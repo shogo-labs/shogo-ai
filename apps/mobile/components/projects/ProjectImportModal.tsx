@@ -199,6 +199,17 @@ export function ProjectImportModal({
   // streaming API.
   const errorsRef = useRef<string[]>([])
 
+  // Tracks whether `done` has been received. The SSE stream stays open
+  // *after* `done` so bootstrap progress (install → generate → …) can keep
+  // streaming, which means:
+  //   - We flip to the `done` step on the event itself, not on stream close
+  //     (so "Open project" enables immediately while bootstrap continues).
+  //   - If the await throws AFTER `done` (e.g. user closed the modal mid-
+  //     bootstrap and the EventSource was torn down), we treat it as a
+  //     non-fatal "bootstrap interrupted" and stay in the done state instead
+  //     of flashing the user back to the failure screen.
+  const doneReceivedRef = useRef(false)
+
   const resetAll = useCallback(() => {
     setStep('options')
     setPendingFile(null)
@@ -215,6 +226,7 @@ export function ProjectImportModal({
       health: { status: 'pending' },
     })
     setDone(null)
+    doneReceivedRef.current = false
   }, [])
 
   const close = useCallback(() => {
@@ -292,6 +304,7 @@ export function ProjectImportModal({
     errorsRef.current = []
     setFatalMessage(null)
     setDone(null)
+    doneReceivedRef.current = false
 
     try {
       await api.importProjectStream(
@@ -321,6 +334,7 @@ export function ProjectImportModal({
             return
           }
           if (ev.phase === 'done') {
+            doneReceivedRef.current = true
             setDone({
               project: ev.project,
               stats: ev.stats,
@@ -329,13 +343,27 @@ export function ProjectImportModal({
               secretsAutoFilled: !!ev.secretsAutoFilled,
             })
             setProgress(ev)
+            // Switch into the done step as soon as `done` arrives so the
+            // user can click "Open project" without waiting for bootstrap
+            // to finish. Any subsequent `bootstrap` events that come down
+            // the SSE wire will continue to update bootstrapSteps below
+            // the file-stats summary.
+            setStep('done')
             return
           }
           setProgress(ev)
         },
       )
-      setStep('done')
+      // Stream ended cleanly after bootstrap finished. If `done` had
+      // already arrived, the step is already 'done' — no-op. The fall-back
+      // assignment is here in case the server ever ends the stream before
+      // emitting any `done` event, which the helper would also throw on.
+      if (!doneReceivedRef.current) setStep('done')
     } catch (err: any) {
+      // Surface as fatal only if we never saw `done`. Post-`done` stream
+      // failures usually mean "user navigated away mid-bootstrap" and
+      // shouldn't reverse a successful import in the UI.
+      if (doneReceivedRef.current) return
       setFatalMessage(err?.message || 'Import failed')
       setStep('fatal')
     }
@@ -387,7 +415,11 @@ export function ProjectImportModal({
           )}
 
           {step === 'done' && done && (
-            <DoneStep done={done} errors={errors} />
+            <DoneStep
+              done={done}
+              errors={errors}
+              bootstrapSteps={bootstrapSteps}
+            />
           )}
 
           {step === 'fatal' && (
@@ -503,50 +535,59 @@ function OptionsStep({
         </Button>
       )}
 
-      <View className="flex-row items-start gap-3 rounded-lg border border-outline-100 bg-background-50 px-4 py-3">
-        <View className="mt-0.5">
-          <MessageSquare size={18} className="text-typography-500" />
-        </View>
-        <View className="flex-1">
-          <Text className="text-sm font-medium text-typography-900">
-            Include chat history
-          </Text>
-          <Text className="text-xs text-typography-500 mt-0.5 leading-relaxed">
-            If the archive contains conversations, import them alongside the project files.
-          </Text>
-        </View>
-        <Switch value={includeChats} onValueChange={setIncludeChats} />
-      </View>
+      {/* Import options are gated on a picked file. Showing them up front
+          is noise: the user can't act on them yet, the toggles are pre-set
+          to sensible defaults, and the passphrase field is irrelevant
+          until we know what's in the archive. */}
+      {pendingFile && (
+        <>
+          <View className="flex-row items-start gap-3 rounded-lg border border-outline-100 bg-background-50 px-4 py-3">
+            <View className="mt-0.5">
+              <MessageSquare size={18} className="text-typography-500" />
+            </View>
+            <View className="flex-1">
+              <Text className="text-sm font-medium text-typography-900">
+                Include chat history
+              </Text>
+              <Text className="text-xs text-typography-500 mt-0.5 leading-relaxed">
+                If the archive contains conversations, import them alongside the project files.
+              </Text>
+            </View>
+            <Switch value={includeChats} onValueChange={setIncludeChats} />
+          </View>
 
-      {/* Optional passphrase: when the bundle ships an encryptedSecrets blob,
-          this lets us auto-fill credentials. We don't know whether the bundle
-          is encrypted until parse-time, so the field is always available;
-          leaving it blank simply skips the auto-fill. */}
-      <View className="rounded-lg border border-outline-100 bg-background-50 px-4 py-3 gap-2">
-        <View className="flex-row items-start gap-3">
-          <View className="mt-0.5">
-            <Lock size={18} className="text-typography-500" />
+          {/* Optional passphrase: when the bundle ships an encryptedSecrets
+              blob, this lets us auto-fill credentials. We don't know
+              whether the bundle is encrypted until parse-time, so the
+              field is always available once a file is picked; leaving it
+              blank simply skips the auto-fill. */}
+          <View className="rounded-lg border border-outline-100 bg-background-50 px-4 py-3 gap-2">
+            <View className="flex-row items-start gap-3">
+              <View className="mt-0.5">
+                <Lock size={18} className="text-typography-500" />
+              </View>
+              <View className="flex-1">
+                <Text className="text-sm font-medium text-typography-900">
+                  Passphrase (optional)
+                </Text>
+                <Text className="text-xs text-typography-500 mt-0.5 leading-relaxed">
+                  If the bundle was exported with encrypted credentials, enter the same passphrase here to auto-fill bot tokens, API keys, and <Text className="font-mono text-xs">.env</Text> secrets.
+                </Text>
+              </View>
+            </View>
+            <Input>
+              <InputField
+                placeholder="Leave empty if not encrypted"
+                value={passphrase}
+                onChangeText={setPassphrase}
+                secureTextEntry
+                autoComplete="off"
+                autoCorrect={false}
+              />
+            </Input>
           </View>
-          <View className="flex-1">
-            <Text className="text-sm font-medium text-typography-900">
-              Passphrase (optional)
-            </Text>
-            <Text className="text-xs text-typography-500 mt-0.5 leading-relaxed">
-              If the bundle was exported with encrypted credentials, enter the same passphrase here to auto-fill bot tokens, API keys, and <Text className="font-mono text-xs">.env</Text> secrets.
-            </Text>
-          </View>
-        </View>
-        <Input>
-          <InputField
-            placeholder="Leave empty if not encrypted"
-            value={passphrase}
-            onChangeText={setPassphrase}
-            secureTextEntry
-            autoComplete="off"
-            autoCorrect={false}
-          />
-        </Input>
-      </View>
+        </>
+      )}
     </>
   )
 }
@@ -646,6 +687,7 @@ function BootstrapIcon({ status }: { status: BootstrapStatus }) {
 function DoneStep({
   done,
   errors,
+  bootstrapSteps,
 }: {
   done: {
     project: { id: string; name: string; description?: string | null }
@@ -660,7 +702,24 @@ function DoneStep({
     secretsAutoFilled: boolean
   }
   errors: string[]
+  bootstrapSteps: Record<BootstrapStep, { status: BootstrapStatus; message?: string }>
 }) {
+  // Bootstrap is "still in flight" if any sub-step is queued or running.
+  // While that's true we keep the checklist visible at the top of the done
+  // view so the user sees `bun install` progress even though they can
+  // already click "Open project". Once every step has settled (ok / failed
+  // / skipped), the section collapses into a one-line summary.
+  const bootstrapInFlight = BOOTSTRAP_ORDER.some((s) => {
+    const status = bootstrapSteps[s].status
+    return status === 'pending' || status === 'running'
+  })
+  const bootstrapHadActivity = BOOTSTRAP_ORDER.some(
+    (s) => bootstrapSteps[s].status !== 'pending',
+  )
+  const bootstrapFailures = BOOTSTRAP_ORDER.filter(
+    (s) => bootstrapSteps[s].status === 'failed',
+  )
+
   return (
     <>
       <View className="flex-row items-center gap-3">
@@ -677,6 +736,24 @@ function DoneStep({
           </Text>
         </View>
       </View>
+
+      {/* Bootstrap progress: visible whenever we're still installing /
+          generating, or when something failed (so the user has a chance to
+          notice). Quiet otherwise. */}
+      {(bootstrapInFlight || bootstrapFailures.length > 0) && (
+        <BootstrapProgress
+          bootstrapSteps={bootstrapSteps}
+          inFlight={bootstrapInFlight}
+        />
+      )}
+      {!bootstrapInFlight && bootstrapHadActivity && bootstrapFailures.length === 0 && (
+        <View className="flex-row items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2">
+          <CheckCircle2 size={14} className="text-emerald-500" />
+          <Text className="text-xs text-emerald-700">
+            Project setup complete (deps installed, routes generated).
+          </Text>
+        </View>
+      )}
 
       <View className="rounded-lg border border-outline-100 bg-background-50 p-4 gap-1">
         <Text className="text-xs text-typography-500">
@@ -718,6 +795,63 @@ function DoneStep({
 
       {errors.length > 0 && <ErrorList errors={errors} />}
     </>
+  )
+}
+
+// Reusable bootstrap checklist shared between the in-flight progress step
+// and the post-`done` view. Renders a row per sub-step + a header that
+// distinguishes "still running" from "finished with failures".
+function BootstrapProgress({
+  bootstrapSteps,
+  inFlight,
+}: {
+  bootstrapSteps: Record<BootstrapStep, { status: BootstrapStatus; message?: string }>
+  inFlight: boolean
+}) {
+  const completed = BOOTSTRAP_ORDER.filter((s) => {
+    const status = bootstrapSteps[s].status
+    return status === 'ok' || status === 'skipped' || status === 'failed'
+  }).length
+  return (
+    <View className="rounded-lg border border-outline-100 bg-background-50 p-3 gap-2">
+      <View className="flex-row items-center gap-2">
+        {inFlight ? (
+          <Loader2 size={14} className="text-primary-500 animate-spin" />
+        ) : (
+          <CheckCircle2 size={14} className="text-typography-400" />
+        )}
+        <Text className="text-[11px] font-semibold uppercase tracking-wide text-typography-500 flex-1">
+          {inFlight ? 'Setting up project' : 'Project setup'}
+        </Text>
+        <Text className="text-[10px] text-typography-500 font-mono">
+          {completed} / {BOOTSTRAP_ORDER.length}
+        </Text>
+      </View>
+      {BOOTSTRAP_ORDER.map((stepId) => {
+        const s = bootstrapSteps[stepId]
+        return (
+          <View key={stepId} className="flex-row items-center gap-2">
+            <BootstrapIcon status={s.status} />
+            <Text className="text-xs text-typography-700 flex-1">
+              {BOOTSTRAP_STEP_LABELS[stepId]}
+            </Text>
+            {s.status === 'failed' && s.message && (
+              <Text
+                className="text-[10px] text-amber-600 font-mono max-w-[55%]"
+                numberOfLines={1}
+              >
+                {s.message}
+              </Text>
+            )}
+            {s.status === 'skipped' && (
+              <Text className="text-[10px] text-typography-500 italic">
+                skipped
+              </Text>
+            )}
+          </View>
+        )
+      })}
+    </View>
   )
 }
 

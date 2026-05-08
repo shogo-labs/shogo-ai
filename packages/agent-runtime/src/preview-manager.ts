@@ -457,7 +457,7 @@ export class PreviewManager {
     return this.apiPhase
   }
 
-  /** Last error from `bun x shogo generate`, or null on success. */
+  /** Last error from `bun run generate` (or its fallback), or null on success. */
   get apiLastGenerateError(): string | null {
     return this.lastGenerateError
   }
@@ -581,15 +581,26 @@ export class PreviewManager {
    * Strategy:
    *   1. If `package.json` declares a `generate` script, run
    *      `bun run generate`. The runtime template ships such a script
-   *      that points at the SDK CLI and is the canonical surface for
-   *      project-specific tweaks (e.g. running `db:push` afterwards,
-   *      pausing the watcher around the writes, etc.).
-   *   2. Otherwise fall back to `bun x shogo generate`. This is the
-   *      escape hatch for workspaces that haven't been re-seeded onto
-   *      the new template; it still picks up `shogo.config.json` if
-   *      present, or runs the SDK's legacy single-dir mode if not.
+   *      that points directly at the SDK CLI's source file and is the
+   *      canonical surface for project-specific tweaks (e.g. running
+   *      `db:push` afterwards, pausing the watcher around the writes,
+   *      etc.).
+   *   2. Otherwise, if the SDK is installed in `node_modules/`, run
+   *      `bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate`
+   *      directly. This bypasses `node_modules/.bin/shogo` so we don't
+   *      need a working bin shim — pre-warmed templates and partial
+   *      installs can leave node_modules in place without bin shims, in
+   *      which case `bun x shogo` would fall through to npm and 404
+   *      (since `@shogo-ai/sdk` publishes a `shogo` bin but no `shogo`
+   *      package exists on npm).
+   *   3. As a last-ditch fallback, run `bun x shogo generate` so an
+   *      ancient workspace whose lockfile somehow predates the SDK
+   *      install can still re-fetch the bin from a (future) registry
+   *      entry. Today this just produces a clear 404 for
+   *      `@shogo-ai/sdk`-less workspaces, which is better than a silent
+   *      hang.
    *
-   * Both paths read the workspace's `shogo.config.json` (when it
+   * All paths read the workspace's `shogo.config.json` (when it
    * exists), so generated `server.tsx` ends up with the right
    * `customRoutesPath`, `dynamicCrudImport`, and `bunServe` settings
    * regardless of which entry point was used.
@@ -607,10 +618,11 @@ export class PreviewManager {
     const start = Date.now()
 
     // Prefer the project's own `generate` script when one exists. The
-    // runtime template ships `"generate": "bun x shogo generate"`, so
-    // both paths converge on the SDK CLI; the indirection lets
-    // user-customised projects splice extra steps into the pipeline
-    // without us having to teach PreviewManager about every variation.
+    // runtime template ships `"generate": "bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate"`,
+    // so both paths converge on the SDK CLI's published entry file; the
+    // indirection lets user-customised projects splice extra steps into
+    // the pipeline without us having to teach PreviewManager about every
+    // variation.
     let useBunRun = false
     try {
       const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf-8')) as {
@@ -620,11 +632,27 @@ export class PreviewManager {
         useBunRun = true
       }
     } catch {
-      // Malformed package.json — fall through to `bun x shogo generate`.
+      // Malformed package.json — fall through to the path-based CLI.
     }
 
-    const args = useBunRun ? ['run', 'generate'] : ['x', 'shogo', 'generate']
-    const cmdLabel = useBunRun ? 'bun run generate' : 'bun x shogo generate'
+    // Fallback resolution. We prefer the file-path form because
+    // `bun x shogo` resolves through `node_modules/.bin/` first and
+    // then through the npm registry — and there is no `shogo` package
+    // on npm (the bin name is owned by `@shogo-ai/sdk`). Workspaces
+    // bootstrapped without a working `.bin/` shim (pre-warmed templates,
+    // crashed installs, etc.) would 404 there.
+    const sdkCliPath = join(cwd, 'node_modules', '@shogo-ai', 'sdk', 'bin', 'cli.mjs')
+    const hasSdkCli = existsSync(sdkCliPath)
+    const args = useBunRun
+      ? ['run', 'generate']
+      : hasSdkCli
+        ? [sdkCliPath, 'generate']
+        : ['x', 'shogo', 'generate']
+    const cmdLabel = useBunRun
+      ? 'bun run generate'
+      : hasSdkCli
+        ? 'bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate'
+        : 'bun x shogo generate'
     console.log(`[${LOG_PREFIX}] Running ${cmdLabel} at ${cwd}...`)
 
     return await new Promise<boolean>((resolveResult) => {
