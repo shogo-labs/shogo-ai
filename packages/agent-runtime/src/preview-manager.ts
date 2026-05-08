@@ -224,6 +224,52 @@ function detectLocalMode(): boolean {
   return !process.env.KUBERNETES_SERVICE_HOST
 }
 
+/**
+ * Build the env passed to the spawned `bun run server.tsx` API sidecar.
+ *
+ * Three things go in beyond `parentEnv`:
+ *
+ *   1. `PORT` / `API_SERVER_PORT` / `SKILL_SERVER_PORT` — the canonical
+ *      Bun.serve input plus two legacy aliases the SDK template scripts
+ *      and rolled-back binaries still consult. Always overridden so the
+ *      sidecar binds to the port `PreviewManager` chose, not whatever
+ *      the parent had.
+ *   2. `DATABASE_URL` — pinned to the workspace's local sqlite file so
+ *      Prisma in the sidecar talks to the same db the runtime's other
+ *      tools (db studio, generate, etc.) do.
+ *   3. `SHOGO_API_URL` (local-mode default only) — when the parent
+ *      process declared `SHOGO_LOCAL_MODE=true` but didn't itself
+ *      export `SHOGO_API_URL`, inject `http://localhost:8002` so the
+ *      `@shogo-ai/sdk` voice/chat client in the sidecar reaches the
+ *      local Shogo API instead of falling back to `api.shogo.ai`.
+ *      In cloud, `SHOGO_LOCAL_MODE` is unset and the warm-pool
+ *      launcher already pins `SHOGO_API_URL` on the parent, so this
+ *      branch is a no-op. An explicit override on the parent always
+ *      wins.
+ *
+ * Exported for direct unit testing (mocking `spawn` to capture env is
+ * fiddly and slow; this is the small pure surface that actually matters).
+ */
+export function resolveApiServerEnv(input: {
+  parentEnv: NodeJS.ProcessEnv
+  portStr: string
+  cwd: string
+}): Record<string, string> {
+  const { parentEnv, portStr, cwd } = input
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(parentEnv)) {
+    if (typeof v === 'string') out[k] = v
+  }
+  out.PORT = portStr
+  out.API_SERVER_PORT = portStr
+  out.SKILL_SERVER_PORT = portStr
+  out.DATABASE_URL = `file:${join(cwd, 'prisma', 'dev.db')}`
+  if (parentEnv.SHOGO_LOCAL_MODE === 'true' && !parentEnv.SHOGO_API_URL) {
+    out.SHOGO_API_URL = 'http://localhost:8002'
+  }
+  return out
+}
+
 export type PreviewPhase =
   | 'idle'
   | 'installing'
@@ -1339,16 +1385,15 @@ export class PreviewManager {
     // keep generated code / rolled-back binaries consistent with the
     // host-side runtime checks.
     const portStr = String(this.apiPort)
+
     const proc = spawn(pkg.bunBinary, ['run', 'server.tsx'], {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        PORT: portStr,
-        API_SERVER_PORT: portStr,
-        SKILL_SERVER_PORT: portStr,
-        DATABASE_URL: `file:${join(cwd, 'prisma', 'dev.db')}`,
-      },
+      env: resolveApiServerEnv({
+        parentEnv: process.env,
+        portStr,
+        cwd,
+      }),
     })
 
     this.apiServerProcess = proc
