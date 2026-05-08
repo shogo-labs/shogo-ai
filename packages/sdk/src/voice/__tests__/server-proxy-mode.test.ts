@@ -172,6 +172,77 @@ describe('createVoiceHandlers — runtime-token proxy mode', () => {
     }
   })
 
+  test('forwards agentName from incoming request to upstream URL', async () => {
+    const { fetch: fetchImpl, calls } = makeMockFetch(() => ({
+      status: 200,
+      body: { signedUrl: 'wss://x', agentId: 'agent_arch', agentName: 'architect' },
+    }))
+    const handlers = createVoiceHandlers({
+      proxy: {
+        runtimeToken: 'rt',
+        projectId: 'proj_z',
+        apiUrl: 'http://api',
+        fetch: fetchImpl,
+      },
+    })
+    const res = await handlers.signedUrl(
+      new Request('http://pod/api/voice/signed-url?agentName=architect'),
+    )
+    expect(res.status).toBe(200)
+    expect(calls).toHaveLength(1)
+    const [call] = calls
+    expect(call.url).toBe(
+      'http://api/api/voice/signed-url?projectId=proj_z&agentName=architect',
+    )
+  })
+
+  test('omits agentName when client did not pass one', async () => {
+    const { fetch: fetchImpl, calls } = makeMockFetch(() => ({
+      status: 200,
+      body: { signedUrl: 'wss://x', agentId: 'a' },
+    }))
+    const handlers = createVoiceHandlers({
+      proxy: {
+        runtimeToken: 'rt',
+        projectId: 'proj_z',
+        apiUrl: 'http://api',
+        fetch: fetchImpl,
+      },
+    })
+    await handlers.signedUrl(new Request('http://pod/api/voice/signed-url'))
+    const [call] = calls
+    expect(call.url).toBe('http://api/api/voice/signed-url?projectId=proj_z')
+    expect(call.url).not.toContain('agentName')
+  })
+
+  test('does not forward arbitrary unknown query params', async () => {
+    const { fetch: fetchImpl, calls } = makeMockFetch(() => ({
+      status: 200,
+      body: { signedUrl: 'w', agentId: 'a' },
+    }))
+    const handlers = createVoiceHandlers({
+      proxy: {
+        runtimeToken: 'rt',
+        projectId: 'proj_z',
+        apiUrl: 'http://api',
+        fetch: fetchImpl,
+      },
+    })
+    await handlers.signedUrl(
+      new Request(
+        'http://pod/api/voice/signed-url?agentName=architect&foo=bar&projectId=spoofed',
+      ),
+    )
+    const [call] = calls
+    // Allowlist forwards only `agentName`; pinned `projectId` from the
+    // runtime token wins; `foo` is dropped.
+    expect(call.url).toBe(
+      'http://api/api/voice/signed-url?projectId=proj_z&agentName=architect',
+    )
+    expect(call.url).not.toContain('foo=bar')
+    expect(call.url).not.toContain('spoofed')
+  })
+
   test('signedUrl rejects non-GET (405) in proxy mode', async () => {
     const handlers = createVoiceHandlers({
       proxy: {

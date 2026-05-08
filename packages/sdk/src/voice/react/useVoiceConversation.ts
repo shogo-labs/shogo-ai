@@ -31,7 +31,7 @@ import {
   createPostJson,
   createTranscriptDisconnectHandler,
   fetchSignedUrl,
-  withProjectId,
+  withProjectQuery,
   type BaseVoiceConversationOptions,
   type BaseVoiceConversationResult,
   type ClientToolFn,
@@ -59,17 +59,19 @@ export function useVoiceConversation(
     onTranscript,
     shogoApiKey,
     projectId,
+    agentName,
     fetchCredentials = shogoApiKey ? 'omit' : 'same-origin',
     onError,
     onMessage,
     conversationId: optionConversationId,
+    dynamicVariables,
   } = options
 
   const authHeaders = useCallback((): Record<string, string> => {
     return shogoApiKey ? { authorization: `Bearer ${shogoApiKey}` } : {}
   }, [shogoApiKey])
 
-  const resolvedSignedUrlPath = withProjectId(signedUrlPath, projectId)
+  const resolvedSignedUrlPath = withProjectQuery(signedUrlPath, { projectId, agentName })
 
   const transcriptRef = useRef<string[]>([])
   const lastInjectedRef = useRef<string>('')
@@ -227,6 +229,7 @@ export function useVoiceConversation(
         agentPromptOverride: data.agentPromptOverride,
         suppressFirstMessage: opts?.suppressFirstMessage,
         conversationId: optionConversationId,
+        dynamicVariables,
       })
       await startSession(sessionPayload as never)
     },
@@ -235,6 +238,7 @@ export function useVoiceConversation(
       endSession,
       resolvedSignedUrlPath,
       fetchCredentials,
+      dynamicVariables,
       startSession,
       characterName,
       authHeaders,

@@ -57,6 +57,21 @@
  *   )
  * }
  * ```
+ *
+ * Named secondary agents
+ * ----------------------
+ * Same as on web: declare extra agents in `shogo.config.json#agents`,
+ * run `bunx shogo deploy`, then pass `agentName` to drive a specific
+ * persona. `useShogoVoice({ agentName })` and `useShogoChat({
+ * agentName })` resolve to the same `ProjectAgent` row.
+ *
+ * Per-user dynamic variables
+ * --------------------------
+ * Pass `dynamicVariables: { user_display_name, relationship_stage }`
+ * (or any keys the agent prompt references) to surface per-user
+ * fields from your local `Companion` row to ElevenLabs at session
+ * start. The SDK's built-ins (`character_name`, `user_context`,
+ * `conversation_id`) always win on collision.
  */
 
 import {

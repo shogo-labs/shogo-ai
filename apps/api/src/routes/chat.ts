@@ -83,8 +83,12 @@ const CHAT_MODEL_ID = process.env.SHOGO_CHAT_MODEL || 'claude-haiku-4-5'
  * Resolve the chat LLM. Mirrors `resolveTranslatorModel` in voice.ts:
  *   1. Shogo AI proxy (`AI_PROXY_URL` + `AI_PROXY_TOKEN`) — preferred.
  *   2. Direct `ANTHROPIC_API_KEY` — fallback for local dev.
+ *
+ * `agentModelId` (when set) overrides the env-driven default. Used
+ * when a named `ProjectAgent` row carries its own `model` field.
  */
-function resolveChatModel() {
+function resolveChatModel(agentModelId: string | null = null) {
+  const modelId = agentModelId || CHAT_MODEL_ID
   const proxyUrl = process.env.AI_PROXY_URL
   const proxyToken = process.env.AI_PROXY_TOKEN
   if (proxyUrl && proxyToken) {
@@ -93,12 +97,12 @@ function resolveChatModel() {
       baseURL: anthropicProxyUrl,
       apiKey: proxyToken,
     })
-    return anthropic(CHAT_MODEL_ID)
+    return anthropic(modelId)
   }
   const directKey = process.env.ANTHROPIC_API_KEY
   if (directKey) {
     const anthropic = createAnthropic({ apiKey: directKey })
-    return anthropic(CHAT_MODEL_ID)
+    return anthropic(modelId)
   }
   return null
 }
@@ -136,6 +140,18 @@ const ChatToolDescriptorSchema = z.object({
 const ChatTurnBodySchema = z.object({
   messages: z.array(z.unknown()).min(1, 'messages is required'),
   projectId: z.string().min(1).optional(),
+  /**
+   * Optional named agent on the project (`shogo.config.json#agents`).
+   * When present, the named row's `systemPrompt`, `model`, and
+   * `tools` (full descriptors) drive this turn. Omitted / empty
+   * string falls back to the project's `default` agent (or the
+   * built-in persona for projects predating the agents table).
+   *
+   * Also accepted as `?agentName=` on the URL — the URL value wins
+   * when both are present (matches voice's signed-url query
+   * convention).
+   */
+  agentName: z.string().min(1).max(64).optional(),
   conversationId: z.string().min(1).optional(),
   tools: z.array(ChatToolDescriptorSchema).max(32).optional(),
 })
@@ -216,8 +232,19 @@ export function chatRoutes() {
       )
     }
 
-    const { messages: rawMessages, projectId, conversationId, tools: toolDescriptors } =
-      parsedBody
+    const {
+      messages: rawMessages,
+      projectId,
+      conversationId,
+      tools: toolDescriptors,
+    } = parsedBody
+    // URL-level `agentName` wins over body to match voice's
+    // signed-url contract; both default to the body value.
+    const queryAgentName = c.req.query('agentName')
+    const agentName =
+      typeof queryAgentName === 'string' && queryAgentName.length > 0
+        ? queryAgentName
+        : parsedBody.agentName
 
     if (!projectId) {
       return c.json(
@@ -244,7 +271,39 @@ export function chatRoutes() {
       )
     }
 
-    const model = resolveChatModel()
+    // Resolve the named agent up front so we can pick its model
+    // before consulting `resolveChatModel`'s default. Failures here
+    // (no row, network error) degrade to the built-in persona +
+    // default model — same shape as the legacy path. A missing
+    // *named* (non-default) agent is a hard 404 so consumers get a
+    // useful error during dev.
+    const { resolveProjectAgent, listProjectAgentNames } = await import(
+      '../services/projectAgent.service'
+    )
+    let resolvedAgent: Awaited<ReturnType<typeof resolveProjectAgent>> = null
+    try {
+      resolvedAgent = await resolveProjectAgent({ projectId, agentName })
+    } catch (err: any) {
+      console.warn(
+        '[Chat] resolveProjectAgent failed; falling back to default persona:',
+        err?.message || err,
+      )
+    }
+    if (!resolvedAgent && agentName) {
+      const knownAgents = await listProjectAgentNames(projectId).catch(() => [])
+      return c.json(
+        {
+          error: {
+            code: 'agent_not_found',
+            message: `Chat agent '${agentName}' is not configured for this project. Run \`shogo deploy\` to provision it.`,
+            knownAgents,
+          },
+        },
+        404,
+      )
+    }
+
+    const model = resolveChatModel(resolvedAgent?.model ?? null)
     if (!model) {
       return c.json(
         {
@@ -258,19 +317,19 @@ export function chatRoutes() {
       )
     }
 
-    // Compose the system prompt. `resolveVoiceContext` is wrapped in
-    // try/catch so a slow / cold-starting pod never blocks the chat
-    // reply — degraded path uses just the default persona.
-    let systemPrompt = composeChatSystemPrompt(DEFAULT_CHAT_SYSTEM_PROMPT, '')
+    // Compose the system prompt. The named agent's `systemPrompt`
+    // wins; `resolveVoiceContext` is wrapped in try/catch so a slow
+    // / cold-starting pod never blocks the chat reply — degraded
+    // path uses just the persona without the project-context
+    // injection.
+    const personaPrompt = resolvedAgent?.systemPrompt ?? DEFAULT_CHAT_SYSTEM_PROMPT
+    let systemPrompt = composeChatSystemPrompt(personaPrompt, '')
     try {
       const contextBlock = await resolveVoiceContext({
         projectId,
         signal: c.req.raw.signal,
       })
-      systemPrompt = composeChatSystemPrompt(
-        DEFAULT_CHAT_SYSTEM_PROMPT,
-        contextBlock,
-      )
+      systemPrompt = composeChatSystemPrompt(personaPrompt, contextBlock)
     } catch (err: any) {
       console.warn(
         '[Chat] resolveVoiceContext failed; falling back to bare persona:',
@@ -278,12 +337,55 @@ export function chatRoutes() {
       )
     }
 
-    // Build the AI-SDK tools map from caller-supplied descriptors.
-    // Each tool is declared WITHOUT an `execute` function so the
-    // model produces a `tool-call` event that the client resolves
-    // and routes back via `addToolOutput`.
+    // Build the AI-SDK tools map. Two-source precedence:
+    //
+    //   1. The agent's manifest tools (`resolvedAgent.tools`) are the
+    //      source of truth: their `description` + `inputSchema` are
+    //      what the model sees. This means a single `shogo deploy`
+    //      pushes the contract to BOTH ElevenLabs (voice) and the
+    //      chat route — no need to redeclare schemas client-side.
+    //   2. The body's `tools` array is treated as a "client capability"
+    //      signal — which tools the consumer has registered handlers
+    //      for in `clientTools`. Tools the client did not register are
+    //      dropped so the model can't tool-call something that nothing
+    //      will resolve.
+    //
+    // For agents with no manifest tools (legacy, or chat-only with
+    // empty `tools`), we fall back to the client's descriptors
+    // verbatim — preserves the V1 contract for projects that haven't
+    // adopted named agents yet.
+    //
+    // Each tool is declared WITHOUT an `execute` function so the model
+    // produces a `tool-call` event that the client resolves and routes
+    // back via `addToolOutput`.
     const toolsMap: Record<string, ReturnType<typeof tool>> = {}
-    if (toolDescriptors && toolDescriptors.length > 0) {
+    const manifestTools = resolvedAgent?.tools
+    const clientToolNames = new Set(
+      (toolDescriptors ?? []).map((t) => t.name),
+    )
+    const clientToolByName = new Map(
+      (toolDescriptors ?? []).map((t) => [t.name, t] as const),
+    )
+
+    if (manifestTools && manifestTools.length > 0) {
+      // Manifest is authoritative.
+      for (const mt of manifestTools) {
+        if (!clientToolNames.has(mt.name)) continue
+        const clientCopy = clientToolByName.get(mt.name)
+        // Manifest fields win; fall back to client's when manifest
+        // omits them so older deploys (string-sugar tools without
+        // schemas) still work.
+        const description =
+          mt.description ?? clientCopy?.description ?? mt.name
+        const inputSchema = mt.inputSchema ?? clientCopy?.inputSchema
+        if (!inputSchema) continue
+        toolsMap[mt.name] = tool({
+          description,
+          inputSchema: jsonSchema(inputSchema as never),
+        })
+      }
+    } else if (toolDescriptors && toolDescriptors.length > 0) {
+      // Legacy fallback — no manifest tools, declare the client's.
       for (const t of toolDescriptors) {
         toolsMap[t.name] = tool({
           description: t.description,

@@ -74,6 +74,18 @@ export interface BaseVoiceConversationOptions {
    */
   projectId?: string
 
+  /**
+   * Optional named agent to talk to. Forwarded as `?agentName=` on
+   * the signed-URL fetch and resolved server-side to a project-scoped
+   * `ProjectAgent` row (created via `shogo deploy`). When omitted,
+   * the server resolves the project's `default` agent.
+   *
+   * The same `agentName` reaches the same persona via
+   * `useChatConversation({ agentName })` — voice and chat are two
+   * transports for one agent record.
+   */
+  agentName?: string
+
   /** Called on connection errors. */
   onError?: (error: unknown) => void
 
@@ -97,6 +109,24 @@ export interface BaseVoiceConversationOptions {
    * the convai conversation id once the session connects.
    */
   conversationId?: string
+
+  /**
+   * Extra dynamic variables forwarded to ElevenLabs at session start.
+   * Merged on top of the SDK's built-in variables — `character_name`,
+   * `user_context`, and `conversation_id` (when supplied) always win
+   * on collision so consumers can't accidentally override them.
+   *
+   * Typical use: surface per-user fields from the consumer's own
+   * `Companion` row (display name, relationship stage, custom greeting
+   * tokens) so the agent's prompt can reference them via
+   * `{{var_name}}`. Variables also need to be declared in the agent's
+   * `dynamic_variable_placeholders` (set at deploy time) for EL to
+   * pick up the value.
+   *
+   * Non-string values are coerced via `String(...)` before being
+   * forwarded; `null` / `undefined` values are silently dropped.
+   */
+  dynamicVariables?: Record<string, unknown> | null
 }
 
 export interface BaseVoiceConversationResult {

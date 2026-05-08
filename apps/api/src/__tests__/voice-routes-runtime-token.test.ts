@@ -83,7 +83,29 @@ const mockPrisma = {
       return merged
     }),
   },
+  projectAgent: {
+    findUnique: mock(async (args: any) => {
+      const { projectId, name } = args.where.projectId_name
+      const rows = projectAgentsByProject.get(projectId) ?? []
+      return rows.find((r: any) => r.name === name) ?? null
+    }),
+    findMany: mock(async (args: any) => {
+      const rows = projectAgentsByProject.get(args.where.projectId) ?? []
+      if (args.select && args.select.name === true) {
+        return rows.map((r: any) => ({ name: r.name }))
+      }
+      return rows
+    }),
+    update: mock(async (args: any) => {
+      // Only used when ensureVoiceAgentId persists a freshly minted EL
+      // agent id. We don't track per-id state in this fixture, so just
+      // ack.
+      void args
+      return null
+    }),
+  },
 }
+const projectAgentsByProject = new Map<string, any[]>()
 
 mock.module('../lib/prisma', () => ({ prisma: mockPrisma }))
 mock.module('../auth', () => ({
@@ -193,6 +215,7 @@ const USER_OWNER_B = 'user_owner_b'
 beforeEach(() => {
   projectsById.clear()
   voiceConfigByProjectId.clear()
+  projectAgentsByProject.clear()
   projectsById.set(PROJECT_A, {
     id: PROJECT_A,
     workspaceId: WORKSPACE_A,
@@ -276,6 +299,85 @@ describe('GET /api/voice/signed-url?projectId=X with x-runtime-token', () => {
       { method: 'GET' },
     )
     expect(res.status).toBe(401)
+  })
+
+  test('agentName=architect resolves a named ProjectAgent row\u2019s elevenlabsAgentId', async () => {
+    projectAgentsByProject.set(PROJECT_A, [
+      {
+        id: 'pa_arch',
+        projectId: PROJECT_A,
+        workspaceId: WORKSPACE_A,
+        name: 'architect',
+        systemPrompt: 'arch',
+        toolsAllowlist: null,
+        tools: null,
+        characterName: null,
+        displayName: null,
+        voiceId: 'voice_arch',
+        firstMessage: null,
+        elevenlabsAgentId: 'agent_arch_pre',
+        model: null,
+      },
+    ])
+    const app = createApp()
+    const token = deriveRuntimeToken(PROJECT_A)
+    const res = await app.request(
+      `/api/voice/signed-url?projectId=${PROJECT_A}&agentName=architect`,
+      { method: 'GET', headers: { 'x-runtime-token': token } },
+    )
+    expect(res.status).toBe(200)
+    const body: any = await res.json()
+    expect(body.agentId).toBe('agent_arch_pre')
+    expect(body.agentName).toBe('architect')
+    expect(getSignedUrlMock).toHaveBeenCalledWith('agent_arch_pre')
+  })
+
+  test('agentName=missing returns 404 with knownAgents list', async () => {
+    projectAgentsByProject.set(PROJECT_A, [
+      {
+        id: 'pa_arch',
+        projectId: PROJECT_A,
+        workspaceId: WORKSPACE_A,
+        name: 'architect',
+        systemPrompt: null,
+        toolsAllowlist: null,
+        tools: null,
+        characterName: null,
+        displayName: null,
+        voiceId: 'voice_arch',
+        firstMessage: null,
+        elevenlabsAgentId: 'agent_arch',
+        model: null,
+      },
+    ])
+    const app = createApp()
+    const token = deriveRuntimeToken(PROJECT_A)
+    const res = await app.request(
+      `/api/voice/signed-url?projectId=${PROJECT_A}&agentName=ghost`,
+      { method: 'GET', headers: { 'x-runtime-token': token } },
+    )
+    expect(res.status).toBe(404)
+    const body: any = await res.json()
+    expect(body.error).toMatch(/ghost/)
+    expect(body.knownAgents).toEqual(['architect'])
+  })
+
+  test('no agentName: legacy fallback to voice_project_configs.elevenlabsAgentId', async () => {
+    voiceConfigByProjectId.set(PROJECT_A, {
+      projectId: PROJECT_A,
+      workspaceId: WORKSPACE_A,
+      elevenlabsAgentId: 'agent_legacy_default',
+    })
+    const app = createApp()
+    const token = deriveRuntimeToken(PROJECT_A)
+    const res = await app.request(
+      `/api/voice/signed-url?projectId=${PROJECT_A}`,
+      { method: 'GET', headers: { 'x-runtime-token': token } },
+    )
+    expect(res.status).toBe(200)
+    const body: any = await res.json()
+    expect(body.agentId).toBe('agent_legacy_default')
+    expect(body.agentName).toBe('default')
   })
 })
 
@@ -470,6 +572,73 @@ describe('POST /api/voice/twilio/provision-number/:projectId with x-runtime-toke
  * `via: 'runtimeToken'` on the request (that's the worst case — token
  * validated + project-scoped + STILL rejected for this route).
  */
+/**
+ * `shogo deploy` invoked from inside a warm pod (e.g. `shogo dev`
+ * preflight) authenticates with the pod's runtime token, not a
+ * `shogo_sk_*` API key. The sync route already runs `authMiddleware`
+ * + `authorizeProject`, so runtime tokens scoped to the URL's
+ * `:projectId` succeed — and tokens scoped to a different project
+ * 403, mirroring `voice/config/:projectId` semantics.
+ */
+describe('POST /api/projects/:projectId/agents/sync — runtime token', () => {
+  test('valid token + matching projectId → 200, manifest reconciled', async () => {
+    const app = createApp()
+    const token = deriveRuntimeToken(PROJECT_A)
+    const res = await app.request(
+      `/api/projects/${PROJECT_A}/agents/sync`,
+      {
+        method: 'POST',
+        headers: {
+          'x-runtime-token': token,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          agents: { architect: { systemPrompt: 'arch' } },
+          dryRun: true,
+        }),
+      },
+    )
+    expect(res.status).toBe(200)
+    const body: any = await res.json()
+    // dryRun=true short-circuits writes but still surfaces the diff.
+    expect(body.dryRun).toBe(true)
+    expect(body.created).toEqual(['architect'])
+  })
+
+  test('valid token but mismatched projectId → 403 forbidden', async () => {
+    const app = createApp()
+    // Token signed for PROJECT_A; URL targets PROJECT_B.
+    const token = deriveRuntimeToken(PROJECT_A)
+    const res = await app.request(
+      `/api/projects/${PROJECT_B}/agents/sync`,
+      {
+        method: 'POST',
+        headers: {
+          'x-runtime-token': token,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ agents: {} }),
+      },
+    )
+    expect(res.status).toBe(403)
+    const body: any = await res.json()
+    expect(body.error.code).toBe('forbidden')
+  })
+
+  test('missing token + missing session → 401 unauthorized', async () => {
+    const app = createApp()
+    const res = await app.request(
+      `/api/projects/${PROJECT_A}/agents/sync`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ agents: {} }),
+      },
+    )
+    expect(res.status).toBe(401)
+  })
+})
+
 describe('POST /api/voice/translator/chat/:chatSessionId — runtime-token rejection', () => {
   test('valid runtime token for the owning project → 403 (not user-scoped)', async () => {
     const app = createApp()
