@@ -133,6 +133,20 @@ const UNGROUPABLE_TOOLS = new Set([
   "StrReplace",
 ])
 const TEAM_TOOL_NAMES = new Set(["team_create"])
+
+// "Low-information" tools that render as a chrome-less, hover-highlighted
+// row with a human-readable label (e.g. "Read package.json"). Bash/exec
+// has its own dedicated widget (`ExecWidget`) which is already minimal
+// by default, so it's NOT in this set — only tools that flow through
+// `InlineToolWidget` need to be flagged here.
+const MINIMAL_TOOL_NAMES = new Set([
+  "Read", "read_file",
+  "ReadLints", "read_lints",
+  "Grep", "grep", "search",
+  "Glob", "glob",
+  "WebSearch", "WebFetch",
+  "Delete",
+])
 const MIN_GROUP_SIZE = 2
 
 function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
@@ -605,6 +619,18 @@ export const AssistantContent = memo(
               <BrowserWidget
                 key={part.id}
                 tool={part.tool}
+                isExpanded={expandedTools.has(part.id)}
+                onToggle={getToggle(part.id)}
+              />
+            )
+          }
+
+          if (MINIMAL_TOOL_NAMES.has(part.tool.toolName)) {
+            return (
+              <InlineToolWidget
+                key={part.id}
+                tool={part.tool}
+                variant="minimal"
                 isExpanded={expandedTools.has(part.id)}
                 onToggle={getToggle(part.id)}
               />
