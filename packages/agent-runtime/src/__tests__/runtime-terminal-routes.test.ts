@@ -19,32 +19,11 @@ function writePackageJson(workspaceDir: string, pkg: Record<string, unknown>): v
   writeFileSync(join(workspaceDir, 'package.json'), JSON.stringify(pkg, null, 2), 'utf-8')
 }
 
-// `printf` is a bash builtin and not a PowerShell cmdlet, so use Node to emit
-// fixed bytes instead. This keeps the test portable across the bash launcher
-// (Unix) and the PowerShell launcher (Windows).
-const PORTABLE_OK_CMD = `node -e "process.stdout.write('ok')"`
-
-/**
- * Pull the meta sentinel out of a /terminal/run streamed body. Mirrors the
- * client-side parser in apps/mobile/components/project/panels/ide/Terminal.tsx
- * so we can assert on the post-command cwd / exit code without copying the
- * decoder into the test.
- */
-function readMeta(body: string): { cwd?: string; exitCode?: number | null } | null {
-  const m = /\u001eSHOGO_TERM_META:([A-Za-z0-9+/=]+)\u001e\n?/.exec(body)
-  if (!m) return null
-  try {
-    return JSON.parse(Buffer.from(m[1], 'base64').toString('utf8'))
-  } catch {
-    return null
-  }
-}
-
-describe('runtimeTerminalRoutes', () => {
+describe('runtimeTerminalRoutes — preset commands', () => {
   test('serves preset commands as JSON at the runtime-local path', async () => {
     await withWorkspace(async (workspaceDir) => {
       writePackageJson(workspaceDir, { name: 'demo' })
-      const app = runtimeTerminalRoutes({ workspaceDir })
+      const { router: app, manager } = runtimeTerminalRoutes({ workspaceDir })
 
       const res = await app.request('/terminal/commands')
       expect(res.status).toBe(200)
@@ -52,84 +31,104 @@ describe('runtimeTerminalRoutes', () => {
 
       const body = await res.json() as { commands: Record<string, Array<{ id: string }>> }
       expect(body.commands.package.some(cmd => cmd.id === 'bun-install')).toBe(true)
+      manager.shutdown()
     })
   })
 
   test('omits bun-install when the workspace has no package.json', async () => {
     await withWorkspace(async (workspaceDir) => {
-      const app = runtimeTerminalRoutes({ workspaceDir })
+      const { router: app, manager } = runtimeTerminalRoutes({ workspaceDir })
 
       const res = await app.request('/terminal/commands')
       const body = await res.json() as { commands: Record<string, Array<{ id: string }>> }
       const all = Object.values(body.commands).flat()
       expect(all.some((c) => c.id === 'bun-install')).toBe(false)
+      manager.shutdown()
+    })
+  })
+})
+
+describe('runtimeTerminalRoutes — PTY session lifecycle (REST)', () => {
+  test('POST /terminal/sessions creates a session with defaults', async () => {
+    await withWorkspace(async (workspaceDir) => {
+      const { router: app, manager } = runtimeTerminalRoutes({ workspaceDir })
+
+      const res = await app.request('/terminal/sessions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      expect(res.status).toBe(200)
+      const body = await res.json() as { id: string; cols: number; rows: number; cwd: string }
+      expect(body.id).toMatch(/^t/)
+      expect(body.cols).toBe(80)
+      expect(body.rows).toBe(24)
+      expect(body.cwd).toBe(workspaceDir)
+      expect(manager.list()).toHaveLength(1)
+      manager.shutdown()
     })
   })
 
-  test('serves free-form command endpoint as a terminal stream', async () => {
+  test('POST /terminal/sessions clamps cols/rows', async () => {
     await withWorkspace(async (workspaceDir) => {
-      const app = runtimeTerminalRoutes({ workspaceDir })
-
-      const res = await app.request('http://runtime.test/terminal/run', {
+      const { router: app, manager } = runtimeTerminalRoutes({ workspaceDir })
+      const res = await app.request('/terminal/sessions', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ command: PORTABLE_OK_CMD }),
+        body: JSON.stringify({ cols: 5000, rows: 9999 }),
       })
-
-      expect(res.status).toBe(200)
-      expect(res.headers.get('content-type')).toContain('text/plain')
-
-      const text = await res.text()
-      expect(text).toContain('SHOGO_TERM_META:')
-      const meta = readMeta(text)
-      expect(meta?.exitCode).toBe(0)
+      const body = await res.json() as { cols: number; rows: number }
+      expect(body.cols).toBe(1000)
+      expect(body.rows).toBe(1000)
+      manager.shutdown()
     })
   })
 
-  test('cd into a subdirectory updates the reported cwd', async () => {
+  test('POST /terminal/sessions returns 400 with max_sessions_reached', async () => {
     await withWorkspace(async (workspaceDir) => {
-      const sub = join(workspaceDir, 'files')
-      mkdirSync(sub)
-      const app = runtimeTerminalRoutes({ workspaceDir })
-
-      const res = await app.request('http://runtime.test/terminal/run', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ command: 'cd files' }),
+      const manager = new (await import('../pty-session-manager')).PtySessionManager({
+        workspaceDir, maxSessions: 1, sweepIntervalMs: 0,
       })
-
-      expect(res.status).toBe(200)
-      const text = await res.text()
-      const meta = readMeta(text)
-      expect(meta).not.toBeNull()
-      expect(meta?.exitCode).toBe(0)
-      // PowerShell reports `C:\...\files`, bash reports `/tmp/.../files`. Both
-      // resolve to the same realpath; just check the trailing segment to stay
-      // platform-agnostic without dragging fs.realpathSync into the test.
-      expect(meta?.cwd?.endsWith('files')).toBe(true)
+      const { router: app } = runtimeTerminalRoutes({ workspaceDir, manager })
+      const ok = await app.request('/terminal/sessions', { method: 'POST', body: '{}' })
+      expect(ok.status).toBe(200)
+      const fail = await app.request('/terminal/sessions', { method: 'POST', body: '{}' })
+      expect(fail.status).toBe(400)
+      const body = await fail.json() as { error: { code: string } }
+      expect(body.error.code).toBe('max_sessions_reached')
+      manager.shutdown()
     })
   })
 
-  test('failing cd reports a non-zero exit code', async () => {
-    // Regression guard: PowerShell's Invoke-Expression masks cmdlet
-    // failures because the IE call itself succeeds — `$?` stays True
-    // and `$LASTEXITCODE` stays 0. The launcher must use `$Error.Count`
-    // to surface those as non-zero exits, otherwise users get a
-    // misleading "exit 0" after `cd nonexistent`. The same path on
-    // Unix is just `cd missing` returning rc=1 from bash directly.
+  test('GET /terminal/sessions lists active sessions', async () => {
     await withWorkspace(async (workspaceDir) => {
-      const app = runtimeTerminalRoutes({ workspaceDir })
+      const { router: app, manager } = runtimeTerminalRoutes({ workspaceDir })
+      await app.request('/terminal/sessions', { method: 'POST', body: '{}' })
+      await app.request('/terminal/sessions', { method: 'POST', body: '{}' })
+      const res = await app.request('/terminal/sessions')
+      const body = await res.json() as { sessions: Array<{ id: string }> }
+      expect(body.sessions).toHaveLength(2)
+      manager.shutdown()
+    })
+  })
 
-      const res = await app.request('http://runtime.test/terminal/run', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ command: 'cd this_directory_should_not_exist_xyz' }),
-      })
+  test('DELETE /terminal/sessions/:id kills the session', async () => {
+    await withWorkspace(async (workspaceDir) => {
+      const { router: app, manager } = runtimeTerminalRoutes({ workspaceDir })
+      const created = await (await app.request('/terminal/sessions', { method: 'POST', body: '{}' })).json() as { id: string }
+      const del = await app.request(`/terminal/sessions/${created.id}`, { method: 'DELETE' })
+      expect(del.status).toBe(200)
+      expect(manager.list()).toHaveLength(0)
+      manager.shutdown()
+    })
+  })
 
-      expect(res.status).toBe(200)
-      const meta = readMeta(await res.text())
-      expect(meta).not.toBeNull()
-      expect(meta?.exitCode).not.toBe(0)
+  test('DELETE on unknown id returns 404', async () => {
+    await withWorkspace(async (workspaceDir) => {
+      const { router: app, manager } = runtimeTerminalRoutes({ workspaceDir })
+      const res = await app.request('/terminal/sessions/nope', { method: 'DELETE' })
+      expect(res.status).toBe(404)
+      manager.shutdown()
     })
   })
 })
@@ -236,7 +235,7 @@ describe('buildQuickCommands (dynamic per-workspace presets)', () => {
         name: 'demo',
         scripts: { dev: 'vite', build: 'vite build', lint: 'eslint .' },
       })
-      const app = runtimeTerminalRoutes({ workspaceDir })
+      const { router: app, manager } = runtimeTerminalRoutes({ workspaceDir })
 
       const res = await app.request('/terminal/commands')
       const body = await res.json() as { commands: Record<string, Array<{ id: string }>> }
@@ -244,33 +243,7 @@ describe('buildQuickCommands (dynamic per-workspace presets)', () => {
       expect(body.commands.server?.some((c) => c.id === 'script-dev')).toBe(true)
       expect(body.commands.build?.some((c) => c.id === 'script-build')).toBe(true)
       expect(body.commands.lint?.some((c) => c.id === 'script-lint')).toBe(true)
-    })
-  })
-
-  test('exec endpoint resolves dynamically-derived script commands', async () => {
-    await withWorkspace(async (workspaceDir) => {
-      writePackageJson(workspaceDir, { name: 'demo', scripts: { dev: 'vite' } })
-      const app = runtimeTerminalRoutes({ workspaceDir })
-
-      // Unknown id still 400s.
-      const bad = await app.request('http://runtime.test/terminal/exec', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ commandId: 'no-such-id' }),
-      })
-      expect(bad.status).toBe(400)
-
-      // Known dynamic id is accepted (200 + streamed body). We don't actually
-      // wait for the spawned `bun run dev` to finish — just that the route
-      // accepts the id and starts streaming.
-      const ok = await app.request('http://runtime.test/terminal/exec', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ commandId: 'script-dev' }),
-      })
-      expect(ok.status).toBe(200)
-      // Drain to release resources without waiting for dev server steady state.
-      ok.body?.cancel?.().catch(() => {})
+      manager.shutdown()
     })
   })
 })

@@ -17,10 +17,9 @@
  * Usage:
  *   ```ts
  *   import { installAgentFetchMock, recordedAgentFetch } from '...'
- *   import { streamingResponse } from '../../../../test/helpers/streamingResponse'
  *
  *   const fetcher = recordedAgentFetch()
- *   fetcher.queue(streamingResponse(['line1\n']))
+ *   fetcher.setRoute('/some/endpoint', () => new Response('{}'))
  *   installAgentFetchMock(fetcher.handler)
  *   ```
  */

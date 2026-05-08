@@ -54,6 +54,7 @@ import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
+import { createPtyWsHandlers, type WsData } from './pty-ws-handler'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import { userMessage } from './pi-adapter'
 import { fileURLToPath } from 'url'
@@ -560,9 +561,14 @@ WebChatAdapter.registerRoutes(app, () => {
 // /health, /ready, /pool/activity, /pool/assign are provided by createRuntimeApp()
 
 // Cloud API proxies /api/projects/:id/terminal/* to this runtime-local mount.
-// Register before the static app fallback so POST /terminal/run cannot fall
-// through to a generic 404 and GET /terminal/commands cannot return index.html.
-app.route('/', runtimeTerminalRoutes({ workspaceDir: WORKSPACE_DIR }))
+// Register before the static app fallback so POST /terminal/sessions cannot
+// fall through to a generic 404 and GET /terminal/commands cannot return
+// index.html.
+const { router: terminalRouter, manager: ptyManager } = runtimeTerminalRoutes({
+  workspaceDir: WORKSPACE_DIR,
+})
+app.route('/', terminalRouter)
+const ptyWs = createPtyWsHandlers()
 
 // Agent status (detailed)
 app.get('/agent/status', (c) => {
@@ -3696,8 +3702,36 @@ if (state.isPoolMode && !state.poolAssigned) {
     })
 }
 
+// Match a path like `/terminal/sessions/<id>/ws`; the id segment is opaque
+// (no slashes) and is whatever PtySessionManager.create() assigned.
+const WS_PATH_RE = /^\/terminal\/sessions\/([^/]+)\/ws$/
+
 export default {
   port: PORT,
-  fetch: app.fetch,
+  fetch: async (req: Request, server: any) => {
+    const url = new URL(req.url)
+    const upgrade = req.headers.get('upgrade')?.toLowerCase()
+    const wsMatch = upgrade === 'websocket' ? WS_PATH_RE.exec(url.pathname) : null
+    if (wsMatch) {
+      const sessionId = wsMatch[1]
+      const since = Number(url.searchParams.get('since')) || 0
+      // Quick existence check pre-upgrade so a missing session returns a
+      // proper 404 rather than a confusing accept-then-immediate-close.
+      // We don't `attach()` here — that happens in the WS open handler.
+      if (!ptyManager.get(sessionId)) {
+        return new Response('Unknown session', { status: 404 })
+      }
+      const data: WsData = { manager: ptyManager, sessionId, since }
+      const upgraded = server.upgrade(req, { data })
+      if (upgraded) return undefined
+      return new Response('WebSocket upgrade failed', { status: 500 })
+    }
+    return app.fetch(req)
+  },
+  websocket: {
+    open: ptyWs.open,
+    message: ptyWs.message,
+    close: ptyWs.close,
+  },
   idleTimeout: 0,
 }
