@@ -8,11 +8,12 @@
  * into what the agent is executing.
  */
 
-import { useState, memo } from "react"
+import { useState, memo, Fragment } from "react"
 import { View, Text, Pressable, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { Terminal, Loader2, CheckCircle2, XCircle, ChevronRight, ChevronDown } from "lucide-react-native"
 import type { ToolCallData } from "../tools/types"
+import { parseShellCommand } from "../tools/summary"
 
 const MAX_OUTPUT_LINES = 30
 const MAX_OUTPUT_CHARS = 3000
@@ -108,8 +109,7 @@ function ExecWidgetImpl({
   }
 
   const command = (tool.args?.command as string) || ""
-  const firstLine = command.split("\n")[0]
-  const displayCmd = firstLine.length > 60 ? firstLine.slice(0, 57) + "…" : firstLine
+  const summary = parseShellCommand(command)
   const { stdout, stderr, exitCode, durationMs } = extractExecOutput(tool)
   const hasOutput = stdout || stderr
   const output = [stdout, stderr].filter(Boolean).join("\n")
@@ -121,80 +121,104 @@ function ExecWidgetImpl({
     error: XCircle,
   }[tool.state]
 
+  // Bash/exec is in the minimal-row allow-list — always render as plain
+  // text with a hover background, no border/panel chrome. Errors and
+  // streaming keep their leading icon for signal; success collapses to
+  // just text.
+  const showLeadingIcon = tool.state !== "success"
+
   return (
-    <View className={cn("overflow-hidden rounded-md", className)}>
+    <View className={cn("overflow-hidden", className)}>
       {/* Header — always visible */}
       <Pressable
         onPress={handleToggle}
-        className={cn(
-          "group w-full flex-row items-center gap-1.5 py-1.5 px-2",
-          "bg-gray-100 dark:bg-gray-950 border border-gray-200 dark:border-transparent",
-        )}
+        className="group w-full flex-row items-center gap-1.5 py-0.5 rounded hover:bg-muted/40"
       >
-        <View className="group-hover:hidden">
-          <Terminal className="w-3 h-3 text-emerald-600 dark:text-emerald-500" size={12} />
-        </View>
-        <View className="hidden group-hover:flex">
-          {isExpanded ? (
-            <ChevronDown className="w-3 h-3 text-gray-600 dark:text-gray-500" size={12} />
-          ) : (
-            <ChevronRight className="w-3 h-3 text-gray-600 dark:text-gray-500" size={12} />
-          )}
-        </View>
-        <Text className="flex-1 font-mono text-[10px] text-gray-800 dark:text-gray-300" numberOfLines={1}>
-          {displayCmd}
+        {showLeadingIcon ? (
+          <>
+            <View className="group-hover:hidden">
+              <Terminal className="w-3 h-3 text-emerald-600 dark:text-emerald-500" size={12} />
+            </View>
+            <View className="hidden group-hover:flex">
+              {isExpanded ? (
+                <ChevronDown className="w-3 h-3 text-muted-foreground" size={12} />
+              ) : (
+                <ChevronRight className="w-3 h-3 text-muted-foreground" size={12} />
+              )}
+            </View>
+          </>
+        ) : (
+          <View className="hidden group-hover:flex">
+            {isExpanded ? (
+              <ChevronDown className="w-3 h-3 text-muted-foreground" size={12} />
+            ) : (
+              <ChevronRight className="w-3 h-3 text-muted-foreground" size={12} />
+            )}
+          </View>
+        )}
+        <Text className="flex-1 text-[11px] text-muted-foreground" numberOfLines={1}>
+          <Text className="font-medium text-muted-foreground">{summary.verb}</Text>
+          {summary.target ? (
+            <Text className="text-foreground"> {summary.target}</Text>
+          ) : null}
+          {summary.rest?.map((s, i) => (
+            <Fragment key={i}>
+              <Text className="text-muted-foreground/60"> && </Text>
+              <Text className="font-medium text-muted-foreground">{s.verb}</Text>
+              {s.target ? <Text className="text-foreground"> {s.target}</Text> : null}
+            </Fragment>
+          ))}
         </Text>
         {durationMs != null && tool.state !== "streaming" && (
-          <Text className="font-mono text-[9px] text-gray-500 dark:text-gray-600 mr-1">
+          <Text className="hidden group-hover:flex font-mono text-[9px] text-muted-foreground mr-1">
             {formatDuration(durationMs)}
           </Text>
         )}
-        <StateIcon
-          className={cn(
-            "w-3 h-3",
-            tool.state === "streaming" && "text-primary animate-spin",
-            tool.state === "success" && "text-emerald-500",
-            tool.state === "error" && "text-red-500",
-          )}
-          size={12}
-        />
+        {tool.state !== "success" && (
+          <StateIcon
+            className={cn(
+              "w-3 h-3",
+              tool.state === "streaming" && "text-primary animate-spin",
+              tool.state === "error" && "text-red-500",
+            )}
+            size={12}
+          />
+        )}
       </Pressable>
 
       {/* Expanded — full command + output */}
       {isExpanded && (
-        <View className="bg-gray-50 dark:bg-gray-950 border-t border-gray-200 dark:border-gray-800 px-2 pb-2 gap-1.5">
-          {/* Full command (if multi-line or long) */}
-          {command !== firstLine && (
-            <View className="gap-0.5">
-              <Text className="text-[9px] font-medium text-gray-600 dark:text-gray-500 uppercase tracking-wide">
-                Command
+        <View className="border-l border-border/40 ml-2 pl-2 py-2 gap-1.5">
+          {/* Full command — always show in minimal so users can grab the raw text */}
+          <View className="gap-0.5">
+            <Text className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
+              Command
+            </Text>
+            <ScrollView nestedScrollEnabled className="bg-background/50 rounded p-1.5 max-h-24">
+              <Text className="text-[10px] font-mono text-foreground" selectable>
+                {command}
               </Text>
-              <ScrollView nestedScrollEnabled className="bg-gray-200/60 dark:bg-black/30 rounded p-1.5 max-h-24">
-                <Text className="text-[10px] font-mono text-gray-800 dark:text-gray-300" selectable>
-                  {command}
-                </Text>
-              </ScrollView>
-            </View>
-          )}
+            </ScrollView>
+          </View>
 
           {/* Output */}
           {tool.state !== "streaming" && hasOutput && (
             <View className="gap-0.5">
               <View className="flex-row items-center justify-between">
-                <Text className="text-[9px] font-medium text-gray-600 dark:text-gray-500 uppercase tracking-wide">
+                <Text className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
                   Output
                 </Text>
                 {exitCode !== undefined && exitCode !== 0 && (
-                  <Text className="text-[9px] font-mono text-red-600 dark:text-red-400">
+                  <Text className="text-[9px] font-mono text-red-500">
                     exit {exitCode}
                   </Text>
                 )}
               </View>
-              <ScrollView nestedScrollEnabled className="bg-gray-200/60 dark:bg-black/30 rounded p-1.5 max-h-48">
+              <ScrollView nestedScrollEnabled className="bg-background/50 rounded p-1.5 max-h-48">
                 <Text
                   className={cn(
                     "text-[10px] font-mono",
-                    stderr && !stdout ? "text-red-600 dark:text-red-400" : "text-gray-800 dark:text-gray-300"
+                    stderr && !stdout ? "text-red-500" : "text-foreground"
                   )}
                   selectable
                 >
@@ -203,7 +227,7 @@ function ExecWidgetImpl({
               </ScrollView>
               {truncated && (
                 <Pressable onPress={() => setShowFull(!showFull)}>
-                  <Text className="text-[9px] text-gray-600 dark:text-gray-500">
+                  <Text className="text-[9px] text-muted-foreground">
                     {showFull ? "Show less" : "Show full output"}
                   </Text>
                 </Pressable>
@@ -215,7 +239,7 @@ function ExecWidgetImpl({
           {tool.state === "streaming" && (
             <View className="flex-row items-center gap-1.5 py-1">
               <Loader2 className="w-3 h-3 text-primary animate-spin" size={12} />
-              <Text className="text-[10px] text-gray-600 dark:text-gray-500">Running…</Text>
+              <Text className="text-[10px] text-muted-foreground">Running…</Text>
             </View>
           )}
 
