@@ -134,6 +134,88 @@ export function scopedAnalyticsRoutes(): Hono {
     }
   })
 
+  router.get('/workspaces/:workspaceId/analytics/spend-timeseries', async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const auth = c.get('auth')
+
+      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+
+      const url = new URL(c.req.url)
+      const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
+      const fromIso = url.searchParams.get('from') || undefined
+      const toIso = url.searchParams.get('to') || undefined
+      const groupBy = (url.searchParams.get('groupBy') || 'model') as 'model' | 'user' | 'source'
+      const metric = (url.searchParams.get('metric') || 'spend') as 'spend' | 'tokens' | 'requests'
+      const topN = parseInt(url.searchParams.get('topN') || '8', 10)
+
+      const data = await analytics.getSpendTimeseries(
+        { workspaceId },
+        period,
+        { fromIso, toIso, groupBy, metric, topN },
+      )
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  router.get('/workspaces/:workspaceId/analytics/usage-log.csv', async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const auth = c.get('auth')
+
+      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+
+      const url = new URL(c.req.url)
+      const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
+      const userId = url.searchParams.get('userId') || undefined
+      const model = url.searchParams.get('model') || undefined
+      const limit = Math.min(parseInt(url.searchParams.get('limit') || '5000', 10), 10000)
+
+      const { entries } = await analytics.getUsageLog(
+        { workspaceId },
+        period,
+        { page: 1, limit, userId, model },
+      )
+
+      const escape = (val: unknown): string => {
+        if (val === null || val === undefined) return ''
+        const s = String(val)
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+      }
+      const header = ['Date', 'User', 'Email', 'Type', 'Model', 'Provider', 'Tokens', 'Billed USD']
+      const lines: string[] = [header.join(',')]
+      for (const e of entries) {
+        lines.push(
+          [
+            escape(e.createdAt),
+            escape(e.userName || ''),
+            escape(e.userEmail || ''),
+            escape(e.actionType || ''),
+            escape(e.model || ''),
+            escape(e.provider || ''),
+            escape(e.totalTokens),
+            escape(e.billedUsd.toFixed(4)),
+          ].join(','),
+        )
+      }
+      const csv = lines.join('\n')
+      return new Response(csv, {
+        headers: {
+          'content-type': 'text/csv; charset=utf-8',
+          'content-disposition': `attachment; filename="usage-${workspaceId}-${period}.csv"`,
+        },
+      })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
   // --------------------------------------------------------------------------
   // Workspace Analytics — Advanced (Business plan or higher required)
   // --------------------------------------------------------------------------

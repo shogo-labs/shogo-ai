@@ -46,7 +46,46 @@ export interface AnalyticsScope {
   userId?: string
 }
 
-export type AnalyticsPeriod = '7d' | '30d' | '90d' | '1y'
+export type AnalyticsPeriod = '1d' | '7d' | '30d' | '90d' | '1y' | 'mtd' | 'last_month'
+
+/**
+ * Resolve a period (or explicit `from`/`to` ISO dates) into an inclusive
+ * `[from, to]` window. Used by the new dashboard date-range pills which
+ * support `1d`, `mtd`, `last_month`, and custom ranges in addition to the
+ * legacy `7d / 30d / 90d / 1y` rolling windows.
+ */
+export function periodToWindow(
+  period?: AnalyticsPeriod,
+  fromIso?: string,
+  toIso?: string,
+): { from: Date; to: Date } {
+  const now = new Date()
+  if (fromIso && toIso) {
+    const from = new Date(fromIso)
+    const to = new Date(toIso)
+    if (!isNaN(from.getTime()) && !isNaN(to.getTime())) return { from, to }
+  }
+  switch (period) {
+    case '1d':
+      return { from: new Date(now.getTime() - 24 * 60 * 60 * 1000), to: now }
+    case 'mtd':
+      return { from: new Date(now.getFullYear(), now.getMonth(), 1), to: now }
+    case 'last_month': {
+      const start = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+      const end = new Date(now.getFullYear(), now.getMonth(), 1)
+      return { from: start, to: end }
+    }
+    case '90d':
+      return { from: new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000), to: now }
+    case '1y':
+      return { from: new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000), to: now }
+    case '7d':
+      return { from: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000), to: now }
+    case '30d':
+    default:
+      return { from: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000), to: now }
+  }
+}
 
 interface TimeSeriesPoint {
   date: string
@@ -58,17 +97,7 @@ interface TimeSeriesPoint {
 // ============================================================================
 
 function periodToDate(period: AnalyticsPeriod): Date {
-  const now = new Date()
-  switch (period) {
-    case '7d':
-      return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
-    case '30d':
-      return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
-    case '90d':
-      return new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000)
-    case '1y':
-      return new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000)
-  }
+  return periodToWindow(period).from
 }
 
 /**
@@ -290,20 +319,32 @@ export async function getGrowthTimeSeries(
 
 /**
  * Per-member USD usage for the people/settings table.
- * Returns current-month and all-time totals keyed by memberId (userId).
+ *
+ * Returns the current-month spend split across the three buckets that show
+ * in the Members UI (Image 3 of the billing UX refresh):
+ * - `included`  → seat-bound monthly allocation (UsageEvent.source = 'monthly')
+ * - `free`      → daily allowance (UsageEvent.source = 'daily')
+ * - `onDemand`  → overage / trust-block charges (UsageEvent.source = 'overage')
+ *
+ * `monthly` and `total` are kept for backwards-compatibility with older
+ * callers that just want a single $ figure. `monthly` is the sum across all
+ * three buckets for the current month; `total` is all-time spend.
  */
 export async function getMemberUsageStats(
   workspaceId: string
 ): Promise<{
   monthly: Record<string, number>
   total: Record<string, number>
+  included: Record<string, number>
+  free: Record<string, number>
+  onDemand: Record<string, number>
 }> {
   const now = new Date()
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
 
-  const [monthlyRows, totalRows] = await Promise.all([
+  const [bucketRows, totalRows] = await Promise.all([
     prisma.usageEvent.groupBy({
-      by: ['memberId'],
+      by: ['memberId', 'source'],
       where: { workspaceId, createdAt: { gte: monthStart } },
       _sum: { billedUsd: true },
     }),
@@ -314,9 +355,28 @@ export async function getMemberUsageStats(
     }),
   ])
 
+  const included: Record<string, number> = {}
+  const free: Record<string, number> = {}
+  const onDemand: Record<string, number> = {}
   const monthly: Record<string, number> = {}
-  for (const row of monthlyRows) {
-    monthly[row.memberId] = row._sum.billedUsd ?? 0
+
+  for (const row of bucketRows) {
+    const sum = row._sum.billedUsd ?? 0
+    monthly[row.memberId] = (monthly[row.memberId] ?? 0) + sum
+    switch (row.source) {
+      case 'monthly':
+        included[row.memberId] = (included[row.memberId] ?? 0) + sum
+        break
+      case 'daily':
+        free[row.memberId] = (free[row.memberId] ?? 0) + sum
+        break
+      case 'overage':
+        onDemand[row.memberId] = (onDemand[row.memberId] ?? 0) + sum
+        break
+      default:
+        // Unknown source — count toward included so spend isn't lost in the UI.
+        included[row.memberId] = (included[row.memberId] ?? 0) + sum
+    }
   }
 
   const total: Record<string, number> = {}
@@ -324,7 +384,7 @@ export async function getMemberUsageStats(
     total[row.memberId] = row._sum.billedUsd ?? 0
   }
 
-  return { monthly, total }
+  return { monthly, total, included, free, onDemand }
 }
 
 // ============================================================================
@@ -397,6 +457,185 @@ export async function getUsageAnalytics(
     bySource: Object.fromEntries(bySource),
     topConsumers,
     dailyUsage,
+  }
+}
+
+// ============================================================================
+// Spend Timeseries (Stacked Area Chart)
+// ============================================================================
+
+/** Daily $ spend grouped by model — used by the Team Usage stacked-area chart. */
+export interface SpendTimeseriesPoint {
+  date: string
+  byModel: Record<string, number>
+  total: number
+}
+
+export interface SpendTimeseriesData {
+  days: SpendTimeseriesPoint[]
+  totals: {
+    totalSpendUsd: number
+    totalIncludedUsd: number
+    totalOnDemandUsd: number
+    uniqueModels: number
+  }
+  models: string[]
+  groupBy: 'model' | 'user' | 'source'
+  metric: 'spend' | 'tokens' | 'requests'
+}
+
+/** ISO yyyy-mm-dd string in UTC. */
+function isoDay(d: Date): string {
+  return d.toISOString().split('T')[0]
+}
+
+/**
+ * Daily spend (or token / request count) over the period, grouped by model
+ * (or user / source). Zero-fills missing days so the rendered chart never
+ * jumps over a gap.
+ */
+export async function getSpendTimeseries(
+  scope: AnalyticsScope = {},
+  period: AnalyticsPeriod = '30d',
+  options: {
+    fromIso?: string
+    toIso?: string
+    groupBy?: 'model' | 'user' | 'source'
+    metric?: 'spend' | 'tokens' | 'requests'
+    topN?: number
+  } = {}
+): Promise<SpendTimeseriesData> {
+  const { from, to } = periodToWindow(period, options.fromIso, options.toIso)
+  const groupBy = options.groupBy ?? 'model'
+  const metric = options.metric ?? 'spend'
+  const topN = options.topN ?? 8
+
+  const where: any = {
+    ...scopeWhere(scope),
+    actionType: {
+      in: [
+        'ai_proxy_completion',
+        'chat_message',
+        'voice_minutes_inbound',
+        'voice_minutes_outbound',
+        'voice_number_setup',
+        'voice_number_monthly',
+      ],
+    },
+    createdAt: { gte: from, lt: to },
+  }
+
+  const events = await prisma.usageEvent.findMany({
+    where,
+    select: {
+      memberId: true,
+      billedUsd: true,
+      rawUsd: true,
+      source: true,
+      actionMetadata: true,
+      createdAt: true,
+    },
+  })
+
+  // Resolve user emails up front for groupBy:user
+  let userMap = new Map<string, string>()
+  if (groupBy === 'user') {
+    const ids = [...new Set(events.map((e) => e.memberId).filter((id) => id !== 'system'))]
+    const users = await prisma.user.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, email: true, name: true },
+    })
+    userMap = new Map(users.map((u) => [u.id, u.email || u.name || u.id]))
+  }
+
+  // Aggregate {date → {seriesKey → metric value}} and totals
+  const byDay = new Map<string, Map<string, number>>()
+  const seriesTotals = new Map<string, number>()
+  let totalSpendUsd = 0
+  let totalIncludedUsd = 0
+  let totalOnDemandUsd = 0
+
+  // For "spend" metric we want the *actual cost incurred* — `billedUsd` is 0
+  // for events covered by included plan quota or running in local mode, so we
+  // fall back to `rawUsd` (the underlying provider cost recorded on the event
+  // and inside `actionMetadata`). This way the chart is always meaningful even
+  // when nothing has been charged yet.
+  const eventCostUsd = (event: { billedUsd: number; rawUsd: number | null; actionMetadata: unknown }, meta: Record<string, any>): number => {
+    if (event.billedUsd > 0) return event.billedUsd
+    if (event.rawUsd != null && event.rawUsd > 0) return event.rawUsd
+    const metaRaw = (meta.rawUsd as number | undefined) ?? (meta.dollarCost as number | undefined)
+    return typeof metaRaw === 'number' ? metaRaw : 0
+  }
+
+  for (const event of events) {
+    const meta = parseMeta(event.actionMetadata)
+    const day = isoDay(event.createdAt)
+    const costUsd = eventCostUsd(event, meta)
+
+    const series =
+      groupBy === 'user'
+        ? userMap.get(event.memberId) ?? event.memberId
+        : groupBy === 'source'
+          ? event.source
+          : (meta.model || meta.modelUsed || 'unknown')
+
+    const value =
+      metric === 'tokens'
+        ? meta.totalTokens || 0
+        : metric === 'requests'
+          ? 1
+          : costUsd
+
+    if (!byDay.has(day)) byDay.set(day, new Map())
+    const dayMap = byDay.get(day)!
+    dayMap.set(series, (dayMap.get(series) ?? 0) + value)
+    seriesTotals.set(series, (seriesTotals.get(series) ?? 0) + value)
+
+    totalSpendUsd += costUsd
+    if (event.source === 'overage') totalOnDemandUsd += costUsd
+    else totalIncludedUsd += costUsd
+  }
+
+  // Pick top-N series by total; collapse the rest into "Other"
+  const ranked = [...seriesTotals.entries()].sort((a, b) => b[1] - a[1])
+  const top = new Set(ranked.slice(0, topN).map(([k]) => k))
+  const collapsed = new Set(ranked.slice(topN).map(([k]) => k))
+  const includeOther = collapsed.size > 0
+  const models = ranked.slice(0, topN).map(([k]) => k)
+  if (includeOther) models.push('Other')
+
+  // Zero-fill day buckets
+  const days: SpendTimeseriesPoint[] = []
+  const cursor = new Date(from)
+  cursor.setUTCHours(0, 0, 0, 0)
+  const last = new Date(to)
+  last.setUTCHours(0, 0, 0, 0)
+  while (cursor <= last) {
+    const key = isoDay(cursor)
+    const sourceMap = byDay.get(key) ?? new Map()
+    const byModel: Record<string, number> = {}
+    for (const m of models) byModel[m] = 0
+    let dayTotal = 0
+    for (const [series, value] of sourceMap.entries()) {
+      const targetKey = top.has(series) ? series : (collapsed.has(series) ? 'Other' : series)
+      byModel[targetKey] = (byModel[targetKey] ?? 0) + value
+      dayTotal += value
+    }
+    days.push({ date: key, byModel, total: dayTotal })
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+
+  return {
+    days,
+    totals: {
+      totalSpendUsd,
+      totalIncludedUsd,
+      totalOnDemandUsd,
+      uniqueModels: seriesTotals.size,
+    },
+    models,
+    groupBy,
+    metric,
   }
 }
 
