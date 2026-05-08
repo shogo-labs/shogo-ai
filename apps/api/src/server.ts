@@ -4048,6 +4048,23 @@ app.delete('/api/projects/:projectId/agent/tool-mocks', async (c) => {
   }
 })
 
+// GET /api/projects/:projectId/chat/:chatSessionId/turn - Read-only durable
+// turn snapshot. Lets the client probe whether a session has an in-progress
+// turn buffered in the runtime *before* deciding to attach to /stream. Without
+// this registration the route 404s at the app router (the inner router under
+// `projectChatRoutes` is only reachable via the explicit forwarders below).
+app.get('/api/projects/:projectId/chat/:chatSessionId/turn', async (c) => {
+  const authResult = await requireProjectAuth(c)
+  if ('error' in authResult) return authResult.error
+
+  const manager = getRuntimeManager()
+  const router = projectChatRoutes({ runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/chat/${c.req.param('chatSessionId')}/turn`
+  const newReq = new Request(url.toString(), { method: 'GET', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
 // GET /api/projects/:projectId/chat/:chatSessionId/stream - Resume active stream
 // URL pattern matches AI SDK's default: ${api}/${chatId}/stream
 app.get('/api/projects/:projectId/chat/:chatSessionId/stream', async (c) => {
