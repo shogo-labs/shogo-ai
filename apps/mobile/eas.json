@@ -51,9 +51,9 @@
         "track": "internal"
       },
       "ios": {
-        "appleId": "ashutosh.ojha@getodin.ai",
-        "ascAppId": "6766839930",
-        "appleTeamId": "X8XU4RM2WY"
+        "appleId": "$APPLE_ID",
+        "ascAppId": "$ASC_APP_ID",
+        "appleTeamId": "$APPLE_TEAM_ID"
       }
     },
     "production": {
@@ -62,9 +62,9 @@
         "track": "production"
       },
       "ios": {
-        "appleId": "ashutosh.ojha@getodin.ai",
-        "ascAppId": "6766839930",
-        "appleTeamId": "X8XU4RM2WY"
+        "appleId": "$APPLE_ID",
+        "ascAppId": "$ASC_APP_ID",
+        "appleTeamId": "$APPLE_TEAM_ID"
       }
     }
   }
