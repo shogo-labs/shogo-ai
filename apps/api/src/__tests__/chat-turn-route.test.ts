@@ -40,6 +40,29 @@ function memberKey(userId: string, workspaceId: string): string {
   return `${userId}::${workspaceId}`
 }
 
+type ProjectAgentRow = {
+  id: string
+  projectId: string
+  workspaceId: string
+  name: string
+  systemPrompt: string | null
+  toolsAllowlist: string[] | null
+  tools:
+    | Array<{
+        name: string
+        description?: string
+        inputSchema?: Record<string, unknown>
+      }>
+    | null
+  characterName: string | null
+  displayName: string | null
+  voiceId: string | null
+  firstMessage: string | null
+  elevenlabsAgentId: string | null
+  model: string | null
+}
+const projectAgentsByProject = new Map<string, ProjectAgentRow[]>()
+
 const mockPrisma = {
   project: {
     findUnique: mock(async (args: any) => {
@@ -74,6 +97,21 @@ const mockPrisma = {
   },
   user: {
     findUnique: mock(async () => null),
+  },
+  projectAgent: {
+    findUnique: mock(async (args: any) => {
+      const { projectId, name } = args.where.projectId_name
+      const rows = projectAgentsByProject.get(projectId) ?? []
+      return rows.find((r) => r.name === name) ?? null
+    }),
+    findMany: mock(async (args: any) => {
+      const rows = projectAgentsByProject.get(args.where.projectId) ?? []
+      // Mimic the real findMany select shape used by listProjectAgentNames.
+      if (args.select && args.select.name === true) {
+        return rows.map((r) => ({ name: r.name }))
+      }
+      return rows
+    }),
   },
 }
 mock.module('../lib/prisma', () => ({ prisma: mockPrisma }))
@@ -160,6 +198,7 @@ const USER_A = 'user_chat_a'
 beforeEach(() => {
   projectsById.clear()
   memberByUserAndWorkspace.clear()
+  projectAgentsByProject.clear()
   projectsById.set(PROJECT_A, {
     id: PROJECT_A,
     workspaceId: WORKSPACE_A,
@@ -172,6 +211,8 @@ beforeEach(() => {
   mockPrisma.project.findUnique.mockClear()
   mockPrisma.member.findFirst.mockClear()
   mockPrisma.user.findUnique.mockClear()
+  mockPrisma.projectAgent.findUnique.mockClear()
+  mockPrisma.projectAgent.findMany.mockClear()
 })
 
 const validBody = {
@@ -348,6 +389,150 @@ describe('POST /api/chat/turn — happy path', () => {
     expect(args.system).toMatch(/Shogo assistant for this project/)
   })
 
+  test('uses named agent\u2019s systemPrompt + model when agentName matches a row', async () => {
+    projectAgentsByProject.set(PROJECT_A, [
+      {
+        id: 'pa_arch',
+        projectId: PROJECT_A,
+        workspaceId: WORKSPACE_A,
+        name: 'architect',
+        systemPrompt: 'You are the architect agent.',
+        toolsAllowlist: null,
+        tools: null,
+        characterName: 'Archie',
+        displayName: 'Architect',
+        voiceId: null,
+        firstMessage: null,
+        elevenlabsAgentId: null,
+        model: 'claude-sonnet-4-5',
+      },
+    ])
+    const app = createApp()
+    const res = await app.request('/api/chat/turn', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody, agentName: 'architect' }),
+    })
+    expect(res.status).toBe(200)
+    const args = streamTextMock.mock.calls[0]![0] as { system: string }
+    expect(args.system).toContain('You are the architect agent.')
+    expect(args.system).not.toMatch(/Shogo assistant for this project/)
+  })
+
+  test('reads agentName from the URL when the body omits it; URL wins on conflict', async () => {
+    projectAgentsByProject.set(PROJECT_A, [
+      {
+        id: 'pa_arch',
+        projectId: PROJECT_A,
+        workspaceId: WORKSPACE_A,
+        name: 'architect',
+        systemPrompt: 'URL-resolved architect.',
+        toolsAllowlist: null,
+        tools: null,
+        characterName: null,
+        displayName: null,
+        voiceId: null,
+        firstMessage: null,
+        elevenlabsAgentId: null,
+        model: null,
+      },
+      {
+        id: 'pa_other',
+        projectId: PROJECT_A,
+        workspaceId: WORKSPACE_A,
+        name: 'planner',
+        systemPrompt: 'Body-resolved planner.',
+        toolsAllowlist: null,
+        tools: null,
+        characterName: null,
+        displayName: null,
+        voiceId: null,
+        firstMessage: null,
+        elevenlabsAgentId: null,
+        model: null,
+      },
+    ])
+    const app = createApp()
+    const res = await app.request('/api/chat/turn?agentName=architect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody, agentName: 'planner' }),
+    })
+    expect(res.status).toBe(200)
+    const args = streamTextMock.mock.calls[0]![0] as { system: string }
+    expect(args.system).toContain('URL-resolved architect.')
+  })
+
+  test('returns 404 with knownAgents when agentName does not match any row', async () => {
+    projectAgentsByProject.set(PROJECT_A, [
+      {
+        id: 'pa_arch',
+        projectId: PROJECT_A,
+        workspaceId: WORKSPACE_A,
+        name: 'architect',
+        systemPrompt: null,
+        toolsAllowlist: null,
+        tools: null,
+        characterName: null,
+        displayName: null,
+        voiceId: null,
+        firstMessage: null,
+        elevenlabsAgentId: null,
+        model: null,
+      },
+    ])
+    const app = createApp()
+    const res = await app.request('/api/chat/turn', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody, agentName: 'doesnotexist' }),
+    })
+    expect(res.status).toBe(404)
+    const body: any = await res.json()
+    expect(body.error.code).toBe('agent_not_found')
+    expect(body.error.knownAgents).toEqual(['architect'])
+    expect(streamTextMock).not.toHaveBeenCalled()
+  })
+
+  test('drops client-requested tools that are not on the agent\u2019s allowlist', async () => {
+    projectAgentsByProject.set(PROJECT_A, [
+      {
+        id: 'pa_arch',
+        projectId: PROJECT_A,
+        workspaceId: WORKSPACE_A,
+        name: 'architect',
+        systemPrompt: 'arch',
+        toolsAllowlist: ['lookup_user'],
+        tools: null,
+        characterName: null,
+        displayName: null,
+        voiceId: null,
+        firstMessage: null,
+        elevenlabsAgentId: null,
+        model: null,
+      },
+    ])
+    const app = createApp()
+    const res = await app.request('/api/chat/turn', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...validBody,
+        agentName: 'architect',
+        tools: [
+          { name: 'lookup_user', description: 'allowed', inputSchema: {} },
+          { name: 'send_email', description: 'forbidden', inputSchema: {} },
+        ],
+      }),
+    })
+    expect(res.status).toBe(200)
+    const args = streamTextMock.mock.calls[0]![0] as {
+      tools?: Record<string, unknown>
+    }
+    expect(args.tools).toBeDefined()
+    expect(Object.keys(args.tools!)).toEqual(['lookup_user'])
+  })
+
   test('forwards caller-supplied tool descriptors to streamText', async () => {
     const app = createApp()
     const res = await app.request('/api/chat/turn', {
@@ -373,6 +558,109 @@ describe('POST /api/chat/turn — happy path', () => {
       tools?: Record<string, unknown>
     }
     expect(args.tools).toBeDefined()
+    expect(Object.keys(args.tools!)).toEqual(['lookup_user'])
+  })
+
+  test('manifest schema wins over client-supplied schema (description + inputSchema)', async () => {
+    projectAgentsByProject.set(PROJECT_A, [
+      {
+        id: 'pa_arch',
+        projectId: PROJECT_A,
+        workspaceId: WORKSPACE_A,
+        name: 'architect',
+        systemPrompt: 'arch',
+        toolsAllowlist: null,
+        tools: [
+          {
+            name: 'lookup_user',
+            description: 'Manifest-declared lookup',
+            inputSchema: {
+              type: 'object',
+              properties: { id: { type: 'string', minLength: 1 } },
+              required: ['id'],
+            },
+          },
+        ],
+        characterName: null,
+        displayName: null,
+        voiceId: null,
+        firstMessage: null,
+        elevenlabsAgentId: null,
+        model: null,
+      },
+    ])
+    const app = createApp()
+    const res = await app.request('/api/chat/turn', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...validBody,
+        agentName: 'architect',
+        tools: [
+          {
+            name: 'lookup_user',
+            description: 'Client says something else',
+            inputSchema: { type: 'object', properties: {} },
+          },
+        ],
+      }),
+    })
+    expect(res.status).toBe(200)
+    const args = streamTextMock.mock.calls[0]![0] as {
+      tools?: Record<string, any>
+    }
+    expect(Object.keys(args.tools!)).toEqual(['lookup_user'])
+    // The AI SDK's `tool()` returns a record with the original
+    // `description`. We assert the manifest's description wins.
+    expect(args.tools!.lookup_user.description).toBe('Manifest-declared lookup')
+  })
+
+  test('drops manifest tools the client did not register', async () => {
+    projectAgentsByProject.set(PROJECT_A, [
+      {
+        id: 'pa_arch',
+        projectId: PROJECT_A,
+        workspaceId: WORKSPACE_A,
+        name: 'architect',
+        systemPrompt: 'arch',
+        toolsAllowlist: null,
+        tools: [
+          {
+            name: 'lookup_user',
+            description: 'm1',
+            inputSchema: { type: 'object' },
+          },
+          {
+            name: 'send_email',
+            description: 'm2',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        characterName: null,
+        displayName: null,
+        voiceId: null,
+        firstMessage: null,
+        elevenlabsAgentId: null,
+        model: null,
+      },
+    ])
+    const app = createApp()
+    const res = await app.request('/api/chat/turn', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...validBody,
+        agentName: 'architect',
+        // Client only registered handlers for `lookup_user`.
+        tools: [
+          { name: 'lookup_user', description: 'x', inputSchema: { type: 'object' } },
+        ],
+      }),
+    })
+    expect(res.status).toBe(200)
+    const args = streamTextMock.mock.calls[0]![0] as {
+      tools?: Record<string, unknown>
+    }
     expect(Object.keys(args.tools!)).toEqual(['lookup_user'])
   })
 })

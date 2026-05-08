@@ -108,6 +108,20 @@ export interface BaseChatConversationOptions {
   projectId?: string
 
   /**
+   * Optional named agent to converse with. Appended to the chat URL
+   * as `?agentName=` and resolved server-side to a project-scoped
+   * `ProjectAgent` row whose `systemPrompt` / `model` / tool
+   * allowlist drive this turn. When omitted, the server resolves the
+   * project's `default` agent (or falls back to its built-in
+   * persona for projects predating the agents table).
+   *
+   * The same `agentName` reaches the same persona via
+   * `useVoiceConversation({ agentName })` — voice and chat are two
+   * transports for one agent record.
+   */
+  agentName?: string
+
+  /**
    * Stable conversation id used by the consumer to correlate this
    * text thread with a sibling voice session (see
    * `BaseVoiceConversationResult.conversationId`). The value is
@@ -167,6 +181,18 @@ export interface BaseChatConversationOptions {
 
   /** Called on transport / model errors. */
   onError?: (error: unknown) => void
+
+  /**
+   * Per-user dynamic variables forwarded with each chat turn. Mirrors
+   * the option of the same name on `BaseVoiceConversationOptions` so a
+   * single config object can drive both hooks.
+   *
+   * V1 plumbs this through to the request body — server-side rendering
+   * into the system prompt is not yet wired up. Treat it as forwards-
+   * compatible: setting the value today is safe and lets the server
+   * pick it up once support lands without a SDK bump.
+   */
+  dynamicVariables?: Record<string, unknown> | null
 }
 
 export interface BaseChatConversationResult {

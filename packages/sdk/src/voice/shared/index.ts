@@ -31,6 +31,7 @@ export {
   buildSessionPayload,
   fetchSignedUrl,
   withProjectId,
+  withProjectQuery,
   type BuildSessionPayloadOptions,
   type FetchSignedUrlOptions,
   type SignedUrlResponse,

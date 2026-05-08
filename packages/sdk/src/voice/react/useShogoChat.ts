@@ -35,6 +35,26 @@
  * }
  * ```
  *
+ * @example Named secondary agents
+ * Pass `agentName` to drive a project-specific persona declared in
+ * `shogo.config.json#agents` and reconciled to the cloud via
+ * `bunx shogo deploy`. Voice + text share one row per name — the
+ * same `agentName` reaches the same record from
+ * `useShogoVoice({ agentName })`.
+ *
+ * ```tsx
+ * function ArchitectChat() {
+ *   const chat = useShogoChat({ agentName: 'architect' })
+ *   // ...
+ * }
+ * ```
+ *
+ * Tool contract: the manifest's `tools: [...]` list is the
+ * server-enforced allowlist. The hook's `clientTools` map holds the
+ * matching handler implementations. Tools the hook registers that
+ * aren't on the manifest's allowlist are silently dropped server-
+ * side.
+ *
  * @example Voice + text bridge (the customer use case)
  * ```tsx
  * const voice = useShogoVoice({ shogoApiKey, projectId })

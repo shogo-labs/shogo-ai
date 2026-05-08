@@ -92,6 +92,7 @@ export function useChatConversation(
     api = DEFAULT_API_PATH,
     shogoApiKey,
     projectId,
+    agentName,
     conversationId,
     initialMessages,
     clientTools = {},
@@ -99,6 +100,7 @@ export function useChatConversation(
     fetchCredentials = shogoApiKey ? 'omit' : 'same-origin',
     id,
     onError,
+    dynamicVariables,
   } = options
 
   // Resolve the per-request URL up front. `useChat` is given a
@@ -107,8 +109,8 @@ export function useChatConversation(
   // and let `useMemo` guard against churn when nothing relevant
   // changed.
   const resolvedApi = useMemo(
-    () => appendChatQuery(api, { projectId, conversationId }),
-    [api, projectId, conversationId],
+    () => appendChatQuery(api, { projectId, conversationId, agentName }),
+    [api, projectId, conversationId, agentName],
   )
 
   const headers = useMemo(() => {
@@ -124,10 +126,17 @@ export function useChatConversation(
   const body = useMemo(() => {
     const b: Record<string, unknown> = {}
     if (projectId) b.projectId = projectId
+    if (agentName) b.agentName = agentName
     if (conversationId) b.conversationId = conversationId
     if (tools && tools.length > 0) b.tools = tools
+    if (dynamicVariables && Object.keys(dynamicVariables).length > 0) {
+      // Forward verbatim — the server may use these in the system
+      // prompt or simply log them. Symmetric with how voice surfaces
+      // them to ElevenLabs.
+      b.dynamicVariables = dynamicVariables
+    }
     return b
-  }, [projectId, conversationId, tools])
+  }, [projectId, agentName, conversationId, tools, dynamicVariables])
 
   const transport = useMemo(
     () =>

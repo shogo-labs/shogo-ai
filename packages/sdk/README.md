@@ -962,6 +962,130 @@ Two things to know:
   for hydration and for echoing voice turns into the bubble; use
   `sendMessage` when you want the model to respond.
 
+#### Named secondary agents
+
+A project can have multiple named agents — one record per
+`(projectId, agentName)` — declared in `shogo.config.json#agents`
+and reconciled to the cloud with `bunx shogo deploy`. Voice and
+chat share the SAME row per name, so:
+
+```ts
+useShogoVoice({ agentName: 'architect' })  // → voice transport
+useShogoChat ({ agentName: 'architect' })  // → text transport
+```
+
+both reach the same `ProjectAgent` row's persona, model, and tool
+allowlist. Voice-bearing entries (those with `voiceId`) get an
+ElevenLabs agent provisioned lazily on first signed-URL request;
+chat-only entries omit `voiceId` and pay nothing for unused voice.
+
+Tools may be declared as bare names (legacy sugar) OR as full
+`{ name, description?, inputSchema? }` descriptors. Inline descriptors
+become the source of truth for BOTH modalities — the chat route
+declares them to `streamText`, and `shogo deploy` forwards the
+schemas to ElevenLabs as `prompt.tools` so the voice agent can also
+emit `tool-call` events. Pick one form per agent; mix sugar and
+descriptors freely.
+
+```jsonc
+// shogo.config.json
+{
+  "agents": {
+    "default": {
+      "systemPrompt": "You are the project's voice + text companion."
+    },
+    "architect": {
+      "systemPrompt": "You design system architectures.",
+      "tools": [
+        {
+          "name": "lookup_user",
+          "description": "Look up a user by id",
+          "inputSchema": {
+            "type": "object",
+            "properties": { "id": { "type": "string" } },
+            "required": ["id"]
+          }
+        },
+        "set_palette"  // sugar — schema falls back to the client's
+      ],
+      "model": "claude-sonnet-4-5"
+    },
+    "narrator": {
+      "systemPrompt": "You narrate system events out loud.",
+      "voiceId": "21m00Tcm4TlvDq8ikWAM",
+      "firstMessage": "Hi, I'll narrate updates."
+    }
+  }
+}
+```
+
+```bash
+# Preview the diff:
+bunx shogo deploy --dry-run
+
+# Apply (creates / updates rows; does NOT prune by default):
+bunx shogo deploy
+
+# Apply + delete cloud rows that are no longer in the manifest:
+bunx shogo deploy --prune
+```
+
+Inside a warm pod (`shogo dev`), the deploy step runs automatically
+on every preflight using the pod's runtime token — so iterating on
+`shogo.config.json#agents` is a straight save-and-reload loop with
+no separate `shogo deploy` invocation required. Errors are
+non-fatal: a bad manifest warns and falls through to `bun run dev`
+so a deploy hiccup never blocks local dev.
+
+**Tool contract.** The manifest declares the tool *schemas* (or just
+names); the consumer's React code provides the matching handler
+implementations. Manifest schemas WIN — client-supplied schemas are
+ignored when the manifest has its own:
+
+```tsx
+useShogoChat({
+  agentName: 'architect',
+  tools: [
+    // Tells the SDK which tools this surface has handlers for.
+    { name: 'lookup_user', description: 'ignored when manifest has it', inputSchema: {} },
+  ],
+  clientTools: { lookup_user: async ({ id }) => fetchUser(id as string) },
+})
+```
+
+Tools the client did not register are dropped server-side, so the
+model never tool-calls something nothing will resolve. Tools the
+manifest didn't declare don't reach the model at all (server schema
+is the contract).
+
+The `default` agent is special: it's what `agentName === undefined`
+resolves to. Projects predating the agents table fall back to the
+legacy per-project ElevenLabs agent for `default` until `shogo
+deploy` writes a row.
+
+#### Per-user dynamic variables
+
+Surface fields from your own user / companion store to the agent
+prompt with `dynamicVariables` — values land in ElevenLabs as
+`dynamic_variables` so the agent prompt can reference them via
+`{{var_name}}`. The SDK's built-ins (`character_name`,
+`user_context`, `conversation_id`) always win on collision.
+
+```tsx
+const v = useShogoVoice({
+  agentName: 'narrator',
+  dynamicVariables: {
+    user_display_name: companion.displayName,
+    relationship_stage: companion.stage,
+    greeting_token: companion.firstMessage ?? '',
+  },
+})
+```
+
+Variables also need to be declared on the agent's
+`dynamic_variable_placeholders` (set at deploy time) for EL to pick
+up the value at session start.
+
 ### Voice on React Native
 
 `@shogo-ai/sdk/voice/native` is the Expo / React Native sister of

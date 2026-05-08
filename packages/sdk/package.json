@@ -101,6 +101,11 @@
       "types": "./dist/voice/route/audio-tags.d.ts",
       "import": "./dist/voice/route/audio-tags.js",
       "require": "./dist/voice/route/audio-tags.cjs"
+    },
+    "./cli/deploy": {
+      "types": "./dist/cli/deploy.d.ts",
+      "import": "./dist/cli/deploy.js",
+      "require": "./dist/cli/deploy.cjs"
     }
   },
   "bin": {

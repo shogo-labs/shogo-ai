@@ -61,6 +61,72 @@
  *   )
  * }
  * ```
+ *
+ * @example Named secondary agents
+ * Declare additional agents in `shogo.config.json#agents`, run
+ * `bunx shogo deploy`, then pick which one a component talks to via
+ * `agentName`. Both `useShogoVoice({ agentName: 'architect' })` and
+ * `useShogoChat({ agentName: 'architect' })` resolve to the SAME
+ * `ProjectAgent` row, so voice + text can share one persona /
+ * tool-allowlist.
+ *
+ * ```jsonc
+ * // shogo.config.json
+ * {
+ *   "agents": {
+ *     "architect": {
+ *       "systemPrompt": "You design system architectures.",
+ *       "tools": ["lookup_user"],
+ *       "model": "claude-sonnet-4-5"
+ *     },
+ *     "narrator": {
+ *       "systemPrompt": "You narrate system events out loud.",
+ *       "voiceId": "voice_id_here",
+ *       "firstMessage": "Hi, I'll narrate updates."
+ *     }
+ *   }
+ * }
+ * ```
+ *
+ * ```tsx
+ * function NarratorButton() {
+ *   const v = useShogoVoice({ agentName: 'narrator' })
+ *   return <button onClick={v.start}>Start narration</button>
+ * }
+ * ```
+ *
+ * Tool contract: the manifest declares the tools the agent is allowed
+ * to invoke — including the full `description` + JSON `inputSchema`
+ * for each — and the consumer's React code provides the matching
+ * handler implementations via `clientTools`. Manifest schemas win
+ * server-side, so a `shogo deploy` is a single source of truth for
+ * BOTH ElevenLabs (voice) AND `streamText` (chat).
+ *
+ * @example Per-user dynamic variables
+ * Surface fields from your own `Companion` row to the agent prompt
+ * via `dynamicVariables`. The values land in EL as
+ * `dynamic_variables` and the agent prompt can reference them via
+ * `{{user_display_name}}` etc. (assuming the variables are declared
+ * on the agent in `dynamic_variable_placeholders` at deploy time).
+ *
+ * The SDK's built-ins (`character_name`, `user_context`,
+ * `conversation_id`) always win on collision so you can't
+ * accidentally override them.
+ *
+ * ```tsx
+ * function NarratorButton() {
+ *   const companion = useCompanion() // your store
+ *   const v = useShogoVoice({
+ *     agentName: 'narrator',
+ *     dynamicVariables: {
+ *       user_display_name: companion.userDisplayName,
+ *       relationship_stage: companion.relationshipStage,
+ *       greeting_token: companion.firstMessage ?? '',
+ *     },
+ *   })
+ *   return <button onClick={v.start}>Start narration</button>
+ * }
+ * ```
  */
 
 import {
