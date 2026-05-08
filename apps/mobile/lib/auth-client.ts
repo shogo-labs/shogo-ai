@@ -7,6 +7,16 @@ import { expoClient } from '@better-auth/expo/client'
 import * as SecureStore from 'expo-secure-store'
 import { API_URL } from './api'
 
+function normalizeCookieHeader(cookie: string | null | undefined): string | null {
+  if (!cookie) return null
+  const normalized = cookie
+    .split(';')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join('; ')
+  return normalized || null
+}
+
 function createMobileAuthClient() {
   if (Platform.OS === 'web') {
     return createAuthClient({
@@ -15,17 +25,25 @@ function createMobileAuthClient() {
     })
   }
 
-  return createBetterAuthClient({
+  const client = createBetterAuthClient({
     baseURL: API_URL!,
     basePath: '/api/auth',
     plugins: [
       expoClient({
         scheme: 'shogo',
         storagePrefix: 'shogo',
+        cookiePrefix: 'shogo',
         storage: SecureStore,
       }),
     ],
   })
+
+  const getCookie = (client as any).getCookie?.bind(client)
+  if (getCookie) {
+    ;(client as any).getCookie = () => normalizeCookieHeader(getCookie())
+  }
+
+  return client
 }
 
 export const authClient = createMobileAuthClient()
