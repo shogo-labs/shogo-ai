@@ -56,9 +56,22 @@ const { surfaces, dispatchAction } = useCanvasStream()
 
 Or use the client directly: \`new AgentClient()\` with relative URLs (\`/agent/status\`, \`/agent/chat\`, etc.) — zero configuration needed.
 
+### Installed Integrations
+
+When the user has installed an integration with \`tool_install\`, the user's app consumes it via \`@shogo-ai/sdk/tools\`:
+
+\`\`\`typescript
+import { useTools } from '@shogo-ai/sdk/tools'              // browser
+import { getServerToolsClient } from '@shogo-ai/sdk/tools'  // server (custom-routes.ts, server.tsx)
+\`\`\`
+
+Both default to the pod's local \`/api/tools/*\` proxy and need zero configuration. The runtime forwards each call to the agent's tool registry with the right auth attached.
+
+NEVER \`fetch()\` the integration provider's REST API directly and NEVER read provider tokens from env (no \`process.env.*_API_TOKEN\`, no \`c.env.*_API_KEY\`). There are no provider env vars in the pod — auth lives in the runtime, and inventing one guarantees a 500.
+
 ### Runtime Facts
 - **Vite** runs in \`build --watch\` mode. File changes trigger automatic rebuilds in 1-2 seconds.
-- Dev server on **port 3001** (Hono server serving API + built frontend).
+- The agent runtime serves the built SPA at the project's public origin. A sidecar Hono server (the user's \`server.tsx\` + \`custom-routes.ts\`) is auto-mounted at \`/api/*\` on that same origin. From the SPA, \`fetch('/api/...')\` works without proxy config — there is no second port to think about.
 - **SQLite** dev database at \`file:./prisma/dev.db\`.
 - \`bun\` and \`node\` are available. You can write and execute scripts.
 
@@ -393,9 +406,22 @@ const { surfaces, dispatchAction } = useCanvasStream()
 
 Or use the client directly: \`new AgentClient()\` with relative URLs (\`/agent/status\`, \`/agent/chat\`, etc.) — zero configuration needed.
 
+### Installed Integrations
+
+When the user has installed an integration with \`tool_install\`, the user's app consumes it via \`@shogo-ai/sdk/tools\`:
+
+\`\`\`typescript
+import { useTools } from '@shogo-ai/sdk/tools'              // browser
+import { getServerToolsClient } from '@shogo-ai/sdk/tools'  // server (custom-routes.ts, server.tsx)
+\`\`\`
+
+Both default to the pod's local \`/api/tools/*\` proxy and need zero configuration. The runtime forwards each call to the agent's tool registry with the right auth attached.
+
+NEVER \`fetch()\` the integration provider's REST API directly and NEVER read provider tokens from env (no \`process.env.*_API_TOKEN\`, no \`c.env.*_API_KEY\`). There are no provider env vars in the pod — auth lives in the runtime, and inventing one guarantees a 500.
+
 ### Runtime Facts
 - **Vite** runs in \`build --watch\` mode. File changes trigger automatic rebuilds in 1-2 seconds.
-- Dev server on **port 3001** (Hono server serving API + built frontend).
+- The agent runtime serves the built SPA at the project's public origin. A sidecar Hono server (the user's \`server.tsx\` + \`custom-routes.ts\`) is auto-mounted at \`/api/*\` on that same origin. From the SPA, \`fetch('/api/...')\` works without proxy config — there is no second port to think about.
 - **SQLite** dev database at \`file:./prisma/dev.db\`.
 - \`bun\` and \`node\` are available.
 

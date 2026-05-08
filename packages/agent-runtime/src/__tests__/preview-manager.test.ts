@@ -607,5 +607,28 @@ describe('PreviewManager', () => {
       expect(env.HOME).toBe('/home/test')
       expect(env.PROJECT_ID).toBe('proj_abc')
     })
+
+    test('captures parent PORT into RUNTIME_PORT before overwriting PORT', () => {
+      // The sidecar's @shogo-ai/sdk/tools/server proxy uses RUNTIME_PORT
+      // to forward `/api/tools/*` calls back to the agent runtime over
+      // 127.0.0.1. If we ever stop preserving the parent's PORT here,
+      // every installed-integration call from a pod app silently breaks.
+      const env = resolveApiServerEnv({
+        parentEnv: { PORT: '8080' },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env.RUNTIME_PORT).toBe('8080')
+      expect(env.PORT).toBe(PORT)
+    })
+
+    test('falls back to 8080 when parent PORT is unset', () => {
+      const env = resolveApiServerEnv({
+        parentEnv: {},
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env.RUNTIME_PORT).toBe('8080')
+    })
   })
 })

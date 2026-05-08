@@ -19,7 +19,7 @@
   "dependencies": {
     "@prisma/adapter-libsql": "^7.3.0",
     "@prisma/client": "^7.3.0",
-    "@shogo-ai/sdk": "^0.4.0",
+    "@shogo-ai/sdk": "^1.2.2",
     "expo": "~51.0.0",
     "expo-router": "~3.5.0",
     "expo-status-bar": "~1.12.0",

@@ -10,9 +10,22 @@
  *
  * Examples:
  *   - Aggregations / dashboards: `app.get('/dashboard', ...)`
- *   - External proxies (LLM, payments, weather): `app.post('/llm', ...)`
  *   - Webhooks: `app.post('/webhooks/stripe', ...)`
  *   - Auth flows: `app.post('/auth/login', ...)`
+ *
+ * For installed integrations (Jira, Slack, Google, Meta Ads, etc.),
+ * do NOT add a route here. Call them from the browser via:
+ *
+ *   import { useTools } from '@shogo-ai/sdk/tools'
+ *
+ * or from server code via:
+ *
+ *   import { getServerToolsClient } from '@shogo-ai/sdk/tools'
+ *
+ * The SDK already exposes the runtime's tool registry at
+ * `/api/tools/*` with the right auth attached. Hand-rolling a fetch
+ * to the provider's REST API will fail because the pod has no
+ * provider tokens in its env — auth lives in the runtime.
  *
  * The runtime watches this file. Saving triggers a fast restart of
  * `server.tsx` (no schema regeneration, no `prisma db push`) so changes

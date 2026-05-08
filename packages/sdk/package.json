@@ -1,6 +1,6 @@
 {
   "name": "@shogo-ai/sdk",
-  "version": "0.4.1",
+  "version": "1.2.2",
   "description": "Shogo Platform SDK - Zero-boilerplate auth and database for Shogo apps",
   "type": "module",
   "main": "dist/index.cjs",
@@ -46,6 +46,11 @@
       "types": "./dist/tools/index.d.ts",
       "import": "./dist/tools/index.js",
       "require": "./dist/tools/index.cjs"
+    },
+    "./tools/server": {
+      "types": "./dist/tools/server.d.ts",
+      "import": "./dist/tools/server.js",
+      "require": "./dist/tools/server.cjs"
     },
     "./memory": {
       "types": "./dist/memory/index.d.ts",

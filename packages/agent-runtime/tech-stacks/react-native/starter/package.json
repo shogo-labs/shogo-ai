@@ -19,7 +19,7 @@
   "dependencies": {
     "@prisma/adapter-libsql": "^7.3.0",
     "@prisma/client": "^7.3.0",
-    "@shogo-ai/sdk": "^0.4.0",
+    "@shogo-ai/sdk": "^1.2.2",
     "hono": "^4.0.0",
     "mobx": "^6.13.0",
     "mobx-react-lite": "^4.0.0",

@@ -2999,6 +2999,32 @@ function createMcpSearchTool(): AgentTool {
   }
 }
 
+/**
+ * Snippet appended to every successful `tool_install` message so the
+ * model has a concrete code shape to copy when the user asks for a
+ * dashboard or any other in-app use of the integration. Without this
+ * the model tends to invent provider env vars (`*_API_TOKEN`) and
+ * hand-roll bearer-token fetches in `custom-routes.ts`, which has no
+ * working credentials in the pod.
+ */
+const SDK_USAGE_FOOTER = [
+  '',
+  'To use these tools from the user\'s app, import from @shogo-ai/sdk/tools:',
+  '',
+  '  // In a React component or hook',
+  '  import { useTools } from \'@shogo-ai/sdk/tools\'',
+  '  const { execute } = useTools()',
+  '  const res = await execute(\'<TOOL_NAME>\', { ...args })',
+  '',
+  '  // In server code (custom-routes.ts, server.tsx)',
+  '  import { getServerToolsClient } from \'@shogo-ai/sdk/tools\'',
+  '  const res = await getServerToolsClient().execute(\'<TOOL_NAME>\', { ...args })',
+  '',
+  'NEVER read provider tokens from env (no *_API_TOKEN, *_API_KEY) for managed',
+  'integrations — there are no provider env vars in the pod. NEVER call the',
+  'provider\'s REST API directly with fetch(). Always go through the SDK.',
+].join('\n')
+
 function formatToolInstallMessage(
   toolkitName: string,
   toolCount: number,
@@ -3006,12 +3032,12 @@ function formatToolInstallMessage(
 ): string {
   const base = `"${toolkitName}" installed with ${toolCount} tool(s).`
   if (auth.status !== 'needs_auth') {
-    return `${base} Auth is active. No manual credentials needed.`
+    return `${base} Auth is active. No manual credentials needed.\n${SDK_USAGE_FOOTER}`
   }
   if (auth.authUrl) {
-    return `${base} User needs to authorize — a Connect button is displayed in the chat for them to click. Do NOT include the auth URL in your response; the UI button handles the OAuth popup flow automatically. Tell the user to click the Connect button below.`
+    return `${base} User needs to authorize — a Connect button is displayed in the chat for them to click. Do NOT include the auth URL in your response; the UI button handles the OAuth popup flow automatically. Tell the user to click the Connect button below.\n\nOnce the user confirms they've connected, you'll be able to call these tools.\n${SDK_USAGE_FOOTER}`
   }
-  return `${base} Auth status: needs_auth. The user may need to authorize via the Tools panel.`
+  return `${base} Auth status: needs_auth. The user may need to authorize via the Tools panel.\n${SDK_USAGE_FOOTER}`
 }
 
 function createToolInstallTool(ctx: ToolContext): AgentTool {
