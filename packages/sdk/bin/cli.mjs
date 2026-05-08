@@ -11,8 +11,9 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { resolve, dirname } from 'path'
-import { execSync } from 'child_process'
+import { execSync, execFileSync } from 'child_process'
 import { parseArgs } from 'util'
+import { pathToFileURL } from 'url'
 
 // ============================================================================
 // CLI Parsing
@@ -68,7 +69,11 @@ if (command === 'deploy') {
   // versions without dynamic-import-in-CJS work.
   let deploy
   try {
-    deploy = await import(resolve(dirname(new URL(import.meta.url).pathname), '../dist/cli/deploy.js'))
+    // Convert to a file:// URL so absolute paths containing spaces (e.g.
+    // macOS "/Users/<u>/Library/Application Support/...") survive the
+    // dynamic import. Bare absolute paths trip ERR_INVALID_FILE_URL_PATH.
+    const deployPath = resolve(dirname(new URL(import.meta.url).pathname), '../dist/cli/deploy.js')
+    deploy = await import(pathToFileURL(deployPath).href)
   } catch (err) {
     console.error('[shogo] Failed to load deploy module:', err.message)
     console.error('   (this usually means @shogo-ai/sdk was not built; run `bun run build` in the package)')
@@ -154,7 +159,12 @@ try {
 const generateScript = resolve(cwd, 'scripts/generate.ts')
 if (existsSync(generateScript)) {
   try {
-    execSync(`bun ${generateScript}`, { cwd, stdio: 'inherit' })
+    // Use execFileSync (no shell, array argv) so paths containing spaces
+    // — e.g. macOS workspaces under "/Users/<u>/Library/Application Support/..." —
+    // are passed verbatim as a single argv[1]. Plain execSync hands the
+    // command to /bin/sh which tokenizes on whitespace and breaks the
+    // module specifier at the first space.
+    execFileSync('bun', [generateScript], { cwd, stdio: 'inherit' })
   } catch (err) {
     console.error('[shogo] SDK generation failed (scripts/generate.ts)')
     process.exit(1)
