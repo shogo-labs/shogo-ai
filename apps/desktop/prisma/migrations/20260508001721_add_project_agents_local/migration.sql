@@ -1,5 +1,3 @@
-[2mLoaded Prisma config from prisma.config.ts.
-[22m
 -- CreateTable
 CREATE TABLE "project_agents" (
     "id" TEXT NOT NULL PRIMARY KEY,
@@ -26,4 +24,3 @@ CREATE INDEX "project_agents_workspaceId_idx" ON "project_agents"("workspaceId")
 
 -- CreateIndex
 CREATE UNIQUE INDEX "project_agents_projectId_name_key" ON "project_agents"("projectId", "name");
-

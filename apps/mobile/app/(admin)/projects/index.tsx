@@ -7,7 +7,7 @@
  * on mobile shows a compact card list.
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   View,
   Text,
@@ -167,25 +167,36 @@ export default function AdminProjectsPage() {
   const isWide = width >= 900
 
   const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [page, setPage] = useState(1)
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [data, setData] = useState<ProjectsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      setDebouncedSearch(search)
+      setPage(1)
+    }, 350)
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
+  }, [search])
 
   const loadProjects = useCallback(async () => {
     const params: Record<string, string> = {
       page: String(page),
       limit: '20',
     }
-    if (search) params.search = search
+    if (debouncedSearch) params.search = debouncedSearch
     if (statusFilter) params.status = statusFilter
 
     const result = await fetchAdminJson<ProjectsResponse>('/projects', params)
     setData(result)
     setLoading(false)
     setRefreshing(false)
-  }, [page, search, statusFilter])
+  }, [page, debouncedSearch, statusFilter])
 
   useEffect(() => {
     setLoading(true)
@@ -199,7 +210,7 @@ export default function AdminProjectsPage() {
     loadProjects()
   }
 
-  const ListHeader = () => (
+  const listHeader = (
     <View className="gap-3 mb-2">
       <View className={cn(isWide ? 'flex-row items-center gap-3' : 'gap-3')}>
         <View
@@ -213,13 +224,11 @@ export default function AdminProjectsPage() {
             placeholder="Search projects..."
             placeholderTextColor="#9ca3af"
             value={search}
-            onChangeText={(t) => {
-              setSearch(t)
-              setPage(1)
-            }}
+            onChangeText={setSearch}
             autoCapitalize="none"
             autoCorrect={false}
-            className="flex-1 text-foreground text-sm"
+            className="flex-1 text-foreground text-sm web:outline-none"
+            style={{ outline: 'none' } as any}
           />
         </View>
 
@@ -348,7 +357,7 @@ export default function AdminProjectsPage() {
         <FlatList
           data={data?.projects ?? []}
           keyExtractor={(item) => item.id}
-          ListHeaderComponent={<ListHeader />}
+          ListHeaderComponent={listHeader}
           ListFooterComponent={<ListFooter />}
           ListEmptyComponent={loading ? null : <EmptyState />}
           refreshControl={
