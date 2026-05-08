@@ -5,6 +5,13 @@
 /* Skema Pro Display (self-hosted, license: Mint Type) */
 @import './assets/fonts/skema-pro-display/stylesheet.css';
 
+/* xterm.js base styles for the IDE terminal panel. xterm renders into a
+   non-styled <div>; without these the cursor is invisible and the
+   selection rectangle has no width. Web bundles only — Metro won't try to
+   resolve this on native because the app code that uses xterm gates on
+   Platform.OS === 'web'. */
+@import './node_modules/@xterm/xterm/css/xterm.css';
+
 /* ── Streamdown overrides for chat markdown ── */
 
 /* Base text color — inherits the theme-aware foreground so all

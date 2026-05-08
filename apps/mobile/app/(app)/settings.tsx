@@ -2931,7 +2931,7 @@ function GroupBySelect({
     source: 'Group By: Source',
   }
   return (
-    <View>
+    <View style={{ zIndex: 100 }}>
       <Pressable
         onPress={() => setOpen((o) => !o)}
         className="flex-row items-center gap-1.5 px-3 h-8 rounded-md border border-border bg-background"
@@ -2940,7 +2940,10 @@ function GroupBySelect({
         <ChevronDown size={12} className="text-muted-foreground" />
       </Pressable>
       {open && (
-        <View className="absolute top-9 right-0 z-50 min-w-[160px] rounded-md border border-border bg-popover shadow-md">
+        <View
+          style={{ zIndex: 100 }}
+          className="absolute top-9 right-0 z-50 min-w-[160px] rounded-md border border-border bg-popover shadow-md"
+        >
           {(['model', 'user', 'source'] as const).map((v) => (
             <Pressable
               key={v}
@@ -2970,7 +2973,7 @@ function MetricSelect({
     requests: 'Metric: Requests',
   }
   return (
-    <View>
+    <View style={{ zIndex: 100 }}>
       <Pressable
         onPress={() => setOpen((o) => !o)}
         className="flex-row items-center gap-1.5 px-3 h-8 rounded-md border border-border bg-background"
@@ -2979,7 +2982,10 @@ function MetricSelect({
         <ChevronDown size={12} className="text-muted-foreground" />
       </Pressable>
       {open && (
-        <View className="absolute top-9 right-0 z-50 min-w-[160px] rounded-md border border-border bg-popover shadow-md">
+        <View
+          style={{ zIndex: 100 }}
+          className="absolute top-9 right-0 z-50 min-w-[160px] rounded-md border border-border bg-popover shadow-md"
+        >
           {(['spend', 'tokens', 'requests'] as const).map((v) => (
             <Pressable
               key={v}

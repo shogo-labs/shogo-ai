@@ -34,7 +34,8 @@ import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
 import { projectChatRoutes } from './routes/project-chat'
 import { projectAdminRoutes } from './routes/project-admin'
-import { terminalRoutes } from './routes/terminal'
+import { ProjectPtyRegistry } from '@shogo/agent-runtime/src/pty-project-registry'
+import { createPtyWsHandlers, type WsData as PtyWsData } from '@shogo/agent-runtime/src/pty-ws-handler'
 import { diagnosticsRoutes } from '@shogo/shared-runtime'
 import { testsRoutes } from './routes/tests'
 import { securityRoutes } from './routes/security'
@@ -2551,140 +2552,86 @@ app.get('/api/projects/:projectId/terminal/commands', async (c) => {
     }
   }
   
-  // Local development: Use local filesystem
+  // Local development: build the per-workspace preset list inline. The
+  // dynamic shape (package.json scripts + Prisma/Playwright/Python file
+  // probes + .tech-stack quickCommands) lives in `quick-commands.ts` so
+  // both the API and the runtime pod produce identical responses.
   const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-  const router = terminalRoutes({ workspacesDir })
-  const url = new URL(c.req.url)
-  url.pathname = `/projects/${projectId}/terminal/commands`
-  const newReq = new Request(url.toString(), { method: 'GET' })
-  return router.fetch(newReq)
+  const projectDir = join(workspacesDir, projectId)
+  const { buildQuickCommands, groupQuickCommandsByCategory } = await import(
+    '@shogo/agent-runtime/src/quick-commands'
+  )
+  const commands = groupQuickCommandsByCategory(buildQuickCommands(projectDir))
+  return c.json({ commands })
 })
 
-// Execute a preset command
-app.post('/api/projects/:projectId/terminal/exec', async (c) => {
+// =============================================================================
+// PTY terminal sessions — long-lived shells (real PTY) over WebSockets
+// =============================================================================
+//
+// Lifecycle endpoints are JSON; the byte stream (keystrokes ↔ PTY output) lives
+// on a WebSocket at /api/projects/:projectId/terminal/sessions/:sessionId/ws,
+// upgraded inside the Bun.serve fetch handler at the bottom of this file.
+//
+// Local dev: spawn shells directly inside this process via PtySessionManager.
+// Kubernetes: TODO — proxy WS frames through to the per-project runtime pod
+// (REST is straightforward HTTP forwarding; WS proxy is a follow-up).
+
+const ptyRegistry = new ProjectPtyRegistry({
+  resolveWorkspaceDir: (projectId) => {
+    const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+    return join(workspacesDir, projectId)
+  },
+})
+// One handler set serves all projects: each WS carries its own
+// PtySessionManager reference (set at upgrade time below).
+const ptyWs = createPtyWsHandlers()
+
+app.post('/api/projects/:projectId/terminal/sessions', async (c) => {
   const projectId = c.req.param('projectId')
-  
-  if (isKubernetes()) {
-    // In Kubernetes: Proxy to runtime pod
-    try {
-      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-      const { deriveRuntimeToken } = await import('./lib/runtime-token')
-      const podUrl = await getProjectPodUrl(projectId)
-      const targetUrl = `${podUrl}/terminal/exec`
-      
-      console.log(`[TerminalProxy] Proxying exec to ${targetUrl}`)
-      
-      // Read and forward only the necessary headers and body
-      const body = await c.req.text()
-      
-      const response = await fetch(targetUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': c.req.header('Content-Type') || 'application/json',
-          'x-runtime-token': deriveRuntimeToken(projectId),
-        },
-        body,
-      })
-      
-      console.log(`[TerminalProxy] Response status: ${response.status}`)
-      
-      const responseHeaders = new Headers()
-      response.headers.forEach((value, key) => {
-        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
-          responseHeaders.set(key, value)
-        }
-      })
-      
-      return new Response(response.body, {
-        status: response.status,
-        headers: responseHeaders,
-      })
-    } catch (error: any) {
-      console.error('[TerminalProxy] Error:', error)
-      return c.json({
-        error: { code: 'proxy_error', message: error.message || 'Failed to execute command' }
-      }, 502)
-    }
-  }
-  
-  // Local development: Use local filesystem
   const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-  const router = terminalRoutes({ workspacesDir })
-  const url = new URL(c.req.url)
-  url.pathname = `/projects/${projectId}/terminal/exec`
-  const newReq = new Request(url.toString(), {
-    method: 'POST',
-    headers: c.req.raw.headers,
-    body: c.req.raw.body,
-    // @ts-expect-error - required when forwarding a streaming request body in Node
-    duplex: 'half',
-    signal: c.req.raw.signal,
-  })
-  return router.fetch(newReq)
+  const projectDir = join(workspacesDir, projectId)
+  if (!existsSync(projectDir)) {
+    return c.json({ error: { code: 'project_not_found', message: 'Project not found' } }, 404)
+  }
+  let body: { cwd?: string; cols?: number; rows?: number } = {}
+  try { body = await c.req.json() } catch {}
+  const mgr = ptyRegistry.for(projectId)
+  try {
+    const rec = mgr.create({
+      cwd: body.cwd,
+      cols: body.cols,
+      rows: body.rows,
+    })
+    return c.json({
+      id: rec.id,
+      cwd: rec.session.cwd,
+      cols: rec.session.cols,
+      rows: rec.session.rows,
+      createdAt: rec.createdAt,
+    })
+  } catch (err: any) {
+    const msg = err?.message ?? String(err)
+    const code = msg.startsWith('max-sessions-reached') ? 'max_sessions_reached' : 'spawn_failed'
+    return c.json({ error: { code, message: msg } }, 400)
+  }
 })
 
-// Execute a free-form shell command (the IDE "$" prompt). Mirrors /exec but
-// forwards arbitrary user input instead of a curated command id.
-app.post('/api/projects/:projectId/terminal/run', async (c) => {
+app.get('/api/projects/:projectId/terminal/sessions', (c) => {
   const projectId = c.req.param('projectId')
+  const mgr = ptyRegistry.peek(projectId)
+  return c.json({ sessions: mgr?.list() ?? [] })
+})
 
-  if (isKubernetes()) {
-    // In Kubernetes: Proxy to the project's runtime pod.
-    try {
-      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-      const { deriveRuntimeToken } = await import('./lib/runtime-token')
-      const podUrl = await getProjectPodUrl(projectId)
-      const targetUrl = `${podUrl}/terminal/run`
-
-      console.log(`[TerminalProxy] Proxying run to ${targetUrl}`)
-
-      const body = await c.req.text()
-
-      const response = await fetch(targetUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': c.req.header('Content-Type') || 'application/json',
-          'x-runtime-token': deriveRuntimeToken(projectId),
-        },
-        body,
-        signal: c.req.raw.signal,
-      })
-
-      console.log(`[TerminalProxy] run response status: ${response.status}`)
-
-      const responseHeaders = new Headers()
-      response.headers.forEach((value, key) => {
-        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
-          responseHeaders.set(key, value)
-        }
-      })
-
-      return new Response(response.body, {
-        status: response.status,
-        headers: responseHeaders,
-      })
-    } catch (error: any) {
-      console.error('[TerminalProxy] Error:', error)
-      return c.json({
-        error: { code: 'proxy_error', message: error.message || 'Failed to run command' }
-      }, 502)
-    }
+app.delete('/api/projects/:projectId/terminal/sessions/:id', (c) => {
+  const projectId = c.req.param('projectId')
+  const id = c.req.param('id')
+  const mgr = ptyRegistry.peek(projectId)
+  if (!mgr || !mgr.get(id)) {
+    return c.json({ error: { code: 'unknown_session', message: 'Session not found' } }, 404)
   }
-
-  // Local development: Use local filesystem
-  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-  const router = terminalRoutes({ workspacesDir })
-  const url = new URL(c.req.url)
-  url.pathname = `/projects/${projectId}/terminal/run`
-  const newReq = new Request(url.toString(), {
-    method: 'POST',
-    headers: c.req.raw.headers,
-    body: c.req.raw.body,
-    // @ts-expect-error - required when forwarding a streaming request body in Node
-    duplex: 'half',
-    signal: c.req.raw.signal,
-  })
-  return router.fetch(newReq)
+  mgr.kill(id)
+  return c.json({ ok: true })
 })
 
 // =============================================================================
@@ -6498,6 +6445,17 @@ await (async () => {
   }
 })()
 
+// Match a path like `/api/projects/<projectId>/terminal/sessions/<id>/ws`.
+const PTY_WS_PATH_RE = /^\/api\/projects\/([^/]+)\/terminal\/sessions\/([^/]+)\/ws$/
+
+// Tag attached to PTY WS data so the multiplexed websocket{} dispatcher
+// can route open/message/close to the right handler set.
+const PTY_DATA_KIND = '__pty_ws__'
+type PtyTaggedData = PtyWsData & { __kind: typeof PTY_DATA_KIND }
+function isPtyData(data: unknown): data is PtyTaggedData {
+  return !!data && typeof data === 'object' && (data as { __kind?: string }).__kind === PTY_DATA_KIND
+}
+
 export default {
   port: API_PORT,
   hostname: "0.0.0.0",
@@ -6512,12 +6470,43 @@ export default {
       if (upgraded) return undefined
       return new Response('WebSocket upgrade failed', { status: 500 })
     }
+    // PTY terminal session WebSocket: in local-dev we own the manager;
+    // in Kubernetes we proxy to the runtime pod (TODO).
+    if (req.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+      const ptyMatch = PTY_WS_PATH_RE.exec(url.pathname)
+      if (ptyMatch) {
+        const [, projectId, sessionId] = ptyMatch
+        if (isKubernetes()) {
+          // K8s WS proxy is a follow-up. For now reject so the client
+          // doesn't think it's connected to a non-functional channel.
+          return new Response('PTY WS proxy not yet implemented in K8s', { status: 501 })
+        }
+        const mgr = ptyRegistry.peek(projectId)
+        if (!mgr || !mgr.get(sessionId)) {
+          return new Response('Unknown session', { status: 404 })
+        }
+        const since = Number(url.searchParams.get('since')) || 0
+        const data: PtyTaggedData = { __kind: PTY_DATA_KIND, manager: mgr, sessionId, since }
+        const upgraded = server.upgrade(req, { data })
+        if (upgraded) return undefined
+        return new Response('PTY WebSocket upgrade failed', { status: 500 })
+      }
+    }
     return app.fetch(req, server)
   },
   websocket: {
-    open: handleInstanceWsOpen,
-    message: handleInstanceWsMessage,
-    close: handleInstanceWsClose,
+    open(ws: any) {
+      if (isPtyData(ws.data)) ptyWs.open(ws)
+      else handleInstanceWsOpen(ws)
+    },
+    message(ws: any, msg: any) {
+      if (isPtyData(ws.data)) ptyWs.message(ws, msg)
+      else handleInstanceWsMessage(ws, msg)
+    },
+    close(ws: any, code?: number, reason?: string) {
+      if (isPtyData(ws.data)) ptyWs.close(ws, code, reason)
+      else handleInstanceWsClose(ws, code, reason)
+    },
   },
   idleTimeout: 255,
 }
