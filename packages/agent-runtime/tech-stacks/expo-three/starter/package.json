@@ -20,7 +20,7 @@
     "@prisma/adapter-libsql": "^7.3.0",
     "@prisma/client": "^7.3.0",
     "@react-three/fiber": "^8.17.10",
-    "@shogo-ai/sdk": "^1.2.2",
+    "@shogo-ai/sdk": "^1.3.0",
     "expo": "~51.0.0",
     "expo-gl": "~14.0.2",
     "expo-router": "~3.5.0",

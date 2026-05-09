@@ -83,10 +83,18 @@ export class ToolsClient {
   /**
    * Execute an installed tool by name.
    *
+   * The runtime tool-execution path always JSON.stringifies the tool's
+   * response into `data`, so `data` arrives as a string from the wire.
+   * This method auto-parses it: every JSON-encoded payload (object,
+   * array, primitive) is rehydrated to its natural JS shape. Tools that
+   * return raw text (markdown, etc.) leave `data` as the original
+   * string — `JSON.parse` failures are caught and ignored. Error
+   * payloads (`ok: false`) are passed through untouched.
+   *
    * @param toolName - Tool slug (e.g. `METAADS_GET_INSIGHTS`, `GMAIL_SEND_EMAIL`)
    * @param args - Arguments matching the tool's parameter schema
    */
-  async execute(toolName: string, args: Record<string, unknown> = {}): Promise<ToolExecuteResult> {
+  async execute<T = unknown>(toolName: string, args: Record<string, unknown> = {}): Promise<ToolExecuteResult<T>> {
     const res = await this.doFetch(this.url(this.paths.execute), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.headers },
@@ -96,7 +104,15 @@ export class ToolsClient {
       const text = await res.text().catch(() => res.statusText)
       return { ok: false, error: `Request failed (${res.status}): ${text}` }
     }
-    return (await res.json()) as ToolExecuteResult
+    const result = (await res.json()) as ToolExecuteResult<T>
+    if (result.ok && typeof result.data === 'string') {
+      try {
+        ;(result as { data: unknown }).data = JSON.parse(result.data) as T
+      } catch {
+        // Plain-text payload (markdown, raw prose) — leave as the original string.
+      }
+    }
+    return result
   }
 }
 

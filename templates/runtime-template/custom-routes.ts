@@ -20,16 +20,38 @@
  *   `<TOOLKIT>_GET_CURRENT_USER`, compose the calls you need, return
  *   a clean shape your component owns.
  *
+ *   The SDK auto-parses tool result `data` on success (the runtime
+ *   JSON.stringifies tool responses; @shogo-ai/sdk/tools >=1.3 parses
+ *   them back). Index `data` like a plain object — do NOT write a
+ *   `JSON.parse(result.data)` helper. Pass a generic to `execute<T>()`
+ *   for typed access.
+ *
  *   import { getServerToolsClient } from '@shogo-ai/sdk/tools'
  *
  *   app.get('/jira/my-issues', async (c) => {
  *     const tools = getServerToolsClient()
- *     const me = await tools.execute('JIRA_GET_CURRENT_USER', {})
- *     const issues = await tools.execute('JIRA_SEARCH_ISSUES', {
- *       jql: `assignee = "${me.data?.accountId}"`,
+ *     const me = await tools.execute<{ accountId: string }>('JIRA_GET_CURRENT_USER', {})
+ *     if (!me.ok || !me.data?.accountId) {
+ *       return c.json({ error: me.error ?? 'not authenticated' }, 401)
+ *     }
+ *     const issues = await tools.execute<{ issues: unknown[] }>('JIRA_SEARCH_ISSUES', {
+ *       jql: `assignee = "${me.data.accountId}"`,
  *     })
+ *     if (!issues.ok) return c.json({ error: issues.error ?? 'search failed' }, 502)
  *     return c.json({ issues: issues.data?.issues ?? [] })
  *   })
+ *
+ *   In the browser, surface the server's `error` field — never throw
+ *   `new Error('Failed to load X')`:
+ *
+ *     const res = await fetch('/api/jira/my-issues')
+ *     const body = await res.json().catch(() => ({}))
+ *     if (!res.ok) setError(body.error ?? `HTTP ${res.status}`)
+ *     else setIssues(body.issues ?? [])
+ *
+ *   After writing or editing a route, hit it to confirm shape + status:
+ *     curl -s -w "\nHTTP %{http_code}\n" http://localhost:$RUNTIME_PORT/api/jira/my-issues
+ *   A green build proves the file compiled, not that the endpoint works.
  *
  * - Ad-hoc interactive actions (button clicks, form submits) → use
  *   `useTools()` directly in the component. Don't add a route here for

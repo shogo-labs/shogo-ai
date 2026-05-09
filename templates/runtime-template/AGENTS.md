@@ -62,25 +62,48 @@ the browser fetch your route. This keeps identity resolved per request,
 the provider wire format out of the React tree, and pagination /
 composition / caching in one place.
 
+The SDK auto-parses tool result `data` for you (the runtime always
+JSON.stringifies tool responses; `@shogo-ai/sdk/tools` >= 1.3 parses
+them back into objects on success). Index it like a plain object —
+`me.data?.accountId` works. Pass a generic to `execute<T>()` for typed
+access. For tools that return raw text (markdown, prose), `data` stays
+as the original string.
+
 ```ts
 // custom-routes.ts
 import { getServerToolsClient } from '@shogo-ai/sdk/tools'
 
 app.get('/jira/my-issues', async (c) => {
   const tools = getServerToolsClient()
-  const me = await tools.execute('JIRA_GET_CURRENT_USER', {})
-  const accountId = me.data?.accountId
-  if (!accountId) return c.json({ error: 'not authenticated' }, 401)
-  const issues = await tools.execute('JIRA_SEARCH_ISSUES', {
-    jql: `assignee = "${accountId}" AND statusCategory != Done`,
+  const me = await tools.execute<{ accountId: string }>('JIRA_GET_CURRENT_USER', {})
+  if (!me.ok || !me.data?.accountId) {
+    return c.json({ error: me.error ?? 'not authenticated' }, 401)
+  }
+  const issues = await tools.execute<{ issues: unknown[] }>('JIRA_SEARCH_ISSUES', {
+    jql: `assignee = "${me.data.accountId}" AND statusCategory != Done`,
   })
+  if (!issues.ok) return c.json({ error: issues.error ?? 'search failed' }, 502)
   return c.json({ issues: issues.data?.issues ?? [] })
 })
 ```
 
 ```tsx
-// src/components/MyIssues.tsx
-const res = await fetch('/api/jira/my-issues').then(r => r.json())
+// src/components/MyIssues.tsx — surface the server's actual error to the UI
+const res = await fetch('/api/jira/my-issues')
+const body = await res.json().catch(() => ({}))
+if (!res.ok) {
+  setError(body.error ?? `HTTP ${res.status}`)
+  return
+}
+setIssues(body.issues ?? [])
+```
+
+After writing or editing a route, hit it with `curl` to confirm the
+shape and status — a green build proves the file compiled, not that
+the endpoint works:
+
+```sh
+curl -s -w "\nHTTP %{http_code}\n" http://localhost:$RUNTIME_PORT/api/jira/my-issues
 ```
 
 ### Ad-hoc interactive actions → `useTools()`
@@ -108,6 +131,12 @@ async function onSend() {
 - NEVER hardcode the agent operator's identity (your accountId, member
   id, userId) into route or component code. Resolve it per request
   inside the route via `<TOOLKIT>_GET_CURRENT_USER`.
+- NEVER throw `new Error('Failed to load X')` from a client `fetch()`
+  handler. Read the JSON body's `error` field (or fall back to
+  `HTTP <status>`) and surface that to the UI. Generic messages strand
+  the user with no debugging path.
+- Do NOT write a `JSON.parse(result.data)` helper — the SDK already
+  parses on success. Double-parsing breaks the call silently.
 
 # Shogo Voice Conventions
 

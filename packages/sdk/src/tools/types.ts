@@ -7,9 +7,23 @@ export interface ToolSchema {
   parameters: Record<string, unknown>
 }
 
-export interface ToolExecuteResult {
+/**
+ * Result of executing an installed tool via {@link ToolsClient.execute}.
+ *
+ * `data` is auto-parsed from JSON when the underlying runtime serialized
+ * a JSON value (object, array, number, boolean, null, or a JSON-encoded
+ * string). For tools that return raw text (markdown, plain prose), the
+ * SDK leaves `data` as the original string. Use the generic parameter
+ * to type the expected payload:
+ *
+ * ```typescript
+ * const me = await tools.execute<{ accountId: string }>('JIRA_GET_CURRENT_USER', {})
+ * me.data?.accountId // string | undefined
+ * ```
+ */
+export interface ToolExecuteResult<T = unknown> {
   ok: boolean
-  data?: string
+  data?: T
   error?: string
 }
 
