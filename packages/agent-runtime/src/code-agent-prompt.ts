@@ -119,6 +119,22 @@ For detailed code review (risk scoring, test gap analysis, execution flow tracin
 - If you introduced errors, fix them immediately before moving on.
 - Never claim you are done without verifying.
 
+### Verify the endpoints you build
+
+A green \`.build.log\` proves the file compiled, not that the endpoint works. Any time you add or change an endpoint that does dynamic work — auth lookups, integration calls, DB joins, request-time computation — you MUST hit it and inspect the response shape before declaring the feature done.
+
+Two-step check:
+
+1. **HTTP status + body**:
+   \`\`\`
+   exec({ command: 'curl -s -w "\\nHTTP %{http_code}\\n" http://localhost:$RUNTIME_PORT/api/<your-route> | head -100' })
+   \`\`\`
+   Anything other than 2xx means the route is broken — read the body, fix it, re-curl. Do NOT respond "it's live" with a 4xx/5xx unaddressed.
+
+2. **Shape match**: the JSON the route returns MUST match the shape the consuming component reads. If the route returns \`{ user, stats, issues }\` but the component reads \`data.tickets\`, the build is green and the UI is empty. Compare the curl output against the component's destructuring before saying done.
+
+If the endpoint requires auth or integration setup that hasn't happened yet (e.g. a Jira route called before the user connected), surface that in the response with a clear \`error\` string and a useful status code (\`401\`, \`412\`) — not a green \`200 {}\` that silently looks like success.
+
 ### Minimal Change Principle
 
 - Prefer the smallest correct change. A one-line fix is better than a ten-line rewrite when both are correct.
@@ -161,25 +177,36 @@ Every tool returns \`{ ok: boolean, data: <result>, error?: string }\`. List end
 
 **Calling from the user's app — dashboards ALWAYS go through the server.** When you build any dashboard, list view, "my issues" / "my calendar" / "my channels" page, or any screen that aggregates, paginates, joins, or transforms integration data: put the work in \`custom-routes.ts\` using \`getServerToolsClient()\`, and have the browser \`fetch()\` your route. Do not call integration tools from a React component for these.
 
+The SDK auto-parses tool result \`data\`. The runtime always JSON.stringifies tool responses, so \`data\` arrives over the wire as a string — \`@shogo-ai/sdk/tools\` (>=1.3) parses it back into its natural shape on success. You access it like a plain object: \`me.data?.accountId\`. Do not write \`JSON.parse(me.data)\` helpers — that double-parses and silently breaks. Tools that return raw text (markdown, prose) leave \`data\` as a string; error payloads (\`ok:false\`) are passed through untouched. Pass a generic to \`execute<T>()\` for typed access.
+
 \`\`\`typescript
 // custom-routes.ts
 import { getServerToolsClient } from '@shogo-ai/sdk/tools'
 
 app.get('/jira/my-issues', async (c) => {
   const tools = getServerToolsClient()
-  const me = await tools.execute('JIRA_GET_CURRENT_USER', {})
-  const accountId = me.data?.accountId
-  if (!accountId) return c.json({ error: 'not authenticated' }, 401)
-  const issues = await tools.execute('JIRA_SEARCH_ISSUES', {
-    jql: \`assignee = "\${accountId}" AND statusCategory != Done\`,
+  const me = await tools.execute<{ accountId: string }>('JIRA_GET_CURRENT_USER', {})
+  if (!me.ok || !me.data?.accountId) {
+    return c.json({ error: me.error ?? 'not authenticated' }, 401)
+  }
+  const issues = await tools.execute<{ issues: unknown[] }>('JIRA_SEARCH_ISSUES', {
+    jql: \`assignee = "\${me.data.accountId}" AND statusCategory != Done\`,
   })
+  if (!issues.ok) return c.json({ error: issues.error ?? 'search failed' }, 502)
   return c.json({ issues: issues.data?.issues ?? [] })
 })
 \`\`\`
 
 \`\`\`typescript
 // src/components/MyIssues.tsx
-const res = await fetch('/api/jira/my-issues').then(r => r.json())
+const res = await fetch('/api/jira/my-issues')
+const body = await res.json().catch(() => ({}))
+if (!res.ok) {
+  // Surface the server's actual error to the UI — never a generic "Failed to load".
+  setError(body.error ?? \`Request failed (\${res.status})\`)
+  return
+}
+setIssues(body.issues ?? [])
 \`\`\`
 
 Why server-side for dashboards:
@@ -201,6 +228,8 @@ async function onSend() {
 **Hard rules:**
 - NEVER hardcode end-user identifiers from your own session (Atlassian \`accountId\`, Slack member id, Google \`userId\`) into route or component code. Those values are tied to the agent operator, not the end user. Derive them at request time inside the route via \`*_GET_CURRENT_USER\` (or equivalent) and feed that into the next call. Same code then works for every user, not just you.
 - Build dashboards in \`custom-routes.ts\` + \`getServerToolsClient()\`, not in components with \`useTools()\`.
+- NEVER throw \`new Error('Failed to load X')\` from a client \`fetch()\` handler. Read the JSON body's \`error\` field (or fall back to \`HTTP <status>\`) and surface that to the UI. Generic messages strand the user and yourself with no debugging path.
+- Routes that wrap integration tools count as "endpoints that do dynamic work" — verify per the **Verify the endpoints you build** section below. The first request often surfaces auth-shape mismatches the build can't catch.
 
 ### Runtime Facts
 - **Vite** runs in \`build --watch\` mode. File changes trigger automatic rebuilds in 1-2 seconds.

@@ -33,12 +33,13 @@ export interface UseToolsResult {
   /** Re-fetch tool schemas. */
   refresh: () => void
   /**
-   * Execute an installed tool.
+   * Execute an installed tool. `data` is auto-parsed from JSON; pass a
+   * type parameter to type the expected payload.
    *
    * @param toolName - Tool slug (e.g. `METAADS_GET_INSIGHTS`)
    * @param args - Arguments matching the tool's parameter schema
    */
-  execute: (toolName: string, args?: Record<string, unknown>) => Promise<ToolExecuteResult>
+  execute: <T = unknown>(toolName: string, args?: Record<string, unknown>) => Promise<ToolExecuteResult<T>>
 }
 
 /**
@@ -53,11 +54,11 @@ export interface UseToolsResult {
  *   const [insights, setInsights] = useState(null)
  *
  *   const load = async () => {
- *     const res = await execute('METAADS_GET_INSIGHTS', {
+ *     const res = await execute<{ data: unknown[] }>('METAADS_GET_INSIGHTS', {
  *       ad_account_id: '123',
  *       date_preset: 'last_30_days',
  *     })
- *     if (res.ok) setInsights(JSON.parse(res.data!))
+ *     if (res.ok) setInsights(res.data?.data ?? [])
  *   }
  *
  *   if (loading) return <p>Loading tools...</p>
@@ -93,8 +94,8 @@ export function useTools(options?: UseToolsOptions): UseToolsResult {
   }, [fetchSchemas, options?.autoLoad])
 
   const execute = useCallback(
-    (toolName: string, args?: Record<string, unknown>) =>
-      client.execute(toolName, args),
+    <T = unknown>(toolName: string, args?: Record<string, unknown>) =>
+      client.execute<T>(toolName, args),
     [client],
   )
 

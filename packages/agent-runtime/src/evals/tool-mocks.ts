@@ -3853,9 +3853,38 @@ export const JIRA_INSTALL_FLOW_MOCKS: ToolMockMap = {
     type: 'static',
     description: 'Get the current authenticated Jira user.',
     paramKeys: [],
+    // `data` is JSON-stringified to match real runtime behavior — the
+    // tool-execution path always JSON.stringifies the underlying tool
+    // response into `data`. The SDK (>=1.3) auto-parses on the client
+    // side, so consuming code reads `me.data?.accountId` as if it were
+    // a plain object. This mock pins that wire shape.
     response: {
       ok: true,
-      data: { accountId: 'mock-account', displayName: 'Mock User', emailAddress: 'mock@example.com' },
+      data: JSON.stringify({
+        accountId: 'mock-account',
+        displayName: 'Mock User',
+        emailAddress: 'mock@example.com',
+      }),
+    },
+  },
+  JIRA_SEARCH_ISSUES: {
+    type: 'static',
+    description: 'Search Jira issues by JQL.',
+    paramKeys: ['jql'],
+    // See JIRA_GET_CURRENT_USER comment — `data` is JSON-stringified to
+    // mirror the real runtime wire shape.
+    response: {
+      ok: true,
+      data: JSON.stringify({
+        issues: [
+          { key: 'PLAT-101', fields: { summary: 'Wire up auth proxy', status: { name: 'In Progress' } } },
+          { key: 'PLAT-104', fields: { summary: 'Ship dashboard MVP', status: { name: 'To Do' } } },
+          { key: 'MOB-22', fields: { summary: 'Push notification crash', status: { name: 'In Progress' } } },
+        ],
+        total: 3,
+        startAt: 0,
+        maxResults: 50,
+      }),
     },
   },
 }

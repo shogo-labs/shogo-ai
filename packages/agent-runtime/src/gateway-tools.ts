@@ -165,6 +165,43 @@ function assertWithinWorkspace(workspaceDir: string, filePath: string): string {
 }
 
 /**
+ * Bogus path prefixes the model frequently hallucinates when it remembers
+ * the project as "the project" or "the workspace" instead of the workspace
+ * root being the CWD. Stripping these and pointing at the right path turns
+ * a wasted tool call into a one-shot fix.
+ */
+const BOGUS_PATH_PREFIXES = ['project/', 'workspace/', 'app/', 'pod/', 'repo/'] as const
+
+/**
+ * If `filePath` starts with a known-bogus prefix and the corresponding
+ * stripped path actually exists on disk, return a hint string the caller
+ * can append to `File not found` errors. Otherwise return null.
+ *
+ * Example: `read_file({ path: 'project/src/App.tsx' })` against a workspace
+ * that has `src/App.tsx` returns a hint pointing at `src/App.tsx`.
+ */
+function bogusPathPrefixHint(workspaceDir: string, filePath: string): string | null {
+  for (const prefix of BOGUS_PATH_PREFIXES) {
+    if (!filePath.startsWith(prefix)) continue
+    const stripped = filePath.slice(prefix.length)
+    if (!stripped) continue
+    let strippedResolved: string
+    try {
+      strippedResolved = assertWithinWorkspace(workspaceDir, stripped)
+    } catch {
+      continue
+    }
+    if (existsSync(strippedResolved)) {
+      return (
+        `Hint: workspace root is your CWD. The path you gave starts with "${prefix}" ` +
+        `but "${stripped}" exists. Drop the "${prefix}" prefix — try "${stripped}".`
+      )
+    }
+  }
+  return null
+}
+
+/**
  * Block mutations to Shogo-managed files when the project is in canvas-code
  * mode. In every other mode (chat, app, json-canvas, etc.) the gate is a
  * no-op — agents can edit any file freely. See protected-files.ts for the
@@ -637,7 +674,8 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
       }
       const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
       if (!existsSync(resolved)) {
-        return textResult({ error: `File not found: ${filePath}` })
+        const hint = bogusPathPrefixHint(ctx.workspaceDir, filePath)
+        return textResult({ error: hint ? `File not found: ${filePath}\n${hint}` : `File not found: ${filePath}` })
       }
       try {
         const stat = statSync(resolved)
@@ -1162,7 +1200,8 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
           }
           return textResult({ ok: true, path: filePath, created: true })
         }
-        return textResult({ error: `File not found: ${filePath}` })
+        const hint = bogusPathPrefixHint(ctx.workspaceDir, filePath)
+        return textResult({ error: hint ? `File not found: ${filePath}\n${hint}` : `File not found: ${filePath}` })
       }
 
       // File size guard
@@ -3011,20 +3050,33 @@ const SDK_USAGE_FOOTER = [
   '',
   'To use these tools from the user\'s app, import from @shogo-ai/sdk/tools.',
   '',
+  'The SDK auto-parses tool result `data` (the runtime always JSON.stringifies',
+  'tool responses; @shogo-ai/sdk/tools >=1.3 parses them back). Index `data`',
+  'as a plain object — `me.data?.accountId` works. Do NOT write a',
+  '`JSON.parse(result.data)` helper; that double-parses and breaks. Pass a',
+  'generic to `execute<T>()` for typed access.',
+  '',
   'DASHBOARDS / list views / "my X" pages → ALWAYS server-side in custom-routes.ts:',
   '',
   '  import { getServerToolsClient } from \'@shogo-ai/sdk/tools\'',
   '  app.get(\'/jira/my-issues\', async (c) => {',
   '    const tools = getServerToolsClient()',
-  '    const me = await tools.execute(\'JIRA_GET_CURRENT_USER\', {})',
-  '    const issues = await tools.execute(\'JIRA_SEARCH_ISSUES\', {',
-  '      jql: `assignee = "${me.data?.accountId}"`,',
+  '    const me = await tools.execute<{ accountId: string }>(\'JIRA_GET_CURRENT_USER\', {})',
+  '    if (!me.ok || !me.data?.accountId) {',
+  '      return c.json({ error: me.error ?? \'not authenticated\' }, 401)',
+  '    }',
+  '    const issues = await tools.execute<{ issues: unknown[] }>(\'JIRA_SEARCH_ISSUES\', {',
+  '      jql: `assignee = "${me.data.accountId}"`,',
   '    })',
+  '    if (!issues.ok) return c.json({ error: issues.error ?? \'search failed\' }, 502)',
   '    return c.json({ issues: issues.data?.issues ?? [] })',
   '  })',
   '',
-  '  // In the browser, just fetch your route — no SDK needed.',
-  '  const res = await fetch(\'/api/jira/my-issues\').then(r => r.json())',
+  '  // In the browser — surface the server\'s actual error to the UI:',
+  '  const res = await fetch(\'/api/jira/my-issues\')',
+  '  const body = await res.json().catch(() => ({}))',
+  '  if (!res.ok) setError(body.error ?? `HTTP ${res.status}`)',
+  '  else setIssues(body.issues ?? [])',
   '',
   'AD-HOC interactive actions (button clicks, form submits) → useTools() in the component:',
   '',
@@ -3038,6 +3090,12 @@ const SDK_USAGE_FOOTER = [
   'NEVER hardcode the agent operator\'s identity (your accountId, member id,',
   'userId) into the user\'s app — derive it per request inside the route via',
   '<TOOLKIT>_GET_CURRENT_USER.',
+  'NEVER throw `new Error(\'Failed to load X\')` from a client fetch handler.',
+  'Parse the JSON body\'s `error` field and surface it to the UI — generic',
+  'messages strand the user with no path to debug.',
+  'AFTER writing a route, hit it: `curl -s -w "\\nHTTP %{http_code}\\n"',
+  'http://localhost:$RUNTIME_PORT/api/<your-route>`. A green build proves the',
+  'file compiled, not that the endpoint works.',
 ].join('\n')
 
 /**
@@ -4597,7 +4655,8 @@ function createDeleteFileTool(ctx: ToolContext): AgentTool {
       const protectedRejection = rejectIfProtected(ctx, resolved)
       if (protectedRejection) return protectedRejection
       if (!existsSync(resolved)) {
-        return textResult({ error: `File not found: ${filePath}` })
+        const hint = bogusPathPrefixHint(ctx.workspaceDir, filePath)
+        return textResult({ error: hint ? `File not found: ${filePath}\n${hint}` : `File not found: ${filePath}` })
       }
 
       unlinkSync(resolved)
