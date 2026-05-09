@@ -13,19 +13,32 @@
  *   - Webhooks: `app.post('/webhooks/stripe', ...)`
  *   - Auth flows: `app.post('/auth/login', ...)`
  *
- * For installed integrations (Jira, Slack, Google, Meta Ads, etc.),
- * do NOT add a route here. Call them from the browser via:
+ * For installed integrations (Jira, Slack, Google, Meta Ads, etc.):
  *
- *   import { useTools } from '@shogo-ai/sdk/tools'
- *
- * or from server code via:
+ * - Dashboards / list views / "my X" pages → mount a route HERE that
+ *   uses `getServerToolsClient()`. Resolve identity per request with
+ *   `<TOOLKIT>_GET_CURRENT_USER`, compose the calls you need, return
+ *   a clean shape your component owns.
  *
  *   import { getServerToolsClient } from '@shogo-ai/sdk/tools'
  *
- * The SDK already exposes the runtime's tool registry at
- * `/api/tools/*` with the right auth attached. Hand-rolling a fetch
- * to the provider's REST API will fail because the pod has no
- * provider tokens in its env — auth lives in the runtime.
+ *   app.get('/jira/my-issues', async (c) => {
+ *     const tools = getServerToolsClient()
+ *     const me = await tools.execute('JIRA_GET_CURRENT_USER', {})
+ *     const issues = await tools.execute('JIRA_SEARCH_ISSUES', {
+ *       jql: `assignee = "${me.data?.accountId}"`,
+ *     })
+ *     return c.json({ issues: issues.data?.issues ?? [] })
+ *   })
+ *
+ * - Ad-hoc interactive actions (button clicks, form submits) → use
+ *   `useTools()` directly in the component. Don't add a route here for
+ *   single-call passthroughs.
+ *
+ * Hand-rolling a `fetch()` to the provider's REST API will fail
+ * because the pod has no provider tokens — auth lives in the runtime.
+ * NEVER hardcode the agent operator's identity (accountId, member id,
+ * userId) into route code; resolve it per request as shown above.
  *
  * The runtime watches this file. Saving triggers a fast restart of
  * `server.tsx` (no schema regeneration, no `prisma db push`) so changes

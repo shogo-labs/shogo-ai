@@ -11,7 +11,7 @@
  */
 
 import type { AgentEval, EvalResult } from './types'
-import { CROSS_CUTTING_MOCKS, type ToolMockMap } from './tool-mocks'
+import { CROSS_CUTTING_MOCKS, JIRA_INSTALL_FLOW_MOCKS, type ToolMockMap } from './tool-mocks'
 import {
   usedTool,
   toolCallArgsContain,
@@ -584,6 +584,70 @@ const XCUT_PERSONA_ADAPTATION: AgentEval = {
 }
 
 // ---------------------------------------------------------------------------
+// 9. Integration tools — call directly after install (no skill, no integration subagent)
+// ---------------------------------------------------------------------------
+
+function spawnedIntegrationSubagent(r: EvalResult): boolean {
+  return r.toolCalls.some(
+    tc => tc.name === 'agent_spawn' && (tc.input as any)?.type === 'integration',
+  )
+}
+
+const XCUT_INTEGRATION_TOOLS_DIRECT: AgentEval = {
+  id: 'xcut-integration-tools-direct',
+  name: 'Cross-cutting: call installed integration tools directly (no skill, no integration subagent)',
+  category: 'cross-cutting' as any,
+  level: 3,
+  input: 'Connect to my Jira and tell me all of the boards I have access to.',
+  toolMocks: { ...CROSS_CUTTING_MOCKS, ...JIRA_INSTALL_FLOW_MOCKS } satisfies ToolMockMap,
+  maxScore: 14,
+  validationCriteria: [
+    {
+      id: 'installed-jira',
+      description: 'Installed the Jira integration via tool_install',
+      points: 2,
+      phase: 'execution',
+      validate: (r) =>
+        r.toolCalls.some(tc => tc.name === 'tool_install' && /jira/i.test(String((tc.input as any)?.name ?? ''))),
+    },
+    {
+      id: 'called-list-boards-directly',
+      description: 'Called JIRA_LIST_BOARDS directly (without delegating)',
+      points: 5,
+      phase: 'intention',
+      validate: (r) => usedTool(r, 'JIRA_LIST_BOARDS'),
+    },
+    {
+      id: 'no-skill-tool',
+      description: 'Did NOT route the call through the `skill` tool',
+      points: 3,
+      phase: 'intention',
+      validate: (r) => !usedTool(r, 'skill'),
+    },
+    {
+      id: 'no-integration-subagent',
+      description: 'Did NOT spawn an `integration` subagent to execute Jira tools',
+      points: 3,
+      phase: 'intention',
+      validate: (r) => !spawnedIntegrationSubagent(r),
+    },
+    {
+      id: 'mentioned-boards',
+      description: 'Response mentions at least one of the returned boards',
+      points: 1,
+      phase: 'execution',
+      validate: (r) =>
+        responseContains(r, 'platform') || responseContains(r, 'mobile') || responseContains(r, 'growth'),
+    },
+  ],
+  antiPatterns: [
+    'invoked `skill` for "jira" instead of calling JIRA_LIST_BOARDS directly',
+    'spawned `agent_spawn({ type: "integration" })` to execute an installed tool',
+  ],
+  tags: ['cross-cutting', 'integrations', 'tool-routing'],
+}
+
+// ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
 
@@ -596,4 +660,5 @@ export const CROSS_CUTTING_EVALS: AgentEval[] = [
   XCUT_DELEGATION_JUDGMENT_COMPLEX,
   XCUT_ERROR_RECOVERY_LOOP,
   XCUT_PERSONA_ADAPTATION,
+  XCUT_INTEGRATION_TOOLS_DIRECT,
 ]
