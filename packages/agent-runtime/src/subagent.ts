@@ -171,7 +171,15 @@ Return a structured review with:
 - Review guidance and action items
 - Affected execution flows and their criticality`
 
-export const INTEGRATION_SUBAGENT_PROMPT = `You are a tool and MCP integration subagent. Discover, search, install, and uninstall tools and MCP servers.
+export const INTEGRATION_SUBAGENT_PROMPT = `You are a tool and MCP integration subagent.
+
+**Scope: discovery and lifecycle ONLY.** You search, install, and uninstall
+managed integrations and MCP servers. You do NOT execute already-installed
+tools — those are bound to the parent agent and are called by name (e.g.
+\`JIRA_LIST_BOARDS\`, \`GMAIL_SEND_EMAIL\`). If a parent agent asks you to
+"use" or "call" a provider tool, the parent has misrouted the request:
+respond with one sentence telling them to call it directly, and stop. Do
+not re-search, do not re-install, do not write files.
 
 ## Available Tools
 tool_search, tool_install, tool_uninstall — managed integrations (Composio, bundled tools)
@@ -408,16 +416,16 @@ export function getBuiltinSubagentConfig(
         provider: 'openai',
         maxTurns: 200,
       }
-    case 'integration':
-      return {
-        name: 'integration',
-        description: 'Tool and MCP server discovery, installation, and management',
-        systemPrompt: INTEGRATION_SUBAGENT_PROMPT,
-        toolNames: ['tool_search', 'tool_install', 'tool_uninstall', 'mcp_search', 'mcp_install', 'mcp_uninstall', 'read_file', 'write_file'],
-        includeInstalledTools: true,
-        disallowedTools: ['task', 'skill'],
-        maxTurns: 10,
-      }
+    // case 'integration':
+    //   return {
+    //     name: 'integration',
+    //     description: 'Discover, install, and uninstall integrations and MCP servers. Does NOT execute installed tools — the parent agent calls those directly by name.',
+    //     systemPrompt: INTEGRATION_SUBAGENT_PROMPT,
+    //     toolNames: ['tool_search', 'tool_install', 'tool_uninstall', 'mcp_search', 'mcp_install', 'mcp_uninstall', 'read_file', 'write_file'],
+    //     includeInstalledTools: true,
+    //     disallowedTools: ['task', 'skill'],
+    //     maxTurns: 10,
+    //   }
     case 'channel':
       return {
         name: 'channel',

@@ -51,14 +51,51 @@ When the user has installed an integration via the agent's tool panel (e.g.
 Jira, Slack, Gmail, Google Calendar, Meta Ads), consume it from the app via
 `@shogo-ai/sdk/tools` — never hand-roll HTTP fetches.
 
-- Components / hooks: `import { useTools } from '@shogo-ai/sdk/tools'`
-- Server code (custom-routes.ts, server.tsx): `import { getServerToolsClient } from '@shogo-ai/sdk/tools'`
-
-Both default to the pod's local proxy and need zero configuration. The
-runtime forwards each call to the agent's tool registry with the right
-auth attached. Tool names are uppercase and namespaced by integration
-(e.g. `JIRA_SEARCH_ISSUES`, `GMAIL_SEND_EMAIL`); they appear in the
+Tool names are uppercase and namespaced by integration (e.g.
+`JIRA_SEARCH_ISSUES`, `GMAIL_SEND_EMAIL`); they appear in the
 `tool_install` result and via `useTools().tools`.
+
+### Dashboards / list views / "my X" pages → server-side, always
+
+Put the work in `custom-routes.ts` with `getServerToolsClient()` and have
+the browser fetch your route. This keeps identity resolved per request,
+the provider wire format out of the React tree, and pagination /
+composition / caching in one place.
+
+```ts
+// custom-routes.ts
+import { getServerToolsClient } from '@shogo-ai/sdk/tools'
+
+app.get('/jira/my-issues', async (c) => {
+  const tools = getServerToolsClient()
+  const me = await tools.execute('JIRA_GET_CURRENT_USER', {})
+  const accountId = me.data?.accountId
+  if (!accountId) return c.json({ error: 'not authenticated' }, 401)
+  const issues = await tools.execute('JIRA_SEARCH_ISSUES', {
+    jql: `assignee = "${accountId}" AND statusCategory != Done`,
+  })
+  return c.json({ issues: issues.data?.issues ?? [] })
+})
+```
+
+```tsx
+// src/components/MyIssues.tsx
+const res = await fetch('/api/jira/my-issues').then(r => r.json())
+```
+
+### Ad-hoc interactive actions → `useTools()`
+
+For one-off actions tied to user input (a Send button, a Create form
+submit, a single lookup): call `useTools()` directly in the component.
+No aggregation, no persistent display.
+
+```tsx
+import { useTools } from '@shogo-ai/sdk/tools'
+const { execute } = useTools()
+async function onSend() {
+  await execute('GMAIL_SEND_EMAIL', { to, subject, body })
+}
+```
 
 ### Rules
 
@@ -68,10 +105,9 @@ auth attached. Tool names are uppercase and namespaced by integration
   guarantees a 500 at request time.
 - NEVER call provider REST APIs directly from pod code. Use
   `execute(name, args)` from the SDK.
-- For dashboards, prefer the browser-side `useTools()` and render the
-  result. Do NOT add a custom proxy route in `custom-routes.ts` just
-  to call an integration — the SDK already exposes one at
-  `/api/tools/*`.
+- NEVER hardcode the agent operator's identity (your accountId, member
+  id, userId) into route or component code. Resolve it per request
+  inside the route via `<TOOLKIT>_GET_CURRENT_USER`.
 
 # Shogo Voice Conventions
 

@@ -3798,6 +3798,68 @@ export const CROSS_CUTTING_MOCKS: ToolMockMap = {
   ...BUSINESS_USER_MOCKS,
 }
 
+// ---------------------------------------------------------------------------
+// Jira install + execute fixture (regression: agent must call JIRA_LIST_BOARDS
+// directly after `tool_install("jira")`, not via `skill` or
+// `agent_spawn({type:"integration"})`).
+// ---------------------------------------------------------------------------
+
+export const JIRA_INSTALL_FLOW_MOCKS: ToolMockMap = {
+  tool_search: {
+    type: 'static',
+    description: 'Search for managed integrations and MCP servers by capability or keyword.',
+    paramKeys: ['query', 'limit'],
+    response: {
+      query: 'jira',
+      results: [
+        { name: 'Jira', qualifiedName: 'jira', description: 'Jira — managed OAuth integration. List boards, search issues, manage tickets.', source: 'managed', authType: 'oauth', composioToolkit: 'jira' },
+      ],
+      message: 'Found 1 tool(s). Use tool_install to add one.',
+    },
+  },
+  tool_install: {
+    type: 'static',
+    description: 'Install a managed OAuth integration.',
+    paramKeys: ['name'],
+    response: {
+      ok: true,
+      server: 'composio',
+      integration: 'jira',
+      toolCount: 6,
+      tools: ['JIRA_LIST_BOARDS', 'JIRA_GET_CURRENT_USER', 'JIRA_SEARCH_ISSUES', 'JIRA_CREATE_ISSUE', 'JIRA_UPDATE_ISSUE', 'JIRA_GET_BOARD'],
+      authStatus: 'active',
+      message: '"jira" installed with 6 tool(s) (e.g. JIRA_LIST_BOARDS, JIRA_GET_CURRENT_USER, ...). These tools are now bound to YOU. Call them directly in this turn by name: JIRA_LIST_BOARDS({}). Do NOT spawn an `integration` subagent — it does not have them bound. Do NOT use the `skill` tool. Each tool returns { ok, data, error? }; list endpoints often nest items under data.values (Jira) or data.items (Google).',
+    },
+  },
+  JIRA_LIST_BOARDS: {
+    type: 'static',
+    description: 'List all Jira boards the authenticated user can access.',
+    paramKeys: [],
+    response: {
+      ok: true,
+      data: {
+        values: [
+          { id: 1, name: 'Platform', type: 'scrum' },
+          { id: 2, name: 'Mobile', type: 'kanban' },
+          { id: 3, name: 'Growth', type: 'scrum' },
+        ],
+        startAt: 0,
+        maxResults: 50,
+        total: 3,
+      },
+    },
+  },
+  JIRA_GET_CURRENT_USER: {
+    type: 'static',
+    description: 'Get the current authenticated Jira user.',
+    paramKeys: [],
+    response: {
+      ok: true,
+      data: { accountId: 'mock-account', displayName: 'Mock User', emailAddress: 'mock@example.com' },
+    },
+  },
+}
+
 /**
  * Build the mock payload for an eval. Merges built-in tool mocks with
  * the eval's specific `toolMocks`. Only MCP tools explicitly listed in

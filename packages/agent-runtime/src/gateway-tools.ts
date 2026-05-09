@@ -3009,35 +3009,81 @@ function createMcpSearchTool(): AgentTool {
  */
 const SDK_USAGE_FOOTER = [
   '',
-  'To use these tools from the user\'s app, import from @shogo-ai/sdk/tools:',
+  'To use these tools from the user\'s app, import from @shogo-ai/sdk/tools.',
   '',
-  '  // In a React component or hook',
+  'DASHBOARDS / list views / "my X" pages → ALWAYS server-side in custom-routes.ts:',
+  '',
+  '  import { getServerToolsClient } from \'@shogo-ai/sdk/tools\'',
+  '  app.get(\'/jira/my-issues\', async (c) => {',
+  '    const tools = getServerToolsClient()',
+  '    const me = await tools.execute(\'JIRA_GET_CURRENT_USER\', {})',
+  '    const issues = await tools.execute(\'JIRA_SEARCH_ISSUES\', {',
+  '      jql: `assignee = "${me.data?.accountId}"`,',
+  '    })',
+  '    return c.json({ issues: issues.data?.issues ?? [] })',
+  '  })',
+  '',
+  '  // In the browser, just fetch your route — no SDK needed.',
+  '  const res = await fetch(\'/api/jira/my-issues\').then(r => r.json())',
+  '',
+  'AD-HOC interactive actions (button clicks, form submits) → useTools() in the component:',
+  '',
   '  import { useTools } from \'@shogo-ai/sdk/tools\'',
   '  const { execute } = useTools()',
-  '  const res = await execute(\'<TOOL_NAME>\', { ...args })',
-  '',
-  '  // In server code (custom-routes.ts, server.tsx)',
-  '  import { getServerToolsClient } from \'@shogo-ai/sdk/tools\'',
-  '  const res = await getServerToolsClient().execute(\'<TOOL_NAME>\', { ...args })',
+  '  await execute(\'GMAIL_SEND_EMAIL\', { to, subject, body })',
   '',
   'NEVER read provider tokens from env (no *_API_TOKEN, *_API_KEY) for managed',
   'integrations — there are no provider env vars in the pod. NEVER call the',
   'provider\'s REST API directly with fetch(). Always go through the SDK.',
+  'NEVER hardcode the agent operator\'s identity (your accountId, member id,',
+  'userId) into the user\'s app — derive it per request inside the route via',
+  '<TOOLKIT>_GET_CURRENT_USER.',
 ].join('\n')
 
-function formatToolInstallMessage(
+/**
+ * Renders the "you can call these tools yourself, in this turn, by name"
+ * preamble. Without this, the model tends to reach for the wrong
+ * indirection (`skill: invoke` or `agent_spawn({type:'integration'})`)
+ * to *call* an integration tool. Both fail: the integration subagent
+ * doesn't have provider tools bound, and `skill` doesn't know about
+ * managed integrations.
+ */
+function renderAgentDirectUsageBlock(toolkitName: string, toolNames: string[]): string {
+  const sample = toolNames[0] ?? `${toolkitName.toUpperCase()}_<TOOL>`
+  const namedExamples = toolNames.slice(0, 5).join(', ')
+  const exampleSuffix = toolNames.length > 5 ? ', ...' : ''
+  const namesHint = namedExamples ? ` (e.g. ${namedExamples}${exampleSuffix})` : ''
+  return [
+    `These ${toolNames.length || 'newly installed'} tools${namesHint} are now bound to YOU.`,
+    `Call them directly in this turn by name:`,
+    ``,
+    `    ${sample}({})`,
+    ``,
+    `Do NOT spawn an \`integration\` subagent to call these — it does not have`,
+    `them bound. Do NOT use the \`skill\` tool — these are managed integration`,
+    `tools, not skills.`,
+    ``,
+    `Each tool returns { ok: boolean, data: <result>, error?: string }. For`,
+    `list-style endpoints, items often live under \`data.values\` (Jira) or`,
+    `\`data.items\` (Google) or similar — index in once and check the shape.`,
+  ].join('\n')
+}
+
+export function formatToolInstallMessage(
   toolkitName: string,
-  toolCount: number,
+  toolNames: string[],
   auth: { status: string; authUrl?: string },
 ): string {
+  const toolCount = toolNames.length
   const base = `"${toolkitName}" installed with ${toolCount} tool(s).`
+  const directUsage = renderAgentDirectUsageBlock(toolkitName, toolNames)
   if (auth.status !== 'needs_auth') {
-    return `${base} Auth is active. No manual credentials needed.\n${SDK_USAGE_FOOTER}`
+    return `${base} Auth is active. No manual credentials needed.\n\n${directUsage}\n${SDK_USAGE_FOOTER}`
   }
   if (auth.authUrl) {
-    return `${base} User needs to authorize — a Connect button is displayed in the chat for them to click. Do NOT include the auth URL in your response; the UI button handles the OAuth popup flow automatically. Tell the user to click the Connect button below.\n\nOnce the user confirms they've connected, you'll be able to call these tools.\n${SDK_USAGE_FOOTER}`
+    return `${base} User needs to authorize — a Connect button is displayed in the chat for them to click. Do NOT include the auth URL in your response; the UI button handles the OAuth popup flow automatically. Tell the user to click the Connect button below.\n\nOnce the user confirms they've connected, you'll be able to call these tools.\n\n${directUsage}\n${SDK_USAGE_FOOTER}`
   }
-  return `${base} Auth status: needs_auth. The user may need to authorize via the Tools panel.\n${SDK_USAGE_FOOTER}`
+  return `${base} Auth status: needs_auth. The user may need to authorize via the Tools panel.\n\n${directUsage}\n${SDK_USAGE_FOOTER}`
 }
 
 function createToolInstallTool(ctx: ToolContext): AgentTool {
@@ -3106,7 +3152,7 @@ function createToolInstallTool(ctx: ToolContext): AgentTool {
             tools: proxy.toolNames,
             authStatus: auth.status,
             ...(auth.authUrl ? { authUrl: auth.authUrl } : {}),
-            message: formatToolInstallMessage(composioToolkit.name, proxy.toolCount, auth),
+            message: formatToolInstallMessage(composioToolkit.name, proxy.toolNames, auth),
           })
         }
       }
@@ -3132,7 +3178,7 @@ function createToolInstallTool(ctx: ToolContext): AgentTool {
               tools: proxy.toolNames,
               authStatus: auth.status,
               ...(auth.authUrl ? { authUrl: auth.authUrl } : {}),
-              message: formatToolInstallMessage(composioToolkit.name, proxy.toolCount, auth),
+              message: formatToolInstallMessage(composioToolkit.name, proxy.toolNames, auth),
             })
           }
           return textResult({ error: `Failed to connect "${composioToolkit.name}" via Composio. The integration may not be available.` })
@@ -3355,7 +3401,11 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
     description:
       'Launch an instance of a registered or built-in agent type. Returns an instance_id. ' +
       'Use background: true for async execution, then check with agent_status/agent_result. ' +
-      'Built-in types: explore, general-purpose, code-reviewer. ' +
+      'Built-in types: explore, general-purpose, code-reviewer, integration, channel, media, devops, browser, browser_qa. ' +
+      'IMPORTANT: `integration` is for discovery / install / uninstall ONLY. ' +
+      'Once a tool is installed, it is bound to YOU — call it directly by name ' +
+      '(e.g. JIRA_LIST_BOARDS({})). Do NOT spawn the integration subagent to ' +
+      'execute installed tools; it does not have them bound. ' +
       'Omit type to use fork mode (inherits your full context — ideal for context-heavy tasks).',
     label: 'Spawn Agent',
     parameters: Type.Object({
@@ -4203,6 +4253,30 @@ function inferRuntime(filename: string): string {
   return map[ext || ''] || 'bash'
 }
 
+/**
+ * If the requested skill name matches an installed managed-integration
+ * toolkit (e.g. user typed `skill: invoke` with skill="jira" after
+ * `tool_install("jira")`), return a remediation hint pointing them at
+ * the bound tools. Otherwise return null so the caller falls back to
+ * the generic "Skill not found" message.
+ *
+ * Composio proxy tools follow a `<TOOLKIT>_<ACTION>` uppercase naming
+ * convention (JIRA_LIST_BOARDS, GMAIL_SEND_EMAIL, etc.).
+ */
+function getIntegrationOverlapHint(
+  skillName: string,
+  allTools: AgentTool[],
+): string | null {
+  const prefix = `${skillName.toUpperCase().replace(/[^A-Z0-9]/g, '')}_`
+  const matches = allTools
+    .map(t => t.name)
+    .filter(n => n.startsWith(prefix))
+  if (matches.length === 0) return null
+  const sample = matches.slice(0, 3).join(', ')
+  const more = matches.length > 3 ? `, ...` : ''
+  return `Note: "${skillName}" is a managed integration, not a skill. Its tools (${sample}${more}) are already bound to you — call them directly by name (e.g. \`${matches[0]}({})\`).`
+}
+
 function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): AgentTool {
   return {
     name: 'skill',
@@ -4302,7 +4376,9 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
         const skills = getLoadedSkills()
         const found = skills.find(s => s.name === skillName)
         if (!found) {
-          return textResult({ error: `Skill not found: ${skillName}` })
+          const overlapHint = getIntegrationOverlapHint(skillName, allToolsGetter())
+          const baseMsg = `Skill not found: ${skillName}`
+          return textResult({ error: overlapHint ? `${baseMsg}. ${overlapHint}` : baseMsg })
         }
 
         const scriptPath = join(found.skillDir, 'scripts', script)
@@ -4348,9 +4424,13 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
       const skills = getLoadedSkills()
       const found = skills.find(s => s.name === skillName)
       if (!found) {
+        const overlapHint = getIntegrationOverlapHint(skillName, allToolsGetter())
+        const baseError = `Skill not found: ${skillName}. Available: ${skills.map(s => s.name).join(', ')}`
         return textResult({
-          error: `Skill not found: ${skillName}. Available: ${skills.map(s => s.name).join(', ')}`,
-          hint: 'Use skill({ action: "search", query: "..." }) to find and install new skills.',
+          error: overlapHint ? `${baseError}\n\n${overlapHint}` : baseError,
+          hint: overlapHint
+            ? 'Call the integration tool directly by name (do not use `skill` or `agent_spawn({type:"integration"})`).'
+            : 'Use skill({ action: "search", query: "..." }) to find and install new skills.',
         })
       }
 

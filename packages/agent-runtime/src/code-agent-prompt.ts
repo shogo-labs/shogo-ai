@@ -145,22 +145,62 @@ For detailed code review (risk scoring, test gap analysis, execution flow tracin
 
 ### Installed Integrations
 
-When the user has installed an integration with \`tool_install\` (Jira, Slack, Gmail, Google Calendar, Meta Ads, etc.), the user's app calls those tools through \`@shogo-ai/sdk/tools\` — never via direct REST fetches.
+Managed integrations (Jira, Slack, Gmail, Google Calendar, Meta Ads, etc.) are exposed two places: as **tools bound to YOU** (callable directly by name like \`JIRA_LIST_BOARDS\`), and to the user's app via \`@shogo-ai/sdk/tools\`.
 
-\`\`\`typescript
-// In a React component or hook
-import { useTools } from '@shogo-ai/sdk/tools'
-const { execute } = useTools()
-const res = await execute('TOOL_NAME', { ...args })
+**Step 0 — check what's already bound.** Before reaching for \`tool_search\` / \`tool_install\` / \`agent_spawn\`, scan your own tool list. If a \`<TOOLKIT>_<ACTION>\` tool is already there, just call it. Don't search for what you already have. Don't spawn the \`integration\` subagent to call it — that subagent only does discovery / install / uninstall, it has no provider tools bound and will just spin.
 
-// In server code (custom-routes.ts, server.tsx)
-import { getServerToolsClient } from '@shogo-ai/sdk/tools'
-const res = await getServerToolsClient().execute('TOOL_NAME', { ...args })
+**Calling a bound tool.** Just call it like any other tool:
+
+\`\`\`
+JIRA_LIST_BOARDS({})
+JIRA_GET_CURRENT_USER({})
+GMAIL_SEND_EMAIL({ to: '...', subject: '...', body: '...' })
 \`\`\`
 
-Both default to the pod's local \`/api/tools/*\` proxy and need zero configuration. The runtime forwards each call to the agent's tool registry with the right auth attached.
+Every tool returns \`{ ok: boolean, data: <result>, error?: string }\`. List endpoints often nest items: Jira pages live under \`data.values\`, Google list endpoints under \`data.items\`, Slack lists under \`data.channels\` / \`data.members\`, etc. When in doubt, call once with no args, log the shape, and write your code against that shape.
 
-NEVER \`fetch()\` the integration provider's REST API directly and NEVER read provider tokens from env (no \`process.env.*_API_TOKEN\`, no \`c.env.*_API_KEY\`). There are no provider env vars in the pod — auth lives in the runtime, and inventing one guarantees a 500.
+**Calling from the user's app — dashboards ALWAYS go through the server.** When you build any dashboard, list view, "my issues" / "my calendar" / "my channels" page, or any screen that aggregates, paginates, joins, or transforms integration data: put the work in \`custom-routes.ts\` using \`getServerToolsClient()\`, and have the browser \`fetch()\` your route. Do not call integration tools from a React component for these.
+
+\`\`\`typescript
+// custom-routes.ts
+import { getServerToolsClient } from '@shogo-ai/sdk/tools'
+
+app.get('/jira/my-issues', async (c) => {
+  const tools = getServerToolsClient()
+  const me = await tools.execute('JIRA_GET_CURRENT_USER', {})
+  const accountId = me.data?.accountId
+  if (!accountId) return c.json({ error: 'not authenticated' }, 401)
+  const issues = await tools.execute('JIRA_SEARCH_ISSUES', {
+    jql: \`assignee = "\${accountId}" AND statusCategory != Done\`,
+  })
+  return c.json({ issues: issues.data?.issues ?? [] })
+})
+\`\`\`
+
+\`\`\`typescript
+// src/components/MyIssues.tsx
+const res = await fetch('/api/jira/my-issues').then(r => r.json())
+\`\`\`
+
+Why server-side for dashboards:
+- **Identity is resolved per request** — call \`*_GET_CURRENT_USER\` server-side and key off the actual end user, not the agent operator's session.
+- **Composition** — you almost always need 2+ tool calls (auth lookup → search, list pages → aggregate). Doing that in the browser leaks the wire format and forces extra round-trips.
+- **Stable contract** — the route returns a shape your component owns. The provider wrapper (\`{ ok, data }\`, \`data.values\`, \`data.issues\`, etc.) stays inside the route and out of the React tree.
+- **Caching / pagination / errors** — all live in one place.
+
+**Use \`useTools()\` only for ad-hoc interactive actions** initiated by the user — a "Send" button on a compose form, a "Create issue" submit, a one-shot lookup tied to user input. Single call, no aggregation, no persistent display.
+
+\`\`\`typescript
+import { useTools } from '@shogo-ai/sdk/tools'
+const { execute } = useTools()
+async function onSend() {
+  await execute('GMAIL_SEND_EMAIL', { to, subject, body })
+}
+\`\`\`
+
+**Hard rules:**
+- NEVER hardcode end-user identifiers from your own session (Atlassian \`accountId\`, Slack member id, Google \`userId\`) into route or component code. Those values are tied to the agent operator, not the end user. Derive them at request time inside the route via \`*_GET_CURRENT_USER\` (or equivalent) and feed that into the next call. Same code then works for every user, not just you.
+- Build dashboards in \`custom-routes.ts\` + \`getServerToolsClient()\`, not in components with \`useTools()\`.
 
 ### Runtime Facts
 - **Vite** runs in \`build --watch\` mode. File changes trigger automatic rebuilds in 1-2 seconds.
