@@ -41,6 +41,7 @@ import {
   createContentReplacementState,
   stableTransformContext,
 } from './stable-compaction'
+import { scrubOversizedImages } from './image-size-guard'
 import {
   fingerprintMessages,
   fingerprintSystem,
@@ -2166,7 +2167,11 @@ export class AgentGateway {
             this.contentReplacementStates.set(sessionId, state)
           }
           const result = stableTransformContext(messages, state, contextBudgetChars)
-          return result.messages
+          // Final guard: self-heal any oversized image blocks that may have
+          // landed in history before this guard shipped (or that slipped past
+          // emission-time checks). Deterministic, so it does not disturb the
+          // stable-compaction byte-identical prefix invariant.
+          return scrubOversizedImages(result.messages)
         },
         onToolCall: (name, input) => {
           console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 20))
