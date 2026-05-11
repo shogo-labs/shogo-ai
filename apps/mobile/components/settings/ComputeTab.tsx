@@ -74,6 +74,10 @@ export function ComputeTab() {
 
   const handleInstanceCheckout = useCallback(async (size: InstanceSizeName) => {
     if (!workspaceId || size === 'micro') return
+    if (Platform.OS === 'ios') {
+      console.warn('[Compute] Instance Stripe checkout is disabled on iOS for App Store compliance.')
+      return
+    }
     setIsCheckoutLoading(true)
     try {
       const isNative = Platform.OS !== 'web'

@@ -35,6 +35,7 @@
     "plugins": [
       "expo-router",
       "expo-apple-authentication",
+      "react-native-iap",
       [
         "expo-image-picker",
         {
