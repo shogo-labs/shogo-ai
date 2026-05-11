@@ -241,6 +241,160 @@ Bun.serve({ port, fetch: app.fetch })
     expect(snapshot).toBe(staleSdkServer)
   })
 
+  // Regression test for the comment-nesting bug. The earlier merge
+  // branch appended a `/* ... */` wrapper around `customRoutesBody`,
+  // which (for the hand-edited path) contained a JSDoc `*/` that
+  // prematurely closed the outer wrapper and dumped a second
+  // `const app = new Hono()` + `export default app` as live code.
+  // Fixed by leaving the existing file alone.
+  test('existing custom-routes.ts is preserved byte-for-byte when server.tsx is hand-edited', () => {
+    const existingCustomRoutes = [
+      "// SPDX-License-Identifier: Apache-2.0",
+      "import { Hono } from 'hono'",
+      "",
+      "const app = new Hono()",
+      "",
+      "app.get('/runway/balance', (c) => c.json({ balance: 42 }))",
+      "",
+      "export default app",
+      "",
+    ].join('\n')
+
+    writeFileSync(join(tmpDir, 'server.tsx'), HAND_EDITED_SERVER_TSX, 'utf-8')
+    writeFileSync(join(tmpDir, 'custom-routes.ts'), existingCustomRoutes, 'utf-8')
+    writeFileSync(join(tmpDir, 'shogo.config.json'), '{"schema":"./prisma/schema.prisma","outputs":[]}', 'utf-8')
+
+    const result = extractCustomRoutes(tmpDir)
+
+    expect(result.migrated).toBe(true)
+    expect(result.hadMarker).toBe(false)
+    expect(result.needsReview).toBe(true)
+    expect(existsSync(join(tmpDir, 'server.tsx'))).toBe(false)
+
+    // The user file is preserved BYTE-FOR-BYTE — no appended trailer,
+    // no duplicate `const app = new Hono()`, no commented-out
+    // placeholder dump.
+    const after = readFileSync(join(tmpDir, 'custom-routes.ts'), 'utf-8')
+    expect(after).toBe(existingCustomRoutes)
+
+    // The snapshot still captures what we found for manual review.
+    expect(result.snapshotPath).toBeDefined()
+    const snapshot = readFileSync(join(result.snapshotPath!, 'server.tsx'), 'utf-8')
+    expect(snapshot).toBe(HAND_EDITED_SERVER_TSX)
+  })
+
+  // The marker case used to splice the extracted block into the
+  // existing custom-routes.ts via the same broken `/* ... */` wrap.
+  // It now writes the extracted body to a sibling file under the
+  // snapshot dir so the user can copy it in without breaking
+  // anything.
+  test('marker case writes extracted block to a sibling file, not into existing custom-routes.ts', () => {
+    const existingCustomRoutes = [
+      "import { Hono } from 'hono'",
+      "",
+      "const app = new Hono()",
+      "",
+      "app.get('/keepme', (c) => c.text('preserved'))",
+      "",
+      "export default app",
+      "",
+    ].join('\n')
+
+    writeFileSync(join(tmpDir, 'server.tsx'), MIGRATED_SERVER_TSX, 'utf-8')
+    writeFileSync(join(tmpDir, 'custom-routes.ts'), existingCustomRoutes, 'utf-8')
+    writeFileSync(join(tmpDir, 'shogo.config.json'), '{"schema":"./prisma/schema.prisma","outputs":[]}', 'utf-8')
+
+    const result = extractCustomRoutes(tmpDir)
+
+    expect(result.migrated).toBe(true)
+    expect(result.hadMarker).toBe(true)
+    expect(result.needsReview).toBe(true)
+
+    // Existing file is unchanged.
+    const after = readFileSync(join(tmpDir, 'custom-routes.ts'), 'utf-8')
+    expect(after).toBe(existingCustomRoutes)
+
+    // The extracted block lands at <snapshotDir>/extracted-routes.ts.
+    expect(result.snapshotPath).toBeDefined()
+    const extractedPath = join(result.snapshotPath!, 'extracted-routes.ts')
+    expect(existsSync(extractedPath)).toBe(true)
+    const extracted = readFileSync(extractedPath, 'utf-8')
+    expect(extracted).toContain("import { Hono } from 'hono'")
+    expect(extracted).toContain("app.get('/hello'")
+    expect(extracted).toContain("app.post('/llm'")
+    expect(extracted).toContain('export default app')
+  })
+
+  // Workspaces corrupted by the previous buggy merge branch (e.g.
+  // 8bfafbf0-...) end with a `/* Extracted from server.tsx on ... */`
+  // trailer whose inner JSDoc `*/` closes the wrapper early. The
+  // heal helper truncates that trailer back off so the file compiles
+  // again. Real route code above the trailer is preserved verbatim.
+  test('repair helper strips the broken trailer from a corrupted custom-routes.ts idempotently', () => {
+    const realRoutes = [
+      "// SPDX-License-Identifier: Apache-2.0",
+      "import { Hono } from 'hono'",
+      "",
+      "const app = new Hono()",
+      "",
+      "app.get('/runway/balance', (c) => c.json({ balance: 42 }))",
+      "",
+      "export default app",
+      "",
+    ].join('\n')
+
+    // The exact trailer shape the buggy merge branch wrote. The
+    // inner JSDoc `*/` is what broke parsing; the heal helper just
+    // strips the whole trailer.
+    const brokenTrailer = [
+      "",
+      "/* Extracted from server.tsx on 2026-05-11",
+      "   Review and merge by hand. The original server.tsx is at:",
+      "   /tmp/.shogo/server-tsx-extracted-2026-05-11T08-33-19-293Z/server.tsx",
+      "// SPDX-License-Identifier: Apache-2.0",
+      "/**",
+      " * Custom API Routes (extracted from a hand-edited server.tsx —",
+      " * needs manual review).",
+      " */",
+      "",
+      "import { Hono } from 'hono'",
+      "",
+      "const app = new Hono()",
+      "",
+      "// TODO(extract-custom-routes): port routes from snapshot server.tsx",
+      "",
+      "export default app",
+      "",
+      "*/",
+      "",
+    ].join('\n')
+
+    writeFileSync(join(tmpDir, 'custom-routes.ts'), realRoutes + brokenTrailer, 'utf-8')
+
+    // Run the migration. No server.tsx → the migration would
+    // otherwise return early, but the heal helper at the top should
+    // still fire before that check.
+    const first = extractCustomRoutes(tmpDir)
+    expect(first.migrated).toBe(false)
+
+    const afterFirst = readFileSync(join(tmpDir, 'custom-routes.ts'), 'utf-8')
+    // Trailer is gone.
+    expect(afterFirst).not.toContain('Extracted from server.tsx on')
+    expect(afterFirst).not.toContain('TODO(extract-custom-routes)')
+    // Real routes above the trailer survive verbatim.
+    expect(afterFirst).toContain("app.get('/runway/balance'")
+    expect(afterFirst).toContain('export default app')
+    // Exactly one `const app = new Hono()` (the bug duplicated it).
+    const appDecls = afterFirst.match(/const app = new Hono\(\)/g) ?? []
+    expect(appDecls.length).toBe(1)
+
+    // Second run is a no-op: no trailer, no change.
+    const second = extractCustomRoutes(tmpDir)
+    expect(second.migrated).toBe(false)
+    const afterSecond = readFileSync(join(tmpDir, 'custom-routes.ts'), 'utf-8')
+    expect(afterSecond).toBe(afterFirst)
+  })
+
   // A hand-edited `server.tsx` (no SDK auto-gen header) that's also
   // drifted (missing customRoutes mount) is intentionally NOT
   // recognised as stale-generated. Instead it falls through to the

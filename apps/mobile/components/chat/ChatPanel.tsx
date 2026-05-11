@@ -114,7 +114,7 @@ import {
 import { subagentStreamStore } from "../../lib/subagent-stream-store"
 import { teamStore } from "../../lib/team-store"
 import * as ExpoLinking from "expo-linking"
-import { AlertCircle, RefreshCw, X } from "lucide-react-native"
+import { AlertCircle, RefreshCw, X, ChevronDown } from "lucide-react-native"
 import { type PlanData } from "./PlanCard"
 import { usePlanStreamSafe } from "./PlanStreamContext"
 import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from "@shogo/ui-kit/platform"
@@ -786,12 +786,37 @@ export const ChatPanel = observer(function ChatPanel({
   const prevDisplayLengthRef = useRef(0)
   /** Web only: debounce timer for near-top load-older (see LOAD_OLDER_WEB_DEBOUNCE_MS). */
   const loadOlderWebDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /**
+   * Timestamp (ms) until which any onScroll events should be treated as
+   * programmatic and NOT used to flip follow state. Our own scrollToEnd /
+   * scrollTo calls fire onScroll on web; without this guard, streaming-token
+   * auto-scrolls silently re-engage follow after the user scrolled away.
+   */
+  const programmaticScrollUntilRef = useRef(0)
   const MESSAGE_PAGE_SIZE = 10
   const isNative = Platform.OS !== "web"
-  const STICK_BOTTOM_PX = 16
+  /** Native re-engage threshold: distance from bottom (px) on drag/momentum end
+   * within which we treat the user as having returned to the bottom and resume
+   * follow. 40px is forgiving enough that a soft release after a peek-up does
+   * not snap follow back on against the user's intent. */
+  const STICK_BOTTOM_PX = 40
   const pendingScrollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastScrollTimeRef = useRef(0)
   const SCROLL_THROTTLE_MS = 300
+  /** Duration of the programmatic-scroll guard window (ms). Must comfortably
+   * exceed the time between a scrollTo* call and the resulting onScroll event. */
+  const PROGRAMMATIC_SCROLL_GUARD_MS = 250
+
+  /**
+   * Mark the next ~250ms of onScroll events as programmatic so handlers ignore
+   * them. Call this immediately before any of our own scrollTo/scrollToEnd. */
+  const markProgrammaticScroll = useCallback(() => {
+    programmaticScrollUntilRef.current = Date.now() + PROGRAMMATIC_SCROLL_GUARD_MS
+  }, [])
+
+  /** Mirrors stick/at-bottom into React so we can show the "Jump to latest"
+   * pill. Source of truth for streaming follow remains the refs above. */
+  const [isFollowing, setIsFollowing] = useState(true)
 
   const shouldFollowBottom = useCallback(
     () => (isNative ? stickToBottomRef.current : isUserAtBottomRef.current),
@@ -801,26 +826,29 @@ export const ChatPanel = observer(function ChatPanel({
   const scrollToBottomIfFollowing = useCallback(
     (animated = false) => {
       if (shouldFollowBottom()) {
+        markProgrammaticScroll()
         scrollViewRef.current?.scrollToEnd({ animated })
       }
     },
-    [shouldFollowBottom]
+    [shouldFollowBottom, markProgrammaticScroll]
   )
 
   const throttledScrollToEnd = useCallback(() => {
     const now = Date.now()
     const elapsed = now - lastScrollTimeRef.current
     if (elapsed >= SCROLL_THROTTLE_MS) {
+      markProgrammaticScroll()
       scrollViewRef.current?.scrollToEnd({ animated: true })
       lastScrollTimeRef.current = now
     } else if (!pendingScrollRef.current) {
       pendingScrollRef.current = setTimeout(() => {
+        markProgrammaticScroll()
         scrollViewRef.current?.scrollToEnd({ animated: true })
         lastScrollTimeRef.current = Date.now()
         pendingScrollRef.current = null
       }, SCROLL_THROTTLE_MS - elapsed)
     }
-  }, [])
+  }, [markProgrammaticScroll])
 
   const syncStickFromNativeEvent = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -828,10 +856,22 @@ export const ChatPanel = observer(function ChatPanel({
       const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
       const fromBottom =
         contentSize.height - contentOffset.y - layoutMeasurement.height
-      stickToBottomRef.current = fromBottom <= STICK_BOTTOM_PX
+      const atBottom = fromBottom <= STICK_BOTTOM_PX
+      stickToBottomRef.current = atBottom
+      setIsFollowing(atBottom)
     },
     [isNative]
   )
+
+  /** Re-engage follow and snap to the latest message. Used by the
+   * "Jump to latest" pill. */
+  const jumpToLatest = useCallback(() => {
+    isUserAtBottomRef.current = true
+    stickToBottomRef.current = true
+    setIsFollowing(true)
+    markProgrammaticScroll()
+    scrollViewRef.current?.scrollToEnd({ animated: true })
+  }, [markProgrammaticScroll])
 
   useEffect(() => {
     const sub = Keyboard.addListener("keyboardDidShow", () => {
@@ -845,6 +885,51 @@ export const ChatPanel = observer(function ChatPanel({
       if (pendingScrollRef.current) clearTimeout(pendingScrollRef.current)
       if (loadOlderWebDebounceRef.current) clearTimeout(loadOlderWebDebounceRef.current)
       if (contextUsageTimerRef.current) clearTimeout(contextUsageTimerRef.current)
+    }
+  }, [])
+
+  /**
+   * Web only: any user-initiated scroll input immediately disengages follow,
+   * independent of distance from the bottom. Without this, the onScroll-only
+   * heuristic requires the user to scroll up >100px between streaming chunks
+   * to escape auto-scroll, which feels like fighting the chat. Wheel, touch,
+   * and keyboard navigation all count as intent to leave the bottom.
+   */
+  useEffect(() => {
+    if (Platform.OS !== "web") return
+    const node: any =
+      (scrollViewRef.current as any)?.getScrollableNode?.() ??
+      (scrollViewRef.current as any)
+    if (!node || typeof node.addEventListener !== "function") return
+
+    const disengage = () => {
+      isUserAtBottomRef.current = false
+      setIsFollowing(false)
+    }
+
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) disengage()
+    }
+    const onTouchStart = () => {
+      disengage()
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.key === "ArrowUp" ||
+        e.key === "PageUp" ||
+        e.key === "Home"
+      ) {
+        disengage()
+      }
+    }
+
+    node.addEventListener("wheel", onWheel, { passive: true })
+    node.addEventListener("touchstart", onTouchStart, { passive: true })
+    node.addEventListener("keydown", onKeyDown)
+    return () => {
+      node.removeEventListener("wheel", onWheel)
+      node.removeEventListener("touchstart", onTouchStart)
+      node.removeEventListener("keydown", onKeyDown)
     }
   }, [])
 
@@ -2761,11 +2846,16 @@ export const ChatPanel = observer(function ChatPanel({
    */
   const handleMessagesScrollWeb = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (Date.now() < programmaticScrollUntilRef.current) return
+
       const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
       const isAtBottom =
         contentSize.height - contentOffset.y - layoutMeasurement.height <
         SCROLL_NEAR_BOTTOM_PX
-      isUserAtBottomRef.current = isAtBottom
+      if (isAtBottom !== isUserAtBottomRef.current) {
+        isUserAtBottomRef.current = isAtBottom
+        setIsFollowing(isAtBottom)
+      }
 
       if (contentOffset.y < LOAD_OLDER_SCROLL_EDGE_PX) {
         if (loadOlderWebDebounceRef.current) {
@@ -3012,6 +3102,7 @@ export const ChatPanel = observer(function ChatPanel({
     isFirstLoadRef.current = true
     isUserAtBottomRef.current = true
     stickToBottomRef.current = true
+    setIsFollowing(true)
     prevDisplayLengthRef.current = 0
   }, [currentSessionId])
 
@@ -3027,6 +3118,7 @@ export const ChatPanel = observer(function ChatPanel({
     }
 
     if (displayMessages.length === 1 && (isFirstLoadRef.current || shouldFollowBottom())) {
+      markProgrammaticScroll()
       scrollViewRef.current?.scrollTo({ y: 0, animated: false })
       isFirstLoadRef.current = false
       return
@@ -3039,7 +3131,7 @@ export const ChatPanel = observer(function ChatPanel({
       scrollToBottomIfFollowing(!isFirstLoadRef.current)
       isFirstLoadRef.current = false
     }
-  }, [displayMessages.length, messages, currentSessionId, isNative, shouldFollowBottom, scrollToBottomIfFollowing])
+  }, [displayMessages.length, messages, currentSessionId, isNative, shouldFollowBottom, scrollToBottomIfFollowing, markProgrammaticScroll])
 
   // Detect a pending ask_user tool call in the last assistant message
   const hasPendingQuestion = useMemo(() => {
@@ -3079,7 +3171,10 @@ export const ChatPanel = observer(function ChatPanel({
       const trimmedContent = content.trim()
       if (Platform.OS !== "web") {
         stickToBottomRef.current = true
+      } else {
+        isUserAtBottomRef.current = true
       }
+      setIsFollowing(true)
       lastUserInputRef.current = { content: trimmedContent, files: fileArray }
       setOptimisticUserInput({ sessionId: currentSessionId, content: trimmedContent, files: fileArray })
 
@@ -3686,6 +3781,7 @@ export const ChatPanel = observer(function ChatPanel({
           keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 50}
         >
           {/* Messages with Turn Grouping */}
+          <View className="flex-1">
           <ScrollView
             ref={scrollViewRef}
             className="flex-1"
@@ -3699,6 +3795,7 @@ export const ChatPanel = observer(function ChatPanel({
             onScrollBeginDrag={() => {
               if (isNative) {
                 stickToBottomRef.current = false
+                setIsFollowing(false)
               }
             }}
             onScrollEndDrag={(e) => {
@@ -3717,6 +3814,7 @@ export const ChatPanel = observer(function ChatPanel({
               if (isLoadingOlderRef.current) {
                 const delta = h - contentHeightBeforeLoadRef.current
                 if (delta > 0 && contentHeightBeforeLoadRef.current > 0) {
+                  markProgrammaticScroll()
                   scrollViewRef.current?.scrollTo({ y: delta, animated: false })
                 }
                 // Reset after a frame so the scroll offset takes effect
@@ -3782,6 +3880,31 @@ export const ChatPanel = observer(function ChatPanel({
             )}
 
           </ScrollView>
+
+          {/* "Jump to latest" pill — shown when the user has scrolled away
+              from the bottom during streaming. Re-engages follow on press.
+              Positioned at the bottom of the scroll area (just above the
+              chat input). */}
+          {!isFollowing && displayMessages.length > 0 && (
+            <View
+              pointerEvents="box-none"
+              style={{ position: "absolute", left: 0, right: 0, bottom: 8 }}
+              className="items-center"
+            >
+              <Pressable
+                onPress={jumpToLatest}
+                accessibilityRole="button"
+                accessibilityLabel="Jump to latest message"
+                className="flex-row items-center gap-1 rounded-full bg-primary px-3 py-1.5 shadow-md active:opacity-80"
+              >
+                <ChevronDown size={14} className="text-primary-foreground" />
+                <Text className="text-xs font-medium text-primary-foreground">
+                  Latest
+                </Text>
+              </Pressable>
+            </View>
+          )}
+          </View>
 
           {/* Tool Error Banner */}
           {toolErrorBanner && (
