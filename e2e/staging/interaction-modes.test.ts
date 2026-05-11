@@ -99,11 +99,11 @@ test.describe("Interaction Modes (Agent / Plan / Ask)", () => {
 
     // A plan card should appear with Cursor-like Build and plan-file actions
     await expect(page.getByText("Build Plan")).toBeVisible({ timeout: 30_000 })
-    await expect(page.getByText("Open Plan")).toBeVisible({ timeout: 30_000 })
+    await expect(page.getByText("View Full Plan")).toBeVisible({ timeout: 30_000 })
   })
 
   test("plan card opens saved plan artifact", async () => {
-    await page.getByText("Open Plan").click()
+    await page.getByText("View Full Plan").click()
     await expect(page.getByText("Plans")).toBeVisible({ timeout: 10_000 })
     await expect(page.getByText(/^Build$/)).toBeVisible({ timeout: 15_000 })
     await expect(page.getByText(/hello\.txt|Hello World/i).first()).toBeVisible({ timeout: 15_000 })

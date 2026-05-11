@@ -17,7 +17,7 @@ import {
   formatToolName,
   getToolKeyArg,
 } from "../tools/types"
-import { getToolSummary } from "../tools/summary"
+import { getToolSummary, sepLabel } from "../tools/summary"
 import { useChatContextSafe } from "../ChatContext"
 
 const MD_IMAGE_RE = /\[([^\]]*)\]\(([^)]+\.(png|jpg|jpeg|gif|webp))\)/gi
@@ -242,7 +242,7 @@ function InlineToolWidgetImpl({
           ) : null}
           {isMinimal && summary?.rest?.map((s, i) => (
             <Fragment key={i}>
-              <Text className="text-muted-foreground/60"> && </Text>
+              <Text className="text-muted-foreground/60">{` ${sepLabel(s.sep)} `}</Text>
               <Text className="font-medium text-muted-foreground">{s.verb}</Text>
               {s.target ? <Text className="text-foreground"> {s.target}</Text> : null}
             </Fragment>

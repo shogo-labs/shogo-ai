@@ -5,7 +5,7 @@
  * tool rows in the chat thread.
  */
 import { describe, expect, test } from "bun:test"
-import { getToolSummary, parseShellCommand } from "../summary"
+import { getToolSummary, parseShellCommand, sepLabel } from "../summary"
 
 describe("getToolSummary — built-in tools", () => {
   test("read_file returns Read + basename", () => {
@@ -189,6 +189,50 @@ describe("parseShellCommand — runners", () => {
   test("python file.py", () => {
     expect(parseShellCommand("python foo.py")).toEqual({ verb: "Run", target: "foo.py" })
   })
+
+  test("python3 with heredoc keeps the runner as the target", () => {
+    expect(parseShellCommand("python3 << 'EOF'")).toEqual({
+      verb: "Run",
+      target: "python3",
+    })
+  })
+
+  test("node with heredoc keeps the runner as the target", () => {
+    expect(parseShellCommand("node << EOF")).toEqual({
+      verb: "Run",
+      target: "node",
+    })
+  })
+
+  test("here-string <<< is also skipped", () => {
+    expect(parseShellCommand("python3 <<< 'print(1)'")).toEqual({
+      verb: "Run",
+      target: "python3",
+    })
+  })
+})
+
+describe("parseShellCommand — redirections", () => {
+  test("output redirect doesn't leak into the target", () => {
+    expect(parseShellCommand("cat foo.txt > out.txt")).toEqual({
+      verb: "Read",
+      target: "foo.txt",
+    })
+  })
+
+  test("append redirect doesn't leak into the target", () => {
+    expect(parseShellCommand("echo hi >> log.txt")).toEqual({
+      verb: "echo",
+      target: "hi",
+    })
+  })
+
+  test("2>&1 redirection token is skipped", () => {
+    expect(parseShellCommand("python3 foo.py 2>&1")).toEqual({
+      verb: "Run",
+      target: "foo.py",
+    })
+  })
 })
 
 describe("parseShellCommand — fetch", () => {
@@ -212,8 +256,12 @@ describe("parseShellCommand — pipelines", () => {
     expect(parseShellCommand("ls | grep foo")).toEqual({ verb: "List" })
   })
 
-  test("first segment of ; wins", () => {
-    expect(parseShellCommand("echo a; echo b")).toEqual({ verb: "echo", target: "a" })
+  test("; chains echo segments with then", () => {
+    expect(parseShellCommand("echo a; echo b")).toEqual({
+      verb: "echo",
+      target: "a",
+      rest: [{ verb: "echo", target: "b", sep: ";" }],
+    })
   })
 
   test("multi-line uses first line", () => {
@@ -244,19 +292,22 @@ describe("parseShellCommand — pipelines", () => {
   })
 })
 
-describe("parseShellCommand — && chains", () => {
-  test("two &&-joined commands produce a rest entry", () => {
+describe("parseShellCommand — chains", () => {
+  test("two &&-joined commands produce a rest entry with sep", () => {
     expect(parseShellCommand("bun test && bun lint")).toEqual({
       verb: "Run",
       target: "test",
-      rest: [{ verb: "Run", target: "lint" }],
+      rest: [{ verb: "Run", target: "lint", sep: "&&" }],
     })
   })
 
   test("three &&-joined commands produce two rest entries", () => {
     expect(parseShellCommand("git add . && git commit -m foo && git push")).toEqual({
       verb: "git add",
-      rest: [{ verb: "git commit" }, { verb: "git push" }],
+      rest: [
+        { verb: "git commit", sep: "&&" },
+        { verb: "git push", sep: "&&" },
+      ],
     })
   })
 
@@ -264,7 +315,7 @@ describe("parseShellCommand — && chains", () => {
     expect(parseShellCommand("cd foo && bun test && bun lint")).toEqual({
       verb: "Run",
       target: "test",
-      rest: [{ verb: "Run", target: "lint" }],
+      rest: [{ verb: "Run", target: "lint", sep: "&&" }],
     })
   })
 
@@ -272,21 +323,43 @@ describe("parseShellCommand — && chains", () => {
     expect(parseShellCommand("bun test && cd foo && bun lint")).toEqual({
       verb: "Run",
       target: "test",
-      rest: [{ verb: "Run", target: "lint" }],
+      rest: [{ verb: "Run", target: "lint", sep: "&&" }],
     })
   })
 
-  test("; terminates the chain", () => {
-    const result = parseShellCommand("bun test; bun lint")
-    expect(result).toEqual({ verb: "Run", target: "test" })
-    expect(result.rest).toBeUndefined()
+  test("|| chain produces a rest entry with sep ||", () => {
+    expect(parseShellCommand("bun test || bun lint")).toEqual({
+      verb: "Run",
+      target: "test",
+      rest: [{ verb: "Run", target: "lint", sep: "||" }],
+    })
+  })
+
+  test("; chain produces a rest entry with sep ;", () => {
+    expect(parseShellCommand("bun test; bun lint")).toEqual({
+      verb: "Run",
+      target: "test",
+      rest: [{ verb: "Run", target: "lint", sep: ";" }],
+    })
+  })
+
+  test("mixed && / || / ; chains keep their separators", () => {
+    expect(parseShellCommand("bun test && bun lint || bun fix; echo done")).toEqual({
+      verb: "Run",
+      target: "test",
+      rest: [
+        { verb: "Run", target: "lint", sep: "&&" },
+        { verb: "Run", target: "fix", sep: "||" },
+        { verb: "echo", target: "done", sep: ";" },
+      ],
+    })
   })
 
   test("| terminates the chain", () => {
     const result = parseShellCommand("ls && grep foo | wc -l")
     expect(result).toEqual({
       verb: "List",
-      rest: [{ verb: "Search for", target: "foo" }],
+      rest: [{ verb: "Search for", target: "foo", sep: "&&" }],
     })
   })
 
@@ -316,5 +389,152 @@ describe("getToolSummary — fallback", () => {
 
   test("unknown tool with no useful args", () => {
     expect(getToolSummary("custom_tool")).toEqual({ verb: "custom_tool" })
+  })
+})
+
+describe("parseShellCommand — quote-aware splitting", () => {
+  test("| inside double quotes is part of the regex pattern", () => {
+    expect(parseShellCommand('grep -n "a|b" file')).toEqual({
+      verb: "Search for",
+      target: "a or b",
+    })
+  })
+
+  test("\\| inside double quotes (BRE) is part of the regex pattern", () => {
+    expect(parseShellCommand('grep -n "soul\\|character\\|Soul\\|Character"')).toMatchObject({
+      verb: "Search for",
+    })
+    const result = parseShellCommand('grep -n "soul\\|character\\|Soul\\|Character"')
+    expect(result.target?.startsWith("soul or character")).toBe(true)
+    expect(result.target?.length).toBeLessThanOrEqual(30)
+    expect(result.rest).toBeUndefined()
+  })
+
+  test("; inside double quotes is part of the echoed string", () => {
+    expect(parseShellCommand('echo "foo;bar"')).toEqual({
+      verb: "echo",
+      target: "foo;bar",
+    })
+  })
+
+  test("escaped \\| outside quotes is not a pipe separator", () => {
+    const result = parseShellCommand("echo foo \\| bar")
+    expect(result.verb).toBe("echo")
+    expect(result.rest).toBeUndefined()
+  })
+
+  test("regression: top-level pipe still terminates the chain", () => {
+    expect(parseShellCommand("ls | grep foo")).toEqual({ verb: "List" })
+  })
+})
+
+describe("getToolSummary — Grep regex prettify", () => {
+  test("alternation with \\| is translated to or", () => {
+    expect(getToolSummary("Grep", { pattern: "useShogo\\|useFoo" })).toEqual({
+      verb: "Search for",
+      target: "useShogo or useFoo",
+    })
+  })
+
+  test("alternation with bare | is translated to or", () => {
+    expect(getToolSummary("Grep", { pattern: "foo|bar" })).toEqual({
+      verb: "Search for",
+      target: "foo or bar",
+    })
+  })
+
+  test("leading anchor becomes 'starting with'", () => {
+    expect(getToolSummary("Grep", { pattern: "^useShogo" })).toEqual({
+      verb: "Search for",
+      target: "starting with useShogo",
+    })
+  })
+
+  test("trailing anchor becomes 'ending with'", () => {
+    expect(getToolSummary("Grep", { pattern: "useShogo$" })).toEqual({
+      verb: "Search for",
+      target: "ending with useShogo",
+    })
+  })
+
+  test("both anchors become 'exactly'", () => {
+    expect(getToolSummary("Grep", { pattern: "^useShogo$" })).toEqual({
+      verb: "Search for",
+      target: "exactly useShogo",
+    })
+  })
+
+  test("anchors apply per alternative when combined with alternation", () => {
+    const summary = getToolSummary("Grep", { pattern: "^foo\\|bar$" })
+    expect(summary.verb).toBe("Search for")
+    expect(summary.target?.startsWith("starting with foo or ending w")).toBe(true)
+    expect(summary.target?.length).toBeLessThanOrEqual(30)
+  })
+
+  test("character class becomes 'any of …'", () => {
+    expect(getToolSummary("Grep", { pattern: "[abc]" })).toEqual({
+      verb: "Search for",
+      target: "any of a, b, or c",
+    })
+  })
+
+  test("character class with range keeps the range token", () => {
+    expect(getToolSummary("Grep", { pattern: "[a-z]" })).toEqual({
+      verb: "Search for",
+      target: "any of a-z",
+    })
+  })
+
+  test("negated character class becomes 'anything except …'", () => {
+    expect(getToolSummary("Grep", { pattern: "[^abc]" })).toEqual({
+      verb: "Search for",
+      target: "anything except a, b, or c",
+    })
+  })
+
+  test("two-item character class skips the Oxford comma", () => {
+    expect(getToolSummary("Grep", { pattern: "[ab]" })).toEqual({
+      verb: "Search for",
+      target: "any of a or b",
+    })
+  })
+
+  test("character classes are stashed before the alternation split", () => {
+    const summary = getToolSummary("Grep", { pattern: "[abc]\\|[def]" })
+    expect(summary.verb).toBe("Search for")
+    expect(summary.target?.startsWith("any of a, b, or c or any of")).toBe(true)
+    expect(summary.target?.length).toBeLessThanOrEqual(30)
+  })
+
+  test("anchored character class becomes 'exactly any of …'", () => {
+    expect(getToolSummary("Grep", { pattern: "^[abc]$" })).toEqual({
+      verb: "Search for",
+      target: "exactly any of a, b, or c",
+    })
+  })
+
+  test("plain identifier with no regex syntax is unchanged", () => {
+    expect(getToolSummary("Grep", { pattern: "useShogoVoice" })).toEqual({
+      verb: "Search for",
+      target: "useShogoVoice",
+    })
+  })
+})
+
+describe("sepLabel", () => {
+  test("&& maps to 'and'", () => {
+    expect(sepLabel("&&")).toBe("and")
+  })
+
+  test("|| maps to 'or'", () => {
+    expect(sepLabel("||")).toBe("or")
+  })
+
+  test("; maps to 'then'", () => {
+    expect(sepLabel(";")).toBe("then")
+  })
+
+  test("undefined defaults to 'and'", () => {
+    expect(sepLabel(undefined)).toBe("and")
   })
 })
