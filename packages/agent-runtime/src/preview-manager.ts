@@ -19,6 +19,7 @@ import { spawn, execSync, type ChildProcess } from 'child_process'
 import { join } from 'path'
 import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync, watch, type FSWatcher } from 'fs'
 import { recordBuildEntry } from './runtime-log-dispatcher'
+import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
 import {
   commitBuildOutput,
   cleanupStagingOutput,
@@ -1396,6 +1397,38 @@ export class PreviewManager {
       if (!existsSync(serverFile)) {
         this.apiPhase = ok ? 'idle' : 'crashed'
         return
+      }
+    }
+
+    // Drift check: a `server.tsx` that exists on disk but predates the
+    // current `shogo.config.json#customRoutesPath` won't import
+    // `custom-routes.ts`. The SPA's static catch-all then serves
+    // `index.html` (HTTP 200) for `/api/*` requests, silently masking
+    // the missing mount. Detect that here and self-heal — regenerate
+    // when the file looks SDK-generated (safe to overwrite), patch in
+    // place otherwise (preserves hand edits). See `server-tsx-drift.ts`.
+    if (existsSync(serverFile)) {
+      const drift = checkServerTsxDrift(cwd)
+      if (drift.drifted) {
+        const heal = healServerTsxDrift(cwd, drift)
+        if (heal.mode === 'regenerate') {
+          console.warn(
+            `[${LOG_PREFIX}] server.tsx (SDK-generated) is missing the custom-routes mount ` +
+              `(${drift.reason}). Regenerating before spawn...`,
+          )
+          await this.runShogoGenerate()
+        } else if (heal.mode === 'patched') {
+          console.warn(
+            `[${LOG_PREFIX}] server.tsx (hand-edited) was missing the custom-routes mount. ` +
+              `Inserted import + app.route in place; other edits preserved.`,
+          )
+        } else if (heal.mode === 'failed') {
+          console.error(
+            `[${LOG_PREFIX}] Could not heal server.tsx drift: ${heal.reason}. ` +
+              `Custom routes will not be mounted at ${drift.apiBasePath}. ` +
+              `Edit server.tsx by hand or run \`bun x shogo generate\`.`,
+          )
+        }
       }
     }
 

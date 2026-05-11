@@ -32,6 +32,7 @@ const {
   generateRoutes,
   generateRoutesIndex,
   generateServer,
+  ensureCustomRoutes,
 } = generators
 
 type PrismaModel = Parameters<typeof generateServerFunctions>[0][0]
@@ -182,6 +183,24 @@ function writeServerEntry(projectDir: string): void {
   }
 
   mkdirSync(outDir, { recursive: true })
+
+  // Guarantee `custom-routes.ts` exists at the project root, and
+  // auto-fill `serverConfig.customRoutesPath` when `shogo.config.json`
+  // doesn't declare one. Without this, every regen produces a
+  // `server.tsx` that drops the custom-routes mount, and the agent's
+  // `/api/...` calls fall through to the SPA's static catch-all
+  // (HTTP 200 + index.html — looks like a routing bug rather than the
+  // missing import it actually is). Idempotent — see
+  // `packages/sdk/src/generators/custom-routes.ts`.
+  const crResult = ensureCustomRoutes(projectDir)
+  if (crResult.created) {
+    console.log(`   custom-routes.ts (seeded — workspace was missing it)`)
+  }
+  if (!serverConfig.customRoutesPath) {
+    serverConfig = { ...serverConfig, customRoutesPath: crResult.path }
+    console.log(`   auto-detected customRoutesPath=${crResult.path}`)
+  }
+
   const target = join(outDir, `server.${ext}`)
   writeFileSync(target, generateServer(serverConfig), 'utf-8')
   console.log(`   server.${ext}`)

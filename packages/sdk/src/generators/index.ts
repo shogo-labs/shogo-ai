@@ -85,6 +85,16 @@ export {
   type ServerGeneratorConfig,
 } from './server-generator'
 
+// custom-routes.ts scaffolder — guarantees the file exists at the
+// project root on every regen, and returns the path to plug into
+// `serverConfig.customRoutesPath` when `shogo.config.json` doesn't
+// declare one.
+export {
+  ensureCustomRoutes,
+  CUSTOM_ROUTES_SCAFFOLD,
+  type EnsureCustomRoutesResult,
+} from './custom-routes'
+
 // Auth store generator
 export {
   generateAuthStore,
