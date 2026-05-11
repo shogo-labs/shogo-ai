@@ -630,13 +630,35 @@ export class PreviewManager {
     // indirection lets user-customised projects splice extra steps into
     // the pipeline without us having to teach PreviewManager about every
     // variation.
+    //
+    // EXCEPTION: legacy workspaces (pre-May 2026) carry the older
+    // `"generate": "bunx shogo generate"` script in their package.json.
+    // `bunx shogo` resolves to the only published `@shogo-ai/sdk` version
+    // that satisfies the pinned `^0.4.0` constraint — namely 0.4.0,
+    // which has the unquoted-`execSync` path-truncation bug. The fix
+    // (commit 68ab3e7d, May 8) was tagged as 0.4.1 internally but never
+    // published; npm's @shogo-ai/sdk goes 0.4.0 → 1.0.0 with no 0.4.x
+    // patch in between. Until the user upgrades their pin (or 0.4.1
+    // gets published), we must NOT honour that script — it will crash
+    // every workspace whose path contains a space (which is every
+    // standard macOS install under "~/Library/Application Support").
     let useBunRun = false
+    let legacyShogoGenerate = false
     try {
       const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf-8')) as {
         scripts?: Record<string, string>
       }
-      if (pkgJson.scripts && typeof pkgJson.scripts.generate === 'string' && pkgJson.scripts.generate.trim()) {
-        useBunRun = true
+      const gen = pkgJson.scripts?.generate?.trim()
+      if (gen) {
+        // Match `bunx shogo …` and `bun x shogo …`, with or without
+        // `--bun`. We deliberately do NOT match the runtime-template
+        // form `bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate`
+        // — that path-based form is path-safe.
+        if (/^\s*(bunx|bun\s+x)(\s+--bun)?\s+shogo(\s|$)/.test(gen)) {
+          legacyShogoGenerate = true
+        } else {
+          useBunRun = true
+        }
       }
     } catch {
       // Malformed package.json — fall through to the path-based CLI.
@@ -650,16 +672,40 @@ export class PreviewManager {
     // crashed installs, etc.) would 404 there.
     const sdkCliPath = join(cwd, 'node_modules', '@shogo-ai', 'sdk', 'bin', 'cli.mjs')
     const hasSdkCli = existsSync(sdkCliPath)
-    const args = useBunRun
-      ? ['run', 'generate']
-      : hasSdkCli
-        ? [sdkCliPath, 'generate']
-        : ['x', 'shogo', 'generate']
-    const cmdLabel = useBunRun
-      ? 'bun run generate'
-      : hasSdkCli
-        ? 'bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate'
-        : 'bun x shogo generate'
+    // Bundled with the desktop app at packaging time. Set by
+    // apps/desktop/src/local-server.ts. In dev mode it points at the
+    // monorepo source; in packaged mode at `Resources/sdk-cli.mjs`.
+    const bundledSdkCli = process.env.SHOGO_BUNDLED_SDK_CLI
+    const hasBundledSdkCli = !!(bundledSdkCli && existsSync(bundledSdkCli))
+
+    // Resolution order, in priority:
+    //   1. project-local node_modules CLI (always path-safe in HEAD)
+    //   2. desktop-bundled CLI (always path-safe in HEAD)
+    //   3. project's `generate` script (only if it isn't the broken
+    //      `bunx shogo` pattern)
+    //   4. `bun x shogo` last-ditch (broken on space-paths, but better
+    //      than nothing for non-macOS installs)
+    let args: string[]
+    let cmdLabel: string
+    if (legacyShogoGenerate && hasSdkCli) {
+      args = [sdkCliPath, 'generate']
+      cmdLabel = 'bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate (legacy script bypass)'
+    } else if (legacyShogoGenerate && hasBundledSdkCli) {
+      args = [bundledSdkCli!, 'generate']
+      cmdLabel = `bun ${bundledSdkCli} generate (legacy script bypass — bundled fallback)`
+    } else if (useBunRun) {
+      args = ['run', 'generate']
+      cmdLabel = 'bun run generate'
+    } else if (hasSdkCli) {
+      args = [sdkCliPath, 'generate']
+      cmdLabel = 'bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate'
+    } else if (hasBundledSdkCli) {
+      args = [bundledSdkCli!, 'generate']
+      cmdLabel = `bun ${bundledSdkCli} generate (bundled fallback)`
+    } else {
+      args = ['x', 'shogo', 'generate']
+      cmdLabel = 'bun x shogo generate'
+    }
     console.log(`[${LOG_PREFIX}] Running ${cmdLabel} at ${cwd}...`)
 
     return await new Promise<boolean>((resolveResult) => {
