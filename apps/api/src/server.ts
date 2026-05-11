@@ -1438,7 +1438,21 @@ app.post('/api/projects/:projectId/runtime/stop', async (c) => {
       )
     }
   } else {
-    // Local development: Use RuntimeManager
+    // Local development: Use RuntimeManager (host mode) and the VM warm
+    // pool (VM mode). Both are safe no-ops when not in use, so we stop
+    // both unconditionally — that's the only way `closeProject` from the
+    // renderer can reliably tear down whichever runtime the project is
+    // bound to without round-tripping for an extra status check.
+    try {
+      const mod = await import('./lib/vm-warm-pool-controller')
+      try {
+        mod.getVMWarmPoolController().evictProject(projectId)
+      } catch {
+        // VM pool not initialized — host mode, nothing to evict.
+      }
+    } catch {
+      // Module not available.
+    }
     const manager = getRuntimeManager()
     const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
     const url = new URL(c.req.url)
@@ -6599,7 +6613,10 @@ if (isVMIsolation() && !isKubernetes()) {
       const managerFactory = () => vmModule.createVMManager()
 
       // Read persisted config.json (admin UI settings) as fallback for env vars
-      let configMemoryMB = 1536
+      // Default raised from 1536 → 4096 to give vite build --watch / bun /
+      // LSPs / prisma headroom inside the Linux guest. The OOM killer was
+      // reaping `node` mid-build at 1.5 GB. See apps/desktop/src/vm/types.ts.
+      let configMemoryMB = 4096
       let configCpus = 0
       let configMountWorkspace = false
       try {

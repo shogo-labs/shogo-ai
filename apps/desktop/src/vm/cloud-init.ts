@@ -331,6 +331,17 @@ function buildUserData(config: CloudInitConfig): string {
     lines.push('    done')
     lines.push('    ls -la /opt/shogo/ /opt/shogo/wasm/')
     lines.push('    ln -sf /opt/shogo/shogo.js /packages/sdk/bin/shogo.ts 2>/dev/null || true')
+    // Install a `shogo` shim on PATH so workspace `package.json` scripts
+    // that say `bunx shogo generate` resolve to the bundled CLI instead
+    // of `bunx` falling through to the npm registry and 404'ing on the
+    // (non-existent) `shogo` package. Without this, every project
+    // preview crashes at the generate step with:
+    //   error: GET https://registry.npmjs.org/shogo - 404
+    //   [preview-manager] Initial shogo generate failed
+    // (Use printf, not heredoc — YAML block scalar `|` strips/normalizes
+    // indentation and would corrupt a multi-line shebang.)
+    lines.push('    printf \'#!/bin/sh\\nexec /usr/local/bin/bun /opt/shogo/shogo.js "$@"\\n\' > /usr/local/bin/shogo')
+    lines.push('    chmod 755 /usr/local/bin/shogo')
     lines.push('    umount /mnt/seed 2>/dev/null || true')
 
     // Build env block and start agent-runtime

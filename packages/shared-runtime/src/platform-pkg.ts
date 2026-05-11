@@ -67,7 +67,15 @@ export interface PkgExecOptions {
 }
 
 const IS_WINDOWS = process.platform === 'win32'
-const DEFAULT_INSTALL_TIMEOUT = IS_WINDOWS ? 120_000 : 60_000
+// 60s was not enough for a cold `bun install` over a 9p-mounted /workspace
+// inside the desktop's Linux guest VM — production logs show every cold
+// boot hitting "bun install timed out after 60s" and leaving a half-deleted
+// node_modules behind (which then poisons the next preview run with
+// ENOENT for @prisma/internals etc.). Bump to 5 min and let env override.
+const DEFAULT_INSTALL_TIMEOUT = parseInt(
+  process.env.SHOGO_INSTALL_TIMEOUT_MS || (IS_WINDOWS ? '300000' : '300000'),
+  10,
+)
 const DEFAULT_EXEC_TIMEOUT = 60_000
 
 export class PlatformPackageManager {

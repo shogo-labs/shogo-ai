@@ -903,7 +903,20 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
   // macOS/Linux it stays bun. Doing the install through pkg.installAsync
   // also means we no longer need this file's hand-rolled --frozen-lockfile
   // dance — installAsync owns the retry policy.
-  await pkg.installAsync(dir, { frozen: true })
+  try {
+    await pkg.installAsync(dir, { frozen: true })
+  } catch (err) {
+    // If install fails (timeout, crash) it can leave a partially-populated
+    // node_modules behind. PreviewManager / subsequent reads will then hit
+    // ENOENT for files like @prisma/internals/dist/cli/getSchema.js (see
+    // production main.log) because lower-level packages were never finished.
+    // Wipe the partial tree so the next launch retries from a clean state.
+    try {
+      console.warn('[workspace-defaults] Install failed — clearing partial node_modules so the next launch retries clean')
+      rmSync(nodeModules, { recursive: true, force: true })
+    } catch {}
+    throw err
+  }
   writePlatformMarker(dir)
   // Record the install marker so PreviewManager.installDepsIfNeeded sees
   // a hash match on its first run and skips redundant reinstall — this

@@ -906,6 +906,31 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           return false
         })()
 
+      // Independent check: even if it's not Expo, we should only spawn Vite
+      // when the workspace actually has a Vite entry. Otherwise the dev
+      // server respawns forever pre-transforming a non-existent
+      // `/src/main.tsx`. This guards legacy workspaces that were created
+      // before techStackId was persisted (where projectInfo.techStackId is
+      // null and the workspace has no Vite scaffold yet) and stacks like
+      // python-data / skill-server which use bun directly with no Vite.
+      const looksLikeViteProject = (() => {
+        try {
+          const pkgJsonPath = join(projectDir, 'package.json')
+          if (existsSync(pkgJsonPath)) {
+            const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'))
+            const deps = { ...(pkgJson.dependencies || {}), ...(pkgJson.devDependencies || {}) }
+            if (deps.vite || deps['@vitejs/plugin-react']) return true
+          }
+        } catch { /* fall through */ }
+        for (const cfg of ['vite.config.ts', 'vite.config.js', 'vite.config.mjs', 'vite.config.cjs']) {
+          if (existsSync(join(projectDir, cfg))) return true
+        }
+        for (const entry of ['src/main.tsx', 'src/main.ts', 'src/main.jsx', 'src/main.js']) {
+          if (existsSync(join(projectDir, entry))) return true
+        }
+        return false
+      })()
+
       let proc: ReturnType<typeof spawn> | null = null
 
       if (isExpoProject) {
@@ -916,6 +941,13 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         // Hold the project port even though we don't spawn Vite, so the
         // existing /preview proxy keeps routing to the agent port. The
         // agent-runtime serves dist/ at runtimePort.
+      } else if (!looksLikeViteProject) {
+        console.log(
+          `[RuntimeManager] Project ${projectId} has no Vite entry ` +
+          `(no vite dep, no vite.config, no src/main.*) — skipping Vite spawn. ` +
+          `agent-runtime PreviewManager will own preview if the workspace ` +
+          `later writes one.`,
+        )
       } else {
         // Run Vite dev server
         // Resolve vite binary directly from node_modules to avoid Windows .bin/ issue

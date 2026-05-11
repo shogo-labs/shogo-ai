@@ -62,7 +62,7 @@ export function getCloudUrl(): string {
 
 const DEFAULT_VM_CONFIG: VMIsolationConfig = {
   enabled: 'auto',
-  memoryMB: 1536,
+  memoryMB: 4096,
   cpus: 0,  // 0 = auto (half physical cores)
   mountWorkspace: true,
 }
