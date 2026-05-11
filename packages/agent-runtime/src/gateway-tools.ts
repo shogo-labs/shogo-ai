@@ -61,6 +61,7 @@ import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
 import { addQuickAction, validateQuickActions } from './quick-actions'
 import { withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
 import { deriveApiUrl, derivePublicApiUrl } from './internal-api'
+import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 import { FileStateCache } from './file-state-cache'
 import type { TeamManager } from './team-manager'
@@ -981,6 +982,73 @@ async function maybeCustomRoutesSync(
     filePath.endsWith('/custom-routes.ts') ||
     filePath.endsWith('/custom-routes.tsx')
   if (!isCustomRoutesEdit || !ctx.skillServerManager) return null
+
+  // Drift heal: if `server.tsx` is on disk but missing the
+  // `customRoutes` import/mount, the fast restart would just respawn
+  // the same broken file (custom routes 404 → SPA catch-all returns
+  // index.html with HTTP 200, silently masking the bug). Detect and
+  // self-heal before restarting. See `server-tsx-drift.ts`.
+  try {
+    const drift = checkServerTsxDrift(ctx.workspaceDir)
+    if (drift.drifted) {
+      const heal = healServerTsxDrift(ctx.workspaceDir, drift)
+      if (heal.mode === 'regenerate') {
+        // SDK-generated stale file — full sync overwrites it via
+        // `writeServerEntry()` in the project's `generate` script.
+        const syncResult = await ctx.skillServerManager.sync()
+        return {
+          ...baseResult,
+          apiServer: {
+            serverRestarted: true,
+            regenerated: true,
+            phase: syncResult.phase,
+            url: ctx.skillServerManager.url,
+            hint:
+              'server.tsx (SDK-generated) was stale and missing the custom-routes mount. ' +
+              'Regenerated from shogo.config.json — your custom routes are now live under /api/.',
+            ...(syncResult.error ? { error: syncResult.error } : {}),
+          },
+        }
+      }
+      if (heal.mode === 'patched') {
+        // Hand-edited file — patched in place, all other edits
+        // preserved. Just restart with the (now correct) server.tsx.
+        await ctx.skillServerManager.restartApiServerOnly()
+        return {
+          ...baseResult,
+          apiServer: {
+            serverRestarted: true,
+            patched: true,
+            phase: ctx.skillServerManager.phase,
+            url: ctx.skillServerManager.url,
+            hint:
+              'server.tsx was missing the custom-routes import/mount. Inserted the two ' +
+              'required lines in place (other edits preserved). Restarted — routes are now live.',
+          },
+        }
+      }
+      if (heal.mode === 'failed') {
+        return {
+          ...baseResult,
+          apiServer: {
+            serverRestarted: false,
+            error: `server.tsx is missing the custom-routes mount and self-heal failed: ${heal.reason}`,
+            hint:
+              `Add \`import customRoutes from '${drift.customRoutesPath}'\` to server.tsx and ` +
+              `\`app.route('${drift.apiBasePath}', customRoutes)\` before the static catch-all, ` +
+              'or run `bun x shogo generate` to regenerate server.tsx from shogo.config.json.',
+          },
+        }
+      }
+      // mode === 'noop' falls through to the fast restart below.
+    }
+  } catch (err: any) {
+    // A failure to even check drift shouldn't block the restart —
+    // log and continue to the fast path.
+    console.warn(
+      `[gateway-tools] custom-routes drift check failed (continuing to fast restart): ${err?.message ?? err}`,
+    )
+  }
 
   try {
     // Fast path — no schema regeneration, no `prisma db push`. Custom
