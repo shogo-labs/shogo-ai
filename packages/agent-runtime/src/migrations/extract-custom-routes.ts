@@ -269,10 +269,54 @@ function extractMigratedBlock(serverTsx: string, when: Date): {
 }
 
 /**
+ * Heal a `custom-routes.ts` that a previous broken run of this
+ * migration corrupted by appending its own placeholder text inside a
+ * `/* ... *\/` wrapper. The inner placeholder always contains a JSDoc
+ * `/`** ... *\/`, whose closing `*\/` prematurely closes the outer
+ * wrapper — the remaining text (`import { Hono } from 'hono'`, a
+ * second `const app = new Hono()`, `export default app`) lands as
+ * live code and redeclares `app`. We can't recover the original
+ * placeholder body, but the user file above the trailer is the real
+ * one — truncate back to it.
+ *
+ * The trailer's signature is unmistakable: two newlines, then
+ * `/* Extracted from server.tsx on YYYY-MM-DD` immediately followed
+ * by `   Review and merge by hand.`, running to end of file. We
+ * never emit text matching this pattern from anywhere else.
+ *
+ * Idempotent: a second call on a healed file finds no trailer and
+ * returns false.
+ */
+function repairBrokenAppendedTrailer(workspaceDir: string): boolean {
+  const candidates = [
+    join(workspaceDir, 'custom-routes.ts'),
+    join(workspaceDir, 'custom-routes.tsx'),
+  ]
+  for (const path of candidates) {
+    if (!existsSync(path)) continue
+    const src = readFileSync(path, 'utf-8')
+    const re = /\n\n\/\* Extracted from server\.tsx on \d{4}-\d{2}-\d{2}\n {3}Review and merge by hand\.[\s\S]*$/
+    if (!re.test(src)) continue
+    writeFileSync(path, src.replace(re, '\n'), 'utf-8')
+    console.log(`[${LOG_PREFIX}] Repaired broken extract-custom-routes trailer in ${path}`)
+    return true
+  }
+  return false
+}
+
+/**
  * Run the migration. Idempotent: silently no-ops when there's nothing
  * to extract.
  */
 export function extractCustomRoutes(workspaceDir: string): ExtractCustomRoutesResult {
+  // Self-heal: an earlier buggy run of this migration may have
+  // appended a `/* ... */`-wrapped placeholder onto an existing
+  // custom-routes.ts. The wrapper breaks because its body contains a
+  // JSDoc `*/` that prematurely closes the outer comment, leaving
+  // `const app = new Hono()` as live code. Strip the trailer before
+  // doing anything else so a stuck workspace can boot.
+  repairBrokenAppendedTrailer(workspaceDir)
+
   const serverPath = join(workspaceDir, 'server.tsx')
   if (!existsSync(serverPath)) {
     // Nothing to do — workspace is already SDK-managed.
@@ -410,21 +454,26 @@ export function extractCustomRoutes(workspaceDir: string): ExtractCustomRoutesRe
 
     if (!customRoutesExists) {
       writeFileSync(customRoutesPath, customRoutesBody, 'utf-8')
+    } else if (hadMarker) {
+      // Marker case + the user already has a custom-routes.ts. There is
+      // real route code we'd like to surface, but we MUST NOT splice it
+      // into the existing file: TS block comments don't nest, so any
+      // `*/` inside `customRoutesBody` (which always contains a JSDoc
+      // `/** ... */` header) would prematurely close a `/* ... */`
+      // wrapper and the trailing import / `const app = new Hono()` /
+      // `export default app` would land as live code, redeclaring `app`
+      // and breaking the build. Write the extracted block to a sibling
+      // file under the snapshot dir for the user to review and copy in
+      // by hand instead.
+      const extractedFile = join(snapshotDir, 'extracted-routes.ts')
+      writeFileSync(extractedFile, customRoutesBody, 'utf-8')
+      needsReview = true
     } else {
-      // The user already has a custom-routes file. Append the extracted
-      // content as a comment block so we don't lose anything.
-      const existing = readFileSync(
-        existsSync(customRoutesPath) ? customRoutesPath : customRoutesTsxPath,
-        'utf-8',
-      )
-      const target = existsSync(customRoutesPath) ? customRoutesPath : customRoutesTsxPath
-      const merged = existing.trimEnd() + '\n\n/* ' +
-        `Extracted from server.tsx on ${now.toISOString().slice(0, 10)}\n` +
-        '   Review and merge by hand. The original server.tsx is at:\n' +
-        `   ${snapshotDir}/server.tsx\n` +
-        customRoutesBody +
-        '\n*/\n'
-      writeFileSync(target, merged, 'utf-8')
+      // Hand-edited server.tsx + the user already has a custom-routes.ts.
+      // `customRoutesBody` here is just the placeholder stub — there is
+      // nothing to add to the user's existing file. Preserve it
+      // byte-for-byte; the snapshot + MIGRATION_NOTES.md document what
+      // we found for review.
       needsReview = true
     }
 

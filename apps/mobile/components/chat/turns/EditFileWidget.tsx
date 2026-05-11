@@ -112,12 +112,6 @@ export const EditFileWidget = memo(function EditFileWidget({
           )}
         </View>
 
-        <View className="bg-gray-200 dark:bg-gray-800 rounded px-1 py-0.5">
-          <Text className="text-[8px] font-medium text-gray-800 dark:text-gray-300 uppercase tracking-wide">
-            {langLabel}
-          </Text>
-        </View>
-
         <Text className="flex-1 font-mono text-[11px] font-medium text-foreground" numberOfLines={1}>
           {basename}
         </Text>
