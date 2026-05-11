@@ -24,7 +24,14 @@ export type MessagePart =
 
 /**
  * A message part after consecutive-tool grouping.
- * Consecutive tool calls with the same name are collapsed into a "tool-group".
+ *
+ * - Consecutive tool calls with the same name are collapsed into a
+ *   `tool-group` (rendered by `ToolCallGroup`).
+ * - Consecutive read-only "exploration" tool calls of mixed names
+ *   (Read / Grep / Glob / WebSearch / WebFetch and read-only exec
+ *   commands like `cat`, `ls`, `grep`, `find`) are collapsed into an
+ *   `exploration-group` (rendered by `ExplorationGroup`) once at least
+ *   3 such calls fire back-to-back.
  */
 export type GroupedMessagePart =
   | MessagePart
@@ -32,6 +39,27 @@ export type GroupedMessagePart =
       type: "tool-group"
       toolName: string
       tools: Array<{ tool: ToolCallData; id: string }>
+      id: string
+    }
+  | {
+      type: "exploration-group"
+      /**
+       * Ordered tool + reasoning parts for a run of consecutive
+       * read-only "exploration" actions (Read/Grep/Glob/WebSearch/
+       * WebFetch + read-only exec verbs). Reasoning is transparent.
+       */
+      items: MessagePart[]
+      id: string
+    }
+  | {
+      type: "editing-group"
+      /**
+       * Ordered tool + reasoning parts for a run that contains at
+       * least one write / edit / StrReplace call. Reads interleaved
+       * in the same run fold in here too so a "read → edit → write"
+       * sequence renders as a single Editing group.
+       */
+      items: MessagePart[]
       id: string
     }
 
