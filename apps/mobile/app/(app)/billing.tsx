@@ -34,6 +34,7 @@ import {
 import { useAuth } from '../../contexts/auth'
 import { useWorkspaceCollection, useDomainHttp } from '../../contexts/domain'
 import { api } from '../../lib/api'
+import { openWebAppSession } from '../../lib/openWebAppSession'
 import { purchaseSubscription, finishPurchase, restorePurchases, initIapListeners, IapError, APP_STORE_SUBSCRIPTIONS_URL } from '../../lib/iap'
 import type { IapPurchaseResult } from '../../lib/iap'
 import type { RegionalPricingResponse } from '../../lib/api'
@@ -303,7 +304,7 @@ export default observer(function BillingPage() {
           })
           const purchaseResult = await processIapPurchase(result, {
             successTitle: 'Subscription activated',
-            successDescription: `You're now on ${planType} (1 seat). Add more seats via shogo.ai on the web.`,
+            successDescription: `You're now on ${planType} (1 seat).`,
             onVerified: () => trackPurchase({
               planId,
               billingInterval,
@@ -441,6 +442,12 @@ export default observer(function BillingPage() {
     }
   }, [http, currentWorkspace?.id, refetchSubscription, refetchUsageWallet])
 
+  const handleManageBillingOnWeb = useCallback(() => {
+    openWebAppSession('/billing').catch((err) =>
+      console.warn('[Billing] failed to open web billing:', err),
+    )
+  }, [])
+
   if (isAuthLoading || isBillingLoading) {
     return (
       <View className="flex-1 bg-background p-6">
@@ -562,10 +569,12 @@ export default observer(function BillingPage() {
               <View className="flex-row items-center gap-2">
                 <Info size={16} className="text-muted-foreground" />
                 <Text className="text-sm text-muted-foreground">
-                  All usage is billed at the AI provider's raw cost plus a flat 20% markup. Pro and Business include $20/$40 of monthly usage per seat. No credits, no unit conversions. Daily allowance resets at midnight UTC.
+                  {Platform.OS === 'ios'
+                    ? 'Pro and Business include monthly usage per seat. Daily allowance resets at midnight UTC.'
+                    : 'All usage is billed at the AI provider\'s raw cost plus a flat 20% markup. Pro and Business include $20/$40 of monthly usage per seat. No credits, no unit conversions. Daily allowance resets at midnight UTC.'}
                 </Text>
               </View>
-              {effectiveBalance?.overageEnabled && (
+              {Platform.OS !== 'ios' && effectiveBalance?.overageEnabled && (
                 <View className="flex-row items-center gap-2">
                   <Info size={16} className="text-muted-foreground" />
                   <Text className="text-sm text-muted-foreground">
@@ -711,7 +720,9 @@ export default observer(function BillingPage() {
                   <Text className="text-sm text-muted-foreground">per month</Text>
                 </View>
                 <Text className="text-sm text-muted-foreground">
-                  ${proPricing.monthly}/seat × {proSeats} seat{proSeats === 1 ? '' : 's'} — raw cost + 20% on usage
+                  {Platform.OS === 'ios'
+                    ? `$${proPricing.monthly}/seat`
+                    : `$${proPricing.monthly}/seat × ${proSeats} seat${proSeats === 1 ? '' : 's'} — raw cost + 20% on usage`}
                 </Text>
               </View>
 
@@ -721,7 +732,7 @@ export default observer(function BillingPage() {
                 </Text>
                 {Platform.OS === 'ios' ? (
                   <Text className="text-xs text-muted-foreground">
-                    iOS purchases include 1 seat. Add seats on shogo.ai (web) after upgrading.
+                    iOS purchases include 1 seat per subscription.
                   </Text>
                 ) : (
                   <SeatCounter
@@ -787,7 +798,9 @@ export default observer(function BillingPage() {
                   <Text className="text-sm text-muted-foreground">per month</Text>
                 </View>
                 <Text className="text-sm text-muted-foreground">
-                  ${businessPricing.monthly}/seat × {businessSeats} seat{businessSeats === 1 ? '' : 's'} — raw cost + 20% on usage
+                  {Platform.OS === 'ios'
+                    ? `$${businessPricing.monthly}/seat`
+                    : `$${businessPricing.monthly}/seat × ${businessSeats} seat${businessSeats === 1 ? '' : 's'} — raw cost + 20% on usage`}
                 </Text>
               </View>
 
@@ -797,7 +810,7 @@ export default observer(function BillingPage() {
                 </Text>
                 {Platform.OS === 'ios' ? (
                   <Text className="text-xs text-muted-foreground">
-                    iOS purchases include 1 seat. Add seats on shogo.ai (web) after upgrading.
+                    iOS purchases include 1 seat per subscription.
                   </Text>
                 ) : (
                   <SeatCounter
@@ -864,6 +877,22 @@ export default observer(function BillingPage() {
           </Card>
         </View>
       </View>
+
+      {Platform.OS === 'ios' && (
+        <Card className="mt-6">
+          <CardContent className="p-4 gap-3">
+            <View className="gap-1">
+              <Text className="text-sm font-semibold text-foreground">Manage billing on the web</Text>
+              <Text className="text-sm text-muted-foreground">
+                Additional seats and usage payment settings are managed from your web account.
+              </Text>
+            </View>
+            <Button variant="outline" onPress={handleManageBillingOnWeb}>
+              <Text className="text-foreground font-medium text-sm">Manage on the web</Text>
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
     </ScrollView>
   )
