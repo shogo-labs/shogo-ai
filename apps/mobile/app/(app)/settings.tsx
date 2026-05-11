@@ -48,6 +48,7 @@ import {
   Coins,
   Plug,
   Download,
+  Bug,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import {
@@ -67,6 +68,7 @@ import { getIncludedUsdCapacityForDisplay, formatUsd, PLAN_PRICING } from '../..
 import { usePlatformConfig } from '../../lib/platform-config'
 import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
 import { ComputeTab } from '../../components/settings/ComputeTab'
+import { BugReportTab } from '../../components/settings/BugReportTab'
 import { IntegrationsTab } from '../../components/settings/IntegrationsTab'
 import {
   type AnalyticsPeriod,
@@ -108,9 +110,9 @@ import { useNotifyOnTurnComplete as useNotifyOnTurnCompletePref } from '../../li
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'integrations' | 'account' | 'security' | 'billing' | 'compute' | 'analytics' | 'costs'
+type TabId = 'workspace' | 'people' | 'integrations' | 'account' | 'security' | 'billing' | 'compute' | 'analytics' | 'costs' | 'support'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'integrations', 'account', 'security', 'billing', 'compute', 'analytics', 'costs']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'integrations', 'account', 'security', 'billing', 'compute', 'analytics', 'costs', 'support']
 
 /** Tablet/desktop split: matches `SettingsPage` `isWide` (sidebar layout). */
 const SETTINGS_WIDE_BREAKPOINT = 768
@@ -139,6 +141,7 @@ const LOCAL_NAV_ITEMS: NavItem[] = [
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'analytics', label: 'Usage', icon: BarChart3 },
   { id: 'costs', label: 'Costs', icon: Coins },
+  { id: 'support', label: 'Report Bug', icon: Bug },
 ]
 
 function TabBar({
@@ -252,6 +255,13 @@ function SettingsSidebar({
         ...(!showBilling ? [{ id: 'security' as TabId, label: 'Security' }] : []),
       ],
     },
+    ...(localMode ? [{
+      id: 'support',
+      label: 'Support',
+      items: [
+        { id: 'support' as TabId, label: 'Report Bug' },
+      ],
+    }] : []),
   ]
 
   return (
@@ -3082,6 +3092,7 @@ const SettingsContent = observer(function SettingsContent({
       {activeTab === 'billing' && !isLocal && <BillingTab />}
       {activeTab === 'analytics' && <WorkspaceAnalyticsTab />}
       {activeTab === 'costs' && <WorkspaceCostTab />}
+      {activeTab === 'support' && <BugReportTab />}
     </>
   )
 })
