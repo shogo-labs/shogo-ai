@@ -9,11 +9,13 @@ import {
   readFileSync,
   writeFileSync,
   mkdirSync,
+  rmSync,
   statSync,
 } from 'node:fs'
 import { join, resolve, relative } from 'node:path'
 import { spawn } from 'node:child_process'
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
+import { createS3SyncForProject } from '@shogo/shared-runtime'
 import { prisma } from '../lib/prisma'
 import type { AuthContext } from '../middleware/auth'
 import {
@@ -185,6 +187,16 @@ type ImportEvent =
       status: 'pending' | 'running' | 'ok' | 'failed' | 'skipped'
       message?: string
     }
+  // Push the imported workspace from the API pod's local disk up to S3 so
+  // the warm-pool runtime pod can `downloadAll()` it on first assignment.
+  // K8s-only — local dev mounts the same workspace dir directly.
+  | {
+      phase: 'syncToS3'
+      status: 'running' | 'ok' | 'failed' | 'skipped'
+      bytes?: number
+      durationMs?: number
+      message?: string
+    }
   | {
       phase: 'done'
       project: { id: string; name: string; description: string | null }
@@ -262,9 +274,9 @@ type ImportResult =
       warnings: string[]
       secretsAutoFilled: boolean
     }
-  | { ok: false; status: 400 | 401 | 403 | 413; error: string }
+  | { ok: false; status: 400 | 401 | 403 | 413 | 500; error: string }
 
-async function runImport(
+export async function runImport(
   zipBuffer: Uint8Array,
   workspaceId: string,
   userId: string,
@@ -653,6 +665,119 @@ async function runImport(
     importWarnings.push(
       `${pendingCredentials.length} credential(s) need to be configured: ${pendingCredentials.map((c) => c.label).join(', ')}.`,
     )
+  }
+
+  // ─── Push imported workspace to S3 (k8s only) ──────────────────────
+  // In k8s mode, the API pod and the warm-pool runtime pod do NOT share a
+  // filesystem. If we stop after writing `projectDir/` to the API pod's
+  // local disk, the warm pod's `S3Sync.downloadAll()` finds NOTHING at
+  // `s3://${S3_WORKSPACES_BUCKET}/<projectId>/project-src.tar.gz` and
+  // silently seeds the warm-pool default template — which the user then
+  // sees instead of their import. Push to S3 here so the assignment path
+  // finds the real archive.
+  //
+  // This is a hard failure: if S3 upload fails we delete the project row
+  // and return 500 so the importer sees a real error instead of
+  // navigating into an empty hello-world. The 200-with-empty-project
+  // outcome is the bug we are explicitly fixing.
+  if (isKubernetes() && process.env.S3_WORKSPACES_BUCKET) {
+    await emit({ phase: 'syncToS3', status: 'running' })
+    const syncStart = Date.now()
+    const sync = createS3SyncForProject(projectDir, project.id)
+    if (!sync) {
+      // Misconfiguration (e.g. bucket env truthy but empty string). Treat
+      // as fatal — see comment above.
+      await emit({
+        phase: 'syncToS3',
+        status: 'failed',
+        message: 'S3 sync not configured (bucket/projectId missing)',
+      })
+      try {
+        await prisma.project.delete({ where: { id: project.id } })
+      } catch (cleanupErr: any) {
+        console.error(
+          `[project-import] Could not roll back project ${project.id} after S3 misconfig:`,
+          cleanupErr?.message || cleanupErr,
+        )
+      }
+      return {
+        ok: false,
+        status: 500,
+        error: 'S3 sync not configured for k8s mode — refusing to create an unreachable project',
+      }
+    }
+    try {
+      const stats = await sync.uploadAll(false)
+      const durationMs = Date.now() - syncStart
+      if (stats.errors && stats.errors.length > 0) {
+        throw new Error(stats.errors.join('; '))
+      }
+      const bytes = stats.archiveSize ?? 0
+      console.log(
+        `[project-import] S3 upload ok for ${project.id} in ${durationMs}ms (bytes=${bytes})`,
+      )
+      await emit({
+        phase: 'syncToS3',
+        status: 'ok',
+        bytes,
+        durationMs,
+      })
+
+      // Once the workspace is durably in S3, the API pod's local copy is
+      // dead weight on ephemeral storage (we evicted api-00242 with this
+      // exact failure mode three days ago). Default to cleanup, but allow
+      // disabling via PURGE_LOCAL_AFTER_S3=false in case we get burned by
+      // a follow-up read.
+      if (process.env.PURGE_LOCAL_AFTER_S3 !== 'false') {
+        try {
+          rmSync(projectDir, { recursive: true, force: true })
+        } catch (cleanupErr: any) {
+          console.warn(
+            `[project-import] Local cleanup failed for ${project.id} (non-fatal):`,
+            cleanupErr?.message || cleanupErr,
+          )
+        }
+      }
+    } catch (err: any) {
+      const durationMs = Date.now() - syncStart
+      const message = err?.message || 'unknown S3 sync error'
+      console.error(
+        `[project-import] S3 upload FAILED for ${project.id} after ${durationMs}ms:`,
+        message,
+      )
+      await emit({
+        phase: 'syncToS3',
+        status: 'failed',
+        durationMs,
+        message,
+      })
+      try {
+        await prisma.project.delete({ where: { id: project.id } })
+      } catch (cleanupErr: any) {
+        console.error(
+          `[project-import] Could not roll back project ${project.id} after S3 failure:`,
+          cleanupErr?.message || cleanupErr,
+        )
+      }
+      return {
+        ok: false,
+        status: 500,
+        error: `S3 sync failed: ${message}`,
+      }
+    }
+  } else if (isKubernetes()) {
+    // K8s but no bucket configured — the warm pod can't find the workspace
+    // and will spin up a default template. Surface this as a non-fatal
+    // warning rather than a hard fail; some environments may intentionally
+    // run without S3 (e.g. all-in-one dev cluster).
+    importWarnings.push(
+      'S3_WORKSPACES_BUCKET not configured — imported workspace will not be visible to the runtime pod.',
+    )
+    await emit({
+      phase: 'syncToS3',
+      status: 'skipped',
+      message: 'S3_WORKSPACES_BUCKET not configured',
+    })
   }
 
   // ─── Done before bootstrap ─────────────────────────────────────────

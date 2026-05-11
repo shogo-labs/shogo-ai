@@ -118,6 +118,22 @@ spec:
               value: "us-ashburn-1"
             - name: S3_ENDPOINT
               value: "https://idin4oltblww.compat.objectstorage.us-ashburn-1.oraclecloud.com"
+            # S3 credentials for OCI Object Storage (Oracle's S3-compat API).
+            # Required for: project import → S3 seed (apps/api/src/routes/project-export-import.ts),
+            # Storage cron, and any other S3 PUT from the API pod. NOT marked
+            # optional: a missing secret is the exact silent-failure mode that
+            # let imports "succeed" with empty projects in staging on
+            # 2026-05-11. We'd rather crashloop than ship that again.
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: access-key
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: secret-key
             - name: PUBLISH_NAMESPACE
               value: "shogo-system"
             - name: PUBLISH_DOMAIN

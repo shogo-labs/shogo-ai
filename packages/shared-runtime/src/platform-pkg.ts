@@ -355,6 +355,83 @@ export class PlatformPackageManager {
   }
 
   // ---------------------------------------------------------------------------
+  // Exec — async variant that DOES NOT block the JS event loop.
+  //
+  // The sync variant above is fine for one-shot project scaffolding
+  // (template.copy.ts) where blocking is intentional. Inside the runtime's
+  // hot path (PreviewManager.runPrismaIfNeeded → /pool/assign) it caused
+  // a measured ~4.7s freeze of /pool/assign in staging because prisma's
+  // child process held the event loop for the full duration. Always
+  // prefer this variant in long-lived services.
+  // ---------------------------------------------------------------------------
+
+  async execToolAsync(
+    tool: string,
+    args: string[],
+    cwd: string,
+    opts?: PkgExecOptions,
+  ): Promise<string> {
+    const timeout = opts?.timeout ?? DEFAULT_EXEC_TIMEOUT
+    const stdio = opts?.stdio ?? 'pipe'
+    const env = this.spawnEnv(opts?.env)
+
+    // Skip the shell on Unix so we can spawn `bun x <tool> <args>` directly
+    // and reliably collect stdout/stderr. On Windows we still route through
+    // the shell so `npx.cmd` resolution behaves the same as execToolSync.
+    let cmd: string
+    let argv: string[]
+    let useShell: boolean
+    if (IS_WINDOWS) {
+      const argStr = args.length > 0 ? ` ${args.join(' ')}` : ''
+      cmd = `npx ${tool}${argStr}`
+      argv = []
+      useShell = true
+    } else {
+      cmd = this.bunBinary
+      argv = ['x']
+      if (opts?.useBunFlag) argv.push('--bun')
+      argv.push(tool, ...args)
+      useShell = false
+    }
+
+    return new Promise<string>((resolvePromise, rejectPromise) => {
+      const proc = spawn(cmd, argv, {
+        cwd,
+        env,
+        stdio,
+        shell: useShell ? (this.shellOpt() as boolean) : false,
+      })
+      let stdout = ''
+      let stderr = ''
+      // stdio may be 'inherit', in which case stdout/stderr are null. Only
+      // wire data handlers when piped so we don't crash on undefined.
+      proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
+      proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+
+      const timer = setTimeout(() => {
+        try { proc.kill('SIGKILL') } catch { /* already dead */ }
+        rejectPromise(
+          new Error(`${tool} ${args.join(' ')} timed out after ${timeout}ms`),
+        )
+      }, timeout)
+
+      proc.on('error', (err) => {
+        clearTimeout(timer)
+        rejectPromise(err)
+      })
+      proc.on('exit', (code) => {
+        clearTimeout(timer)
+        if (code === 0) {
+          resolvePromise(stdout)
+        } else {
+          const errMsg = stderr.trim() || stdout.trim() || `exit ${code}`
+          rejectPromise(new Error(`${tool} ${args.join(' ')} failed: ${errMsg}`))
+        }
+      })
+    })
+  }
+
+  // ---------------------------------------------------------------------------
   // Prisma convenience wrappers
   // ---------------------------------------------------------------------------
 
@@ -370,6 +447,31 @@ export class PlatformPackageManager {
     const args = ['db', 'push']
     if (opts?.acceptDataLoss) args.push('--accept-data-loss')
     this.execToolSync('prisma', args, cwd, {
+      timeout: opts?.timeout ?? DEFAULT_EXEC_TIMEOUT,
+      stdio: opts?.stdio,
+      env: opts?.env,
+    })
+  }
+
+  // Async siblings of the prisma wrappers above. Use these from any
+  // long-running service (runtime, agent gateway, preview manager) so a
+  // 1-3s prisma child process doesn't freeze /health, /pool/assign, or
+  // other concurrent HTTP work. Same arg shape, same timeout defaults.
+  async prismaGenerateAsync(cwd: string, opts?: PkgExecOptions): Promise<void> {
+    await this.execToolAsync('prisma', ['generate'], cwd, {
+      timeout: opts?.timeout ?? 30_000,
+      stdio: opts?.stdio,
+      env: opts?.env,
+    })
+  }
+
+  async prismaDbPushAsync(
+    cwd: string,
+    opts?: PkgExecOptions & { acceptDataLoss?: boolean },
+  ): Promise<void> {
+    const args = ['db', 'push']
+    if (opts?.acceptDataLoss) args.push('--accept-data-loss')
+    await this.execToolAsync('prisma', args, cwd, {
       timeout: opts?.timeout ?? DEFAULT_EXEC_TIMEOUT,
       stdio: opts?.stdio,
       env: opts?.env,

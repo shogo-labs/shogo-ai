@@ -830,15 +830,31 @@ export class PreviewManager {
   }
 
   /**
-   * Start the preview server (install deps, generate Prisma, start Vite watch).
-   * No-op if already started.
+   * Start the preview server. ALWAYS returns immediately and runs the
+   * expensive work (install deps, prisma generate, vite build watch, api
+   * server) in `backgroundSetup`.
    *
-   * Optimizations:
-   * - If dist/index.html already exists (pre-built in template archive), we mark
-   *   the preview as ready immediately so the frontend can render the app, then
-   *   run setup tasks (install, prisma, vite watch) in the background.
-   * - Skips `bun install` when node_modules/ already exists (pre-installed in archive).
+   * Why always background? The previous behavior was:
+   *   - prebuilt-dist branch: backgroundSetup (fast)
+   *   - cold path: awaited `runSetupTasks` (~3-5s)
+   *   - Metro path: awaited `runSetupTasksMetro` (slower still)
+   *
+   * pm.start() is invoked from inside `initializeEssentials` (server.ts)
+   * which is in turn awaited by /pool/assign. The "cold path" branch
+   * blocked /pool/assign for the entire setup window — measured 4.7s in
+   * staging on 2026-05-11, dominated by execSync'd prisma generate/db
+   * push. Returning fast and reporting progress via _phase keeps the
+   * warm-pool assignment path tight regardless of whether the workspace
+   * shipped a prebuilt dist/.
+   *
+   * Callers that need to wait for readiness should poll `getStatus()`
+   * for `_phase === 'ready'`.
+   *
+   * Optimizations preserved from the old fast path:
+   * - Skips `bun install` when node_modules/ already exists.
    * - Skips `prisma generate` when the generated client already exists.
+   * - Marks _phase = 'ready' immediately when dist/ is prebuilt so the
+   *   preview iframe can render while background work continues.
    */
   async start(): Promise<{ mode: string; port: number | null; timings: Record<string, number> }> {
     if (this.started) {
@@ -858,27 +874,6 @@ export class PreviewManager {
 
     const devServer = this.resolveDevServer()
 
-    if (devServer === 'metro') {
-      // Web preview is always built; the device-preview Metro tunnel only
-      // runs in local mode. Cloud pods skip the tunnel and surface a
-      // "device preview not yet available in cloud" indicator via
-      // /preview/metro.
-      await this.runSetupTasksMetro(timings, bundlerCwd)
-      // Mode label encodes whether the bundler-tunnel and the colocated
-      // API server actually came up — useful when debugging "did the
-      // pod's Hono server start?" without scraping logs. `+api` means
-      // `startApiServer()` spawned `server.tsx`; absence means the
-      // workspace is bundler-only (no `prisma/schema.prisma` yet, or
-      // the API crashed and is in recovery).
-      const apiSuffix = this.apiServerProcess ? '+api' : ''
-      const mode = this.metroProcess
-        ? `metro-web${apiSuffix}+tunnel`
-        : this.localMode
-          ? `metro-web${apiSuffix} (tunnel-failed)`
-          : `metro-web${apiSuffix} (cloud-todo)`
-      return { mode, port: this.runtimePort, timings }
-    }
-
     if (devServer === 'none') {
       console.log(`[${LOG_PREFIX}] Stack declares devServer=none — skipping bundler`)
       this._phase = 'ready'
@@ -886,52 +881,80 @@ export class PreviewManager {
       return { mode: 'no-bundler', port: this.runtimePort, timings }
     }
 
+    if (devServer === 'metro') {
+      // Web preview always builds; the device-preview Metro tunnel only
+      // runs in local mode. Cloud pods skip the tunnel and surface a
+      // "device preview not yet available in cloud" indicator via
+      // /preview/metro. Setup runs in background — see start() docstring.
+      this._phase = 'building'
+      this.started = true
+      this.backgroundSetupMetro(timings, bundlerCwd).catch((err: any) => {
+        console.error(`[${LOG_PREFIX}] Background Metro setup failed:`, err.message)
+      })
+      // Mode label here is "in-progress" — final label (with tunnel
+      // status etc.) is logged when backgroundSetupMetro finishes.
+      return { mode: 'metro-web (background)', port: this.runtimePort, timings }
+    }
+
     const hasPrebuiltDist = existsSync(join(bundlerCwd, 'dist', 'index.html'))
 
     if (hasPrebuiltDist) {
       console.log(`[${LOG_PREFIX}] Pre-built dist/ found — serving immediately, setup continues in background`)
       this._phase = 'ready'
-      this.started = true
-
-      this.backgroundSetup(timings).catch((err) => {
-        console.error(`[${LOG_PREFIX}] Background setup failed:`, err.message)
-      })
-
-      return { mode: 'prebuilt-dist', port: this.runtimePort, timings }
+    } else {
+      this._phase = 'building'
     }
+    this.started = true
 
-    await this.runSetupTasks(timings)
-    return { mode: this.apiServerProcess ? 'vite-watch+api' : 'vite-watch', port: this.runtimePort, timings }
+    this.backgroundSetup(timings).catch((err) => {
+      console.error(`[${LOG_PREFIX}] Background setup failed:`, err.message)
+    })
+
+    return {
+      mode: hasPrebuiltDist ? 'prebuilt-dist' : 'background-build',
+      port: this.runtimePort,
+      timings,
+    }
   }
 
   private async backgroundSetup(timings: Record<string, number>): Promise<void> {
-    const savedPhase = this._phase
+    const startedWithPrebuiltDist = this._phase === 'ready'
+
     await this.installDepsIfNeeded(timings)
     await this.runPrismaIfNeeded(timings)
 
+    if (!startedWithPrebuiltDist) {
+      this._phase = 'building'
+    }
     await this.startBuildWatch()
     timings.buildWatch = 0
 
+    if (!startedWithPrebuiltDist) {
+      this._phase = 'starting-api'
+    }
     await this.startApiServer()
     timings.apiServer = 0
 
-    this._phase = savedPhase
+    this._phase = 'ready'
 
     console.log(`[${LOG_PREFIX}] Background setup complete:`, JSON.stringify(timings))
   }
 
-  private async runSetupTasks(timings: Record<string, number>): Promise<void> {
-    await this.installDepsIfNeeded(timings)
-    await this.runPrismaIfNeeded(timings)
-
-    this._phase = 'building'
-    await this.startBuildWatch()
-
-    this._phase = 'starting-api'
-    await this.startApiServer()
-
-    this._phase = 'ready'
-    this.started = true
+  private async backgroundSetupMetro(
+    timings: Record<string, number>,
+    bundlerCwd: string,
+  ): Promise<void> {
+    await this.runSetupTasksMetro(timings, bundlerCwd)
+    // `runSetupTasksMetro` is responsible for flipping _phase / started
+    // and logging the final mode label (web preview, tunnel status, etc.)
+    // — keep this wrapper minimal so we don't double-emit phase changes.
+    const apiSuffix = this.apiServerProcess ? '+api' : ''
+    const mode = this.metroProcess
+      ? `metro-web${apiSuffix}+tunnel`
+      : this.localMode
+        ? `metro-web${apiSuffix} (tunnel-failed)`
+        : `metro-web${apiSuffix} (cloud-todo)`
+    console.log(`[${LOG_PREFIX}] Background Metro setup complete: ${mode}`)
   }
 
   /**
@@ -1079,7 +1102,11 @@ export class PreviewManager {
       this._phase = 'generating-prisma'
       const t1 = Date.now()
       try {
-        pkg.prismaGenerate(cwd)
+        // Async variant: prisma generate spawns a child Node process that
+        // can take ~3s on a cold pod. The sync variant blocks the event
+        // loop and was the root cause of the ~4.7s /pool/assign freeze
+        // observed in staging on 2026-05-11. Always use *Async from here.
+        await pkg.prismaGenerateAsync(cwd)
         timings.prisma = Date.now() - t1
       } catch (err: any) {
         timings.prisma = Date.now() - t1
@@ -1097,7 +1124,9 @@ export class PreviewManager {
 
     const t2 = Date.now()
     try {
-      pkg.prismaDbPush(cwd, { env: { ...process.env, DATABASE_URL: `file:${devDb}` } as NodeJS.ProcessEnv })
+      await pkg.prismaDbPushAsync(cwd, {
+        env: { ...process.env, DATABASE_URL: `file:${devDb}` } as NodeJS.ProcessEnv,
+      })
       timings.dbPush = Date.now() - t2
       console.log(`[${LOG_PREFIX}] Prisma db push succeeded (${timings.dbPush}ms)`)
     } catch (err: any) {

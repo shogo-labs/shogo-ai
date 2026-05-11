@@ -3,6 +3,7 @@
 export {
   initializeS3Sync,
   createS3SyncFromEnv,
+  createS3SyncForProject,
   S3Sync,
   type S3SyncConfig,
   type SyncStats,
