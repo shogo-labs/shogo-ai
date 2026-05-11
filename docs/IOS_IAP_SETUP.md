@@ -79,6 +79,8 @@ The `react-native-iap` config plugin (`app.json` line 38) handles linking the na
 
 - **JWS signature verification**: the ASSN V2 webhook verifies the outer notification, transaction, and renewal JWS payloads against Apple's x5c certificate chain anchored to Apple Root CA G3. Do not set `APPLE_IAP_SKIP_JWS_VERIFY=1` outside local development.
 - **StoreKit 2 JWS path**: the verifier uses the legacy `/verifyReceipt` endpoint, which still works for both SK1 and SK2 receipts as of 2026. Migrating to App Store Server API v2 (`/inApps/v1/transactions/{transactionId}`) is a future optimization.
-- **Seat upgrades on iOS**: not supported — UI should hide the seat selector on iOS or display a "Manage seats on shogo.ai" link.
+- **Seat upgrades on iOS**: not supported — iOS purchases include 1 seat per Apple subscription. Additional seats are managed from the web app.
+- **Usage overage on iOS**: not sold through IAP. Usage costs remain charged to the Stripe card on file from the web app because adding usage plus Apple's commission would make the price too high.
+- **Instance compute upgrades on iOS**: not sold through IAP. Instance resizing stays on Stripe and is managed from the web app.
 - **Plan changes (upgrade/downgrade between Pro ↔ Business)**: handled by App Store's subscription group automatic proration. The webhook updates `planId` from `DID_CHANGE_RENEWAL_PREF`.
 - **Refunds**: handled via `REFUND` notification → flips status to `canceled`. Wallet balance reset is the responsibility of `billingService.syncFromStripe` (already runs on every receipt sync).

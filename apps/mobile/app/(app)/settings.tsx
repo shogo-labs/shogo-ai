@@ -65,6 +65,7 @@ import { api, API_URL } from '../../lib/api'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { getIncludedUsdCapacityForDisplay, formatUsd, PLAN_PRICING } from '../../lib/billing-config'
 import { usePlatformConfig } from '../../lib/platform-config'
+import { openWebAppSession } from '../../lib/openWebAppSession'
 import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
 import { ComputeTab } from '../../components/settings/ComputeTab'
 import { IntegrationsTab } from '../../components/settings/IntegrationsTab'
@@ -2472,6 +2473,12 @@ function BillingTab() {
     return () => { cancelled = true }
   }, [http, workspace?.id])
 
+  const handleManageUsageOnWeb = useCallback(() => {
+    openWebAppSession('/settings?tab=billing').catch((err) =>
+      console.warn('[BillingTab] failed to open web billing:', err),
+    )
+  }, [])
+
   const planId = subscription?.planId?.toLowerCase() ?? 'free'
   const planLabel = planId.startsWith('enterprise')
     ? 'Enterprise'
@@ -2508,7 +2515,9 @@ function BillingTab() {
       <View>
         <Text className="text-lg font-bold text-foreground mb-1">Billing</Text>
         <Text className="text-xs text-muted-foreground">
-          Manage your plan and on-demand spending cap. For detailed analytics, see the Usage tab.
+          {Platform.OS === 'ios'
+            ? 'Manage your plan and usage. For detailed analytics, see the Usage tab.'
+            : 'Manage your plan and on-demand spending cap. For detailed analytics, see the Usage tab.'}
         </Text>
       </View>
 
@@ -2549,7 +2558,7 @@ function BillingTab() {
                 ? `${formatUsd(effectiveBalance.dailyIncludedUsd)} daily + ${formatUsd(effectiveBalance.monthlyIncludedUsd)} monthly remaining`
                 : 'Loading...'}
             </Text>
-            {effectiveBalance?.overageEnabled && effectiveBalance.overageAccumulatedUsd > 0 && (
+            {Platform.OS !== 'ios' && effectiveBalance?.overageEnabled && effectiveBalance.overageAccumulatedUsd > 0 && (
               <Text className="text-xs text-muted-foreground">
                 Overage this period: {formatUsd(effectiveBalance.overageAccumulatedUsd)} (billed in trust blocks: $100 → $500)
               </Text>
@@ -2587,7 +2596,23 @@ function BillingTab() {
         </CardContent>
       </Card>
 
-      {canUseOverage && (
+      {canUseOverage && Platform.OS === 'ios' && (
+        <Card>
+          <CardContent className="p-4 gap-3">
+            <View className="gap-1">
+              <Text className="text-sm font-semibold text-foreground">Usage payments</Text>
+              <Text className="text-xs text-muted-foreground">
+                Usage beyond your included monthly amount is managed from your web account.
+              </Text>
+            </View>
+            <Button variant="outline" onPress={handleManageUsageOnWeb}>
+              <Text className="text-foreground font-medium text-sm">Manage usage & payments on the web</Text>
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {canUseOverage && Platform.OS !== 'ios' && (
         <Card>
           <CardContent className="p-4 gap-3">
             <View className="gap-1">
@@ -2616,14 +2641,16 @@ function BillingTab() {
         </Card>
       )}
 
-      <SetSpendLimitDialog
-        visible={spendLimitOpen}
-        onClose={() => setSpendLimitOpen(false)}
-        workspaceId={workspace.id}
-        currentLimitUsd={effectiveBalance?.overageHardLimitUsd ?? null}
-        accumulatedUsageUsd={effectiveBalance?.overageAccumulatedUsd ?? 0}
-        onSaved={() => refetchUsageWallet()}
-      />
+      {Platform.OS !== 'ios' && (
+        <SetSpendLimitDialog
+          visible={spendLimitOpen}
+          onClose={() => setSpendLimitOpen(false)}
+          workspaceId={workspace.id}
+          currentLimitUsd={effectiveBalance?.overageHardLimitUsd ?? null}
+          accumulatedUsageUsd={effectiveBalance?.overageAccumulatedUsd ?? 0}
+          onSaved={() => refetchUsageWallet()}
+        />
+      )}
     </View>
   )
 }
@@ -2812,8 +2839,12 @@ function WorkspaceAnalyticsTab() {
               ? `${fmtUsd(onDemandLimit)} team spend cap`
               : 'No spend cap set'
           }
-          actionLabel="Set Limit"
-          onActionPress={() => setSpendLimitOpen(true)}
+          {...(Platform.OS !== 'ios'
+            ? {
+                actionLabel: 'Set Limit',
+                onActionPress: () => setSpendLimitOpen(true),
+              }
+            : {})}
         />
       </View>
 
@@ -2904,16 +2935,18 @@ function WorkspaceAnalyticsTab() {
         </>
       )}
 
-      <SetSpendLimitDialog
-        visible={spendLimitOpen}
-        onClose={() => setSpendLimitOpen(false)}
-        workspaceId={workspaceId}
-        currentLimitUsd={onDemandLimit}
-        accumulatedUsageUsd={onDemandUsed}
-        onSaved={() => {
-          refetchUsageWallet()
-        }}
-      />
+      {Platform.OS !== 'ios' && (
+        <SetSpendLimitDialog
+          visible={spendLimitOpen}
+          onClose={() => setSpendLimitOpen(false)}
+          workspaceId={workspaceId}
+          currentLimitUsd={onDemandLimit}
+          accumulatedUsageUsd={onDemandUsed}
+          onSaved={() => {
+            refetchUsageWallet()
+          }}
+        />
+      )}
     </View>
   )
 }
