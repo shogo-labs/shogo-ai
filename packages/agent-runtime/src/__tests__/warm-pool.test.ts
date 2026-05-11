@@ -23,7 +23,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
 import { spawn, type Subprocess } from 'bun'
-import { mkdirSync, rmSync } from 'fs'
+import { mkdirSync, rmSync, writeFileSync, chmodSync } from 'fs'
 import { join } from 'path'
 
 const TEST_PORT = 18_900 + Math.floor(Math.random() * 100)
@@ -159,4 +159,129 @@ describe('Warm Pool Mode', () => {
     const data = await resp.json() as any
     expect(data.error).toContain('Already assigned')
   })
+})
+
+/**
+ * Regression test for the /pool/assign latency incident on 2026-05-11.
+ *
+ * Before the fix: PreviewManager.start() awaited runSetupTasks → runPrismaIfNeeded
+ * → pkg.prismaGenerate (execSync) which froze the event loop for ~2.9s, and then
+ * prismaDbPush for another ~1.6s. /pool/assign's onAssign handler `await`s
+ * PreviewManager.start() (indirectly via initializeEssentials), so the entire
+ * assign hot path stalled for 4.7s in staging.
+ *
+ * After the fix: PreviewManager.start() schedules its setup in the background
+ * and returns immediately, so /pool/assign latency no longer scales with prisma
+ * cold-start time.
+ *
+ * We simulate slow prisma by pointing SHOGO_BUN_PATH at a fake `bun` binary
+ * that sleeps before exiting. The agent's preview-manager will spawn it via
+ * `bun x prisma ...`. The fake takes 3s — well above the 1s SLA the test
+ * enforces — so any regression that re-introduces awaiting prisma will fail
+ * loudly here.
+ */
+describe('Warm Pool Mode — assign latency with slow prisma', () => {
+  const TEST_PORT_2 = 19_100 + Math.floor(Math.random() * 100)
+  const TEST_AGENT_DIR_2 = `/tmp/test-warm-pool-slow-prisma-${TEST_PORT_2}`
+  const FAKE_BUN_PATH = join(TEST_AGENT_DIR_2, 'fake-bun.sh')
+  let serverProc2: Subprocess | null = null
+
+  beforeAll(async () => {
+    if (process.platform === 'win32') return // fake-bun shell script assumes POSIX
+    rmSync(TEST_AGENT_DIR_2, { recursive: true, force: true })
+    mkdirSync(TEST_AGENT_DIR_2, { recursive: true })
+
+    // Workspace with a prisma schema — triggers the slow path we are
+    // explicitly testing. No dev.db, no .prisma/client → both generate
+    // AND db push will run.
+    mkdirSync(join(TEST_AGENT_DIR_2, 'prisma'), { recursive: true })
+    writeFileSync(
+      join(TEST_AGENT_DIR_2, 'prisma', 'schema.prisma'),
+      'generator client { provider = "prisma-client-js" }\nmodel A { id Int @id }\n',
+    )
+    writeFileSync(
+      join(TEST_AGENT_DIR_2, 'package.json'),
+      JSON.stringify({ name: 'slow-prisma-test', dependencies: {} }),
+    )
+
+    // Pre-stage node_modules so `ensureWorkspaceDeps` short-circuits.
+    // Otherwise it would spawn `bun install` (our fake bun → 3s sleep)
+    // and the assign path would still be slow — but for a *different*
+    // reason than the one this test is supposed to catch. We want the
+    // ONLY slow thing left to be prisma generate / db push.
+    const nm = join(TEST_AGENT_DIR_2, 'node_modules')
+    mkdirSync(join(nm, '.bin'), { recursive: true })
+    writeFileSync(join(nm, '.bin', 'vite'), '#!/usr/bin/env bash\nexit 0\n')
+    chmodSync(join(nm, '.bin', 'vite'), 0o755)
+    // Platform marker matching the current host so ensureWorkspaceDeps
+    // doesn't trip the "wrong platform → reinstall" branch.
+    writeFileSync(
+      join(nm, '.shogo-platform'),
+      `${process.platform}-${process.arch}\n`,
+    )
+
+    // Fake `bun` that sleeps 3s and exits. preview-manager spawns this
+    // via `bun x prisma generate` / `bun x prisma db push`. We don't care
+    // what the args are — we just need the child process to occupy real
+    // wall-clock time so we can prove /pool/assign doesn't wait on it.
+    writeFileSync(
+      FAKE_BUN_PATH,
+      '#!/usr/bin/env bash\nsleep 3\nexit 0\n',
+    )
+    chmodSync(FAKE_BUN_PATH, 0o755)
+
+    serverProc2 = spawn({
+      cmd: ['bun', 'run', SERVER_PATH],
+      env: {
+        ...process.env,
+        PROJECT_ID: '__POOL__',
+        WARM_POOL_MODE: 'true',
+        AGENT_DIR: TEST_AGENT_DIR_2,
+        PROJECT_DIR: TEST_AGENT_DIR_2,
+        PORT: String(TEST_PORT_2),
+        S3_WORKSPACES_BUCKET: '',
+        S3_BUCKET: '',
+        AI_PROXY_URL: '',
+        AI_PROXY_TOKEN: '',
+        ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || 'test-key',
+        // Inject our slow fake bun into pkg.bunBinary. Any call from
+        // PreviewManager that goes through `bun x ...` will hit this
+        // script instead of the real bun.
+        SHOGO_BUN_PATH: FAKE_BUN_PATH,
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+
+    await waitForServer(TEST_PORT_2)
+  }, 20_000)
+
+  afterAll(() => {
+    if (serverProc2) {
+      serverProc2.kill()
+      serverProc2 = null
+    }
+    rmSync(TEST_AGENT_DIR_2, { recursive: true, force: true })
+  })
+
+  test('/pool/assign returns in <1s even when prisma generate takes 3s', async () => {
+    if (process.platform === 'win32') return
+    const testProjectId = `slow-prisma-${Date.now()}`
+
+    const t0 = Date.now()
+    const resp = await fetch(`http://localhost:${TEST_PORT_2}/pool/assign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: testProjectId, env: {} }),
+    })
+    const elapsed = Date.now() - t0
+
+    expect(resp.ok).toBe(true)
+    const data = await resp.json() as any
+    expect(data.ok).toBe(true)
+    // The whole point of this test: even with 3s of prisma work staged in
+    // the background, the HTTP round-trip MUST come back under 1s. The
+    // pre-fix staging measurement was 4661ms.
+    expect(elapsed).toBeLessThan(1_000)
+  }, 10_000)
 })

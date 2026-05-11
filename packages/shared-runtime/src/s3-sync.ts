@@ -1193,6 +1193,42 @@ export function createS3SyncFromEnv(localDir: string): S3Sync | null {
 }
 
 /**
+ * Create an S3Sync instance for a specific project, independent of process env.
+ *
+ * Used by the API server (which serves many projects) for one-shot operations
+ * like seeding S3 immediately after a project import. Unlike createS3SyncFromEnv,
+ * the projectId is passed explicitly rather than read from process.env.PROJECT_ID,
+ * and the file watcher is disabled by default — this is intended for short-lived
+ * "tar local dir, push to S3, done" usage, not a long-running sync.
+ *
+ * Returns null if S3_WORKSPACES_BUCKET is unset so callers can fall back to
+ * local-only behavior in dev / unconfigured environments.
+ */
+export function createS3SyncForProject(localDir: string, projectId: string): S3Sync | null {
+  const bucket = process.env.S3_WORKSPACES_BUCKET
+  if (!bucket || !projectId) {
+    console.log(`[S3Sync] [createForProject] Not configured (bucket=${bucket ?? 'unset'}, projectId=${projectId ?? 'unset'})`)
+    return null
+  }
+
+  const region = process.env.S3_REGION
+  const endpoint = process.env.S3_ENDPOINT
+
+  console.log(`[S3Sync] [createForProject] Creating S3Sync instance (bucket=${bucket}, prefix=${projectId}, region=${region}, endpoint=${endpoint ?? 'default'}, localDir=${localDir})`)
+
+  return new S3Sync({
+    bucket,
+    prefix: projectId,
+    localDir,
+    endpoint,
+    region,
+    forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
+    syncInterval: 0,
+    watchEnabled: false,
+  })
+}
+
+/**
  * Initialize S3 sync: download archive and start background sync.
  * Returns null if S3 is not configured OR if initial download fails critically.
  *
