@@ -9,6 +9,21 @@ import http from 'http'
 const GITHUB_REPO = 'shogo-labs/shogo-ai'
 const GITHUB_API = `https://api.github.com/repos/${GITHUB_REPO}/releases`
 
+/**
+ * Pinned VM image release tag.
+ *
+ * This is intentionally hardcoded (not "latest") so every desktop build ships
+ * against the exact VM image it was tested with. Bump this when you cut a new
+ * vm-images-v* release and want it shipped to users — they'll receive it the
+ * next time they update the desktop app.
+ *
+ * Tag must exist as a non-draft release at:
+ *   https://github.com/shogo-labs/shogo-ai/releases/tag/<VM_IMAGE_TAG>
+ * and must contain assets: vm-image-aarch64.tar.gz, vm-image-x86_64.tar.gz,
+ * version.txt
+ */
+const VM_IMAGE_TAG = 'vm-images-v7'
+
 export interface DownloadProgress {
   bytesDownloaded: number
   totalBytes: number
@@ -61,7 +76,11 @@ export class VMImageManager {
     const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64'
     const assetName = `vm-image-${arch}.tar.gz`
 
-    const res = await fetch(GITHUB_API, {
+    // Target the pinned tag directly. Using /releases/tags/<tag> instead of
+    // listing /releases means unrelated app/SDK releases can never push the
+    // VM image release off the page and break discovery.
+    const url = `${GITHUB_API}/tags/${encodeURIComponent(VM_IMAGE_TAG)}`
+    const res = await fetch(url, {
       headers: {
         'User-Agent': 'shogo-desktop',
         'Accept': 'application/vnd.github+json',
@@ -69,22 +88,22 @@ export class VMImageManager {
       signal: AbortSignal.timeout(15000),
     })
 
+    if (res.status === 404) {
+      throw new Error(`VM image release ${VM_IMAGE_TAG} not found on GitHub`)
+    }
     if (!res.ok) {
       throw new Error(`GitHub API returned ${res.status} — cannot discover VM image release`)
     }
 
-    const releases = await res.json() as Array<{
+    const release = (await res.json()) as {
       tag_name: string
       draft: boolean
       prerelease: boolean
       assets: Array<{ name: string; browser_download_url: string }>
-    }>
+    }
 
-    const release = releases.find(
-      (r) => r.tag_name.startsWith('vm-images-v') && !r.draft && !r.prerelease,
-    )
-    if (!release) {
-      throw new Error('No VM image release found on GitHub')
+    if (release.draft) {
+      throw new Error(`VM image release ${VM_IMAGE_TAG} is a draft`)
     }
 
     const tarAsset = release.assets.find((a) => a.name === assetName)
