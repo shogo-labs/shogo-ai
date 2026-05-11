@@ -789,6 +789,151 @@ function detectWrongPlatformNativeDeps(dir: string): string | null {
 }
 
 /**
+ * Compare two `x.y.z` semver strings numerically. Returns >0 if a > b,
+ * <0 if a < b, 0 if equal. Treats pre-release/build suffixes as the
+ * lowest-precedence component (we just strip them) — good enough for
+ * pin migrations where the only callers feed clean release numbers
+ * pulled from npm and from the bundled runtime-template's package.json.
+ */
+function compareSemver(a: string, b: string): number {
+  const parse = (s: string) => s.replace(/[+-].*$/, '').split('.').map((n) => parseInt(n, 10) || 0)
+  const [aMaj, aMin, aPat] = parse(a)
+  const [bMaj, bMin, bPat] = parse(b)
+  return (aMaj - bMaj) || (aMin - bMin) || (aPat - bPat)
+}
+
+/**
+ * Heal legacy `@shogo-ai/sdk` pins and `generate` scripts in a user's
+ * workspace `package.json`.
+ *
+ * Why this exists: projects bootstrapped pre-May 2026 shipped with
+ *   "@shogo-ai/sdk": "^0.4.0"
+ *   "generate":     "bunx shogo generate"
+ *
+ * That combination is permanently broken on every macOS install:
+ *   1. `bunx shogo` resolves to the only published 0.4.x — `0.4.0` —
+ *      because the registry jumps 0.4.0 → 1.0.0 with no patch
+ *      in between (0.4.1 was tagged internally but never published).
+ *   2. The published 0.4.0 CLI does `execSync(\`bun ${absScriptPath}\`)`
+ *      which `/bin/sh` tokenizes on whitespace, truncating workspace
+ *      paths under `~/Library/Application Support/Shogo/...` and
+ *      crashing with `Module not found "/Users/<u>/Library/Application"`.
+ *
+ * Once an install is on the broken pin, no amount of `bun install`
+ * rescues it — the only working npm version that satisfies `^0.4.0`
+ * really is 0.4.0. The only fix is to rewrite the pin to a non-broken
+ * line.
+ *
+ * Behaviour:
+ *
+ *   - If the workspace pins a version of `@shogo-ai/sdk` strictly less
+ *     than what the bundled runtime-template carries, rewrite the pin
+ *     to `^${bundled-version}`. The new pin matches the SDK that the
+ *     desktop app's own runtime-template/node_modules is built against,
+ *     so we ship a known-working pair.
+ *   - If the workspace's `scripts.generate` matches the legacy
+ *     `bunx shogo …` / `bun x shogo …` shape, rewrite it to the
+ *     path-based form
+ *     `bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate`. The
+ *     path form skips bunx's npm-cache lookup entirely and stays
+ *     space-safe (no shell tokenization — Bun handles argv directly).
+ *
+ * Side-effects: writes back the modified `package.json`. Because
+ * `ensureWorkspaceDeps`'s install-marker is a sha256 of that file,
+ * the next call after migration trips a fresh install — exactly what
+ * we want to pull the upgraded SDK into `node_modules/`.
+ *
+ * Safe to call repeatedly: bails when nothing needs fixing and never
+ * downgrades existing healthy pins.
+ */
+export function migrateLegacyShogoSdkPin(dir: string): { upgraded: boolean; before?: string; after?: string; scriptRewritten?: boolean } {
+  const pkgPath = join(dir, 'package.json')
+  if (!existsSync(pkgPath)) return { upgraded: false }
+
+  let raw: string
+  try { raw = readFileSync(pkgPath, 'utf-8') } catch { return { upgraded: false } }
+
+  let pkgJson: {
+    dependencies?: Record<string, string>
+    devDependencies?: Record<string, string>
+    scripts?: Record<string, string>
+  }
+  try { pkgJson = JSON.parse(raw) } catch { return { upgraded: false } }
+
+  // The bundled runtime-template is the source of truth for the "good"
+  // SDK version — its node_modules/ ships pre-installed in the desktop
+  // app, so whatever it pins is guaranteed to resolve.
+  let templateSdkVersion: string | null = null
+  const templatePath = getRuntimeTemplatePath()
+  if (templatePath) {
+    try {
+      const templatePkg = JSON.parse(readFileSync(join(templatePath, 'package.json'), 'utf-8'))
+      const range = templatePkg.dependencies?.['@shogo-ai/sdk'] ?? templatePkg.devDependencies?.['@shogo-ai/sdk']
+      if (typeof range === 'string') {
+        // Strip leading range operators (^, ~, >=, etc.) to get a
+        // concrete version for comparison.
+        const m = range.match(/(\d+\.\d+\.\d+)/)
+        if (m) templateSdkVersion = m[1]
+      }
+    } catch { /* template package.json missing/malformed — no upgrade target */ }
+  }
+
+  let changed = false
+  let beforePin: string | undefined
+  let afterPin: string | undefined
+  let scriptRewritten = false
+
+  // 1. Pin migration.
+  const userSdkRange = pkgJson.dependencies?.['@shogo-ai/sdk']
+  if (userSdkRange && templateSdkVersion) {
+    const userVerMatch = userSdkRange.match(/(\d+\.\d+\.\d+)/)
+    const userVer = userVerMatch?.[1]
+    // Upgrade if either:
+    //   - user's pin is older than the bundled SDK (compareSemver < 0)
+    //   - user's pin is the known-broken 0.4.0 (exact match — same
+    //     compareSemver result, but we log it explicitly so we know
+    //     we're healing the bug, not just bumping for fun)
+    if (userVer && compareSemver(userVer, templateSdkVersion) < 0) {
+      const newRange = `^${templateSdkVersion}`
+      pkgJson.dependencies!['@shogo-ai/sdk'] = newRange
+      beforePin = userSdkRange
+      afterPin = newRange
+      changed = true
+      console.log(
+        `[workspace-defaults] migrateLegacyShogoSdkPin: ` +
+        `upgrading @shogo-ai/sdk ${userSdkRange} → ${newRange} in ${pkgPath}`,
+      )
+    }
+  }
+
+  // 2. Script rewrite.
+  const gen = pkgJson.scripts?.generate?.trim()
+  if (gen && /^(bunx|bun\s+x)(\s+--bun)?\s+shogo(\s|$)/.test(gen)) {
+    const safeGen = 'bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate'
+    pkgJson.scripts!.generate = safeGen
+    scriptRewritten = true
+    changed = true
+    console.log(
+      `[workspace-defaults] migrateLegacyShogoSdkPin: ` +
+      `rewrote broken \`bunx shogo generate\` script to path-safe form in ${pkgPath}`,
+    )
+  }
+
+  if (!changed) return { upgraded: false }
+
+  // Preserve a trailing newline if the original file had one — many
+  // tools (git, eslint, prettier) treat its absence as a diff.
+  const trailingNewline = raw.endsWith('\n') ? '\n' : ''
+  try {
+    writeFileSync(pkgPath, JSON.stringify(pkgJson, null, 2) + trailingNewline)
+  } catch (err: any) {
+    console.error(`[workspace-defaults] migrateLegacyShogoSdkPin: failed to write ${pkgPath}: ${err.message}`)
+    return { upgraded: false }
+  }
+  return { upgraded: !!afterPin, before: beforePin, after: afterPin, scriptRewritten }
+}
+
+/**
  * Ensure workspace has node_modules installed with correct platform binaries.
  *
  * Platform detection: a `.shogo-platform` marker records what OS+arch the
@@ -803,6 +948,11 @@ function detectWrongPlatformNativeDeps(dir: string): string | null {
  */
 export async function ensureWorkspaceDeps(dir: string): Promise<void> {
   if (!existsSync(join(dir, 'package.json'))) return
+
+  // Run BEFORE the install-marker check so an upgrade trips a reinstall
+  // (the marker is a sha256 of package.json — rewriting the SDK pin or
+  // the `generate` script changes the hash and forces install to run).
+  migrateLegacyShogoSdkPin(dir)
 
   const viteBin = join(dir, 'node_modules', '.bin', 'vite')
   const nodeModules = join(dir, 'node_modules')
