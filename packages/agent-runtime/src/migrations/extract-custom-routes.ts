@@ -187,6 +187,35 @@ function isStaleGeneratedServerTsx(source: string): boolean {
 }
 
 /**
+ * Detect a current `generateServer()` output that's correctly wired:
+ * has the SDK auto-gen header, imports `customRoutes` from
+ * `./custom-routes`, and mounts it via `app.route(<apiBase>, customRoutes)`.
+ *
+ * This is the steady state for a healthy workspace. Without this
+ * short-circuit the migration falls through to the "hand-edited" path
+ * (because `isStockServerTsx` returns false for any server.tsx that
+ * also mounts the SDK tools proxy at `/api/tools/execute` +
+ * `/api/tools/schemas`, which is every modern SDK output), snapshots
+ * + deletes server.tsx on every boot, and `bun run generate` then
+ * re-emits the identical file. Net effect: no useful work, a fresh
+ * `.shogo/server-tsx-extracted-*` snapshot dir per boot, and a
+ * misleading "needs review" log line.
+ *
+ * Returns true ONLY when the file is unambiguously SDK-generated and
+ * already correctly wired. Anything else (hand-edited, missing the
+ * mount, has the migrated-routes marker) falls through to the
+ * existing classifiers.
+ */
+function isCorrectlyWiredSdkServerTsx(source: string): boolean {
+  if (source.includes(CUSTOM_ROUTES_MARKER)) return false
+  if (!source.includes(SDK_AUTOGEN_MARKER)) return false
+  if (!/\bimport\s+customRoutes\b[\s\S]{0,200}from\s+['"]\.\/custom-routes['"]/.test(source)) return false
+  // Must actually mount it — an import alone could be dead code.
+  if (!/\bapp\.route\(\s*['"][^'"]*['"]\s*,\s*customRoutes\s*\)/.test(source)) return false
+  return true
+}
+
+/**
  * Extract a `// MIGRATED-CUSTOM-ROUTES` block (the format
  * {@link injectCustomRoutes} produces) into a standalone
  * `custom-routes.ts` body. Returns `null` when no marker is present.
@@ -352,6 +381,19 @@ export function extractCustomRoutes(workspaceDir: string): ExtractCustomRoutesRe
 
   try {
     const serverSrc = readFileSync(serverPath, 'utf-8')
+
+    // Short-circuit: a correctly-wired SDK server.tsx (auto-gen
+    // header + `import customRoutes from './custom-routes'` + an
+    // `app.route(<apiBase>, customRoutes)` mount) is the steady
+    // state for a healthy workspace. There is nothing for this
+    // migration to extract or delete — leave the file in place so
+    // the next `bun run generate` doesn't have to re-emit an
+    // identical copy. Without this guard the migration falls into
+    // the hand-edited path on every boot and creates a fresh
+    // snapshot dir under `.shogo/`.
+    if (isCorrectlyWiredSdkServerTsx(serverSrc)) {
+      return { migrated: false }
+    }
 
     const stockMatch = customRoutesExists && isStockServerTsx(serverSrc)
     // A previous `generateServer()` run that predates the
