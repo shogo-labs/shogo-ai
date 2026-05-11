@@ -13,14 +13,22 @@
 
 import { getToolKeyArg } from "./types"
 
+export type RestSep = "&&" | "||" | ";"
+
 export interface ToolSummary {
   verb: string
   target?: string
   /**
-   * Additional segments chained with `&&` after the primary verb.
-   * Renderers should join with " && " for display, e.g.
-   * `bun test && bun lint` -> { verb:"Run", target:"test", rest:[{verb:"Run", target:"lint"}] }.
-   * Only populated by `parseShellCommand` for `&&`-joined shell commands.
+   * Separator that linked this entry to the previous one. Only set on
+   * entries inside another summary's `rest` array; the top-level summary
+   * has no separator.
+   */
+  sep?: RestSep
+  /**
+   * Additional segments chained with `&&`, `||`, or `;` after the primary
+   * verb. Each entry carries its own `sep` so renderers can label the
+   * link as "and" / "or" / "then". Pipes (`|`) terminate the chain and
+   * are not represented here.
    */
   rest?: ToolSummary[]
 }
@@ -48,6 +56,103 @@ function dequote(value: string): string {
     }
   }
   return value
+}
+
+function formatList(items: string[]): string {
+  if (items.length === 0) return ""
+  if (items.length === 1) return items[0]
+  if (items.length === 2) return `${items[0]} or ${items[1]}`
+  return items.slice(0, -1).join(", ") + ", or " + items[items.length - 1]
+}
+
+/**
+ * Convert the inside of a regex character class (without the `[]`) to an
+ * English phrase like `any of a, b, or c`. Leading `^` flips to
+ * `anything except …`. Ranges like `a-z` are kept as a single token.
+ */
+function prettifyCharClass(inside: string): string {
+  if (!inside) return "[]"
+  const negated = inside.startsWith("^")
+  const body = negated ? inside.slice(1) : inside
+  const items: string[] = []
+  let i = 0
+  while (i < body.length) {
+    let token: string
+    if (body[i] === "\\" && i + 1 < body.length) {
+      token = body.slice(i, i + 2)
+      i += 2
+    } else {
+      token = body[i]
+      i += 1
+    }
+    if (i < body.length - 1 && body[i] === "-") {
+      token = `${token}-${body[i + 1]}`
+      i += 2
+    }
+    items.push(token)
+  }
+  const list = formatList(items)
+  return negated ? `anything except ${list}` : `any of ${list}`
+}
+
+/**
+ * Apply anchor translation to a single alternation alternative:
+ * `^X` -> `starting with X`, `X$` -> `ending with X`, `^X$` -> `exactly X`.
+ */
+function prettifyAnchoredPart(part: string): string {
+  if (!part) return part
+  const hasStart = part.startsWith("^") && !part.startsWith("\\^")
+  const hasEnd = part.endsWith("$") && !part.endsWith("\\$")
+  const middle = part.slice(hasStart ? 1 : 0, hasEnd ? part.length - 1 : part.length)
+  if (hasStart && hasEnd) return `exactly ${middle}`
+  if (hasStart) return `starting with ${middle}`
+  if (hasEnd) return `ending with ${middle}`
+  return part
+}
+
+/**
+ * Translate a regex search pattern into an English summary suitable for a
+ * one-line tool row. Handles alternation (`\|` BRE / `|` ERE), anchors
+ * (`^`, `$`), and character classes (`[abc]`, `[a-z]`, `[^abc]`). Other
+ * regex syntax passes through as-is — the goal is "more readable than raw
+ * regex" within ~30 chars, not a full regex-to-prose translation.
+ */
+function prettifySearchPattern(pattern: string): string {
+  const M = "\u0000"
+  const classes: string[] = []
+  // Phase 1: stash char classes so their inner `|` doesn't trip the
+  // alternation split in phase 2. (?<!\\) avoids matching escaped `\[`.
+  const stashed = pattern.replace(/(?<!\\)\[([^\]]*)\]/g, (_, inner: string) => {
+    classes.push(prettifyCharClass(inner))
+    return `${M}${classes.length - 1}${M}`
+  })
+  const parts = stashed.split(/\\\||\|/)
+  const prettified = parts.map(prettifyAnchoredPart)
+  let result = prettified.join(" or ")
+  // Restore stashed char classes with surrounding spaces so adjacent
+  // text doesn't fuse into the phrase.
+  result = result.replace(new RegExp(`${M}(\\d+)${M}`, "g"), (_, idx: string) => {
+    return ` ${classes[Number(idx)] ?? ""} `
+  })
+  return result.replace(/\s+/g, " ").trim()
+}
+
+/**
+ * Map a shell chain separator to a human-readable connector. Used by
+ * chat tool-row renderers to display `bun test && bun lint` as
+ * `Run test and Run lint`. Defaults to `"and"` so existing callers
+ * without a `sep` field keep working.
+ */
+export function sepLabel(sep?: RestSep): string {
+  switch (sep) {
+    case "||":
+      return "or"
+    case ";":
+      return "then"
+    case "&&":
+    default:
+      return "and"
+  }
 }
 
 function urlHost(url: string): string | undefined {
@@ -90,9 +195,34 @@ function tokenize(line: string): string[] {
   return tokens
 }
 
+/**
+ * Match shell I/O redirection operators so we can skip them when picking
+ * the first "real" argument. Covers:
+ *   `<`, `<<`, `<<<`, `>`, `>>`           — basic redirection / heredoc
+ *   `2>`, `2>>`, `&>`, `2>&1`, `>&2`     — fd-tagged variants
+ * The following token (heredoc delimiter, target filename, fd ref) is
+ * also consumed via the `skipNext` flag in `firstNonFlagArg`.
+ */
+function isRedirection(token: string): boolean {
+  if (!token) return false
+  if (/^[0-9]*[<>]+$/.test(token)) return true
+  if (/^&[<>]$/.test(token)) return true
+  if (/^[0-9]*[<>]&[0-9]*$/.test(token)) return true
+  return false
+}
+
 function firstNonFlagArg(tokens: string[], startIdx: number): string | undefined {
+  let skipNext = false
   for (let i = startIdx; i < tokens.length; i++) {
     const t = tokens[i]
+    if (skipNext) {
+      skipNext = false
+      continue
+    }
+    if (isRedirection(t)) {
+      skipNext = true
+      continue
+    }
     if (!t.startsWith("-")) return dequote(t)
   }
   return undefined
@@ -108,8 +238,11 @@ interface SegmentWithSep {
 /**
  * Split the first line of `command` into top-level segments at `&&`, `||`,
  * `;`, and `|`, retaining the separator that precedes each segment.
- * Quote-awareness is intentionally rough — the verbs we care about rarely
- * contain these chars in their own args.
+ *
+ * Quote- and backslash-aware: separator chars inside `"..."` or `'...'`
+ * are ignored, and a `\` outside single quotes escapes the next char so
+ * literal `\|` / `\&` aren't treated as separators either. Inside single
+ * quotes `\` is literal (POSIX), so escapes are not honored there.
  */
 function splitSegmentsWithSep(command: string): SegmentWithSep[] {
   const firstLine = command.split("\n")[0] ?? ""
@@ -117,12 +250,39 @@ function splitSegmentsWithSep(command: string): SegmentWithSep[] {
   let i = 0
   let start = 0
   let pendingSep: SegmentWithSep["sep"] = ""
+  let quote: '"' | "'" | null = null
+  let escaped = false
   const flush = (end: number, nextSep: SegmentWithSep["sep"]) => {
     const text = firstLine.slice(start, end).trim()
     if (text) out.push({ text, sep: pendingSep })
     pendingSep = nextSep
   }
   while (i < firstLine.length) {
+    const ch = firstLine[i]
+    if (escaped) {
+      escaped = false
+      i += 1
+      continue
+    }
+    if (quote === null && ch === "\\") {
+      escaped = true
+      i += 1
+      continue
+    }
+    if (quote === null && (ch === '"' || ch === "'")) {
+      quote = ch
+      i += 1
+      continue
+    }
+    if (quote !== null) {
+      if (ch === quote) {
+        quote = null
+      } else if (quote === '"' && ch === "\\") {
+        escaped = true
+      }
+      i += 1
+      continue
+    }
     const two = firstLine.slice(i, i + 2)
     if (two === "&&" || two === "||") {
       flush(i, two as "&&" | "||")
@@ -130,7 +290,6 @@ function splitSegmentsWithSep(command: string): SegmentWithSep[] {
       start = i
       continue
     }
-    const ch = firstLine[i]
     if (ch === ";" || ch === "|") {
       flush(i, ch as ";" | "|")
       i += 1
@@ -172,16 +331,18 @@ export function parseShellCommand(command: string): ToolSummary {
 
   const primary = parseSingleSegment(segments[primaryIdx].text)
 
-  // Walk forward collecting additional &&-joined segments (skipping any
-  // mid-chain cds, which are still navigation preamble). A non-`&&`
-  // separator (`;`, `||`, `|`) terminates the chain — those don't
-  // express the same "do A then B" intent.
+  // Walk forward collecting additional segments chained with &&, ||, or ;
+  // (skipping any mid-chain cds, which are still navigation preamble).
+  // Pipes (`|`) terminate the chain — output piping isn't the same
+  // "do A then B" intent we want to surface as a list.
   const rest: ToolSummary[] = []
   for (let i = primaryIdx + 1; i < segments.length; i++) {
     const seg = segments[i]
-    if (seg.sep !== "&&") break
+    if (seg.sep === "|" || seg.sep === "") break
     if (isCd(seg)) continue
-    rest.push(parseSingleSegment(seg.text))
+    const entry = parseSingleSegment(seg.text)
+    entry.sep = seg.sep
+    rest.push(entry)
   }
   if (rest.length > 0) primary.rest = rest
 
@@ -240,14 +401,17 @@ function parseSingleSegment(segment: string): ToolSummary {
     case "rg":
     case "ag": {
       const pattern = firstNonFlagArg(rest, 0)
-      return { verb: "Search for", target: pattern ? truncate(pattern, 30) : undefined }
+      const pretty = pattern ? prettifySearchPattern(pattern) : undefined
+      return { verb: "Search for", target: pretty ? truncate(pretty, 30) : undefined }
     }
     case "find": {
       const target = firstNonFlagArg(rest, 0)
       return { verb: "Find in", target: target ? truncate(basename(target)) : undefined }
     }
     case "echo": {
-      const target = rest.length > 0 ? dequote(rest.join(" ")) : undefined
+      const stopIdx = rest.findIndex(isRedirection)
+      const args = stopIdx === -1 ? rest : rest.slice(0, stopIdx)
+      const target = args.length > 0 ? dequote(args.join(" ")) : undefined
       return { verb: "echo", target: target ? truncate(target, 30) : undefined }
     }
     case "curl":
@@ -323,7 +487,8 @@ export function getToolSummary(
     case "grep":
     case "search": {
       const pattern = a.pattern as string | undefined
-      return { verb: "Search for", target: pattern ? truncate(pattern, 30) : undefined }
+      const pretty = pattern ? prettifySearchPattern(pattern) : undefined
+      return { verb: "Search for", target: pretty ? truncate(pretty, 30) : undefined }
     }
     case "Glob":
     case "glob": {

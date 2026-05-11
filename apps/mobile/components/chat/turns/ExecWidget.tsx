@@ -13,7 +13,7 @@ import { View, Text, Pressable, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { Terminal, Loader2, CheckCircle2, XCircle, ChevronRight, ChevronDown } from "lucide-react-native"
 import type { ToolCallData } from "../tools/types"
-import { parseShellCommand } from "../tools/summary"
+import { parseShellCommand, sepLabel } from "../tools/summary"
 
 const MAX_OUTPUT_LINES = 30
 const MAX_OUTPUT_CHARS = 3000
@@ -163,7 +163,7 @@ function ExecWidgetImpl({
           ) : null}
           {summary.rest?.map((s, i) => (
             <Fragment key={i}>
-              <Text className="text-muted-foreground/60"> && </Text>
+              <Text className="text-muted-foreground/60">{` ${sepLabel(s.sep)} `}</Text>
               <Text className="font-medium text-muted-foreground">{s.verb}</Text>
               {s.target ? <Text className="text-foreground"> {s.target}</Text> : null}
             </Fragment>
