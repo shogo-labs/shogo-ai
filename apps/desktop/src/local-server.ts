@@ -302,6 +302,19 @@ export async function startLocalServer(): Promise<void> {
     BETTER_AUTH_URL: `http://localhost:${apiPort}`,
     BUN_INSTALL_CACHE_DIR: path.join(getWorkspacesDir(), '..', '.bun-cache'),
     SHOGO_BUN_PATH: bunPath,
+    // Path-safe SDK CLI fallback. PreviewManager uses this when a
+    // project's `package.json` declares the legacy
+    // `"generate": "bunx shogo generate"` script — `bunx` would resolve
+    // that to the published @shogo-ai/sdk@0.4.0, whose execSync-based
+    // sub-shell breaks on workspace paths containing spaces (notably
+    // every macOS install under "~/Library/Application Support/Shogo").
+    // 0.4.1 fixed the bug but was never published to npm, so we ship
+    // the in-repo CLI as a sibling resource and route around the
+    // broken script when detected. See apps/desktop/scripts/bundle-api.mjs
+    // for the bundling step.
+    SHOGO_BUNDLED_SDK_CLI: IS_DEV
+      ? path.join(projectRoot, 'packages', 'sdk', 'bin', 'cli.mjs')
+      : path.join(projectRoot, 'sdk-cli.mjs'),
     AGENT_RUNTIME_ENTRY: IS_DEV
       ? path.join(projectRoot, 'packages', 'agent-runtime', 'src', 'entry.ts')
       : path.join(bundleDir, 'agent-runtime.js'),

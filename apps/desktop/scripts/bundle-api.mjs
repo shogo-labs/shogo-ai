@@ -186,6 +186,33 @@ function main() {
     fs.copyFileSync(localSchema, path.join(prismaDir, 'schema.local.prisma'))
   }
 
+  // --- Shogo SDK CLI (path-safe variant) ---
+  //
+  // The published `@shogo-ai/sdk@0.4.0` shipped a CLI that used
+  // `execSync(\`bun ${scriptPath}\`)` — `/bin/sh` then tokenized the
+  // absolute path on whitespace and broke for any workspace under
+  // "/Users/<u>/Library/Application Support/Shogo/...". The fix landed
+  // in 68ab3e7d (May 8) as 0.4.1, but 0.4.1 was never published to
+  // npm: the registry jumps 0.4.0 → 1.0.0. Existing projects pin
+  // `"@shogo-ai/sdk": "^0.4.0"`, so `bunx shogo generate` still
+  // resolves to the broken 0.4.0 and fails the same way it always did.
+  //
+  // Until those projects upgrade (or 0.4.1 is published), we ship the
+  // in-repo CLI as a sibling resource. PreviewManager prefers it over
+  // the project's script when the script matches the known-broken
+  // `bunx shogo` / `bun x shogo` pattern. cli.mjs only uses Node
+  // built-ins for the `generate` codepath, so a plain file copy is
+  // sufficient (no bundling).
+  logStep('Bundling SDK CLI (path-safe fallback)...')
+  const sdkCliSrc = path.join(REPO_ROOT, 'packages', 'sdk', 'bin', 'cli.mjs')
+  const sdkCliDest = path.join(RESOURCES_DIR, 'sdk-cli.mjs')
+  if (fs.existsSync(sdkCliSrc)) {
+    fs.copyFileSync(sdkCliSrc, sdkCliDest)
+    console.log('  ✓ sdk-cli.mjs')
+  } else {
+    console.warn('  ⚠ packages/sdk/bin/cli.mjs not found — preview projects with the legacy `bunx shogo generate` script will fail on paths with spaces')
+  }
+
   // --- Generate seed.db from current schema (prevents stale seed after migrations) ---
   logStep('Generating seed.db...')
   const seedDbPath = path.join(RESOURCES_DIR, 'seed.db')
