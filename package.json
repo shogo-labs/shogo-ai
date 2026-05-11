@@ -102,6 +102,7 @@
     "prisma-adapter-bun-sqlite": "^0.7.1"
   },
   "patchedDependencies": {
-    "react-native-css-interop@0.2.2": "patches/react-native-css-interop@0.2.2.patch"
+    "react-native-css-interop@0.2.2": "patches/react-native-css-interop@0.2.2.patch",
+    "@react-navigation/routers@7.5.3": "patches/@react-navigation%2Frouters@7.5.3.patch"
   }
 }
