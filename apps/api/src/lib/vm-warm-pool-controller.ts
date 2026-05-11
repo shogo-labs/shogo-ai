@@ -22,6 +22,17 @@ const RECONCILE_INTERVAL_MS = parseInt(process.env.VM_POOL_RECONCILE_INTERVAL ||
 const HEALTH_CHECK_RETRIES = parseInt(process.env.VM_HEALTH_CHECK_RETRIES || '120', 10)
 const HEALTH_CHECK_INTERVAL_MS = parseInt(process.env.VM_HEALTH_CHECK_INTERVAL || '2000', 10)
 
+// Idle-eviction reaper: stop any assigned VM whose project hasn't been touched
+// (getProjectUrl / external touch) for this long. Mirrors the cloud
+// WarmPoolController.gc.idleEvictions path. Default 10 min; disable with 0.
+const IDLE_EVICTION_MS = parseInt(process.env.VM_IDLE_EVICTION_MS || `${10 * 60 * 1000}`, 10)
+
+// Hard cap on concurrent assigned VMs so opening many projects can't OOM the
+// host. 0 = auto: derive from host free memory / vmMemoryMB at start().
+const ASSIGNED_VM_CAP_ENV = process.env.VM_MAX_ASSIGNED
+  ? parseInt(process.env.VM_MAX_ASSIGNED, 10)
+  : 0
+
 export interface VMPodInfo {
   id: string
   vmId: string
@@ -29,6 +40,12 @@ export interface VMPodInfo {
   createdAt: number
   ready: boolean
   assignedAt?: number
+  /**
+   * Last time someone asked for this project's URL (or otherwise signalled
+   * it's still in use). Used by the idle-eviction reaper. Refreshed on every
+   * successful getProjectUrl() and on explicit touch().
+   */
+  lastTouchedAt?: number
   projectId?: string
 }
 
@@ -88,6 +105,7 @@ export class VMWarmPoolController {
   private started = false
   private consecutiveBootFailures = 0
   private managerFactory: VMManagerFactory
+  private maxAssigned: number = 0
 
   constructor(
     managerOrFactory: VMManagerInterface | VMManagerFactory,
@@ -97,13 +115,39 @@ export class VMWarmPoolController {
     this.managerFactory = typeof managerOrFactory === 'function'
       ? managerOrFactory
       : () => managerOrFactory
+    this.maxAssigned = this.computeMaxAssigned()
+  }
+
+  /**
+   * Cap on concurrent assigned VMs. Each VM holds `vmConfig.memoryMB` of
+   * host RAM plus QEMU overhead; without a cap the warm pool grew to 13+
+   * QEMU processes (49 GB resident) in production logs.
+   *
+   * Auto sizing leaves half of host free RAM for the rest of the desktop
+   * app (Electron, renderer, host RuntimeManager, LSPs).
+   */
+  private computeMaxAssigned(): number {
+    if (ASSIGNED_VM_CAP_ENV > 0) return ASSIGNED_VM_CAP_ENV
+    const memoryMB = Number(this.vmConfig?.memoryMB) || 4096
+    let freeMB: number
+    try {
+      const os = require('os') as typeof import('os')
+      freeMB = Math.floor(os.totalmem() / 1024 / 1024)
+    } catch {
+      freeMB = 16 * 1024
+    }
+    return Math.max(2, Math.floor(freeMB / (memoryMB * 2)))
   }
 
   async start(): Promise<void> {
     if (this.started) return
     this.started = true
 
-    console.log(`[VMWarmPool] Starting VM warm pool controller (poolSize: ${this.poolSize})`)
+    console.log(
+      `[VMWarmPool] Starting VM warm pool controller ` +
+      `(poolSize: ${this.poolSize}, maxAssigned: ${this.maxAssigned}, ` +
+      `idleEvictionMs: ${IDLE_EVICTION_MS})`,
+    )
 
     // Kill orphaned QEMU and VM helper processes from a previous server session
     if (process.platform === 'win32') {
@@ -196,10 +240,22 @@ export class VMWarmPoolController {
       throw new Error(`VM /pool/assign failed (${res.status}): ${text}`)
     }
 
-    pod.assignedAt = Date.now()
+    const now = Date.now()
+    pod.assignedAt = now
+    pod.lastTouchedAt = now
     pod.projectId = projectId
     this.assigned.set(projectId, pod)
     console.log(`[VMWarmPool] Assigned VM ${pod.vmId} to project ${projectId}`)
+  }
+
+  /**
+   * Mark a project as recently used. Call from anywhere the project is
+   * still actively being viewed (e.g. agent proxy stream open, UI focus
+   * event) so the idle-eviction reaper doesn't kill its VM prematurely.
+   */
+  touch(projectId: string): void {
+    const pod = this.assigned.get(projectId)
+    if (pod) pod.lastTouchedAt = Date.now()
   }
 
   getAssignedPod(projectId: string): VMPodInfo | undefined {
@@ -219,6 +275,7 @@ export class VMWarmPoolController {
       const STARTUP_GRACE_MS = 60_000
 
       if (age < STARTUP_GRACE_MS) {
+        existing.lastTouchedAt = Date.now()
         try {
           const probe = await fetch(`${existing.url}/health`, {
             signal: AbortSignal.timeout(5000),
@@ -234,7 +291,10 @@ export class VMWarmPoolController {
         const probe = await fetch(`${existing.url}/health`, {
           signal: AbortSignal.timeout(3000),
         })
-        if (probe.ok) return existing.url
+        if (probe.ok) {
+          existing.lastTouchedAt = Date.now()
+          return existing.url
+        }
       } catch {
         // VM is dead after grace period — fall through to evict + re-assign
       }
@@ -268,6 +328,18 @@ export class VMWarmPoolController {
       this.evict(projectId)
     }
 
+    // LRU cap: if we're about to push past maxAssigned, evict the
+    // least-recently-touched VM first. This stops a runaway warm pool
+    // (e.g. user opens 13+ projects in one session) from OOM-ing the host.
+    while (this.assigned.size >= this.maxAssigned) {
+      const victim = this.findLruAssigned()
+      if (!victim) break
+      console.log(
+        `[VMWarmPool] LRU cap reached (${this.assigned.size}/${this.maxAssigned}) — evicting ${victim}`,
+      )
+      this.evict(victim)
+    }
+
     const pod = this.claim()
     if (!pod) {
       const freshPod = await this.bootVM()
@@ -278,6 +350,29 @@ export class VMWarmPoolController {
 
     await this.assign(pod, projectId)
     return pod.url
+  }
+
+  private findLruAssigned(): string | null {
+    let oldestId: string | null = null
+    let oldestTs = Number.POSITIVE_INFINITY
+    for (const [projectId, pod] of this.assigned) {
+      const ts = pod.lastTouchedAt ?? pod.assignedAt ?? 0
+      if (ts < oldestTs) {
+        oldestTs = ts
+        oldestId = projectId
+      }
+    }
+    return oldestId
+  }
+
+  /**
+   * Public entry point for callers (e.g. project-close IPC handlers, project
+   * deletion) to release a VM. Safe to call with an unknown project id.
+   */
+  evictProject(projectId: string): void {
+    if (this.assigned.has(projectId)) {
+      this.evict(projectId)
+    }
   }
 
   private evict(projectId: string): void {
@@ -300,6 +395,27 @@ export class VMWarmPoolController {
 
   private async reconcile(): Promise<void> {
     if (!this.started) return
+
+    // Idle-eviction reaper: stop any assigned VM whose project hasn't been
+    // touched in IDLE_EVICTION_MS. Without this the pool grows unbounded:
+    // every project switch claims a fresh warm VM, the old one is left
+    // running, and after ~13 project opens you have 13 QEMU processes
+    // (~49 GB resident) leaking RAM until manual shutdown.
+    if (IDLE_EVICTION_MS > 0 && this.assigned.size > 0) {
+      const now = Date.now()
+      const stale: string[] = []
+      for (const [projectId, pod] of this.assigned) {
+        const lastSeen = pod.lastTouchedAt ?? pod.assignedAt ?? 0
+        if (now - lastSeen > IDLE_EVICTION_MS) stale.push(projectId)
+      }
+      for (const projectId of stale) {
+        console.log(
+          `[VMWarmPool] Idle-evicting ${projectId} (untouched for ` +
+          `${Math.round((now - (this.assigned.get(projectId)?.lastTouchedAt ?? 0)) / 1000)}s)`,
+        )
+        this.evict(projectId)
+      }
+    }
 
     // Health check existing available VMs
     for (const [id, pod] of this.available) {
@@ -446,6 +562,8 @@ export class VMWarmPoolController {
       available: this.available.size,
       assigned: this.assigned.size,
       targetPoolSize: this.poolSize,
+      maxAssigned: this.maxAssigned,
+      idleEvictionMs: IDLE_EVICTION_MS,
       vms: [...this.available.values(), ...this.assigned.values()].map(p => ({
         id: p.id,
         vmId: p.vmId,
@@ -453,6 +571,7 @@ export class VMWarmPoolController {
         ready: p.ready,
         projectId: p.projectId,
         assignedAt: p.assignedAt,
+        lastTouchedAt: p.lastTouchedAt,
       })),
     }
   }
