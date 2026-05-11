@@ -22,6 +22,7 @@ import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { isPreinstalledMcpId, isMcpServerAllowed, isCatalogEntry, getPreinstalledPackages } from './mcp-catalog'
 import { getSanitizedEnv } from './sandbox-exec'
 import { shouldRouteThroughCloud, getCloudDispatcher, type McpTransportPin } from './lib/cloud-fetcher'
+import { enforceImageSizeLimit } from './image-size-guard'
 
 const MAX_MCP_SERVERS = 10
 const MCP_CONNECT_TIMEOUT_MS = 90_000
@@ -392,10 +393,13 @@ export class MCPClientManager {
             }
 
             if (images.length > 0) {
-              const content: any[] = images.map((img: any) => ({
+              const rawContent: any[] = images.map((img: any) => ({
                 type: 'image' as const, data: img.data, mimeType: img.mimeType || 'image/png',
               }))
-              if (texts) content.push({ type: 'text' as const, text: texts })
+              if (texts) rawContent.push({ type: 'text' as const, text: texts })
+              const content = enforceImageSizeLimit(rawContent, {
+                label: `mcp:${mcpTool.name}`,
+              })
               return { content }
             }
 
@@ -559,10 +563,13 @@ export class MCPClientManager {
             }
 
             if (images.length > 0) {
-              const content: any[] = images.map((img: any) => ({
+              const rawContent: any[] = images.map((img: any) => ({
                 type: 'image' as const, data: img.data, mimeType: img.mimeType || 'image/png',
               }))
-              if (texts) content.push({ type: 'text' as const, text: texts })
+              if (texts) rawContent.push({ type: 'text' as const, text: texts })
+              const content = enforceImageSizeLimit(rawContent, {
+                label: `mcp:${mcpTool.name}`,
+              })
               return { content }
             }
 

@@ -64,6 +64,7 @@ import { deriveApiUrl, derivePublicApiUrl } from './internal-api'
 import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 import { FileStateCache } from './file-state-cache'
+import { enforceImageSizeLimit, MAX_IMAGE_BASE64_BYTES } from './image-size-guard'
 import type { TeamManager } from './team-manager'
 import type { TeammateLoopHandle } from './teammate-loop'
 
@@ -713,6 +714,35 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
           }
           const buf = readFileSync(resolved)
           const base64 = buf.toString('base64')
+          if (base64.length > MAX_IMAGE_BASE64_BYTES) {
+            const details = {
+              path: filePath,
+              bytes: buf.length,
+              base64Bytes: base64.length,
+              mimeType: imageMime,
+              error:
+                `Image too large to send to the model: ${filePath} ` +
+                `(${buf.length} raw bytes / ${base64.length} base64 bytes, ` +
+                `cap is ${MAX_IMAGE_BASE64_BYTES} base64 bytes). ` +
+                'Downscale before reading, e.g. on macOS: ' +
+                `\`sips -Z 1024 "${filePath}" --out "${filePath}.small.png"\`, ` +
+                `or with ImageMagick: \`convert "${filePath}" -resize 1024x1024 "${filePath}.small.png"\`, ` +
+                'then read the resized file.',
+            }
+            return textResult(details)
+          }
+          const initialContent = [
+            { type: 'image' as const, data: base64, mimeType: imageMime },
+            { type: 'text' as const, text: JSON.stringify({
+              path: filePath,
+              bytes: buf.length,
+              mimeType: imageMime,
+              ...(offset !== undefined || limit !== undefined
+                ? { note: 'offset/limit are ignored for image files.' }
+                : {}),
+            }) },
+          ]
+          const safeContent = enforceImageSizeLimit(initialContent, { label: 'read_file', pathHint: filePath })
           const details = {
             path: filePath,
             bytes: buf.length,
@@ -721,13 +751,7 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
               ? { note: 'offset/limit are ignored for image files.' }
               : {}),
           }
-          return {
-            content: [
-              { type: 'image' as const, data: base64, mimeType: imageMime },
-              { type: 'text' as const, text: JSON.stringify(details) },
-            ],
-            details,
-          }
+          return { content: safeContent, details }
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err)
           return textResult({
@@ -2787,11 +2811,16 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             // reports can reference it portably.
             const relPath = relative(ctx.workspaceDir, screenshotPath)
             const base64 = Buffer.from(buffer).toString('base64')
+            const rawContent = [
+              { type: 'image' as const, data: base64, mimeType: 'image/png' },
+              { type: 'text' as const, text: JSON.stringify({ ok: true, path: relPath, url: p.url() }) },
+            ]
+            const safeContent = enforceImageSizeLimit(rawContent, {
+              label: 'browser:screenshot',
+              pathHint: relPath,
+            })
             return {
-              content: [
-                { type: 'image' as const, data: base64, mimeType: 'image/png' },
-                { type: 'text' as const, text: JSON.stringify({ ok: true, path: relPath, url: p.url() }) },
-              ],
+              content: safeContent,
               details: { ok: true, path: relPath, url: p.url() },
             }
           }
