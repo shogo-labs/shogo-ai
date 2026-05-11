@@ -114,6 +114,7 @@ const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'integrations', 'account', 
 
 /** Tablet/desktop split: matches `SettingsPage` `isWide` (sidebar layout). */
 const SETTINGS_WIDE_BREAKPOINT = 768
+const HIDE_COMPUTE_PURCHASES_ON_IOS = Platform.OS === 'ios'
 
 interface NavItem {
   id: TabId
@@ -126,7 +127,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = [
   { id: 'people', label: 'People', icon: Users },
   { id: 'integrations', label: 'Integrations', icon: Plug },
   { id: 'account', label: 'Account', icon: User },
-  { id: 'compute', label: 'Compute', icon: Server },
+  ...(!HIDE_COMPUTE_PURCHASES_ON_IOS ? [{ id: 'compute' as TabId, label: 'Compute', icon: Server }] : []),
   { id: 'billing', label: 'Billing', icon: CreditCard },
   { id: 'analytics', label: 'Usage', icon: BarChart3 },
   { id: 'costs', label: 'Costs', icon: Coins },
@@ -227,7 +228,7 @@ function SettingsSidebar({
     { id: 'integrations' as TabId, label: 'Integrations' },
     ...(showBilling
       ? [
-          { id: 'compute' as TabId, label: 'Compute' },
+          ...(!HIDE_COMPUTE_PURCHASES_ON_IOS ? [{ id: 'compute' as TabId, label: 'Compute' }] : []),
           { id: 'billing' as TabId, label: 'Billing' },
           { id: 'analytics' as TabId, label: 'Usage' },
           { id: 'costs' as TabId, label: 'Cost Optimizer' },
@@ -3078,7 +3079,7 @@ const SettingsContent = observer(function SettingsContent({
       {activeTab === 'integrations' && <IntegrationsTab />}
       {activeTab === 'account' && <AccountTab />}
       {activeTab === 'security' && <SecuritySettingsPanel />}
-      {activeTab === 'compute' && !isLocal && <ComputeTab />}
+      {activeTab === 'compute' && !isLocal && !HIDE_COMPUTE_PURCHASES_ON_IOS && <ComputeTab />}
       {activeTab === 'billing' && !isLocal && <BillingTab />}
       {activeTab === 'analytics' && <WorkspaceAnalyticsTab />}
       {activeTab === 'costs' && <WorkspaceCostTab />}
@@ -3105,7 +3106,7 @@ export default observer(function SettingsPage() {
   useEffect(() => {
     const isLocal = localMode || !features.billing
     if (activeTab === 'people' && isLocal) setActiveTab('workspace')
-    if (activeTab === 'compute' && isLocal) setActiveTab('workspace')
+    if (activeTab === 'compute' && (isLocal || HIDE_COMPUTE_PURCHASES_ON_IOS)) setActiveTab('workspace')
     if (activeTab === 'billing' && isLocal) setActiveTab('workspace')
   }, [activeTab, features.billing, localMode])
 
