@@ -41,7 +41,7 @@
     },
     "apps/api": {
       "name": "@shogo/api",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "dependencies": {
         "@ai-sdk/anthropic": "^3.0.37",
         "@aws-sdk/client-s3": "^3.975.0",
@@ -91,7 +91,7 @@
     },
     "apps/mobile": {
       "name": "@shogo/mobile",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "dependencies": {
         "@ai-sdk/react": "^3.0.99",
         "@better-auth/expo": "^1.4.19",
@@ -285,7 +285,7 @@
     },
     "packages/sdk": {
       "name": "@shogo-ai/sdk",
-      "version": "0.4.0",
+      "version": "1.3.0",
       "bin": {
         "shogo": "./bin/cli.mjs",
       },
@@ -449,6 +449,7 @@
     },
   },
   "patchedDependencies": {
+    "@react-navigation/routers@7.5.3": "patches/@react-navigation%2Frouters@7.5.3.patch",
     "react-native-css-interop@0.2.2": "patches/react-native-css-interop@0.2.2.patch",
   },
   "packages": {
@@ -4443,8 +4444,6 @@
     "@shogo-ai/worker/@types/node": ["@types/node@20.19.39", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-orrrD74MBUyK8jOAD/r0+lfa1I2MO6I+vAkmAWzMYbCcgrN4lCrmK52gRFQq/JRxfYPfonkr4b0jcY7Olqdqbw=="],
 
     "@shogo-ai/worker/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
-
-    "@shogo/api/@types/bun": ["@types/bun@1.3.11", "", { "dependencies": { "bun-types": "1.3.11" } }, "sha512-5vPne5QvtpjGpsGYXiFyycfpDF2ECyPcTSsFBMa0fraoxiQyMJ3SmuQIGhzPg2WJuWxVBoxWJ2kClYTcw/4fAg=="],
 
     "@shogo/domain-stores/mobx-state-tree": ["mobx-state-tree@7.0.2", "", { "dependencies": { "ts-essentials": "^9.4.1" }, "peerDependencies": { "mobx": "^6.3.0" } }, "sha512-Qmqgo2Ho1/JRTquo0EWw0ZA/k4wTUNPMIBg98ALGN1V/0Gupic7dg4GDYUhNbiLsYHpp48VgpaCDpDIKV+jNkQ=="],
 
