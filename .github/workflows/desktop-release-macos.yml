@@ -115,7 +115,18 @@ jobs:
           unzip bun.zip
           mv ${{ matrix.bun-target }}/bun* . || true
           rm -rf ${{ matrix.bun-target }} bun.zip
+          # Bun's macOS/Linux zip ships only `bun`; `bunx` is conventionally a
+          # symlink to the same binary (Bun reads argv[0] to decide its mode).
+          # Without this step, every `bunx shogo generate` inside a project
+          # workspace fails with `bunx: command not found` (PreviewManager
+          # invokes scripts through /bin/sh, which has no built-in `bun x`
+          # alias). This breaks prisma generate → server.tsx crashes on
+          # first project open. electron-packager preserves hardlinks as
+          # independent files, so this survives `.app` packaging cleanly.
+          ln bun bunx
+          chmod +x bun bunx
           ls -la
+          ./bunx --version
 
       - name: Bundle QEMU for VM isolation
         if: matrix.arch == 'arm64'
