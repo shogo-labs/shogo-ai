@@ -804,6 +804,11 @@ describe('WarmPoolController', () => {
       expect(env).toHaveProperty('S3_REGION', 'us-east-1')
       expect(env).toHaveProperty('S3_WATCH_ENABLED', 'true')
       expect(env).toHaveProperty('S3_SYNC_INTERVAL', '30000')
+      // SHOGO_API_URL must be pinned so the SDK's voice runtime-token proxy
+      // mode reaches the in-cluster Shogo API instead of falling back to
+      // localhost:8002. It shares the apiBase used to derive AI_PROXY_URL.
+      expect(env).toHaveProperty('SHOGO_API_URL')
+      expect(env.AI_PROXY_URL).toBe(`${env.SHOGO_API_URL}/api/ai/v1`)
     })
 
     test('should handle missing project gracefully', async () => {
