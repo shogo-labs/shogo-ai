@@ -88,7 +88,13 @@ export async function checkSelfAssign(apiUrl?: string, workDir?: string): Promis
   }
 }
 
-function readSAToken(): string | null {
+/**
+ * Read the Kubernetes ServiceAccount token mounted at the standard path.
+ * Returns null when not running inside a pod. Exported so the token-refresh
+ * loop can reuse the exact same auth used by self-assign on boot, instead of
+ * duplicating the path and read logic.
+ */
+export function readSAToken(): string | null {
   try {
     if (existsSync(SA_TOKEN_PATH)) {
       return readFileSync(SA_TOKEN_PATH, 'utf-8').trim()
@@ -99,7 +105,16 @@ function readSAToken(): string | null {
   return null
 }
 
-function deriveApiUrl(): string | null {
+/**
+ * Resolve the Shogo API base URL the runtime should talk to. Looks at
+ * SHOGO_API_URL / API_URL explicit overrides, falls back to deriving from
+ * AI_PROXY_URL (stripping the `/api/ai/v1` suffix), and finally constructs
+ * an in-cluster ClusterIP-style URL from SYSTEM_NAMESPACE.
+ *
+ * Exported so the token-refresh loop hits the same endpoint self-assign
+ * uses on boot.
+ */
+export function deriveApiUrl(): string | null {
   if (process.env.SHOGO_API_URL) return process.env.SHOGO_API_URL
   if (process.env.API_URL) return process.env.API_URL
 
