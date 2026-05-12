@@ -17,8 +17,8 @@
  */
 
 import { execSync as nodeExecSync, spawn, type StdioOptions } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, readlinkSync, lstatSync } from 'node:fs'
+import { isAbsolute, join, resolve as resolvePath, dirname } from 'node:path'
 
 export interface PkgInstallOptions {
   timeout?: number
@@ -56,6 +56,105 @@ export function isNodeAvailableOnWindows(pathEnv: string | undefined = process.e
     if (dir && existsSync(join(dir, 'npm.cmd'))) return true
   }
   return false
+}
+
+let _unixNodeAvailable: boolean | null = null
+
+/**
+ * True if a `node` binary is on PATH (Unix-style search). The Shogo
+ * Desktop API process is spawned by Electron with a PATH inherited
+ * from `launchctl`, which on macOS frequently EXCLUDES the user's
+ * shell-managed paths (Homebrew, nvm, asdf). `process.env.PATH` is
+ * what child spawns see when they exec a `#!/usr/bin/env node` shim,
+ * so this is the right thing to check.
+ *
+ * Cached for the lifetime of the process — node-install state doesn't
+ * change between project opens, and re-walking PATH on every spawn
+ * adds up.
+ *
+ * Pass an explicit `pathEnv` only from tests; production callers should
+ * use the default.
+ */
+export function isNodeAvailableOnUnix(pathEnv: string | undefined = process.env.PATH): boolean {
+  if (process.platform === 'win32') return false
+  if (pathEnv === process.env.PATH && _unixNodeAvailable !== null) return _unixNodeAvailable
+  let found = false
+  if (pathEnv) {
+    for (const dir of pathEnv.split(':')) {
+      if (!dir) continue
+      if (existsSync(join(dir, 'node'))) { found = true; break }
+    }
+  }
+  if (pathEnv === process.env.PATH) _unixNodeAvailable = found
+  return found
+}
+
+/** Reset the cached node-availability probe — only used by tests. */
+export function _resetUnixNodeCache(): void { _unixNodeAvailable = null }
+
+/**
+ * Resolve a `node_modules/.bin/<name>` invocation that works whether
+ * or not a system `node` is on PATH.
+ *
+ * Why this exists: npm publishes its `.bin/<tool>` shims with
+ * `#!/usr/bin/env node` at the top of the underlying JS file. The
+ * kernel reads the shebang and tries to exec `/usr/bin/env node`;
+ * if `node` isn't on PATH the exec fails with `env: node: No such
+ * file or directory` and the spawn exits 127. Shogo Desktop ships
+ * the bundled `bun` runtime but does not bundle Node.js, and many
+ * end-user macOS PATHs (launchctl-default) don't expose any
+ * shell-installed node either — so every `spawn(.bin/vite, ...)`
+ * fails on first use. Observed in main.log:
+ *   [CanvasBuildManager] Build error: env: node: No such file or directory
+ *   [preview-manager] Vite build --watch exited (code=127, signal=null)
+ *
+ * Returns `null` if the shim doesn't exist (caller should treat
+ * this exactly like the historical `existsSync(viteBin)` no-op
+ * path). Otherwise returns `{ cmd, argsPrefix }`:
+ *   - On Windows, or when `node` is on PATH: the shim itself with
+ *     no prefix args (preserves the current behavior — fastest path).
+ *   - When node is missing on Unix: `readlinkSync` resolves the shim
+ *     to its underlying `.../bin/<tool>.js`, and we route through
+ *     the bundled `bun` (`{ cmd: bunBinary, argsPrefix: [jsEntry] }`),
+ *     which executes the JS directly and treats the shebang as a
+ *     comment. Bun's CLI compatibility is a superset of node for
+ *     the bundler tools we ship (vite, expo) — same exit codes,
+ *     same flag parsing.
+ */
+export function resolveBinInvocation(
+  workspaceDir: string,
+  binName: string,
+): { cmd: string; argsPrefix: string[] } | null {
+  const binDir = join(workspaceDir, 'node_modules', '.bin')
+  const isWindows = process.platform === 'win32'
+  const candidates = isWindows
+    ? [join(binDir, `${binName}.CMD`), join(binDir, `${binName}.cmd`), join(binDir, `${binName}.exe`)]
+    : [join(binDir, binName)]
+  const shim = candidates.find((p) => existsSync(p))
+  if (!shim) return null
+
+  // Windows .CMD shims are batch files that resolve node themselves;
+  // they're outside this fix's scope.
+  if (isWindows) return { cmd: shim, argsPrefix: [] }
+
+  if (isNodeAvailableOnUnix()) return { cmd: shim, argsPrefix: [] }
+
+  // Node missing — readlink the shim and route through bundled bun.
+  // If the shim isn't a symlink (some installs write wrapper scripts
+  // instead — bun's hardlink-fallback mode can do this), fall back
+  // to direct invocation; that path will still fail with code 127 but
+  // we've done what we can.
+  try {
+    const st = lstatSync(shim)
+    if (!st.isSymbolicLink()) return { cmd: shim, argsPrefix: [] }
+    const target = readlinkSync(shim)
+    const jsEntry = isAbsolute(target) ? target : resolvePath(dirname(shim), target)
+    if (!existsSync(jsEntry)) return { cmd: shim, argsPrefix: [] }
+    const bun = process.env.SHOGO_BUN_PATH || 'bun'
+    return { cmd: bun, argsPrefix: [jsEntry] }
+  } catch {
+    return { cmd: shim, argsPrefix: [] }
+  }
 }
 
 export interface PkgExecOptions {

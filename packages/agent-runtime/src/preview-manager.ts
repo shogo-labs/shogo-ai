@@ -50,7 +50,7 @@ export function emitBuildLine(
   recordBuildEntry(`${prefix} ${line}`, stream === 'stderr' ? 'error' : 'info')
 }
 import { createServer } from 'net'
-import { pkg } from '@shogo/shared-runtime'
+import { pkg, resolveBinInvocation } from '@shogo/shared-runtime'
 import { BUILD_LOG_FILE, CONSOLE_LOG_FILE } from './runtime-log-paths'
 import {
   loadTechStackMeta,
@@ -1377,12 +1377,16 @@ export class PreviewManager {
   ): Promise<void> {
     cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
     console.log(`[${LOG_PREFIX}] Seeding dist/ via one-shot vite build (staging)...`)
+    // Route through bundled `bun` when system node is missing — otherwise
+    // the shim's `#!/usr/bin/env node` shebang fails with code 127. See
+    // resolveBinInvocation() doc-block for the full story.
+    const invocation = resolveBinInvocation(cwd, 'vite') ?? { cmd: viteBin, argsPrefix: [] }
     const exitCode = await new Promise<number | null>((resolveBuild) => {
       let proc: ChildProcess
       try {
         proc = spawn(
-          viteBin,
-          ['build', '--outDir', DEFAULT_STAGING_DIR, '--emptyOutDir'],
+          invocation.cmd,
+          [...invocation.argsPrefix, 'build', '--outDir', DEFAULT_STAGING_DIR, '--emptyOutDir'],
           {
             cwd,
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -1459,19 +1463,26 @@ export class PreviewManager {
 
     console.log(`[${LOG_PREFIX}] Starting vite build --watch (no empty)...`)
 
+    // Same node-missing fallback as runViteOneShotBuild — see
+    // resolveBinInvocation() for rationale.
+    const invocation = resolveBinInvocation(cwd, 'vite') ?? { cmd: viteBin, argsPrefix: [] }
     let viteProcess: ChildProcess
     try {
-      viteProcess = spawn(viteBin, ['build', '--watch', '--emptyOutDir', 'false'], {
-        cwd,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        // `.CMD` shims must go through cmd.exe on Windows.
-        shell: isWindows,
-        env: {
-          ...process.env,
-          NODE_ENV: 'development',
-          VITE_RUNTIME_PORT: String(this.runtimePort),
+      viteProcess = spawn(
+        invocation.cmd,
+        [...invocation.argsPrefix, 'build', '--watch', '--emptyOutDir', 'false'],
+        {
+          cwd,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          // `.CMD` shims must go through cmd.exe on Windows.
+          shell: isWindows,
+          env: {
+            ...process.env,
+            NODE_ENV: 'development',
+            VITE_RUNTIME_PORT: String(this.runtimePort),
+          },
         },
-      })
+      )
     } catch (err: any) {
       console.error(`[${LOG_PREFIX}] Failed to spawn vite build --watch: ${err?.message ?? err}`)
       return
