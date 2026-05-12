@@ -38,32 +38,16 @@
 \set ON_ERROR_STOP on
 
 -- Guard: if the role doesn't exist yet (very first cluster bootstrap, before
--- CNPG's managed.roles reconciler has run), exit cleanly. CNPG creates the
--- role before deploy.yml ever invokes this file in steady state, so this
--- branch only fires during an unusual bootstrap-order window.
-DO $guard$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'logical_replicator') THEN
-    RAISE NOTICE 'logical_replicator role not present yet — skipping GRANT reconciliation';
-    -- Abort the rest of the script with a *non-error* by raising an exception
-    -- that the calling shell can grep for. Plain RETURN doesn't stop the
-    -- outer psql session, so we set a flag instead.
-    PERFORM set_config('grants_sql.skip', '1', false);
-  ELSE
-    PERFORM set_config('grants_sql.skip', '0', false);
-  END IF;
-END
-$guard$;
-
--- All subsequent statements use \gset / \if so the script can exit cleanly
--- when the guard above signals "skip". psql evaluates \if at parse time, so
--- this needs the flag fetched into a psql variable.
-SELECT current_setting('grants_sql.skip', true) AS skip \gset
-\if :{?skip}
-  \if :{skip}
-    \echo 'skipping: logical_replicator role missing'
-    \quit
-  \endif
+-- CNPG's managed.roles reconciler has run), exit cleanly. By the time
+-- deploy.yml invokes this script in steady state, the role exists; this
+-- branch only protects against extreme bootstrap ordering.
+SELECT EXISTS (
+  SELECT 1 FROM pg_roles WHERE rolname = 'logical_replicator'
+) AS role_present \gset
+\if :role_present
+\else
+  \echo 'skipping: logical_replicator role not present yet'
+  \quit
 \endif
 
 -- ---------------------------------------------------------------------------
@@ -81,6 +65,10 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO logical_replicator;
 -- The default form (no FOR ROLE) only applies to tables created by the role
 -- *running* this script (postgres). That alone is not enough, because
 -- migrations run as `shogo`. We explicitly cover both.
+--
+-- `FOR ROLE postgres` is defensive — `postgres` does not create tables in
+-- `public` in the normal migration flow. Kept as belt-and-suspenders for
+-- ad-hoc operator sessions that might `CREATE TABLE` as postgres.
 -- ---------------------------------------------------------------------------
 ALTER DEFAULT PRIVILEGES FOR ROLE shogo    IN SCHEMA public GRANT SELECT ON TABLES TO logical_replicator;
 ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT SELECT ON TABLES TO logical_replicator;
@@ -125,9 +113,20 @@ END
 $fn$;
 
 -- Recreate the trigger so its WHEN clause / function binding always matches
--- the function definition above. DROP IF EXISTS + CREATE is idempotent and
--- the trigger does not fire on a temporary in-flight DDL between the two
--- statements (there is no concurrent DDL stream during deploy reconcile).
+-- the function definition above. DROP IF EXISTS + CREATE is idempotent.
+--
+-- Theoretical hole: a CREATE TABLE that lands in the microseconds between
+-- DROP and CREATE would miss the trigger. Mitigated by the sweep in layer
+-- (1) above which re-grants on the next deploy. Acceptable for steady-state
+-- deploys; would be tighter if Postgres supported CREATE OR REPLACE EVENT
+-- TRIGGER (it does not).
+--
+-- Coverage note: this trigger fires on CREATE TABLE (incl. PARTITION OF) but
+-- NOT on `ALTER TABLE ... ATTACH PARTITION existing_table`. If an existing
+-- table from outside `public` is attached, it does NOT receive the GRANT
+-- automatically. We do not use ATTACH PARTITION in migrations today; if we
+-- ever do, add 'ALTER TABLE' to the WHEN clause and filter on the operation
+-- subtype inside the function.
 DROP EVENT TRIGGER IF EXISTS auto_grant_replicator_select;
 CREATE EVENT TRIGGER auto_grant_replicator_select
   ON ddl_command_end
