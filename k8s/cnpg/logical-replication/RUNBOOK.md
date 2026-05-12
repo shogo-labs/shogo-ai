@@ -111,17 +111,45 @@ kill %1 %2
 
 ### Step 6: Grant Replication Permissions
 
-On each region's primary, grant the `logical_replicator` role SELECT on all tables:
+The GRANT contract is automated. `.github/workflows/deploy.yml` runs
+`k8s/cnpg/logical-replication/grants.sql` on every deploy via a
+`Reconcile logical replication GRANTs` step in each regional job, then
+asserts the contract holds via a follow-up `Verify GRANT contract` step
+that fails the deploy if any table in `public` is missing SELECT for
+`logical_replicator`. The script installs:
+
+1. A one-time sweep (`GRANT SELECT ON ALL TABLES`) for current state.
+2. `ALTER DEFAULT PRIVILEGES FOR ROLE shogo` and `FOR ROLE postgres` so
+   future tables created by either role auto-grant on `CREATE TABLE`.
+3. An event trigger (`auto_grant_replicator_select`) that fires on every
+   `CREATE TABLE` / `CREATE TABLE AS` / `SELECT INTO` in `public`,
+   regardless of which role issued the DDL. The GRANT inside the trigger
+   is wrapped in `BEGIN/EXCEPTION` so a GRANT failure cannot abort the
+   migration.
+
+The regression test in `.github/workflows/ci-cnpg.yml` verifies all three
+properties on every PR.
+
+**For bootstrap of a brand-new cluster** (first time, before the
+deploy.yml step has ever run on that cluster), apply the same SQL once
+manually so the contract exists before the first migration lands:
 
 ```bash
 for ctx in oke-us oke-eu oke-india; do
-  kubectl --context $ctx exec -n shogo-production-system platform-pg-1 -c postgres -- psql -U postgres -d shogo -c "
-    GRANT USAGE ON SCHEMA public TO logical_replicator;
-    GRANT SELECT ON ALL TABLES IN SCHEMA public TO logical_replicator;
-    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO logical_replicator;
-  "
+  kubectl --context $ctx exec -i -n shogo-production-system \
+    $(kubectl --context $ctx get pods -n shogo-production-system \
+        -l "cnpg.io/cluster=platform-pg,cnpg.io/instanceRole=primary" \
+        -o jsonpath='{.items[0].metadata.name}') \
+    -c postgres -- psql -U postgres -d shogo \
+    < k8s/cnpg/logical-replication/grants.sql
 done
 ```
+
+**For incident response** when an existing cluster is in the failure mode
+(missing GRANT → tablesync respawn → slot pool saturation), see issue
+[#533](https://github.com/shogo-labs/shogo-ai/issues/533) for the full
+three-step remediation (GRANT sweep + drop leaked slots + REFRESH
+PUBLICATION).
 
 ### Step 7: Apply Publication CRDs
 
