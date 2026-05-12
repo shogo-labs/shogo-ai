@@ -6,7 +6,8 @@
  * Generates a single admin-routes file with unrestricted CRUD for ALL models.
  * Features per model:
  *   - LIST: pagination, text search across string fields, sorting, _count on relations
- *   - GET:  full record with relations included
+ *   - POST:  create a new record from raw JSON body
+ *   - GET:   full record with relations included
  *   - PATCH: update any scalar field
  *   - DELETE: hard delete
  *
@@ -218,6 +219,24 @@ export function generateAdminRoutes(
     lines.push('    } catch (error: any) {')
     lines.push(`      console.error("[Admin] List ${modelName} error:", error)`)
     lines.push('      return c.json({ error: { code: "list_failed", message: error.message } }, 500)')
+    lines.push('    }')
+    lines.push('  })')
+    lines.push('')
+
+    // POST (create)
+    lines.push(`  // POST ${routePath}`)
+    lines.push(`  router.post("/${routePath}", async (c) => {`)
+    lines.push('    try {')
+    lines.push('      const body = await c.req.json()')
+    lines.push('')
+    lines.push(`      const item = await prisma.${modelLower}.create({`)
+    lines.push('        data: body,')
+    lines.push('      })')
+    lines.push('')
+    lines.push('      return c.json({ ok: true, data: item }, 201)')
+    lines.push('    } catch (error: any) {')
+    lines.push(`      console.error("[Admin] Create ${modelName} error:", error)`)
+    lines.push('      return c.json({ error: { code: "create_failed", message: error.message } }, 500)')
     lines.push('    }')
     lines.push('  })')
     lines.push('')

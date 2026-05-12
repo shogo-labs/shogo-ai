@@ -479,5 +479,15 @@ describe('Routes Generator', () => {
       expect(result.fileName).toBe('admin-routes.ts')
       expect(result.code).toContain('export function createAdminRoutes(config: AdminRoutesConfig): Hono')
     })
+
+    it('should emit a POST create route per model', () => {
+      const result = generateAdminRoutes([mockProjectModel, mockWorkspaceModel])
+
+      expect(result.code).toContain('router.post("/projects"')
+      expect(result.code).toContain('router.post("/workspaces"')
+      expect(result.code).toContain('prisma.project.create({')
+      expect(result.code).toContain('prisma.workspace.create({')
+      expect(result.code).toContain('return c.json({ ok: true, data: item }, 201)')
+    })
   })
 })
