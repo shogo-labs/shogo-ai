@@ -24,6 +24,7 @@ import {
   readdirSync,
   statSync,
   lstatSync,
+  readlinkSync,
   symlinkSync,
   rmSync,
   renameSync,
@@ -177,19 +178,112 @@ const { app, state, logTiming } = await createRuntimeApp({
       // --- Mounted mode: symlink /workspace -> /host-workspaces/<projectId> ---
       const projectWorkspace = join(hostWorkspacesRoot, projectId)
       mkdirSync(projectWorkspace, { recursive: true })
-      try {
-        const st = lstatSync(WORKSPACE_DIR)
-        if (st.isSymbolicLink() || st.isFile()) unlinkSync(WORKSPACE_DIR)
-        else if (st.isDirectory()) rmSync(WORKSPACE_DIR, { recursive: true, force: true })
-      } catch {}
-      symlinkSync(projectWorkspace, WORKSPACE_DIR)
 
-      // Keep .shogo/ on the local overlay disk (SQLite doesn't work on 9p).
+      // Idempotent replace. The earlier code swallowed every error
+      // here, which made the cleanup look harmless even when it
+      // wasn't — see the .shogo block below for why that matters.
+      let workspaceStat: ReturnType<typeof lstatSync> | null = null
+      try { workspaceStat = lstatSync(WORKSPACE_DIR) } catch { /* doesn't exist */ }
+
+      let workspaceAlreadyCorrect = false
+      if (workspaceStat?.isSymbolicLink()) {
+        try {
+          if (readlinkSync(WORKSPACE_DIR) === projectWorkspace) workspaceAlreadyCorrect = true
+        } catch { /* dangling */ }
+      }
+
+      if (!workspaceAlreadyCorrect && workspaceStat) {
+        try {
+          if (workspaceStat.isSymbolicLink() || workspaceStat.isFile()) {
+            unlinkSync(WORKSPACE_DIR)
+          } else if (workspaceStat.isDirectory()) {
+            rmSync(WORKSPACE_DIR, { recursive: true, force: true })
+          }
+        } catch (err: any) {
+          throw new Error(
+            `[onAssign] Could not clear ${WORKSPACE_DIR} (${err?.message ?? err}) — ` +
+              `cannot install /workspace -> ${projectWorkspace} symlink.`,
+          )
+        }
+      }
+
+      if (!workspaceAlreadyCorrect) {
+        symlinkSync(projectWorkspace, WORKSPACE_DIR)
+      }
+
+      // Keep .shogo/ on the local overlay disk (SQLite doesn't work on
+      // 9p — fcntl locking and file truncation semantics break the
+      // SQLite journal). Replace `/workspace/.shogo` (which dereferences
+      // through the 9p mount to the host's `.shogo`) with a symlink to
+      // a per-project dir on the VM's local overlay disk.
+      //
+      // History: an earlier version did `rmSync(workspaceShogoDir,
+      // {recursive, force})` inside `try {} catch {}` and then
+      // `symlinkSync(...)`. The recursive remove failed silently on 9p
+      // mounts — `.virtfs_metadata/` entries created by the
+      // `security_model=mapped-file` 9p server, plus pre-existing
+      // `.shogo/install-marker` and `.shogo/agent-state.json` files
+      // from prior HOST-mode runs, would partially survive the rm.
+      // The symlink then threw EEXIST and the whole assign 500'd, which
+      // VMWarmPoolController counts as a boot failure. Three of those
+      // and the pool permanently disables itself for the session,
+      // which is exactly the symptom users saw (`VM warm pool
+      // permanently disabled (3 boot failures)` in main.log). Fix:
+      //   1. Idempotent fast path — if the symlink already points at
+      //      localShogoDir, no-op.
+      //   2. Single-syscall move-aside (renameSync) instead of a
+      //      recursive rm. rename doesn't iterate children, so it
+      //      sidesteps the 9p per-entry deletion failures entirely.
+      //   3. Fall back to recursive rm if rename refuses.
+      //   4. Throw with a useful message instead of catching silently
+      //      so the caller (and the warm-pool failure counter) sees
+      //      the actual cause.
       const localShogoDir = `/tmp/shogo-local/${projectId}/.shogo`
       mkdirSync(localShogoDir, { recursive: true })
       const workspaceShogoDir = join(WORKSPACE_DIR, '.shogo')
-      try { lstatSync(workspaceShogoDir); rmSync(workspaceShogoDir, { recursive: true, force: true }) } catch {}
-      symlinkSync(localShogoDir, workspaceShogoDir)
+
+      let existingStat: ReturnType<typeof lstatSync> | null = null
+      try { existingStat = lstatSync(workspaceShogoDir) } catch { /* doesn't exist — easy path */ }
+
+      let alreadyCorrect = false
+      if (existingStat?.isSymbolicLink()) {
+        try {
+          if (readlinkSync(workspaceShogoDir) === localShogoDir) alreadyCorrect = true
+        } catch {
+          // Dangling/bad symlink — fall through to the replace path
+          // and let the move-aside clear it.
+        }
+      }
+
+      if (!alreadyCorrect && existingStat) {
+        const asidePath = join(WORKSPACE_DIR, `.shogo.host-bak-${Date.now()}`)
+        let cleared = false
+        let renameErrMsg = ''
+        try {
+          renameSync(workspaceShogoDir, asidePath)
+          cleared = true
+        } catch (err: any) {
+          renameErrMsg = err?.message ?? String(err)
+        }
+        if (!cleared) {
+          try {
+            rmSync(workspaceShogoDir, { recursive: true, force: true })
+            cleared = true
+          } catch (err: any) {
+            throw new Error(
+              `[onAssign] Could not clear ${workspaceShogoDir} to install ` +
+                `local-disk symlink (rename: ${renameErrMsg}; rm: ${err?.message ?? err}). ` +
+                `VM assignment cannot proceed without this. The 9p mount may have a ` +
+                `held lock or restricted permissions on .shogo/ contents — try closing ` +
+                `the project on host first.`,
+            )
+          }
+        }
+      }
+
+      if (!alreadyCorrect) {
+        symlinkSync(localShogoDir, workspaceShogoDir)
+      }
 
       // Suppress .virtfs_metadata in git (created by 9p security_model=mapped-file)
       try {
