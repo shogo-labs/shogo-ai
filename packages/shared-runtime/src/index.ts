@@ -99,6 +99,10 @@ export {
 export {
   PlatformPackageManager,
   pkg,
+  isNodeAvailableOnWindows,
+  isNodeAvailableOnUnix,
+  resolveBinInvocation,
+  _resetUnixNodeCache,
   type PkgInstallOptions,
   type PkgExecOptions,
 } from './platform-pkg'

@@ -28,6 +28,7 @@
 import { spawn, type ChildProcess } from 'child_process'
 import { join } from 'path'
 import { existsSync } from 'fs'
+import { resolveBinInvocation } from '@shogo/shared-runtime'
 import {
   commitBuildOutput,
   cleanupStagingOutput,
@@ -156,22 +157,36 @@ export class CanvasBuildManager {
     cleanupStagingOutput(this.workspaceDir, DEFAULT_STAGING_DIR)
 
     const isWindows = process.platform === 'win32'
+    // Route through bundled `bun` when the system has no `node` on PATH
+    // — the .bin shim's `#!/usr/bin/env node` shebang otherwise exits
+    // 127 with `env: node: No such file or directory`, breaking every
+    // canvas rebuild on Shogo Desktop bundles. Falls back to direct
+    // spawn when the helper can't readlink the shim. See
+    // resolveBinInvocation() for the full rationale.
+    const invocation = resolveBinInvocation(this.workspaceDir, bundler.kind) ?? {
+      cmd: bundler.bin,
+      argsPrefix: [],
+    }
     try {
       await new Promise<void>((resolve, reject) => {
-        const proc: ChildProcess = spawn(bundler.bin, this.buildArgsFor(bundler.kind), {
-          cwd: this.workspaceDir,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          // `.CMD` shims must go through cmd.exe on Windows. Mirrors the
-          // shape of the spawn calls in PreviewManager.
-          shell: isWindows,
-          env: {
-            ...process.env,
-            NODE_ENV: 'development',
-            // Keep Expo non-interactive so a missing dep doesn't deadlock
-            // the spawn waiting on stdin.
-            CI: '1',
+        const proc: ChildProcess = spawn(
+          invocation.cmd,
+          [...invocation.argsPrefix, ...this.buildArgsFor(bundler.kind)],
+          {
+            cwd: this.workspaceDir,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            // `.CMD` shims must go through cmd.exe on Windows. Mirrors the
+            // shape of the spawn calls in PreviewManager.
+            shell: isWindows,
+            env: {
+              ...process.env,
+              NODE_ENV: 'development',
+              // Keep Expo non-interactive so a missing dep doesn't deadlock
+              // the spawn waiting on stdin.
+              CI: '1',
+            },
           },
-        })
+        )
 
         let stderr = ''
         proc.stderr?.on('data', (chunk: Buffer) => {
