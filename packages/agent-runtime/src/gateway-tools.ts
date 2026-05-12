@@ -128,6 +128,10 @@ export interface ToolContext {
   effectiveModel?: string
   /** When true, Auto mode is active — sub-agents should use the spawn-time model router */
   autoRouting?: boolean
+  /** When true, create_plan/update_plan additionally generate a business-language
+   *  translation of the technical plan using the fast-tier model and emit it via
+   *  the `data-plan-translation` stream event. Persistent per-user preference. */
+  dualPlan?: boolean
   /** Persistent shell cwd state — survives across exec calls within a session */
   shellState?: { getCwd: () => string; setCwd: (cwd: string) => void }
   /** Tracks backgrounded shell commands that soft-timed-out so exec_wait can retrieve them */
@@ -5808,6 +5812,83 @@ function parsePlanTodosFromFrontmatter(fm: string): Array<{ id: string; content:
   return todos
 }
 
+// ---------------------------------------------------------------------------
+// Plan Mode: business-language translation (Dual Plan)
+//
+// When ctx.dualPlan is true, every successful create_plan / update_plan call
+// kicks off a background translation pass via the fast-tier model. The pass:
+//   1. Emits `data-plan-translation-start` so the UI can render a spinner.
+//   2. Calls translateToBusiness() (one-shot tool-less runAgentLoop).
+//   3. Rewrites the .plan.md file in place, appending/replacing the business
+//      section delimited by BUSINESS_SECTION_START/END.
+//   4. Emits `data-plan-translation` with the markdown, or
+//      `data-plan-translation-error` with a message on failure.
+//
+// The work is fired-and-forgotten with respect to the tool's return value —
+// the create_plan tool result fires immediately so the model can continue
+// reasoning, and the UI receives the translation asynchronously via the
+// stream.
+// ---------------------------------------------------------------------------
+
+interface PlanTranslationJob {
+  filepath: string
+  relativePath: string
+  name: string
+  overview: string
+  planMarkdown: string
+  toolCallId: string
+}
+
+function runPlanTranslation(ctx: ToolContext, job: PlanTranslationJob): void {
+  const writer = ctx.uiWriter
+  writer?.write({
+    type: 'data-plan-translation-start',
+    data: { filepath: job.relativePath, toolCallId: job.toolCallId },
+  })
+
+  void (async () => {
+    try {
+      const { translateToBusiness, upsertBusinessSection } = await import('./plan-translation')
+      const business = await translateToBusiness({
+        name: job.name,
+        overview: job.overview,
+        planMarkdown: job.planMarkdown,
+        parentModel: ctx.effectiveModel,
+      })
+
+      try {
+        if (existsSync(job.filepath)) {
+          const current = readFileSync(job.filepath, 'utf-8')
+          const next = upsertBusinessSection(current, business)
+          writeFileSync(job.filepath, next, 'utf-8')
+        }
+      } catch (writeErr) {
+        console.error(`[create_plan][dual-plan] failed to persist business section for ${job.relativePath}:`, writeErr)
+      }
+
+      writer?.write({
+        type: 'data-plan-translation',
+        data: {
+          filepath: job.relativePath,
+          business,
+          toolCallId: job.toolCallId,
+        },
+      })
+    } catch (err: any) {
+      const message = err?.message || String(err)
+      console.error(`[create_plan][dual-plan] translation failed for ${job.relativePath}:`, message)
+      writer?.write({
+        type: 'data-plan-translation-error',
+        data: {
+          filepath: job.relativePath,
+          message,
+          toolCallId: job.toolCallId,
+        },
+      })
+    }
+  })()
+}
+
 function createCreatePlanTool(ctx: ToolContext): AgentTool {
   return {
     name: 'create_plan',
@@ -5866,6 +5947,18 @@ function createCreatePlanTool(ctx: ToolContext): AgentTool {
             filepath: `.shogo/plans/${filename}`,
             toolCallId: _id,
           },
+        })
+      }
+
+      if (ctx.dualPlan) {
+        const relPath = `.shogo/plans/${filename}`
+        runPlanTranslation(ctx, {
+          filepath: filepath,
+          relativePath: relPath,
+          name: params.name,
+          overview: params.overview,
+          planMarkdown: params.plan,
+          toolCallId: _id,
         })
       }
 
@@ -5972,6 +6065,21 @@ function createUpdatePlanTool(ctx: ToolContext): AgentTool {
             todos: params.todos ?? parsePlanTodosFromFrontmatter(fm),
             toolCallId: _id,
           },
+        })
+      }
+
+      const bodyChanged = params.plan !== undefined && params.plan !== existingBody.replace(/^#[^\n]*\n*/, '')
+      const nameOrOverviewChanged =
+        (params.name !== undefined && params.name !== existingName) ||
+        (params.overview !== undefined && params.overview !== existingOverview)
+      if (ctx.dualPlan && (bodyChanged || nameOrOverviewChanged)) {
+        runPlanTranslation(ctx, {
+          filepath: resolved,
+          relativePath: planFilepath,
+          name: updatedName,
+          overview: updatedOverview,
+          planMarkdown: updatedBody,
+          toolCallId: _id,
         })
       }
 

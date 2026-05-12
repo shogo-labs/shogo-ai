@@ -60,6 +60,7 @@ import {
   Check,
   Mic,
   Sparkles,
+  Languages,
 } from "lucide-react-native"
 import { AutoModelOption } from "./AutoModelOption"
 import { useVoiceInput } from "./useVoiceInput"
@@ -189,6 +190,8 @@ export interface ChatInputProps {
   onEditQueuedMessage?: (messageId: string) => void
   interactionMode?: InteractionMode
   onInteractionModeChange?: (mode: InteractionMode) => void
+  dualPlan?: boolean
+  onDualPlanChange?: (enabled: boolean) => void
   contextUsage?: { inputTokens: number; contextWindowTokens: number } | null
   quickActions?: { label: string; prompt: string }[]
   onQuickActionClick?: (prompt: string) => void
@@ -212,6 +215,8 @@ function ChatInputImpl({
   onEditQueuedMessage,
   interactionMode: controlledInteractionMode,
   onInteractionModeChange,
+  dualPlan = false,
+  onDualPlanChange,
   contextUsage,
   quickActions = [],
   onQuickActionClick,
@@ -1127,6 +1132,39 @@ function ChatInputImpl({
               </PopoverContent>
             </Popover>
 
+            {/* Dual Plan toggle — surfaces only while in Plan mode. Persistent
+                per-device preference: once on, every plan generated in Plan
+                mode also produces a business-language version. */}
+            {interactionMode === "plan" && (
+              <Pressable
+                testID="dual-plan-toggle"
+                disabled={disabled}
+                onPress={() => onDualPlanChange?.(!dualPlan)}
+                accessibilityLabel="Also generate a business-language version"
+                className={cn(
+                  "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
+                  dualPlan
+                    ? "border border-sky-500/45 bg-sky-500/12"
+                    : "bg-muted/50"
+                )}
+              >
+                <Languages
+                  className={cn(
+                    "h-2.5 w-2.5",
+                    dualPlan ? "text-sky-400" : "text-muted-foreground"
+                  )}
+                  size={10}
+                />
+                <Text
+                  className={cn(
+                    "text-xs",
+                    dualPlan ? "text-sky-400" : "text-muted-foreground"
+                  )}
+                >
+                  Business
+                </Text>
+              </Pressable>
+            )}
 
             {/* Quick Actions selector */}
             {quickActions.length > 0 && (

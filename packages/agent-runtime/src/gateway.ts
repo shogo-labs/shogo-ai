@@ -1203,6 +1203,7 @@ export class AgentGateway {
       userId?: string
       interactionMode?: 'agent' | 'plan' | 'ask'
       confirmedPlan?: { name: string; overview: string; plan: string; todos?: Array<{ id: string; content: string }>; filepath?: string }
+      dualPlan?: boolean
       chatSessionId?: string
     },
   ): Promise<void> {
@@ -1275,8 +1276,9 @@ export class AgentGateway {
     }
 
     const interactionMode = options?.confirmedPlan ? 'agent' : (options?.interactionMode || 'agent')
-    console.log(`[Gateway][processChatMessageStream] resolved interactionMode: ${interactionMode} (options had: ${options?.interactionMode ?? '(undefined)'}), sessionId: ${sessionId}, activeSkill: ${activeSkill ?? '(none)'}`)
-    const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, interactionMode)
+    const dualPlan = options?.dualPlan === true
+    console.log(`[Gateway][processChatMessageStream] resolved interactionMode: ${interactionMode} (options had: ${options?.interactionMode ?? '(undefined)'}), dualPlan: ${dualPlan}, sessionId: ${sessionId}, activeSkill: ${activeSkill ?? '(none)'}`)
+    const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, interactionMode, dualPlan)
     this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
 
     this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
@@ -1357,6 +1359,7 @@ export class AgentGateway {
     activeSkill?: { name: string },
     images?: ImageContent[],
     interactionMode: 'agent' | 'plan' | 'ask' = 'agent',
+    dualPlan: boolean = false,
   ): Promise<string> {
     // Wait for any in-flight turn on this session to finish so the new turn
     // reads a fully-updated session history (important for "continue" after a
@@ -1369,7 +1372,7 @@ export class AgentGateway {
     }
 
     this._currentTask = isHeartbeat ? 'heartbeat' : prompt.slice(0, 120)
-    const turnPromise = this._agentTurnInner(prompt, sessionId, isHeartbeat, streamTarget, uiWriter, activeSkill, images, interactionMode)
+    const turnPromise = this._agentTurnInner(prompt, sessionId, isHeartbeat, streamTarget, uiWriter, activeSkill, images, interactionMode, dualPlan)
     this.turnLocks.set(sessionId, turnPromise)
     try {
       return await turnPromise
@@ -1390,6 +1393,7 @@ export class AgentGateway {
     activeSkill?: { name: string },
     images?: ImageContent[],
     interactionMode: 'agent' | 'plan' | 'ask' = 'agent',
+    dualPlan: boolean = false,
   ): Promise<string> {
     // Reload skills and quick actions from disk so any files created/edited/deleted by file tools are picked up
     this.skills = loadAllSkills(this.workspaceDir)
@@ -1534,6 +1538,7 @@ export class AgentGateway {
       workspaceGraph: this.workspaceGraph ?? undefined,
       effectiveModel: modelId,
       autoRouting,
+      dualPlan,
       shellState: sessionId ? {
         getCwd: () => this.shellCwd.get(sessionId!) || this.workspaceDir,
         setCwd: (cwd: string) => this.shellCwd.set(sessionId!, cwd),

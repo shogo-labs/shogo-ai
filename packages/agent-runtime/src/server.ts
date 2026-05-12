@@ -1084,7 +1084,8 @@ app.post('/agent/chat', async (c) => {
   const modelOverride = (body.agentMode as string | undefined) || undefined
   const interactionMode = body.interactionMode as 'agent' | 'plan' | 'ask' | undefined
   const confirmedPlan = body.confirmedPlan || undefined
-  console.log(`[AgentRuntime][chat] received — interactionMode: ${interactionMode ?? '(undefined → defaults to agent)'}, agentMode: ${modelOverride ?? '(none)'}, hasConfirmedPlan: ${!!confirmedPlan}, sessionKey: ${chatSessionKey}, bodyKeys: ${Object.keys(body).join(',')}`)
+  const dualPlan = body.dualPlan === true
+  console.log(`[AgentRuntime][chat] received — interactionMode: ${interactionMode ?? '(undefined → defaults to agent)'}, agentMode: ${modelOverride ?? '(none)'}, hasConfirmedPlan: ${!!confirmedPlan}, dualPlan: ${dualPlan}, sessionKey: ${chatSessionKey}, bodyKeys: ${Object.keys(body).join(',')}`)
 
   if (body.timezone && typeof body.timezone === 'string') {
     agentGateway!.setUserTimezone(body.timezone)
@@ -1137,6 +1138,7 @@ app.post('/agent/chat', async (c) => {
           userId: chatUserId,
           interactionMode,
           confirmedPlan,
+          dualPlan,
           chatSessionId: chatSessionKey,
         })
 
@@ -1469,7 +1471,9 @@ app.get('/agent/plans/:filename', async (c) => {
     return c.json({ error: 'Plan not found' }, 404)
   }
   const content = readFileSync(filepath, 'utf-8')
-  return c.json({ filename, content })
+  const { extractBusinessSection } = await import('./plan-translation')
+  const business = extractBusinessSection(content)
+  return c.json({ filename, content, business: business ?? undefined })
 })
 
 app.put('/agent/plans/:filename', async (c) => {
@@ -1540,6 +1544,58 @@ app.delete('/agent/plans/:filename', async (c) => {
   }
   unlinkSync(filepath)
   return c.json({ deleted: true })
+})
+
+// On-demand business translation for an existing plan. Works for plans
+// created BEFORE the Dual Plan feature existed (or with the toggle off) —
+// the endpoint reads the current technical body, runs the fast-tier
+// translator, and persists the result back into the same .plan.md file.
+app.post('/agent/plans/:filename/translate', async (c) => {
+  const filename = c.req.param('filename')
+  if (!filename || !filename.endsWith('.plan.md')) {
+    return c.json({ error: 'Invalid plan filename' }, 400)
+  }
+  const filepath = join(WORKSPACE_DIR, '.shogo', 'plans', filename)
+  if (!existsSync(filepath)) {
+    return c.json({ error: 'Plan not found' }, 404)
+  }
+
+  const current = readFileSync(filepath, 'utf-8')
+  const fmMatch = current.match(/^---\n([\s\S]*?)\n---/)
+  if (!fmMatch) {
+    return c.json({ error: 'Could not parse plan frontmatter' }, 500)
+  }
+  const fm = fmMatch[1]
+  const name = fm.match(/name:\s*"?([^"\n]*)"?/)?.[1] ?? filename
+  const overview = fm.match(/overview:\s*"?([^"\n]*)"?/)?.[1] ?? ''
+
+  const {
+    translateToBusiness,
+    upsertBusinessSection,
+    stripBusinessSection,
+  } = await import('./plan-translation')
+
+  // The body for translation must be the *technical* markdown only — strip
+  // any previously-stored business section first, then take everything
+  // after the frontmatter and the leading `# Heading` line.
+  const withoutBusiness = stripBusinessSection(current)
+  const afterFrontmatter = withoutBusiness.substring(withoutBusiness.indexOf('---', 4) + 3).trim()
+  const planMarkdown = afterFrontmatter.replace(/^#[^\n]*\n*/, '')
+
+  try {
+    // parentModel intentionally omitted: the fast tier maps to a concrete
+    // model regardless of parent, so no need to surface a gateway hook.
+    const business = await translateToBusiness({
+      name,
+      overview,
+      planMarkdown,
+    })
+    const next = upsertBusinessSection(current, business)
+    writeFileSync(filepath, next, 'utf-8')
+    return c.json({ business })
+  } catch (err: any) {
+    return c.json({ error: err?.message || 'Translation failed' }, 500)
+  }
 })
 
 // Stop/interrupt the current agent turn (and any active code agent task)
