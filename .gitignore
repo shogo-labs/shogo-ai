@@ -205,3 +205,5 @@ apps/desktop/resources/sherpa-onnx/
 # (large recordings-archive/, regenerable node_modules/, ephemeral state.json
 # with auth tokens).
 demo/
+
+vendor/agent-native

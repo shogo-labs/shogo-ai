@@ -59,6 +59,47 @@ import { FileViewerModal } from "../FileViewerModal"
  */
 const STREAMING_THROTTLE_MS = 50
 
+/**
+ * Hold a boolean's previous `true` for `delayMs` after it transitions to
+ * `false`. Rising edges (`false` → `true`) are instantaneous, so a fresh
+ * tool call relights the "streaming" state immediately, but the falling
+ * edge waits — preventing the Editing… / Exploring… header from
+ * flickering to its summary form during the brief gap between
+ * consecutive tool calls in the same agent turn.
+ */
+function useDelayedFalse(value: boolean, delayMs: number): boolean {
+  const [stable, setStable] = useState(value)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (value) {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current)
+        timerRef.current = null
+      }
+      if (!stable) setStable(true)
+      return
+    }
+    if (!stable) return
+    if (timerRef.current !== null) return
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null
+      setStable(false)
+    }, delayMs)
+  }, [value, delayMs, stable])
+
+  useEffect(
+    () => () => {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current)
+      }
+    },
+    [],
+  )
+
+  return stable
+}
+
 function useThrottledWhileStreaming<T>(value: T, isStreaming: boolean): T {
   const [throttled, setThrottled] = useState<T>(value)
   const lastEmitAtRef = useRef(0)
@@ -341,6 +382,48 @@ function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
 }
 
 
+const GROUP_FALLING_EDGE_DELAY_MS = 1500
+
+function isItemActive(item: MessagePart): boolean {
+  if (item.type === "tool") return item.tool.state === "streaming"
+  if (item.type === "reasoning") return item.isStreaming
+  return false
+}
+
+interface GroupSlotProps {
+  items: MessagePart[]
+  id: string
+  messageIsStreaming: boolean
+  isLastGroup: boolean
+}
+
+// Slots intentionally do NOT thread a controlled `isExpanded`/`onToggle`
+// down — they let `CollapsibleToolGroup` run in its uncontrolled mode so
+// the group auto-expands while `stableActive` is true and auto-collapses
+// (with the height-spring animation) once it falls. The user can still
+// toggle the chevron to override during either phase.
+const EditingGroupSlot = memo(function EditingGroupSlot({
+  items,
+  messageIsStreaming,
+  isLastGroup,
+}: GroupSlotProps) {
+  const isAnyItemActive = items.some(isItemActive)
+  const rawActive = isAnyItemActive || (messageIsStreaming && isLastGroup)
+  const stableActive = useDelayedFalse(rawActive, GROUP_FALLING_EDGE_DELAY_MS)
+  return <EditingGroup items={items} isStreaming={stableActive} />
+})
+
+const ExplorationGroupSlot = memo(function ExplorationGroupSlot({
+  items,
+  messageIsStreaming,
+  isLastGroup,
+}: GroupSlotProps) {
+  const isAnyItemActive = items.some(isItemActive)
+  const rawActive = isAnyItemActive || (messageIsStreaming && isLastGroup)
+  const stableActive = useDelayedFalse(rawActive, GROUP_FALLING_EDGE_DELAY_MS)
+  return <ExplorationGroup items={items} isStreaming={stableActive} />
+})
+
 function ImageThumbnail({
   url,
   index,
@@ -585,39 +668,25 @@ export const AssistantContent = memo(
         }
 
         if (part.type === "exploration-group") {
-          const isGroupStreaming = part.items.some((it) =>
-            it.type === "tool"
-              ? it.tool.state === "streaming"
-              : it.type === "reasoning"
-                ? it.isStreaming
-                : false,
-          )
           return (
-            <ExplorationGroup
+            <ExplorationGroupSlot
               key={part.id}
               items={part.items}
-              isStreaming={isGroupStreaming}
-              isExpanded={expandedTools.has(part.id)}
-              onToggle={getToggle(part.id)}
+              id={part.id}
+              messageIsStreaming={isStreaming}
+              isLastGroup={index === groupedParts.length - 1}
             />
           )
         }
 
         if (part.type === "editing-group") {
-          const isGroupStreaming = part.items.some((it) =>
-            it.type === "tool"
-              ? it.tool.state === "streaming"
-              : it.type === "reasoning"
-                ? it.isStreaming
-                : false,
-          )
           return (
-            <EditingGroup
+            <EditingGroupSlot
               key={part.id}
               items={part.items}
-              isStreaming={isGroupStreaming}
-              isExpanded={expandedTools.has(part.id)}
-              onToggle={getToggle(part.id)}
+              id={part.id}
+              messageIsStreaming={isStreaming}
+              isLastGroup={index === groupedParts.length - 1}
             />
           )
         }
