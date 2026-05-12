@@ -1194,6 +1194,32 @@ jobs:
         run: |
           kubectl apply -f k8s/cnpg/production-us-oci/platform-publication.yaml
 
+      # ----------------------------------------------------------------------
+      # Logical replication: keep the SELECT contract for `logical_replicator`
+      # in sync.
+      #
+      # The publication is `FOR TABLES IN SCHEMA public`, so new tables join
+      # the publication automatically. But Postgres does NOT auto-grant SELECT
+      # to `logical_replicator` on those new tables — and tablesync workers
+      # connect as that role. A missing GRANT causes the tablesync worker to
+      # fail, respawn, leak a slot, and eventually break unrelated healthy
+      # subscriptions when the slot pool saturates.
+      #
+      # grants.sql installs (a) a sweep over current tables, (b) ALTER
+      # DEFAULT PRIVILEGES for every role that creates tables, and (c) an
+      # event trigger that auto-grants SELECT on every future CREATE TABLE
+      # in `public`. The event trigger wraps its GRANT in an EXCEPTION
+      # handler so a failure cannot block a migration.
+      #
+      # Idempotent and safe to run on every deploy. See the file header for
+      # the full rationale.
+      # ----------------------------------------------------------------------
+      - name: Reconcile logical replication GRANTs
+        run: |
+          kubectl exec -i -n ${{ env.NS_SYSTEM }} platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo < k8s/cnpg/logical-replication/grants.sql \
+            || echo "::warning::GRANT reconciliation failed on US (see logs above)"
+
       - name: Refresh logical replication subscriptions
         run: |
           for SUB in sub_from_eu sub_from_india; do
@@ -1420,6 +1446,14 @@ jobs:
       - name: Reconcile logical replication publication
         run: |
           kubectl apply -f k8s/cnpg/production-eu-oci/platform-publication.yaml
+
+      # GRANT reconciliation: see the matching block in the deploy-us job for
+      # full rationale. Same idempotent SQL file applied to every region.
+      - name: Reconcile logical replication GRANTs
+        run: |
+          kubectl exec -i -n ${{ env.NS_SYSTEM }} platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo < k8s/cnpg/logical-replication/grants.sql \
+            || echo "::warning::GRANT reconciliation failed on EU (see logs above)"
 
       - name: Refresh logical replication subscriptions
         run: |
@@ -1733,6 +1767,14 @@ jobs:
       - name: Reconcile logical replication publication
         run: |
           kubectl apply -f k8s/cnpg/production-india-oci/platform-publication.yaml
+
+      # GRANT reconciliation: see the matching block in the deploy-us job for
+      # full rationale. Same idempotent SQL file applied to every region.
+      - name: Reconcile logical replication GRANTs
+        run: |
+          kubectl exec -i -n ${{ env.NS_SYSTEM }} platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo < k8s/cnpg/logical-replication/grants.sql \
+            || echo "::warning::GRANT reconciliation failed on India (see logs above)"
 
       - name: Refresh logical replication subscriptions
         run: |
