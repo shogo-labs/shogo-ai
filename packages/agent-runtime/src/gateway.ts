@@ -357,6 +357,19 @@ export class AgentGateway {
   }
   /** Canvas build manager — runs per-workspace Vite builds */
   private canvasBuildManager: CanvasBuildManager | null = null
+  /**
+   * Direct handle on the runtime's PreviewManager (set by
+   * `attachApiServer`). Held in addition to the `skillServerManager`
+   * shim because we need to surface its `depsReady` deferred to the
+   * canvas build manager — going through the shim would require
+   * forwarding the promise through a layer whose contract is
+   * "skill-server-like API server", not "preview lifecycle".
+   *
+   * `null` is tolerated by `CanvasBuildManager`: missing waitForDeps
+   * just means the build proceeds without the gate (e.g. tests, or
+   * cloud paths where deps are guaranteed-installed before boot).
+   */
+  private previewManager: import('./preview-manager').PreviewManager | null = null
   /** Tracks the current high-level task description for remote status */
   private _currentTask: string | null = null
   /** Tracks the last tool name invoked for remote status */
@@ -747,9 +760,17 @@ export class AgentGateway {
       }
 
       const watcher = this.canvasFileWatcher
+      const pm = this.previewManager
       this.canvasBuildManager = new CanvasBuildManager(this.workspaceDir, {
         onBuildComplete: () => watcher.broadcastReload(),
         onBuildError: (err) => console.error(`${this.logPrefix} Canvas build error:`, err),
+        // Block the first canvas build (and every subsequent one until
+        // deps settle) on the preview manager's in-flight install. See
+        // PreviewManager.depsReady for the full rationale; tl;dr this
+        // is what stops VM-isolated macOS sessions from hitting
+        // `Cannot find module @rollup/rollup-linux-arm64-gnu` when
+        // host-installed node_modules is 9p-mounted into the guest.
+        waitForDeps: pm ? () => pm.depsReady : undefined,
       })
       watcher.setOnRebuild(() => this.canvasBuildManager?.triggerRebuild())
       this.canvasBuildManager.start().then(() => {
@@ -3435,6 +3456,11 @@ export class AgentGateway {
    */
   attachApiServer(pm: import('./preview-manager').PreviewManager): void {
     this.skillServerManager.attach(pm)
+    // Keep a direct handle so `start()` can pass `pm.depsReady` into
+    // CanvasBuildManager. The order matters: `server.ts` calls
+    // `attachApiServer()` BEFORE `start()`, so the handle is always
+    // populated by the time we wire it.
+    this.previewManager = pm
   }
 
   getSkillServerPort(): number | null {

@@ -57,6 +57,9 @@ import {
   computePackageJsonHash,
   readInstallMarker,
   writeInstallMarker,
+  readInstallPlatformMarker,
+  writeInstallPlatformMarker,
+  INSTALL_PLATFORM_TAG,
   findMissingTopLevelDeps,
   migrateLegacyShogoSdkPin,
 } from './workspace-defaults'
@@ -364,6 +367,53 @@ export class PreviewManager {
    */
   private readonly apiPort: number
 
+  /**
+   * Promise that resolves after the first `installDepsIfNeeded()` call
+   * settles (success OR caught failure). Created up-front so callers can
+   * await it before `start()` is invoked.
+   *
+   * The canvas build manager awaits this before spawning `vite build`,
+   * which closes a race that broke every VM-isolated session:
+   *
+   *   1. Pool-assign fires `pm.start()` in the background (fire-and-forget
+   *      at server.ts:3660), then immediately calls `startGateway()`.
+   *   2. The gateway constructs `CanvasBuildManager` and runs
+   *      `runBuild()` while bun-install is still extracting packages.
+   *   3. On a macOS host, the workspace's `node_modules` was populated by
+   *      the host's `ensureWorkspaceDeps` and is 9p-mounted into the linux
+   *      guest. The host install (Darwin arm64) installed
+   *      `@rollup/rollup-darwin-arm64` and SKIPPED
+   *      `@rollup/rollup-linux-arm64-gnu` (rollup ships its natives as
+   *      optionalDependencies filtered by `os`/`cpu`). Vite-config-loader
+   *      → rollup → `requireWithFriendlyError` → `Cannot find module
+   *      @rollup/rollup-linux-arm64-gnu`. The error propagates out of
+   *      vite as `undefined`, which is what shows up in main.log:
+   *
+   *        [CanvasBuildManager] Build error: failed to load config from
+   *          /host-workspaces/<projectId>/vite.config.ts
+   *        error during build: undefined
+   *
+   *   4. The in-guest `bun install` triggered by step 1 WOULD have
+   *      installed the linux-arm64 rollup native (bun honors `os`/`cpu`
+   *      relative to the running platform, not the lockfile's), but the
+   *      build had already failed and torn down dist.staging/ by the
+   *      time it finished — visible in main.log as a missing
+   *      "Dependencies installed" line preceding the canvas error.
+   *
+   * Awaiting depsReady before the build closes the race. The promise is
+   * best-effort: any throw inside `installDepsIfNeeded` is caught and
+   * the promise still resolves (we'd rather attempt a build and report
+   * the real error than hang the build forever).
+   */
+  private depsReadyResolve: (() => void) | null = null
+  private depsReadyPromise: Promise<void>
+  /**
+   * `true` once `installDepsIfNeeded` has settled at least once. Used by
+   * `depsReady` getter callers to distinguish "still pending" from
+   * "already done" without re-awaiting a resolved promise.
+   */
+  private _depsSettled = false
+
   constructor(config: PreviewManagerConfig) {
     this.workspaceDir = config.workspaceDir
     this.runtimePort = config.runtimePort
@@ -372,6 +422,31 @@ export class PreviewManager {
     this.onLogLine = config.onLogLine
     this.localMode = config.localMode ?? detectLocalMode()
     this.apiPort = resolveApiServerPort()
+    this.depsReadyPromise = new Promise<void>((resolve) => {
+      this.depsReadyResolve = resolve
+    })
+  }
+
+  /**
+   * Resolves once `installDepsIfNeeded()` has run to completion (or has
+   * given up and logged the failure). Idempotent and safe to await from
+   * multiple callers; safe to await before `start()` has been invoked.
+   *
+   * Note: this does NOT signal that the API server is up or that
+   * `dist/` exists. It is strictly an "install has stopped touching
+   * node_modules" gate. The build manager uses it to ensure platform-
+   * specific native bindings are present before invoking vite/rollup.
+   */
+  get depsReady(): Promise<void> {
+    return this.depsReadyPromise
+  }
+
+  /**
+   * True once depsReady has resolved at least once. Read-only mirror of
+   * the resolved-state of `depsReadyPromise` for sync callers.
+   */
+  get depsSettled(): boolean {
+    return this._depsSettled
   }
 
   /**
@@ -1113,6 +1188,61 @@ export class PreviewManager {
 
     const hasNodeModules = existsSync(join(installCwd, 'node_modules'))
 
+    // Cross-platform install-reuse guard.
+    //
+    // The host (`apps/api/.../ensureWorkspaceDeps`) populates the
+    // workspace `node_modules` on macOS/Windows BEFORE the linux
+    // guest VM 9p-mounts it. Rollup/esbuild/lightningcss/swc all
+    // ship native bindings as `optionalDependencies` filtered by
+    // `os`/`cpu`, so a Darwin-arm64 host install leaves
+    // `@rollup/rollup-linux-arm64-gnu` (and friends) absent.
+    //
+    // Once the guest mounts the workspace, the install-marker hash
+    // still matches (package.json didn't change) — without this
+    // platform gate, `installDepsIfNeeded` would short-circuit and
+    // the next `vite build` would die with
+    //   Cannot find module @rollup/rollup-linux-arm64-gnu
+    //   at requireWithFriendlyError (.../node_modules/rollup/dist/native.js)
+    // exactly the regression visible across every macOS+VM session
+    // in `~/Library/Logs/Shogo/main.log`.
+    //
+    // The host writes `node_modules/.shogo-platform` after every
+    // install (via workspace-defaults.writePlatformMarker). When the
+    // tag on disk doesn't match the running platform's tag, we
+    // force a full install — bun on the running platform will pull
+    // the matching natives (bun honors `os`/`cpu` relative to the
+    // running platform, not the lockfile platform).
+    //
+    // Three states the guard handles:
+    //   - tag matches    → fast paths run normally
+    //   - tag mismatches → force install (BOTH fast paths skipped)
+    //   - no tag on disk → legacy / first-run; treat as compatible
+    //     (the host install will write a tag on its way out, so the
+    //     next guest-side check is conclusive). Avoids paying a
+    //     redundant install on every legacy workspace that didn't
+    //     pre-date this marker.
+    const platformOnDisk = hasNodeModules ? readInstallPlatformMarker(installCwd) : null
+    const platformMismatched = !!(platformOnDisk && platformOnDisk !== INSTALL_PLATFORM_TAG)
+    if (platformMismatched) {
+      console.log(
+        `[${LOG_PREFIX}] node_modules was installed for ${platformOnDisk} but we're running on ${INSTALL_PLATFORM_TAG} — forcing reinstall (cross-platform native bindings would be absent)`,
+      )
+      // Drop both markers so neither fast-path can short-circuit.
+      // We intentionally don't delete `node_modules` itself — bun
+      // overwrites stale package dirs during install, and a partial
+      // rewrite is recoverable on the next start.
+      try {
+        const markerPath = join(installCwd, '.shogo', 'install-marker')
+        if (existsSync(markerPath)) {
+          const { unlinkSync } = require('fs')
+          unlinkSync(markerPath)
+        }
+      } catch {
+        // Best-effort: a leftover marker only causes one wasted
+        // install on the next start.
+      }
+    }
+
     // Hash-based install gate: write `.shogo/install-marker` containing
     // sha256(package.json) after each successful install; on next start,
     // compare. Same hash → skip install. Replaces the older anchor-deps
@@ -1144,6 +1274,7 @@ export class PreviewManager {
     ) {
       console.log(`[${LOG_PREFIX}] install-marker matches package.json sha256 — skipping bun install`)
       timings.install = 0
+      this._markDepsSettled()
       return
     }
 
@@ -1169,7 +1300,7 @@ export class PreviewManager {
     // we check *every* declared dep, not a fixed list, so dep churn
     // can't desync the probe from the package.json the project is
     // actually pinning.
-    if (hasNodeModules && expectedHash != null && recordedHash == null) {
+    if (hasNodeModules && expectedHash != null && recordedHash == null && !platformMismatched) {
       const missing = findMissingTopLevelDeps(installCwd)
       if (missing.length === 0) {
         console.log(
@@ -1177,6 +1308,7 @@ export class PreviewManager {
         )
         writeInstallMarker(installCwd, expectedHash)
         timings.install = 0
+        this._markDepsSettled()
         return
       }
       console.log(
@@ -1208,10 +1340,33 @@ export class PreviewManager {
       // Best-effort marker write — a failure here just means we'll run
       // install one more time on the next start, never anything worse.
       writeInstallMarker(installCwd, expectedHash ?? undefined)
+      // Tag the install with the platform we ran on. Subsequent
+      // boots on a DIFFERENT platform (host install → guest run,
+      // or vice versa) will see the mismatch and re-install above.
+      writeInstallPlatformMarker(installCwd)
     } catch (err: any) {
       timings.install = Date.now() - t0
       console.error(`[${LOG_PREFIX}] Dependency install failed:`, err.message)
+    } finally {
+      // Signal install-has-settled exactly once. Subsequent
+      // installDepsIfNeeded calls (re-install on package.json change,
+      // metro path follow-up at line ~1068) leave depsReady resolved.
+      // Awaiters on a stack-switch reinstall can poll _phase instead;
+      // we explicitly don't reset the gate or downstream canvas builds
+      // would block on every package.json edit.
+      this._markDepsSettled()
     }
+  }
+
+  /**
+   * Resolve `depsReadyPromise` exactly once. Safe to call from multiple
+   * exit paths (success / catch / early-skip in `installDepsIfNeeded`).
+   */
+  private _markDepsSettled(): void {
+    if (this._depsSettled) return
+    this._depsSettled = true
+    this.depsReadyResolve?.()
+    this.depsReadyResolve = null
   }
 
   private async runPrismaIfNeeded(timings: Record<string, number>): Promise<void> {

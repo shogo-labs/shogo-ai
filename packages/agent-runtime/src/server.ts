@@ -14,7 +14,7 @@
  */
 
 import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
-import { resolve, dirname, join, extname } from 'path'
+import { resolve, dirname, join, extname, basename } from 'path'
 import {
   existsSync,
   readFileSync,
@@ -83,6 +83,44 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 const WORKSPACE_DIR = process.env.WORKSPACE_DIR || process.env.AGENT_DIR || process.env.PROJECT_DIR || '/app/workspace'
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
 const PORT = parseInt(process.env.PORT || '8080', 10)
+
+/**
+ * Defensive sanity check on WORKSPACE_DIR.
+ *
+ * Backstory: the host-side RuntimeManager once defaulted its
+ * `workspacesDir` to `process.cwd()` when `WORKSPACES_DIR` was unset,
+ * which silently materialised project workspaces at
+ * `<repo-root>/<projectId>` instead of `<repo-root>/workspaces/<projectId>`.
+ * The agent-runtime then booted with `WORKSPACE_DIR` pointing at the
+ * wrong directory and served an empty `.shogo` (no `quick-actions.json`,
+ * no skills, no plans), with zero indication anything was wrong.
+ *
+ * Failing loud at startup is much cheaper than the user noticing
+ * missing chips three days later.
+ */
+function checkWorkspaceDirSanity(): void {
+  const expectedProjectId = process.env.PROJECT_ID
+  const workspaceBase = basename(WORKSPACE_DIR.replace(/\/+$/, ''))
+  const isContainerDefault = WORKSPACE_DIR === '/app/workspace'
+
+  if (isContainerDefault && !process.env.WORKSPACE_DIR && !process.env.AGENT_DIR && !process.env.PROJECT_DIR) {
+    console.warn(
+      `[agent-runtime] WARNING: WORKSPACE_DIR fell back to '/app/workspace'. ` +
+      `None of WORKSPACE_DIR / AGENT_DIR / PROJECT_DIR are set. ` +
+      `Outside a container this almost certainly means the project workspace will not be found.`,
+    )
+  }
+
+  if (expectedProjectId && workspaceBase !== expectedProjectId) {
+    console.warn(
+      `[agent-runtime] WARNING: WORKSPACE_DIR='${WORKSPACE_DIR}' does not end with PROJECT_ID='${expectedProjectId}'. ` +
+      `This usually means the host RuntimeManager resolved 'workspacesDir' to the wrong directory ` +
+      `(historically a process.cwd() fallback bug). The runtime will serve .shogo/, skills, plans, and ` +
+      `quick-actions from '${WORKSPACE_DIR}' — verify this is actually the project workspace.`,
+    )
+  }
+}
+checkWorkspaceDirSanity()
 
 async function reportHeartbeatComplete(projectId: string): Promise<void> {
   const apiUrl = deriveApiUrl()

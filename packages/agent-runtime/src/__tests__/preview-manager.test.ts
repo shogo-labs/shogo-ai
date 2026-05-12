@@ -50,6 +50,116 @@ describe('PreviewManager', () => {
     expect(s.phase).toBe('idle')
   })
 
+  test('depsReady is constructable up-front and resolves after start() settles', async () => {
+    // Pin the contract `CanvasBuildManager` relies on: the deferred
+    // must exist BEFORE `start()` is called (so the gateway can pass
+    // `() => pm.depsReady` into CanvasBuildManager during wiring,
+    // which happens before pm.start()), and it must resolve exactly
+    // once installDepsIfNeeded settles — not on subsequent restarts.
+    //
+    // Regression target: the canvas-build vs. install race that
+    // produced `error during build: undefined` in every VM-isolated
+    // session on macOS (see PreviewManager.depsReady doc comment).
+    setupProjectDir(true) // pre-built dist → start() short-circuits without spawning vite
+    const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080 })
+    expect(pm.depsSettled).toBe(false)
+    let resolved = false
+    pm.depsReady.then(() => { resolved = true })
+    await pm.start()
+    // start() runs installDepsIfNeeded, which (with no node_modules
+    // to inspect and no install marker) falls through to the actual
+    // install branch. Whether that branch succeeds or throws, the
+    // `finally` in installDepsIfNeeded must flip depsSettled.
+    expect(pm.depsSettled).toBe(true)
+    // Allow microtask flush so the then() can observe resolution.
+    await Promise.resolve()
+    expect(resolved).toBe(true)
+    pm.stop()
+  })
+
+  test('depsReady can be awaited before start() (deferred created in constructor)', async () => {
+    setupProjectDir(true)
+    const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080 })
+    let observed = false
+    const waiter = pm.depsReady.then(() => { observed = true })
+
+    // Sanity: the await is still pending — nothing has settled yet.
+    await Promise.resolve()
+    expect(observed).toBe(false)
+
+    await pm.start()
+    await waiter
+    expect(observed).toBe(true)
+    expect(pm.depsSettled).toBe(true)
+    pm.stop()
+  })
+
+  test('cross-platform node_modules tag drops the install-marker fast-path', async () => {
+    // Regression target: macOS host installs node_modules and writes
+    // an install-marker; linux guest VM 9p-mounts the same workspace
+    // and `installDepsIfNeeded` would otherwise see the matching
+    // package.json sha256 and skip the install, leaving
+    // `@rollup/rollup-linux-arm64-gnu` (and friends) absent.
+    //
+    // We can't fake `process.platform` from a unit test, so we go in
+    // the other direction: write a `.shogo-platform` tag that
+    // CANNOT match the running platform (`fake-tag-from-other-os`),
+    // along with a valid install-marker matching the current
+    // package.json. After running through the marker-loading branch
+    // by inspecting on-disk state, the install-marker must be gone
+    // (signaling the mismatch path tripped) so the next install pass
+    // runs unconditionally.
+    setupProjectDir(false)
+    const {
+      writeInstallMarker,
+      computePackageJsonHash,
+      readInstallPlatformMarker,
+      INSTALL_PLATFORM_TAG,
+    } = await import('../workspace-defaults')
+    const fs = await import('fs')
+    const path = await import('path')
+
+    // Seed a populated node_modules so the gate path's
+    // `hasNodeModules` branch evaluates.
+    fs.mkdirSync(path.join(TEST_DIR, 'node_modules'), { recursive: true })
+    const hash = computePackageJsonHash(TEST_DIR)!
+    writeInstallMarker(TEST_DIR, hash)
+
+    // Write a platform marker that is GUARANTEED to differ from the
+    // host running this test. (`INSTALL_PLATFORM_TAG` is `darwin-arm64`
+    // / `linux-x64` etc. on CI runners; `synthetic-other-arch` matches
+    // nothing.)
+    fs.writeFileSync(
+      path.join(TEST_DIR, 'node_modules', '.shogo-platform'),
+      'synthetic-other-arch\n',
+      'utf-8',
+    )
+
+    expect(INSTALL_PLATFORM_TAG).not.toBe('synthetic-other-arch')
+
+    // PreviewManager.start() spawns backgroundSetup async and
+    // returns before installDepsIfNeeded has actually run. We must
+    // await depsReady to observe the side-effects of the
+    // cross-platform check (and the subsequent install pass).
+    const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080 })
+    await pm.start()
+    await pm.depsReady
+
+    // The contract under test: cross-platform reuse never wins
+    // silently. The mismatch path forces a full `bun install`
+    // (skipping BOTH the hash-match and missing-deps fast paths),
+    // and a successful install rewrites the platform marker to
+    // the running platform. In this fixture there are no deps in
+    // package.json, so `bun install` is a successful no-op — but
+    // critically it ran (rather than being short-circuited by the
+    // matching install-marker), and the platform tag is now
+    // `INSTALL_PLATFORM_TAG`, not the synthetic foreign tag.
+    const platformOnDisk = readInstallPlatformMarker(TEST_DIR)
+    expect(platformOnDisk).toBe(INSTALL_PLATFORM_TAG)
+    expect(platformOnDisk).not.toBe('synthetic-other-arch')
+    pm.stop()
+  })
+
   test('internalUrl getter always reflects runtimePort', () => {
     const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 9123 })
     expect(pm.internalUrl).toBe('http://localhost:9123/')
