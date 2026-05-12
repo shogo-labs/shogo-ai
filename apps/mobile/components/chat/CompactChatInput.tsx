@@ -13,7 +13,7 @@
  * Drag-and-drop is omitted (not available on mobile).
  */
 
-import { useState, useRef, useCallback, forwardRef, useEffect, useMemo } from "react"
+import React, { useState, useRef, useCallback, forwardRef, useEffect, useMemo } from "react"
 import { View, Text, TextInput, Pressable, Image, ScrollView, Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
@@ -92,6 +92,22 @@ const MAX_FILES = 10
 
 const MIN_INPUT_HEIGHT = 80
 const MAX_INPUT_HEIGHT = 200
+
+/**
+ * Show a native browser tooltip on hover (web only). Wraps children in a
+ * `display: contents` div with the `title` attribute so layout is unaffected
+ * and the trigger's own ref (e.g. for popover positioning) isn't disturbed.
+ * On native this is a transparent passthrough — the icon click opens the
+ * popover menu which already shows the full label.
+ */
+function WebTooltip({ label, children }: { label: string; children: React.ReactNode }) {
+  if (Platform.OS !== "web") return <>{children}</>
+  return React.createElement(
+    "div",
+    { title: label, style: { display: "contents" } },
+    children,
+  )
+}
 
 interface AttachedFile {
   id: string
@@ -635,48 +651,32 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 onOpen={() => setInteractionModeOpen(true)}
                 onClose={() => setInteractionModeOpen(false)}
                 trigger={(triggerProps) => (
-                  <Pressable
-                    {...triggerProps}
-                    disabled={disabled}
-                    className={cn(
-                      "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
-                      interactionMode === "agent" && "bg-muted/50",
-                      interactionMode === "plan" &&
-                        "border border-amber-500/45 bg-amber-500/12",
-                      interactionMode === "ask" &&
-                        "border border-emerald-500/45 bg-emerald-500/12"
-                    )}
-                    testID="home-interaction-mode-trigger"
-                  >
-                    <currentInteractionConfig.Icon
+                  <WebTooltip label={`Mode: ${currentInteractionConfig.label}`}>
+                    <Pressable
+                      {...triggerProps}
+                      disabled={disabled}
+                      accessibilityLabel={`Mode: ${currentInteractionConfig.label}`}
                       className={cn(
-                        "h-2.5 w-2.5",
-                        interactionMode === "agent" && "text-muted-foreground",
-                        interactionMode === "plan" && "text-amber-400",
-                        interactionMode === "ask" && "text-emerald-400"
+                        "h-[22px] w-[22px] items-center justify-center rounded-md",
+                        interactionMode === "agent" && "bg-muted/50",
+                        interactionMode === "plan" &&
+                          "border border-amber-500/45 bg-amber-500/12",
+                        interactionMode === "ask" &&
+                          "border border-emerald-500/45 bg-emerald-500/12"
                       )}
-                      size={10}
-                    />
-                    <Text
-                      className={cn(
-                        "text-xs",
-                        interactionMode === "agent" && "text-muted-foreground",
-                        interactionMode === "plan" && "text-amber-400",
-                        interactionMode === "ask" && "text-emerald-400"
-                      )}
+                      testID="home-interaction-mode-trigger"
                     >
-                      {currentInteractionConfig.label}
-                    </Text>
-                    <ChevronDown
-                      className={cn(
-                        "h-2 w-2",
-                        interactionMode === "agent" && "text-muted-foreground/60",
-                        interactionMode === "plan" && "text-amber-400/80",
-                        interactionMode === "ask" && "text-emerald-400/80"
-                      )}
-                      size={8}
-                    />
-                  </Pressable>
+                      <currentInteractionConfig.Icon
+                        className={cn(
+                          "h-3.5 w-3.5",
+                          interactionMode === "agent" && "text-muted-foreground",
+                          interactionMode === "plan" && "text-amber-400",
+                          interactionMode === "ask" && "text-emerald-400"
+                        )}
+                        size={14}
+                      />
+                    </Pressable>
+                  </WebTooltip>
                 )}
               >
                 <PopoverBackdrop />
@@ -751,34 +751,28 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   per-device preference; every subsequent plan auto-generates
                   a business-language version until disabled. */}
               {interactionMode === "plan" && (
-                <Pressable
-                  testID="home-dual-plan-toggle"
-                  disabled={disabled}
-                  onPress={() => onDualPlanChange?.(!dualPlan)}
-                  accessibilityLabel="Also generate a business-language version"
-                  className={cn(
-                    "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
-                    dualPlan
-                      ? "border border-sky-500/45 bg-sky-500/12"
-                      : "bg-muted/50"
-                  )}
-                >
-                  <Languages
+                <WebTooltip label="Also generate a business-language version">
+                  <Pressable
+                    testID="home-dual-plan-toggle"
+                    disabled={disabled}
+                    onPress={() => onDualPlanChange?.(!dualPlan)}
+                    accessibilityLabel="Also generate a business-language version"
                     className={cn(
-                      "h-2.5 w-2.5",
-                      dualPlan ? "text-sky-400" : "text-muted-foreground"
-                    )}
-                    size={10}
-                  />
-                  <Text
-                    className={cn(
-                      "text-xs",
-                      dualPlan ? "text-sky-400" : "text-muted-foreground"
+                      "h-[22px] w-[22px] items-center justify-center rounded-md",
+                      dualPlan
+                        ? "border border-sky-500/45 bg-sky-500/12"
+                        : "bg-muted/50"
                     )}
                   >
-                    Business
-                  </Text>
-                </Pressable>
+                    <Languages
+                      className={cn(
+                        "h-3.5 w-3.5",
+                        dualPlan ? "text-sky-400" : "text-muted-foreground"
+                      )}
+                      size={14}
+                    />
+                  </Pressable>
+                </WebTooltip>
               )}
 
               {/* Environment selector — pick Cloud or a paired machine */}

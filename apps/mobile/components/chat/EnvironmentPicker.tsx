@@ -19,9 +19,9 @@
  * already rewrites `agentUrl` through `${apiUrl}/api/instances/:id/p/...`,
  * so the chat + canvas + SSE streams all follow automatically.
  */
-import { useState, useMemo } from "react"
+import React, { useState, useMemo } from "react"
 import { View, Text, Pressable, ScrollView, Platform } from "react-native"
-import { Cloud, Laptop, ChevronDown, Check, RefreshCw } from "lucide-react-native"
+import { Cloud, Laptop, Check, RefreshCw } from "lucide-react-native"
 import {
   Popover,
   PopoverBackdrop,
@@ -39,6 +39,21 @@ function getAuthHeaders(): Record<string, string> {
   if (Platform.OS === "web") return {}
   const cookie = (authClient as any).getCookie?.()
   return cookie ? { Cookie: cookie } : {}
+}
+
+/**
+ * Show a native browser tooltip on hover (web only). Wraps children in a
+ * `display: contents` div with the `title` attribute so layout is unaffected
+ * and the trigger's own ref isn't disturbed. On native this is a transparent
+ * passthrough — the icon click opens the popover menu.
+ */
+function WebTooltip({ label, children }: { label: string; children: React.ReactNode }) {
+  if (Platform.OS !== "web") return <>{children}</>
+  return React.createElement(
+    "div",
+    { title: label, style: { display: "contents" } },
+    children,
+  )
 }
 
 function StatusDot({ status }: { status: Instance["status"] }) {
@@ -80,15 +95,19 @@ export function EnvironmentPicker({ disabled }: EnvironmentPickerProps) {
 
   const displayLabel = activeInstance ? activeInstance.name : "Cloud"
   const triggerIcon = activeInstance
-    ? <Laptop className="h-3 w-3 text-emerald-500" size={12} />
-    : <Cloud className="h-3 w-3 text-muted-foreground/80" size={12} />
+    ? <Laptop className="h-3.5 w-3.5 text-emerald-500" size={14} />
+    : <Cloud className="h-3.5 w-3.5 text-muted-foreground" size={14} />
 
   if (localMode) {
     return (
-      <View className="h-[22px] flex-row items-center gap-1 rounded-md px-1.5">
-        <Laptop className="h-3 w-3 text-muted-foreground/80" size={12} />
-        <Text className="text-xs text-muted-foreground">Local</Text>
-      </View>
+      <WebTooltip label="Environment: Local">
+        <View
+          accessibilityLabel="Environment: Local"
+          className="h-[22px] w-[22px] items-center justify-center rounded-md"
+        >
+          <Laptop className="h-3.5 w-3.5 text-muted-foreground" size={14} />
+        </View>
+      </WebTooltip>
     )
   }
 
@@ -100,21 +119,19 @@ export function EnvironmentPicker({ disabled }: EnvironmentPickerProps) {
       onOpen={() => { setOpen(true); refresh() }}
       onClose={() => setOpen(false)}
       trigger={(triggerProps) => (
-        <Pressable
-          {...triggerProps}
-          disabled={disabled}
-          accessibilityLabel="Select execution environment"
-          className="h-[22px] flex-row items-center gap-1 rounded-md px-1.5"
-        >
-          {triggerIcon}
-          <Text className={cn(
-            "text-xs",
-            activeInstance ? "text-emerald-600" : "text-muted-foreground"
-          )}>
-            {displayLabel}
-          </Text>
-          <ChevronDown className="h-2 w-2 text-muted-foreground/60" size={8} />
-        </Pressable>
+        <WebTooltip label={`Environment: ${displayLabel}`}>
+          <Pressable
+            {...triggerProps}
+            disabled={disabled}
+            accessibilityLabel={`Environment: ${displayLabel}`}
+            className={cn(
+              "h-[22px] w-[22px] items-center justify-center rounded-md",
+              activeInstance && "bg-emerald-500/10",
+            )}
+          >
+            {triggerIcon}
+          </Pressable>
+        </WebTooltip>
       )}
     >
       <PopoverBackdrop />

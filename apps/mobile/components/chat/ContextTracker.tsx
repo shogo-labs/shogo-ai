@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { Platform, Pressable, useColorScheme as useSystemColorScheme } from "react-native"
+import React from "react"
+import { Platform, useColorScheme as useSystemColorScheme } from "react-native"
 import Svg, { Circle } from "react-native-svg"
 
 import { useTheme } from "../../contexts/theme"
@@ -82,12 +83,9 @@ export function ContextTracker({ inputTokens, contextWindowTokens }: ContextTrac
     return ring
   }
 
-  return (
-    <Pressable
-      ref={(el: any) => { if (el) el.title = label }}
-      accessibilityLabel={label}
-    >
-      {ring}
-    </Pressable>
+  return React.createElement(
+    "div",
+    { title: label, "aria-label": label, style: { display: "inline-flex" } },
+    ring,
   )
 }
