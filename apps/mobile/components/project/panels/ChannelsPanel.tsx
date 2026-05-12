@@ -21,6 +21,7 @@ import {
   Copy,
   Check,
   Phone,
+  AlertTriangle,
 } from 'lucide-react-native'
 import * as Clipboard from 'expo-clipboard'
 import { agentFetch } from '../../../lib/agent-fetch'
@@ -286,6 +287,28 @@ export function ChannelsPanel({ projectId, agentUrl, visible, hasAdvancedModelAc
   }
 
   if (!visible) return null
+
+  if (!agentUrl) {
+    return (
+      <View className="absolute inset-0 flex-col" style={{ display: visible ? 'flex' : 'none' }}>
+        <View className="px-4 py-3 border-b border-border flex-row items-center gap-2">
+          <MessageSquare size={16} className="text-muted-foreground" />
+          <View className="flex-1">
+            <Text className="text-sm font-medium text-foreground">Channels</Text>
+          </View>
+        </View>
+        <View className="flex-1 items-center justify-center px-6">
+          <AlertTriangle className="text-muted-foreground/40 mb-3" size={32} />
+          <Text className="text-sm font-medium text-foreground text-center">
+            Agent not connected
+          </Text>
+          <Text className="text-xs text-muted-foreground text-center mt-1">
+            The agent runtime is starting up. Channels will be available once the agent is ready.
+          </Text>
+        </View>
+      </View>
+    )
+  }
 
   const connectedTypes = new Set(channels.map(ch => ch.type))
 

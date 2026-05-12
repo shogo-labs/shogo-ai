@@ -27,6 +27,7 @@ import {
   Play,
   ChevronDown,
   Check,
+  AlertTriangle,
 } from "lucide-react-native"
 import { MarkdownText } from "../../chat/MarkdownText"
 import { AgentClient, type AgentPlanSummary } from "@shogo-ai/sdk/agent"
@@ -126,6 +127,8 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
   const [buildMode, setBuildMode] = useState<string>(selectedModel || DEFAULT_MODEL_PRO)
   const [showModelPicker, setShowModelPicker] = useState(false)
   const [buildStarted, setBuildStarted] = useState(false)
+  const [fetchError, setFetchError] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const prevSelectedPlanRef = useRef<string | null>(null)
 
   // Align Build model with chat when opening a plan or switching plans — not when only
@@ -160,24 +163,28 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
 
   const fetchPlans = useCallback(async () => {
     setLoading(true)
+    setFetchError(null)
     try {
       const list = await agentClient.listPlans()
       setPlans(list)
-    } catch (err) {
-      console.error("[PlansPanel] Failed to fetch plans:", err)
+    } catch (err: any) {
+      setFetchError(err?.message || "Failed to load plans")
     } finally {
       setLoading(false)
     }
   }, [agentClient])
 
+  const [detailError, setDetailError] = useState<string | null>(null)
+
   const fetchPlanDetail = useCallback(
     async (filename: string) => {
       setDetailLoading(true)
+      setDetailError(null)
       try {
         const data = await agentClient.getPlan(filename)
         setPlanContent(data.content)
-      } catch (err) {
-        console.error("[PlansPanel] Failed to fetch plan detail:", err)
+      } catch (err: any) {
+        setDetailError(err?.message || "Failed to load plan")
         setPlanContent(null)
       } finally {
         setDetailLoading(false)
@@ -188,6 +195,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
 
   const handleDelete = useCallback(
     async (filename: string) => {
+      setDeleteError(null)
       try {
         await agentClient.deletePlan(filename)
         setPlans((prev) => prev.filter((p) => p.filename !== filename))
@@ -195,8 +203,8 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
           setSelectedPlan(null)
           setPlanContent(null)
         }
-      } catch (err) {
-        console.error("[PlansPanel] Failed to delete plan:", err)
+      } catch (err: any) {
+        setDeleteError(err?.message || "Failed to delete plan")
       }
     },
     [agentClient, selectedPlan]
@@ -402,10 +410,37 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
           )}
         </View>
 
+        {/* Delete error banner */}
+        {deleteError && (
+          <View className="px-4 py-2 bg-destructive/10 flex-row items-center gap-2">
+            <AlertTriangle className="text-destructive" size={14} />
+            <Text className="text-xs text-destructive flex-1">{deleteError}</Text>
+            <Pressable onPress={() => setDeleteError(null)} className="p-1">
+              <Text className="text-xs text-destructive font-medium">Dismiss</Text>
+            </Pressable>
+          </View>
+        )}
+
         {/* Detail body */}
         <ScrollView className="flex-1 px-4 py-3" onScrollBeginDrag={() => setShowModelPicker(false)}>
           {!isStreamingDetail && detailLoading ? (
             <ActivityIndicator className="mt-8" />
+          ) : !isStreamingDetail && detailError ? (
+            <View className="items-center justify-center py-12 px-4">
+              <AlertTriangle className="h-8 w-8 text-destructive/60 mb-3" size={32} />
+              <Text className="text-sm text-foreground text-center font-medium">
+                Couldn't load plan
+              </Text>
+              <Text className="text-xs text-muted-foreground text-center mt-1">
+                {detailError}
+              </Text>
+              <Pressable
+                onPress={() => fetchPlanDetail(selectedPlan!)}
+                className="mt-4 px-4 py-2 bg-primary rounded-lg active:bg-primary/80"
+              >
+                <Text className="text-xs font-medium text-primary-foreground">Retry</Text>
+              </Pressable>
+            </View>
           ) : (
             <>
               <MarkdownText>{body}</MarkdownText>
@@ -520,6 +555,22 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
 
         {loading && !planStream?.isPlanStreaming ? (
           <ActivityIndicator className="mt-8" />
+        ) : fetchError && plans.length === 0 && !planStream?.isPlanStreaming ? (
+          <View className="items-center justify-center py-12 px-4">
+            <AlertTriangle className="h-8 w-8 text-destructive/60 mb-3" size={32} />
+            <Text className="text-sm text-foreground text-center font-medium">
+              Couldn't load plans
+            </Text>
+            <Text className="text-xs text-muted-foreground text-center mt-1">
+              {fetchError}
+            </Text>
+            <Pressable
+              onPress={fetchPlans}
+              className="mt-4 px-4 py-2 bg-primary rounded-lg active:bg-primary/80"
+            >
+              <Text className="text-xs font-medium text-primary-foreground">Retry</Text>
+            </Pressable>
+          </View>
         ) : filteredPlans.length === 0 && !planStream?.isPlanStreaming && !planStream?.streamingPlan ? (
           <View className="items-center justify-center py-12 px-4">
             <ClipboardList className="h-8 w-8 text-muted-foreground/40 mb-3" size={32} />

@@ -330,6 +330,26 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
 
   if (!visible) return null
 
+  if (!agentUrl) {
+    return (
+      <View className="absolute inset-0 flex-col">
+        <View className="px-4 py-3 border-b border-border flex-row items-center gap-2">
+          <Wrench size={16} className="text-muted-foreground" />
+          <Text className="text-sm font-medium text-foreground">Integrations</Text>
+        </View>
+        <View className="flex-1 items-center justify-center px-6">
+          <AlertTriangle className="text-muted-foreground/40 mb-3" size={32} />
+          <Text className="text-sm font-medium text-foreground text-center">
+            Agent not connected
+          </Text>
+          <Text className="text-xs text-muted-foreground text-center mt-1">
+            The agent runtime is starting up. Integrations will be available once the agent is ready.
+          </Text>
+        </View>
+      </View>
+    )
+  }
+
   return (
     <View className="absolute inset-0 flex-col">
       <View className="px-4 py-3 border-b border-border flex-row items-center gap-2">
