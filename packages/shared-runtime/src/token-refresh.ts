@@ -55,11 +55,15 @@
  * What this module does NOT do
  * ============================
  * - Active-session rotation. A WebSocket chat session that started
- *   30 seconds before rotation finishes the turn with the old token.
- *   That's fine: tokens get a 30s grace window inside the API's
- *   verifier, sessions are typically <30 min, and refresh happens
- *   ≥24h before expiry — the worst-case live session has hours of
- *   headroom.
+ *   moments before rotation finishes the turn with whichever token
+ *   it captured. The API's verifier checks `exp` strictly — no
+ *   leeway, no grace window — so a session that captured a token
+ *   within milliseconds of its expiry could 401 mid-turn. In
+ *   practice this is fine because refresh happens ≥24h before
+ *   expiry: the worst-case live session has hours of headroom on
+ *   the OLD token, and any session constructed after rotation uses
+ *   the NEW token. If the API ever adds verifier leeway, the
+ *   already-large headroom only widens.
  * - HMAC secret rotation. If `AI_PROXY_SECRET` on the API is rotated,
  *   every existing token becomes invalid instantly. The next refresh
  *   tick recovers the runtime, but a brief outage is unavoidable
@@ -133,6 +137,11 @@ export function startTokenRefreshLoop(options: TokenRefreshOptions): TokenRefres
 
   let timer: ReturnType<typeof setTimeout> | null = null
   let stopped = false
+  // Single-flight guard for refresh(). Both the scheduled tick and a public
+  // `refreshNow()` call route through the same refresh function; without
+  // coalescing, concurrent invocations each call schedule() in their
+  // `finally`, which would leak setTimeouts.
+  let inflight: Promise<Record<string, string> | null> | null = null
 
   const computeNextDelay = (): number => {
     const jitter = jitterMs > 0
@@ -158,16 +167,36 @@ export function startTokenRefreshLoop(options: TokenRefreshOptions): TokenRefres
 
   const schedule = () => {
     if (stopped) return
+    // Cancel any previously-pending tick before installing a new one.
+    // Required for safety under concurrent refresh(): without this, two
+    // overlapping refresh() calls would each schedule a fresh setTimeout
+    // in their finally, leaking timers that compound over time.
+    if (timer) {
+      clearTimeout(timer)
+      timer = null
+    }
     const delay = computeNextDelay()
     timer = setTimeout(() => {
       void refresh()
     }, delay)
     // Don't keep the event loop alive for the refresh timer — if the runtime
     // is otherwise idle and Bun/Node wants to exit, we don't block it.
+    // The `as any` cast bridges the Bun/Node setTimeout return-type
+    // difference; both runtimes expose `.unref()` at runtime.
     if (typeof (timer as any)?.unref === 'function') (timer as any).unref()
   }
 
-  const refresh = async (): Promise<Record<string, string> | null> => {
+  const refresh = (): Promise<Record<string, string> | null> => {
+    // Single-flight: a concurrent caller gets the in-flight promise back
+    // instead of starting a second refresh + schedule cycle.
+    if (inflight) return inflight
+    inflight = doRefresh().finally(() => {
+      inflight = null
+    })
+    return inflight
+  }
+
+  const doRefresh = async (): Promise<Record<string, string> | null> => {
     try {
       const projectId = options.getProjectId()
       if (!projectId || projectId === '__POOL__') {
