@@ -57,6 +57,7 @@ import {
   computePackageJsonHash,
   readInstallMarker,
   writeInstallMarker,
+  findMissingTopLevelDeps,
 } from './workspace-defaults'
 
 const LOG_PREFIX = 'preview-manager'
@@ -1088,22 +1089,42 @@ export class PreviewManager {
       return
     }
 
-    // First-ever start with a pre-installed node_modules and no marker: trust
-    // that the install matches package.json (this is the runtime template's
-    // pre-warmed fast path) and just record the marker so we hit the cheap
-    // skip path on subsequent starts. Avoids redundant `bun install` on every
-    // fresh workspace, which was the original anchor-deps heuristic's whole
-    // job. If the bundled node_modules doesn't actually match package.json —
-    // e.g. a Vite template copied into an Expo workspace — the bundler will
-    // fail on first build and the user can `bun install` manually; we'd
-    // rather not unconditionally install on every start.
+    // First-ever start with a pre-installed node_modules and no marker:
+    // optimistically trust the install IF every top-level dependency
+    // declared in package.json actually exists in node_modules/.
+    //
+    // Background: the original "just stamp the hash" heuristic was meant
+    // to skip a redundant `bun install` for the runtime-template's
+    // pre-warmed fast path. But it has a nasty failure mode for legacy
+    // user workspaces: if a previous install crashed halfway, or the
+    // workspace was migrated (e.g. by `migrateLegacyShogoSdkPin` rewriting
+    // the SDK pin), node_modules can exist but be missing key deps —
+    // vite, @shogo-ai/sdk, the prisma adapter — and we'd permanently
+    // record the BROKEN state as "good", preventing every subsequent
+    // start from ever installing them. Observed in main.log:
+    //   "Vite build --watch exited (code=127, signal=null)"
+    // on a workspace whose node_modules had no vite at all.
+    //
+    // The probe is cheap (one stat per top-level dep, capped at a few
+    // dozen names) and catches both the partial-install and stale-tree
+    // cases without bringing back the old anchor-deps false positives:
+    // we check *every* declared dep, not a fixed list, so dep churn
+    // can't desync the probe from the package.json the project is
+    // actually pinning.
     if (hasNodeModules && expectedHash != null && recordedHash == null) {
+      const missing = findMissingTopLevelDeps(installCwd)
+      if (missing.length === 0) {
+        console.log(
+          `[${LOG_PREFIX}] node_modules/ present with all declared deps — recording hash without reinstall`,
+        )
+        writeInstallMarker(installCwd, expectedHash)
+        timings.install = 0
+        return
+      }
       console.log(
-        `[${LOG_PREFIX}] node_modules/ present but install-marker missing — recording hash without reinstall`,
+        `[${LOG_PREFIX}] node_modules/ present but ${missing.length} declared dep(s) missing (${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ', …' : ''}) — running install`,
       )
-      writeInstallMarker(installCwd, expectedHash)
-      timings.install = 0
-      return
+      // fall through to install
     }
 
     if (hasNodeModules && expectedHash != null && recordedHash !== expectedHash) {

@@ -755,6 +755,46 @@ export function writeInstallMarker(dir: string, hash?: string): void {
 }
 
 /**
+ * Return the names of top-level dependencies declared in `package.json`
+ * (both `dependencies` and `devDependencies`) that are NOT present as
+ * directories under `node_modules/`. Used to decide whether an existing
+ * `node_modules/` is actually trustworthy when no install marker is on
+ * disk — a partial or crashed prior install leaves `node_modules/`
+ * present but missing key packages (vite, @shogo-ai/sdk, etc.), and
+ * we'd otherwise stamp that broken state as "good".
+ *
+ * Cheap: one `existsSync` per declared dep, capped at the number of
+ * names actually in package.json. Skips git/protocol/file specifiers
+ * — those don't map to a deterministic `node_modules/<name>` path —
+ * and tolerates a missing or unreadable package.json by returning
+ * an empty list (no false-positive reinstalls).
+ */
+export function findMissingTopLevelDeps(dir: string): string[] {
+  const pkgPath = join(dir, 'package.json')
+  if (!existsSync(pkgPath)) return []
+
+  let pkg: { dependencies?: Record<string, string>; devDependencies?: Record<string, string> }
+  try { pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) }
+  catch { return [] }
+
+  const allDeps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) }
+  const nodeModules = join(dir, 'node_modules')
+  if (!existsSync(nodeModules)) return Object.keys(allDeps)
+
+  const missing: string[] = []
+  for (const [name, spec] of Object.entries(allDeps)) {
+    // Skip non-registry specifiers — those don't always materialise as
+    // `node_modules/<name>` (workspace:*, file:, git+, etc. may resolve
+    // to symlinks or alternative layouts that aren't worth probing).
+    if (typeof spec === 'string' && /^(file:|link:|workspace:|git\+|https?:|github:)/.test(spec)) continue
+    if (!existsSync(join(nodeModules, name, 'package.json'))) {
+      missing.push(name)
+    }
+  }
+  return missing
+}
+
+/**
  * Remove the install marker. Used by `wipeProjectFiles` on a stack switch
  * — `.shogo/` is preserved across wipes (it carries agent identity), but
  * the marker inside it is package.json-specific and would otherwise leak
