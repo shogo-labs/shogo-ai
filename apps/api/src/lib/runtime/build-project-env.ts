@@ -111,6 +111,12 @@ export async function buildProjectEnv(
   env.ANTHROPIC_PROXY_URL = `${apiBase}/api/ai/anthropic`
   env.OPENAI_PROXY_URL = `${apiBase}/api/ai/v1`
 
+  // Pin SHOGO_API_URL so the SDK's voice runtime-token proxy mode
+  // (packages/sdk/src/voice/server.ts) reaches the in-cluster Shogo API
+  // instead of falling back to http://localhost:8002. Same apiBase the
+  // AI proxy URLs use — both endpoints live on the API service.
+  env.SHOGO_API_URL = apiBase
+
   // Inject admin-configured agent model overrides so the gateway resolves correctly
   const modelOverrides = getAgentModeOverrides()
   if (modelOverrides.basic) env.AGENT_BASIC_MODEL = modelOverrides.basic
