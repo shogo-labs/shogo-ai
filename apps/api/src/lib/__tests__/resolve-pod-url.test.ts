@@ -1,0 +1,279 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+
+import { describe, expect, it, mock } from 'bun:test'
+import { resolveProjectPodUrl, type ResolvePodUrlOpts } from '../resolve-pod-url'
+
+class FakeVMPoolPermanentlyDisabledError extends Error {
+  constructor(public consecutiveFailures: number = 3) {
+    super(`VM warm pool permanently disabled (${consecutiveFailures} failures)`)
+    this.name = 'VMPoolPermanentlyDisabledError'
+  }
+}
+
+function fakeRuntime(overrides: Partial<any> = {}) {
+  return {
+    projectId: 'proj-1',
+    port: 37500,
+    agentPort: 38500,
+    status: 'running' as const,
+    url: 'http://localhost:37500',
+    pid: 12345,
+    startedAt: Date.now(),
+    ...overrides,
+  }
+}
+
+function fakeRuntimeManager(initial?: any) {
+  let runtime = initial
+  return {
+    status: () => runtime,
+    start: mock(async () => {
+      runtime = fakeRuntime()
+      return runtime
+    }),
+    _setRuntime(r: any) { runtime = r },
+  }
+}
+
+describe('resolveProjectPodUrl', () => {
+  describe('mode selection', () => {
+    it('routes K8s when isKubernetes()', async () => {
+      const res = await resolveProjectPodUrl('proj-1', {
+        _isKubernetes: () => true,
+        _isVMIsolation: () => false,
+        _k8sResolver: async () => 'http://pod.example/v1',
+      })
+      expect(res).toEqual({ mode: 'k8s', url: 'http://pod.example/v1' })
+    })
+
+    it('routes VM when SHOGO_VM_ISOLATION=true and K8s is off', async () => {
+      const res = await resolveProjectPodUrl('proj-1', {
+        _isKubernetes: () => false,
+        _isVMIsolation: () => true,
+        _vmResolver: async () => 'http://localhost:39200',
+      })
+      expect(res).toEqual({ mode: 'vm', url: 'http://localhost:39200' })
+    })
+
+    it('routes host when neither isolation flag is set', async () => {
+      const mgr = fakeRuntimeManager(fakeRuntime())
+      const res = await resolveProjectPodUrl('proj-1', {
+        _isKubernetes: () => false,
+        _isVMIsolation: () => false,
+        runtimeManager: mgr as any,
+      })
+      expect(res.mode).toBe('host')
+      expect(res.url).toBe('http://localhost:38500')
+      expect((res as any).runtime).toBeDefined()
+    })
+
+    it('K8s wins over VM if both env flags are set (matches existing precedence)', async () => {
+      const res = await resolveProjectPodUrl('proj-1', {
+        _isKubernetes: () => true,
+        _isVMIsolation: () => true,
+        _k8sResolver: async () => 'http://pod.cluster/v1',
+        _vmResolver: async () => 'http://localhost:39200',
+      })
+      expect(res.mode).toBe('k8s')
+    })
+  })
+
+  describe('VM transient failure handling', () => {
+    it('throws the transient error by default (maxVMRetries=1)', async () => {
+      await expect(
+        resolveProjectPodUrl('proj-1', {
+          _isKubernetes: () => false,
+          _isVMIsolation: () => true,
+          _vmResolver: async () => { throw new Error('transient: pool warming up') },
+        }),
+      ).rejects.toThrow(/transient/)
+    })
+
+    it('retries up to maxVMRetries times before throwing', async () => {
+      let calls = 0
+      await expect(
+        resolveProjectPodUrl('proj-1', {
+          _isKubernetes: () => false,
+          _isVMIsolation: () => true,
+          maxVMRetries: 3,
+          vmRetryDelayMs: 0,
+          _vmResolver: async () => {
+            calls++
+            throw new Error('transient')
+          },
+        }),
+      ).rejects.toThrow(/transient/)
+      expect(calls).toBe(3)
+    })
+
+    it('succeeds on a later attempt if VM becomes ready', async () => {
+      let calls = 0
+      const res = await resolveProjectPodUrl('proj-1', {
+        _isKubernetes: () => false,
+        _isVMIsolation: () => true,
+        maxVMRetries: 5,
+        vmRetryDelayMs: 0,
+        _vmResolver: async () => {
+          calls++
+          if (calls < 3) throw new Error('transient')
+          return 'http://localhost:39200'
+        },
+      })
+      expect(res).toEqual({ mode: 'vm', url: 'http://localhost:39200' })
+      expect(calls).toBe(3)
+    })
+
+    it('does NOT retry on VMPoolPermanentlyDisabledError', async () => {
+      let calls = 0
+      await expect(
+        resolveProjectPodUrl('proj-1', {
+          _isKubernetes: () => false,
+          _isVMIsolation: () => true,
+          maxVMRetries: 5,
+          vmRetryDelayMs: 0,
+          _vmResolver: async () => {
+            calls++
+            throw new FakeVMPoolPermanentlyDisabledError(3)
+          },
+          _vmPoolPermanentlyDisabledError: FakeVMPoolPermanentlyDisabledError,
+          onVMPermanentlyDisabled: 'throw',
+        }),
+      ).rejects.toThrow(/permanently disabled/)
+      expect(calls).toBe(1)
+    })
+  })
+
+  describe('VM permanent-disable fallback policy', () => {
+    it("'throw' rethrows VMPoolPermanentlyDisabledError without touching host", async () => {
+      const mgr = fakeRuntimeManager()
+      await expect(
+        resolveProjectPodUrl('proj-1', {
+          _isKubernetes: () => false,
+          _isVMIsolation: () => true,
+          _vmResolver: async () => { throw new FakeVMPoolPermanentlyDisabledError(3) },
+          _vmPoolPermanentlyDisabledError: FakeVMPoolPermanentlyDisabledError,
+          onVMPermanentlyDisabled: 'throw',
+          runtimeManager: mgr as any,
+        }),
+      ).rejects.toThrow()
+      expect(mgr.start).toHaveBeenCalledTimes(0)
+    })
+
+    it("'fallback-to-host' switches to host RuntimeManager after permanent disable", async () => {
+      const mgr = fakeRuntimeManager()
+      const res = await resolveProjectPodUrl('proj-1', {
+        _isKubernetes: () => false,
+        _isVMIsolation: () => true,
+        _vmResolver: async () => { throw new FakeVMPoolPermanentlyDisabledError(3) },
+        _vmPoolPermanentlyDisabledError: FakeVMPoolPermanentlyDisabledError,
+        onVMPermanentlyDisabled: 'fallback-to-host',
+        runtimeManager: mgr as any,
+      })
+      expect(res.mode).toBe('host')
+      expect(res.url).toBe('http://localhost:38500')
+      expect(mgr.start).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('host mode runtime reuse', () => {
+    it('does NOT call manager.start when runtime is already running', async () => {
+      const running = fakeRuntime({ status: 'running' })
+      const mgr = fakeRuntimeManager(running)
+      const res = await resolveProjectPodUrl('proj-1', {
+        _isKubernetes: () => false,
+        _isVMIsolation: () => false,
+        runtimeManager: mgr as any,
+      })
+      expect(res.mode).toBe('host')
+      expect((res as any).runtime).toBe(running)
+      expect(mgr.start).toHaveBeenCalledTimes(0)
+    })
+
+    it('calls manager.start when status is stopped', async () => {
+      const stopped = fakeRuntime({ status: 'stopped' })
+      const mgr = fakeRuntimeManager(stopped)
+      await resolveProjectPodUrl('proj-1', {
+        _isKubernetes: () => false,
+        _isVMIsolation: () => false,
+        runtimeManager: mgr as any,
+      })
+      expect(mgr.start).toHaveBeenCalledTimes(1)
+    })
+
+    it('calls manager.start when status is error', async () => {
+      const errored = fakeRuntime({ status: 'error' })
+      const mgr = fakeRuntimeManager(errored)
+      await resolveProjectPodUrl('proj-1', {
+        _isKubernetes: () => false,
+        _isVMIsolation: () => false,
+        runtimeManager: mgr as any,
+      })
+      expect(mgr.start).toHaveBeenCalledTimes(1)
+    })
+
+    it('calls manager.start when no runtime exists', async () => {
+      const mgr = fakeRuntimeManager(undefined)
+      await resolveProjectPodUrl('proj-1', {
+        _isKubernetes: () => false,
+        _isVMIsolation: () => false,
+        runtimeManager: mgr as any,
+      })
+      expect(mgr.start).toHaveBeenCalledTimes(1)
+    })
+
+    it('calls manager.start when runtime exists but agentPort is missing (interrupted boot)', async () => {
+      const halfBaked = { ...fakeRuntime(), agentPort: undefined }
+      const mgr = fakeRuntimeManager(halfBaked)
+      await resolveProjectPodUrl('proj-1', {
+        _isKubernetes: () => false,
+        _isVMIsolation: () => false,
+        runtimeManager: mgr as any,
+      })
+      expect(mgr.start).toHaveBeenCalledTimes(1)
+    })
+
+    it('falls back to runtime.port+1000 when agentPort is set later but undefined now', async () => {
+      // Captures the legacy convention `agentPort ?? port + 1000`.
+      const mgr = fakeRuntimeManager()
+      mgr.start = mock(async () => fakeRuntime({ agentPort: undefined as any, port: 37500 })) as any
+      const res = await resolveProjectPodUrl('proj-1', {
+        _isKubernetes: () => false,
+        _isVMIsolation: () => false,
+        runtimeManager: mgr as any,
+      })
+      expect(res.mode).toBe('host')
+      expect(res.url).toBe('http://localhost:38500') // 37500 + 1000
+    })
+
+    it('reuses the hostname from runtime.url so non-localhost host bindings still work', async () => {
+      const mgr = fakeRuntimeManager(fakeRuntime({ url: 'http://0.0.0.0:37500' }))
+      const res = await resolveProjectPodUrl('proj-1', {
+        _isKubernetes: () => false,
+        _isVMIsolation: () => false,
+        runtimeManager: mgr as any,
+      })
+      expect(res.url).toBe('http://0.0.0.0:38500')
+    })
+  })
+
+  describe('regression coverage for the original split-brain bug', () => {
+    it("never calls manager.start when VM isolation is on and the resolver succeeds", async () => {
+      // This is the bug from the user's 1.6.x main.log: `agent-proxy`
+      // and `resolveAgentRuntimeUrl` in server.ts called
+      // `runtimeManager.start()` even with SHOGO_VM_ISOLATION=true,
+      // producing a host runtime in parallel with the (eventually
+      // booted) warm-pool VM. Through this helper, host mode is now
+      // unreachable when VM resolution succeeds.
+      const mgr = fakeRuntimeManager()
+      const res = await resolveProjectPodUrl('proj-1', {
+        _isKubernetes: () => false,
+        _isVMIsolation: () => true,
+        _vmResolver: async () => 'http://localhost:39200',
+        runtimeManager: mgr as any,
+      })
+      expect(res.mode).toBe('vm')
+      expect(mgr.start).toHaveBeenCalledTimes(0)
+    })
+  })
+})

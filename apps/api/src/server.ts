@@ -2026,68 +2026,12 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   // each LLM round-trip would emit its own `ai_proxy_completion` row.
   const isChatStream = c.req.method === 'POST' && path === '/agent/chat' && !!authedWorkspaceId && !!authedUserId
 
-  let podUrl: string
-
-  if (isKubernetes()) {
-    try {
-      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-      podUrl = await getProjectPodUrl(projectId)
-    } catch (error: any) {
-      console.error('[AgentProxy] K8s pod resolution error:', error)
-      return c.json({ error: { code: 'proxy_error', message: error.message || 'Failed to resolve agent pod' } }, 502)
-    }
-  } else if (process.env.SHOGO_VM_ISOLATION === 'true') {
-    // VM isolation on the desktop: route through the warm pool, NOT
-    // host RuntimeManager. Falling back to the host here is what
-    // produced the "Connecting to agent runtime…" split-brain — the
-    // frontend's /sandbox/url route correctly waits for the VM, but
-    // this agent-proxy route used to start a host runtime in parallel,
-    // leaving the VM forever unused. See routes/runtime.ts:104-119 for
-    // the same gate. Permanent-disabled fallback is handled inside
-    // project-chat.ts because only that path serializes user chat.
-    try {
-      const { getVMProjectUrl, VMPoolPermanentlyDisabledError } = await import('./lib/vm-warm-pool-controller')
-      try {
-        podUrl = await getVMProjectUrl(projectId)
-      } catch (vmErr: any) {
-        if (vmErr instanceof VMPoolPermanentlyDisabledError) {
-          // Pool gave up after MAX_CONSECUTIVE_FAILURES — same recovery
-          // story as project-chat.ts:696. Fall through to host so the
-          // user isn't permanently stuck on a 503.
-          console.warn(`[AgentProxy] VM warm pool permanently disabled (${vmErr.consecutiveFailures} boot failures); falling back to host runtime for ${projectId}`)
-          const manager = getRuntimeManager()
-          let runtime = manager.status(projectId)
-          if (!runtime || !runtime.agentPort) {
-            runtime = await manager.start(projectId)
-          }
-          podUrl = `http://localhost:${runtime.agentPort}`
-        } else {
-          // Transient — return 503 so the client retries instead of
-          // accidentally creating a host-side split-brain runtime.
-          console.error('[AgentProxy] VM pool unavailable:', vmErr.message)
-          return c.json(
-            { error: { code: 'vm_pool_unavailable', message: 'VM isolation is enabled but the pool is not ready. Retrying...' } },
-            503
-          )
-        }
-      }
-    } catch (importErr: any) {
-      console.error('[AgentProxy] Failed to load VM warm pool controller:', importErr.message)
-      return c.json({ error: { code: 'proxy_error', message: 'VM isolation enabled but controller unavailable' } }, 502)
-    }
-  } else {
-    const manager = getRuntimeManager()
-    let runtime = manager.status(projectId)
-    if (!runtime || !runtime.agentPort) {
-      try {
-        runtime = await manager.start(projectId)
-      } catch (error: any) {
-        console.error(`[AgentProxy] Failed to auto-start runtime for ${projectId}:`, error)
-        return c.json({ error: { code: 'agent_start_failed', message: error.message || 'Failed to start agent runtime' } }, 503)
-      }
-    }
-    podUrl = `http://localhost:${runtime.agentPort}`
+  const { resolveAgentProxyPodUrl } = await import('./lib/agent-proxy-resolver')
+  const resolution = await resolveAgentProxyPodUrl(projectId)
+  if (!resolution.ok) {
+    return c.json(resolution.body, resolution.status)
   }
+  const podUrl = resolution.url
 
   const targetUrl = `${podUrl}${path}${qs}`
 
@@ -3961,36 +3905,20 @@ app.get('/api/projects/:projectId/chat/status', async (c) => {
 // installing mocks has no externally visible side effects beyond the project
 // pod itself.
 async function resolveAgentRuntimeUrl(projectId: string): Promise<string | null> {
-  if (isKubernetes()) {
-    try {
-      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-      return await getProjectPodUrl(projectId)
-    } catch (err: any) {
-      console.warn(`[ToolMocks] Failed to resolve k8s pod URL for ${projectId}: ${err?.message ?? err}`)
-      return null
-    }
+  try {
+    const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
+    // Tool-mocks installer is best-effort: if VM/K8s/host resolution
+    // fails, return null and let the caller log and skip rather than
+    // 503ing the (demo-mode-only) caller.
+    const res = await resolveProjectPodUrl(projectId, {
+      logTag: 'ToolMocks',
+      onVMPermanentlyDisabled: 'throw',
+    })
+    return res.url
+  } catch (err: any) {
+    console.warn(`[ToolMocks] Failed to resolve runtime URL for ${projectId}: ${err?.message ?? err}`)
+    return null
   }
-  // VM isolation: route through the warm pool. Same split-brain
-  // reasoning as the agent-proxy gate above — never silently spin up
-  // a host runtime when the project is supposed to live in a VM.
-  if (process.env.SHOGO_VM_ISOLATION === 'true') {
-    try {
-      const { getVMProjectUrl } = await import('./lib/vm-warm-pool-controller')
-      return await getVMProjectUrl(projectId)
-    } catch (err: any) {
-      console.warn(`[ToolMocks] Failed to resolve VM URL for ${projectId}: ${err?.message ?? err}`)
-      return null
-    }
-  }
-  const manager = getRuntimeManager()
-  let runtime = manager.status(projectId)
-  if (!runtime || runtime.status === 'stopped' || runtime.status === 'error') {
-    runtime = await manager.start(projectId)
-  }
-  if (!runtime?.url) return null
-  const agentPort = runtime.agentPort || (runtime.port + 1000)
-  const host = new URL(runtime.url).hostname
-  return `http://${host}:${agentPort}`
 }
 
 function demoModeEnabled(): boolean {
