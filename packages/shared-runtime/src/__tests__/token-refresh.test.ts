@@ -219,11 +219,13 @@ describe('startTokenRefreshLoop', () => {
     expect(calls).toBe(0)
   })
 
-  test('uses ServiceAccount token in Authorization header when present', async () => {
-    // Point at a tmp file we control so readSAToken returns our value.
-    // The module hardcodes the K8s SA path; we can't override it without
-    // disk access, so this test verifies the header is omitted in the
-    // "no SA token on disk" common-case (running outside a pod).
+  test('omits Authorization header when no ServiceAccount token is mounted (outside-pod case)', async () => {
+    // The module reads the K8s SA token from a hardcoded path inside
+    // `readSAToken()`. Without restructuring `readSAToken` to be injectable,
+    // we can only exercise the negative path here: outside a pod, the file
+    // doesn't exist, so readSAToken returns null and no Authorization
+    // header is attached. Positive-case coverage (header IS set when token
+    // IS present) is tracked as a follow-up — see issue #535.
     let observedHeaders: Record<string, string> = {}
     globalThis.fetch = mock(async (_url: string, init: any) => {
       observedHeaders = init?.headers ?? {}
@@ -239,6 +241,49 @@ describe('startTokenRefreshLoop', () => {
       expect(observedHeaders['Content-Type']).toBe('application/json')
       // outside a pod, no SA token mounted → no Authorization header
       expect(observedHeaders['Authorization']).toBeUndefined()
+    } finally {
+      handle.stop()
+    }
+  })
+
+  test('concurrent refreshNow() calls coalesce into a single fetch (single-flight)', async () => {
+    // Regression guard for the timer-multiplication bug: without
+    // single-flight coalescing, two overlapping refresh() invocations
+    // would each schedule a new setTimeout in their finally, leaking
+    // timers that compound on every subsequent tick. The fix is to
+    // share the in-flight promise between concurrent callers; this
+    // test verifies both that the fetch is issued once and that the
+    // two callers receive the same resolved env.
+    let fetchCount = 0
+    let resolveFetch: ((res: Response) => void) | null = null
+    globalThis.fetch = mock(
+      () =>
+        new Promise<Response>((resolve) => {
+          fetchCount++
+          resolveFetch = resolve
+        }),
+    ) as any
+    const handle = startTokenRefreshLoop({
+      getProjectId: () => 'p1',
+      intervalMs: 60_000,
+      jitterMs: 0,
+    })
+    try {
+      // Two overlapping refreshNow() calls while the fetch is pending.
+      const p1 = handle.refreshNow()
+      const p2 = handle.refreshNow()
+      // Let microtasks drain so both calls reach the fetch path.
+      await new Promise((r) => setTimeout(r, 10))
+      expect(fetchCount).toBe(1)
+      resolveFetch!(
+        new Response(JSON.stringify({ projectId: 'p1', env: { AI_PROXY_TOKEN: 'rotated' } }), {
+          status: 200,
+        }),
+      )
+      const [r1, r2] = await Promise.all([p1, p2])
+      expect(r1).toEqual({ AI_PROXY_TOKEN: 'rotated' })
+      expect(r2).toEqual({ AI_PROXY_TOKEN: 'rotated' })
+      expect(fetchCount).toBe(1)
     } finally {
       handle.stop()
     }
