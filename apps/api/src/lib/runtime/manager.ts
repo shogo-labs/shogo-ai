@@ -94,6 +94,26 @@ export class RuntimeManager implements IRuntimeManager {
 
         const selfPid = String(process.pid)
         const parentPid = String(process.ppid)
+        // Skip PIDs the VM warm pool owns. The warm pool's QEMU forwards
+        // the guest agent port to a free host port from `findFreePort(37100)`,
+        // which lands inside this scan range. Without this filter, the very
+        // first init pass of RuntimeManager would `kill -9` the brand-new
+        // warm-pool QEMU it just observed, leaving VM mode permanently
+        // broken. See apps/desktop/src/vm/pid-registry.ts.
+        let vmPids: ReadonlySet<number>
+        try {
+          // Lazy require so non-desktop deployments (k8s, dev server, tests)
+          // do not pay the cost of resolving the desktop VM module. If the
+          // module is unavailable, fall through with an empty set — there's
+          // no VM warm pool in this process, so no PIDs to protect.
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const reg = require('../../../../desktop/src/vm/pid-registry') as
+            typeof import('../../../../desktop/src/vm/pid-registry')
+          vmPids = reg.getRegisteredVMPids()
+        } catch {
+          vmPids = new Set<number>()
+        }
+
         // Some lsof builds (notably inside the minimal runtime container
         // images) silently ignore `-t` when another flag isn't honored and
         // fall back to verbose tabular output. If any non-numeric tokens
@@ -104,6 +124,7 @@ export class RuntimeManager implements IRuntimeManager {
           .split(/\s+/)
           .map((p) => p.trim())
           .filter((p) => /^\d+$/.test(p) && p !== selfPid && p !== parentPid && p !== '1')
+          .filter((p) => !vmPids.has(parseInt(p, 10)))
 
         if (pids.length > 0) {
           const uniquePids = [...new Set(pids)]
