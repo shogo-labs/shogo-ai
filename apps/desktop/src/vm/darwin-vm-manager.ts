@@ -10,7 +10,22 @@ import { VM_DEFAULTS } from './types'
 import { QMPClient } from './qmp-client'
 import { generateSeedISO } from './cloud-init'
 import { isNoisyVMLine } from './vm-log-filter'
-import { registerVMPid, unregisterVMPid } from './pid-registry'
+
+// Host-side base ports for the VM's hostfwd forwarders. These MUST stay
+// outside `apps/api/src/lib/runtime/manager.ts`'s stale-process scan
+// range (PORT_RANGE_START..END + AGENT_PORT_OFFSET = 37100-37900 plus
+// 38100-38900). Historically these were `findFreePort(37100)` and
+// `findFreePort(38100)`, which put the warm pool's QEMU directly in
+// RuntimeManager's `kill -9` path: on init it would lsof the range,
+// find the brand-new VM listening, and SIGKILL it before cloud-init
+// finished — see main.log 04:58:53→54 in the 1.6.x failure report.
+//
+// 39200/39400 is above the API server's own port (39100) and the
+// legacy K8s RUNTIME_BASE_PORT (39110), and far below typical user
+// app ports. Stays headroom-safe for `VM_MAX_ASSIGNED` ≥ 8 since
+// `findFreePort()` scans 100 sequential ports.
+const VM_AGENT_HOST_PORT_BASE = 39200
+const VM_SKILL_HOST_PORT_BASE = 39400
 
 /**
  * macOS VM Manager using QEMU with HVF (Hypervisor.framework) acceleration.
@@ -48,8 +63,8 @@ export class DarwinVMManager implements VMManager {
     this.ensureOverlay(config.overlayPath)
 
     const qmpPort = await this.findFreePort(44440)
-    const agentHostPort = await this.findFreePort(37100)
-    const skillHostPort = config.skillServerHostPort || await this.findFreePort(38100)
+    const agentHostPort = await this.findFreePort(VM_AGENT_HOST_PORT_BASE)
+    const skillHostPort = config.skillServerHostPort || await this.findFreePort(VM_SKILL_HOST_PORT_BASE)
 
     const extraFiles: Array<{ name: string; content: Buffer }> = []
     const bundleFiles = config.bundleFiles ?? this.readBundleDir(config.bundleDir)
@@ -90,13 +105,6 @@ export class DarwinVMManager implements VMManager {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
 
-    // Register BEFORE QEMU has a chance to bind its hostfwd port.
-    // Without this, RuntimeManager.cleanupStaleProcesses (which scans
-    // ports 37100-37900 + agent offset and `kill -9`s every PID it
-    // finds) will treat the warm-pool VM as stale and SIGKILL it ~1s
-    // after spawn. See apps/desktop/src/vm/pid-registry.ts.
-    registerVMPid(this.qemuProcess.pid)
-
     let accelReported = false
     let stdoutBuf = ''
     let stderrBuf = ''
@@ -134,7 +142,6 @@ export class DarwinVMManager implements VMManager {
       if (stdoutBuf.trim()) console.log(`[shogo-vm] ${stdoutBuf.trim()}`)
       if (stderrBuf.trim()) console.error(`[shogo-vm] ${stderrBuf.trim()}`)
       console.log(`[shogo-vm] QEMU exited with code ${code}`)
-      unregisterVMPid(this.qemuProcess?.pid)
       this.vmRunning = false
     })
 
@@ -301,10 +308,7 @@ export class DarwinVMManager implements VMManager {
 
   private cleanup(): void {
     if (this.qmpClient) { this.qmpClient.disconnect(); this.qmpClient = null }
-    if (this.qemuProcess && !this.qemuProcess.killed) {
-      unregisterVMPid(this.qemuProcess.pid)
-      this.qemuProcess.kill('SIGTERM')
-    }
+    if (this.qemuProcess && !this.qemuProcess.killed) this.qemuProcess.kill('SIGTERM')
     this.qemuProcess = null
     this.vmRunning = false
     this.portForwards.clear()

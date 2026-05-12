@@ -673,65 +673,36 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
    * - Waiting if runtime is already starting from another request
    */
   async function getProjectUrl(projectId: string): Promise<string> {
-    if (isKubernetes()) {
-      // In Kubernetes: Use Knative project manager
-      const { getProjectPodUrl } = await import("../lib/knative-project-manager")
-      return await getProjectPodUrl(projectId)
-    } else if (isVMIsolation()) {
-      // Desktop VM: VMWarmPoolController (same claim/assign pattern as K8s).
-      // Normally we do NOT fall back to the local RuntimeManager — that would
-      // create a split-brain where the preview renders from the host but the
-      // agent runs in the VM. The one exception is when the warm pool has
-      // permanently disabled itself (3+ boot failures): in that case no VM is
-      // running at all, so falling back to the host runtime is safe and gives
-      // the user a working runtime instead of a cryptic `pod_unavailable`.
-      const vmPool = await import("../lib/vm-warm-pool-controller")
-      const { getVMProjectUrl, VMPoolPermanentlyDisabledError } = vmPool
-      const maxRetries = 5
-      const retryDelayMs = 3000
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-          return await getVMProjectUrl(projectId)
-        } catch (err) {
-          if (err instanceof VMPoolPermanentlyDisabledError) {
-            if (runtimeManager) {
-              console.warn(
-                `[ProjectChat] VM warm pool permanently disabled (${err.consecutiveFailures} boot failures); ` +
-                  `falling back to host RuntimeManager for project ${projectId}. ` +
-                  `To silence this warning, set vmIsolation.enabled=false in the desktop config.`,
-              )
-              break
-            }
-            throw err
-          }
-          if (attempt === maxRetries) throw err
-          console.log(`[ProjectChat] VM not ready (attempt ${attempt}/${maxRetries}), retrying in ${retryDelayMs}ms...`)
-          await new Promise(r => setTimeout(r, retryDelayMs))
-        }
-      }
-    }
-    if (runtimeManager) {
-      // Local development: Use RuntimeManager
-      let runtime = runtimeManager.status(projectId)
-
-      if (!runtime || runtime.status === "stopped" || runtime.status === "error") {
-        // No runtime or failed - start it
-        console.log(`[ProjectChat] Starting runtime for ${projectId}...`)
-        runtime = await runtimeManager.start(projectId)
-      } else if (runtime.status === "starting") {
-        // Runtime is being started by another request - wait for it
-        console.log(`[ProjectChat] Runtime for ${projectId} is starting, waiting...`)
-        await waitForRuntimeReady(projectId)
-        runtime = runtimeManager.status(projectId)!
-      }
-      // else: runtime.status === "running" - proceed immediately
-
-      const agentPort = runtime.agentPort || (runtime.port + 1000)
-      const runtimeHost = new URL(runtime.url).hostname
-      return `http://${runtimeHost}:${agentPort}`
-    } else {
+    if (!isKubernetes() && !isVMIsolation() && !runtimeManager) {
       throw new Error("No runtime manager available for local development")
     }
+
+    // Special-case: host runtime in 'starting' state. resolveProjectPodUrl
+    // would call manager.start() (which deduplicates concurrent starts
+    // and waits), but in the chat path we'd rather block via
+    // waitForRuntimeReady so progress logs land in the right log
+    // file. Punch through here only when host mode is in flight.
+    if (runtimeManager && !isKubernetes() && !isVMIsolation()) {
+      const existing = runtimeManager.status(projectId)
+      if (existing?.status === 'starting') {
+        console.log(`[ProjectChat] Runtime for ${projectId} is starting, waiting...`)
+        await waitForRuntimeReady(projectId)
+      }
+    }
+
+    const { resolveProjectPodUrl } = await import("../lib/resolve-pod-url")
+    const res = await resolveProjectPodUrl(projectId, {
+      logTag: 'ProjectChat',
+      // Chat traffic must keep flowing if the warm pool gives up
+      // entirely — without fallback the user is permanently stuck.
+      onVMPermanentlyDisabled: 'fallback-to-host',
+      // Preserves the historical 5×3s retry loop for transient
+      // warm-pool boot failures.
+      maxVMRetries: 5,
+      vmRetryDelayMs: 3000,
+      runtimeManager: runtimeManager ?? undefined,
+    })
+    return res.url
   }
 
   /**

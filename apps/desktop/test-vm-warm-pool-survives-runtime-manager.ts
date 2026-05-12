@@ -4,32 +4,36 @@
 /**
  * End-to-end regression for the warm-pool VM kill race.
  *
- * Production failure observed in the user's main.log:
+ * Production failure observed in the user's 1.6.x main.log:
  *
  *   04:58:52.886 [VMWarmPool] Starting (poolSize: 1, ...)
  *   04:58:53.148 [VMWarmPool] Reconcile: need 1 more VMs
  *   04:58:53.953 [RuntimeManager] Cleaning up 1 stale process(es) on
  *                  ports 37100-37900: 75951
- *   04:58:54.019 [shogo-vm] QEMU exited with code null      ← FIX TARGET
+ *   04:58:54.019 [shogo-vm] QEMU exited with code null      ← BUG
  *   04:58:57.473 [VMWarmPool] COLD START: no warm VM available
  *
- * → the freshly-spawned warm-pool QEMU was SIGKILLed by RuntimeManager
- * because its hostfwd agent port (from `findFreePort(37100)`) sat
- * inside RuntimeManager's stale-process scan range (37100-37900).
+ * Root cause: `findFreePort(37100)` / `findFreePort(38100)` allocated
+ * the VM's hostfwd ports inside `RuntimeManager.cleanupStaleProcesses`
+ * scan range (37100-37900 + agent offset 38100-38900). When
+ * RuntimeManager initialised ~1s after the warm pool spawned its first
+ * QEMU, its `lsof | kill -9` pass treated the brand-new VM as a
+ * leftover process and SIGKILLed it.
  *
- * This script proves the fix:
- *   1. Boot a real warm-pool VM through `DarwinVMManager` (same code
- *      path the production warm pool uses).
- *   2. Wait until QEMU is listening on its hostfwd agent port — the
- *      precise window where the regression used to fire.
- *   3. Construct a fresh `RuntimeManager`, which synchronously runs
- *      `cleanupStaleProcesses()` against ports 37100-37900 and
- *      38100-38900. Before the fix, this killed our VM.
- *   4. Assert that the QEMU PID is still alive afterwards AND that
- *      its hostfwd port is still listening.
+ * Fix: move the VM hostfwd bases to 39200 (agent) / 39400 (skill) —
+ * above the API port (39100), the legacy RUNTIME_BASE_PORT (39110),
+ * and well outside the RuntimeManager scan range. See
+ * `darwin-vm-manager.ts` / `win32-vm-manager.ts`.
  *
- * If you ever see this test SIGKILL its own QEMU at step 3, the fix
- * has regressed.
+ * This script asserts the fix end-to-end:
+ *   1. Boot a real warm-pool VM through the production `DarwinVMManager`
+ *      (or `Win32VMManager` on Windows).
+ *   2. Read the allocated agent host port from the VM handle.
+ *   3. Assert it sits OUTSIDE 37100-37900 (the dangerous range).
+ *   4. Construct a fresh `RuntimeManager`, which synchronously runs
+ *      its stale-process cleanup against the dangerous range.
+ *   5. Assert the QEMU PID is still alive and still listening
+ *      afterwards. (Pre-fix, step 4 reliably SIGKILLed QEMU here.)
  *
  * Requires the user-data VM image at
  *   apps/desktop/resources/vm/rootfs-provisioned.qcow2
@@ -44,9 +48,17 @@ import fs from 'fs'
 import { execSync } from 'child_process'
 
 const DESKTOP_DIR = path.dirname(new URL(import.meta.url).pathname)
-const REPO_ROOT = path.resolve(DESKTOP_DIR, '../..')
 const VM_IMAGE_DIR = path.join(DESKTOP_DIR, 'resources', 'vm')
 const TEST_OVERLAY_DIR = '/tmp/shogo-vm-warm-pool-test'
+
+// Must match `apps/api/src/lib/runtime/manager.ts` PORT_RANGE_START..END
+// and PORT_RANGE_START + AGENT_PORT_OFFSET..END + AGENT_PORT_OFFSET.
+const RUNTIME_VITE_RANGE = { start: 37100, end: 37900 } as const
+const RUNTIME_AGENT_RANGE = { start: 38100, end: 38900 } as const
+
+function inRange(port: number, range: { start: number; end: number }): boolean {
+  return port >= range.start && port <= range.end
+}
 
 function log(msg: string): void {
   const ts = new Date().toISOString().slice(11, 23)
@@ -88,7 +100,6 @@ async function main(): Promise<void> {
   }
   pass('VM images present')
 
-  // QEMU + qemu-img need to exist. Use the same resolver the prod code uses.
   process.env.SHOGO_VM_IMAGE_DIR = VM_IMAGE_DIR
   const vmModule = await import('./src/vm/index')
   if (!vmModule.isVMAvailable()) {
@@ -103,13 +114,10 @@ async function main(): Promise<void> {
   const mgr = vmModule.createVMManager()
   pass('VMManager instantiated (DarwinVMManager / Win32VMManager)')
 
-  // Prep overlay dir.
   if (fs.existsSync(TEST_OVERLAY_DIR)) fs.rmSync(TEST_OVERLAY_DIR, { recursive: true, force: true })
   fs.mkdirSync(TEST_OVERLAY_DIR, { recursive: true })
   const overlayPath = path.join(TEST_OVERLAY_DIR, 'overlay.qcow2')
 
-  // The pool controller calls ensureOverlay(); the manager exposes it.
-  // (Falls back to the manager's internal path resolution otherwise.)
   if (typeof (mgr as any).ensureOverlay === 'function') {
     ;(mgr as any).ensureOverlay(overlayPath)
     pass('Overlay disk created')
@@ -119,7 +127,7 @@ async function main(): Promise<void> {
   // Boot the VM. This is the *exact* call the warm pool makes
   // (vm-warm-pool-controller.ts:bootVM → manager.startVM).
   // -----------------------------------------------------------------------
-  log('Booting VM (this takes ~15s)...')
+  log('Booting VM (this takes ~1-15s depending on first-boot caching)...')
   const t0 = Date.now()
   let handle: any
   try {
@@ -140,36 +148,52 @@ async function main(): Promise<void> {
 
   try {
     // ---------------------------------------------------------------------
-    // Confirm the QEMU PID is registered.
-    // ---------------------------------------------------------------------
-    const { getRegisteredVMPids } = await import('./src/vm/pid-registry')
-    const reg = getRegisteredVMPids()
-    if (!reg.has(handle.pid)) {
-      fail('Registry contains QEMU PID', `PID ${handle.pid} not in registry`)
-      testFailed = true
-    } else {
-      pass(`QEMU PID ${handle.pid} is registered`)
-    }
-
-    // ---------------------------------------------------------------------
-    // Confirm QEMU is actually listening on its hostfwd agent port
-    // (i.e. it's inside the dangerous 37100-37900 cleanup range).
+    // *** THE FIX ASSERTION ***
+    // Agent + skill host ports MUST be outside RuntimeManager's
+    // stale-process scan range. This is the structural guarantee
+    // that makes the SIGKILL race impossible — not a runtime filter,
+    // not a registry, just disjoint port ranges.
     // ---------------------------------------------------------------------
     const agentUrl: string = handle.agentUrl
     const agentPort = parseInt(new URL(agentUrl).port, 10)
+    log(`Agent host port: ${agentPort}`)
+
     if (!Number.isFinite(agentPort) || agentPort <= 0) {
       fail('Agent port resolved', `Got "${agentUrl}"`)
       testFailed = true
     }
-    log(`Agent host port: ${agentPort}`)
 
-    if (agentPort < 37100 || agentPort > 37900) {
-      fail('Agent port in cleanup range', `Port ${agentPort} is NOT in 37100-37900 — the regression scenario doesn't apply on this run`)
-      // Not strictly a test failure, but we wanted to exercise the
-      // race. Continue anyway because the registry should still
-      // protect any registered PID.
+    if (inRange(agentPort, RUNTIME_VITE_RANGE)) {
+      fail(
+        'Agent port outside RuntimeManager vite scan range',
+        `Port ${agentPort} is INSIDE ${RUNTIME_VITE_RANGE.start}-${RUNTIME_VITE_RANGE.end} — REGRESSION`,
+      )
+      testFailed = true
     } else {
-      pass(`Agent port ${agentPort} is in the dangerous cleanup range`)
+      pass(`Agent port ${agentPort} is outside ${RUNTIME_VITE_RANGE.start}-${RUNTIME_VITE_RANGE.end}`)
+    }
+
+    if (inRange(agentPort, RUNTIME_AGENT_RANGE)) {
+      fail(
+        'Agent port outside RuntimeManager agent scan range',
+        `Port ${agentPort} is INSIDE ${RUNTIME_AGENT_RANGE.start}-${RUNTIME_AGENT_RANGE.end} — REGRESSION`,
+      )
+      testFailed = true
+    } else {
+      pass(`Agent port ${agentPort} is outside ${RUNTIME_AGENT_RANGE.start}-${RUNTIME_AGENT_RANGE.end}`)
+    }
+
+    // The skill server port lives on the handle's `skillServerPort`
+    // when DarwinVMManager populates it. Check it the same way.
+    const skillPort: number | undefined = (handle as any).skillServerPort
+    if (typeof skillPort === 'number') {
+      log(`Skill server host port: ${skillPort}`)
+      if (inRange(skillPort, RUNTIME_VITE_RANGE) || inRange(skillPort, RUNTIME_AGENT_RANGE)) {
+        fail('Skill port outside RuntimeManager scan ranges', `Port ${skillPort} is INSIDE — REGRESSION`)
+        testFailed = true
+      } else {
+        pass(`Skill port ${skillPort} is outside RuntimeManager scan ranges`)
+      }
     }
 
     // Give QEMU a moment to actually bind() the forwarded port.
@@ -184,32 +208,21 @@ async function main(): Promise<void> {
       pass(`QEMU listening on agent port ${agentPort}`)
     }
 
-    // Sanity: lsof on the cleanup range now finds QEMU.
-    const lsofOut = execSync(`lsof -nP -iTCP:37100-37900 -sTCP:LISTEN -t 2>/dev/null || true`, { encoding: 'utf-8' }).trim()
-    if (!lsofOut.split(/\s+/).includes(String(handle.pid))) {
-      fail('lsof sees QEMU PID in cleanup range', `Output was: ${JSON.stringify(lsofOut)}`)
-      testFailed = true
-    } else {
-      pass(`lsof confirms QEMU PID ${handle.pid} listens in cleanup range`)
-    }
-
     // ---------------------------------------------------------------------
     // *** THE REGRESSION TRIGGER ***
     // Construct a fresh RuntimeManager. Its constructor synchronously
-    // runs cleanupStaleProcesses() against 37100-37900 + agent offset.
-    // Before the fix, this is where the user's QEMU was SIGKILLed.
+    // runs cleanupStaleProcesses() against 37100-37900 + 38100-38900.
+    // Pre-fix, this was where the user's QEMU was SIGKILLed because
+    // its agent port was 37100 — exactly inside the scan range.
     // ---------------------------------------------------------------------
-    log('Constructing RuntimeManager (this is the regression trigger)...')
+    log('Constructing RuntimeManager (the regression trigger)...')
     const { RuntimeManager } = await import('../api/src/lib/runtime/manager')
     new RuntimeManager()
     pass('RuntimeManager constructed without throwing')
 
-    // Wait a beat — `kill -9` is async at the kernel level.
+    // `kill -9` is async at the kernel level — give it a moment.
     await sleep(750)
 
-    // ---------------------------------------------------------------------
-    // VM must still be alive.
-    // ---------------------------------------------------------------------
     if (!isPidAlive(handle.pid)) {
       fail('QEMU survives RuntimeManager cleanup', `PID ${handle.pid} no longer alive — REGRESSION`)
       testFailed = true
@@ -223,9 +236,7 @@ async function main(): Promise<void> {
       pass(`QEMU still listening on agent port ${agentPort}`)
     }
 
-    // Construct a SECOND RuntimeManager — production runs cleanup once
-    // per RuntimeManager instance. If anything in the constructor was
-    // a one-time side effect, this also rules it out.
+    // A SECOND RuntimeManager — rules out one-time-only behaviours.
     new RuntimeManager()
     await sleep(500)
     if (!isPidAlive(handle.pid)) {
@@ -242,10 +253,10 @@ async function main(): Promise<void> {
   }
 
   if (testFailed) {
-    console.log('\n\x1b[31m✗ E2E FAILED — warm-pool VM was killed by RuntimeManager (regression)\x1b[0m\n')
+    console.log('\n\x1b[31m✗ E2E FAILED — VM hostfwd port collides with RuntimeManager (regression)\x1b[0m\n')
     process.exit(1)
   }
-  console.log('\n\x1b[32m✓ E2E PASSED — warm-pool VM survived RuntimeManager init\x1b[0m\n')
+  console.log('\n\x1b[32m✓ E2E PASSED — VM ports are outside RuntimeManager\'s scan range, QEMU survives init\x1b[0m\n')
   process.exit(0)
 }
 

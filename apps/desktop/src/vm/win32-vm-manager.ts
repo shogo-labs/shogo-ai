@@ -10,7 +10,12 @@ import { VM_DEFAULTS } from './types'
 import { QMPClient } from './qmp-client'
 import { generateSeedISO } from './cloud-init'
 import { isNoisyVMLine } from './vm-log-filter'
-import { registerVMPid, unregisterVMPid } from './pid-registry'
+
+// See apps/desktop/src/vm/darwin-vm-manager.ts for the rationale —
+// these ports MUST stay outside RuntimeManager's 37100-37900 +
+// 38100-38900 stale-process scan range.
+const VM_AGENT_HOST_PORT_BASE = 39200
+const VM_SKILL_HOST_PORT_BASE = 39400
 
 /**
  * Windows VM Manager using QEMU with WHPX acceleration.
@@ -53,8 +58,8 @@ export class Win32VMManager implements VMManager {
     this.ensureOverlay(config.overlayPath)
 
     const qmpPort = await this.findFreePort(44440)
-    const agentHostPort = await this.findFreePort(37100)
-    const skillHostPort = config.skillServerHostPort || await this.findFreePort(38100)
+    const agentHostPort = await this.findFreePort(VM_AGENT_HOST_PORT_BASE)
+    const skillHostPort = config.skillServerHostPort || await this.findFreePort(VM_SKILL_HOST_PORT_BASE)
 
     // Build extra files to embed in the seed ISO.
     // If bundleFiles were provided explicitly (eval path), use them directly.
@@ -99,11 +104,6 @@ export class Win32VMManager implements VMManager {
       windowsHide: true,
     })
 
-    // Register BEFORE QEMU has a chance to bind its hostfwd port — see
-    // ./pid-registry.ts. Prevents RuntimeManager.cleanupStaleProcesses
-    // from SIGKILLing the warm-pool VM that just spawned.
-    registerVMPid(this.qemuProcess.pid)
-
     let accelReported = false
     let stdoutBuf = ''
     let stderrBuf = ''
@@ -141,7 +141,6 @@ export class Win32VMManager implements VMManager {
       if (stdoutBuf.trim()) console.log(`[QEMU] ${stdoutBuf.trim()}`)
       if (stderrBuf.trim()) console.error(`[QEMU] ${stderrBuf.trim()}`)
       console.log(`[QEMU] Process exited with code ${code}`)
-      unregisterVMPid(this.qemuProcess?.pid)
       this.vmRunning = false
     })
 
@@ -319,10 +318,7 @@ export class Win32VMManager implements VMManager {
 
   private cleanup(): void {
     if (this.qmpClient) { this.qmpClient.disconnect(); this.qmpClient = null }
-    if (this.qemuProcess && !this.qemuProcess.killed) {
-      unregisterVMPid(this.qemuProcess.pid)
-      this.qemuProcess.kill('SIGTERM')
-    }
+    if (this.qemuProcess && !this.qemuProcess.killed) this.qemuProcess.kill('SIGTERM')
     this.qemuProcess = null
     this.vmRunning = false
     this.portForwards.clear()
