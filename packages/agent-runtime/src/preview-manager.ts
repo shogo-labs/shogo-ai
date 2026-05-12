@@ -58,6 +58,7 @@ import {
   readInstallMarker,
   writeInstallMarker,
   findMissingTopLevelDeps,
+  migrateLegacyShogoSdkPin,
 } from './workspace-defaults'
 
 const LOG_PREFIX = 'preview-manager'
@@ -288,6 +289,28 @@ export type PreviewPhase =
   | 'ready'
 
 export type ApiServerPhase = 'idle' | 'generating' | 'starting' | 'healthy' | 'restarting' | 'crashed' | 'stopped'
+
+/**
+ * Detect the npm-published `@shogo-ai/sdk@0.4.0` build, which ships
+ * `bin/cli.mjs` with an unquoted `execSync(\`bun ${absScriptPath}\`)`
+ * that truncates the path at the first space. macOS desktop installs
+ * live under `~/Library/Application Support/` — every path contains a
+ * space — so the truncation is universal, not edge-case. The fix is
+ * in HEAD but was never published (npm jumps 0.4.0 → 1.0.0), so
+ * runtime version-sniffing is the only way to recognise the bad
+ * install. Best-effort: any read/parse failure returns false (we'd
+ * rather risk a redundant install than refuse to use a healthy CLI).
+ */
+function isKnownBrokenSdkInstall(sdkPkgDir: string): boolean {
+  try {
+    const pkgJsonPath = join(sdkPkgDir, 'package.json')
+    if (!existsSync(pkgJsonPath)) return false
+    const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'))
+    return pkg?.version === '0.4.0'
+  } catch {
+    return false
+  }
+}
 
 export class PreviewManager {
   private workspaceDir: string
@@ -673,14 +696,31 @@ export class PreviewManager {
     // crashed installs, etc.) would 404 there.
     const sdkCliPath = join(cwd, 'node_modules', '@shogo-ai', 'sdk', 'bin', 'cli.mjs')
     const hasSdkCli = existsSync(sdkCliPath)
+    // The installed CLI in node_modules is whatever version `bun install`
+    // resolved — frequently the broken `@shogo-ai/sdk@0.4.0` that ships
+    // an `execSync(\`bun ${absScriptPath}\`)` for the Step 2 script
+    // (templating the path into the shell command line truncates it on
+    // the first space, blowing up with `Module not found
+    // "/Users/foo/Library/Application"` on every macOS install). 0.4.1
+    // never made it to the npm registry, so the installed copy stays
+    // broken indefinitely. Detect that exact version and refuse to use it.
+    const installedSdkBroken = hasSdkCli && isKnownBrokenSdkInstall(join(cwd, 'node_modules', '@shogo-ai', 'sdk'))
+    const useInstalledCli = hasSdkCli && !installedSdkBroken
     // Bundled with the desktop app at packaging time. Set by
     // apps/desktop/src/local-server.ts. In dev mode it points at the
     // monorepo source; in packaged mode at `Resources/sdk-cli.mjs`.
     const bundledSdkCli = process.env.SHOGO_BUNDLED_SDK_CLI
     const hasBundledSdkCli = !!(bundledSdkCli && existsSync(bundledSdkCli))
 
+    if (installedSdkBroken) {
+      console.warn(
+        `[${LOG_PREFIX}] installed @shogo-ai/sdk has a known path-truncation bug — ignoring it in favour of bundled CLI`,
+      )
+    }
+
     // Resolution order, in priority:
-    //   1. project-local node_modules CLI (always path-safe in HEAD)
+    //   1. project-local node_modules CLI — only when NOT the known-broken
+    //      0.4.0 build (path-safe in 0.4.1+ / 1.x)
     //   2. desktop-bundled CLI (always path-safe in HEAD)
     //   3. project's `generate` script (only if it isn't the broken
     //      `bunx shogo` pattern)
@@ -688,16 +728,19 @@ export class PreviewManager {
     //      than nothing for non-macOS installs)
     let args: string[]
     let cmdLabel: string
-    if (legacyShogoGenerate && hasSdkCli) {
+    if (legacyShogoGenerate && useInstalledCli) {
       args = [sdkCliPath, 'generate']
       cmdLabel = 'bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate (legacy script bypass)'
     } else if (legacyShogoGenerate && hasBundledSdkCli) {
       args = [bundledSdkCli!, 'generate']
       cmdLabel = `bun ${bundledSdkCli} generate (legacy script bypass — bundled fallback)`
-    } else if (useBunRun) {
+    } else if (installedSdkBroken && hasBundledSdkCli) {
+      args = [bundledSdkCli!, 'generate']
+      cmdLabel = `bun ${bundledSdkCli} generate (broken installed SDK — bundled fallback)`
+    } else if (useBunRun && !installedSdkBroken) {
       args = ['run', 'generate']
       cmdLabel = 'bun run generate'
-    } else if (hasSdkCli) {
+    } else if (useInstalledCli) {
       args = [sdkCliPath, 'generate']
       cmdLabel = 'bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate'
     } else if (hasBundledSdkCli) {
@@ -1053,6 +1096,21 @@ export class PreviewManager {
 
   private async installDepsIfNeeded(timings: Record<string, number>, cwd?: string): Promise<void> {
     const installCwd = cwd ?? this.bundlerCwd
+
+    // Run the legacy-SDK migration before any hash/install gating. Two
+    // reasons this must live here in addition to `ensureWorkspaceDeps`:
+    //   1. Not every project boot goes through `ensureWorkspaceDeps` —
+    //      restored workspaces, pre-seeded templates, and certain
+    //      RuntimeManager paths land in PreviewManager directly, and
+    //      we observed (main.log, project 1a010000) the migration
+    //      never firing for those.
+    //   2. The migration's `clearInstallMarker` + stale-SDK wipe must
+    //      run BEFORE we sample the install marker, otherwise we'd
+    //      stamp a hash on a tree we just declared stale.
+    try { migrateLegacyShogoSdkPin(installCwd) } catch (err: any) {
+      console.warn(`[${LOG_PREFIX}] migrateLegacyShogoSdkPin threw: ${err?.message ?? err}`)
+    }
+
     const hasNodeModules = existsSync(join(installCwd, 'node_modules'))
 
     // Hash-based install gate: write `.shogo/install-marker` containing

@@ -970,6 +970,30 @@ export function migrateLegacyShogoSdkPin(dir: string): { upgraded: boolean; befo
     console.error(`[workspace-defaults] migrateLegacyShogoSdkPin: failed to write ${pkgPath}: ${err.message}`)
     return { upgraded: false }
   }
+
+  // Pin upgrade is meaningless if the stale `node_modules/@shogo-ai/sdk`
+  // stays on disk — bun install with a cached lockfile may decline to
+  // reinstall what's already there, and the next launch's
+  // `findMissingTopLevelDeps` check still sees the directory and skips
+  // the install. Wipe the installed SDK so the upgrade actually
+  // materialises on the next `bun install`. We also drop the install
+  // marker so PreviewManager.installDepsIfNeeded can't short-circuit
+  // through its hash-match fast path on the rewritten package.json.
+  if (afterPin) {
+    try {
+      const sdkDir = join(dir, 'node_modules', '@shogo-ai', 'sdk')
+      if (existsSync(sdkDir)) {
+        rmSync(sdkDir, { recursive: true, force: true })
+        console.log(
+          `[workspace-defaults] migrateLegacyShogoSdkPin: cleared stale ${sdkDir} so reinstall picks up the upgrade`,
+        )
+      }
+    } catch (err: any) {
+      console.warn(`[workspace-defaults] migrateLegacyShogoSdkPin: could not clear stale SDK: ${err.message}`)
+    }
+    clearInstallMarker(dir)
+  }
+
   return { upgraded: !!afterPin, before: beforePin, after: afterPin, scriptRewritten }
 }
 
