@@ -933,8 +933,8 @@ function DualPlanCard() {
               Generate business summaries for plans
             </Text>
             <Text className="text-sm text-muted-foreground mt-0.5">
-              When on, every plan you generate in Plan mode also gets a
-              business-language summary translated by a fast model. You can
+              When on, every plan you generate also gets a
+              business-language summary translated. You can
               flip between the Technical and Business views from any plan,
               and generate summaries on demand for older plans.
             </Text>
