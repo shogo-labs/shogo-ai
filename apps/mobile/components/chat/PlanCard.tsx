@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { memo, useState } from "react"
-import { View, Text, Pressable, ScrollView } from "react-native"
+import { ActivityIndicator, View, Text, Pressable, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { CheckCircle2, Circle, Play, ClipboardList, ChevronDown, ChevronUp, ChevronRight } from "lucide-react-native"
+import { CheckCircle2, Circle, Play, ClipboardList, ChevronDown, ChevronUp, ChevronRight, Languages } from "lucide-react-native"
 import { MarkdownText } from "./MarkdownText"
+
+export type PlanBusinessStatus = "idle" | "pending" | "ready" | "error"
 
 export interface PlanData {
   name: string
@@ -13,7 +15,16 @@ export interface PlanData {
   todos: Array<{ id: string; content: string }>
   filepath?: string
   toolCallId?: string
+  /** Business-language translation, populated asynchronously by the runtime
+   *  when the user has the Dual Plan preference enabled. */
+  business?: string
+  /** Lifecycle of the business translation. Absent / `idle` means the user
+   *  did not opt in for this plan; "pending" shows a spinner; "ready" enables
+   *  the Business tab; "error" surfaces an inline message. */
+  businessStatus?: PlanBusinessStatus
 }
+
+type PlanTab = "technical" | "business"
 
 const PLAN_TRUNCATE_LENGTH = 2000
 
@@ -24,6 +35,9 @@ interface PlanCardProps {
   onOpenPlan?: () => void
   onViewFull?: () => void
   isConfirmed?: boolean
+  /** Triggers an on-demand business-language translation for a plan that
+   *  does not yet have one. Surfaced when business is missing and idle. */
+  onGenerateBusiness?: () => void | Promise<void>
 }
 
 // `AssistantContent` rebuilds the `plan` object literal on every commit while
@@ -38,6 +52,7 @@ function planCardPropsEqual(prev: PlanCardProps, next: PlanCardProps) {
   if (prev.onConfirm !== next.onConfirm) return false
   if (prev.onOpenPlan !== next.onOpenPlan) return false
   if (prev.onViewFull !== next.onViewFull) return false
+  if (prev.onGenerateBusiness !== next.onGenerateBusiness) return false
   const a = prev.plan
   const b = next.plan
   if (a === b) return true
@@ -47,7 +62,9 @@ function planCardPropsEqual(prev: PlanCardProps, next: PlanCardProps) {
     a.plan !== b.plan ||
     a.filepath !== b.filepath ||
     a.toolCallId !== b.toolCallId ||
-    a.todos.length !== b.todos.length
+    a.todos.length !== b.todos.length ||
+    a.business !== b.business ||
+    a.businessStatus !== b.businessStatus
   ) {
     return false
   }
@@ -58,15 +75,41 @@ function planCardPropsEqual(prev: PlanCardProps, next: PlanCardProps) {
   return true
 }
 
-function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConfirmed }: PlanCardProps) {
+function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConfirmed, onGenerateBusiness }: PlanCardProps) {
   const [expanded, setExpanded] = useState(false)
   const [tasksExpanded, setTasksExpanded] = useState(false)
+  const [activeTab, setActiveTab] = useState<PlanTab>("technical")
+  const [generating, setGenerating] = useState(false)
+  const [generateError, setGenerateError] = useState<string | null>(null)
+
+  const handleGenerate = onGenerateBusiness
+    ? async () => {
+        if (generating) return
+        setGenerating(true)
+        setGenerateError(null)
+        try {
+          await onGenerateBusiness()
+        } catch (err: any) {
+          setGenerateError(err?.message || "Failed to generate business summary")
+        } finally {
+          setGenerating(false)
+        }
+      }
+    : undefined
   const isTruncatable = plan.plan.length > PLAN_TRUNCATE_LENGTH
   const buildAction = onBuild ?? onConfirm
   const canNavigateToPlan = !!onOpenPlan && !!plan.filepath
-  const displayedPlan = expanded || !isTruncatable
+  const technicalDisplayedPlan = expanded || !isTruncatable
     ? plan.plan
     : plan.plan.substring(0, PLAN_TRUNCATE_LENGTH) + "\n\n..."
+  const businessStatus: PlanBusinessStatus = plan.businessStatus ?? "idle"
+  const businessAvailable = businessStatus !== "idle"
+  const isBusinessTab = activeTab === "business" && businessAvailable
+  const businessTextRaw = plan.business ?? ""
+  const businessIsTruncatable = businessTextRaw.length > PLAN_TRUNCATE_LENGTH
+  const businessDisplayed = expanded || !businessIsTruncatable
+    ? businessTextRaw
+    : businessTextRaw.substring(0, PLAN_TRUNCATE_LENGTH) + "\n\n..."
 
   // "View Full Plan" navigates to the plan page when a filepath is available;
   // it only falls back to expanding inline if the plan hasn't been saved yet
@@ -93,9 +136,71 @@ function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConf
         </View>
       </View>
 
+      {/* Tab strip — only visible when a business translation exists or is in flight */}
+      {businessAvailable && (
+        <View className="flex-row items-center border-b border-border/40">
+          <Pressable
+            onPress={() => setActiveTab("technical")}
+            className={cn(
+              "flex-1 items-center justify-center py-2",
+              activeTab === "technical" && "border-b-2 border-primary"
+            )}
+          >
+            <Text
+              className={cn(
+                "text-xs font-semibold",
+                activeTab === "technical"
+                  ? "text-foreground"
+                  : "text-muted-foreground"
+              )}
+            >
+              Technical
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setActiveTab("business")}
+            className={cn(
+              "flex-1 flex-row items-center justify-center gap-1 py-2",
+              activeTab === "business" && "border-b-2 border-sky-400"
+            )}
+          >
+            <Text
+              className={cn(
+                "text-xs font-semibold",
+                activeTab === "business"
+                  ? "text-sky-400"
+                  : "text-muted-foreground"
+              )}
+            >
+              Business
+            </Text>
+            {businessStatus === "pending" && (
+              <ActivityIndicator size="small" />
+            )}
+          </Pressable>
+        </View>
+      )}
+
       {/* Plan body */}
       <ScrollView className={cn("px-4 py-3", expanded ? "max-h-[600px]" : "max-h-[300px]")}>
-        <MarkdownText>{displayedPlan}</MarkdownText>
+        {isBusinessTab ? (
+          businessStatus === "pending" ? (
+            <View className="flex-row items-center gap-2 py-3">
+              <ActivityIndicator size="small" />
+              <Text className="text-xs text-muted-foreground">
+                Generating business summary...
+              </Text>
+            </View>
+          ) : businessStatus === "error" ? (
+            <Text className="text-xs text-destructive">
+              Failed to generate business summary. The technical plan above is unaffected.
+            </Text>
+          ) : (
+            <MarkdownText>{businessDisplayed}</MarkdownText>
+          )
+        ) : (
+          <MarkdownText>{technicalDisplayedPlan}</MarkdownText>
+        )}
       </ScrollView>
 
       {/* Todos */}
@@ -154,7 +259,37 @@ function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConf
               </Text>
             </Pressable>
           )}
+          {/* On-demand business translation for plans that didn't have one
+              auto-generated (Dual Plan off, or older plan). Requires a saved
+              filepath because the runtime endpoint operates on .plan.md. */}
+          {handleGenerate && !businessAvailable && !!plan.filepath && (
+            <Pressable
+              onPress={handleGenerate}
+              disabled={generating}
+              className={cn(
+                "flex-row items-center gap-1.5 rounded-lg border px-4 py-2",
+                generating
+                  ? "border-sky-500/30 bg-sky-500/5 opacity-70"
+                  : "border-sky-500/40 bg-sky-500/10"
+              )}
+            >
+              {generating ? (
+                <ActivityIndicator size="small" />
+              ) : (
+                <Languages className="h-3.5 w-3.5 text-sky-400" size={14} />
+              )}
+              <Text className="text-xs font-semibold text-sky-400">
+                {generating ? "Generating..." : "Business Summary"}
+              </Text>
+            </Pressable>
+          )}
         </View>
+      )}
+
+      {generateError && !businessAvailable && (
+        <Text className="px-4 pb-2 text-xs text-destructive">
+          {generateError}
+        </Text>
       )}
 
       {isConfirmed && (

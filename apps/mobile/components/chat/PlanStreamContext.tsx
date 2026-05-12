@@ -3,6 +3,8 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react"
 import type { PlanData } from "./PlanCard"
 
+export type BusinessPlanStatus = "idle" | "pending" | "ready" | "error"
+
 export interface PlanStreamContextValue {
   /** True while the agent is streaming in plan mode (researching phase). */
   isPlanStreaming: boolean
@@ -12,11 +14,21 @@ export interface PlanStreamContextValue {
   planRefreshNonce: number
   /** Set once the plan file is written to disk (from data-plan event). Used to transition the streaming view to the persisted plan. */
   streamingPlanFilepath: string | null
+  /** Lifecycle of the business-language translation for the current streaming plan. */
+  businessStatus: BusinessPlanStatus
+  /** Final business-language markdown once translation completes. */
+  streamingBusinessPlan: string | null
+  /** Error message if translation failed. */
+  businessError: string | null
 
   setIsPlanStreaming: (v: boolean) => void
   setStreamingPlan: (plan: PlanData | null) => void
   setStreamingPlanFilepath: (v: string | null) => void
   notifyPlanCreated: () => void
+  setBusinessStatus: (s: BusinessPlanStatus) => void
+  setStreamingBusinessPlan: (v: string | null) => void
+  setBusinessError: (v: string | null) => void
+  resetBusinessPlan: () => void
 }
 
 const PlanStreamContext = createContext<PlanStreamContextValue | null>(null)
@@ -30,9 +42,18 @@ export function PlanStreamProvider({ children }: PlanStreamProviderProps) {
   const [streamingPlan, setStreamingPlan] = useState<PlanData | null>(null)
   const [planRefreshNonce, setPlanRefreshNonce] = useState(0)
   const [streamingPlanFilepath, setStreamingPlanFilepath] = useState<string | null>(null)
+  const [businessStatus, setBusinessStatus] = useState<BusinessPlanStatus>("idle")
+  const [streamingBusinessPlan, setStreamingBusinessPlan] = useState<string | null>(null)
+  const [businessError, setBusinessError] = useState<string | null>(null)
 
   const notifyPlanCreated = useCallback(() => {
     setPlanRefreshNonce((n) => n + 1)
+  }, [])
+
+  const resetBusinessPlan = useCallback(() => {
+    setBusinessStatus("idle")
+    setStreamingBusinessPlan(null)
+    setBusinessError(null)
   }, [])
 
   // Memoize the context value so its identity only changes when one of the
@@ -49,17 +70,28 @@ export function PlanStreamProvider({ children }: PlanStreamProviderProps) {
       streamingPlan,
       planRefreshNonce,
       streamingPlanFilepath,
+      businessStatus,
+      streamingBusinessPlan,
+      businessError,
       setIsPlanStreaming,
       setStreamingPlan,
       setStreamingPlanFilepath,
       notifyPlanCreated,
+      setBusinessStatus,
+      setStreamingBusinessPlan,
+      setBusinessError,
+      resetBusinessPlan,
     }),
     [
       isPlanStreaming,
       streamingPlan,
       planRefreshNonce,
       streamingPlanFilepath,
+      businessStatus,
+      streamingBusinessPlan,
+      businessError,
       notifyPlanCreated,
+      resetBusinessPlan,
     ],
   )
 

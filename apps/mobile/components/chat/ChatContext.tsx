@@ -99,6 +99,10 @@ export interface ChatContextValue {
 
   /** Open the saved plan artifact in the Plans panel. */
   openPlan?: (filepath?: string | null) => void
+
+  /** Generate (or regenerate) a business-language translation for a plan
+   *  that doesn't have one yet. Returns the business markdown on success. */
+  generateBusinessSummary?: (filepath: string) => Promise<string>
 }
 
 // ============================================================================

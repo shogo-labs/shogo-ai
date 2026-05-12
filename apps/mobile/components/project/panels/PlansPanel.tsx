@@ -27,6 +27,7 @@ import {
   Play,
   ChevronDown,
   Check,
+  Languages,
 } from "lucide-react-native"
 import { MarkdownText } from "../../chat/MarkdownText"
 import { AgentClient, type AgentPlanSummary } from "@shogo-ai/sdk/agent"
@@ -34,6 +35,7 @@ import { agentFetch } from "../../../lib/agent-fetch"
 import { API_URL } from "../../../lib/api"
 import { DEFAULT_MODEL_PRO } from "../../chat/ChatInput"
 import type { PlanData } from "../../chat/PlanCard"
+import { useDualPlan } from "../../../lib/dual-plan-preference"
 
 const PLAN_MODEL_GROUPS = getModelsByProvider().map((g) => ({
   label: g.label,
@@ -73,10 +75,31 @@ function formatDate(iso: string): string {
   }
 }
 
+const BUSINESS_SECTION_START = "<!-- :::business-plan::: -->"
+const BUSINESS_SECTION_END = "<!-- :::end-business-plan::: -->"
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+const BUSINESS_SECTION_RE = new RegExp(
+  `\\n*${escapeRegex(BUSINESS_SECTION_START)}\\n([\\s\\S]*?)\\n${escapeRegex(BUSINESS_SECTION_END)}\\n*$`
+)
+
+function extractBusinessFromContent(content: string): string | null {
+  const match = content.match(BUSINESS_SECTION_RE)
+  return match ? match[1].trim() : null
+}
+
+function stripBusinessFromContent(content: string): string {
+  return content.replace(BUSINESS_SECTION_RE, "").trimEnd()
+}
+
 function extractPlanBody(content: string): string {
-  const fmEnd = content.indexOf("---", 4)
-  if (fmEnd === -1) return content
-  return content.substring(fmEnd + 3).trim()
+  const stripped = stripBusinessFromContent(content)
+  const fmEnd = stripped.indexOf("---", 4)
+  if (fmEnd === -1) return stripped
+  return stripped.substring(fmEnd + 3).trim()
 }
 
 function extractTodos(
@@ -126,7 +149,20 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
   const [buildMode, setBuildMode] = useState<string>(selectedModel || DEFAULT_MODEL_PRO)
   const [showModelPicker, setShowModelPicker] = useState(false)
   const [buildStarted, setBuildStarted] = useState(false)
+  const [activeTab, setActiveTab] = useState<"technical" | "business">("technical")
+  // Mirror of the global Dual Plan preference — singleton-backed so any
+  // change here is reflected immediately in the chat input and user
+  // settings page (and vice versa).
+  const [dualPlan, setDualPlanAsync] = useDualPlan()
+  // On-demand translation lifecycle for the currently open plan, keyed by
+  // filename so navigating between plans doesn't show a stale spinner.
+  const [translateLoading, setTranslateLoading] = useState<string | null>(null)
+  const [translateError, setTranslateError] = useState<string | null>(null)
   const prevSelectedPlanRef = useRef<string | null>(null)
+
+  const handleDualPlanToggle = useCallback(() => {
+    void setDualPlanAsync(!dualPlan)
+  }, [dualPlan, setDualPlanAsync])
 
   // Align Build model with chat when opening a plan or switching plans — not when only
   // `selectedModel` changes while staying on the same plan (preserves Plans-picker override).
@@ -228,7 +264,29 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
 
   useEffect(() => {
     setBuildStarted(false)
+    setActiveTab("technical")
+    setTranslateError(null)
   }, [selectedPlan])
+
+  const handleTranslate = useCallback(async () => {
+    if (!selectedPlan || selectedPlan === "__streaming__") return
+    if (translateLoading) return
+    setTranslateLoading(selectedPlan)
+    setTranslateError(null)
+    try {
+      await agentClient.translatePlan(selectedPlan)
+      // Re-fetch the file so extractBusinessFromContent picks up the new
+      // section; switching the active tab gives the user immediate feedback.
+      await fetchPlanDetail(selectedPlan)
+      setActiveTab("business")
+    } catch (err: any) {
+      const message = err?.message || "Failed to generate business summary"
+      console.error("[PlansPanel] Translate failed:", err)
+      setTranslateError(message)
+    } finally {
+      setTranslateLoading((cur) => (cur === selectedPlan ? null : cur))
+    }
+  }, [agentClient, fetchPlanDetail, selectedPlan, translateLoading])
 
   // Transition from streaming to persisted plan once the file is saved
   useEffect(() => {
@@ -284,6 +342,35 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
       ? (streamingData?.name || "Creating plan...")
       : (plan?.name || selectedPlan)
     const isBuildDisabled = isStreamingDetail || !onBuildPlan || detailLoading || !planContent || buildStarted
+
+    // Resolve the business translation from either the live stream (while the
+    // plan is being generated) or the persisted file. We also surface the
+    // translation lifecycle so the Business tab can spin or show errors.
+    const businessFromStream = planStream?.streamingBusinessPlan ?? null
+    const businessFromFile = planContent
+      ? extractBusinessFromContent(planContent)
+      : null
+    const businessText = isStreamingDetail
+      ? businessFromStream
+      : (businessFromFile ?? businessFromStream)
+    const isTranslatingThisPlan = translateLoading === selectedPlan
+    const businessStatus = isStreamingDetail
+      ? (planStream?.businessStatus ?? "idle")
+      : isTranslatingThisPlan
+        ? "pending"
+        : (businessText ? "ready" : (planStream?.businessStatus ?? "idle"))
+    const businessAvailable = businessStatus !== "idle" || !!businessText
+    const isBusinessTab = activeTab === "business" && businessAvailable
+    // The on-demand Generate action shows up when this plan is missing a
+    // business translation and we're not already producing one. It works
+    // regardless of the global Dual Plan toggle so historic plans aren't
+    // stuck without the feature.
+    const canGenerateOnDemand =
+      !isStreamingDetail &&
+      !!planContent &&
+      !detailLoading &&
+      !businessText &&
+      !isTranslatingThisPlan
 
     return (
       <View className="flex-1 bg-background">
@@ -379,6 +466,26 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
             )}
           </View>
 
+          {/* Generate business summary — sits beside Build so it's the
+              primary discovery surface for historic plans without a
+              translation. Hidden when the plan already has one or while
+              one is being produced. */}
+          {canGenerateOnDemand && (
+            <Pressable
+              onPress={handleTranslate}
+              className="flex-row items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-1.5"
+            >
+              <Languages className="h-3.5 w-3.5 text-sky-400" size={14} />
+              <Text className="text-xs font-semibold text-sky-400">Business</Text>
+            </Pressable>
+          )}
+          {isTranslatingThisPlan && (
+            <View className="flex-row items-center gap-1.5 rounded-lg border border-sky-500/30 bg-sky-500/5 px-3 py-1.5">
+              <ActivityIndicator size="small" />
+              <Text className="text-xs font-semibold text-sky-400">Translating...</Text>
+            </View>
+          )}
+
           {/* Build button */}
           <Pressable
             onPress={handleBuild}
@@ -402,12 +509,73 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
           )}
         </View>
 
+        {/* Tab strip — only when a business translation exists or is in flight */}
+        {businessAvailable && (
+          <View className="flex-row items-center border-b border-border/40">
+            <Pressable
+              onPress={() => setActiveTab("technical")}
+              className={cn(
+                "flex-1 items-center justify-center py-2",
+                activeTab === "technical" && "border-b-2 border-primary"
+              )}
+            >
+              <Text
+                className={cn(
+                  "text-xs font-semibold",
+                  activeTab === "technical"
+                    ? "text-foreground"
+                    : "text-muted-foreground"
+                )}
+              >
+                Technical
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setActiveTab("business")}
+              className={cn(
+                "flex-1 flex-row items-center justify-center gap-1.5 py-2",
+                activeTab === "business" && "border-b-2 border-sky-400"
+              )}
+            >
+              <Text
+                className={cn(
+                  "text-xs font-semibold",
+                  activeTab === "business"
+                    ? "text-sky-400"
+                    : "text-muted-foreground"
+                )}
+              >
+                Business
+              </Text>
+              {businessStatus === "pending" && <ActivityIndicator size="small" />}
+            </Pressable>
+          </View>
+        )}
+
         {/* Detail body */}
         <ScrollView className="flex-1 px-4 py-3" onScrollBeginDrag={() => setShowModelPicker(false)}>
           {!isStreamingDetail && detailLoading ? (
             <ActivityIndicator className="mt-8" />
+          ) : isBusinessTab ? (
+            businessText ? (
+              <MarkdownText>{businessText}</MarkdownText>
+            ) : businessStatus === "pending" ? (
+              <View className="flex-row items-center gap-2 py-3">
+                <ActivityIndicator size="small" />
+                <Text className="text-xs text-muted-foreground">
+                  Generating business summary...
+                </Text>
+              </View>
+            ) : businessStatus === "error" ? (
+              <Text className="text-xs text-destructive">
+                Failed to generate business summary. The technical plan is unaffected.
+              </Text>
+            ) : null
           ) : (
             <>
+              {translateError ? (
+                <Text className="mb-3 text-xs text-destructive">{translateError}</Text>
+              ) : null}
               <MarkdownText>{body}</MarkdownText>
 
               {todos.length > 0 && (
@@ -455,9 +623,41 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
           <ClipboardList className="h-4 w-4 text-foreground" size={16} />
           <Text className="font-semibold text-sm text-foreground">Plans</Text>
         </View>
-        <Pressable onPress={fetchPlans} className="h-8 w-8 items-center justify-center rounded-lg">
-          <RefreshCw className="h-3.5 w-3.5 text-muted-foreground" size={14} />
-        </Pressable>
+        <View className="flex-row items-center gap-1.5">
+          {/* Persistent Dual Plan toggle — mirror of the same preference the
+              chat input controls, surfaced here so users can manage the
+              feature from the Plans view too. */}
+          <Pressable
+            testID="plans-dual-plan-toggle"
+            onPress={handleDualPlanToggle}
+            accessibilityLabel="Toggle business-language summaries for new plans"
+            className={cn(
+              "h-7 flex-row items-center gap-1 rounded-md px-2",
+              dualPlan
+                ? "border border-sky-500/45 bg-sky-500/12"
+                : "bg-muted/50"
+            )}
+          >
+            <Languages
+              className={cn(
+                "h-3 w-3",
+                dualPlan ? "text-sky-400" : "text-muted-foreground"
+              )}
+              size={12}
+            />
+            <Text
+              className={cn(
+                "text-[11px] font-medium",
+                dualPlan ? "text-sky-400" : "text-muted-foreground"
+              )}
+            >
+              Business
+            </Text>
+          </Pressable>
+          <Pressable onPress={fetchPlans} className="h-8 w-8 items-center justify-center rounded-lg">
+            <RefreshCw className="h-3.5 w-3.5 text-muted-foreground" size={14} />
+          </Pressable>
+        </View>
       </View>
 
       {/* Search */}

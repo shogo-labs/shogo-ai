@@ -41,6 +41,7 @@ import {
   Check,
   Mic,
   Square,
+  Languages,
 } from "lucide-react-native"
 import { AutoModelOption } from "./AutoModelOption"
 import {
@@ -110,6 +111,8 @@ export interface CompactChatInputProps {
   onChange?: (value: string) => void
   interactionMode?: InteractionMode
   onInteractionModeChange?: (mode: InteractionMode) => void
+  dualPlan?: boolean
+  onDualPlanChange?: (enabled: boolean) => void
   selectedModel?: string
   onModelChange?: (modelId: string) => void
   isPro?: boolean
@@ -147,6 +150,8 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       onChange: controlledOnChange,
       interactionMode: controlledInteractionMode,
       onInteractionModeChange,
+      dualPlan = false,
+      onDualPlanChange,
       selectedModel: controlledModel,
       onModelChange,
       isPro = false,
@@ -741,6 +746,40 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   </View>
                 </PopoverContent>
               </Popover>
+
+              {/* Dual Plan toggle — only visible in Plan mode. Persistent
+                  per-device preference; every subsequent plan auto-generates
+                  a business-language version until disabled. */}
+              {interactionMode === "plan" && (
+                <Pressable
+                  testID="home-dual-plan-toggle"
+                  disabled={disabled}
+                  onPress={() => onDualPlanChange?.(!dualPlan)}
+                  accessibilityLabel="Also generate a business-language version"
+                  className={cn(
+                    "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
+                    dualPlan
+                      ? "border border-sky-500/45 bg-sky-500/12"
+                      : "bg-muted/50"
+                  )}
+                >
+                  <Languages
+                    className={cn(
+                      "h-2.5 w-2.5",
+                      dualPlan ? "text-sky-400" : "text-muted-foreground"
+                    )}
+                    size={10}
+                  />
+                  <Text
+                    className={cn(
+                      "text-xs",
+                      dualPlan ? "text-sky-400" : "text-muted-foreground"
+                    )}
+                  >
+                    Business
+                  </Text>
+                </Pressable>
+              )}
 
               {/* Environment selector — pick Cloud or a paired machine */}
               <EnvironmentPicker disabled={disabled || isLoading} />

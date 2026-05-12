@@ -107,6 +107,7 @@ import {
   cn,
 } from '@shogo/shared-ui/primitives'
 import { useNotifyOnTurnComplete as useNotifyOnTurnCompletePref } from '../../lib/notifications/preferences'
+import { useDualPlan } from '../../lib/dual-plan-preference'
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
@@ -921,6 +922,35 @@ function NotificationsCard() {
   )
 }
 
+function DualPlanCard() {
+  const [dualPlan, setDualPlan] = useDualPlan()
+  return (
+    <Card>
+      <CardContent className="p-0">
+        <View className="px-6 py-5 flex-row items-center justify-between">
+          <View className="flex-1 mr-4">
+            <Text className="text-sm font-semibold text-foreground">
+              Generate business summaries for plans
+            </Text>
+            <Text className="text-sm text-muted-foreground mt-0.5">
+              When on, every plan you generate in Plan mode also gets a
+              business-language summary translated by a fast model. You can
+              flip between the Technical and Business views from any plan,
+              and generate summaries on demand for older plans.
+            </Text>
+          </View>
+          <Switch
+            checked={dualPlan}
+            onCheckedChange={(v) => {
+              void setDualPlan(v)
+            }}
+          />
+        </View>
+      </CardContent>
+    </Card>
+  )
+}
+
 function AccountTab() {
   const { user, signOut, updateUser } = useAuth()
   const http = useDomainHttp()
@@ -1083,6 +1113,8 @@ function AccountTab() {
       </Card>
 
       <NotificationsCard />
+
+      <DualPlanCard />
 
       {!localMode && (
         <Card>

@@ -293,12 +293,20 @@ export class AgentClient {
     return data.plans ?? []
   }
 
-  async getPlan(filename: string): Promise<{ filename: string; content: string }> {
+  async getPlan(filename: string): Promise<{ filename: string; content: string; business?: string }> {
     return this.fetchJson(`/agent/plans/${encodeURIComponent(filename)}`)
   }
 
   async deletePlan(filename: string): Promise<void> {
     await this.fetchJson(`/agent/plans/${encodeURIComponent(filename)}`, { method: 'DELETE' })
+  }
+
+  /** Generate (or regenerate) a business-language translation for an
+   *  existing plan and persist it inside the plan's .plan.md file. */
+  async translatePlan(filename: string): Promise<{ business: string }> {
+    return this.fetchJson(`/agent/plans/${encodeURIComponent(filename)}/translate`, {
+      method: 'POST',
+    })
   }
 
   async uploadWorkspaceFiles(formData: FormData): Promise<{ uploaded: string[]; count: number }> {
