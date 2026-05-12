@@ -27,6 +27,7 @@ import { initInstrumentation, traceOperation } from './instrumentation'
 import { createLogger } from './logger'
 import { configureAIProxy } from './ai-proxy'
 import { checkSelfAssign, POOL_ASSIGNMENT_MARKER } from './self-assign'
+import { startTokenRefreshLoop, type TokenRefreshHandle } from './token-refresh'
 
 export interface RuntimeAppConfig {
   /** Display name used in logs (e.g. 'agent-runtime', 'runtime') */
@@ -55,6 +56,16 @@ export interface RuntimeAppConfig {
    * Extra data to include in the /health response.
    */
   getHealthExtra?: () => Record<string, unknown>
+  /**
+   * Optional hook invoked after the token-refresh loop has rotated
+   * `AI_PROXY_TOKEN` (and any other short-lived credential the API returns).
+   * Use this to rebuild model clients that captured the old token at
+   * construction time. Errors thrown here are caught and logged — they
+   * never abort the refresh loop. Most LLM SDKs read `ANTHROPIC_API_KEY` /
+   * `OPENAI_API_KEY` from `process.env` at request time when constructed
+   * without an explicit key, so this hook is optional belt-and-suspenders.
+   */
+  onTokenRotate?: (env: Record<string, string>) => void | Promise<void>
 }
 
 export interface RuntimeState {
@@ -70,6 +81,13 @@ export interface RuntimeState {
   lastRequestAt: number
   /** AI proxy configuration (reconfigured on assign) */
   aiProxy: ReturnType<typeof configureAIProxy>
+  /**
+   * Handle to the token-refresh loop, when one is running. Null before a
+   * project assignment has happened, set once self-assign or /pool/assign
+   * promotes the pod. Exposed on state so tests and graceful-shutdown
+   * paths can stop the loop deterministically.
+   */
+  tokenRefresh: TokenRefreshHandle | null
   /** Server start time */
   serverStartTime: number
   /** Entrypoint start time (from STARTUP_TIME env) */
@@ -186,8 +204,39 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     poolAssignedAt,
     lastRequestAt,
     aiProxy,
+    tokenRefresh: null,
     serverStartTime: SERVER_START_TIME,
     entrypointStartTime: ENTRYPOINT_START_TIME,
+  }
+
+  // ---------------------------------------------------------------------------
+  // Token refresh loop bootstrap
+  //
+  // Starts the AI_PROXY_TOKEN auto-rotation loop once the pod is bound to a
+  // real project. Idempotent — calling this more than once is a no-op after
+  // the first successful start. Reads `state.currentProjectId` at refresh
+  // time, so a /pool/assign that changes the bound project after start is
+  // picked up automatically without restarting the loop.
+  //
+  // See packages/shared-runtime/src/token-refresh.ts for full rationale.
+  // ---------------------------------------------------------------------------
+  const ensureTokenRefreshLoop = () => {
+    if (state.tokenRefresh) return
+    state.tokenRefresh = startTokenRefreshLoop({
+      logPrefix: `${config.name}/token-refresh`,
+      getProjectId: () => state.currentProjectId ?? null,
+      onTokenRotate: config.onTokenRotate,
+    })
+    logTiming('token refresh loop started')
+  }
+
+  // If the pod already has a project at startup — either by booting in
+  // non-pool mode with PROJECT_ID set, or by completing self-assign on
+  // boot — start the refresh loop immediately. Pure warm-pool pods
+  // (still PROJECT_ID=__POOL__) defer this until /pool/assign promotes
+  // them; see the /pool/assign handler below.
+  if (state.currentProjectId && state.currentProjectId !== '__POOL__') {
+    ensureTokenRefreshLoop()
   }
 
   // ---------------------------------------------------------------------------
@@ -200,6 +249,10 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       if (shuttingDown) return
       shuttingDown = true
       console.log(`[${config.name}] ${signal} received — draining for 5s before exit`)
+      // Stop the token-refresh timer so it can't fire a stray fetch during
+      // shutdown. The timer is .unref()'d so it shouldn't keep the loop
+      // alive either way, but stopping is the explicit contract.
+      state.tokenRefresh?.stop()
       setTimeout(() => process.exit(0), 5_000)
     })
   }
@@ -487,6 +540,12 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       } catch (writeErr: any) {
         console.warn(`[${config.name}] Could not persist pool assignment marker: ${writeErr.message}`)
       }
+
+      // 6. Start the token-refresh loop. The injected AI_PROXY_TOKEN is a
+      //    short-TTL JWT (currently 7 days from build-project-env.ts) and
+      //    the pod can outlive it. The loop refreshes well before exp; see
+      //    packages/shared-runtime/src/token-refresh.ts for rationale.
+      ensureTokenRefreshLoop()
 
       const duration = Date.now() - startTime
       logTiming(`Pool assignment complete for ${projectId} (${duration}ms)`)
