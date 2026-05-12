@@ -10,6 +10,7 @@ import { VM_DEFAULTS } from './types'
 import { QMPClient } from './qmp-client'
 import { generateSeedISO } from './cloud-init'
 import { isNoisyVMLine } from './vm-log-filter'
+import { registerVMPid, unregisterVMPid } from './pid-registry'
 
 /**
  * Windows VM Manager using QEMU with WHPX acceleration.
@@ -98,6 +99,11 @@ export class Win32VMManager implements VMManager {
       windowsHide: true,
     })
 
+    // Register BEFORE QEMU has a chance to bind its hostfwd port — see
+    // ./pid-registry.ts. Prevents RuntimeManager.cleanupStaleProcesses
+    // from SIGKILLing the warm-pool VM that just spawned.
+    registerVMPid(this.qemuProcess.pid)
+
     let accelReported = false
     let stdoutBuf = ''
     let stderrBuf = ''
@@ -135,6 +141,7 @@ export class Win32VMManager implements VMManager {
       if (stdoutBuf.trim()) console.log(`[QEMU] ${stdoutBuf.trim()}`)
       if (stderrBuf.trim()) console.error(`[QEMU] ${stderrBuf.trim()}`)
       console.log(`[QEMU] Process exited with code ${code}`)
+      unregisterVMPid(this.qemuProcess?.pid)
       this.vmRunning = false
     })
 
@@ -312,7 +319,10 @@ export class Win32VMManager implements VMManager {
 
   private cleanup(): void {
     if (this.qmpClient) { this.qmpClient.disconnect(); this.qmpClient = null }
-    if (this.qemuProcess && !this.qemuProcess.killed) this.qemuProcess.kill('SIGTERM')
+    if (this.qemuProcess && !this.qemuProcess.killed) {
+      unregisterVMPid(this.qemuProcess.pid)
+      this.qemuProcess.kill('SIGTERM')
+    }
     this.qemuProcess = null
     this.vmRunning = false
     this.portForwards.clear()

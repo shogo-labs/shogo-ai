@@ -7,6 +7,13 @@ export { VMPool } from './vm-pool'
 export { VMImageManager } from './image-manager'
 export { DarwinVMManager } from './darwin-vm-manager'
 export { Win32VMManager } from './win32-vm-manager'
+// NOTE: `./pid-registry` is intentionally NOT re-exported here. The
+// VM managers in this directory import it via `./pid-registry`, and
+// RuntimeManager lazy-`require`s it from
+// `apps/desktop/src/vm/pid-registry` directly. Re-exporting it would
+// drag pid-registry.ts into the apps/api `tsc` rootDir scan (which
+// already complains about the rest of this barrel, but that ship has
+// sailed) and add a noisy error to typecheck output for no benefit.
 
 import path from 'path'
 import fs from 'fs'

@@ -10,6 +10,7 @@ import { VM_DEFAULTS } from './types'
 import { QMPClient } from './qmp-client'
 import { generateSeedISO } from './cloud-init'
 import { isNoisyVMLine } from './vm-log-filter'
+import { registerVMPid, unregisterVMPid } from './pid-registry'
 
 /**
  * macOS VM Manager using QEMU with HVF (Hypervisor.framework) acceleration.
@@ -89,6 +90,13 @@ export class DarwinVMManager implements VMManager {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
 
+    // Register BEFORE QEMU has a chance to bind its hostfwd port.
+    // Without this, RuntimeManager.cleanupStaleProcesses (which scans
+    // ports 37100-37900 + agent offset and `kill -9`s every PID it
+    // finds) will treat the warm-pool VM as stale and SIGKILL it ~1s
+    // after spawn. See apps/desktop/src/vm/pid-registry.ts.
+    registerVMPid(this.qemuProcess.pid)
+
     let accelReported = false
     let stdoutBuf = ''
     let stderrBuf = ''
@@ -126,6 +134,7 @@ export class DarwinVMManager implements VMManager {
       if (stdoutBuf.trim()) console.log(`[shogo-vm] ${stdoutBuf.trim()}`)
       if (stderrBuf.trim()) console.error(`[shogo-vm] ${stderrBuf.trim()}`)
       console.log(`[shogo-vm] QEMU exited with code ${code}`)
+      unregisterVMPid(this.qemuProcess?.pid)
       this.vmRunning = false
     })
 
@@ -292,7 +301,10 @@ export class DarwinVMManager implements VMManager {
 
   private cleanup(): void {
     if (this.qmpClient) { this.qmpClient.disconnect(); this.qmpClient = null }
-    if (this.qemuProcess && !this.qemuProcess.killed) this.qemuProcess.kill('SIGTERM')
+    if (this.qemuProcess && !this.qemuProcess.killed) {
+      unregisterVMPid(this.qemuProcess.pid)
+      this.qemuProcess.kill('SIGTERM')
+    }
     this.qemuProcess = null
     this.vmRunning = false
     this.portForwards.clear()
