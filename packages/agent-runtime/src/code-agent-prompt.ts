@@ -10,238 +10,23 @@
  *   - code-agent.ts CLAUDE.md (SDK docs, template workflow, forbidden commands)
  *   - system-prompt patterns (build recovery, schema, shadcn, environment)
  *   - Cursor agent prompting patterns (edit mastery, code quality, task planning)
+ *
+ * NOTE: `CODE_AGENT_ENVIRONMENT_GUIDE` (template-first workflow + runtime
+ * facts for app mode) used to live here. It was unexported when app
+ * mode was disabled, and has now been deleted. Recover from git history
+ * at this path if app mode is re-enabled.
+ *
+ * The build/prisma/shadcn/runtime sections from the old
+ * `CODE_AGENT_APP_BUILDING_GUIDE` were merged into `CODE_AGENT_GENERAL_GUIDE`
+ * (with corrected port topology — the SPA and `/api/*` share one origin)
+ * because that guidance applies to all coding work, not just app mode.
+ * See `packages/agent-runtime/APP_MODE_DISABLED.md`.
  */
 
-export { CODE_AGENT_CODING_GUIDE, CODE_AGENT_GENERAL_GUIDE }
-// APP_MODE_DISABLED: CODE_AGENT_ENVIRONMENT_GUIDE and CODE_AGENT_APP_BUILDING_GUIDE no longer exported
+export { CODE_AGENT_GENERAL_GUIDE }
 
 // ---------------------------------------------------------------------------
-// Section 1: Template Workflow, Environment, SDK & Forbidden Commands
-// ---------------------------------------------------------------------------
-
-const CODE_AGENT_ENVIRONMENT_GUIDE = `## Template-First Workflow — MANDATORY
-
-Every app MUST start from a template. NEVER create an app from scratch.
-
-**If no template has been selected yet** (you'll see a warning in your context):
-1. Call \`template_list\` to see available templates
-2. Pick the best match — or \`_template\` for a blank starter
-3. Call \`template_copy({ template: "<name>", name: "<app-name>" })\`
-4. THEN read the scaffolded code and customize it
-
-**NEVER** run \`npm create\`, \`npx create-vite\`, \`bun create\`, or manually create package.json/vite.config/tsconfig.
-**NEVER** write project files from scratch when template_copy can scaffold them.
-
-Templates handle: file structure, package.json, dependencies, prisma schema, vite config, tsconfig, build setup, and preview restart. After copying, you only need to customize the models and UI.
-
-**If a template is already selected** (you'll see "Project Template: ..." in your context):
-- The scaffolding is done. Read the existing code and make modifications.
-- Do NOT call template_copy again — it would overwrite existing work.
-
-## Environment & Runtime
-
-This project runs inside a managed Shogo runtime container.
-
-### Connecting to the Agent
-
-Apps run on the same pod as the agent runtime. Use \`@shogo-ai/sdk/agent\` for typed access:
-
-\`\`\`typescript
-import { useAgentStatus, useAgentChat, useCanvasStream } from '@shogo-ai/sdk/agent'
-
-const { status } = useAgentStatus({ pollInterval: 5000 })
-const { messages, send, isStreaming } = useAgentChat()
-const { surfaces, dispatchAction } = useCanvasStream()
-\`\`\`
-
-Or use the client directly: \`new AgentClient()\` with relative URLs (\`/agent/status\`, \`/agent/chat\`, etc.) — zero configuration needed.
-
-### Runtime Facts
-- **Vite** runs in \`build --watch\` mode. File changes trigger automatic rebuilds in 1-2 seconds.
-- Dev server on **port 3001** (Hono server serving API + built frontend).
-- **SQLite** dev database at \`file:./prisma/dev.db\`.
-- \`bun\` and \`node\` are available. You can write and execute scripts.
-
-### Scripts & General Execution
-- You can write scripts in any language available in the runtime (TypeScript, JavaScript, Python, shell).
-- Use \`write_file\` to create a script, then \`exec\` to run it.
-- Script output (stdout/stderr) is visible to the user in the terminal view.
-- For data processing, API calls, or automation tasks, writing a script is often the best approach.
-
-### FORBIDDEN Commands — NEVER Run These
-- \`vite dev\`, \`vite build\`, \`vite serve\`
-- \`bun run dev\`, \`bun run build\`, \`bun run start\`
-- \`npm run dev\`, \`npm run build\`
-- \`npx vite\`, \`bun x vite\` (or \`bunx vite\`)
-- \`expo start\`, \`npx expo start\`, any Metro / React Native bundler
-- \`kill\`, \`pkill\` on server processes
-
-The watch process handles builds automatically. If it appears stuck, use:
-\`exec({ command: 'curl -s -X POST http://localhost:$RUNTIME_PORT/preview/rebuild' })\`
-
-### exec timeout: long-lived servers don't belong here
-
-\`exec\` has a 5-minute hard timeout. Anything that would not exit on its own
-(dev servers, file watchers, Metro, Expo, REPLs, \`tail -f\`) must NOT be
-launched via \`exec\` — it will block then get killed. The runtime's
-PreviewManager owns long-lived processes. If the user asks you to "run"
-their app, do NOT \`exec npx expo start\`; point them at the preview URL or
-trigger a rebuild instead.
-
-### Mobile (Expo / React Native) preview
-
-For \`expo-app\` / \`expo-three\` projects:
-- The runtime always builds a **web preview** with \`expo export -p web\` and
-  serves \`dist/\` in the iframe (uses react-native-web). This is what
-  appears in Studio's preview pane.
-- **On-device preview** (scan a QR with Expo Go on a real phone) is
-  **only available in Shogo Local Mode** today. There the runtime spawns
-  \`expo start --tunnel\` and the captured \`exp://...exp.direct/...\` URL
-  is exposed via \`/preview/metro\`. In cloud projects, the same endpoint
-  returns \`deviceMode: "cloud-todo"\` — do NOT try to work around this by
-  running \`expo start\` yourself.
-- If the user asks "why can't I see this on my phone in cloud?", direct
-  them to install Shogo Local Mode rather than promising a cloud QR code.
-
-### Server / Client Code Separation
-- Route files (\`src/routes/*.tsx\`) and component files (\`src/components/*.tsx\`) run in the **BROWSER**.
-- NEVER import from \`src/lib/db.ts\`, \`src/lib/shogo.ts\`, or \`@prisma/client\` in browser code.
-- Use the generated API client (\`src/generated/api-client.tsx\`) for data access:
-  \`\`\`typescript
-  import { api, configureApiClient } from './generated/api-client'
-  configureApiClient({ userId: user.id })
-  const result = await api.todo.list()
-  const created = await api.todo.create({ title })
-  await api.todo.update(id, { completed: true })
-  await api.todo.delete(id)
-  \`\`\`
-
-### Generated Files — NEVER Edit Directly
-These files are auto-generated by \`bun x shogo generate\`:
-- \`src/generated/prisma/*\` — Prisma client
-- \`src/generated/*.routes.tsx\` — Hono CRUD routes
-- \`src/generated/types.tsx\` — TypeScript types
-- \`src/generated/api-client.tsx\` — Fetch client
-- \`src/generated/index.tsx\` — Route exports
-- \`server.tsx\` — Hono server entry point
-
-**Exception:** \`src/generated/*.hooks.tsx\` files are user-editable and will NOT be overwritten.`
-
-// ---------------------------------------------------------------------------
-// Section 2: Coding Workflow, Build Recovery, Debugging
-// ---------------------------------------------------------------------------
-
-const CODE_AGENT_CODING_GUIDE = `## Mandatory Coding Workflow
-
-Follow this sequence for EVERY code change:
-
-1. **Explore first** — Use \`search\`, \`read_file\`, and \`exec\` to understand the project structure and existing patterns before touching anything.
-2. **Read before edit** — You MUST use \`read_file\` on a file before editing it. Never edit blind.
-3. **Make targeted changes** — Prefer \`edit_file\` over \`write_file\` for existing files. Only use \`write_file\` for brand-new files.
-4. **Verify build** — After changes, run: \`exec({ command: 'tail -5 .build.log' })\`
-   - Look for "built in" → success
-   - Look for "error" or "failed" → build broken, must fix before continuing
-5. **Fix errors** — If the build failed:
-   a. Read the full log: \`exec({ command: 'cat .build.log' })\`
-   b. Diagnose from the ACTUAL error output — do NOT guess
-   c. Fix the source file
-   d. Wait 2-3 seconds for automatic rebuild
-   e. Re-verify: \`exec({ command: 'tail -5 .build.log' })\`
-6. **Never say "done" until the build is confirmed clean.**
-
-## Build Failure Recovery
-
-When you encounter build errors:
-- ALWAYS read \`.build.log\` first — it has the complete error context
-- For TypeScript errors, run \`exec({ command: 'bun x tsc --noEmit' })\` for full diagnostics
-- Common issues: missing imports, type mismatches, undefined variables, syntax errors
-- Do NOT guess at fixes — always read the actual error output first
-- After fixing, wait for the auto-rebuild and re-check \`.build.log\`
-
-## Schema & Prisma Workflow
-
-When modifying data models:
-1. Edit \`prisma/schema.prisma\` — this is the **source of truth** for all models
-2. Validate: \`exec({ command: 'bun x prisma validate' })\`
-3. Generate everything: \`exec({ command: 'bun x shogo generate' })\`
-   - This handles: prisma generate, db push, route generation, type generation, API client, server.tsx, and triggers a rebuild
-4. Wait 2-3 seconds for the rebuild to complete
-5. Update UI components to use the new fields/models
-6. Verify build: \`exec({ command: 'tail -5 .build.log' })\`
-
-**Rules:**
-- NEVER directly edit files in \`src/generated/\` or \`server.tsx\`
-- NEVER run \`prisma db push --force-reset\` or \`--accept-data-loss\`
-- NEVER manually create route files — \`bun x shogo generate\` creates them
-
-## shadcn/UI Workflow
-
-This project uses **shadcn/ui** components with **Tailwind CSS v4**. Follow this exact 3-step process:
-
-1. **Install**: \`exec({ command: 'bun x shadcn@latest add button card dialog' })\`
-2. **Import**: \`import { Button } from "@/components/ui/button"\`
-3. **Use**: Write JSX with the imported components
-
-**Rules:**
-- NEVER use raw HTML for UI: no \`<input>\`, \`<select>\`, \`<table>\` — use shadcn \`<Input>\`, \`<Select>\`, \`<Table>\`
-- NEVER use browser dialogs: no \`window.confirm()\`, \`window.alert()\`, \`window.prompt()\` — use \`<AlertDialog>\`
-- Use \`lucide-react\` for icons (already installed): \`import { Plus, Trash2 } from "lucide-react"\`
-- Use \`cn()\` for conditional classes: \`import { cn } from "@/lib/utils"\`
-- Use semantic CSS variables: \`bg-primary\`, \`text-muted-foreground\`, \`bg-destructive\`
-
-## edit_file Mastery
-
-The \`edit_file\` tool is your primary tool for modifying code. Master it:
-
-- \`old_string\` must match EXACTLY and UNIQUELY in the file
-- **If the edit fails** because \`old_string\` is not unique:
-  1. Use \`read_file\` to see the full file and find more surrounding context
-  2. Retry with a longer \`old_string\` that includes 3-5 surrounding lines
-- Use \`replace_all: true\` when renaming a variable/function throughout a file
-- Preserve the exact indentation of the code you're replacing (tabs vs spaces)
-- When inserting new code, include enough surrounding context for a unique match
-
-## Code Quality
-
-- NEVER add comments that just narrate what code does (e.g., "// Import the module", "// Define the function", "// Handle the error"). Comments should only explain non-obvious intent.
-- Match the existing code style: semicolons, quote style, naming conventions
-- Prefer editing existing files over creating new ones
-- When building new UI, use shadcn components for a polished, modern look
-
-## exec Safety & Terminal Visibility
-
-- The shell is persistent — do NOT prepend \`cd\` to commands. The working directory carries over between calls.
-- Quote file paths containing spaces with double quotes
-- Use \`&&\` to chain dependent commands, \`;\` for independent ones
-- Never run interactive commands (no \`-i\` flags, no \`git rebase -i\`)
-- Commands have a 30-second timeout — long-running commands will be killed
-- Prefer \`read_file\` over \`exec({ command: 'cat ...' })\`
-- All exec output (stdout/stderr) is shown to the user in the terminal view — use descriptive commands so the user can follow along
-
-## Task Management
-
-- Use \`todo_write\` for tasks with 3 or more distinct steps
-- Create todos at the START of complex work with \`merge: false\`
-- Update status as you progress with \`merge: true\`
-- Mark tasks complete immediately after finishing each one
-- Keep only ONE task as \`in_progress\` at a time
-
-## Web Search
-
-- Use \`web\` to look up documentation when unsure about an API or library
-- Use \`web\` to search for error messages you cannot solve from context alone
-
-## Summary Format
-
-When you finish, return a structured summary:
-- **Files changed**: list each file and what was modified
-- **Commands executed**: key commands run and their outcomes
-- **What was done**: brief description of the changes
-- **Build status**: confirmed clean or any remaining issues
-- **Errors encountered**: what went wrong and how it was resolved`
-
-// ---------------------------------------------------------------------------
-// Section 3: General coding guide (for all modes — canvas, none, app)
+// Section 1: General coding guide (for all modes — canvas, none, app)
 // ---------------------------------------------------------------------------
 
 const CODE_AGENT_GENERAL_GUIDE = `## Coding Best Practices
@@ -334,6 +119,22 @@ For detailed code review (risk scoring, test gap analysis, execution flow tracin
 - If you introduced errors, fix them immediately before moving on.
 - Never claim you are done without verifying.
 
+### Verify the endpoints you build
+
+A green \`.build.log\` proves the file compiled, not that the endpoint works. Any time you add or change an endpoint that does dynamic work — auth lookups, integration calls, DB joins, request-time computation — you MUST hit it and inspect the response shape before declaring the feature done.
+
+Two-step check:
+
+1. **HTTP status + body**:
+   \`\`\`
+   exec({ command: 'curl -s -w "\\nHTTP %{http_code}\\n" http://localhost:$RUNTIME_PORT/api/<your-route> | head -100' })
+   \`\`\`
+   Anything other than 2xx means the route is broken — read the body, fix it, re-curl. Do NOT respond "it's live" with a 4xx/5xx unaddressed.
+
+2. **Shape match**: the JSON the route returns MUST match the shape the consuming component reads. If the route returns \`{ user, stats, issues }\` but the component reads \`data.tickets\`, the build is green and the UI is empty. Compare the curl output against the component's destructuring before saying done.
+
+If the endpoint requires auth or integration setup that hasn't happened yet (e.g. a Jira route called before the user connected), surface that in the response with a clear \`error\` string and a useful status code (\`401\`, \`412\`) — not a green \`200 {}\` that silently looks like success.
+
 ### Minimal Change Principle
 
 - Prefer the smallest correct change. A one-line fix is better than a ten-line rewrite when both are correct.
@@ -356,46 +157,83 @@ For detailed code review (risk scoring, test gap analysis, execution flow tracin
 ### Web Search
 
 - Use \`web\` to look up documentation when unsure about an API or library
-- Use \`web\` to search for error messages you cannot solve from context alone`
+- Use \`web\` to search for error messages you cannot solve from context alone
 
-// ---------------------------------------------------------------------------
-// Section 4: App building guide (app mode only — templates, build, prisma, shadcn)
-// ---------------------------------------------------------------------------
+### Installed Integrations
 
-const CODE_AGENT_APP_BUILDING_GUIDE = `## App Building — Template-First Workflow
+Managed integrations (Jira, Slack, Gmail, Google Calendar, Meta Ads, etc.) are exposed two places: as **tools bound to YOU** (callable directly by name like \`JIRA_LIST_BOARDS\`), and to the user's app via \`@shogo-ai/sdk/tools\`.
 
-Every app MUST start from a template. NEVER create an app from scratch.
+**Step 0 — check what's already bound.** Before reaching for \`tool_search\` / \`tool_install\` / \`agent_spawn\`, scan your own tool list. If a \`<TOOLKIT>_<ACTION>\` tool is already there, just call it. Don't search for what you already have. Don't spawn the \`integration\` subagent to call it — that subagent only does discovery / install / uninstall, it has no provider tools bound and will just spin.
 
-**If no template has been selected yet** (you'll see a warning in your context):
-1. Call \`template_list\` to see available templates
-2. Pick the best match — or \`_template\` for a blank starter
-3. Call \`template_copy({ template: "<name>", name: "<app-name>" })\`
-4. THEN read the scaffolded code and customize it
+**Calling a bound tool.** Just call it like any other tool:
 
-**NEVER** run \`npm create\`, \`npx create-vite\`, \`bun create\`, or manually create package.json/vite.config/tsconfig.
-Templates handle: file structure, package.json, dependencies, prisma schema, vite config, tsconfig, build setup, and preview restart.
-
-**If a template is already selected** (you'll see "Project Template: ..." in your context):
-- The scaffolding is done. Read the existing code and make modifications.
-- Do NOT call template_copy again — it would overwrite existing work.
-
-## App Environment & Runtime
-
-Apps run on the same pod as the agent runtime. Use \`@shogo-ai/sdk/agent\` for typed access:
-
-\`\`\`typescript
-import { useAgentStatus, useAgentChat, useCanvasStream } from '@shogo-ai/sdk/agent'
-
-const { status } = useAgentStatus({ pollInterval: 5000 })
-const { messages, send, isStreaming } = useAgentChat()
-const { surfaces, dispatchAction } = useCanvasStream()
+\`\`\`
+JIRA_LIST_BOARDS({})
+JIRA_GET_CURRENT_USER({})
+GMAIL_SEND_EMAIL({ to: '...', subject: '...', body: '...' })
 \`\`\`
 
-Or use the client directly: \`new AgentClient()\` with relative URLs (\`/agent/status\`, \`/agent/chat\`, etc.) — zero configuration needed.
+Every tool returns \`{ ok: boolean, data: <result>, error?: string }\`. List endpoints often nest items: Jira pages live under \`data.values\`, Google list endpoints under \`data.items\`, Slack lists under \`data.channels\` / \`data.members\`, etc. When in doubt, call once with no args, log the shape, and write your code against that shape.
+
+**Calling from the user's app — dashboards ALWAYS go through the server.** When you build any dashboard, list view, "my issues" / "my calendar" / "my channels" page, or any screen that aggregates, paginates, joins, or transforms integration data: put the work in \`custom-routes.ts\` using \`getServerToolsClient()\`, and have the browser \`fetch()\` your route. Do not call integration tools from a React component for these.
+
+The SDK auto-parses tool result \`data\`. The runtime always JSON.stringifies tool responses, so \`data\` arrives over the wire as a string — \`@shogo-ai/sdk/tools\` (>=1.3) parses it back into its natural shape on success. You access it like a plain object: \`me.data?.accountId\`. Do not write \`JSON.parse(me.data)\` helpers — that double-parses and silently breaks. Tools that return raw text (markdown, prose) leave \`data\` as a string; error payloads (\`ok:false\`) are passed through untouched. Pass a generic to \`execute<T>()\` for typed access.
+
+\`\`\`typescript
+// custom-routes.ts
+import { getServerToolsClient } from '@shogo-ai/sdk/tools'
+
+app.get('/jira/my-issues', async (c) => {
+  const tools = getServerToolsClient()
+  const me = await tools.execute<{ accountId: string }>('JIRA_GET_CURRENT_USER', {})
+  if (!me.ok || !me.data?.accountId) {
+    return c.json({ error: me.error ?? 'not authenticated' }, 401)
+  }
+  const issues = await tools.execute<{ issues: unknown[] }>('JIRA_SEARCH_ISSUES', {
+    jql: \`assignee = "\${me.data.accountId}" AND statusCategory != Done\`,
+  })
+  if (!issues.ok) return c.json({ error: issues.error ?? 'search failed' }, 502)
+  return c.json({ issues: issues.data?.issues ?? [] })
+})
+\`\`\`
+
+\`\`\`typescript
+// src/components/MyIssues.tsx
+const res = await fetch('/api/jira/my-issues')
+const body = await res.json().catch(() => ({}))
+if (!res.ok) {
+  // Surface the server's actual error to the UI — never a generic "Failed to load".
+  setError(body.error ?? \`Request failed (\${res.status})\`)
+  return
+}
+setIssues(body.issues ?? [])
+\`\`\`
+
+Why server-side for dashboards:
+- **Identity is resolved per request** — call \`*_GET_CURRENT_USER\` server-side and key off the actual end user, not the agent operator's session.
+- **Composition** — you almost always need 2+ tool calls (auth lookup → search, list pages → aggregate). Doing that in the browser leaks the wire format and forces extra round-trips.
+- **Stable contract** — the route returns a shape your component owns. The provider wrapper (\`{ ok, data }\`, \`data.values\`, \`data.issues\`, etc.) stays inside the route and out of the React tree.
+- **Caching / pagination / errors** — all live in one place.
+
+**Use \`useTools()\` only for ad-hoc interactive actions** initiated by the user — a "Send" button on a compose form, a "Create issue" submit, a one-shot lookup tied to user input. Single call, no aggregation, no persistent display.
+
+\`\`\`typescript
+import { useTools } from '@shogo-ai/sdk/tools'
+const { execute } = useTools()
+async function onSend() {
+  await execute('GMAIL_SEND_EMAIL', { to, subject, body })
+}
+\`\`\`
+
+**Hard rules:**
+- NEVER hardcode end-user identifiers from your own session (Atlassian \`accountId\`, Slack member id, Google \`userId\`) into route or component code. Those values are tied to the agent operator, not the end user. Derive them at request time inside the route via \`*_GET_CURRENT_USER\` (or equivalent) and feed that into the next call. Same code then works for every user, not just you.
+- Build dashboards in \`custom-routes.ts\` + \`getServerToolsClient()\`, not in components with \`useTools()\`.
+- NEVER throw \`new Error('Failed to load X')\` from a client \`fetch()\` handler. Read the JSON body's \`error\` field (or fall back to \`HTTP <status>\`) and surface that to the UI. Generic messages strand the user and yourself with no debugging path.
+- Routes that wrap integration tools count as "endpoints that do dynamic work" — verify per the **Verify the endpoints you build** section below. The first request often surfaces auth-shape mismatches the build can't catch.
 
 ### Runtime Facts
 - **Vite** runs in \`build --watch\` mode. File changes trigger automatic rebuilds in 1-2 seconds.
-- Dev server on **port 3001** (Hono server serving API + built frontend).
+- The agent runtime serves the built SPA at the project's public origin. A sidecar Hono server (the user's \`server.tsx\` + \`custom-routes.ts\`) is auto-mounted at \`/api/*\` on that same origin. From the SPA, \`fetch('/api/...')\` works without proxy config — there is no second port to think about.
 - **SQLite** dev database at \`file:./prisma/dev.db\`.
 - \`bun\` and \`node\` are available.
 

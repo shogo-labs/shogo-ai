@@ -74,11 +74,59 @@ export interface BaseVoiceConversationOptions {
    */
   projectId?: string
 
+  /**
+   * Optional named agent to talk to. Forwarded as `?agentName=` on
+   * the signed-URL fetch and resolved server-side to a project-scoped
+   * `ProjectAgent` row (created via `shogo deploy`). When omitted,
+   * the server resolves the project's `default` agent.
+   *
+   * The same `agentName` reaches the same persona via
+   * `useChatConversation({ agentName })` — voice and chat are two
+   * transports for one agent record.
+   */
+  agentName?: string
+
   /** Called on connection errors. */
   onError?: (error: unknown) => void
 
   /** Called on each message (user or agent) for debugging / custom UI. */
   onMessage?: (message: { source: string; message: string }) => void
+
+  /**
+   * Stable conversation id used to correlate this voice session with
+   * a sibling text thread (see `BaseChatConversationOptions.conversationId`).
+   *
+   * When set, forwarded to ElevenLabs as a `conversation_id` dynamic
+   * variable so the agent's prompt can reference it (`{{conversation_id}}`),
+   * and surfaced on `BaseVoiceConversationResult.conversationId` so a
+   * single bridge component can read the same value from either hook.
+   *
+   * Independent of the convai-side conversation id — see
+   * `BaseVoiceConversationResult.convaiConversationId` for that. The
+   * caller-supplied value wins on `result.conversationId` so consumers
+   * who keep their own thread store don't have to special-case the
+   * default. Optional; when omitted, `result.conversationId` mirrors
+   * the convai conversation id once the session connects.
+   */
+  conversationId?: string
+
+  /**
+   * Extra dynamic variables forwarded to ElevenLabs at session start.
+   * Merged on top of the SDK's built-in variables — `character_name`,
+   * `user_context`, and `conversation_id` (when supplied) always win
+   * on collision so consumers can't accidentally override them.
+   *
+   * Typical use: surface per-user fields from the consumer's own
+   * `Companion` row (display name, relationship stage, custom greeting
+   * tokens) so the agent's prompt can reference them via
+   * `{{var_name}}`. Variables also need to be declared in the agent's
+   * `dynamic_variable_placeholders` (set at deploy time) for EL to
+   * pick up the value.
+   *
+   * Non-string values are coerced via `String(...)` before being
+   * forwarded; `null` / `undefined` values are silently dropped.
+   */
+  dynamicVariables?: Record<string, unknown> | null
 }
 
 export interface BaseVoiceConversationResult {
@@ -141,4 +189,24 @@ export interface BaseVoiceConversationResult {
    * want to keep the session "warm" without forcing a full turn.
    */
   sendUserActivity: () => void
+
+  /**
+   * Stable conversation id for cross-transport correlation. Returns the
+   * caller-supplied `BaseVoiceConversationOptions.conversationId` when
+   * one was provided; otherwise mirrors the convai conversation id once
+   * the session connects (and is `null` while disconnected).
+   *
+   * Pass this same value to `useChatConversation({ conversationId })`
+   * to stitch a text thread onto the same logical conversation.
+   */
+  conversationId: string | null
+
+  /**
+   * The convai-side conversation id reported by ElevenLabs on connect.
+   * Always reflects the underlying transport id (or `null` while
+   * disconnected) regardless of whether the consumer supplied an id.
+   * Useful for log correlation against ElevenLabs dashboards even
+   * when the consumer is using their own ids on `conversationId`.
+   */
+  convaiConversationId: string | null
 }

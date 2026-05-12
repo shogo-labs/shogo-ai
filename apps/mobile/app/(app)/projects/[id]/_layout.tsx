@@ -65,7 +65,6 @@ import {
   useChatBridge,
 } from '../../../../components/voice-mode/ChatBridgeContext'
 import { ShogoChatPanel } from '../../../../components/voice-mode/ShogoChatPanel'
-import { ShogoModeToggle } from '../../../../components/voice-mode/ShogoModeToggle'
 import type { InteractionMode } from '../../../../components/chat/ChatInput'
 import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../../../components/chat/ChatInput'
 import { loadModelPreference, saveModelPreference } from '../../../../lib/agent-mode-preference'
@@ -95,7 +94,14 @@ import {
   CheckpointsPanel,
 } from '../../../../components/project/panels'
 import { DrawerHost } from '../../../../components/project/panels/ide/DrawerHost'
-import { RefreshCw, MessageSquare, Sparkles } from 'lucide-react-native'
+import { RefreshCw, MessageSquare, Sparkles, Bug, X as XIcon } from 'lucide-react-native'
+import {
+  useToast,
+  Toast,
+  ToastTitle,
+  ToastDescription,
+} from '../../../../components/ui/toast'
+import { getEntries as getRuntimeLogEntries } from '../../../../lib/runtime-logs/runtime-log-store'
 import { subagentStreamStore } from '../../../../lib/subagent-stream-store'
 import { IntegrationsCard, type TemplateIntegrationRef } from '../../../../components/project/IntegrationsCard'
 import { parseToolInstallResult } from '../../../../components/chat/turns/ConnectToolWidget'
@@ -123,6 +129,108 @@ const DEFAULT_CHAT_PANEL_WIDTH = 480
 const MIN_CHAT_PANEL_WIDTH = 320
 const CHAT_PANEL_WIDTH_STORAGE_KEY = 'shogo:chatPanelWidth'
 
+/** Suppress duplicate "[canvas-error]" toasts within this many ms. */
+const CANVAS_ERROR_DEDUP_MS = 10_000
+/** How many recent runtime log entries to attach to a debug-with-Shogo prompt. */
+const CANVAS_ERROR_LOG_TAIL = 30
+/** Cap any single error / log line so the seed prompt stays bounded. */
+const CANVAS_ERROR_MAX_LINE = 1200
+
+/**
+ * Build the seed message that gets auto-sent into a fresh chat when the
+ * user clicks "Debug" on a `[canvas-error]` toast.
+ *
+ * The prompt deliberately includes everything the agent would otherwise
+ * have to hunt down: the iframe's current page, the phase (compile vs
+ * runtime), the full error string, the breadcrumb of recent user actions
+ * (clicks / navigations / form submits) leading up to the crash, and the
+ * tail of the runtime log buffer (build output / console lines).
+ *
+ * The surface label is only included when the canvas actually exposes a
+ * Shogo surface — workspace canvases (Vite/Expo apps with their own
+ * router) don't, and the page route is the meaningful identifier there.
+ */
+function buildCanvasErrorDebugPrompt(args: {
+  surfaceId: string
+  surfaceTitle?: string | null
+  phase: 'compile' | 'runtime'
+  error: string
+  /** Iframe `pathname + search + hash` at the moment of the error. */
+  route?: string
+  /** Recent user-interaction breadcrumb from `canvas-bridge.js`, oldest first. */
+  recentActions?: ReadonlyArray<{
+    ts: number
+    kind: string
+    target?: string
+    route?: string
+  }>
+  recentLogs: ReadonlyArray<{
+    source: string
+    level: string
+    text: string
+    ts: number
+  }>
+}): string {
+  const { surfaceId, surfaceTitle, phase, error, route, recentActions, recentLogs } = args
+  const truncate = (s: string, n: number) =>
+    s.length <= n ? s : `${s.slice(0, n - 1)}…`
+  const phaseLabel = phase === 'compile' ? 'compile-time' : 'runtime'
+  // Only call out the surface when one is actually known — for plain
+  // workspace canvases `surfaceId` is empty/`undefined` and the old
+  // wording ("on `undefined`") was actively confusing.
+  const hasSurface = !!surfaceTitle || (!!surfaceId && surfaceId !== 'undefined')
+  const surfaceLabel = surfaceTitle
+    ? ` on \`${surfaceTitle}\``
+    : hasSurface
+      ? ` on \`${surfaceId}\``
+      : ''
+  const pageLabel = route ? ` (page \`${route}\`)` : ''
+
+  const lines: string[] = []
+  lines.push(
+    `🐞 The canvas just hit a ${phaseLabel} error${surfaceLabel}${pageLabel}. Please diagnose the root cause and propose / apply a minimal fix.`,
+  )
+  lines.push('')
+  lines.push('**Error**')
+  lines.push('```')
+  lines.push(truncate(error, CANVAS_ERROR_MAX_LINE))
+  lines.push('```')
+
+  if (recentActions && recentActions.length > 0) {
+    lines.push('')
+    lines.push(
+      `**Recent user actions** (last ${recentActions.length}, oldest first — most recent immediately before the error)`,
+    )
+    lines.push('```')
+    for (const a of recentActions) {
+      const ts = Number.isFinite(a.ts) ? new Date(a.ts).toISOString().slice(11, 23) : '--:--:--.---'
+      const target = a.target ? ` ${a.target}` : ''
+      const onPage = a.route && a.route !== route ? ` @ ${a.route}` : ''
+      lines.push(truncate(`${ts} ${a.kind}${target}${onPage}`, CANVAS_ERROR_MAX_LINE))
+    }
+    lines.push('```')
+  }
+
+  if (recentLogs.length > 0) {
+    lines.push('')
+    lines.push(`**Recent runtime logs** (last ${recentLogs.length}, oldest first)`)
+    lines.push('```')
+    for (const e of recentLogs) {
+      const ts = new Date(e.ts).toISOString().slice(11, 23)
+      lines.push(
+        `${ts} [${e.source}] ${e.level !== 'info' ? `${e.level.toUpperCase()} ` : ''}${truncate(e.text, CANVAS_ERROR_MAX_LINE)}`,
+      )
+    }
+    lines.push('```')
+  }
+
+  lines.push('')
+  lines.push(
+    'Read the relevant files, identify the offending change, and either propose a fix or apply it directly. Keep the change minimal and explain what went wrong.',
+  )
+  return lines.join('\n')
+}
+
 export default observer(function ProjectLayout() {
   const params = useLocalSearchParams<{
     id: string
@@ -145,6 +253,7 @@ export default observer(function ProjectLayout() {
   const liftIntegrationsAboveComposer = nativePhone && !isWide
   const { user } = useAuth()
   const http = useDomainHttp()
+  const toast = useToast()
 
   const router = useRouter()
   const store = useSDKDomain() as IDomainStore
@@ -568,31 +677,64 @@ export default observer(function ProjectLayout() {
   const [openChatTabIds, setOpenChatTabIds] = useState<string[]>([])
   /** Web: pending delete confirmation (AlertDialog); native uses Alert.alert */
   const [deleteChatConfirmSessionId, setDeleteChatConfirmSessionId] = useState<string | null>(null)
+  /**
+   * Per-tab seed messages auto-sent when a freshly-created chat session mounts.
+   * Used by the canvas-error → "Debug" flow to spawn a new chat that opens
+   * pre-loaded with a debug prompt. Cleaned up when the tab closes.
+   */
+  const [debugInitMessages, setDebugInitMessages] = useState<Record<string, string>>({})
+  /**
+   * Tri-state hydration status for the open-tabs list:
+   * - 'loading': haven't read AsyncStorage yet
+   * - 'restored-with-tabs': storage had a non-empty list, restored it
+   * - 'restored-empty': storage had an explicit `[]` (user previously closed everything)
+   * - 'fresh': no storage key — first visit to this project, OK to auto-create
+   * Distinguishing 'restored-empty' from 'fresh' is what prevents the auto-select
+   * effect from resurrecting a tab the user just closed.
+   */
+  type TabsHydration = 'loading' | 'restored-with-tabs' | 'restored-empty' | 'fresh'
+  const [tabsHydration, setTabsHydration] = useState<TabsHydration>('loading')
   const openTabsRestoredRef = useRef(false)
 
   // Restore open tabs from AsyncStorage on mount
   useEffect(() => {
     if (!projectId || openTabsRestoredRef.current) return
     AsyncStorage.getItem(`shogo:chatTabs:${projectId}`).then((raw) => {
-      if (raw) {
-        try {
-          const ids = JSON.parse(raw)
-          if (Array.isArray(ids) && ids.length > 0) {
+      if (raw === null) {
+        openTabsRestoredRef.current = true
+        setTabsHydration('fresh')
+        return
+      }
+      try {
+        const ids = JSON.parse(raw)
+        if (Array.isArray(ids)) {
+          if (ids.length > 0) {
             setOpenChatTabIds(ids)
             openTabsRestoredRef.current = true
+            setTabsHydration('restored-with-tabs')
             return
           }
-        } catch { /* ignore malformed data */ }
-      }
+          openTabsRestoredRef.current = true
+          setTabsHydration('restored-empty')
+          return
+        }
+      } catch { /* ignore malformed data */ }
+      // Malformed payload — treat as fresh so we still auto-create.
       openTabsRestoredRef.current = true
-    }).catch(() => { openTabsRestoredRef.current = true })
+      setTabsHydration('fresh')
+    }).catch(() => {
+      openTabsRestoredRef.current = true
+      setTabsHydration('fresh')
+    })
   }, [projectId])
 
-  // Persist open tabs to AsyncStorage when they change
+  // Persist open tabs to AsyncStorage on every change, including `[]`.
+  // Storing the explicit empty array is what lets the next mount distinguish
+  // "user closed everything" from "first-ever visit".
   useEffect(() => {
-    if (!projectId || !openTabsRestoredRef.current || openChatTabIds.length === 0) return
+    if (!projectId || tabsHydration === 'loading') return
     AsyncStorage.setItem(`shogo:chatTabs:${projectId}`, JSON.stringify(openChatTabIds)).catch(() => {})
-  }, [projectId, openChatTabIds])
+  }, [projectId, openChatTabIds, tabsHydration])
 
   // Ensure the active session is always in the open tabs list
   useEffect(() => {
@@ -611,6 +753,12 @@ export default observer(function ProjectLayout() {
       next.delete(tabId)
       return next
     })
+    setDebugInitMessages((prev) => {
+      if (!(tabId in prev)) return prev
+      const next = { ...prev }
+      delete next[tabId]
+      return next
+    })
     setOpenChatTabIds((prev) => {
       const next = prev.filter((id) => id !== tabId)
       if (tabId === chatSessionId) {
@@ -620,10 +768,13 @@ export default observer(function ProjectLayout() {
           setChatSessionId(neighbor)
         } else {
           setChatSessionId(null)
+          // Belt-and-suspenders: clear the "last chat session" pointer so a
+          // future visit (or a stray run of the auto-select effect) can't
+          // resurrect the just-closed session id.
+          if (projectId) {
+            AsyncStorage.removeItem(`shogo:lastChatSession:${projectId}`).catch(() => {})
+          }
         }
-      }
-      if (next.length === 0 && projectId) {
-        AsyncStorage.removeItem(`shogo:chatTabs:${projectId}`).catch(() => {})
       }
       return next
     })
@@ -639,8 +790,11 @@ export default observer(function ProjectLayout() {
   const seededProjectsRef = useRef<Set<string>>(new Set())
 
   // Seed the chat session collection and, when no session is selected yet,
-  // auto-select or create one. The seed runs once per projectId; the
-  // auto-select/create branch only runs when chatSessionId is still null.
+  // auto-select or create one. The seed always runs once per projectId; the
+  // auto-select/create branch only runs on a *fresh* visit (no prior tabs in
+  // storage). For 'restored-with-tabs' the dedicated effect below picks an
+  // active tab from the restored list, and 'restored-empty' is honored as a
+  // user-intent "no tabs open" state — we deliberately do NOT auto-select.
   useEffect(() => {
     if (!projectId || !store?.chatSessionCollection) return
 
@@ -661,6 +815,12 @@ export default observer(function ProjectLayout() {
       }
 
       if (chatSessionId) return
+      // Wait for restore to finish so we know which branch to take.
+      if (tabsHydration === 'loading') return
+      // Only auto-select / auto-create on a truly fresh visit. On
+      // 'restored-with-tabs' the picker effect handles it; on 'restored-empty'
+      // we honor the user's explicit close.
+      if (tabsHydration !== 'fresh') return
 
       try {
         const existing = store.chatSessionCollection.all.filter(
@@ -695,7 +855,40 @@ export default observer(function ProjectLayout() {
     return () => {
       cancelled = true
     }
-  }, [projectId, store, chatSessionId, actions])
+  }, [projectId, store, chatSessionId, actions, tabsHydration])
+
+  // After a 'restored-with-tabs' hydration, choose which restored tab is
+  // active. Prefer the persisted `lastChatSession` if it's still in the list,
+  // otherwise the first restored tab. Tracked per-project so navigating
+  // between projects in the same mount still works.
+  const pickedFromRestoreRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (!projectId) return
+    if (pickedFromRestoreRef.current.has(projectId)) return
+    if (tabsHydration !== 'restored-with-tabs') return
+    if (chatSessionId) {
+      pickedFromRestoreRef.current.add(projectId)
+      return
+    }
+    if (openChatTabIds.length === 0) return
+    let cancelled = false
+    AsyncStorage.getItem(`shogo:lastChatSession:${projectId}`).then((lastId) => {
+      if (cancelled) return
+      const pick = lastId && openChatTabIds.includes(lastId) ? lastId : openChatTabIds[0]
+      if (pick) {
+        pickedFromRestoreRef.current.add(projectId)
+        setChatSessionId(pick)
+      }
+    }).catch(() => {
+      if (cancelled) return
+      const pick = openChatTabIds[0]
+      if (pick) {
+        pickedFromRestoreRef.current.add(projectId)
+        setChatSessionId(pick)
+      }
+    })
+    return () => { cancelled = true }
+  }, [projectId, tabsHydration, openChatTabIds, chatSessionId])
 
   const handleChatSessionChange = useCallback((sessionId: string) => {
     setChatSessionId(sessionId)
@@ -952,6 +1145,10 @@ export default observer(function ProjectLayout() {
     }
   }, [canvasEnabled])
 
+  const handleBuildPlanConsumed = useCallback((nonce: number) => {
+    setBuildPlanRequest((curr) => (curr && curr.nonce === nonce ? null : curr))
+  }, [])
+
   const handleOpenPlan = useCallback((filepath?: string | null) => {
     openPlanNonceRef.current += 1
     setRequestedPlanPath({ filepath: filepath ?? null, nonce: openPlanNonceRef.current })
@@ -1061,6 +1258,142 @@ export default observer(function ProjectLayout() {
       console.error('[ProjectLayout] Failed to create chat session:', err)
     }
   }, [actions, projectId])
+
+  // ─── Canvas-error → "Debug" toast ───────────────────────────────────────
+  // The canvas iframe (and its ShogoErrorBoundary) postMessage `canvas-error`
+  // back to the parent on uncaught render / runtime / compile failures. We
+  // surface a toast with a "Debug" button that spins up a fresh chat
+  // pre-loaded with the error + recent runtime-log tail.
+  const lastCanvasErrorRef = useRef<{ key: string; ts: number } | null>(null)
+  const openDebugChatForCanvasError = useCallback(
+    async (
+      surfaceId: string,
+      phase: 'compile' | 'runtime',
+      error: string,
+      context?: {
+        route?: string
+        recentActions?: ReadonlyArray<{ ts: number; kind: string; target?: string; route?: string }>
+      },
+    ) => {
+      if (!projectId) return
+      try {
+        const surfaceTitle = surfaces.get(surfaceId)?.title ?? null
+        const recentLogs = getRuntimeLogEntries(projectId).slice(-CANVAS_ERROR_LOG_TAIL)
+        const prompt = buildCanvasErrorDebugPrompt({
+          surfaceId,
+          surfaceTitle,
+          phase,
+          error,
+          route: context?.route,
+          recentActions: context?.recentActions,
+          recentLogs,
+        })
+
+        const newSession = await actions.createChatSession({
+          inferredName: `Debug: ${phase} error`,
+          contextType: 'project',
+          contextId: projectId,
+        })
+        if (!newSession?.id) return
+        const newId = newSession.id
+
+        setDebugInitMessages((prev) => ({ ...prev, [newId]: prompt }))
+        setOpenChatTabIds((prev) =>
+          prev.includes(newId) ? prev : [...prev, newId],
+        )
+        setChatSessionId(newId)
+        // Narrow layouts hide the chat column behind the canvas tab, so flip
+        // back to it. Wide layouts already show the chat column alongside the
+        // canvas — leave the preview pane (canvas / IDE / etc.) untouched.
+        if (!isWide) setActiveTab('chat')
+      } catch (err) {
+        console.error('[ProjectLayout] Failed to open debug chat:', err)
+      }
+    },
+    [projectId, surfaces, actions, isWide],
+  )
+
+  const handleCanvasError = useCallback(
+    (
+      surfaceId: string,
+      phase: 'compile' | 'runtime',
+      error: string,
+      context?: {
+        route?: string
+        recentActions?: ReadonlyArray<{ ts: number; kind: string; target?: string; route?: string }>
+      },
+    ) => {
+      if (!projectId) return
+      // Dedup: the canvas iframe re-throws the same error on every retry /
+      // HMR loop. One toast per unique error within the dedup window.
+      const key = `${surfaceId}|${phase}|${error}`
+      const now = Date.now()
+      const last = lastCanvasErrorRef.current
+      if (last && last.key === key && now - last.ts < CANVAS_ERROR_DEDUP_MS) {
+        return
+      }
+      lastCanvasErrorRef.current = { key, ts: now }
+
+      const surfaceTitle = surfaces.get(surfaceId)?.title ?? null
+      const phaseWord = phase === 'compile' ? 'Compile-time' : 'Runtime'
+      const where = surfaceTitle
+        ? ` on “${surfaceTitle}”`
+        : context?.route
+          ? ` on ${context.route}`
+          : ''
+      const description = where
+        ? `${phaseWord} error${where}.`
+        : `${phaseWord} error in the canvas.`
+      const toastId = `canvas-error-${surfaceId}-${now}`
+
+      toast.show({
+        id: toastId,
+        placement: 'top',
+        duration: 12_000,
+        render: ({ id: tId }: { id: string }) => (
+          <Toast nativeID={tId} variant="solid" action="error">
+            <View className="flex-row items-start gap-2">
+              <View className="mt-0.5">
+                <Bug size={16} className="text-typography-0" />
+              </View>
+              <View className="flex-1">
+                <ToastTitle>Canvas error</ToastTitle>
+                <ToastDescription>{description}</ToastDescription>
+              </View>
+            </View>
+            <View className="mt-2 flex-row gap-2">
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Debug this canvas error in a new chat"
+                onPress={() => {
+                  toast.close(tId)
+                  void openDebugChatForCanvasError(surfaceId, phase, error, context)
+                }}
+                className="flex-row items-center gap-1.5 rounded-md bg-white/95 px-3 py-1.5 active:opacity-80"
+              >
+                <Bug size={12} className="text-error-700" />
+                <Text className="text-xs font-semibold text-error-700">
+                  Debug
+                </Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Dismiss canvas error"
+                onPress={() => toast.close(tId)}
+                className="flex-row items-center gap-1 rounded-md border border-white/30 px-3 py-1.5 active:opacity-80"
+              >
+                <XIcon size={12} className="text-typography-0" />
+                <Text className="text-xs font-medium text-typography-0">
+                  Dismiss
+                </Text>
+              </Pressable>
+            </View>
+          </Toast>
+        ),
+      })
+    },
+    [projectId, surfaces, toast, openDebugChatForCanvasError],
+  )
 
   const handleRenameChatSession = useCallback(
     async (sessionId: string, newName: string) => {
@@ -1241,11 +1574,44 @@ export default observer(function ProjectLayout() {
     )
   }
 
+  /**
+   * No tabs are open and we've finished hydrating from storage. This is the
+   * post-fix "user closed everything" state — show the chat history list so
+   * they can pick an existing session or start a new one. While
+   * `tabsHydration === 'loading'` we render nothing extra to avoid flashing
+   * the empty state for one frame on every mount.
+   */
+  const showEmptyChatState = tabsHydration !== 'loading' && openChatTabIds.length === 0
+
+  const renderEmptyChatList = (onSelectClose?: () => void) => (
+    <ChatSessionSidebar
+      sessions={chatSessions}
+      currentSessionId={undefined}
+      onSelect={(sessionId) => {
+        setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
+        setChatSessionId(sessionId)
+        onSelectClose?.()
+      }}
+      onCreate={() => {
+        void handleCreateNewSession()
+        onSelectClose?.()
+      }}
+      onRename={handleRenameChatSession}
+      onLoadMore={handleLoadMoreSessions}
+      hasMore={store?.chatSessionCollection?.hasMore ?? false}
+      isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
+      hideHeader
+      searchOpen={sidebarSearchOpen}
+      onSearchClose={() => setSidebarSearchOpen(false)}
+    />
+  )
+
   const chatPanels = (
     <>
       {openChatTabIds.map((tabId) => {
         const isActive = tabId === chatSessionId
         const isInitialSession = tabId === initialPropsSessionId
+        const debugSeed = debugInitMessages[tabId]
         return (
           <View
             key={tabId}
@@ -1266,7 +1632,7 @@ export default observer(function ProjectLayout() {
                 projectType="unified"
                 isActive={isActive}
                 localAgentUrl={remoteProjectAgentBaseUrl ?? undefined}
-                initialMessage={isInitialSession ? capturedInitialMessage : undefined}
+                initialMessage={isInitialSession ? capturedInitialMessage : (debugSeed ?? undefined)}
                 initialInteractionMode={isInitialSession ? capturedInitialInteractionMode : undefined}
                 initialFiles={isInitialSession ? capturedInitialFiles : undefined}
                 billingData={billingDataResolved}
@@ -1274,6 +1640,7 @@ export default observer(function ProjectLayout() {
                 onMessagesChange={isActive ? setChatMessages : undefined}
                 onStreamingChange={getStreamingChangeHandler(tabId)}
                 buildPlanRequest={isActive ? buildPlanRequest : null}
+                onBuildPlanConsumed={isActive ? handleBuildPlanConsumed : undefined}
                 onOpenPlan={handleOpenPlan}
                 selectedModel={selectedModel}
                 onModelChange={handleModelChange}
@@ -1303,6 +1670,7 @@ export default observer(function ProjectLayout() {
       canvasMode={canvasMode}
       iframeRefreshKey={iframeRefreshKey}
       onCanvasCapabilities={handleCanvasCapabilities}
+      onCanvasError={handleCanvasError}
     />
   ) : null
 
@@ -1355,6 +1723,13 @@ export default observer(function ProjectLayout() {
     canvasThemeSupported,
     effectiveSurfaceId,
     onCanvasRefresh: canvasMode === 'code' ? () => setIframeRefreshKey(k => k + 1) : undefined,
+    onCanvasOpenInNewTab:
+      canvasMode === 'code' && Platform.OS === 'web' && (canvasBaseUrl || agentUrl)
+        ? () => {
+            const base = canvasBaseUrl || agentUrl
+            if (base) window.open(`${base}/`, '_blank', 'noopener,noreferrer')
+          }
+        : undefined,
   }
 
   return (
@@ -1433,7 +1808,23 @@ export default observer(function ProjectLayout() {
                   </View>
                 )}
                 {isChatFullscreen ? (
-                  <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
+                  <View className="flex-1 min-h-0 relative">
+                    <View
+                      className="absolute inset-0"
+                      style={showEmptyChatState ? { opacity: 0 } : undefined}
+                      pointerEvents={showEmptyChatState ? 'none' : 'auto'}
+                    >
+                      <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
+                    </View>
+                    {showEmptyChatState && (
+                      <View className="absolute inset-0 bg-background items-center justify-center px-8">
+                        <MessageSquare size={28} className="text-muted-foreground" />
+                        <Text className="text-sm text-muted-foreground mt-3 text-center">
+                          No chat open. Pick one from the list on the left, or start a new chat.
+                        </Text>
+                      </View>
+                    )}
+                  </View>
                 ) : (
                   <>
                     {isWide && (
@@ -1453,11 +1844,22 @@ export default observer(function ProjectLayout() {
                     <View className="flex-1 min-h-0 relative">
                       <View
                         className="absolute inset-0"
-                        style={isWide && showChatSessions ? { opacity: 0 } : undefined}
-                        pointerEvents={isWide && showChatSessions ? 'none' : 'auto'}
+                        style={
+                          (isWide && showChatSessions) || showEmptyChatState
+                            ? { opacity: 0 }
+                            : undefined
+                        }
+                        pointerEvents={
+                          (isWide && showChatSessions) || showEmptyChatState ? 'none' : 'auto'
+                        }
                       >
                         <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
                       </View>
+                      {showEmptyChatState && !(isWide && showChatSessions) && (
+                        <View className="absolute inset-0 bg-background">
+                          {renderEmptyChatList()}
+                        </View>
+                      )}
                       {isWide && showChatSessions && (
                         <View className="absolute inset-0 bg-background">
                           <ChatSessionSidebar
@@ -1623,18 +2025,6 @@ export default observer(function ProjectLayout() {
             </View>
           )}
 
-          {/* Floating Shogo Mode toggle — screen-level bottom-right so it's
-              reachable from every layout (wide split, narrow tabs, chat
-              fullscreen). Web-only for now; native renders a null stub.
-              Hidden entirely when the shogoMode feature flag is off. */}
-          {Platform.OS === 'web' && features.shogoMode && (
-            <View
-              className="absolute bottom-4 right-4 z-40"
-              pointerEvents="box-none"
-            >
-              <ShogoModeToggle />
-            </View>
-          )}
           </View>
 
         </View>
@@ -1934,6 +2324,7 @@ function CanvasPanel({
   canvasMode = 'json',
   iframeRefreshKey = 0,
   onCanvasCapabilities,
+  onCanvasError,
 }: {
   surface: any | null
   surfaces: Map<string, any>
@@ -1950,6 +2341,15 @@ function CanvasPanel({
   canvasMode?: 'json' | 'code'
   iframeRefreshKey?: number
   onCanvasCapabilities?: (caps: { supportsTheme: boolean }) => void
+  onCanvasError?: (
+    surfaceId: string,
+    phase: 'compile' | 'runtime',
+    error: string,
+    context?: {
+      route?: string
+      recentActions?: ReadonlyArray<{ ts: number; kind: string; target?: string; route?: string }>
+    },
+  ) => void
 }) {
   const editMode = useEditModeOptional()
   const isEditMode = editMode?.isEditMode ?? false
@@ -2013,7 +2413,7 @@ function CanvasPanel({
   if (canvasMode === 'code') {
     return (
       <View className="flex-1 overflow-hidden rounded-2xl mx-2 mb-2">
-        <CanvasWebView agentUrl={agentUrl} canvasBaseUrl={readyCanvasBaseUrl} activeSurfaceId={activeSurfaceId} refreshKey={iframeRefreshKey} onCanvasCapabilities={onCanvasCapabilities} />
+        <CanvasWebView agentUrl={agentUrl} canvasBaseUrl={readyCanvasBaseUrl} activeSurfaceId={activeSurfaceId} refreshKey={iframeRefreshKey} onCanvasCapabilities={onCanvasCapabilities} onCanvasError={onCanvasError} />
       </View>
     )
   }

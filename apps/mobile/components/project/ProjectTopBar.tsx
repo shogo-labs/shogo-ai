@@ -62,6 +62,7 @@ import {
   Terminal,
   ClipboardList,
   RefreshCw,
+  ExternalLink,
   GitCommit,
   Upload,
 } from 'lucide-react-native'
@@ -161,6 +162,7 @@ export interface ProjectTopBarProps {
   canvasThemePicker?: React.ReactNode
   canvasThemeSupported?: boolean | null
   onCanvasRefresh?: () => void
+  onCanvasOpenInNewTab?: () => void
 }
 
 /** Set the native HTML `title` tooltip on the DOM element via ref. */
@@ -259,6 +261,7 @@ export function ProjectTopBar({
   canvasThemePicker,
   canvasThemeSupported,
   onCanvasRefresh,
+  onCanvasOpenInNewTab,
 }: ProjectTopBarProps) {
   const router = useRouter()
   const { width, height } = useWindowDimensions()
@@ -771,6 +774,9 @@ export function ProjectTopBar({
         {isCanvasActive && onCanvasRefresh && (
           <BarIconButton icon={RefreshCw} onPress={onCanvasRefresh} title="Refresh preview" />
         )}
+        {isCanvasActive && onCanvasOpenInNewTab && (
+          <BarIconButton icon={ExternalLink} onPress={onCanvasOpenInNewTab} title="Open preview in new tab" />
+        )}
 
         {/* Right actions */}
         <View className="flex-row items-center gap-0.5">
@@ -996,12 +1002,18 @@ function ProjectMenuView({
   const showBilling = features.billing
   const usdPercent = usdTotal > 0 ? (usdRemaining / usdTotal) * 100 : 0
 
-  const runExport = useCallback(async (options: { includeChats: boolean }) => {
+  const runExport = useCallback(async (options: {
+    includeChats: boolean
+    passphrase?: string
+    includeEnv?: boolean
+  }) => {
     if (isExporting) return
     setIsExporting(true)
     try {
       const { blob, filename } = await api.exportProjectBlob(projectId, {
         includeChats: options.includeChats,
+        passphrase: options.passphrase,
+        includeEnv: options.includeEnv,
       })
 
       if (Platform.OS === 'web' && typeof document !== 'undefined') {

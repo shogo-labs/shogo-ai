@@ -137,6 +137,10 @@ export interface CloudLoginStatus {
   workspace?: { id?: string; name?: string; slug?: string } | null
   deviceId?: string | null
   keyPrefix?: string
+  /** True when the cloud has rejected the stored API key (revoked / expired).
+   * The user remains signed in locally; the UI should show a warning banner
+   * prompting them to sign out and sign in again. */
+  cloudKeyRejected?: boolean
 }
 
 export interface ShogoKeyStatus {

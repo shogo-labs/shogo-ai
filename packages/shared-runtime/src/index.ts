@@ -3,6 +3,7 @@
 export {
   initializeS3Sync,
   createS3SyncFromEnv,
+  createS3SyncForProject,
   S3Sync,
   type S3SyncConfig,
   type SyncStats,
@@ -98,6 +99,10 @@ export {
 export {
   PlatformPackageManager,
   pkg,
+  isNodeAvailableOnWindows,
+  isNodeAvailableOnUnix,
+  resolveBinInvocation,
+  _resetUnixNodeCache,
   type PkgInstallOptions,
   type PkgExecOptions,
 } from './platform-pkg'

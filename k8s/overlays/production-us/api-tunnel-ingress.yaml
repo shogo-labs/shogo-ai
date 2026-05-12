@@ -1,0 +1,74 @@
+# =============================================================================
+# Desktop Tunnel WebSocket Ingress — Production US (Ashburn)
+# =============================================================================
+# See k8s/overlays/staging/api-tunnel-ingress.yaml for the full rationale.
+#
+# Short version: Knative DomainMapping wraps its KIngress in a `rewriteHost`
+# + ExternalName loopback that silently drops `Upgrade: websocket` (503 UC
+# after ~1s) because the upstream HTTP/2 cluster does not enable RFC 8441
+# extended-CONNECT. Plain HTTP works fine, hence the desktop heartbeat is
+# green but the remote-control WS upgrade stalls in "standby".
+#
+# Workaround: a non-DomainMapping public route, `tunnel.shogo.ai`, whose
+# KIngress points directly at a label-selector Service tracking the live
+# api ksvc revision pods on their queue-proxy port (8012). No rewriteHost,
+# no ExternalName — Kourier emits a normal Envoy upstream cluster that
+# happily passes the WS Upgrade.
+#
+# Routing chain:
+#   Cloudflare (TLS, shogo.ai cert)
+#     → OCI LoadBalancer (kourier:80/443)
+#     → Kourier external listener
+#     → Knative Ingress `api-tunnel`     (no DomainMapping, no rewriteHost)
+#     → Service `api-tunnel-direct`      (selector: serving.knative.dev/service=api)
+#     → api revision Pod  port 8012      (queue-proxy, then user container)
+#
+# Heartbeat / HTTP traffic is unchanged — it still flows through the
+# studio.shogo.ai DomainMapping.
+# =============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-tunnel-direct
+  namespace: shogo-production-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: instance-tunnel
+    environment: production
+    region: us-ashburn-1
+spec:
+  type: ClusterIP
+  selector:
+    serving.knative.dev/service: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8012
+      protocol: TCP
+---
+apiVersion: networking.internal.knative.dev/v1alpha1
+kind: Ingress
+metadata:
+  name: api-tunnel
+  namespace: shogo-production-system
+  annotations:
+    networking.knative.dev/ingress.class: kourier.ingress.networking.knative.dev
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: instance-tunnel
+    environment: production
+    region: us-ashburn-1
+spec:
+  httpOption: Enabled
+  rules:
+    - hosts:
+        - tunnel.shogo.ai
+      visibility: ExternalIP
+      http:
+        paths:
+          - splits:
+              - serviceName: api-tunnel-direct
+                serviceNamespace: shogo-production-system
+                servicePort: 80
+                percent: 100

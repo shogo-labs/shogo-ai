@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import type { Page } from "@playwright/test"
+import { test, type Page } from "@playwright/test"
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -152,6 +152,58 @@ export async function signUpAndOnboardWithAppTemplate(
  *
  * Leaves the browser on the app after the Stripe redirect.
  */
+// ── API Keys page helpers ────────────────────────────────────────────────────
+
+/**
+ * The `/api-keys` page was redesigned in v1.5.0: the "Devices" section is
+ * primary, and manual workspace API keys live behind a collapsed
+ * `"Manual API keys (N) · advanced"` accordion. Tests that need to create
+ * a manual key must expand the accordion first.
+ *
+ * Prefers the stable `testID="manual-api-keys-toggle"` and falls back to
+ * role-based matching for revisions that predate the testID.
+ *
+ * See apps/mobile/app/(app)/api-keys.tsx — the `showManualKeys` state.
+ */
+export async function expandManualApiKeys(page: Page) {
+  const toggle = page
+    .getByTestId("manual-api-keys-toggle")
+    .or(page.getByRole("button", { name: /Manual API keys/ }))
+    .first()
+  await toggle.waitFor({ state: "visible", timeout: 10_000 })
+  const expanded = await toggle.getAttribute("aria-expanded").catch(() => null)
+  if (expanded !== "true") {
+    await toggle.click()
+  }
+  // "Create Key" only renders after the accordion animates open.
+  const createBtn = page
+    .getByTestId("create-api-key-btn")
+    .or(page.getByText("Create Key").first())
+    .first()
+  await createBtn.waitFor({ state: "visible", timeout: 10_000 })
+}
+
+/**
+ * Returns the "Create Key" button inside the expanded Manual API keys
+ * section, preferring the stable testID.
+ */
+export function createApiKeyButton(page: Page) {
+  return page
+    .getByTestId("create-api-key-btn")
+    .or(page.getByText("Create Key").first())
+    .first()
+}
+
+/**
+ * Returns the "Create Key" submit button inside the Create API Key modal.
+ */
+export function createApiKeySubmitButton(page: Page) {
+  return page
+    .getByTestId("create-api-key-submit")
+    .or(page.getByRole("dialog", { name: "Create API Key" }).getByText("Create Key", { exact: true }))
+    .first()
+}
+
 // ── Interaction mode helpers ─────────────────────────────────────────────────
 
 export async function selectInteractionMode(page: Page, mode: "Agent" | "Plan" | "Ask") {
@@ -194,8 +246,29 @@ export async function selectInteractionMode(page: Page, mode: "Agent" | "Plan" |
   await page.waitForTimeout(300)
 }
 
+/**
+ * The home composer uses an animated typewriter placeholder
+ * (`"Ask Shogo to " + rotating suggestion`), so the old
+ * `getByPlaceholder("Ask Shogo to ...")` selector never matches.
+ * `CompactChatInput` exposes a stable `testID="home-composer-input"` we
+ * can target regardless of interaction mode and placeholder churn.
+ *
+ * Falls back to `accessibilityLabel` matching for revisions that predate
+ * the testID (e.g. long-lived staging sessions) so this helper works on
+ * any prod/staging tag.
+ *
+ * See apps/mobile/components/chat/CompactChatInput.tsx.
+ */
+export function homeComposerInput(page: Page) {
+  return page.getByTestId("home-composer-input").or(
+    page.getByRole("textbox", {
+      name: "Describe the agent you want to build",
+    }),
+  )
+}
+
 export async function sendChatMessage(page: Page, text: string) {
-  const chatInput = page.getByPlaceholder(/Ask Shogo|Describe what|Ask a question/)
+  const chatInput = homeComposerInput(page)
   await chatInput.click()
   await chatInput.fill(text)
   await page.waitForTimeout(300)
@@ -221,7 +294,7 @@ export async function createProjectAndWait(page: Page, prompt: string) {
   await page.goto("/")
   await page.waitForSelector("text=What's on your mind", { timeout: 15_000 })
 
-  const input = page.getByPlaceholder("Ask Shogo to ...")
+  const input = homeComposerInput(page)
   await input.click()
   await input.fill(prompt)
   await page.waitForTimeout(500)
@@ -243,8 +316,110 @@ export async function createProjectAndWait(page: Page, prompt: string) {
   await page.waitForTimeout(1000)
 }
 
+/**
+ * Returns true when the Playwright suite is pointed at a live-Stripe
+ * environment (production). Live Stripe rejects the test card
+ * `4242424242424242`, so any test that drives hosted Checkout with a
+ * test card must skip when this returns true.
+ *
+ * Detection priority:
+ *   1. Explicit opt-in/opt-out via `E2E_STRIPE_MODE` (`live` | `test`).
+ *   2. URL heuristic — anything that looks like *.staging.shogo.ai or
+ *      localhost is test-mode; everything else is live.
+ *
+ * Override when needed with:
+ *   E2E_STRIPE_MODE=test npx playwright test ...     # force test mode
+ *   E2E_STRIPE_MODE=live npx playwright test ...     # force live mode
+ */
+export function isLiveStripeEnv(): boolean {
+  const explicit = process.env.E2E_STRIPE_MODE?.toLowerCase()
+  if (explicit === "live") return true
+  if (explicit === "test") return false
+
+  const url = process.env.E2E_TARGET_URL || process.env.STAGING_URL || ""
+  if (!url) return false
+  if (url.includes("localhost") || url.includes("127.0.0.1")) return false
+  if (url.includes("staging.shogo.ai")) return false
+  if (url.includes("shogo.ai")) return true
+  return false
+}
+
+/**
+ * Resolves the URL for the e2e bootstrap backdoor. Tests that call into
+ * `/api/internal/e2e/*` should target the same API host used elsewhere
+ * (`E2E_API_URL` → `STAGING_API_URL` → `E2E_TARGET_URL` → …).
+ */
+function bootstrapApiBase(): string {
+  return (
+    process.env.E2E_API_URL ||
+    process.env.STAGING_API_URL ||
+    process.env.E2E_TARGET_URL ||
+    process.env.STAGING_URL ||
+    "http://localhost:8081"
+  )
+}
+
+/**
+ * Upgrade a freshly-signed-up workspace to a paid plan by calling the
+ * API-side bootstrap backdoor (see apps/api/src/routes/internal-e2e.ts).
+ * The backdoor requires the `SHOGO_E2E_BOOTSTRAP_SECRET` env var and a
+ * shared header, so tests can opt in only when the infra is deployed.
+ *
+ * Returns `true` if the backdoor handled the upgrade, `false` if the
+ * env vars aren't set or the endpoint returned 5xx — caller should fall
+ * back to the UI-driven Stripe flow.
+ */
+export async function bootstrapProSubscriptionViaApi(
+  page: Page,
+  user: TestUser,
+  planId: "basic" | "pro" | "business" = "pro",
+): Promise<boolean> {
+  const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+  if (!secret) return false
+
+  const base = bootstrapApiBase()
+  const res = await page.request
+    .post(`${base}/api/internal/e2e/bootstrap-subscription`, {
+      headers: {
+        "x-e2e-bootstrap-secret": secret,
+        "content-type": "application/json",
+      },
+      data: { userEmail: user.email, planId },
+    })
+    .catch(() => null)
+  if (!res) return false
+  if (res.status() === 503) {
+    // Endpoint present but disabled (NODE_ENV=production and override
+    // not set). Caller should fall back.
+    return false
+  }
+  if (!res.ok()) return false
+  const body = await res.json().catch(() => ({ ok: false }))
+  return body?.ok === true
+}
+
 export async function signUpAndUpgradeToPro(page: Page, user: TestUser): Promise<void> {
   await signUpAndOnboard(page, user)
+
+  // Try the API bootstrap first — this works against any environment
+  // where the secret + feature flag are set (including production).
+  if (await bootstrapProSubscriptionViaApi(page, user, "pro")) {
+    // Give the client a moment to revalidate billing state on the next
+    // navigation; most callers go to /billing or / right after.
+    await page.waitForTimeout(500)
+    return
+  }
+
+  // Fall back to the UI-driven Stripe Checkout flow. Against live keys
+  // this will fail at the card-entry step, so we skip cleanly in that
+  // case — PR 5's backdoor is what unlocks prod coverage.
+  test.skip(
+    isLiveStripeEnv(),
+    "signUpAndUpgradeToPro fallback drives Stripe hosted Checkout " +
+      "with a test card, which live Stripe rejects. Set " +
+      "SHOGO_E2E_BOOTSTRAP_SECRET against an env that exposes the " +
+      "bootstrap backdoor, or run against staging.",
+  )
 
   await page.goto("/billing")
   // Wait for workspace + billing data to load (not just the page header).

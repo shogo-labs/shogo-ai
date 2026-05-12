@@ -1,0 +1,60 @@
+# =============================================================================
+# Desktop Tunnel WebSocket Ingress — Production India (Mumbai)
+# =============================================================================
+# See k8s/overlays/staging/api-tunnel-ingress.yaml for the full rationale.
+#
+# Routes `india.tunnel.shogo.ai` → the India api ksvc revision pods'
+# queue-proxy port, bypassing the Knative DomainMapping that drops
+# WebSocket Upgrade.
+#
+# The regional hostname is intentional: the desktop must reach the same
+# region whose API issued its heartbeat, so each region advertises its own
+# SHOGO_TUNNEL_WS_URL (see api-service.yaml). Cloudflare resolves
+# `india.tunnel.shogo.ai` to the Mumbai OCI LB only.
+# =============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-tunnel-direct
+  namespace: shogo-production-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: instance-tunnel
+    environment: production
+    region: ap-mumbai-1
+spec:
+  type: ClusterIP
+  selector:
+    serving.knative.dev/service: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8012
+      protocol: TCP
+---
+apiVersion: networking.internal.knative.dev/v1alpha1
+kind: Ingress
+metadata:
+  name: api-tunnel
+  namespace: shogo-production-system
+  annotations:
+    networking.knative.dev/ingress.class: kourier.ingress.networking.knative.dev
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: instance-tunnel
+    environment: production
+    region: ap-mumbai-1
+spec:
+  httpOption: Enabled
+  rules:
+    - hosts:
+        - india.tunnel.shogo.ai
+      visibility: ExternalIP
+      http:
+        paths:
+          - splits:
+              - serviceName: api-tunnel-direct
+                serviceNamespace: shogo-production-system
+                servicePort: 80
+                percent: 100

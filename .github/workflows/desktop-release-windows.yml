@@ -108,6 +108,13 @@ jobs:
           7z x bun.zip || unzip bun.zip
           mv bun-windows-x64/bun* . || true
           rm -rf bun-windows-x64 bun.zip
+          # Bun's Windows zip ships only `bun.exe`; create a hardlink so
+          # `bunx` (without .exe) and `bunx.exe` both resolve. Required for
+          # `bunx shogo generate` invoked from package.json scripts when the
+          # bundled bun directory is added to PATH.
+          if [ -f bun.exe ]; then
+            cp bun.exe bunx.exe
+          fi
           ls -la
 
       - name: Install monorepo dependencies

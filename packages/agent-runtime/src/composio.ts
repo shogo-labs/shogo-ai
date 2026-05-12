@@ -16,8 +16,25 @@ import type { MCPClientManager } from './mcp-client'
 import { fetchComposioToolSchemas, type ComposioToolSchema } from './composio-auto-bind'
 import { smartTruncateJson } from './response-transforms'
 
+/**
+ * Whether Composio OAuth connections are scoped to the workspace
+ * (`'workspace'`: one auth per toolkit shared across every project) or the
+ * project (`'project'`: each project has its own isolated set of connections).
+ * Mirrors the `Workspace.composioScope` column in `prisma/schema.prisma`.
+ */
+export type ComposioScope = 'workspace' | 'project'
+
 /** Stored composio user ID for SDK auth and tool execution scoping */
 let storedComposioUserId: string | null = null
+
+/**
+ * Project-scoped fallback ID. Populated when the active scope is
+ * `'workspace'` so that a workspace flipped from project scope keeps
+ * resolving its previously-OAuth'd project-scoped connections without
+ * requiring re-auth. Never used for *writes* — the asymmetric fallback
+ * means a project-scoped session never bleeds in workspace IDs.
+ */
+let storedProjectScopedComposioUserId: string | null = null
 
 /** Legacy composio user ID (shogo_{userId}_{projectId}) for backward-compatible lookups.
  * TODO: Remove after all existing connections have been re-authenticated under the new format. */
@@ -228,13 +245,30 @@ function getComposioClient(): Composio | null {
  * Initialize a Composio session for a given user/project.
  * Creates the session via SDK (registers user with Composio) and stores the
  * user ID for tool execution scoping. No MCP transport is used.
+ *
+ * `scope` controls which user-id format the session uses for primary
+ * tool execution + auth checks:
+ *   - `'workspace'` (default for new workspaces): connections are shared
+ *     across every project in the workspace.
+ *   - `'project'`: connections live only on this project.
+ *
+ * For backward compatibility, when `scope === 'workspace'` we ALSO record
+ * the project-scoped + legacy IDs in `storedProjectScopedComposioUserId`
+ * and `storedLegacyComposioUserId`. The asymmetric fallback in
+ * `checkComposioAuth` means a workspace-scoped lookup will still resolve
+ * connections that were originally OAuth'd under the project-scoped
+ * format. Project-scoped lookups deliberately never inherit
+ * workspace-scoped connections (preserves the isolation guarantee).
  */
 export async function initComposioSession(
   userId: string,
   workspaceId: string,
   projectId: string,
+  scope: ComposioScope = 'project',
 ): Promise<boolean> {
-  const composioUserId = `shogo_${userId}_${workspaceId}_${projectId}`
+  const composioUserId = scope === 'workspace'
+    ? `shogo_${userId}_${workspaceId}`
+    : `shogo_${userId}_${workspaceId}_${projectId}`
 
   if (storedComposioUserId === composioUserId) return true
 
@@ -248,13 +282,16 @@ export async function initComposioSession(
     const t0 = performance.now()
     const switching = storedComposioUserId && storedComposioUserId !== composioUserId
     if (switching) {
-      console.log(`[Composio] Switching session from "${storedComposioUserId}" to "${composioUserId}"`)
+      console.log(`[Composio] Switching session from "${storedComposioUserId}" to "${composioUserId}" (scope=${scope})`)
     }
-    console.log(`[Composio] Creating session for user "${composioUserId}"${hasCustomAuth ? ' (with custom auth configs)' : ' (using Composio managed auth)'}...`)
+    console.log(`[Composio] Creating session for user "${composioUserId}" (scope=${scope})${hasCustomAuth ? ' (with custom auth configs)' : ' (using Composio managed auth)'}...`)
     const sessionOpts = hasCustomAuth ? { authConfigs } : undefined
     await client.create(composioUserId, sessionOpts)
 
     storedComposioUserId = composioUserId
+    storedProjectScopedComposioUserId = scope === 'workspace'
+      ? `shogo_${userId}_${workspaceId}_${projectId}`
+      : null
     // TODO: Remove legacy ID tracking after migration period
     storedLegacyComposioUserId = `shogo_${userId}_${projectId}`
     const elapsed = performance.now() - t0
@@ -272,6 +309,7 @@ export async function initComposioSession(
  */
 export function resetComposioSession(): void {
   storedComposioUserId = null
+  storedProjectScopedComposioUserId = null
   storedLegacyComposioUserId = null
   registeredProxyToolNames.clear()
   console.log('[Composio] Session reset')
@@ -302,9 +340,21 @@ export function getComposio(): Composio | null {
 
 /**
  * Build the composio user ID from Shogo user/workspace/project IDs.
+ *
+ * The default scope is `'project'` — this preserves the historical
+ * behavior for any code path that pre-dates the workspace-scope rollout
+ * and hasn't been updated to read `workspace.composioScope`. Newer
+ * callers should pass the workspace's setting explicitly.
  */
-export function buildComposioUserId(userId: string, workspaceId: string, projectId: string): string {
-  return `shogo_${userId}_${workspaceId}_${projectId}`
+export function buildComposioUserId(
+  userId: string,
+  workspaceId: string,
+  projectId: string,
+  scope: ComposioScope = 'project',
+): string {
+  return scope === 'workspace'
+    ? `shogo_${userId}_${workspaceId}`
+    : `shogo_${userId}_${workspaceId}_${projectId}`
 }
 
 /**
@@ -477,10 +527,19 @@ export async function checkComposioAuth(
   }
 
   try {
-    // TODO: Remove legacy dual-lookup after all connections migrated to new format
-    const userIds = storedLegacyComposioUserId && storedLegacyComposioUserId !== storedComposioUserId
-      ? [storedComposioUserId, storedLegacyComposioUserId]
-      : [storedComposioUserId]
+    // Asymmetric fallback:
+    //   * workspace scope ⇒ also try the project-scoped + legacy IDs so
+    //     a workspace flipped from project scope still resolves its old
+    //     OAuth'd connections without forcing re-auth.
+    //   * project scope ⇒ only the primary + legacy IDs; we do NOT
+    //     bleed in workspace-scoped IDs (preserves isolation).
+    // TODO: Remove legacy ID after all connections migrated to new format
+    const candidateIds = [
+      storedComposioUserId,
+      storedProjectScopedComposioUserId,
+      storedLegacyComposioUserId,
+    ].filter((id): id is string => !!id)
+    const userIds = Array.from(new Set(candidateIds))
 
     const t0 = performance.now()
     const accounts = await client.connectedAccounts.list({

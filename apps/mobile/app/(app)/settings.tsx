@@ -46,6 +46,9 @@ import {
   Cloud,
   Server,
   Coins,
+  Plug,
+  Download,
+  Bug,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import {
@@ -65,6 +68,8 @@ import { getIncludedUsdCapacityForDisplay, formatUsd, PLAN_PRICING } from '../..
 import { usePlatformConfig } from '../../lib/platform-config'
 import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
 import { ComputeTab } from '../../components/settings/ComputeTab'
+import { BugReportTab } from '../../components/settings/BugReportTab'
+import { IntegrationsTab } from '../../components/settings/IntegrationsTab'
 import {
   type AnalyticsPeriod,
   type UsageSummaryData,
@@ -77,6 +82,16 @@ import {
   ChatAnalyticsSection,
   UsageBreakdownSection,
 } from '../../components/analytics/SharedAnalytics'
+import { DateRangePills } from '../../components/analytics/DateRangePills'
+import {
+  StackedAreaChart,
+  StackedAreaLegend,
+  STACKED_PALETTE,
+  type StackedSeries,
+} from '../../components/analytics/StackedAreaChart'
+import { UsageLeaderboard } from '../../components/analytics/UsageLeaderboard'
+import { BillingProgressCard } from '../../components/billing/BillingProgressCard'
+import { SetSpendLimitDialog } from '../../components/billing/SetSpendLimitDialog'
 import { CostAnalyticsTab } from '../../components/analytics/CostAnalyticsTab'
 import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
 import { invitationEvents } from '../../lib/invitation-events'
@@ -95,9 +110,9 @@ import { useNotifyOnTurnComplete as useNotifyOnTurnCompletePref } from '../../li
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'account' | 'security' | 'billing' | 'compute' | 'analytics' | 'costs'
+type TabId = 'workspace' | 'people' | 'integrations' | 'account' | 'security' | 'billing' | 'compute' | 'analytics' | 'costs' | 'support'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'security', 'billing', 'compute', 'analytics', 'costs']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'integrations', 'account', 'security', 'billing', 'compute', 'analytics', 'costs', 'support']
 
 /** Tablet/desktop split: matches `SettingsPage` `isWide` (sidebar layout). */
 const SETTINGS_WIDE_BREAKPOINT = 768
@@ -111,6 +126,7 @@ interface NavItem {
 const MOBILE_NAV_ITEMS: NavItem[] = [
   { id: 'workspace', label: 'Workspace', icon: Building2 },
   { id: 'people', label: 'People', icon: Users },
+  { id: 'integrations', label: 'Integrations', icon: Plug },
   { id: 'account', label: 'Account', icon: User },
   { id: 'compute', label: 'Compute', icon: Server },
   { id: 'billing', label: 'Billing', icon: CreditCard },
@@ -120,10 +136,12 @@ const MOBILE_NAV_ITEMS: NavItem[] = [
 
 const LOCAL_NAV_ITEMS: NavItem[] = [
   { id: 'workspace', label: 'Workspace', icon: Building2 },
+  { id: 'integrations', label: 'Integrations', icon: Plug },
   { id: 'account', label: 'Account', icon: User },
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'analytics', label: 'Usage', icon: BarChart3 },
   { id: 'costs', label: 'Costs', icon: Coins },
+  { id: 'support', label: 'Report Bug', icon: Bug },
 ]
 
 function TabBar({
@@ -209,6 +227,7 @@ function SettingsSidebar({
   const workspaceItems: SidebarItem[] = [
     { id: 'workspace', label: workspaceName || 'Workspace', avatar: (workspaceName?.[0] || 'W').toUpperCase() },
     ...(!(localMode || !showBilling) ? [{ id: 'people' as TabId, label: 'People' }] : []),
+    { id: 'integrations' as TabId, label: 'Integrations' },
     ...(showBilling
       ? [
           { id: 'compute' as TabId, label: 'Compute' },
@@ -236,6 +255,13 @@ function SettingsSidebar({
         ...(!showBilling ? [{ id: 'security' as TabId, label: 'Security' }] : []),
       ],
     },
+    ...(localMode ? [{
+      id: 'support',
+      label: 'Support',
+      items: [
+        { id: 'support' as TabId, label: 'Report Bug' },
+      ],
+    }] : []),
   ]
 
   return (
@@ -1178,7 +1204,7 @@ const ROLE_COLORS: Record<string, string> = {
   viewer: 'bg-slate-400',
 }
 
-type SortField = 'name' | 'role' | 'joinedDate' | 'usage' | 'totalUsage' | 'spendLimit'
+type SortField = 'name' | 'role' | 'included' | 'free' | 'onDemand'
 type SortDir = 'asc' | 'desc'
 
 function formatUsdLabel(value: number): string {
@@ -1205,8 +1231,8 @@ const PeopleTab = observer(function PeopleTab() {
   const [roleFilter, setRoleFilter] = useState<string>('all')
   const [showRoleFilter, setShowRoleFilter] = useState(false)
   const [showInviteModal, setShowInviteModal] = useState(false)
-  const [sortField, setSortField] = useState<SortField>('name')
-  const [sortDir, setSortDir] = useState<SortDir>('asc')
+  const [sortField, setSortField] = useState<SortField>('onDemand')
+  const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [isLoading, setIsLoading] = useState(true)
   const [menuState, setMenuState] = useState<{ memberId: string; view: 'actions' | 'roles' } | null>(null)
   const [userMap, setUserMap] = useState<Record<string, { name: string; email: string }>>({})
@@ -1214,7 +1240,13 @@ const PeopleTab = observer(function PeopleTab() {
   const [processingInvite, setProcessingInvite] = useState<{ id: string; action: 'accept' | 'decline' } | null>(null)
 
   const [resolvedWs, setResolvedWs] = useState<{ id: string; name: string } | null>(null)
-  const [memberUsage, setMemberUsage] = useState<{ monthly: Record<string, number>; total: Record<string, number> }>({ monthly: {}, total: {} })
+  const [memberUsage, setMemberUsage] = useState<{
+    monthly: Record<string, number>
+    total: Record<string, number>
+    included: Record<string, number>
+    free: Record<string, number>
+    onDemand: Record<string, number>
+  }>({ monthly: {}, total: {}, included: {}, free: {}, onDemand: {} })
 
   const loadPeopleData = useCallback(async () => {
     if (!currentWorkspace?.id) {
@@ -1308,9 +1340,9 @@ const PeopleTab = observer(function PeopleTab() {
       let cmp = 0
       if (sortField === 'name') cmp = (a.userId || '').localeCompare(b.userId || '')
       else if (sortField === 'role') cmp = (a.role || '').localeCompare(b.role || '')
-      else if (sortField === 'joinedDate') cmp = (a.createdAt || 0) - (b.createdAt || 0)
-      else if (sortField === 'usage') cmp = (memberUsage.monthly[a.userId] ?? 0) - (memberUsage.monthly[b.userId] ?? 0)
-      else if (sortField === 'totalUsage') cmp = (memberUsage.total[a.userId] ?? 0) - (memberUsage.total[b.userId] ?? 0)
+      else if (sortField === 'included') cmp = (memberUsage.included[a.userId] ?? 0) - (memberUsage.included[b.userId] ?? 0)
+      else if (sortField === 'free') cmp = (memberUsage.free[a.userId] ?? 0) - (memberUsage.free[b.userId] ?? 0)
+      else if (sortField === 'onDemand') cmp = (memberUsage.onDemand[a.userId] ?? 0) - (memberUsage.onDemand[b.userId] ?? 0)
       return sortDir === 'desc' ? -cmp : cmp
     })
     return result
@@ -1401,9 +1433,7 @@ const PeopleTab = observer(function PeopleTab() {
   )
   const peopleMetricsRow = 'flex-row items-center gap-x-5 shrink-0'
   const colRole = 'w-[104px]'
-  const colJoined = 'w-[128px]'
-  const colUsage = 'w-[140px]'
-  const colSpend = 'w-[120px]'
+  const colUsage = 'w-[120px]'
   const colActions = 'w-11 items-center justify-center pr-1'
 
   const memberListTable = (
@@ -1413,7 +1443,7 @@ const PeopleTab = observer(function PeopleTab() {
           onPress={() => handleSort('name')}
           className={cn('flex-row items-center', peopleNameCol)}
         >
-          <Text className="text-xs font-medium text-muted-foreground">Name</Text>
+          <Text className="text-xs font-medium text-muted-foreground">Member</Text>
           <SortArrow field="name" />
         </Pressable>
         <View className={peopleMetricsRow}>
@@ -1425,29 +1455,26 @@ const PeopleTab = observer(function PeopleTab() {
             <SortArrow field="role" />
           </Pressable>
           <Pressable
-            onPress={() => handleSort('joinedDate')}
-            className={cn('flex-row items-center', colJoined)}
-          >
-            <Text className="text-xs font-medium text-muted-foreground">Joined date</Text>
-            <SortArrow field="joinedDate" />
-          </Pressable>
-          <Pressable
-            onPress={() => handleSort('usage')}
+            onPress={() => handleSort('included')}
             className={cn('flex-row items-center justify-end', colUsage)}
           >
-            <Text className="text-xs font-medium text-muted-foreground text-right">{currentMonth} usage</Text>
-            <SortArrow field="usage" />
+            <Text className="text-xs font-medium text-muted-foreground text-right">Included Usage</Text>
+            <SortArrow field="included" />
           </Pressable>
           <Pressable
-            onPress={() => handleSort('totalUsage')}
+            onPress={() => handleSort('free')}
             className={cn('flex-row items-center justify-end', colUsage)}
           >
-            <Text className="text-xs font-medium text-muted-foreground text-right">Total usage</Text>
-            <SortArrow field="totalUsage" />
+            <Text className="text-xs font-medium text-muted-foreground text-right">Free Usage</Text>
+            <SortArrow field="free" />
           </Pressable>
-          <View className={cn(colSpend, 'items-end')}>
-            <Text className="text-xs font-medium text-muted-foreground text-right">Spend limit</Text>
-          </View>
+          <Pressable
+            onPress={() => handleSort('onDemand')}
+            className={cn('flex-row items-center justify-end', colUsage)}
+          >
+            <Text className="text-xs font-medium text-muted-foreground text-right">On-Demand Usage</Text>
+            <SortArrow field="onDemand" />
+          </Pressable>
           <View className={colActions} />
         </View>
       </View>
@@ -1506,28 +1533,22 @@ const PeopleTab = observer(function PeopleTab() {
                 )}
               </View>
 
-              <View className={colJoined}>
-                <Text className="text-sm text-foreground">
-                  {member.createdAt
-                    ? new Date(member.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-                    : '—'}
+              <View className={cn(colUsage, 'items-end')}>
+                <Text className="text-sm text-foreground text-right tabular-nums">
+                  {formatUsdLabel(memberUsage.included[member.userId] ?? 0)}
                 </Text>
               </View>
 
               <View className={cn(colUsage, 'items-end')}>
                 <Text className="text-sm text-foreground text-right tabular-nums">
-                  {formatUsdLabel(memberUsage.monthly[member.userId] ?? 0)}
+                  {formatUsdLabel(memberUsage.free[member.userId] ?? 0)}
                 </Text>
               </View>
 
               <View className={cn(colUsage, 'items-end')}>
                 <Text className="text-sm text-foreground text-right tabular-nums">
-                  {formatUsdLabel(memberUsage.total[member.userId] ?? 0)}
+                  {formatUsdLabel(memberUsage.onDemand[member.userId] ?? 0)}
                 </Text>
-              </View>
-
-              <View className={cn(colSpend, 'items-end')}>
-                <Text className="text-sm text-foreground text-right tabular-nums">—</Text>
               </View>
 
               <View className={colActions}>
@@ -1632,19 +1653,54 @@ const PeopleTab = observer(function PeopleTab() {
     </>
   )
 
+  const billableSeats = workspaceMembers.filter((m: any) => m.role !== 'viewer').length
+
+  const handleExportMembersCsv = () => {
+    if (!currentWorkspace?.id) return
+    const url = api.getUsageLogCsvUrl(currentWorkspace.id, { period: '30d' })
+    if (typeof window !== 'undefined') {
+      window.open(url, '_blank', 'noopener')
+    } else {
+      Linking.openURL(url)
+    }
+  }
+
   return (
     <View className="gap-0">
       {/* Header */}
-      <View className={cn('mb-6', isMobilePeopleLayout && 'mb-5')}>
-        <Text className="text-xl font-semibold text-foreground">People</Text>
-        <Text className={cn('text-sm text-muted-foreground mt-1', isMobilePeopleLayout && 'leading-5')}>
-          Inviting people to{' '}
-          <Text className="font-semibold text-foreground">
-            {resolvedWs?.name || currentWorkspace?.name || 'your workspace'}
-          </Text>{' '}
-          gives access to workspace shared projects and usage.{' '}
-          You have {builderCount} builder{builderCount !== 1 ? 's' : ''} in this workspace.
-        </Text>
+      <View
+        className={cn(
+          'flex-row items-start justify-between gap-3 mb-4',
+          isMobilePeopleLayout && 'flex-col mb-5',
+        )}
+      >
+        <View className="flex-1">
+          <Text className="text-xl font-semibold text-foreground">Members</Text>
+          <Text className={cn('text-sm text-muted-foreground mt-1', isMobilePeopleLayout && 'leading-5')}>
+            Inviting people to{' '}
+            <Text className="font-semibold text-foreground">
+              {resolvedWs?.name || currentWorkspace?.name || 'your workspace'}
+            </Text>{' '}
+            gives access to workspace shared projects and usage.
+          </Text>
+        </View>
+        <Pressable
+          onPress={handleExportMembersCsv}
+          hitSlop={6}
+          className="h-9 w-9 items-center justify-center rounded-md border border-border"
+          accessibilityLabel="Export usage CSV"
+        >
+          <Download size={14} className="text-foreground" />
+        </Pressable>
+      </View>
+
+      {/* Billable seats stat */}
+      <View className="rounded-xl border border-border bg-card p-4 mb-4">
+        <View className="flex-row items-center gap-2 mb-1">
+          <View className="h-2 w-2 rounded-full bg-emerald-500" />
+          <Text className="text-xs font-medium text-foreground">Billable Seats</Text>
+        </View>
+        <Text className="text-2xl font-bold text-foreground">{billableSeats}</Text>
       </View>
 
       {/* Sub-tabs */}
@@ -2411,48 +2467,7 @@ function BillingTab() {
   const workspace = useActiveWorkspace()
   const { subscription, effectiveBalance, refetchUsageWallet } = useBillingData(workspace?.id)
   const [instanceLabel, setInstanceLabel] = useState<string | null>(null)
-  const [overageLimitInput, setOverageLimitInput] = useState<string>('')
-  const [overageSaving, setOverageSaving] = useState(false)
-  const [overageError, setOverageError] = useState<string | null>(null)
-  const [overageSaved, setOverageSaved] = useState(false)
-
-  useEffect(() => {
-    if (!effectiveBalance) return
-    setOverageLimitInput(
-      effectiveBalance.overageHardLimitUsd != null
-        ? String(effectiveBalance.overageHardLimitUsd)
-        : ''
-    )
-  }, [effectiveBalance?.overageHardLimitUsd])
-
-  const handleSaveOverage = useCallback(async () => {
-    if (!workspace?.id) return
-    setOverageSaving(true)
-    setOverageError(null)
-    setOverageSaved(false)
-    try {
-      const trimmed = overageLimitInput.trim()
-      let limitUsd: number | null = null
-      if (trimmed !== '') {
-        const parsed = Number(trimmed)
-        if (!Number.isFinite(parsed) || parsed < 0) {
-          throw new Error('Enter a non-negative number')
-        }
-        limitUsd = parsed
-      }
-      // Trust-first overage stays enabled; the cap is the only knob.
-      await api.setUsageBasedPricing(http, workspace.id, {
-        enabled: true,
-        hardLimitUsd: limitUsd,
-      })
-      setOverageSaved(true)
-      refetchUsageWallet()
-    } catch (e: any) {
-      setOverageError(e?.message ?? 'Failed to update spending cap')
-    } finally {
-      setOverageSaving(false)
-    }
-  }, [workspace?.id, overageLimitInput, http, refetchUsageWallet])
+  const [spendLimitOpen, setSpendLimitOpen] = useState(false)
 
   useEffect(() => {
     if (!workspace?.id) return
@@ -2502,7 +2517,7 @@ function BillingTab() {
       <View>
         <Text className="text-lg font-bold text-foreground mb-1">Billing</Text>
         <Text className="text-xs text-muted-foreground">
-          Manage your plan and view usage
+          Manage your plan and on-demand spending cap. For detailed analytics, see the Usage tab.
         </Text>
       </View>
 
@@ -2562,13 +2577,22 @@ function BillingTab() {
 
           <Separator />
 
-          <Button
-            variant="default"
-            onPress={() => router.push('/(app)/billing' as any)}
-            className="mt-1"
-          >
-            <Text className="text-primary-foreground font-medium">Manage Plan</Text>
-          </Button>
+          <View className="flex-row items-center gap-2">
+            <Button
+              variant="default"
+              onPress={() => router.push('/(app)/billing' as any)}
+              className="flex-1"
+            >
+              <Text className="text-primary-foreground font-medium">Manage Plan</Text>
+            </Button>
+            <Button
+              variant="outline"
+              onPress={() => router.push('/(app)/settings?tab=analytics' as any)}
+              className="flex-1"
+            >
+              <Text className="text-foreground font-medium">View detailed usage</Text>
+            </Button>
+          </View>
         </CardContent>
       </Card>
 
@@ -2580,44 +2604,35 @@ function BillingTab() {
               <Text className="text-xs text-muted-foreground">
                 You keep working when your included usage runs out — we charge the saved card
                 in trust blocks billed at provider cost + 20%. Blocks start at $100 and step
-                up by $100 as you build payment history (capped at $500 per charge). Set an
-                optional monthly cap below to protect against surprise spend.
+                up by $100 as you build payment history (capped at $500 per charge).
               </Text>
             </View>
 
-            <View className="gap-1">
-              <Text className="text-xs text-muted-foreground">Monthly spending cap (USD)</Text>
-              <Input
-                value={overageLimitInput}
-                onChangeText={setOverageLimitInput}
-                keyboardType="decimal-pad"
-                placeholder="e.g. 100"
-              />
-              <Text className="text-[10px] text-muted-foreground">
-                Leave blank for no cap. Set to 0 to stop overage entirely once included usage
-                runs out.
-              </Text>
+            <View className="flex-row items-center justify-between">
+              <View>
+                <Text className="text-xs text-muted-foreground">Monthly spending cap</Text>
+                <Text className="text-base font-semibold text-foreground">
+                  {effectiveBalance?.overageHardLimitUsd != null
+                    ? formatUsd(effectiveBalance.overageHardLimitUsd)
+                    : 'No cap'}
+                </Text>
+              </View>
+              <Button variant="outline" onPress={() => setSpendLimitOpen(true)}>
+                <Text className="text-foreground font-medium text-sm">Set Limit</Text>
+              </Button>
             </View>
-
-            {overageError && (
-              <Text className="text-xs text-destructive">{overageError}</Text>
-            )}
-            {overageSaved && !overageError && (
-              <Text className="text-xs text-primary">Saved</Text>
-            )}
-
-            <Button
-              variant="outline"
-              onPress={handleSaveOverage}
-              disabled={overageSaving}
-            >
-              <Text className="text-foreground font-medium">
-                {overageSaving ? 'Saving...' : 'Save spending cap'}
-              </Text>
-            </Button>
           </CardContent>
         </Card>
       )}
+
+      <SetSpendLimitDialog
+        visible={spendLimitOpen}
+        onClose={() => setSpendLimitOpen(false)}
+        workspaceId={workspace.id}
+        currentLimitUsd={effectiveBalance?.overageHardLimitUsd ?? null}
+        accumulatedUsageUsd={effectiveBalance?.overageAccumulatedUsd ?? 0}
+        onSaved={() => refetchUsageWallet()}
+      />
     </View>
   )
 }
@@ -2626,23 +2641,55 @@ function BillingTab() {
 // WORKSPACE ANALYTICS TAB
 // ============================================================================
 
+interface SpendTimeseriesPayload {
+  days: { date: string; byModel: Record<string, number>; total: number }[]
+  totals: {
+    totalSpendUsd: number
+    totalIncludedUsd: number
+    totalOnDemandUsd: number
+    uniqueModels: number
+  }
+  models: string[]
+  groupBy: 'model' | 'user' | 'source'
+  metric: 'spend' | 'tokens' | 'requests'
+}
+
+function fmtUsd(n: number): string {
+  if (n === 0) return '$0.00'
+  if (n < 0.01) return `$${n.toFixed(4)}`
+  if (n < 1000) return `$${n.toFixed(2)}`
+  return `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+}
+
+function buildSeries(payload: SpendTimeseriesPayload | null): StackedSeries[] {
+  if (!payload) return []
+  return payload.models.map((m, i) => ({
+    id: m,
+    label: m,
+    color: STACKED_PALETTE[i % STACKED_PALETTE.length],
+  }))
+}
+
 function WorkspaceAnalyticsTab() {
   const http = useDomainHttp()
   const router = useRouter()
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id
   const { localMode } = usePlatformConfig()
-  const { subscription } = useBillingData(workspaceId)
+  const { subscription, effectiveBalance, refetchUsageWallet } = useBillingData(workspaceId)
 
   const planId = subscription?.planId?.toLowerCase() ?? ''
   const isBusinessOrHigher = localMode || planId.startsWith('business') || planId.startsWith('enterprise')
 
-  const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
+  const [period, setPeriod] = useState<AnalyticsPeriod>('7d')
   const [logPage, setLogPage] = useState(1)
+  const [groupBy, setGroupBy] = useState<'model' | 'user' | 'source'>('model')
+  const [metric, setMetric] = useState<'spend' | 'tokens' | 'requests'>('spend')
+  const [spendLimitOpen, setSpendLimitOpen] = useState(false)
 
-  const [overview, setOverview] = useState<{ data: any; loading: boolean }>({ data: null, loading: true })
   const [usageSummary, setUsageSummary] = useState<{ data: UsageSummaryData | null; loading: boolean }>({ data: null, loading: true })
   const [usageLog, setUsageLog] = useState<{ data: UsageLogData | null; loading: boolean }>({ data: null, loading: true })
+  const [spend, setSpend] = useState<{ data: SpendTimeseriesPayload | null; loading: boolean }>({ data: null, loading: true })
   const [usage, setUsage] = useState<{ data: UsageBreakdownData | null; loading: boolean }>({ data: null, loading: true })
   const [chatStats, setChatStats] = useState<{ data: ChatAnalyticsData | null; loading: boolean }>({ data: null, loading: true })
 
@@ -2650,38 +2697,38 @@ function WorkspaceAnalyticsTab() {
     if (!workspaceId) return
     const p = { period }
 
-    setOverview(s => ({ ...s, loading: true }))
     setUsageSummary(s => ({ ...s, loading: true }))
     setUsageLog(s => ({ ...s, loading: true }))
+    setSpend(s => ({ ...s, loading: true }))
 
     const basicFetches = [
-      api.getWorkspaceAnalytics<any>(http, workspaceId, 'overview', p).catch(() => null),
       api.getWorkspaceAnalytics<UsageSummaryData>(http, workspaceId, 'usage-summary', p).catch(() => null),
       api.getWorkspaceAnalytics<UsageLogData>(http, workspaceId, 'usage-log', { ...p, page: String(logPage), limit: '50' }).catch(() => null),
+      api.getWorkspaceAnalytics<SpendTimeseriesPayload>(http, workspaceId, 'spend-timeseries', { ...p, groupBy, metric }).catch(() => null),
     ] as const
 
     if (isBusinessOrHigher) {
       setUsage(s => ({ ...s, loading: true }))
       setChatStats(s => ({ ...s, loading: true }))
 
-      const [ov, uSum, uLog, us, ch] = await Promise.all([
+      const [uSum, uLog, sp, us, ch] = await Promise.all([
         ...basicFetches,
         api.getWorkspaceAnalytics<UsageBreakdownData>(http, workspaceId, 'usage', p).catch(() => null),
         api.getWorkspaceAnalytics<ChatAnalyticsData>(http, workspaceId, 'chat', p).catch(() => null),
       ])
 
-      setOverview({ data: ov, loading: false })
       setUsageSummary({ data: uSum, loading: false })
       setUsageLog({ data: uLog, loading: false })
+      setSpend({ data: sp, loading: false })
       setUsage({ data: us, loading: false })
       setChatStats({ data: ch, loading: false })
     } else {
-      const [ov, uSum, uLog] = await Promise.all(basicFetches)
-      setOverview({ data: ov, loading: false })
+      const [uSum, uLog, sp] = await Promise.all(basicFetches)
       setUsageSummary({ data: uSum, loading: false })
       setUsageLog({ data: uLog, loading: false })
+      setSpend({ data: sp, loading: false })
     }
-  }, [http, workspaceId, period, logPage, isBusinessOrHigher])
+  }, [http, workspaceId, period, logPage, groupBy, metric, isBusinessOrHigher])
 
   useEffect(() => {
     loadAll()
@@ -2695,63 +2742,270 @@ function WorkspaceAnalyticsTab() {
     )
   }
 
+  // ─── Progress card data ──────────────────────────────────
+  const subSeats = subscription?.seats ?? 1
+  const includedTotal = getIncludedUsdCapacityForDisplay({
+    planId: subscription?.planId,
+    seats: subSeats,
+    remainingTotal: effectiveBalance?.total,
+    monthlyIncludedAllocationUsd: effectiveBalance?.monthlyIncludedAllocationUsd,
+  })
+  const includedRemaining = effectiveBalance?.total ?? includedTotal
+  const includedUsed = Math.max(0, includedTotal - includedRemaining)
+  const includedPct = includedTotal > 0 ? Math.min(100, (includedUsed / includedTotal) * 100) : 0
+
+  const onDemandUsed = effectiveBalance?.overageAccumulatedUsd ?? 0
+  const onDemandLimit = effectiveBalance?.overageHardLimitUsd ?? null
+  const onDemandPct = onDemandLimit && onDemandLimit > 0
+    ? Math.min(100, (onDemandUsed / onDemandLimit) * 100)
+    : (onDemandUsed > 0 ? Math.min(100, onDemandUsed / 1000 * 100) : 0)
+
+  const resetDateLabel = (() => {
+    const ts = (subscription as any)?.currentPeriodEnd
+    if (!ts) return 'Resets monthly'
+    const d = ts instanceof Date ? ts : new Date(ts)
+    if (isNaN(d.getTime())) return 'Resets monthly'
+    return `Resets ${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`
+  })()
+
+  // ─── Summary cards ───────────────────────────────────────
+  const totalSpend = spend.data?.totals.totalSpendUsd ?? 0
+  const includedSpend = spend.data?.totals.totalIncludedUsd ?? 0
+  const onDemandSpend = spend.data?.totals.totalOnDemandUsd ?? 0
+
+  const series = buildSeries(spend.data)
+  const chartDays = (spend.data?.days ?? []).map((d) => ({
+    date: d.date,
+    values: d.byModel,
+  }))
+
+  const csvUrl = api.getUsageLogCsvUrl(workspaceId, { period })
+  const handleExportCsv = () => {
+    if (typeof window !== 'undefined') {
+      window.open(csvUrl, '_blank', 'noopener')
+    } else {
+      Linking.openURL(csvUrl)
+    }
+  }
+
   return (
     <View className="gap-4">
       <View>
-        <Text className="text-lg font-bold text-foreground mb-1">Workspace Usage</Text>
-        <Text className="text-xs text-muted-foreground mb-3">
+        <Text className="text-lg font-bold text-foreground mb-1">Usage</Text>
+        <Text className="text-xs text-muted-foreground">
           {localMode
             ? 'Token usage and agent activity for this workspace'
             : 'Usage metrics and spend for this workspace'}
         </Text>
-        <PeriodSelector value={period} onChange={setPeriod} />
       </View>
 
-      {/* Overview cards */}
+      {/* Progress cards */}
+      <View className="flex-row flex-wrap gap-3">
+        <BillingProgressCard
+          title="Your included usage"
+          current={fmtUsd(includedUsed)}
+          total={fmtUsd(includedTotal)}
+          percent={includedPct}
+          tone={includedPct > 90 ? 'destructive' : 'primary'}
+          helper={resetDateLabel}
+        />
+        <BillingProgressCard
+          title="On-Demand Usage (Team)"
+          current={fmtUsd(onDemandUsed)}
+          total={onDemandLimit != null ? fmtUsd(onDemandLimit) : null}
+          percent={onDemandPct}
+          tone={onDemandPct > 80 ? 'warning' : 'primary'}
+          helper="Pay for extra usage beyond your plan limits."
+          subHelper={
+            onDemandLimit != null
+              ? `${fmtUsd(onDemandLimit)} team spend cap`
+              : 'No spend cap set'
+          }
+          actionLabel="Set Limit"
+          onActionPress={() => setSpendLimitOpen(true)}
+        />
+      </View>
+
+      {/* Date range pills */}
+      <View className="flex-row items-center justify-between flex-wrap gap-3">
+        <DateRangePills value={period} onChange={setPeriod} />
+      </View>
+
+      {/* Summary cards */}
       <View className="flex-row flex-wrap gap-2">
-        <StatCard label="Members" value={overview.data?.members} icon={Users} />
-        <StatCard label="Projects" value={overview.data?.projects} icon={Building2} />
-        <StatCard label="Sessions" value={overview.data?.chatSessions} icon={MessageSquare} />
-        <StatCard label="Usage Events" value={overview.data?.usageEvents} icon={Zap} />
+        <StatCard label="Total spend" value={fmtUsd(totalSpend)} icon={Coins} />
+        <StatCard label="Included" value={fmtUsd(includedSpend)} icon={CreditCard} />
+        <StatCard label="On-demand" value={fmtUsd(onDemandSpend)} icon={Zap} />
       </View>
 
-      {/* Usage table (summary + event log) — available to all plans */}
-      <UsageTableSection
-        summaryData={usageSummary.data}
-        logData={usageLog.data}
-        summaryLoading={usageSummary.loading}
-        logLoading={usageLog.loading}
-        onLogPageChange={setLogPage}
-        logPage={logPage}
-        isLocalMode={localMode}
-      />
+      {/* Team Usage chart */}
+      <Card>
+        <CardContent className="p-4 gap-3">
+          <View className="flex-row items-center justify-between flex-wrap gap-2">
+            <View>
+              <Text className="text-sm font-semibold text-foreground">Team Usage</Text>
+              <Text className="text-xs text-muted-foreground">
+                Team usage per day across this billing period
+              </Text>
+            </View>
+            <View className="flex-row items-center gap-2">
+              <GroupBySelect value={groupBy} onChange={setGroupBy} />
+              <MetricSelect value={metric} onChange={setMetric} />
+            </View>
+          </View>
 
-      {isBusinessOrHigher ? (
+          {spend.loading ? (
+            <View className="h-[260px] items-center justify-center">
+              <ActivityIndicator />
+            </View>
+          ) : (
+            <>
+              <StackedAreaChart
+                days={chartDays}
+                series={series}
+                height={260}
+                formatY={(n) =>
+                  metric === 'spend'
+                    ? fmtUsd(n)
+                    : n >= 1000
+                      ? `${(n / 1000).toFixed(1)}K`
+                      : String(Math.round(n))
+                }
+                formatTooltip={(n) =>
+                  metric === 'spend' ? fmtUsd(n) : n.toLocaleString()
+                }
+              />
+              <StackedAreaLegend series={series} />
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Event log + CSV export */}
+      <View className="gap-2">
+        <View className="flex-row items-center justify-end">
+          <Pressable
+            onPress={handleExportCsv}
+            className="flex-row items-center gap-1.5 px-3 h-8 rounded-md border border-border bg-background active:bg-muted"
+          >
+            <Download size={14} className="text-foreground" />
+            <Text className="text-xs font-medium text-foreground">Export CSV</Text>
+          </Pressable>
+        </View>
+        <UsageTableSection
+          summaryData={usageSummary.data}
+          logData={usageLog.data}
+          summaryLoading={usageSummary.loading}
+          logLoading={usageLog.loading}
+          onLogPageChange={setLogPage}
+          logPage={logPage}
+          isLocalMode={localMode}
+        />
+      </View>
+
+      {/* Leaderboard (Image 2) */}
+      <UsageLeaderboard data={usageSummary.data} loading={usageSummary.loading} />
+
+      {isBusinessOrHigher && (
         <>
           <ChatAnalyticsSection data={chatStats.data} loading={chatStats.loading} />
           <UsageBreakdownSection data={usage.data} loading={usage.loading} />
         </>
-      ) : (
-        <Card>
-          <CardContent className="p-4 items-center gap-3">
-            <View className="w-10 h-10 rounded-full bg-primary/10 items-center justify-center">
-              <BarChart3 size={18} className="text-primary" />
-            </View>
-            <Text className="text-sm font-semibold text-foreground text-center">
-              Advanced Team Analytics
-            </Text>
-            <Text className="text-xs text-muted-foreground text-center max-w-[320px]">
-              Growth charts, per-member spend breakdown, and chat analytics are available on Business plans.
-            </Text>
-            <Button
-              variant="outline"
-              onPress={() => router.push('/(app)/billing' as any)}
-              className="mt-1"
+      )}
+
+      <SetSpendLimitDialog
+        visible={spendLimitOpen}
+        onClose={() => setSpendLimitOpen(false)}
+        workspaceId={workspaceId}
+        currentLimitUsd={onDemandLimit}
+        accumulatedUsageUsd={onDemandUsed}
+        onSaved={() => {
+          refetchUsageWallet()
+        }}
+      />
+    </View>
+  )
+}
+
+function GroupBySelect({
+  value,
+  onChange,
+}: {
+  value: 'model' | 'user' | 'source'
+  onChange: (v: 'model' | 'user' | 'source') => void
+}) {
+  const [open, setOpen] = useState(false)
+  const labels: Record<typeof value, string> = {
+    model: 'Group By: Model',
+    user: 'Group By: User',
+    source: 'Group By: Source',
+  }
+  return (
+    <View style={{ zIndex: 100 }}>
+      <Pressable
+        onPress={() => setOpen((o) => !o)}
+        className="flex-row items-center gap-1.5 px-3 h-8 rounded-md border border-border bg-background"
+      >
+        <Text className="text-xs text-foreground">{labels[value]}</Text>
+        <ChevronDown size={12} className="text-muted-foreground" />
+      </Pressable>
+      {open && (
+        <View
+          style={{ zIndex: 100 }}
+          className="absolute top-9 right-0 z-50 min-w-[160px] rounded-md border border-border bg-popover shadow-md"
+        >
+          {(['model', 'user', 'source'] as const).map((v) => (
+            <Pressable
+              key={v}
+              onPress={() => { onChange(v); setOpen(false) }}
+              className={cn('px-3 py-2', v === value && 'bg-muted')}
             >
-              <Text className="text-foreground font-medium text-sm">Upgrade to Business</Text>
-            </Button>
-          </CardContent>
-        </Card>
+              <Text className="text-xs text-foreground">{labels[v]}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+    </View>
+  )
+}
+
+function MetricSelect({
+  value,
+  onChange,
+}: {
+  value: 'spend' | 'tokens' | 'requests'
+  onChange: (v: 'spend' | 'tokens' | 'requests') => void
+}) {
+  const [open, setOpen] = useState(false)
+  const labels: Record<typeof value, string> = {
+    spend: 'Metric: Spend',
+    tokens: 'Metric: Tokens',
+    requests: 'Metric: Requests',
+  }
+  return (
+    <View style={{ zIndex: 100 }}>
+      <Pressable
+        onPress={() => setOpen((o) => !o)}
+        className="flex-row items-center gap-1.5 px-3 h-8 rounded-md border border-border bg-background"
+      >
+        <Text className="text-xs text-foreground">{labels[value]}</Text>
+        <ChevronDown size={12} className="text-muted-foreground" />
+      </Pressable>
+      {open && (
+        <View
+          style={{ zIndex: 100 }}
+          className="absolute top-9 right-0 z-50 min-w-[160px] rounded-md border border-border bg-popover shadow-md"
+        >
+          {(['spend', 'tokens', 'requests'] as const).map((v) => (
+            <Pressable
+              key={v}
+              onPress={() => { onChange(v); setOpen(false) }}
+              className={cn('px-3 py-2', v === value && 'bg-muted')}
+            >
+              <Text className="text-xs text-foreground">{labels[v]}</Text>
+            </Pressable>
+          ))}
+        </View>
       )}
     </View>
   )
@@ -2831,12 +3085,14 @@ const SettingsContent = observer(function SettingsContent({
     <>
       {activeTab === 'workspace' && <WorkspaceSettingsTab />}
       {activeTab === 'people' && !isLocal && <PeopleTab />}
+      {activeTab === 'integrations' && <IntegrationsTab />}
       {activeTab === 'account' && <AccountTab />}
       {activeTab === 'security' && <SecuritySettingsPanel />}
       {activeTab === 'compute' && !isLocal && <ComputeTab />}
       {activeTab === 'billing' && !isLocal && <BillingTab />}
       {activeTab === 'analytics' && <WorkspaceAnalyticsTab />}
       {activeTab === 'costs' && <WorkspaceCostTab />}
+      {activeTab === 'support' && <BugReportTab />}
     </>
   )
 })

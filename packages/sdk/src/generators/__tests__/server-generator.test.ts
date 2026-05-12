@@ -159,4 +159,48 @@ describe('Server Generator', () => {
       expect(output).not.toContain('Access-Control-Allow-Origin')
     })
   })
+
+  describe('tools handler (default on)', () => {
+    const output = generateServer()
+
+    it('imports createToolsHandlers from @shogo-ai/sdk/tools/server', () => {
+      expect(output).toContain(
+        "import { createToolsHandlers } from '@shogo-ai/sdk/tools/server'",
+      )
+    })
+
+    it('mounts execute and schemas under the API base path', () => {
+      expect(output).toContain("app.post('/api/tools/execute'")
+      expect(output).toContain("app.get('/api/tools/schemas'")
+    })
+
+    it('mounts tools BEFORE the static catch-all so requests do not fall through', () => {
+      const toolsIdx = output.indexOf("app.post('/api/tools/execute'")
+      const staticIdx = output.indexOf("app.get('*', serveStatic")
+      expect(toolsIdx).toBeGreaterThan(-1)
+      expect(staticIdx).toBeGreaterThan(toolsIdx)
+    })
+  })
+
+  describe('tools disabled', () => {
+    const output = generateServer({ tools: false })
+
+    it('does not import createToolsHandlers', () => {
+      expect(output).not.toContain('createToolsHandlers')
+    })
+
+    it('does not mount /api/tools/* routes', () => {
+      expect(output).not.toContain("'/api/tools/execute'")
+      expect(output).not.toContain("'/api/tools/schemas'")
+    })
+  })
+
+  describe('tools with custom apiBasePath', () => {
+    const output = generateServer({ apiBasePath: '/v1', tools: true })
+
+    it('respects the apiBasePath for tools mounts', () => {
+      expect(output).toContain("app.post('/v1/tools/execute'")
+      expect(output).toContain("app.get('/v1/tools/schemas'")
+    })
+  })
 })

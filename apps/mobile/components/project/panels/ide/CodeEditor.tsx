@@ -60,11 +60,17 @@ function configureMonaco(monaco: MonacoNs) {
   ts.typescriptDefaults.setCompilerOptions(compilerOptions);
   ts.javascriptDefaults.setCompilerOptions(compilerOptions);
 
-  // We register extraLibs (react, react-dom, csstype, prop-types) below,
-  // so 2307 "Cannot find module" should fire correctly for genuinely-missing
-  // packages. We still ignore noisy codes that apply to ad-hoc workspace files.
+  // Semantic diagnostics are owned by the backend typescript-language-server
+  // (surfaced via the Problems panel's `/diagnostics` route and via Monaco
+  // markers wired through Workbench). The in-browser TS Web Worker only sees
+  // currently-open Monaco models, so its semantic results are always
+  // incomplete and frequently contradict the real LSP — keep syntactic
+  // checks on (cheap, local) but turn semantic validation off so the two
+  // sources of truth don't fight each other in hover popovers and the
+  // gutter. `setEagerModelSync` is dropped for the same reason: there's
+  // nothing to eagerly sync once the bulk preload is gone.
   const diagOpts = {
-    noSemanticValidation: false,
+    noSemanticValidation: true,
     noSyntaxValidation: false,
     diagnosticCodesToIgnore: [
       2339, // Property does not exist (common with dynamic types)
@@ -75,10 +81,10 @@ function configureMonaco(monaco: MonacoNs) {
   ts.typescriptDefaults.setDiagnosticsOptions(diagOpts);
   ts.javascriptDefaults.setDiagnosticsOptions(diagOpts);
 
-  ts.typescriptDefaults.setEagerModelSync(true);
-
-  // Register the Monaco instance so workspace files can be preloaded as
-  // models for cross-file go-to-def, hover, and import resolution.
+  // Register the Monaco instance so the live-edit handlers can upsert
+  // single-file models on demand (hot path: SSE `file.changed` from the
+  // chat agent → upsert into the open editor's model). Cross-file
+  // IntelliSense itself is served by the backend LSP (see lspProviders).
   setMonacoRef(monaco);
 
   // Load real @types/react, @types/react-dom, csstype, prop-types

@@ -19,6 +19,8 @@ export * as checkpointService from './checkpoint.service';
 export * as githubService from './github.service';
 export * as emailService from './email.service';
 export * as costAnalyticsService from './cost-analytics.service';
+export * as projectAgentService from './projectAgent.service';
+export * as projectAgentSyncService from './projectAgentSync.service';
 
 // Re-export Prisma client for direct use when needed
 export { prisma } from '../lib/prisma';

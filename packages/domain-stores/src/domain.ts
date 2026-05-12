@@ -23,6 +23,7 @@ import { NotificationCollection, type INotificationCollection } from "./notifica
 import { SubscriptionCollection, type ISubscriptionCollection } from "./subscription.collection"
 import { UsageWalletCollection, type IUsageWalletCollection } from "./usage-wallet.collection"
 import { UsageEventCollection, type IUsageEventCollection } from "./usage-event.collection"
+import { WorkspaceGrantCollection, type IWorkspaceGrantCollection } from "./workspace-grant.collection"
 import { ChatSessionCollection, type IChatSessionCollection } from "./chat-session.collection"
 import { ChatMessageCollection, type IChatMessageCollection } from "./chat-message.collection"
 import { ToolCallLogCollection, type IToolCallLogCollection } from "./tool-call-log.collection"
@@ -41,6 +42,7 @@ export { NotificationModel, type INotification, type INotificationSnapshotIn, ty
 export { SubscriptionModel, type ISubscription, type ISubscriptionSnapshotIn, type ISubscriptionSnapshotOut } from "./subscription.model"
 export { UsageWalletModel, type IUsageWallet, type IUsageWalletSnapshotIn, type IUsageWalletSnapshotOut } from "./usage-wallet.model"
 export { UsageEventModel, type IUsageEvent, type IUsageEventSnapshotIn, type IUsageEventSnapshotOut } from "./usage-event.model"
+export { WorkspaceGrantModel, type IWorkspaceGrant, type IWorkspaceGrantSnapshotIn, type IWorkspaceGrantSnapshotOut } from "./workspace-grant.model"
 export { ChatSessionModel, type IChatSession, type IChatSessionSnapshotIn, type IChatSessionSnapshotOut } from "./chat-session.model"
 export { ChatMessageModel, type IChatMessage, type IChatMessageSnapshotIn, type IChatMessageSnapshotOut } from "./chat-message.model"
 export { ToolCallLogModel, type IToolCallLog, type IToolCallLogSnapshotIn, type IToolCallLogSnapshotOut } from "./tool-call-log.model"
@@ -59,6 +61,7 @@ export { NotificationCollection, type INotificationCollection }
 export { SubscriptionCollection, type ISubscriptionCollection }
 export { UsageWalletCollection, type IUsageWalletCollection }
 export { UsageEventCollection, type IUsageEventCollection }
+export { WorkspaceGrantCollection, type IWorkspaceGrantCollection }
 export { ChatSessionCollection, type IChatSessionCollection }
 export { ChatMessageCollection, type IChatMessageCollection }
 export { ToolCallLogCollection, type IToolCallLogCollection }
@@ -103,6 +106,7 @@ export const DomainStore = types
     subscriptionCollection: types.optional(SubscriptionCollection, { items: {} }),
     usageWalletCollection: types.optional(UsageWalletCollection, { items: {} }),
     usageEventCollection: types.optional(UsageEventCollection, { items: {} }),
+    workspaceGrantCollection: types.optional(WorkspaceGrantCollection, { items: {} }),
     chatSessionCollection: types.optional(ChatSessionCollection, { items: {} }),
     chatMessageCollection: types.optional(ChatMessageCollection, { items: {} }),
     toolCallLogCollection: types.optional(ToolCallLogCollection, { items: {} }),
@@ -125,6 +129,7 @@ export const DomainStore = types
         "subscriptionCollection",
         "usageWalletCollection",
         "usageEventCollection",
+        "workspaceGrantCollection",
         "chatSessionCollection",
         "chatMessageCollection",
         "toolCallLogCollection",
@@ -148,6 +153,7 @@ export const DomainStore = types
       self.subscriptionCollection.clear()
       self.usageWalletCollection.clear()
       self.usageEventCollection.clear()
+      self.workspaceGrantCollection.clear()
       self.chatSessionCollection.clear()
       self.chatMessageCollection.clear()
       self.toolCallLogCollection.clear()
@@ -168,6 +174,7 @@ export const DomainStore = types
       self.subscriptionCollection.clearError()
       self.usageWalletCollection.clearError()
       self.usageEventCollection.clearError()
+      self.workspaceGrantCollection.clearError()
       self.chatSessionCollection.clearError()
       self.chatMessageCollection.clearError()
       self.toolCallLogCollection.clearError()

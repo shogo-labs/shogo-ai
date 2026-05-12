@@ -108,14 +108,21 @@ model Verification {
 // =============================================================================
 
 model Workspace {
-  id           String       @id @default(uuid())
-  name         String
-  slug         String       @unique
-  description  String?
-  ssoSettings  Json?
-  instanceSize InstanceSize @default(micro)
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
+  id            String       @id @default(uuid())
+  name          String
+  slug          String       @unique
+  description   String?
+  ssoSettings   Json?
+  instanceSize  InstanceSize @default(micro)
+  // Whether Composio OAuth connections are stored at workspace scope
+  // (one auth per toolkit shared across every project) or project
+  // scope (each project gets its own isolated connections). New
+  // workspaces default to "workspace"; existing workspaces are
+  // back-filled to "project" by the matching migration so behavior
+  // for already-connected accounts is preserved.
+  composioScope String       @default("workspace")
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
 
   // Relations
   projects               Project[]
@@ -134,12 +141,14 @@ model Workspace {
   instances              Instance[]
   meetings               Meeting[]
   voiceProjectConfigs    VoiceProjectConfig[]
+  projectAgents          ProjectAgent[]
   agentCostMetrics       AgentCostMetric[]
   budgetAlerts           BudgetAlert[]
   modelExperiments       ModelExperiment[]
   subagentModelOverrides SubagentModelOverride[]
   agentEvalResults       AgentEvalResult[]
   agentEvalSets          AgentEvalSet[]
+  grants                 WorkspaceGrant[]
 
   @@map("workspaces")
 }
@@ -195,6 +204,7 @@ model Project {
   subagentModelOverrides SubagentModelOverride[]
   agentEvalSets          AgentEvalSet[]
   voiceConfig            VoiceProjectConfig?
+  agents                 ProjectAgent[]
 
   @@index([workspaceId])
   @@index([folderId])
@@ -473,20 +483,20 @@ enum NotificationType {
 // =============================================================================
 
 model Subscription {
-  id                  String             @id @default(uuid())
-  workspaceId         String
-  stripeSubscriptionId String            @unique
-  stripeCustomerId    String
-  planId              String
+  id                   String             @id @default(uuid())
+  workspaceId          String
+  stripeSubscriptionId String             @unique
+  stripeCustomerId     String
+  planId               String
   // Number of paying seats. Basic is always 1; Pro/Business are per-seat.
-  seats               Int                @default(1)
-  status              SubscriptionStatus
-  billingInterval     BillingInterval
-  currentPeriodStart  DateTime
-  currentPeriodEnd    DateTime
-  cancelAtPeriodEnd   Boolean            @default(false)
-  createdAt           DateTime           @default(now())
-  updatedAt           DateTime           @updatedAt
+  seats                Int                @default(1)
+  status               SubscriptionStatus
+  billingInterval      BillingInterval
+  currentPeriodStart   DateTime
+  currentPeriodEnd     DateTime
+  cancelAtPeriodEnd    Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
 
   // Relations
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -509,26 +519,26 @@ enum BillingInterval {
 }
 
 model UsageWallet {
-  id                            String   @id @default(uuid())
-  workspaceId                   String   @unique
-  monthlyIncludedUsd            Float    @default(0)
-  dailyIncludedUsd              Float    @default(0)
-  monthlyIncludedAllocationUsd  Float    @default(0)
-  dailyUsedThisMonthUsd         Float    @default(0)
-  overageEnabled                Boolean  @default(true)
-  overageHardLimitUsd           Float?
-  overageAccumulatedUsd         Float    @default(0)
+  id                           String   @id @default(uuid())
+  workspaceId                  String   @unique
+  monthlyIncludedUsd           Float    @default(0)
+  dailyIncludedUsd             Float    @default(0)
+  monthlyIncludedAllocationUsd Float    @default(0)
+  dailyUsedThisMonthUsd        Float    @default(0)
+  overageEnabled               Boolean  @default(true)
+  overageHardLimitUsd          Float?
+  overageAccumulatedUsd        Float    @default(0)
   // USD already invoiced this period in $100 trust blocks. When
   // `overageAccumulatedUsd` crosses the next 100 dollar threshold past this
   // value, a new $100 invoice is created mid-cycle and this field bumps.
   // Resets to 0 each monthly allocation reset.
-  overageBilledUsd              Float    @default(0)
-  stripeMeteredItemId           String?
-  anniversaryDay                Int
-  lastDailyReset                DateTime
-  lastMonthlyReset              DateTime
-  createdAt                     DateTime @default(now())
-  updatedAt                     DateTime @updatedAt
+  overageBilledUsd             Float    @default(0)
+  stripeMeteredItemId          String?
+  anniversaryDay               Int
+  lastDailyReset               DateTime
+  lastMonthlyReset             DateTime
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
 
   // Relations
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -565,6 +575,29 @@ enum UsageSource {
   daily
   monthly
   overage
+}
+
+/// Super-admin-managed credit grant. Each row gives a workspace a fixed
+/// number of free seats (deducted from the Stripe seat quantity, with a
+/// minimum of 1 paid seat) plus a monthly USD allotment that stacks on
+/// top of any plan-included USD. Multiple active grants on the same
+/// workspace are summed.
+model WorkspaceGrant {
+  id                 String    @id @default(uuid())
+  workspaceId        String
+  freeSeats          Int       @default(0)
+  monthlyIncludedUsd Float     @default(0)
+  startsAt           DateTime  @default(now())
+  expiresAt          DateTime?
+  note               String?
+  createdByUserId    String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, expiresAt])
+  @@map("workspace_grants")
 }
 
 // =============================================================================
@@ -1771,6 +1804,63 @@ model VoiceProjectConfig {
 
   @@index([workspaceId])
   @@map("voice_project_configs")
+}
+
+// ProjectAgent is the unified persona record for a project — same row
+// is reachable from both `useShogoVoice({ agentName })` and
+// `useShogoChat({ agentName })`. Voice-capable agents have `voiceId`
+// set (and lazily get `elevenlabsAgentId` populated on first signed-
+// URL request); chat-only agents leave those null.
+//
+// Reconciled from `shogo.config.json#agents` via `shogo deploy` →
+// POST /api/projects/:id/agents/sync.
+//
+// The legacy `VoiceProjectConfig.elevenlabsAgentId` column remains
+// the fallback for the `default` agent of pre-migration projects;
+// the sync endpoint backfills a `default` row on first deploy.
+
+model ProjectAgent {
+  id          String @id @default(cuid())
+  projectId   String
+  workspaceId String
+  // Stable name keyed off `(projectId, name)`. `default` is special —
+  // it's what `agentName === undefined` resolves to.
+  name        String
+
+  // Shared by both modalities.
+  systemPrompt   String?
+  // Allowlist of tool names — kept for backwards compatibility with
+  // pre-tool-schemas deploys. New code reads `tools` (full descriptors)
+  // instead. Backfilled into `tools` by the
+  // `add_project_agents_tools` migration; will be dropped once the
+  // dual-read window closes.
+  toolsAllowlist Json?
+  // Tool descriptors: array of { name, description?, inputSchema? }.
+  // Source of truth as of `shogo deploy` v1.6+. The chat route
+  // declares these to `streamText` and the voice sync forwards them
+  // to ElevenLabs `createAgent`/`patchAgent` as `prompt.tools`.
+  tools          Json?
+  characterName  String?
+  displayName    String?
+
+  // Voice-only.
+  voiceId           String?
+  firstMessage      String?
+  // Lazy-provisioned on first voice request when `voiceId` is set.
+  elevenlabsAgentId String?
+
+  // Chat-only.
+  model String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, name])
+  @@index([workspaceId])
+  @@map("project_agents")
 }
 
 // VoiceCallMeter dedupes webhooks from ElevenLabs (post_call_transcription)

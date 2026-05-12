@@ -35,7 +35,10 @@
     "db:studio": "npx prisma studio",
     "db:generate": "npx prisma generate",
     "db:generate:all": "bun scripts/db-generate-all.ts",
+    "check:schema-parity": "bun scripts/check-schema-parity.ts",
+    "check:publication": "bun scripts/check-publication-drift.ts",
     "db:reset": "npx prisma migrate reset",
+    "seed:marketplace": "bun scripts/seed-marketplace.ts",
     "docker:prod": "docker-compose up",
     "docker:prod:build": "docker-compose up --build",
     "docker:prod:down": "docker-compose down",
@@ -47,8 +50,13 @@
     "desktop:dev:clean": "rm -rf \"$HOME/Library/Application Support/Shogo/data\" && bun run desktop:dev",
     "docs:dev": "bun run --cwd apps/docs dev",
     "docs:build": "bun run --cwd apps/docs build",
+    "test:e2e:hosted": "npx playwright test --config e2e/playwright.config.ts",
+    "test:e2e:hosted:ui": "npx playwright test --config e2e/playwright.config.ts --ui",
+    "test:e2e:local": "npx playwright test --config e2e/local/playwright.config.ts",
+    "test:e2e:local:ui": "npx playwright test --config e2e/local/playwright.config.ts --ui",
     "test:e2e:staging": "npx playwright test --config e2e/playwright.config.ts",
     "test:e2e:staging:ui": "npx playwright test --config e2e/playwright.config.ts --ui",
+    "cleanup:e2e-users": "bun scripts/cleanup-e2e-test-users.ts",
     "test:channels": "bun test e2e/channels/",
     "test:replication": "bun test e2e/replication/",
     "test:channels:status": "bun test e2e/channels/agent-status.integration.test.ts",
@@ -94,6 +102,7 @@
     "prisma-adapter-bun-sqlite": "^0.7.1"
   },
   "patchedDependencies": {
-    "react-native-css-interop@0.2.2": "patches/react-native-css-interop@0.2.2.patch"
+    "react-native-css-interop@0.2.2": "patches/react-native-css-interop@0.2.2.patch",
+    "@react-navigation/routers@7.5.3": "patches/@react-navigation%2Frouters@7.5.3.patch"
   }
 }

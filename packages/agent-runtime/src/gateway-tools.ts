@@ -61,8 +61,10 @@ import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
 import { addQuickAction, validateQuickActions } from './quick-actions'
 import { withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
 import { deriveApiUrl, derivePublicApiUrl } from './internal-api'
+import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 import { FileStateCache } from './file-state-cache'
+import { enforceImageSizeLimit, MAX_IMAGE_BASE64_BYTES } from './image-size-guard'
 import type { TeamManager } from './team-manager'
 import type { TeammateLoopHandle } from './teammate-loop'
 
@@ -162,6 +164,43 @@ function isBlockedCommand(command: string): boolean {
 
 function assertWithinWorkspace(workspaceDir: string, filePath: string): string {
   return assertWithinWorkspaceSecure(workspaceDir, filePath)
+}
+
+/**
+ * Bogus path prefixes the model frequently hallucinates when it remembers
+ * the project as "the project" or "the workspace" instead of the workspace
+ * root being the CWD. Stripping these and pointing at the right path turns
+ * a wasted tool call into a one-shot fix.
+ */
+const BOGUS_PATH_PREFIXES = ['project/', 'workspace/', 'app/', 'pod/', 'repo/'] as const
+
+/**
+ * If `filePath` starts with a known-bogus prefix and the corresponding
+ * stripped path actually exists on disk, return a hint string the caller
+ * can append to `File not found` errors. Otherwise return null.
+ *
+ * Example: `read_file({ path: 'project/src/App.tsx' })` against a workspace
+ * that has `src/App.tsx` returns a hint pointing at `src/App.tsx`.
+ */
+function bogusPathPrefixHint(workspaceDir: string, filePath: string): string | null {
+  for (const prefix of BOGUS_PATH_PREFIXES) {
+    if (!filePath.startsWith(prefix)) continue
+    const stripped = filePath.slice(prefix.length)
+    if (!stripped) continue
+    let strippedResolved: string
+    try {
+      strippedResolved = assertWithinWorkspace(workspaceDir, stripped)
+    } catch {
+      continue
+    }
+    if (existsSync(strippedResolved)) {
+      return (
+        `Hint: workspace root is your CWD. The path you gave starts with "${prefix}" ` +
+        `but "${stripped}" exists. Drop the "${prefix}" prefix — try "${stripped}".`
+      )
+    }
+  }
+  return null
 }
 
 /**
@@ -637,7 +676,8 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
       }
       const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
       if (!existsSync(resolved)) {
-        return textResult({ error: `File not found: ${filePath}` })
+        const hint = bogusPathPrefixHint(ctx.workspaceDir, filePath)
+        return textResult({ error: hint ? `File not found: ${filePath}\n${hint}` : `File not found: ${filePath}` })
       }
       try {
         const stat = statSync(resolved)
@@ -674,6 +714,35 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
           }
           const buf = readFileSync(resolved)
           const base64 = buf.toString('base64')
+          if (base64.length > MAX_IMAGE_BASE64_BYTES) {
+            const details = {
+              path: filePath,
+              bytes: buf.length,
+              base64Bytes: base64.length,
+              mimeType: imageMime,
+              error:
+                `Image too large to send to the model: ${filePath} ` +
+                `(${buf.length} raw bytes / ${base64.length} base64 bytes, ` +
+                `cap is ${MAX_IMAGE_BASE64_BYTES} base64 bytes). ` +
+                'Downscale before reading, e.g. on macOS: ' +
+                `\`sips -Z 1024 "${filePath}" --out "${filePath}.small.png"\`, ` +
+                `or with ImageMagick: \`convert "${filePath}" -resize 1024x1024 "${filePath}.small.png"\`, ` +
+                'then read the resized file.',
+            }
+            return textResult(details)
+          }
+          const initialContent = [
+            { type: 'image' as const, data: base64, mimeType: imageMime },
+            { type: 'text' as const, text: JSON.stringify({
+              path: filePath,
+              bytes: buf.length,
+              mimeType: imageMime,
+              ...(offset !== undefined || limit !== undefined
+                ? { note: 'offset/limit are ignored for image files.' }
+                : {}),
+            }) },
+          ]
+          const safeContent = enforceImageSizeLimit(initialContent, { label: 'read_file', pathHint: filePath })
           const details = {
             path: filePath,
             bytes: buf.length,
@@ -682,13 +751,7 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
               ? { note: 'offset/limit are ignored for image files.' }
               : {}),
           }
-          return {
-            content: [
-              { type: 'image' as const, data: base64, mimeType: imageMime },
-              { type: 'text' as const, text: JSON.stringify(details) },
-            ],
-            details,
-          }
+          return { content: safeContent, details }
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err)
           return textResult({
@@ -944,6 +1007,73 @@ async function maybeCustomRoutesSync(
     filePath.endsWith('/custom-routes.tsx')
   if (!isCustomRoutesEdit || !ctx.skillServerManager) return null
 
+  // Drift heal: if `server.tsx` is on disk but missing the
+  // `customRoutes` import/mount, the fast restart would just respawn
+  // the same broken file (custom routes 404 → SPA catch-all returns
+  // index.html with HTTP 200, silently masking the bug). Detect and
+  // self-heal before restarting. See `server-tsx-drift.ts`.
+  try {
+    const drift = checkServerTsxDrift(ctx.workspaceDir)
+    if (drift.drifted) {
+      const heal = healServerTsxDrift(ctx.workspaceDir, drift)
+      if (heal.mode === 'regenerate') {
+        // SDK-generated stale file — full sync overwrites it via
+        // `writeServerEntry()` in the project's `generate` script.
+        const syncResult = await ctx.skillServerManager.sync()
+        return {
+          ...baseResult,
+          apiServer: {
+            serverRestarted: true,
+            regenerated: true,
+            phase: syncResult.phase,
+            url: ctx.skillServerManager.url,
+            hint:
+              'server.tsx (SDK-generated) was stale and missing the custom-routes mount. ' +
+              'Regenerated from shogo.config.json — your custom routes are now live under /api/.',
+            ...(syncResult.error ? { error: syncResult.error } : {}),
+          },
+        }
+      }
+      if (heal.mode === 'patched') {
+        // Hand-edited file — patched in place, all other edits
+        // preserved. Just restart with the (now correct) server.tsx.
+        await ctx.skillServerManager.restartApiServerOnly()
+        return {
+          ...baseResult,
+          apiServer: {
+            serverRestarted: true,
+            patched: true,
+            phase: ctx.skillServerManager.phase,
+            url: ctx.skillServerManager.url,
+            hint:
+              'server.tsx was missing the custom-routes import/mount. Inserted the two ' +
+              'required lines in place (other edits preserved). Restarted — routes are now live.',
+          },
+        }
+      }
+      if (heal.mode === 'failed') {
+        return {
+          ...baseResult,
+          apiServer: {
+            serverRestarted: false,
+            error: `server.tsx is missing the custom-routes mount and self-heal failed: ${heal.reason}`,
+            hint:
+              `Add \`import customRoutes from '${drift.customRoutesPath}'\` to server.tsx and ` +
+              `\`app.route('${drift.apiBasePath}', customRoutes)\` before the static catch-all, ` +
+              'or run `bun x shogo generate` to regenerate server.tsx from shogo.config.json.',
+          },
+        }
+      }
+      // mode === 'noop' falls through to the fast restart below.
+    }
+  } catch (err: any) {
+    // A failure to even check drift shouldn't block the restart —
+    // log and continue to the fast path.
+    console.warn(
+      `[gateway-tools] custom-routes drift check failed (continuing to fast restart): ${err?.message ?? err}`,
+    )
+  }
+
   try {
     // Fast path — no schema regeneration, no `prisma db push`. Custom
     // route changes don't affect the data model, so this typically
@@ -1162,7 +1292,8 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
           }
           return textResult({ ok: true, path: filePath, created: true })
         }
-        return textResult({ error: `File not found: ${filePath}` })
+        const hint = bogusPathPrefixHint(ctx.workspaceDir, filePath)
+        return textResult({ error: hint ? `File not found: ${filePath}\n${hint}` : `File not found: ${filePath}` })
       }
 
       // File size guard
@@ -2191,6 +2322,66 @@ function spawnCDPRelay(token: string): Promise<{ cdpEndpoint: string; kill: () =
   })
 }
 
+/**
+ * Optional capture tap for the `browser` tool. When SHOGO_MOCK_CAPTURE_DIR
+ * is set the runtime writes every browser-action call (params + response,
+ * plus PNG bytes for screenshots) into that directory so the demo
+ * fixture loader can replay them later.
+ *
+ * Format on disk:
+ *   <dir>/manifest.json                    — ordered step list
+ *   <dir>/step-001.json                    — { idx, action, params, response, screenshotFile? }
+ *   <dir>/screenshots/step-001.png         — full screenshot bytes (only for screenshot)
+ *
+ * The replay loader (loadBrowserFixturesFromDir, see tool-mocks-demo.ts)
+ * keys each call by JSON-stringified params so the replay survives
+ * agent re-runs as long as the agent makes the same calls in the same
+ * order. If the agent diverges we fall back to the closest action match
+ * inside the loader.
+ */
+function captureBrowserCall(
+  dir: string,
+  entry: {
+    idx: number
+    action: string
+    params: Record<string, any>
+    response: any
+    screenshotBuffer?: Buffer
+  },
+): void {
+  try {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    const idxPad = String(entry.idx).padStart(3, '0')
+    let screenshotFile: string | undefined
+    if (entry.screenshotBuffer) {
+      const screenshotsDir = join(dir, 'screenshots')
+      if (!existsSync(screenshotsDir)) mkdirSync(screenshotsDir, { recursive: true })
+      screenshotFile = `screenshots/step-${idxPad}.png`
+      writeFileSync(join(dir, screenshotFile), entry.screenshotBuffer)
+    }
+    const stepFile = join(dir, `step-${idxPad}.json`)
+    writeFileSync(stepFile, JSON.stringify({
+      idx: entry.idx,
+      action: entry.action,
+      params: entry.params,
+      response: entry.response,
+      screenshotFile,
+      ts: Date.now(),
+    }, null, 2))
+    // Maintain manifest.json so the loader doesn't have to scandir.
+    const manifestPath = join(dir, 'manifest.json')
+    let manifest: { steps: Array<{ idx: number; action: string; file: string }> } = { steps: [] }
+    if (existsSync(manifestPath)) {
+      try { manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) } catch {}
+    }
+    manifest.steps.push({ idx: entry.idx, action: entry.action, file: `step-${idxPad}.json` })
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
+  } catch (err) {
+    // Capture is best-effort; never break the tool call if capture I/O fails.
+    console.warn(`[browser-capture] failed to write step ${entry.idx}: ${(err as any)?.message}`)
+  }
+}
+
 export function createBrowserTool(ctx: ToolContext): AgentTool {
   let browser: any = null
   let page: any = null
@@ -2387,7 +2578,14 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
     return null
   }
 
-  return {
+  // Capture mode: when SHOGO_MOCK_CAPTURE_DIR is set, every browser
+  // tool call is dumped to disk for later replay by the demo mock
+  // system. The wrapper at the bottom of this function (before the
+  // final `return tool`) intercepts execute() and writes step files.
+  const captureDir = process.env.SHOGO_MOCK_CAPTURE_DIR || ''
+  let browserCaptureCounter = 0
+
+  const tool: AgentTool = {
     name: 'browser',
     description:
       'Control a browser. MUST snapshot before any interaction to get element refs. ' +
@@ -2613,11 +2811,16 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             // reports can reference it portably.
             const relPath = relative(ctx.workspaceDir, screenshotPath)
             const base64 = Buffer.from(buffer).toString('base64')
+            const rawContent = [
+              { type: 'image' as const, data: base64, mimeType: 'image/png' },
+              { type: 'text' as const, text: JSON.stringify({ ok: true, path: relPath, url: p.url() }) },
+            ]
+            const safeContent = enforceImageSizeLimit(rawContent, {
+              label: 'browser:screenshot',
+              pathHint: relPath,
+            })
             return {
-              content: [
-                { type: 'image' as const, data: base64, mimeType: 'image/png' },
-                { type: 'text' as const, text: JSON.stringify({ ok: true, path: relPath, url: p.url() }) },
-              ],
+              content: safeContent,
               details: { ok: true, path: relPath, url: p.url() },
             }
           }
@@ -2656,6 +2859,45 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
       }
     },
   }
+
+  if (captureDir) {
+    const innerExecute = tool.execute
+    tool.execute = async (toolCallId: string, params: any, signal?: any, onUpdate?: any) => {
+      const result: any = await innerExecute(toolCallId, params, signal, onUpdate)
+      const idx = ++browserCaptureCounter
+      const action = String(params?.action ?? 'unknown')
+      // For screenshots the response envelope embeds base64 PNG data we
+      // can strip out and write as raw bytes — replay then loads the
+      // PNG, base64-encodes it, and resurfaces the same multipart shape
+      // (see loadBrowserFixturesFromDir in tool-mocks-demo.ts).
+      let screenshotBuffer: Buffer | undefined
+      let responseToWrite: any = result
+      if (action === 'screenshot' && result && Array.isArray(result.content)) {
+        const img = result.content.find((c: any) => c?.type === 'image' && typeof c?.data === 'string')
+        if (img) {
+          try { screenshotBuffer = Buffer.from(img.data, 'base64') } catch {}
+          // Trim the inline base64 from what we serialize to JSON; replay
+          // will rehydrate from screenshotFile so JSON stays small.
+          responseToWrite = {
+            ...result,
+            content: result.content.map((c: any) =>
+              c?.type === 'image' ? { type: 'image', mimeType: c.mimeType, dataInFile: true } : c,
+            ),
+          }
+        }
+      }
+      captureBrowserCall(captureDir, {
+        idx,
+        action,
+        params,
+        response: responseToWrite,
+        screenshotBuffer,
+      })
+      return result
+    }
+  }
+
+  return tool
 }
 
 function createSendMessageTool(ctx: ToolContext): AgentTool {
@@ -2893,19 +3135,110 @@ function createMcpSearchTool(): AgentTool {
   }
 }
 
-function formatToolInstallMessage(
+/**
+ * Snippet appended to every successful `tool_install` message so the
+ * model has a concrete code shape to copy when the user asks for a
+ * dashboard or any other in-app use of the integration. Without this
+ * the model tends to invent provider env vars (`*_API_TOKEN`) and
+ * hand-roll bearer-token fetches in `custom-routes.ts`, which has no
+ * working credentials in the pod.
+ */
+const SDK_USAGE_FOOTER = [
+  '',
+  'To use these tools from the user\'s app, import from @shogo-ai/sdk/tools.',
+  '',
+  'The SDK auto-parses tool result `data` (the runtime always JSON.stringifies',
+  'tool responses; @shogo-ai/sdk/tools >=1.3 parses them back). Index `data`',
+  'as a plain object — `me.data?.accountId` works. Do NOT write a',
+  '`JSON.parse(result.data)` helper; that double-parses and breaks. Pass a',
+  'generic to `execute<T>()` for typed access.',
+  '',
+  'DASHBOARDS / list views / "my X" pages → ALWAYS server-side in custom-routes.ts:',
+  '',
+  '  import { getServerToolsClient } from \'@shogo-ai/sdk/tools\'',
+  '  app.get(\'/jira/my-issues\', async (c) => {',
+  '    const tools = getServerToolsClient()',
+  '    const me = await tools.execute<{ accountId: string }>(\'JIRA_GET_CURRENT_USER\', {})',
+  '    if (!me.ok || !me.data?.accountId) {',
+  '      return c.json({ error: me.error ?? \'not authenticated\' }, 401)',
+  '    }',
+  '    const issues = await tools.execute<{ issues: unknown[] }>(\'JIRA_SEARCH_ISSUES\', {',
+  '      jql: `assignee = "${me.data.accountId}"`,',
+  '    })',
+  '    if (!issues.ok) return c.json({ error: issues.error ?? \'search failed\' }, 502)',
+  '    return c.json({ issues: issues.data?.issues ?? [] })',
+  '  })',
+  '',
+  '  // In the browser — surface the server\'s actual error to the UI:',
+  '  const res = await fetch(\'/api/jira/my-issues\')',
+  '  const body = await res.json().catch(() => ({}))',
+  '  if (!res.ok) setError(body.error ?? `HTTP ${res.status}`)',
+  '  else setIssues(body.issues ?? [])',
+  '',
+  'AD-HOC interactive actions (button clicks, form submits) → useTools() in the component:',
+  '',
+  '  import { useTools } from \'@shogo-ai/sdk/tools\'',
+  '  const { execute } = useTools()',
+  '  await execute(\'GMAIL_SEND_EMAIL\', { to, subject, body })',
+  '',
+  'NEVER read provider tokens from env (no *_API_TOKEN, *_API_KEY) for managed',
+  'integrations — there are no provider env vars in the pod. NEVER call the',
+  'provider\'s REST API directly with fetch(). Always go through the SDK.',
+  'NEVER hardcode the agent operator\'s identity (your accountId, member id,',
+  'userId) into the user\'s app — derive it per request inside the route via',
+  '<TOOLKIT>_GET_CURRENT_USER.',
+  'NEVER throw `new Error(\'Failed to load X\')` from a client fetch handler.',
+  'Parse the JSON body\'s `error` field and surface it to the UI — generic',
+  'messages strand the user with no path to debug.',
+  'AFTER writing a route, hit it: `curl -s -w "\\nHTTP %{http_code}\\n"',
+  'http://localhost:$RUNTIME_PORT/api/<your-route>`. A green build proves the',
+  'file compiled, not that the endpoint works.',
+].join('\n')
+
+/**
+ * Renders the "you can call these tools yourself, in this turn, by name"
+ * preamble. Without this, the model tends to reach for the wrong
+ * indirection (`skill: invoke` or `agent_spawn({type:'integration'})`)
+ * to *call* an integration tool. Both fail: the integration subagent
+ * doesn't have provider tools bound, and `skill` doesn't know about
+ * managed integrations.
+ */
+function renderAgentDirectUsageBlock(toolkitName: string, toolNames: string[]): string {
+  const sample = toolNames[0] ?? `${toolkitName.toUpperCase()}_<TOOL>`
+  const namedExamples = toolNames.slice(0, 5).join(', ')
+  const exampleSuffix = toolNames.length > 5 ? ', ...' : ''
+  const namesHint = namedExamples ? ` (e.g. ${namedExamples}${exampleSuffix})` : ''
+  return [
+    `These ${toolNames.length || 'newly installed'} tools${namesHint} are now bound to YOU.`,
+    `Call them directly in this turn by name:`,
+    ``,
+    `    ${sample}({})`,
+    ``,
+    `Do NOT spawn an \`integration\` subagent to call these — it does not have`,
+    `them bound. Do NOT use the \`skill\` tool — these are managed integration`,
+    `tools, not skills.`,
+    ``,
+    `Each tool returns { ok: boolean, data: <result>, error?: string }. For`,
+    `list-style endpoints, items often live under \`data.values\` (Jira) or`,
+    `\`data.items\` (Google) or similar — index in once and check the shape.`,
+  ].join('\n')
+}
+
+export function formatToolInstallMessage(
   toolkitName: string,
-  toolCount: number,
+  toolNames: string[],
   auth: { status: string; authUrl?: string },
 ): string {
+  const toolCount = toolNames.length
   const base = `"${toolkitName}" installed with ${toolCount} tool(s).`
+  const directUsage = renderAgentDirectUsageBlock(toolkitName, toolNames)
   if (auth.status !== 'needs_auth') {
-    return `${base} Auth is active. No manual credentials needed.`
+    return `${base} Auth is active. No manual credentials needed.\n\n${directUsage}\n${SDK_USAGE_FOOTER}`
   }
   if (auth.authUrl) {
-    return `${base} User needs to authorize — a Connect button is displayed in the chat for them to click. Do NOT include the auth URL in your response; the UI button handles the OAuth popup flow automatically. Tell the user to click the Connect button below.`
+    return `${base} User needs to authorize — a Connect button is displayed in the chat for them to click. Do NOT include the auth URL in your response; the UI button handles the OAuth popup flow automatically. Tell the user to click the Connect button below.\n\nOnce the user confirms they've connected, you'll be able to call these tools.\n\n${directUsage}\n${SDK_USAGE_FOOTER}`
   }
-  return `${base} Auth status: needs_auth. The user may need to authorize via the Tools panel.`
+  return `${base} Auth status: needs_auth. The user may need to authorize via the Tools panel.\n\n${directUsage}\n${SDK_USAGE_FOOTER}`
 }
 
 function createToolInstallTool(ctx: ToolContext): AgentTool {
@@ -2974,7 +3307,7 @@ function createToolInstallTool(ctx: ToolContext): AgentTool {
             tools: proxy.toolNames,
             authStatus: auth.status,
             ...(auth.authUrl ? { authUrl: auth.authUrl } : {}),
-            message: formatToolInstallMessage(composioToolkit.name, proxy.toolCount, auth),
+            message: formatToolInstallMessage(composioToolkit.name, proxy.toolNames, auth),
           })
         }
       }
@@ -2985,7 +3318,10 @@ function createToolInstallTool(ctx: ToolContext): AgentTool {
         if (composioToolkit) {
           const userId = ctx.userId || process.env.USER_ID || 'default'
           const workspaceId = process.env.WORKSPACE_ID || 'default'
-          const initialized = await initComposioSession(userId, workspaceId, ctx.projectId)
+          const scopeEnv = process.env.COMPOSIO_USER_SCOPE
+          const scope: 'workspace' | 'project' =
+            scopeEnv === 'workspace' || scopeEnv === 'project' ? scopeEnv : 'workspace'
+          const initialized = await initComposioSession(userId, workspaceId, ctx.projectId, scope)
           if (initialized) {
             const proxy = await registerToolkitProxyTools(ctx.mcpClientManager, composioToolkit.slug)
             const auth = await checkComposioAuth(composioToolkit.slug)
@@ -2997,7 +3333,7 @@ function createToolInstallTool(ctx: ToolContext): AgentTool {
               tools: proxy.toolNames,
               authStatus: auth.status,
               ...(auth.authUrl ? { authUrl: auth.authUrl } : {}),
-              message: formatToolInstallMessage(composioToolkit.name, proxy.toolCount, auth),
+              message: formatToolInstallMessage(composioToolkit.name, proxy.toolNames, auth),
             })
           }
           return textResult({ error: `Failed to connect "${composioToolkit.name}" via Composio. The integration may not be available.` })
@@ -3220,7 +3556,11 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
     description:
       'Launch an instance of a registered or built-in agent type. Returns an instance_id. ' +
       'Use background: true for async execution, then check with agent_status/agent_result. ' +
-      'Built-in types: explore, general-purpose, code-reviewer. ' +
+      'Built-in types: explore, general-purpose, code-reviewer, integration, channel, media, devops, browser, browser_qa. ' +
+      'IMPORTANT: `integration` is for discovery / install / uninstall ONLY. ' +
+      'Once a tool is installed, it is bound to YOU — call it directly by name ' +
+      '(e.g. JIRA_LIST_BOARDS({})). Do NOT spawn the integration subagent to ' +
+      'execute installed tools; it does not have them bound. ' +
       'Omit type to use fork mode (inherits your full context — ideal for context-heavy tasks).',
     label: 'Spawn Agent',
     parameters: Type.Object({
@@ -4068,6 +4408,30 @@ function inferRuntime(filename: string): string {
   return map[ext || ''] || 'bash'
 }
 
+/**
+ * If the requested skill name matches an installed managed-integration
+ * toolkit (e.g. user typed `skill: invoke` with skill="jira" after
+ * `tool_install("jira")`), return a remediation hint pointing them at
+ * the bound tools. Otherwise return null so the caller falls back to
+ * the generic "Skill not found" message.
+ *
+ * Composio proxy tools follow a `<TOOLKIT>_<ACTION>` uppercase naming
+ * convention (JIRA_LIST_BOARDS, GMAIL_SEND_EMAIL, etc.).
+ */
+function getIntegrationOverlapHint(
+  skillName: string,
+  allTools: AgentTool[],
+): string | null {
+  const prefix = `${skillName.toUpperCase().replace(/[^A-Z0-9]/g, '')}_`
+  const matches = allTools
+    .map(t => t.name)
+    .filter(n => n.startsWith(prefix))
+  if (matches.length === 0) return null
+  const sample = matches.slice(0, 3).join(', ')
+  const more = matches.length > 3 ? `, ...` : ''
+  return `Note: "${skillName}" is a managed integration, not a skill. Its tools (${sample}${more}) are already bound to you — call them directly by name (e.g. \`${matches[0]}({})\`).`
+}
+
 function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): AgentTool {
   return {
     name: 'skill',
@@ -4167,7 +4531,9 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
         const skills = getLoadedSkills()
         const found = skills.find(s => s.name === skillName)
         if (!found) {
-          return textResult({ error: `Skill not found: ${skillName}` })
+          const overlapHint = getIntegrationOverlapHint(skillName, allToolsGetter())
+          const baseMsg = `Skill not found: ${skillName}`
+          return textResult({ error: overlapHint ? `${baseMsg}. ${overlapHint}` : baseMsg })
         }
 
         const scriptPath = join(found.skillDir, 'scripts', script)
@@ -4213,9 +4579,13 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
       const skills = getLoadedSkills()
       const found = skills.find(s => s.name === skillName)
       if (!found) {
+        const overlapHint = getIntegrationOverlapHint(skillName, allToolsGetter())
+        const baseError = `Skill not found: ${skillName}. Available: ${skills.map(s => s.name).join(', ')}`
         return textResult({
-          error: `Skill not found: ${skillName}. Available: ${skills.map(s => s.name).join(', ')}`,
-          hint: 'Use skill({ action: "search", query: "..." }) to find and install new skills.',
+          error: overlapHint ? `${baseError}\n\n${overlapHint}` : baseError,
+          hint: overlapHint
+            ? 'Call the integration tool directly by name (do not use `skill` or `agent_spawn({type:"integration"})`).'
+            : 'Use skill({ action: "search", query: "..." }) to find and install new skills.',
         })
       }
 
@@ -4382,7 +4752,8 @@ function createDeleteFileTool(ctx: ToolContext): AgentTool {
       const protectedRejection = rejectIfProtected(ctx, resolved)
       if (protectedRejection) return protectedRejection
       if (!existsSync(resolved)) {
-        return textResult({ error: `File not found: ${filePath}` })
+        const hint = bogusPathPrefixHint(ctx.workspaceDir, filePath)
+        return textResult({ error: hint ? `File not found: ${filePath}\n${hint}` : `File not found: ${filePath}` })
       }
 
       unlinkSync(resolved)

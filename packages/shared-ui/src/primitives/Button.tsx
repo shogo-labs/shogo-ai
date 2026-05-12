@@ -39,6 +39,9 @@ export interface ButtonProps {
   disabled?: boolean
   onPress?: () => void
   children: React.ReactNode
+  /** Forwarded to the underlying Pressable so tests can use `getByTestId`. */
+  testID?: string
+  accessibilityLabel?: string
 }
 
 export function Button({
@@ -48,9 +51,13 @@ export function Button({
   disabled,
   onPress,
   children,
+  testID,
+  accessibilityLabel,
 }: ButtonProps) {
   return (
     <Pressable
+      testID={testID}
+      accessibilityLabel={accessibilityLabel}
       className={cn(
         'flex-row items-center justify-center rounded-md',
         variantStyles[variant],

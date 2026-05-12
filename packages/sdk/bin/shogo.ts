@@ -74,6 +74,50 @@ interface ShogoConfig {
    *      runtime deps for that feature are present.
    */
   features?: ShogoFeatures
+  /**
+   * Named secondary agents on this project. Each entry maps an
+   * `agentName` (e.g. `architect`) to a partial spec — system
+   * prompt, tool allowlist, voice id, etc. Reconciled with the
+   * cloud via `shogo deploy`.
+   *
+   * Voice and chat share one row per name: `useShogoVoice({
+   * agentName: 'architect' })` and `useShogoChat({ agentName:
+   * 'architect' })` both resolve to the same record. Voice-capable
+   * entries (those with `voiceId`) get an ElevenLabs agent
+   * provisioned lazily on first signed-URL request; chat-only
+   * entries omit `voiceId`.
+   *
+   * The `default` key is special — it's what `agentName ===
+   * undefined` resolves to. Projects predating this block fall
+   * back to the legacy `voice_project_configs.elevenlabsAgentId`
+   * column for `default` until `shogo deploy` writes a row.
+   */
+  agents?: Record<
+    string,
+    {
+      systemPrompt?: string
+      /**
+       * Tools the agent may invoke. Either a name string (sugar) or a
+       * full `{ name, description?, inputSchema? }` descriptor — see
+       * `AgentToolEntry` in `src/cli/deploy.ts`. The full descriptor
+       * lets the manifest declare the schema once for both modalities
+       * (voice via ElevenLabs `tool-call`, chat via `streamText`).
+       */
+      tools?: Array<
+        | string
+        | {
+            name: string
+            description?: string
+            inputSchema?: Record<string, unknown>
+          }
+      >
+      characterName?: string
+      displayName?: string
+      voiceId?: string
+      firstMessage?: string
+      model?: string
+    }
+  >
 }
 
 /** Voice feature is on when set to `true` or `{ ... }`. */
@@ -128,6 +172,16 @@ const { values, positionals } = parseArgs({
       type: 'boolean',
     },
     url: {
+      type: 'string',
+    },
+    // `shogo deploy` flags
+    prune: {
+      type: 'boolean',
+    },
+    'dry-run': {
+      type: 'boolean',
+    },
+    project: {
       type: 'string',
     },
   },
@@ -219,6 +273,7 @@ Commands:
   generate              Generate routes, types, stores, and docs from Prisma schema
   enable <feature>      Enable a feature in shogo.config.json and re-run codegen
                           (voice | voice.phoneNumber)
+  deploy                Reconcile shogo.config.json#agents with the cloud
   dev                   Runtime-token preflight then passthrough to \`bun run dev\`
   db switch <provider>  Switch Prisma schema provider (sqlite | postgres)
   db status             Show current schema provider
@@ -514,6 +569,78 @@ async function handleDevCommand() {
     console.log('⊘ shogo dev preflight: voice feature disabled, nothing to check.')
   }
 
+  // Auto-deploy named agents from shogo.config.json#agents — only
+  // when both runtime-token plumbing is in scope (warm-pod context)
+  // and the manifest actually declares any agents. Errors are
+  // intentionally non-fatal so a deploy hiccup never blocks the
+  // user's `bun run dev` step. The user can re-run `shogo deploy`
+  // manually for the full error.
+  const declaredAgents = config?.agents ?? {}
+  const declaredAgentNames = Object.keys(declaredAgents)
+  if (
+    projectId &&
+    runtimeToken &&
+    declaredAgentNames.length > 0
+  ) {
+    try {
+      const { validateManifest, runDeploy } = await import('../src/cli/deploy')
+      const { agents, issues } = validateManifest(declaredAgents)
+      if (issues.length > 0) {
+        console.warn(
+          `⚠️ shogo dev preflight: skipping agents auto-deploy — manifest has ${issues.length} validation issue(s):`,
+        )
+        for (const issue of issues) {
+          console.warn(`     - ${issue.path}: ${issue.message}`)
+        }
+        console.warn('     Run `shogo deploy` manually after fixing them.')
+      } else {
+        console.log(
+          `🛰  shogo dev preflight: deploying ${declaredAgentNames.length} agent(s) from shogo.config.json`,
+        )
+        const result = await runDeploy({
+          apiUrl,
+          projectId,
+          manifest: agents,
+          prune: false,
+          dryRun: false,
+          auth: { kind: 'runtimeToken', token: runtimeToken },
+        })
+        if (result.status >= 400) {
+          console.warn(
+            `   ⚠️ Auto-deploy failed (${result.status}); continuing with dev. Run \`shogo deploy\` for the full error.`,
+          )
+        } else {
+          const body = result.body as
+            | {
+                created?: string[]
+                updated?: string[]
+                deleted?: string[]
+                errors?: Array<{ name: string; message: string }>
+              }
+            | null
+          const summary = [
+            body?.created?.length ? `+${body.created.length} created` : null,
+            body?.updated?.length ? `~${body.updated.length} updated` : null,
+            body?.deleted?.length ? `-${body.deleted.length} deleted` : null,
+          ]
+            .filter(Boolean)
+            .join(', ')
+          console.log(`   ✓ Agents reconciled${summary ? ` (${summary})` : ''}`)
+          if (body?.errors?.length) {
+            for (const e of body.errors) {
+              console.warn(`     ⚠️ ${e.name}: ${e.message}`)
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `⚠️ shogo dev preflight: agents auto-deploy failed — ${err instanceof Error ? err.message : err}`,
+      )
+      console.warn('     (continuing with dev; run `shogo deploy` for the full error.)')
+    }
+  }
+
   // Transparent passthrough to the app's `dev` script.
   const devScript = positionals[1] ?? 'dev'
   console.log(`\n▶️  bun run ${devScript}`)
@@ -521,6 +648,123 @@ async function handleDevCommand() {
     execSync(`bun run ${devScript}`, { stdio: 'inherit', cwd })
   } catch {
     process.exit(1)
+  }
+}
+
+// ============================================================================
+// `shogo deploy` — reconcile shogo.config.json#agents with the cloud.
+// ============================================================================
+
+/**
+ * Resolve the project id and Shogo API key from the environment +
+ * CLI flags. `--project` wins over `PROJECT_ID`; `SHOGO_API_KEY`
+ * env var is required.
+ */
+function resolveDeployCredentials(): {
+  apiUrl: string
+  projectId: string
+  shogoApiKey: string
+} {
+  const apiUrl = process.env.SHOGO_API_URL ?? 'https://api.shogo.ai'
+  const projectId =
+    (values.project as string | undefined) ?? process.env.PROJECT_ID ?? ''
+  const shogoApiKey = process.env.SHOGO_API_KEY ?? ''
+  if (!projectId) {
+    console.error('❌ Missing project id. Set PROJECT_ID or pass --project <id>.')
+    process.exit(1)
+  }
+  if (!shogoApiKey) {
+    console.error('❌ Missing SHOGO_API_KEY. Generate one in the dashboard, then `export SHOGO_API_KEY=shogo_sk_...`.')
+    process.exit(1)
+  }
+  return { apiUrl, projectId, shogoApiKey }
+}
+
+async function handleDeployCommand() {
+  const cwd = process.cwd()
+  if (values.help) {
+    console.log(`\nshogo deploy [--prune] [--dry-run] [--project <id>]\n\nReconcile \`shogo.config.json#agents\` with the project's cloud-side\nProjectAgent rows.\n\nFlags:\n  --prune        Delete cloud rows missing from the manifest (default: keep)\n  --dry-run      Print the diff but do not mutate (no DB / EL writes)\n  --project <id> Override PROJECT_ID env var\n\nEnvironment:\n  SHOGO_API_KEY  Required. Bearer token for the project's workspace.\n  SHOGO_API_URL  Optional. Defaults to https://api.shogo.ai\n  PROJECT_ID     Required unless --project is passed.\n`)
+    process.exit(0)
+  }
+
+  // Lazy-load the deploy module so the CLI startup path doesn't pay
+  // for it on every run.
+  const { validateManifest, runDeploy } = await import('../src/cli/deploy')
+
+  const config = loadConfig(cwd)
+  if (!config) {
+    console.error('❌ shogo.config.json not found in', cwd)
+    process.exit(1)
+  }
+
+  const { agents, issues } = validateManifest(config.agents ?? {})
+  if (issues.length > 0) {
+    console.error('❌ Manifest validation failed:')
+    for (const issue of issues) {
+      console.error(`   - ${issue.path}: ${issue.message}`)
+    }
+    process.exit(1)
+  }
+
+  const agentNames = Object.keys(agents).sort()
+  console.log(`🚀 shogo deploy — ${agentNames.length} agent(s) declared`)
+  for (const n of agentNames) {
+    const e = agents[n]!
+    const flags: string[] = []
+    if (e.voiceId) flags.push(`voice(${e.voiceId})`)
+    if (e.model) flags.push(`model(${e.model})`)
+    if (e.tools && e.tools.length > 0) flags.push(`tools(${e.tools.length})`)
+    console.log(`   • ${n}${flags.length ? ` — ${flags.join(', ')}` : ''}`)
+  }
+
+  const { apiUrl, projectId, shogoApiKey } = resolveDeployCredentials()
+  const prune = values.prune === true
+  const dryRun = values['dry-run'] === true
+  console.log('')
+  console.log(`   API:     ${apiUrl}`)
+  console.log(`   Project: ${projectId}`)
+  console.log(`   Prune:   ${prune ? 'yes' : 'no'}`)
+  console.log(`   DryRun:  ${dryRun ? 'yes' : 'no'}`)
+  console.log('')
+
+  let result
+  try {
+    result = await runDeploy({
+      apiUrl,
+      projectId,
+      shogoApiKey,
+      manifest: agents,
+      prune,
+      dryRun,
+    })
+  } catch (err) {
+    console.error('❌ Deploy request failed:', err instanceof Error ? err.message : err)
+    process.exit(1)
+  }
+
+  if (result.status >= 400) {
+    console.error(`❌ Deploy failed (${result.status}):`)
+    console.error(JSON.stringify(result.body, null, 2))
+    process.exit(1)
+  }
+
+  const body = result.body as
+    | {
+        created?: string[]
+        updated?: string[]
+        deleted?: string[]
+        errors?: Array<{ name: string; message: string }>
+        dryRun?: boolean
+      }
+    | null
+
+  console.log(`✅ Deploy ${body?.dryRun ? '(dry-run) ' : ''}succeeded`)
+  if (body?.created?.length) console.log(`   + created: ${body.created.join(', ')}`)
+  if (body?.updated?.length) console.log(`   ~ updated: ${body.updated.join(', ')}`)
+  if (body?.deleted?.length) console.log(`   - deleted: ${body.deleted.join(', ')}`)
+  if (body?.errors?.length) {
+    console.log('   ⚠️ errors:')
+    for (const e of body.errors) console.log(`      ${e.name}: ${e.message}`)
   }
 }
 
@@ -658,6 +902,12 @@ async function main() {
   // Handle dev command (runtime-token preflight + passthrough to `bun run dev`)
   if (command === 'dev') {
     await handleDevCommand()
+    process.exit(0)
+  }
+
+  // Handle deploy command (reconcile shogo.config.json#agents with cloud)
+  if (command === 'deploy') {
+    await handleDeployCommand()
     process.exit(0)
   }
 

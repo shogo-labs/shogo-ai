@@ -41,6 +41,7 @@ import {
   createContentReplacementState,
   stableTransformContext,
 } from './stable-compaction'
+import { scrubOversizedImages } from './image-size-guard'
 import {
   fingerprintMessages,
   fingerprintSystem,
@@ -228,6 +229,34 @@ export interface GatewayConfig {
   coordinatorMode?: boolean
 }
 
+/**
+ * Run a tool mock and convert its return value into the agent-tool
+ * result envelope.
+ *
+ * Mocks are awaited (they may sleep for the demo latency model). When
+ * the resolved value carries the `__multipart: true` marker we strip
+ * the marker and return the raw `{ content, details? }` envelope so
+ * tools like `browser screenshot` can return inline images directly
+ * (otherwise textResult() would JSON-stringify the base64). All other
+ * shapes go through textResult() as before. Sentinel `__passthrough`
+ * is preserved for the dispatch site to fall through to the real impl.
+ *
+ * Used by demo recordings so canned screenshots show as actual images
+ * in the chat panel.
+ */
+async function runMockAndUnwrap(
+  mockFn: (params: Record<string, any>) => any | Promise<any>,
+  params: Record<string, any>,
+): Promise<any> {
+  const result = await mockFn(params)
+  if (result === '__passthrough') return result
+  if (result && typeof result === 'object' && (result as any).__multipart === true) {
+    const { __multipart: _m, ...rest } = result as any
+    return rest
+  }
+  return textResult(result)
+}
+
 export class AgentGateway {
   private workspaceDir: string
   private projectId: string
@@ -328,6 +357,19 @@ export class AgentGateway {
   }
   /** Canvas build manager — runs per-workspace Vite builds */
   private canvasBuildManager: CanvasBuildManager | null = null
+  /**
+   * Direct handle on the runtime's PreviewManager (set by
+   * `attachApiServer`). Held in addition to the `skillServerManager`
+   * shim because we need to surface its `depsReady` deferred to the
+   * canvas build manager — going through the shim would require
+   * forwarding the promise through a layer whose contract is
+   * "skill-server-like API server", not "preview lifecycle".
+   *
+   * `null` is tolerated by `CanvasBuildManager`: missing waitForDeps
+   * just means the build proceeds without the gate (e.g. tests, or
+   * cloud paths where deps are guaranteed-installed before boot).
+   */
+  private previewManager: import('./preview-manager').PreviewManager | null = null
   /** Tracks the current high-level task description for remote status */
   private _currentTask: string | null = null
   /** Tracks the last tool name invoked for remote status */
@@ -405,9 +447,15 @@ export class AgentGateway {
     return this.permissionEngine
   }
 
-  /** Install tool-level execute overrides (for eval mocking). Preserves tool schema. */
+  /**
+   * Install tool-level execute overrides (for eval mocking + demo
+   * recordings). Preserves tool schema. Mock functions may be sync or
+   * async; the dispatch sites await the result either way. Async fns
+   * power the demo latency model (sleep before resolving) so demo
+   * recordings don't return in 0ms.
+   */
   setToolMocks(
-    mocks: Record<string, (params: Record<string, any>) => any>,
+    mocks: Record<string, (params: Record<string, any>) => any | Promise<any>>,
     syntheticDefs?: Record<string, { description: string; paramKeys: string[] }>,
     hiddenTools?: Set<string>,
   ): void {
@@ -461,10 +509,7 @@ export class AgentGateway {
         description: synDef?.description || `External integration tool: ${toolName}`,
         label: toolName.replace(/__/g, ' > ').replace(/_/g, ' '),
         parameters: Type.Object(paramProps),
-        execute: async (_id: string, params: any) => {
-          const r = mockFn(params)
-          return textResult(r)
-        },
+        execute: async (_id: string, params: any) => runMockAndUnwrap(mockFn, params),
       })
       this.hiddenMockTools.delete(toolName)
     }
@@ -715,9 +760,17 @@ export class AgentGateway {
       }
 
       const watcher = this.canvasFileWatcher
+      const pm = this.previewManager
       this.canvasBuildManager = new CanvasBuildManager(this.workspaceDir, {
         onBuildComplete: () => watcher.broadcastReload(),
         onBuildError: (err) => console.error(`${this.logPrefix} Canvas build error:`, err),
+        // Block the first canvas build (and every subsequent one until
+        // deps settle) on the preview manager's in-flight install. See
+        // PreviewManager.depsReady for the full rationale; tl;dr this
+        // is what stops VM-isolated macOS sessions from hitting
+        // `Cannot find module @rollup/rollup-linux-arm64-gnu` when
+        // host-installed node_modules is 9p-mounted into the guest.
+        waitForDeps: pm ? () => pm.depsReady : undefined,
       })
       watcher.setOnRebuild(() => this.canvasBuildManager?.triggerRebuild())
       this.canvasBuildManager.start().then(() => {
@@ -1163,7 +1216,10 @@ export class AgentGateway {
       this.currentUserId = options.userId
       if (isComposioEnabled()) {
         const workspaceId = process.env.WORKSPACE_ID || 'default'
-        await initComposioSession(options.userId, workspaceId, this.projectId)
+        const scopeEnv = process.env.COMPOSIO_USER_SCOPE
+        const scope: 'workspace' | 'project' =
+          scopeEnv === 'workspace' || scopeEnv === 'project' ? scopeEnv : 'workspace'
+        await initComposioSession(options.userId, workspaceId, this.projectId, scope)
       }
     }
 
@@ -1303,7 +1359,10 @@ export class AgentGateway {
     interactionMode: 'agent' | 'plan' | 'ask' = 'agent',
   ): Promise<string> {
     // Wait for any in-flight turn on this session to finish so the new turn
-    // reads a fully-updated session history (critical for "continue" after stop).
+    // reads a fully-updated session history (important for "continue" after a
+    // clean turn-end). On user-initiated abort the lock is dropped eagerly in
+    // `abortCurrentTurn`, so a new message right after Stop won't queue behind
+    // the aborted turn's cleanup.
     const prevTurn = this.turnLocks.get(sessionId)
     if (prevTurn) {
       await prevTurn.catch(() => {})
@@ -1580,8 +1639,12 @@ export class AgentGateway {
           return {
             ...tool,
             execute: async (_id: string, params: any) => {
-              const result = mockFn(params)
+              const result = await mockFn(params)
               gateway._promoteHiddenMocksFromInstall(result)
+              if (result && typeof result === 'object' && (result as any).__multipart === true) {
+                const { __multipart: _m, ...rest } = result as any
+                return rest
+              }
               return textResult(result)
             },
           }
@@ -1591,8 +1654,12 @@ export class AgentGateway {
         return {
           ...tool,
           execute: async (_id: string, params: any, signal?: AbortSignal, onUpdate?: any) => {
-            const result = mockFn(params)
+            const result = await mockFn(params)
             if (result === '__passthrough') return realExecute(_id, params, signal, onUpdate)
+            if (result && typeof result === 'object' && (result as any).__multipart === true) {
+              const { __multipart: _m, ...rest } = result as any
+              return rest
+            }
             return textResult(result)
           },
         }
@@ -1616,10 +1683,7 @@ export class AgentGateway {
           description: synDef?.description || `External integration tool: ${name}`,
           label: name.replace(/__/g, ' > ').replace(/_/g, ' '),
           parameters: Type.Object(paramProps),
-          execute: async (_id: string, params: any) => {
-            const result = mockFn(params)
-            return textResult(result)
-          },
+          execute: async (_id: string, params: any) => runMockAndUnwrap(mockFn, params),
         }
         staticTools.push(syntheticTool)
       }
@@ -1786,28 +1850,261 @@ export class AgentGateway {
 
       // Prompt breakdown: compute tool schema size and emit per-section breakdown
       if (this.lastPromptBreakdown) {
-        const toolSchemaChars = tools.reduce((sum, t) => {
+        // ---- 1) Per-tool schema sizing ----
+        const toolSizes = tools.map(t => {
           const schema = JSON.stringify({ name: t.name, description: t.description, input_schema: t.parameters })
-          return sum + schema.length
-        }, 0)
+          return { name: t.name, chars: schema.length }
+        })
+        const toolSchemaChars = toolSizes.reduce((s, t) => s + t.chars, 0)
         const toolSchemaEstTokens = Math.ceil(toolSchemaChars / 4)
+        const toolSchemasPerTool = toolSizes
+          .map(t => ({ name: t.name, chars: t.chars, estTokens: Math.ceil(t.chars / 4) }))
+          .sort((a, b) => b.chars - a.chars || a.name.localeCompare(b.name))
 
+        // ---- 2) Chat-context (history + prompt) sizing ----
+        // Walks `history` and aggregates char counts per category, with per-tool
+        // sub-buckets for assistant tool_use blocks and toolResult messages.
+        // Mirrors the sizing approach used in prefix-fingerprint.approxMessageChars.
+        const compactedSummaryChars = session.compactedSummary?.length ?? 0
+        let userMessagesChars = 0
+        let userMessagesCount = 0
+        let assistantTextChars = 0
+        let assistantTextCount = 0
+        let assistantThinkingChars = 0
+        let assistantToolCallsChars = 0
+        let assistantToolCallsCount = 0
+        let toolResultsChars = 0
+        let toolResultsCount = 0
+        const perToolUse = new Map<string, { chars: number; count: number }>()
+        const perToolResult = new Map<string, { chars: number; count: number }>()
+
+        // The synthesized "[Previous conversation summary]" user message and its
+        // assistant ack inserted by SessionManager.buildHistory get counted under
+        // `compacted-summary` instead of user/assistant categories so the source
+        // summary length isn't reported twice.
+        const SUMMARY_USER_PREFIX = '[Previous conversation summary]'
+        const SUMMARY_ACK_PREFIX = 'Understood, I have the context'
+
+        for (const msg of history) {
+          if (msg.role === 'user') {
+            const content = (msg as any).content
+            if (typeof content === 'string') {
+              if (content.startsWith(SUMMARY_USER_PREFIX)) continue
+              userMessagesChars += content.length
+              userMessagesCount++
+            } else if (Array.isArray(content)) {
+              let chars = 0
+              let isSummary = false
+              for (const block of content) {
+                if (block?.type === 'text') {
+                  const t: string = block.text ?? ''
+                  if (t.startsWith(SUMMARY_USER_PREFIX)) { isSummary = true; break }
+                  chars += t.length
+                }
+              }
+              if (isSummary) continue
+              userMessagesChars += chars
+              userMessagesCount++
+            }
+            continue
+          }
+          if (msg.role === 'assistant') {
+            const content = ((msg as any).content as any[]) || []
+            let isSummaryAck = false
+            let textChars = 0
+            let toolCallChars = 0
+            let toolCallsHere = 0
+            let thinkingChars = 0
+            const localToolUse: Array<{ name: string; chars: number }> = []
+            for (const block of content) {
+              if (block?.type === 'text') {
+                const t: string = block.text ?? ''
+                if (t.startsWith(SUMMARY_ACK_PREFIX)) { isSummaryAck = true; break }
+                textChars += t.length
+              } else if (block?.type === 'toolCall') {
+                const argsStr = JSON.stringify(block.arguments ?? {})
+                const c = argsStr.length
+                toolCallChars += c
+                toolCallsHere++
+                const name: string = block.name ?? '<unknown>'
+                localToolUse.push({ name, chars: c })
+              } else if (block?.type === 'thinking') {
+                thinkingChars += ((block as any).thinking ?? '').length
+              }
+            }
+            if (isSummaryAck) continue
+            assistantTextChars += textChars
+            assistantThinkingChars += thinkingChars
+            assistantToolCallsChars += toolCallChars
+            assistantToolCallsCount += toolCallsHere
+            if (textChars > 0) assistantTextCount++
+            for (const t of localToolUse) {
+              const cur = perToolUse.get(t.name) ?? { chars: 0, count: 0 }
+              cur.chars += t.chars
+              cur.count += 1
+              perToolUse.set(t.name, cur)
+            }
+            continue
+          }
+          if (msg.role === 'toolResult') {
+            const tr = msg as any
+            const content = (tr.content as any[]) || []
+            let chars = 0
+            for (const c of content) {
+              if (c?.type === 'text') chars += (c.text?.length ?? 0)
+            }
+            toolResultsChars += chars
+            toolResultsCount++
+            const name: string = tr.toolName ?? '<unknown>'
+            const cur = perToolResult.get(name) ?? { chars: 0, count: 0 }
+            cur.chars += chars
+            cur.count += 1
+            perToolResult.set(name, cur)
+            continue
+          }
+        }
+
+        const currentPromptChars = prompt.length
+        const chatContextChars = compactedSummaryChars
+          + userMessagesChars
+          + assistantTextChars
+          + assistantThinkingChars
+          + assistantToolCallsChars
+          + toolResultsChars
+          + currentPromptChars
+        const chatContextEstTokens = Math.ceil(chatContextChars / 4)
+
+        // ---- 3) System prompt totals (existing) ----
         const breakdown = this.lastPromptBreakdown
         const totalChars = breakdown.reduce((s, sec) => s + sec.chars, 0)
         const totalEstTokens = breakdown.reduce((s, sec) => s + sec.estTokens, 0)
-        const grandEstTokens = totalEstTokens + toolSchemaEstTokens
+        const grandEstTokens = totalEstTokens + toolSchemaEstTokens + chatContextEstTokens
+
+        // ---- 4) Render log lines ----
+        // Keep the colon column fixed across hierarchy levels so columns align.
+        // Parent labels live at 2-space indent (`  label    :`), children at 4-space
+        // (`    label    :`), sub-children at 6-space (`      label    :`).
+        const candidateLabels = [
+          ...breakdown.map(s => s.label.length),
+          'tool-schemas (XX)'.length,
+          `Tool schemas (${tools.length})`.length,
+          `Chat context (${history.length} msgs)`.length,
+          'assistant-tool-calls (XXX)'.length + 2, // children sit 2 chars deeper
+          'compacted-summary'.length + 2,
+        ]
+        // Also factor in the longest top-tool name (top 10) so child rows don't overflow
+        for (const t of toolSchemasPerTool.slice(0, 10)) {
+          candidateLabels.push(t.name.length + 2)
+        }
+        for (const [name, v] of perToolUse) {
+          candidateLabels.push(`${name} (${v.count})`.length + 4)
+        }
+        for (const [name, v] of perToolResult) {
+          candidateLabels.push(`${name} (${v.count})`.length + 4)
+        }
+        const maxLabel = Math.max(...candidateLabels)
+        const childLabelWidth = maxLabel - 2
+        const subChildLabelWidth = maxLabel - 4
 
         const lines = ['[AgentGateway] Prompt breakdown:']
-        const maxLabel = Math.max(...breakdown.map(s => s.label.length), 'tool-schemas (XX)'.length)
         for (const sec of breakdown) {
           const tag = sec.zone === 'stable' ? 'S' : 'D'
           lines.push(`  ${sec.label.padEnd(maxLabel)} [${tag}]: ${sec.chars.toLocaleString().padStart(7)} chars ~${sec.estTokens.toLocaleString().padStart(6)} tok`)
         }
         lines.push(`  ${''.padEnd(maxLabel + 30, '─')}`)
         lines.push(`  ${'System prompt total'.padEnd(maxLabel)}    : ${totalChars.toLocaleString().padStart(7)} chars ~${totalEstTokens.toLocaleString().padStart(6)} tok`)
-        lines.push(`  ${`Tool schemas (${tools.length})`.padEnd(maxLabel)}    : ${toolSchemaChars.toLocaleString().padStart(7)} chars ~${toolSchemaEstTokens.toLocaleString().padStart(6)} tok`)
+
+        const fmtParent = (label: string, chars: number, estTokens: number) =>
+          `  ${label.padEnd(maxLabel)}    : ${chars.toLocaleString().padStart(7)} chars ~${estTokens.toLocaleString().padStart(6)} tok`
+        const fmtChild = (label: string, chars: number) =>
+          `    ${label.padEnd(childLabelWidth)}    : ${chars.toLocaleString().padStart(7)} chars ~${Math.ceil(chars / 4).toLocaleString().padStart(6)} tok`
+        const fmtSubChild = (label: string, chars: number) =>
+          `      ${label.padEnd(subChildLabelWidth)}    : ${chars.toLocaleString().padStart(7)} chars ~${Math.ceil(chars / 4).toLocaleString().padStart(6)} tok`
+
+        // Tool schemas: parent + per-tool top 10 + other
+        lines.push(fmtParent(`Tool schemas (${tools.length})`, toolSchemaChars, toolSchemaEstTokens))
+        const TOP_SCHEMAS = 10
+        const topSchemas = toolSchemasPerTool.slice(0, TOP_SCHEMAS)
+        const restSchemas = toolSchemasPerTool.slice(TOP_SCHEMAS)
+        for (const t of topSchemas) {
+          lines.push(fmtChild(t.name, t.chars))
+        }
+        if (restSchemas.length > 0) {
+          const rChars = restSchemas.reduce((s, t) => s + t.chars, 0)
+          lines.push(fmtChild(`other (${restSchemas.length} tools)`, rChars))
+        }
+
+        // Chat context: parent + per-category children, with per-tool sub-children
+        lines.push(fmtParent(`Chat context (${history.length} msgs)`, chatContextChars, chatContextEstTokens))
+        if (compactedSummaryChars > 0) lines.push(fmtChild('compacted-summary', compactedSummaryChars))
+        if (userMessagesCount > 0) lines.push(fmtChild(`user-messages (${userMessagesCount})`, userMessagesChars))
+        if (assistantTextCount > 0) lines.push(fmtChild(`assistant-text (${assistantTextCount})`, assistantTextChars))
+        if (assistantThinkingChars > 0) lines.push(fmtChild('assistant-thinking', assistantThinkingChars))
+        const TOP_PER_TOOL = 5
+        if (assistantToolCallsCount > 0) {
+          lines.push(fmtChild(`assistant-tool-calls (${assistantToolCallsCount})`, assistantToolCallsChars))
+          const sortedUse = [...perToolUse.entries()]
+            .map(([name, v]) => ({ name, ...v }))
+            .sort((a, b) => b.chars - a.chars || a.name.localeCompare(b.name))
+          const topUse = sortedUse.slice(0, TOP_PER_TOOL)
+          const restUse = sortedUse.slice(TOP_PER_TOOL)
+          for (const t of topUse) lines.push(fmtSubChild(`${t.name} (${t.count})`, t.chars))
+          if (restUse.length > 0) {
+            const rChars = restUse.reduce((s, t) => s + t.chars, 0)
+            lines.push(fmtSubChild(`other (${restUse.length} tools)`, rChars))
+          }
+        }
+        if (toolResultsCount > 0) {
+          lines.push(fmtChild(`tool-results (${toolResultsCount})`, toolResultsChars))
+          const sortedTr = [...perToolResult.entries()]
+            .map(([name, v]) => ({ name, ...v }))
+            .sort((a, b) => b.chars - a.chars || a.name.localeCompare(b.name))
+          const topTr = sortedTr.slice(0, TOP_PER_TOOL)
+          const restTr = sortedTr.slice(TOP_PER_TOOL)
+          for (const t of topTr) lines.push(fmtSubChild(`${t.name} (${t.count})`, t.chars))
+          if (restTr.length > 0) {
+            const rChars = restTr.reduce((s, t) => s + t.chars, 0)
+            lines.push(fmtSubChild(`other (${restTr.length} tools)`, rChars))
+          }
+        }
+        if (currentPromptChars > 0) lines.push(fmtChild('current-prompt', currentPromptChars))
+
+        lines.push(`  ${''.padEnd(maxLabel + 30, '─')}`)
         lines.push(`  ${'Grand total'.padEnd(maxLabel)}    :                ~${grandEstTokens.toLocaleString().padStart(6)} tok`)
         console.log(lines.join('\n'))
+
+        const sortedToolUseEntries = [...perToolUse.entries()]
+          .map(([name, v]) => ({ name, count: v.count, chars: v.chars, estTokens: Math.ceil(v.chars / 4) }))
+          .sort((a, b) => b.chars - a.chars || a.name.localeCompare(b.name))
+        const sortedToolResultEntries = [...perToolResult.entries()]
+          .map(([name, v]) => ({ name, count: v.count, chars: v.chars, estTokens: Math.ceil(v.chars / 4) }))
+          .sort((a, b) => b.chars - a.chars || a.name.localeCompare(b.name))
+
+        const chatContextCategories: Array<{
+          key: string
+          count?: number
+          chars: number
+          estTokens: number
+          perTool?: Array<{ name: string; count: number; chars: number; estTokens: number }>
+        }> = []
+        if (compactedSummaryChars > 0) chatContextCategories.push({ key: 'compacted-summary', chars: compactedSummaryChars, estTokens: Math.ceil(compactedSummaryChars / 4) })
+        if (userMessagesCount > 0) chatContextCategories.push({ key: 'user-messages', count: userMessagesCount, chars: userMessagesChars, estTokens: Math.ceil(userMessagesChars / 4) })
+        if (assistantTextCount > 0) chatContextCategories.push({ key: 'assistant-text', count: assistantTextCount, chars: assistantTextChars, estTokens: Math.ceil(assistantTextChars / 4) })
+        if (assistantThinkingChars > 0) chatContextCategories.push({ key: 'assistant-thinking', chars: assistantThinkingChars, estTokens: Math.ceil(assistantThinkingChars / 4) })
+        if (assistantToolCallsCount > 0) chatContextCategories.push({
+          key: 'assistant-tool-calls',
+          count: assistantToolCallsCount,
+          chars: assistantToolCallsChars,
+          estTokens: Math.ceil(assistantToolCallsChars / 4),
+          perTool: sortedToolUseEntries,
+        })
+        if (toolResultsCount > 0) chatContextCategories.push({
+          key: 'tool-results',
+          count: toolResultsCount,
+          chars: toolResultsChars,
+          estTokens: Math.ceil(toolResultsChars / 4),
+          perTool: sortedToolResultEntries,
+        })
 
         const breakdownPayload = {
           sections: breakdown,
@@ -1816,6 +2113,15 @@ export class AgentGateway {
           toolSchemaChars,
           toolSchemaEstTokens,
           toolCount: tools.length,
+          toolSchemasPerTool,
+          chatContext: {
+            totalChars: chatContextChars,
+            totalEstTokens: chatContextEstTokens,
+            messageCount: history.length,
+            categories: chatContextCategories,
+            currentPromptChars,
+            currentPromptEstTokens: Math.ceil(currentPromptChars / 4),
+          },
           grandEstTokens,
         }
 
@@ -1882,10 +2188,14 @@ export class AgentGateway {
             this.contentReplacementStates.set(sessionId, state)
           }
           const result = stableTransformContext(messages, state, contextBudgetChars)
-          return result.messages
+          // Final guard: self-heal any oversized image blocks that may have
+          // landed in history before this guard shipped (or that slipped past
+          // emission-time checks). Deterministic, so it does not disturb the
+          // stable-compaction byte-identical prefix invariant.
+          return scrubOversizedImages(result.messages)
         },
         onToolCall: (name, input) => {
-          console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 200))
+          console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 20))
         },
         onThinkingStart: () => {
           if (uiWriter) {
@@ -3146,6 +3456,11 @@ export class AgentGateway {
    */
   attachApiServer(pm: import('./preview-manager').PreviewManager): void {
     this.skillServerManager.attach(pm)
+    // Keep a direct handle so `start()` can pass `pm.depsReady` into
+    // CanvasBuildManager. The order matters: `server.ts` calls
+    // `attachApiServer()` BEFORE `start()`, so the handle is always
+    // populated by the time we wire it.
+    this.previewManager = pm
   }
 
   getSkillServerPort(): number | null {
@@ -3252,6 +3567,16 @@ export class AgentGateway {
   // ---------------------------------------------------------------------------
   // Status
   // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the live workspace LSP manager (or null if not started yet).
+   * Exposed so the runtime HTTP layer can serve Monaco IDE traffic from
+   * the same warmed-up tsserver instance the agent already uses for
+   * read_lints diagnostics — no second process, no duplicate state.
+   */
+  getLspManager(): WorkspaceLSPManager | null {
+    return this.lspManager
+  }
 
   getStatus(): AgentStatus {
     // Hot-reload config so the UI always reflects the latest config.json
@@ -3410,10 +3735,23 @@ export class AgentGateway {
   private turnAbortControllers = new Map<string, AbortController>()
 
   /** Per-session turn lock: ensures sequential turn execution so a "continue"
-   *  after stop always sees the interrupted turn's messages in the session. */
+   *  after stop always sees the interrupted turn's messages in the session.
+   *  On abort, the lock is released eagerly (see `abortCurrentTurn`) so the
+   *  next user message doesn't have to wait for the aborted turn's loop /
+   *  in-flight tool calls to finish unwinding. The aborted turn's late
+   *  message additions land in the SessionManager whenever they finish and
+   *  become visible to subsequent turns; we accept a small chance the next
+   *  turn's prompt is built before the abortee's last few messages settle.
+   */
   private turnLocks = new Map<string, Promise<unknown>>()
 
   abortCurrentTurn(sessionId: string): boolean {
+    // Release the lock so a new user message on this session can start
+    // immediately instead of queueing behind the aborted turn's
+    // post-abort cleanup (which can take minutes when in-flight tool
+    // calls or the iterative loop's wind-down don't honor the signal
+    // synchronously).
+    this.turnLocks.delete(sessionId)
     const controller = this.turnAbortControllers.get(sessionId)
     if (controller) {
       controller.abort()

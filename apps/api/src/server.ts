@@ -34,7 +34,8 @@ import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
 import { projectChatRoutes } from './routes/project-chat'
 import { projectAdminRoutes } from './routes/project-admin'
-import { terminalRoutes } from './routes/terminal'
+import { ProjectPtyRegistry } from '@shogo/agent-runtime/src/pty-project-registry'
+import { createPtyWsHandlers, type WsData as PtyWsData } from '@shogo/agent-runtime/src/pty-ws-handler'
 import { diagnosticsRoutes } from '@shogo/shared-runtime'
 import { testsRoutes } from './routes/tests'
 import { securityRoutes } from './routes/security'
@@ -44,6 +45,7 @@ import { thumbnailRoutes } from './routes/thumbnail'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
 import { voiceRoutes } from './routes/voice'
+import { chatRoutes } from './routes/chat'
 import { toolsProxyRoutes } from './routes/tools-proxy'
 import { calculateUsageCost } from './lib/usage-cost'
 import { openSession, closeSession, hasSession } from './lib/proxy-billing-session'
@@ -66,6 +68,7 @@ import { checkRedisHealth, isTunnelRedisDegraded } from './lib/tunnel-redis'
 import { remoteAuditRoutes } from './routes/remote-audit'
 import { syncRoutes } from './routes/sync'
 import internalRoutes from './routes/internal'
+import internalE2eRoutes from './routes/internal-e2e'
 import { vmRoutes, triggerVMImageDownload } from './routes/vm'
 import { requireSuperAdmin } from './middleware/super-admin'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
@@ -1435,7 +1438,21 @@ app.post('/api/projects/:projectId/runtime/stop', async (c) => {
       )
     }
   } else {
-    // Local development: Use RuntimeManager
+    // Local development: Use RuntimeManager (host mode) and the VM warm
+    // pool (VM mode). Both are safe no-ops when not in use, so we stop
+    // both unconditionally — that's the only way `closeProject` from the
+    // renderer can reliably tear down whichever runtime the project is
+    // bound to without round-tripping for an extra status check.
+    try {
+      const mod = await import('./lib/vm-warm-pool-controller')
+      try {
+        mod.getVMWarmPoolController().evictProject(projectId)
+      } catch {
+        // VM pool not initialized — host mode, nothing to evict.
+      }
+    } catch {
+      // Module not available.
+    }
     const manager = getRuntimeManager()
     const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
     const url = new URL(c.req.url)
@@ -2009,29 +2026,12 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   // each LLM round-trip would emit its own `ai_proxy_completion` row.
   const isChatStream = c.req.method === 'POST' && path === '/agent/chat' && !!authedWorkspaceId && !!authedUserId
 
-  let podUrl: string
-
-  if (isKubernetes()) {
-    try {
-      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-      podUrl = await getProjectPodUrl(projectId)
-    } catch (error: any) {
-      console.error('[AgentProxy] K8s pod resolution error:', error)
-      return c.json({ error: { code: 'proxy_error', message: error.message || 'Failed to resolve agent pod' } }, 502)
-    }
-  } else {
-    const manager = getRuntimeManager()
-    let runtime = manager.status(projectId)
-    if (!runtime || !runtime.agentPort) {
-      try {
-        runtime = await manager.start(projectId)
-      } catch (error: any) {
-        console.error(`[AgentProxy] Failed to auto-start runtime for ${projectId}:`, error)
-        return c.json({ error: { code: 'agent_start_failed', message: error.message || 'Failed to start agent runtime' } }, 503)
-      }
-    }
-    podUrl = `http://localhost:${runtime.agentPort}`
+  const { resolveAgentProxyPodUrl } = await import('./lib/agent-proxy-resolver')
+  const resolution = await resolveAgentProxyPodUrl(projectId)
+  if (!resolution.ok) {
+    return c.json(resolution.body, resolution.status)
   }
+  const podUrl = resolution.url
 
   const targetUrl = `${podUrl}${path}${qs}`
 
@@ -2549,140 +2549,86 @@ app.get('/api/projects/:projectId/terminal/commands', async (c) => {
     }
   }
   
-  // Local development: Use local filesystem
+  // Local development: build the per-workspace preset list inline. The
+  // dynamic shape (package.json scripts + Prisma/Playwright/Python file
+  // probes + .tech-stack quickCommands) lives in `quick-commands.ts` so
+  // both the API and the runtime pod produce identical responses.
   const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-  const router = terminalRoutes({ workspacesDir })
-  const url = new URL(c.req.url)
-  url.pathname = `/projects/${projectId}/terminal/commands`
-  const newReq = new Request(url.toString(), { method: 'GET' })
-  return router.fetch(newReq)
+  const projectDir = join(workspacesDir, projectId)
+  const { buildQuickCommands, groupQuickCommandsByCategory } = await import(
+    '@shogo/agent-runtime/src/quick-commands'
+  )
+  const commands = groupQuickCommandsByCategory(buildQuickCommands(projectDir))
+  return c.json({ commands })
 })
 
-// Execute a preset command
-app.post('/api/projects/:projectId/terminal/exec', async (c) => {
+// =============================================================================
+// PTY terminal sessions — long-lived shells (real PTY) over WebSockets
+// =============================================================================
+//
+// Lifecycle endpoints are JSON; the byte stream (keystrokes ↔ PTY output) lives
+// on a WebSocket at /api/projects/:projectId/terminal/sessions/:sessionId/ws,
+// upgraded inside the Bun.serve fetch handler at the bottom of this file.
+//
+// Local dev: spawn shells directly inside this process via PtySessionManager.
+// Kubernetes: TODO — proxy WS frames through to the per-project runtime pod
+// (REST is straightforward HTTP forwarding; WS proxy is a follow-up).
+
+const ptyRegistry = new ProjectPtyRegistry({
+  resolveWorkspaceDir: (projectId) => {
+    const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+    return join(workspacesDir, projectId)
+  },
+})
+// One handler set serves all projects: each WS carries its own
+// PtySessionManager reference (set at upgrade time below).
+const ptyWs = createPtyWsHandlers()
+
+app.post('/api/projects/:projectId/terminal/sessions', async (c) => {
   const projectId = c.req.param('projectId')
-  
-  if (isKubernetes()) {
-    // In Kubernetes: Proxy to runtime pod
-    try {
-      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-      const { deriveRuntimeToken } = await import('./lib/runtime-token')
-      const podUrl = await getProjectPodUrl(projectId)
-      const targetUrl = `${podUrl}/terminal/exec`
-      
-      console.log(`[TerminalProxy] Proxying exec to ${targetUrl}`)
-      
-      // Read and forward only the necessary headers and body
-      const body = await c.req.text()
-      
-      const response = await fetch(targetUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': c.req.header('Content-Type') || 'application/json',
-          'x-runtime-token': deriveRuntimeToken(projectId),
-        },
-        body,
-      })
-      
-      console.log(`[TerminalProxy] Response status: ${response.status}`)
-      
-      const responseHeaders = new Headers()
-      response.headers.forEach((value, key) => {
-        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
-          responseHeaders.set(key, value)
-        }
-      })
-      
-      return new Response(response.body, {
-        status: response.status,
-        headers: responseHeaders,
-      })
-    } catch (error: any) {
-      console.error('[TerminalProxy] Error:', error)
-      return c.json({
-        error: { code: 'proxy_error', message: error.message || 'Failed to execute command' }
-      }, 502)
-    }
-  }
-  
-  // Local development: Use local filesystem
   const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-  const router = terminalRoutes({ workspacesDir })
-  const url = new URL(c.req.url)
-  url.pathname = `/projects/${projectId}/terminal/exec`
-  const newReq = new Request(url.toString(), {
-    method: 'POST',
-    headers: c.req.raw.headers,
-    body: c.req.raw.body,
-    // @ts-expect-error - required when forwarding a streaming request body in Node
-    duplex: 'half',
-    signal: c.req.raw.signal,
-  })
-  return router.fetch(newReq)
+  const projectDir = join(workspacesDir, projectId)
+  if (!existsSync(projectDir)) {
+    return c.json({ error: { code: 'project_not_found', message: 'Project not found' } }, 404)
+  }
+  let body: { cwd?: string; cols?: number; rows?: number } = {}
+  try { body = await c.req.json() } catch {}
+  const mgr = ptyRegistry.for(projectId)
+  try {
+    const rec = mgr.create({
+      cwd: body.cwd,
+      cols: body.cols,
+      rows: body.rows,
+    })
+    return c.json({
+      id: rec.id,
+      cwd: rec.session.cwd,
+      cols: rec.session.cols,
+      rows: rec.session.rows,
+      createdAt: rec.createdAt,
+    })
+  } catch (err: any) {
+    const msg = err?.message ?? String(err)
+    const code = msg.startsWith('max-sessions-reached') ? 'max_sessions_reached' : 'spawn_failed'
+    return c.json({ error: { code, message: msg } }, 400)
+  }
 })
 
-// Execute a free-form shell command (the IDE "$" prompt). Mirrors /exec but
-// forwards arbitrary user input instead of a curated command id.
-app.post('/api/projects/:projectId/terminal/run', async (c) => {
+app.get('/api/projects/:projectId/terminal/sessions', (c) => {
   const projectId = c.req.param('projectId')
+  const mgr = ptyRegistry.peek(projectId)
+  return c.json({ sessions: mgr?.list() ?? [] })
+})
 
-  if (isKubernetes()) {
-    // In Kubernetes: Proxy to the project's runtime pod.
-    try {
-      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-      const { deriveRuntimeToken } = await import('./lib/runtime-token')
-      const podUrl = await getProjectPodUrl(projectId)
-      const targetUrl = `${podUrl}/terminal/run`
-
-      console.log(`[TerminalProxy] Proxying run to ${targetUrl}`)
-
-      const body = await c.req.text()
-
-      const response = await fetch(targetUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': c.req.header('Content-Type') || 'application/json',
-          'x-runtime-token': deriveRuntimeToken(projectId),
-        },
-        body,
-        signal: c.req.raw.signal,
-      })
-
-      console.log(`[TerminalProxy] run response status: ${response.status}`)
-
-      const responseHeaders = new Headers()
-      response.headers.forEach((value, key) => {
-        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
-          responseHeaders.set(key, value)
-        }
-      })
-
-      return new Response(response.body, {
-        status: response.status,
-        headers: responseHeaders,
-      })
-    } catch (error: any) {
-      console.error('[TerminalProxy] Error:', error)
-      return c.json({
-        error: { code: 'proxy_error', message: error.message || 'Failed to run command' }
-      }, 502)
-    }
+app.delete('/api/projects/:projectId/terminal/sessions/:id', (c) => {
+  const projectId = c.req.param('projectId')
+  const id = c.req.param('id')
+  const mgr = ptyRegistry.peek(projectId)
+  if (!mgr || !mgr.get(id)) {
+    return c.json({ error: { code: 'unknown_session', message: 'Session not found' } }, 404)
   }
-
-  // Local development: Use local filesystem
-  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-  const router = terminalRoutes({ workspacesDir })
-  const url = new URL(c.req.url)
-  url.pathname = `/projects/${projectId}/terminal/run`
-  const newReq = new Request(url.toString(), {
-    method: 'POST',
-    headers: c.req.raw.headers,
-    body: c.req.raw.body,
-    // @ts-expect-error - required when forwarding a streaming request body in Node
-    duplex: 'half',
-    signal: c.req.raw.signal,
-  })
-  return router.fetch(newReq)
+  mgr.kill(id)
+  return c.json({ ok: true })
 })
 
 // =============================================================================
@@ -3939,6 +3885,123 @@ app.get('/api/projects/:projectId/chat/status', async (c) => {
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/chat/status`
   const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// =============================================================================
+// Demo tool-mocks proxy
+// =============================================================================
+// POST/DELETE /api/projects/:projectId/agent/tool-mocks
+//
+// Forwards to the project's agent-runtime `/agent/tool-mocks` endpoint so
+// Playwright demo specs (and the eval runner via the same path) can install
+// deterministic tool mocks before driving the agent. The runtime endpoint is
+// defined in packages/agent-runtime/src/server.ts and merely populates the
+// in-memory `AgentGateway.toolMocks` map.
+//
+// Gated by `DEMO_MODE_ENABLED`. Local dev defaults this on; production stays
+// off. There is no user/session auth on top of the gate because the only
+// caller is the local Playwright recorder talking to its own runtime, and
+// installing mocks has no externally visible side effects beyond the project
+// pod itself.
+async function resolveAgentRuntimeUrl(projectId: string): Promise<string | null> {
+  try {
+    const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
+    // Tool-mocks installer is best-effort: if VM/K8s/host resolution
+    // fails, return null and let the caller log and skip rather than
+    // 503ing the (demo-mode-only) caller.
+    const res = await resolveProjectPodUrl(projectId, {
+      logTag: 'ToolMocks',
+      onVMPermanentlyDisabled: 'throw',
+    })
+    return res.url
+  } catch (err: any) {
+    console.warn(`[ToolMocks] Failed to resolve runtime URL for ${projectId}: ${err?.message ?? err}`)
+    return null
+  }
+}
+
+function demoModeEnabled(): boolean {
+  // On in local dev unless explicitly disabled. Off in any deployed
+  // environment (k8s, staging, production) unless explicitly turned on.
+  if (process.env.DEMO_MODE_ENABLED === '1' || process.env.DEMO_MODE_ENABLED === 'true') return true
+  if (process.env.DEMO_MODE_ENABLED === '0' || process.env.DEMO_MODE_ENABLED === 'false') return false
+  return !isKubernetes() && process.env.NODE_ENV !== 'production'
+}
+
+app.post('/api/projects/:projectId/agent/tool-mocks', async (c) => {
+  if (!demoModeEnabled()) {
+    return c.json({ error: 'tool-mocks proxy disabled (set DEMO_MODE_ENABLED=1 to enable)' }, 403)
+  }
+  const projectId = c.req.param('projectId')
+  const body = await c.req.text()
+
+  const baseUrl = await resolveAgentRuntimeUrl(projectId)
+  if (!baseUrl) {
+    return c.json({ error: 'Project runtime is not available' }, 503)
+  }
+
+  try {
+    const { deriveRuntimeToken } = await import('./lib/runtime-token')
+    const resp = await fetch(`${baseUrl}/agent/tool-mocks`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-runtime-token': deriveRuntimeToken(projectId),
+      },
+      body,
+    })
+    const text = await resp.text()
+    return new Response(text, {
+      status: resp.status,
+      headers: { 'Content-Type': resp.headers.get('content-type') ?? 'application/json' },
+    })
+  } catch (err: any) {
+    return c.json({ error: `Failed to install tool mocks: ${err?.message ?? err}` }, 502)
+  }
+})
+
+app.delete('/api/projects/:projectId/agent/tool-mocks', async (c) => {
+  if (!demoModeEnabled()) {
+    return c.json({ error: 'tool-mocks proxy disabled (set DEMO_MODE_ENABLED=1 to enable)' }, 403)
+  }
+  const projectId = c.req.param('projectId')
+
+  const baseUrl = await resolveAgentRuntimeUrl(projectId)
+  if (!baseUrl) {
+    return c.json({ error: 'Project runtime is not available' }, 503)
+  }
+
+  try {
+    const { deriveRuntimeToken } = await import('./lib/runtime-token')
+    const resp = await fetch(`${baseUrl}/agent/tool-mocks`, {
+      method: 'DELETE',
+      headers: { 'x-runtime-token': deriveRuntimeToken(projectId) },
+    })
+    const text = await resp.text()
+    return new Response(text, {
+      status: resp.status,
+      headers: { 'Content-Type': resp.headers.get('content-type') ?? 'application/json' },
+    })
+  } catch (err: any) {
+    return c.json({ error: `Failed to clear tool mocks: ${err?.message ?? err}` }, 502)
+  }
+})
+
+// GET /api/projects/:projectId/chat/:chatSessionId/turn - Read-only durable
+// turn snapshot. Lets the client probe whether a session has an in-progress
+// turn buffered in the runtime *before* deciding to attach to /stream. Without
+// this registration the route 404s at the app router (the inner router under
+// `projectChatRoutes` is only reachable via the explicit forwarders below).
+app.get('/api/projects/:projectId/chat/:chatSessionId/turn', async (c) => {
+  const authResult = await requireProjectAuth(c)
+  if ('error' in authResult) return authResult.error
+
+  const manager = getRuntimeManager()
+  const router = projectChatRoutes({ runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/chat/${c.req.param('chatSessionId')}/turn`
+  const newReq = new Request(url.toString(), { method: 'GET', headers: c.req.raw.headers })
   return router.fetch(newReq)
 })
 
@@ -5609,6 +5672,14 @@ app.route('/api', toolsProxy)
 // translator persona for both voice (signed URL) and text (streaming chat).
 app.route('/api', voiceRoutes())
 
+// Public streaming chat route — text-only sibling of the voice signed-
+// URL endpoint. Lets external SDK consumers (`useShogoChat`) drive the
+// project's persona over a plain HTTPS POST without opening an
+// ElevenLabs Convai websocket. Stateless in V1; auth via bearer
+// (`shogo_sk_*`) or session cookie. Runtime-token callers are
+// rejected — see runtime-token.md §7 for the rationale.
+app.route('/api', chatRoutes())
+
 // =============================================================================
 // Domain API routes - For APIPersistence layer
 // =============================================================================
@@ -5648,6 +5719,51 @@ app.delete('/api/admin/users/:id', authMiddleware, requireAuth, requireSuperAdmi
   return c.json({ ok: true })
 })
 
+// Apply a workspace credit grant to its wallet immediately (without
+// waiting for the next monthly cycle / Stripe invoice). Useful right
+// after a super-admin creates or edits a grant.
+app.post(
+  '/api/admin/workspace-grants/:id/apply',
+  authMiddleware,
+  requireAuth,
+  requireSuperAdmin,
+  async (c) => {
+    const id = c.req.param('id')
+    const grant = await prisma.workspaceGrant.findUnique({ where: { id } })
+    if (!grant) {
+      return c.json({ error: { code: 'not_found', message: 'Grant not found' } }, 404)
+    }
+    const workspaceId = grant.workspaceId
+
+    const paidSub = await prisma.subscription.findFirst({
+      where: { workspaceId, status: { in: ['active', 'trialing'] } },
+      select: { planId: true, seats: true },
+    })
+
+    if (paidSub) {
+      // Paid path: re-allocate using current plan + paid seat count;
+      // grant USD/seats are stacked inside `allocateMonthlyIncluded`.
+      await billingService.allocateMonthlyIncluded(workspaceId, paidSub.planId, paidSub.seats)
+      // Push the new effective Stripe seat quantity (members - freeSeats).
+      const sync = await billingService.syncSeatsFromMembership(workspaceId)
+      return c.json({
+        ok: true,
+        path: 'paid',
+        planId: paidSub.planId,
+        seats: paidSub.seats,
+        sync,
+      })
+    }
+
+    const wallet = await billingService.applyGrantMonthlyAllocation(workspaceId)
+    return c.json({
+      ok: true,
+      path: 'free',
+      monthlyIncludedUsd: wallet.monthlyIncludedUsd,
+    })
+  },
+)
+
 // Generated admin CRUD routes - full model CRUD with pagination/search/sorting
 // Protected by auth + requireSuperAdmin middleware stack
 app.route('/api/admin', createAdminRoutes({
@@ -5674,6 +5790,12 @@ app.route('/api', integrationRoutes())
 
 // Internal routes for cluster-internal pod communication (not exposed externally)
 app.route('/api/internal', internalRoutes)
+
+// E2E bootstrap routes — gated by NODE_ENV + shared secret. See
+// apps/api/src/routes/internal-e2e.ts for the guardrails. Mounted under
+// /api/internal/e2e so it inherits the existing auth-skip for
+// /api/internal/* (handlers enforce their own secret-based auth).
+app.route('/api/internal/e2e', internalE2eRoutes)
 
 // =============================================================================
 // Current User Route (/api/me) - Returns user profile with role
@@ -6316,6 +6438,17 @@ await (async () => {
   }
 })()
 
+// Match a path like `/api/projects/<projectId>/terminal/sessions/<id>/ws`.
+const PTY_WS_PATH_RE = /^\/api\/projects\/([^/]+)\/terminal\/sessions\/([^/]+)\/ws$/
+
+// Tag attached to PTY WS data so the multiplexed websocket{} dispatcher
+// can route open/message/close to the right handler set.
+const PTY_DATA_KIND = '__pty_ws__'
+type PtyTaggedData = PtyWsData & { __kind: typeof PTY_DATA_KIND }
+function isPtyData(data: unknown): data is PtyTaggedData {
+  return !!data && typeof data === 'object' && (data as { __kind?: string }).__kind === PTY_DATA_KIND
+}
+
 export default {
   port: API_PORT,
   hostname: "0.0.0.0",
@@ -6330,12 +6463,43 @@ export default {
       if (upgraded) return undefined
       return new Response('WebSocket upgrade failed', { status: 500 })
     }
+    // PTY terminal session WebSocket: in local-dev we own the manager;
+    // in Kubernetes we proxy to the runtime pod (TODO).
+    if (req.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+      const ptyMatch = PTY_WS_PATH_RE.exec(url.pathname)
+      if (ptyMatch) {
+        const [, projectId, sessionId] = ptyMatch
+        if (isKubernetes()) {
+          // K8s WS proxy is a follow-up. For now reject so the client
+          // doesn't think it's connected to a non-functional channel.
+          return new Response('PTY WS proxy not yet implemented in K8s', { status: 501 })
+        }
+        const mgr = ptyRegistry.peek(projectId)
+        if (!mgr || !mgr.get(sessionId)) {
+          return new Response('Unknown session', { status: 404 })
+        }
+        const since = Number(url.searchParams.get('since')) || 0
+        const data: PtyTaggedData = { __kind: PTY_DATA_KIND, manager: mgr, sessionId, since }
+        const upgraded = server.upgrade(req, { data })
+        if (upgraded) return undefined
+        return new Response('PTY WebSocket upgrade failed', { status: 500 })
+      }
+    }
     return app.fetch(req, server)
   },
   websocket: {
-    open: handleInstanceWsOpen,
-    message: handleInstanceWsMessage,
-    close: handleInstanceWsClose,
+    open(ws: any) {
+      if (isPtyData(ws.data)) ptyWs.open(ws)
+      else handleInstanceWsOpen(ws)
+    },
+    message(ws: any, msg: any) {
+      if (isPtyData(ws.data)) ptyWs.message(ws, msg)
+      else handleInstanceWsMessage(ws, msg)
+    },
+    close(ws: any, code?: number, reason?: string) {
+      if (isPtyData(ws.data)) ptyWs.close(ws, code, reason)
+      else handleInstanceWsClose(ws, code, reason)
+    },
   },
   idleTimeout: 255,
 }
@@ -6428,7 +6592,10 @@ if (isVMIsolation() && !isKubernetes()) {
       const managerFactory = () => vmModule.createVMManager()
 
       // Read persisted config.json (admin UI settings) as fallback for env vars
-      let configMemoryMB = 1536
+      // Default raised from 1536 → 4096 to give vite build --watch / bun /
+      // LSPs / prisma headroom inside the Linux guest. The OOM killer was
+      // reaping `node` mid-build at 1.5 GB. See apps/desktop/src/vm/types.ts.
+      let configMemoryMB = 4096
       let configCpus = 0
       let configMountWorkspace = false
       try {
@@ -6515,6 +6682,25 @@ if (isKubernetes()) {
     } catch (err: any) {
       console.error(
         '[VoiceRebill] failed to schedule monthly rebill (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
+}
+
+// Super-admin grant monthly refill — refills `monthlyIncludedUsd` on
+// free-tier workspaces with active `WorkspaceGrant` rows. Paid plans
+// are refilled by the Stripe `invoice.payment_succeeded` webhook.
+{
+  ;(async () => {
+    try {
+      const { startGrantMonthlyRefillCron } = await import(
+        './jobs/grant-monthly-refill'
+      )
+      startGrantMonthlyRefillCron()
+    } catch (err: any) {
+      console.error(
+        '[GrantRefill] failed to schedule grant refill (non-fatal):',
         err?.message ?? err,
       )
     }

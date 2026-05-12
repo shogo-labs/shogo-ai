@@ -31,7 +31,9 @@ import type { WorkspaceService } from "./workspace/types";
 // Workspace services are injected by the parent (WorkspaceService impls per root).
 import { isFsaSupported, pickDirectory, ensurePermission, LocalFs } from "./workspace/localFs";
 import { saveRoot, listRoots, deleteRoot, touchRoot } from "./workspace/handleStore";
-import { loadWorkspaceModels, disposeWorkspaceModels, removeModel, removeModelsUnderPath } from "./monaco/workspaceModels";
+import { disposeWorkspaceModels, removeModel, removeModelsUnderPath } from "./monaco/workspaceModels";
+import { setupLspProviders } from "./monaco/lspProviders";
+import { setupLspDocumentSync } from "./monaco/lspDocumentSync";
 import { matchesShortcut, type Command } from "./commands";
 import { useTheme } from "../../../../contexts/theme";
 import {
@@ -107,6 +109,8 @@ export function Workbench({
   agentLabel = "agent-workspace",
   projectId,
   paneVisible = true,
+  agentUrl,
+  fetchImpl,
 }: {
   agentService: WorkspaceService;
   agentLabel?: string;
@@ -120,6 +124,20 @@ export function Workbench({
    * edits a file.
    */
   paneVisible?: boolean;
+  /**
+   * Base URL of the agent runtime (e.g. http://localhost:38587). When set,
+   * Monaco's hover / completion / definition / references / document-symbol
+   * / signature-help / rename providers are routed to the backend
+   * typescript-language-server via `/agent/lsp/*` instead of the in-browser
+   * TS Web Worker. Lets us delete the 1000-file bulk preload entirely.
+   */
+  agentUrl?: string;
+  /**
+   * Authenticated fetch implementation (`agentFetch` from the mobile app)
+   * used by the LSP providers and document-sync. Defaults to global `fetch`
+   * for tests.
+   */
+  fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 }) {
   const themeMode = useResolvedTheme();
   const [activity, setActivity] = useState<ActivityId>("files");
@@ -186,6 +204,10 @@ export function Workbench({
 
   const editorRefs = useRef<Record<string, editor.IStandaloneCodeEditor>>({});
   const monacoNsRef = useRef<MonacoNs | null>(null);
+  // Bumped each time a Monaco editor mounts so the backend-LSP wiring effect
+  // below can run as soon as `monaco` is first available (effects can't read
+  // refs reactively).
+  const [monacoReadyTick, setMonacoReadyTick] = useState(0);
   const groupsRef = useRef(groups);
   groupsRef.current = groups;
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -227,9 +249,11 @@ export function Workbench({
       try {
         const raw = await svc.listTree("", 4);
         setRoot(id, { tree: annotateRoot(raw, id), loading: false });
-        // Fire-and-forget: preload TS/JS files as Monaco models so cross-file
-        // IntelliSense (go-to-def, imports) works across the whole project.
-        void loadWorkspaceModels(svc, id, raw).catch(() => {});
+        // Cross-file IntelliSense is served by the backend
+        // typescript-language-server (see `setupLspProviders` below); we used
+        // to preload up to 1000 TS/JS files into Monaco here to feed the
+        // in-browser TS Web Worker, but that bulk read is no longer needed —
+        // tsserver reads files off disk natively.
       } catch (err) {
         setRoot(id, {
           loading: false,
@@ -246,9 +270,28 @@ export function Workbench({
 
   // Keep open editors in sync with agent filesystem writes (Cursor-style).
   // Only hooks into the "agent" workspace; local folders never emit events.
+  //
+  // Trailing-edge debounced so a flurry of `file.changed` events from the
+  // agent (e.g. a multi-file edit) collapses into a single `listTree` round
+  // trip instead of N. The Monaco model contents are handled separately by
+  // the SSE handler in `useLiveAgentEdits` (per-file `upsertModel`), so the
+  // tree refresh here is purely for sidebar shape (adds/removes/renames).
+  const refreshTreeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshAgentTree = useCallback(() => {
-    void loadRoot("agent");
+    if (refreshTreeTimerRef.current) clearTimeout(refreshTreeTimerRef.current);
+    refreshTreeTimerRef.current = setTimeout(() => {
+      refreshTreeTimerRef.current = null;
+      void loadRoot("agent");
+    }, 250);
   }, [loadRoot]);
+  useEffect(() => {
+    return () => {
+      if (refreshTreeTimerRef.current) {
+        clearTimeout(refreshTreeTimerRef.current);
+        refreshTreeTimerRef.current = null;
+      }
+    };
+  }, []);
   // Try to animate a live-edit in-place for the currently-active editor/file.
   // Returns true if the animation owned the content update (and React state
   // only needs savedContent/dirty updated), false otherwise.
@@ -314,6 +357,34 @@ export function Workbench({
     void loadRoot("agent");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ─── Backend LSP wiring ────────────────────────────────────────────────
+  // Once a Monaco editor mounts AND we have an agentUrl, register the
+  // hover/completion/definition/references/rename providers and the
+  // didOpen/didChange/didClose sync against the typescript-language-server
+  // running in the agent runtime. Replaces the in-browser TS Web Worker as
+  // the source of truth for cross-file IntelliSense — no client preload of
+  // workspace files required because tsserver reads them off disk natively.
+  useEffect(() => {
+    const monaco = monacoNsRef.current;
+    if (!monaco || !agentUrl) return;
+    const providers = setupLspProviders({
+      monaco: monaco as unknown as typeof import("monaco-editor"),
+      agentUrl,
+      rootId: "agent",
+      fetchImpl,
+    });
+    const sync = setupLspDocumentSync({
+      monaco: monaco as unknown as typeof import("monaco-editor"),
+      agentUrl,
+      rootId: "agent",
+      fetchImpl,
+    });
+    return () => {
+      providers.dispose();
+      sync.dispose();
+    };
+  }, [monacoReadyTick, agentUrl, fetchImpl]);
 
   // ─── Fix-in-agent toast ─────────────────────────────────────────────
   // When the user clicks "✨ Fix with Shogo" in a Monaco hover or quick-fix,
@@ -1251,7 +1322,10 @@ export function Workbench({
                       settings={settings}
                       onEditorMount={(ed, monaco) => {
                         editorRefs.current[g.id] = ed;
-                        if (monaco) monacoNsRef.current = monaco;
+                        if (monaco && monacoNsRef.current !== monaco) {
+                          monacoNsRef.current = monaco;
+                          setMonacoReadyTick((t) => t + 1);
+                        }
                       }}
                     />
                   </div>

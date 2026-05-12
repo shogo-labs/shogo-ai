@@ -26,6 +26,7 @@ export const UsageWalletModel = types
     overageEnabled: types.optional(types.boolean, false),
     overageHardLimitUsd: types.optional(types.number, 0),
     overageAccumulatedUsd: types.optional(types.number, 0),
+    overageBilledUsd: types.optional(types.number, 0),
     stripeMeteredItemId: types.optional(types.string, ""),
     anniversaryDay: types.number,
     lastDailyReset: types.number,

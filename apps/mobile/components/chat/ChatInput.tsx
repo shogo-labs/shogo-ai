@@ -14,7 +14,7 @@
  * Native: Expo ImagePicker + DocumentPicker (AttachSourceSheet + native-attachment-picker).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   View,
   Text,
@@ -59,6 +59,7 @@ import {
   MessageCircleQuestion,
   Check,
   Mic,
+  Sparkles,
 } from "lucide-react-native"
 import { AutoModelOption } from "./AutoModelOption"
 import { useVoiceInput } from "./useVoiceInput"
@@ -74,6 +75,7 @@ import {
 } from "./long-text-utils"
 import { FileViewerModal } from "./FileViewerModal"
 import { PastedTextChip } from "./PastedTextChip"
+import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext"
 
 export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6"
 export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
@@ -128,6 +130,9 @@ export const INTERACTION_MODES: InteractionModeConfig[] = [
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 const MAX_FILES = 10
 const INTERACTION_MODE_ORDER: InteractionMode[] = ["agent", "plan", "ask"]
+
+const MIN_INPUT_HEIGHT = 60
+const MAX_INPUT_HEIGHT = 200
 
 interface AttachedFile {
   id: string
@@ -191,7 +196,7 @@ export interface ChatInputProps {
   dimWhenDisabled?: boolean
 }
 
-export function ChatInput({
+function ChatInputImpl({
   onSubmit,
   disabled = false,
   placeholder = "Ask Shogo...",
@@ -216,6 +221,10 @@ export function ChatInput({
   const { features } = usePlatformConfig()
   const effectiveIsPro = features.billing ? isPro : true
 
+  const bridge = useChatBridgeOptional()
+  const shogoAvailable = Platform.OS === "web" && features.shogoMode && !!bridge
+  const shogoActive = bridge?.shogoModeActive ?? false
+
   const textInputRef = useRef<TextInput>(null)
   const dropZoneRef = useRef<View>(null)
   const dragCounterRef = useRef(0)
@@ -225,6 +234,7 @@ export function ChatInput({
   const pasteHandledRef = useRef(false)
 
   const [inputValue, setInputValue] = useState("")
+  const [inputHeight, setInputHeight] = useState(MIN_INPUT_HEIGHT)
   const [pendingFiles, setPendingFiles] = useState<AttachedFile[]>([])
   const [fileError, setFileError] = useState<string | null>(null)
   const [isProcessingFiles, setIsProcessingFiles] = useState(false)
@@ -276,11 +286,11 @@ export function ChatInput({
   )
 
   const cycleInteractionMode = useCallback(() => {
-    if (disabled || isStreaming) return
+    if (disabled) return
     const currentIndex = INTERACTION_MODE_ORDER.indexOf(interactionMode)
     const nextIndex = (currentIndex + 1) % INTERACTION_MODE_ORDER.length
     handleInteractionModeChange(INTERACTION_MODE_ORDER[nextIndex])
-  }, [disabled, handleInteractionModeChange, interactionMode, isStreaming])
+  }, [disabled, handleInteractionModeChange, interactionMode])
 
   const currentInteractionConfig = useMemo(
     () => INTERACTION_MODES.find((m) => m.id === interactionMode) || INTERACTION_MODES[0],
@@ -573,6 +583,7 @@ export function ChatInput({
 
     onSubmit(trimmedContent, fileData, currentModelId)
     setInputValue("")
+    setInputHeight(MIN_INPUT_HEIGHT)
     setPendingFiles([])
     setPastedTexts([])
     setViewingPastedId(null)
@@ -603,6 +614,9 @@ export function ChatInput({
       }
 
       setInputValue(text)
+      if (text.length === 0) {
+        setInputHeight(MIN_INPUT_HEIGHT)
+      }
 
       if (text.startsWith("/") && !text.includes(" ")) {
         setShowSkillPicker(true)
@@ -933,6 +947,14 @@ export function ChatInput({
           editable={!disabled && !voiceInput.isRecording}
           multiline
           blurOnSubmit={false}
+          onContentSizeChange={(e) => {
+            const h = e.nativeEvent.contentSize.height
+            const clamped = Math.min(MAX_INPUT_HEIGHT, Math.max(MIN_INPUT_HEIGHT, h))
+            if (clamped !== inputHeight) {
+              setInputHeight(clamped)
+            }
+          }}
+          style={{ height: inputHeight }}
           className={cn(
             "min-h-[60px] max-h-[200px] w-full",
             "bg-transparent",
@@ -957,7 +979,7 @@ export function ChatInput({
               trigger={(triggerProps) => (
                 <Pressable
                   {...triggerProps}
-                  disabled={disabled || isStreaming}
+                  disabled={disabled}
                   className={cn(
                     "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
                     interactionMode === "agent" && "bg-muted/50",
@@ -1000,7 +1022,7 @@ export function ChatInput({
               )}
             >
               <PopoverBackdrop />
-              <PopoverContent className="w-[280px] p-0">
+              <PopoverContent className="w-[140px] p-0">
                 <View className="py-1">
                   {INTERACTION_MODES.map((mode) => {
                     const isSelected = mode.id === interactionMode
@@ -1012,7 +1034,7 @@ export function ChatInput({
                           setInteractionModeOpen(false)
                         }}
                         className={cn(
-                          "flex-row items-center gap-3 p-3 rounded-lg mb-1",
+                          "flex-row items-center p-1 rounded-lg mb-1",
                           isSelected &&
                             mode.id === "agent" &&
                             "bg-accent",
@@ -1037,13 +1059,13 @@ export function ChatInput({
                               (!isSelected || mode.id === "agent") &&
                                 "text-muted-foreground"
                             )}
-                            size={14}
+                            size={6}
                           />
                         </View>
                         <View className="flex-1">
                           <Text
                             className={cn(
-                              "font-medium text-sm",
+                              "text-xs",
                               isSelected &&
                                 mode.id === "plan" &&
                                 "text-amber-400",
@@ -1056,13 +1078,51 @@ export function ChatInput({
                           >
                             {mode.label}
                           </Text>
-                          <Text className="text-xs text-muted-foreground">
-                            {mode.description}
-                          </Text>
                         </View>
                       </Pressable>
                     )
                   })}
+                  {shogoAvailable && (
+                    <>
+                      <View className="h-px bg-border/50 mx-2 my-1" />
+                      <Pressable
+                        testID="shogo-mode-toggle"
+                        onPress={() => {
+                          bridge?.toggleShogoMode()
+                          setInteractionModeOpen(false)
+                        }}
+                        className={cn(
+                          "flex-row items-center p-1 rounded-lg mb-1",
+                          shogoActive &&
+                            "border border-violet-500/35 bg-violet-500/12"
+                        )}
+                      >
+                        <View className="w-8 items-center">
+                          <Sparkles
+                            className={cn(
+                              "h-3.5 w-3.5",
+                              shogoActive
+                                ? "text-violet-400"
+                                : "text-muted-foreground"
+                            )}
+                            size={6}
+                          />
+                        </View>
+                        <View className="flex-1">
+                          <Text
+                            className={cn(
+                              "text-xs",
+                              shogoActive
+                                ? "text-violet-400"
+                                : "text-foreground"
+                            )}
+                          >
+                            Shogo Mode
+                          </Text>
+                        </View>
+                      </Pressable>
+                    </>
+                  )}
                 </View>
               </PopoverContent>
             </Popover>
@@ -1079,7 +1139,7 @@ export function ChatInput({
                 trigger={(triggerProps) => (
                   <Pressable
                     {...triggerProps}
-                    disabled={disabled || isStreaming}
+                    disabled={disabled}
                     className={cn(
                       "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
                       quickActionsOpen
@@ -1155,7 +1215,7 @@ export function ChatInput({
               trigger={(triggerProps) => (
                 <Pressable
                   {...triggerProps}
-                  disabled={disabled || isStreaming}
+                  disabled={disabled}
                   className="h-[22px] flex-row items-center gap-1 rounded-md px-1.5"
                 >
                   <Text className="text-xs text-muted-foreground">
@@ -1380,5 +1440,16 @@ export function ChatInput({
     </View>
   )
 }
+
+/**
+ * Memoized so ChatPanel re-renders driven by streaming-token state
+ * (token-level message updates, MobX reactions, scroll handlers, etc.)
+ * don't re-run the entire input subtree on every commit. The default
+ * shallow comparison is sufficient as long as callers pass stable
+ * callbacks (`useCallback`) and stable arrays (`useMemo`) — defaulted
+ * primitive props are compared by value, and inline arrows would defeat
+ * memo if any reappear.
+ */
+export const ChatInput = memo(ChatInputImpl)
 
 export default ChatInput

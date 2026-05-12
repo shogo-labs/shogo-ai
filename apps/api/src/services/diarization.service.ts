@@ -21,6 +21,8 @@ export interface DiarizationResult {
 // Path resolution
 // ---------------------------------------------------------------------------
 
+const SHERPA_BIN_EXT = process.platform === 'win32' ? '.exe' : ''
+
 function getSherpaDir(): string {
   const candidates = [
     process.env.SHOGO_SHERPA_DIR,
@@ -29,13 +31,13 @@ function getSherpaDir(): string {
     join((process as any).resourcesPath || '', 'sherpa-onnx'),
   ].filter(Boolean) as string[]
   for (const dir of candidates) {
-    if (existsSync(join(dir, 'bin', 'sherpa-onnx-offline-speaker-diarization'))) return dir
+    if (existsSync(join(dir, 'bin', `sherpa-onnx-offline-speaker-diarization${SHERPA_BIN_EXT}`))) return dir
   }
   return candidates[0]
 }
 
 export function getDiarizationBinaryPath(): string | null {
-  const bin = join(getSherpaDir(), 'bin', 'sherpa-onnx-offline-speaker-diarization')
+  const bin = join(getSherpaDir(), 'bin', `sherpa-onnx-offline-speaker-diarization${SHERPA_BIN_EXT}`)
   return existsSync(bin) ? bin : null
 }
 
@@ -55,7 +57,8 @@ export function isDiarizationAvailable(): boolean {
 
 function whichSync(cmd: string): string | null {
   try {
-    return execSync(`which ${cmd}`, { encoding: 'utf-8' }).trim() || null
+    const whichCmd = process.platform === 'win32' ? 'where' : 'which'
+    return execSync(`${whichCmd} ${cmd}`, { encoding: 'utf-8' }).trim().split('\n')[0] || null
   } catch {
     return null
   }
@@ -103,6 +106,9 @@ export async function diarize(
   const env = { ...process.env }
   if (process.platform === 'darwin') {
     env.DYLD_LIBRARY_PATH = [libDir, env.DYLD_LIBRARY_PATH].filter(Boolean).join(':')
+  } else if (process.platform === 'win32') {
+    const binDir = join(getSherpaDir(), 'bin')
+    env.PATH = [binDir, libDir, env.PATH].filter(Boolean).join(';')
   } else {
     env.LD_LIBRARY_PATH = [libDir, env.LD_LIBRARY_PATH].filter(Boolean).join(':')
   }
@@ -155,7 +161,12 @@ async function ensureResampled(audioPath: string): Promise<string> {
   } catch { /* proceed to resample */ }
 
   if (!whichSync('ffmpeg')) {
-    throw new Error('ffmpeg is required for diarization (audio resampling). Install it with: brew install ffmpeg')
+    const installHint = process.platform === 'win32'
+      ? 'Download from https://ffmpeg.org or install via: winget install ffmpeg'
+      : process.platform === 'darwin'
+        ? 'Install with: brew install ffmpeg'
+        : 'Install with: sudo apt install ffmpeg'
+    throw new Error(`ffmpeg is required for diarization (audio resampling). ${installHint}`)
   }
 
   const resampledPath = audioPath.replace(/\.wav$/, '-16k.wav')

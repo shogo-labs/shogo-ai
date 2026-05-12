@@ -240,12 +240,18 @@ export async function ensureProjectElevenLabsAgent(params: {
 }
 
 /**
- * Handler for `GET /api/voice/signed-url?projectId=...`.
+ * Handler for `GET /api/voice/signed-url?projectId=...&agentName=...`.
  *
- * Lazily provisions a per-project EL agent (Mode B) if one doesn't
- * already exist, then mints a signed URL for that agent using Shogo's
- * pooled EL API key. The browser connects directly to EL via the
- * signed URL — Shogo never proxies convai media.
+ * Resolves the requested named agent on the project (default: the
+ * `default` agent), lazily provisions an EL agent id if the row has
+ * a `voiceId` but no agent yet, then mints a signed URL using
+ * Shogo's pooled EL API key. The browser connects directly to EL via
+ * the signed URL — Shogo never proxies convai media.
+ *
+ * `agentName` is optional. When omitted, falls back to the project's
+ * `default` agent in `project_agents`; pre-migration projects fall
+ * through to the legacy `voice_project_configs.elevenlabsAgentId`
+ * column via {@link ensureProjectElevenLabsAgent}.
  */
 async function projectSignedUrlHandler(
   c: import('hono').Context,
@@ -256,14 +262,38 @@ async function projectSignedUrlHandler(
     return c.json({ error: resolved.error }, 503)
   }
 
+  // Lazy import to avoid a tight circular at module-eval time —
+  // `projectAgent.service.ts` imports `ensureProjectElevenLabsAgent`
+  // from this file, so any top-level import here would cycle.
+  const { resolveVoiceAgentForSignedUrl, listProjectAgentNames } = await import(
+    '../services/projectAgent.service'
+  )
+
+  const requestedName = c.req.query('agentName')
+
   try {
-    const agentId = await ensureProjectElevenLabsAgent({
+    const resolvedAgent = await resolveVoiceAgentForSignedUrl({
       projectId: params.projectId,
       workspaceId: params.workspaceId,
+      agentName: requestedName,
       client: resolved.client,
     })
-    const signedUrl = await resolved.client.getSignedUrl(agentId)
-    return c.json({ signedUrl, agentId })
+    if (!resolvedAgent) {
+      const knownAgents = await listProjectAgentNames(params.projectId)
+      return c.json(
+        {
+          error: `Voice agent '${requestedName}' is not configured for this project. Run \`shogo deploy\` to provision it.`,
+          knownAgents,
+        },
+        404,
+      )
+    }
+    const signedUrl = await resolved.client.getSignedUrl(resolvedAgent.agentId)
+    return c.json({
+      signedUrl,
+      agentId: resolvedAgent.agentId,
+      agentName: resolvedAgent.agentName,
+    })
   } catch (err: any) {
     console.error(
       '[Voice] project signed-url failed:',
@@ -1965,6 +1995,97 @@ export function voiceRoutes() {
       released: true,
       ...(errors.length ? { warnings: errors } : {}),
     })
+  })
+
+  /**
+   * POST /api/projects/:projectId/agents/sync
+   *
+   * Reconcile the project's `project_agents` rows against a manifest
+   * supplied by `shogo deploy`. Creates rows for new names, patches
+   * rows whose manifest fields differ, optionally prunes rows that
+   * disappeared from the manifest. Voice-capable rows (with
+   * `voiceId`) additionally provision / patch / delete the
+   * underlying ElevenLabs agent.
+   *
+   * Body:
+   *   {
+   *     agents: Record<string, AgentManifest>,
+   *     prune?: boolean,
+   *     dryRun?: boolean,
+   *   }
+   *
+   * Response:
+   *   { created: string[], updated: string[], deleted: string[],
+   *     errors: Array<{ name, message }>, dryRun: boolean }
+   */
+  router.post('/projects/:projectId/agents/sync', async (c) => {
+    const projectId = c.req.param('projectId')
+    const authz = await authorizeProject(c, projectId)
+    if (!authz.ok) {
+      return c.json(
+        { error: { code: authz.code, message: authz.message } },
+        authz.status,
+      )
+    }
+
+    let body: any
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json(
+        { error: { code: 'bad_request', message: 'Invalid JSON body' } },
+        400,
+      )
+    }
+    if (!body || typeof body !== 'object') {
+      return c.json(
+        { error: { code: 'bad_request', message: 'Invalid JSON body' } },
+        400,
+      )
+    }
+    const manifest = (body.agents ?? {}) as Record<string, unknown>
+    const prune = body.prune === true
+    const dryRun = body.dryRun === true
+
+    if (!manifest || typeof manifest !== 'object') {
+      return c.json(
+        { error: { code: 'bad_request', message: '`agents` must be an object' } },
+        400,
+      )
+    }
+
+    const { syncProjectAgents } = await import(
+      '../services/projectAgentSync.service'
+    )
+
+    const elClient = (() => {
+      const r = resolveShogoElevenLabsClient()
+      return 'error' in r ? null : r.client
+    })()
+
+    try {
+      const result = await syncProjectAgents({
+        projectId: authz.projectId,
+        workspaceId: authz.workspaceId,
+        manifest,
+        prune,
+        dryRun,
+        elClient,
+      })
+      return c.json(result)
+    } catch (err: any) {
+      console.error('[Agents Sync] failed:', err?.message || err)
+      return c.json(
+        {
+          error: {
+            code: 'sync_failed',
+            message: 'Failed to reconcile project agents',
+            detail: err?.message ?? String(err),
+          },
+        },
+        500,
+      )
+    }
   })
 
   return router

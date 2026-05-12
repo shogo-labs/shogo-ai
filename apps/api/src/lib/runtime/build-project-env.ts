@@ -30,12 +30,30 @@ export async function buildProjectEnv(
     const { prisma } = await import('../prisma')
     const project = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { workspaceId: true, templateId: true, name: true, settings: true },
-    })
+      select: {
+        workspaceId: true,
+        templateId: true,
+        name: true,
+        settings: true,
+        workspace: { select: { composioScope: true } },
+      } as any,
+    }) as (Record<string, any> & {
+      workspaceId?: string | null
+      templateId?: string | null
+      name?: string | null
+      settings?: unknown
+      workspace?: { composioScope?: string | null } | null
+    }) | null
     if (project) {
       if (project.workspaceId) env.WORKSPACE_ID = project.workspaceId
       if (project.templateId) env.TEMPLATE_ID = project.templateId
       if (project.name) env.AGENT_NAME = project.name
+
+      // Tell the runtime which scope to use for Composio user IDs.
+      // Falls back to 'workspace' (the new default) when the workspace
+      // row is missing the column or the join didn't return a value.
+      const scope = project.workspace?.composioScope
+      env.COMPOSIO_USER_SCOPE = scope === 'project' || scope === 'workspace' ? scope : 'workspace'
 
       const settings = project.settings as Record<string, unknown> | null
 
@@ -105,6 +123,31 @@ export async function buildProjectEnv(
     env.S3_SYNC_INTERVAL = '30000'
     if (process.env.S3_ENDPOINT) env.S3_ENDPOINT = process.env.S3_ENDPOINT
     if (process.env.S3_FORCE_PATH_STYLE === 'true') env.S3_FORCE_PATH_STYLE = 'true'
+  }
+
+  // Voice mock mode for demo recordings. When the API server has
+  // SHOGO_VOICE_MODE=mock (or SHOGO_DEMO_VOICE=mock as a more obvious
+  // alias), forward it into the pod env so `createClient().voice.telephony`
+  // resolves to MockTelephonyClient inside the runtime. Effect: the agent
+  // generates real `shogo.voice.telephony.outboundCall(...)` code, the SDK
+  // returns canned data, no real Twilio/EL traffic, no usage-wallet debit.
+  // See packages/sdk/src/voice/mock-telephony.ts.
+  const voiceMode = process.env.SHOGO_VOICE_MODE || process.env.SHOGO_DEMO_VOICE
+  if (voiceMode) {
+    env.SHOGO_VOICE_MODE = voiceMode
+  }
+
+  // Browser-tool capture mode for demo recordings. When set, every
+  // `browser` tool call dumps params + (for screenshots) PNG bytes to
+  // this directory inside the pod. The Playwright capture script
+  // (demo/playwright/scripts/capture-scene-1.ts) sets it to a path
+  // mounted into the pod's workspace so the captured fixtures persist
+  // out to the host filesystem. OFF in normal operation. Replay
+  // happens in Playwright via loadBrowserFixturesFromDir() — the
+  // runtime never reads the captured files itself.
+  const captureDir = process.env.SHOGO_MOCK_CAPTURE_DIR
+  if (captureDir) {
+    env.SHOGO_MOCK_CAPTURE_DIR = captureDir
   }
 
   console.log(`[${prefix}] total ${Date.now() - startTime}ms for ${projectId}`)

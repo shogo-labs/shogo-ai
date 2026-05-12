@@ -24,9 +24,10 @@
  *      if a `playwright.config.*` exists; Python presets only when
  *      `requirements.txt` / `pyproject.toml` are present.
  *
- * No LLM round-trip, no agent prompt — the IDE invokes these directly via
- * `POST /terminal/exec`, which spawns the command and streams stdout/stderr
- * back. See `runtime-terminal-routes.ts` for the wiring.
+ * No LLM round-trip, no agent prompt — the IDE renders these in the
+ * Terminal kebab menu and types the chosen command into the active PTY
+ * shell. See `runtime-terminal-routes.ts` for the `/terminal/commands`
+ * endpoint that serves this list.
  */
 
 import { existsSync, readFileSync } from 'fs'

@@ -98,8 +98,13 @@ spec:
               value: "0"
             - name: PROJECT_NAMESPACE
               value: "shogo-production-workspaces"
+            # RUNTIME_IMAGE is patched per-deploy to an immutable
+            # `:production-<git-sha>` tag (workflow "Pin RUNTIME_IMAGE on api
+            # ksvc"). Bootstrap value below is only used on a fresh cluster.
+            # NEVER use a mutable `:*-latest` tag here — see the staging
+            # incident postmortem (2026-05-04).
             - name: RUNTIME_IMAGE
-              value: "us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-runtime:production-latest"
+              value: "us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-runtime:production-bootstrap"
             - name: PREVIEW_BASE_DOMAIN
               value: "shogo.ai"
             - name: PREVIEW_ENVIRONMENT
@@ -110,6 +115,22 @@ spec:
               value: "us-ashburn-1"
             - name: S3_ENDPOINT
               value: "https://idin4oltblww.compat.objectstorage.us-ashburn-1.oraclecloud.com"
+            # S3 credentials for OCI Object Storage (Oracle's S3-compat API).
+            # Required for: project import → S3 seed (apps/api/src/routes/project-export-import.ts),
+            # Storage cron, and any other S3 PUT from the API pod. NOT marked
+            # optional: a missing secret is the exact silent-failure mode that
+            # let imports "succeed" with empty projects in staging on
+            # 2026-05-11. We'd rather crashloop than ship that again.
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: access-key
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: secret-key
             - name: PUBLISH_NAMESPACE
               value: "shogo-production-system"
             - name: PUBLISH_DOMAIN
@@ -120,6 +141,13 @@ spec:
               value: "https://studio.shogo.ai"
             - name: ALLOWED_ORIGINS
               value: "https://studio.shogo.ai,https://shogo.ai,https://eu.studio.shogo.ai,https://india.studio.shogo.ai"
+            # Public hostname the desktop should use for the on-demand
+            # tunnel WebSocket. Routed by api-tunnel-ingress.yaml directly
+            # to the api revision pod (no DomainMapping → no broken WS
+            # Upgrade hop). Heartbeat traffic stays on
+            # SHOGO_PUBLIC_API_URL above.
+            - name: SHOGO_TUNNEL_WS_URL
+              value: "wss://tunnel.shogo.ai"
             - name: REDIS_URL
               value: "redis://redis-master.shogo-production-system:6379"
             - name: DATABASE_URL
@@ -227,6 +255,36 @@ spec:
                   name: api-secrets
                   key: GOOGLE_API_KEY
                   optional: true
+            - name: ELEVENLABS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: ELEVENLABS_API_KEY
+                  optional: true
+            - name: ELEVENLABS_VOICE_MODE_AGENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: ELEVENLABS_VOICE_MODE_AGENT_ID
+                  optional: true
+            - name: ELEVENLABS_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: ELEVENLABS_WEBHOOK_SECRET
+                  optional: true
+            - name: TWILIO_ACCOUNT_SID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: TWILIO_ACCOUNT_SID
+                  optional: true
+            - name: TWILIO_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: TWILIO_AUTH_TOKEN
+                  optional: true
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "https://ingest.us.signoz.cloud:443"
             - name: OTEL_SERVICE_NAME
@@ -253,8 +311,14 @@ spec:
               value: "3600000"
             - name: PROMOTED_POD_GC_ENABLED
               value: "true"
+            # 30 min: needs to be longer than typical user-think-time
+            # between chat turns. With 10 min users would idle out while
+            # reading/typing the next message and the next visit hit a
+            # cold start, which (combined with the activator's hardcoded
+            # 5-minute request timeout) was producing the
+            # `eof-without-turn-complete` log lines.
             - name: PROMOTED_POD_IDLE_TIMEOUT_MS
-              value: "600000"
+              value: "1800000"
             - name: LOAD_TEST_SECRET
               valueFrom:
                 secretKeyRef:

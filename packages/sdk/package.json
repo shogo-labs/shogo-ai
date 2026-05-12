@@ -1,6 +1,6 @@
 {
   "name": "@shogo-ai/sdk",
-  "version": "0.4.0",
+  "version": "1.3.0",
   "description": "Shogo Platform SDK - Zero-boilerplate auth and database for Shogo apps",
   "type": "module",
   "main": "dist/index.cjs",
@@ -47,6 +47,11 @@
       "import": "./dist/tools/index.js",
       "require": "./dist/tools/index.cjs"
     },
+    "./tools/server": {
+      "types": "./dist/tools/server.d.ts",
+      "import": "./dist/tools/server.js",
+      "require": "./dist/tools/server.cjs"
+    },
     "./memory": {
       "types": "./dist/memory/index.d.ts",
       "import": "./dist/memory/index.js",
@@ -76,6 +81,36 @@
       "types": "./dist/voice/native/index.d.ts",
       "import": "./dist/voice/native/index.js",
       "require": "./dist/voice/native/index.cjs"
+    },
+    "./voice/route": {
+      "types": "./dist/voice/route/index.d.ts",
+      "import": "./dist/voice/route/index.js",
+      "require": "./dist/voice/route/index.cjs"
+    },
+    "./voice/route/signed-url": {
+      "types": "./dist/voice/route/signed-url.d.ts",
+      "import": "./dist/voice/route/signed-url.js",
+      "require": "./dist/voice/route/signed-url.cjs"
+    },
+    "./voice/route/tts-preview": {
+      "types": "./dist/voice/route/tts-preview.d.ts",
+      "import": "./dist/voice/route/tts-preview.js",
+      "require": "./dist/voice/route/tts-preview.cjs"
+    },
+    "./voice/route/agent": {
+      "types": "./dist/voice/route/agent.d.ts",
+      "import": "./dist/voice/route/agent.js",
+      "require": "./dist/voice/route/agent.cjs"
+    },
+    "./voice/route/audio-tags": {
+      "types": "./dist/voice/route/audio-tags.d.ts",
+      "import": "./dist/voice/route/audio-tags.js",
+      "require": "./dist/voice/route/audio-tags.cjs"
+    },
+    "./cli/deploy": {
+      "types": "./dist/cli/deploy.d.ts",
+      "import": "./dist/cli/deploy.js",
+      "require": "./dist/cli/deploy.cjs"
     }
   },
   "bin": {
@@ -102,8 +137,10 @@
   },
   "devDependencies": {
     "@aws-sdk/client-ses": "^3.700.0",
+    "@ai-sdk/react": "^3.0.99",
     "@elevenlabs/react": "^1.1.1",
     "@elevenlabs/react-native": "^1.1.4",
+    "ai": "^6.0.97",
     "@playwright/test": "^1.40.0",
     "@prisma/internals": "^7.3.0",
     "@types/better-sqlite3": "^7.6.13",
@@ -127,8 +164,11 @@
     "@aws-sdk/client-ses": ">=3.0.0",
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/adapter-libsql": "",
+    "@ai-sdk/react": ">=3.0.0",
     "@elevenlabs/react": ">=1.1.0",
     "@elevenlabs/react-native": ">=1.1.0",
+    "ai": ">=6.0.0",
+    "mobx": ">=6.0.0",
     "react": ">=18.0.0",
     "react-native": ">=0.70.0",
     "better-sqlite3": ">=11.0.0",
@@ -149,10 +189,19 @@
     "@prisma/adapter-libsql": {
       "optional": true
     },
+    "@ai-sdk/react": {
+      "optional": true
+    },
     "@elevenlabs/react": {
       "optional": true
     },
     "@elevenlabs/react-native": {
+      "optional": true
+    },
+    "ai": {
+      "optional": true
+    },
+    "mobx": {
       "optional": true
     },
     "react": {

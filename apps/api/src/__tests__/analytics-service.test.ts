@@ -155,6 +155,31 @@ describe('getUserFunnel', () => {
     const query = mockPrisma.$queryRawUnsafe.mock.calls[0][0] as string
     expect(query).not.toContain('@test.shogo.ai')
   })
+
+  test('coerces bigint counts (SQLite COUNT(*)) to number so JSON.stringify works', async () => {
+    // SQLite via Prisma `$queryRaw*` returns 64-bit integer aggregates as BigInt
+    // even when CAST(... AS INTEGER). Hono's c.json -> JSON.stringify throws on
+    // BigInt. Regression: see "Funnel error: TypeError: JSON.stringify cannot
+    // serialize BigInt" reported on the macOS desktop app (SQLite local mode).
+    mockPrisma.$queryRawUnsafe.mockResolvedValueOnce([{
+      signups: 7n,
+      onboarded: 5n,
+      createdProject: 3n,
+      sentMessage: 2n,
+      engaged: 1n,
+      avgMinToFirstProject: 12.5,
+      avgMinToFirstMessage: null,
+    }])
+
+    const result = await getUserFunnel('30d', true)
+    expect(typeof result.signups).toBe('number')
+    expect(result.signups).toBe(7)
+    expect(typeof result.onboarded).toBe('number')
+    expect(typeof result.engaged).toBe('number')
+    expect(result.avgMinToFirstMessage).toBeNull()
+    // Critical assertion: the result must be JSON-serializable end-to-end.
+    expect(() => JSON.stringify(result)).not.toThrow()
+  })
 })
 
 describe('getSourceBreakdown', () => {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   View,
   Text,
@@ -12,6 +12,10 @@ import {
   Alert,
   Linking,
   TextInput,
+  Modal,
+  useWindowDimensions,
+  type NativeSyntheticEvent,
+  type NativeScrollEvent,
 } from 'react-native'
 import { observer } from 'mobx-react-lite'
 import { useRouter, useLocalSearchParams } from 'expo-router'
@@ -19,21 +23,40 @@ import {
   ArrowLeft,
   Star,
   Download,
-  Shield,
   ExternalLink,
   MessageSquarePlus,
   X,
   Info,
+  ChevronRight,
+  Share2,
+  Clock,
+  Check,
+  ChevronDown,
 } from 'lucide-react-native'
 import { useDomainHttp } from '../../../contexts/domain'
 import { useAuth } from '../../../contexts/auth'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
-import { PricingBadge } from '../../../components/marketplace/PricingBadge'
 import {
-  CreatorBadge,
-  TIER_COLORS,
+  AgentTile,
+  type AgentTileListing,
+  CreatorChip,
+  HorizontalRail,
+  IntegrationStrip,
+  MarketplaceHero,
+  PricingCards,
+  QualityBadge,
+  SectionHeader,
+  StarRating,
+  formatCents,
+  installCtaLabel,
+  getAccentColor,
+  getInitial,
   type CreatorTier,
-} from '../../../components/marketplace/CreatorBadge'
+} from '../../../components/marketplace'
+import {
+  resolvePermissionCopy,
+  categoryLabel,
+} from '@shogo/shared-app'
 
 interface CreatorFromAPI {
   id: string
@@ -45,6 +68,7 @@ interface CreatorFromAPI {
   verified: boolean
   totalAgentsPublished: number
   totalInstalls: number
+  averageAgentRating?: number
 }
 
 interface ListingDetail {
@@ -60,10 +84,14 @@ interface ListingDetail {
   pricingModel: 'free' | 'one_time' | 'subscription'
   priceInCents?: number | null
   monthlyPriceInCents?: number | null
+  annualPriceInCents?: number | null
   installCount: number
   averageRating: number
   reviewCount: number
   currentVersion: string
+  featuredAt?: string | null
+  publishedAt?: string | null
+  updatedAt?: string | null
   creator: CreatorFromAPI
 }
 
@@ -97,29 +125,33 @@ interface UserInstall {
   status: string
 }
 
-function formatCents(cents: number): string {
-  return cents % 100 === 0 ? `$${cents / 100}` : `$${(cents / 100).toFixed(2)}`
-}
-
-function renderStars(rating: number, size = 14) {
-  const stars = []
-  const full = Math.floor(rating)
-  const half = rating - full >= 0.5
-  for (let i = 0; i < 5; i++) {
-    const filled = i < full || (i === full && half)
-    stars.push(
-      <Star
-        key={i}
-        size={size}
-        fill={filled ? '#eab308' : 'transparent'}
-        color={filled ? '#eab308' : '#d1d5db'}
-      />,
-    )
+interface RelatedListing {
+  slug: string
+  title: string
+  shortDescription: string
+  iconUrl?: string | null
+  screenshotUrls?: string[]
+  pricingModel: 'free' | 'one_time' | 'subscription'
+  priceInCents?: number | null
+  monthlyPriceInCents?: number | null
+  installCount: number
+  averageRating: number
+  reviewCount: number
+  featuredAt?: string | null
+  creatorId: string
+  creator?: {
+    id?: string
+    displayName: string
+    creatorTier: CreatorTier
+    avatarUrl?: string | null
+    verified?: boolean
   }
-  return stars
 }
 
-function timeAgo(dateStr: string): string {
+type ReviewSort = 'newest' | 'highest' | 'lowest'
+
+function timeAgo(dateStr: string | null | undefined): string {
+  if (!dateStr) return ''
   try {
     const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000)
     if (seconds < 60) return 'just now'
@@ -136,14 +168,57 @@ function timeAgo(dateStr: string): string {
   }
 }
 
-const ACCENT_COLORS = [
-  '#8b5cf6', '#ec4899', '#f97316', '#22c55e',
-  '#06b6d4', '#7c3aed', '#d946ef', '#14b8a6',
-]
+function toTileListing(item: RelatedListing): AgentTileListing {
+  return {
+    slug: item.slug,
+    title: item.title,
+    shortDescription: item.shortDescription,
+    iconUrl: item.iconUrl,
+    previewUrl: item.screenshotUrls?.[0] ?? null,
+    pricingModel: item.pricingModel,
+    priceInCents: item.priceInCents,
+    monthlyPriceInCents: item.monthlyPriceInCents,
+    installCount: item.installCount,
+    averageRating: item.averageRating,
+    reviewCount: item.reviewCount,
+    featured: !!item.featuredAt,
+    creator: item.creator
+      ? {
+          id: item.creator.id ?? item.creatorId,
+          displayName: item.creator.displayName,
+          creatorTier: item.creator.creatorTier,
+          avatarUrl: item.creator.avatarUrl,
+          verified: item.creator.verified,
+        }
+      : {
+          id: item.creatorId,
+          displayName: 'Unknown',
+          creatorTier: 'newcomer',
+        },
+  }
+}
 
-function getAccentColor(title: string): string {
-  const idx = title.split('').reduce((a, c) => a + c.charCodeAt(0), 0) % ACCENT_COLORS.length
-  return ACCENT_COLORS[idx]
+/**
+ * Try to extract bullet points from `longDescription`. Looks for lines
+ * starting with `- `, `* `, or `• `. When at least 2 bullets are found,
+ * returns them with the leading prose split out separately. Otherwise
+ * the whole string is treated as plain prose.
+ */
+function parseDescription(longDescription: string | null | undefined): {
+  prose: string
+  bullets: string[]
+} {
+  if (!longDescription) return { prose: '', bullets: [] }
+  const lines = longDescription.split(/\r?\n/)
+  const proseLines: string[] = []
+  const bullets: string[] = []
+  for (const line of lines) {
+    const m = line.match(/^\s*[-*•]\s+(.*)$/)
+    if (m) bullets.push(m[1].trim())
+    else proseLines.push(line)
+  }
+  if (bullets.length < 2) return { prose: longDescription.trim(), bullets: [] }
+  return { prose: proseLines.join('\n').trim(), bullets }
 }
 
 export default observer(function MarketplaceDetailScreen() {
@@ -152,9 +227,12 @@ export default observer(function MarketplaceDetailScreen() {
   const http = useDomainHttp()
   const { user } = useAuth()
   const activeWorkspace = useActiveWorkspace()
+  const { width } = useWindowDimensions()
+  const isWide = width >= 768
 
   const [listing, setListing] = useState<ListingDetail | null>(null)
   const [reviews, setReviews] = useState<Review[]>([])
+  const [reviewTotal, setReviewTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [installing, setInstalling] = useState(false)
@@ -166,6 +244,16 @@ export default observer(function MarketplaceDetailScreen() {
   const [reviewBody, setReviewBody] = useState('')
   const [submittingReview, setSubmittingReview] = useState(false)
   const [reviewError, setReviewError] = useState<string | null>(null)
+  const [reviewFilter, setReviewFilter] = useState<number | null>(null)
+  const [reviewSort, setReviewSort] = useState<ReviewSort>('newest')
+  const [showAllPermissions, setShowAllPermissions] = useState(false)
+
+  const [moreFromCreator, setMoreFromCreator] = useState<RelatedListing[]>([])
+  const [similar, setSimilar] = useState<RelatedListing[]>([])
+
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
+  const [heroVisible, setHeroVisible] = useState(true)
+  const heroOffsetRef = useRef(0)
 
   const loadListing = useCallback(async () => {
     if (!slug) return
@@ -185,26 +273,52 @@ export default observer(function MarketplaceDetailScreen() {
   const loadReviews = useCallback(async () => {
     if (!slug) return
     try {
-      const res = await http.get<ReviewsResponse>(`/api/marketplace/${slug}/reviews?limit=10`)
+      const res = await http.get<ReviewsResponse>(
+        `/api/marketplace/${slug}/reviews?limit=50`,
+      )
       setReviews(res.data.items)
+      setReviewTotal(res.data.total)
     } catch (err) {
       console.error('[MarketplaceDetail] Failed to load reviews:', err)
     }
   }, [http, slug])
 
   const loadUserInstall = useCallback(async () => {
-    if (!user?.id) return
+    if (!user?.id || !listing) return
     try {
       const res = await http.get<{ installs: UserInstall[] }>('/api/marketplace/my-installs')
       const installs = res.data?.installs ?? []
-      if (listing) {
-        const match = installs.find((i) => i.listingId === listing.id && i.status === 'active')
-        setUserInstall(match ?? null)
-      }
+      const match = installs.find((i) => i.listingId === listing.id && i.status === 'active')
+      setUserInstall(match ?? null)
     } catch {
       // non-critical
     }
   }, [http, user?.id, listing])
+
+  const loadRelated = useCallback(async () => {
+    if (!listing) return
+    try {
+      const fromCreator = http.get<{ items: RelatedListing[] }>(
+        `/api/marketplace?creatorId=${encodeURIComponent(listing.creator.id)}&excludeSlug=${encodeURIComponent(listing.slug)}&limit=6&sort=popular`,
+      )
+      const sameCategory = listing.category
+        ? http.get<{ items: RelatedListing[] }>(
+            `/api/marketplace?category=${encodeURIComponent(listing.category)}&excludeSlug=${encodeURIComponent(listing.slug)}&limit=8&sort=popular`,
+          )
+        : Promise.resolve({ data: { items: [] } })
+      const [a, b] = await Promise.all([fromCreator, sameCategory])
+      setMoreFromCreator(a.data.items ?? [])
+      // Avoid duplicating items between rails
+      const fromCreatorSlugs = new Set((a.data.items ?? []).map((i) => i.slug))
+      setSimilar(
+        ((b as any).data.items ?? []).filter(
+          (i: RelatedListing) => !fromCreatorSlugs.has(i.slug),
+        ),
+      )
+    } catch (err) {
+      console.error('[MarketplaceDetail] related load failed:', err)
+    }
+  }, [http, listing])
 
   useEffect(() => {
     loadListing()
@@ -212,8 +326,11 @@ export default observer(function MarketplaceDetailScreen() {
   }, [slug])
 
   useEffect(() => {
-    if (listing) loadUserInstall()
-  }, [listing, loadUserInstall])
+    if (listing) {
+      loadUserInstall()
+      loadRelated()
+    }
+  }, [listing, loadUserInstall, loadRelated])
 
   const handleInstall = useCallback(async () => {
     if (!listing || !user?.id || !activeWorkspace?.id) {
@@ -260,17 +377,81 @@ export default observer(function MarketplaceDetailScreen() {
       loadListing()
     } catch (err: any) {
       const msg = err?.message || err?.data?.error || 'Failed to submit review'
-      setReviewError(msg.includes('already reviewed') ? 'You have already reviewed this agent.' : msg)
+      setReviewError(
+        msg.includes('already reviewed')
+          ? 'You have already reviewed this agent.'
+          : msg,
+      )
     } finally {
       setSubmittingReview(false)
     }
-  }, [listing, userInstall, slug, http, reviewRating, reviewTitle, reviewBody, loadReviews, loadListing])
+  }, [
+    listing,
+    userInstall,
+    slug,
+    http,
+    reviewRating,
+    reviewTitle,
+    reviewBody,
+    loadReviews,
+    loadListing,
+  ])
+
+  const onScroll = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const y = e.nativeEvent.contentOffset.y
+      // Reveal sticky CTA once the user scrolls past the hero block.
+      const threshold = heroOffsetRef.current || 320
+      setHeroVisible(y < threshold)
+    },
+    [],
+  )
+
+  // ── Derived data ─────────────────────────────────────────────────
+  const ratingHistogram = useMemo(() => {
+    const counts = [0, 0, 0, 0, 0]
+    for (const r of reviews) {
+      if (r.rating >= 1 && r.rating <= 5) counts[r.rating - 1] += 1
+    }
+    const total = reviews.length || 1
+    return counts.map((c) => ({ count: c, pct: (c / total) * 100 }))
+  }, [reviews])
+
+  const filteredReviews = useMemo(() => {
+    let list = reviews.slice()
+    if (reviewFilter != null) list = list.filter((r) => r.rating === reviewFilter)
+    list.sort((a, b) => {
+      if (reviewSort === 'newest')
+        return +new Date(b.createdAt) - +new Date(a.createdAt)
+      if (reviewSort === 'highest') return b.rating - a.rating
+      return a.rating - b.rating
+    })
+    return list
+  }, [reviews, reviewFilter, reviewSort])
+
+  const description = useMemo(
+    () => parseDescription(listing?.longDescription),
+    [listing?.longDescription],
+  )
+
+  const permissions = useMemo(() => {
+    if (!listing) return []
+    const seen = new Set<string>()
+    const out: { tag: string; copy: string }[] = []
+    for (const tag of listing.tags) {
+      const c = resolvePermissionCopy(tag)
+      if (c && !seen.has(c)) {
+        seen.add(c)
+        out.push({ tag, copy: c })
+      }
+    }
+    return out
+  }, [listing])
 
   if (loading) {
     return (
-      <View className="flex-1 bg-background items-center justify-center">
-        <ActivityIndicator size="large" />
-        <Text className="text-muted-foreground mt-3 text-sm">Loading...</Text>
+      <View className="flex-1 bg-background">
+        <DetailSkeleton />
       </View>
     )
   }
@@ -291,189 +472,324 @@ export default observer(function MarketplaceDetailScreen() {
     )
   }
 
-  const color = getAccentColor(listing.title)
-  const initial = listing.title.charAt(0).toUpperCase()
-  const tierColor = TIER_COLORS[listing.creator.creatorTier] ?? TIER_COLORS.newcomer
-
-  let installLabel: string
-  if (listing.pricingModel === 'free') {
-    installLabel = 'Install Free'
-  } else if (listing.pricingModel === 'subscription' && listing.monthlyPriceInCents) {
-    installLabel = `Subscribe ${formatCents(listing.monthlyPriceInCents)}/mo`
-  } else if (listing.priceInCents) {
-    installLabel = `Purchase ${formatCents(listing.priceInCents)}`
-  } else {
-    installLabel = 'Install Free'
-  }
+  const accent = getAccentColor(listing.title)
+  const initial = getInitial(listing.title)
+  const isPaid = listing.pricingModel !== 'free'
+  const ctaLabel = installCtaLabel(
+    listing.pricingModel,
+    listing.priceInCents,
+    listing.monthlyPriceInCents,
+    listing.annualPriceInCents,
+  )
 
   return (
     <View className="flex-1 bg-background">
       {/* Header */}
-      <View className="flex-row items-center gap-3 px-4 pt-3 pb-2">
-        <Pressable onPress={() => router.back()} className="p-1">
-          <ArrowLeft size={20} className="text-foreground" />
+      <View className="flex-row items-center gap-3 px-5 pt-3 pb-2">
+        <Pressable onPress={() => router.back()} hitSlop={6} className="p-1">
+          <ArrowLeft size={20} color="#71717a" />
         </Pressable>
-        <Text className="text-lg font-semibold text-foreground flex-1" numberOfLines={1}>
+        <Text className="text-base font-semibold text-foreground flex-1" numberOfLines={1}>
           {listing.title}
         </Text>
+        <Pressable hitSlop={6} className="p-1.5 active:opacity-60">
+          <Share2 size={18} color="#71717a" />
+        </Pressable>
       </View>
 
-      <ScrollView className="flex-1" contentContainerClassName="pb-32">
-        {/* Agent icon + title section */}
-        <View className="px-4 py-4">
-          <View className="flex-row gap-4">
-            {listing.iconUrl ? (
-              <Image
-                source={{ uri: listing.iconUrl }}
-                className="w-20 h-20 rounded-2xl"
-                resizeMode="cover"
-              />
-            ) : (
+      <ScrollView
+        className="flex-1"
+        contentContainerStyle={{ paddingBottom: 120 }}
+        onScroll={onScroll}
+        scrollEventThrottle={32}
+      >
+        {/* Hero */}
+        <View
+          onLayout={(e) => (heroOffsetRef.current = e.nativeEvent.layout.height)}
+        >
+          <MarketplaceHero
+            accent={accent}
+            title={listing.title}
+            subtitle={listing.shortDescription}
+            trailing={
               <View
-                className="w-20 h-20 rounded-2xl items-center justify-center"
-                style={{ backgroundColor: `${color}22` }}
+                className="rounded-2xl items-center justify-center"
+                style={{
+                  width: 88,
+                  height: 88,
+                  backgroundColor: `${accent}33`,
+                }}
               >
-                <Text style={{ color, fontSize: 28, fontWeight: '700' }}>{initial}</Text>
+                {listing.iconUrl ? (
+                  <Image
+                    source={{ uri: listing.iconUrl }}
+                    style={{ width: 64, height: 64, borderRadius: 14 }}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <Text style={{ color: accent, fontSize: 36, fontWeight: '700' }}>
+                    {initial}
+                  </Text>
+                )}
               </View>
-            )}
-            <View className="flex-1 justify-center gap-1.5">
-              <Text className="text-xl font-bold text-foreground">{listing.title}</Text>
-              <Text className="text-sm text-muted-foreground">{listing.shortDescription}</Text>
-              <View className="flex-row items-center gap-3 mt-1">
-                <PricingBadge
-                  pricingModel={listing.pricingModel}
-                  priceInCents={listing.priceInCents}
-                  monthlyPriceInCents={listing.monthlyPriceInCents}
-                />
+            }
+          >
+            <View className="gap-3">
+              <View className="flex-row items-center gap-2 flex-wrap">
+                {listing.featuredAt && <QualityBadge size="sm" />}
                 {listing.category && (
-                  <View className="rounded-full bg-muted px-2 py-0.5">
-                    <Text className="text-[11px] text-muted-foreground capitalize">
-                      {listing.category}
+                  <View className="rounded-full bg-foreground/10 px-2.5 py-1">
+                    <Text className="text-[11px] font-medium text-foreground/80">
+                      {categoryLabel(listing.category)}
+                    </Text>
+                  </View>
+                )}
+              </View>
+              <CreatorChip
+                creatorId={listing.creator.id}
+                displayName={listing.creator.displayName}
+                tier={listing.creator.creatorTier}
+                avatarUrl={listing.creator.avatarUrl}
+                verified={listing.creator.verified}
+                size="sm"
+              />
+              <View className="flex-row items-center gap-4">
+                <View className="flex-row items-center gap-1">
+                  <StarRating rating={listing.averageRating} size={13} />
+                  <Text className="text-xs text-foreground/80 ml-1">
+                    {listing.averageRating > 0
+                      ? listing.averageRating.toFixed(1)
+                      : '—'}{' '}
+                    ({listing.reviewCount})
+                  </Text>
+                </View>
+                <View className="flex-row items-center gap-1">
+                  <Download size={12} color="#71717a" />
+                  <Text className="text-xs text-foreground/80">
+                    {listing.installCount.toLocaleString()} installs
+                  </Text>
+                </View>
+                {listing.updatedAt && (
+                  <View className="flex-row items-center gap-1">
+                    <Clock size={12} color="#71717a" />
+                    <Text className="text-xs text-foreground/80">
+                      Updated {timeAgo(listing.updatedAt)}
+                    </Text>
+                  </View>
+                )}
+              </View>
+              <View className="flex-row items-center gap-3 mt-2">
+                <Pressable
+                  onPress={handleInstall}
+                  disabled={installing}
+                  className={`rounded-xl px-5 py-3 flex-row items-center gap-2 ${
+                    installing ? 'bg-primary/60' : 'bg-primary active:opacity-90'
+                  }`}
+                  style={{ minWidth: 200 }}
+                >
+                  {installing ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <>
+                      {isPaid && <ExternalLink size={14} color="#fff" />}
+                      <Text className="text-sm font-semibold text-primary-foreground">
+                        {ctaLabel}
+                      </Text>
+                    </>
+                  )}
+                </Pressable>
+                {!!userInstall && (
+                  <View className="flex-row items-center gap-1">
+                    <Check size={14} color="#22c55e" />
+                    <Text className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                      Installed
                     </Text>
                   </View>
                 )}
               </View>
             </View>
-          </View>
+          </MarketplaceHero>
         </View>
 
-        {/* Stats row */}
-        <View className="flex-row px-4 gap-6 pb-4">
-          <View className="items-center">
-            <View className="flex-row items-center gap-1">
-              {renderStars(listing.averageRating)}
-            </View>
-            <Text className="text-xs text-muted-foreground mt-0.5">
-              {listing.averageRating.toFixed(1)} ({listing.reviewCount})
-            </Text>
-          </View>
-          <View className="items-center">
-            <View className="flex-row items-center gap-1">
-              <Download size={16} className="text-muted-foreground" />
-              <Text className="text-sm font-medium text-foreground">
-                {listing.installCount.toLocaleString()}
-              </Text>
-            </View>
-            <Text className="text-xs text-muted-foreground mt-0.5">Installs</Text>
-          </View>
-          <View className="items-center">
-            <Text className="text-sm font-medium text-foreground">v{listing.currentVersion}</Text>
-            <Text className="text-xs text-muted-foreground mt-0.5">Version</Text>
-          </View>
-        </View>
-
-        {/* Creator card */}
-        <View className="mx-4 mb-4 p-3 rounded-xl border border-border bg-card">
-          <Text className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-            Created By
-          </Text>
-          <View className="flex-row items-center gap-3">
-            {listing.creator.avatarUrl ? (
-              <Image
-                source={{ uri: listing.creator.avatarUrl }}
-                className="w-10 h-10 rounded-full"
-              />
-            ) : (
-              <View
-                className="w-10 h-10 rounded-full items-center justify-center"
-                style={{ backgroundColor: `${tierColor}22` }}
-              >
-                <Text style={{ color: tierColor, fontSize: 16, fontWeight: '600' }}>
-                  {listing.creator.displayName.charAt(0).toUpperCase()}
-                </Text>
-              </View>
-            )}
-            <View className="flex-1">
-              <View className="flex-row items-center gap-2">
-                <Text className="text-sm font-semibold text-foreground">
-                  {listing.creator.displayName}
-                </Text>
-                {listing.creator.verified && (
-                  <Shield size={12} className="text-blue-500" />
-                )}
-              </View>
-              <View className="flex-row items-center gap-2 mt-0.5">
-                <CreatorBadge
-                  tier={listing.creator.creatorTier}
-                  displayName={listing.creator.creatorTier}
-                />
-                <Text className="text-xs text-muted-foreground">
-                  {listing.creator.reputationScore} rep
-                </Text>
-              </View>
-            </View>
-          </View>
-        </View>
-
-        {/* Screenshots */}
+        {/* Screenshots gallery */}
         {listing.screenshotUrls.length > 0 && (
-          <View className="mb-4">
-            <Text className="text-sm font-semibold text-foreground px-4 mb-2">Screenshots</Text>
+          <View className="mt-8 mb-8">
+            <SectionHeader title="Screenshots" padded />
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
-              contentContainerClassName="px-4 gap-3"
+              decelerationRate="fast"
+              snapToInterval={isWide ? 540 : 320}
+              contentContainerStyle={{ paddingHorizontal: 20, gap: 12 }}
             >
               {listing.screenshotUrls.map((url, i) => (
-                <Image
-                  key={i}
-                  source={{ uri: url }}
-                  className="w-64 h-40 rounded-xl bg-muted"
-                  resizeMode="cover"
-                />
+                <Pressable
+                  key={`${url}-${i}`}
+                  onPress={() => setLightboxIndex(i)}
+                  className="rounded-2xl overflow-hidden border border-border bg-muted active:opacity-90"
+                  style={{
+                    width: isWide ? 520 : 300,
+                    height: isWide ? 320 : 200,
+                  }}
+                >
+                  <Image
+                    source={{ uri: url }}
+                    style={{ width: '100%', height: '100%' }}
+                    resizeMode="cover"
+                  />
+                </Pressable>
               ))}
             </ScrollView>
           </View>
         )}
 
-        {/* Description */}
-        {listing.longDescription && (
-          <View className="px-4 mb-4">
-            <Text className="text-sm font-semibold text-foreground mb-2">About</Text>
-            <Text className="text-sm text-muted-foreground leading-5">
-              {listing.longDescription}
-            </Text>
+        {/* About + What's included */}
+        {(description.prose || description.bullets.length > 0) && (
+          <View className="px-5 mb-8 max-w-2xl gap-5">
+            <View>
+              <Text className="text-base font-semibold text-foreground mb-2">About</Text>
+              {description.prose ? (
+                <Text className="text-sm text-foreground/80 leading-6">
+                  {description.prose}
+                </Text>
+              ) : (
+                <Text className="text-sm text-foreground/80 leading-6">
+                  {listing.shortDescription}
+                </Text>
+              )}
+            </View>
+            {description.bullets.length > 0 && (
+              <View>
+                <Text className="text-base font-semibold text-foreground mb-2">
+                  What&apos;s included
+                </Text>
+                <View className="gap-2">
+                  {description.bullets.map((b, i) => (
+                    <View key={i} className="flex-row items-start gap-2">
+                      <View className="rounded-full bg-emerald-500/15 mt-0.5 p-0.5">
+                        <Check size={12} color="#22c55e" />
+                      </View>
+                      <Text className="text-sm text-foreground/80 flex-1 leading-5">
+                        {b}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            )}
           </View>
         )}
 
-        {/* Tags */}
+        {/* Works with */}
         {listing.tags.length > 0 && (
-          <View className="px-4 mb-4">
-            <View className="flex-row flex-wrap gap-1.5">
-              {listing.tags.map((tag) => (
-                <View key={tag} className="rounded-full bg-muted px-2.5 py-1">
-                  <Text className="text-xs text-muted-foreground">{tag}</Text>
+          <View className="px-5 mb-8 max-w-3xl">
+            <Text className="text-base font-semibold text-foreground mb-3">Works with</Text>
+            <IntegrationStrip tags={listing.tags} />
+          </View>
+        )}
+
+        {/* This agent uses (positive permissions) */}
+        {permissions.length > 0 && (
+          <View className="px-5 mb-8 max-w-2xl">
+            <Text className="text-base font-semibold text-foreground mb-3">
+              This agent uses
+            </Text>
+            <View className="rounded-2xl border border-border bg-card p-4 gap-2.5">
+              {(showAllPermissions ? permissions : permissions.slice(0, 4)).map((p) => (
+                <View key={p.tag} className="flex-row items-start gap-2.5">
+                  <View className="rounded-full bg-primary/15 mt-0.5 p-1">
+                    <Check size={10} color="#e27927" />
+                  </View>
+                  <Text className="text-sm text-foreground/85 flex-1 leading-5">
+                    {p.copy}
+                  </Text>
                 </View>
               ))}
+              {permissions.length > 4 && !showAllPermissions && (
+                <Pressable
+                  onPress={() => setShowAllPermissions(true)}
+                  className="flex-row items-center gap-1 mt-1 active:opacity-60"
+                >
+                  <Text className="text-xs font-medium text-primary">
+                    Show all {permissions.length}
+                  </Text>
+                  <ChevronDown size={12} color="#e27927" />
+                </Pressable>
+              )}
             </View>
           </View>
         )}
 
-        {/* Reviews */}
-        <View className="px-4 mb-4">
-          <View className="flex-row items-center justify-between mb-3">
-            <Text className="text-sm font-semibold text-foreground">
-              Reviews ({listing.reviewCount})
+        {/* Pricing */}
+        <View className="px-5 mb-8 max-w-3xl">
+          <Text className="text-base font-semibold text-foreground mb-3">Pricing</Text>
+          <PricingCards
+            pricingModel={listing.pricingModel}
+            priceInCents={listing.priceInCents}
+            monthlyPriceInCents={listing.monthlyPriceInCents}
+            annualPriceInCents={listing.annualPriceInCents}
+            onSelect={() => handleInstall()}
+            loading={installing}
+          />
+          {isPaid && (
+            <Text className="text-xs text-muted-foreground mt-3 text-center">
+              Payment processed by Stripe · Cancel anytime
+            </Text>
+          )}
+        </View>
+
+        {/* Created by */}
+        <View className="px-5 mb-8 max-w-2xl">
+          <Text className="text-base font-semibold text-foreground mb-3">Created by</Text>
+          <Pressable
+            onPress={() =>
+              router.push(`/(app)/marketplace/creators/${listing.creator.id}` as any)
+            }
+            className="rounded-2xl border border-border bg-card p-4 active:opacity-90"
+          >
+            <View className="flex-row items-center gap-3 mb-3">
+              <CreatorChip
+                displayName={listing.creator.displayName}
+                tier={listing.creator.creatorTier}
+                avatarUrl={listing.creator.avatarUrl}
+                verified={listing.creator.verified}
+                size="lg"
+                disablePress
+              />
+              <View className="ml-auto">
+                <ChevronRight size={16} color="#71717a" />
+              </View>
+            </View>
+            <View className="flex-row items-center gap-5 mb-2">
+              <CreatorStat label="Agents" value={String(listing.creator.totalAgentsPublished)} />
+              <CreatorStat
+                label="Installs"
+                value={listing.creator.totalInstalls.toLocaleString()}
+              />
+              <CreatorStat
+                label="Avg rating"
+                value={
+                  listing.creator.averageAgentRating &&
+                  listing.creator.averageAgentRating > 0
+                    ? listing.creator.averageAgentRating.toFixed(1)
+                    : '—'
+                }
+              />
+              <CreatorStat label="Reputation" value={String(listing.creator.reputationScore)} />
+            </View>
+            {listing.creator.bio && (
+              <Text className="text-sm text-foreground/70 leading-5 mt-1">
+                {listing.creator.bio}
+              </Text>
+            )}
+          </Pressable>
+        </View>
+
+        {/* Ratings & reviews */}
+        <View className="px-5 mb-8 max-w-3xl">
+          <View className="flex-row items-center justify-between mb-4">
+            <Text className="text-base font-semibold text-foreground">
+              Ratings & reviews
             </Text>
             {userInstall && !showReviewForm && (
               <Pressable
@@ -481,39 +797,33 @@ export default observer(function MarketplaceDetailScreen() {
                 className="flex-row items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary"
               >
                 <MessageSquarePlus size={13} color="#fff" />
-                <Text className="text-xs font-semibold text-primary-foreground">Write Review</Text>
+                <Text className="text-xs font-semibold text-primary-foreground">
+                  Write review
+                </Text>
               </Pressable>
             )}
           </View>
 
           {/* Review form */}
           {showReviewForm && (
-            <View className="mb-4 p-4 rounded-xl border border-primary/30 bg-primary/5">
-              <View className="flex-row items-center justify-between mb-3">
-                <Text className="text-sm font-semibold text-foreground">Your Review</Text>
-                <Pressable onPress={() => setShowReviewForm(false)}>
-                  <X size={16} className="text-muted-foreground" />
+            <View className="mb-5 p-4 rounded-2xl border border-primary/30 bg-primary/5 gap-3">
+              <View className="flex-row items-center justify-between">
+                <Text className="text-sm font-semibold text-foreground">Your review</Text>
+                <Pressable onPress={() => setShowReviewForm(false)} hitSlop={6}>
+                  <X size={16} color="#71717a" />
                 </Pressable>
               </View>
-
-              {/* Star rating selector */}
-              <View className="mb-3">
+              <View>
                 <Text className="text-xs text-muted-foreground mb-1.5">Rating</Text>
-                <View className="flex-row gap-1">
-                  {[1, 2, 3, 4, 5].map((n) => (
-                    <Pressable key={n} onPress={() => setReviewRating(n)}>
-                      <Star
-                        size={28}
-                        fill={n <= reviewRating ? '#eab308' : 'transparent'}
-                        color={n <= reviewRating ? '#eab308' : '#d1d5db'}
-                      />
-                    </Pressable>
-                  ))}
-                </View>
+                <StarRating
+                  rating={reviewRating}
+                  onChange={setReviewRating}
+                  size={28}
+                  gap={4}
+                />
               </View>
-
-              <View className="mb-3">
-                <Text className="text-xs text-muted-foreground mb-1.5">Title (Optional)</Text>
+              <View>
+                <Text className="text-xs text-muted-foreground mb-1.5">Title (optional)</Text>
                 <TextInput
                   value={reviewTitle}
                   onChangeText={setReviewTitle}
@@ -522,9 +832,8 @@ export default observer(function MarketplaceDetailScreen() {
                   className="px-3 py-2.5 rounded-lg border border-border bg-card text-foreground text-sm"
                 />
               </View>
-
-              <View className="mb-3">
-                <Text className="text-xs text-muted-foreground mb-1.5">Review (Optional)</Text>
+              <View>
+                <Text className="text-xs text-muted-foreground mb-1.5">Review (optional)</Text>
                 <TextInput
                   value={reviewBody}
                   onChangeText={setReviewBody}
@@ -533,61 +842,136 @@ export default observer(function MarketplaceDetailScreen() {
                   multiline
                   numberOfLines={3}
                   textAlignVertical="top"
-                  className="px-3 py-2.5 rounded-lg border border-border bg-card text-foreground text-sm min-h-[72px]"
+                  className="px-3 py-2.5 rounded-lg border border-border bg-card text-foreground text-sm min-h-[80px]"
                 />
               </View>
-
               {reviewError && (
-                <Text className="text-xs text-destructive mb-2">{reviewError}</Text>
+                <Text className="text-xs text-destructive">{reviewError}</Text>
               )}
-
               <Pressable
                 onPress={handleSubmitReview}
                 disabled={submittingReview}
-                className={`py-2.5 rounded-lg items-center ${submittingReview ? 'bg-primary/60' : 'bg-primary'}`}
+                className={`py-2.5 rounded-lg items-center ${
+                  submittingReview ? 'bg-primary/60' : 'bg-primary'
+                }`}
               >
                 {submittingReview ? (
                   <ActivityIndicator size="small" color="#fff" />
                 ) : (
-                  <Text className="text-sm font-semibold text-primary-foreground">Submit Review</Text>
+                  <Text className="text-sm font-semibold text-primary-foreground">
+                    Submit review
+                  </Text>
                 )}
               </Pressable>
             </View>
           )}
 
           {!userInstall && !showReviewForm && (
-            <View className="flex-row items-start gap-2 mb-3 px-3 py-2.5 rounded-lg bg-muted/50">
-              <Info size={14} className="text-muted-foreground mt-0.5" />
+            <View className="flex-row items-start gap-2 mb-4 px-3 py-2.5 rounded-lg bg-muted/50">
+              <Info size={14} color="#71717a" />
               <Text className="text-xs text-muted-foreground flex-1">
                 Install this agent to leave a review.
               </Text>
             </View>
           )}
 
-          {reviews.length === 0 ? (
-            <Text className="text-sm text-muted-foreground">No reviews yet. Be the first!</Text>
+          {reviewTotal > 0 && (
+            <View className={`gap-4 mb-5 ${isWide ? 'flex-row' : ''}`}>
+              {/* Aggregate */}
+              <View
+                className="rounded-2xl border border-border bg-card p-4 items-center justify-center"
+                style={isWide ? { width: 220 } : undefined}
+              >
+                <Text className="text-4xl font-bold text-foreground">
+                  {listing.averageRating.toFixed(1)}
+                </Text>
+                <View className="my-1">
+                  <StarRating rating={listing.averageRating} size={16} />
+                </View>
+                <Text className="text-xs text-muted-foreground">
+                  Based on {reviewTotal} review{reviewTotal === 1 ? '' : 's'}
+                </Text>
+              </View>
+              {/* Histogram */}
+              <View className="flex-1 rounded-2xl border border-border bg-card p-4 gap-2">
+                {[5, 4, 3, 2, 1].map((row) => {
+                  const data = ratingHistogram[row - 1]
+                  const isActive = reviewFilter === row
+                  return (
+                    <Pressable
+                      key={row}
+                      onPress={() => setReviewFilter(isActive ? null : row)}
+                      className="flex-row items-center gap-3 active:opacity-70"
+                    >
+                      <Text className="text-xs text-muted-foreground w-3">{row}</Text>
+                      <Star size={12} fill="#eab308" color="#eab308" />
+                      <View className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
+                        <View
+                          className={isActive ? 'bg-primary' : 'bg-yellow-400'}
+                          style={{
+                            width: `${data.pct}%`,
+                            height: '100%',
+                          }}
+                        />
+                      </View>
+                      <Text className="text-[11px] text-muted-foreground w-10 text-right">
+                        {data.count}
+                      </Text>
+                    </Pressable>
+                  )
+                })}
+              </View>
+            </View>
+          )}
+
+          {/* Review filter / sort row */}
+          {reviews.length > 0 && (
+            <View className="flex-row items-center gap-2 mb-3 flex-wrap">
+              <ReviewFilterPill
+                label="All"
+                active={reviewFilter == null}
+                onPress={() => setReviewFilter(null)}
+              />
+              {[5, 4, 3, 2, 1].map((n) => (
+                <ReviewFilterPill
+                  key={n}
+                  label={`${n}★`}
+                  active={reviewFilter === n}
+                  onPress={() => setReviewFilter(n)}
+                />
+              ))}
+              <View className="ml-auto">
+                <ReviewSortPill value={reviewSort} onChange={setReviewSort} />
+              </View>
+            </View>
+          )}
+
+          {filteredReviews.length === 0 ? (
+            <Text className="text-sm text-muted-foreground">
+              {reviews.length === 0
+                ? 'No reviews yet. Be the first!'
+                : 'No reviews match the current filter.'}
+            </Text>
           ) : (
             <View className="gap-3">
-              {reviews.map((review) => (
+              {filteredReviews.map((review) => (
                 <View
                   key={review.id}
-                  className="p-3 rounded-xl border border-border bg-card"
+                  className="p-4 rounded-2xl border border-border bg-card"
                 >
-                  <View className="flex-row items-center justify-between mb-1">
-                    <View className="flex-row items-center gap-1">
-                      {renderStars(review.rating)}
-                    </View>
+                  <View className="flex-row items-center justify-between mb-2">
+                    <StarRating rating={review.rating} size={13} />
                     <Text className="text-[10px] text-muted-foreground">
                       {timeAgo(review.createdAt)}
                     </Text>
                   </View>
                   {review.title && (
-                    <Text className="text-sm font-medium text-foreground mb-0.5">
+                    <Text className="text-sm font-semibold text-foreground mb-1">
                       {review.title}
                     </Text>
                   )}
                   {review.body && (
-                    <Text className="text-xs text-muted-foreground leading-4">
+                    <Text className="text-sm text-foreground/80 leading-5">
                       {review.body}
                     </Text>
                   )}
@@ -596,33 +980,222 @@ export default observer(function MarketplaceDetailScreen() {
             </View>
           )}
         </View>
+
+        {/* More from creator */}
+        {moreFromCreator.length > 0 && (
+          <View className="mb-8">
+            <SectionHeader
+              title={`More from ${listing.creator.displayName}`}
+              onSeeAll={() =>
+                router.push(`/(app)/marketplace/creators/${listing.creator.id}` as any)
+              }
+            />
+            <HorizontalRail
+              items={moreFromCreator}
+              keyExtractor={(item) => item.slug}
+              itemWidth={220}
+              renderItem={(item) => (
+                <AgentTile
+                  size="medium"
+                  listing={toTileListing(item)}
+                  onPress={() => router.push(`/(app)/marketplace/${item.slug}` as any)}
+                />
+              )}
+            />
+          </View>
+        )}
+
+        {/* Similar */}
+        {similar.length > 0 && (
+          <View className="mb-8">
+            <SectionHeader
+              title="You might also like"
+              subtitle={
+                listing.category ? `Other ${categoryLabel(listing.category)} agents` : undefined
+              }
+              onSeeAll={
+                listing.category
+                  ? () =>
+                      router.push(
+                        `/(app)/marketplace/category/${listing.category}` as any,
+                      )
+                  : undefined
+              }
+            />
+            <HorizontalRail
+              items={similar}
+              keyExtractor={(item) => item.slug}
+              itemWidth={220}
+              renderItem={(item) => (
+                <AgentTile
+                  size="medium"
+                  listing={toTileListing(item)}
+                  onPress={() => router.push(`/(app)/marketplace/${item.slug}` as any)}
+                />
+              )}
+            />
+          </View>
+        )}
+
+        {/* Version footer */}
+        <View className="px-5 mb-12">
+          <View className="rounded-2xl border border-border bg-card px-4 py-3 flex-row items-center justify-between">
+            <View>
+              <Text className="text-xs font-semibold text-foreground">
+                Version {listing.currentVersion}
+              </Text>
+              {listing.updatedAt && (
+                <Text className="text-[11px] text-muted-foreground mt-0.5">
+                  Updated {timeAgo(listing.updatedAt)}
+                </Text>
+              )}
+            </View>
+            {listing.publishedAt && (
+              <Text className="text-[11px] text-muted-foreground">
+                Published {timeAgo(listing.publishedAt)}
+              </Text>
+            )}
+          </View>
+        </View>
       </ScrollView>
 
-      {/* Install button - fixed bottom */}
-      <View className="absolute bottom-0 left-0 right-0 bg-background border-t border-border px-4 py-3 pb-8">
-        <Pressable
-          onPress={handleInstall}
-          disabled={installing}
-          accessibilityRole="button"
-          accessibilityLabel={installLabel}
-          className={`rounded-xl py-3.5 items-center justify-center ${
-            installing ? 'bg-primary/60' : 'bg-primary active:bg-primary/80'
-          }`}
+      {/* Sticky bottom CTA — only when hero scrolled out of view */}
+      {!heroVisible && (
+        <View
+          className="absolute bottom-0 left-0 right-0 bg-background border-t border-border px-5 py-3 pb-6"
+          style={{
+            shadowColor: '#000',
+            shadowOpacity: 0.04,
+            shadowRadius: 12,
+            shadowOffset: { width: 0, height: -4 },
+            elevation: 8,
+          }}
         >
-          {installing ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <View className="flex-row items-center gap-2">
-              {listing.pricingModel !== 'free' && (
-                <ExternalLink size={16} color="#fff" />
-              )}
-              <Text className="text-primary-foreground font-semibold text-base">
-                {installLabel}
-              </Text>
-            </View>
+          <Pressable
+            onPress={handleInstall}
+            disabled={installing}
+            accessibilityRole="button"
+            accessibilityLabel={ctaLabel}
+            className={`rounded-xl py-3.5 items-center justify-center ${
+              installing ? 'bg-primary/60' : 'bg-primary active:bg-primary/80'
+            }`}
+          >
+            {installing ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <View className="flex-row items-center gap-2">
+                {isPaid && <ExternalLink size={16} color="#fff" />}
+                <Text className="text-primary-foreground font-semibold text-base">
+                  {ctaLabel}
+                </Text>
+              </View>
+            )}
+          </Pressable>
+        </View>
+      )}
+
+      {/* Lightbox */}
+      <Modal
+        visible={lightboxIndex != null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setLightboxIndex(null)}
+      >
+        <View className="flex-1 bg-black/95 items-center justify-center">
+          <Pressable
+            onPress={() => setLightboxIndex(null)}
+            className="absolute top-12 right-5 w-10 h-10 rounded-full bg-white/10 items-center justify-center z-10"
+          >
+            <X size={20} color="#fff" />
+          </Pressable>
+          {lightboxIndex != null && listing.screenshotUrls[lightboxIndex] && (
+            <Image
+              source={{ uri: listing.screenshotUrls[lightboxIndex] }}
+              style={{ width: '95%', height: '85%' }}
+              resizeMode="contain"
+            />
           )}
-        </Pressable>
-      </View>
+        </View>
+      </Modal>
     </View>
   )
 })
+
+// ── Sub-components ─────────────────────────────────────────────────
+
+function CreatorStat({ label, value }: { label: string; value: string }) {
+  return (
+    <View>
+      <Text className="text-sm font-semibold text-foreground">{value}</Text>
+      <Text className="text-[10px] text-muted-foreground mt-0.5 uppercase" style={{ letterSpacing: 0.4 }}>
+        {label}
+      </Text>
+    </View>
+  )
+}
+
+function ReviewFilterPill({
+  label,
+  active,
+  onPress,
+}: {
+  label: string
+  active: boolean
+  onPress: () => void
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      className={`rounded-full h-7 px-3 items-center justify-center border ${
+        active ? 'bg-primary border-primary' : 'bg-card border-border'
+      }`}
+    >
+      <Text
+        className={`text-[11px] font-medium ${
+          active ? 'text-primary-foreground' : 'text-foreground'
+        }`}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  )
+}
+
+function ReviewSortPill({
+  value,
+  onChange,
+}: {
+  value: ReviewSort
+  onChange: (v: ReviewSort) => void
+}) {
+  const labels: Record<ReviewSort, string> = {
+    newest: 'Newest',
+    highest: 'Highest',
+    lowest: 'Lowest',
+  }
+  const order: ReviewSort[] = ['newest', 'highest', 'lowest']
+  const next = order[(order.indexOf(value) + 1) % order.length]
+  return (
+    <Pressable
+      onPress={() => onChange(next)}
+      className="flex-row items-center gap-1 rounded-full h-7 px-3 border border-border bg-card"
+    >
+      <Text className="text-[11px] font-medium text-foreground">{labels[value]}</Text>
+      <ChevronDown size={11} color="#71717a" />
+    </Pressable>
+  )
+}
+
+function DetailSkeleton() {
+  return (
+    <View className="flex-1 px-5 pt-4 gap-4">
+      <View className="h-8 w-1/2 rounded bg-muted/40" />
+      <View className="h-44 rounded-3xl bg-muted/40" />
+      <View className="flex-row gap-3">
+        <View className="h-44 flex-1 rounded-2xl bg-muted/40" />
+        <View className="h-44 flex-1 rounded-2xl bg-muted/40" />
+      </View>
+      <View className="h-24 rounded-2xl bg-muted/40" />
+    </View>
+  )
+}

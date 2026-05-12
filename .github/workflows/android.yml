@@ -3,7 +3,8 @@
 # =============================================================================
 # Environments:
 #   staging    — push to main branch (auto OTA to staging channel)
-#   production — push android-v* tag or manual dispatch with environment=production
+#   production — push v* (unified release tag, e.g. v1.0.0) or android-v* (Android-only)
+#                or manual dispatch with environment=production
 #
 # Automatic (push to main):
 #   - Resolves native fingerprint to detect if native deps changed
@@ -38,6 +39,7 @@ on:
       - main
     tags:
       - 'android-v*'
+      - 'v[0-9]*'
     paths:
       - 'apps/mobile/**'
       - 'packages/domain-stores/**'
@@ -88,7 +90,7 @@ jobs:
         run: |
           if [ -n "${{ github.event.inputs.environment }}" ]; then
             ENV="${{ github.event.inputs.environment }}"
-          elif [[ "${{ github.ref }}" == refs/tags/android-v* ]]; then
+          elif [[ "${{ github.ref }}" =~ ^refs/tags/(android-v|v[0-9]) ]]; then
             ENV="production"
           elif [ "${{ github.ref_name }}" = "main" ]; then
             ENV="staging"
@@ -147,8 +149,8 @@ jobs:
       - name: Determine if build is needed
         id: decide
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/android-v* ]]; then
-            echo "Tag push (android-v*) → release event, forcing full build + submit"
+          if [[ "${{ github.ref }}" =~ ^refs/tags/(android-v|v[0-9]) ]]; then
+            echo "Tag push (${{ github.ref_name }}) → release event, forcing full build + submit"
             echo "needs_build=true" >> $GITHUB_OUTPUT
           elif [ "${{ steps.fingerprint.outputs.runtime_version }}" = "unknown" ]; then
             echo "Could not resolve fingerprint → forcing full build"

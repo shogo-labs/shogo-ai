@@ -62,6 +62,16 @@ export class HeartbeatScheduler extends BaseHeartbeatScheduler {
     heartbeatsSkippedCounter.add(1)
   }
 
+  protected override onTriggerSuccess(projectId: string): void {
+    super.onTriggerSuccess(projectId)
+    heartbeatsTriggeredCounter.add(1)
+  }
+
+  protected override onTriggerFailure(projectId: string, error?: unknown): void {
+    super.onTriggerFailure(projectId, error)
+    heartbeatsFailedCounter.add(1)
+  }
+
   protected async fetchDueAgents(): Promise<DueAgent[]> {
     const { prisma } = await import('./prisma')
 
@@ -99,12 +109,12 @@ export class HeartbeatScheduler extends BaseHeartbeatScheduler {
         throw new Error(`HTTP ${response.status}: ${await response.text().catch(() => 'unknown')}`)
       }
 
-      heartbeatsTriggeredCounter.add(1)
       this.breaker.clearFailure(projectId)
+      this.onTriggerSuccess(projectId)
       console.log(`[HeartbeatScheduler] Triggered heartbeat for ${projectId}`)
     } catch (err: any) {
-      heartbeatsFailedCounter.add(1)
       this.breaker.recordFailure(projectId)
+      this.onTriggerFailure(projectId, err)
       console.error(`[HeartbeatScheduler] Failed to trigger ${projectId}:`, err.message)
     }
   }

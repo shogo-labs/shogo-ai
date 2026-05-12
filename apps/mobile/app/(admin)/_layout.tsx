@@ -31,6 +31,8 @@ import {
   Mic,
   Monitor,
   ScrollText,
+  Gift,
+  Heart,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
@@ -44,9 +46,11 @@ const BASE_NAV_ITEMS = [
   { href: '/(admin)', icon: LayoutDashboard, label: 'Dashboard' },
   { href: '/(admin)/users', icon: Users, label: 'Users' },
   { href: '/(admin)/workspaces', icon: Building2, label: 'Workspaces' },
+  { href: '/(admin)/grants', icon: Gift, label: 'Credit grants' },
   { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
   { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },
   { href: '/(admin)/infrastructure', icon: Server, label: 'Infrastructure' },
+  { href: '/(admin)/heartbeats', icon: Heart, label: 'Heartbeats' },
   { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
   { href: '/(admin)/general', icon: Settings, label: 'General' },
 ] as const
@@ -56,6 +60,7 @@ const AI_NAV_ITEM = { href: '/(admin)/settings' as const, icon: BrainCircuit, la
 const LOCAL_MAIN_ITEMS = [
   { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
   { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },
+  { href: '/(admin)/heartbeats', icon: Heart, label: 'Heartbeats' },
   { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
 ] as const
 
@@ -343,10 +348,13 @@ function getPageTitle(pathname: string): string {
   if (pathname.startsWith('/users') || pathname === '/users') return 'Users'
   if (pathname.startsWith('/workspaces/')) return 'Workspace Detail'
   if (pathname.includes('workspaces')) return 'Workspaces'
+  if (pathname.startsWith('/grants/')) return 'Grant Detail'
+  if (pathname.includes('grants')) return 'Credit grants'
   if (pathname.startsWith('/projects/')) return 'Project Detail'
   if (pathname.includes('projects')) return 'Projects'
   if (pathname.includes('analytics')) return 'Analytics'
   if (pathname.includes('infrastructure')) return 'Infrastructure'
+  if (pathname.includes('heartbeats')) return 'Heartbeats'
   if (pathname.startsWith('/evals/')) return 'Eval Detail'
   if (pathname.includes('evals')) return 'Evals'
   if (pathname.includes('/logs')) return 'Logs'

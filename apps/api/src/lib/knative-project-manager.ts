@@ -144,6 +144,61 @@ export async function mergePatchKnativeService(
   }
 }
 
+/**
+ * Perform an RFC 6902 JSON Patch on a Knative Service. Unlike merge-patch,
+ * JSON Patch supports a "test" operation that atomically fails the entire
+ * patch if the tested path/value does not match. This enables optimistic
+ * concurrency (compare-and-swap) on a specific label — used by the warm
+ * pool controller to avoid trimming pods that another replica has just
+ * promoted.
+ *
+ * Returns true if the patch succeeded, false if the `test` op failed (the
+ * resource state no longer matches — caller should treat the pod as
+ * "claimed by someone else" and skip it). Throws on 404 (service gone)
+ * and other hard errors so callers can distinguish.
+ *
+ * Kubernetes returns 422 Unprocessable Entity when a test op fails. We
+ * map that to `false` for ergonomic CAS semantics.
+ */
+export async function jsonPatchKnativeService(
+  namespace: string,
+  serviceName: string,
+  ops: Array<{ op: 'test' | 'replace' | 'add' | 'remove'; path: string; value?: unknown }>,
+): Promise<boolean> {
+  const kc = getKubeConfig()
+  const cluster = kc.getCurrentCluster()
+  if (!cluster) throw new Error('No current K8s cluster configured')
+
+  const user = kc.getCurrentUser()
+  const url = `${cluster.server}/apis/${KNATIVE_GROUP}/${KNATIVE_VERSION}/namespaces/${namespace}/services/${serviceName}`
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json-patch+json',
+    'Accept': 'application/json',
+  }
+  if (user?.token) {
+    headers['Authorization'] = `Bearer ${user.token}`
+  }
+
+  const resp = await fetch(url, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify(ops),
+  })
+
+  if (resp.ok) return true
+
+  const body = await resp.text()
+  // 422 = test op failed (label value doesn't match expected). Return
+  // false so caller can treat this as a lost race without raising.
+  if (resp.status === 422) return false
+
+  const err: any = new Error(`JSON-patch failed (${resp.status}): ${body}`)
+  err.statusCode = resp.status
+  if (resp.status === 404) err.code = 404
+  throw err
+}
+
 function getCoreApi(): k8s.CoreV1Api {
   if (!k8sCoreApi) {
     const kc = getKubeConfig()
@@ -822,10 +877,21 @@ export class KnativeProjectManager {
    * Perform an active health check on a project's pod.
    * Returns true if the pod is responding and ready to handle requests.
    * Uses /ready endpoint which verifies the project directory exists.
+   *
+   * Resolves the actual Knative Service via the DB so warm-pool-promoted
+   * projects (whose service name is `warm-pool-*`, not `project-{id}`) are
+   * probed at the correct hostname. Using the legacy `project-{id}`
+   * convention here causes NXDOMAIN and waitForReady() loops until timeout.
    */
   async healthCheck(projectId: string): Promise<boolean> {
+    let url: string
     try {
-      const url = this.getProjectPodUrl(projectId)
+      url = await this.resolveProjectPodUrl(projectId)
+    } catch (error: any) {
+      console.warn(`[KnativeProjectManager] healthCheck: failed to resolve pod URL for ${projectId}: ${error?.message || error}`)
+      return false
+    }
+    try {
       const response = await fetch(`${url}/ready`, {
         method: "GET",
         signal: AbortSignal.timeout(5000), // 5 second timeout
@@ -959,8 +1025,24 @@ export class KnativeProjectManager {
     const { prisma } = await import('./prisma')
     const projectRecord = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { templateId: true, name: true, workspaceId: true, settings: true },
-    })
+      select: {
+        templateId: true,
+        name: true,
+        workspaceId: true,
+        settings: true,
+        workspace: { select: { composioScope: true } },
+      } as any,
+    }) as (Record<string, any> & {
+      templateId?: string | null
+      name?: string | null
+      workspaceId?: string | null
+      settings?: unknown
+      workspace?: { composioScope?: string | null } | null
+    }) | null
+    const composioScope: 'workspace' | 'project' = (() => {
+      const value = projectRecord?.workspace?.composioScope
+      return value === 'project' || value === 'workspace' ? value : 'workspace'
+    })()
     const projectTechStackId = (() => {
       const s = projectRecord?.settings as { techStackId?: string } | null | undefined
       return s?.techStackId ?? null
@@ -987,6 +1069,9 @@ export class KnativeProjectManager {
       ...(projectRecord?.templateId ? [{ name: "TEMPLATE_ID", value: projectRecord.templateId }] : []),
       ...(projectRecord?.name ? [{ name: "AGENT_NAME", value: projectRecord.name }] : []),
       ...(projectRecord?.workspaceId ? [{ name: "WORKSPACE_ID", value: projectRecord.workspaceId }] : []),
+      // Tell the runtime which Composio scope to use for OAuth user IDs.
+      // See packages/agent-runtime/src/composio.ts (`ComposioScope`).
+      { name: "COMPOSIO_USER_SCOPE", value: composioScope },
       { name: "SCHEMAS_PATH", value: "/app/.schemas" },
     ]
 
@@ -1862,9 +1947,16 @@ async function tryClaimWarmPod(
     // pg_try_advisory_lock returns true if we acquired it, false if another
     // session already holds it. If contended, re-check the DB — the winning
     // replica may have already written knativeServiceName.
-    const [{ acquired }] = await prisma.$queryRawUnsafe<{ acquired: boolean }[]>(
+    //
+    // NOTE: pg_advisory_lock() returns `void`, which Prisma cannot deserialize
+    // via $queryRawUnsafe (raw query engine fails with
+    // "Failed to deserialize column of type 'void'"). Use $executeRawUnsafe
+    // for void-returning statements; $queryRawUnsafe for functions that
+    // return a scalar we actually read.
+    const acquiredRows = await prisma.$queryRawUnsafe<{ acquired: boolean }[]>(
       `SELECT pg_try_advisory_lock($1) AS acquired`, lockKey,
     )
+    const acquired = acquiredRows[0]?.acquired === true
 
     if (!acquired) {
       // Another replica is actively claiming for this project. Wait briefly
@@ -1885,8 +1977,9 @@ async function tryClaimWarmPod(
       }
 
       // Other replica may have failed — proceed with our own claim.
-      // Try to acquire the lock now (blocking).
-      await prisma.$queryRawUnsafe(`SELECT pg_advisory_lock($1)`, lockKey)
+      // Try to acquire the lock now (blocking). pg_advisory_lock returns
+      // void — must use $executeRawUnsafe, not $queryRawUnsafe.
+      await prisma.$executeRawUnsafe(`SELECT pg_advisory_lock($1)`, lockKey)
       console.log(`[KnativeProjectManager] Acquired warm pool claim lock for ${projectId} after contention`)
 
       // Re-check after acquiring — other replica may have finished between our wait and lock
@@ -1895,7 +1988,7 @@ async function tryClaimWarmPod(
         select: { knativeServiceName: true },
       })
       if (recheck?.knativeServiceName) {
-        await prisma.$queryRawUnsafe(`SELECT pg_advisory_unlock($1)`, lockKey)
+        await prisma.$executeRawUnsafe(`SELECT pg_advisory_unlock($1)`, lockKey)
         const url = `http://${recheck.knativeServiceName}.${NAMESPACE}.svc.cluster.local`
         console.log(
           `[KnativeProjectManager] Warm pool claim for ${projectId} resolved after lock acquisition: ${recheck.knativeServiceName} (elapsed: ${Date.now() - t0}ms)`
@@ -1938,8 +2031,10 @@ async function tryClaimWarmPod(
       console.log(`[KnativeProjectManager] All warm pool attempts exhausted for ${projectId} after ${Date.now() - t0}ms — falling back to cold start`)
       return null
     } finally {
-      // Always release the advisory lock
-      await prisma.$queryRawUnsafe(`SELECT pg_advisory_unlock($1)`, lockKey).catch(() => {})
+      // Always release the advisory lock. pg_advisory_unlock returns bool
+      // but we don't care about the result — use $executeRawUnsafe for
+      // consistency with the blocking pg_advisory_lock above.
+      await prisma.$executeRawUnsafe(`SELECT pg_advisory_unlock($1)`, lockKey).catch(() => {})
     }
   } catch (err: any) {
     const elapsed = Date.now() - t0

@@ -114,7 +114,6 @@ export function buildGuideRegistry(promptOverrides?: Map<string, string>): Map<s
 export const CAPABILITIES_INDEX = `## Capabilities Index
 Read the full guide with \`read_guide({ name: "..." })\` before using these capabilities for the first time.
 
-- **mcp-discovery**: Tool discovery via CLI-first tools, managed integrations, and MCP servers. Delegated — use \`agent_spawn({ type: "integration", prompt: "..." })\`. Read before first delegation.
 - **subagent**: Agent orchestration — explore, general-purpose, code-reviewer, browser, integration, channel, media, devops, fork mode, and team swarm. Read before delegating tasks.
 - **browser**: Browser automation via snapshot/ref/click workflow. Delegated — use \`agent_spawn({ type: "browser", prompt: "..." })\`. The \`web\` tool for HTTP fetching is available directly. Read the guide before first browser delegation.
 - **constraint-awareness**: Track and enforce user constraints (budgets, dates, requirements). Read when user states explicit constraints.

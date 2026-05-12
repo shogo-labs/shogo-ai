@@ -1,22 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * CanvasBuildManager — Runs `bun run build` in the workspace on file changes.
+ * CanvasBuildManager — Drives the workspace's web bundler on file changes.
  *
- * Stack-aware: works for any first-party stack whose package.json exposes a
- * `build` script and whose bundler binary is in `node_modules/.bin/`.
+ * Stack-aware: works for any first-party stack whose bundler binary is in
+ * `node_modules/.bin/`.
  *
  * Concretely today:
- *   - Vite stacks (`react-app`, `threejs-game`, `phaser-game`) — `vite build`
- *     produces `dist/`.
- *   - Metro stacks (`expo-app`, `expo-three`) — `expo export --platform web
- *     --output-dir dist` produces `dist/` containing the react-native-web
- *     rendering of the app.
+ *   - Vite stacks (`react-app`, `threejs-game`, `phaser-game`) — invokes
+ *     `vite build --outDir dist.staging --emptyOutDir` and atomically
+ *     swaps the result into `dist/`.
+ *   - Metro stacks (`expo-app`, `expo-three`) — invokes
+ *     `expo export --platform web --output-dir dist.staging` and atomically
+ *     swaps the result into `dist/`.
  *
- * In both cases we just run `bun run build` and let package.json drive the
- * actual command. The only thing this manager checks is that *some* known
- * bundler binary is present, so we don't fire `bun run build` against a
- * fresh workspace where nothing has installed yet.
+ * The historical implementation ran `bun run build` and let package.json
+ * pick the command. That worked, but the templates' build scripts target
+ * `dist/` directly — both `expo export` and `vite build` clear the output
+ * dir before writing, so refreshes during a rebuild (and any failed
+ * rebuild) left users staring at a 404. We now invoke the bundler
+ * ourselves so we control the output dir and can promote it atomically;
+ * see `build-output-commit.ts`.
  *
  * Builds are debounced so rapid file writes don't cause build storms.
  */
@@ -24,22 +28,69 @@
 import { spawn, type ChildProcess } from 'child_process'
 import { join } from 'path'
 import { existsSync } from 'fs'
+import { resolveBinInvocation } from '@shogo/shared-runtime'
+import {
+  commitBuildOutput,
+  cleanupStagingOutput,
+  DEFAULT_STAGING_DIR,
+} from './build-output-commit'
 
 const BUILD_DEBOUNCE_MS = 500
 const LOG_PREFIX = '[CanvasBuildManager]'
 
+type BundlerKind = 'vite' | 'expo'
+
 /**
- * Bundler binaries we know how to drive via `bun run build`. The first one
- * we find under `node_modules/.bin/` is enough to consider the workspace
- * buildable. Order doesn't matter — they're not exclusive (an Expo app
- * could in principle have vite for a tooling sidecar).
+ * Bundler binaries we know how to drive directly. The first one we
+ * find under `node_modules/.bin/` decides the build command. Vite is
+ * preferred over Expo when both happen to be present (a Vite app with
+ * an Expo tooling sidecar, etc.) because the resulting `dist/` is what
+ * the runtime serves.
  */
-const KNOWN_BUNDLER_BINS = ['vite', 'expo'] as const
+const KNOWN_BUNDLERS: readonly BundlerKind[] = ['vite', 'expo'] as const
 
 export interface CanvasBuildCallbacks {
   onBuildComplete: () => void
   onBuildError: (error: string) => void
+  /**
+   * Optional gate awaited before each `runBuild()` spawns the bundler.
+   * Used by AgentGateway to block canvas builds until
+   * `PreviewManager.installDepsIfNeeded()` has settled.
+   *
+   * Without this gate, VM-isolated sessions on macOS hosts crash
+   * deterministically: the host installs `node_modules` with only the
+   * Darwin rollup native, the linux guest 9p-mounts it, vite's config
+   * loader requires `@rollup/rollup-linux-<arch>-gnu`, fails, and
+   * surfaces as `error during build: undefined`. See PreviewManager's
+   * `depsReady` for the full chain.
+   *
+   * The wait is bounded by `WAIT_FOR_DEPS_TIMEOUT_MS` to prevent a
+   * misconfigured environment (no preview manager wired, deferred
+   * never resolves) from hanging the build forever — the build then
+   * proceeds anyway and reports whatever real error it hits.
+   */
+  waitForDeps?: () => Promise<void>
 }
+
+/**
+ * How long `runBuild()` will wait on `waitForDeps()` before giving up
+ * and proceeding anyway. 120s is comfortably longer than a cold
+ * `bun install` on a fresh VM-9p mount (observed up to ~40s in
+ * main.log), without making the user wait forever if the gate is
+ * broken.
+ */
+const WAIT_FOR_DEPS_TIMEOUT_MS = 120_000
+
+/**
+ * Bundler stderr/stdout slice ceiling for error reporting. The
+ * historical 200-char limit cut the actual error off mid-frame on
+ * vite/rollup native-binding failures (the friendly message lives at
+ * the bottom of a 30+ line trace), which is what made
+ * `error during build: undefined` so common — most of the useful
+ * text never made it into the log line. 4000 is enough for the full
+ * vite friendly-error block and a short stack tail.
+ */
+const ERROR_SLICE_LIMIT = 4000
 
 export class CanvasBuildManager {
   private workspaceDir: string
@@ -76,6 +127,13 @@ export class CanvasBuildManager {
     return this._started
   }
 
+  /** True while a build is in flight. Used by the runtime's static handler
+   *  to render a "Building..." placeholder when neither `dist/` nor a
+   *  prior build is available. */
+  get isBuilding(): boolean {
+    return this.building
+  }
+
   isReady(): boolean {
     return this._started && existsSync(join(this.outDir, 'index.html'))
   }
@@ -84,10 +142,36 @@ export class CanvasBuildManager {
     return this.outDir
   }
 
-  /** True if we can find a bundler binary under `node_modules/.bin/`. */
-  private hasBundlerBin(): boolean {
+  /**
+   * Resolve the bundler binary to invoke. Picks the platform-correct
+   * shim (`.CMD` on Windows, no-extension on POSIX) and returns the
+   * first hit from `KNOWN_BUNDLERS`. Returns `null` when no known
+   * bundler is installed.
+   */
+  private resolveBundler(): { kind: BundlerKind; bin: string } | null {
     const binDir = join(this.workspaceDir, 'node_modules', '.bin')
-    return KNOWN_BUNDLER_BINS.some((b) => existsSync(join(binDir, b)))
+    const isWindows = process.platform === 'win32'
+    for (const kind of KNOWN_BUNDLERS) {
+      const candidates = isWindows
+        ? [join(binDir, `${kind}.CMD`), join(binDir, `${kind}.cmd`), join(binDir, `${kind}.exe`)]
+        : [join(binDir, kind)]
+      const bin = candidates.find((p) => existsSync(p))
+      if (bin) return { kind, bin }
+    }
+    return null
+  }
+
+  /**
+   * Build args that route output into `dist.staging/` instead of
+   * `dist/` so we can atomically swap on success. `--emptyOutDir` is
+   * passed to Vite explicitly to suppress its "outDir outside project
+   * root" warning when users seed exotic vite.config.ts setups.
+   */
+  private buildArgsFor(kind: BundlerKind): string[] {
+    if (kind === 'vite') {
+      return ['build', '--outDir', DEFAULT_STAGING_DIR, '--emptyOutDir']
+    }
+    return ['export', '--platform', 'web', '--output-dir', DEFAULT_STAGING_DIR]
   }
 
   private async runBuild(): Promise<void> {
@@ -99,39 +183,124 @@ export class CanvasBuildManager {
     if (!existsSync(join(this.workspaceDir, 'package.json'))) {
       return
     }
-    if (!this.hasBundlerBin()) {
+    const bundler = this.resolveBundler()
+    if (!bundler) {
       return
     }
 
     this.building = true
 
+    // Block the build on `PreviewManager.depsReady` if a gate is wired
+    // in. Critical for VM-isolated sessions on macOS hosts; harmless
+    // (resolves immediately) for cloud/k8s where the install has
+    // already completed by the time the gateway boots.
+    if (this.callbacks.waitForDeps) {
+      try {
+        await Promise.race([
+          this.callbacks.waitForDeps(),
+          new Promise<void>((_, reject) => {
+            setTimeout(
+              () => reject(new Error(`waitForDeps timed out after ${WAIT_FOR_DEPS_TIMEOUT_MS}ms`)),
+              WAIT_FOR_DEPS_TIMEOUT_MS,
+            )
+          }),
+        ])
+      } catch (err: any) {
+        console.warn(
+          `${LOG_PREFIX} waitForDeps gate did not settle (${err?.message ?? err}) — building anyway, expect platform-native errors if node_modules is incomplete`,
+        )
+      }
+    }
+
+    // Wipe any leftover staging dir from a prior crashed build so the
+    // bundler starts from a clean slate.
+    cleanupStagingOutput(this.workspaceDir, DEFAULT_STAGING_DIR)
+
+    const isWindows = process.platform === 'win32'
+    // Route through bundled `bun` when the system has no `node` on PATH
+    // — the .bin shim's `#!/usr/bin/env node` shebang otherwise exits
+    // 127 with `env: node: No such file or directory`, breaking every
+    // canvas rebuild on Shogo Desktop bundles. Falls back to direct
+    // spawn when the helper can't readlink the shim. See
+    // resolveBinInvocation() for the full rationale.
+    const invocation = resolveBinInvocation(this.workspaceDir, bundler.kind) ?? {
+      cmd: bundler.bin,
+      argsPrefix: [],
+    }
     try {
       await new Promise<void>((resolve, reject) => {
-        const bunBin = process.env.SHOGO_BUN_PATH || 'bun'
-        const proc: ChildProcess = spawn(bunBin, ['run', 'build'], {
-          cwd: this.workspaceDir,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        })
+        const proc: ChildProcess = spawn(
+          invocation.cmd,
+          [...invocation.argsPrefix, ...this.buildArgsFor(bundler.kind)],
+          {
+            cwd: this.workspaceDir,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            // `.CMD` shims must go through cmd.exe on Windows. Mirrors the
+            // shape of the spawn calls in PreviewManager.
+            shell: isWindows,
+            env: {
+              ...process.env,
+              NODE_ENV: 'development',
+              // Keep Expo non-interactive so a missing dep doesn't deadlock
+              // the spawn waiting on stdin.
+              CI: '1',
+            },
+          },
+        )
 
         let stderr = ''
+        let stdout = ''
         proc.stderr?.on('data', (chunk: Buffer) => {
           stderr += chunk.toString()
         })
-        proc.stdout?.on('data', () => {})
+        proc.stdout?.on('data', (chunk: Buffer) => {
+          // Vite/rollup emit the friendly-error block on stdout, with
+          // the actual error message in stderr only as a one-liner
+          // (and sometimes empty). Capturing both is the difference
+          // between "error during build: undefined" and a usable
+          // diagnostic.
+          stdout += chunk.toString()
+        })
 
         proc.on('close', (code) => {
-          if (code === 0) resolve()
-          else reject(new Error(stderr.trim() || `Build exited with code ${code}`))
+          if (code === 0) {
+            resolve()
+            return
+          }
+          // Prefer stderr; fall back to stdout when the bundler
+          // wrote its useful output there (vite does this for
+          // config-loader failures). Never throw an `Error` with an
+          // empty message — that's what produced
+          // `error during build: undefined` in main.log.
+          const errText = stderr.trim() || stdout.trim() || `Build exited with code ${code}`
+          reject(new Error(errText))
         })
         proc.on('error', reject)
       })
 
+      // Bundler succeeded — promote the staging dir into `dist/` atomically.
+      // A swap failure (e.g. a locked file on Windows) is non-fatal: the
+      // previous `dist/` keeps serving and the next rebuild will retry.
+      const committed = commitBuildOutput(this.workspaceDir, DEFAULT_STAGING_DIR)
+      if (!committed) {
+        console.warn(
+          `${LOG_PREFIX} Build succeeded but commit into dist/ failed — previous build remains live`,
+        )
+      }
+
       this.buildCount++
-      console.log(`${LOG_PREFIX} Build #${this.buildCount} complete → ${this.outDir}`)
+      console.log(`${LOG_PREFIX} Build #${this.buildCount} (${bundler.kind}) complete → ${this.outDir}`)
       this.callbacks.onBuildComplete()
     } catch (err: any) {
-      console.error(`${LOG_PREFIX} Build error:`, err.message)
-      this.callbacks.onBuildError(err.message)
+      // Failed build: drop the partial staging output so it doesn't
+      // poison the next swap, and leave `dist/` untouched.
+      cleanupStagingOutput(this.workspaceDir, DEFAULT_STAGING_DIR)
+      const message = String(err?.message ?? err ?? '(no error message)')
+      // Slice generously — see ERROR_SLICE_LIMIT comment. The 200-char
+      // cap dropped vite/rollup's actual error frame, which is what
+      // made cross-arch native binding failures unreadable in main.log.
+      console.error(`${LOG_PREFIX} Build error:`, message.slice(0, ERROR_SLICE_LIMIT))
+      this.callbacks.onBuildError(message)
     } finally {
       this.building = false
       if (this.pendingBuild) {

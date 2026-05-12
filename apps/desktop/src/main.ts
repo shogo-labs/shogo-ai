@@ -9,13 +9,14 @@ if (handleSquirrelEvent()) {
   process.exit(0)
 }
 
-import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification } from 'electron'
+import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification, dialog } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
 import { startLocalServer, stopLocalServer, getApiUrl, getApiPort } from './local-server'
 import { getWebDir } from './paths'
 import { readConfig, writeConfig, getDeviceInfo, getCloudUrl } from './config'
+import { buildBugReportZip, submitToDiscord, submitToGitHub, collectSystemInfo, type BugReportPayload } from './bug-report'
 import { initAutoUpdater, getIsApplyingUpdate } from './updater'
 import {
   registerRecordingIpcHandlers,
@@ -35,6 +36,7 @@ interface CloudLoginBody {
   workspace?: string
   authUrl?: string
   revoked?: boolean
+  cloudKeyRejected?: boolean
 }
 
 // --- Persistent file logging ---
@@ -211,9 +213,11 @@ function notifyRendererLoginResult(payload: { ok: boolean; error?: string; email
 // Keep the cloud-minted device key fresh by pinging the local heartbeat
 // endpoint periodically. The local API forwards this to the cloud
 // `/api/api-keys/heartbeat`, which updates `lastSeenAt` / `deviceAppVersion`
-// for the Devices UI, and tells us to sign out if the key was revoked
-// remotely. The AI proxy also updates `lastSeenAt` on every authenticated
-// call, so this only matters when the device is idle.
+// for the Devices UI. If the cloud rejects the key (revoked / expired),
+// we push `cloudKeyRejected` to the renderer so Settings can show a
+// warning banner — but we never auto-sign the user out. The AI proxy
+// also updates `lastSeenAt` on every authenticated call, so this only
+// matters when the device is idle.
 const HEARTBEAT_INTERVAL_MS = 5 * 60_000
 let heartbeatTimer: NodeJS.Timeout | null = null
 
@@ -226,13 +230,17 @@ function startCloudLoginHeartbeat(): void {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ deviceAppVersion: app.getVersion() }),
       })
-      if (!res.ok) return
       const body = (await res.json().catch(() => ({}))) as CloudLoginBody
-      if (body?.revoked) {
-        console.warn('[Desktop] Cloud key was revoked remotely, signing out')
-        notifyRendererLoginResult({
-          ok: false,
-          error: 'Signed out from Shogo Cloud (key revoked)',
+      if (body?.cloudKeyRejected) {
+        console.warn('[Desktop] Cloud rejected API key — notifying renderer of connection issue')
+      }
+      // Push current cloud-connection health to the renderer so the
+      // Settings UI can show a warning banner without signing out.
+      for (const win of BrowserWindow.getAllWindows()) {
+        win.webContents.send('cloud-connection-status', {
+          connected: body?.ok === true,
+          cloudKeyRejected: !!body?.cloudKeyRejected,
+          error: body?.error,
         })
       }
     } catch {
@@ -315,6 +323,26 @@ function buildAppMenu(): void {
         ] : [
           { role: 'close' as const },
         ]),
+      ],
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'Documentation',
+          click: () => { shell.openExternal('https://docs.shogo.ai') },
+        },
+        { type: 'separator' },
+        {
+          label: 'Report Bug...',
+          click: () => {
+            if (mainWindow) {
+              if (mainWindow.isMinimized()) mainWindow.restore()
+              mainWindow.focus()
+              mainWindow.webContents.send('navigate', '/settings?tab=support')
+            }
+          },
+        },
       ],
     },
   ]
@@ -490,6 +518,82 @@ function registerIpcHandlers(): void {
       return { available: false, currentVersion: null, latestVersion: '' }
     }
   })
+
+  // --- Bug report / log sharing ---
+
+  ipcMain.handle('capture-screenshot', async () => {
+    if (!mainWindow) return { ok: false, error: 'No window available' }
+    try {
+      const image = await mainWindow.webContents.capturePage()
+      return { ok: true, base64: image.toPNG().toString('base64') }
+    } catch (err) {
+      return { ok: false, error: (err as Error)?.message || 'Screenshot capture failed' }
+    }
+  })
+
+  ipcMain.handle('export-bug-report', async (_event, payload: BugReportPayload) => {
+    try {
+      const bundle = buildBugReportZip(payload)
+      const result = await dialog.showSaveDialog({
+        title: 'Save Bug Report',
+        defaultPath: bundle.filename,
+        filters: [{ name: 'Zip Archive', extensions: ['zip'] }],
+      })
+      if (result.canceled || !result.filePath) {
+        return { ok: false, error: 'Cancelled' }
+      }
+      fs.writeFileSync(result.filePath, bundle.zipBuffer)
+      return { ok: true, path: result.filePath }
+    } catch (err) {
+      return { ok: false, error: (err as Error)?.message || 'Export failed' }
+    }
+  })
+
+  ipcMain.handle('submit-bug-report', async (_event, payload: BugReportPayload) => {
+    try {
+      const config = readConfig()
+      const bundle = buildBugReportZip(payload)
+      const results: { discord?: { ok: boolean; error?: string }; github?: { ok: boolean; error?: string; issueUrl?: string } } = {}
+
+      if (config.bugReport?.discordWebhookUrl) {
+        results.discord = await submitToDiscord(config.bugReport.discordWebhookUrl, payload, bundle)
+      }
+
+      if (config.bugReport?.githubRepo && config.bugReport?.githubToken) {
+        results.github = await submitToGitHub(config.bugReport.githubRepo, config.bugReport.githubToken, payload)
+      }
+
+      if (!results.discord && !results.github) {
+        return { ok: false, error: 'No submission targets configured. Use "Export" to save locally.' }
+      }
+
+      const anyFailed = (results.discord && !results.discord.ok) || (results.github && !results.github.ok)
+      if (anyFailed) {
+        const errors = [results.discord?.error, results.github?.error].filter(Boolean).join('; ')
+        return { ok: false, error: errors }
+      }
+      return { ok: true, ...results }
+    } catch (err) {
+      return { ok: false, error: (err as Error)?.message || 'Submission failed' }
+    }
+  })
+
+  ipcMain.handle('get-bug-report-config', () => {
+    const config = readConfig()
+    return {
+      hasDiscord: !!config.bugReport?.discordWebhookUrl,
+      hasGitHub: !!(config.bugReport?.githubRepo && config.bugReport?.githubToken),
+      maxLogLines: config.bugReport?.maxLogLines ?? 500,
+    }
+  })
+
+  ipcMain.handle('set-bug-report-config', (_event, bugReport: { discordWebhookUrl?: string; githubRepo?: string; githubToken?: string; maxLogLines?: number }) => {
+    const current = readConfig()
+    writeConfig({ bugReport: { ...current.bugReport, ...bugReport } })
+    return { ok: true }
+  })
+
+  ipcMain.handle('get-system-info', () => collectSystemInfo())
 }
 
 function createWindow(): void {
@@ -675,7 +779,8 @@ function setupSessionHandlers(): void {
           "default-src 'self' shogo: https: http:",
           `connect-src *`,
           `frame-src 'self' shogo: ${apiOrigin} http://localhost:*`,
-          "script-src 'self' shogo: 'unsafe-inline' 'unsafe-eval'",
+          "script-src 'self' shogo: blob: 'unsafe-inline' 'unsafe-eval'",
+          "worker-src 'self' shogo: blob:",
           "style-src 'self' shogo: 'unsafe-inline'",
           "img-src * data: blob:",
           "font-src 'self' shogo: data: https:",
@@ -759,6 +864,14 @@ app.whenReady().then(async () => {
 
   if (app.isPackaged) {
     initAutoUpdater()
+  } else {
+    // In dev mode, register no-op handlers so the renderer doesn't crash
+    // when it invokes update-related IPC (initAutoUpdater registers these
+    // only in packaged builds).
+    ipcMain.handle('get-update-status', () => ({ status: 'idle', releaseName: null, availableVersion: null }))
+    ipcMain.handle('download-update', () => ({ ok: false, error: 'Updates disabled in dev mode' }))
+    ipcMain.handle('dismiss-update', () => ({ ok: true }))
+    ipcMain.handle('install-update', () => {})
   }
 
   if (!isCloudMode) {

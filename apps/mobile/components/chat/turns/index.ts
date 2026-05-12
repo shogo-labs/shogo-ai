@@ -15,6 +15,12 @@ export { AssistantContent, type AssistantContentProps } from "./AssistantContent
 export { InlineToolWidget, type InlineToolWidgetProps } from "./InlineToolWidget"
 export { ExecWidget, type ExecWidgetProps } from "./ExecWidget"
 export { ToolCallGroup, type ToolCallGroupProps } from "./ToolCallGroup"
+export { ExplorationGroup, type ExplorationGroupProps } from "./ExplorationGroup"
+export { EditingGroup, type EditingGroupProps } from "./EditingGroup"
+export {
+  CollapsibleToolGroup,
+  type CollapsibleToolGroupProps,
+} from "./CollapsibleToolGroup"
 export { TodoWidget, type TodoWidgetProps } from "./TodoWidget"
 export { AskUserQuestionWidget, type AskUserQuestionWidgetProps } from "./AskUserQuestionWidget"
 export { type ConversationTurn, type TurnBoundary, type MessagePart } from "./types"

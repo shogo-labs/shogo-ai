@@ -25,10 +25,25 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
 /**
+ * Monorepo root. apps/api/src/lib/runtime -> repo root is 5 levels up.
+ * Used to compute a sensible default `workspacesDir` when the
+ * `WORKSPACES_DIR` env var isn't set. Historically this fell back to
+ * `process.cwd()`, which silently broke whenever the API was launched
+ * from somewhere other than `<repo>/workspaces`'s parent directory —
+ * `bun dev:all` from the repo root created project workspaces at
+ * `<repo>/<projectId>` instead of `<repo>/workspaces/<projectId>`,
+ * leaving the agent-runtime serving a fresh empty `.shogo` and the
+ * user's real `quick-actions.json` (etc.) invisible. server.ts at
+ * line 313 uses the equivalent computation; keeping the two
+ * defaults aligned is what stops the divergence.
+ */
+const PROJECT_ROOT = resolve(__dirname, '..', '..', '..', '..', '..')
+
+/**
  * Path to the bundled Vite + React + TypeScript template.
  * Adjusted for api package location: apps/api/src/lib/runtime -> templates/runtime-template
  */
-const BUNDLED_TEMPLATE_DIR = join(__dirname, '..', '..', '..', '..', '..', 'templates', 'runtime-template')
+const BUNDLED_TEMPLATE_DIR = join(PROJECT_ROOT, 'templates', 'runtime-template')
 
 /**
  * Path to the unified runtime server.
@@ -36,7 +51,7 @@ const BUNDLED_TEMPLATE_DIR = join(__dirname, '..', '..', '..', '..', '..', 'temp
  * Falls back to source path for cloud/local dev.
  */
 const RUNTIME_SERVER = process.env.AGENT_RUNTIME_ENTRY
-  || join(__dirname, '..', '..', '..', '..', '..', 'packages', 'agent-runtime', 'src', 'server.ts')
+  || join(PROJECT_ROOT, 'packages', 'agent-runtime', 'src', 'server.ts')
 
 /** Port range for random allocation (obscure high range to avoid conflicts) */
 const PORT_RANGE_START = 37100
@@ -48,7 +63,7 @@ const DEFAULT_CONFIG: IRuntimeConfig = {
   basePort: PORT_RANGE_START,
   maxRuntimes: 10,
   healthCheckInterval: 30000,
-  workspacesDir: process.cwd(),
+  workspacesDir: join(PROJECT_ROOT, 'workspaces'),
   domainSuffix: 'localhost',
   templateDir: '_template',
 }
@@ -94,11 +109,21 @@ export class RuntimeManager implements IRuntimeManager {
 
         const selfPid = String(process.pid)
         const parentPid = String(process.ppid)
-        const pids = result.split('\n').filter(p => p.trim() && p !== selfPid && p !== parentPid)
+        // Some lsof builds (notably inside the minimal runtime container
+        // images) silently ignore `-t` when another flag isn't honored and
+        // fall back to verbose tabular output. If any non-numeric tokens
+        // reach `kill -9`, sh will choke on unescaped characters like `(`
+        // and spray `/bin/sh: syntax error: unexpected "("` into the logs.
+        // Defensively keep only pure integer PIDs.
+        const pids = result
+          .split(/\s+/)
+          .map((p) => p.trim())
+          .filter((p) => /^\d+$/.test(p) && p !== selfPid && p !== parentPid && p !== '1')
 
         if (pids.length > 0) {
-          console.log(`[RuntimeManager] Cleaning up ${pids.length} stale process(es) on ports ${range.start}-${range.end}: ${pids.join(', ')}`)
-          for (const pid of pids) {
+          const uniquePids = [...new Set(pids)]
+          console.log(`[RuntimeManager] Cleaning up ${uniquePids.length} stale process(es) on ports ${range.start}-${range.end}: ${uniquePids.join(', ')}`)
+          for (const pid of uniquePids) {
             try { execSync(`kill -9 ${pid} 2>/dev/null || true`) } catch {}
           }
         }
@@ -149,7 +174,13 @@ export class RuntimeManager implements IRuntimeManager {
           return [...new Set(pids)]
         } else {
           const result = execSync(`lsof -ti :${port} 2>/dev/null || true`, { encoding: 'utf-8' })
-          return result.trim().split('\n').filter(pid => pid.length > 0)
+          // Defensively accept only numeric PIDs — some lsof builds emit
+          // verbose output even with `-t`, which would cause sh to choke
+          // on unescaped `(` when fed to `kill`.
+          return result
+            .split(/\s+/)
+            .map((p) => p.trim())
+            .filter((pid) => /^\d+$/.test(pid))
         }
       } catch {
         return []
@@ -499,7 +530,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     techStackId?: string,
     templateId?: string,
   ): Promise<string> {
-    const workspacesDir = resolve(this.config.workspacesDir || process.cwd())
+    const workspacesDir = resolve(this.config.workspacesDir || join(PROJECT_ROOT, 'workspaces'))
     const projectDir = join(workspacesDir, projectId)
     const workspaceTemplateDir = join(workspacesDir, this.config.templateDir || '_template')
 
@@ -707,6 +738,26 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   }
 
   /**
+   * Read the workspace's `composioScope` setting for a project.
+   * Returns `'workspace'` (the new default) when the project, workspace,
+   * or column is missing — matches the API route's defaulting logic.
+   */
+  private async getProjectComposioScope(projectId: string): Promise<'workspace' | 'project'> {
+    try {
+      const { prisma } = await import('../prisma')
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { workspace: { select: { composioScope: true } } } as any,
+      }) as { workspace?: { composioScope?: string | null } | null } | null
+      const value = project?.workspace?.composioScope
+      if (value === 'project' || value === 'workspace') return value
+      return 'workspace'
+    } catch {
+      return 'workspace'
+    }
+  }
+
+  /**
    * Build a merged security policy for a project runtime (local mode only).
    * Reads user-level preference from LocalConfig and project-level overrides
    * from Project.settings, merges with escalation protection, and returns
@@ -870,6 +921,31 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           return false
         })()
 
+      // Independent check: even if it's not Expo, we should only spawn Vite
+      // when the workspace actually has a Vite entry. Otherwise the dev
+      // server respawns forever pre-transforming a non-existent
+      // `/src/main.tsx`. This guards legacy workspaces that were created
+      // before techStackId was persisted (where projectInfo.techStackId is
+      // null and the workspace has no Vite scaffold yet) and stacks like
+      // python-data / skill-server which use bun directly with no Vite.
+      const looksLikeViteProject = (() => {
+        try {
+          const pkgJsonPath = join(projectDir, 'package.json')
+          if (existsSync(pkgJsonPath)) {
+            const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'))
+            const deps = { ...(pkgJson.dependencies || {}), ...(pkgJson.devDependencies || {}) }
+            if (deps.vite || deps['@vitejs/plugin-react']) return true
+          }
+        } catch { /* fall through */ }
+        for (const cfg of ['vite.config.ts', 'vite.config.js', 'vite.config.mjs', 'vite.config.cjs']) {
+          if (existsSync(join(projectDir, cfg))) return true
+        }
+        for (const entry of ['src/main.tsx', 'src/main.ts', 'src/main.jsx', 'src/main.js']) {
+          if (existsSync(join(projectDir, entry))) return true
+        }
+        return false
+      })()
+
       let proc: ReturnType<typeof spawn> | null = null
 
       if (isExpoProject) {
@@ -880,6 +956,13 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         // Hold the project port even though we don't spawn Vite, so the
         // existing /preview proxy keeps routing to the agent port. The
         // agent-runtime serves dist/ at runtimePort.
+      } else if (!looksLikeViteProject) {
+        console.log(
+          `[RuntimeManager] Project ${projectId} has no Vite entry ` +
+          `(no vite dep, no vite.config, no src/main.*) — skipping Vite spawn. ` +
+          `agent-runtime PreviewManager will own preview if the workspace ` +
+          `later writes one.`,
+        )
       } else {
         // Run Vite dev server
         // Resolve vite binary directly from node_modules to avoid Windows .bin/ issue
@@ -975,7 +1058,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           // hardcodes 5173, but the actual port is whatever RuntimeManager
           // allocated here).
           PUBLIC_PREVIEW_URL: url,
-          SCHEMAS_PATH: join(this.config.workspacesDir || process.cwd(), '..', '.schemas'),
+          SCHEMAS_PATH: join(this.config.workspacesDir || join(PROJECT_ROOT, 'workspaces'), '..', '.schemas'),
           NODE_ENV: 'development',
         }
         
@@ -1016,6 +1099,11 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         runtimeEnv.TOOLS_PROXY_URL = `http://localhost:${apiPort}/api`
 
         runtimeEnv.WORKSPACE_ID = workspaceId
+
+        // Tell the runtime which Composio scope to use for OAuth user IDs.
+        // Defaults to 'workspace' (the new default) for any project where
+        // the workspace row is missing the column.
+        runtimeEnv.COMPOSIO_USER_SCOPE = await this.getProjectComposioScope(projectId)
 
         // Per-project runtime auth tokens (deterministic — derived from signing secret + projectId).
         // Gotchas around rotation / leak response / synthetic userId live in
@@ -1371,11 +1459,20 @@ export class ShogoErrorBoundary extends Component<Props, State> {
  * Create a RuntimeManager with environment-based configuration.
  */
 export function createRuntimeManager(overrides?: Partial<IRuntimeConfig>): RuntimeManager {
+  // The `WORKSPACES_DIR || PROJECT_ROOT/workspaces` resolution is the
+  // SAME one apps/api/src/server.ts:316 uses. Historically this
+  // fell back to `process.cwd()`, which only happened to do the
+  // right thing when the API was launched from inside the
+  // workspaces parent. `bun dev:all` from the repo root resolved
+  // `process.cwd()` to the repo itself and silently materialised
+  // project workspaces at `<repo>/<projectId>` instead of
+  // `<repo>/workspaces/<projectId>` — see the long comment on
+  // PROJECT_ROOT above.
   const config: Partial<IRuntimeConfig> = {
     basePort: PORT_RANGE_START,
     maxRuntimes: parseInt(process.env.RUNTIME_MAX_COUNT || '10', 10),
     healthCheckInterval: parseInt(process.env.RUNTIME_HEALTH_INTERVAL || '30000', 10),
-    workspacesDir: process.env.WORKSPACES_DIR || process.cwd(),
+    workspacesDir: process.env.WORKSPACES_DIR || join(PROJECT_ROOT, 'workspaces'),
     domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
     ...overrides,
   }

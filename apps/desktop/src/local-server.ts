@@ -302,6 +302,19 @@ export async function startLocalServer(): Promise<void> {
     BETTER_AUTH_URL: `http://localhost:${apiPort}`,
     BUN_INSTALL_CACHE_DIR: path.join(getWorkspacesDir(), '..', '.bun-cache'),
     SHOGO_BUN_PATH: bunPath,
+    // Path-safe SDK CLI fallback. PreviewManager uses this when a
+    // project's `package.json` declares the legacy
+    // `"generate": "bunx shogo generate"` script — `bunx` would resolve
+    // that to the published @shogo-ai/sdk@0.4.0, whose execSync-based
+    // sub-shell breaks on workspace paths containing spaces (notably
+    // every macOS install under "~/Library/Application Support/Shogo").
+    // 0.4.1 fixed the bug but was never published to npm, so we ship
+    // the in-repo CLI as a sibling resource and route around the
+    // broken script when detected. See apps/desktop/scripts/bundle-api.mjs
+    // for the bundling step.
+    SHOGO_BUNDLED_SDK_CLI: IS_DEV
+      ? path.join(projectRoot, 'packages', 'sdk', 'bin', 'cli.mjs')
+      : path.join(projectRoot, 'sdk-cli.mjs'),
     AGENT_RUNTIME_ENTRY: IS_DEV
       ? path.join(projectRoot, 'packages', 'agent-runtime', 'src', 'entry.ts')
       : path.join(bundleDir, 'agent-runtime.js'),
@@ -513,10 +526,38 @@ function listBundledMigrationNames(): string[] {
 }
 
 /**
- * Records every bundled Prisma migration as already-applied in the target
- * SQLite database. Used after copying seed.db (whose schema is already at
- * the latest migration) so that `prisma migrate deploy` reports
- * "No pending migrations" instead of failing with P3005.
+ * Records bundled Prisma migrations as applied in the target SQLite database.
+ *
+ * Three modes:
+ *
+ *   - `'seed'`:    Mark **every** bundled migration as applied without running
+ *                  any SQL. Correct only when called right after copying a
+ *                  fresh `seed.db` (whose schema is already at HEAD).
+ *
+ *   - `'introspect'`: P3005 self-heal for existing user databases. Reads each
+ *                     migration's SQL, introspects the live schema, and for
+ *                     additive statements (`ALTER TABLE … ADD COLUMN`,
+ *                     `CREATE TABLE`) replays the ones whose target is still
+ *                     missing. Migrations with statements we can't safely
+ *                     classify are left un-baselined so `prisma migrate deploy`
+ *                     can attempt them. This avoids the historical footgun
+ *                     where the old `'seed'`-style self-heal silently marked
+ *                     all migrations as applied against a stale schema and
+ *                     left columns like `subscriptions.seats` missing forever.
+ *
+ *   - `'rescue'`:  Drift repair sweep. Runs on **every** launch and never
+ *                  touches `_prisma_migrations`. For every bundled migration
+ *                  (including ones already marked applied), scans for
+ *                  `ALTER TABLE … ADD COLUMN` / `CREATE TABLE` /
+ *                  `CREATE INDEX` / `DROP INDEX` and re-runs only those
+ *                  whose target is currently missing. This is the *only*
+ *                  thing that recovers a user whose `seed.db` was generated
+ *                  at build time without the seats column: their
+ *                  `_prisma_migrations` table marks the seats migration as
+ *                  applied (so `prisma migrate deploy` does nothing), and
+ *                  `'introspect'` mode also skips it because it's in
+ *                  `existing`. Only this rescue pass actually re-applies the
+ *                  ALTER TABLE.
  *
  * Historically this shelled out to the `sqlite3` CLI, which is not present
  * on a stock Windows install — the previous implementation silently warned
@@ -525,18 +566,35 @@ function listBundledMigrationNames(): string[] {
  * dependency (it runs the API server) and ships with `bun:sqlite`, so we
  * reuse it here for a portable, dependency-free baseline.
  */
-function baselineMigrations(bunPath: string, dbPath: string): void {
+function baselineMigrations(
+  bunPath: string,
+  dbPath: string,
+  mode: 'seed' | 'introspect' | 'rescue' = 'seed',
+): void {
   const dirs = listBundledMigrationNames()
   if (dirs.length === 0) return
+
+  const migrationsDir = path.join(getProjectRoot(), 'prisma', 'migrations')
 
   // Under `bun -e`, process.argv is [bunExecutable, ...positionalArgs] with
   // no script-path placeholder (unlike Node). So argv[1] is the first arg we
   // pass, not argv[2]. A leading "--" is stripped by bun, hence omitted below.
+  // argv layout: [dbPath, migrationsDir, mode, ...migrationNames]
+  //
+  // Wrapped in an IIFE so the 'seed' early-return is legal — top-level
+  // `return` is a SyntaxError under `bun -e` (script body is parsed as a
+  // module, not a function), and bun won't print *anything* if it can't
+  // parse the script, which makes the failure silent.
   const script = `
+  (function main() {
+    const fs = require("node:fs");
+    const path = require("node:path");
     const { Database } = require("bun:sqlite");
     const { randomUUID } = require("node:crypto");
     const db = new Database(process.argv[1]);
-    const names = process.argv.slice(2);
+    const migrationsDir = process.argv[2];
+    const mode = process.argv[3];
+    const names = process.argv.slice(4);
     db.exec(\`
       CREATE TABLE IF NOT EXISTS "_prisma_migrations" (
         "id" TEXT PRIMARY KEY NOT NULL,
@@ -549,33 +607,232 @@ function baselineMigrations(bunPath: string, dbPath: string): void {
         "applied_steps_count" INTEGER NOT NULL DEFAULT 0
       );
     \`);
-    // Idempotent: skip names that already have a row. We can't rely on
-    // PRIMARY KEY conflict because the PK is a random UUID per row.
+
     const existing = new Set(
       db.query('SELECT migration_name FROM "_prisma_migrations"').all()
         .map((r) => r.migration_name)
     );
-    const stmt = db.prepare(
+
+    const insertStmt = db.prepare(
       'INSERT INTO "_prisma_migrations" ("id","checksum","finished_at","migration_name","applied_steps_count","started_at") VALUES (?, ?, ?, ?, 1, ?)'
     );
-    const now = new Date().toISOString();
-    let inserted = 0;
-    for (const name of names) {
-      if (existing.has(name)) continue;
-      stmt.run(randomUUID(), "baseline-seed", now, name, now);
-      inserted++;
+
+    function nowIso() { return new Date().toISOString(); }
+    function baseline(name, checksum) {
+      if (existing.has(name)) return false;
+      insertStmt.run(randomUUID(), checksum, nowIso(), name, nowIso());
+      existing.add(name);
+      return true;
     }
+
+    // Introspect live schema into { tableName: Set<columnName> }
+    function loadSchema() {
+      const tables = new Map();
+      for (const row of db.query("SELECT name FROM sqlite_master WHERE type='table'").all()) {
+        const cols = new Set(
+          db.query(\`PRAGMA table_info("\${row.name.replace(/"/g, '""')}")\`).all().map((r) => r.name)
+        );
+        tables.set(row.name, cols);
+      }
+      return tables;
+    }
+
+    function splitSqlStatements(sql) {
+      // Strip block & line comments, then split on ';' at end of line. Good
+      // enough for Prisma-generated SQLite migrations (no PL/pgSQL etc.).
+      const noBlock = sql.replace(/\\/\\*[\\s\\S]*?\\*\\//g, '');
+      const noLine = noBlock.replace(/--[^\\n]*\\n/g, '\\n');
+      return noLine
+        .split(/;\\s*(?:\\n|$)/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+    }
+
+    // mode === 'seed': legacy behavior — mark all as applied, no SQL replay.
+    if (mode === 'seed') {
+      let inserted = 0;
+      for (const name of names) {
+        if (baseline(name, 'baseline-seed')) inserted++;
+      }
+      db.close();
+      console.log(JSON.stringify({ mode, inserted, total: names.length, skipped: names.length - inserted }));
+      return;
+    }
+
+    // mode === 'rescue': drift repair. Re-run any ADD COLUMN / CREATE TABLE /
+    // DROP INDEX whose target is missing in the live schema, regardless of
+    // whether the migration is recorded in _prisma_migrations. NEVER touches
+    // _prisma_migrations. Designed to be safe to run on every launch.
+    if (mode === 'rescue') {
+      const repaired = [];
+      const tables = loadSchema();
+      for (const name of names) {
+        const sqlPath = path.join(migrationsDir, name, 'migration.sql');
+        let sql;
+        try { sql = fs.readFileSync(sqlPath, 'utf-8'); } catch { continue; }
+        for (const stmt of splitSqlStatements(sql)) {
+          const addCol = stmt.match(/^ALTER\\s+TABLE\\s+"?(\\w+)"?\\s+ADD\\s+COLUMN\\s+"?(\\w+)"?/i);
+          if (addCol) {
+            const [, table, col] = addCol;
+            const cols = tables.get(table);
+            if (!cols) continue;            // table absent → skip (rescue can't create FKs etc.)
+            if (cols.has(col)) continue;    // already applied
+            try {
+              db.exec(stmt);
+              cols.add(col);
+              repaired.push({ kind: 'add_col', migration: name, table, col });
+            } catch (e) {
+              const msg = String(e && e.message || e);
+              if (!/duplicate column/i.test(msg)) {
+                repaired.push({ kind: 'add_col_failed', migration: name, table, col, error: msg });
+              }
+            }
+            continue;
+          }
+          const createTbl = stmt.match(/^CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?"?(\\w+)"?/i);
+          if (createTbl) {
+            const [, table] = createTbl;
+            if (tables.has(table)) continue;
+            try {
+              db.exec(stmt);
+              tables.set(table, new Set());
+              repaired.push({ kind: 'create_table', migration: name, table });
+            } catch (e) {
+              const msg = String(e && e.message || e);
+              if (!/already exists/i.test(msg)) {
+                repaired.push({ kind: 'create_table_failed', migration: name, table, error: msg });
+              }
+            }
+            continue;
+          }
+          // Other statements (UPDATE, RENAME, etc.) are NOT replayed by rescue.
+        }
+      }
+      db.close();
+      console.log(JSON.stringify({ mode, repaired, repairedCount: repaired.length, total: names.length }));
+      return;
+    }
+
+    // mode === 'introspect': replay-or-baseline based on actual schema state.
+    let baselined = 0, replayed = 0, deferred = 0, skipped = 0;
+    const deferredNames = [];
+    const replayedNames = [];
+
+    for (const name of names) {
+      if (existing.has(name)) { skipped++; continue; }
+      const sqlPath = path.join(migrationsDir, name, 'migration.sql');
+      let sql;
+      try { sql = fs.readFileSync(sqlPath, 'utf-8'); }
+      catch { baseline(name, 'baseline-introspect-no-sql'); baselined++; continue; }
+
+      const tables = loadSchema();
+      const stmts = splitSqlStatements(sql);
+      let canRescue = true;
+      const toExecute = [];
+
+      for (const stmt of stmts) {
+        const addCol = stmt.match(/^ALTER\\s+TABLE\\s+"?(\\w+)"?\\s+ADD\\s+COLUMN\\s+"?(\\w+)"?/i);
+        if (addCol) {
+          const [, table, col] = addCol;
+          const cols = tables.get(table);
+          if (cols && cols.has(col)) continue;
+          toExecute.push({ kind: 'add_col', table, col, stmt });
+          continue;
+        }
+        const createTbl = stmt.match(/^CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?"?(\\w+)"?/i);
+        if (createTbl) {
+          const [, table] = createTbl;
+          if (tables.has(table)) continue;
+          toExecute.push({ kind: 'create_table', table, stmt });
+          continue;
+        }
+        const createIdx = stmt.match(/^CREATE\\s+(UNIQUE\\s+)?INDEX/i);
+        if (createIdx) {
+          // SQLite supports IF NOT EXISTS on CREATE INDEX; safe to attempt.
+          toExecute.push({ kind: 'create_index', stmt });
+          continue;
+        }
+        // PRAGMA is connection-scoped, idempotent, and routinely used at
+        // the top of Prisma SQLite migrations to toggle foreign_keys.
+        if (/^PRAGMA\\s/i.test(stmt)) {
+          toExecute.push({ kind: 'pragma', stmt });
+          continue;
+        }
+        // DROP INDEX is safe — if the index doesn't exist with IF EXISTS
+        // it's a no-op; without IF EXISTS we treat a "no such index" error
+        // as success below. Old indexes that we never created on this DB
+        // are exactly the kind of thing migrations clean up.
+        if (/^DROP\\s+INDEX\\b/i.test(stmt)) {
+          toExecute.push({ kind: 'drop_index', stmt });
+          continue;
+        }
+        // Anything else (RENAME, UPDATE, INSERT, foreign-key emulation
+        // via temp tables, etc.) we won't reason about. Defer to prisma.
+        canRescue = false;
+        break;
+      }
+
+      if (!canRescue) {
+        deferred++;
+        deferredNames.push(name);
+        continue;
+      }
+
+      for (const action of toExecute) {
+        try {
+          db.exec(action.stmt);
+          if (action.kind === 'add_col') {
+            const cols = tables.get(action.table);
+            if (cols) cols.add(action.col);
+          } else if (action.kind === 'create_table') {
+            tables.set(action.table, new Set());
+          }
+        } catch (e) {
+          // Best-effort: ignore idempotency-style errors, bail on real ones.
+          const msg = String(e && e.message || e);
+          if (/duplicate column|already exists|no such index/i.test(msg)) continue;
+          canRescue = false;
+          break;
+        }
+      }
+
+      if (!canRescue) {
+        deferred++;
+        deferredNames.push(name);
+        continue;
+      }
+
+      baseline(name, toExecute.length > 0 ? 'baseline-introspect-replay' : 'baseline-introspect');
+      if (toExecute.length > 0) {
+        replayed++;
+        replayedNames.push(name);
+      } else {
+        baselined++;
+      }
+    }
+
     db.close();
-    console.log(JSON.stringify({ inserted, total: names.length, skipped: names.length - inserted }));
+    console.log(JSON.stringify({
+      mode,
+      baselined,
+      replayed,
+      deferred,
+      skipped,
+      total: names.length,
+      replayedNames,
+      deferredNames,
+    }));
+  })();
   `
 
+  const args = ['-e', script, dbPath, migrationsDir, mode, ...dirs]
   try {
-    const out = execFileSync(bunPath, ['-e', script, dbPath, ...dirs], {
+    const out = execFileSync(bunPath, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 10_000,
+      timeout: 30_000,
       encoding: 'utf-8',
     }).trim()
-    console.log(`[Desktop] Baselined ${dirs.length} migration(s) for seed database: ${out}`)
+    console.log(`[Desktop] baselineMigrations(${mode}) result: ${out}`)
   } catch (err: any) {
     const stderr = err?.stderr?.toString?.() || ''
     const stdout = err?.stdout?.toString?.() || ''
@@ -621,11 +878,16 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
       const stdout = err.stdout?.toString() || ''
       if (stdout.includes('No pending migrations') || stderr.includes('No pending migrations')) {
         console.log('[Desktop] Database schema is up to date')
-        return
+      } else {
+        console.error('[Desktop] Migration failed:', stderr || err.message)
+        console.error('[Desktop] Migration stdout:', stdout)
+        throw new Error('Failed to run database migrations')
       }
-      console.error('[Desktop] Migration failed:', stderr || err.message)
-      console.error('[Desktop] Migration stdout:', stdout)
-      throw new Error('Failed to run database migrations')
+    }
+    try {
+      baselineMigrations(bunPath, getDbPath(), 'rescue')
+    } catch (rescueErr) {
+      console.error('[Desktop] Dev-mode schema rescue failed (non-fatal):', rescueErr)
     }
     return
   }
@@ -681,21 +943,51 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
   // Self-heal for users whose install pre-dates the baseline fix: the seed DB
   // was copied but `_prisma_migrations` never populated (the old sqlite3 CLI
   // path silently no-oped on systems without sqlite3). Prisma then reports
-  // P3005 "database schema is not empty". Baseline the existing DB and retry
-  // once so the app can boot instead of being permanently broken.
+  // P3005 "database schema is not empty".
+  //
+  // We use `'introspect'` mode here, NOT `'seed'`: the live DB may be at an
+  // older schema than HEAD (e.g. missing `subscriptions.seats`), and seed-
+  // style baselining would silently mark the un-applied migration as done,
+  // permanently breaking subsequent reads of those columns. Introspect mode
+  // reads each migration's SQL, replays additive `ADD COLUMN`/`CREATE TABLE`
+  // statements whose target isn't in the live schema, and defers anything
+  // else to the subsequent `prisma migrate deploy` retry.
   if (!attempt.ok && (attempt.stdout + attempt.stderr).includes('P3005')) {
-    console.warn('[Desktop] Detected P3005 — baselining existing database and retrying migrations')
+    console.warn('[Desktop] Detected P3005 — introspecting existing database and replaying missing migrations')
     try {
-      baselineMigrations(bunPath, getDbPath())
+      baselineMigrations(bunPath, getDbPath(), 'introspect')
     } catch (err) {
-      console.error('[Desktop] P3005 self-heal failed during baseline:', err)
+      console.error('[Desktop] P3005 self-heal failed during introspect:', err)
       throw new Error('Failed to run database migrations (P3005 self-heal could not baseline)')
     }
     attempt = runDeploy()
   }
 
+  // Rescue pass: even when `prisma migrate deploy` says everything is fine,
+  // the schema may be drifted — specifically, an early v1.5.x `seed.db` was
+  // generated by `prisma db push` before `schema.local.prisma` had the
+  // `seats` column, but the bundled `_prisma_migrations` baseline marked
+  // the seats migration as applied anyway. Result: `_prisma_migrations`
+  // says 19/19 applied, `prisma migrate deploy` reports "No pending
+  // migrations", but `subscriptions.seats` does not exist in the DB.
+  // Users in this state are unrecoverable without explicit rescue.
+  //
+  // This rescue pass runs on every launch, scans every bundled migration
+  // for `ADD COLUMN` / `CREATE TABLE` statements whose target is missing
+  // in the live schema, and re-applies those statements. It never touches
+  // `_prisma_migrations`. It's safe to run repeatedly (it no-ops when
+  // schema is healthy) so we don't gate it on the deploy result.
+  const runRescue = () => {
+    try {
+      baselineMigrations(bunPath, getDbPath(), 'rescue')
+    } catch (err) {
+      console.error('[Desktop] Schema rescue pass failed (non-fatal):', err)
+    }
+  }
+
   if (attempt.ok) {
     console.log('[Desktop] Migrations complete:', attempt.stdout.trim())
+    runRescue()
     return
   }
 
@@ -704,6 +996,7 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
     attempt.stderr.includes('No pending migrations')
   ) {
     console.log('[Desktop] Database schema is up to date')
+    runRescue()
     return
   }
 

@@ -60,7 +60,7 @@ function StatusBadge({ status }: { status: Meeting['status'] }) {
 
 export default function MeetingsScreen() {
   const router = useRouter()
-  const { isRecording, startRecording, stopRecording, isDesktop, isLocal } = useRecording()
+  const { isRecording, startRecording, stopRecording, isDesktop, isLocal, isUploading } = useRecording()
   const canRecord = isDesktop || isLocal
   const [meetings, setMeetings] = useState<Meeting[]>([])
   const [loading, setLoading] = useState(true)
@@ -83,13 +83,13 @@ export default function MeetingsScreen() {
     fetchMeetings()
   }, [fetchMeetings])
 
-  // Refresh list when recording stops
+  // Refresh list when recording stops or upload finishes
   useEffect(() => {
-    if (!isRecording) {
+    if (!isRecording && !isUploading) {
       const timer = setTimeout(fetchMeetings, 2000)
       return () => clearTimeout(timer)
     }
-  }, [isRecording, fetchMeetings])
+  }, [isRecording, isUploading, fetchMeetings])
 
   const onRefresh = useCallback(() => {
     setRefreshing(true)
@@ -150,15 +150,23 @@ export default function MeetingsScreen() {
           <Text className="text-2xl font-bold text-foreground">Meetings</Text>
           {canRecord && (
             <Pressable
-              onPress={isRecording ? stopRecording : startRecording}
+              onPress={isUploading ? undefined : (isRecording ? stopRecording : startRecording)}
+              disabled={isUploading}
               className={cn(
                 'flex-row items-center gap-2 px-4 py-2 rounded-lg',
-                isRecording
-                  ? 'bg-red-600 active:bg-red-700'
-                  : 'bg-primary active:opacity-80'
+                isUploading
+                  ? 'bg-muted'
+                  : isRecording
+                    ? 'bg-red-600 active:bg-red-700'
+                    : 'bg-primary active:opacity-80'
               )}
             >
-              {isRecording ? (
+              {isUploading ? (
+                <>
+                  <ActivityIndicator size="small" color="white" />
+                  <Text className="text-sm font-medium text-muted-foreground">Uploading...</Text>
+                </>
+              ) : isRecording ? (
                 <>
                   <Square size={14} color="white" fill="white" />
                   <Text className="text-sm font-medium text-white">Stop</Text>

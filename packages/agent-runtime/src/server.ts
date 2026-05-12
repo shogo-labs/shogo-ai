@@ -14,7 +14,7 @@
  */
 
 import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
-import { resolve, dirname, join, extname, relative } from 'path'
+import { resolve, dirname, join, extname, basename, relative } from 'path'
 import {
   existsSync,
   readFileSync,
@@ -24,6 +24,7 @@ import {
   readdirSync,
   statSync,
   lstatSync,
+  readlinkSync,
   symlinkSync,
   rmSync,
   renameSync,
@@ -51,8 +52,10 @@ import {
   getTechStackPath,
 } from './workspace-defaults'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
+import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
+import { createPtyWsHandlers, type WsData } from './pty-ws-handler'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import { userMessage } from './pi-adapter'
 import { fileURLToPath } from 'url'
@@ -80,6 +83,44 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 const WORKSPACE_DIR = process.env.WORKSPACE_DIR || process.env.AGENT_DIR || process.env.PROJECT_DIR || '/app/workspace'
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
 const PORT = parseInt(process.env.PORT || '8080', 10)
+
+/**
+ * Defensive sanity check on WORKSPACE_DIR.
+ *
+ * Backstory: the host-side RuntimeManager once defaulted its
+ * `workspacesDir` to `process.cwd()` when `WORKSPACES_DIR` was unset,
+ * which silently materialised project workspaces at
+ * `<repo-root>/<projectId>` instead of `<repo-root>/workspaces/<projectId>`.
+ * The agent-runtime then booted with `WORKSPACE_DIR` pointing at the
+ * wrong directory and served an empty `.shogo` (no `quick-actions.json`,
+ * no skills, no plans), with zero indication anything was wrong.
+ *
+ * Failing loud at startup is much cheaper than the user noticing
+ * missing chips three days later.
+ */
+function checkWorkspaceDirSanity(): void {
+  const expectedProjectId = process.env.PROJECT_ID
+  const workspaceBase = basename(WORKSPACE_DIR.replace(/\/+$/, ''))
+  const isContainerDefault = WORKSPACE_DIR === '/app/workspace'
+
+  if (isContainerDefault && !process.env.WORKSPACE_DIR && !process.env.AGENT_DIR && !process.env.PROJECT_DIR) {
+    console.warn(
+      `[agent-runtime] WARNING: WORKSPACE_DIR fell back to '/app/workspace'. ` +
+      `None of WORKSPACE_DIR / AGENT_DIR / PROJECT_DIR are set. ` +
+      `Outside a container this almost certainly means the project workspace will not be found.`,
+    )
+  }
+
+  if (expectedProjectId && workspaceBase !== expectedProjectId) {
+    console.warn(
+      `[agent-runtime] WARNING: WORKSPACE_DIR='${WORKSPACE_DIR}' does not end with PROJECT_ID='${expectedProjectId}'. ` +
+      `This usually means the host RuntimeManager resolved 'workspacesDir' to the wrong directory ` +
+      `(historically a process.cwd() fallback bug). The runtime will serve .shogo/, skills, plans, and ` +
+      `quick-actions from '${WORKSPACE_DIR}' — verify this is actually the project workspace.`,
+    )
+  }
+}
+checkWorkspaceDirSanity()
 
 async function reportHeartbeatComplete(projectId: string): Promise<void> {
   const apiUrl = deriveApiUrl()
@@ -175,19 +216,112 @@ const { app, state, logTiming } = await createRuntimeApp({
       // --- Mounted mode: symlink /workspace -> /host-workspaces/<projectId> ---
       const projectWorkspace = join(hostWorkspacesRoot, projectId)
       mkdirSync(projectWorkspace, { recursive: true })
-      try {
-        const st = lstatSync(WORKSPACE_DIR)
-        if (st.isSymbolicLink() || st.isFile()) unlinkSync(WORKSPACE_DIR)
-        else if (st.isDirectory()) rmSync(WORKSPACE_DIR, { recursive: true, force: true })
-      } catch {}
-      symlinkSync(projectWorkspace, WORKSPACE_DIR)
 
-      // Keep .shogo/ on the local overlay disk (SQLite doesn't work on 9p).
+      // Idempotent replace. The earlier code swallowed every error
+      // here, which made the cleanup look harmless even when it
+      // wasn't — see the .shogo block below for why that matters.
+      let workspaceStat: ReturnType<typeof lstatSync> | null = null
+      try { workspaceStat = lstatSync(WORKSPACE_DIR) } catch { /* doesn't exist */ }
+
+      let workspaceAlreadyCorrect = false
+      if (workspaceStat?.isSymbolicLink()) {
+        try {
+          if (readlinkSync(WORKSPACE_DIR) === projectWorkspace) workspaceAlreadyCorrect = true
+        } catch { /* dangling */ }
+      }
+
+      if (!workspaceAlreadyCorrect && workspaceStat) {
+        try {
+          if (workspaceStat.isSymbolicLink() || workspaceStat.isFile()) {
+            unlinkSync(WORKSPACE_DIR)
+          } else if (workspaceStat.isDirectory()) {
+            rmSync(WORKSPACE_DIR, { recursive: true, force: true })
+          }
+        } catch (err: any) {
+          throw new Error(
+            `[onAssign] Could not clear ${WORKSPACE_DIR} (${err?.message ?? err}) — ` +
+              `cannot install /workspace -> ${projectWorkspace} symlink.`,
+          )
+        }
+      }
+
+      if (!workspaceAlreadyCorrect) {
+        symlinkSync(projectWorkspace, WORKSPACE_DIR)
+      }
+
+      // Keep .shogo/ on the local overlay disk (SQLite doesn't work on
+      // 9p — fcntl locking and file truncation semantics break the
+      // SQLite journal). Replace `/workspace/.shogo` (which dereferences
+      // through the 9p mount to the host's `.shogo`) with a symlink to
+      // a per-project dir on the VM's local overlay disk.
+      //
+      // History: an earlier version did `rmSync(workspaceShogoDir,
+      // {recursive, force})` inside `try {} catch {}` and then
+      // `symlinkSync(...)`. The recursive remove failed silently on 9p
+      // mounts — `.virtfs_metadata/` entries created by the
+      // `security_model=mapped-file` 9p server, plus pre-existing
+      // `.shogo/install-marker` and `.shogo/agent-state.json` files
+      // from prior HOST-mode runs, would partially survive the rm.
+      // The symlink then threw EEXIST and the whole assign 500'd, which
+      // VMWarmPoolController counts as a boot failure. Three of those
+      // and the pool permanently disables itself for the session,
+      // which is exactly the symptom users saw (`VM warm pool
+      // permanently disabled (3 boot failures)` in main.log). Fix:
+      //   1. Idempotent fast path — if the symlink already points at
+      //      localShogoDir, no-op.
+      //   2. Single-syscall move-aside (renameSync) instead of a
+      //      recursive rm. rename doesn't iterate children, so it
+      //      sidesteps the 9p per-entry deletion failures entirely.
+      //   3. Fall back to recursive rm if rename refuses.
+      //   4. Throw with a useful message instead of catching silently
+      //      so the caller (and the warm-pool failure counter) sees
+      //      the actual cause.
       const localShogoDir = `/tmp/shogo-local/${projectId}/.shogo`
       mkdirSync(localShogoDir, { recursive: true })
       const workspaceShogoDir = join(WORKSPACE_DIR, '.shogo')
-      try { lstatSync(workspaceShogoDir); rmSync(workspaceShogoDir, { recursive: true, force: true }) } catch {}
-      symlinkSync(localShogoDir, workspaceShogoDir)
+
+      let existingStat: ReturnType<typeof lstatSync> | null = null
+      try { existingStat = lstatSync(workspaceShogoDir) } catch { /* doesn't exist — easy path */ }
+
+      let alreadyCorrect = false
+      if (existingStat?.isSymbolicLink()) {
+        try {
+          if (readlinkSync(workspaceShogoDir) === localShogoDir) alreadyCorrect = true
+        } catch {
+          // Dangling/bad symlink — fall through to the replace path
+          // and let the move-aside clear it.
+        }
+      }
+
+      if (!alreadyCorrect && existingStat) {
+        const asidePath = join(WORKSPACE_DIR, `.shogo.host-bak-${Date.now()}`)
+        let cleared = false
+        let renameErrMsg = ''
+        try {
+          renameSync(workspaceShogoDir, asidePath)
+          cleared = true
+        } catch (err: any) {
+          renameErrMsg = err?.message ?? String(err)
+        }
+        if (!cleared) {
+          try {
+            rmSync(workspaceShogoDir, { recursive: true, force: true })
+            cleared = true
+          } catch (err: any) {
+            throw new Error(
+              `[onAssign] Could not clear ${workspaceShogoDir} to install ` +
+                `local-disk symlink (rename: ${renameErrMsg}; rm: ${err?.message ?? err}). ` +
+                `VM assignment cannot proceed without this. The 9p mount may have a ` +
+                `held lock or restricted permissions on .shogo/ contents — try closing ` +
+                `the project on host first.`,
+            )
+          }
+        }
+      }
+
+      if (!alreadyCorrect) {
+        symlinkSync(localShogoDir, workspaceShogoDir)
+      }
 
       // Suppress .virtfs_metadata in git (created by 9p security_model=mapped-file)
       try {
@@ -559,9 +693,14 @@ WebChatAdapter.registerRoutes(app, () => {
 // /health, /ready, /pool/activity, /pool/assign are provided by createRuntimeApp()
 
 // Cloud API proxies /api/projects/:id/terminal/* to this runtime-local mount.
-// Register before the static app fallback so POST /terminal/run cannot fall
-// through to a generic 404 and GET /terminal/commands cannot return index.html.
-app.route('/', runtimeTerminalRoutes({ workspaceDir: WORKSPACE_DIR }))
+// Register before the static app fallback so POST /terminal/sessions cannot
+// fall through to a generic 404 and GET /terminal/commands cannot return
+// index.html.
+const { router: terminalRouter, manager: ptyManager } = runtimeTerminalRoutes({
+  workspaceDir: WORKSPACE_DIR,
+})
+app.route('/', terminalRouter)
+const ptyWs = createPtyWsHandlers()
 
 // Agent status (detailed)
 app.get('/agent/status', (c) => {
@@ -1788,58 +1927,11 @@ app.post('/agent/tool-mocks', async (c) => {
   if (!agentGateway) {
     return c.json({ error: 'Agent gateway not running' }, 503)
   }
-  const body = await c.req.json() as {
-    mocks: Record<string, {
-      type: 'static'
-      response: any
-      description?: string
-      paramKeys?: string[]
-      hidden?: boolean
-    } | {
-      type: 'pattern'
-      patterns: Array<{ match: Record<string, string>; response: any }>
-      default?: any
-      description?: string
-      paramKeys?: string[]
-      hidden?: boolean
-    }>
-  }
-
-  const fns: Record<string, (params: Record<string, any>) => any> = {}
-  const syntheticDefs: Record<string, { description: string; paramKeys: string[] }> = {}
-  const hiddenTools = new Set<string>()
-
-  for (const [toolName, spec] of Object.entries(body.mocks)) {
-    if (spec.type === 'static') {
-      const resp = spec.response
-      fns[toolName] = () => resp
-    } else if (spec.type === 'pattern') {
-      const patterns = spec.patterns
-      const defaultResp = spec.default ?? { ok: true }
-      fns[toolName] = (params: Record<string, any>) => {
-        const paramsStr = JSON.stringify(params).toLowerCase()
-        for (const p of patterns) {
-          const allMatch = Object.values(p.match).every(
-            substr => paramsStr.includes(substr.toLowerCase())
-          )
-          if (allMatch) return p.response
-        }
-        return defaultResp
-      }
-    }
-
-    if (spec.description || spec.paramKeys) {
-      syntheticDefs[toolName] = {
-        description: spec.description || `External integration tool: ${toolName}`,
-        paramKeys: spec.paramKeys || [],
-      }
-    }
-    if ((spec as any).hidden) {
-      hiddenTools.add(toolName)
-    }
-  }
-  agentGateway.setToolMocks(fns, syntheticDefs, hiddenTools)
-  return c.json({ ok: true, mockedTools: Object.keys(fns) })
+  const raw = await c.req.json()
+  const { compileInstallBody } = await import('./evals/tool-mocks-runtime')
+  const compiled = compileInstallBody(raw)
+  agentGateway.setToolMocks(compiled.fns, compiled.syntheticDefs, compiled.hiddenTools)
+  return c.json({ ok: true, mockedTools: Object.keys(compiled.fns), defaults: compiled.defaults })
 })
 
 app.delete('/agent/tool-mocks', (c) => {
@@ -2089,7 +2181,9 @@ function walkFilesTree(
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name.startsWith('.')) continue
     const absPath = join(dir, entry.name)
-    const relPath = absPath.slice(rootDir.length + 1)
+    // Always emit POSIX-style separators so Windows runtimes don't surface
+    // `tools\foo\bar.ts` (which the IDE would then URL-encode as `%5C`).
+    const relPath = absPath.slice(rootDir.length + 1).replace(/\\/g, '/')
     const stat = statSync(absPath)
     if (entry.isDirectory()) {
       if (excludeDirs?.has(entry.name)) continue
@@ -2760,7 +2854,10 @@ app.post('/agent/tools/install', async (c) => {
         const userId = c.req.header('X-User-Id') || process.env.USER_ID || 'default'
         const workspaceId = process.env.WORKSPACE_ID || 'default'
         const projectId = process.env.PROJECT_ID || 'default'
-        await initComposioSession(userId, workspaceId, projectId)
+        const scopeEnv = process.env.COMPOSIO_USER_SCOPE
+        const scope: 'workspace' | 'project' =
+          scopeEnv === 'workspace' || scopeEnv === 'project' ? scopeEnv : 'workspace'
+        await initComposioSession(userId, workspaceId, projectId, scope)
         const proxy = await registerToolkitProxyTools(mcpMgr, composioToolkit.slug)
         return c.json({
           ok: true,
@@ -3153,25 +3250,59 @@ app.get('/agent/canvas/stream', (c) => {
 
 app.post('/agent/canvas/error', async (c) => {
   try {
-    const body = await c.req.json() as { surfaceId?: string; phase?: string; error?: string }
+    const body = await c.req.json() as {
+      surfaceId?: string
+      phase?: string
+      error?: string
+      route?: string
+      recentActions?: Array<{ ts?: number; kind?: string; target?: string; route?: string }>
+    }
     if (!body.error) return c.json({ error: 'Missing error field' }, 400)
+
+    // Sanitize recentActions — the bridge serializes its own ring buffer
+    // but we don't fully trust the shape since this endpoint is reachable
+    // from the iframe. Drop anything that isn't a plain `{ ts, kind, ... }`.
+    const recentActions = Array.isArray(body.recentActions)
+      ? body.recentActions
+          .filter((a): a is { ts: number; kind: string; target?: string; route?: string } =>
+            !!a && typeof a.ts === 'number' && typeof a.kind === 'string',
+          )
+          .map((a) => ({
+            ts: a.ts,
+            kind: a.kind,
+            target: typeof a.target === 'string' ? a.target : undefined,
+            route: typeof a.route === 'string' ? a.route : undefined,
+          }))
+      : undefined
+
+    const route = typeof body.route === 'string' ? body.route : undefined
 
     pushCanvasRuntimeError({
       surfaceId: body.surfaceId || 'unknown',
       phase: body.phase || 'unknown',
       error: body.error,
       timestamp: Date.now(),
+      route,
+      recentActions,
     })
 
     // Mirror into the typed runtime-log dispatcher so the Output tab
     // surfaces canvas errors alongside build/console output and the
-    // unseen-error counter ticks correctly.
+    // unseen-error counter ticks correctly. We append a compact suffix
+    // for page + last action so a glance at the Output tab still shows
+    // useful repro context without expanding into the chat seed.
+    const lastAction = recentActions && recentActions.length > 0
+      ? recentActions[recentActions.length - 1]
+      : null
+    const suffixParts: string[] = []
+    if (route) suffixParts.push(`page=${route}`)
+    if (lastAction) suffixParts.push(`lastAction=${lastAction.kind}${lastAction.target ? ' ' + lastAction.target : ''}`)
+    const suffix = suffixParts.length > 0 ? ` (${suffixParts.join(', ')})` : ''
     recordCanvasErrorEntry(
-      `[${body.phase || 'unknown'}] ${body.error}`,
+      `[${body.phase || 'unknown'}] ${body.error}${suffix}`,
       body.surfaceId,
     )
 
-    console.warn(`[canvas-error] ${body.phase} error in ${body.surfaceId}: ${body.error.slice(0, 200)}`)
     return c.json({ ok: true })
   } catch {
     return c.json({ error: 'Invalid request body' }, 400)
@@ -3270,11 +3401,98 @@ app.route('/', runtimeDiagnosticsRoutes({
 }))
 
 // =============================================================================
+// LSP routes (Monaco IDE) — mounted alongside diagnostics.
+//
+// The browser-side Monaco editor delegates hover, completion, go-to-def,
+// references, document-symbol, signature-help, and rename to the
+// typescript-language-server already running inside this pod. This eliminates
+// the 1000-file Monaco bulk preload that used to be required for cross-file
+// IntelliSense.
+//
+// Auth: covered by the existing `/agent` authPrefix in createRuntimeApp.
+// SPA fallback skip: also covered by the existing `/agent` startsWith check.
+// =============================================================================
+app.route('/', runtimeLspRoutes({
+  workspaceDir: WORKSPACE_DIR,
+  getLspManager: () => agentGateway?.getLspManager?.() ?? null,
+}))
+
+// =============================================================================
 // Static File Serving — workspace Vite build output (dist/) at root
 // =============================================================================
 
 function getDistDir(): string {
   return join(WORKSPACE_DIR, 'dist')
+}
+
+/**
+ * Phases during which a build is plausibly in flight and `dist/` may
+ * legitimately be missing. When a navigation request would otherwise
+ * 404 we render a small "Building..." placeholder instead so the user
+ * sees a self-refreshing message rather than a hard error during the
+ * first-ever build of a fresh workspace. (The atomic-swap commit logic
+ * in `build-output-commit.ts` keeps `dist/` populated through every
+ * subsequent rebuild, so this only fires before the first successful
+ * build has landed.)
+ */
+const BUILDING_PHASES = new Set([
+  'installing',
+  'generating-prisma',
+  'pushing-db',
+  'building',
+  'starting-api',
+])
+
+function isBuildLikelyInFlight(): boolean {
+  // Avoid accidentally constructing a PreviewManager just to peek at
+  // its phase — the fallback is only meaningful once one already exists
+  // (i.e. a preview start has been requested somewhere).
+  if (!previewManager) return false
+  const phase = previewManager.phase
+  return BUILDING_PHASES.has(phase)
+}
+
+function renderBuildingPlaceholder(): Response {
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta http-equiv="refresh" content="2" />
+<title>Building preview…</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: #555; background: #fafafa;
+  }
+  .card { text-align: center; }
+  .spinner {
+    width: 28px; height: 28px; margin: 0 auto 12px;
+    border: 3px solid #e0e0e0; border-top-color: #5b8def;
+    border-radius: 50%; animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .hint { font-size: 13px; color: #888; margin-top: 6px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="spinner" aria-hidden="true"></div>
+    <div>Building preview…</div>
+    <div class="hint">This page will refresh automatically.</div>
+  </div>
+</body>
+</html>`
+  return new Response(html, {
+    status: 503,
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Retry-After': '2',
+    },
+  })
 }
 
 function collectDistFiles(dir: string, root = dir): Array<{ path: string; content: string }> {
@@ -3358,6 +3576,15 @@ app.get('*', (c) => {
     return new Response(html, {
       headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' },
     })
+  }
+
+  // No dist yet. If a build is in flight, render a self-refreshing
+  // "Building..." placeholder so the user doesn't stare at a raw 404
+  // during the first build of a fresh workspace. After the first
+  // successful build the atomic-swap pipeline keeps `dist/` populated,
+  // so this only matters pre-first-build (or after a fresh wipe).
+  if (isBuildLikelyInFlight()) {
+    return renderBuildingPlaceholder()
   }
 
   return c.notFound()
@@ -3645,8 +3872,36 @@ if (state.isPoolMode && !state.poolAssigned) {
     })
 }
 
+// Match a path like `/terminal/sessions/<id>/ws`; the id segment is opaque
+// (no slashes) and is whatever PtySessionManager.create() assigned.
+const WS_PATH_RE = /^\/terminal\/sessions\/([^/]+)\/ws$/
+
 export default {
   port: PORT,
-  fetch: app.fetch,
+  fetch: async (req: Request, server: any) => {
+    const url = new URL(req.url)
+    const upgrade = req.headers.get('upgrade')?.toLowerCase()
+    const wsMatch = upgrade === 'websocket' ? WS_PATH_RE.exec(url.pathname) : null
+    if (wsMatch) {
+      const sessionId = wsMatch[1]
+      const since = Number(url.searchParams.get('since')) || 0
+      // Quick existence check pre-upgrade so a missing session returns a
+      // proper 404 rather than a confusing accept-then-immediate-close.
+      // We don't `attach()` here — that happens in the WS open handler.
+      if (!ptyManager.get(sessionId)) {
+        return new Response('Unknown session', { status: 404 })
+      }
+      const data: WsData = { manager: ptyManager, sessionId, since }
+      const upgraded = server.upgrade(req, { data })
+      if (upgraded) return undefined
+      return new Response('WebSocket upgrade failed', { status: 500 })
+    }
+    return app.fetch(req)
+  },
+  websocket: {
+    open: ptyWs.open,
+    message: ptyWs.message,
+    close: ptyWs.close,
+  },
   idleTimeout: 0,
 }

@@ -19,6 +19,12 @@ import { spawn, execSync, type ChildProcess } from 'child_process'
 import { join } from 'path'
 import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync, watch, type FSWatcher } from 'fs'
 import { recordBuildEntry } from './runtime-log-dispatcher'
+import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
+import {
+  commitBuildOutput,
+  cleanupStagingOutput,
+  DEFAULT_STAGING_DIR,
+} from './build-output-commit'
 
 /**
  * Append a line to the on-disk `.build.log` *and* dispatch it through
@@ -44,13 +50,18 @@ export function emitBuildLine(
   recordBuildEntry(`${prefix} ${line}`, stream === 'stderr' ? 'error' : 'info')
 }
 import { createServer } from 'net'
-import { pkg } from '@shogo/shared-runtime'
+import { pkg, resolveBinInvocation } from '@shogo/shared-runtime'
 import { BUILD_LOG_FILE, CONSOLE_LOG_FILE } from './runtime-log-paths'
 import {
   loadTechStackMeta,
   computePackageJsonHash,
   readInstallMarker,
   writeInstallMarker,
+  readInstallPlatformMarker,
+  writeInstallPlatformMarker,
+  INSTALL_PLATFORM_TAG,
+  findMissingTopLevelDeps,
+  migrateLegacyShogoSdkPin,
 } from './workspace-defaults'
 
 const LOG_PREFIX = 'preview-manager'
@@ -219,6 +230,58 @@ function detectLocalMode(): boolean {
   return !process.env.KUBERNETES_SERVICE_HOST
 }
 
+/**
+ * Build the env passed to the spawned `bun run server.tsx` API sidecar.
+ *
+ * Three things go in beyond `parentEnv`:
+ *
+ *   1. `PORT` / `API_SERVER_PORT` / `SKILL_SERVER_PORT` — the canonical
+ *      Bun.serve input plus two legacy aliases the SDK template scripts
+ *      and rolled-back binaries still consult. Always overridden so the
+ *      sidecar binds to the port `PreviewManager` chose, not whatever
+ *      the parent had.
+ *   2. `DATABASE_URL` — pinned to the workspace's local sqlite file so
+ *      Prisma in the sidecar talks to the same db the runtime's other
+ *      tools (db studio, generate, etc.) do.
+ *   3. `SHOGO_API_URL` (local-mode default only) — when the parent
+ *      process declared `SHOGO_LOCAL_MODE=true` but didn't itself
+ *      export `SHOGO_API_URL`, inject `http://localhost:8002` so the
+ *      `@shogo-ai/sdk` voice/chat client in the sidecar reaches the
+ *      local Shogo API instead of falling back to `api.shogo.ai`.
+ *      In cloud, `SHOGO_LOCAL_MODE` is unset and the warm-pool
+ *      launcher already pins `SHOGO_API_URL` on the parent, so this
+ *      branch is a no-op. An explicit override on the parent always
+ *      wins.
+ *
+ * Exported for direct unit testing (mocking `spawn` to capture env is
+ * fiddly and slow; this is the small pure surface that actually matters).
+ */
+export function resolveApiServerEnv(input: {
+  parentEnv: NodeJS.ProcessEnv
+  portStr: string
+  cwd: string
+}): Record<string, string> {
+  const { parentEnv, portStr, cwd } = input
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(parentEnv)) {
+    if (typeof v === 'string') out[k] = v
+  }
+  // Capture the agent runtime's own listening port BEFORE we overwrite
+  // PORT below — the sidecar's @shogo-ai/sdk/tools/server proxy needs
+  // RUNTIME_PORT to forward `/api/tools/*` calls back to the runtime
+  // over `127.0.0.1`. parentEnv.PORT is the runtime's port; portStr is
+  // the sidecar's own bind port.
+  out.RUNTIME_PORT = parentEnv.PORT ?? '8080'
+  out.PORT = portStr
+  out.API_SERVER_PORT = portStr
+  out.SKILL_SERVER_PORT = portStr
+  out.DATABASE_URL = `file:${join(cwd, 'prisma', 'dev.db')}`
+  if (parentEnv.SHOGO_LOCAL_MODE === 'true' && !parentEnv.SHOGO_API_URL) {
+    out.SHOGO_API_URL = 'http://localhost:8002'
+  }
+  return out
+}
+
 export type PreviewPhase =
   | 'idle'
   | 'installing'
@@ -229,6 +292,28 @@ export type PreviewPhase =
   | 'ready'
 
 export type ApiServerPhase = 'idle' | 'generating' | 'starting' | 'healthy' | 'restarting' | 'crashed' | 'stopped'
+
+/**
+ * Detect the npm-published `@shogo-ai/sdk@0.4.0` build, which ships
+ * `bin/cli.mjs` with an unquoted `execSync(\`bun ${absScriptPath}\`)`
+ * that truncates the path at the first space. macOS desktop installs
+ * live under `~/Library/Application Support/` — every path contains a
+ * space — so the truncation is universal, not edge-case. The fix is
+ * in HEAD but was never published (npm jumps 0.4.0 → 1.0.0), so
+ * runtime version-sniffing is the only way to recognise the bad
+ * install. Best-effort: any read/parse failure returns false (we'd
+ * rather risk a redundant install than refuse to use a healthy CLI).
+ */
+function isKnownBrokenSdkInstall(sdkPkgDir: string): boolean {
+  try {
+    const pkgJsonPath = join(sdkPkgDir, 'package.json')
+    if (!existsSync(pkgJsonPath)) return false
+    const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'))
+    return pkg?.version === '0.4.0'
+  } catch {
+    return false
+  }
+}
 
 export class PreviewManager {
   private workspaceDir: string
@@ -282,6 +367,53 @@ export class PreviewManager {
    */
   private readonly apiPort: number
 
+  /**
+   * Promise that resolves after the first `installDepsIfNeeded()` call
+   * settles (success OR caught failure). Created up-front so callers can
+   * await it before `start()` is invoked.
+   *
+   * The canvas build manager awaits this before spawning `vite build`,
+   * which closes a race that broke every VM-isolated session:
+   *
+   *   1. Pool-assign fires `pm.start()` in the background (fire-and-forget
+   *      at server.ts:3660), then immediately calls `startGateway()`.
+   *   2. The gateway constructs `CanvasBuildManager` and runs
+   *      `runBuild()` while bun-install is still extracting packages.
+   *   3. On a macOS host, the workspace's `node_modules` was populated by
+   *      the host's `ensureWorkspaceDeps` and is 9p-mounted into the linux
+   *      guest. The host install (Darwin arm64) installed
+   *      `@rollup/rollup-darwin-arm64` and SKIPPED
+   *      `@rollup/rollup-linux-arm64-gnu` (rollup ships its natives as
+   *      optionalDependencies filtered by `os`/`cpu`). Vite-config-loader
+   *      → rollup → `requireWithFriendlyError` → `Cannot find module
+   *      @rollup/rollup-linux-arm64-gnu`. The error propagates out of
+   *      vite as `undefined`, which is what shows up in main.log:
+   *
+   *        [CanvasBuildManager] Build error: failed to load config from
+   *          /host-workspaces/<projectId>/vite.config.ts
+   *        error during build: undefined
+   *
+   *   4. The in-guest `bun install` triggered by step 1 WOULD have
+   *      installed the linux-arm64 rollup native (bun honors `os`/`cpu`
+   *      relative to the running platform, not the lockfile's), but the
+   *      build had already failed and torn down dist.staging/ by the
+   *      time it finished — visible in main.log as a missing
+   *      "Dependencies installed" line preceding the canvas error.
+   *
+   * Awaiting depsReady before the build closes the race. The promise is
+   * best-effort: any throw inside `installDepsIfNeeded` is caught and
+   * the promise still resolves (we'd rather attempt a build and report
+   * the real error than hang the build forever).
+   */
+  private depsReadyResolve: (() => void) | null = null
+  private depsReadyPromise: Promise<void>
+  /**
+   * `true` once `installDepsIfNeeded` has settled at least once. Used by
+   * `depsReady` getter callers to distinguish "still pending" from
+   * "already done" without re-awaiting a resolved promise.
+   */
+  private _depsSettled = false
+
   constructor(config: PreviewManagerConfig) {
     this.workspaceDir = config.workspaceDir
     this.runtimePort = config.runtimePort
@@ -290,6 +422,31 @@ export class PreviewManager {
     this.onLogLine = config.onLogLine
     this.localMode = config.localMode ?? detectLocalMode()
     this.apiPort = resolveApiServerPort()
+    this.depsReadyPromise = new Promise<void>((resolve) => {
+      this.depsReadyResolve = resolve
+    })
+  }
+
+  /**
+   * Resolves once `installDepsIfNeeded()` has run to completion (or has
+   * given up and logged the failure). Idempotent and safe to await from
+   * multiple callers; safe to await before `start()` has been invoked.
+   *
+   * Note: this does NOT signal that the API server is up or that
+   * `dist/` exists. It is strictly an "install has stopped touching
+   * node_modules" gate. The build manager uses it to ensure platform-
+   * specific native bindings are present before invoking vite/rollup.
+   */
+  get depsReady(): Promise<void> {
+    return this.depsReadyPromise
+  }
+
+  /**
+   * True once depsReady has resolved at least once. Read-only mirror of
+   * the resolved-state of `depsReadyPromise` for sync callers.
+   */
+  get depsSettled(): boolean {
+    return this._depsSettled
   }
 
   /**
@@ -406,7 +563,7 @@ export class PreviewManager {
     return this.apiPhase
   }
 
-  /** Last error from `bun x shogo generate`, or null on success. */
+  /** Last error from `bun run generate` (or its fallback), or null on success. */
   get apiLastGenerateError(): string | null {
     return this.lastGenerateError
   }
@@ -530,15 +687,26 @@ export class PreviewManager {
    * Strategy:
    *   1. If `package.json` declares a `generate` script, run
    *      `bun run generate`. The runtime template ships such a script
-   *      that points at the SDK CLI and is the canonical surface for
-   *      project-specific tweaks (e.g. running `db:push` afterwards,
-   *      pausing the watcher around the writes, etc.).
-   *   2. Otherwise fall back to `bun x shogo generate`. This is the
-   *      escape hatch for workspaces that haven't been re-seeded onto
-   *      the new template; it still picks up `shogo.config.json` if
-   *      present, or runs the SDK's legacy single-dir mode if not.
+   *      that points directly at the SDK CLI's source file and is the
+   *      canonical surface for project-specific tweaks (e.g. running
+   *      `db:push` afterwards, pausing the watcher around the writes,
+   *      etc.).
+   *   2. Otherwise, if the SDK is installed in `node_modules/`, run
+   *      `bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate`
+   *      directly. This bypasses `node_modules/.bin/shogo` so we don't
+   *      need a working bin shim — pre-warmed templates and partial
+   *      installs can leave node_modules in place without bin shims, in
+   *      which case `bun x shogo` would fall through to npm and 404
+   *      (since `@shogo-ai/sdk` publishes a `shogo` bin but no `shogo`
+   *      package exists on npm).
+   *   3. As a last-ditch fallback, run `bun x shogo generate` so an
+   *      ancient workspace whose lockfile somehow predates the SDK
+   *      install can still re-fetch the bin from a (future) registry
+   *      entry. Today this just produces a clear 404 for
+   *      `@shogo-ai/sdk`-less workspaces, which is better than a silent
+   *      hang.
    *
-   * Both paths read the workspace's `shogo.config.json` (when it
+   * All paths read the workspace's `shogo.config.json` (when it
    * exists), so generated `server.tsx` ends up with the right
    * `customRoutesPath`, `dynamicCrudImport`, and `bunServe` settings
    * regardless of which entry point was used.
@@ -556,24 +724,107 @@ export class PreviewManager {
     const start = Date.now()
 
     // Prefer the project's own `generate` script when one exists. The
-    // runtime template ships `"generate": "bun x shogo generate"`, so
-    // both paths converge on the SDK CLI; the indirection lets
-    // user-customised projects splice extra steps into the pipeline
-    // without us having to teach PreviewManager about every variation.
+    // runtime template ships `"generate": "bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate"`,
+    // so both paths converge on the SDK CLI's published entry file; the
+    // indirection lets user-customised projects splice extra steps into
+    // the pipeline without us having to teach PreviewManager about every
+    // variation.
+    //
+    // EXCEPTION: legacy workspaces (pre-May 2026) carry the older
+    // `"generate": "bunx shogo generate"` script in their package.json.
+    // `bunx shogo` resolves to the only published `@shogo-ai/sdk` version
+    // that satisfies the pinned `^0.4.0` constraint — namely 0.4.0,
+    // which has the unquoted-`execSync` path-truncation bug. The fix
+    // (commit 68ab3e7d, May 8) was tagged as 0.4.1 internally but never
+    // published; npm's @shogo-ai/sdk goes 0.4.0 → 1.0.0 with no 0.4.x
+    // patch in between. Until the user upgrades their pin (or 0.4.1
+    // gets published), we must NOT honour that script — it will crash
+    // every workspace whose path contains a space (which is every
+    // standard macOS install under "~/Library/Application Support").
     let useBunRun = false
+    let legacyShogoGenerate = false
     try {
       const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf-8')) as {
         scripts?: Record<string, string>
       }
-      if (pkgJson.scripts && typeof pkgJson.scripts.generate === 'string' && pkgJson.scripts.generate.trim()) {
-        useBunRun = true
+      const gen = pkgJson.scripts?.generate?.trim()
+      if (gen) {
+        // Match `bunx shogo …` and `bun x shogo …`, with or without
+        // `--bun`. We deliberately do NOT match the runtime-template
+        // form `bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate`
+        // — that path-based form is path-safe.
+        if (/^\s*(bunx|bun\s+x)(\s+--bun)?\s+shogo(\s|$)/.test(gen)) {
+          legacyShogoGenerate = true
+        } else {
+          useBunRun = true
+        }
       }
     } catch {
-      // Malformed package.json — fall through to `bun x shogo generate`.
+      // Malformed package.json — fall through to the path-based CLI.
     }
 
-    const args = useBunRun ? ['run', 'generate'] : ['x', 'shogo', 'generate']
-    const cmdLabel = useBunRun ? 'bun run generate' : 'bun x shogo generate'
+    // Fallback resolution. We prefer the file-path form because
+    // `bun x shogo` resolves through `node_modules/.bin/` first and
+    // then through the npm registry — and there is no `shogo` package
+    // on npm (the bin name is owned by `@shogo-ai/sdk`). Workspaces
+    // bootstrapped without a working `.bin/` shim (pre-warmed templates,
+    // crashed installs, etc.) would 404 there.
+    const sdkCliPath = join(cwd, 'node_modules', '@shogo-ai', 'sdk', 'bin', 'cli.mjs')
+    const hasSdkCli = existsSync(sdkCliPath)
+    // The installed CLI in node_modules is whatever version `bun install`
+    // resolved — frequently the broken `@shogo-ai/sdk@0.4.0` that ships
+    // an `execSync(\`bun ${absScriptPath}\`)` for the Step 2 script
+    // (templating the path into the shell command line truncates it on
+    // the first space, blowing up with `Module not found
+    // "/Users/foo/Library/Application"` on every macOS install). 0.4.1
+    // never made it to the npm registry, so the installed copy stays
+    // broken indefinitely. Detect that exact version and refuse to use it.
+    const installedSdkBroken = hasSdkCli && isKnownBrokenSdkInstall(join(cwd, 'node_modules', '@shogo-ai', 'sdk'))
+    const useInstalledCli = hasSdkCli && !installedSdkBroken
+    // Bundled with the desktop app at packaging time. Set by
+    // apps/desktop/src/local-server.ts. In dev mode it points at the
+    // monorepo source; in packaged mode at `Resources/sdk-cli.mjs`.
+    const bundledSdkCli = process.env.SHOGO_BUNDLED_SDK_CLI
+    const hasBundledSdkCli = !!(bundledSdkCli && existsSync(bundledSdkCli))
+
+    if (installedSdkBroken) {
+      console.warn(
+        `[${LOG_PREFIX}] installed @shogo-ai/sdk has a known path-truncation bug — ignoring it in favour of bundled CLI`,
+      )
+    }
+
+    // Resolution order, in priority:
+    //   1. project-local node_modules CLI — only when NOT the known-broken
+    //      0.4.0 build (path-safe in 0.4.1+ / 1.x)
+    //   2. desktop-bundled CLI (always path-safe in HEAD)
+    //   3. project's `generate` script (only if it isn't the broken
+    //      `bunx shogo` pattern)
+    //   4. `bun x shogo` last-ditch (broken on space-paths, but better
+    //      than nothing for non-macOS installs)
+    let args: string[]
+    let cmdLabel: string
+    if (legacyShogoGenerate && useInstalledCli) {
+      args = [sdkCliPath, 'generate']
+      cmdLabel = 'bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate (legacy script bypass)'
+    } else if (legacyShogoGenerate && hasBundledSdkCli) {
+      args = [bundledSdkCli!, 'generate']
+      cmdLabel = `bun ${bundledSdkCli} generate (legacy script bypass — bundled fallback)`
+    } else if (installedSdkBroken && hasBundledSdkCli) {
+      args = [bundledSdkCli!, 'generate']
+      cmdLabel = `bun ${bundledSdkCli} generate (broken installed SDK — bundled fallback)`
+    } else if (useBunRun && !installedSdkBroken) {
+      args = ['run', 'generate']
+      cmdLabel = 'bun run generate'
+    } else if (useInstalledCli) {
+      args = [sdkCliPath, 'generate']
+      cmdLabel = 'bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate'
+    } else if (hasBundledSdkCli) {
+      args = [bundledSdkCli!, 'generate']
+      cmdLabel = `bun ${bundledSdkCli} generate (bundled fallback)`
+    } else {
+      args = ['x', 'shogo', 'generate']
+      cmdLabel = 'bun x shogo generate'
+    }
     console.log(`[${LOG_PREFIX}] Running ${cmdLabel} at ${cwd}...`)
 
     return await new Promise<boolean>((resolveResult) => {
@@ -744,15 +995,31 @@ export class PreviewManager {
   }
 
   /**
-   * Start the preview server (install deps, generate Prisma, start Vite watch).
-   * No-op if already started.
+   * Start the preview server. ALWAYS returns immediately and runs the
+   * expensive work (install deps, prisma generate, vite build watch, api
+   * server) in `backgroundSetup`.
    *
-   * Optimizations:
-   * - If dist/index.html already exists (pre-built in template archive), we mark
-   *   the preview as ready immediately so the frontend can render the app, then
-   *   run setup tasks (install, prisma, vite watch) in the background.
-   * - Skips `bun install` when node_modules/ already exists (pre-installed in archive).
+   * Why always background? The previous behavior was:
+   *   - prebuilt-dist branch: backgroundSetup (fast)
+   *   - cold path: awaited `runSetupTasks` (~3-5s)
+   *   - Metro path: awaited `runSetupTasksMetro` (slower still)
+   *
+   * pm.start() is invoked from inside `initializeEssentials` (server.ts)
+   * which is in turn awaited by /pool/assign. The "cold path" branch
+   * blocked /pool/assign for the entire setup window — measured 4.7s in
+   * staging on 2026-05-11, dominated by execSync'd prisma generate/db
+   * push. Returning fast and reporting progress via _phase keeps the
+   * warm-pool assignment path tight regardless of whether the workspace
+   * shipped a prebuilt dist/.
+   *
+   * Callers that need to wait for readiness should poll `getStatus()`
+   * for `_phase === 'ready'`.
+   *
+   * Optimizations preserved from the old fast path:
+   * - Skips `bun install` when node_modules/ already exists.
    * - Skips `prisma generate` when the generated client already exists.
+   * - Marks _phase = 'ready' immediately when dist/ is prebuilt so the
+   *   preview iframe can render while background work continues.
    */
   async start(): Promise<{ mode: string; port: number | null; timings: Record<string, number> }> {
     if (this.started) {
@@ -772,20 +1039,6 @@ export class PreviewManager {
 
     const devServer = this.resolveDevServer()
 
-    if (devServer === 'metro') {
-      // Web preview is always built; the device-preview Metro tunnel only
-      // runs in local mode. Cloud pods skip the tunnel and surface a
-      // "device preview not yet available in cloud" indicator via
-      // /preview/metro.
-      await this.runSetupTasksMetro(timings, bundlerCwd)
-      const mode = this.metroProcess
-        ? 'metro-web+tunnel'
-        : this.localMode
-          ? 'metro-web (tunnel-failed)'
-          : 'metro-web (cloud-todo)'
-      return { mode, port: this.runtimePort, timings }
-    }
-
     if (devServer === 'none') {
       console.log(`[${LOG_PREFIX}] Stack declares devServer=none — skipping bundler`)
       this._phase = 'ready'
@@ -793,52 +1046,80 @@ export class PreviewManager {
       return { mode: 'no-bundler', port: this.runtimePort, timings }
     }
 
+    if (devServer === 'metro') {
+      // Web preview always builds; the device-preview Metro tunnel only
+      // runs in local mode. Cloud pods skip the tunnel and surface a
+      // "device preview not yet available in cloud" indicator via
+      // /preview/metro. Setup runs in background — see start() docstring.
+      this._phase = 'building'
+      this.started = true
+      this.backgroundSetupMetro(timings, bundlerCwd).catch((err: any) => {
+        console.error(`[${LOG_PREFIX}] Background Metro setup failed:`, err.message)
+      })
+      // Mode label here is "in-progress" — final label (with tunnel
+      // status etc.) is logged when backgroundSetupMetro finishes.
+      return { mode: 'metro-web (background)', port: this.runtimePort, timings }
+    }
+
     const hasPrebuiltDist = existsSync(join(bundlerCwd, 'dist', 'index.html'))
 
     if (hasPrebuiltDist) {
       console.log(`[${LOG_PREFIX}] Pre-built dist/ found — serving immediately, setup continues in background`)
       this._phase = 'ready'
-      this.started = true
-
-      this.backgroundSetup(timings).catch((err) => {
-        console.error(`[${LOG_PREFIX}] Background setup failed:`, err.message)
-      })
-
-      return { mode: 'prebuilt-dist', port: this.runtimePort, timings }
+    } else {
+      this._phase = 'building'
     }
+    this.started = true
 
-    await this.runSetupTasks(timings)
-    return { mode: this.apiServerProcess ? 'vite-watch+api' : 'vite-watch', port: this.runtimePort, timings }
+    this.backgroundSetup(timings).catch((err) => {
+      console.error(`[${LOG_PREFIX}] Background setup failed:`, err.message)
+    })
+
+    return {
+      mode: hasPrebuiltDist ? 'prebuilt-dist' : 'background-build',
+      port: this.runtimePort,
+      timings,
+    }
   }
 
   private async backgroundSetup(timings: Record<string, number>): Promise<void> {
-    const savedPhase = this._phase
+    const startedWithPrebuiltDist = this._phase === 'ready'
+
     await this.installDepsIfNeeded(timings)
     await this.runPrismaIfNeeded(timings)
 
+    if (!startedWithPrebuiltDist) {
+      this._phase = 'building'
+    }
     await this.startBuildWatch()
     timings.buildWatch = 0
 
+    if (!startedWithPrebuiltDist) {
+      this._phase = 'starting-api'
+    }
     await this.startApiServer()
     timings.apiServer = 0
 
-    this._phase = savedPhase
+    this._phase = 'ready'
 
     console.log(`[${LOG_PREFIX}] Background setup complete:`, JSON.stringify(timings))
   }
 
-  private async runSetupTasks(timings: Record<string, number>): Promise<void> {
-    await this.installDepsIfNeeded(timings)
-    await this.runPrismaIfNeeded(timings)
-
-    this._phase = 'building'
-    await this.startBuildWatch()
-
-    this._phase = 'starting-api'
-    await this.startApiServer()
-
-    this._phase = 'ready'
-    this.started = true
+  private async backgroundSetupMetro(
+    timings: Record<string, number>,
+    bundlerCwd: string,
+  ): Promise<void> {
+    await this.runSetupTasksMetro(timings, bundlerCwd)
+    // `runSetupTasksMetro` is responsible for flipping _phase / started
+    // and logging the final mode label (web preview, tunnel status, etc.)
+    // — keep this wrapper minimal so we don't double-emit phase changes.
+    const apiSuffix = this.apiServerProcess ? '+api' : ''
+    const mode = this.metroProcess
+      ? `metro-web${apiSuffix}+tunnel`
+      : this.localMode
+        ? `metro-web${apiSuffix} (tunnel-failed)`
+        : `metro-web${apiSuffix} (cloud-todo)`
+    console.log(`[${LOG_PREFIX}] Background Metro setup complete: ${mode}`)
   }
 
   /**
@@ -860,6 +1141,11 @@ export class PreviewManager {
    */
   private async runSetupTasksMetro(timings: Record<string, number>, bundlerCwd: string): Promise<void> {
     await this.installDepsIfNeeded(timings, bundlerCwd)
+    // Mobile (Metro/Expo) workspaces ship the same Hono + Prisma backend
+    // at their root as Vite stacks. Generate the Prisma client up-front
+    // so `startApiServer()` can spawn `server.tsx` cleanly below; this
+    // is a no-op when there's no `prisma/schema.prisma` on disk.
+    await this.runPrismaIfNeeded(timings)
 
     this._phase = 'building'
     await this.runExpoExportWeb(timings, bundlerCwd)
@@ -871,13 +1157,91 @@ export class PreviewManager {
       console.log(`[${LOG_PREFIX}] Cloud mode — skipping Metro tunnel (DEVICE_PREVIEW_CLOUD_TODO)`)
     }
 
+    // Bring up the colocated Hono API server. `startApiServer()`
+    // self-heals: when `prisma/schema.prisma` and `package.json` are
+    // both present it generates `server.tsx` (if missing) and spawns
+    // `bun run server.tsx`; otherwise it stays in `idle` and the
+    // mobile client just runs without a backend, like before.
+    this._phase = 'starting-api'
+    await this.startApiServer()
+
     this._phase = 'ready'
     this.started = true
   }
 
   private async installDepsIfNeeded(timings: Record<string, number>, cwd?: string): Promise<void> {
     const installCwd = cwd ?? this.bundlerCwd
+
+    // Run the legacy-SDK migration before any hash/install gating. Two
+    // reasons this must live here in addition to `ensureWorkspaceDeps`:
+    //   1. Not every project boot goes through `ensureWorkspaceDeps` —
+    //      restored workspaces, pre-seeded templates, and certain
+    //      RuntimeManager paths land in PreviewManager directly, and
+    //      we observed (main.log, project 1a010000) the migration
+    //      never firing for those.
+    //   2. The migration's `clearInstallMarker` + stale-SDK wipe must
+    //      run BEFORE we sample the install marker, otherwise we'd
+    //      stamp a hash on a tree we just declared stale.
+    try { migrateLegacyShogoSdkPin(installCwd) } catch (err: any) {
+      console.warn(`[${LOG_PREFIX}] migrateLegacyShogoSdkPin threw: ${err?.message ?? err}`)
+    }
+
     const hasNodeModules = existsSync(join(installCwd, 'node_modules'))
+
+    // Cross-platform install-reuse guard.
+    //
+    // The host (`apps/api/.../ensureWorkspaceDeps`) populates the
+    // workspace `node_modules` on macOS/Windows BEFORE the linux
+    // guest VM 9p-mounts it. Rollup/esbuild/lightningcss/swc all
+    // ship native bindings as `optionalDependencies` filtered by
+    // `os`/`cpu`, so a Darwin-arm64 host install leaves
+    // `@rollup/rollup-linux-arm64-gnu` (and friends) absent.
+    //
+    // Once the guest mounts the workspace, the install-marker hash
+    // still matches (package.json didn't change) — without this
+    // platform gate, `installDepsIfNeeded` would short-circuit and
+    // the next `vite build` would die with
+    //   Cannot find module @rollup/rollup-linux-arm64-gnu
+    //   at requireWithFriendlyError (.../node_modules/rollup/dist/native.js)
+    // exactly the regression visible across every macOS+VM session
+    // in `~/Library/Logs/Shogo/main.log`.
+    //
+    // The host writes `node_modules/.shogo-platform` after every
+    // install (via workspace-defaults.writePlatformMarker). When the
+    // tag on disk doesn't match the running platform's tag, we
+    // force a full install — bun on the running platform will pull
+    // the matching natives (bun honors `os`/`cpu` relative to the
+    // running platform, not the lockfile platform).
+    //
+    // Three states the guard handles:
+    //   - tag matches    → fast paths run normally
+    //   - tag mismatches → force install (BOTH fast paths skipped)
+    //   - no tag on disk → legacy / first-run; treat as compatible
+    //     (the host install will write a tag on its way out, so the
+    //     next guest-side check is conclusive). Avoids paying a
+    //     redundant install on every legacy workspace that didn't
+    //     pre-date this marker.
+    const platformOnDisk = hasNodeModules ? readInstallPlatformMarker(installCwd) : null
+    const platformMismatched = !!(platformOnDisk && platformOnDisk !== INSTALL_PLATFORM_TAG)
+    if (platformMismatched) {
+      console.log(
+        `[${LOG_PREFIX}] node_modules was installed for ${platformOnDisk} but we're running on ${INSTALL_PLATFORM_TAG} — forcing reinstall (cross-platform native bindings would be absent)`,
+      )
+      // Drop both markers so neither fast-path can short-circuit.
+      // We intentionally don't delete `node_modules` itself — bun
+      // overwrites stale package dirs during install, and a partial
+      // rewrite is recoverable on the next start.
+      try {
+        const markerPath = join(installCwd, '.shogo', 'install-marker')
+        if (existsSync(markerPath)) {
+          const { unlinkSync } = require('fs')
+          unlinkSync(markerPath)
+        }
+      } catch {
+        // Best-effort: a leftover marker only causes one wasted
+        // install on the next start.
+      }
+    }
 
     // Hash-based install gate: write `.shogo/install-marker` containing
     // sha256(package.json) after each successful install; on next start,
@@ -910,25 +1274,47 @@ export class PreviewManager {
     ) {
       console.log(`[${LOG_PREFIX}] install-marker matches package.json sha256 — skipping bun install`)
       timings.install = 0
+      this._markDepsSettled()
       return
     }
 
-    // First-ever start with a pre-installed node_modules and no marker: trust
-    // that the install matches package.json (this is the runtime template's
-    // pre-warmed fast path) and just record the marker so we hit the cheap
-    // skip path on subsequent starts. Avoids redundant `bun install` on every
-    // fresh workspace, which was the original anchor-deps heuristic's whole
-    // job. If the bundled node_modules doesn't actually match package.json —
-    // e.g. a Vite template copied into an Expo workspace — the bundler will
-    // fail on first build and the user can `bun install` manually; we'd
-    // rather not unconditionally install on every start.
-    if (hasNodeModules && expectedHash != null && recordedHash == null) {
+    // First-ever start with a pre-installed node_modules and no marker:
+    // optimistically trust the install IF every top-level dependency
+    // declared in package.json actually exists in node_modules/.
+    //
+    // Background: the original "just stamp the hash" heuristic was meant
+    // to skip a redundant `bun install` for the runtime-template's
+    // pre-warmed fast path. But it has a nasty failure mode for legacy
+    // user workspaces: if a previous install crashed halfway, or the
+    // workspace was migrated (e.g. by `migrateLegacyShogoSdkPin` rewriting
+    // the SDK pin), node_modules can exist but be missing key deps —
+    // vite, @shogo-ai/sdk, the prisma adapter — and we'd permanently
+    // record the BROKEN state as "good", preventing every subsequent
+    // start from ever installing them. Observed in main.log:
+    //   "Vite build --watch exited (code=127, signal=null)"
+    // on a workspace whose node_modules had no vite at all.
+    //
+    // The probe is cheap (one stat per top-level dep, capped at a few
+    // dozen names) and catches both the partial-install and stale-tree
+    // cases without bringing back the old anchor-deps false positives:
+    // we check *every* declared dep, not a fixed list, so dep churn
+    // can't desync the probe from the package.json the project is
+    // actually pinning.
+    if (hasNodeModules && expectedHash != null && recordedHash == null && !platformMismatched) {
+      const missing = findMissingTopLevelDeps(installCwd)
+      if (missing.length === 0) {
+        console.log(
+          `[${LOG_PREFIX}] node_modules/ present with all declared deps — recording hash without reinstall`,
+        )
+        writeInstallMarker(installCwd, expectedHash)
+        timings.install = 0
+        this._markDepsSettled()
+        return
+      }
       console.log(
-        `[${LOG_PREFIX}] node_modules/ present but install-marker missing — recording hash without reinstall`,
+        `[${LOG_PREFIX}] node_modules/ present but ${missing.length} declared dep(s) missing (${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ', …' : ''}) — running install`,
       )
-      writeInstallMarker(installCwd, expectedHash)
-      timings.install = 0
-      return
+      // fall through to install
     }
 
     if (hasNodeModules && expectedHash != null && recordedHash !== expectedHash) {
@@ -954,10 +1340,33 @@ export class PreviewManager {
       // Best-effort marker write — a failure here just means we'll run
       // install one more time on the next start, never anything worse.
       writeInstallMarker(installCwd, expectedHash ?? undefined)
+      // Tag the install with the platform we ran on. Subsequent
+      // boots on a DIFFERENT platform (host install → guest run,
+      // or vice versa) will see the mismatch and re-install above.
+      writeInstallPlatformMarker(installCwd)
     } catch (err: any) {
       timings.install = Date.now() - t0
       console.error(`[${LOG_PREFIX}] Dependency install failed:`, err.message)
+    } finally {
+      // Signal install-has-settled exactly once. Subsequent
+      // installDepsIfNeeded calls (re-install on package.json change,
+      // metro path follow-up at line ~1068) leave depsReady resolved.
+      // Awaiters on a stack-switch reinstall can poll _phase instead;
+      // we explicitly don't reset the gate or downstream canvas builds
+      // would block on every package.json edit.
+      this._markDepsSettled()
     }
+  }
+
+  /**
+   * Resolve `depsReadyPromise` exactly once. Safe to call from multiple
+   * exit paths (success / catch / early-skip in `installDepsIfNeeded`).
+   */
+  private _markDepsSettled(): void {
+    if (this._depsSettled) return
+    this._depsSettled = true
+    this.depsReadyResolve?.()
+    this.depsReadyResolve = null
   }
 
   private async runPrismaIfNeeded(timings: Record<string, number>): Promise<void> {
@@ -973,7 +1382,11 @@ export class PreviewManager {
       this._phase = 'generating-prisma'
       const t1 = Date.now()
       try {
-        pkg.prismaGenerate(cwd)
+        // Async variant: prisma generate spawns a child Node process that
+        // can take ~3s on a cold pod. The sync variant blocks the event
+        // loop and was the root cause of the ~4.7s /pool/assign freeze
+        // observed in staging on 2026-05-11. Always use *Async from here.
+        await pkg.prismaGenerateAsync(cwd)
         timings.prisma = Date.now() - t1
       } catch (err: any) {
         timings.prisma = Date.now() - t1
@@ -991,7 +1404,9 @@ export class PreviewManager {
 
     const t2 = Date.now()
     try {
-      pkg.prismaDbPush(cwd, { env: { ...process.env, DATABASE_URL: `file:${devDb}` } as NodeJS.ProcessEnv })
+      await pkg.prismaDbPushAsync(cwd, {
+        env: { ...process.env, DATABASE_URL: `file:${devDb}` } as NodeJS.ProcessEnv,
+      })
       timings.dbPush = Date.now() - t2
       console.log(`[${LOG_PREFIX}] Prisma db push succeeded (${timings.dbPush}ms)`)
     } catch (err: any) {
@@ -1101,6 +1516,77 @@ export class PreviewManager {
     this.onConsoleLogReset?.()
   }
 
+  /**
+   * One-shot `vite build --outDir dist.staging` used to seed `dist/`
+   * before the long-running watcher takes over. Atomically swaps the
+   * staging output into place on success and cleans it up on failure.
+   * Best-effort: the watcher still spawns even if this fails — the
+   * watcher's own first build will eventually populate `dist/` (just
+   * with the historical 404 window we're trying to avoid).
+   */
+  private async runViteOneShotBuild(
+    viteBin: string,
+    cwd: string,
+    buildLogPath: string,
+    isWindows: boolean,
+  ): Promise<void> {
+    cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
+    console.log(`[${LOG_PREFIX}] Seeding dist/ via one-shot vite build (staging)...`)
+    // Route through bundled `bun` when system node is missing — otherwise
+    // the shim's `#!/usr/bin/env node` shebang fails with code 127. See
+    // resolveBinInvocation() doc-block for the full story.
+    const invocation = resolveBinInvocation(cwd, 'vite') ?? { cmd: viteBin, argsPrefix: [] }
+    const exitCode = await new Promise<number | null>((resolveBuild) => {
+      let proc: ChildProcess
+      try {
+        proc = spawn(
+          invocation.cmd,
+          [...invocation.argsPrefix, 'build', '--outDir', DEFAULT_STAGING_DIR, '--emptyOutDir'],
+          {
+            cwd,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            shell: isWindows,
+            env: {
+              ...process.env,
+              NODE_ENV: 'development',
+              VITE_RUNTIME_PORT: String(this.runtimePort),
+              CI: '1',
+            },
+          },
+        )
+      } catch (err: any) {
+        console.error(`[${LOG_PREFIX}] Failed to spawn one-shot vite build: ${err?.message ?? err}`)
+        resolveBuild(null)
+        return
+      }
+      proc.on('error', (err: Error) => {
+        console.error(`[${LOG_PREFIX}] One-shot vite build error: ${err.message}`)
+        resolveBuild(null)
+      })
+      proc.stdout?.on('data', (data: Buffer) => {
+        const line = data.toString().trim()
+        emitBuildLine(buildLogPath, '[stdout]', line, 'stdout')
+      })
+      proc.stderr?.on('data', (data: Buffer) => {
+        const line = data.toString().trim()
+        emitBuildLine(buildLogPath, '[stderr]', line, 'stderr')
+      })
+      proc.on('exit', (code) => resolveBuild(code))
+    })
+
+    if (exitCode === 0) {
+      const committed = commitBuildOutput(cwd, DEFAULT_STAGING_DIR)
+      if (!committed) {
+        console.warn(
+          `[${LOG_PREFIX}] One-shot vite build succeeded but commit into dist/ failed`,
+        )
+      }
+    } else {
+      console.warn(`[${LOG_PREFIX}] One-shot vite build failed (code=${exitCode})`)
+      cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
+    }
+  }
+
   private async startBuildWatch(): Promise<void> {
     const cwd = this.bundlerCwd
     const buildLogPath = join(cwd, BUILD_LOG_FILE)
@@ -1120,21 +1606,38 @@ export class PreviewManager {
       return
     }
 
-    console.log(`[${LOG_PREFIX}] Starting vite build --watch...`)
+    // Vite's default `--watch` mode empties `dist/` on its initial pass,
+    // which would briefly 404 every refresh during that window and leave
+    // the live preview broken if the very first build failed. Do a
+    // one-shot `vite build --outDir dist.staging` instead and atomically
+    // promote the result; the subsequent watch then runs with
+    // `--emptyOutDir false` so it only ever rewrites files in place.
+    if (!existsSync(join(cwd, 'dist', 'index.html'))) {
+      await this.runViteOneShotBuild(viteBin, cwd, buildLogPath, isWindows)
+    }
 
+    console.log(`[${LOG_PREFIX}] Starting vite build --watch (no empty)...`)
+
+    // Same node-missing fallback as runViteOneShotBuild — see
+    // resolveBinInvocation() for rationale.
+    const invocation = resolveBinInvocation(cwd, 'vite') ?? { cmd: viteBin, argsPrefix: [] }
     let viteProcess: ChildProcess
     try {
-      viteProcess = spawn(viteBin, ['build', '--watch'], {
-        cwd,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        // `.CMD` shims must go through cmd.exe on Windows.
-        shell: isWindows,
-        env: {
-          ...process.env,
-          NODE_ENV: 'development',
-          VITE_RUNTIME_PORT: String(this.runtimePort),
+      viteProcess = spawn(
+        invocation.cmd,
+        [...invocation.argsPrefix, 'build', '--watch', '--emptyOutDir', 'false'],
+        {
+          cwd,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          // `.CMD` shims must go through cmd.exe on Windows.
+          shell: isWindows,
+          env: {
+            ...process.env,
+            NODE_ENV: 'development',
+            VITE_RUNTIME_PORT: String(this.runtimePort),
+          },
         },
-      })
+      )
     } catch (err: any) {
       console.error(`[${LOG_PREFIX}] Failed to spawn vite build --watch: ${err?.message ?? err}`)
       return
@@ -1217,6 +1720,38 @@ export class PreviewManager {
       }
     }
 
+    // Drift check: a `server.tsx` that exists on disk but predates the
+    // current `shogo.config.json#customRoutesPath` won't import
+    // `custom-routes.ts`. The SPA's static catch-all then serves
+    // `index.html` (HTTP 200) for `/api/*` requests, silently masking
+    // the missing mount. Detect that here and self-heal — regenerate
+    // when the file looks SDK-generated (safe to overwrite), patch in
+    // place otherwise (preserves hand edits). See `server-tsx-drift.ts`.
+    if (existsSync(serverFile)) {
+      const drift = checkServerTsxDrift(cwd)
+      if (drift.drifted) {
+        const heal = healServerTsxDrift(cwd, drift)
+        if (heal.mode === 'regenerate') {
+          console.warn(
+            `[${LOG_PREFIX}] server.tsx (SDK-generated) is missing the custom-routes mount ` +
+              `(${drift.reason}). Regenerating before spawn...`,
+          )
+          await this.runShogoGenerate()
+        } else if (heal.mode === 'patched') {
+          console.warn(
+            `[${LOG_PREFIX}] server.tsx (hand-edited) was missing the custom-routes mount. ` +
+              `Inserted import + app.route in place; other edits preserved.`,
+          )
+        } else if (heal.mode === 'failed') {
+          console.error(
+            `[${LOG_PREFIX}] Could not heal server.tsx drift: ${heal.reason}. ` +
+              `Custom routes will not be mounted at ${drift.apiBasePath}. ` +
+              `Edit server.tsx by hand or run \`bun x shogo generate\`.`,
+          )
+        }
+      }
+    }
+
     const buildLogPath = join(cwd, BUILD_LOG_FILE)
     console.log(`[${LOG_PREFIX}] Starting API server on port ${this.apiPort}...`)
     this.apiPhase = 'starting'
@@ -1237,16 +1772,15 @@ export class PreviewManager {
     // keep generated code / rolled-back binaries consistent with the
     // host-side runtime checks.
     const portStr = String(this.apiPort)
+
     const proc = spawn(pkg.bunBinary, ['run', 'server.tsx'], {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        PORT: portStr,
-        API_SERVER_PORT: portStr,
-        SKILL_SERVER_PORT: portStr,
-        DATABASE_URL: `file:${join(cwd, 'prisma', 'dev.db')}`,
-      },
+      env: resolveApiServerEnv({
+        parentEnv: process.env,
+        portStr,
+        cwd,
+      }),
     })
 
     this.apiServerProcess = proc
@@ -1523,10 +2057,15 @@ export class PreviewManager {
   }
 
   /**
-   * Run `expo export --platform web --output-dir dist` once. The resulting
-   * `dist/` is served by the runtime at the root, just like a Vite build.
-   * This gives Studio's iframe preview a working web rendering of the RN
-   * app via `react-native-web`. Re-run on demand via `restart()`.
+   * Run `expo export --platform web --output-dir dist.staging` once,
+   * then atomically promote `dist.staging/` into `dist/`. Writing to a
+   * staging directory keeps the live `dist/` serveable while the export
+   * runs (typically several seconds) and leaves the previous good
+   * build intact if the export fails — without this, `expo export`
+   * would clear `dist/` first and any refresh during the build window
+   * would 404.
+   *
+   * Re-run on demand via `restart()`.
    */
   private async runExpoExportWeb(timings: Record<string, number>, cwd: string): Promise<void> {
     const expoBin = this.resolveExpoBin(cwd)
@@ -1541,12 +2080,17 @@ export class PreviewManager {
     // workspace root. `resolveBundlerCwd()` is the single source of truth.
     const buildLogPath = join(cwd, BUILD_LOG_FILE)
     if (!existsSync(cwd)) mkdirSync(cwd, { recursive: true })
+    // A leftover staging dir from a prior crashed build would confuse
+    // expo export (it expects a clean output dir or none). Drop it
+    // before spawning.
+    cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
+
     const t0 = Date.now()
-    console.log(`[${LOG_PREFIX}] Running expo export --platform web...`)
-    await new Promise<void>((resolveExport) => {
+    console.log(`[${LOG_PREFIX}] Running expo export --platform web (staging)...`)
+    const exitCode = await new Promise<number | null>((resolveExport) => {
       let proc: ChildProcess
       try {
-        proc = spawn(expoBin, ['export', '--platform', 'web', '--output-dir', 'dist'], {
+        proc = spawn(expoBin, ['export', '--platform', 'web', '--output-dir', DEFAULT_STAGING_DIR], {
           cwd,
           stdio: ['ignore', 'pipe', 'pipe'],
           // `.CMD` shims must go through cmd.exe on Windows.
@@ -1560,7 +2104,7 @@ export class PreviewManager {
         })
       } catch (err: any) {
         console.error(`[${LOG_PREFIX}] Failed to spawn expo export: ${err?.message ?? err}`)
-        resolveExport()
+        resolveExport(null)
         return
       }
       // Async spawn errors (e.g. ENOENT surfaced after the call returns) must
@@ -1568,7 +2112,7 @@ export class PreviewManager {
       // tears down the entire agent runtime process.
       proc.on('error', (err: Error) => {
         console.error(`[${LOG_PREFIX}] expo export error: ${err.message}`)
-        resolveExport()
+        resolveExport(null)
       })
       proc.stdout?.on('data', (data: Buffer) => {
         const text = data.toString()
@@ -1592,9 +2136,24 @@ export class PreviewManager {
         if (code !== 0) {
           console.error(`[${LOG_PREFIX}] expo export failed (code=${code})`)
         }
-        resolveExport()
+        resolveExport(code)
       })
     })
+
+    if (exitCode === 0) {
+      const committed = commitBuildOutput(cwd, DEFAULT_STAGING_DIR)
+      if (!committed) {
+        console.warn(
+          `[${LOG_PREFIX}] expo export succeeded but commit into dist/ failed — ` +
+            `previous build (if any) remains live`,
+        )
+      }
+    } else {
+      // Failed build: drop the partial staging output so it can't poison
+      // the next swap.
+      cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
+    }
+
     timings.expoExport = Date.now() - t0
   }
 

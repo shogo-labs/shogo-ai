@@ -3,7 +3,7 @@
 import { memo, useState } from "react"
 import { View, Text, Pressable, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { CheckCircle2, Circle, Play, ClipboardList, ChevronDown, ChevronUp, ChevronRight, FileText } from "lucide-react-native"
+import { CheckCircle2, Circle, Play, ClipboardList, ChevronDown, ChevronUp, ChevronRight } from "lucide-react-native"
 import { MarkdownText } from "./MarkdownText"
 
 export interface PlanData {
@@ -63,11 +63,19 @@ function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConf
   const [tasksExpanded, setTasksExpanded] = useState(false)
   const isTruncatable = plan.plan.length > PLAN_TRUNCATE_LENGTH
   const buildAction = onBuild ?? onConfirm
+  const canNavigateToPlan = !!onOpenPlan && !!plan.filepath
   const displayedPlan = expanded || !isTruncatable
     ? plan.plan
     : plan.plan.substring(0, PLAN_TRUNCATE_LENGTH) + "\n\n..."
 
-  const handleViewFull = onViewFull ?? (isTruncatable ? () => setExpanded(prev => !prev) : undefined)
+  // "View Full Plan" navigates to the plan page when a filepath is available;
+  // it only falls back to expanding inline if the plan hasn't been saved yet
+  // (e.g. while the tool call is still streaming).
+  const handleViewFull = onViewFull
+    ?? (canNavigateToPlan
+      ? onOpenPlan
+      : (isTruncatable ? () => setExpanded(prev => !prev) : undefined))
+  const viewFullExpands = handleViewFull !== undefined && !onViewFull && !canNavigateToPlan
 
   return (
     <View className="mx-2 my-3 rounded-xl border border-border bg-card overflow-hidden">
@@ -131,25 +139,18 @@ function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConf
               </Text>
             </Pressable>
           )}
-          {onOpenPlan && plan.filepath && (
-            <Pressable
-              onPress={onOpenPlan}
-              className="flex-row items-center gap-1.5 rounded-lg border border-border px-4 py-2"
-            >
-              <FileText className="h-3 w-3 text-muted-foreground" size={12} />
-              <Text className="text-xs text-muted-foreground">Open Plan</Text>
-            </Pressable>
-          )}
           {handleViewFull && (
             <Pressable
               onPress={handleViewFull}
               className="flex-row items-center gap-1.5 rounded-lg border border-border px-4 py-2"
             >
-              {expanded
-                ? <ChevronUp className="h-3 w-3 text-muted-foreground" size={12} />
-                : <ChevronDown className="h-3 w-3 text-muted-foreground" size={12} />}
+              {viewFullExpands
+                ? (expanded
+                    ? <ChevronUp className="h-3 w-3 text-muted-foreground" size={12} />
+                    : <ChevronDown className="h-3 w-3 text-muted-foreground" size={12} />)
+                : <ChevronRight className="h-3 w-3 text-muted-foreground" size={12} />}
               <Text className="text-xs text-muted-foreground">
-                {expanded ? "Collapse Plan" : "View Full Plan"}
+                {viewFullExpands && expanded ? "Collapse Plan" : "View Full Plan"}
               </Text>
             </Pressable>
           )}

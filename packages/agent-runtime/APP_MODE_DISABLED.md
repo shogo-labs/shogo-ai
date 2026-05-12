@@ -134,13 +134,23 @@ import { CODE_AGENT_CODING_GUIDE, CODE_AGENT_ENVIRONMENT_GUIDE } from './code-ag
 
 ### `packages/agent-runtime/src/code-agent-prompt.ts`
 
-**Re-export** (~line 15):
-```typescript
-// CURRENT:
-export { CODE_AGENT_CODING_GUIDE, CODE_AGENT_GENERAL_GUIDE }
+- `CODE_AGENT_ENVIRONMENT_GUIDE` was **deleted**. Recover from git
+  history at this file path, then re-add and re-export it. The old
+  version's "Dev server on **port 3001**" line is wrong — the runtime
+  serves the SPA and `/api/*` on the project's public origin via a
+  sidecar Hono server, with no second port to think about. Fix that line
+  before re-injecting into the agent prompt.
+- `CODE_AGENT_APP_BUILDING_GUIDE` is **gone** as a separate constant.
+  Its build/prisma/shadcn/runtime guidance was merged into
+  `CODE_AGENT_GENERAL_GUIDE` (which is always injected) with the port
+  topology corrected. There is nothing to "restore" here unless you want
+  app mode to inject a *different* build guide than canvas/none modes —
+  in which case lift the relevant sections out of `GENERAL_GUIDE` into a
+  new `CODE_AGENT_APP_BUILDING_GUIDE` and re-export.
 
-// RESTORE TO:
-export { CODE_AGENT_CODING_GUIDE, CODE_AGENT_ENVIRONMENT_GUIDE, CODE_AGENT_GENERAL_GUIDE, CODE_AGENT_APP_BUILDING_GUIDE }
+To re-export `CODE_AGENT_ENVIRONMENT_GUIDE`, update the export to:
+```typescript
+export { CODE_AGENT_CODING_GUIDE, CODE_AGENT_ENVIRONMENT_GUIDE, CODE_AGENT_GENERAL_GUIDE }
 ```
 
 ### `packages/agent-runtime/src/gateway.ts` — Prompt Sections

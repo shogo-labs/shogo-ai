@@ -65,6 +65,10 @@ import {
 import { FileViewerModal } from "./FileViewerModal"
 import { PastedTextChip } from "./PastedTextChip"
 import { EnvironmentPicker } from "./EnvironmentPicker"
+import {
+  useTypingPlaceholder,
+  AGENT_PLACEHOLDER_PREFIX,
+} from "../../hooks/useTypingPlaceholder"
 
 const MODEL_GROUPS = getModelsByProvider().map((g) => ({
   label: g.label,
@@ -84,6 +88,9 @@ import { AttachSourceSheet } from "./AttachSourceSheet"
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 const MAX_FILES = 10
+
+const MIN_INPUT_HEIGHT = 80
+const MAX_INPUT_HEIGHT = 200
 
 interface AttachedFile {
   id: string
@@ -117,6 +124,15 @@ export interface CompactChatInputProps {
    * project creation while preemptively warming a runtime pod.
    */
   onStartVoiceProjectCreation?: () => void | Promise<void>
+  /**
+   * When true, the input runs the rotating "Ask Shogo to ..." typewriter
+   * effect locally as its placeholder while the input is empty. Owning the
+   * timer here means the per-character placeholder updates only re-render
+   * this component, instead of cascading through the parent screen on
+   * every tick (~30Hz). Overrides `placeholder` while the typewriter is
+   * actively rendering.
+   */
+  agentPlaceholderActive?: boolean
 }
 
 export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
@@ -137,6 +153,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       onUpgradeClick,
       dimWhenDisabled = true,
       onStartVoiceProjectCreation,
+      agentPlaceholderActive = false,
     },
     ref
   ) {
@@ -144,6 +161,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const effectiveIsPro = features.billing ? isPro : true
 
     const [internalValue, setInternalValue] = useState("")
+    const [inputHeight, setInputHeight] = useState(MIN_INPUT_HEIGHT)
     const textInputRef = useRef<TextInput>(null)
     const pasteHandledRef = useRef(false)
 
@@ -205,13 +223,23 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       valueRef.current = value
     }, [value])
 
-    const placeholderText =
-      placeholderProp ??
-      (interactionMode === "plan"
-        ? "Describe what you want to plan..."
-        : interactionMode === "ask"
-          ? "Ask a question..."
-          : "Describe the agent you want to build...")
+    // Run the rotating typewriter locally so its 25–45ms ticks only
+    // re-render this component, not whatever screen owns the input. The
+    // hook short-circuits to an empty string when disabled, so there is no
+    // ongoing timer when the user has typed something or the host hasn't
+    // opted in via `agentPlaceholderActive`.
+    const typingPlaceholder = useTypingPlaceholder(undefined, {
+      enabled: agentPlaceholderActive && !value,
+    })
+
+    const placeholderText = agentPlaceholderActive
+      ? `${AGENT_PLACEHOLDER_PREFIX}${typingPlaceholder}`
+      : (placeholderProp ??
+        (interactionMode === "plan"
+          ? "Describe what you want to plan..."
+          : interactionMode === "ask"
+            ? "Ask a question..."
+            : "Describe the agent you want to build..."))
 
     const formatFileSize = useCallback((bytes: number): string => {
       if (bytes < 1024) return `${bytes} B`
@@ -415,6 +443,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
         return
       }
       setValue("")
+      setInputHeight(MIN_INPUT_HEIGHT)
       setPendingFiles([])
       setFileError(null)
       setPastedTexts([])
@@ -439,6 +468,9 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
           return
         }
         setValue(next)
+        if (next.length === 0) {
+          setInputHeight(MIN_INPUT_HEIGHT)
+        }
       },
       [setValue, addPastedText]
     )
@@ -553,6 +585,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
           <TextInput
             ref={textInputRef}
+            testID="home-composer-input"
             placeholder={placeholderText}
             placeholderTextColor="#9ca3af"
             accessibilityLabel="Describe the agent you want to build"
@@ -568,6 +601,14 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             editable={!disabled && !isLoading && !voiceInput.isRecording}
             multiline
             blurOnSubmit={false}
+            onContentSizeChange={(e) => {
+              const h = e.nativeEvent.contentSize.height
+              const clamped = Math.min(MAX_INPUT_HEIGHT, Math.max(MIN_INPUT_HEIGHT, h))
+              if (clamped !== inputHeight) {
+                setInputHeight(clamped)
+              }
+            }}
+            style={{ height: inputHeight }}
             className={cn(
               "min-h-[80px] max-h-[200px] w-full",
               "px-4 pt-4 text-xs text-foreground",
@@ -591,7 +632,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 trigger={(triggerProps) => (
                   <Pressable
                     {...triggerProps}
-                    disabled={disabled || isLoading}
+                    disabled={disabled}
                     className={cn(
                       "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
                       interactionMode === "agent" && "bg-muted/50",
@@ -714,7 +755,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 trigger={(triggerProps) => (
                   <Pressable
                     {...triggerProps}
-                    disabled={disabled || isLoading}
+                    disabled={disabled}
                     className="h-[22px] flex-row items-center gap-1 rounded-md px-1.5"
                   >
                     <Text className="text-xs text-muted-foreground">

@@ -184,10 +184,17 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     ipcRenderer.removeAllListeners('navigate')
   },
 
-  // App updates
+  // App updates — downloads are user-gated. The main process probes the
+  // feed and broadcasts `status: 'available'` with a version; the renderer
+  // shows a banner and only calls `downloadUpdate()` after the user
+  // explicitly opts in.
   getUpdateStatus: () => ipcRenderer.invoke('get-update-status'),
+  downloadUpdate: () => ipcRenderer.invoke('download-update'),
+  dismissUpdate: () => ipcRenderer.invoke('dismiss-update'),
   installUpdate: () => ipcRenderer.invoke('install-update'),
-  onUpdateStatus: (callback: (data: { status: string; releaseName: string | null }) => void) => {
+  onUpdateStatus: (
+    callback: (data: { status: string; releaseName: string | null; availableVersion: string | null }) => void,
+  ) => {
     ipcRenderer.on('desktop-update-status', (_event, data) => callback(data))
   },
   removeUpdateListener: () => {
@@ -226,4 +233,26 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   removeCloudLoginListener: () => {
     ipcRenderer.removeAllListeners('cloud-login-result')
   },
+  onCloudConnectionStatus: (
+    callback: (status: { connected: boolean; cloudKeyRejected: boolean; error?: string }) => void,
+  ) => {
+    ipcRenderer.on('cloud-connection-status', (_event, status) => callback(status))
+  },
+  removeCloudConnectionStatusListener: () => {
+    ipcRenderer.removeAllListeners('cloud-connection-status')
+  },
+
+  // Bug report / log sharing
+  captureScreenshot: (): Promise<{ ok: boolean; base64?: string; error?: string }> =>
+    ipcRenderer.invoke('capture-screenshot'),
+  exportBugReport: (payload: { description: string; attachments?: { name: string; dataUrl: string }[] }): Promise<{ ok: boolean; path?: string; error?: string }> =>
+    ipcRenderer.invoke('export-bug-report', payload),
+  submitBugReport: (payload: { description: string; attachments?: { name: string; dataUrl: string }[] }): Promise<{ ok: boolean; error?: string; discord?: { ok: boolean }; github?: { ok: boolean; issueUrl?: string } }> =>
+    ipcRenderer.invoke('submit-bug-report', payload),
+  getBugReportConfig: (): Promise<{ hasDiscord: boolean; hasGitHub: boolean; maxLogLines: number }> =>
+    ipcRenderer.invoke('get-bug-report-config'),
+  setBugReportConfig: (config: { discordWebhookUrl?: string; githubRepo?: string; githubToken?: string; maxLogLines?: number }): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('set-bug-report-config', config),
+  getSystemInfo: (): Promise<Record<string, unknown>> =>
+    ipcRenderer.invoke('get-system-info'),
 })

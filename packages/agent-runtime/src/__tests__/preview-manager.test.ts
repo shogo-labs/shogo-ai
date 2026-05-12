@@ -13,7 +13,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { PreviewManager, emitBuildLine } from '../preview-manager'
+import { PreviewManager, emitBuildLine, resolveApiServerEnv } from '../preview-manager'
 import {
   __resetRuntimeLogDispatcherForTest,
   getRuntimeLogsSnapshot,
@@ -48,6 +48,116 @@ describe('PreviewManager', () => {
     expect(s.internalUrl).toBeNull()
     expect(s.publicUrl).toBeNull()
     expect(s.phase).toBe('idle')
+  })
+
+  test('depsReady is constructable up-front and resolves after start() settles', async () => {
+    // Pin the contract `CanvasBuildManager` relies on: the deferred
+    // must exist BEFORE `start()` is called (so the gateway can pass
+    // `() => pm.depsReady` into CanvasBuildManager during wiring,
+    // which happens before pm.start()), and it must resolve exactly
+    // once installDepsIfNeeded settles — not on subsequent restarts.
+    //
+    // Regression target: the canvas-build vs. install race that
+    // produced `error during build: undefined` in every VM-isolated
+    // session on macOS (see PreviewManager.depsReady doc comment).
+    setupProjectDir(true) // pre-built dist → start() short-circuits without spawning vite
+    const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080 })
+    expect(pm.depsSettled).toBe(false)
+    let resolved = false
+    pm.depsReady.then(() => { resolved = true })
+    await pm.start()
+    // start() runs installDepsIfNeeded, which (with no node_modules
+    // to inspect and no install marker) falls through to the actual
+    // install branch. Whether that branch succeeds or throws, the
+    // `finally` in installDepsIfNeeded must flip depsSettled.
+    expect(pm.depsSettled).toBe(true)
+    // Allow microtask flush so the then() can observe resolution.
+    await Promise.resolve()
+    expect(resolved).toBe(true)
+    pm.stop()
+  })
+
+  test('depsReady can be awaited before start() (deferred created in constructor)', async () => {
+    setupProjectDir(true)
+    const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080 })
+    let observed = false
+    const waiter = pm.depsReady.then(() => { observed = true })
+
+    // Sanity: the await is still pending — nothing has settled yet.
+    await Promise.resolve()
+    expect(observed).toBe(false)
+
+    await pm.start()
+    await waiter
+    expect(observed).toBe(true)
+    expect(pm.depsSettled).toBe(true)
+    pm.stop()
+  })
+
+  test('cross-platform node_modules tag drops the install-marker fast-path', async () => {
+    // Regression target: macOS host installs node_modules and writes
+    // an install-marker; linux guest VM 9p-mounts the same workspace
+    // and `installDepsIfNeeded` would otherwise see the matching
+    // package.json sha256 and skip the install, leaving
+    // `@rollup/rollup-linux-arm64-gnu` (and friends) absent.
+    //
+    // We can't fake `process.platform` from a unit test, so we go in
+    // the other direction: write a `.shogo-platform` tag that
+    // CANNOT match the running platform (`fake-tag-from-other-os`),
+    // along with a valid install-marker matching the current
+    // package.json. After running through the marker-loading branch
+    // by inspecting on-disk state, the install-marker must be gone
+    // (signaling the mismatch path tripped) so the next install pass
+    // runs unconditionally.
+    setupProjectDir(false)
+    const {
+      writeInstallMarker,
+      computePackageJsonHash,
+      readInstallPlatformMarker,
+      INSTALL_PLATFORM_TAG,
+    } = await import('../workspace-defaults')
+    const fs = await import('fs')
+    const path = await import('path')
+
+    // Seed a populated node_modules so the gate path's
+    // `hasNodeModules` branch evaluates.
+    fs.mkdirSync(path.join(TEST_DIR, 'node_modules'), { recursive: true })
+    const hash = computePackageJsonHash(TEST_DIR)!
+    writeInstallMarker(TEST_DIR, hash)
+
+    // Write a platform marker that is GUARANTEED to differ from the
+    // host running this test. (`INSTALL_PLATFORM_TAG` is `darwin-arm64`
+    // / `linux-x64` etc. on CI runners; `synthetic-other-arch` matches
+    // nothing.)
+    fs.writeFileSync(
+      path.join(TEST_DIR, 'node_modules', '.shogo-platform'),
+      'synthetic-other-arch\n',
+      'utf-8',
+    )
+
+    expect(INSTALL_PLATFORM_TAG).not.toBe('synthetic-other-arch')
+
+    // PreviewManager.start() spawns backgroundSetup async and
+    // returns before installDepsIfNeeded has actually run. We must
+    // await depsReady to observe the side-effects of the
+    // cross-platform check (and the subsequent install pass).
+    const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080 })
+    await pm.start()
+    await pm.depsReady
+
+    // The contract under test: cross-platform reuse never wins
+    // silently. The mismatch path forces a full `bun install`
+    // (skipping BOTH the hash-match and missing-deps fast paths),
+    // and a successful install rewrites the platform marker to
+    // the running platform. In this fixture there are no deps in
+    // package.json, so `bun install` is a successful no-op — but
+    // critically it ran (rather than being short-circuited by the
+    // matching install-marker), and the platform tag is now
+    // `INSTALL_PLATFORM_TAG`, not the synthetic foreign tag.
+    const platformOnDisk = readInstallPlatformMarker(TEST_DIR)
+    expect(platformOnDisk).toBe(INSTALL_PLATFORM_TAG)
+    expect(platformOnDisk).not.toBe('synthetic-other-arch')
+    pm.stop()
   })
 
   test('internalUrl getter always reflects runtimePort', () => {
@@ -426,6 +536,135 @@ describe('PreviewManager', () => {
     })
   })
 
+  // --- Drift heal at boot --------------------------------------------------
+  // When `server.tsx` exists on disk but doesn't import / mount
+  // `custom-routes.ts`, `startApiServer` self-heals before spawning.
+  // SDK-generated stale files are signalled for regeneration; hand-edited
+  // files are patched in place so the user's other edits are preserved.
+  // We assert the on-disk file is patched after `restartApiServerOnly`
+  // returns. The fixture server.tsx exits as soon as it runs so the
+  // spawn doesn't bind a real port — we only care about the heal step.
+
+  describe('startApiServer drift heal', () => {
+    let savedPort: string | undefined
+    beforeEach(() => {
+      savedPort = process.env.API_SERVER_PORT
+      process.env.API_SERVER_PORT = '39023'
+    })
+    afterEach(() => {
+      if (savedPort === undefined) delete process.env.API_SERVER_PORT
+      else process.env.API_SERVER_PORT = savedPort
+    })
+
+    function seedDriftWorkspace(serverTsx: string): void {
+      // src/generated/index.ts so startApiServer skips the missing-file
+      // branch and lands directly in the drift check.
+      mkdirSync(join(TEST_DIR, 'src', 'generated'), { recursive: true })
+      writeFileSync(
+        join(TEST_DIR, 'src', 'generated', 'index.ts'),
+        'export {}\n',
+        'utf-8',
+      )
+      writeFileSync(join(TEST_DIR, 'server.tsx'), serverTsx, 'utf-8')
+      writeFileSync(
+        join(TEST_DIR, 'shogo.config.json'),
+        JSON.stringify({
+          schema: './prisma/schema.prisma',
+          outputs: [
+            {
+              dir: '.',
+              generate: ['server'],
+              fileExtension: 'tsx',
+              serverConfig: { customRoutesPath: './custom-routes' },
+            },
+          ],
+        }),
+        'utf-8',
+      )
+      writeFileSync(
+        join(TEST_DIR, 'custom-routes.ts'),
+        "import { Hono } from 'hono'\nconst app = new Hono()\nexport default app\n",
+        'utf-8',
+      )
+    }
+
+    test('hand-edited drifted server.tsx is patched in place at boot', async () => {
+      // Self-exiting fixture so the spawn that follows the heal step
+      // returns quickly without binding a port.
+      const handEdited = `import { Hono } from 'hono'
+
+const app = new Hono()
+
+app.get('/health', (c) => c.json({ ok: true }))
+
+process.exit(0)
+
+export default { port: Number(process.env.PORT) || 3001, fetch: app.fetch }
+`
+      seedDriftWorkspace(handEdited)
+
+      const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080 })
+      try {
+        await pm.restartApiServerOnly()
+      } finally {
+        pm.stop()
+      }
+
+      const after = readFileSync(join(TEST_DIR, 'server.tsx'), 'utf-8')
+      // Heal helper inserted both required lines.
+      expect(after).toContain("import customRoutes from './custom-routes'")
+      expect(after).toMatch(/app\.route\(\s*['"]\/api['"]\s*,\s*customRoutes\s*\)/)
+      // Hand-edited body is preserved verbatim.
+      expect(after).toContain("app.get('/health'")
+      expect(after).toContain('process.exit(0)')
+    }, 15_000)
+
+    test('stale SDK-generated server.tsx is NOT patched in place (signals regenerate)', async () => {
+      // Has the SDK auto-gen header → drift heal returns
+      // { mode: 'regenerate' }. In this fixture `runShogoGenerate` will
+      // fail (no real prisma schema / sdk) but that's fine — we just
+      // want to verify the file is left UNTOUCHED so the caller can
+      // overwrite it.
+      const staleSdk = `/**
+ * Hono Server
+ *
+ * Auto-generated by @shogo-ai/sdk
+ * This file can be customized - it will not be overwritten if it exists.
+ */
+
+import { Hono } from 'hono'
+
+const app = new Hono()
+
+app.get('/health', (c) => c.json({ ok: true }))
+
+process.exit(0)
+
+export default { port: Number(process.env.PORT) || 3001, fetch: app.fetch }
+`
+      seedDriftWorkspace(staleSdk)
+
+      const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080 })
+      try {
+        await pm.restartApiServerOnly()
+      } finally {
+        pm.stop()
+      }
+
+      const after = readFileSync(join(TEST_DIR, 'server.tsx'), 'utf-8')
+      // No in-place patch — the file must NOT have gained customRoutes
+      // lines, because the heal helper signalled `regenerate` and we
+      // never invoke the additive patcher for that path.
+      expect(after).not.toContain('import customRoutes from')
+      expect(after).not.toMatch(/app\.route\(\s*['"]\/api['"]\s*,\s*customRoutes\s*\)/)
+      // (The full regen via `runShogoGenerate` doesn't run cleanly in
+      // this fixture because there's no `prisma/schema.prisma`. The
+      // wiring is unit-tested in `server-tsx-drift.test.ts`; this test
+      // just pins that the in-place patcher does NOT touch
+      // SDK-generated files.)
+    }, 15_000)
+  })
+
   // --- emitBuildLine: build-log dispatcher integration -----------------------
   // The Output tab and Monitor consume the typed RuntimeLogEntry stream.
   // Every call site in preview-manager.ts that previously called appendFileSync
@@ -495,6 +734,140 @@ describe('PreviewManager', () => {
       emitBuildLine(buildLogPath, '[stdout]', 'ERROR: missing module', 'stdout')
       const entries = getRuntimeLogsSnapshot()
       expect(entries[0]!.level).toBe('error')
+    })
+  })
+
+  // --- resolveApiServerEnv: env handed to the spawned `server.tsx` ----------
+  // The API sidecar inherits `process.env` plus a few overrides + a
+  // local-mode default for SHOGO_API_URL. Each invariant gets pinned
+  // here so a future "fix" of one branch doesn't accidentally regress
+  // another (e.g. accidentally forcing localhost in cloud or stomping
+  // a desktop user's explicit SHOGO_API_URL override).
+
+  describe('resolveApiServerEnv', () => {
+    const FIXED_CWD = '/tmp/test-preview-manager'
+    const PORT = '3091'
+
+    test('always pins PORT/API_SERVER_PORT/SKILL_SERVER_PORT to the resolved port', () => {
+      const env = resolveApiServerEnv({
+        parentEnv: { PORT: '9999', API_SERVER_PORT: '8888', SKILL_SERVER_PORT: '7777' },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env.PORT).toBe(PORT)
+      expect(env.API_SERVER_PORT).toBe(PORT)
+      expect(env.SKILL_SERVER_PORT).toBe(PORT)
+    })
+
+    test('pins DATABASE_URL to the workspace sqlite file regardless of parent', () => {
+      const env = resolveApiServerEnv({
+        parentEnv: { DATABASE_URL: 'postgres://elsewhere/db' },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env.DATABASE_URL).toBe(`file:${FIXED_CWD}/prisma/dev.db`)
+    })
+
+    test('local mode + no SHOGO_API_URL parent override → injects http://localhost:8002', () => {
+      const env = resolveApiServerEnv({
+        parentEnv: { SHOGO_LOCAL_MODE: 'true' },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env.SHOGO_API_URL).toBe('http://localhost:8002')
+    })
+
+    test('local mode + explicit SHOGO_API_URL parent override → parent wins', () => {
+      // A power user (or the e2e harness) pinned a different API URL on
+      // the parent; the sidecar must inherit that, not the localhost
+      // default. Otherwise integration tests pointing at a staging API
+      // would silently get redirected to localhost.
+      const env = resolveApiServerEnv({
+        parentEnv: { SHOGO_LOCAL_MODE: 'true', SHOGO_API_URL: 'https://api.staging.shogo.ai' },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env.SHOGO_API_URL).toBe('https://api.staging.shogo.ai')
+    })
+
+    test('cloud mode (SHOGO_LOCAL_MODE unset) → does NOT inject localhost', () => {
+      // Cloud pods get SHOGO_API_URL pinned to the in-cluster API service
+      // by the warm-pool launcher; if we accidentally injected
+      // localhost here that would break every voice/chat call from
+      // every cloud-pod sidecar.
+      const env = resolveApiServerEnv({
+        parentEnv: { /* no SHOGO_LOCAL_MODE */ },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env.SHOGO_API_URL).toBeUndefined()
+    })
+
+    test('cloud mode with parent SHOGO_API_URL → still propagates parent value', () => {
+      const env = resolveApiServerEnv({
+        parentEnv: { SHOGO_API_URL: 'http://api.shogo-system.svc.cluster.local' },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env.SHOGO_API_URL).toBe('http://api.shogo-system.svc.cluster.local')
+    })
+
+    test('SHOGO_LOCAL_MODE values other than the literal "true" do NOT trigger injection', () => {
+      // The repo convention is `SHOGO_LOCAL_MODE === 'true'` (string compare),
+      // not "is truthy". `'1'` / `'yes'` / boolean `true` would be a typo.
+      // Pinning the strict-equals contract here avoids accidental regression
+      // to a Boolean(...) check that would surprise cloud callers.
+      const env1 = resolveApiServerEnv({
+        parentEnv: { SHOGO_LOCAL_MODE: '1' },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env1.SHOGO_API_URL).toBeUndefined()
+
+      const env2 = resolveApiServerEnv({
+        parentEnv: { SHOGO_LOCAL_MODE: 'TRUE' },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env2.SHOGO_API_URL).toBeUndefined()
+    })
+
+    test('preserves unrelated parent env (e.g. PATH, HOME, PROJECT_ID)', () => {
+      const env = resolveApiServerEnv({
+        parentEnv: {
+          PATH: '/usr/local/bin:/usr/bin',
+          HOME: '/home/test',
+          PROJECT_ID: 'proj_abc',
+        },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env.PATH).toBe('/usr/local/bin:/usr/bin')
+      expect(env.HOME).toBe('/home/test')
+      expect(env.PROJECT_ID).toBe('proj_abc')
+    })
+
+    test('captures parent PORT into RUNTIME_PORT before overwriting PORT', () => {
+      // The sidecar's @shogo-ai/sdk/tools/server proxy uses RUNTIME_PORT
+      // to forward `/api/tools/*` calls back to the agent runtime over
+      // 127.0.0.1. If we ever stop preserving the parent's PORT here,
+      // every installed-integration call from a pod app silently breaks.
+      const env = resolveApiServerEnv({
+        parentEnv: { PORT: '8080' },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env.RUNTIME_PORT).toBe('8080')
+      expect(env.PORT).toBe(PORT)
+    })
+
+    test('falls back to 8080 when parent PORT is unset', () => {
+      const env = resolveApiServerEnv({
+        parentEnv: {},
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env.RUNTIME_PORT).toBe('8080')
     })
   })
 })

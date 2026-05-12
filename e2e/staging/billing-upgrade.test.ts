@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect, type Page } from "@playwright/test"
-import { makeTestUser, signUpAndOnboard } from "./helpers"
+import { homeComposerInput, makeTestUser, signUpAndOnboard } from "./helpers"
 
 /**
  * Billing & Upgrade Flow E2E Tests (USD pricing)
@@ -19,7 +19,8 @@ import { makeTestUser, signUpAndOnboard } from "./helpers"
  * post-upgrade test cases are skipped until the Checkout interaction is
  * automated (or replaced with a direct Stripe API subscription bootstrap).
  *
- * Targets the deployed staging environment (set STAGING_URL env var).
+ * Targets the deployed environment (set E2E_TARGET_URL or the legacy
+ * STAGING_URL env var).
  *
  * Run: npx playwright test --config e2e/playwright.config.ts billing-upgrade
  */
@@ -100,15 +101,34 @@ test.describe("Billing & Upgrade Flow", () => {
     ).toBeVisible()
   })
 
-  test("free plan: three pricing tiers displayed", async () => {
+  test("free plan: per-seat pricing tiers displayed (v1.5.0 USD)", async () => {
     await navigateToBilling(page)
 
-    await expect(page.getByText("Pro").first()).toBeVisible()
-    await expect(page.getByText("$25")).toBeVisible()
-    await expect(page.getByText("Business", { exact: true }).first()).toBeVisible()
-    await expect(page.getByText("$365")).toBeVisible()
-    await expect(page.getByText("Enterprise", { exact: true }).first()).toBeVisible()
+    // v1.5.0 pricing: Basic $8/mo, Pro $20/seat, Business $40/seat, Enterprise custom.
+    // Source: apps/mobile/app/(app)/billing.tsx → PLAN_PRICING.
+    // Each plan Card is wrapped in a View with a stable testID; fall back
+    // to role/name matching if the app predates the testIDs.
+    const basicCard = page.getByTestId("plan-card-basic")
+    const proCard = page.getByTestId("plan-card-pro")
+    const businessCard = page.getByTestId("plan-card-business")
+    const enterpriseCard = page.getByTestId("plan-card-enterprise")
+
+    await expect(basicCard.or(page.getByText("Basic", { exact: true }).first())).toBeVisible()
+    await expect(proCard.or(page.getByText("Pro").first())).toBeVisible()
+    await expect(businessCard.or(page.getByText("Business", { exact: true }).first())).toBeVisible()
+    await expect(enterpriseCard.or(page.getByText("Enterprise", { exact: true }).first())).toBeVisible()
     await expect(page.getByText("Custom", { exact: true })).toBeVisible()
+    // Dollar labels live inside each plan card (prefer testID scoping).
+    await expect(
+      basicCard.getByText("$8").first().or(page.getByText("$8").first()),
+    ).toBeVisible()
+    await expect(
+      proCard.getByText("$20").first().or(page.getByText("$20").first()),
+    ).toBeVisible()
+    await expect(
+      businessCard.getByText("$40").first().or(page.getByText("$40").first()),
+    ).toBeVisible()
+    await expect(page.getByText(/\/seat/).first()).toBeVisible()
   })
 
   // ── Phase 3: Stripe Checkout (Reach-Only) ────────────────────────
@@ -130,7 +150,9 @@ test.describe("Billing & Upgrade Flow", () => {
     expect(page.url()).toContain("checkout.stripe.com")
 
     await expect(page.getByText("Subscribe to Pro")).toBeVisible({ timeout: 15_000 })
-    await expect(page.getByText("$25.00")).toBeVisible()
+    // v1.5.0: Pro is $20/seat/month. The exact label on Stripe Checkout
+    // is "$20.00 per seat / month" so a partial "$20.00" match is enough.
+    await expect(page.getByText("$20.00")).toBeVisible()
   })
 
   // ── Phase 4: Post-Upgrade UI (skipped) ───────────────────────────
@@ -182,7 +204,7 @@ test.describe("Billing & Upgrade Flow", () => {
     await page.goto("/")
     await page.waitForSelector("text=What's on your mind", { timeout: 10_000 })
 
-    const input = page.getByPlaceholder("Ask Shogo to ...")
+    const input = homeComposerInput(page)
     await input.click()
     await input.fill("Test model gating for Pro plan")
     await page.waitForTimeout(500)

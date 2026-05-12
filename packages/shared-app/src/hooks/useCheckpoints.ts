@@ -49,17 +49,17 @@ export interface GitStatus {
  * Diff information between checkpoints
  */
 export interface CheckpointDiff {
+  checkpointId: string
+  commitSha: string
   files: Array<{
     path: string
-    status: 'added' | 'modified' | 'deleted'
+    status: 'added' | 'modified' | 'deleted' | 'renamed'
     additions: number
     deletions: number
+    oldPath?: string
   }>
-  stats: {
-    filesChanged: number
-    additions: number
-    deletions: number
-  }
+  totalAdditions: number
+  totalDeletions: number
 }
 
 /**
@@ -167,7 +167,7 @@ export function useCheckpoints(projectId: string | undefined, options?: UseCheck
 
         if (statusRes.ok) {
           const data: any = await statusRes.json()
-          setGitStatus(data as GitStatus)
+          setGitStatus((data?.status ?? null) as GitStatus | null)
         } else {
           setGitStatus(null)
         }
@@ -291,7 +291,7 @@ export function useCheckpoints(projectId: string | undefined, options?: UseCheck
         }
 
         const data: any = await response.json()
-        return data as CheckpointDiff
+        return (data?.diff ?? null) as CheckpointDiff | null
       } catch (err) {
         console.error("[useCheckpoints] Error getting diff:", err)
         return null

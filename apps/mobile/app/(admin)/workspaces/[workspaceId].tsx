@@ -28,6 +28,8 @@ import {
   Key,
   Database,
   HardDrive,
+  Gift,
+  Plus,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../../lib/api'
@@ -76,6 +78,31 @@ interface InstanceSubscription {
   id: string
   status: string
   createdAt: string
+}
+
+interface WorkspaceGrant {
+  id: string
+  workspaceId: string
+  freeSeats: number
+  monthlyIncludedUsd: number
+  startsAt: string
+  expiresAt: string | null
+  note: string | null
+  createdAt: string
+}
+
+interface GrantsListResponse {
+  workspaceGrants: WorkspaceGrant[]
+  total: number
+  page: number
+  limit: number
+}
+
+function isGrantActive(g: WorkspaceGrant, now: Date = new Date()): boolean {
+  const starts = new Date(g.startsAt)
+  if (starts > now) return false
+  if (g.expiresAt && new Date(g.expiresAt) <= now) return false
+  return true
 }
 
 interface WorkspaceDetail {
@@ -145,14 +172,21 @@ export default function AdminWorkspaceDetailPage() {
   const isWide = width >= 900
 
   const [workspace, setWorkspace] = useState<WorkspaceDetail | null>(null)
+  const [grants, setGrants] = useState<WorkspaceGrant[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [userNames, setUserNames] = useState<Record<string, { name: string | null; email: string }>>({})
 
   const loadWorkspace = useCallback(async () => {
     if (!workspaceId) return
-    const data = await fetchAdminJson<WorkspaceDetail>(`/workspaces/${workspaceId}`)
+    const [data, grantsData] = await Promise.all([
+      fetchAdminJson<WorkspaceDetail>(`/workspaces/${workspaceId}`),
+      fetchAdminJson<GrantsListResponse>(
+        `/workspace-grants?workspaceId=${encodeURIComponent(workspaceId)}&limit=50&orderBy=createdAt&order=desc`,
+      ),
+    ])
     setWorkspace(data)
+    setGrants(grantsData?.workspaceGrants ?? [])
     setLoading(false)
     setRefreshing(false)
   }, [workspaceId])
@@ -487,6 +521,80 @@ export default function AdminWorkspaceDetailPage() {
             </View>
           </View>
         )}
+
+        {/* Credit grants */}
+        <View className="rounded-xl border border-border bg-card p-4 mt-4">
+          <View className="flex-row items-center justify-between mb-3">
+            <View className="flex-row items-center gap-2">
+              <Gift size={16} className="text-foreground" />
+              <Text className="text-sm font-semibold text-foreground">
+                Credit grants ({grants.length})
+              </Text>
+            </View>
+            <Pressable
+              onPress={() =>
+                router.push(
+                  `/(admin)/grants/new?workspaceId=${encodeURIComponent(workspace.id)}` as any,
+                )
+              }
+              className="flex-row items-center gap-1.5 bg-primary/10 px-2.5 py-1.5 rounded-md active:bg-primary/20"
+            >
+              <Plus size={12} className="text-primary" />
+              <Text className="text-xs font-medium text-primary">New grant</Text>
+            </Pressable>
+          </View>
+          {grants.length === 0 ? (
+            <Text className="text-sm text-muted-foreground">
+              No grants. Use "New grant" to give this workspace free seats and/or monthly USD.
+            </Text>
+          ) : (
+            <View className="gap-2">
+              {grants.map((g) => {
+                const active = isGrantActive(g)
+                return (
+                  <Pressable
+                    key={g.id}
+                    onPress={() => router.push(`/(admin)/grants/${g.id}` as any)}
+                    className="flex-row items-center justify-between p-3 rounded-lg bg-muted/50 active:bg-muted"
+                  >
+                    <View className="flex-1 min-w-0 mr-2">
+                      <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
+                        {g.freeSeats} free seat{g.freeSeats === 1 ? '' : 's'} + ${g.monthlyIncludedUsd.toFixed(0)}/mo
+                      </Text>
+                      <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+                        {g.note
+                          ? g.note
+                          : g.expiresAt
+                            ? `Expires ${new Date(g.expiresAt).toLocaleDateString()}`
+                            : 'No expiry'}
+                      </Text>
+                    </View>
+                    <View
+                      className={cn(
+                        'px-2 py-0.5 rounded-full mr-2',
+                        active
+                          ? 'bg-green-100 dark:bg-green-900/30'
+                          : 'bg-muted',
+                      )}
+                    >
+                      <Text
+                        className={cn(
+                          'text-[10px] font-medium',
+                          active
+                            ? 'text-green-700 dark:text-green-400'
+                            : 'text-muted-foreground',
+                        )}
+                      >
+                        {active ? 'Active' : 'Expired'}
+                      </Text>
+                    </View>
+                    <ChevronRight size={14} className="text-muted-foreground" />
+                  </Pressable>
+                )
+              })}
+            </View>
+          )}
+        </View>
       </View>
     </ScrollView>
   )
