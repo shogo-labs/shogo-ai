@@ -27,7 +27,7 @@
 
 import { spawn, type ChildProcess } from 'child_process'
 import { join } from 'path'
-import { existsSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { resolveBinInvocation } from '@shogo/shared-runtime'
 import {
   commitBuildOutput,
@@ -41,13 +41,37 @@ const LOG_PREFIX = '[CanvasBuildManager]'
 type BundlerKind = 'vite' | 'expo'
 
 /**
- * Bundler binaries we know how to drive directly. The first one we
- * find under `node_modules/.bin/` decides the build command. Vite is
- * preferred over Expo when both happen to be present (a Vite app with
- * an Expo tooling sidecar, etc.) because the resulting `dist/` is what
- * the runtime serves.
+ * Bundler binaries we know how to drive directly. When `.tech-stack`
+ * doesn't pin a preference (legacy workspaces, unknown ids), the first
+ * one we find under `node_modules/.bin/` decides the build command.
+ * Vite is listed first as the historical default for Vite-and-Expo
+ * hybrids that don't carry a marker.
+ *
+ * Note: `.tech-stack` (when present and known) overrides this scan
+ * order — see `resolveBundler()` and `STACK_TO_BUNDLER`. This is what
+ * fixes the cloud Expo rebuild bug: warm pods always have
+ * `node_modules/.bin/vite` from the pre-seed, so plain scan order
+ * picks Vite forever even after the workspace becomes Expo.
  */
 const KNOWN_BUNDLERS: readonly BundlerKind[] = ['vite', 'expo'] as const
+
+/**
+ * Tech-stack id (as written to `<workspace>/.tech-stack` by
+ * `seedTechStack`) → preferred bundler. Anything not in this map
+ * falls back to `KNOWN_BUNDLERS` scan order, preserving today's
+ * behavior for marker-less or third-party stacks.
+ *
+ * Source of truth for the id list lives in
+ * `packages/agent-runtime/tech-stacks/<id>/stack.json` (`runtime.devServer`).
+ * Keep this map in sync when adding a new first-party stack.
+ */
+const STACK_TO_BUNDLER: Readonly<Record<string, BundlerKind>> = {
+  'react-app': 'vite',
+  'threejs-game': 'vite',
+  'phaser-game': 'vite',
+  'expo-app': 'expo',
+  'expo-three': 'expo',
+}
 
 export interface CanvasBuildCallbacks {
   onBuildComplete: () => void
@@ -144,21 +168,69 @@ export class CanvasBuildManager {
 
   /**
    * Resolve the bundler binary to invoke. Picks the platform-correct
-   * shim (`.CMD` on Windows, no-extension on POSIX) and returns the
-   * first hit from `KNOWN_BUNDLERS`. Returns `null` when no known
-   * bundler is installed.
+   * shim (`.CMD` on Windows, no-extension on POSIX).
+   *
+   * Selection order:
+   *   1. `.tech-stack` marker, when it names a stack we recognize in
+   *      `STACK_TO_BUNDLER`. The corresponding bin must actually exist
+   *      under `node_modules/.bin/`; otherwise we fall through.
+   *   2. Scan `KNOWN_BUNDLERS` in declaration order and return the
+   *      first hit. This is the historical (pre-marker) behavior and
+   *      covers legacy workspaces with no marker, third-party stacks,
+   *      and the agent-runtime's evals.
+   *
+   * Returns `null` when no known bundler is installed.
+   *
+   * Why marker-first: in cloud, warm pods always have
+   * `node_modules/.bin/vite` from the pool pre-seed, so plain scan
+   * order would pick Vite for every Expo workspace forever — see
+   * `__tests__/expo-cloud-rebuild.test.ts` for the regression bar.
    */
   private resolveBundler(): { kind: BundlerKind; bin: string } | null {
     const binDir = join(this.workspaceDir, 'node_modules', '.bin')
     const isWindows = process.platform === 'win32'
-    for (const kind of KNOWN_BUNDLERS) {
+
+    const findBin = (kind: BundlerKind): string | undefined => {
       const candidates = isWindows
         ? [join(binDir, `${kind}.CMD`), join(binDir, `${kind}.cmd`), join(binDir, `${kind}.exe`)]
         : [join(binDir, kind)]
-      const bin = candidates.find((p) => existsSync(p))
+      return candidates.find((p) => existsSync(p))
+    }
+
+    const preferred = this.preferredBundlerFromMarker()
+    if (preferred) {
+      const bin = findBin(preferred)
+      if (bin) return { kind: preferred, bin }
+      // Marker says expo but no expo bin yet (deps still installing).
+      // Falling through to scan order would pick the leftover vite
+      // bin and rebuild dist/ with the wrong bundler — which is the
+      // exact cloud bug. Bail instead so the next debounced rebuild
+      // (after deps land) gets a clean shot.
+      return null
+    }
+
+    for (const kind of KNOWN_BUNDLERS) {
+      const bin = findBin(kind)
       if (bin) return { kind, bin }
     }
     return null
+  }
+
+  /**
+   * Read `<workspace>/.tech-stack` (written by `seedTechStack`) and
+   * map it through `STACK_TO_BUNDLER`. Returns `null` for missing,
+   * unreadable, or unrecognized markers — caller falls back to
+   * `KNOWN_BUNDLERS` scan order in that case.
+   */
+  private preferredBundlerFromMarker(): BundlerKind | null {
+    try {
+      const markerPath = join(this.workspaceDir, '.tech-stack')
+      if (!existsSync(markerPath)) return null
+      const stackId = readFileSync(markerPath, 'utf-8').trim()
+      return STACK_TO_BUNDLER[stackId] ?? null
+    } catch {
+      return null
+    }
   }
 
   /**
