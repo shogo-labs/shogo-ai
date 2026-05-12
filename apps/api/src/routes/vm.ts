@@ -33,7 +33,7 @@ interface DesktopConfig {
 
 const DEFAULT_VM_CONFIG: VMIsolationConfig = {
   enabled: 'auto',
-  memoryMB: 1536,
+  memoryMB: 4096,
   cpus: 0,
   mountWorkspace: true,
 }

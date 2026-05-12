@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import type { ReactNode } from 'react'
+import { memo, type ReactNode } from 'react'
 import { View, Text, Pressable, ActivityIndicator, Platform } from 'react-native'
 import { Zap, ChevronRight, Sparkles } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -1059,7 +1059,7 @@ function AgentTemplatePreview({
   }
 }
 
-export function AgentTemplateGalleryCard({
+export const AgentTemplateGalleryCard = memo(function AgentTemplateGalleryCard({
   template,
   isLoading,
   onPress,
@@ -1153,4 +1153,4 @@ export function AgentTemplateGalleryCard({
       )}
     </Pressable>
   )
-}
+})

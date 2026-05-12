@@ -55,6 +55,15 @@ function main() {
 
   if (fs.existsSync(outputPath)) {
     console.log(`Bun binary already exists at ${outputPath}`)
+    // Still ensure the bunx symlink exists for existing downloads — earlier
+    // builds of this script didn't create it.
+    if (!isWindows) {
+      const outputBunx = path.join(outputDir, 'bunx')
+      if (!fs.existsSync(outputBunx)) {
+        fs.symlinkSync('bun', outputBunx)
+        console.log(`Bunx symlink created at ${outputBunx} -> bun`)
+      }
+    }
     return
   }
 
@@ -107,6 +116,20 @@ function main() {
   // Make executable on unix
   if (!isWindows) {
     fs.chmodSync(outputPath, 0o755)
+  }
+
+  // On macOS/Linux, the bun release zip ships only the `bun` binary — bun
+  // self-detects argv[0] and behaves as `bunx` when invoked under that name,
+  // so the official installer creates a `bunx -> bun` symlink. Replicate
+  // that here. Without it, project preview scripts that say `bunx prisma`
+  // / `bunx shogo generate` crash inside the desktop API server with
+  // `/bin/bash: bunx: command not found`, which cascades into preview-manager
+  // restart loops (see shogo-ai/main.log: `bun run generate failed (exit=127)`).
+  if (!isWindows) {
+    const outputBunx = path.join(outputDir, 'bunx')
+    try { fs.rmSync(outputBunx, { force: true }) } catch {}
+    fs.symlinkSync('bun', outputBunx)
+    console.log(`Bunx symlink created at ${outputBunx} -> bun`)
   }
 
   // Clean up zip

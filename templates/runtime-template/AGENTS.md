@@ -45,6 +45,99 @@ You explain what you're about to do, then do it. You prefer showing over telling
 3. Scheduled checks — run on heartbeat cadence
 4. Proactive suggestions — offer when relevant context is available
 
+## Installed Integrations
+
+When the user has installed an integration via the agent's tool panel (e.g.
+Jira, Slack, Gmail, Google Calendar, Meta Ads), consume it from the app via
+`@shogo-ai/sdk/tools` — never hand-roll HTTP fetches.
+
+Tool names are uppercase and namespaced by integration (e.g.
+`JIRA_SEARCH_ISSUES`, `GMAIL_SEND_EMAIL`); they appear in the
+`tool_install` result and via `useTools().tools`.
+
+### Dashboards / list views / "my X" pages → server-side, always
+
+Put the work in `custom-routes.ts` with `getServerToolsClient()` and have
+the browser fetch your route. This keeps identity resolved per request,
+the provider wire format out of the React tree, and pagination /
+composition / caching in one place.
+
+The SDK auto-parses tool result `data` for you (the runtime always
+JSON.stringifies tool responses; `@shogo-ai/sdk/tools` >= 1.3 parses
+them back into objects on success). Index it like a plain object —
+`me.data?.accountId` works. Pass a generic to `execute<T>()` for typed
+access. For tools that return raw text (markdown, prose), `data` stays
+as the original string.
+
+```ts
+// custom-routes.ts
+import { getServerToolsClient } from '@shogo-ai/sdk/tools'
+
+app.get('/jira/my-issues', async (c) => {
+  const tools = getServerToolsClient()
+  const me = await tools.execute<{ accountId: string }>('JIRA_GET_CURRENT_USER', {})
+  if (!me.ok || !me.data?.accountId) {
+    return c.json({ error: me.error ?? 'not authenticated' }, 401)
+  }
+  const issues = await tools.execute<{ issues: unknown[] }>('JIRA_SEARCH_ISSUES', {
+    jql: `assignee = "${me.data.accountId}" AND statusCategory != Done`,
+  })
+  if (!issues.ok) return c.json({ error: issues.error ?? 'search failed' }, 502)
+  return c.json({ issues: issues.data?.issues ?? [] })
+})
+```
+
+```tsx
+// src/components/MyIssues.tsx — surface the server's actual error to the UI
+const res = await fetch('/api/jira/my-issues')
+const body = await res.json().catch(() => ({}))
+if (!res.ok) {
+  setError(body.error ?? `HTTP ${res.status}`)
+  return
+}
+setIssues(body.issues ?? [])
+```
+
+After writing or editing a route, hit it with `curl` to confirm the
+shape and status — a green build proves the file compiled, not that
+the endpoint works:
+
+```sh
+curl -s -w "\nHTTP %{http_code}\n" http://localhost:$RUNTIME_PORT/api/jira/my-issues
+```
+
+### Ad-hoc interactive actions → `useTools()`
+
+For one-off actions tied to user input (a Send button, a Create form
+submit, a single lookup): call `useTools()` directly in the component.
+No aggregation, no persistent display.
+
+```tsx
+import { useTools } from '@shogo-ai/sdk/tools'
+const { execute } = useTools()
+async function onSend() {
+  await execute('GMAIL_SEND_EMAIL', { to, subject, body })
+}
+```
+
+### Rules
+
+- NEVER read provider tokens from env (no `process.env.*_API_TOKEN`,
+  no `c.env.*_API_KEY`). Managed integrations are authed by the
+  runtime — there is no provider env var to read, and inventing one
+  guarantees a 500 at request time.
+- NEVER call provider REST APIs directly from pod code. Use
+  `execute(name, args)` from the SDK.
+- NEVER hardcode the agent operator's identity (your accountId, member
+  id, userId) into route or component code. Resolve it per request
+  inside the route via `<TOOLKIT>_GET_CURRENT_USER`.
+- NEVER throw `new Error('Failed to load X')` from a client `fetch()`
+  handler. Read the JSON body's `error` field (or fall back to
+  `HTTP <status>`) and surface that to the UI. Generic messages strand
+  the user with no debugging path.
+- Do NOT write a `JSON.parse(result.data)` helper — the SDK already
+  parses on success. Double-parsing breaks the call silently.
+
 # Shogo Voice Conventions
 
 ## When to use voice

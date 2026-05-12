@@ -26,10 +26,18 @@ export interface MeetingConfig {
   useCloudTranscription: boolean
 }
 
+export interface BugReportConfig {
+  discordWebhookUrl?: string
+  githubRepo?: string
+  githubToken?: string
+  maxLogLines?: number
+}
+
 export interface DesktopConfig {
   mode: 'local' | 'cloud'
   vmIsolation: VMIsolationConfig
   meetings: MeetingConfig
+  bugReport?: BugReportConfig
   /** Stable per-machine identifier. Generated on first launch and used so
    * Shogo Cloud can dedupe device-session API keys when the same desktop
    * install signs in multiple times. Treated as non-secret metadata — the
@@ -54,7 +62,7 @@ export function getCloudUrl(): string {
 
 const DEFAULT_VM_CONFIG: VMIsolationConfig = {
   enabled: 'auto',
-  memoryMB: 1536,
+  memoryMB: 4096,
   cpus: 0,  // 0 = auto (half physical cores)
   mountWorkspace: true,
 }
@@ -108,6 +116,9 @@ export function readConfig(): DesktopConfig {
         ? parsed.meetings
         : {}),
     },
+    bugReport: typeof parsed.bugReport === 'object' && parsed.bugReport !== null
+      ? parsed.bugReport
+      : undefined,
     deviceId: existingDeviceId || generateDeviceId(),
   }
 

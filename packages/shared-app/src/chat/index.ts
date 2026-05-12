@@ -12,6 +12,7 @@ export {
 export {
   useChatTransportConfig,
   buildChatApiUrl,
+  buildChatTurnUrl,
   type ChatTransportOptions,
   type ChatTransportConfig,
 } from './useChatTransport'

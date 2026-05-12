@@ -8,7 +8,7 @@
  * Expands to show full args and result.
  */
 
-import { useState, useMemo, useCallback } from "react"
+import { useState, useMemo, useCallback, memo, Fragment } from "react"
 import { View, Text, Pressable, ScrollView, Image } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { CheckCircle2, XCircle, Loader2, AlertTriangle, ChevronRight } from "lucide-react-native"
@@ -17,6 +17,7 @@ import {
   formatToolName,
   getToolKeyArg,
 } from "../tools/types"
+import { getToolSummary, sepLabel } from "../tools/summary"
 import { useChatContextSafe } from "../ChatContext"
 
 const MD_IMAGE_RE = /\[([^\]]*)\]\(([^)]+\.(png|jpg|jpeg|gif|webp))\)/gi
@@ -38,18 +39,69 @@ function detectAuthError(tool: ToolCallData): boolean {
   return AUTH_ERROR_PATTERNS.some(p => combined.includes(p))
 }
 
+export type InlineToolVariant = "boxed" | "minimal"
+
 export interface InlineToolWidgetProps {
   tool: ToolCallData
   isExpanded?: boolean
   onToggle?: () => void
   className?: string
+  /**
+   * `boxed` (default) keeps the bordered/muted card chrome used by MCP /
+   * Skill / unknown tools. `minimal` strips the chrome down to plain
+   * clickable text and renders a human-readable verb/target via
+   * `getToolSummary` — used for the allow-list of "low-information"
+   * tools (read_file, read_lints, Grep, etc.).
+   */
+  variant?: InlineToolVariant
 }
 
-export function InlineToolWidget({
+function stableStringify(val: unknown): string {
+  if (val === null || val === undefined) return ""
+  if (typeof val === "string") return val
+  try { return JSON.stringify(val) } catch { return "" }
+}
+
+// Memo equality: `extractOrderedParts` rebuilds the outer `tool` wrapper
+// on every streaming-throttle tick (~20Hz), so plain shallow memo never
+// bails. Cheap primitive checks first; for terminal-state tools we skip
+// the deep compare entirely (their args/result can't change after the
+// AI SDK marks them complete). Only streaming tools fall through to the
+// JSON.stringify content compare. This is what stops the spinning
+// `exec_wait` (and every other inline tool) from re-rendering per token.
+function inlineToolPropsEqual(
+  prev: InlineToolWidgetProps,
+  next: InlineToolWidgetProps,
+) {
+  if (
+    prev.isExpanded !== next.isExpanded ||
+    prev.onToggle !== next.onToggle ||
+    prev.className !== next.className ||
+    prev.variant !== next.variant
+  ) {
+    return false
+  }
+  if (prev.tool.state !== next.tool.state) return false
+  if (prev.tool.error !== next.tool.error) return false
+  if (prev.tool.toolName !== next.tool.toolName) return false
+  if (
+    prev.tool.id === next.tool.id &&
+    next.tool.state !== "streaming"
+  ) {
+    return true
+  }
+  return (
+    stableStringify(prev.tool.args) === stableStringify(next.tool.args) &&
+    stableStringify(prev.tool.result) === stableStringify(next.tool.result)
+  )
+}
+
+function InlineToolWidgetImpl({
   tool,
   isExpanded: controlledExpanded,
   onToggle,
   className,
+  variant = "boxed",
 }: InlineToolWidgetProps) {
   const [internalExpanded, setInternalExpanded] = useState(false)
   const isExpanded = controlledExpanded ?? internalExpanded
@@ -63,8 +115,10 @@ export function InlineToolWidget({
   }
 
   const chatContext = useChatContextSafe()
-  const displayName = formatToolName(tool.toolName)
-  const keyArg = getToolKeyArg(tool.toolName, tool.args)
+  const isMinimal = variant === "minimal"
+  const summary = isMinimal ? getToolSummary(tool.toolName, tool.args) : null
+  const displayName = isMinimal ? summary!.verb : formatToolName(tool.toolName)
+  const keyArg = isMinimal ? summary!.target ?? null : getToolKeyArg(tool.toolName, tool.args)
   const isAuthErr = detectAuthError(tool)
   const [failedImages, setFailedImages] = useState<Set<string>>(new Set())
 
@@ -134,36 +188,77 @@ export function InlineToolWidget({
     return formatJson(tool.result)
   }
 
+  // Hide the leading status icon for healthy success rows on minimal so
+  // the row is "just text" by default; streaming/error still show their
+  // icon since they carry useful signal.
+  const hideStatusIcon = isMinimal && tool.state === "success" && !isAuthErr
+
   return (
-    <View className={cn("overflow-hidden rounded-lg border border-border/60 bg-muted/50 dark:bg-muted/30", className)}>
+    <View
+      className={cn(
+        "overflow-hidden",
+        isMinimal
+          ? null
+          : "rounded-lg border border-border/60 bg-muted/50 dark:bg-muted/30",
+        className,
+      )}
+    >
       <Pressable
         onPress={handleToggle}
-        className="group w-full flex-row items-center gap-2 px-1 py-1"
+        className={cn(
+          "group w-full flex-row items-center gap-2",
+          isMinimal ? "py-0.5 rounded hover:bg-muted/40" : "py-1",
+        )}
       >
-        <View className="group-hover:hidden">
-          <StateIcon
-            className={cn(
-              "w-3 h-3",
-              tool.state === "streaming" && "text-muted-foreground/60 animate-spin",
-              tool.state === "success" && "text-muted-foreground/60",
-              tool.state === "error" && (isAuthErr ? "text-orange-500" : "text-red-500"),
-            )}
-          />
-        </View>
-        <View className="hidden group-hover:flex">
-          <ChevronRight className="w-3 h-3 text-muted-foreground" />
-        </View>
+        {hideStatusIcon ? (
+          <View className="hidden group-hover:flex">
+            <ChevronRight className="w-3 h-3 text-muted-foreground" />
+          </View>
+        ) : (
+          <>
+            <View className="group-hover:hidden">
+              <StateIcon
+                className={cn(
+                  "w-3 h-3",
+                  tool.state === "streaming" && "text-muted-foreground/60 animate-spin",
+                  tool.state === "success" && "text-muted-foreground/60",
+                  tool.state === "error" && (isAuthErr ? "text-orange-500" : "text-red-500"),
+                )}
+              />
+            </View>
+            <View className="hidden group-hover:flex">
+              <ChevronRight className="w-3 h-3 text-muted-foreground" />
+            </View>
+          </>
+        )}
 
         <Text className="flex-1 text-[11px] text-muted-foreground" numberOfLines={1}>
           <Text className="font-medium text-muted-foreground">{displayName}</Text>
           {keyArg ? (
-            <Text className="text-muted-foreground/50"> {keyArg}</Text>
+            <Text className={isMinimal ? "text-foreground" : "text-muted-foreground/50"}>
+              {" "}
+              {keyArg}
+            </Text>
           ) : null}
+          {isMinimal && summary?.rest?.map((s, i) => (
+            <Fragment key={i}>
+              <Text className="text-muted-foreground/60">{` ${sepLabel(s.sep)} `}</Text>
+              <Text className="font-medium text-muted-foreground">{s.verb}</Text>
+              {s.target ? <Text className="text-foreground"> {s.target}</Text> : null}
+            </Fragment>
+          ))}
         </Text>
       </Pressable>
 
       {isExpanded && (
-        <View className="border-t border-border/60 px-2 py-2 gap-1.5">
+        <View
+          className={cn(
+            "py-2 gap-1.5",
+            isMinimal
+              ? "border-l border-border/40 ml-2 pl-2"
+              : "border-t border-border/60 px-2",
+          )}
+        >
           {tool.args && Object.keys(tool.args).length > 0 && (
             <View className="gap-0.5">
               <Text className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
@@ -245,5 +340,7 @@ export function InlineToolWidget({
     </View>
   )
 }
+
+export const InlineToolWidget = memo(InlineToolWidgetImpl, inlineToolPropsEqual)
 
 export default InlineToolWidget

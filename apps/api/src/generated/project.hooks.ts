@@ -9,6 +9,7 @@
 import { getAgentTemplateById } from '../../../../packages/agent-runtime/src/agent-templates'
 import * as billingService from '../services/billing.service'
 import { getModelTier } from '../../../../packages/model-catalog/src/helpers'
+import { getRuntimeManager } from '../lib/runtime/manager'
 
 /**
  * Result from a hook that can modify or reject the operation
@@ -409,6 +410,32 @@ export const projectHooks: ProjectHooks = {
     return {
       ok: false,
       error: { code: "forbidden", message: "Only admins and owners can delete projects" },
+    }
+  },
+
+  /**
+   * Tear down any live runtime for the project as soon as it's deleted.
+   * Without this, the warm-pool VM (or host RuntimeManager runtime) stays
+   * resident until the next idle-eviction sweep, which on the desktop has
+   * been observed to leak 49 GB+ of QEMU memory across orphaned projects.
+   * Best-effort: lazily import the VM pool so cloud (Knative) deployments
+   * don't pay for the dependency.
+   */
+  afterDelete: async (id) => {
+    try {
+      await getRuntimeManager().stop(id).catch(() => {})
+    } catch {
+      // RuntimeManager not initialized (cloud mode) — nothing to clean up.
+    }
+    try {
+      const mod = await import('../lib/vm-warm-pool-controller')
+      try {
+        mod.getVMWarmPoolController().evictProject(id)
+      } catch {
+        // VM pool not initialized (host mode / cloud) — nothing to evict.
+      }
+    } catch {
+      // Module not available in this build.
     }
   },
 }

@@ -115,6 +115,20 @@ jobs:
           unzip bun.zip
           mv ${{ matrix.bun-target }}/bun* . || true
           rm -rf ${{ matrix.bun-target }} bun.zip
+          # Bun's macOS/Linux zip ships only `bun`; `bunx` is conventionally a
+          # hardlink/symlink to the same binary (Bun reads argv[0] to decide
+          # its mode). Without this, every `bunx shogo generate` inside a
+          # project workspace fails with `bunx: command not found`
+          # (PreviewManager invokes scripts through /bin/sh, which has no
+          # built-in `bun x` alias). This breaks prisma generate →
+          # server.tsx crashes on first project open. electron-packager
+          # preserves hardlinks as independent files, so this survives
+          # `.app` packaging cleanly. We do not exec the binary here:
+          # macos-14 runners are arm64 and cannot run the bun-darwin-x64
+          # binary natively, so a `--version` self-check would SIGILL
+          # (exit 132) on the x64 matrix leg.
+          ln bun bunx
+          chmod +x bun bunx
           ls -la
 
       - name: Bundle QEMU for VM isolation

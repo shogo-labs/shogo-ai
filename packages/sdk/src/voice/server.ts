@@ -26,6 +26,15 @@
  * app.delete('/voice/agent',     (c) => voice.agent.delete(c.req.raw))
  * app.get('/voice/audio-tags',   (c) => voice.audioTags(c.req.raw))
  * ```
+ *
+ * Drop-in route handlers
+ * ----------------------
+ * For Web-Standard routers that dispatch by HTTP method export
+ * (Expo Router `+api.ts`, Next.js App Router `route.ts`, Cloudflare
+ * Workers, Bun.serve), use the `@shogo-ai/sdk/voice/route/*`
+ * sub-modules instead — they re-export pre-instantiated `GET`/
+ * `POST`/`PATCH`/`DELETE` so each route file is a one-line
+ * re-export. See {@link ./route/index.ts}.
  */
 
 import {
@@ -227,15 +236,47 @@ function createProxyHandlers(
   }
   const apiBase = proxy.apiUrl.replace(/\/+$/, '')
 
-  function proxyUrl(path: string): string {
+  /**
+   * Build an upstream URL with the project id pinned by the runtime
+   * token plus a conservative allowlist of forwardable client query
+   * params. We deliberately do NOT pass through arbitrary query
+   * strings — the runtime token is project-scoped, and forwarding
+   * unknown params risks privilege confusion if the upstream API
+   * grows new auth-relevant flags.
+   */
+  function proxyUrl(path: string, forward: Record<string, string | null>): string {
+    const tail: string[] = [`projectId=${encodeURIComponent(proxy.projectId)}`]
+    for (const [k, v] of Object.entries(forward)) {
+      if (typeof v === 'string' && v.length > 0) {
+        tail.push(`${k}=${encodeURIComponent(v)}`)
+      }
+    }
     const sep = path.includes('?') ? '&' : '?'
-    return `${apiBase}${path}${sep}projectId=${encodeURIComponent(proxy.projectId)}`
+    return `${apiBase}${path}${sep}${tail.join('&')}`
   }
+
+  /** Allowlist of query params forwarded from the incoming request. */
+  const FORWARDED_SIGNED_URL_PARAMS = ['agentName'] as const
 
   async function doSignedUrl(req: Request): Promise<Response> {
     if (req.method !== 'GET') return json({ error: 'Method Not Allowed' }, 405)
     try {
-      const upstream = await fetchImpl(proxyUrl('/api/voice/signed-url'), {
+      let incomingUrl: URL | null = null
+      try {
+        incomingUrl = new URL(req.url)
+      } catch {
+        // Some test transports pass non-absolute URLs; fall back to no
+        // forwarded params. The upstream API will resolve the project's
+        // default agent.
+      }
+      const forward: Record<string, string | null> = {}
+      if (incomingUrl) {
+        for (const key of FORWARDED_SIGNED_URL_PARAMS) {
+          const v = incomingUrl.searchParams.get(key)
+          if (v != null) forward[key] = v
+        }
+      }
+      const upstream = await fetchImpl(proxyUrl('/api/voice/signed-url', forward), {
         method: 'GET',
         headers: { 'x-runtime-token': proxy.runtimeToken },
         credentials: 'omit',

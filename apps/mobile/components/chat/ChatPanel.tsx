@@ -56,10 +56,11 @@ import {
   getToolCategory,
   ERROR_CODE_MESSAGES,
 } from "@shogo/shared-app/chat"
-import { useChatTransportConfig } from "@shogo/shared-app/chat"
+import { useChatTransportConfig, buildChatTurnUrl } from "@shogo/shared-app/chat"
 import { useSDKDomains, useDomainActions, useChatMessageCollectionForSession } from "@shogo/shared-app/domain"
 import { decideMessagesPropagation } from "./messages-propagation"
 import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
+import { probeChatTurnStatus, shouldAttachLiveStream } from "./probe-turn-status"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
 
@@ -89,7 +90,17 @@ import { invalidateProjectFiles } from "../../hooks/useProjectFiles"
 import { ExecutionBadge } from "./ExecutionBadge"
 import { ExpandTab } from "./ExpandTab"
 import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
-import { ChatContextProvider, type ChatContextValue } from "./ChatContext"
+import {
+  ChatContextProvider,
+  type ChatContextValue,
+  type ChatMessage,
+} from "./ChatContext"
+
+// Stable empty array we hand to the chat context's `messages` field.
+// See the long comment near `contextValue` below — we intentionally do
+// not plumb the live message list through context, so this constant
+// satisfies the type without flipping per token.
+const EMPTY_CONTEXT_MESSAGES: ChatMessage[] = []
 import { TurnList } from "./turns"
 import { PhaseEmptyState } from "./empty"
 import {
@@ -104,7 +115,7 @@ import {
 import { subagentStreamStore } from "../../lib/subagent-stream-store"
 import { teamStore } from "../../lib/team-store"
 import * as ExpoLinking from "expo-linking"
-import { AlertCircle, RefreshCw, X } from "lucide-react-native"
+import { AlertCircle, RefreshCw, X, ChevronDown } from "lucide-react-native"
 import { type PlanData } from "./PlanCard"
 import { usePlanStreamSafe } from "./PlanStreamContext"
 import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from "@shogo/ui-kit/platform"
@@ -776,12 +787,37 @@ export const ChatPanel = observer(function ChatPanel({
   const prevDisplayLengthRef = useRef(0)
   /** Web only: debounce timer for near-top load-older (see LOAD_OLDER_WEB_DEBOUNCE_MS). */
   const loadOlderWebDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /**
+   * Timestamp (ms) until which any onScroll events should be treated as
+   * programmatic and NOT used to flip follow state. Our own scrollToEnd /
+   * scrollTo calls fire onScroll on web; without this guard, streaming-token
+   * auto-scrolls silently re-engage follow after the user scrolled away.
+   */
+  const programmaticScrollUntilRef = useRef(0)
   const MESSAGE_PAGE_SIZE = 10
   const isNative = Platform.OS !== "web"
-  const STICK_BOTTOM_PX = 16
+  /** Native re-engage threshold: distance from bottom (px) on drag/momentum end
+   * within which we treat the user as having returned to the bottom and resume
+   * follow. 40px is forgiving enough that a soft release after a peek-up does
+   * not snap follow back on against the user's intent. */
+  const STICK_BOTTOM_PX = 40
   const pendingScrollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastScrollTimeRef = useRef(0)
   const SCROLL_THROTTLE_MS = 300
+  /** Duration of the programmatic-scroll guard window (ms). Must comfortably
+   * exceed the time between a scrollTo* call and the resulting onScroll event. */
+  const PROGRAMMATIC_SCROLL_GUARD_MS = 250
+
+  /**
+   * Mark the next ~250ms of onScroll events as programmatic so handlers ignore
+   * them. Call this immediately before any of our own scrollTo/scrollToEnd. */
+  const markProgrammaticScroll = useCallback(() => {
+    programmaticScrollUntilRef.current = Date.now() + PROGRAMMATIC_SCROLL_GUARD_MS
+  }, [])
+
+  /** Mirrors stick/at-bottom into React so we can show the "Jump to latest"
+   * pill. Source of truth for streaming follow remains the refs above. */
+  const [isFollowing, setIsFollowing] = useState(true)
 
   const shouldFollowBottom = useCallback(
     () => (isNative ? stickToBottomRef.current : isUserAtBottomRef.current),
@@ -791,26 +827,29 @@ export const ChatPanel = observer(function ChatPanel({
   const scrollToBottomIfFollowing = useCallback(
     (animated = false) => {
       if (shouldFollowBottom()) {
+        markProgrammaticScroll()
         scrollViewRef.current?.scrollToEnd({ animated })
       }
     },
-    [shouldFollowBottom]
+    [shouldFollowBottom, markProgrammaticScroll]
   )
 
   const throttledScrollToEnd = useCallback(() => {
     const now = Date.now()
     const elapsed = now - lastScrollTimeRef.current
     if (elapsed >= SCROLL_THROTTLE_MS) {
+      markProgrammaticScroll()
       scrollViewRef.current?.scrollToEnd({ animated: true })
       lastScrollTimeRef.current = now
     } else if (!pendingScrollRef.current) {
       pendingScrollRef.current = setTimeout(() => {
+        markProgrammaticScroll()
         scrollViewRef.current?.scrollToEnd({ animated: true })
         lastScrollTimeRef.current = Date.now()
         pendingScrollRef.current = null
       }, SCROLL_THROTTLE_MS - elapsed)
     }
-  }, [])
+  }, [markProgrammaticScroll])
 
   const syncStickFromNativeEvent = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -818,10 +857,22 @@ export const ChatPanel = observer(function ChatPanel({
       const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
       const fromBottom =
         contentSize.height - contentOffset.y - layoutMeasurement.height
-      stickToBottomRef.current = fromBottom <= STICK_BOTTOM_PX
+      const atBottom = fromBottom <= STICK_BOTTOM_PX
+      stickToBottomRef.current = atBottom
+      setIsFollowing(atBottom)
     },
     [isNative]
   )
+
+  /** Re-engage follow and snap to the latest message. Used by the
+   * "Jump to latest" pill. */
+  const jumpToLatest = useCallback(() => {
+    isUserAtBottomRef.current = true
+    stickToBottomRef.current = true
+    setIsFollowing(true)
+    markProgrammaticScroll()
+    scrollViewRef.current?.scrollToEnd({ animated: true })
+  }, [markProgrammaticScroll])
 
   useEffect(() => {
     const sub = Keyboard.addListener("keyboardDidShow", () => {
@@ -835,6 +886,51 @@ export const ChatPanel = observer(function ChatPanel({
       if (pendingScrollRef.current) clearTimeout(pendingScrollRef.current)
       if (loadOlderWebDebounceRef.current) clearTimeout(loadOlderWebDebounceRef.current)
       if (contextUsageTimerRef.current) clearTimeout(contextUsageTimerRef.current)
+    }
+  }, [])
+
+  /**
+   * Web only: any user-initiated scroll input immediately disengages follow,
+   * independent of distance from the bottom. Without this, the onScroll-only
+   * heuristic requires the user to scroll up >100px between streaming chunks
+   * to escape auto-scroll, which feels like fighting the chat. Wheel, touch,
+   * and keyboard navigation all count as intent to leave the bottom.
+   */
+  useEffect(() => {
+    if (Platform.OS !== "web") return
+    const node: any =
+      (scrollViewRef.current as any)?.getScrollableNode?.() ??
+      (scrollViewRef.current as any)
+    if (!node || typeof node.addEventListener !== "function") return
+
+    const disengage = () => {
+      isUserAtBottomRef.current = false
+      setIsFollowing(false)
+    }
+
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) disengage()
+    }
+    const onTouchStart = () => {
+      disengage()
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.key === "ArrowUp" ||
+        e.key === "PageUp" ||
+        e.key === "Home"
+      ) {
+        disengage()
+      }
+    }
+
+    node.addEventListener("wheel", onWheel, { passive: true })
+    node.addEventListener("touchstart", onTouchStart, { passive: true })
+    node.addEventListener("keydown", onKeyDown)
+    return () => {
+      node.removeEventListener("wheel", onWheel)
+      node.removeEventListener("touchstart", onTouchStart)
+      node.removeEventListener("keydown", onKeyDown)
     }
   }, [])
 
@@ -958,28 +1054,20 @@ export const ChatPanel = observer(function ChatPanel({
   // flip to 0 because another session's `loadPage` clobbered the singleton.
   const sessionMessages = useChatMessageCollectionForSession(currentSessionId)
 
-  // Fix D small win: memoize the sorted persisted messages so we don't create
-  // a new array on every ChatPanel render. Without this, any consumer that
-  // depends on the array identity (Effect 2 etc.) would see a fresh ref every
-  // render even when the underlying MobX collection didn't change.
-  // Keyed on length since MobX's observable array triggers re-read on mutation.
-  const persistedMessagesFromMobX = useMemo(
-    () =>
-      sessionMessages
-        ? [...sessionMessages.all].sort(
-            (a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0),
-          )
-        : [],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sessionMessages, sessionMessages?.all.length],
-  )
-
   // Loading state for Effect 1. Kept as *both* a ref (for synchronous reads
   // elsewhere) AND state (so changes to it can retrigger Effect 1 via deps,
   // which is what unsticks the "skip: already loading" wedge when a prior
   // fetch was stalled behind a streaming SSE request).
   const [isLoadingMessages, setIsLoadingMessages] = useState(false)
   const isLoadingMessagesRef = useRef(false)
+  // Monotonic counter bumped on every Effect 1 run. The async .then() /
+  // .finally() callbacks compare their captured generation against the
+  // current value to detect a session switch (or any other re-run) that
+  // happened mid-load and skip writing to stale state. This is what stops
+  // the post-loadPage `resumeStream()` probe from attaching to the wrong
+  // chat session if the user tab-switches while the history fetch is in
+  // flight.
+  const loadGenerationRef = useRef(0)
   // Per-session timestamp of the last successful (or attempted) refetch.
   // Used to skip redundant fetches on rapid Effect 1 re-runs — otherwise the
   // promote-ref-to-state change would drive an infinite refetch loop.
@@ -1075,11 +1163,33 @@ export const ChatPanel = observer(function ChatPanel({
     [transportConfig]
   )
 
-  // AI SDK useChat hook
-  const { messages, sendMessage, addToolOutput, status, error, setMessages, stop } = useChat({
+  // AI SDK useChat hook.
+  //
+  // `resume` is intentionally `false`: we do NOT want the AI SDK firing
+  // `resumeStream()` automatically on every mount keyed off
+  // `isInitialLoadComplete`. That used to race the /chat-messages history
+  // loader (two writers to `messages`) and produced the "I see the same
+  // message twice" bug, plus the orphan
+  // `[AgentChat] Stream reconnect ... snapshot=none` server log spam on
+  // every refresh of an already-completed chat.
+  //
+  // Instead, after the history fetch completes (Effect 1's `.then()`) we
+  // probe the runtime's read-only `/turn` snapshot and ONLY call
+  // `resumeStream()` when there is genuinely a live, in-progress turn to
+  // attach to. See `probe-turn-status.ts` for the gate.
+  const {
+    messages,
+    sendMessage,
+    addToolOutput,
+    status,
+    error,
+    setMessages,
+    stop,
+    resumeStream,
+  } = useChat({
     transport: chatTransport,
     id: currentSessionId || undefined,
-    resume: isInitialLoadComplete,
+    resume: false,
     experimental_throttle: 120,
     onError: (err) => {
       console.error("[ChatPanel] Stream error:", err)
@@ -2470,9 +2580,16 @@ export const ChatPanel = observer(function ChatPanel({
     // re-run would refetch /chat-messages and the resulting isInitialLoadComplete
     // false→true flip would re-fire useChat's resumeStream → /stream — exactly
     // the ~700ms /stream + /chat-messages spam users saw on a fresh chat.
-    const refreshedAt = cacheRefreshedAtRef.current.get(currentSessionId) ?? 0
-    const cacheAgeMs = performance.now() - refreshedAt
-    if (cacheAgeMs < 5000) {
+    //
+    // Equally critical: distinguish "no stamp at all" from "stamp at t=0".
+    // `?? 0` collapses both into 0, which makes the bailout fire for the first
+    // 5s after page navigation (when `performance.now() < 5000`) on every
+    // hard refresh — setting isInitialLoadComplete=true (firing useChat's
+    // resumeStream → orphan `[AgentChat] Stream reconnect ... snapshot=none`)
+    // but never calling loadPage, leaving the chat blank.
+    // See chat-load-decision.test.ts for the regression repro.
+    const refreshedAt = cacheRefreshedAtRef.current.get(currentSessionId)
+    if (refreshedAt !== undefined && performance.now() - refreshedAt < 5000) {
       if (hasCached && messagesRef.current !== cachedMessagesRef.current) {
         setMessages(cachedMessagesRef.current!)
       }
@@ -2498,12 +2615,19 @@ export const ChatPanel = observer(function ChatPanel({
       return
     }
 
+    // Generation token: lets the async .then()/.finally() callbacks below
+    // detect that a session switch / tab close happened mid-load and bail
+    // without writing to stale state. Bumped on every Effect 1 run.
+    const myGeneration = ++loadGenerationRef.current
+    const loadSessionId = currentSessionId
+
     sessionMessages
       .loadPage(
         { sessionId: currentSessionId, agent: 'technical' },
         { limit: MESSAGE_PAGE_SIZE, offset: 0 },
       )
       .then((_result: any) => {
+        if (myGeneration !== loadGenerationRef.current) return
         if (isStreamingRef.current || isSendingMessageRef.current) return
 
         const loaded = [...sessionMessages.all].sort(
@@ -2536,12 +2660,12 @@ export const ChatPanel = observer(function ChatPanel({
 
         if (changed) {
           cachedMessagesRef.current = aiMessages
-          sessionMessageCache.set(currentSessionId, aiMessages)
+          sessionMessageCache.set(loadSessionId, aiMessages)
           setMessages(aiMessages)
         } else {
           // Same shape as cache — still refresh the module cache entry so any
           // later in-flight mutations (status flips, etc.) don't drift.
-          sessionMessageCache.set(currentSessionId, aiMessages)
+          sessionMessageCache.set(loadSessionId, aiMessages)
         }
       })
       .catch((err: any) => console.error("[ChatPanel] Failed to load messages:", err))
@@ -2551,13 +2675,45 @@ export const ChatPanel = observer(function ChatPanel({
         // skip the stamp via the `loaded.length === 0` early return above and
         // then loop: Effect 1 re-runs on the isLoadingMessages flip, the
         // `cacheAgeMs < 5000` bailout misses, a new fetch starts, and the
-        // resulting isInitialLoadComplete flip fires `useChat`'s resumeStream
-        // every cycle (visible as `[AgentChat] Stream reconnect ... snapshot=none`
-        // spam plus a flickering "Loading conversation..." indicator).
-        cacheRefreshedAtRef.current.set(currentSessionId, performance.now())
-        isLoadingMessagesRef.current = false
-        setIsLoadingMessages(false)
-        setIsInitialLoadComplete(true)
+        // resulting isInitialLoadComplete flip used to fire `useChat`'s
+        // resumeStream every cycle (visible as
+        // `[AgentChat] Stream reconnect ... snapshot=none` spam plus a
+        // flickering "Loading conversation..." indicator). Now that
+        // `useChat({ resume: false })` no longer auto-attaches we still
+        // need the stamp for the dedup-the-fetch reason.
+        cacheRefreshedAtRef.current.set(loadSessionId, performance.now())
+        if (myGeneration === loadGenerationRef.current) {
+          isLoadingMessagesRef.current = false
+          setIsLoadingMessages(false)
+          setIsInitialLoadComplete(true)
+        }
+
+        // Now that the history is in place, ask the runtime if there's a
+        // genuinely live, in-progress turn to attach to. The probe is
+        // robust (every failure mode → 'unknown' → no attach) so this
+        // block is fire-and-forget. Critical: only run for the live
+        // generation — otherwise a tab switch mid-load would attach to
+        // a stale session's stream and corrupt the active panel's
+        // message list (the original "I see the same message twice"
+        // shape, just from a different angle).
+        if (myGeneration !== loadGenerationRef.current) return
+        const turnUrl = buildChatTurnUrl(
+          API_URL!,
+          projectId,
+          localAgentUrl,
+          loadSessionId,
+        )
+        void probeChatTurnStatus({
+          url: turnUrl,
+          fetch: expoFetch,
+          headers: nativeHeaders ? nativeHeaders() : undefined,
+          credentials: Platform.OS === 'web' ? 'include' : undefined,
+        }).then((turnStatus) => {
+          if (myGeneration !== loadGenerationRef.current) return
+          if (shouldAttachLiveStream(turnStatus)) {
+            void resumeStream()
+          }
+        })
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isActive, currentSessionId, sessionMessages, setMessages, isLoadingMessages, isStreaming])
@@ -2693,11 +2849,16 @@ export const ChatPanel = observer(function ChatPanel({
    */
   const handleMessagesScrollWeb = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (Date.now() < programmaticScrollUntilRef.current) return
+
       const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
       const isAtBottom =
         contentSize.height - contentOffset.y - layoutMeasurement.height <
         SCROLL_NEAR_BOTTOM_PX
-      isUserAtBottomRef.current = isAtBottom
+      if (isAtBottom !== isUserAtBottomRef.current) {
+        isUserAtBottomRef.current = isAtBottom
+        setIsFollowing(isAtBottom)
+      }
 
       if (contentOffset.y < LOAD_OLDER_SCROLL_EDGE_PX) {
         if (loadOlderWebDebounceRef.current) {
@@ -2714,17 +2875,6 @@ export const ChatPanel = observer(function ChatPanel({
     },
     [handleLoadOlderMessages],
   )
-
-  const hasReceivedPartsRef = useRef(false)
-
-  useEffect(() => {
-    const hasParts = messages.some(
-      (msg: any) => Array.isArray(msg.parts) && msg.parts.length > 0
-    )
-    if (hasParts) {
-      hasReceivedPartsRef.current = true
-    }
-  }, [messages])
 
   // Re-hydrate pendingPlan from persisted messages on session restore
   useEffect(() => {
@@ -2757,56 +2907,21 @@ export const ChatPanel = observer(function ChatPanel({
     setPendingPlan(restoredPlan)
   }, [isInitialLoadComplete, messages.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Effect 2: Sync MobX → AI SDK state when data arrives.
-  // This is a fallback for when messages appear in MobX before Effect 1 finishes,
-  // e.g. from a real-time sync. It must NOT race with Effect 1's load cycle.
-  useEffect(() => {
-    if (persistedMessagesFromMobX.length > 0) {
-      if (isStreamingRef.current) return
-      if (isSendingMessageRef.current) return
-      if (messages.length > 0) return
-
-      const persistedHaveParts = persistedMessagesFromMobX.some((msg: any) => msg.parts)
-      if (hasReceivedPartsRef.current && !persistedHaveParts) return
-      if (persistedHaveParts) {
-        hasReceivedPartsRef.current = false
-      }
-
-      const aiMessages = persistedMessagesFromMobX.map((msg: any) => {
-        const baseMessage: any = {
-          id: msg.id,
-          role: msg.role as "user" | "assistant",
-          content: msg.content,
-        }
-
-        if (msg.parts) {
-          try {
-            baseMessage.parts = JSON.parse(msg.parts)
-          } catch (err) {
-            console.warn("[ChatPanel] Failed to parse message parts:", err)
-          }
-        }
-
-        return baseMessage
-      })
-      if (currentSessionId) {
-        sessionMessageCache.set(currentSessionId, aiMessages as UIMessage[])
-      }
-      setMessages(aiMessages)
-    } else if (currentSessionId) {
-      if (initialMessageRef.current?.trim()) return
-      // Don't clear messages while Effect 1 is still loading — that would
-      // cause a flicker (messages → empty → loading → messages).
-      if (isLoadingMessagesRef.current) return
-      // The MobX collection is shared across ChatPanel instances and only holds
-      // one session's messages at a time. When a sibling panel loads its session,
-      // our filtered view drops to 0 even though our AI SDK state is still valid.
-      // Never clobber non-empty AI SDK state from the MobX-empty signal.
-      if (messages.length > 0) return
-      setMessages([])
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentSessionId, persistedMessagesFromMobX.length, setMessages])
+  // (Removed) Effect 2: MobX → AI SDK setMessages sync.
+  //
+  // This effect existed as a "fallback for when messages appear in MobX
+  // before Effect 1 finishes" (e.g. real-time sync from another device).
+  // It was the second writer to the AI SDK `messages` array, racing
+  // Effect 1's loadPage `.then()` and the streaming SDK itself. With
+  // Option-2's "single writer" model, Effect 1 owns `messages` end to
+  // end and the live-stream attach is gated behind the explicit /turn
+  // probe, so this fallback is no longer needed and was a primary
+  // suspect for the "I see the same message twice" duplication.
+  //
+  // If real-time sync from another device ever needs to push history
+  // into the SDK again, do it through a single funnel that lives next
+  // to Effect 1 (e.g. by observing the per-session MST collection
+  // *inside* Effect 1) so there is still only one setMessages caller.
 
   useEffect(() => {
     onStreamingChange?.(isStreaming)
@@ -2990,6 +3105,7 @@ export const ChatPanel = observer(function ChatPanel({
     isFirstLoadRef.current = true
     isUserAtBottomRef.current = true
     stickToBottomRef.current = true
+    setIsFollowing(true)
     prevDisplayLengthRef.current = 0
   }, [currentSessionId])
 
@@ -3005,6 +3121,7 @@ export const ChatPanel = observer(function ChatPanel({
     }
 
     if (displayMessages.length === 1 && (isFirstLoadRef.current || shouldFollowBottom())) {
+      markProgrammaticScroll()
       scrollViewRef.current?.scrollTo({ y: 0, animated: false })
       isFirstLoadRef.current = false
       return
@@ -3017,7 +3134,7 @@ export const ChatPanel = observer(function ChatPanel({
       scrollToBottomIfFollowing(!isFirstLoadRef.current)
       isFirstLoadRef.current = false
     }
-  }, [displayMessages.length, messages, currentSessionId, isNative, shouldFollowBottom, scrollToBottomIfFollowing])
+  }, [displayMessages.length, messages, currentSessionId, isNative, shouldFollowBottom, scrollToBottomIfFollowing, markProgrammaticScroll])
 
   // Detect a pending ask_user tool call in the last assistant message
   const hasPendingQuestion = useMemo(() => {
@@ -3057,7 +3174,10 @@ export const ChatPanel = observer(function ChatPanel({
       const trimmedContent = content.trim()
       if (Platform.OS !== "web") {
         stickToBottomRef.current = true
+      } else {
+        isUserAtBottomRef.current = true
       }
+      setIsFollowing(true)
       lastUserInputRef.current = { content: trimmedContent, files: fileArray }
       setOptimisticUserInput({ sessionId: currentSessionId, content: trimmedContent, files: fileArray })
 
@@ -3495,15 +3615,6 @@ export const ChatPanel = observer(function ChatPanel({
   const handleRetryRef = useRef<(() => void) | null>(null)
   handleRetryRef.current = handleRetry
 
-  const messageListMessages = messages.map((msg) => ({
-    id: msg.id,
-    role: msg.role as "user" | "assistant",
-    content:
-      (msg as any).content ||
-      msg.parts?.map((p: any) => p.text || "").join("") ||
-      "",
-  }))
-
   const resolvedAgentUrl = localAgentUrl || (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
 
   const handleSaveToolOutput = useCallback(
@@ -3556,30 +3667,83 @@ export const ChatPanel = observer(function ChatPanel({
     [setMessages, sessionMessages]
   )
 
-  const contextValue: ChatContextValue = {
-    currentSession: currentSession
-      ? { id: currentSession.id, name: currentSession.name }
-      : null,
-    messages: messageListMessages,
-    sendMessage: handleSendMessage,
-    isLoading: isStreaming,
-    isPolling,
-    error: error?.message ?? null,
-    agentUrl: resolvedAgentUrl,
-    addToolOutput: (params) => addToolOutput(params as any),
-    saveToolOutput: handleSaveToolOutput,
-    buildPlan: pendingPlan ? handleConfirmPlan : null,
-    confirmPlan: pendingPlan ? handleConfirmPlan : null,
-    pendingPlan,
-    confirmedPlan,
-    openPlan: onOpenPlan,
-  }
+  // Stable session summary so a new object literal isn't allocated each
+  // render even when the underlying session id/name haven't changed.
+  const sessionSummary = useMemo(
+    () =>
+      currentSession
+        ? { id: currentSession.id, name: currentSession.name }
+        : null,
+    [currentSession?.id, currentSession?.name],
+  )
+
+  // Wrap the AI SDK's addToolOutput so we hand a stable reference to
+  // context consumers — without this every render produced a fresh
+  // `(params) => addToolOutput(params as any)` closure.
+  const stableAddToolOutput = useCallback(
+    (params: { toolCallId: string; output: string }) =>
+      addToolOutput(params as any),
+    [addToolOutput],
+  )
+
+  const errorMessage = error?.message ?? null
+
+  // Memoizing the context value is the single biggest win for streaming
+  // re-renders. Previously this was a fresh object literal on every
+  // ChatPanel commit, so every `useChatContext()` consumer re-rendered
+  // on every token even when nothing they read had actually changed.
+  //
+  // Note: `messages` is intentionally NOT plumbed through the context
+  // (we hand a stable empty array). A grep across the codebase shows no
+  // consumer reads `chatContext.messages` — they read `sendMessage`,
+  // `agentUrl`, `saveToolOutput`, `pendingPlan` etc. which are stable.
+  // Including the live message list flipped the value's identity per
+  // token (because `useChat`'s `messages` array is a new reference every
+  // delta), defeating every downstream memo. Components that genuinely
+  // need the message list receive it as a prop instead.
+  const contextValue = useMemo<ChatContextValue>(
+    () => ({
+      currentSession: sessionSummary,
+      messages: EMPTY_CONTEXT_MESSAGES,
+      sendMessage: handleSendMessage,
+      isLoading: isStreaming,
+      isPolling,
+      error: errorMessage,
+      agentUrl: resolvedAgentUrl,
+      addToolOutput: stableAddToolOutput,
+      saveToolOutput: handleSaveToolOutput,
+      buildPlan: pendingPlan ? handleConfirmPlan : null,
+      confirmPlan: pendingPlan ? handleConfirmPlan : null,
+      pendingPlan,
+      confirmedPlan,
+      openPlan: onOpenPlan,
+    }),
+    [
+      sessionSummary,
+      handleSendMessage,
+      isStreaming,
+      isPolling,
+      errorMessage,
+      resolvedAgentUrl,
+      stableAddToolOutput,
+      handleSaveToolOutput,
+      pendingPlan,
+      handleConfirmPlan,
+      confirmedPlan,
+      onOpenPlan,
+    ],
+  )
 
   const handleCompactSubmit = useCallback(
     (prompt: string, files?: FileAttachment[]) => {
       onCompactSubmit?.(prompt, files)
     },
     [onCompactSubmit]
+  )
+
+  const handleQuickActionClick = useCallback(
+    (prompt: string) => handleSendMessage(prompt),
+    [handleSendMessage],
   )
 
   // Render compact mode (homepage)
@@ -3626,6 +3790,7 @@ export const ChatPanel = observer(function ChatPanel({
           keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 50}
         >
           {/* Messages with Turn Grouping */}
+          <View className="flex-1">
           <ScrollView
             ref={scrollViewRef}
             className="flex-1"
@@ -3639,6 +3804,7 @@ export const ChatPanel = observer(function ChatPanel({
             onScrollBeginDrag={() => {
               if (isNative) {
                 stickToBottomRef.current = false
+                setIsFollowing(false)
               }
             }}
             onScrollEndDrag={(e) => {
@@ -3657,6 +3823,7 @@ export const ChatPanel = observer(function ChatPanel({
               if (isLoadingOlderRef.current) {
                 const delta = h - contentHeightBeforeLoadRef.current
                 if (delta > 0 && contentHeightBeforeLoadRef.current > 0) {
+                  markProgrammaticScroll()
                   scrollViewRef.current?.scrollTo({ y: delta, animated: false })
                 }
                 // Reset after a frame so the scroll offset takes effect
@@ -3722,6 +3889,31 @@ export const ChatPanel = observer(function ChatPanel({
             )}
 
           </ScrollView>
+
+          {/* "Jump to latest" pill — shown when the user has scrolled away
+              from the bottom during streaming. Re-engages follow on press.
+              Positioned at the bottom of the scroll area (just above the
+              chat input). */}
+          {!isFollowing && displayMessages.length > 0 && (
+            <View
+              pointerEvents="box-none"
+              style={{ position: "absolute", left: 0, right: 0, bottom: 8 }}
+              className="items-center"
+            >
+              <Pressable
+                onPress={jumpToLatest}
+                accessibilityRole="button"
+                accessibilityLabel="Jump to latest message"
+                className="flex-row items-center gap-1 rounded-full bg-primary px-3 py-1.5 shadow-md active:opacity-80"
+              >
+                <ChevronDown size={14} className="text-primary-foreground" />
+                <Text className="text-xs font-medium text-primary-foreground">
+                  Latest
+                </Text>
+              </Pressable>
+            </View>
+          )}
+          </View>
 
           {/* Tool Error Banner */}
           {toolErrorBanner && (
@@ -3974,7 +4166,7 @@ export const ChatPanel = observer(function ChatPanel({
               onInteractionModeChange={handleInteractionModeChange}
               contextUsage={contextUsage}
               quickActions={quickActions}
-              onQuickActionClick={(prompt) => handleSendMessage(prompt)}
+              onQuickActionClick={handleQuickActionClick}
               restoreDraftRequest={restoreDraftRequest}
               projectId={projectId}
             />

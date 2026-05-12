@@ -139,6 +139,21 @@ describe('gateway-tools', () => {
       expect(result.error).toContain('huge.png')
     })
 
+    test('rejects images whose base64 payload would exceed the Anthropic 5MB cap', async () => {
+      // A raw PNG of ~4.2 MB base64-encodes to ~5.6 MB, well over the 5 MB
+      // per-image cap. The raw-byte guard (20 MB) won't catch this — only the
+      // base64 guard does.
+      const bigPath = join(TEST_DIR, 'medium.png')
+      writeFileSync(bigPath, Buffer.alloc(4_200_000, 0xab))
+      const result = await exec(createCtx(), 'read_file', { path: 'medium.png' })
+      expect(result.error).toContain('Image too large to send to the model')
+      expect(result.error).toContain('medium.png')
+      expect(typeof result.base64Bytes).toBe('number')
+      expect(result.base64Bytes).toBeGreaterThan(5 * 1024 * 1024 - 4096)
+      // The error message should hand the model a concrete downscale recipe.
+      expect(result.error.toLowerCase()).toMatch(/sips|convert/)
+    })
+
     test('ignores offset/limit for image files and notes it in details', async () => {
       writeFileSync(join(TEST_DIR, 'tiny.gif'), Buffer.from([0x47, 0x49, 0x46, 0x38]))
       const tool = getTool(createCtx(), 'read_file')
@@ -412,7 +427,7 @@ describe('gateway-tools', () => {
 
   describe('tool sets', () => {
     test('createTools returns expected tools', () => {
-      expect(createTools(createCtx())).toHaveLength(50)
+      expect(createTools(createCtx())).toHaveLength(51)
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_configure')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_status')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()

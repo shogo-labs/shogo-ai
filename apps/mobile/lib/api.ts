@@ -244,6 +244,24 @@ export const api = {
     return (res.data as any).data ?? res.data
   },
 
+  /**
+   * Build the absolute CSV download URL for a workspace's usage event log.
+   * Filters mirror `analytics/usage-log` (period, userId, model). The route
+   * sets `content-disposition: attachment` so the browser downloads it.
+   */
+  getUsageLogCsvUrl(
+    workspaceId: string,
+    params: { period?: string; userId?: string; model?: string; limit?: number } = {},
+  ): string {
+    const qs = new URLSearchParams()
+    if (params.period) qs.set('period', params.period)
+    if (params.userId) qs.set('userId', params.userId)
+    if (params.model) qs.set('model', params.model)
+    if (params.limit) qs.set('limit', String(params.limit))
+    const suffix = qs.toString()
+    return `${API_URL}/api/workspaces/${workspaceId}/analytics/usage-log.csv${suffix ? `?${suffix}` : ''}`
+  },
+
   async getMyAnalytics<T>(
     http: HttpClient,
     endpoint: string,
@@ -612,11 +630,41 @@ export const api = {
     return Array.isArray(items) ? items : []
   },
 
-  async getMemberUsageStats(http: HttpClient, workspaceId: string): Promise<{ monthly: Record<string, number>; total: Record<string, number> }> {
-    const res = await http.get<{ ok: boolean; data?: { monthly: Record<string, number>; total: Record<string, number> } }>(
-      `/api/workspaces/${workspaceId}/analytics/member-usage`,
-    )
-    return res.data?.data ?? { monthly: {}, total: {} }
+  /**
+   * Per-member USD usage for the People settings table.
+   *
+   * Returns the current-month spend split into the three buckets the new
+   * Members UI shows (Included / Free / On-Demand) plus the legacy
+   * `monthly` (sum of all three) and `total` (all-time) figures.
+   */
+  async getMemberUsageStats(
+    http: HttpClient,
+    workspaceId: string,
+  ): Promise<{
+    monthly: Record<string, number>
+    total: Record<string, number>
+    included: Record<string, number>
+    free: Record<string, number>
+    onDemand: Record<string, number>
+  }> {
+    const res = await http.get<{
+      ok: boolean
+      data?: {
+        monthly: Record<string, number>
+        total: Record<string, number>
+        included?: Record<string, number>
+        free?: Record<string, number>
+        onDemand?: Record<string, number>
+      }
+    }>(`/api/workspaces/${workspaceId}/analytics/member-usage`)
+    const data = res.data?.data
+    return {
+      monthly: data?.monthly ?? {},
+      total: data?.total ?? {},
+      included: data?.included ?? {},
+      free: data?.free ?? {},
+      onDemand: data?.onDemand ?? {},
+    }
   },
 
   // ─── Invitations ──────────────────────────────────────
@@ -757,14 +805,32 @@ export const api = {
 
   // ─── Project Export/Import ──────────────────────────────────
 
-  getProjectExportUrl(projectId: string, opts?: { includeChats?: boolean }): string {
-    const qs = opts?.includeChats === false ? '?includeChats=false' : ''
-    return `${API_URL}/api/projects/${projectId}/export${qs}`
+  getProjectExportUrl(
+    projectId: string,
+    opts?: {
+      includeChats?: boolean
+      passphrase?: string  // Encrypted-secrets opt-in (≥8 chars).
+      includeEnv?: boolean // True = ship raw .env files; false (default) = smart-split.
+    },
+  ): string {
+    const params = new URLSearchParams()
+    if (opts?.includeChats === false) params.set('includeChats', 'false')
+    if (opts?.passphrase && opts.passphrase.length > 0) {
+      params.set('passphrase', opts.passphrase)
+    }
+    if (opts?.includeEnv === true) params.set('includeEnv', 'true')
+    const qs = params.toString()
+    return `${API_URL}/api/projects/${projectId}/export${qs ? `?${qs}` : ''}`
   },
 
   async exportProjectBlob(
     projectId: string,
-    opts?: { includeChats?: boolean; authCookie?: string | null },
+    opts?: {
+      includeChats?: boolean
+      passphrase?: string
+      includeEnv?: boolean
+      authCookie?: string | null
+    },
   ): Promise<{ blob: Blob; filename: string }> {
     const url = api.getProjectExportUrl(projectId, opts)
     const headers: Record<string, string> = {}
@@ -830,34 +896,55 @@ export const api = {
       workspaceId: string
       filename?: string
       includeChats: boolean
+      /** Unlock `encryptedSecrets` (auto-fills tokens). */
+      passphrase?: string
+      /** Defaults to true; set false to skip bun install / generate / etc. */
+      runBootstrap?: boolean
     },
     onProgress: (ev: ProjectImportProgress) => void,
-  ): Promise<{ id: string; name: string; description?: string | null }> {
+  ): Promise<ImportDoneResult> {
     const filename = params.filename || 'project.shogo-project'
-
-    if (Platform.OS === 'web' && typeof XMLHttpRequest !== 'undefined') {
-      // Use XHR so we can surface upload progress alongside the streamed SSE body.
-      return await importViaXhr(
-        params.file,
-        params.workspaceId,
-        params.includeChats,
-        filename,
-        onProgress,
-      )
+    const opts = {
+      file: params.file,
+      workspaceId: params.workspaceId,
+      includeChats: params.includeChats,
+      passphrase: params.passphrase || '',
+      runBootstrap: params.runBootstrap !== false,
+      filename,
     }
 
-    // Native / non-web: plain fetch + SSE reader, no upload progress.
-    return await importViaFetchSSE(
-      params.file,
-      params.workspaceId,
-      params.includeChats,
-      filename,
-      onProgress,
-    )
+    if (Platform.OS === 'web' && typeof XMLHttpRequest !== 'undefined') {
+      return await importViaXhr(opts, onProgress)
+    }
+    return await importViaFetchSSE(opts, onProgress)
   },
 }
 
 // ─── Project import — streaming helpers ────────────────────────
+
+export interface RequiredCredential {
+  channel: string
+  field: string
+  label: string
+}
+
+export type BootstrapStep = 'install' | 'generate' | 'preview' | 'health'
+export type BootstrapStatus = 'pending' | 'running' | 'ok' | 'failed' | 'skipped'
+
+export interface ImportDoneResult {
+  id: string
+  name: string
+  description?: string | null
+  stats?: {
+    filesWritten: number
+    filesSkipped: number
+    chatsImported: number
+    chatsSkipped: number
+  }
+  requiredCredentials?: RequiredCredential[]
+  warnings?: string[]
+  secretsAutoFilled?: boolean
+}
 
 export type ProjectImportProgress =
   | { phase: 'upload'; loaded: number; total: number }
@@ -865,6 +952,12 @@ export type ProjectImportProgress =
   | { phase: 'createProject' }
   | { phase: 'writeFiles'; done: number; total: number }
   | { phase: 'importChats'; done: number; total: number }
+  | {
+      phase: 'bootstrap'
+      step: BootstrapStep
+      status: BootstrapStatus
+      message?: string
+    }
   | {
       phase: 'done'
       project: { id: string; name: string; description?: string | null }
@@ -874,6 +967,9 @@ export type ProjectImportProgress =
         chatsImported: number
         chatsSkipped: number
       }
+      requiredCredentials?: RequiredCredential[]
+      warnings?: string[]
+      secretsAutoFilled?: boolean
     }
   | { phase: 'error'; message: string; fatal: boolean }
 
@@ -906,7 +1002,7 @@ function handleSSEEvent(
   data: string,
   onProgress: (ev: ProjectImportProgress) => void,
   state: {
-    done?: { id: string; name: string; description?: string | null }
+    done?: ImportDoneResult
     fatal?: string
   },
 ) {
@@ -921,11 +1017,22 @@ function handleSSEEvent(
         fatal: false,
       })
     } else if (event === 'done') {
-      state.done = parsed.project
+      state.done = {
+        id: parsed.project.id,
+        name: parsed.project.name,
+        description: parsed.project.description,
+        stats: parsed.stats,
+        requiredCredentials: parsed.requiredCredentials || [],
+        warnings: parsed.warnings || [],
+        secretsAutoFilled: !!parsed.secretsAutoFilled,
+      }
       onProgress({
         phase: 'done',
         project: parsed.project,
         stats: parsed.stats,
+        requiredCredentials: parsed.requiredCredentials || [],
+        warnings: parsed.warnings || [],
+        secretsAutoFilled: !!parsed.secretsAutoFilled,
       })
     } else if (event === 'fatal') {
       state.fatal = parsed.message || 'Import failed'
@@ -940,21 +1047,32 @@ function handleSSEEvent(
   }
 }
 
-async function importViaFetchSSE(
-  file: Blob,
-  workspaceId: string,
-  includeChats: boolean,
-  filename: string,
-  onProgress: (ev: ProjectImportProgress) => void,
-): Promise<{ id: string; name: string; description?: string | null }> {
-  const formData = new FormData()
-  formData.append('file', file, filename)
-  formData.append('workspaceId', workspaceId)
-  formData.append('includeChats', includeChats ? 'true' : 'false')
+interface ImportHelperOpts {
+  file: Blob
+  workspaceId: string
+  includeChats: boolean
+  passphrase: string
+  runBootstrap: boolean
+  filename: string
+}
 
+function buildImportFormData(opts: ImportHelperOpts): FormData {
+  const fd = new FormData()
+  fd.append('file', opts.file, opts.filename)
+  fd.append('workspaceId', opts.workspaceId)
+  fd.append('includeChats', opts.includeChats ? 'true' : 'false')
+  if (opts.passphrase) fd.append('passphrase', opts.passphrase)
+  if (!opts.runBootstrap) fd.append('runBootstrap', 'false')
+  return fd
+}
+
+async function importViaFetchSSE(
+  opts: ImportHelperOpts,
+  onProgress: (ev: ProjectImportProgress) => void,
+): Promise<ImportDoneResult> {
   const res = await fetch(`${API_URL}/api/projects/import`, {
     method: 'POST',
-    body: formData,
+    body: buildImportFormData(opts),
     credentials: Platform.OS === 'web' ? 'include' : 'omit',
     headers: { Accept: 'text/event-stream' },
   })
@@ -964,10 +1082,7 @@ async function importViaFetchSSE(
     throw new Error(text || `Import failed with status ${res.status}`)
   }
 
-  const state: {
-    done?: { id: string; name: string; description?: string | null }
-    fatal?: string
-  } = {}
+  const state: { done?: ImportDoneResult; fatal?: string } = {}
   const parser = createSSEParser((event, data) =>
     handleSSEEvent(event, data, onProgress, state),
   )
@@ -992,17 +1107,11 @@ async function importViaFetchSSE(
 }
 
 async function importViaXhr(
-  file: Blob,
-  workspaceId: string,
-  includeChats: boolean,
-  filename: string,
+  opts: ImportHelperOpts,
   onProgress: (ev: ProjectImportProgress) => void,
-): Promise<{ id: string; name: string; description?: string | null }> {
+): Promise<ImportDoneResult> {
   return await new Promise((resolve, reject) => {
-    const formData = new FormData()
-    formData.append('file', file, filename)
-    formData.append('workspaceId', workspaceId)
-    formData.append('includeChats', includeChats ? 'true' : 'false')
+    const formData = buildImportFormData(opts)
 
     const xhr = new XMLHttpRequest()
     xhr.open('POST', `${API_URL}/api/projects/import`, true)
@@ -1016,13 +1125,10 @@ async function importViaXhr(
       }
     }
     xhr.upload.onload = () => {
-      onProgress({ phase: 'upload', loaded: file.size, total: file.size })
+      onProgress({ phase: 'upload', loaded: opts.file.size, total: opts.file.size })
     }
 
-    const state: {
-      done?: { id: string; name: string; description?: string | null }
-      fatal?: string
-    } = {}
+    const state: { done?: ImportDoneResult; fatal?: string } = {}
     const parser = createSSEParser((event, data) =>
       handleSSEEvent(event, data, onProgress, state),
     )

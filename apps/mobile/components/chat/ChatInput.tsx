@@ -14,7 +14,7 @@
  * Native: Expo ImagePicker + DocumentPicker (AttachSourceSheet + native-attachment-picker).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Alert,
   View,
@@ -215,7 +215,7 @@ export interface ChatInputProps {
   projectId?: string
 }
 
-export function ChatInput({
+function ChatInputImpl({
   onSubmit,
   disabled = false,
   placeholder = "Ask Shogo...",
@@ -1680,5 +1680,16 @@ export function ChatInput({
     </View>
   )
 }
+
+/**
+ * Memoized so ChatPanel re-renders driven by streaming-token state
+ * (token-level message updates, MobX reactions, scroll handlers, etc.)
+ * don't re-run the entire input subtree on every commit. The default
+ * shallow comparison is sufficient as long as callers pass stable
+ * callbacks (`useCallback`) and stable arrays (`useMemo`) — defaulted
+ * primitive props are compared by value, and inline arrows would defeat
+ * memo if any reappear.
+ */
+export const ChatInput = memo(ChatInputImpl)
 
 export default ChatInput

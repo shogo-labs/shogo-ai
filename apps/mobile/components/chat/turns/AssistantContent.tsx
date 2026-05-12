@@ -23,8 +23,11 @@ import {
 import { AskUserQuestionWidget } from "./AskUserQuestionWidget"
 import { TodoWidget } from "./TodoWidget"
 import { ToolCallGroup } from "./ToolCallGroup"
+import { ExplorationGroup } from "./ExplorationGroup"
+import { EditingGroup } from "./EditingGroup"
 import type { MessagePart, GroupedMessagePart } from "./types"
 import { type ToolCallData } from "../tools/types"
+import { getToolSummary } from "../tools/summary"
 import {
   TASK_TOOL_NAMES,
   extractOrderedParts,
@@ -133,7 +136,107 @@ const UNGROUPABLE_TOOLS = new Set([
   "StrReplace",
 ])
 const TEAM_TOOL_NAMES = new Set(["team_create"])
+
+// "Low-information" tools that render as a chrome-less, hover-highlighted
+// row with a human-readable label (e.g. "Read package.json"). Bash/exec
+// has its own dedicated widget (`ExecWidget`) which is already minimal
+// by default, so it's NOT in this set — only tools that flow through
+// `InlineToolWidget` need to be flagged here.
+const MINIMAL_TOOL_NAMES = new Set([
+  "Read", "read_file",
+  "ReadLints", "read_lints",
+  "Grep", "grep", "search",
+  "Glob", "glob",
+  "WebSearch", "WebFetch",
+  "Delete",
+])
 const MIN_GROUP_SIZE = 2
+
+// Verbs (from tools/summary.ts) that classify a tool call as an
+// "exploration" action — read-only investigation that the agent is
+// likely doing in bursts. The set deliberately omits destructive verbs
+// (Move, Remove, Install, etc.) so they keep their dedicated widgets,
+// and omits "Read lints" since the user asked for ReadLints to stay
+// inline rather than fold into the exploration roll-up.
+const EXPLORATION_VERBS = new Set([
+  "Read",
+  "List",
+  "Search for",
+  "Find in",
+  "Find files matching",
+  "Search the web for",
+  "Fetch",
+  "pwd",
+])
+const MIN_EXPLORATION_GROUP_SIZE = 2
+
+// Tool names that fold into the "Editing…" group. write_file / Write
+// and edit_file / Edit / StrReplace stay in UNGROUPABLE_TOOLS so the
+// generic same-name `ToolCallGroup` ignores them — the editing pass
+// below handles them instead with a richer mixed-name run.
+const EDITING_TOOL_NAMES = new Set([
+  "write_file",
+  "Write",
+  "edit_file",
+  "Edit",
+  "StrReplace",
+])
+const MIN_EDITING_GROUP_SIZE = 2
+
+function isExplorationTool(tool: ToolCallData): boolean {
+  const { verb } = getToolSummary(tool.toolName, tool.args)
+  return EXPLORATION_VERBS.has(verb)
+}
+
+function isEditingTool(tool: ToolCallData): boolean {
+  return EDITING_TOOL_NAMES.has(tool.toolName)
+}
+
+/**
+ * Shell command (`exec` / `Bash`) whose verb is *not* a pure
+ * exploration verb — typically a generic `Run` (bun test, node x.js,
+ * unknown commands), `Install`, `git X`, or mutating ops like
+ * `Move` / `Remove` / `Copy` / `Touch`. These fold into the Editing
+ * group alongside writes/edits since they're actions, not pure
+ * inspection.
+ */
+function isShellRunCommand(tool: ToolCallData): boolean {
+  if (tool.toolName !== "exec" && tool.toolName !== "Bash") return false
+  const { verb } = getToolSummary(tool.toolName, tool.args)
+  return !EXPLORATION_VERBS.has(verb)
+}
+
+/**
+ * Walk forward from `start` collecting tool parts that match
+ * `accept`, treating `reasoning` parts as transparent (consumed into
+ * the run but not counted toward the tool threshold). Returns the
+ * exclusive end of the *trimmed* slice (trailing reasoning excluded)
+ * and the tool count.
+ */
+function scanTransparentRun(
+  parts: MessagePart[],
+  start: number,
+  accept: (tool: ToolCallData) => boolean,
+): { endIdx: number; toolCount: number } {
+  let j = start + 1
+  let toolCount = 1
+  let lastToolIdx = start
+  while (j < parts.length) {
+    const next = parts[j]
+    if (next.type === "reasoning") {
+      j++
+      continue
+    }
+    if (next.type === "tool" && accept(next.tool)) {
+      toolCount++
+      lastToolIdx = j
+      j++
+      continue
+    }
+    break
+  }
+  return { endIdx: lastToolIdx + 1, toolCount }
+}
 
 function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
   const result: GroupedMessagePart[] = []
@@ -142,7 +245,60 @@ function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
   while (i < parts.length) {
     const part = parts[i]
 
-    if (part.type !== "tool" || UNGROUPABLE_TOOLS.has(part.tool.toolName)) {
+    if (part.type !== "tool") {
+      result.push(part)
+      i++
+      continue
+    }
+
+    // Work pass: greedy run of mixed read + edit + write tools. We
+    // intentionally bypass UNGROUPABLE_TOOLS here so a `cat foo` /
+    // `ls` / `grep` exec can join the run alongside a Read/Grep —
+    // the verb classifier in tools/summary.ts already filters out
+    // destructive exec verbs.
+    //
+    // Reasoning parts are "transparent": a read → thought → read →
+    // thought → edit sequence still counts as 3 tools, with the
+    // thoughts rendered inline inside the group body. Trailing
+    // reasoning is trimmed so it belongs to the next response.
+    //
+    // After scanning, the run is classified:
+    //   - any edit/write tool or non-read shell command  → editing-group
+    //   - reads + read-only shell commands only          → exploration-group
+    const isWorkTool = (t: ToolCallData) =>
+      isExplorationTool(t) || isEditingTool(t) || isShellRunCommand(t)
+
+    if (isWorkTool(part.tool)) {
+      const { endIdx, toolCount } = scanTransparentRun(parts, i, isWorkTool)
+      const slice = parts.slice(i, endIdx)
+      const hasEditing = slice.some(
+        (p) =>
+          p.type === "tool" &&
+          (isEditingTool(p.tool) || isShellRunCommand(p.tool)),
+      )
+      if (hasEditing && toolCount >= MIN_EDITING_GROUP_SIZE) {
+        result.push({
+          type: "editing-group",
+          items: slice,
+          id: `edit-${parts[i].id}`,
+        })
+        i = endIdx
+        continue
+      }
+      if (!hasEditing && toolCount >= MIN_EXPLORATION_GROUP_SIZE) {
+        result.push({
+          type: "exploration-group",
+          items: slice,
+          id: `explore-${parts[i].id}`,
+        })
+        i = endIdx
+        continue
+      }
+      // Run below threshold — fall through to passthrough / same-name
+      // grouping so 1 lone tool still renders as a plain inline row.
+    }
+
+    if (UNGROUPABLE_TOOLS.has(part.tool.toolName)) {
       result.push(part)
       i++
       continue
@@ -428,6 +584,44 @@ export const AssistantContent = memo(
           )
         }
 
+        if (part.type === "exploration-group") {
+          const isGroupStreaming = part.items.some((it) =>
+            it.type === "tool"
+              ? it.tool.state === "streaming"
+              : it.type === "reasoning"
+                ? it.isStreaming
+                : false,
+          )
+          return (
+            <ExplorationGroup
+              key={part.id}
+              items={part.items}
+              isStreaming={isGroupStreaming}
+              isExpanded={expandedTools.has(part.id)}
+              onToggle={getToggle(part.id)}
+            />
+          )
+        }
+
+        if (part.type === "editing-group") {
+          const isGroupStreaming = part.items.some((it) =>
+            it.type === "tool"
+              ? it.tool.state === "streaming"
+              : it.type === "reasoning"
+                ? it.isStreaming
+                : false,
+          )
+          return (
+            <EditingGroup
+              key={part.id}
+              items={part.items}
+              isStreaming={isGroupStreaming}
+              isExpanded={expandedTools.has(part.id)}
+              onToggle={getToggle(part.id)}
+            />
+          )
+        }
+
         if (part.type === "tool-group") {
           return (
             <ToolCallGroup
@@ -605,6 +799,18 @@ export const AssistantContent = memo(
               <BrowserWidget
                 key={part.id}
                 tool={part.tool}
+                isExpanded={expandedTools.has(part.id)}
+                onToggle={getToggle(part.id)}
+              />
+            )
+          }
+
+          if (MINIMAL_TOOL_NAMES.has(part.tool.toolName)) {
+            return (
+              <InlineToolWidget
+                key={part.id}
+                tool={part.tool}
+                variant="minimal"
                 isExpanded={expandedTools.has(part.id)}
                 onToggle={getToggle(part.id)}
               />

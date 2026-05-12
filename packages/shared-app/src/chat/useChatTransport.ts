@@ -53,6 +53,30 @@ export function buildChatApiUrl(
 }
 
 /**
+ * Build the read-only durable-turn snapshot URL for a given chat session.
+ *
+ * Used by the client to ask the runtime "is there a live turn buffered for
+ * this session?" *before* deciding whether to attach to /stream. Without
+ * this probe we'd fire `useChat({ resume: true })` blindly on every mount
+ * and the server logs would fill up with orphan
+ * `[AgentChat] Stream reconnect ... snapshot=none` lines (and, worse, the
+ * resume call would race the /chat-messages history fetch — see
+ * `chat-load-decision.ts` for the regression that motivated probing).
+ *
+ * Mirrors `defaultBuildResumeUrl` in `auto-resuming-fetch.ts` so all three
+ * URLs (post / resume / turn) share the same base path.
+ */
+export function buildChatTurnUrl(
+  apiBaseUrl: string,
+  projectId: string | undefined,
+  localAgentUrl: string | null | undefined,
+  chatSessionId: string,
+): string {
+  const base = buildChatApiUrl(apiBaseUrl, projectId, localAgentUrl).replace(/\/+$/, '')
+  return `${base}/${encodeURIComponent(chatSessionId)}/turn`
+}
+
+/**
  * Hook that returns a memoized chat transport config for DefaultChatTransport.
  */
 export function useChatTransportConfig({

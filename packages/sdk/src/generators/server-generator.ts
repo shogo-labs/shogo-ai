@@ -39,6 +39,13 @@ export interface ServerGeneratorConfig {
   /** Emit Bun.serve() instead of export default { port, fetch } to avoid
    *  the Bun 1.3 double-bind issue. */
   bunServe?: boolean
+  /** Mount the installed-integration tools proxy at `<apiBasePath>/tools/*`.
+   *  When true (default), emits `createToolsHandlers()` from
+   *  `@shogo-ai/sdk/tools/server` before the static catch-all so
+   *  `fetch('/api/tools/*')` from the SPA reaches the runtime instead
+   *  of falling through to `index.html`. Disable only when the pod
+   *  shouldn't expose installed integrations to its own origin. */
+  tools?: boolean
 }
 
 /**
@@ -57,6 +64,7 @@ export function generateServer(config: ServerGeneratorConfig = {}): string {
     customRoutesPath,
     dynamicCrudImport = false,
     bunServe = false,
+    tools = true,
   } = config
 
   const lines: string[] = [
@@ -84,6 +92,10 @@ export function generateServer(config: ServerGeneratorConfig = {}): string {
 
   if (customRoutesPath) {
     lines.push(`import customRoutes from '${customRoutesPath}'`)
+  }
+
+  if (tools) {
+    lines.push("import { createToolsHandlers } from '@shogo-ai/sdk/tools/server'")
   }
 
   lines.push('')
@@ -124,6 +136,17 @@ export function generateServer(config: ServerGeneratorConfig = {}): string {
   if (customRoutesPath) {
     lines.push('// Custom API routes (always mounted)')
     lines.push(`app.route('${apiBasePath}', customRoutes)`)
+    lines.push('')
+  }
+
+  if (tools) {
+    // Mounted BEFORE the static catch-all so `fetch('/api/tools/*')` from
+    // the SPA reaches the proxy instead of falling through to index.html.
+    lines.push('// Installed-integration tools proxy → forwards to the agent runtime')
+    lines.push('// using RUNTIME_AUTH_SECRET + RUNTIME_PORT (auto-detected from env).')
+    lines.push('const tools = createToolsHandlers({})')
+    lines.push(`app.post('${apiBasePath}/tools/execute', (c) => tools.execute(c.req.raw))`)
+    lines.push(`app.get('${apiBasePath}/tools/schemas', (c) => tools.list(c.req.raw))`)
     lines.push('')
   }
 

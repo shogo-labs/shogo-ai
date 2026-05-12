@@ -8,17 +8,98 @@
  * per-tool mocks via the `toolMocks` field on AgentEval; this module
  * provides the reusable fixture data and a `buildMockPayload()` helper
  * that merges eval-specific mocks with sensible defaults.
+ *
+ * SCOPE — eval suite vs. demo recordings:
+ *   Fixtures in this file are owned by the eval suite. Some
+ *   (`STRIPE_REVENUE_MOCKS`, etc.) are *also* used by the Playwright
+ *   demo recordings; if you change one, double-check that the demo
+ *   script.md narratives still match.
+ *   Demo-specific fixtures (`DEMO_*`) live in
+ *   `./tool-mocks-demo.ts` so they can evolve independently without
+ *   churning eval test outputs. See ../../../demo/playwright/MOCKING.md
+ *   for the full demo-mocking model.
  */
 
 // ---------------------------------------------------------------------------
 // Serializable mock spec types (sent over HTTP to POST /agent/tool-mocks)
 // ---------------------------------------------------------------------------
 
+/**
+ * Optional latency knobs on a mock spec. When omitted at every level the
+ * runtime falls back to install-body `defaults.delayMs` and then to
+ * tool-class defaults (browser-navigate ~2200ms, click/fill ~600ms,
+ * tool_install ~1800ms, etc.) so demo recordings don't return in 0ms.
+ *
+ * Resolution order (per call):
+ *   per-pattern.delayMs > spec.delayMs > install-body defaults.delayMs
+ *   > tool-class default > runtime fallback (1200ms)
+ *
+ * Set `delayMs: 0` at any level to opt OUT of pacing entirely (eval
+ * suite sets this so test cases run as fast as possible).
+ */
+export type MockLatency = {
+  /** Override the resolved delay for this spec. Use 0 to disable pacing. */
+  delayMs?: number
+}
+
+/**
+ * Multipart response marker. Some tools (notably `browser screenshot`)
+ * return `{ content: [{ type: 'image', data: <base64>, mimeType }, ...], details }`
+ * instead of a plain JSON value, and the chat UI renders the inline
+ * image from that envelope. A mock spec can opt into the same shape by
+ * returning `{ __multipart: true, content: [...], details? }` — the
+ * runtime strips the marker and bypasses textResult() so the image
+ * lands at the UI intact. Used by the captured browser fixtures for
+ * Scene 1 (real OpenTable / Booking screenshots).
+ */
+export type MultipartMockResponse = {
+  __multipart: true
+  content: Array<
+    | { type: 'image'; data: string; mimeType: string }
+    | { type: 'text'; text: string }
+  >
+  details?: unknown
+}
+
 export type ToolMockSpec =
-  | { type: 'static'; response: any; description?: string; paramKeys?: string[]; hidden?: boolean }
-  | { type: 'pattern'; patterns: Array<{ match: Record<string, string>; response: any }>; default?: any; description?: string; paramKeys?: string[]; hidden?: boolean }
+  | {
+      type: 'static'
+      response: any | MultipartMockResponse
+      description?: string
+      paramKeys?: string[]
+      hidden?: boolean
+      delayMs?: number
+    }
+  | {
+      type: 'pattern'
+      patterns: Array<{
+        match: Record<string, string>
+        response: any | MultipartMockResponse
+        /** Per-pattern latency — beats spec.delayMs and install defaults. */
+        delayMs?: number
+      }>
+      default?: any | MultipartMockResponse
+      description?: string
+      paramKeys?: string[]
+      hidden?: boolean
+      /** Spec-level fallback delay; per-pattern delayMs overrides this. */
+      delayMs?: number
+      /** Latency for the `default` arm specifically. */
+      defaultDelayMs?: number
+    }
 
 export type ToolMockMap = Record<string, ToolMockSpec>
+
+/** Install-body envelope for POST /agent/tool-mocks. */
+export type ToolMockInstallBody = {
+  mocks: ToolMockMap
+  defaults?: {
+    /** Default delay (ms) when no spec / pattern / class override. Default 1200. */
+    delayMs?: number
+    /** Plus-or-minus ms jitter applied to every delay. Default 400. */
+    jitterMs?: number
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Default mock responses (safe fallbacks)
@@ -3715,6 +3796,97 @@ export const ADVERSARIAL_MOCKS: ToolMockMap = {
 /** Baseline mocks for cross-cutting evals (web, sub-agents, exec). */
 export const CROSS_CUTTING_MOCKS: ToolMockMap = {
   ...BUSINESS_USER_MOCKS,
+}
+
+// ---------------------------------------------------------------------------
+// Jira install + execute fixture (regression: agent must call JIRA_LIST_BOARDS
+// directly after `tool_install("jira")`, not via `skill` or
+// `agent_spawn({type:"integration"})`).
+// ---------------------------------------------------------------------------
+
+export const JIRA_INSTALL_FLOW_MOCKS: ToolMockMap = {
+  tool_search: {
+    type: 'static',
+    description: 'Search for managed integrations and MCP servers by capability or keyword.',
+    paramKeys: ['query', 'limit'],
+    response: {
+      query: 'jira',
+      results: [
+        { name: 'Jira', qualifiedName: 'jira', description: 'Jira — managed OAuth integration. List boards, search issues, manage tickets.', source: 'managed', authType: 'oauth', composioToolkit: 'jira' },
+      ],
+      message: 'Found 1 tool(s). Use tool_install to add one.',
+    },
+  },
+  tool_install: {
+    type: 'static',
+    description: 'Install a managed OAuth integration.',
+    paramKeys: ['name'],
+    response: {
+      ok: true,
+      server: 'composio',
+      integration: 'jira',
+      toolCount: 6,
+      tools: ['JIRA_LIST_BOARDS', 'JIRA_GET_CURRENT_USER', 'JIRA_SEARCH_ISSUES', 'JIRA_CREATE_ISSUE', 'JIRA_UPDATE_ISSUE', 'JIRA_GET_BOARD'],
+      authStatus: 'active',
+      message: '"jira" installed with 6 tool(s) (e.g. JIRA_LIST_BOARDS, JIRA_GET_CURRENT_USER, ...). These tools are now bound to YOU. Call them directly in this turn by name: JIRA_LIST_BOARDS({}). Do NOT spawn an `integration` subagent — it does not have them bound. Do NOT use the `skill` tool. Each tool returns { ok, data, error? }; list endpoints often nest items under data.values (Jira) or data.items (Google).',
+    },
+  },
+  JIRA_LIST_BOARDS: {
+    type: 'static',
+    description: 'List all Jira boards the authenticated user can access.',
+    paramKeys: [],
+    response: {
+      ok: true,
+      data: {
+        values: [
+          { id: 1, name: 'Platform', type: 'scrum' },
+          { id: 2, name: 'Mobile', type: 'kanban' },
+          { id: 3, name: 'Growth', type: 'scrum' },
+        ],
+        startAt: 0,
+        maxResults: 50,
+        total: 3,
+      },
+    },
+  },
+  JIRA_GET_CURRENT_USER: {
+    type: 'static',
+    description: 'Get the current authenticated Jira user.',
+    paramKeys: [],
+    // `data` is JSON-stringified to match real runtime behavior — the
+    // tool-execution path always JSON.stringifies the underlying tool
+    // response into `data`. The SDK (>=1.3) auto-parses on the client
+    // side, so consuming code reads `me.data?.accountId` as if it were
+    // a plain object. This mock pins that wire shape.
+    response: {
+      ok: true,
+      data: JSON.stringify({
+        accountId: 'mock-account',
+        displayName: 'Mock User',
+        emailAddress: 'mock@example.com',
+      }),
+    },
+  },
+  JIRA_SEARCH_ISSUES: {
+    type: 'static',
+    description: 'Search Jira issues by JQL.',
+    paramKeys: ['jql'],
+    // See JIRA_GET_CURRENT_USER comment — `data` is JSON-stringified to
+    // mirror the real runtime wire shape.
+    response: {
+      ok: true,
+      data: JSON.stringify({
+        issues: [
+          { key: 'PLAT-101', fields: { summary: 'Wire up auth proxy', status: { name: 'In Progress' } } },
+          { key: 'PLAT-104', fields: { summary: 'Ship dashboard MVP', status: { name: 'To Do' } } },
+          { key: 'MOB-22', fields: { summary: 'Push notification crash', status: { name: 'In Progress' } } },
+        ],
+        total: 3,
+        startAt: 0,
+        maxResults: 50,
+      }),
+    },
+  },
 }
 
 /**

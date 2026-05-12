@@ -41,6 +41,7 @@ import {
   createContentReplacementState,
   stableTransformContext,
 } from './stable-compaction'
+import { scrubOversizedImages } from './image-size-guard'
 import {
   fingerprintMessages,
   fingerprintSystem,
@@ -228,6 +229,34 @@ export interface GatewayConfig {
   coordinatorMode?: boolean
 }
 
+/**
+ * Run a tool mock and convert its return value into the agent-tool
+ * result envelope.
+ *
+ * Mocks are awaited (they may sleep for the demo latency model). When
+ * the resolved value carries the `__multipart: true` marker we strip
+ * the marker and return the raw `{ content, details? }` envelope so
+ * tools like `browser screenshot` can return inline images directly
+ * (otherwise textResult() would JSON-stringify the base64). All other
+ * shapes go through textResult() as before. Sentinel `__passthrough`
+ * is preserved for the dispatch site to fall through to the real impl.
+ *
+ * Used by demo recordings so canned screenshots show as actual images
+ * in the chat panel.
+ */
+async function runMockAndUnwrap(
+  mockFn: (params: Record<string, any>) => any | Promise<any>,
+  params: Record<string, any>,
+): Promise<any> {
+  const result = await mockFn(params)
+  if (result === '__passthrough') return result
+  if (result && typeof result === 'object' && (result as any).__multipart === true) {
+    const { __multipart: _m, ...rest } = result as any
+    return rest
+  }
+  return textResult(result)
+}
+
 export class AgentGateway {
   private workspaceDir: string
   private projectId: string
@@ -328,6 +357,19 @@ export class AgentGateway {
   }
   /** Canvas build manager — runs per-workspace Vite builds */
   private canvasBuildManager: CanvasBuildManager | null = null
+  /**
+   * Direct handle on the runtime's PreviewManager (set by
+   * `attachApiServer`). Held in addition to the `skillServerManager`
+   * shim because we need to surface its `depsReady` deferred to the
+   * canvas build manager — going through the shim would require
+   * forwarding the promise through a layer whose contract is
+   * "skill-server-like API server", not "preview lifecycle".
+   *
+   * `null` is tolerated by `CanvasBuildManager`: missing waitForDeps
+   * just means the build proceeds without the gate (e.g. tests, or
+   * cloud paths where deps are guaranteed-installed before boot).
+   */
+  private previewManager: import('./preview-manager').PreviewManager | null = null
   /** Tracks the current high-level task description for remote status */
   private _currentTask: string | null = null
   /** Tracks the last tool name invoked for remote status */
@@ -405,9 +447,15 @@ export class AgentGateway {
     return this.permissionEngine
   }
 
-  /** Install tool-level execute overrides (for eval mocking). Preserves tool schema. */
+  /**
+   * Install tool-level execute overrides (for eval mocking + demo
+   * recordings). Preserves tool schema. Mock functions may be sync or
+   * async; the dispatch sites await the result either way. Async fns
+   * power the demo latency model (sleep before resolving) so demo
+   * recordings don't return in 0ms.
+   */
   setToolMocks(
-    mocks: Record<string, (params: Record<string, any>) => any>,
+    mocks: Record<string, (params: Record<string, any>) => any | Promise<any>>,
     syntheticDefs?: Record<string, { description: string; paramKeys: string[] }>,
     hiddenTools?: Set<string>,
   ): void {
@@ -461,10 +509,7 @@ export class AgentGateway {
         description: synDef?.description || `External integration tool: ${toolName}`,
         label: toolName.replace(/__/g, ' > ').replace(/_/g, ' '),
         parameters: Type.Object(paramProps),
-        execute: async (_id: string, params: any) => {
-          const r = mockFn(params)
-          return textResult(r)
-        },
+        execute: async (_id: string, params: any) => runMockAndUnwrap(mockFn, params),
       })
       this.hiddenMockTools.delete(toolName)
     }
@@ -715,9 +760,17 @@ export class AgentGateway {
       }
 
       const watcher = this.canvasFileWatcher
+      const pm = this.previewManager
       this.canvasBuildManager = new CanvasBuildManager(this.workspaceDir, {
         onBuildComplete: () => watcher.broadcastReload(),
         onBuildError: (err) => console.error(`${this.logPrefix} Canvas build error:`, err),
+        // Block the first canvas build (and every subsequent one until
+        // deps settle) on the preview manager's in-flight install. See
+        // PreviewManager.depsReady for the full rationale; tl;dr this
+        // is what stops VM-isolated macOS sessions from hitting
+        // `Cannot find module @rollup/rollup-linux-arm64-gnu` when
+        // host-installed node_modules is 9p-mounted into the guest.
+        waitForDeps: pm ? () => pm.depsReady : undefined,
       })
       watcher.setOnRebuild(() => this.canvasBuildManager?.triggerRebuild())
       this.canvasBuildManager.start().then(() => {
@@ -1306,7 +1359,10 @@ export class AgentGateway {
     interactionMode: 'agent' | 'plan' | 'ask' = 'agent',
   ): Promise<string> {
     // Wait for any in-flight turn on this session to finish so the new turn
-    // reads a fully-updated session history (critical for "continue" after stop).
+    // reads a fully-updated session history (important for "continue" after a
+    // clean turn-end). On user-initiated abort the lock is dropped eagerly in
+    // `abortCurrentTurn`, so a new message right after Stop won't queue behind
+    // the aborted turn's cleanup.
     const prevTurn = this.turnLocks.get(sessionId)
     if (prevTurn) {
       await prevTurn.catch(() => {})
@@ -1583,8 +1639,12 @@ export class AgentGateway {
           return {
             ...tool,
             execute: async (_id: string, params: any) => {
-              const result = mockFn(params)
+              const result = await mockFn(params)
               gateway._promoteHiddenMocksFromInstall(result)
+              if (result && typeof result === 'object' && (result as any).__multipart === true) {
+                const { __multipart: _m, ...rest } = result as any
+                return rest
+              }
               return textResult(result)
             },
           }
@@ -1594,8 +1654,12 @@ export class AgentGateway {
         return {
           ...tool,
           execute: async (_id: string, params: any, signal?: AbortSignal, onUpdate?: any) => {
-            const result = mockFn(params)
+            const result = await mockFn(params)
             if (result === '__passthrough') return realExecute(_id, params, signal, onUpdate)
+            if (result && typeof result === 'object' && (result as any).__multipart === true) {
+              const { __multipart: _m, ...rest } = result as any
+              return rest
+            }
             return textResult(result)
           },
         }
@@ -1619,10 +1683,7 @@ export class AgentGateway {
           description: synDef?.description || `External integration tool: ${name}`,
           label: name.replace(/__/g, ' > ').replace(/_/g, ' '),
           parameters: Type.Object(paramProps),
-          execute: async (_id: string, params: any) => {
-            const result = mockFn(params)
-            return textResult(result)
-          },
+          execute: async (_id: string, params: any) => runMockAndUnwrap(mockFn, params),
         }
         staticTools.push(syntheticTool)
       }
@@ -2127,7 +2188,11 @@ export class AgentGateway {
             this.contentReplacementStates.set(sessionId, state)
           }
           const result = stableTransformContext(messages, state, contextBudgetChars)
-          return result.messages
+          // Final guard: self-heal any oversized image blocks that may have
+          // landed in history before this guard shipped (or that slipped past
+          // emission-time checks). Deterministic, so it does not disturb the
+          // stable-compaction byte-identical prefix invariant.
+          return scrubOversizedImages(result.messages)
         },
         onToolCall: (name, input) => {
           console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 20))
@@ -3391,6 +3456,11 @@ export class AgentGateway {
    */
   attachApiServer(pm: import('./preview-manager').PreviewManager): void {
     this.skillServerManager.attach(pm)
+    // Keep a direct handle so `start()` can pass `pm.depsReady` into
+    // CanvasBuildManager. The order matters: `server.ts` calls
+    // `attachApiServer()` BEFORE `start()`, so the handle is always
+    // populated by the time we wire it.
+    this.previewManager = pm
   }
 
   getSkillServerPort(): number | null {
@@ -3497,6 +3567,16 @@ export class AgentGateway {
   // ---------------------------------------------------------------------------
   // Status
   // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the live workspace LSP manager (or null if not started yet).
+   * Exposed so the runtime HTTP layer can serve Monaco IDE traffic from
+   * the same warmed-up tsserver instance the agent already uses for
+   * read_lints diagnostics — no second process, no duplicate state.
+   */
+  getLspManager(): WorkspaceLSPManager | null {
+    return this.lspManager
+  }
 
   getStatus(): AgentStatus {
     // Hot-reload config so the UI always reflects the latest config.json
@@ -3655,10 +3735,23 @@ export class AgentGateway {
   private turnAbortControllers = new Map<string, AbortController>()
 
   /** Per-session turn lock: ensures sequential turn execution so a "continue"
-   *  after stop always sees the interrupted turn's messages in the session. */
+   *  after stop always sees the interrupted turn's messages in the session.
+   *  On abort, the lock is released eagerly (see `abortCurrentTurn`) so the
+   *  next user message doesn't have to wait for the aborted turn's loop /
+   *  in-flight tool calls to finish unwinding. The aborted turn's late
+   *  message additions land in the SessionManager whenever they finish and
+   *  become visible to subsequent turns; we accept a small chance the next
+   *  turn's prompt is built before the abortee's last few messages settle.
+   */
   private turnLocks = new Map<string, Promise<unknown>>()
 
   abortCurrentTurn(sessionId: string): boolean {
+    // Release the lock so a new user message on this session can start
+    // immediately instead of queueing behind the aborted turn's
+    // post-abort cleanup (which can take minutes when in-flight tool
+    // calls or the iterative loop's wind-down don't honor the signal
+    // synchronously).
+    this.turnLocks.delete(sessionId)
     const controller = this.turnAbortControllers.get(sessionId)
     if (controller) {
       controller.abort()

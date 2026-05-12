@@ -1,0 +1,60 @@
+diff --git a/lib/module/DrawerRouter.js b/lib/module/DrawerRouter.js
+index 967abd44dc865924eddb3778fe201ad558597248..29563ee6e3be9a89d479ec5a84040d1e8d18301e 100644
+--- a/lib/module/DrawerRouter.js
++++ b/lib/module/DrawerRouter.js
+@@ -85,6 +85,17 @@ export function DrawerRouter({
+       routeParamList,
+       routeGetIdList
+     }) {
++      // Workaround for react-navigation/react-navigation#13011: React 19
++      // concurrent re-renders can call this with `partialState === undefined`.
++      // Delegate to the wrapped TabRouter (also patched) which falls back to
++      // a fresh initial state in that case.
++      if (!partialState) {
++        return router.getRehydratedState(partialState, {
++          routeNames,
++          routeParamList,
++          routeGetIdList
++        });
++      }
+       if (partialState.stale === false) {
+         return partialState;
+       }
+diff --git a/lib/module/StackRouter.js b/lib/module/StackRouter.js
+index c1459d5918190a85b641710aabdcea37934aeeca..624dcf779f6ce5282302258de2957c784da69c2d 100644
+--- a/lib/module/StackRouter.js
++++ b/lib/module/StackRouter.js
+@@ -78,6 +78,14 @@ export function StackRouter(options) {
+       routeParamList
+     }) {
+       const state = partialState;
++      // Workaround for react-navigation/react-navigation#13011: React 19
++      // concurrent re-renders can call this with `partialState === undefined`
++      // (after useNavigationBuilder marks nested route params as consumed).
++      // Without this guard the next line crashes with
++      // "Cannot read properties of undefined (reading 'stale' / 'routes')".
++      if (!state) {
++        return router.getInitialState({ routeNames, routeParamList });
++      }
+       if (state.stale === false) {
+         return state;
+       }
+diff --git a/lib/module/TabRouter.js b/lib/module/TabRouter.js
+index f3b26a991b60cec9729cd4851aa40a8e2e998479..0afd1f6c3387298af36ea7307e01362608772f60 100644
+--- a/lib/module/TabRouter.js
++++ b/lib/module/TabRouter.js
+@@ -119,6 +119,14 @@ export function TabRouter({
+       routeParamList
+     }) {
+       const state = partialState;
++      // Workaround for react-navigation/react-navigation#13011: React 19
++      // concurrent re-renders can call this with `partialState === undefined`
++      // (after useNavigationBuilder marks nested route params as consumed).
++      // Without this guard the next line crashes with
++      // "Cannot read properties of undefined (reading 'stale' / 'routes')".
++      if (!state) {
++        return router.getInitialState({ routeNames, routeParamList });
++      }
+       if (state.stale === false) {
+         return state;
+       }

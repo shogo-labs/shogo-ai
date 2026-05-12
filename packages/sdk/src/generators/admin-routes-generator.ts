@@ -52,7 +52,7 @@ function toRoutePath(name: string): string {
  * Get string fields that can be searched
  */
 function getSearchableFields(model: PrismaModel): PrismaField[] {
-  return getScalarFields(model).filter(f => f.type === 'String' && !f.isId)
+  return getScalarFields(model).filter(f => f.type === 'String' && !f.isId && !f.isList)
 }
 
 /**
@@ -121,6 +121,15 @@ export function generateAdminRoutes(
     '  const { prisma, middleware = [] } = config',
     '  const router = new Hono()',
     '',
+    '  // SQLite does not support `mode: "insensitive"` on string filters.',
+    '  // Detect the provider at startup so search clauses can adapt.',
+    '  const isSQLite = (() => {',
+    '    try {',
+    '      const url = process.env.DATABASE_URL || ""',
+    '      return url.startsWith("file:") || url.endsWith(".db") || url.includes("sqlite")',
+    '    } catch { return false }',
+    '  })()',
+    '',
     '  // Apply middleware stack',
     '  for (const mw of middleware) {',
     '    router.use("*", mw)',
@@ -157,10 +166,13 @@ export function generateAdminRoutes(
     if (searchFields.length > 0) {
       lines.push('      let where: any = {}')
       lines.push('      if (search) {')
+      lines.push('        const searchFilter = isSQLite')
+      lines.push('          ? { contains: search }')
+      lines.push('          : { contains: search, mode: "insensitive" as const }')
       lines.push('        where = {')
       lines.push('          OR: [')
       for (const field of searchFields) {
-        lines.push(`            { ${field.name}: { contains: search, mode: "insensitive" } },`)
+        lines.push(`            { ${field.name}: searchFilter },`)
       }
       lines.push('          ]')
       lines.push('        }')

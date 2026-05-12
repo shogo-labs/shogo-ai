@@ -49,12 +49,22 @@
       "android": {
         "serviceAccountKeyPath": "./google-services.json",
         "track": "internal"
+      },
+      "ios": {
+        "appleId": "$APPLE_ID",
+        "ascAppId": "$ASC_APP_ID",
+        "appleTeamId": "$APPLE_TEAM_ID"
       }
     },
     "production": {
       "android": {
         "serviceAccountKeyPath": "./google-services.json",
         "track": "production"
+      },
+      "ios": {
+        "appleId": "$APPLE_ID",
+        "ascAppId": "$ASC_APP_ID",
+        "appleTeamId": "$APPLE_TEAM_ID"
       }
     }
   }

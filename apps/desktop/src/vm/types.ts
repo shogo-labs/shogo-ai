@@ -60,7 +60,13 @@ export interface VMManager {
 }
 
 export const VM_DEFAULTS = {
-  memoryMB: 1536,
+  // 1.5 GB was too tight: vite build --watch alone reaches ~500 MB, plus bun
+  // agent-runtime (~300 MB), prisma generate (~200 MB), TypeScript LSP and
+  // Pyright, and the kernel itself. The Linux OOM killer was reaping
+  // `node` mid-build (see desktop main.log "Out of memory: Killed process
+  // ... (node) ... anon-rss:514132kB"), causing preview-manager restart
+  // loops. 4 GB gives headroom for all of the above plus a swapfile.
+  memoryMB: 4096,
   cpus: 4,
   networkEnabled: true,
 

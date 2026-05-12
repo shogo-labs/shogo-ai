@@ -100,19 +100,19 @@ model Verification {
 // =============================================================================
 
 model Workspace {
-  id           String   @id @default(uuid())
-  name         String
-  slug         String   @unique
-  description  String?
-  ssoSettings  String?
-  instanceSize String   @default("micro")
+  id            String   @id @default(uuid())
+  name          String
+  slug          String   @unique
+  description   String?
+  ssoSettings   String?
+  instanceSize  String   @default("micro")
   // See packages/agent-runtime/src/composio.ts and
   // apps/api/src/routes/integrations.ts. New workspaces default to
   // "workspace" (one OAuth shared across the workspace); existing
   // workspaces are migrated to "project" to preserve current behavior.
-  composioScope String  @default("workspace")
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  composioScope String   @default("workspace")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   projects               Project[]
   members                Member[]
@@ -130,6 +130,7 @@ model Workspace {
   apiKeys                ApiKey[]
   meetings               Meeting[]
   voiceProjectConfigs    VoiceProjectConfig[]
+  projectAgents          ProjectAgent[]
   agentCostMetrics       AgentCostMetric[]
   budgetAlerts           BudgetAlert[]
   modelExperiments       ModelExperiment[]
@@ -179,6 +180,7 @@ model Project {
   meetings               Meeting[]
   marketplaceListing     MarketplaceListing?
   voiceConfig            VoiceProjectConfig?
+  agents                 ProjectAgent[]
   agentCostMetrics       AgentCostMetric[]
   modelExperiments       ModelExperiment[]
   subagentModelOverrides SubagentModelOverride[]
@@ -1465,6 +1467,38 @@ model VoiceProjectConfig {
 
   @@index([workspaceId])
   @@map("voice_project_configs")
+}
+
+// ProjectAgent — see canonical docs in prisma/schema.prisma.
+model ProjectAgent {
+  id          String @id @default(cuid())
+  projectId   String
+  workspaceId String
+  name        String
+
+  systemPrompt   String?
+  // SQLite: JSON-encoded string[] (mirrors the postgres JSONB).
+  toolsAllowlist String?
+  // SQLite: JSON-encoded ToolDescriptor[] (mirrors the postgres JSONB).
+  tools          String?
+  characterName  String?
+  displayName    String?
+
+  voiceId           String?
+  firstMessage      String?
+  elevenlabsAgentId String?
+
+  model String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, name])
+  @@index([workspaceId])
+  @@map("project_agents")
 }
 
 model VoiceCallMeter {

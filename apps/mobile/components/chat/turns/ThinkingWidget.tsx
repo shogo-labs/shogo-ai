@@ -7,8 +7,17 @@
  * Auto-opens during streaming, auto-closes when complete.
  */
 
-import { useState, useEffect, useRef, useCallback } from "react"
-import { View, Text, Pressable, ScrollView, Platform, useColorScheme } from "react-native"
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from "react"
+import {
+  View,
+  Text,
+  Pressable,
+  ScrollView,
+  Platform,
+  StyleSheet,
+  useColorScheme,
+  type LayoutChangeEvent,
+} from "react-native"
 import { Motion, AnimatePresence } from "@legendapp/motion"
 import { LinearGradient } from "expo-linear-gradient"
 import { cn } from "@shogo/shared-ui/primitives"
@@ -19,6 +28,71 @@ const ANIM_DURATION = 500
 const STREAM_MAX_HEIGHT = 200
 const FADE_HEIGHT = 16
 
+// Hoisted-stable references for legendapp/motion props. Keeping these out of
+// the render body means @legendapp/motion sees identity-equal `transition` /
+// `animate` props across renders and won't re-kick animations when the
+// component re-renders for unrelated reasons.
+const ROTATE_TRANSITION = {
+  type: "timing",
+  duration: ANIM_DURATION,
+  easing: "easeInOut",
+}
+const HEIGHT_TRANSITION = {
+  opacity: { type: "timing", duration: ANIM_DURATION, easing: "easeInOut" },
+  height: { type: "spring", damping: 22, stiffness: 260, mass: 1 },
+}
+const ROTATE_OPEN = { rotateZ: "180deg" }
+const ROTATE_CLOSED = { rotateZ: "0deg" }
+// Separate refs for initial/exit so legendapp/motion can track them
+// independently inside AnimatePresence.
+const MOTION_INITIAL = { opacity: 0, height: 0 }
+const MOTION_EXIT = { opacity: 0, height: 0 }
+
+const styles = StyleSheet.create({
+  hiddenMeasure: {
+    position: "absolute",
+    opacity: 0,
+    pointerEvents: "none",
+  },
+  overflowHidden: {
+    overflow: "hidden",
+  },
+  relative: {
+    position: "relative",
+  },
+  topFade: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: FADE_HEIGHT,
+    borderTopLeftRadius: 6,
+    borderTopRightRadius: 6,
+    pointerEvents: "none",
+  },
+  bottomFade: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: FADE_HEIGHT,
+    borderBottomLeftRadius: 6,
+    borderBottomRightRadius: 6,
+    pointerEvents: "none",
+  },
+  capHeight: {
+    maxHeight: STREAM_MAX_HEIGHT,
+  },
+})
+
+const WEB_FADE_MASK =
+  Platform.OS === "web"
+    ? ({
+        WebkitMaskImage: `linear-gradient(to bottom, transparent, black ${FADE_HEIGHT}px, black calc(100% - ${FADE_HEIGHT}px), transparent)`,
+        maskImage: `linear-gradient(to bottom, transparent, black ${FADE_HEIGHT}px, black calc(100% - ${FADE_HEIGHT}px), transparent)`,
+      } as any)
+    : undefined
+
 export interface ThinkingWidgetProps {
   text: string
   isStreaming?: boolean
@@ -26,7 +100,7 @@ export interface ThinkingWidgetProps {
   className?: string
 }
 
-export function ThinkingWidget({
+function ThinkingWidgetImpl({
   text,
   isStreaming = false,
   durationSeconds,
@@ -83,21 +157,51 @@ export function ThinkingWidget({
 
   // Composite bg color for gradient fades (muted/30 over page background)
   const fadeColor =
-    colorScheme === "dark"
-      ? "rgb(25, 25, 25)"
-      : "rgb(252, 252, 252)"
+    colorScheme === "dark" ? "rgb(25, 25, 25)" : "rgb(252, 252, 252)"
   const fadeColorTransparent =
-    colorScheme === "dark"
-      ? "rgba(25, 25, 25, 0)"
-      : "rgba(252, 252, 252, 0)"
+    colorScheme === "dark" ? "rgba(25, 25, 25, 0)" : "rgba(252, 252, 252, 0)"
 
-  const webFadeMask =
-    Platform.OS === "web"
-      ? ({
-          WebkitMaskImage: `linear-gradient(to bottom, transparent, black ${FADE_HEIGHT}px, black calc(100% - ${FADE_HEIGHT}px), transparent)`,
-          maskImage: `linear-gradient(to bottom, transparent, black ${FADE_HEIGHT}px, black calc(100% - ${FADE_HEIGHT}px), transparent)`,
-        } as any)
-      : undefined
+  const topFadeColors = useMemo<[string, string]>(
+    () => [fadeColor, fadeColorTransparent],
+    [fadeColor, fadeColorTransparent],
+  )
+  const bottomFadeColors = useMemo<[string, string]>(
+    () => [fadeColorTransparent, fadeColor],
+    [fadeColor, fadeColorTransparent],
+  )
+
+  const scrollStyle = useMemo(
+    () => [capHeight ? styles.capHeight : undefined, WEB_FADE_MASK],
+    [capHeight],
+  )
+
+  const heightAnimate = useMemo(
+    () => ({ opacity: 1, height: targetHeight || STREAM_MAX_HEIGHT }),
+    [targetHeight],
+  )
+
+  const handleHiddenLayout = useCallback((e: LayoutChangeEvent) => {
+    const h = e.nativeEvent.layout.height
+    if (h > 0) setMeasuredHeight(h)
+  }, [])
+
+  const handleScrollBeginDrag = useCallback(() => {
+    userScrolledThinkingRef.current = true
+  }, [])
+
+  const handleContentSizeChange = useCallback(
+    (_w: number, h: number) => {
+      const next = Math.ceil(h + 20)
+      // Only commit when the delta is meaningful — sub-pixel jitter from the
+      // height spring otherwise feeds back into Motion.View.animate and keeps
+      // re-kicking the animation.
+      if (Math.abs(next - measuredHeight) > 1) setMeasuredHeight(next)
+      if (isStreaming && !userScrolledThinkingRef.current) {
+        innerScrollRef.current?.scrollToEnd({ animated: false })
+      }
+    },
+    [measuredHeight, isStreaming],
+  )
 
   return (
     <View className={cn("", className)}>
@@ -109,21 +213,15 @@ export function ThinkingWidget({
       >
         <Text className="text-[11px] text-muted-foreground">{label}</Text>
         <Motion.View
-          animate={{ rotateZ: isOpen ? "180deg" : "0deg" }}
-          transition={{ type: "timing", duration: ANIM_DURATION, easing: "easeInOut" }}
+          animate={isOpen ? ROTATE_OPEN : ROTATE_CLOSED}
+          transition={ROTATE_TRANSITION}
         >
           <ChevronDown size={10} className="text-muted-foreground" />
         </Motion.View>
       </Pressable>
 
       {hasText && measuredHeight === 0 && (
-        <View
-          style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}
-          onLayout={(e) => {
-            const h = e.nativeEvent.layout.height
-            if (h > 0) setMeasuredHeight(h)
-          }}
-        >
+        <View style={styles.hiddenMeasure} onLayout={handleHiddenLayout}>
           <View className="rounded-md border border-border/50 bg-muted/30 p-2.5">
             <MarkdownText variant="thinking">{text}</MarkdownText>
           </View>
@@ -134,35 +232,21 @@ export function ThinkingWidget({
         {isOpen && hasText && (
           <Motion.View
             key="thinking-content"
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: targetHeight || STREAM_MAX_HEIGHT }}
-            exit={{ opacity: 0, height: 0 }}
-            transition={{
-              opacity: { type: "timing", duration: ANIM_DURATION, easing: "easeInOut" },
-              height: { type: "spring", damping: 22, stiffness: 260, mass: 1 },
-            }}
-            style={{ overflow: "hidden" }}
+            initial={MOTION_INITIAL}
+            animate={heightAnimate}
+            exit={MOTION_EXIT}
+            transition={HEIGHT_TRANSITION}
+            style={styles.overflowHidden}
           >
-            <View style={{ position: "relative" }}>
+            <View style={styles.relative}>
               <ScrollView
                 ref={innerScrollRef}
                 className="rounded-md border border-border/50 bg-muted/30 p-2.5"
-                style={[
-                  capHeight ? { maxHeight: STREAM_MAX_HEIGHT } : undefined,
-                  webFadeMask,
-                ]}
+                style={scrollStyle}
                 scrollEnabled={capHeight}
                 nestedScrollEnabled
-                onScrollBeginDrag={() => {
-                  userScrolledThinkingRef.current = true
-                }}
-                onContentSizeChange={(_w, h) => {
-                  const next = Math.ceil(h + 20)
-                  if (next !== measuredHeight) setMeasuredHeight(next)
-                  if (isStreaming && !userScrolledThinkingRef.current) {
-                    innerScrollRef.current?.scrollToEnd({ animated: false })
-                  }
-                }}
+                onScrollBeginDrag={handleScrollBeginDrag}
+                onContentSizeChange={handleContentSizeChange}
               >
                 <MarkdownText variant="thinking">{text}</MarkdownText>
               </ScrollView>
@@ -170,32 +254,8 @@ export function ThinkingWidget({
               {/* Native fade overlays (web uses CSS mask instead) */}
               {Platform.OS !== "web" && (
                 <>
-                  <LinearGradient
-                    colors={[fadeColor, fadeColorTransparent]}
-                    style={{
-                      position: "absolute",
-                      top: 0,
-                      left: 0,
-                      right: 0,
-                      height: FADE_HEIGHT,
-                      borderTopLeftRadius: 6,
-                      borderTopRightRadius: 6,
-                      pointerEvents: "none",
-                    }}
-                  />
-                  <LinearGradient
-                    colors={[fadeColorTransparent, fadeColor]}
-                    style={{
-                      position: "absolute",
-                      bottom: 0,
-                      left: 0,
-                      right: 0,
-                      height: FADE_HEIGHT,
-                      borderBottomLeftRadius: 6,
-                      borderBottomRightRadius: 6,
-                      pointerEvents: "none",
-                    }}
-                  />
+                  <LinearGradient colors={topFadeColors} style={styles.topFade} />
+                  <LinearGradient colors={bottomFadeColors} style={styles.bottomFade} />
                 </>
               )}
             </View>
@@ -205,3 +265,5 @@ export function ThinkingWidget({
     </View>
   )
 }
+
+export const ThinkingWidget = memo(ThinkingWidgetImpl)

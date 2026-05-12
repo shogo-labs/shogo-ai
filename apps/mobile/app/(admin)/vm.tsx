@@ -648,7 +648,7 @@ function VMConfigSection({
     try {
       await bridge.setVMConfig({
         enabled,
-        memoryMB: parseInt(memoryMB, 10) || 1536,
+        memoryMB: parseInt(memoryMB, 10) || 4096,
         cpus: parseInt(cpus, 10) || 0,
         mountWorkspace,
       })
@@ -768,7 +768,7 @@ function VMConfigSection({
             className="border border-border rounded-lg px-3 py-2 text-sm text-foreground bg-background web:outline-none"
           />
           <Text className="text-[10px] text-muted-foreground">
-            RAM allocated to each sandbox VM (default: 1536)
+            RAM allocated to each sandbox VM (default: 4096)
           </Text>
         </View>
 

@@ -11,7 +11,7 @@
  */
 
 import type { AgentEval, EvalResult } from './types'
-import { CROSS_CUTTING_MOCKS, type ToolMockMap } from './tool-mocks'
+import { CROSS_CUTTING_MOCKS, JIRA_INSTALL_FLOW_MOCKS, type ToolMockMap } from './tool-mocks'
 import {
   usedTool,
   toolCallArgsContain,
@@ -584,6 +584,194 @@ const XCUT_PERSONA_ADAPTATION: AgentEval = {
 }
 
 // ---------------------------------------------------------------------------
+// 9. Integration tools — call directly after install (no skill, no integration subagent)
+// ---------------------------------------------------------------------------
+
+function spawnedIntegrationSubagent(r: EvalResult): boolean {
+  return r.toolCalls.some(
+    tc => tc.name === 'agent_spawn' && (tc.input as any)?.type === 'integration',
+  )
+}
+
+const XCUT_INTEGRATION_TOOLS_DIRECT: AgentEval = {
+  id: 'xcut-integration-tools-direct',
+  name: 'Cross-cutting: call installed integration tools directly (no skill, no integration subagent)',
+  category: 'cross-cutting' as any,
+  level: 3,
+  input: 'Connect to my Jira and tell me all of the boards I have access to.',
+  toolMocks: { ...CROSS_CUTTING_MOCKS, ...JIRA_INSTALL_FLOW_MOCKS } satisfies ToolMockMap,
+  maxScore: 14,
+  validationCriteria: [
+    {
+      id: 'installed-jira',
+      description: 'Installed the Jira integration via tool_install',
+      points: 2,
+      phase: 'execution',
+      validate: (r) =>
+        r.toolCalls.some(tc => tc.name === 'tool_install' && /jira/i.test(String((tc.input as any)?.name ?? ''))),
+    },
+    {
+      id: 'called-list-boards-directly',
+      description: 'Called JIRA_LIST_BOARDS directly (without delegating)',
+      points: 5,
+      phase: 'intention',
+      validate: (r) => usedTool(r, 'JIRA_LIST_BOARDS'),
+    },
+    {
+      id: 'no-skill-tool',
+      description: 'Did NOT route the call through the `skill` tool',
+      points: 3,
+      phase: 'intention',
+      validate: (r) => !usedTool(r, 'skill'),
+    },
+    {
+      id: 'no-integration-subagent',
+      description: 'Did NOT spawn an `integration` subagent to execute Jira tools',
+      points: 3,
+      phase: 'intention',
+      validate: (r) => !spawnedIntegrationSubagent(r),
+    },
+    {
+      id: 'mentioned-boards',
+      description: 'Response mentions at least one of the returned boards',
+      points: 1,
+      phase: 'execution',
+      validate: (r) =>
+        responseContains(r, 'platform') || responseContains(r, 'mobile') || responseContains(r, 'growth'),
+    },
+  ],
+  antiPatterns: [
+    'invoked `skill` for "jira" instead of calling JIRA_LIST_BOARDS directly',
+    'spawned `agent_spawn({ type: "integration" })` to execute an installed tool',
+  ],
+  tags: ['cross-cutting', 'integrations', 'tool-routing'],
+}
+
+// ---------------------------------------------------------------------------
+// 10. Integration dashboard — server-side route, per-request identity, curl-verified
+// ---------------------------------------------------------------------------
+
+/** Did the agent write/edit `custom-routes.ts`? */
+function touchedCustomRoutes(r: EvalResult): boolean {
+  return r.toolCalls.some(t => {
+    if (t.name !== 'write_file' && t.name !== 'edit_file') return false
+    return /custom-routes\.ts$/.test(String((t.input as any).path ?? ''))
+  })
+}
+
+/** Concatenated content of every write/edit to custom-routes.ts. */
+function customRoutesContent(r: EvalResult): string {
+  return r.toolCalls
+    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
+    .filter(t => /custom-routes\.ts$/.test(String((t.input as any).path ?? '')))
+    .map(t => String((t.input as any).content ?? (t.input as any).new_string ?? ''))
+    .join('\n')
+}
+
+/** Concatenated content of every write/edit to client/component code. */
+function allClientCode(r: EvalResult): string {
+  return r.toolCalls
+    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
+    .filter(t => {
+      const p = String((t.input as any).path ?? '')
+      return /^src\/.*\.(tsx?|jsx?)$/.test(p)
+    })
+    .map(t => String((t.input as any).content ?? (t.input as any).new_string ?? ''))
+    .join('\n')
+}
+
+/** Did the agent curl/fetch the new route through `exec`? */
+function curledOwnRoute(r: EvalResult): boolean {
+  return r.toolCalls.some(t => {
+    if (t.name !== 'exec') return false
+    const cmd = String((t.input as any).command ?? '').toLowerCase()
+    if (!cmd.includes('curl') && !cmd.includes('fetch') && !cmd.includes('http')) return false
+    // Route mentioned anywhere — /jira, /api/jira, my-issues, dashboard, etc.
+    return cmd.includes('/api/') || cmd.includes('jira') || cmd.includes('dashboard')
+  })
+}
+
+const XCUT_INTEGRATION_DASHBOARD: AgentEval = {
+  id: 'xcut-integration-dashboard',
+  name: 'Cross-cutting: Jira "my issues" dashboard — server route, per-request identity, curl-verified',
+  category: 'cross-cutting' as any,
+  level: 4,
+  conversationHistory: [
+    {
+      role: 'user',
+      content: 'Connect to my Jira so I can build something with it.',
+    },
+    {
+      role: 'assistant',
+      content:
+        'Connected. JIRA_LIST_BOARDS, JIRA_GET_CURRENT_USER, JIRA_SEARCH_ISSUES and a few more are now available — what do you want to build?',
+    },
+  ],
+  input: 'Build me a beautiful dashboard of my open Jira issues.',
+  workspaceFiles: { 'config.json': V2_CONFIG },
+  initialMode: 'canvas' as const,
+  useRuntimeTemplate: true,
+  useSkillServer: true,
+  toolMocks: { ...CROSS_CUTTING_MOCKS, ...JIRA_INSTALL_FLOW_MOCKS } satisfies ToolMockMap,
+  maxScore: 20,
+  validationCriteria: [
+    {
+      id: 'wrote-custom-route',
+      description: 'Mounted a route in custom-routes.ts (server-side dashboard data path)',
+      points: 4,
+      phase: 'execution',
+      validate: (r) => touchedCustomRoutes(r),
+    },
+    {
+      id: 'used-server-tools-client',
+      description: 'Route uses getServerToolsClient() — not bare fetch() or process.env tokens',
+      points: 4,
+      phase: 'execution',
+      validate: (r) => /getServerToolsClient/.test(customRoutesContent(r)),
+    },
+    {
+      id: 'per-request-identity',
+      description: 'Route resolves identity per request via JIRA_GET_CURRENT_USER (no hardcoded accountId)',
+      points: 4,
+      phase: 'execution',
+      validate: (r) => {
+        const code = customRoutesContent(r)
+        const callsCurrentUser = /JIRA_GET_CURRENT_USER/.test(code)
+        // Operator's own accountId would be a hex / alphanumeric literal pasted in;
+        // a permissive guard here flags the most common shapes the agent has
+        // hallucinated (24-char hex, Atlassian-style 'qm:' prefix, 'urn:atlassian').
+        const hardcodedId =
+          /accountId\s*[:=]\s*['"][a-f0-9]{24}['"]/i.test(code) ||
+          /accountId\s*[:=]\s*['"]qm:[\w-]+['"]/i.test(code) ||
+          /accountId\s*[:=]\s*['"]urn:atlassian/i.test(code)
+        return callsCurrentUser && !hardcodedId
+      },
+    },
+    {
+      id: 'curl-verified',
+      description: 'Hit the new route via curl/exec after writing it (build-green ≠ endpoint-works)',
+      points: 4,
+      phase: 'intention',
+      validate: (r) => curledOwnRoute(r),
+    },
+    {
+      id: 'no-generic-failed-to-load',
+      description: 'Client component does NOT throw `Failed to load` — surfaces server error instead',
+      points: 4,
+      phase: 'execution',
+      validate: (r) => !/failed to load/i.test(allClientCode(r)),
+    },
+  ],
+  antiPatterns: [
+    'hand-rolled fetch() to atlassian REST API in custom-routes.ts',
+    'hardcoded operator accountId into route or component',
+    'declared dashboard "live" without curl-ing the new endpoint',
+    'threw `new Error("Failed to load …")` from the client fetch handler',
+  ],
+  tags: ['cross-cutting', 'integrations', 'tool-routing'],
+}
+
+// ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
 
@@ -596,4 +784,6 @@ export const CROSS_CUTTING_EVALS: AgentEval[] = [
   XCUT_DELEGATION_JUDGMENT_COMPLEX,
   XCUT_ERROR_RECOVERY_LOOP,
   XCUT_PERSONA_ADAPTATION,
+  XCUT_INTEGRATION_TOOLS_DIRECT,
+  XCUT_INTEGRATION_DASHBOARD,
 ]

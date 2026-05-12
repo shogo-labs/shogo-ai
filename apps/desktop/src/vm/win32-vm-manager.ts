@@ -11,6 +11,12 @@ import { QMPClient } from './qmp-client'
 import { generateSeedISO } from './cloud-init'
 import { isNoisyVMLine } from './vm-log-filter'
 
+// See apps/desktop/src/vm/darwin-vm-manager.ts for the rationale —
+// these ports MUST stay outside RuntimeManager's 37100-37900 +
+// 38100-38900 stale-process scan range.
+const VM_AGENT_HOST_PORT_BASE = 39200
+const VM_SKILL_HOST_PORT_BASE = 39400
+
 /**
  * Windows VM Manager using QEMU with WHPX acceleration.
  *
@@ -52,8 +58,8 @@ export class Win32VMManager implements VMManager {
     this.ensureOverlay(config.overlayPath)
 
     const qmpPort = await this.findFreePort(44440)
-    const agentHostPort = await this.findFreePort(37100)
-    const skillHostPort = config.skillServerHostPort || await this.findFreePort(38100)
+    const agentHostPort = await this.findFreePort(VM_AGENT_HOST_PORT_BASE)
+    const skillHostPort = config.skillServerHostPort || await this.findFreePort(VM_SKILL_HOST_PORT_BASE)
 
     // Build extra files to embed in the seed ISO.
     // If bundleFiles were provided explicitly (eval path), use them directly.

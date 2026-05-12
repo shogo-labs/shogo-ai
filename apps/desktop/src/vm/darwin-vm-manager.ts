@@ -11,6 +11,22 @@ import { QMPClient } from './qmp-client'
 import { generateSeedISO } from './cloud-init'
 import { isNoisyVMLine } from './vm-log-filter'
 
+// Host-side base ports for the VM's hostfwd forwarders. These MUST stay
+// outside `apps/api/src/lib/runtime/manager.ts`'s stale-process scan
+// range (PORT_RANGE_START..END + AGENT_PORT_OFFSET = 37100-37900 plus
+// 38100-38900). Historically these were `findFreePort(37100)` and
+// `findFreePort(38100)`, which put the warm pool's QEMU directly in
+// RuntimeManager's `kill -9` path: on init it would lsof the range,
+// find the brand-new VM listening, and SIGKILL it before cloud-init
+// finished — see main.log 04:58:53→54 in the 1.6.x failure report.
+//
+// 39200/39400 is above the API server's own port (39100) and the
+// legacy K8s RUNTIME_BASE_PORT (39110), and far below typical user
+// app ports. Stays headroom-safe for `VM_MAX_ASSIGNED` ≥ 8 since
+// `findFreePort()` scans 100 sequential ports.
+const VM_AGENT_HOST_PORT_BASE = 39200
+const VM_SKILL_HOST_PORT_BASE = 39400
+
 /**
  * macOS VM Manager using QEMU with HVF (Hypervisor.framework) acceleration.
  *
@@ -47,8 +63,8 @@ export class DarwinVMManager implements VMManager {
     this.ensureOverlay(config.overlayPath)
 
     const qmpPort = await this.findFreePort(44440)
-    const agentHostPort = await this.findFreePort(37100)
-    const skillHostPort = config.skillServerHostPort || await this.findFreePort(38100)
+    const agentHostPort = await this.findFreePort(VM_AGENT_HOST_PORT_BASE)
+    const skillHostPort = config.skillServerHostPort || await this.findFreePort(VM_SKILL_HOST_PORT_BASE)
 
     const extraFiles: Array<{ name: string; content: Buffer }> = []
     const bundleFiles = config.bundleFiles ?? this.readBundleDir(config.bundleDir)

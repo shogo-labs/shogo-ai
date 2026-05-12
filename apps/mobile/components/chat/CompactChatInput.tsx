@@ -66,6 +66,10 @@ import {
 import { FileViewerModal } from "./FileViewerModal"
 import { PastedTextChip } from "./PastedTextChip"
 import { EnvironmentPicker } from "./EnvironmentPicker"
+import {
+  useTypingPlaceholder,
+  AGENT_PLACEHOLDER_PREFIX,
+} from "../../hooks/useTypingPlaceholder"
 import { FileMentionPicker } from "./FileMentionPicker"
 import { FileMentionChip } from "./FileMentionChip"
 import {
@@ -127,6 +131,15 @@ export interface CompactChatInputProps {
    * project creation while preemptively warming a runtime pod.
    */
   onStartVoiceProjectCreation?: () => void | Promise<void>
+  /**
+   * When true, the input runs the rotating "Ask Shogo to ..." typewriter
+   * effect locally as its placeholder while the input is empty. Owning the
+   * timer here means the per-character placeholder updates only re-render
+   * this component, instead of cascading through the parent screen on
+   * every tick (~30Hz). Overrides `placeholder` while the typewriter is
+   * actively rendering.
+   */
+  agentPlaceholderActive?: boolean
   /** Project id for the @-file mention picker. Optional — picker shows
    *  a "no project connected" state when undefined. */
   projectId?: string
@@ -150,6 +163,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       onUpgradeClick,
       dimWhenDisabled = true,
       onStartVoiceProjectCreation,
+      agentPlaceholderActive = false,
       projectId,
     },
     ref
@@ -221,6 +235,24 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       valueRef.current = value
     }, [value])
 
+    // Run the rotating typewriter locally so its 25–45ms ticks only
+    // re-render this component, not whatever screen owns the input. The
+    // hook short-circuits to an empty string when disabled, so there is no
+    // ongoing timer when the user has typed something or the host hasn't
+    // opted in via `agentPlaceholderActive`.
+    const typingPlaceholder = useTypingPlaceholder(undefined, {
+      enabled: agentPlaceholderActive && !value,
+    })
+
+    const placeholderText = agentPlaceholderActive
+      ? `${AGENT_PLACEHOLDER_PREFIX}${typingPlaceholder}`
+      : (placeholderProp ??
+        (interactionMode === "plan"
+          ? "Describe what you want to plan..."
+          : interactionMode === "ask"
+            ? "Ask a question..."
+            : "Describe the agent you want to build..."))
+
     // ─── @-file mention state (parity with ChatInput) ──────────────────────
     const mentionsFeatureEnabled = features.fileMentions !== false
     const fileMentions = useChatFileMentions({
@@ -256,14 +288,6 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       resolveForSend: resolveMentionsForSend,
       resetMentions,
     } = fileMentions
-
-    const placeholderText =
-      placeholderProp ??
-      (interactionMode === "plan"
-        ? "Describe what you want to plan..."
-        : interactionMode === "ask"
-          ? "Ask a question..."
-          : "Describe the agent you want to build...")
 
     const formatFileSize = useCallback((bytes: number): string => {
       if (bytes < 1024) return `${bytes} B`

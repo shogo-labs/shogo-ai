@@ -4,30 +4,37 @@
 /**
  * Pure reducer + helpers for the multi-tab Terminal session list.
  *
- * Each tab owns its own output buffer, prompt history, in-flight command,
- * and synthetic-shell `cwd` / `prevCwd` (so `cd -` works across independent
- * `bash -c` invocations). Labels are derived from the tab's *position*,
- * not its id, so closing tab #2 leaves "Terminal 1, 2" rather than
- * "Terminal 1, 3".
+ * Each tab holds the React-side bookkeeping for one PTY shell. The actual
+ * shell + scrollback live on the server (see `packages/agent-runtime/src/
+ * pty-session.ts`); the tab keeps a `PtyClient` that owns its WebSocket
+ * and an `XtermView` that owns the rendering.
+ *
+ * Labels are derived from the tab's *position*, not its id, so closing
+ * tab #2 leaves "Terminal 1, 2" rather than "Terminal 1, 3".
  */
 
+import type { PtyClientLike } from './pty-factory'
+
+export type SessionStatus = 'creating' | 'ready' | 'error' | 'closed'
+
 export interface Session {
+  /** Stable client-side id; survives across remounts. */
   id: string
-  output: string
-  /** Non-null while a command (preset or free-form) is streaming. */
-  runningCmdId: string | null
-  /** AbortController held alongside the running command so callers can cancel. */
-  abort: AbortController | null
-  /** Free-form prompt history, oldest → newest. */
-  history: string[]
   /**
-   * Synthetic-shell cwd. `null` means "server default" (project workspace
-   * root) — we resolve it lazily on first command. Updated from the
-   * out-of-band metadata trailer after every command.
+   * Server-allocated PTY session id. `null` while the create REST call is
+   * in flight; non-null once we own a real shell on the server.
    */
-  cwd: string | null
-  /** Previous cwd so `cd -` survives across independent `bash -c` calls. */
-  prevCwd: string | null
+  ptySessionId: string | null
+  /** WebSocket wrapper. Constructed once we have `ptySessionId`. */
+  client: PtyClientLike | null
+  status: SessionStatus
+  /** Surfaced when status === 'error' (REST 4xx/5xx, WS dead, etc.). */
+  errorMessage: string | null
+  /**
+   * Last seen exit info (after the shell has exited). Kept for UI display
+   * so a closed tab shows "[exited 0]" until the user dismisses it.
+   */
+  exit: { code: number | null; signal: string | null } | null
 }
 
 let _idSeq = 0
@@ -43,12 +50,11 @@ export function __resetSessionIdSeqForTest(): void {
 export function makeSession(): Session {
   return {
     id: `t-${Date.now().toString(36)}-${++_idSeq}`,
-    output: '',
-    runningCmdId: null,
-    abort: null,
-    history: [],
-    cwd: null,
-    prevCwd: null,
+    ptySessionId: null,
+    client: null,
+    status: 'creating',
+    errorMessage: null,
+    exit: null,
   }
 }
 
@@ -76,8 +82,8 @@ export interface CloseResult {
  * tab leaves the active id unchanged. Closing the active tab moves to
  * the right neighbor (or left if we were at the end).
  *
- * Aborting the closed tab's in-flight command is the caller's
- * responsibility — this reducer is pure.
+ * Tearing down the closed tab's PtyClient + DELETE'ing the server PTY
+ * is the caller's responsibility — this reducer is pure.
  */
 export function closeSession(
   sessions: Session[],
@@ -90,8 +96,6 @@ export function closeSession(
   }
   const next = sessions.filter((s) => s.id !== id)
   if (next.length === 0) {
-    // The caller seeds a fresh session for the next reopen; it picks the
-    // id so we just signal `panelDismissed`.
     return { sessions: next, nextActiveId: null, panelDismissed: true }
   }
   if (id === activeId) {
@@ -117,3 +121,6 @@ export function patchSession(
 ): Session[] {
   return sessions.map((s) => (s.id === id ? patch(s) : s))
 }
+
+// Re-export so callers can keep their existing import sites.
+export type { PtyClientLike }

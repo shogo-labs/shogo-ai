@@ -32,6 +32,7 @@ import {
   ButtonIcon,
 } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
+import { Input, InputField } from '@/components/ui/input'
 import { Progress, ProgressFilledTrack } from '@/components/ui/progress'
 import {
   Upload,
@@ -42,8 +43,42 @@ import {
   FileArchive,
   RefreshCw,
   ExternalLink,
+  Lock,
+  KeyRound,
+  Loader2,
+  XCircle,
+  ShieldCheck,
+  Settings2,
 } from 'lucide-react-native'
-import { api, type ProjectImportProgress } from '../../lib/api'
+import {
+  api,
+  type ProjectImportProgress,
+  type RequiredCredential,
+  type BootstrapStep,
+  type BootstrapStatus,
+} from '../../lib/api'
+
+// Friendly labels for the bootstrap sub-steps shown during the post-write
+// install / generate / preview / health phase.
+const BOOTSTRAP_STEP_LABELS: Record<BootstrapStep, string> = {
+  install: 'Installing dependencies',
+  generate: 'Generating routes & client',
+  preview: 'Preparing preview',
+  health: 'Health check',
+}
+
+// Friendly grouping for credential checklist items by source channel.
+const CHANNEL_LABELS: Record<string, { label: string; hint?: string }> = {
+  telegram: { label: 'Telegram', hint: 'Bot token & chat ID' },
+  discord: { label: 'Discord', hint: 'Bot token / webhook URL' },
+  slack: { label: 'Slack', hint: 'Bot token & signing secret' },
+  whatsapp: { label: 'WhatsApp', hint: 'Cloud API token' },
+  email: { label: 'Email', hint: 'SMTP credentials' },
+  webhook: { label: 'Webhook', hint: 'Endpoint secret' },
+  openai: { label: 'OpenAI', hint: 'API key' },
+  anthropic: { label: 'Anthropic', hint: 'API key' },
+  github: { label: 'GitHub', hint: 'Personal access token' },
+}
 
 interface ProjectImportModalProps {
   open: boolean
@@ -61,21 +96,29 @@ interface PendingFile {
   size: number
 }
 
-// Phase -> [startPercent, endPercent, label]. writeFiles and importChats use
-// their `done/total` to interpolate inside their band.
+// Phase -> [startPercent, endPercent, label]. writeFiles, importChats, and
+// bootstrap use their `done/total` (or sub-step index) to interpolate inside
+// their band. The new `bootstrap` band steals from importChats — both can't
+// run simultaneously and most projects spend much longer installing deps
+// than writing chat history.
 const PHASE_BANDS: Record<
   ProjectImportProgress['phase'] | 'idle',
   [number, number, string]
 > = {
   idle: [0, 0, 'Ready'],
-  upload: [0, 30, 'Uploading'],
-  parse: [30, 40, 'Parsing archive'],
-  createProject: [40, 50, 'Creating project'],
-  writeFiles: [50, 85, 'Writing files'],
-  importChats: [85, 100, 'Importing chats'],
+  upload: [0, 25, 'Uploading'],
+  parse: [25, 32, 'Parsing archive'],
+  createProject: [32, 40, 'Creating project'],
+  writeFiles: [40, 70, 'Writing files'],
+  importChats: [70, 78, 'Importing chats'],
+  bootstrap: [78, 100, 'Setting up project'],
   done: [100, 100, 'Done'],
   error: [0, 0, 'Error'],
 }
+
+// Linear progression through bootstrap sub-steps so the bar keeps moving
+// during the (potentially long) install + generate phases.
+const BOOTSTRAP_ORDER: BootstrapStep[] = ['install', 'generate', 'preview', 'health']
 
 function computePercent(ev: ProjectImportProgress | null): number {
   if (!ev) return 0
@@ -87,6 +130,15 @@ function computePercent(ev: ProjectImportProgress | null): number {
   if (ev.phase === 'upload') {
     const frac = ev.total > 0 ? ev.loaded / ev.total : 0
     return Math.round(start + (end - start) * frac)
+  }
+  if (ev.phase === 'bootstrap') {
+    // Each step is worth 1/N of the band; we treat `running` as 0.5 within
+    // its slice so the bar keeps inching forward visibly.
+    const idx = BOOTSTRAP_ORDER.indexOf(ev.step)
+    if (idx < 0) return start
+    const slice = (end - start) / BOOTSTRAP_ORDER.length
+    const within = ev.status === 'running' ? 0.5 : ev.status === 'pending' ? 0 : 1
+    return Math.round(start + slice * (idx + within))
   }
   return end
 }
@@ -100,6 +152,9 @@ function phaseLabel(ev: ProjectImportProgress | null): string {
     const mb = (n: number) => (n / (1024 * 1024)).toFixed(1)
     return `${label} (${mb(ev.loaded)} / ${mb(ev.total)} MB)`
   }
+  if (ev.phase === 'bootstrap') {
+    return `${label} — ${BOOTSTRAP_STEP_LABELS[ev.step]}`
+  }
   return label
 }
 
@@ -112,9 +167,20 @@ export function ProjectImportModal({
   const [step, setStep] = useState<Step>('options')
   const [pendingFile, setPendingFile] = useState<PendingFile | null>(null)
   const [includeChats, setIncludeChats] = useState(true)
+  const [passphrase, setPassphrase] = useState('')
   const [progress, setProgress] = useState<ProjectImportProgress | null>(null)
   const [errors, setErrors] = useState<string[]>([])
   const [fatalMessage, setFatalMessage] = useState<string | null>(null)
+  // Tracks the running status of each bootstrap sub-step so the progress UI
+  // can render a checklist (✓ install, ⟳ generate, …) instead of a single bar.
+  const [bootstrapSteps, setBootstrapSteps] = useState<
+    Record<BootstrapStep, { status: BootstrapStatus; message?: string }>
+  >({
+    install: { status: 'pending' },
+    generate: { status: 'pending' },
+    preview: { status: 'pending' },
+    health: { status: 'pending' },
+  })
   const [done, setDone] = useState<{
     project: { id: string; name: string; description?: string | null }
     stats: {
@@ -123,6 +189,9 @@ export function ProjectImportModal({
       chatsImported: number
       chatsSkipped: number
     }
+    requiredCredentials: RequiredCredential[]
+    warnings: string[]
+    secretsAutoFilled: boolean
   } | null>(null)
 
   // Keep the most recent `errors` value visible during auto-re-renders in the
@@ -130,15 +199,34 @@ export function ProjectImportModal({
   // streaming API.
   const errorsRef = useRef<string[]>([])
 
+  // Tracks whether `done` has been received. The SSE stream stays open
+  // *after* `done` so bootstrap progress (install → generate → …) can keep
+  // streaming, which means:
+  //   - We flip to the `done` step on the event itself, not on stream close
+  //     (so "Open project" enables immediately while bootstrap continues).
+  //   - If the await throws AFTER `done` (e.g. user closed the modal mid-
+  //     bootstrap and the EventSource was torn down), we treat it as a
+  //     non-fatal "bootstrap interrupted" and stay in the done state instead
+  //     of flashing the user back to the failure screen.
+  const doneReceivedRef = useRef(false)
+
   const resetAll = useCallback(() => {
     setStep('options')
     setPendingFile(null)
     setIncludeChats(true)
+    setPassphrase('')
     setProgress(null)
     setErrors([])
     errorsRef.current = []
     setFatalMessage(null)
+    setBootstrapSteps({
+      install: { status: 'pending' },
+      generate: { status: 'pending' },
+      preview: { status: 'pending' },
+      health: { status: 'pending' },
+    })
     setDone(null)
+    doneReceivedRef.current = false
   }, [])
 
   const close = useCallback(() => {
@@ -216,6 +304,7 @@ export function ProjectImportModal({
     errorsRef.current = []
     setFatalMessage(null)
     setDone(null)
+    doneReceivedRef.current = false
 
     try {
       await api.importProjectStream(
@@ -224,6 +313,7 @@ export function ProjectImportModal({
           workspaceId,
           filename: pendingFile.name,
           includeChats,
+          passphrase: passphrase.length > 0 ? passphrase : undefined,
         },
         (ev) => {
           if (ev.phase === 'error') {
@@ -235,20 +325,49 @@ export function ProjectImportModal({
             }
             return
           }
-          if (ev.phase === 'done') {
-            setDone({ project: ev.project, stats: ev.stats })
+          if (ev.phase === 'bootstrap') {
+            setBootstrapSteps((prev) => ({
+              ...prev,
+              [ev.step]: { status: ev.status, message: ev.message },
+            }))
             setProgress(ev)
+            return
+          }
+          if (ev.phase === 'done') {
+            doneReceivedRef.current = true
+            setDone({
+              project: ev.project,
+              stats: ev.stats,
+              requiredCredentials: ev.requiredCredentials || [],
+              warnings: ev.warnings || [],
+              secretsAutoFilled: !!ev.secretsAutoFilled,
+            })
+            setProgress(ev)
+            // Switch into the done step as soon as `done` arrives so the
+            // user can click "Open project" without waiting for bootstrap
+            // to finish. Any subsequent `bootstrap` events that come down
+            // the SSE wire will continue to update bootstrapSteps below
+            // the file-stats summary.
+            setStep('done')
             return
           }
           setProgress(ev)
         },
       )
-      setStep('done')
+      // Stream ended cleanly after bootstrap finished. If `done` had
+      // already arrived, the step is already 'done' — no-op. The fall-back
+      // assignment is here in case the server ever ends the stream before
+      // emitting any `done` event, which the helper would also throw on.
+      if (!doneReceivedRef.current) setStep('done')
     } catch (err: any) {
+      // Surface as fatal only if we never saw `done`. Post-`done` stream
+      // failures usually mean "user navigated away mid-bootstrap" and
+      // shouldn't reverse a successful import in the UI.
+      if (doneReceivedRef.current) return
       setFatalMessage(err?.message || 'Import failed')
       setStep('fatal')
     }
-  }, [pendingFile, workspaceId, includeChats])
+  }, [pendingFile, workspaceId, includeChats, passphrase])
 
   const percent = useMemo(() => computePercent(progress), [progress])
   const label = useMemo(() => phaseLabel(progress), [progress])
@@ -280,6 +399,8 @@ export function ProjectImportModal({
               onClear={() => setPendingFile(null)}
               includeChats={includeChats}
               setIncludeChats={setIncludeChats}
+              passphrase={passphrase}
+              setPassphrase={setPassphrase}
             />
           )}
 
@@ -288,11 +409,17 @@ export function ProjectImportModal({
               percent={percent}
               label={label}
               errors={errors}
+              bootstrapSteps={bootstrapSteps}
+              showBootstrap={progress?.phase === 'bootstrap'}
             />
           )}
 
           {step === 'done' && done && (
-            <DoneStep done={done} errors={errors} />
+            <DoneStep
+              done={done}
+              errors={errors}
+              bootstrapSteps={bootstrapSteps}
+            />
           )}
 
           {step === 'fatal' && (
@@ -366,12 +493,16 @@ function OptionsStep({
   onClear,
   includeChats,
   setIncludeChats,
+  passphrase,
+  setPassphrase,
 }: {
   pendingFile: PendingFile | null
   onPick: () => void
   onClear: () => void
   includeChats: boolean
   setIncludeChats: (v: boolean) => void
+  passphrase: string
+  setPassphrase: (v: string) => void
 }) {
   return (
     <>
@@ -404,20 +535,59 @@ function OptionsStep({
         </Button>
       )}
 
-      <View className="flex-row items-start gap-3 rounded-lg border border-outline-100 bg-background-50 px-4 py-3">
-        <View className="mt-0.5">
-          <MessageSquare size={18} className="text-typography-500" />
-        </View>
-        <View className="flex-1">
-          <Text className="text-sm font-medium text-typography-900">
-            Include chat history
-          </Text>
-          <Text className="text-xs text-typography-500 mt-0.5 leading-relaxed">
-            If the archive contains conversations, import them alongside the project files.
-          </Text>
-        </View>
-        <Switch value={includeChats} onValueChange={setIncludeChats} />
-      </View>
+      {/* Import options are gated on a picked file. Showing them up front
+          is noise: the user can't act on them yet, the toggles are pre-set
+          to sensible defaults, and the passphrase field is irrelevant
+          until we know what's in the archive. */}
+      {pendingFile && (
+        <>
+          <View className="flex-row items-start gap-3 rounded-lg border border-outline-100 bg-background-50 px-4 py-3">
+            <View className="mt-0.5">
+              <MessageSquare size={18} className="text-typography-500" />
+            </View>
+            <View className="flex-1">
+              <Text className="text-sm font-medium text-typography-900">
+                Include chat history
+              </Text>
+              <Text className="text-xs text-typography-500 mt-0.5 leading-relaxed">
+                If the archive contains conversations, import them alongside the project files.
+              </Text>
+            </View>
+            <Switch value={includeChats} onValueChange={setIncludeChats} />
+          </View>
+
+          {/* Optional passphrase: when the bundle ships an encryptedSecrets
+              blob, this lets us auto-fill credentials. We don't know
+              whether the bundle is encrypted until parse-time, so the
+              field is always available once a file is picked; leaving it
+              blank simply skips the auto-fill. */}
+          <View className="rounded-lg border border-outline-100 bg-background-50 px-4 py-3 gap-2">
+            <View className="flex-row items-start gap-3">
+              <View className="mt-0.5">
+                <Lock size={18} className="text-typography-500" />
+              </View>
+              <View className="flex-1">
+                <Text className="text-sm font-medium text-typography-900">
+                  Passphrase (optional)
+                </Text>
+                <Text className="text-xs text-typography-500 mt-0.5 leading-relaxed">
+                  If the bundle was exported with encrypted credentials, enter the same passphrase here to auto-fill bot tokens, API keys, and <Text className="font-mono text-xs">.env</Text> secrets.
+                </Text>
+              </View>
+            </View>
+            <Input>
+              <InputField
+                placeholder="Leave empty if not encrypted"
+                value={passphrase}
+                onChangeText={setPassphrase}
+                secureTextEntry
+                autoComplete="off"
+                autoCorrect={false}
+              />
+            </Input>
+          </View>
+        </>
+      )}
     </>
   )
 }
@@ -426,11 +596,21 @@ function ProgressStep({
   percent,
   label,
   errors,
+  bootstrapSteps,
+  showBootstrap,
 }: {
   percent: number
   label: string
   errors: string[]
+  bootstrapSteps: Record<BootstrapStep, { status: BootstrapStatus; message?: string }>
+  showBootstrap: boolean
 }) {
+  // Show the bootstrap checklist as soon as we ENTER the bootstrap phase and
+  // keep it visible afterwards (so failed steps stay legible).
+  const anyStarted = BOOTSTRAP_ORDER.some(
+    (s) => bootstrapSteps[s].status !== 'pending',
+  )
+  const renderBootstrap = showBootstrap || anyStarted
   return (
     <>
       <View className="gap-2">
@@ -451,14 +631,63 @@ function ProgressStep({
         This can take a minute for large projects with a prebuilt app. Please don't close this window.
       </Text>
 
+      {renderBootstrap && (
+        <View className="rounded-lg border border-outline-100 bg-background-50 p-3 gap-2">
+          <Text className="text-[11px] font-semibold uppercase tracking-wide text-typography-500">
+            Setting up project
+          </Text>
+          {BOOTSTRAP_ORDER.map((stepId) => {
+            const s = bootstrapSteps[stepId]
+            return (
+              <View key={stepId} className="flex-row items-center gap-2">
+                <BootstrapIcon status={s.status} />
+                <Text className="text-xs text-typography-700 flex-1">
+                  {BOOTSTRAP_STEP_LABELS[stepId]}
+                </Text>
+                {s.status === 'failed' && s.message && (
+                  <Text
+                    className="text-[10px] text-amber-600 font-mono max-w-[55%]"
+                    numberOfLines={1}
+                  >
+                    {s.message}
+                  </Text>
+                )}
+                {s.status === 'skipped' && (
+                  <Text className="text-[10px] text-typography-500 italic">
+                    skipped
+                  </Text>
+                )}
+              </View>
+            )
+          })}
+        </View>
+      )}
+
       {errors.length > 0 && <ErrorList errors={errors} />}
     </>
   )
 }
 
+function BootstrapIcon({ status }: { status: BootstrapStatus }) {
+  switch (status) {
+    case 'running':
+      return <Loader2 size={14} className="text-primary-500 animate-spin" />
+    case 'ok':
+      return <CheckCircle2 size={14} className="text-emerald-500" />
+    case 'failed':
+      return <XCircle size={14} className="text-red-500" />
+    case 'skipped':
+      return <CheckCircle2 size={14} className="text-typography-400" />
+    case 'pending':
+    default:
+      return <Loader2 size={14} className="text-typography-400 opacity-40" />
+  }
+}
+
 function DoneStep({
   done,
   errors,
+  bootstrapSteps,
 }: {
   done: {
     project: { id: string; name: string; description?: string | null }
@@ -468,9 +697,29 @@ function DoneStep({
       chatsImported: number
       chatsSkipped: number
     }
+    requiredCredentials: RequiredCredential[]
+    warnings: string[]
+    secretsAutoFilled: boolean
   }
   errors: string[]
+  bootstrapSteps: Record<BootstrapStep, { status: BootstrapStatus; message?: string }>
 }) {
+  // Bootstrap is "still in flight" if any sub-step is queued or running.
+  // While that's true we keep the checklist visible at the top of the done
+  // view so the user sees `bun install` progress even though they can
+  // already click "Open project". Once every step has settled (ok / failed
+  // / skipped), the section collapses into a one-line summary.
+  const bootstrapInFlight = BOOTSTRAP_ORDER.some((s) => {
+    const status = bootstrapSteps[s].status
+    return status === 'pending' || status === 'running'
+  })
+  const bootstrapHadActivity = BOOTSTRAP_ORDER.some(
+    (s) => bootstrapSteps[s].status !== 'pending',
+  )
+  const bootstrapFailures = BOOTSTRAP_ORDER.filter(
+    (s) => bootstrapSteps[s].status === 'failed',
+  )
+
   return (
     <>
       <View className="flex-row items-center gap-3">
@@ -488,6 +737,24 @@ function DoneStep({
         </View>
       </View>
 
+      {/* Bootstrap progress: visible whenever we're still installing /
+          generating, or when something failed (so the user has a chance to
+          notice). Quiet otherwise. */}
+      {(bootstrapInFlight || bootstrapFailures.length > 0) && (
+        <BootstrapProgress
+          bootstrapSteps={bootstrapSteps}
+          inFlight={bootstrapInFlight}
+        />
+      )}
+      {!bootstrapInFlight && bootstrapHadActivity && bootstrapFailures.length === 0 && (
+        <View className="flex-row items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2">
+          <CheckCircle2 size={14} className="text-emerald-500" />
+          <Text className="text-xs text-emerald-700">
+            Project setup complete (deps installed, routes generated).
+          </Text>
+        </View>
+      )}
+
       <View className="rounded-lg border border-outline-100 bg-background-50 p-4 gap-1">
         <Text className="text-xs text-typography-500">
           <Text className="font-medium text-typography-900">
@@ -503,10 +770,181 @@ function DoneStep({
           chat session{done.stats.chatsImported === 1 ? '' : 's'} imported
           {done.stats.chatsSkipped > 0 ? `, ${done.stats.chatsSkipped} skipped` : ''}
         </Text>
+        {done.secretsAutoFilled && (
+          <View className="flex-row items-center gap-1.5 mt-1">
+            <ShieldCheck size={12} className="text-emerald-500" />
+            <Text className="text-[11px] text-emerald-600">
+              Encrypted credentials unlocked and applied.
+            </Text>
+          </View>
+        )}
       </View>
+
+      {/* Setup Checklist — only the credentials that aren't already auto-filled
+          appear here. One row per pending field, grouped by source channel. */}
+      {done.requiredCredentials.length > 0 && (
+        <SetupChecklist credentials={done.requiredCredentials} />
+      )}
+
+      {/* Bundle warnings (e.g. "No MEMORY.md found"). Distinct from per-file
+          import errors below — these come from the bundle's manifest.json or
+          post-import sanity checks. */}
+      {done.warnings.length > 0 && (
+        <WarningList warnings={done.warnings} />
+      )}
 
       {errors.length > 0 && <ErrorList errors={errors} />}
     </>
+  )
+}
+
+// Reusable bootstrap checklist shared between the in-flight progress step
+// and the post-`done` view. Renders a row per sub-step + a header that
+// distinguishes "still running" from "finished with failures".
+function BootstrapProgress({
+  bootstrapSteps,
+  inFlight,
+}: {
+  bootstrapSteps: Record<BootstrapStep, { status: BootstrapStatus; message?: string }>
+  inFlight: boolean
+}) {
+  const completed = BOOTSTRAP_ORDER.filter((s) => {
+    const status = bootstrapSteps[s].status
+    return status === 'ok' || status === 'skipped' || status === 'failed'
+  }).length
+  return (
+    <View className="rounded-lg border border-outline-100 bg-background-50 p-3 gap-2">
+      <View className="flex-row items-center gap-2">
+        {inFlight ? (
+          <Loader2 size={14} className="text-primary-500 animate-spin" />
+        ) : (
+          <CheckCircle2 size={14} className="text-typography-400" />
+        )}
+        <Text className="text-[11px] font-semibold uppercase tracking-wide text-typography-500 flex-1">
+          {inFlight ? 'Setting up project' : 'Project setup'}
+        </Text>
+        <Text className="text-[10px] text-typography-500 font-mono">
+          {completed} / {BOOTSTRAP_ORDER.length}
+        </Text>
+      </View>
+      {BOOTSTRAP_ORDER.map((stepId) => {
+        const s = bootstrapSteps[stepId]
+        return (
+          <View key={stepId} className="flex-row items-center gap-2">
+            <BootstrapIcon status={s.status} />
+            <Text className="text-xs text-typography-700 flex-1">
+              {BOOTSTRAP_STEP_LABELS[stepId]}
+            </Text>
+            {s.status === 'failed' && s.message && (
+              <Text
+                className="text-[10px] text-amber-600 font-mono max-w-[55%]"
+                numberOfLines={1}
+              >
+                {s.message}
+              </Text>
+            )}
+            {s.status === 'skipped' && (
+              <Text className="text-[10px] text-typography-500 italic">
+                skipped
+              </Text>
+            )}
+          </View>
+        )
+      })}
+    </View>
+  )
+}
+
+// Groups required credentials by their source `channel` and renders each as a
+// row with a friendly label + hint. Buttons are intentionally non-functional
+// links to the project page for now — the actual connect flows live there.
+function SetupChecklist({ credentials }: { credentials: RequiredCredential[] }) {
+  const grouped = useMemo(() => {
+    const map = new Map<string, RequiredCredential[]>()
+    for (const c of credentials) {
+      const key = String(c.channel).toLowerCase()
+      // Strip "env." prefix → group all env vars under one "Environment vars" row.
+      const groupKey = c.label.startsWith('env.') ? '__env' : key
+      const list = map.get(groupKey) || []
+      list.push(c)
+      map.set(groupKey, list)
+    }
+    return [...map.entries()]
+  }, [credentials])
+
+  const total = credentials.length
+  return (
+    <View className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 gap-3">
+      <View className="flex-row items-center gap-2">
+        <Settings2 size={16} className="text-amber-600" />
+        <Text className="text-sm font-semibold text-amber-700">
+          {total} credential{total === 1 ? '' : 's'} to set up
+        </Text>
+      </View>
+      <Text className="text-xs text-typography-600 leading-relaxed">
+        These were stripped from the bundle for security. Open the project, then connect each one to start using the agent.
+      </Text>
+      <View className="gap-2">
+        {grouped.map(([groupKey, items]) => {
+          const isEnv = groupKey === '__env'
+          const meta = isEnv
+            ? { label: 'Environment variables', hint: undefined }
+            : CHANNEL_LABELS[groupKey] || {
+                label: items[0].channel,
+                hint: undefined,
+              }
+          return (
+            <View
+              key={groupKey}
+              className="rounded-md border border-outline-100 bg-background-0 px-3 py-2.5 gap-1"
+            >
+              <View className="flex-row items-center gap-2">
+                <KeyRound size={13} className="text-typography-500" />
+                <Text className="text-xs font-semibold text-typography-900 flex-1">
+                  {meta.label}
+                </Text>
+                <Text className="text-[10px] text-typography-500 font-mono">
+                  {items.length} field{items.length === 1 ? '' : 's'}
+                </Text>
+              </View>
+              <Text className="text-[11px] text-typography-500 font-mono">
+                {items.map((c) => c.field).join(', ')}
+              </Text>
+              {meta.hint && (
+                <Text className="text-[10px] text-typography-500 italic">
+                  {meta.hint}
+                </Text>
+              )}
+            </View>
+          )
+        })}
+      </View>
+    </View>
+  )
+}
+
+function WarningList({ warnings }: { warnings: string[] }) {
+  return (
+    <View className="rounded-lg border border-outline-100 bg-background-50 p-3 gap-2">
+      <View className="flex-row items-center gap-2">
+        <AlertTriangle size={14} className="text-typography-500" />
+        <Text className="text-xs font-semibold text-typography-700">
+          Notes from the bundle
+        </Text>
+      </View>
+      <ScrollView className="max-h-32">
+        <View className="gap-1">
+          {warnings.map((w, i) => (
+            <Text
+              key={i}
+              className="text-[11px] text-typography-600 leading-relaxed"
+            >
+              • {w}
+            </Text>
+          ))}
+        </View>
+      </ScrollView>
+    </View>
   )
 }
 

@@ -20,15 +20,15 @@ function ids(sessions: Session[]): string[] {
 }
 
 describe('makeSession', () => {
-  test('returns a session with empty buffers and unique id', () => {
+  test('returns a session in the "creating" state with no PTY yet', () => {
     const a = makeSession()
     const b = makeSession()
     expect(a.id).not.toBe(b.id)
-    expect(a.output).toBe('')
-    expect(a.runningCmdId).toBeNull()
-    expect(a.history).toEqual([])
-    expect(a.cwd).toBeNull()
-    expect(a.prevCwd).toBeNull()
+    expect(a.ptySessionId).toBeNull()
+    expect(a.client).toBeNull()
+    expect(a.status).toBe('creating')
+    expect(a.errorMessage).toBeNull()
+    expect(a.exit).toBeNull()
   })
 })
 
@@ -115,15 +115,21 @@ describe('patchSession', () => {
   test('applies the patch immutably to the matching session only', () => {
     const a = makeSession()
     const b = makeSession()
-    const next = patchSession([a, b], b.id, (s) => ({ ...s, output: 'hi' }))
+    const next = patchSession([a, b], b.id, (s) => ({
+      ...s,
+      status: 'ready',
+    }))
     expect(next[0]).toBe(a)
     expect(next[1]).not.toBe(b)
-    expect(next[1].output).toBe('hi')
+    expect(next[1].status).toBe('ready')
   })
 
-  test('returns the same array reference when the id is missing', () => {
+  test('returns the same array reference shape when the id is missing', () => {
     const a = makeSession()
-    const next = patchSession([a], 'missing', (s) => ({ ...s, output: 'x' }))
+    const next = patchSession([a], 'missing', (s) => ({
+      ...s,
+      status: 'ready',
+    }))
     expect(next[0]).toBe(a)
   })
 })

@@ -71,6 +71,8 @@ export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanel
           agentLabel={projectName || `project/${projectId}`}
           projectId={projectId}
           paneVisible={visible}
+          agentUrl={agentUrl ?? undefined}
+          fetchImpl={agentFetch}
         />
       </div>
     </View>

@@ -33,7 +33,7 @@
  */
 
 // Client
-export { ToolsClient, getToolsClient } from './client.js'
+export { ToolsClient, getToolsClient, getServerToolsClient } from './client.js'
 
 // React hooks
 export { useTools } from './hooks.js'

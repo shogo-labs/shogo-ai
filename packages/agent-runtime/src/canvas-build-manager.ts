@@ -28,6 +28,7 @@
 import { spawn, type ChildProcess } from 'child_process'
 import { join } from 'path'
 import { existsSync } from 'fs'
+import { resolveBinInvocation } from '@shogo/shared-runtime'
 import {
   commitBuildOutput,
   cleanupStagingOutput,
@@ -51,7 +52,45 @@ const KNOWN_BUNDLERS: readonly BundlerKind[] = ['vite', 'expo'] as const
 export interface CanvasBuildCallbacks {
   onBuildComplete: () => void
   onBuildError: (error: string) => void
+  /**
+   * Optional gate awaited before each `runBuild()` spawns the bundler.
+   * Used by AgentGateway to block canvas builds until
+   * `PreviewManager.installDepsIfNeeded()` has settled.
+   *
+   * Without this gate, VM-isolated sessions on macOS hosts crash
+   * deterministically: the host installs `node_modules` with only the
+   * Darwin rollup native, the linux guest 9p-mounts it, vite's config
+   * loader requires `@rollup/rollup-linux-<arch>-gnu`, fails, and
+   * surfaces as `error during build: undefined`. See PreviewManager's
+   * `depsReady` for the full chain.
+   *
+   * The wait is bounded by `WAIT_FOR_DEPS_TIMEOUT_MS` to prevent a
+   * misconfigured environment (no preview manager wired, deferred
+   * never resolves) from hanging the build forever — the build then
+   * proceeds anyway and reports whatever real error it hits.
+   */
+  waitForDeps?: () => Promise<void>
 }
+
+/**
+ * How long `runBuild()` will wait on `waitForDeps()` before giving up
+ * and proceeding anyway. 120s is comfortably longer than a cold
+ * `bun install` on a fresh VM-9p mount (observed up to ~40s in
+ * main.log), without making the user wait forever if the gate is
+ * broken.
+ */
+const WAIT_FOR_DEPS_TIMEOUT_MS = 120_000
+
+/**
+ * Bundler stderr/stdout slice ceiling for error reporting. The
+ * historical 200-char limit cut the actual error off mid-frame on
+ * vite/rollup native-binding failures (the friendly message lives at
+ * the bottom of a 30+ line trace), which is what made
+ * `error during build: undefined` so common — most of the useful
+ * text never made it into the log line. 4000 is enough for the full
+ * vite friendly-error block and a short stack tail.
+ */
+const ERROR_SLICE_LIMIT = 4000
 
 export class CanvasBuildManager {
   private workspaceDir: string
@@ -151,37 +190,90 @@ export class CanvasBuildManager {
 
     this.building = true
 
+    // Block the build on `PreviewManager.depsReady` if a gate is wired
+    // in. Critical for VM-isolated sessions on macOS hosts; harmless
+    // (resolves immediately) for cloud/k8s where the install has
+    // already completed by the time the gateway boots.
+    if (this.callbacks.waitForDeps) {
+      try {
+        await Promise.race([
+          this.callbacks.waitForDeps(),
+          new Promise<void>((_, reject) => {
+            setTimeout(
+              () => reject(new Error(`waitForDeps timed out after ${WAIT_FOR_DEPS_TIMEOUT_MS}ms`)),
+              WAIT_FOR_DEPS_TIMEOUT_MS,
+            )
+          }),
+        ])
+      } catch (err: any) {
+        console.warn(
+          `${LOG_PREFIX} waitForDeps gate did not settle (${err?.message ?? err}) — building anyway, expect platform-native errors if node_modules is incomplete`,
+        )
+      }
+    }
+
     // Wipe any leftover staging dir from a prior crashed build so the
     // bundler starts from a clean slate.
     cleanupStagingOutput(this.workspaceDir, DEFAULT_STAGING_DIR)
 
     const isWindows = process.platform === 'win32'
+    // Route through bundled `bun` when the system has no `node` on PATH
+    // — the .bin shim's `#!/usr/bin/env node` shebang otherwise exits
+    // 127 with `env: node: No such file or directory`, breaking every
+    // canvas rebuild on Shogo Desktop bundles. Falls back to direct
+    // spawn when the helper can't readlink the shim. See
+    // resolveBinInvocation() for the full rationale.
+    const invocation = resolveBinInvocation(this.workspaceDir, bundler.kind) ?? {
+      cmd: bundler.bin,
+      argsPrefix: [],
+    }
     try {
       await new Promise<void>((resolve, reject) => {
-        const proc: ChildProcess = spawn(bundler.bin, this.buildArgsFor(bundler.kind), {
-          cwd: this.workspaceDir,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          // `.CMD` shims must go through cmd.exe on Windows. Mirrors the
-          // shape of the spawn calls in PreviewManager.
-          shell: isWindows,
-          env: {
-            ...process.env,
-            NODE_ENV: 'development',
-            // Keep Expo non-interactive so a missing dep doesn't deadlock
-            // the spawn waiting on stdin.
-            CI: '1',
+        const proc: ChildProcess = spawn(
+          invocation.cmd,
+          [...invocation.argsPrefix, ...this.buildArgsFor(bundler.kind)],
+          {
+            cwd: this.workspaceDir,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            // `.CMD` shims must go through cmd.exe on Windows. Mirrors the
+            // shape of the spawn calls in PreviewManager.
+            shell: isWindows,
+            env: {
+              ...process.env,
+              NODE_ENV: 'development',
+              // Keep Expo non-interactive so a missing dep doesn't deadlock
+              // the spawn waiting on stdin.
+              CI: '1',
+            },
           },
-        })
+        )
 
         let stderr = ''
+        let stdout = ''
         proc.stderr?.on('data', (chunk: Buffer) => {
           stderr += chunk.toString()
         })
-        proc.stdout?.on('data', () => {})
+        proc.stdout?.on('data', (chunk: Buffer) => {
+          // Vite/rollup emit the friendly-error block on stdout, with
+          // the actual error message in stderr only as a one-liner
+          // (and sometimes empty). Capturing both is the difference
+          // between "error during build: undefined" and a usable
+          // diagnostic.
+          stdout += chunk.toString()
+        })
 
         proc.on('close', (code) => {
-          if (code === 0) resolve()
-          else reject(new Error(stderr.trim() || `Build exited with code ${code}`))
+          if (code === 0) {
+            resolve()
+            return
+          }
+          // Prefer stderr; fall back to stdout when the bundler
+          // wrote its useful output there (vite does this for
+          // config-loader failures). Never throw an `Error` with an
+          // empty message — that's what produced
+          // `error during build: undefined` in main.log.
+          const errText = stderr.trim() || stdout.trim() || `Build exited with code ${code}`
+          reject(new Error(errText))
         })
         proc.on('error', reject)
       })
@@ -203,8 +295,12 @@ export class CanvasBuildManager {
       // Failed build: drop the partial staging output so it doesn't
       // poison the next swap, and leave `dist/` untouched.
       cleanupStagingOutput(this.workspaceDir, DEFAULT_STAGING_DIR)
-      console.error(`${LOG_PREFIX} Build error:`, err.message.slice(0, 200))
-      this.callbacks.onBuildError(err.message)
+      const message = String(err?.message ?? err ?? '(no error message)')
+      // Slice generously — see ERROR_SLICE_LIMIT comment. The 200-char
+      // cap dropped vite/rollup's actual error frame, which is what
+      // made cross-arch native binding failures unreadable in main.log.
+      console.error(`${LOG_PREFIX} Build error:`, message.slice(0, ERROR_SLICE_LIMIT))
+      this.callbacks.onBuildError(message)
     } finally {
       this.building = false
       if (this.pendingBuild) {

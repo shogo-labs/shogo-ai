@@ -31,7 +31,7 @@
  * three are optional peer dependencies of `@shogo-ai/sdk`.
  */
 
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AppState, type NativeEventSubscription } from 'react-native'
 // `@elevenlabs/react-native` is an optional peer dep at runtime. Just
 // importing it triggers the WebRTC global polyfill and sets the native
@@ -46,7 +46,7 @@ import {
   createPostJson,
   createTranscriptDisconnectHandler,
   fetchSignedUrl,
-  withProjectId,
+  withProjectQuery,
   type BaseVoiceConversationOptions,
   type BaseVoiceConversationResult,
   type ClientToolFn,
@@ -105,6 +105,7 @@ export function useVoiceConversation(
     onTranscript,
     shogoApiKey,
     projectId,
+    agentName,
     // RN fetch has no real "same-origin" — apps are always cross-
     // origin to the backend. Default to `'omit'` for the bearer
     // path and `'include'` for the cookie path so the cookie jar
@@ -113,18 +114,21 @@ export function useVoiceConversation(
     onError,
     onMessage,
     requestPermissions,
+    conversationId: optionConversationId,
+    dynamicVariables,
   } = options
 
   const authHeaders = useCallback((): Record<string, string> => {
     return shogoApiKey ? { authorization: `Bearer ${shogoApiKey}` } : {}
   }, [shogoApiKey])
 
-  const resolvedSignedUrlPath = withProjectId(signedUrlPath, projectId)
+  const resolvedSignedUrlPath = withProjectQuery(signedUrlPath, { projectId, agentName })
 
   const transcriptRef = useRef<string[]>([])
   const lastInjectedRef = useRef<string>('')
   const weStartedSessionRef = useRef(false)
   const isRestartingRef = useRef(false)
+  const [convaiConversationId, setConvaiConversationId] = useState<string | null>(null)
   const conversationRef = useRef<{
     sendContextualUpdate: (text: string) => void
     sendUserMessage?: (text: string) => void
@@ -167,13 +171,22 @@ export function useVoiceConversation(
 
   const conversation = useConversation({
     clientTools: mergedClientTools as never,
-    onConnect: () => {
+    onConnect: (info: unknown) => {
+      const id = (info as { conversationId?: unknown })?.conversationId
+      if (typeof id === 'string' && id.length > 0) {
+        setConvaiConversationId(id)
+      }
       if (!isRestartingRef.current) {
         transcriptRef.current = []
         lastInjectedRef.current = ''
       }
     },
-    onDisconnect: handleTranscriptOnDisconnect,
+    onDisconnect: () => {
+      handleTranscriptOnDisconnect()
+      if (!isRestartingRef.current) {
+        setConvaiConversationId(null)
+      }
+    },
     onError: (e: unknown) => {
       onError?.(e)
     },
@@ -255,6 +268,8 @@ export function useVoiceConversation(
         userContext: ctx,
         agentPromptOverride: data.agentPromptOverride,
         suppressFirstMessage: opts?.suppressFirstMessage,
+        conversationId: optionConversationId,
+        dynamicVariables,
       })
       await startSession(sessionPayload as never)
     },
@@ -263,10 +278,12 @@ export function useVoiceConversation(
       endSession,
       resolvedSignedUrlPath,
       fetchCredentials,
+      dynamicVariables,
       startSession,
       characterName,
       authHeaders,
       requestPermissions,
+      optionConversationId,
     ],
   )
 
@@ -346,5 +363,7 @@ export function useVoiceConversation(
     sendContextualUpdate,
     sendUserMessage,
     sendUserActivity,
+    conversationId: optionConversationId ?? convaiConversationId,
+    convaiConversationId,
   }
 }

@@ -54,6 +54,7 @@ function getPlatformConfig() {
       tarball: `sherpa-onnx-v${VERSION}-osx-arm64-shared-no-tts.tar.bz2`,
       extractDir: `sherpa-onnx-v${VERSION}-osx-arm64-shared-no-tts`,
       libExt: 'dylib',
+      binExt: '',
     }
   }
   if (platform === 'darwin' && arch === 'x64') {
@@ -61,6 +62,7 @@ function getPlatformConfig() {
       tarball: `sherpa-onnx-v${VERSION}-osx-x64-shared-no-tts.tar.bz2`,
       extractDir: `sherpa-onnx-v${VERSION}-osx-x64-shared-no-tts`,
       libExt: 'dylib',
+      binExt: '',
     }
   }
   if (platform === 'linux' && arch === 'x64') {
@@ -68,6 +70,15 @@ function getPlatformConfig() {
       tarball: `sherpa-onnx-v${VERSION}-linux-x64-shared-no-tts.tar.bz2`,
       extractDir: `sherpa-onnx-v${VERSION}-linux-x64-shared-no-tts`,
       libExt: 'so',
+      binExt: '',
+    }
+  }
+  if (platform === 'win32' && arch === 'x64') {
+    return {
+      tarball: `sherpa-onnx-v${VERSION}-win-x64-shared-MD-Release-no-tts.tar.bz2`,
+      extractDir: `sherpa-onnx-v${VERSION}-win-x64-shared-MD-Release-no-tts`,
+      libExt: 'dll',
+      binExt: '.exe',
     }
   }
   throw new Error(`Unsupported platform: ${platform}/${arch}`)
@@ -84,16 +95,17 @@ function downloadFile(url, destPath) {
 }
 
 function downloadBinaries() {
+  const config = getPlatformConfig()
+  const isWin = process.platform === 'win32'
   const binDir = path.join(RESOURCES_DIR, 'bin')
   const libDir = path.join(RESOURCES_DIR, 'lib')
-  const offlineBin = path.join(binDir, 'sherpa-onnx-offline')
+  const offlineBin = path.join(binDir, `sherpa-onnx-offline${config.binExt}`)
 
   if (fs.existsSync(offlineBin)) {
     console.log('Binaries already downloaded.')
     return
   }
 
-  const config = getPlatformConfig()
   const url = `https://github.com/k2-fsa/sherpa-onnx/releases/download/v${VERSION}/${config.tarball}`
   const tmpTar = path.join(RESOURCES_DIR, config.tarball)
 
@@ -112,24 +124,37 @@ function downloadBinaries() {
 
   const requiredBins = ['sherpa-onnx-offline', 'sherpa-onnx-offline-speaker-diarization']
   for (const bin of requiredBins) {
-    const src = path.join(binSrc, bin)
-    const dest = path.join(binDir, bin)
+    const src = path.join(binSrc, `${bin}${config.binExt}`)
+    const dest = path.join(binDir, `${bin}${config.binExt}`)
     if (fs.existsSync(src)) {
       fs.copyFileSync(src, dest)
-      fs.chmodSync(dest, 0o755)
+      if (!isWin) fs.chmodSync(dest, 0o755)
     }
   }
 
-  for (const entry of fs.readdirSync(libSrc)) {
-    const src = path.join(libSrc, entry)
-    const dest = path.join(libDir, entry)
-    const stat = fs.lstatSync(src)
-    if (stat.isSymbolicLink()) {
-      const target = fs.readlinkSync(src)
-      if (fs.existsSync(dest)) fs.unlinkSync(dest)
-      fs.symlinkSync(target, dest)
-    } else {
-      fs.copyFileSync(src, dest)
+  // On Windows, also copy DLLs from bin/ (onnxruntime, sherpa-onnx core, etc.)
+  if (isWin) {
+    for (const entry of fs.readdirSync(binSrc)) {
+      if (entry.endsWith('.dll')) {
+        const src = path.join(binSrc, entry)
+        const dest = path.join(binDir, entry)
+        if (!fs.existsSync(dest)) fs.copyFileSync(src, dest)
+      }
+    }
+  }
+
+  if (fs.existsSync(libSrc)) {
+    for (const entry of fs.readdirSync(libSrc)) {
+      const src = path.join(libSrc, entry)
+      const dest = path.join(libDir, entry)
+      const stat = fs.lstatSync(src)
+      if (!isWin && stat.isSymbolicLink()) {
+        const target = fs.readlinkSync(src)
+        if (fs.existsSync(dest)) fs.unlinkSync(dest)
+        fs.symlinkSync(target, dest)
+      } else if (stat.isFile()) {
+        fs.copyFileSync(src, dest)
+      }
     }
   }
 

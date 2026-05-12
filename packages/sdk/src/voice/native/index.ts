@@ -32,6 +32,22 @@ export {
 
 export { useShogoVoice, type UseShogoVoiceOptions } from './useShogoVoice.js'
 
+export {
+  useChatConversation,
+  type UseChatConversationOptions,
+  type UseChatConversationResult,
+} from './useChatConversation.js'
+
+export { useShogoChat, type UseShogoChatOptions } from './useShogoChat.js'
+
+export type {
+  BaseChatConversationOptions,
+  BaseChatConversationResult,
+  ChatClientToolFn,
+  ChatConversationStatus,
+  ChatToolDescriptor,
+} from '../shared/chatTypes.js'
+
 export { OrganicSphere, type OrganicSphereProps } from './OrganicSphere.js'
 export { OrganicParticles, type OrganicParticlesProps } from './OrganicParticles.js'
 
