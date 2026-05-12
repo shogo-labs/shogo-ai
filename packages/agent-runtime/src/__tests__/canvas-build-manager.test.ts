@@ -218,3 +218,132 @@ describe('CanvasBuildManager atomic dist swap', () => {
     expect(mgr.isBuilding).toBe(false)
   })
 })
+
+/**
+ * Regression coverage for the canvas-build vs. preview-manager race that
+ * surfaced as `error during build: undefined` in every VM-isolated session
+ * on macOS:
+ *
+ *   - Host installs `node_modules` (Darwin arm64 → only @rollup/rollup-
+ *     darwin-arm64 lands).
+ *   - VM 9p-mounts that node_modules. vite/rollup tries to require
+ *     @rollup/rollup-linux-arm64-gnu and throws; the throw escapes
+ *     vite's config loader as `undefined`.
+ *   - The in-guest `bun install` triggered by `pm.start()` WOULD have
+ *     installed the linux native, but ran in parallel with the canvas
+ *     build and lost the race.
+ *
+ * Fix: `waitForDeps` callback is awaited before each runBuild, with a
+ * timeout fallback so a broken gate can never deadlock the build.
+ */
+describe('CanvasBuildManager waitForDeps gate', () => {
+  beforeEach(() => freshWorkspace())
+  afterEach(() => rmSync(TMP, { recursive: true, force: true }))
+
+  test('blocks the build until waitForDeps resolves', async () => {
+    freshWorkspace({ withVite: true, stagingPayload: '<html>gated</html>' })
+
+    let depsResolve: (() => void) | undefined
+    const depsPromise = new Promise<void>((r) => { depsResolve = r })
+    let gateAwaited = false
+    let buildCompleted = false
+
+    const mgr = new CanvasBuildManager(TMP, {
+      onBuildComplete: () => { buildCompleted = true },
+      onBuildError: () => {},
+      waitForDeps: () => {
+        gateAwaited = true
+        return depsPromise
+      },
+    })
+
+    // Kick off the build; it must not complete while the gate is pending.
+    const startPromise = mgr.start()
+    // Give the runBuild() codepath a microtask to enter `waitForDeps()`
+    // so we can sample `gateAwaited` and confirm the build hasn't
+    // already raced past the gate.
+    await new Promise((r) => setTimeout(r, 50))
+    expect(gateAwaited).toBe(true)
+    expect(buildCompleted).toBe(false)
+
+    // Release the gate — build should now finish.
+    depsResolve!()
+    await startPromise
+    expect(buildCompleted).toBe(true)
+    expect(existsSync(join(TMP, 'dist', 'index.html'))).toBe(true)
+  })
+
+  test('proceeds without waitForDeps wired (no gate is a valid configuration)', async () => {
+    freshWorkspace({ withVite: true, stagingPayload: '<html>ungated</html>' })
+    let completed = false
+    const mgr = new CanvasBuildManager(TMP, {
+      onBuildComplete: () => { completed = true },
+      onBuildError: () => {},
+      // No waitForDeps — covers test paths and cloud k8s pods where
+      // deps are guaranteed-installed by the controller before boot.
+    })
+    await mgr.start()
+    expect(completed).toBe(true)
+  })
+
+  test('falls through when waitForDeps rejects (build attempts and reports the real error)', async () => {
+    freshWorkspace({ withVite: true, stagingPayload: '<html>after-reject</html>' })
+    let completed = false
+    const mgr = new CanvasBuildManager(TMP, {
+      onBuildComplete: () => { completed = true },
+      onBuildError: () => {},
+      waitForDeps: () => Promise.reject(new Error('synthetic gate failure')),
+    })
+    // A broken gate must NOT deadlock the build forever — the manager
+    // logs a warning and proceeds. We don't care what happens after
+    // that (build succeeds here because the shim is healthy); we only
+    // care that the call returns within the test timeout.
+    await mgr.start()
+    expect(completed).toBe(true)
+  })
+})
+
+describe('CanvasBuildManager error reporting', () => {
+  beforeEach(() => freshWorkspace())
+  afterEach(() => rmSync(TMP, { recursive: true, force: true }))
+
+  test('reports a meaningful error string when the build fails (never null/undefined)', async () => {
+    // Pin the floor of the error contract: when the bundler exits
+    // non-zero and we never captured its output, the reported error
+    // must still be a non-empty string suitable for printing. This is
+    // the regression bar from main.log's
+    //   `[AgentGateway] Canvas build error: ... undefined`
+    // even though the actual content there came from vite itself —
+    // CanvasBuildManager's own fallback must never *produce* the
+    // literal `undefined`.
+    //
+    // (We can't unit-test stderr capture itself here: bun-test
+    // 1.3.5's test runner doesn't surface a `child_process.spawn`
+    // child's stderr-pipe data events to the test's listeners, even
+    // though the same code in a plain `bun some-script.ts` does
+    // receive them. The real fix — stderr/stdout fall-through in
+    // runBuild() — is validated via the existing
+    // `preserves the previous dist on failed build` case and via
+    // the actual VM end-to-end run.)
+    freshWorkspace({ withVite: false })
+    const binDir = join(TMP, 'node_modules', '.bin')
+    mkdirSync(binDir, { recursive: true })
+    writeShim(binDir, 'vite', { exitCode: 1 })
+
+    let reportedError: string | null = null
+    const mgr = new CanvasBuildManager(TMP, {
+      onBuildComplete: () => {},
+      onBuildError: (err) => { reportedError = err },
+    })
+    await mgr.start()
+
+    expect(reportedError).not.toBeNull()
+    expect(typeof reportedError).toBe('string')
+    expect(reportedError!.length).toBeGreaterThan(0)
+    // Most importantly: the fallback path must produce something
+    // OTHER than the literal word `undefined` — the canonical
+    // user-visible failure mode pre-fix.
+    expect(reportedError!).not.toBe('undefined')
+    expect(reportedError!).toContain('Build exited with code 1')
+  })
+})

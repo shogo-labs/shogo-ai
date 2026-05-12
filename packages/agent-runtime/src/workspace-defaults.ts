@@ -689,6 +689,21 @@ function writePlatformMarker(dir: string): void {
   try { writeFileSync(join(dir, 'node_modules', '.shogo-platform'), PLATFORM_TAG + '\n') } catch {}
 }
 
+// Public re-exports of the in-module platform helpers. PreviewManager.
+// installDepsIfNeeded needs to consult the same marker to detect
+// cross-platform install reuse (host installs as darwin-arm64, VM
+// guest mounts the same node_modules as linux-arm64, install-marker
+// hash still matches because package.json didn't change — without
+// this check the in-VM install short-circuits and the missing
+// linux-arm64 rollup/esbuild/swc natives blow up the next vite build).
+export { PLATFORM_TAG as INSTALL_PLATFORM_TAG }
+export function readInstallPlatformMarker(dir: string): string | null {
+  return readPlatformMarker(dir)
+}
+export function writeInstallPlatformMarker(dir: string): void {
+  writePlatformMarker(dir)
+}
+
 // ---------------------------------------------------------------------------
 // Install-marker — sha256(package.json) under `.shogo/install-marker`
 // ---------------------------------------------------------------------------
@@ -753,6 +768,7 @@ export function writeInstallMarker(dir: string, hash?: string): void {
     // Marker write is best-effort.
   }
 }
+
 
 /**
  * Return the names of top-level dependencies declared in `package.json`

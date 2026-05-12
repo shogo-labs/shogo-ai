@@ -25,10 +25,25 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
 /**
+ * Monorepo root. apps/api/src/lib/runtime -> repo root is 5 levels up.
+ * Used to compute a sensible default `workspacesDir` when the
+ * `WORKSPACES_DIR` env var isn't set. Historically this fell back to
+ * `process.cwd()`, which silently broke whenever the API was launched
+ * from somewhere other than `<repo>/workspaces`'s parent directory —
+ * `bun dev:all` from the repo root created project workspaces at
+ * `<repo>/<projectId>` instead of `<repo>/workspaces/<projectId>`,
+ * leaving the agent-runtime serving a fresh empty `.shogo` and the
+ * user's real `quick-actions.json` (etc.) invisible. server.ts at
+ * line 313 uses the equivalent computation; keeping the two
+ * defaults aligned is what stops the divergence.
+ */
+const PROJECT_ROOT = resolve(__dirname, '..', '..', '..', '..', '..')
+
+/**
  * Path to the bundled Vite + React + TypeScript template.
  * Adjusted for api package location: apps/api/src/lib/runtime -> templates/runtime-template
  */
-const BUNDLED_TEMPLATE_DIR = join(__dirname, '..', '..', '..', '..', '..', 'templates', 'runtime-template')
+const BUNDLED_TEMPLATE_DIR = join(PROJECT_ROOT, 'templates', 'runtime-template')
 
 /**
  * Path to the unified runtime server.
@@ -36,7 +51,7 @@ const BUNDLED_TEMPLATE_DIR = join(__dirname, '..', '..', '..', '..', '..', 'temp
  * Falls back to source path for cloud/local dev.
  */
 const RUNTIME_SERVER = process.env.AGENT_RUNTIME_ENTRY
-  || join(__dirname, '..', '..', '..', '..', '..', 'packages', 'agent-runtime', 'src', 'server.ts')
+  || join(PROJECT_ROOT, 'packages', 'agent-runtime', 'src', 'server.ts')
 
 /** Port range for random allocation (obscure high range to avoid conflicts) */
 const PORT_RANGE_START = 37100
@@ -48,7 +63,7 @@ const DEFAULT_CONFIG: IRuntimeConfig = {
   basePort: PORT_RANGE_START,
   maxRuntimes: 10,
   healthCheckInterval: 30000,
-  workspacesDir: process.cwd(),
+  workspacesDir: join(PROJECT_ROOT, 'workspaces'),
   domainSuffix: 'localhost',
   templateDir: '_template',
 }
@@ -515,7 +530,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     techStackId?: string,
     templateId?: string,
   ): Promise<string> {
-    const workspacesDir = resolve(this.config.workspacesDir || process.cwd())
+    const workspacesDir = resolve(this.config.workspacesDir || join(PROJECT_ROOT, 'workspaces'))
     const projectDir = join(workspacesDir, projectId)
     const workspaceTemplateDir = join(workspacesDir, this.config.templateDir || '_template')
 
@@ -1043,7 +1058,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           // hardcodes 5173, but the actual port is whatever RuntimeManager
           // allocated here).
           PUBLIC_PREVIEW_URL: url,
-          SCHEMAS_PATH: join(this.config.workspacesDir || process.cwd(), '..', '.schemas'),
+          SCHEMAS_PATH: join(this.config.workspacesDir || join(PROJECT_ROOT, 'workspaces'), '..', '.schemas'),
           NODE_ENV: 'development',
         }
         
@@ -1444,11 +1459,20 @@ export class ShogoErrorBoundary extends Component<Props, State> {
  * Create a RuntimeManager with environment-based configuration.
  */
 export function createRuntimeManager(overrides?: Partial<IRuntimeConfig>): RuntimeManager {
+  // The `WORKSPACES_DIR || PROJECT_ROOT/workspaces` resolution is the
+  // SAME one apps/api/src/server.ts:316 uses. Historically this
+  // fell back to `process.cwd()`, which only happened to do the
+  // right thing when the API was launched from inside the
+  // workspaces parent. `bun dev:all` from the repo root resolved
+  // `process.cwd()` to the repo itself and silently materialised
+  // project workspaces at `<repo>/<projectId>` instead of
+  // `<repo>/workspaces/<projectId>` — see the long comment on
+  // PROJECT_ROOT above.
   const config: Partial<IRuntimeConfig> = {
     basePort: PORT_RANGE_START,
     maxRuntimes: parseInt(process.env.RUNTIME_MAX_COUNT || '10', 10),
     healthCheckInterval: parseInt(process.env.RUNTIME_HEALTH_INTERVAL || '30000', 10),
-    workspacesDir: process.env.WORKSPACES_DIR || process.cwd(),
+    workspacesDir: process.env.WORKSPACES_DIR || join(PROJECT_ROOT, 'workspaces'),
     domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
     ...overrides,
   }
