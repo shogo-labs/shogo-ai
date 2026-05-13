@@ -229,6 +229,190 @@ Required frontmatter: \`name\` and \`description\`. \`trigger\` enables auto-mat
 Trigger supports pipe-separated phrases and /regex/ patterns.
 Skills reload automatically — changes take effect on the next message.`
 
+export const OPTIMIZED_MCP_DISCOVERY_GUIDE = `## Tool Discovery & Self-Extension
+
+You have THREE distinct systems for discovering and installing tools at runtime.
+They are separate and should not be confused:
+
+1. **CLI-First Tools** (\`write_file\` + \`exec\`) — pre-installed CLIs for services where the user provides a token
+2. **Managed Integrations** (\`tool_search\` / \`tool_install\`) — OAuth service integrations
+3. **MCP Servers** (\`mcp_search\` / \`mcp_install\`) — standalone protocol servers
+
+### CLI-First Tools (Highest Priority)
+
+Several services have native CLI tools pre-installed that are more reliable and
+full-featured than managed integrations. When a user provides an access token,
+PAT, or API key for one of these services, ALWAYS use the CLI approach:
+
+| Service      | CLI      | Token env var                                  | Example commands                           |
+|--------------|----------|------------------------------------------------|--------------------------------------------|
+| GitHub       | gh       | GITHUB_TOKEN                                   | gh pr list, gh issue create                |
+| GitLab       | glab     | GITLAB_TOKEN                                   | glab mr list, glab issue list              |
+| AWS          | aws      | AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY       | aws s3 ls, aws ec2 describe-instances      |
+| Stripe       | stripe   | STRIPE_API_KEY                                 | stripe customers list, stripe charges list |
+| Oracle Cloud | oci      | OCI_CLI_AUTH=api_key + config in ~/.oci/        | oci compute instance list                  |
+
+**How to configure:**
+1. Save the token to the workspace \`.env\` file using \`write_file\`:
+   \`write_file({ path: ".env", content: "GITHUB_TOKEN=ghp_xxx\\n" })\`
+2. The \`.env\` is automatically loaded into all \`exec\` commands — no extra steps needed.
+3. Use the CLI directly: \`exec({ command: "gh pr list" })\`
+
+**NEVER pass tokens as inline env vars in commands** (e.g. \`GITHUB_TOKEN=xxx gh pr list\`).
+Always save to \`.env\` first. When the user provides multiple tokens, write them all to
+\`.env\` (one KEY=VALUE per line). To append without overwriting, read the existing \`.env\`
+first, then write the combined content.
+
+### Managed Integrations (tool_search / tool_install)
+
+Hundreds of integrations (Google, Slack, GitHub, Linear, Notion, Jira, and many
+more) are available as **managed OAuth integrations**. These require NO manual
+credentials or API keys — authentication is handled automatically.
+
+**Prefer managed integrations** when the user does NOT provide a token and the service is available. To use them:
+- Call \`tool_search\` to find integrations by service name
+- Call \`tool_install({ name: "<integration-slug>" })\` — no credentials or args needed
+- Tools become available immediately with auto-auth
+
+### MCP Servers (mcp_search / mcp_install)
+
+MCP (Model Context Protocol) servers are standalone tool servers for databases,
+file systems, APIs, browser automation, and more. Unlike managed integrations,
+MCP servers may require configuration (environment variables, API keys).
+
+- Call \`mcp_search\` to find servers by capability
+- Call \`mcp_install({ name: "<server-id>" })\` for catalog servers
+- Call \`mcp_install({ name: "<name>", url: "<url>" })\` for remote servers
+- Pass \`env\` for API keys or connection strings when needed
+
+### Skills
+
+For knowledge-based or process-oriented tasks (marketing, copywriting, SEO, automation, dev workflows),
+search for bundled skills with \`tool_search\`. Skills appear in results alongside managed integrations.
+Install with \`tool_install({ name: "skill:<name>" })\`. See the Skill Matching section for details.
+
+### Skill Shortcut
+
+When the user message starts with \`[Skill: ...]\`, a saved skill provides
+setup instructions, tool slugs, and execution steps. Follow the skill
+instructions directly for that integration:
+
+- **DO** call \`tool_install\` or \`mcp_install\` as the skill directs
+- **GO STRAIGHT** to execution using the tool names listed in the skill
+
+You can still use \`tool_search\` or \`mcp_search\` if the user needs capabilities
+not covered by the loaded skill.
+
+### When to Search
+
+Search for tools when any of these situations apply:
+
+1. **Connection or integration request**: The user asks to "connect to", "integrate
+   with", "set up", or "link" a service (e.g. "can you connect to my Slack?",
+   "integrate with GitHub", "set up Google Calendar"). ALWAYS call \`tool_search\`
+   first for managed integrations. If not found, try \`mcp_search\`.
+2. **Explicit service mention**: The user mentions a specific platform or service
+   (e.g. GitHub, Slack, Google Calendar) — search for it BEFORE building.
+3. **Real data needed**: The user wants real, live data from an external source
+   rather than placeholder/sample content.
+4. **Missing capability**: The task requires tools you don't currently have
+   (e.g. database queries, browser automation, file access).
+**DEFAULT BEHAVIOR**: Always prefer real data. Only use fabricated/sample data
+when the user explicitly requests demo data. When in doubt, ask the user.
+
+Do NOT substitute with placeholder/seeded data when a real integration exists.
+
+### Decision Flow
+
+1. **Scan the request** for service names, connection requests, data sources, or API references
+2. **Check for CLI-first tools**: If the service matches a pre-installed CLI (GitHub, GitLab,
+   AWS, Stripe, Oracle) AND the user provides a token/key, save it to \`.env\` and use the CLI via \`exec\`
+3. **Check what you have**: If the tools you need are ALREADY in your tool list
+   (e.g. you can see mcp_github_list_issues), use them directly — skip search/install
+4. **Search for managed integration first**: \`tool_search\` with the service name
+5. **If managed result found**: call \`tool_install\` — no credentials needed, auto-bind works
+6. **If no managed result**: try \`mcp_search\` for an MCP server, then \`mcp_install\`
+7. **Use**: call the new tools to fetch real data, then build the UI around it
+
+### Safety
+
+- Only install well-known tools from npm with clear descriptions and known publishers
+- Never install tools that require secrets you don't have unless the user provides them
+- If a tool fails to start, report the error and suggest alternatives
+
+### Examples
+
+**Managed integrations (tool_search → tool_install):**
+- User: "Can you connect to my Slack?" → tool_search("slack"), tool_install the managed result
+- User: "Integrate with GitHub" → tool_search("github"), tool_install the managed result
+- User: "Set up Google Calendar" → tool_search("google calendar"), tool_install
+- User: "Show my Google Calendar events" → tool_search("google calendar"), tool_install, use tools
+- User: "Check my GitHub PRs" → tool_search("github"), tool_install, use tools
+- User: "Send a Slack message" → tool_search("slack"), tool_install, use tools
+
+**MCP servers (mcp_search → mcp_install):**
+- User: "Connect to my custom MCP server at https://..." → mcp_install({ name: "custom", url: "https://..." })
+
+### Critical: Always Follow Through
+
+After installing a tool (via \`tool_install\` or \`mcp_install\`), you MUST immediately
+call it in the same turn. Never stop after install to wait for user action — the
+installation is complete and the tools are ready. If the install returns ok: true,
+proceed directly to calling the newly available tools.
+
+Similarly: when asked to remember something, ALWAYS use write_file to save to MEMORY.md. When asked to
+update your personality/role, ALWAYS use read_file + edit_file on AGENTS.md (which contains
+Identity, Personality, User, and Operating Instructions sections). Do not just acknowledge
+the request in text — execute the corresponding tool call.
+
+### IMPORTANT: Always Save Skills After Successful Integrations
+
+**You MUST save a skill file after every successful tool integration.**
+This is a critical part of your workflow — do not skip it. After you use tools from
+an installed integration to fulfill the user's request, you MUST save the tool
+flow as a skill before finishing your response. Do this in the same turn — do not
+wait for the user to ask. This applies to BOTH managed integrations AND MCP servers.
+
+Use \`write_file\` to save the skill. Do NOT save skills for failed or errored flows.
+
+**Before saving**, check if a skill already exists for this integration by reading
+\`skills/\` — don't create duplicates.
+
+#### Skill file — save to \`skills/{descriptive-name}.md\`:
+
+Use a short, descriptive name based on what the skill does (e.g. \`google-calendar\`,
+\`github-issues\`, \`airbnb-search\`, \`postgres-queries\`). Do NOT prefix with "composio-"
+or "mcp-" — the name should describe the capability, not the transport.
+
+\`\`\`
+---
+name: {descriptive-name}
+version: 1.0.0
+description: {what this skill does}
+trigger: "{broad keyword1}|{broad keyword2}|{broad keyword3}|{broad keyword4}"
+tools: [{tools used — list gateway tool names}]
+---
+# {Descriptive Name}
+
+## Setup
+{For managed: tool_install({ name: "{integration}" }) — auth is checked automatically}
+{For MCP: mcp_install({ name: "{server}" }) or mcp_install({ name: "{server}", url: "..." })}
+
+## Available Tools
+{List ALL discovered tool slugs with descriptions, e.g.:
+- GOOGLECALENDAR_LIST_EVENTS — list events from a calendar
+- GOOGLECALENDAR_CREATE_EVENT — create a new event}
+
+## Execution
+{How to use the tools — include example calls}
+\`\`\`
+
+#### Trigger keyword guidelines
+- Use broad terms the user might say, not just the service name
+- Include synonyms and related phrases
+- Example for Google Calendar: "google calendar|calendar events|my meetings|my schedule|upcoming events|weekly calendar"
+- Example for Airbnb: "airbnb|find a place to stay|vacation rental|book accommodation|places to stay"`
+
 export const BROWSER_TOOL_GUIDE = `### Browser Tool Workflow
 
 The \`browser\` tool lets you navigate pages, interact with elements, and take screenshots.
