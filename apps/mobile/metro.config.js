@@ -74,25 +74,32 @@ for (const pkg of SINGLETON_PACKAGES) {
   } catch {}
 }
 
-// SDK source files use `.js` extensions in their relative imports
+// Shogo source files use `.js` extensions in their relative imports
 // (e.g. `import './foo.js'` from a `.ts` file) — that's the standard
 // TypeScript NodeNext pattern so the emitted `dist/*.js` references
 // each other correctly. Bun and `tsc` auto-rewrite `.js` -> `.ts`/`.tsx`
 // at resolution time; Metro by default takes the extension literally
 // and ENOENTs.
 //
-// When SDK source HMR is active and the request originates from inside
-// `packages/sdk/src/`, retry a trailing `.js` as `.ts` then `.tsx`.
-// We bound the rewrite by origin path so workspace code that genuinely
-// imports `.js` siblings is unaffected.
-const SDK_SRC_FRAGMENT = `${path.sep}packages${path.sep}sdk${path.sep}src${path.sep}`
+// When source HMR is active and the request originates from inside any
+// `packages/<pkg>/src/` directory we own, retry a trailing `.js` as
+// `.ts` then `.tsx`. We bound the rewrite by origin path so workspace
+// code that genuinely imports `.js` siblings is unaffected.
+const SHOGO_SOURCE_PACKAGES = ['sdk', 'core', 'agent', 'db', 'email', 'voice', 'cli']
+const SHOGO_SRC_FRAGMENTS = SHOGO_SOURCE_PACKAGES.map(
+  (pkg) => `${path.sep}packages${path.sep}${pkg}${path.sep}src${path.sep}`,
+)
+
+function isShogoSourceOrigin(origin) {
+  if (!origin) return false
+  return SHOGO_SRC_FRAGMENTS.some((fragment) => origin.includes(fragment))
+}
 
 function resolveSdkSourceJsAsTs(context, moduleName, platform) {
   if (!enableSdkSourceHmr) return null
   if (!moduleName.endsWith('.js')) return null
   if (!moduleName.startsWith('./') && !moduleName.startsWith('../')) return null
-  const origin = context.originModulePath
-  if (!origin || !origin.includes(SDK_SRC_FRAGMENT)) return null
+  if (!isShogoSourceOrigin(context.originModulePath)) return null
   const stem = moduleName.slice(0, -3)
   for (const ext of ['.ts', '.tsx']) {
     try {

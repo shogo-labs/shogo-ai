@@ -26,6 +26,9 @@ export default defineConfig({
     'src/voice/route/audio-tags.ts',
     'src/cli/deploy.ts',
     'src/cli/pkg.ts',
+    // Back-compat shims for symbols that moved to @shogo-ai/{core,agent}.
+    // Each compiles to a tiny re-export chunk; the actual implementation
+    // lives in the published per-package dist.
     'src/logger.ts',
     'src/instrumentation.ts',
     'src/stream-buffer.ts',
@@ -36,8 +39,6 @@ export default defineConfig({
     'src/prefix-fingerprint.ts',
     'src/tool-orchestration.ts',
     'src/hooks/index.ts',
-    'src/hooks/bundled/command-logger/handler.ts',
-    'src/hooks/bundled/session-memory/handler.ts',
     'src/model-router/index.ts',
     'src/pi-adapter.ts',
     'src/agent-loop.ts',
@@ -49,14 +50,6 @@ export default defineConfig({
   minify: false,
   target: 'es2020',
   outDir: 'dist',
-  // Copy bundled hook metadata (HOOK.md) into dist so loadAllHooks works
-  // when the SDK is consumed from `dist/` (production). Source-mode
-  // consumers (tsconfig paths, `development` export condition) read the
-  // .md files directly from `src/`.
-  onSuccess:
-    'mkdir -p dist/hooks/bundled/command-logger dist/hooks/bundled/session-memory && ' +
-    'cp src/hooks/bundled/command-logger/HOOK.md dist/hooks/bundled/command-logger/HOOK.md && ' +
-    'cp src/hooks/bundled/session-memory/HOOK.md dist/hooks/bundled/session-memory/HOOK.md',
   external: [
     'react',
     'react-native',
@@ -88,5 +81,37 @@ export default defineConfig({
     '@opentelemetry/semantic-conventions',
     '@mariozechner/pi-ai',
     '@mariozechner/pi-agent-core',
+    // Extracted Shogo packages — back-compat re-export shims must
+    // resolve to the published packages at runtime, not be inlined.
+    '@shogo-ai/core',
+    '@shogo-ai/core/logger',
+    '@shogo-ai/core/instrumentation',
+    '@shogo-ai/core/stream-buffer',
+    '@shogo-ai/core/chat-message',
+    '@shogo-ai/agent',
+    '@shogo-ai/agent/agent-loop',
+    '@shogo-ai/agent/pi-adapter',
+    '@shogo-ai/agent/model-catalog',
+    '@shogo-ai/agent/model-router',
+    '@shogo-ai/agent/tool-orchestration',
+    '@shogo-ai/agent/loop-detector',
+    '@shogo-ai/agent/microcompact',
+    '@shogo-ai/agent/prefix-fingerprint',
+    '@shogo-ai/agent/hooks',
+    '@shogo-ai/db',
+    '@shogo-ai/email',
+    '@shogo-ai/email/server',
+    '@shogo-ai/voice',
+    '@shogo-ai/voice/server',
+    '@shogo-ai/voice/react',
+    '@shogo-ai/voice/native',
+    '@shogo-ai/voice/route',
+    '@shogo-ai/voice/route/signed-url',
+    '@shogo-ai/voice/route/tts-preview',
+    '@shogo-ai/voice/route/agent',
+    '@shogo-ai/voice/route/audio-tags',
+    '@shogo-ai/cli',
+    '@shogo-ai/cli/deploy',
+    '@shogo-ai/cli/pkg',
   ],
 })

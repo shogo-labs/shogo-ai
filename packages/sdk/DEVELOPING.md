@@ -1,23 +1,61 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- Copyright (C) 2026 Shogo Technologies, Inc. -->
 
-# Developing `@shogo-ai/sdk`
+# Developing the `@shogo-ai/*` packages
 
-Internal contributor guide. Not shipped to npm (`files` in `package.json`
-only lists `dist/**` and `bin/cli.mjs`).
+Internal contributor guide for the seven MIT packages under
+`packages/{sdk,core,agent,db,email,voice,cli}/`. None of these dev
+files ship to npm (`files` in each `package.json` lists only `dist/**`
+and the SDK's `bin/cli.mjs`).
+
+## Per-package layout
+
+| Package | What's inside | Key peers |
+| --- | --- | --- |
+| `@shogo-ai/sdk` | Client surface — `createShogoClient`, React hooks, tools/memory/generators. Owns the published `shogo` binary. | `react`, `mobx`, `ai`, `@ai-sdk/react` (all optional) |
+| `@shogo-ai/core` | License-isolated primitives shared across packages: `logger`, `instrumentation` (OTEL), `stream-buffer`, `chat-message`. | `@opentelemetry/*` (optional) |
+| `@shogo-ai/agent` | Agent runtime: `agent-loop`, `pi-adapter`, `model-catalog`, `model-router`, `tool-orchestration`, `loop-detector`, `microcompact`, `prefix-fingerprint`, `hooks` (incl. bundled defaults). | `@mariozechner/pi-ai`, `@mariozechner/pi-agent-core` (optional) |
+| `@shogo-ai/db` | Prisma adapter helpers — auto-detects PG/SQLite/libSQL from `DATABASE_URL`. | `@prisma/adapter-pg`, `@prisma/adapter-libsql` (optional) |
+| `@shogo-ai/email` | Multi-provider transactional email (SES, SMTP, OCI) + templates. | `nodemailer`, `@aws-sdk/client-ses` (optional) |
+| `@shogo-ai/voice` | ElevenLabs/Twilio voice infra + React/RN UI primitives + visualizers. | `@elevenlabs/react`, `@elevenlabs/react-native`, `react`, `react-native`, `three`, `expo-gl`, `expo-three`, `@ai-sdk/react`, `ai` (all optional) |
+| `@shogo-ai/cli` | `validateManifest` / `runDeploy` / `pkg` helpers consumed by the published `shogo` bin. | none |
+
+`@shogo-ai/sdk` re-exports every moved subpath via deprecated shims so
+existing `@shogo-ai/sdk/<subpath>` imports keep working through v1.x.
+See `MIGRATION.md` for the full subpath → package map.
+
+### Which package do I want?
+
+```
+Need a TypeScript client for a Shogo agent?
+  → @shogo-ai/sdk
+
+Building a backend / gateway / hosted runtime?
+  Need an agent loop on top of pi-ai?           → @shogo-ai/agent
+  Need just logging / OTEL / streaming helpers? → @shogo-ai/core
+  Need Prisma client wiring?                    → @shogo-ai/db
+  Need transactional email?                     → @shogo-ai/email
+
+Building voice UX (web or React Native)?
+  → @shogo-ai/voice
+
+Writing a deploy script / CI integration?
+  → @shogo-ai/cli
+```
 
 ## TL;DR — the dev loop
 
-Editing files under `packages/sdk/src/` hot-reloads through `apps/api`
-and the mobile app **without** running `bun run build` or `tsup --watch`
-in the SDK. The `bun dev:all` script is sufficient.
+Editing files under `packages/{sdk,core,agent,db,email,voice,cli}/src/`
+hot-reloads through `apps/api` and the mobile app **without** running
+`bun run build` or `tsup --watch` in any of these packages. The
+`bun dev:all` script is sufficient.
 
-You only need to rebuild the SDK (`bun run build:sdk` from the monorepo
-root, or `bun run build` from `packages/sdk/`) in three cases:
+You only need to rebuild a package (`bun run build` from
+`packages/<pkg>/`) in three cases:
 
 1. **Before publishing** — the npm tarball is the dist build.
    `publish-sdk.yml` does this for you on tag.
-2. **Before running anything that consumes the SDK from `dist/`** —
+2. **Before running anything that consumes the package from `dist/`** —
    today the only place is the SDK's own `playgrounds/` and
    `examples/_template/` (they install the SDK via the symlinked
    `node_modules/@shogo-ai/sdk` and don't opt into the `development`
@@ -25,7 +63,7 @@ root, or `bun run build` from `packages/sdk/`) in three cases:
 3. **After changing tsup configuration or adding a new subpath
    export** — to verify the new entry actually emits.
 
-Day-to-day, the loop is: edit `packages/sdk/src/...` → `apps/api`
+Day-to-day, the loop is: edit `packages/<pkg>/src/...` → `apps/api`
 restarts in <1s through `watch-api.ts` → mobile fast-refreshes via
 Metro's `unstable_conditionNames` opt-in.
 
@@ -38,20 +76,26 @@ than crashing.
 ### 1. `tsconfig.base.json` `paths` — covers Bun, `tsc`, and any
    workspace that extends it.
 
-The monorepo root `tsconfig.base.json` declares:
+The monorepo root `tsconfig.base.json` declares one entry per subpath
+across all seven MIT packages:
 
 ```json
 "paths": {
   "@shogo-ai/sdk": ["packages/sdk/src/index.ts"],
   "@shogo-ai/sdk/agent": ["packages/sdk/src/agent/index.ts"],
-  // ...22 entries total, one per subpath export
+  "@shogo-ai/core/logger": ["packages/core/src/logger.ts"],
+  "@shogo-ai/agent/agent-loop": ["packages/agent/src/agent-loop.ts"],
+  "@shogo-ai/db": ["packages/db/src/index.ts"],
+  "@shogo-ai/voice/react": ["packages/voice/src/react/index.ts"],
+  // ...one entry per subpath export across all packages
 }
 ```
 
 Bun's TS-aware module resolver reads tsconfig `paths` automatically,
 so any `bun run`/`bun test` from a workspace that extends this base
-(`apps/api`, `packages/ui-kit`) gets SDK source resolution for free.
-`tsc --noEmit` does the same.
+(`apps/api`, `packages/ui-kit`) gets source resolution for free across
+all of `@shogo-ai/{sdk,core,agent,db,email,voice,cli}`. `tsc --noEmit`
+does the same.
 
 The file also has `baseUrl: "."`, so paths resolve relative to the
 monorepo root regardless of which sub-package is the entry point.
@@ -89,6 +133,12 @@ The `NODE_ENV !== 'production'` gate is critical: Expo prod export
 and EAS Build set `NODE_ENV=production`, where the published-style
 `dist/` resolution should always win. Local dev, simulator runs,
 and EAS dev builds run with `NODE_ENV=development` and benefit.
+
+Metro also rewrites TypeScript-style `'./foo.js'` imports back to
+`./foo.ts` for any origin under `packages/<pkg>/src/` where `<pkg>`
+is one of the seven MIT packages — the list is `SHOGO_SOURCE_PACKAGES`
+near the top of `metro.config.js`. When you add a new MIT package
+(say `@shogo-ai/cache` later), append its directory name there too.
 
 ### 3. Publish-side strip — keeps the npm tarball lean.
 
@@ -164,21 +214,38 @@ node -e 'console.log(JSON.stringify(require("./metro.config.js").resolver.unstab
 # [..., "development"]
 ```
 
-## Adding a new subpath export
+## Adding a new subpath export to an existing package
 
-Five files to keep in sync:
+Four files to keep in sync (replace `<pkg>` with the package and
+`<sub>` with the new subpath):
 
-1. `packages/sdk/tsup.config.ts` — add the `src/foo/index.ts` entry.
-2. `packages/sdk/package.json` — add the four-key block under
-   `exports["./foo"]` (`types` / `development` / `import` /
+1. `packages/<pkg>/tsup.config.ts` — add the `src/<sub>/index.ts` entry.
+2. `packages/<pkg>/package.json` — add the four-key block under
+   `exports["./<sub>"]` (`types` / `development` / `import` /
    `require`).
-3. `tsconfig.base.json` — add a `paths["@shogo-ai/sdk/foo"]` entry.
-4. (Optional) `packages/sdk/README.md` — document the new export.
-5. `packages/sdk/scripts/verify-license-isolation.mjs` — no change
-   needed; it auto-walks `src/`.
+3. `tsconfig.base.json` — add a `paths["@shogo-ai/<pkg>/<sub>"]` entry.
+4. (Optional) `packages/<pkg>/README.md` — document the new export.
 
-A future improvement is to drive (1)–(3) from a single source of
-truth (probably a `subpaths.json` in the SDK).
+The license-isolation verifier auto-walks each MIT package's `src/`,
+so it picks up the new file without changes.
+
+## Adding a new MIT package
+
+Six files plus boilerplate:
+
+1. Create `packages/<pkg>/{package.json,tsconfig.json,tsup.config.ts,README.md}`
+   (copy from a sibling like `packages/core/` and rename).
+2. Add path entries for every subpath to `tsconfig.base.json` under
+   the `paths` block.
+3. Append `'<pkg>'` to `SHOGO_SOURCE_PACKAGES` in
+   `apps/mobile/metro.config.js`.
+4. Append a new entry to `MIT_PACKAGES` in
+   `packages/sdk/scripts/verify-license-isolation.mjs`.
+5. Add the publish job to `.github/workflows/publish-sdk.yml`'s
+   matrix (or whatever publishing strategy you adopt).
+6. If `@shogo-ai/sdk` should re-export the new package as a
+   deprecated shim, add the shim file to `packages/sdk/src/<sub>/`
+   and the matching entries in `packages/sdk/{package.json,tsup.config.ts}`.
 
 ### Worked example — Wave 1 lifts (May 2026)
 
@@ -274,8 +341,9 @@ for two new gotchas surfaced by the larger surface area:
 
 ### Bundled hooks (the `loadAllHooks` story)
 
-`loadAllHooks` ships with two bundled defaults — `command-logger` and
-`session-memory` — that any SDK consumer gets for free:
+`loadAllHooks` lives in `@shogo-ai/agent` and ships with two bundled
+defaults — `command-logger` and `session-memory` — that any agent
+consumer gets for free:
 
 - `command-logger` appends slash-command events to
   `<workspaceDir>/logs/commands.log` as JSONL.
@@ -283,19 +351,20 @@ for two new gotchas surfaced by the larger surface area:
   `<workspaceDir>/memory/<date>-session-<time>.md` when the user
   issues `/new`.
 
-Each bundled hook is a directory under `src/hooks/bundled/<name>/`
-containing `HOOK.md` (frontmatter metadata) and `handler.ts`
-(implementation). Three pieces of the build pipeline cooperate so
-this works from both `src/` (development) and `dist/` (production):
+Each bundled hook is a directory under
+`packages/agent/src/hooks/bundled/<name>/` containing `HOOK.md`
+(frontmatter metadata) and `handler.ts` (implementation). Three
+pieces of the agent package's build pipeline cooperate so this works
+from both `src/` (development) and `dist/` (production):
 
-1. `tsup.config.ts` lists each `handler.ts` as a build entry. The
-   relative path is preserved, so output lands at
+1. `packages/agent/tsup.config.ts` lists each `handler.ts` as a build
+   entry. The relative path is preserved, so output lands at
    `dist/hooks/bundled/<name>/handler.{js,cjs}`.
-2. `tsup.config.ts`'s `onSuccess` hook copies each `HOOK.md` from
-   `src/hooks/bundled/<name>/` to `dist/hooks/bundled/<name>/`.
-3. `package.json#files` includes
-   `dist/hooks/bundled/**/HOOK.md` so the `.md` files end up in
-   the published npm tarball.
+2. The same `tsup.config.ts`'s `onSuccess` hook copies each `HOOK.md`
+   from `src/hooks/bundled/<name>/` to `dist/hooks/bundled/<name>/`.
+3. `packages/agent/package.json#files` includes
+   `dist/hooks/bundled/**/HOOK.md` so the `.md` files end up in the
+   published `@shogo-ai/agent` tarball.
 
 The registry's `loadHandlerFromDir` tries `.mjs`, `.js`, `.cjs`, then
 `.ts` in that order — so dist consumers (Node) hit the compiled JS
@@ -303,11 +372,11 @@ and source consumers (Bun via tsconfig paths or the `development`
 export condition) hit the original `.ts`. Adding a new bundled hook
 is three steps:
 
-1. `mkdir packages/sdk/src/hooks/bundled/<your-hook>` and add
+1. `mkdir packages/agent/src/hooks/bundled/<your-hook>` and add
    `HOOK.md` + `handler.ts`.
 2. Add `'src/hooks/bundled/<your-hook>/handler.ts'` to
-   `tsup.config.ts` `entry`.
-3. Extend `tsup.config.ts` `onSuccess` to copy
+   `packages/agent/tsup.config.ts` `entry`.
+3. Extend the same `tsup.config.ts`'s `onSuccess` to copy
    `src/hooks/bundled/<your-hook>/HOOK.md` to
    `dist/hooks/bundled/<your-hook>/HOOK.md`.
 
@@ -315,5 +384,5 @@ is three steps:
 a `workspaceDir`; workspace-level hooks (`<workspaceDir>/hooks/`)
 override bundled defaults by name when both register. The
 `import.meta.dir` access is gated behind a structural cast (Bun
-extension; falls back to `import.meta.url` on Node) so the SDK can
-typecheck without `@types/bun`.
+extension; falls back to `import.meta.url` on Node) so the package
+can typecheck without `@types/bun`.

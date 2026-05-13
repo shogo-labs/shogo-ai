@@ -1,0 +1,129 @@
+{
+  "name": "@shogo-ai/voice",
+  "version": "1.6.0",
+  "description": "Shogo Voice — ElevenLabs/Twilio voice agent infrastructure with React + React Native UI primitives.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "development": "./src/server.ts",
+      "import": "./dist/server.js",
+      "require": "./dist/server.cjs"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "development": "./src/react/index.ts",
+      "import": "./dist/react/index.js",
+      "require": "./dist/react/index.cjs"
+    },
+    "./native": {
+      "types": "./dist/native/index.d.ts",
+      "development": "./src/native/index.ts",
+      "import": "./dist/native/index.js",
+      "require": "./dist/native/index.cjs"
+    },
+    "./route": {
+      "types": "./dist/route/index.d.ts",
+      "development": "./src/route/index.ts",
+      "import": "./dist/route/index.js",
+      "require": "./dist/route/index.cjs"
+    },
+    "./route/signed-url": {
+      "types": "./dist/route/signed-url.d.ts",
+      "development": "./src/route/signed-url.ts",
+      "import": "./dist/route/signed-url.js",
+      "require": "./dist/route/signed-url.cjs"
+    },
+    "./route/tts-preview": {
+      "types": "./dist/route/tts-preview.d.ts",
+      "development": "./src/route/tts-preview.ts",
+      "import": "./dist/route/tts-preview.js",
+      "require": "./dist/route/tts-preview.cjs"
+    },
+    "./route/agent": {
+      "types": "./dist/route/agent.d.ts",
+      "development": "./src/route/agent.ts",
+      "import": "./dist/route/agent.js",
+      "require": "./dist/route/agent.cjs"
+    },
+    "./route/audio-tags": {
+      "types": "./dist/route/audio-tags.d.ts",
+      "development": "./src/route/audio-tags.ts",
+      "import": "./dist/route/audio-tags.js",
+      "require": "./dist/route/audio-tags.cjs"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.cjs",
+    "dist/**/*.d.ts",
+    "dist/**/*.d.cts"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "bun --no-env-file test src/"
+  },
+  "peerDependencies": {
+    "@ai-sdk/react": ">=3.0.0",
+    "@elevenlabs/react": ">=1.1.0",
+    "@elevenlabs/react-native": ">=1.1.0",
+    "ai": ">=6.0.0",
+    "react": ">=18.0.0",
+    "react-native": ">=0.70.0",
+    "three": ">=0.160.0",
+    "expo-gl": ">=15.0.0",
+    "expo-three": ">=8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@ai-sdk/react": { "optional": true },
+    "@elevenlabs/react": { "optional": true },
+    "@elevenlabs/react-native": { "optional": true },
+    "ai": { "optional": true },
+    "react": { "optional": true },
+    "react-native": { "optional": true },
+    "three": { "optional": true },
+    "expo-gl": { "optional": true },
+    "expo-three": { "optional": true }
+  },
+  "devDependencies": {
+    "@ai-sdk/react": "^3.0.99",
+    "@elevenlabs/react": "^1.1.1",
+    "@elevenlabs/react-native": "^1.1.4",
+    "@types/node": "^25.5.0",
+    "@types/react": "^19.0.0",
+    "@types/three": "^0.180.0",
+    "ai": "^6.0.97",
+    "expo-gl": "^15.0.0",
+    "expo-three": "^8.0.0",
+    "react-native": "^0.81.0",
+    "three": "^0.180.0",
+    "tsup": "^8.0.0",
+    "typescript": "^6.0.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "shogo",
+    "voice",
+    "elevenlabs",
+    "twilio",
+    "tts",
+    "react",
+    "react-native",
+    "three"
+  ]
+}

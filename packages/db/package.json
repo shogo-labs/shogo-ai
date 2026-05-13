@@ -1,0 +1,55 @@
+{
+  "name": "@shogo-ai/db",
+  "version": "1.6.0",
+  "description": "Shogo DB — Prisma adapter helpers for PostgreSQL/SQLite/libSQL with auto-detection from DATABASE_URL.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.cjs",
+    "dist/**/*.d.ts",
+    "dist/**/*.d.cts"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "bun --no-env-file test src/"
+  },
+  "peerDependencies": {
+    "@prisma/adapter-pg": "^7.3.0",
+    "@prisma/adapter-libsql": ">=0.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@prisma/adapter-pg": { "optional": true },
+    "@prisma/adapter-libsql": { "optional": true }
+  },
+  "devDependencies": {
+    "@prisma/adapter-libsql": "^7.3.0",
+    "@types/node": "^25.5.0",
+    "tsup": "^8.0.0",
+    "typescript": "^6.0.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "shogo",
+    "prisma",
+    "postgres",
+    "sqlite",
+    "libsql"
+  ]
+}

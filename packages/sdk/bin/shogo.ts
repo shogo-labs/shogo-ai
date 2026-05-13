@@ -20,14 +20,14 @@ import { parseArgs } from 'util'
 import { writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'fs'
 import { resolve, dirname, basename } from 'path'
 import { execSync } from 'child_process'
-import { pkg } from '../src/cli/pkg'
+import { pkg } from '@shogo-ai/cli/pkg'
 import { generateFromPrisma, type GenerateOptions, type OutputConfig } from '../src/generators/prisma-generator'
 import { ensureFeatureDeps } from '../src/generators/deps-doctor'
 import { 
   transformSchemaFile, 
   detectSchemaProvider,
   type DatabaseProvider as SchemaProvider 
-} from '../src/db/schema-transformer'
+} from '@shogo-ai/db'
 
 // ============================================================================
 // Types
@@ -583,7 +583,7 @@ async function handleDevCommand() {
     declaredAgentNames.length > 0
   ) {
     try {
-      const { validateManifest, runDeploy } = await import('../src/cli/deploy')
+      const { validateManifest, runDeploy } = await import('@shogo-ai/cli/deploy')
       const { agents, issues } = validateManifest(declaredAgents)
       if (issues.length > 0) {
         console.warn(
@@ -689,7 +689,7 @@ async function handleDeployCommand() {
 
   // Lazy-load the deploy module so the CLI startup path doesn't pay
   // for it on every run.
-  const { validateManifest, runDeploy } = await import('../src/cli/deploy')
+  const { validateManifest, runDeploy } = await import('@shogo-ai/cli/deploy')
 
   const config = loadConfig(cwd)
   if (!config) {
