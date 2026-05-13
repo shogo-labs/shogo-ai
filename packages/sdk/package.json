@@ -9,108 +9,135 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     },
     "./db": {
       "types": "./dist/db/index.d.ts",
+      "development": "./src/db/index.ts",
       "import": "./dist/db/index.js",
       "require": "./dist/db/index.cjs"
     },
     "./email": {
       "types": "./dist/email/index.d.ts",
+      "development": "./src/email/index.ts",
       "import": "./dist/email/index.js",
       "require": "./dist/email/index.cjs"
     },
     "./email/server": {
       "types": "./dist/email/server.d.ts",
+      "development": "./src/email/server.ts",
       "import": "./dist/email/server.js",
       "require": "./dist/email/server.cjs"
     },
     "./react": {
       "types": "./dist/react/index.d.ts",
+      "development": "./src/react/index.ts",
       "import": "./dist/react/index.js",
       "require": "./dist/react/index.cjs"
     },
     "./agent": {
       "types": "./dist/agent/index.d.ts",
+      "development": "./src/agent/index.ts",
       "import": "./dist/agent/index.js",
       "require": "./dist/agent/index.cjs"
     },
     "./generators": {
       "types": "./dist/generators/index.d.ts",
+      "development": "./src/generators/index.ts",
       "import": "./dist/generators/index.js",
       "require": "./dist/generators/index.cjs"
     },
     "./tools": {
       "types": "./dist/tools/index.d.ts",
+      "development": "./src/tools/index.ts",
       "import": "./dist/tools/index.js",
       "require": "./dist/tools/index.cjs"
     },
     "./tools/server": {
       "types": "./dist/tools/server.d.ts",
+      "development": "./src/tools/server.ts",
       "import": "./dist/tools/server.js",
       "require": "./dist/tools/server.cjs"
     },
     "./memory": {
       "types": "./dist/memory/index.d.ts",
+      "development": "./src/memory/index.ts",
       "import": "./dist/memory/index.js",
       "require": "./dist/memory/index.cjs"
     },
     "./memory/server": {
       "types": "./dist/memory/server.d.ts",
+      "development": "./src/memory/server.ts",
       "import": "./dist/memory/server.js",
       "require": "./dist/memory/server.cjs"
     },
     "./voice": {
       "types": "./dist/voice/index.d.ts",
+      "development": "./src/voice/index.ts",
       "import": "./dist/voice/index.js",
       "require": "./dist/voice/index.cjs"
     },
     "./voice/server": {
       "types": "./dist/voice/server.d.ts",
+      "development": "./src/voice/server.ts",
       "import": "./dist/voice/server.js",
       "require": "./dist/voice/server.cjs"
     },
     "./voice/react": {
       "types": "./dist/voice/react/index.d.ts",
+      "development": "./src/voice/react/index.ts",
       "import": "./dist/voice/react/index.js",
       "require": "./dist/voice/react/index.cjs"
     },
     "./voice/native": {
       "types": "./dist/voice/native/index.d.ts",
+      "development": "./src/voice/native/index.ts",
       "import": "./dist/voice/native/index.js",
       "require": "./dist/voice/native/index.cjs"
     },
     "./voice/route": {
       "types": "./dist/voice/route/index.d.ts",
+      "development": "./src/voice/route/index.ts",
       "import": "./dist/voice/route/index.js",
       "require": "./dist/voice/route/index.cjs"
     },
     "./voice/route/signed-url": {
       "types": "./dist/voice/route/signed-url.d.ts",
+      "development": "./src/voice/route/signed-url.ts",
       "import": "./dist/voice/route/signed-url.js",
       "require": "./dist/voice/route/signed-url.cjs"
     },
     "./voice/route/tts-preview": {
       "types": "./dist/voice/route/tts-preview.d.ts",
+      "development": "./src/voice/route/tts-preview.ts",
       "import": "./dist/voice/route/tts-preview.js",
       "require": "./dist/voice/route/tts-preview.cjs"
     },
     "./voice/route/agent": {
       "types": "./dist/voice/route/agent.d.ts",
+      "development": "./src/voice/route/agent.ts",
       "import": "./dist/voice/route/agent.js",
       "require": "./dist/voice/route/agent.cjs"
     },
     "./voice/route/audio-tags": {
       "types": "./dist/voice/route/audio-tags.d.ts",
+      "development": "./src/voice/route/audio-tags.ts",
       "import": "./dist/voice/route/audio-tags.js",
       "require": "./dist/voice/route/audio-tags.cjs"
     },
     "./cli/deploy": {
       "types": "./dist/cli/deploy.d.ts",
+      "development": "./src/cli/deploy.ts",
       "import": "./dist/cli/deploy.js",
       "require": "./dist/cli/deploy.cjs"
+    },
+    "./cli/pkg": {
+      "types": "./dist/cli/pkg.d.ts",
+      "development": "./src/cli/pkg.ts",
+      "import": "./dist/cli/pkg.js",
+      "require": "./dist/cli/pkg.cjs"
     }
   },
   "bin": {
@@ -130,11 +157,11 @@
     "test": "bun --no-env-file test src/",
     "test:coverage": "bun --no-env-file test src/ --coverage",
     "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e:ui": "playwright test --ui",
+    "verify:license-isolation": "node scripts/verify-license-isolation.mjs"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "^2.0.41",
-    "@shogo/shared-runtime": "workspace:*"
+    "@ai-sdk/openai-compatible": "^2.0.41"
   },
   "devDependencies": {
     "@aws-sdk/client-ses": "^3.700.0",
