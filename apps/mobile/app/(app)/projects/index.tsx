@@ -79,6 +79,7 @@ import { ProjectCard } from '../../../components/home/ProjectCard'
 import { api } from '../../../lib/api'
 import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
 import { ProjectImportModal } from '../../../components/projects/ProjectImportModal'
+import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 
 // Types
 type SortBy = 'lastEdited' | 'dateCreated' | 'alphabetical'
@@ -256,9 +257,12 @@ export default observer(function AllProjectsPage() {
   // Native phones: 2 columns for readable titles and touch targets; web keeps 3-up grid.
   const numColumns = viewMode === 'grid' ? (isNativeMobile ? 2 : 3) : 1
 
-  // Find current workspace
+  // Use the workspace the user explicitly selected in the sidebar.
+  // Falling back to workspaces[0] previously caused invited-workspace
+  // projects to leak into "All projects" when the user belonged to
+  // multiple workspaces.
+  const currentWorkspace = useActiveWorkspace()
   const workspaces = store?.workspaceCollection?.all ?? []
-  const currentWorkspace = workspaces[0] ?? null
 
   // Load data
   useEffect(() => {
