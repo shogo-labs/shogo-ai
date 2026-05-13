@@ -1,0 +1,34 @@
+# Test + coverage configuration for @shogo/api.
+#
+# `bun test` runs without coverage. `bun test --coverage` enables it
+# using these settings. We deliberately omit `coverage = false` so the
+# CLI flag isn't suppressed.
+#
+# This package uses the isolated runner (scripts/run-tests-isolated.ts)
+# because many of its tests install conflicting `mock.module()` factories
+# for `../lib/prisma` — `bun:test` keeps mock.module state per-process,
+# so running them in one process produces order-dependent failures.
+
+# Threshold is intentionally NOT set per-package — the soft 50%
+# line / 50% function floor is enforced by `scripts/merge-lcov.ts`
+# against the aggregated repo-wide lcov. Per-package thresholds would
+# fire spuriously for files where the test happens to mock most of the
+# source, even when overall coverage is healthy.
+[test]
+coverageReporter = ["text", "lcov"]
+coverageDir = "coverage"
+coverageSkipTestFiles = true
+coveragePathIgnorePatterns = [
+  "**/__tests__/**",
+  "**/__mocks__/**",
+  "**/*.test.ts",
+  "**/*.test.tsx",
+  "**/*.spec.ts",
+  "**/*.spec.tsx",
+  "**/dist/**",
+  "**/build/**",
+  "**/generated/**",
+  "**/node_modules/**",
+  "**/scripts/**",
+  "**/migrations/**",
+]

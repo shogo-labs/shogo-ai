@@ -78,7 +78,9 @@ describe('Python diagnostics smoke test (pyright CLI)', () => {
       d.severity === 1 && (d.message.includes('int') || d.message.includes('str'))
     )
     expect(typeError).toBeTruthy()
-  }, 15_000)
+    // Cold-start pyright takes ~10–20s on first invocation; the sibling
+    // "clear" test runs ~120ms because the binary is already warm.
+  }, 45_000)
 
   test('diagnostics clear after fixing the type error', async () => {
     const filePath = join(WORKSPACE, 'main.py')

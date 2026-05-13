@@ -15,6 +15,10 @@
     "./dynamic-app": "./src/dynamic-app/index.ts",
     "./chat": "./src/chat/index.ts"
   },
+  "scripts": {
+    "test": "bun --no-env-file test",
+    "test:coverage": "bun --no-env-file test --coverage"
+  },
   "dependencies": {
     "@shogo-ai/sdk": "workspace:*",
     "@shogo/domain-stores": "workspace:*",

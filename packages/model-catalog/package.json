@@ -6,7 +6,9 @@
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun --no-env-file test",
+    "test:coverage": "bun --no-env-file test --coverage"
   },
   "devDependencies": {
     "typescript": "^6.0.2"

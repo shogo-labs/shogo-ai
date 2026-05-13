@@ -268,6 +268,14 @@ describe('seedWorkspaceDefaults', () => {
 // ensureWorkspaceDeps — platform detection
 // ---------------------------------------------------------------------------
 
+// `ensureWorkspaceDeps` shells out to `bun install` for the wrong-platform
+// branches; on a developer box the install can easily exceed bun-test's
+// per-test default and leave node_modules half-written, which then makes
+// the next test's `rmSync` (afterEach) block. The two install-driven tests
+// are gated behind RUN_INTEGRATION=1 — the rest of this describe stays
+// in the unit suite (they only inspect markers / source).
+const RUN_INTEGRATION_DEPS = process.env.RUN_INTEGRATION === '1'
+
 describe('ensureWorkspaceDeps platform detection', () => {
   const DEPS_DIR = '/tmp/test-workspace-deps-platform'
 
@@ -275,13 +283,13 @@ describe('ensureWorkspaceDeps platform detection', () => {
     rmSync(DEPS_DIR, { recursive: true, force: true })
     mkdirSync(DEPS_DIR, { recursive: true })
     writeFileSync(join(DEPS_DIR, 'package.json'), '{"name":"test","dependencies":{"vite":"^5"}}')
-  })
+  }, 30_000)
 
   afterEach(() => {
     rmSync(DEPS_DIR, { recursive: true, force: true })
-  })
+  }, 30_000)
 
-  test('detects wrong-platform marker and reinstalls', async () => {
+  test.skipIf(!RUN_INTEGRATION_DEPS)('detects wrong-platform marker and reinstalls', async () => {
     mkdirSync(join(DEPS_DIR, 'node_modules', '.bin'), { recursive: true })
     writeFileSync(join(DEPS_DIR, 'node_modules', '.bin', 'vite'), '#!/bin/sh')
     writeFileSync(join(DEPS_DIR, 'node_modules', '.shogo-platform'), 'linux-arm64-fake\n')
@@ -305,7 +313,7 @@ describe('ensureWorkspaceDeps platform detection', () => {
     if (markerAfter) {
       expect(markerAfter).toBe(currentPlatform)
     }
-  })
+  }, 30_000)
 
   test('skips reinstall when platform marker matches', async () => {
     const currentPlatform = `${process.platform}-${process.arch}`
@@ -322,7 +330,7 @@ describe('ensureWorkspaceDeps platform detection', () => {
     expect(marker).toBe(currentPlatform)
   })
 
-  test('detects wrong-platform rollup packages when no marker exists', async () => {
+  test.skipIf(!RUN_INTEGRATION_DEPS)('detects wrong-platform rollup packages when no marker exists', async () => {
     mkdirSync(join(DEPS_DIR, 'node_modules', '.bin'), { recursive: true })
     writeFileSync(join(DEPS_DIR, 'node_modules', '.bin', 'vite'), '#!/bin/sh')
     // Simulate macOS rollup in a Linux env (or vice versa)
@@ -337,7 +345,7 @@ describe('ensureWorkspaceDeps platform detection', () => {
     }
     // The foreign rollup package should be gone
     expect(existsSync(join(DEPS_DIR, 'node_modules', '@rollup', `rollup-${foreignOs}-arm64`))).toBe(false)
-  })
+  }, 30_000)
 
   // Regression: non-Vite stacks (Expo, RN, Python) used to skip the platform-
   // marker fast path entirely (it was gated on `existsSync(viteBin)`), which

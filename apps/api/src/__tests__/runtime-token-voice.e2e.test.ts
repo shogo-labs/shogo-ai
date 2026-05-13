@@ -27,6 +27,7 @@
 
 import { describe, test, expect, mock, beforeEach } from 'bun:test'
 import { Hono } from 'hono'
+import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 // ─── Env ──────────────────────────────────────────────────────────────────
 process.env.AI_PROXY_SECRET =
@@ -71,6 +72,17 @@ const mockPrisma = {
   },
   user: { findUnique: mock(async () => null) },
   member: { findFirst: mock(async () => null) },
+  // ProjectAgent is consulted by /voice/signed-url when an `agentName`
+  // query param is supplied (named-agent routing). The unit tests under
+  // voice-routes-runtime-token cover the named-agent paths; this e2e
+  // file only exercises the legacy `voice_project_configs` fallback, so
+  // a stub that returns null keeps the route resolving to the fallback
+  // branch instead of throwing on an undefined `prisma.projectAgent`.
+  projectAgent: {
+    findUnique: mock(async () => null),
+    findFirst: mock(async () => null),
+    findMany: mock(async () => []),
+  },
   voiceProjectConfig: {
     findUnique: mock(async (args: any) => {
       const row = voiceConfigByProjectId.get(args.where.projectId)
@@ -85,7 +97,7 @@ const mockPrisma = {
   },
 }
 
-mock.module('../lib/prisma', () => ({ prisma: mockPrisma }))
+mock.module('../lib/prisma', () => withPrismaExports({ prisma: mockPrisma }))
 mock.module('../auth', () => ({
   auth: { api: { getSession: mock(() => Promise.resolve(null)) } },
 }))

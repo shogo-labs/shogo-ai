@@ -100,6 +100,19 @@ describe('AgentGateway integration', () => {
 
   test('heartbeat includes pending webhook events', async () => {
     writeFileSync(join(TEST_DIR, 'HEARTBEAT.md'), '- Check for events')
+    // Override the default quiet hours from setupWorkspace — leaving them in
+    // place makes this test flaky against wall-clock time (the heartbeat
+    // skips its body inside the window and the prompt is never built).
+    writeFileSync(
+      join(TEST_DIR, 'config.json'),
+      JSON.stringify({
+        heartbeatInterval: 1800,
+        heartbeatEnabled: true,
+        quietHours: { start: null, end: null, timezone: 'UTC' },
+        channels: [],
+        model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
+      }),
+    )
 
     let promptsSeen: string[] = []
     const mockStream = createMockStreamFn(

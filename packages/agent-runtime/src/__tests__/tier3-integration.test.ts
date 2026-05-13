@@ -60,6 +60,22 @@ describe('Tier 3: Loop detection in agent turns', () => {
   test('loop detector breaks agent out of identical tool call loop', async () => {
     setupWorkspace()
 
+    // Pin the threshold so the assertion is independent of any future
+    // tuning of LoopDetector defaults (default has been bumped from 3 → 4
+    // historically, and we don't want this test to silently regress when
+    // the default moves again).
+    writeFileSync(
+      join(TEST_DIR, 'config.json'),
+      JSON.stringify({
+        heartbeatInterval: 1800,
+        heartbeatEnabled: false,
+        quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
+        channels: [],
+        model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
+        loopDetection: { maxIdenticalCalls: 3 },
+      }),
+    )
+
     const mockStream = createMockStreamFn([
       buildToolUseResponse([{ name: 'read_file', arguments: { path: 'status.json' }, id: 'toolu_1' }]),
       buildToolUseResponse([{ name: 'read_file', arguments: { path: 'status.json' }, id: 'toolu_2' }]),
@@ -140,9 +156,13 @@ describe('Tier 3: Session compaction through gateway', () => {
     rmSync(TEST_DIR, { recursive: true, force: true })
   })
 
-  test('session auto-compacts when maxMessages exceeded via channel', async () => {
+  test('session auto-compacts when token threshold exceeded via channel', async () => {
     setupWorkspace()
 
+    // Compaction is token-based since the maxMessages knob was deprecated.
+    // Pin a tiny context window so a handful of moderately-sized user
+    // messages reliably crosses `autocompactThreshold = contextWindow -
+    // maxOutput - buffer = 2000 - 500 - 500 = 1000` tokens (~4000 chars).
     writeFileSync(
       join(TEST_DIR, 'config.json'),
       JSON.stringify({
@@ -151,7 +171,12 @@ describe('Tier 3: Session compaction through gateway', () => {
         quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
         channels: [],
         model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
-        session: { maxMessages: 4, keepRecentMessages: 2 },
+        session: {
+          contextWindowTokens: 2_000,
+          maxOutputTokens: 500,
+          bufferTokens: 500,
+          keepRecentMessages: 2,
+        },
       })
     )
 
@@ -166,9 +191,12 @@ describe('Tier 3: Session compaction through gateway', () => {
     mockTelegram.connected = true
     injectMockChannel(gateway, mockTelegram)
 
+    // Each ~1500-char message ≈ 375 tokens; by message #4 cumulative
+    // history (user + assistant) is well past 1000 tokens.
+    const bigPayload = 'word '.repeat(300)
     for (let i = 0; i < 4; i++) {
       await gateway.processMessage({
-        text: `Message ${i}`,
+        text: `Message ${i}: ${bigPayload}`,
         channelId: 'chat-1',
         channelType: 'telegram',
         senderId: 'user-1',
@@ -181,7 +209,6 @@ describe('Tier 3: Session compaction through gateway', () => {
     const session = sm.get('chat-1')
     expect(session).toBeDefined()
     expect(session!.compactionCount).toBeGreaterThanOrEqual(1)
-    expect(session!.messages.length).toBeLessThanOrEqual(4)
   })
 })
 

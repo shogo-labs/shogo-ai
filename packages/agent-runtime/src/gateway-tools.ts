@@ -3248,7 +3248,7 @@ export function formatToolInstallMessage(
 function createToolInstallTool(ctx: ToolContext): AgentTool {
   return {
     name: 'tool_install',
-    description: 'Install a managed OAuth integration or bundled skill. For integrations, just provide the name (no API keys needed). For skills, use "skill:" prefix. See read_guide("mcp-discovery") for details.',
+    description: 'Install a managed OAuth integration or bundled skill. For integrations, just provide the name (no API keys needed). For skills, use "skill:" prefix. Use tool_search first to find the right name.',
     label: 'Install Integration or Skill',
     parameters: Type.Object({
       name: Type.String({ description: 'Integration name (e.g. "googlecalendar", "slack") or skill with prefix (e.g. "skill:github-ops", "skill:mktg-seo-audit"). Use tool_search to find available options.' }),

@@ -1,5 +1,30 @@
 # Test runner configuration. The two preload files MUST stay separate to
 # avoid the @testing-library import-hoisting bug:
 # https://github.com/testing-library/react-testing-library/issues/1348
+#
+# Coverage is opt-in via `--coverage` (the `test:coverage` script). We
+# deliberately omit `coverage = false` so the CLI flag isn't suppressed.
+# Threshold is intentionally NOT set per-package — see the note in
+# apps/api/bunfig.toml. Aggregate enforcement lives in
+# `scripts/merge-lcov.ts`.
 [test]
 preload = ["./test/dom-setup.ts", "./test/testing-library.ts"]
+coverageReporter = ["text", "lcov"]
+coverageDir = "coverage"
+coverageSkipTestFiles = true
+coveragePathIgnorePatterns = [
+  "**/__tests__/**",
+  "**/__mocks__/**",
+  "**/*.test.ts",
+  "**/*.test.tsx",
+  "**/*.spec.ts",
+  "**/*.spec.tsx",
+  "**/dist/**",
+  "**/build/**",
+  "**/generated/**",
+  "**/node_modules/**",
+  "**/.expo/**",
+  "**/android/**",
+  "**/ios/**",
+  "**/scripts/**",
+]

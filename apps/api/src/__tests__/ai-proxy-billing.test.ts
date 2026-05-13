@@ -21,6 +21,7 @@
  */
 
 import { describe, test, expect, beforeAll, beforeEach, mock } from 'bun:test'
+import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 // Force cloud-side mode for this test file so the proxy doesn't try to
 // forward to itself. `SHOGO_LOCAL_MODE` is read at module load time, which
@@ -64,7 +65,7 @@ function applyIncrements(target: any, patch: any): any {
   return out
 }
 
-mock.module('../lib/prisma', () => ({
+mock.module('../lib/prisma', () => withPrismaExports({
   prisma: {
     project: {
       findFirst: async () => null,
@@ -155,8 +156,6 @@ mock.module('../lib/prisma', () => ({
         },
       }),
   },
-  SubscriptionStatus: {},
-  BillingInterval: {},
 }))
 
 // ─── Stripe mock ─────────────────────────────────────────────────────────

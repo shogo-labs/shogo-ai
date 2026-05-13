@@ -10,7 +10,6 @@
  */
 
 import {
-  OPTIMIZED_MCP_DISCOVERY_GUIDE,
   OPTIMIZED_PERSONALITY_GUIDE,
   OPTIMIZED_TOOL_PLANNING_GUIDE,
   OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE,
@@ -23,7 +22,7 @@ import { SUBAGENT_GUIDE } from './subagent-prompts'
 
 // Re-export for use by gateway.ts when building the personality guide with
 // promptOverrides — the prefix is still prepended to the full guide content.
-export { OPTIMIZED_PERSONALITY_GUIDE, OPTIMIZED_MCP_DISCOVERY_GUIDE }
+export { OPTIMIZED_PERSONALITY_GUIDE }
 
 export const PERSONALITY_EVOLUTION_GUIDE_PREFIX = `## Personality Self-Update (MUST use read_file + edit_file)
 
@@ -92,10 +91,8 @@ export function buildGuideRegistry(promptOverrides?: Map<string, string>): Map<s
   const memoryGuide = promptOverrides?.get('memory_guide') ?? OPTIMIZED_MEMORY_GUIDE
   const skillMatchingGuide = promptOverrides?.get('skill_matching_guide') ?? OPTIMIZED_SKILL_MATCHING_GUIDE
   const constraintGuide = promptOverrides?.get('constraint_awareness_guide') ?? OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE
-  const mcpGuide = promptOverrides?.get('mcp_discovery_guide') ?? OPTIMIZED_MCP_DISCOVERY_GUIDE
 
   return new Map<string, string>([
-    ['mcp-discovery', mcpGuide],
     ['subagent', SUBAGENT_GUIDE],
     ['browser', BROWSER_TOOL_GUIDE],
     ['constraint-awareness', constraintGuide],

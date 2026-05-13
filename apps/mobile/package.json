@@ -20,8 +20,9 @@
     "prebuild": "expo prebuild --clean",
     "eas-build-post-install": "cd ../../packages/sdk && bun run build",
     "bundle:monaco-types": "node scripts/bundle-monaco-types.mjs",
-    "test": "bun test",
-    "test:watch": "bun test --watch",
+    "test": "bun --no-env-file test",
+    "test:watch": "bun --no-env-file test --watch",
+    "test:coverage": "bun --no-env-file test --coverage",
     "devtools": "bunx react-devtools"
   },
   "dependencies": {

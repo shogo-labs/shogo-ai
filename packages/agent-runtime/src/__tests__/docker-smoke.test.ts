@@ -22,10 +22,18 @@ import { execSync, spawn } from 'child_process'
 const MCP_PREINSTALL_DIR = process.env.MCP_PREINSTALL_DIR || '/app/mcp-packages'
 const CHROMIUM_PATH = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '/usr/bin/chromium'
 
+// This whole file validates the production Docker image — it asserts on
+// /app/mcp-packages/* and /usr/bin/chromium that don't exist in dev. Skip
+// outside Docker (or when the operator opts out via SKIP_DOCKER_SMOKE=1)
+// so `bun test` in a developer workspace stays green. CI runs this with
+// the Docker image mounted and the env var unset.
+const IN_DOCKER = existsSync('/app/mcp-packages') && existsSync(CHROMIUM_PATH)
+const SKIP_DOCKER = !IN_DOCKER || process.env.SKIP_DOCKER_SMOKE === '1'
+
 // ---------------------------------------------------------------------------
 // Playwright / Browser
 // ---------------------------------------------------------------------------
-describe('Playwright browser launch', () => {
+describe.skipIf(SKIP_DOCKER)('Playwright browser launch', () => {
   let browser: any = null
 
   afterAll(async () => {
@@ -75,7 +83,7 @@ describe('Playwright browser launch', () => {
 // ---------------------------------------------------------------------------
 // Airbnb MCP Server
 // ---------------------------------------------------------------------------
-describe('Airbnb MCP server', () => {
+describe.skipIf(SKIP_DOCKER)('Airbnb MCP server', () => {
   const PKG_NAME = '@openbnb/mcp-server-airbnb'
   const pkgJsonPath = join(MCP_PREINSTALL_DIR, 'node_modules', PKG_NAME, 'package.json')
 
@@ -145,7 +153,7 @@ describe('Airbnb MCP server', () => {
 // ---------------------------------------------------------------------------
 // All pre-installed MCP packages: basic resolution check
 // ---------------------------------------------------------------------------
-describe('Pre-installed MCP packages resolution', () => {
+describe.skipIf(SKIP_DOCKER)('Pre-installed MCP packages resolution', () => {
   const { MCP_CATALOG } = require('../mcp-catalog')
   const preinstalled = MCP_CATALOG.filter((e: any) => e.preinstalled)
 

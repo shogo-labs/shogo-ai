@@ -1405,23 +1405,7 @@ export class AgentGateway {
       this.skillServerManager.start().catch(() => {})
     }
 
-    if (activeSkill) {
-      const skillOverride = [
-        `## Tool Discovery — Skill Active`,
-        ``,
-        `The skill "${activeSkill.name}" has been loaded for this request.`,
-        `Follow the skill's instructions directly for this integration:`,
-        `- Call \`tool_install\` for managed OAuth integrations, or \`mcp_install\` for MCP servers, as the skill directs`,
-        `- Proceed to execution with the tools listed in the skill`,
-        ``,
-        `You can still use \`tool_search\` if you need additional tools, integrations, or skills beyond what the skill provides.`,
-      ].join('\n')
-      this.promptOverrides.set('mcp_discovery_guide', skillOverride)
-    }
     let systemPrompt = this.loadBootstrapContext(sessionId)
-    if (activeSkill) {
-      this.promptOverrides.delete('mcp_discovery_guide')
-    }
 
     console.log(`[Gateway][_agentTurnInner] building system prompt — interactionMode: ${interactionMode}, sessionId: ${sessionId}`)
     // Interaction mode system prompt injection

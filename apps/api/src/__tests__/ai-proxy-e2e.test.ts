@@ -15,6 +15,7 @@
 
 import { describe, test, expect, beforeAll, mock } from 'bun:test'
 import { Hono } from 'hono'
+import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 // Run the billing service in local mode so usage-wallet checks are bypassed
 // without needing to stub every model in the mocked Prisma client. The env
@@ -23,7 +24,7 @@ import { Hono } from 'hono'
 process.env.SHOGO_LOCAL_MODE = 'true'
 
 // Mock prisma to avoid database dependency
-mock.module('../lib/prisma', () => ({
+mock.module('../lib/prisma', () => withPrismaExports({
   prisma: {
     project: {
       findFirst: async () => ({ id: 'e2e-project', name: 'E2E Test' }),

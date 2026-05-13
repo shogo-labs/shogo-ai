@@ -1,0 +1,30 @@
+# Test + coverage configuration for @shogo/model-catalog.
+#
+# `bun test` runs without coverage by default. `bun test --coverage`
+# (or `bun run test:coverage`) enables it and uses the settings below.
+#
+# We deliberately omit `coverage = true/false` here. With `coverage =
+# false` set in bunfig, Bun ignores the CLI `--coverage` flag and never
+# emits a report; with `coverage = true` it would run on every plain
+# `bun test` and slow the inner-loop dev cycle. Letting Bun default to
+# off + opting in via the CLI is the cleanest knob.
+
+# Threshold is intentionally NOT set per-package — the soft 50%
+# line / 50% function floor is enforced by `scripts/merge-lcov.ts`
+# against the aggregated repo-wide lcov.
+[test]
+coverageReporter = ["text", "lcov"]
+coverageDir = "coverage"
+coverageSkipTestFiles = true
+coveragePathIgnorePatterns = [
+  "**/__tests__/**",
+  "**/__mocks__/**",
+  "**/*.test.ts",
+  "**/*.test.tsx",
+  "**/*.spec.ts",
+  "**/*.spec.tsx",
+  "**/dist/**",
+  "**/build/**",
+  "**/generated/**",
+  "**/node_modules/**",
+]

@@ -23,8 +23,9 @@
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
 import { spawn, type Subprocess } from 'bun'
-import { mkdirSync, rmSync, writeFileSync, chmodSync } from 'fs'
+import { mkdirSync, rmSync, writeFileSync, chmodSync, readFileSync } from 'fs'
 import { join } from 'path'
+import { createHash } from 'crypto'
 
 const TEST_PORT = 18_900 + Math.floor(Math.random() * 100)
 const TEST_AGENT_DIR = `/tmp/test-warm-pool-agent-${TEST_PORT}`
@@ -219,6 +220,21 @@ describe('Warm Pool Mode — assign latency with slow prisma', () => {
       join(nm, '.shogo-platform'),
       `${process.platform}-${process.arch}\n`,
     )
+    // Install marker matching the current package.json hash so
+    // ensureWorkspaceDeps takes the "deps already installed" fast path
+    // even though this stub workspace does not depend on Vite (the
+    // viteBin probe path requires `workspaceDependsOnVite`, which our
+    // empty `dependencies: {}` package.json doesn't satisfy). Without
+    // this, ensureWorkspaceDeps falls through to `bun install` — our
+    // fake bun sleeps 3s and this test would catch that as a regression
+    // rather than the actual prisma-await regression it was designed
+    // to detect.
+    const shogoDir = join(TEST_AGENT_DIR_2, '.shogo')
+    mkdirSync(shogoDir, { recursive: true })
+    const pkgHash = createHash('sha256')
+      .update(readFileSync(join(TEST_AGENT_DIR_2, 'package.json')))
+      .digest('hex')
+    writeFileSync(join(shogoDir, 'install-marker'), pkgHash, 'utf-8')
 
     // Fake `bun` that sleeps 3s and exits. preview-manager spawns this
     // via `bun x prisma generate` / `bun x prisma db push`. We don't care
