@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Shogo Generate Script

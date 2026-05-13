@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 // Image replacement for Vite (no next/image)
 const Image = ({ src, alt, className, width, height, ...props }: any) => (

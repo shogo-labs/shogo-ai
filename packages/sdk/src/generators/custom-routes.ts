@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Custom Routes File Helper
@@ -42,7 +42,7 @@ import { join } from 'path'
  * agent-facing docs in `AGENTS.md` / system prompt cover the
  * patterns; the scaffold just needs to be a working Hono app.
  */
-export const CUSTOM_ROUTES_SCAFFOLD = `// SPDX-License-Identifier: Apache-2.0
+export const CUSTOM_ROUTES_SCAFFOLD = `// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Custom API Routes

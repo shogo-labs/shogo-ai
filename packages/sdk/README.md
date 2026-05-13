@@ -1395,4 +1395,4 @@ See the [examples](./examples) directory for complete working examples:
 
 ## License
 
-Apache-2.0
+MIT
