@@ -9,6 +9,50 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "composite": true
+    "composite": true,
+    "baseUrl": ".",
+    // SDK source-map paths.
+    //
+    // These redirect any `import ... from '@shogo-ai/sdk/...'` in
+    // workspaces extending this config (apps/api, packages/ui-kit) to
+    // the SDK's TypeScript source instead of its compiled `dist/`
+    // output. Bun's TS-aware resolver picks these up automatically,
+    // so editing a file in `packages/sdk/src/` triggers an immediate
+    // restart of `apps/api` (via watch-api.ts) without needing
+    // `tsup --watch` to repack the SDK.
+    //
+    // Workspaces that DO NOT extend this base config (apps/mobile,
+    // packages/{sdk,agent-runtime,shared-runtime,...}) are unaffected
+    // — they continue resolving through `node_modules/@shogo-ai/sdk`
+    // to `dist/` exactly as before. Mobile gets HMR via Metro's
+    // `unstable_conditionNames` opt-in to the `development` export
+    // condition (see apps/mobile/metro.config.js).
+    //
+    // Published consumers on npm see only `dist/`; these paths are
+    // monorepo-internal.
+    "paths": {
+      "@shogo-ai/sdk": ["packages/sdk/src/index.ts"],
+      "@shogo-ai/sdk/db": ["packages/sdk/src/db/index.ts"],
+      "@shogo-ai/sdk/email": ["packages/sdk/src/email/index.ts"],
+      "@shogo-ai/sdk/email/server": ["packages/sdk/src/email/server.ts"],
+      "@shogo-ai/sdk/react": ["packages/sdk/src/react/index.ts"],
+      "@shogo-ai/sdk/agent": ["packages/sdk/src/agent/index.ts"],
+      "@shogo-ai/sdk/generators": ["packages/sdk/src/generators/index.ts"],
+      "@shogo-ai/sdk/tools": ["packages/sdk/src/tools/index.ts"],
+      "@shogo-ai/sdk/tools/server": ["packages/sdk/src/tools/server.ts"],
+      "@shogo-ai/sdk/memory": ["packages/sdk/src/memory/index.ts"],
+      "@shogo-ai/sdk/memory/server": ["packages/sdk/src/memory/server.ts"],
+      "@shogo-ai/sdk/voice": ["packages/sdk/src/voice/index.ts"],
+      "@shogo-ai/sdk/voice/server": ["packages/sdk/src/voice/server.ts"],
+      "@shogo-ai/sdk/voice/react": ["packages/sdk/src/voice/react/index.ts"],
+      "@shogo-ai/sdk/voice/native": ["packages/sdk/src/voice/native/index.ts"],
+      "@shogo-ai/sdk/voice/route": ["packages/sdk/src/voice/route/index.ts"],
+      "@shogo-ai/sdk/voice/route/signed-url": ["packages/sdk/src/voice/route/signed-url.ts"],
+      "@shogo-ai/sdk/voice/route/tts-preview": ["packages/sdk/src/voice/route/tts-preview.ts"],
+      "@shogo-ai/sdk/voice/route/agent": ["packages/sdk/src/voice/route/agent.ts"],
+      "@shogo-ai/sdk/voice/route/audio-tags": ["packages/sdk/src/voice/route/audio-tags.ts"],
+      "@shogo-ai/sdk/cli/deploy": ["packages/sdk/src/cli/deploy.ts"],
+      "@shogo-ai/sdk/cli/pkg": ["packages/sdk/src/cli/pkg.ts"]
+    }
   }
 }

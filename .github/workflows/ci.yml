@@ -47,6 +47,12 @@ jobs:
       - name: Lint
         run: bun run lint
 
+      - name: Verify SDK license isolation (no AGPL leak)
+        # Fails if @shogo-ai/sdk (MIT) declares or imports any @shogo/*
+        # AGPL workspace package from a published code path. See
+        # packages/sdk/scripts/verify-license-isolation.mjs for details.
+        run: bun run --filter @shogo-ai/sdk verify:license-isolation
+
       - name: Check replication publication is self-maintaining
         run: bun run check:publication
 

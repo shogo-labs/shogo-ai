@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Auto-generated Types Index
@@ -25,7 +25,7 @@ export * from "./chat-message.types"
 export * from "./tool-call-log.types"
 export * from "./feature-session.types"
 
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * MST Domain Exports

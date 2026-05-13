@@ -20,7 +20,7 @@ import { parseArgs } from 'util'
 import { writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'fs'
 import { resolve, dirname, basename } from 'path'
 import { execSync } from 'child_process'
-import { pkg } from '@shogo/shared-runtime'
+import { pkg } from '../src/cli/pkg'
 import { generateFromPrisma, type GenerateOptions, type OutputConfig } from '../src/generators/prisma-generator'
 import { ensureFeatureDeps } from '../src/generators/deps-doctor'
 import { 

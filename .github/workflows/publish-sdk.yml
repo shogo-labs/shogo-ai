@@ -118,8 +118,16 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          # Set version from tag and strip any workspace: deps (not needed at
-          # runtime; tsup bundles everything non-external into dist/).
+          # Three mutations before publish:
+          #   1. Set version from tag.
+          #   2. Strip any `workspace:` deps (not needed at runtime;
+          #      tsup bundles everything non-external into dist/).
+          #   3. Strip `"development"` keys from `exports` — these
+          #      point at TS source files under `./src/` for monorepo
+          #      HMR (Vite/Metro auto-activate the `development`
+          #      condition in dev mode and would ENOENT against a
+          #      missing src/, since the published tarball ships only
+          #      `dist/` per the `files` field).
           node -e '
             const fs = require("fs");
             const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
@@ -133,10 +141,61 @@ jobs:
                 }
               }
             }
+            let strippedDevConditions = 0;
+            const stripDev = (obj) => {
+              if (obj === null || typeof obj !== "object") return;
+              if (Array.isArray(obj)) { for (const el of obj) stripDev(el); return; }
+              if ("development" in obj) {
+                delete obj.development;
+                strippedDevConditions++;
+              }
+              for (const v of Object.values(obj)) stripDev(v);
+            };
+            if (pkg.exports) stripDev(pkg.exports);
+            if (strippedDevConditions > 0) {
+              console.log(`Stripped ${strippedDevConditions} development export condition(s)`);
+            }
             fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
           '
           echo "--- Final package.json ---"
           cat package.json
+
+      - name: Verify SDK license isolation (source check)
+        if: steps.check.outputs.already_published == 'false'
+        run: bun run --filter @shogo-ai/sdk verify:license-isolation
+
+      - name: Verify SDK license isolation (tarball check)
+        if: steps.check.outputs.already_published == 'false'
+        working-directory: packages/sdk
+        run: |
+          # Pack the to-be-published tarball, unpack it into a sibling
+          # dir, and fail if any code file (anything but *.md / *.txt)
+          # contains an actual `import`/`require` of an `@shogo/*`
+          # AGPL workspace package. JSDoc/comment provenance breadcrumbs
+          # in `*.d.ts` files are tolerated.
+          set -euo pipefail
+          mkdir -p /tmp/sdk-publish-leakcheck
+          npm pack --pack-destination /tmp/sdk-publish-leakcheck >/dev/null
+          tarball=$(ls -1 /tmp/sdk-publish-leakcheck/*.tgz | head -1)
+          rm -rf /tmp/sdk-publish-leakcheck/package
+          tar -xzf "$tarball" -C /tmp/sdk-publish-leakcheck
+          # Allowed: scope-prefix matches @shogo-ai/* (the SDK's own
+          # MIT scope). Forbidden: bare @shogo/* (AGPL monorepo).
+          forbidden=$(
+            grep -rEn \
+              -e 'from[[:space:]]+["'\'']@shogo/[^"'\'']+["'\'']' \
+              -e 'require\([[:space:]]*["'\'']@shogo/[^"'\'']+["'\'']' \
+              -e 'import\([[:space:]]*["'\'']@shogo/[^"'\'']+["'\'']' \
+              --include='*.js' --include='*.cjs' --include='*.mjs' \
+              --include='*.ts' --include='*.cts' --include='*.mts' \
+              /tmp/sdk-publish-leakcheck/package || true
+          )
+          if [ -n "$forbidden" ]; then
+            echo "::error::AGPL leak detected in @shogo-ai/sdk tarball — refusing to publish."
+            echo "$forbidden"
+            exit 1
+          fi
+          echo "Tarball license isolation: OK"
 
       - name: Verify publish contents
         if: steps.check.outputs.already_published == 'false'

@@ -25,6 +25,7 @@ export default defineConfig({
     'src/voice/route/agent.ts',
     'src/voice/route/audio-tags.ts',
     'src/cli/deploy.ts',
+    'src/cli/pkg.ts',
   ],
   format: ['cjs', 'esm'],
   dts: true,
