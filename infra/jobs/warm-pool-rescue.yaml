@@ -1,0 +1,109 @@
+# =============================================================================
+# Warm Pool Rescue Job
+# =============================================================================
+#
+# One-shot Job that runs scripts/warm-pool-rescue.ts inside the cluster to
+# clear "promoted-but-orphaned" warm-pool pods (pods whose K8s metadata says
+# they are assigned to a project but whose runtime is still in pool mode
+# because the underlying container was recreated and lost its emptyDir).
+#
+# Usage:
+#
+#   # Dry-run (default; prints what it would do):
+#   kubectl apply -f infra/jobs/warm-pool-rescue.yaml
+#   kubectl logs -n shogo-staging-system job/warm-pool-rescue -f
+#   kubectl delete -f infra/jobs/warm-pool-rescue.yaml
+#
+#   # Apply for real (edit args below to add --apply):
+#   sed 's|# - --apply|- --apply|' infra/jobs/warm-pool-rescue.yaml | kubectl apply -f -
+#
+# Run from the system namespace (where api-service-account lives), but scan
+# the workspaces namespace where the warm-pool ksvc actually live.
+#
+# This Job assumes the deployed `shogo-api` image already contains the
+# rescue script (it ships in this repo at scripts/warm-pool-rescue.ts).
+# Re-run after a deploy if the staging image was older than the fix.
+# =============================================================================
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: warm-pool-rescue
+  namespace: shogo-staging-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: warm-pool-rescue
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: shogo
+        app.kubernetes.io/component: warm-pool-rescue
+    spec:
+      restartPolicy: Never
+      serviceAccountName: api-service-account
+      containers:
+        - name: rescue
+          image: us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-api:staging-latest
+          imagePullPolicy: Always
+          command: ["bun", "run", "scripts/warm-pool-rescue.ts"]
+          args:
+            - --namespace
+            - shogo-staging-workspaces
+            # Uncomment to actually mutate state. Defaults to dry-run.
+            # - --apply
+            # Uncomment with --apply to re-issue /pool/assign instead of
+            # hard-evict. Only safe once pods support whoami self-discovery.
+            # - --heal
+          env:
+            - name: NODE_ENV
+              value: "staging"
+            - name: SYSTEM_NAMESPACE
+              value: "shogo-staging-system"
+            - name: PROJECT_NAMESPACE
+              value: "shogo-staging-workspaces"
+            - name: NODE_TLS_REJECT_UNAUTHORIZED
+              value: "0"
+            # The rescue script imports apps/api/src/lib/warm-pool-controller
+            # in --apply mode (for evictProject) and apps/api/src/lib/runtime/
+            # build-project-env in --heal mode. Both reach Prisma, so we need
+            # the same DB URL the api ksvc uses.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DATABASE_URL
+            # Required by build-project-env (mints fresh AI_PROXY_TOKEN /
+            # RUNTIME_AUTH_SECRET for the --heal path).
+            - name: AI_PROXY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: AI_PROXY_SECRET
+                  optional: true
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "https://ingest.us.signoz.cloud:443"
+            - name: OTEL_SERVICE_NAME
+              value: "shogo-warm-pool-rescue-staging"
+            - name: SIGNOZ_INGESTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: signoz-credentials
+                  key: SIGNOZ_INGESTION_KEY
+                  optional: true
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
