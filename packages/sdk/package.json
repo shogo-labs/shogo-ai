@@ -1,6 +1,6 @@
 {
   "name": "@shogo-ai/sdk",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Shogo Platform SDK - Zero-boilerplate auth and database for Shogo apps",
   "type": "module",
   "main": "dist/index.cjs",
@@ -226,7 +226,6 @@
     "dist/**/*.cjs",
     "dist/**/*.d.ts",
     "dist/**/*.d.cts",
-    "dist/hooks/bundled/**/HOOK.md",
     "bin/cli.mjs"
   ],
   "scripts": {
@@ -240,21 +239,19 @@
     "verify:license-isolation": "node scripts/verify-license-isolation.mjs"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "^2.0.41"
+    "@ai-sdk/openai-compatible": "^2.0.41",
+    "@shogo-ai/core": "workspace:*",
+    "@shogo-ai/agent": "workspace:*",
+    "@shogo-ai/db": "workspace:*",
+    "@shogo-ai/email": "workspace:*",
+    "@shogo-ai/voice": "workspace:*",
+    "@shogo-ai/cli": "workspace:*"
   },
   "devDependencies": {
     "@aws-sdk/client-ses": "^3.700.0",
     "@ai-sdk/react": "^3.0.99",
     "@elevenlabs/react": "^1.1.1",
     "@elevenlabs/react-native": "^1.1.4",
-    "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.213.0",
-    "@opentelemetry/resources": "^2.5.1",
-    "@opentelemetry/sdk-node": "^0.213.0",
-    "@opentelemetry/sdk-trace-base": "^2.5.1",
-    "@opentelemetry/semantic-conventions": "^1.39.0",
-    "@mariozechner/pi-ai": "^0.67.6",
-    "@mariozechner/pi-agent-core": "^0.67.6",
     "ai": "^6.0.97",
     "@playwright/test": "^1.40.0",
     "@prisma/internals": "^7.3.0",
@@ -289,15 +286,7 @@
     "better-sqlite3": ">=11.0.0",
     "three": ">=0.160.0",
     "expo-gl": ">=15.0.0",
-    "expo-three": ">=8.0.0",
-    "@opentelemetry/api": ">=1.9.0",
-    "@opentelemetry/sdk-node": ">=0.213.0",
-    "@opentelemetry/exporter-trace-otlp-http": ">=0.213.0",
-    "@opentelemetry/sdk-trace-base": ">=2.5.0",
-    "@opentelemetry/resources": ">=2.5.0",
-    "@opentelemetry/semantic-conventions": ">=1.39.0",
-    "@mariozechner/pi-ai": ">=0.67.0",
-    "@mariozechner/pi-agent-core": ">=0.67.0"
+    "expo-three": ">=8.0.0"
   },
   "peerDependenciesMeta": {
     "nodemailer": {
@@ -343,30 +332,6 @@
       "optional": true
     },
     "expo-three": {
-      "optional": true
-    },
-    "@opentelemetry/api": {
-      "optional": true
-    },
-    "@opentelemetry/sdk-node": {
-      "optional": true
-    },
-    "@opentelemetry/exporter-trace-otlp-http": {
-      "optional": true
-    },
-    "@opentelemetry/sdk-trace-base": {
-      "optional": true
-    },
-    "@opentelemetry/resources": {
-      "optional": true
-    },
-    "@opentelemetry/semantic-conventions": {
-      "optional": true
-    },
-    "@mariozechner/pi-ai": {
-      "optional": true
-    },
-    "@mariozechner/pi-agent-core": {
       "optional": true
     }
   },

@@ -22,9 +22,10 @@ import {
   DirectTelephonyClient,
   HostedRuntimeTokenClient,
   HostedTelephonyClient,
+  MockTelephonyClient,
+  isVoiceMockEnv,
   type TelephonyClient,
-} from './voice/telephony.js'
-import { MockTelephonyClient, isVoiceMockEnv } from './voice/mock-telephony.js'
+} from '@shogo-ai/voice'
 import type { ShogoClientConfig } from './types.js'
 
 export interface ShogoVoiceModule {

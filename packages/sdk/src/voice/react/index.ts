@@ -1,77 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * @shogo-ai/sdk/voice/react
- *
- * React integration for the voice module. Requires `@elevenlabs/react` and
- * `react` to be installed in the host app (optional peer dependencies).
+ * @deprecated Import from `@shogo-ai/voice/react` directly. This
+ * re-export shim will be removed in `@shogo-ai/sdk@2.0.0`. See
+ * `packages/sdk/MIGRATION.md`.
  */
-
-export {
-  useVoiceConversation,
-  type UseVoiceConversationOptions,
-  type UseVoiceConversationResult,
-} from './useVoiceConversation.js'
-
-export {
-  useShogoVoice,
-  type UseShogoVoiceOptions,
-} from './useShogoVoice.js'
-
-export {
-  useChatConversation,
-  type UseChatConversationOptions,
-  type UseChatConversationResult,
-} from './useChatConversation.js'
-
-export {
-  useShogoChat,
-  type UseShogoChatOptions,
-} from './useShogoChat.js'
-
-export type {
-  BaseChatConversationOptions,
-  BaseChatConversationResult,
-  ChatClientToolFn,
-  ChatConversationStatus,
-  ChatToolDescriptor,
-} from '../shared/chatTypes.js'
-
-export {
-  ShogoVoiceProvider,
-  type ShogoVoiceProviderProps,
-} from './ShogoVoiceProvider.js'
-
-export {
-  OrganicSphere,
-  type OrganicSphereProps,
-} from './OrganicSphere.js'
-
-export {
-  DEFAULT_ORGANIC_SPHERE_CONFIG,
-  resolveOrganicSphereConfig,
-  type BandReactivity,
-  type OrganicSphereConfig,
-} from './sphereConfig.js'
-
-export {
-  OrganicParticles,
-  type OrganicParticlesProps,
-} from './OrganicParticles.js'
-
-export {
-  DEFAULT_ORGANIC_PARTICLES_CONFIG,
-  resolveOrganicParticlesConfig,
-  type OrganicParticlesConfig,
-} from './particlesConfig.js'
-
-export {
-  PERLIN_4D,
-  ORGANIC_SPHERE_VERTEX_SHADER,
-  ORGANIC_SPHERE_FRAGMENT_SHADER,
-} from './shaders/organicSphereShaders.js'
-
-export {
-  ORGANIC_PARTICLES_VERTEX_SHADER,
-  ORGANIC_PARTICLES_FRAGMENT_SHADER,
-} from './shaders/organicParticlesShaders.js'
+export * from '@shogo-ai/voice/react'
