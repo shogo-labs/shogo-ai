@@ -1224,6 +1224,7 @@ export interface AgentTemplateSummary {
     imageGenEnabled?: boolean
     memoryEnabled?: boolean
     quickActionsEnabled?: boolean
+    sdkGuideEnabled?: boolean
   }
   skills: string[]
   integrations?: Array<{
@@ -1252,6 +1253,7 @@ export interface TechStackSummary {
     imageGenEnabled?: boolean
     memoryEnabled?: boolean
     quickActionsEnabled?: boolean
+    sdkGuideEnabled?: boolean
   }
 }
 
