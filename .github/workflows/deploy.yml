@@ -1194,11 +1194,86 @@ jobs:
         run: |
           kubectl apply -f k8s/cnpg/production-us-oci/platform-publication.yaml
 
+      # ----------------------------------------------------------------------
+      # Logical replication: keep the SELECT contract for `logical_replicator`
+      # in sync.
+      #
+      # The publication is `FOR TABLES IN SCHEMA public`, so new tables join
+      # the publication automatically. But Postgres does NOT auto-grant SELECT
+      # to `logical_replicator` on those new tables — and tablesync workers
+      # connect as that role. A missing GRANT causes the tablesync worker to
+      # fail, respawn, leak a slot, and eventually break unrelated healthy
+      # subscriptions when the slot pool saturates.
+      #
+      # grants.sql installs (a) a sweep over current tables, (b) ALTER
+      # DEFAULT PRIVILEGES for every role that creates tables, and (c) an
+      # event trigger that auto-grants SELECT on every future CREATE TABLE
+      # in `public`. The event trigger wraps its GRANT in an EXCEPTION
+      # handler so a failure cannot block a migration.
+      #
+      # Idempotent and safe to run on every deploy. See the file header for
+      # the full rationale.
+      # ----------------------------------------------------------------------
+      # Resolve the *current* CNPG primary by label, not the hardcoded
+      # `platform-pg-1`. After any failover (planned switchover, OS upgrade,
+      # node drain, OOMKill) the primary may be `platform-pg-2` or
+      # `platform-pg-3`. Hardcoding `platform-pg-1` would land us on a
+      # standby where every GRANT / ALTER / CREATE fails with `read-only
+      # transaction`, the `|| echo ::warning::` would swallow it, the deploy
+      # would go green, and the contract would silently drift.
+      - name: Locate CNPG primary pod
+        id: pg_primary_us
+        run: |
+          set -euo pipefail
+          PRIMARY=$(kubectl get pods -n ${{ env.NS_SYSTEM }} \
+            -l "cnpg.io/cluster=platform-pg,cnpg.io/instanceRole=primary" \
+            -o jsonpath='{.items[0].metadata.name}')
+          if [ -z "$PRIMARY" ]; then
+            echo "::error::No primary pod found for platform-pg cluster in ${{ env.NS_SYSTEM }}"
+            exit 1
+          fi
+          echo "Located primary on US: $PRIMARY"
+          echo "PG_PRIMARY=$PRIMARY" >> "$GITHUB_ENV"
+
+      - name: Reconcile logical replication GRANTs
+        run: |
+          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo < k8s/cnpg/logical-replication/grants.sql \
+            || echo "::warning::GRANT reconciliation failed on US (see logs above)"
+
+      # Hard assertion: every table in `public` must have SELECT for
+      # `logical_replicator` after the reconcile step. Converts a silent
+      # warning into a failed deploy if the contract is ever drift'd.
+      - name: Verify GRANT contract
+        run: |
+          set -euo pipefail
+          MISSING=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo -tAc "
+              SELECT count(*)
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND c.relkind = 'r'
+                AND NOT has_table_privilege('logical_replicator', c.oid, 'SELECT');
+            ")
+          if [ "$MISSING" != "0" ]; then
+            echo "::error::$MISSING tables in public still lack SELECT for logical_replicator on US"
+            kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+              psql -U postgres -d shogo -c "
+                SELECT n.nspname || '.' || c.relname AS missing_table
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public' AND c.relkind = 'r'
+                  AND NOT has_table_privilege('logical_replicator', c.oid, 'SELECT');
+              "
+            exit 1
+          fi
+          echo "✓ logical_replicator has SELECT on every public table on US"
+
       - name: Refresh logical replication subscriptions
         run: |
           for SUB in sub_from_eu sub_from_india; do
             echo "Refreshing $SUB on US..."
-            kubectl exec -n ${{ env.NS_SYSTEM }} platform-pg-1 -c postgres -- \
+            kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
               psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
                 -c "ALTER SUBSCRIPTION ${SUB} REFRESH PUBLICATION;" \
               || echo "::warning::REFRESH PUBLICATION failed for ${SUB} on US (subscription may not exist yet)"
@@ -1421,11 +1496,57 @@ jobs:
         run: |
           kubectl apply -f k8s/cnpg/production-eu-oci/platform-publication.yaml
 
+      # Primary-pod selector + GRANT reconcile + assertion: see the matching
+      # block in the deploy-us job for the full rationale.
+      - name: Locate CNPG primary pod
+        run: |
+          set -euo pipefail
+          PRIMARY=$(kubectl get pods -n ${{ env.NS_SYSTEM }} \
+            -l "cnpg.io/cluster=platform-pg,cnpg.io/instanceRole=primary" \
+            -o jsonpath='{.items[0].metadata.name}')
+          if [ -z "$PRIMARY" ]; then
+            echo "::error::No primary pod found for platform-pg cluster in ${{ env.NS_SYSTEM }}"
+            exit 1
+          fi
+          echo "Located primary on EU: $PRIMARY"
+          echo "PG_PRIMARY=$PRIMARY" >> "$GITHUB_ENV"
+
+      - name: Reconcile logical replication GRANTs
+        run: |
+          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo < k8s/cnpg/logical-replication/grants.sql \
+            || echo "::warning::GRANT reconciliation failed on EU (see logs above)"
+
+      - name: Verify GRANT contract
+        run: |
+          set -euo pipefail
+          MISSING=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo -tAc "
+              SELECT count(*)
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND c.relkind = 'r'
+                AND NOT has_table_privilege('logical_replicator', c.oid, 'SELECT');
+            ")
+          if [ "$MISSING" != "0" ]; then
+            echo "::error::$MISSING tables in public still lack SELECT for logical_replicator on EU"
+            kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+              psql -U postgres -d shogo -c "
+                SELECT n.nspname || '.' || c.relname AS missing_table
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public' AND c.relkind = 'r'
+                  AND NOT has_table_privilege('logical_replicator', c.oid, 'SELECT');
+              "
+            exit 1
+          fi
+          echo "✓ logical_replicator has SELECT on every public table on EU"
+
       - name: Refresh logical replication subscriptions
         run: |
           for SUB in sub_from_us sub_from_india; do
             echo "Refreshing $SUB on EU..."
-            kubectl exec -n ${{ env.NS_SYSTEM }} platform-pg-1 -c postgres -- \
+            kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
               psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
                 -c "ALTER SUBSCRIPTION ${SUB} REFRESH PUBLICATION;" \
               || echo "::warning::REFRESH PUBLICATION failed for ${SUB} on EU (subscription may not exist yet)"
@@ -1734,11 +1855,57 @@ jobs:
         run: |
           kubectl apply -f k8s/cnpg/production-india-oci/platform-publication.yaml
 
+      # Primary-pod selector + GRANT reconcile + assertion: see the matching
+      # block in the deploy-us job for the full rationale.
+      - name: Locate CNPG primary pod
+        run: |
+          set -euo pipefail
+          PRIMARY=$(kubectl get pods -n ${{ env.NS_SYSTEM }} \
+            -l "cnpg.io/cluster=platform-pg,cnpg.io/instanceRole=primary" \
+            -o jsonpath='{.items[0].metadata.name}')
+          if [ -z "$PRIMARY" ]; then
+            echo "::error::No primary pod found for platform-pg cluster in ${{ env.NS_SYSTEM }}"
+            exit 1
+          fi
+          echo "Located primary on India: $PRIMARY"
+          echo "PG_PRIMARY=$PRIMARY" >> "$GITHUB_ENV"
+
+      - name: Reconcile logical replication GRANTs
+        run: |
+          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo < k8s/cnpg/logical-replication/grants.sql \
+            || echo "::warning::GRANT reconciliation failed on India (see logs above)"
+
+      - name: Verify GRANT contract
+        run: |
+          set -euo pipefail
+          MISSING=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo -tAc "
+              SELECT count(*)
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND c.relkind = 'r'
+                AND NOT has_table_privilege('logical_replicator', c.oid, 'SELECT');
+            ")
+          if [ "$MISSING" != "0" ]; then
+            echo "::error::$MISSING tables in public still lack SELECT for logical_replicator on India"
+            kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+              psql -U postgres -d shogo -c "
+                SELECT n.nspname || '.' || c.relname AS missing_table
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public' AND c.relkind = 'r'
+                  AND NOT has_table_privilege('logical_replicator', c.oid, 'SELECT');
+              "
+            exit 1
+          fi
+          echo "✓ logical_replicator has SELECT on every public table on India"
+
       - name: Refresh logical replication subscriptions
         run: |
           for SUB in sub_from_us sub_from_eu; do
             echo "Refreshing $SUB on India..."
-            kubectl exec -n ${{ env.NS_SYSTEM }} platform-pg-1 -c postgres -- \
+            kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
               psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
                 -c "ALTER SUBSCRIPTION ${SUB} REFRESH PUBLICATION;" \
               || echo "::warning::REFRESH PUBLICATION failed for ${SUB} on India (subscription may not exist yet)"

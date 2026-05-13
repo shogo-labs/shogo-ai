@@ -231,6 +231,143 @@ jobs:
           done
           echo "All three regional manifests reconcile cleanly."
 
+      # ----------------------------------------------------------------------
+      # GRANT contract regression tests
+      #
+      # The publication self-maintains, but `logical_replicator` SELECT
+      # grants do NOT happen automatically. `k8s/cnpg/logical-replication/
+      # grants.sql` is supposed to close that gap via a sweep, per-role
+      # ALTER DEFAULT PRIVILEGES, and an event trigger. Three assertions:
+      #
+      #   A. After applying grants.sql, every existing table in `public`
+      #      has SELECT for `logical_replicator`.
+      #   B. A new CREATE TABLE issued AFTER grants.sql ran auto-grants
+      #      SELECT via the event trigger — no manual GRANT required.
+      #   C. **Load-bearing safety:** if the event trigger's GRANT fails
+      #      at runtime (we simulate by dropping the role), the CREATE
+      #      TABLE must still commit. The EXCEPTION handler must catch
+      #      the failure and let the migration proceed. If this ever
+      #      breaks, a future migration could be aborted by replication
+      #      machinery — strictly worse than the bug grants.sql fixes.
+      # ----------------------------------------------------------------------
+      - name: Create logical_replicator role and apply grants.sql
+        run: |
+          set -euo pipefail
+          kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo -v ON_ERROR_STOP=1 -c "
+              CREATE ROLE logical_replicator LOGIN REPLICATION;
+            "
+          kubectl exec -i -n "${NS}" platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
+              < k8s/cnpg/logical-replication/grants.sql
+
+      - name: 'Assert (A) — sweep covered every existing table'
+        run: |
+          set -euo pipefail
+          MISSING=$(kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo -tAc "
+              SELECT count(*)
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND c.relkind = 'r'
+                AND NOT has_table_privilege('logical_replicator', c.oid, 'SELECT');
+            ")
+          if [ "${MISSING}" != "0" ]; then
+            echo "::error::sweep missed ${MISSING} tables"
+            kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+              psql -U postgres -d shogo -c "
+                SELECT n.nspname, c.relname
+                FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname='public' AND c.relkind='r'
+                  AND NOT has_table_privilege('logical_replicator', c.oid, 'SELECT');
+              "
+            exit 1
+          fi
+          echo "✓ (A) all existing public tables have SELECT for logical_replicator"
+
+      - name: 'Assert (B) — event trigger auto-grants on new CREATE TABLE'
+        run: |
+          set -euo pipefail
+          # Create as `shogo` (the migration role) to ensure the trigger
+          # path is the one exercised in production, not the postgres path.
+          kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo -v ON_ERROR_STOP=1 -c "
+              SET ROLE shogo;
+              CREATE TABLE public.auto_grant_canary (id int PRIMARY KEY);
+              RESET ROLE;
+            "
+          OK=$(kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo -tAc "
+              SELECT has_table_privilege('logical_replicator', 'public.auto_grant_canary', 'SELECT');
+            ")
+          if [ "${OK}" != "t" ]; then
+            echo "::error::event trigger did NOT auto-grant SELECT on auto_grant_canary"
+            exit 1
+          fi
+          echo "✓ (B) event trigger auto-granted SELECT to logical_replicator on a fresh table"
+
+      - name: 'Assert (C) — EXCEPTION handler prevents trigger from blocking migrations'
+        run: |
+          set -euo pipefail
+          # Simulate the failure mode by deleting the role mid-flight. The
+          # next CREATE TABLE will fire the event trigger, which will try to
+          # GRANT to a role that no longer exists. Without the EXCEPTION
+          # handler this would abort the CREATE TABLE. With it, the CREATE
+          # must succeed and emit a WARNING.
+          kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo -v ON_ERROR_STOP=1 -c "
+              REASSIGN OWNED BY logical_replicator TO postgres;
+              DROP OWNED BY logical_replicator;
+              DROP ROLE logical_replicator;
+            "
+
+          # Run CREATE TABLE as `shogo`. Capture stderr to confirm the
+          # warning fired; exit code must be 0.
+          OUTPUT=$(kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo -v ON_ERROR_STOP=1 -c "
+              SET ROLE shogo;
+              CREATE TABLE public.exception_canary (id int PRIMARY KEY);
+              RESET ROLE;
+            " 2>&1)
+          EXIT_CODE=$?
+          echo "psql output:"
+          echo "${OUTPUT}"
+          if [ ${EXIT_CODE} -ne 0 ]; then
+            echo "::error::CREATE TABLE was aborted by the event trigger — EXCEPTION handler is broken."
+            echo "::error::This means a future migration could be blocked by replication machinery."
+            exit 1
+          fi
+          EXISTS=$(kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo -tAc \
+              "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+               WHERE n.nspname='public' AND c.relname='exception_canary'")
+          if [ "${EXISTS}" != "1" ]; then
+            echo "::error::exception_canary table does not exist — CREATE TABLE silently rolled back"
+            exit 1
+          fi
+          # Sanity: the trigger should have emitted a WARNING about the
+          # failed GRANT. Loose match — psql formats warnings as
+          # "WARNING:  auto_grant_replicator_select: GRANT failed for ..."
+          if ! echo "${OUTPUT}" | grep -q "auto_grant_replicator_select: GRANT failed"; then
+            echo "::warning::Expected a 'GRANT failed' warning from the trigger, but did not see it in output. Trigger may not have fired."
+          fi
+          echo "✓ (C) EXCEPTION handler caught the failed GRANT; CREATE TABLE committed"
+
+      - name: 'Idempotency check — grants.sql can run twice with no error'
+        run: |
+          set -euo pipefail
+          # Restore the role so a fresh apply has a target.
+          kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo -v ON_ERROR_STOP=1 -c \
+              "CREATE ROLE logical_replicator LOGIN REPLICATION;"
+          for i in 1 2; do
+            echo "Run #${i}..."
+            kubectl exec -i -n "${NS}" platform-pg-1 -c postgres -- \
+              psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
+                < k8s/cnpg/logical-replication/grants.sql
+          done
+          echo "✓ grants.sql is idempotent"
+
       - name: Diagnostics on failure
         if: failure()
         run: |
