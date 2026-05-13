@@ -8,7 +8,14 @@ import os from 'os'
 
 export interface VMIsolationConfig {
   enabled: boolean | 'auto'
+  /** Maximum RAM ceiling for VMs in MB. Assigned VMs get inflated to this
+   *  ceiling on /pool/assign. */
   memoryMB: number
+  /** Initial RAM target for warm-pool VMs in MB. Lower values let pool
+   *  VMs idle at a small footprint; the controller balloon-deflates back
+   *  to `memoryMB` on assignment. Set to the same value as `memoryMB` to
+   *  disable right-sizing. */
+  poolMemoryMB: number
   cpus: number
   /** Share the host workspace directory into the VM via 9p mount.
    *  When true (default), the VM sees host project files via 9p.
@@ -63,6 +70,7 @@ export function getCloudUrl(): string {
 const DEFAULT_VM_CONFIG: VMIsolationConfig = {
   enabled: 'auto',
   memoryMB: 4096,
+  poolMemoryMB: 1536,
   cpus: 0,  // 0 = auto (half physical cores)
   mountWorkspace: true,
 }

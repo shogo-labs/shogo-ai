@@ -159,6 +159,40 @@ export class QMPClient {
     return this.execute('query-status')
   }
 
+  /**
+   * Set the virtio-balloon target — the **target amount of guest memory**
+   * QEMU should make available. Inflating the balloon (target < total)
+   * effectively shrinks the guest's available RAM and lets the host
+   * reclaim those pages. Deflating (target = total) gives the guest
+   * back its full configured memory.
+   *
+   * Requires `-device virtio-balloon-pci` on the QEMU command line.
+   * Returns silently (no throw) when the balloon device isn't present,
+   * so callers can use the same code path on both old and new VM images.
+   */
+  async setBalloonSize(targetBytes: number): Promise<void> {
+    try {
+      await this.execute('balloon', { value: targetBytes })
+    } catch (err: any) {
+      // Device not present is a "GenericError: No balloon device"; we
+      // treat that as a soft failure. Other errors (malformed value,
+      // disconnected, etc.) propagate.
+      if (!String(err?.message).includes('balloon')) throw err
+    }
+  }
+
+  /**
+   * Query the current balloon state. Returns the negotiated guest RAM
+   * size in bytes, or `null` when no balloon device is present.
+   */
+  async queryBalloon(): Promise<{ actual: number } | null> {
+    try {
+      return await this.execute('query-balloon')
+    } catch {
+      return null
+    }
+  }
+
   private sendRaw(msg: any): void {
     if (!this.socket) throw new Error('Not connected')
     this.socket.write(JSON.stringify(msg) + '\r\n')

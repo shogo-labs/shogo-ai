@@ -33,6 +33,13 @@ const ASSIGNED_VM_CAP_ENV = process.env.VM_MAX_ASSIGNED
   ? parseInt(process.env.VM_MAX_ASSIGNED, 10)
   : 0
 
+// Absolute ceiling for the auto-computed cap. Even on a 256 GB workstation
+// we never want a *single user session* to book more than this many 4 GB
+// VMs — opening more projects than this should LRU-evict, not spawn more
+// QEMUs. Set with `VM_MAX_HARD_CAP` (default 4). `VM_MAX_ASSIGNED` still
+// overrides everything.
+const MAX_VM_HARD_CAP = Math.max(1, parseInt(process.env.VM_MAX_HARD_CAP || '4', 10))
+
 export interface VMPodInfo {
   id: string
   vmId: string
@@ -62,6 +69,12 @@ export interface VMManagerInterface {
   isRunning(handle: VMManagerHandle): boolean
   forwardPort(handle: VMManagerHandle, guestPort: number, hostPort: number): Promise<void>
   removeForward(handle: VMManagerHandle, hostPort: number): Promise<void>
+  /**
+   * Optional. Adjust the guest's available RAM via virtio-balloon.
+   * `targetMB` is the guest-visible amount of memory after the change.
+   * Implementations should be a no-op when the VM has no balloon device.
+   */
+  setBalloonTargetMB?(handle: VMManagerHandle, targetMB: number): Promise<void>
 }
 
 /**
@@ -106,16 +119,44 @@ export class VMWarmPoolController {
   private consecutiveBootFailures = 0
   private managerFactory: VMManagerFactory
   private maxAssigned: number = 0
+  /** Reentrancy guard for {@link reconcile}. Without this the 30 s timer,
+   *  the post-claim fire-and-forget reconcile, and the initial `start()`
+   *  call could all observe `available.size = 0` while a previous
+   *  reconcile's boots are still in flight — and each would spawn another
+   *  full batch. The K8s WarmPoolController has the same pattern. */
+  private reconciling = false
+  /** Warm-pool replenishment boots in flight. Counted against `poolSize`
+   *  so concurrent `reconcile()` callers don't all see a stale 0 count
+   *  and pile up extra boots. */
+  private inflightPoolBoots = 0
+  /** `_assignProject` calls in flight (after they've cleared the cap
+   *  loop and reserved a slot, until their `assign` HTTP call completes
+   *  *and* the pod has been inserted into `assigned`). Counted against
+   *  `maxAssigned` so concurrent assign attempts for distinct projects
+   *  can't all race past the cap while their boots+assigns are still in
+   *  progress. The bug we're guarding against: `inflightBoots--` in
+   *  `bootVM.finally` decrementing *before* `assigned.set(...)` runs,
+   *  opening a window where waiters wake up, see empty `assigned` and a
+   *  newly-decremented inflight count, and all bypass the cap. */
+  private pendingAssigns = 0
+  /** Listeners woken when any `pendingAssigns` slot frees up. Used to
+   *  back-pressure assign callers when at cap with nothing to LRU-evict. */
+  private bootCompleteWaiters: Array<() => void> = []
 
   constructor(
     managerOrFactory: VMManagerInterface | VMManagerFactory,
     private vmConfig: any,
     private poolSize: number = POOL_SIZE,
+    /** Test-only override for `maxAssigned`. Production code should use the
+     *  `VM_MAX_ASSIGNED` / `VM_MAX_HARD_CAP` env vars and the auto-compute. */
+    maxAssignedOverride?: number,
   ) {
     this.managerFactory = typeof managerOrFactory === 'function'
       ? managerOrFactory
       : () => managerOrFactory
-    this.maxAssigned = this.computeMaxAssigned()
+    this.maxAssigned = maxAssignedOverride !== undefined
+      ? Math.max(1, maxAssignedOverride)
+      : this.computeMaxAssigned()
   }
 
   /**
@@ -123,8 +164,13 @@ export class VMWarmPoolController {
    * host RAM plus QEMU overhead; without a cap the warm pool grew to 13+
    * QEMU processes (49 GB resident) in production logs.
    *
-   * Auto sizing leaves half of host free RAM for the rest of the desktop
-   * app (Electron, renderer, host RuntimeManager, LSPs).
+   * Auto sizing reserves half of *current free* host RAM (not total!) for
+   * the rest of the desktop app (Electron, renderer, host RuntimeManager,
+   * LSPs, the user's browser, etc.). The old implementation used
+   * `os.totalmem()` despite naming the local `freeMB`, which silently
+   * permitted ~8 × 4 GB VMs on a 64 GB Mac even when 50 GB was already
+   * spoken for. The auto value is then clamped to `MAX_VM_HARD_CAP` so a
+   * 256 GB workstation can't book 32 VMs by accident.
    */
   private computeMaxAssigned(): number {
     if (ASSIGNED_VM_CAP_ENV > 0) return ASSIGNED_VM_CAP_ENV
@@ -132,11 +178,12 @@ export class VMWarmPoolController {
     let freeMB: number
     try {
       const os = require('os') as typeof import('os')
-      freeMB = Math.floor(os.totalmem() / 1024 / 1024)
+      freeMB = Math.floor(os.freemem() / 1024 / 1024)
     } catch {
-      freeMB = 16 * 1024
+      freeMB = 8 * 1024
     }
-    return Math.max(2, Math.floor(freeMB / (memoryMB * 2)))
+    const computed = Math.max(1, Math.floor(freeMB / (memoryMB * 2)))
+    return Math.min(MAX_VM_HARD_CAP, computed)
   }
 
   async start(): Promise<void> {
@@ -246,6 +293,26 @@ export class VMWarmPoolController {
     pod.projectId = projectId
     this.assigned.set(projectId, pod)
     console.log(`[VMWarmPool] Assigned VM ${pod.vmId} to project ${projectId}`)
+
+    // Pool right-sizing companion: this VM may have been booted with the
+    // balloon inflated to `poolMemoryMB`. Now that it's being put to
+    // work on a real project, give it its full configured RAM by
+    // deflating the balloon to `memoryMB`. No-op if the manager doesn't
+    // implement balloons, the boot was already a direct-to-assign boot,
+    // or the config doesn't use right-sizing.
+    if (this.vmConfig?.poolMemoryMB && this.vmConfig?.memoryMB) {
+      const mgr = this.vmManagers.get(pod.vmId)
+      const handle = this.vmHandles.get(pod.vmId)
+      if (mgr?.setBalloonTargetMB && handle) {
+        const target = Number(this.vmConfig.memoryMB)
+        try {
+          await mgr.setBalloonTargetMB(handle, target)
+          console.log(`[VMWarmPool] Deflated balloon on assigned VM ${pod.vmId} to ${target} MB`)
+        } catch (err: any) {
+          console.warn(`[VMWarmPool] Failed to deflate balloon on ${pod.vmId}: ${err.message}`)
+        }
+      }
+    }
   }
 
   /**
@@ -331,25 +398,70 @@ export class VMWarmPoolController {
     // LRU cap: if we're about to push past maxAssigned, evict the
     // least-recently-touched VM first. This stops a runaway warm pool
     // (e.g. user opens 13+ projects in one session) from OOM-ing the host.
-    while (this.assigned.size >= this.maxAssigned) {
+    //
+    // `pendingAssigns` is included so concurrent `_assignProject` calls
+    // for *different* project IDs don't all race past the cap while
+    // their boots+assigns are still in progress. When no LRU victim is
+    // available (cap is held entirely by in-flight assigns), back-pressure
+    // by awaiting the next slot to free before re-checking. Without this
+    // back-pressure 20 concurrent project opens would all blow past the
+    // cap and spawn 20 QEMU processes.
+    while (this.assigned.size + this.pendingAssigns >= this.maxAssigned) {
       const victim = this.findLruAssigned()
-      if (!victim) break
+      if (victim) {
+        console.log(
+          `[VMWarmPool] LRU cap reached ` +
+          `(assigned: ${this.assigned.size}, pending: ${this.pendingAssigns}, max: ${this.maxAssigned}) — evicting ${victim}`,
+        )
+        this.evict(victim)
+        continue
+      }
+      if (this.pendingAssigns === 0) break
       console.log(
-        `[VMWarmPool] LRU cap reached (${this.assigned.size}/${this.maxAssigned}) — evicting ${victim}`,
+        `[VMWarmPool] Cap reached with no LRU victim — waiting for an in-flight assign to free a slot ` +
+        `(pending: ${this.pendingAssigns}, max: ${this.maxAssigned})`,
       )
-      this.evict(victim)
+      await this.waitForBootSlot()
     }
 
-    const pod = this.claim()
-    if (!pod) {
-      const freshPod = await this.bootVM()
-      if (!freshPod) throw new Error('Failed to boot VM for project')
-      await this.assign(freshPod, projectId)
-      return freshPod.url
-    }
+    // Reserve a slot for the entire claim+boot+assign lifecycle. The slot
+    // is released in the `finally` after `assign()` has either inserted
+    // into `this.assigned` (success) or thrown. This closes the window
+    // where decrementing on `bootVM` completion alone let multiple
+    // waiters wake up and all bypass the cap before any of their
+    // `assign()` calls had populated `this.assigned`.
+    this.pendingAssigns++
+    try {
+      const pod = this.claim()
+      if (!pod) {
+        const freshPod = await this.bootVM('assign')
+        if (!freshPod) throw new Error('Failed to boot VM for project')
+        await this.assign(freshPod, projectId)
+        return freshPod.url
+      }
 
-    await this.assign(pod, projectId)
-    return pod.url
+      await this.assign(pod, projectId)
+      return pod.url
+    } finally {
+      this.pendingAssigns--
+      this.notifyBootComplete()
+    }
+  }
+
+  /**
+   * Resolve when any in-flight boot finishes. Used by `_assignProject` for
+   * back-pressure when at cap with no LRU victim available.
+   */
+  private waitForBootSlot(): Promise<void> {
+    return new Promise<void>(resolve => {
+      this.bootCompleteWaiters.push(resolve)
+    })
+  }
+
+  private notifyBootComplete(): void {
+    const ws = this.bootCompleteWaiters
+    this.bootCompleteWaiters = []
+    for (const w of ws) w()
   }
 
   private findLruAssigned(): string | null {
@@ -395,7 +507,22 @@ export class VMWarmPoolController {
 
   private async reconcile(): Promise<void> {
     if (!this.started) return
+    // Reentrancy guard. Three independent call sites can fire reconcile()
+    // concurrently (30 s timer, post-claim fire-and-forget, initial
+    // start()). Without this guard each one observes the same stale
+    // `available.size = 0` while previous boots are still running and
+    // spawns a full extra batch — producing the runaway QEMU growth that
+    // OOMs the host. See vm-pool-oom-fix plan.
+    if (this.reconciling) return
+    this.reconciling = true
+    try {
+      await this._reconcileOnce()
+    } finally {
+      this.reconciling = false
+    }
+  }
 
+  private async _reconcileOnce(): Promise<void> {
     // Idle-eviction reaper: stop any assigned VM whose project hasn't been
     // touched in IDLE_EVICTION_MS. Without this the pool grows unbounded:
     // every project switch claims a fresh warm VM, the old one is left
@@ -433,19 +560,46 @@ export class VMWarmPoolController {
       }
     }
 
-    // Boot new VMs to maintain pool size
-    const needed = this.poolSize - this.available.size
+    // Belt-and-braces: if a previous (pre-fix) reconcile race overshot
+    // poolSize, trim the excess healthy VMs back down. Without this the
+    // pool would stay at the overshot size forever (reconcile only adds,
+    // never removes idle warm VMs).
+    if (this.available.size > this.poolSize) {
+      const excess = this.available.size - this.poolSize
+      const ids = [...this.available.keys()].slice(0, excess)
+      for (const id of ids) {
+        const pod = this.available.get(id)!
+        console.log(`[VMWarmPool] Trimming excess warm VM ${pod.vmId} (have ${this.available.size}, target ${this.poolSize})`)
+        this.available.delete(id)
+        const handle = this.vmHandles.get(pod.vmId)
+        const mgr = this.vmManagers.get(pod.vmId)
+        if (handle && mgr) {
+          mgr.stopVM(handle).catch(() => {})
+        }
+        this.cleanupOverlay(pod.vmId)
+        this.vmHandles.delete(pod.vmId)
+        this.vmManagers.delete(pod.vmId)
+      }
+    }
+
+    // Boot new VMs to maintain pool size. Count in-flight pool boots so a
+    // single concurrent reconcile that's still booting doesn't trick the
+    // next call into starting another batch.
+    const needed = this.poolSize - this.available.size - this.inflightPoolBoots
     if (needed <= 0) return
 
     if (this.consecutiveBootFailures >= MAX_CONSECUTIVE_FAILURES) {
       return
     }
 
-    console.log(`[VMWarmPool] Reconcile: need ${needed} more VMs (available: ${this.available.size}, target: ${this.poolSize})`)
+    console.log(
+      `[VMWarmPool] Reconcile: need ${needed} more VMs ` +
+      `(available: ${this.available.size}, inflight: ${this.inflightPoolBoots}, target: ${this.poolSize})`,
+    )
 
     const bootPromises = []
     for (let i = 0; i < needed; i++) {
-      bootPromises.push(this.bootVM().then(pod => {
+      bootPromises.push(this.bootVM('pool').then(pod => {
         if (pod) {
           this.available.set(pod.id, pod)
           console.log(`[VMWarmPool] VM ${pod.vmId} added to pool (available: ${this.available.size})`)
@@ -458,9 +612,21 @@ export class VMWarmPoolController {
     await Promise.allSettled(bootPromises)
   }
 
-  private async bootVM(): Promise<VMPodInfo | null> {
-    let vmId: string | undefined
+  /**
+   * Boot a fresh VM through the configured `VMManager` factory.
+   *
+   * `purpose`:
+   *   - `'pool'` (default): counted against `inflightPoolBoots` so
+   *     concurrent `reconcile()` callers can't all overshoot `poolSize`.
+   *   - `'assign'`: NOT counted against `inflightPoolBoots` because
+   *     `_assignProject` has already reserved a slot via `pendingAssigns`
+   *     for the entire claim+boot+assign lifecycle.
+   */
+  private async bootVM(purpose: 'pool' | 'assign' = 'pool'): Promise<VMPodInfo | null> {
+    let handle: VMManagerHandle | undefined
     let mgr: ReturnType<typeof this.managerFactory> | undefined
+    let overlayPath: string | undefined
+    if (purpose === 'pool') this.inflightPoolBoots++
     try {
       mgr = this.managerFactory()
 
@@ -468,17 +634,35 @@ export class VMWarmPoolController {
       if (config.overlayPath) {
         const ext = config.overlayPath.replace(/.*(\.\w+)$/, '$1')
         const base = config.overlayPath.replace(/\.\w+$/, '')
-        config.overlayPath = `${base}-${Date.now()}${ext}`
+        const tag = purpose === 'pool' ? this.inflightPoolBoots : this.pendingAssigns
+        config.overlayPath = `${base}-${Date.now()}-${purpose}-${tag}${ext}`
+        overlayPath = config.overlayPath
       }
 
-      const handle = await mgr.startVM(config)
-      vmId = handle.id
+      handle = await mgr.startVM(config)
       this.vmHandles.set(handle.id, handle)
       this.vmManagers.set(handle.id, mgr)
       if (config.overlayPath) this.vmOverlayPaths.set(handle.id, config.overlayPath)
 
       const boundMgr = mgr
-      await this.waitForHealth(handle.agentUrl, () => boundMgr.isRunning(handle))
+      const boundHandle = handle
+      await this.waitForHealth(handle.agentUrl, () => boundMgr.isRunning(boundHandle))
+
+      // Pool right-sizing: inflate the balloon on a freshly-booted pool
+      // VM so it idles at `poolMemoryMB` (typically 1.5 GB) instead of
+      // sitting at the configured `memoryMB` ceiling (typically 4 GB).
+      // For 'assign' boots we skip this — the VM goes straight to a
+      // project and needs its full memory. No-op if the manager doesn't
+      // implement balloons or the config doesn't have `poolMemoryMB`.
+      if (purpose === 'pool' && this.vmConfig?.poolMemoryMB && mgr.setBalloonTargetMB) {
+        const target = Math.max(512, Number(this.vmConfig.poolMemoryMB))
+        try {
+          await mgr.setBalloonTargetMB(handle, target)
+          console.log(`[VMWarmPool] Inflated balloon on pool VM ${handle.id} to ${target} MB`)
+        } catch (err: any) {
+          console.warn(`[VMWarmPool] Failed to inflate balloon on ${handle.id}: ${err.message}`)
+        }
+      }
 
       this.consecutiveBootFailures = 0
       return {
@@ -491,14 +675,27 @@ export class VMWarmPoolController {
     } catch (err: any) {
       this.consecutiveBootFailures++
       console.error(`[VMWarmPool] Boot failed (${this.consecutiveBootFailures}/${MAX_CONSECUTIVE_FAILURES}): ${err.message}`)
-      if (vmId) {
-        try { await mgr?.stopVM(vmId as any) } catch {}
-        this.vmHandles.delete(vmId)
-        this.vmManagers.delete(vmId)
-        this.cleanupOverlay(vmId)
-        console.log(`[VMWarmPool] Cleaned up failed VM ${vmId}`)
+      if (handle) {
+        try { await mgr?.stopVM(handle) } catch {}
+        this.vmHandles.delete(handle.id)
+        this.vmManagers.delete(handle.id)
+        this.cleanupOverlay(handle.id)
+        console.log(`[VMWarmPool] Cleaned up failed VM ${handle.id}`)
+      } else if (overlayPath) {
+        // Boot failed before we got a handle, but the manager may have
+        // already created the overlay file. Clean it up by path since we
+        // have no vmId to look up in `vmOverlayPaths`.
+        try { fs.rmSync(overlayPath, { force: true }) } catch {}
       }
       return null
+    } finally {
+      if (purpose === 'pool') {
+        this.inflightPoolBoots--
+        this.notifyBootComplete()
+      }
+      // For 'assign' boots, `_assignProject`'s `finally` calls
+      // `notifyBootComplete()` itself after `assign()` has populated
+      // `assigned` — see the comment on `pendingAssigns`.
     }
   }
 
@@ -561,6 +758,10 @@ export class VMWarmPoolController {
     return {
       available: this.available.size,
       assigned: this.assigned.size,
+      inflightPoolBoots: this.inflightPoolBoots,
+      pendingAssigns: this.pendingAssigns,
+      /** Sum convenience field for tests and dashboards. */
+      inflightBoots: this.inflightPoolBoots + this.pendingAssigns,
       targetPoolSize: this.poolSize,
       maxAssigned: this.maxAssigned,
       idleEvictionMs: IDLE_EVICTION_MS,
