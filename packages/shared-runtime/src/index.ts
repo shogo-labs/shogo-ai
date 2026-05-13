@@ -127,6 +127,11 @@ export {
 } from './diagnostics'
 
 export {
+  isMacOSJunkName,
+  isMacOSJunkPath,
+} from './macos-junk'
+
+export {
   recordBuildError,
   getBuildErrors,
   clearBuildErrors,

@@ -38,6 +38,7 @@ import { existsSync, statSync, mkdirSync } from 'fs'
 import { createHash } from 'crypto'
 import { spawn } from 'child_process'
 import * as tar from 'tar'
+import { isMacOSJunkName } from './macos-junk'
 
 /**
  * Extract a `.tar.gz` archive without blocking the Node/Bun event loop.
@@ -56,14 +57,75 @@ import * as tar from 'tar'
  *   process exit. We fall back to `node-tar` when the system binary is
  *   missing (e.g. minimal containers).
  */
+/**
+ * tar stderr lines we consider benign — they don't indicate the archive
+ * extracted incorrectly, only that `tar` couldn't perfectly mirror macOS
+ * filesystem metadata into the Linux container.
+ *
+ * Seen in staging on 2026-05-13 for project 9e7ecdc7: the workspace archive
+ * (created on a macOS host with `xattrs` and SIP provenance metadata)
+ * extracted ALL file payloads correctly but `tar` exited code 2 because:
+ *   1. `LIBARCHIVE.xattr.com.apple.provenance` PAX header was unrecognized,
+ *   2. `Cannot utime / Cannot change mode: Operation not permitted` on the
+ *      workspace root, because that dir is mounted with restricted perms.
+ * The previous code rejected on any non-zero exit, then `initializeS3Sync`
+ * swallowed the rejection into `stats.errors[]` and the pod kept booting
+ * with a half-extracted workspace. The benign-pattern allowlist below
+ * lets a "no real files failed" extract complete; anything outside the
+ * allowlist still surfaces as a hard error.
+ */
+const BENIGN_TAR_STDERR_PATTERNS: RegExp[] = [
+  /Ignoring unknown extended header keyword/i,
+  /Cannot u?time/i,
+  /Cannot change (mode|ownership)/i,
+  /Cannot change owner/i,
+  /Operation not permitted/i,
+  /Exiting with failure status due to previous errors/i,
+]
+
+/**
+ * Returns true if every non-empty line in `stderr` matches one of the
+ * benign patterns above (i.e. tar exited non-zero but only complained
+ * about cosmetic metadata it couldn't apply). Exported for tests.
+ */
+export function tarStderrIsBenign(stderr: string): boolean {
+  const lines = stderr.split('\n').map((l) => l.trim()).filter((l) => l.length > 0)
+  if (lines.length === 0) return false
+  return lines.every((line) => BENIGN_TAR_STDERR_PATTERNS.some((re) => re.test(line)))
+}
+
 export async function extractTarFastNonBlocking(
   archivePath: string,
   cwd: string,
 ): Promise<{ usedBinary: boolean }> {
-  return new Promise<{ usedBinary: boolean }>((resolve, reject) => {
-    const child = spawn('tar', ['-xzf', archivePath, '-C', cwd], {
-      stdio: ['ignore', 'ignore', 'pipe'],
-    })
+  const result = await new Promise<{ usedBinary: boolean }>((resolve, reject) => {
+    const child = spawn(
+      'tar',
+      [
+        '-xzf',
+        archivePath,
+        '-C',
+        cwd,
+        // Don't try to restore the source machine's uid/gid/perms onto the
+        // container's workspace. Otherwise tar attempts `chmod`/`chown` on
+        // the destination root dir (which we don't own) and exits non-zero.
+        // Both flags are supported by GNU tar (Linux) and BSD tar (macOS).
+        '--no-same-owner',
+        '--no-same-permissions',
+        // NOTE: we used to also pass `--warning=no-unknown-keyword` here to
+        // suppress macOS xattr PAX-header noise, but that's GNU-only and
+        // BSD tar (macOS dev hosts) treats it as a fatal "unknown option".
+        // The benign-stderr predicate downstream already accepts those
+        // warnings, so we leave them to surface as logged stderr.
+      ],
+      {
+        stdio: ['ignore', 'ignore', 'pipe'],
+        // Prevent BSD `tar` on macOS from writing AppleDouble sidecars (`._*`)
+        // when re-materializing extended attributes during extract. Belt-and-
+        // braces alongside the post-extract scrub below.
+        env: { ...process.env, COPYFILE_DISABLE: '1' },
+      },
+    )
 
     let stderr = ''
     child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
@@ -85,11 +147,72 @@ export async function extractTarFastNonBlocking(
     child.once('exit', (code) => {
       if (code === 0) {
         resolve({ usedBinary: true })
+        return
+      }
+      // Non-zero exit, but only if stderr is exclusively the known-benign
+      // macOS metadata noise do we let the extract complete. Anything else
+      // (truncated archive, gzip corruption, missing disk space, etc.)
+      // must surface — a half-extracted workspace is worse than a hard
+      // failure because subsequent boot steps silently run against a
+      // partial source tree.
+      if (tarStderrIsBenign(stderr)) {
+        console.warn(
+          `[S3Sync] tar -xzf exited with code ${code} but only emitted benign ` +
+            `macOS metadata warnings; treating extract as successful. ` +
+            `First line: ${stderr.split('\n')[0]?.trim() ?? '(empty)'}`,
+        )
+        resolve({ usedBinary: true })
       } else {
         reject(new Error(`tar -xzf exited with code ${code}: ${stderr.trim()}`))
       }
     })
   })
+
+  // Scrub macOS detritus that may have been baked into legacy archives still
+  // sitting in S3 (created before the export filters landed). AppleDouble
+  // sidecars like `._\_layout.tsx` crash Metro's Babel parser if they survive
+  // into the imported workspace, so this runs unconditionally — cheap because
+  // it only walks the freshly-extracted project (no node_modules yet).
+  try {
+    await removeMacOSJunk(cwd)
+  } catch (err) {
+    // Non-fatal: failing to scrub is much better than failing the import.
+    console.warn('[S3Sync] removeMacOSJunk failed:', err)
+  }
+
+  return result
+}
+
+/**
+ * Recursively remove macOS-specific junk files/dirs from `dir`. Idempotent;
+ * safe to call repeatedly. Junk directories are removed wholesale via `rm`
+ * with recursive: true.
+ */
+async function removeMacOSJunk(dir: string): Promise<void> {
+  let entries
+  try {
+    entries = await readdir(dir, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const entry of entries) {
+    const full = join(dir, entry.name)
+    if (isMacOSJunkName(entry.name)) {
+      try {
+        if (entry.isDirectory()) {
+          await rm(full, { recursive: true, force: true })
+        } else {
+          await unlink(full)
+        }
+      } catch {
+        // ignore — best-effort cleanup
+      }
+      continue
+    }
+    if (entry.isDirectory()) {
+      await removeMacOSJunk(full)
+    }
+  }
 }
 
 // =============================================================================
@@ -1081,6 +1204,13 @@ export class S3Sync {
         const relativePath = relative(this.config.localDir, fullPath)
 
         if (this.shouldExclude(relativePath)) continue
+
+        // Drop macOS-specific detritus (AppleDouble sidecars like `._foo.ts`,
+        // `.DS_Store`, `__MACOSX/`, etc.). The existing glob list in
+        // `shouldExclude` can't express the `._*` prefix, so handle it here.
+        // Matching on basename also kills the entire subtree when the entry
+        // is a junk directory (`.AppleDouble/`, `__MACOSX/`).
+        if (isMacOSJunkName(entry.name)) continue
 
         // Skip excluded directories by name at any depth (e.g. 'node_modules' matches
         // both top-level and nested like 'project/node_modules' or '.npm/_npx/.../node_modules')
