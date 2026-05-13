@@ -10,7 +10,7 @@
  * - Pro / Business / Enterprise plan cards with included-USD selectors
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   View,
   Text,
@@ -34,6 +34,9 @@ import {
 import { useAuth } from '../../contexts/auth'
 import { useWorkspaceCollection, useDomainHttp } from '../../contexts/domain'
 import { api } from '../../lib/api'
+import { openWebAppSession } from '../../lib/openWebAppSession'
+import { purchaseSubscription, finishPurchase, restorePurchases, initIapListeners, IapError, APP_STORE_SUBSCRIPTIONS_URL } from '../../lib/iap'
+import type { IapPurchaseResult } from '../../lib/iap'
 import type { RegionalPricingResponse } from '../../lib/api'
 import { getRewardfulReferral } from '../../lib/rewardful'
 import { trackInitiateCheckout, trackPurchase } from '../../lib/tracking'
@@ -54,6 +57,7 @@ import {
   getPlanDisplayName,
 } from '../../lib/billing-config'
 import { SeatCounter } from '../../components/billing/SeatCounter'
+import { useToast, Toast, ToastTitle, ToastDescription } from '../../components/ui/toast'
 import { FeatureList } from '../../components/billing/FeatureList'
 import {
   Card,
@@ -95,6 +99,149 @@ export default observer(function BillingPage() {
   const [isCheckoutLoading, setIsCheckoutLoading] = useState(false)
   const [isPortalLoading, setIsPortalLoading] = useState(false)
   const [regionalPricing, setRegionalPricing] = useState<RegionalPricingResponse | null>(null)
+  const [isRestoreLoading, setIsRestoreLoading] = useState(false)
+  const iapTransactionsInFlightRef = useRef<Map<string, Promise<'processed' | 'failed'>>>(new Map())
+  const toast = useToast()
+
+  type IapToastVariant = 'success' | 'error' | 'info'
+  const showIapToast = useCallback((variant: IapToastVariant, title: string, description: string) => {
+    const action: 'success' | 'error' | 'info' = variant
+    toast.show({
+      id: `iap-${Date.now()}`,
+      placement: 'top',
+      duration: variant === 'error' ? 8000 : 5000,
+      render: ({ id: toastId }: { id: string }) => (
+        <Toast nativeID={toastId} variant="outline" action={action}>
+          <ToastTitle>{title}</ToastTitle>
+          <ToastDescription>{description}</ToastDescription>
+        </Toast>
+      ),
+    })
+  }, [toast])
+
+  const getIapTransactionKey = useCallback((purchase: IapPurchaseResult) => {
+    const transactionId = purchase.transactionId?.trim()
+    if (transactionId) return `tx:${transactionId}`
+
+    // StoreKit should provide a transaction id, but use the receipt tail as a
+    // stable fallback so duplicate listener/direct responses still coalesce.
+    const receiptTail = purchase.transactionReceipt?.slice(-64) ?? ''
+    return `receipt:${purchase.productId}:${receiptTail}`
+  }, [])
+
+  const processIapPurchase = useCallback(async (
+    purchase: IapPurchaseResult,
+    options: {
+      successTitle?: string
+      successDescription?: string
+      onVerified?: () => void
+    } = {},
+  ): Promise<'processed' | 'duplicate' | 'failed'> => {
+    const workspaceId = currentWorkspace?.id
+    if (!workspaceId) return 'failed'
+
+    const key = getIapTransactionKey(purchase)
+    const inFlight = iapTransactionsInFlightRef.current.get(key)
+    if (inFlight) {
+      console.log('[Billing] skipping duplicate IAP transaction processing', {
+        productId: purchase.productId,
+        transactionId: purchase.transactionId,
+      })
+      try {
+        return (await inFlight) === 'processed' ? 'duplicate' : 'failed'
+      } catch (err) {
+        console.warn('[Billing] duplicate IAP transaction processing failed:', err)
+        return 'failed'
+      }
+    }
+
+    const task = (async (): Promise<'processed' | 'failed'> => {
+      const verify = await api.verifyAppleReceipt(http, {
+        workspaceId,
+        productId: purchase.productId,
+        transactionId: purchase.transactionId,
+        transactionReceipt: purchase.transactionReceipt,
+        appAccountToken: purchase.appAccountToken,
+      })
+
+      if (!verify?.ok) {
+        console.warn('[Billing] iOS IAP server verification failed:', verify)
+        return 'failed'
+      }
+
+      await finishPurchase(purchase)
+      options.onVerified?.()
+      refetchSubscription()
+      refetchUsageWallet()
+      if (options.successTitle && options.successDescription) {
+        showIapToast('success', options.successTitle, options.successDescription)
+      }
+      return 'processed'
+    })()
+
+    iapTransactionsInFlightRef.current.set(key, task)
+    try {
+      return await task
+    } catch (err) {
+      console.warn('[Billing] IAP receipt processing failed:', err)
+      return 'failed'
+    } finally {
+      iapTransactionsInFlightRef.current.delete(key)
+    }
+  }, [currentWorkspace?.id, getIapTransactionKey, http, refetchSubscription, refetchUsageWallet, showIapToast])
+
+  // Global StoreKit listener — finishes any pending transaction that gets
+  // delivered async (Ask to Buy approval, app relaunched mid-purchase, etc.).
+  // Without this, transactions sit in the StoreKit queue forever and Apple
+  // rejects the build for "unfinished transactions on relaunch."
+  useEffect(() => {
+    if (Platform.OS !== 'ios' || !currentWorkspace?.id) return
+    const teardown = initIapListeners(
+      async (purchase) => {
+        await processIapPurchase(purchase, {
+          successTitle: 'Subscription activated',
+          successDescription: 'Your pending purchase has been verified.',
+        })
+      },
+      (err) => {
+        if (err.code === 'user_cancelled') return
+        if (err.code === 'pending') {
+          showIapToast('info', 'Purchase pending', 'Waiting for approval (Family Sharing / Ask to Buy).')
+        }
+      },
+    )
+    return teardown
+  }, [currentWorkspace?.id, processIapPurchase, showIapToast])
+
+  const handleRestorePurchases = useCallback(async () => {
+    if (Platform.OS !== 'ios' || !currentWorkspace?.id) return
+    setIsRestoreLoading(true)
+    try {
+      const purchases = await restorePurchases()
+      if (purchases.length === 0) {
+        showIapToast('info', 'No purchases to restore', 'No previous shogo subscriptions were found on this Apple ID.')
+        return
+      }
+      let restored = 0
+      for (const p of purchases) {
+        const result = await processIapPurchase(p)
+        if (result === 'processed') restored += 1
+      }
+      if (restored > 0) {
+        refetchSubscription()
+        refetchUsageWallet()
+        showIapToast('success', 'Purchases restored', `Restored ${restored} subscription${restored === 1 ? '' : 's'}.`)
+      } else {
+        showIapToast('error', 'Restore failed', 'Found previous purchases but could not verify them. Please contact support.')
+      }
+    } catch (err) {
+      if (err instanceof IapError && err.code === 'user_cancelled') return
+      showIapToast('error', 'Restore failed', err instanceof Error ? err.message : 'Unknown error')
+    } finally {
+      setIsRestoreLoading(false)
+    }
+  }, [currentWorkspace?.id, processIapPurchase, showIapToast])
+
 
   useEffect(() => {
     let cancelled = false
@@ -139,6 +286,54 @@ export default observer(function BillingPage() {
       const planId = planType
       const safeSeats = planType === 'basic' ? 1 : Math.max(1, Math.floor(seats || 1))
       const isNative = Platform.OS !== 'web'
+
+      // ============================================================
+      // iOS — App Store IAP path (Apple Guideline 3.1.1 compliance)
+      //
+      // iOS subscriptions are always sold as a single seat. Pro/Business seat
+      // upgrades remain web-only (Apple IAP does not cleanly support per-seat
+      // quantities on auto-renewables). The UI hides the seat picker on iOS.
+      // ============================================================
+      if (Platform.OS === 'ios') {
+        try {
+          trackInitiateCheckout({ planId, billingInterval, seats: 1, workspaceId: currentWorkspace.id })
+          const result = await purchaseSubscription({
+            plan: planType,
+            interval: billingInterval,
+            workspaceId: currentWorkspace.id,
+          })
+          const purchaseResult = await processIapPurchase(result, {
+            successTitle: 'Subscription activated',
+            successDescription: `You're now on ${planType} (1 seat).`,
+            onVerified: () => trackPurchase({
+              planId,
+              billingInterval,
+              seats: 1,
+              workspaceId: currentWorkspace.id,
+              sessionId: result.transactionId,
+            }),
+          })
+          if (purchaseResult === 'failed') {
+            showIapToast('error', 'Could not activate subscription', 'Apple confirmed your purchase but our server could not verify it. We\'ll retry automatically — if it doesn\'t resolve in a few minutes, contact support and we\'ll restore your purchase.')
+          }
+        } catch (err) {
+          if (err instanceof IapError && err.code === 'user_cancelled') {
+            // Silent — same UX as Stripe Checkout cancel.
+          } else if (err instanceof IapError && err.code === 'pending') {
+            showIapToast('info', 'Purchase pending approval', 'Your purchase is waiting for approval (Ask to Buy / Family Sharing). It will activate automatically once approved.')
+          } else if (err instanceof IapError && err.code === 'product_not_available') {
+            showIapToast('error', 'Subscription not available yet', err.message)
+          } else if (err instanceof IapError && err.code === 'network') {
+            showIapToast('error', 'Connection to App Store failed', 'Please check your network and try again.')
+          } else {
+            console.warn('[Billing] iOS IAP failed:', err)
+            showIapToast('error', 'Purchase failed', err instanceof Error ? err.message : 'Unknown error')
+          }
+        } finally {
+          setIsCheckoutLoading(false)
+        }
+        return
+      }
 
       const redirectBase = isNative
         ? ExpoLinking.createURL('billing')
@@ -210,6 +405,17 @@ export default observer(function BillingPage() {
     if (!currentWorkspace?.id) return
     setIsPortalLoading(true)
     try {
+      // iOS: route to native App Store subscriptions screen (Apple requirement).
+      if (Platform.OS === 'ios') {
+        try {
+          await Linking.openURL(APP_STORE_SUBSCRIPTIONS_URL)
+        } catch (err) {
+          console.warn('[Billing] failed to open App Store subscriptions:', err)
+        } finally {
+          setIsPortalLoading(false)
+        }
+        return
+      }
       const isNative = Platform.OS !== 'web'
       const returnUrl = isNative
         ? ExpoLinking.createURL('billing')
@@ -235,6 +441,12 @@ export default observer(function BillingPage() {
       setIsPortalLoading(false)
     }
   }, [http, currentWorkspace?.id, refetchSubscription, refetchUsageWallet])
+
+  const handleManageBillingOnWeb = useCallback(() => {
+    openWebAppSession('/billing').catch((err) =>
+      console.warn('[Billing] failed to open web billing:', err),
+    )
+  }, [])
 
   if (isAuthLoading || isBillingLoading) {
     return (
@@ -312,16 +524,28 @@ export default observer(function BillingPage() {
                 </Text>
               </View>
             </View>
-            {subscription && (
-              <Button
-                variant="outline"
-                size="sm"
-                onPress={handleManageSubscription}
-                disabled={isPortalLoading}
-              >
-                {isPortalLoading ? 'Loading...' : 'Manage'}
-              </Button>
-            )}
+            <View className="flex-row items-center gap-2">
+              {subscription && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onPress={handleManageSubscription}
+                  disabled={isPortalLoading}
+                >
+                  {isPortalLoading ? 'Loading...' : 'Manage'}
+                </Button>
+              )}
+              {Platform.OS === 'ios' && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onPress={handleRestorePurchases}
+                  disabled={isRestoreLoading}
+                >
+                  {isRestoreLoading ? 'Restoring...' : 'Restore Purchases'}
+                </Button>
+              )}
+            </View>
           </View>
         </CardContent>
       </Card>
@@ -345,10 +569,12 @@ export default observer(function BillingPage() {
               <View className="flex-row items-center gap-2">
                 <Info size={16} className="text-muted-foreground" />
                 <Text className="text-sm text-muted-foreground">
-                  All usage is billed at the AI provider's raw cost plus a flat 20% markup. Pro and Business include $20/$40 of monthly usage per seat. No credits, no unit conversions. Daily allowance resets at midnight UTC.
+                  {Platform.OS === 'ios'
+                    ? 'Pro and Business include monthly usage per seat. Daily allowance resets at midnight UTC.'
+                    : 'All usage is billed at the AI provider\'s raw cost plus a flat 20% markup. Pro and Business include $20/$40 of monthly usage per seat. No credits, no unit conversions. Daily allowance resets at midnight UTC.'}
                 </Text>
               </View>
-              {effectiveBalance?.overageEnabled && (
+              {Platform.OS !== 'ios' && effectiveBalance?.overageEnabled && (
                 <View className="flex-row items-center gap-2">
                   <Info size={16} className="text-muted-foreground" />
                   <Text className="text-sm text-muted-foreground">
@@ -494,7 +720,9 @@ export default observer(function BillingPage() {
                   <Text className="text-sm text-muted-foreground">per month</Text>
                 </View>
                 <Text className="text-sm text-muted-foreground">
-                  ${proPricing.monthly}/seat × {proSeats} seat{proSeats === 1 ? '' : 's'} — raw cost + 20% on usage
+                  {Platform.OS === 'ios'
+                    ? `$${proPricing.monthly}/seat`
+                    : `$${proPricing.monthly}/seat × ${proSeats} seat${proSeats === 1 ? '' : 's'} — raw cost + 20% on usage`}
                 </Text>
               </View>
 
@@ -502,13 +730,19 @@ export default observer(function BillingPage() {
                 <Text className="text-sm font-medium text-foreground mb-2">
                   Seats
                 </Text>
-                <SeatCounter
-                  value={proSeats}
-                  onChange={setProSeats}
-                  min={1}
-                  max={500}
-                  label={`$${SEAT_INCLUDED_USD.pro} / seat / month`}
-                />
+                {Platform.OS === 'ios' ? (
+                  <Text className="text-xs text-muted-foreground">
+                    iOS purchases include 1 seat per subscription.
+                  </Text>
+                ) : (
+                  <SeatCounter
+                    value={proSeats}
+                    onChange={setProSeats}
+                    min={1}
+                    max={500}
+                    label={`$${SEAT_INCLUDED_USD.pro} / seat / month`}
+                  />
+                )}
               </View>
 
               <Pressable
@@ -564,7 +798,9 @@ export default observer(function BillingPage() {
                   <Text className="text-sm text-muted-foreground">per month</Text>
                 </View>
                 <Text className="text-sm text-muted-foreground">
-                  ${businessPricing.monthly}/seat × {businessSeats} seat{businessSeats === 1 ? '' : 's'} — raw cost + 20% on usage
+                  {Platform.OS === 'ios'
+                    ? `$${businessPricing.monthly}/seat`
+                    : `$${businessPricing.monthly}/seat × ${businessSeats} seat${businessSeats === 1 ? '' : 's'} — raw cost + 20% on usage`}
                 </Text>
               </View>
 
@@ -572,13 +808,19 @@ export default observer(function BillingPage() {
                 <Text className="text-sm font-medium text-foreground mb-2">
                   Seats
                 </Text>
-                <SeatCounter
-                  value={businessSeats}
-                  onChange={setBusinessSeats}
-                  min={1}
-                  max={500}
-                  label={`$${SEAT_INCLUDED_USD.business} / seat / month`}
-                />
+                {Platform.OS === 'ios' ? (
+                  <Text className="text-xs text-muted-foreground">
+                    iOS purchases include 1 seat per subscription.
+                  </Text>
+                ) : (
+                  <SeatCounter
+                    value={businessSeats}
+                    onChange={setBusinessSeats}
+                    min={1}
+                    max={500}
+                    label={`$${SEAT_INCLUDED_USD.business} / seat / month`}
+                  />
+                )}
               </View>
 
               <Pressable
@@ -635,6 +877,22 @@ export default observer(function BillingPage() {
           </Card>
         </View>
       </View>
+
+      {Platform.OS === 'ios' && (
+        <Card className="mt-6">
+          <CardContent className="p-4 gap-3">
+            <View className="gap-1">
+              <Text className="text-sm font-semibold text-foreground">Manage billing on the web</Text>
+              <Text className="text-sm text-muted-foreground">
+                Additional seats and usage payment settings are managed from your web account.
+              </Text>
+            </View>
+            <Button variant="outline" onPress={handleManageBillingOnWeb}>
+              <Text className="text-foreground font-medium text-sm">Manage on the web</Text>
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
     </ScrollView>
   )

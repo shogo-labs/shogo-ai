@@ -19,6 +19,7 @@ import { getCurrencyForCountry, formatPrice, SUPPORTED_CURRENCIES } from './conf
 import { getExchangeRates, convertPrice } from './services/exchange-rate.service'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import * as billingService from './services/billing.service'
+import * as appleIap from './services/apple-iap.service'
 import * as instanceService from './services/instance.service'
 import * as storageService from './services/storage.service'
 import * as nodeMetricsService from './services/node-metrics.service'
@@ -502,6 +503,7 @@ app.use(
       '/api/version',
       '/api/config',
       '/api/webhooks/',
+      '/api/billing/ios/notifications',
       '/api/integrations/',
       '/api/invite-links/',
       '/api/internal/',
@@ -4928,6 +4930,88 @@ app.post('/api/billing/workspace-checkout', async (c) => {
   } catch (error: any) {
     console.error('[Billing] Workspace checkout error:', error)
     return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
+// ============================================================
+// iOS App Store In-App Purchase routes (Guideline 3.1.1)
+// ============================================================
+app.post('/api/billing/ios/verify-receipt', authMiddleware, requireAuth, async (c) => {
+  let body: any
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ ok: false, error: { code: 'invalid_json', message: 'Request body must be JSON' } }, 400)
+  }
+  const { workspaceId, productId, transactionId, transactionReceipt, appAccountToken } = body || {}
+  if (!workspaceId || !productId || !transactionId || !transactionReceipt) {
+    return c.json({ ok: false, error: { code: 'invalid_request', message: 'workspaceId, productId, transactionId, transactionReceipt are required' } }, 400)
+  }
+  if (typeof transactionReceipt !== 'string' || typeof productId !== 'string' || typeof workspaceId !== 'string') {
+    return c.json({ ok: false, error: { code: 'invalid_request', message: 'workspaceId, productId, transactionReceipt must be strings' } }, 400)
+  }
+  // Critical: the caller must be a member of the workspace they're activating
+  // the subscription on. Without this check, anyone with a valid Apple receipt
+  // could activate a subscription on any workspaceId.
+  if (!await verifyWorkspaceMembership(c, workspaceId)) {
+    return c.json({ ok: false, error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
+  }
+  try {
+    const result = await appleIap.verifyAndSyncReceipt({
+      workspaceId,
+      productId,
+      transactionId,
+      transactionReceipt,
+      appAccountToken,
+    })
+    if (!result.ok) {
+      console.warn('[IAP] verify-receipt failed:', { workspaceId, productId, reason: result.reason, appleStatus: 'appleStatus' in result ? result.appleStatus : undefined })
+      return c.json({ ok: false, error: { code: 'verification_failed', message: result.reason, appleStatus: 'appleStatus' in result ? result.appleStatus : undefined } }, 400)
+    }
+    return c.json({
+      ok: true,
+      planId: result.planId,
+      interval: result.interval,
+      expiresAt: result.expiresAt.toISOString(),
+      alreadyProcessed: result.alreadyProcessed ?? false,
+    })
+  } catch (error: any) {
+    console.error('[IAP] verify-receipt error:', error)
+    return c.json({ ok: false, error: { code: 'server_error', message: 'Verification failed' } }, 500)
+  }
+})
+
+// App Store Server Notifications V2 webhook. Configure URL in App Store Connect:
+// My Apps → app → App Information → App Store Server Notifications → Production Server URL.
+//
+// Auth: the signedPayload IS the auth. We verify Apple's JWS signature against
+// Apple's Root CA G3 inside handleAppStoreNotification — forged payloads are
+// rejected. No session auth (Apple has no session with us).
+//
+// We always return 200 OK once we've parsed the body so Apple stops retrying.
+// Signature failures are still logged but acked — Apple's retry policy is
+// aggressive and we'd rather investigate via logs than thrash.
+app.post('/api/billing/ios/notifications', async (c) => {
+  let body: any
+  try {
+    body = await c.req.json()
+  } catch {
+    // Malformed body — don't ack; Apple will retry once (we'd want to know).
+    return c.json({ ok: false, error: 'invalid_json' }, 400)
+  }
+  const signedPayload = body?.signedPayload
+  if (!signedPayload || typeof signedPayload !== 'string') {
+    // Ack structurally invalid notification attempts so Apple does not retry
+    // indefinitely. Legitimate ASSN V2 requests always include signedPayload.
+    return c.json({ ok: false, processed: false, reason: 'signedPayload_missing' }, 200)
+  }
+  try {
+    const result = await appleIap.handleAppStoreNotification(signedPayload)
+    // 200 even on signature failure — Apple keeps retrying otherwise; we log & investigate.
+    return c.json(result)
+  } catch (error: any) {
+    console.error('[IAP] notification error:', error)
+    return c.json({ ok: false, error: 'internal' }, 200)
   }
 })
 

@@ -66,6 +66,10 @@ export default function NewWorkspacePage() {
 
   const handleCheckout = useCallback(async (planType: 'pro' | 'business', seats: number) => {
     if (!user?.id) return
+    if (Platform.OS === 'ios') {
+      setError('Additional workspace creation is not available in the iOS app.')
+      return
+    }
     if (!workspaceName.trim()) {
       setError('Give your workspace a name before subscribing.')
       return
@@ -150,6 +154,32 @@ export default function NewWorkspacePage() {
       setIsCheckoutLoading(false)
     }
   }, [http, workspaceName, billingInterval, user?.id, user?.email, router])
+
+  if (Platform.OS === 'ios') {
+    return (
+      <View className="flex-1 bg-background p-4">
+        <View className="flex-row items-center gap-3 mb-6">
+          <Pressable onPress={() => router.back()}>
+            <ArrowLeft size={20} className="text-foreground" />
+          </Pressable>
+          <Text className="text-2xl font-bold text-foreground">
+            Create workspace
+          </Text>
+        </View>
+
+        <Card>
+          <CardContent className="p-5 gap-3">
+            <Text className="text-base font-semibold text-foreground">
+              Additional workspaces are not available in the iOS app.
+            </Text>
+            <Text className="text-sm text-muted-foreground">
+              You can continue using workspaces that are already available on your account.
+            </Text>
+          </CardContent>
+        </Card>
+      </View>
+    )
+  }
 
   return (
     <ScrollView

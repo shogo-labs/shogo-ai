@@ -17,6 +17,7 @@ import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useDomainHttp } from '../../contexts/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { api } from '../../lib/api'
+import { openWebAppSession } from '../../lib/openWebAppSession'
 import {
   INSTANCE_SIZES,
   getInstanceSize,
@@ -55,6 +56,12 @@ export function ComputeTab() {
 
   const tableSectionRef = useRef<View>(null)
 
+  const handleManageComputeOnWeb = useCallback(() => {
+    openWebAppSession('/settings?tab=compute').catch((err) =>
+      console.warn('[Compute] failed to open web compute settings:', err),
+    )
+  }, [])
+
   useEffect(() => {
     if (!workspaceId) return
     let cancelled = false
@@ -74,6 +81,10 @@ export function ComputeTab() {
 
   const handleInstanceCheckout = useCallback(async (size: InstanceSizeName) => {
     if (!workspaceId || size === 'micro') return
+    if (Platform.OS === 'ios') {
+      console.warn('[Compute] Instance Stripe checkout is disabled on iOS for App Store compliance.')
+      return
+    }
     setIsCheckoutLoading(true)
     try {
       const isNative = Platform.OS !== 'web'
@@ -229,50 +240,68 @@ export function ComputeTab() {
         </Card>
       ) : null}
 
-      {/* Billing interval toggle */}
-      <View className="flex-row items-center justify-between mt-2">
-        <Text className="text-base font-semibold text-foreground">Instance Sizes</Text>
-        <View className="flex-row border border-border rounded-lg bg-muted/60 p-0.5">
-          <Pressable
-            onPress={() => setBillingInterval('monthly')}
-            className={cn(
-              'px-3 py-1.5 rounded-md',
-              billingInterval === 'monthly' && 'bg-primary',
-            )}
-          >
-            <Text className={cn(
-              'text-xs font-medium',
-              billingInterval === 'monthly' ? 'text-primary-foreground' : 'text-foreground',
-            )}>
-              Monthly
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setBillingInterval('annual')}
-            className={cn(
-              'px-3 py-1.5 rounded-md',
-              billingInterval === 'annual' && 'bg-primary',
-            )}
-          >
-            <Text className={cn(
-              'text-xs font-medium',
-              billingInterval === 'annual' ? 'text-primary-foreground' : 'text-foreground',
-            )}>
-              Annual
-            </Text>
-          </Pressable>
-        </View>
-      </View>
+      {Platform.OS === 'ios' ? (
+        <Card>
+          <CardContent className="p-4 gap-3">
+            <View className="gap-1">
+              <Text className="text-sm font-semibold text-foreground">Instance resizing</Text>
+              <Text className="text-xs text-muted-foreground">
+                Instance size changes are managed from your web account.
+              </Text>
+            </View>
+            <Button variant="outline" onPress={handleManageComputeOnWeb}>
+              <Text className="text-foreground font-medium text-sm">Resize on the web</Text>
+            </Button>
+          </CardContent>
+        </Card>
+      ) : (
+        <>
+          {/* Billing interval toggle */}
+          <View className="flex-row items-center justify-between mt-2">
+            <Text className="text-base font-semibold text-foreground">Instance Sizes</Text>
+            <View className="flex-row border border-border rounded-lg bg-muted/60 p-0.5">
+              <Pressable
+                onPress={() => setBillingInterval('monthly')}
+                className={cn(
+                  'px-3 py-1.5 rounded-md',
+                  billingInterval === 'monthly' && 'bg-primary',
+                )}
+              >
+                <Text className={cn(
+                  'text-xs font-medium',
+                  billingInterval === 'monthly' ? 'text-primary-foreground' : 'text-foreground',
+                )}>
+                  Monthly
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setBillingInterval('annual')}
+                className={cn(
+                  'px-3 py-1.5 rounded-md',
+                  billingInterval === 'annual' && 'bg-primary',
+                )}
+              >
+                <Text className={cn(
+                  'text-xs font-medium',
+                  billingInterval === 'annual' ? 'text-primary-foreground' : 'text-foreground',
+                )}>
+                  Annual
+                </Text>
+              </Pressable>
+            </View>
+          </View>
 
-      {/* Instance Comparison Table */}
-      <View ref={tableSectionRef}>
-        <InstanceComparisonTable
-          currentSize={currentSize}
-          billingInterval={billingInterval}
-          onSelectSize={handleInstanceCheckout}
-          isCheckoutLoading={isCheckoutLoading}
-        />
-      </View>
+          {/* Instance Comparison Table */}
+          <View ref={tableSectionRef}>
+            <InstanceComparisonTable
+              currentSize={currentSize}
+              billingInterval={billingInterval}
+              onSelectSize={handleInstanceCheckout}
+              isCheckoutLoading={isCheckoutLoading}
+            />
+          </View>
+        </>
+      )}
     </View>
   )
 }
