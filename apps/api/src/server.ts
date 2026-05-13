@@ -2405,13 +2405,23 @@ app.get('/api/projects/:projectId/download', async (c) => {
   try {
     const excludes = [
       'node_modules', '.git', '.next', 'dist', 'build', '.cache',
-      '.output', '.nuxt', '.bun', '.vite'
+      '.output', '.nuxt', '.bun', '.vite',
+      // macOS detritus — AppleDouble sidecars (`._*`) are binary resource-fork
+      // blobs that crash Metro's Babel parser if they survive into the imported
+      // workspace. The rest are Finder/Spotlight noise.
+      '._*', '.DS_Store', '__MACOSX', '.AppleDouble',
     ]
     const excludeArgs = excludes.flatMap((dir: string) => ['--exclude', dir])
-    
+
     const result = Bun.spawnSync(
       ['tar', '-czf', '-', ...excludeArgs, '-C', projectDir, '.'],
-      { stdout: 'pipe', stderr: 'pipe' }
+      {
+        stdout: 'pipe',
+        stderr: 'pipe',
+        // Prevent BSD `tar` on macOS from re-injecting AppleDouble entries
+        // synthesized from extended attributes at archive time.
+        env: { ...process.env, COPYFILE_DISABLE: '1' },
+      }
     )
     
     if (result.exitCode !== 0) {

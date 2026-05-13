@@ -361,6 +361,20 @@ export class PreviewManager {
   private started = false
   private _phase: PreviewPhase = 'idle'
   /**
+   * Reentrancy guard for `runExpoExportWeb`. Without it, the staging-pod
+   * boot path can spawn `expo export --platform web` twice in parallel:
+   *   - Once via `start() -> backgroundSetupMetro()` (fire-and-forget).
+   *   - Once via a second `start()`/`restart()` call slipping through
+   *     before `this.started` is observed by the caller.
+   *
+   * Each invocation forks ~6 jest-worker children and competes for the
+   * same `dist.staging/` output dir, doubling Metro's already-heavy
+   * memory footprint and producing the OOM kills we saw in staging on
+   * 2026-05-13 (project 9e7ecdc7-...). The guard keeps the export
+   * strictly serial — concurrent callers receive the in-flight promise.
+   */
+  private expoExportInFlight: Promise<void> | null = null
+  /**
    * Port the spawned project API server (`server.tsx`) binds to. Resolved
    * once in the constructor — subsequent `process.env` mutations don't
    * hot-swap the bound port mid-flight.
@@ -2087,6 +2101,18 @@ export class PreviewManager {
    * Re-run on demand via `restart()`.
    */
   private async runExpoExportWeb(timings: Record<string, number>, cwd: string): Promise<void> {
+    // Reentrancy guard — see `expoExportInFlight` field doc.
+    if (this.expoExportInFlight) {
+      console.log(`[${LOG_PREFIX}] expo export already running — awaiting in-flight build`)
+      return this.expoExportInFlight
+    }
+    this.expoExportInFlight = this._runExpoExportWebImpl(timings, cwd).finally(() => {
+      this.expoExportInFlight = null
+    })
+    return this.expoExportInFlight
+  }
+
+  private async _runExpoExportWebImpl(timings: Record<string, number>, cwd: string): Promise<void> {
     const expoBin = this.resolveExpoBin(cwd)
     if (!expoBin) {
       console.log(`[${LOG_PREFIX}] expo CLI not found in node_modules — skipping web export`)
@@ -2160,12 +2186,31 @@ export class PreviewManager {
     })
 
     if (exitCode === 0) {
-      const committed = commitBuildOutput(cwd, DEFAULT_STAGING_DIR)
-      if (!committed) {
-        console.warn(
-          `[${LOG_PREFIX}] expo export succeeded but commit into dist/ failed — ` +
-            `previous build (if any) remains live`,
+      // `expo export` can exit 0 even when Metro's bundle silently failed —
+      // for example, on 2026-05-13 (project 9e7ecdc7) a stray AppleDouble
+      // file (`app/.__layout.tsx`) blew up Babel inside a jest-worker, the
+      // worker crash didn't propagate to the parent, and `expo export`
+      // happily returned with an empty `dist.staging/`. Without this
+      // check we then atomically swap an empty dir into `dist/` and the
+      // preview goes from "stale but working" to "404 on /".
+      //
+      // Refuse to swap unless staging actually contains `index.html`.
+      const stagingIndex = join(cwd, DEFAULT_STAGING_DIR, 'index.html')
+      if (!existsSync(stagingIndex)) {
+        console.error(
+          `[${LOG_PREFIX}] expo export exited 0 but ${DEFAULT_STAGING_DIR}/index.html ` +
+            `is missing — refusing to swap. Previous build (if any) stays live. ` +
+            `Inspect ${BUILD_LOG_FILE} for the real error.`,
         )
+        cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
+      } else {
+        const committed = commitBuildOutput(cwd, DEFAULT_STAGING_DIR)
+        if (!committed) {
+          console.warn(
+            `[${LOG_PREFIX}] expo export succeeded but commit into dist/ failed — ` +
+              `previous build (if any) remains live`,
+          )
+        }
       }
     } else {
       // Failed build: drop the partial staging output so it can't poison

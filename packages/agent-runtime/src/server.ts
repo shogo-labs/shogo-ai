@@ -37,6 +37,7 @@ import {
   initializePostgresBackup,
   configureAIProxy,
   StreamBufferStore,
+  isMacOSJunkName,
 } from '@shogo/shared-runtime'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import {
@@ -2296,6 +2297,9 @@ function collectBundleFiles(dir: string, baseDir: string): Record<string, string
   for (const entry of entries) {
     if (BUNDLE_EXCLUDED_DIRS.has(entry.name)) continue
     if (entry.name.startsWith('.install-ok')) continue
+    // macOS detritus: `._*` AppleDouble sidecars crash Metro's Babel parser
+    // when an imported workspace contains them, so they must never round-trip.
+    if (isMacOSJunkName(entry.name)) continue
 
     const fullPath = join(dir, entry.name)
     const relPath = require('path').relative(baseDir, fullPath).replace(/\\/g, '/')

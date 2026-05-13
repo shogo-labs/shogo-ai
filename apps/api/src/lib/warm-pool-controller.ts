@@ -2178,8 +2178,27 @@ export class WarmPoolController {
                 ports: [{ containerPort: 8080, name: 'http1' }],
                 env: dedupedEnv,
                 resources: {
+                  // Memory limit must cover the heaviest legitimate workload
+                  // a pool pod can be assigned, since the pod's resources are
+                  // baked in at ksvc creation and we can't safely patch them
+                  // post-assignment (a patch creates a new revision, which
+                  // loses the in-memory agent/preview state).
+                  //
+                  // Empirical peak (staging, 2026-05-13):
+                  //   - Vite + React:                       ~800 MiB
+                  //   - Expo + react-native-web (web only): ~3.5 GiB
+                  //   - Expo + @react-three/fiber + VRM:    ~4.5–5 GiB
+                  //     (Metro keeps the entire module graph in-memory while
+                  //     bundling; the @pixiv/three-vrm + three.js + R3F combo
+                  //     is the worst offender we ship templates for.)
+                  //
+                  // 2 GiB OOM-killed every Expo build with code 137 (the
+                  // 9e7ecdc7 staging incident). 5 GiB / 1.5 GiB request is
+                  // the smallest envelope that doesn't crash any current
+                  // tech stack. Request stays low so we still bin-pack
+                  // efficiently — the limit is only an upper bound.
                   requests: { memory: '768Mi', cpu: '200m' },
-                  limits: { memory: '2Gi', cpu: '1000m' },
+                  limits: { memory: '5Gi', cpu: '1000m' },
                 },
                 volumeMounts: [{ name: 'project-data', mountPath: workDir }],
                 startupProbe: {
@@ -2210,7 +2229,14 @@ export class WarmPoolController {
             volumes: [
               {
                 name: 'project-data',
-                emptyDir: { sizeLimit: '2Gi' },
+                // Expo workspaces with full template deps consume ~1.1 GiB
+                // just for `node_modules/`; add dist/dist.staging + metro
+                // cache + the user's assets and 2 GiB blows past the
+                // sizeLimit mid-build, which K8s surfaces as a confusing
+                // "no space left on device" failure inside the pod. 5 GiB
+                // matches the memory ceiling and gives the heaviest stack
+                // (expo-three-vrm) room to breathe.
+                emptyDir: { sizeLimit: '5Gi' },
               },
             ],
           },

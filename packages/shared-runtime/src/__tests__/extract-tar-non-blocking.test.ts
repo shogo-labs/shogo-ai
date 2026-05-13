@@ -22,7 +22,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { extractTarFastNonBlocking } from '../s3-sync'
+import { extractTarFastNonBlocking, tarStderrIsBenign } from '../s3-sync'
 
 let tmpRoot: string
 
@@ -140,5 +140,31 @@ describe('extractTarFastNonBlocking', () => {
     }
     // We must have observed *some* ticks during extraction.
     expect(ticks.length).toBeGreaterThan(0)
+  })
+})
+
+describe('tarStderrIsBenign', () => {
+  test('returns true for the staging 9e7ecdc7 stderr (macOS metadata only)', () => {
+    // Lifted verbatim from the staging logs we used to diagnose the
+    // 2026-05-13 "imported Expo never builds" report.
+    const stderr = `tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: .: Cannot utime: Operation not permitted
+tar: .: Cannot change mode to rwxr-sr-x: Operation not permitted
+tar: Exiting with failure status due to previous errors`
+    expect(tarStderrIsBenign(stderr)).toBe(true)
+  })
+
+  test('returns false when stderr contains a real corruption marker', () => {
+    const stderr = `tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: short read
+tar: Exiting with failure status due to previous errors`
+    expect(tarStderrIsBenign(stderr)).toBe(false)
+  })
+
+  test('returns false on empty stderr (we only allow benign-positive)', () => {
+    expect(tarStderrIsBenign('')).toBe(false)
+    expect(tarStderrIsBenign('   \n  \n')).toBe(false)
   })
 })

@@ -15,7 +15,7 @@ import {
 import { join, resolve, relative } from 'node:path'
 import { spawn } from 'node:child_process'
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
-import { createS3SyncForProject } from '@shogo/shared-runtime'
+import { createS3SyncForProject, isMacOSJunkName } from '@shogo/shared-runtime'
 import { prisma } from '../lib/prisma'
 import type { AuthContext } from '../middleware/auth'
 import {
@@ -172,6 +172,9 @@ function collectWorkspaceFiles(
   const entries = readdirSync(dir, { withFileTypes: true })
   for (const entry of entries) {
     if (EXCLUDED_DIRS.has(entry.name)) continue
+    // macOS detritus: `._*` AppleDouble sidecars crash Metro's Babel parser
+    // on import. Drop the whole subtree for junk dirs like `__MACOSX/`.
+    if (isMacOSJunkName(entry.name)) continue
 
     const fullPath = join(dir, entry.name)
     const relPath = relative(baseDir, fullPath).replace(/\\/g, '/')
