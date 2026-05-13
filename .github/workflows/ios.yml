@@ -376,6 +376,20 @@ jobs:
         working-directory: apps/mobile
         run: ruby scripts/strip-sentry-build-phases.rb
 
+      - name: Fix code sign identity for Apple Distribution certificate
+        working-directory: apps/mobile
+        run: |
+          ruby scripts/fix-code-sign-identity.rb
+
+          echo "--- Raw pbxproj CODE_SIGN_IDENTITY before sed ---"
+          grep -n "CODE_SIGN_IDENTITY" ios/Shogo.xcodeproj/project.pbxproj || echo "(none found)"
+
+          sed -i '' 's/"iOS Distribution"/"Apple Distribution"/g' ios/Shogo.xcodeproj/project.pbxproj
+          sed -i '' 's/"iPhone Distribution"/"Apple Distribution"/g' ios/Shogo.xcodeproj/project.pbxproj
+
+          echo "--- Raw pbxproj CODE_SIGN_IDENTITY after sed ---"
+          grep -n "CODE_SIGN_IDENTITY" ios/Shogo.xcodeproj/project.pbxproj || echo "(none found)"
+
       - name: Decode and install signing certificate
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}

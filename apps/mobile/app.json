@@ -2,7 +2,7 @@
   "expo": {
     "name": "Shogo",
     "slug": "shogo",
-    "version": "1.0.5",
+    "version": "1.0.6",
     "orientation": "default",
     "icon": "./assets/ic_shogo_legacy.png",
     "scheme": "shogo",
@@ -81,6 +81,7 @@
     },
     "updates": {
       "url": "https://u.expo.dev/1523dfce-1689-48f6-b921-68d992ff05c5"
-    }
+    },
+    "newArchEnabled": false
   }
 }
