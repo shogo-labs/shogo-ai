@@ -2,9 +2,38 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, test, expect, beforeAll, afterAll, afterEach, mock } from 'bun:test'
 import { randomUUID } from 'crypto'
+import { Socket } from 'net'
 
 const TEST_DB_URL = process.env.DATABASE_URL || 'postgres://shogo:shogo_dev@127.0.0.1:5432/shogo'
 process.env.DATABASE_URL = TEST_DB_URL
+
+// This whole file talks to a real Postgres instance — `LocalHeartbeatScheduler`
+// owns the SQLite path, this `HeartbeatScheduler` is the production /
+// pg-backed variant. Skip when Postgres isn't reachable so devs without a
+// local pg can still run the unit suite. CI brings up Postgres explicitly.
+async function isPostgresReachable(): Promise<boolean> {
+  try {
+    const url = new URL(TEST_DB_URL)
+    const host = url.hostname
+    const port = parseInt(url.port || '5432', 10)
+    return await new Promise<boolean>((resolve) => {
+      const sock = new Socket()
+      const done = (ok: boolean) => {
+        sock.destroy()
+        resolve(ok)
+      }
+      sock.setTimeout(500)
+      sock.once('connect', () => done(true))
+      sock.once('error', () => done(false))
+      sock.once('timeout', () => done(false))
+      sock.connect(port, host)
+    })
+  } catch {
+    return false
+  }
+}
+
+const POSTGRES_REACHABLE = await isPostgresReachable()
 
 let prisma: any
 let HeartbeatScheduler: any
@@ -83,7 +112,7 @@ afterAll(async () => {
   await prisma.$disconnect?.()
 })
 
-describe('HeartbeatScheduler e2e', () => {
+describe.skipIf(!POSTGRES_REACHABLE)('HeartbeatScheduler e2e', () => {
   test('tick() picks up due agents and advances nextHeartbeatAt', async () => {
     const { projectId } = await createTestFixtures({
       heartbeatEnabled: true,

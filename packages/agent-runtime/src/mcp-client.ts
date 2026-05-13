@@ -33,7 +33,24 @@ const MCP_TOOL_LIST_TIMEOUT_MS = 15_000
  * When a package exists here, we run it directly with `node` instead of
  * going through `npx` (which takes 30-45s even with a warm npm cache).
  */
-export const MCP_PREINSTALL_DIR = process.env.MCP_PREINSTALL_DIR || '/app/mcp-packages'
+/**
+ * Resolved at call time (not at module load) so test files that need to
+ * point this at a fixture dir (`__tests__/.test-mcp-packages`) work even
+ * when `mcp-client.ts` was already imported by a sibling test that ran
+ * first in the bun-test process — module caching used to freeze the old
+ * `process.env.MCP_PREINSTALL_DIR || '/app/mcp-packages'` snapshot before
+ * the fixture dir env was set.
+ */
+export function getMcpPreinstallDir(): string {
+  return process.env.MCP_PREINSTALL_DIR || '/app/mcp-packages'
+}
+
+/**
+ * Back-compat re-export. New code should call `getMcpPreinstallDir()`.
+ * Existing call sites in this file go through the function so the value
+ * is always live.
+ */
+export const MCP_PREINSTALL_DIR = getMcpPreinstallDir()
 
 /** Workspace-local directory for MCP packages installed at runtime (persisted via S3) */
 export const MCP_WORKSPACE_PACKAGES_DIR = '.mcp-packages'
@@ -211,7 +228,8 @@ export class MCPClientManager {
 
     const pkgName = pkgArg.replace(/@(latest|[\d^~>=<].*)$/, '')
 
-    const searchDirs = [MCP_PREINSTALL_DIR]
+    const preinstallDir = getMcpPreinstallDir()
+    const searchDirs = [preinstallDir]
     if (this.workspaceDir) {
       searchDirs.push(join(this.workspaceDir, MCP_WORKSPACE_PACKAGES_DIR))
     }
@@ -238,7 +256,7 @@ export class MCPClientManager {
 
         const extraArgs = args.filter(a => a !== '-y' && a !== '--yes' && a !== pkgArg)
 
-        const source = baseDir === MCP_PREINSTALL_DIR ? 'Docker pre-install' : 'workspace cache'
+        const source = baseDir === preinstallDir ? 'Docker pre-install' : 'workspace cache'
         console.log(`[MCPClient] ${source} hit: ${pkgName} → node ${fullEntrypoint}`)
         return { ...config, command: 'node', args: [fullEntrypoint, ...extraArgs] }
       } catch {

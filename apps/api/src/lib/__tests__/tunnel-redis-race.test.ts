@@ -19,6 +19,11 @@ let store: Map<string, string>
 
 class FakeRedis {
   public events = new Map<string, Array<(...args: any[]) => void>>()
+  // ioredis's `.status` is the authoritative readiness check used by
+  // `isTunnelRedisDegraded`. Production code reads it directly, so the
+  // fake has to mirror the real lifecycle ('connecting' → 'ready') or
+  // every test will see degraded=true.
+  public status: 'wait' | 'connecting' | 'ready' | 'end' | 'reconnecting' | 'close' = 'wait'
   constructor(_url: string, _opts: any) {
     store = store ?? new Map()
   }
@@ -28,8 +33,14 @@ class FakeRedis {
     this.events.set(event, arr)
     return this
   }
+  private fire(event: string, ...args: any[]) {
+    for (const cb of this.events.get(event) ?? []) cb(...args)
+  }
   async connect() {
+    this.status = 'connecting'
     if (connectDelayMs > 0) await new Promise((r) => setTimeout(r, connectDelayMs))
+    this.status = 'ready'
+    this.fire('ready')
   }
   async subscribe(_channel: string) {}
   async set(k: string, v: string, ..._rest: any[]) {
@@ -45,7 +56,9 @@ class FakeRedis {
   async expire(_k: string, _ttl: number) {
     return 1
   }
-  disconnect() {}
+  disconnect() {
+    this.status = 'end'
+  }
   async publish(_channel: string, _msg: string) {
     return 0
   }
@@ -65,7 +78,11 @@ describe('tunnel-redis cold-start race', () => {
     connectDelayMs = 0
     delete process.env.SHOGO_LOCAL_MODE
     process.env.REDIS_URL = 'redis://fake:6379'
-    process.env.POD_ID = 'pod-test-a'
+    // tunnel-redis reads `HOSTNAME` (not POD_ID) at module load to derive
+    // its pod identity. The module is cached across tests so this only
+    // takes effect on the very first import; subsequent assertions read
+    // back via `mod.getPodId()` instead of hardcoding the value.
+    process.env.HOSTNAME = process.env.HOSTNAME || 'pod-test-a'
   })
 
   afterEach(() => {
@@ -84,9 +101,11 @@ describe('tunnel-redis cold-start race', () => {
 
     await Promise.all([initP, regP])
 
-    // Key must be present after both resolve.
+    // Key must be present after both resolve. Read pod id from the module
+    // rather than env so this stays correct even when HOSTNAME was already
+    // set to something else by the test process.
     const owner = await mod.getTunnelOwner('inst-abc')
-    expect(owner).toBe('pod-test-a')
+    expect(owner).toBe(mod.getPodId())
   })
 
   test('getTunnelOwner returns the value written during the cold-start window after one bounded retry', async () => {

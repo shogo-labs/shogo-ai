@@ -13,9 +13,10 @@ import { describe, test, expect, beforeAll, mock } from 'bun:test'
 import { Hono } from 'hono'
 import { generateProxyToken } from '../lib/ai-proxy-token'
 import { aiProxyRoutes } from '../routes/ai-proxy'
+import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 // Mock prisma to avoid database dependency
-mock.module('../lib/prisma', () => ({
+mock.module('../lib/prisma', () => withPrismaExports({
   prisma: {
     project: {
       findFirst: async () => ({ id: 'test-project', name: 'Test' }),

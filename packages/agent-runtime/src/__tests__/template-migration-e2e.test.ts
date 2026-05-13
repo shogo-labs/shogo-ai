@@ -18,6 +18,8 @@ const ALL_TEMPLATE_IDS = [
   'dividend-income-builder', 'macro-market-briefing', 'travel-concierge',
   // sales-specific reusable apps
   'sales-bdr-pipeline', 'sales-cold-call-agent', 'stripe-revenue-ops',
+  // newer directory-based templates
+  'knowledge-vault', 'qa-automation-hub', 'uiux-design-studio', 'video-ad-factory',
 ]
 
 const EXPECTED_TEMPLATE_COUNT = ALL_TEMPLATE_IDS.length

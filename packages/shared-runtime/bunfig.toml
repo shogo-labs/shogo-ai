@@ -1,0 +1,24 @@
+# Test + coverage configuration for @shogo/shared-runtime.
+#
+# `bun test` runs without coverage. `bun test --coverage` enables it
+# using these settings. We deliberately omit `coverage = false` so the
+# CLI flag isn't suppressed.
+
+# Threshold is intentionally NOT set per-package — see the note in
+# apps/api/bunfig.toml.
+[test]
+coverageReporter = ["text", "lcov"]
+coverageDir = "coverage"
+coverageSkipTestFiles = true
+coveragePathIgnorePatterns = [
+  "**/__tests__/**",
+  "**/__mocks__/**",
+  "**/*.test.ts",
+  "**/*.test.tsx",
+  "**/*.spec.ts",
+  "**/*.spec.tsx",
+  "**/dist/**",
+  "**/build/**",
+  "**/generated/**",
+  "**/node_modules/**",
+]

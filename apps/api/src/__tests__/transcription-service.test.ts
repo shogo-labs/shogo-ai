@@ -9,9 +9,10 @@
  * Run: bun test apps/api/src/__tests__/transcription-service.test.ts
  */
 
-import { describe, test, expect } from 'bun:test'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
+import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
+import { tmpdir } from 'os'
 
 // ---------------------------------------------------------------------------
 // WAV helpers
@@ -279,6 +280,10 @@ describe('transcription service', () => {
 
   beforeAll(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'transcription-test-'))
+  })
+
+  afterAll(() => {
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true })
   })
 
   test('transcribeCloud rejects audio shorter than 0.1s', async () => {

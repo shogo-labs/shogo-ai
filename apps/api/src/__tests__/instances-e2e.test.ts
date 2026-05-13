@@ -13,6 +13,7 @@
 
 import { describe, test, expect, mock, beforeEach } from 'bun:test'
 import { Hono } from 'hono'
+import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
@@ -76,7 +77,7 @@ const mockPrisma = {
 // instances.ts (which transitively imports tunnel-redis).
 process.env.SHOGO_LOCAL_MODE = 'true'
 
-mock.module('../lib/prisma', () => ({ prisma: mockPrisma }))
+mock.module('../lib/prisma', () => withPrismaExports({ prisma: mockPrisma }))
 mock.module('../routes/api-keys', () => ({
   resolveApiKey: mock(async (key: string) => {
     if (key === 'shogo_e2e_key') return { workspaceId: 'ws-e2e', userId: 'user-e2e' }

@@ -7,6 +7,7 @@
  */
 
 import { describe, test, expect, mock, beforeEach } from 'bun:test'
+import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 const mockPrisma = {
   instance: {
@@ -24,7 +25,7 @@ const mockPrisma = {
   },
 }
 
-mock.module('../lib/prisma', () => ({ prisma: mockPrisma }))
+mock.module('../lib/prisma', () => withPrismaExports({ prisma: mockPrisma }))
 mock.module('../routes/api-keys', () => ({
   resolveApiKey: mock(async () => null),
 }))

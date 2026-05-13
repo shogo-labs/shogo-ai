@@ -50,6 +50,8 @@
     "desktop:dev:clean": "rm -rf \"$HOME/Library/Application Support/Shogo/data\" && bun run desktop:dev",
     "docs:dev": "bun run --cwd apps/docs dev",
     "docs:build": "bun run --cwd apps/docs build",
+    "test": "bun --no-env-file scripts/run-all-tests.ts",
+    "test:coverage": "bun --no-env-file scripts/run-all-tests.ts --coverage",
     "test:e2e:hosted": "npx playwright test --config e2e/playwright.config.ts",
     "test:e2e:hosted:ui": "npx playwright test --config e2e/playwright.config.ts --ui",
     "test:e2e:local": "npx playwright test --config e2e/local/playwright.config.ts",

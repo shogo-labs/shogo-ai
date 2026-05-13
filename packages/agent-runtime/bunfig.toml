@@ -1,0 +1,36 @@
+# Test + coverage configuration for @shogo/agent-runtime.
+#
+# `bun run test` and `bun run test:coverage` both use the isolated
+# runner (scripts/run-tests-isolated.ts: process-per-file). `bun test`
+# also works against this bunfig but is exposed only as `test:fast`
+# because some tests in this package use `mock.module()` for the same
+# specifier with different factories — running them in one process
+# produces order-dependent failures that show up *only* under coverage
+# instrumentation (which alters import timing).
+#
+# We deliberately omit `coverage = false` so the CLI `--coverage` flag
+# isn't suppressed when the runner forwards it to each subprocess.
+
+# Threshold is intentionally NOT set per-package — see the note in
+# apps/api/bunfig.toml. Aggregate enforcement lives in
+# `scripts/merge-lcov.ts`.
+[test]
+coverageReporter = ["text", "lcov"]
+coverageDir = "coverage"
+coverageSkipTestFiles = true
+coveragePathIgnorePatterns = [
+  "**/__tests__/**",
+  "**/__mocks__/**",
+  "**/*.test.ts",
+  "**/*.test.tsx",
+  "**/*.spec.ts",
+  "**/*.spec.tsx",
+  "**/dist/**",
+  "**/build/**",
+  "**/generated/**",
+  "**/node_modules/**",
+  "**/scripts/**",
+  "**/evals/**",
+  "**/template-generator/**",
+  "**/__fixtures__/**",
+]

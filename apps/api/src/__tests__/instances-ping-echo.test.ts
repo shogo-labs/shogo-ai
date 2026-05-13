@@ -9,6 +9,7 @@
  */
 
 import { describe, test, expect, mock, beforeEach } from 'bun:test'
+import { withPrismaExports } from './helpers/prisma-mock-exports'
 import { Hono } from 'hono'
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
@@ -41,7 +42,7 @@ const mockPrisma = {
   },
 }
 
-mock.module('../lib/prisma', () => ({ prisma: mockPrisma }))
+mock.module('../lib/prisma', () => withPrismaExports({ prisma: mockPrisma }))
 mock.module('../routes/api-keys', () => ({
   resolveApiKey: mock(async () => null),
 }))

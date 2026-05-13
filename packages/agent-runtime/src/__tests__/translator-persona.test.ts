@@ -15,9 +15,9 @@ describe('translator-persona', () => {
     expect(TRANSLATOR_SYSTEM_PROMPT).toContain('set_mode')
   })
 
-  test('ElevenLabs tools declare send_to_chat and set_mode as client tools', () => {
+  test('ElevenLabs tools declare send_to_chat, set_mode, and get_recent_activity as client tools', () => {
     const names = TRANSLATOR_ELEVENLABS_TOOLS.map((t) => t.name).sort()
-    expect(names).toEqual(['send_to_chat', 'set_mode'])
+    expect(names).toEqual(['get_recent_activity', 'send_to_chat', 'set_mode'])
     for (const t of TRANSLATOR_ELEVENLABS_TOOLS) {
       expect(t.type).toBe('client')
       expect(t.expects_response).toBe(true)
@@ -32,7 +32,9 @@ describe('translator-persona', () => {
   })
 
   test('AI SDK tool map mirrors ElevenLabs tool names', () => {
-    expect(Object.keys(TRANSLATOR_AI_SDK_TOOLS).sort()).toEqual(['send_to_chat', 'set_mode'])
+    expect(Object.keys(TRANSLATOR_AI_SDK_TOOLS).sort()).toEqual(
+      ['get_recent_activity', 'send_to_chat', 'set_mode'],
+    )
   })
 
   test('Zod schemas reject invalid modes and empty text', () => {

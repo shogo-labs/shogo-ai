@@ -17,7 +17,13 @@
  */
 
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test'
+import { withPrismaExports } from './helpers/prisma-mock-exports'
 import { Hono } from 'hono'
+
+// Force tunnel-redis into local-mode short-circuit so the relay tests
+// don't spend 5s trying to connect to a real Redis (the streaming test
+// uses an in-process fake tunnel — Redis isn't actually needed).
+process.env.SHOGO_LOCAL_MODE = 'true'
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
@@ -53,7 +59,7 @@ const mockPrisma = {
   },
 }
 
-mock.module('../lib/prisma', () => ({ prisma: mockPrisma }))
+mock.module('../lib/prisma', () => withPrismaExports({ prisma: mockPrisma }))
 mock.module('../routes/api-keys', () => ({
   resolveApiKey: mock(async () => null),
 }))

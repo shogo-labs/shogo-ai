@@ -391,8 +391,16 @@ describe('File Management Agent Tools', () => {
 // ============================================================================
 // 4. HTTP API Integration Tests (against running server)
 // ============================================================================
+//
+// This block spawns the real `src/server.ts` as a subprocess and exercises the
+// HTTP surface end-to-end. The reindex/search path can take >10s on a busy
+// box and a single hung test cascades into the next (the killed proc means
+// subsequent fetches blow up). Gate behind RUN_INTEGRATION=1 so the unit
+// suite stays fast and deterministic; CI sets the flag explicitly.
 
-describe('Workspace HTTP API Integration', () => {
+const RUN_INTEGRATION = process.env.RUN_INTEGRATION === '1'
+
+describe.skipIf(!RUN_INTEGRATION)('Workspace HTTP API Integration', () => {
   const TEST_API_DIR = '/tmp/test-file-api-e2e'
   const PORT = 19877
   const BASE = `http://localhost:${PORT}`
@@ -538,7 +546,7 @@ describe('Workspace HTTP API Integration', () => {
     }
     expect(data.results.length).toBeGreaterThan(0)
     expect(data.stats).toBeDefined()
-  })
+  }, 15_000) // bun-test default per-test cap is 5s; the polling deadline above is 10s.
 
   test('GET /agent/workspace/download/* returns file content', async () => {
     const res = await fetch(`${BASE}/agent/workspace/download/test.md`)

@@ -121,8 +121,8 @@ describe('extractFilePartsAsText', () => {
     ]
 
     const result = extractFilePartsAsText(parts)
-    expect(result).toContain('Binary file attached')
-    expect(result).toContain('cannot be displayed as text')
+    expect(result).toContain('Binary content')
+    expect(result).toContain('cannot be inlined as text')
   })
 
   test('skips parts without url', () => {

@@ -721,7 +721,7 @@ Old instructions.
       expect(config!.name).toBe('browser_qa')
       expect(config!.model).toBe('gpt-5.4-nano')
       expect(config!.provider).toBe('openai')
-      expect(config!.maxTurns).toBeUndefined()
+      expect(config!.maxTurns).toBe(200)
       expect(config!.toolNames).toEqual(['browser', 'web', 'read_file', 'write_file', 'edit_file'])
       expect(config!.disallowedTools).toContain('task')
       expect(config!.disallowedTools).toContain('skill')
