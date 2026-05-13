@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 // @ts-nocheck
 import { type Dispatch, memo, type SetStateAction, useState } from "react";

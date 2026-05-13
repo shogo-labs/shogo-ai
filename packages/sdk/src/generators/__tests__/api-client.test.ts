@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * API Client Generator Tests
@@ -43,7 +43,7 @@ describe('API Client Generator', () => {
   it('should include SPDX license header', () => {
     const code = generateApiClient([mockProjectModel])
     expect(code).toStartWith(
-      '// SPDX-License-Identifier: AGPL-3.0-or-later\n// Copyright (C) 2026 Shogo Technologies, Inc.\n',
+      '// SPDX-License-Identifier: MIT\n// Copyright (C) 2026 Shogo Technologies, Inc.\n',
     )
   })
 

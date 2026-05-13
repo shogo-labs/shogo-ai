@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { isToday, isYesterday, subMonths, subWeeks } from "date-fns";
 import { useEffect, useState } from "react";

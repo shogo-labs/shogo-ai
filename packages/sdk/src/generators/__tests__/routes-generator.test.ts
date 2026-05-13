@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Routes Generator Tests
@@ -56,7 +56,7 @@ describe('Routes Generator', () => {
     it('should include SPDX license header', () => {
       const result = generateModelRoutes(mockProjectModel)
 
-      expect(result!.code).toStartWith('// SPDX-License-Identifier: AGPL-3.0-or-later\n// Copyright (C) 2026 Shogo Technologies, Inc.\n')
+      expect(result!.code).toStartWith('// SPDX-License-Identifier: MIT\n// Copyright (C) 2026 Shogo Technologies, Inc.\n')
     })
 
     it('should import required dependencies', () => {
@@ -321,7 +321,7 @@ describe('Routes Generator', () => {
     it('should include SPDX license header', () => {
       const result = generateModelHooks(mockProjectModel)
 
-      expect(result.code).toStartWith('// SPDX-License-Identifier: AGPL-3.0-or-later\n// Copyright (C) 2026 Shogo Technologies, Inc.\n')
+      expect(result.code).toStartWith('// SPDX-License-Identifier: MIT\n// Copyright (C) 2026 Shogo Technologies, Inc.\n')
     })
 
     it('should define HookResult interface', () => {
@@ -413,7 +413,7 @@ describe('Routes Generator', () => {
     it('should include SPDX license header', () => {
       const code = generateRoutesIndex([mockWorkspaceModel, mockProjectModel])
 
-      expect(code).toStartWith('// SPDX-License-Identifier: AGPL-3.0-or-later\n// Copyright (C) 2026 Shogo Technologies, Inc.\n')
+      expect(code).toStartWith('// SPDX-License-Identifier: MIT\n// Copyright (C) 2026 Shogo Technologies, Inc.\n')
     })
 
     it('should generate index file with imports', () => {
@@ -470,7 +470,7 @@ describe('Routes Generator', () => {
     it('should include SPDX license header', () => {
       const result = generateAdminRoutes([mockProjectModel, mockWorkspaceModel])
 
-      expect(result.code).toStartWith('// SPDX-License-Identifier: AGPL-3.0-or-later\n// Copyright (C) 2026 Shogo Technologies, Inc.\n')
+      expect(result.code).toStartWith('// SPDX-License-Identifier: MIT\n// Copyright (C) 2026 Shogo Technologies, Inc.\n')
     })
 
     it('should generate admin-routes file', () => {
