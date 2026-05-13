@@ -57,7 +57,15 @@
       "@shogo-ai/sdk/instrumentation": ["packages/sdk/src/instrumentation.ts"],
       "@shogo-ai/sdk/stream-buffer": ["packages/sdk/src/stream-buffer.ts"],
       "@shogo-ai/sdk/chat-message": ["packages/sdk/src/chat-message.ts"],
-      "@shogo-ai/sdk/model-catalog": ["packages/sdk/src/model-catalog/index.ts"]
+      "@shogo-ai/sdk/model-catalog": ["packages/sdk/src/model-catalog/index.ts"],
+      "@shogo-ai/sdk/loop-detector": ["packages/sdk/src/loop-detector.ts"],
+      "@shogo-ai/sdk/microcompact": ["packages/sdk/src/microcompact.ts"],
+      "@shogo-ai/sdk/prefix-fingerprint": ["packages/sdk/src/prefix-fingerprint.ts"],
+      "@shogo-ai/sdk/tool-orchestration": ["packages/sdk/src/tool-orchestration.ts"],
+      "@shogo-ai/sdk/hooks": ["packages/sdk/src/hooks/index.ts"],
+      "@shogo-ai/sdk/model-router": ["packages/sdk/src/model-router/index.ts"],
+      "@shogo-ai/sdk/pi-adapter": ["packages/sdk/src/pi-adapter.ts"],
+      "@shogo-ai/sdk/agent-loop": ["packages/sdk/src/agent-loop.ts"]
     }
   }
 }

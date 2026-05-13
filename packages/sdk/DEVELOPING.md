@@ -238,3 +238,82 @@ search the monorepo for `packages/<pkg>/src/<filename>` after the
 delete and switch those imports to the public surface
 (`@shogo/<pkg>` or `@shogo-ai/sdk/<subpath>`). Generated/scaffolded
 code is the most likely place this hides.
+
+### Worked example — Wave 2 lifts (May 2026)
+
+Wave 2 lifted the agent runtime core: `loop-detector`, `microcompact`,
+`prefix-fingerprint`, `tool-orchestration`, `hooks/*`, `model-router`,
+`pi-adapter`, `agent-loop`. The pattern is identical to Wave 1 except
+for two new gotchas surfaced by the larger surface area:
+
+- **Cross-subpath imports inside the SDK must be relative, not aliased.**
+  If `pi-adapter.ts` needs `getMaxOutputTokens` from `model-catalog`,
+  write `import { getMaxOutputTokens } from './model-catalog'` —
+  **not** `from '@shogo-ai/sdk/model-catalog'`. The aliased form fails
+  at SDK bundle time because the alias resolves to `dist/`, which
+  doesn't exist yet during the build that's producing it. Reserve the
+  `@shogo-ai/sdk/<subpath>` form for downstream consumers (apps/api,
+  packages/agent-runtime back-shims, etc.) — inside `packages/sdk/src/`
+  always go relative.
+
+- **JSON imports** (`import x from './foo.json'`) are picked up by
+  tsup automatically and emitted as a separate chunk. No tsup config
+  change is needed; just make sure the `.json` file lives next to the
+  consuming `.ts` (so the relative path survives both source-resolution
+  and dist-resolution). `model-router/routing-thresholds.json` is the
+  canonical example.
+
+- **Optional pi-* peer deps.** `pi-adapter`, `agent-loop`, `microcompact`,
+  and `prefix-fingerprint` import from `@mariozechner/pi-agent-core` and
+  `@mariozechner/pi-ai`. These go in `peerDependencies` (with
+  `optional: true` in `peerDependenciesMeta`) **and** `devDependencies`
+  in `packages/sdk/package.json`, plus the `external` array of
+  `tsup.config.ts`. Apps that don't run the agent loop (e.g. a pure
+  email-only consumer) can omit them entirely; bundlers see the peer as
+  optional and don't error.
+
+### Bundled hooks (the `loadAllHooks` story)
+
+`loadAllHooks` ships with two bundled defaults — `command-logger` and
+`session-memory` — that any SDK consumer gets for free:
+
+- `command-logger` appends slash-command events to
+  `<workspaceDir>/logs/commands.log` as JSONL.
+- `session-memory` snapshots the last 10 messages to
+  `<workspaceDir>/memory/<date>-session-<time>.md` when the user
+  issues `/new`.
+
+Each bundled hook is a directory under `src/hooks/bundled/<name>/`
+containing `HOOK.md` (frontmatter metadata) and `handler.ts`
+(implementation). Three pieces of the build pipeline cooperate so
+this works from both `src/` (development) and `dist/` (production):
+
+1. `tsup.config.ts` lists each `handler.ts` as a build entry. The
+   relative path is preserved, so output lands at
+   `dist/hooks/bundled/<name>/handler.{js,cjs}`.
+2. `tsup.config.ts`'s `onSuccess` hook copies each `HOOK.md` from
+   `src/hooks/bundled/<name>/` to `dist/hooks/bundled/<name>/`.
+3. `package.json#files` includes
+   `dist/hooks/bundled/**/HOOK.md` so the `.md` files end up in
+   the published npm tarball.
+
+The registry's `loadHandlerFromDir` tries `.mjs`, `.js`, `.cjs`, then
+`.ts` in that order — so dist consumers (Node) hit the compiled JS
+and source consumers (Bun via tsconfig paths or the `development`
+export condition) hit the original `.ts`. Adding a new bundled hook
+is three steps:
+
+1. `mkdir packages/sdk/src/hooks/bundled/<your-hook>` and add
+   `HOOK.md` + `handler.ts`.
+2. Add `'src/hooks/bundled/<your-hook>/handler.ts'` to
+   `tsup.config.ts` `entry`.
+3. Extend `tsup.config.ts` `onSuccess` to copy
+   `src/hooks/bundled/<your-hook>/HOOK.md` to
+   `dist/hooks/bundled/<your-hook>/HOOK.md`.
+
+`loadAllHooks` resolves `bundled/` via `import.meta.dir` and accepts
+a `workspaceDir`; workspace-level hooks (`<workspaceDir>/hooks/`)
+override bundled defaults by name when both register. The
+`import.meta.dir` access is gated behind a structural cast (Bun
+extension; falls back to `import.meta.url` on Node) so the SDK can
+typecheck without `@types/bun`.

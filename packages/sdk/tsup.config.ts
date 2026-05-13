@@ -31,6 +31,16 @@ export default defineConfig({
     'src/stream-buffer.ts',
     'src/chat-message.ts',
     'src/model-catalog/index.ts',
+    'src/loop-detector.ts',
+    'src/microcompact.ts',
+    'src/prefix-fingerprint.ts',
+    'src/tool-orchestration.ts',
+    'src/hooks/index.ts',
+    'src/hooks/bundled/command-logger/handler.ts',
+    'src/hooks/bundled/session-memory/handler.ts',
+    'src/model-router/index.ts',
+    'src/pi-adapter.ts',
+    'src/agent-loop.ts',
   ],
   format: ['cjs', 'esm'],
   dts: true,
@@ -39,6 +49,14 @@ export default defineConfig({
   minify: false,
   target: 'es2020',
   outDir: 'dist',
+  // Copy bundled hook metadata (HOOK.md) into dist so loadAllHooks works
+  // when the SDK is consumed from `dist/` (production). Source-mode
+  // consumers (tsconfig paths, `development` export condition) read the
+  // .md files directly from `src/`.
+  onSuccess:
+    'mkdir -p dist/hooks/bundled/command-logger dist/hooks/bundled/session-memory && ' +
+    'cp src/hooks/bundled/command-logger/HOOK.md dist/hooks/bundled/command-logger/HOOK.md && ' +
+    'cp src/hooks/bundled/session-memory/HOOK.md dist/hooks/bundled/session-memory/HOOK.md',
   external: [
     'react',
     'react-native',
@@ -68,5 +86,7 @@ export default defineConfig({
     '@opentelemetry/sdk-trace-base',
     '@opentelemetry/resources',
     '@opentelemetry/semantic-conventions',
+    '@mariozechner/pi-ai',
+    '@mariozechner/pi-agent-core',
   ],
 })
