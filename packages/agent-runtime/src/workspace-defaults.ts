@@ -704,6 +704,29 @@ export function writeInstallPlatformMarker(dir: string): void {
   writePlatformMarker(dir)
 }
 
+/**
+ * Whether the workspace's `package.json` declares Vite (or a vite-
+ * dependent plugin) as a dep. Used to gate the `existsSync(viteBin)`
+ * fast paths in `ensureWorkspaceDeps`: a workspace pre-seeded by the
+ * Vite warm-pool template and then overlaid with a non-Vite import
+ * (e.g. an Expo project) has the bin without the dep, and trusting
+ * the bin alone leads to the cloud Expo "kind of works but never
+ * rebuilds" bug. Best-effort: any read/parse failure returns false
+ * (the conservative choice — we'd rather attempt an install than
+ * incorrectly skip one).
+ */
+function workspaceUsesVite(dir: string): boolean {
+  try {
+    const pkgPath = join(dir, 'package.json')
+    if (!existsSync(pkgPath)) return false
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+    const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) }
+    return !!(deps.vite || deps['@vitejs/plugin-react'])
+  } catch {
+    return false
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Install-marker — sha256(package.json) under `.shogo/install-marker`
 // ---------------------------------------------------------------------------
@@ -1037,12 +1060,26 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
   const viteBin = join(dir, 'node_modules', '.bin', 'vite')
   const nodeModules = join(dir, 'node_modules')
 
+  // Does the workspace's package.json actually depend on Vite? We need
+  // this to gate the `existsSync(viteBin)` fast-paths below: a
+  // workspace pre-seeded with the Vite/react-app warm-pool template
+  // and then overlaid with a non-Vite import (e.g. Expo) will have a
+  // leftover `.bin/vite` shim with no corresponding dep in the
+  // current package.json. Returning early in that case leaves the
+  // workspace with the warm pod's Vite node_modules instead of the
+  // user's real deps — surfaced as the 2026-05-12 imported-Expo
+  // "kind of works but never rebuilds" bug. The `workspacePkgUsesVite`
+  // check that already exists below (around the template-copy fast
+  // path) needs to gate these two earlier shortcuts too. Inlined
+  // close to the call sites so the gating reads as a single decision.
+  const workspaceDependsOnVite = workspaceUsesVite(dir)
+
   // Check for wrong-platform modules (e.g. macOS host-mounted into Linux VM)
   const installedPlatform = readPlatformMarker(dir)
   if (installedPlatform && installedPlatform !== PLATFORM_TAG) {
     console.log(`[workspace-defaults] node_modules built for ${installedPlatform}, need ${PLATFORM_TAG} — reinstalling`)
     try { rmSync(nodeModules, { recursive: true, force: true }) } catch {}
-  } else if (existsSync(viteBin)) {
+  } else if (existsSync(viteBin) && workspaceDependsOnVite) {
     if (installedPlatform === PLATFORM_TAG) return
     // No marker — check for wrong-platform native binaries (rollup)
     if (!installedPlatform && existsSync(nodeModules)) {
@@ -1055,6 +1092,13 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
         return
       }
     }
+  } else if (existsSync(viteBin) && !workspaceDependsOnVite) {
+    // Defensive log so production can see at a glance when a
+    // hybrid-state workspace (Vite leftover bin + non-Vite
+    // package.json) was correctly NOT short-circuited.
+    console.log(
+      `[workspace-defaults] Found leftover .bin/vite but package.json doesn't depend on vite — falling through to install`,
+    )
   }
 
   // Non-Vite stacks (Expo, React Native, etc.) don't have a `vite` bin to
@@ -1087,18 +1131,7 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
   // node_modules where `expo` is missing and PreviewManager later has to
   // re-run install anyway. Detect the mismatch and fall through to the
   // proper install path.
-  const workspacePkgUsesVite = (() => {
-    try {
-      const pkgPath = join(dir, 'package.json')
-      if (!existsSync(pkgPath)) return false
-      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
-      const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) }
-      // We treat "vite" or any framework that depends on vite (e.g.
-      // @vitejs/plugin-react) as a signal the workspace will use the
-      // shared template.
-      return !!(deps.vite || deps['@vitejs/plugin-react'])
-    } catch { return false }
-  })()
+  const workspacePkgUsesVite = workspaceDependsOnVite
   const templatePath = getRuntimeTemplatePath()
   const templateModules = templatePath ? join(templatePath, 'node_modules') : null
   const templatePlatform = templatePath ? readPlatformMarker(templatePath) : null
