@@ -22,6 +22,7 @@ import {
   LayoutGrid,
   List,
   ChevronDown,
+  ChevronRight,
   FolderOpen,
   Users,
   Settings,
@@ -46,6 +47,41 @@ const SORT_OPTIONS: { value: SortBy; label: string }[] = [
 
 function getTimeAgo(timestamp: number): string {
   return formatDistanceToNow(new Date(timestamp), { addSuffix: true })
+}
+
+type SharedGroup = {
+  workspace: any
+  role: string
+  projects: any[]
+  latestUpdatedAt: number
+}
+
+const COLLAPSE_STORAGE_KEY = 'shogo:shared:collapsed'
+
+function readCollapsedFromStorage(): Record<string, boolean> {
+  if (typeof window === 'undefined' || !window.localStorage) return {}
+  try {
+    const raw = window.localStorage.getItem(COLLAPSE_STORAGE_KEY)
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeCollapsedToStorage(state: Record<string, boolean>) {
+  if (typeof window === 'undefined' || !window.localStorage) return
+  try {
+    const compact: Record<string, true> = {}
+    for (const [id, v] of Object.entries(state)) if (v) compact[id] = true
+    window.localStorage.setItem(COLLAPSE_STORAGE_KEY, JSON.stringify(compact))
+  } catch {
+    // ignore quota / privacy-mode errors
+  }
+}
+
+function roleLabel(role: string | undefined): string {
+  if (!role) return 'Member'
+  return role.charAt(0).toUpperCase() + role.slice(1)
 }
 
 const GRADIENT_COLORS = [
@@ -154,13 +190,73 @@ export default observer(function SharedWithMePage() {
     return result
   }, [sharedProjects, searchQuery, sortBy])
 
-  const getWorkspaceName = useCallback(
-    (project: any) => {
-      const ws = sharedWorkspaces.find((w: any) => w.id === project.workspaceId)
-      return ws?.name || 'Unknown workspace'
-    },
-    [sharedWorkspaces]
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() =>
+    readCollapsedFromStorage()
   )
+
+  const toggleCollapsed = useCallback((workspaceId: string) => {
+    setCollapsed((prev) => ({ ...prev, [workspaceId]: !prev[workspaceId] }))
+  }, [])
+
+  const roleByWorkspaceId = useMemo(() => {
+    const out: Record<string, string> = {}
+    if (!user?.id) return out
+    for (const m of membersColl.all as any[]) {
+      if (m.userId === user.id) out[m.workspaceId] = m.role
+    }
+    return out
+  }, [user?.id, membersColl.all])
+
+  const groups: SharedGroup[] = useMemo(() => {
+    const byWs = new Map<string, SharedGroup>()
+    for (const p of filteredProjects as any[]) {
+      const ws = sharedWorkspaces.find((w: any) => w.id === p.workspaceId)
+      if (!ws) continue
+      let g = byWs.get(ws.id)
+      if (!g) {
+        g = {
+          workspace: ws,
+          role: roleByWorkspaceId[ws.id] || 'member',
+          projects: [],
+          latestUpdatedAt: 0,
+        }
+        byWs.set(ws.id, g)
+      }
+      g.projects.push(p)
+      const t = p.updatedAt || p.createdAt || 0
+      if (t > g.latestUpdatedAt) g.latestUpdatedAt = t
+    }
+    const arr = Array.from(byWs.values())
+    if (sortBy === 'lastEdited') {
+      arr.sort((a, b) => b.latestUpdatedAt - a.latestUpdatedAt)
+    } else if (sortBy === 'dateCreated') {
+      arr.sort((a, b) => {
+        const ac = a.workspace.createdAt || 0
+        const bc = b.workspace.createdAt || 0
+        return bc - ac
+      })
+    } else {
+      arr.sort((a, b) =>
+        (a.workspace.name || '').localeCompare(b.workspace.name || '')
+      )
+    }
+    return arr
+  }, [filteredProjects, sharedWorkspaces, roleByWorkspaceId, sortBy])
+
+  const totalFiltered = filteredProjects.length
+  const visibleGroupCount = groups.length
+
+  // Persist collapse state to storage as a side effect (keeps the
+  // setState updater pure). Also prune ids for workspaces that no
+  // longer appear in `groups` so the payload doesn't grow forever.
+  useEffect(() => {
+    const validIds = new Set(groups.map((g) => g.workspace.id))
+    const pruned: Record<string, boolean> = {}
+    for (const [id, v] of Object.entries(collapsed)) {
+      if (v && validIds.has(id)) pruned[id] = true
+    }
+    writeCollapsedToStorage(pruned)
+  }, [collapsed, groups])
 
   const handleProjectPress = useCallback(
     (project: any) => {
@@ -207,11 +303,6 @@ export default observer(function SharedWithMePage() {
           className={cn('items-center justify-center', getPlaceholderColor(project.name || ''))}
         >
           <FolderOpen size={28} className="text-white/30" />
-          {/* Shared badge */}
-          <View className="absolute top-2 left-2 flex-row items-center bg-black/30 rounded-md px-2 py-0.5">
-            <Users size={12} className="text-white mr-1" />
-            <Text className="text-white text-xs">Shared</Text>
-          </View>
           {/* Star button */}
           <Pressable
             onPress={() => handleToggleStar(project)}
@@ -241,14 +332,14 @@ export default observer(function SharedWithMePage() {
                 {project.name}
               </Text>
               <Text className="text-muted-foreground text-xs" numberOfLines={1}>
-                {getWorkspaceName(project)}
+                {getTimeAgo(project.updatedAt || project.createdAt)}
               </Text>
             </View>
           </View>
         </View>
       </Pressable>
     ),
-    [handleProjectPress, handleToggleStar, getWorkspaceName, starredProjectIds, user?.name]
+    [handleProjectPress, handleToggleStar, starredProjectIds, user?.name]
   )
 
   const renderListItem = useCallback(
@@ -266,16 +357,11 @@ export default observer(function SharedWithMePage() {
           <FolderOpen size={16} className="text-white/50" />
         </View>
         <View className="flex-1 mr-3">
-          <View className="flex-row items-center gap-1.5">
-            <Text className="text-foreground text-sm font-medium" numberOfLines={1}>
-              {project.name}
-            </Text>
-            <View className="bg-muted rounded px-1.5 py-0.5">
-              <Text className="text-muted-foreground text-[10px]">Shared</Text>
-            </View>
-          </View>
+          <Text className="text-foreground text-sm font-medium" numberOfLines={1}>
+            {project.name}
+          </Text>
           <Text className="text-muted-foreground text-xs" numberOfLines={1}>
-            {getWorkspaceName(project)} · {getTimeAgo(project.updatedAt || project.createdAt)}
+            {getTimeAgo(project.updatedAt || project.createdAt)}
           </Text>
         </View>
         <Pressable onPress={() => handleToggleStar(project)} className="p-2">
@@ -287,7 +373,54 @@ export default observer(function SharedWithMePage() {
         </Pressable>
       </Pressable>
     ),
-    [handleProjectPress, handleToggleStar, getWorkspaceName, starredProjectIds]
+    [handleProjectPress, handleToggleStar, starredProjectIds]
+  )
+
+  const renderSectionHeader = useCallback(
+    (group: SharedGroup) => {
+      const isCollapsed = !!collapsed[group.workspace.id]
+      const Chevron = isCollapsed ? ChevronRight : ChevronDown
+      return (
+        <Pressable
+          onPress={() => toggleCollapsed(group.workspace.id)}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: !isCollapsed }}
+          className="flex-row items-center pl-3 pr-4 py-3 bg-muted/60 dark:bg-muted/40 border-y border-border border-l-2 border-l-primary/50 hover:bg-muted/80 dark:hover:bg-muted/60"
+        >
+          <View
+            className={cn(
+              'w-8 h-8 rounded-md items-center justify-center mr-3 ml-1',
+              getPlaceholderColor(group.workspace.name || '')
+            )}
+          >
+            <Text className="text-white text-sm font-semibold">
+              {(group.workspace.name || '?').charAt(0).toUpperCase()}
+            </Text>
+          </View>
+          <View className="flex-1 mr-3">
+            <View className="flex-row items-center gap-2">
+              <Text className="text-foreground text-[15px] font-semibold" numberOfLines={1}>
+                {group.workspace.name || 'Untitled workspace'}
+              </Text>
+              <View className="bg-background border border-border rounded px-1.5 py-0.5">
+                <Text className="text-muted-foreground text-[10px]">
+                  {roleLabel(group.role)}
+                </Text>
+              </View>
+            </View>
+            <Text className="text-muted-foreground text-xs mt-0.5" numberOfLines={1}>
+              {group.projects.length}{' '}
+              {group.projects.length === 1 ? 'project' : 'projects'}
+              {group.latestUpdatedAt
+                ? ` · updated ${getTimeAgo(group.latestUpdatedAt)}`
+                : ''}
+            </Text>
+          </View>
+          <Chevron size={16} className="text-muted-foreground" />
+        </Pressable>
+      )
+    },
+    [collapsed, toggleCollapsed]
   )
 
   return (
@@ -301,6 +434,12 @@ export default observer(function SharedWithMePage() {
         <Text className="text-muted-foreground text-sm mt-1">
           Projects from workspaces you've been invited to
         </Text>
+        {!isLoading && totalFiltered > 0 && (
+          <Text className="text-muted-foreground text-xs mt-1">
+            {totalFiltered} {totalFiltered === 1 ? 'project' : 'projects'} across{' '}
+            {visibleGroupCount} {visibleGroupCount === 1 ? 'workspace' : 'workspaces'}
+          </Text>
+        )}
       </View>
 
       {/* Filters Bar */}
@@ -357,21 +496,36 @@ export default observer(function SharedWithMePage() {
               : 'Projects you are invited to will appear here. When someone adds you to their workspace, you\'ll see their projects here.'}
           </Text>
         </View>
-      ) : viewMode === 'grid' ? (
-        <FlatList
-          key="grid-2"
-          data={filteredProjects}
-          keyExtractor={(item: any) => item.id}
-          numColumns={2}
-          contentContainerClassName="p-2.5 pt-4"
-          renderItem={renderGridItem}
-        />
       ) : (
         <FlatList
-          key="list-1"
-          data={filteredProjects}
-          keyExtractor={(item: any) => item.id}
-          renderItem={renderListItem}
+          key={`groups-${viewMode}`}
+          data={groups}
+          keyExtractor={(g) => g.workspace.id}
+          contentContainerClassName="pb-8"
+          renderItem={({ item: group }) => {
+            const isCollapsed = !!collapsed[group.workspace.id]
+            return (
+              <View className="mb-2">
+                {renderSectionHeader(group)}
+                {!isCollapsed &&
+                  (viewMode === 'grid' ? (
+                    <View className="flex-row flex-wrap p-2.5">
+                      {group.projects.map((p: any) => (
+                        <View key={p.id} className="w-1/2">
+                          {renderGridItem({ item: p })}
+                        </View>
+                      ))}
+                    </View>
+                  ) : (
+                    <View>
+                      {group.projects.map((p: any) => (
+                        <View key={p.id}>{renderListItem({ item: p })}</View>
+                      ))}
+                    </View>
+                  ))}
+              </View>
+            )
+          }}
         />
       )}
 
