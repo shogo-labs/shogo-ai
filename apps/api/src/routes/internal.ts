@@ -94,6 +94,57 @@ app.get('/pod-config/:projectId', async (c) => {
 })
 
 /**
+ * GET /api/internal/whoami/:serviceName
+ *
+ * Called by runtime pods on boot when they have neither an `ASSIGNED_PROJECT`
+ * env var nor a `.shogo-pool-assignment` marker on disk — the failure mode
+ * triggered when K8s recreates a promoted warm-pool pod (OOM kill, node
+ * drain, deploy, eviction). The recreated pod still has its stable
+ * `KNATIVE_SERVICE_NAME` from the Downward API, and the API has the
+ * authoritative project↔service mapping in `Project.knativeServiceName`,
+ * so the pod can ask "which project am I supposed to be serving?" without
+ * any out-of-band coordination.
+ *
+ * Returns `{ projectId: string | null }`. A `null` projectId is a valid
+ * answer ("this service is in the warm pool but not promoted") — the
+ * caller stays in pool mode and waits for `/pool/assign`.
+ *
+ * Authenticated via K8s ServiceAccount token.
+ */
+app.get('/whoami/:serviceName', async (c) => {
+  const serviceName = c.req.param('serviceName')
+
+  // Defense-in-depth: limit to the Knative naming alphabet so we cannot be
+  // tricked into a Prisma query with a wildcard. K8s already rejects names
+  // outside RFC 1123 subdomain syntax, but the value comes off the wire.
+  if (!/^[a-z0-9][a-z0-9.-]{0,251}[a-z0-9]$/.test(serviceName)) {
+    return c.json({ error: 'Invalid serviceName' }, 400)
+  }
+
+  const authHeader = c.req.header('Authorization')
+  if (!authHeader?.startsWith('Bearer ')) {
+    return c.json({ error: 'Missing or invalid Authorization header' }, 401)
+  }
+  const token = authHeader.slice(7)
+  const identity = await validatePodToken(token)
+  if (!identity) {
+    return c.json({ error: 'Invalid or unauthorized service account token' }, 403)
+  }
+
+  try {
+    const { prisma } = await import('../lib/prisma')
+    const project = await prisma.project.findFirst({
+      where: { knativeServiceName: serviceName },
+      select: { id: true },
+    })
+    return c.json({ projectId: project?.id ?? null })
+  } catch (err: any) {
+    console.error(`[Internal] whoami(${serviceName}) lookup failed:`, err.message)
+    return c.json({ error: 'Lookup failed' }, 500)
+  }
+})
+
+/**
  * POST /api/internal/heartbeat/complete
  *
  * Called by the agent pod after a heartbeat tick finishes.

@@ -63,6 +63,7 @@ import {
 } from '@shogo/model-catalog'
 import { selectModelForSpawn, buildAutoTierMap, formatRoutingLog, type SpawnClassificationInput } from './model-router'
 import { CODE_AGENT_GENERAL_GUIDE } from './code-agent-prompt'
+import { SHOGO_SDK_GUIDE } from './shogo-sdk-prompt'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
 import { WorkspaceLSPManager, resolveBin } from '@shogo/shared-runtime'
@@ -219,6 +220,8 @@ export interface GatewayConfig {
   memoryEnabled?: boolean
   /** Whether quick action registration is enabled (default: true) */
   quickActionsEnabled?: boolean
+  /** Whether the Shogo SDK guide section is included in the system prompt (default: true) */
+  sdkGuideEnabled?: boolean
   /** Whether canvas tools are enabled (default: true). Automatically set false when switching to app/none mode. */
   canvasEnabled?: boolean
   /** Canvas rendering mode: 'json' = v1 declarative JSON, 'code' = v2 agent-written React code */
@@ -2656,6 +2659,13 @@ export class AgentGateway {
 
     // 2. General coding guide (always the same)
     pushStable('code-agent-guide', CODE_AGENT_GENERAL_GUIDE)
+
+    // 2b. Shogo SDK guide — when/how to reach for @shogo-ai/sdk in user apps.
+    // Toggleable so projects that don't ship a Shogo app (pure-chat agents,
+    // SWE benches, etc.) can drop ~2k tokens from the cached prefix.
+    if (this.config.sdkGuideEnabled !== false) {
+      pushStable('shogo-sdk-guide', SHOGO_SDK_GUIDE)
+    }
 
     // 3. Capabilities Index — compact pointers to on-demand guides served by read_guide tool.
     // Full guide content lives in guide-registry.ts and is returned by the read_guide tool,

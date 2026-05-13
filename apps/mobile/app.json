@@ -2,7 +2,7 @@
   "expo": {
     "name": "Shogo",
     "slug": "shogo",
-    "version": "1.0.5",
+    "version": "1.0.6",
     "orientation": "default",
     "icon": "./assets/ic_shogo_legacy.png",
     "scheme": "shogo",
@@ -35,6 +35,7 @@
     "plugins": [
       "expo-router",
       "expo-apple-authentication",
+      "react-native-iap",
       [
         "expo-image-picker",
         {
@@ -57,8 +58,8 @@
       [
         "expo-speech-recognition",
         {
-          "microphonePermission": "Allow Shogo to use the microphone for voice input.",
-          "speechRecognitionPermission": "Allow Shogo to use speech recognition for voice input."
+          "microphonePermission": "Shogo uses your microphone to record your voice when you tap the mic button in chat, so the AI can transcribe what you say into a prompt — for example, asking \"summarize my last meeting notes.\" Audio is processed only to generate the transcript and is not stored.",
+          "speechRecognitionPermission": "Shogo uses Apple's on-device speech recognition to convert your dictated voice into text in the chat input — for example, when you say \"create a new task for tomorrow,\" it appears as text you can edit before sending."
         }
       ],
       [
@@ -80,6 +81,7 @@
     },
     "updates": {
       "url": "https://u.expo.dev/1523dfce-1689-48f6-b921-68d992ff05c5"
-    }
+    },
+    "newArchEnabled": false
   }
 }

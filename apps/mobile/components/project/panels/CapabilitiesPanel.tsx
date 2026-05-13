@@ -24,6 +24,7 @@ import {
   Zap,
   Layers,
   Settings,
+  Package,
 } from 'lucide-react-native'
 import { TextInput } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -50,6 +51,7 @@ export interface CapabilitySettings {
   imageGenEnabled: boolean
   memoryEnabled: boolean
   quickActionsEnabled: boolean
+  sdkGuideEnabled: boolean
 }
 
 interface CapabilityDef {
@@ -59,7 +61,10 @@ interface CapabilityDef {
   detail: string
   disabledDescription: string
   icon: typeof LayoutDashboard
+  /** Tool names this capability gates. Empty for pure prompt-section toggles (e.g. SDK guide). */
   toolNames: string[]
+  /** Label override for the small badge next to the title. Defaults to "<n> tool(s)". */
+  badgeLabel?: string
   warning?: string
   examples?: string[]
 }
@@ -152,6 +157,16 @@ const CAPABILITIES: CapabilityDef[] = [
       '"Create a shortcut that generates a weekly status report from my project"',
       '"Make a one-click action to deploy the current build to staging"',
     ],
+  },
+  {
+    key: 'sdkGuideEnabled',
+    label: 'Shogo SDK Guide',
+    description: 'Inject @shogo-ai/sdk reference into the system prompt',
+    detail: 'Adds a stable-zone reference covering the @shogo-ai/sdk surface (auth, db, email, memory, voice, LLM gateway) plus when to reach for the SDK versus built-in agent tools. Helps the agent generate correct imports and patterns when building user apps on top of the Shogo runtime. Turn off to save ~2k tokens per turn for chat-only agents that never ship an app.',
+    disabledDescription: 'No SDK reference in the prompt',
+    icon: Package,
+    toolNames: [],
+    badgeLabel: 'Prompt section',
   },
 ]
 
@@ -699,7 +714,8 @@ export function CapabilitiesPanel({
                             <View className="flex-row items-center gap-2">
                               <Text className="text-sm font-medium text-foreground">{cap.label}</Text>
                               <Text className="text-[10px] text-muted-foreground">
-                                {cap.toolNames.length} tool{cap.toolNames.length !== 1 ? 's' : ''}
+                                {cap.badgeLabel
+                                  ?? `${cap.toolNames.length} tool${cap.toolNames.length !== 1 ? 's' : ''}`}
                               </Text>
                             </View>
                             <Text className="text-xs text-muted-foreground mt-0.5">
@@ -738,16 +754,20 @@ export function CapabilitiesPanel({
                               </View>
                             </View>
                           )}
-                          <Text className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1.5">
-                            Tools
-                          </Text>
-                          <View className="flex-row flex-wrap gap-1">
-                            {cap.toolNames.map((name) => (
-                              <View key={name} className="px-2 py-0.5 bg-muted rounded-md">
-                                <Text className="text-[10px] text-muted-foreground font-mono">{name}</Text>
+                          {cap.toolNames.length > 0 && (
+                            <>
+                              <Text className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1.5">
+                                Tools
+                              </Text>
+                              <View className="flex-row flex-wrap gap-1">
+                                {cap.toolNames.map((name) => (
+                                  <View key={name} className="px-2 py-0.5 bg-muted rounded-md">
+                                    <Text className="text-[10px] text-muted-foreground font-mono">{name}</Text>
+                                  </View>
+                                ))}
                               </View>
-                            ))}
-                          </View>
+                            </>
+                          )}
 
                           {cap.key === 'browserEnabled' && (
                             <View className="mt-3 pt-2 border-t border-border/50">

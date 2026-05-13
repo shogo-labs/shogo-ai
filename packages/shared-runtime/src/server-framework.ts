@@ -449,6 +449,32 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
 
     logTiming(`Pool assignment starting for project ${projectId}`)
 
+    // Snapshot the env keys we are about to overwrite so any rollback path
+    // can restore process.env to its pre-assign state. Without this, a
+    // failed /pool/assign that injected (say) AI_PROXY_URL without
+    // AI_PROXY_TOKEN poisons the env permanently — every subsequent
+    // /pool/assign with a partial env then fails too. The 2026-05-13
+    // staging incident's fragility traced back to a non-atomic rollback
+    // here.
+    const envKeysSet = ['PROJECT_ID', ...Object.keys(envVars ?? {})]
+    const envSnapshot: Record<string, string | undefined> = {}
+    for (const key of envKeysSet) envSnapshot[key] = process.env[key]
+
+    const rollbackToPool = (): void => {
+      state.poolAssigned = false
+      state.currentProjectId = POOL_PROJECT_ID
+      currentProjectId = POOL_PROJECT_ID
+      state.aiProxy = { useProxy: false, env: {} }
+      for (const key of envKeysSet) {
+        const prior = envSnapshot[key]
+        if (prior === undefined) {
+          delete process.env[key]
+        } else {
+          process.env[key] = prior
+        }
+      }
+    }
+
     // 1. Update project identity
     state.currentProjectId = projectId
     currentProjectId = projectId
@@ -463,12 +489,19 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       }
     }
 
-    // 3. Reconfigure AI proxy with new env (picks up AI_PROXY_TOKEN)
+    // 3. Reconfigure AI proxy with new env (picks up AI_PROXY_TOKEN).
+    //    Historically this called process.exit(1) on failure, which meant a
+    //    misformed /pool/assign request (e.g. partial env that omits
+    //    AI_PROXY_TOKEN while AI_PROXY_URL is set) crashed the entire pod
+    //    and prevented any retry. Now we roll back the partial promotion
+    //    in-process and return 400 — the pod stays alive and the caller
+    //    can re-issue with a complete env.
     try {
       state.aiProxy = configureAIProxy({ logPrefix: config.name })
     } catch (err: any) {
-      console.error(`[${config.name}] FATAL during reconfigure: ${err.message}`)
-      process.exit(1)
+      console.error(`[${config.name}] Pool assignment reconfigure failed for ${projectId}: ${err.message}`)
+      rollbackToPool()
+      return c.json({ error: `Reconfigure failed: ${err.message}` }, 400)
     }
     if (state.aiProxy.useProxy) {
       Object.assign(process.env, state.aiProxy.env)
@@ -492,10 +525,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       logTiming(`Pool assignment complete for ${projectId} (${duration}ms)`)
       return c.json({ ok: true, projectId, durationMs: duration })
     } catch (error: any) {
-      state.poolAssigned = false
-      state.currentProjectId = undefined
-      currentProjectId = '__POOL__'
-      process.env.PROJECT_ID = '__POOL__'
+      rollbackToPool()
       // Clean up marker if it was written before failure
       try { unlinkSync(join(config.workDir, POOL_ASSIGNMENT_MARKER)) } catch {}
       console.error(`[${config.name}] Pool assignment failed for ${projectId}:`, error.message)

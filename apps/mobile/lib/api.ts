@@ -154,6 +154,17 @@ export const api = {
     return res.data
   },
 
+  async verifyAppleReceipt(http: HttpClient, params: {
+    workspaceId: string
+    productId: string
+    transactionId: string
+    transactionReceipt: string
+    appAccountToken?: string
+  }) {
+    const res = await http.post<{ ok?: boolean; planId?: string; expiresAt?: string }>('/api/billing/ios/verify-receipt', params)
+    return res.data
+  },
+
   async createPortalSession(http: HttpClient, workspaceId: string, returnUrl?: string) {
     const res = await http.post<{ url?: string }>(
       `/api/billing/portal?workspaceId=${encodeURIComponent(workspaceId)}`,
@@ -1213,6 +1224,7 @@ export interface AgentTemplateSummary {
     imageGenEnabled?: boolean
     memoryEnabled?: boolean
     quickActionsEnabled?: boolean
+    sdkGuideEnabled?: boolean
   }
   skills: string[]
   integrations?: Array<{
@@ -1241,6 +1253,7 @@ export interface TechStackSummary {
     imageGenEnabled?: boolean
     memoryEnabled?: boolean
     quickActionsEnabled?: boolean
+    sdkGuideEnabled?: boolean
   }
 }
 

@@ -1073,9 +1073,27 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
     const expectedHash = computePackageJsonHash(dir)
     const recordedHash = readInstallMarker(dir)
     if (expectedHash != null && recordedHash != null && expectedHash === recordedHash) {
-      if (!installedPlatform) writePlatformMarker(dir)
-      console.log('[workspace-defaults] install-marker matches package.json — skipping reinstall')
-      return
+      // Trust-but-verify (see same comment in preview-manager.ts):
+      // in cloud, the marker travels with the workspace archive but
+      // `node_modules/` does not. A pod that installed deps + wrote the
+      // marker, then crashed before its deps-cache upload landed, leaves
+      // the next pod with a marker whose hash matches package.json but
+      // a `node_modules/` from the warm-pool's Vite template (which is
+      // missing every Expo / @react-three / etc. dep). Without this
+      // probe the install short-circuit fires, the bundler can't find
+      // its bin (`node_modules/.bin/expo`) or imports (`expo`,
+      // `@react-three/fiber`), and the build never recovers — exactly
+      // the staging symptom on 9e7ecdc7-... seen on 2026-05-13.
+      const missing = findMissingTopLevelDeps(dir)
+      if (missing.length === 0) {
+        if (!installedPlatform) writePlatformMarker(dir)
+        console.log('[workspace-defaults] install-marker matches package.json — skipping reinstall')
+        return
+      }
+      console.log(
+        `[workspace-defaults] install-marker matches but ${missing.length} declared dep(s) missing from node_modules (${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ', …' : ''}) — marker is stale, running install`,
+      )
+      // fall through to install
     }
   }
 

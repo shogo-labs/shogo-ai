@@ -388,6 +388,7 @@ export default observer(function ProjectLayout() {
     imageGenEnabled: projectSettings.imageGenEnabled !== false,
     memoryEnabled: projectSettings.memoryEnabled !== false,
     quickActionsEnabled: projectSettings.quickActionsEnabled !== false,
+    sdkGuideEnabled: projectSettings.sdkGuideEnabled !== false,
   }), [projectSettings])
 
   const updateProjectSettings = useCallback(async (patch: Record<string, unknown>) => {

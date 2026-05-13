@@ -106,7 +106,14 @@ export class HeartbeatScheduler extends BaseHeartbeatScheduler {
       })
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${await response.text().catch(() => 'unknown')}`)
+        const body = await response.text().catch(() => 'unknown')
+        // Self-heal "promoted-but-orphaned" pods: heartbeat traffic is
+        // always API-internal so a 401 with the missing-auth sentinel
+        // is unambiguously a stale assignment — evict on first hit and
+        // surface a normal failure for retry.
+        const { evictOnSingleMissingAuth } = await import('./warm-pool-self-heal')
+        await evictOnSingleMissingAuth(projectId, response.status, body)
+        throw new Error(`HTTP ${response.status}: ${body}`)
       }
 
       this.breaker.clearFailure(projectId)
