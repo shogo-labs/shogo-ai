@@ -6680,6 +6680,7 @@ if (isVMIsolation() && !isKubernetes()) {
       // LSPs / prisma headroom inside the Linux guest. The OOM killer was
       // reaping `node` mid-build at 1.5 GB. See apps/desktop/src/vm/types.ts.
       let configMemoryMB = 4096
+      let configPoolMemoryMB = 1536
       let configCpus = 0
       let configMountWorkspace = false
       try {
@@ -6692,11 +6693,19 @@ if (isVMIsolation() && !isKubernetes()) {
         const raw = fs.readFileSync(path.join(configDir, 'config.json'), 'utf-8')
         const parsed = JSON.parse(raw)
         if (parsed?.vmIsolation?.memoryMB > 0) configMemoryMB = parsed.vmIsolation.memoryMB
+        if (parsed?.vmIsolation?.poolMemoryMB > 0) configPoolMemoryMB = parsed.vmIsolation.poolMemoryMB
         if (parsed?.vmIsolation?.cpus > 0) configCpus = parsed.vmIsolation.cpus
         if (parsed?.vmIsolation?.mountWorkspace === true) configMountWorkspace = true
       } catch {}
 
       const memoryMB = parseInt(process.env.VM_MEMORY_MB || String(configMemoryMB), 10)
+      // Pool VMs idle at this size and balloon-deflate to `memoryMB` on
+      // assign. Clamp to ≤ memoryMB so misconfiguration can't inflate
+      // pool VMs above the assigned ceiling.
+      const poolMemoryMB = Math.min(
+        memoryMB,
+        parseInt(process.env.VM_POOL_MEMORY_MB || String(configPoolMemoryMB), 10),
+      )
       const autoCpus = Math.max(2, Math.floor(os.cpus().length / 2))
       const cpus = parseInt(process.env.VM_CPUS || String(configCpus > 0 ? configCpus : autoCpus), 10)
 
@@ -6710,6 +6719,7 @@ if (isVMIsolation() && !isKubernetes()) {
           path.join(home, '.config', 'gh'),
         ],
         memoryMB,
+        poolMemoryMB,
         cpus,
         networkEnabled: true,
         overlayPath: path.join(overlayDir, `pool-${crypto.randomUUID()}.qcow2`),

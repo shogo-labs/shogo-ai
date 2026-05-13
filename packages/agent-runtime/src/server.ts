@@ -3746,6 +3746,22 @@ async function startGateway(): Promise<void> {
     console.warn('[agent-runtime] startGateway() called while already starting — skipping')
     return
   }
+
+  // Pool-mode invariant: the gateway starts the TypeScript + Pyright LSPs
+  // (~450 MB combined RSS), prisma generate, and the canvas vite build
+  // watcher. None of these should fire before /pool/assign, otherwise
+  // every warm pool VM would sit at ~3 GB RSS even when idle. The plan
+  // (vm-pool-oom-fix) tracks this property as part of the host-memory
+  // budget for desktop VMs.
+  if (state.isPoolMode && !state.poolAssigned) {
+    console.warn(
+      '[agent-runtime] startGateway() called in pool mode before /pool/assign — refusing. ' +
+      'This would prematurely start the TS/Py LSPs and prisma engine, blowing the ' +
+      'idle pool VM memory budget. The caller likely forgot to await onAssign().',
+    )
+    return
+  }
+
   gatewayStarting = true
   logTiming('Starting agent gateway...')
 

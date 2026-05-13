@@ -10,6 +10,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import crypto from 'crypto'
 import { VMWarmPoolController, type VMManagerInterface, type VMManagerFactory } from '../vm-warm-pool-controller'
 
 // Tracks all VMs started/stopped by the mock manager
@@ -122,7 +123,11 @@ describe('VMWarmPoolController', () => {
 
   test('different projects get different VMs', async () => {
     const factory: VMManagerFactory = () => createMockVMManager()
-    pool = new VMWarmPoolController(factory, {}, 3)
+    // Pin maxAssigned=3 so the cap doesn't LRU-evict the first project
+    // when the host's reported free memory is low (the auto-compute used
+    // to read totalmem so was effectively unbounded — now it reads
+    // freemem clamped by VM_MAX_HARD_CAP).
+    pool = new VMWarmPoolController(factory, {}, 3, 3)
     await pool.start()
 
     const [url1, url2] = await Promise.all([
@@ -154,7 +159,7 @@ describe('VMWarmPoolController', () => {
 
   test('pool does not exceed pool size after rapid claims', async () => {
     const factory: VMManagerFactory = () => createMockVMManager()
-    pool = new VMWarmPoolController(factory, {}, 1)
+    pool = new VMWarmPoolController(factory, {}, 1, 1)
     await pool.start()
     expect(pool.getStatus().available).toBe(1)
 
@@ -169,5 +174,113 @@ describe('VMWarmPoolController', () => {
     expect(s.assigned).toBe(1)
     // Available should be at most poolSize (1)
     expect(s.available).toBeLessThanOrEqual(1)
+  })
+
+  test('reconcile() is reentrant — concurrent calls boot exactly one batch', async () => {
+    // Use a slow-boot manager so the reconcile race window is wide. Track
+    // every startVM call across all manager instances.
+    let startCount = 0
+    const slowFactory: VMManagerFactory = () => ({
+      async startVM() {
+        startCount++
+        await new Promise(r => setTimeout(r, 100))
+        return {
+          id: `vm-${startCount}`,
+          agentUrl: `http://localhost:${10000 + startCount}`,
+          pid: 1000 + startCount,
+          platform: 'darwin' as const,
+        }
+      },
+      async stopVM() {},
+      isRunning: () => true,
+      async forwardPort() {},
+      async removeForward() {},
+    })
+
+    pool = new VMWarmPoolController(slowFactory, {}, 1, 1)
+    await pool.start()
+
+    // After start(), exactly 1 VM boots
+    expect(startCount).toBe(1)
+
+    // 5 concurrent reconciles on a full pool should boot 0 more VMs
+    await Promise.all([
+      (pool as any).reconcile(),
+      (pool as any).reconcile(),
+      (pool as any).reconcile(),
+      (pool as any).reconcile(),
+      (pool as any).reconcile(),
+    ])
+    expect(startCount).toBe(1)
+  })
+
+  test('getProjectUrl across distinct projects never exceeds maxAssigned', async () => {
+    // Slow boot reproduces the race where multiple _assignProject callers
+    // pass the cap check before any of them populate `assigned`.
+    let liveVMs = 0
+    let maxLive = 0
+    const slowFactory: VMManagerFactory = () => ({
+      async startVM() {
+        liveVMs++
+        maxLive = Math.max(maxLive, liveVMs)
+        await new Promise(r => setTimeout(r, 100))
+        return {
+          id: crypto.randomUUID(),
+          agentUrl: `http://localhost:${10000 + liveVMs}`,
+          pid: 1000 + liveVMs,
+          platform: 'darwin' as const,
+        }
+      },
+      async stopVM() {
+        liveVMs = Math.max(0, liveVMs - 1)
+      },
+      isRunning: () => true,
+      async forwardPort() {},
+      async removeForward() {},
+    })
+
+    const POOL_SIZE = 1
+    const MAX = 2
+    pool = new VMWarmPoolController(slowFactory, {}, POOL_SIZE, MAX)
+    await pool.start()
+
+    // 10 concurrent assigns for distinct projects. The cap is 2 plus the
+    // 1 warm-pool slot. With the back-pressure logic, max live at any
+    // point should be ≤ MAX + POOL_SIZE + 1 (the +1 covers the race
+    // between claim() and the replacement warm-pool boot).
+    let pollMaxAssigned = 0
+    let polling = true
+    ;(async () => {
+      while (polling) {
+        pollMaxAssigned = Math.max(pollMaxAssigned, pool.getStatus().assigned)
+        await new Promise(r => setTimeout(r, 10))
+      }
+    })()
+
+    await Promise.all(
+      Array.from({ length: 10 }, (_, i) => pool.getProjectUrl(`proj-${i}`)),
+    )
+    await new Promise(r => setTimeout(r, 200))
+    polling = false
+
+    expect(pollMaxAssigned).toBeLessThanOrEqual(MAX)
+    expect(pool.getStatus().assigned).toBe(MAX)
+    expect(maxLive).toBeLessThanOrEqual(MAX + POOL_SIZE + 1)
+  })
+
+  test('VM_MAX_HARD_CAP clamps the auto-computed cap', async () => {
+    // Without an explicit maxAssignedOverride, the controller computes the
+    // cap from free RAM clamped by VM_MAX_HARD_CAP. We can't reliably
+    // manipulate freemem in a test, but we *can* assert the cap never
+    // exceeds the hard ceiling regardless of host size.
+    const factory: VMManagerFactory = () => createMockVMManager()
+    pool = new VMWarmPoolController(factory, { memoryMB: 1024 }, 1)
+    const cap = pool.getStatus().maxAssigned
+    // MAX_VM_HARD_CAP defaults to 4; the test env may override it. The
+    // invariant under test: cap is finite, >= 1, and never higher than
+    // the hard ceiling (read from env at module load).
+    const hardCap = parseInt(process.env.VM_MAX_HARD_CAP || '4', 10)
+    expect(cap).toBeGreaterThanOrEqual(1)
+    expect(cap).toBeLessThanOrEqual(hardCap)
   })
 })
