@@ -24,6 +24,7 @@ import {
   parseEnvFile,
   type EncryptedSecretsBlob,
 } from '../lib/bundle-crypto'
+import { deriveRuntimeToken } from '../lib/runtime-token'
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
@@ -288,6 +289,10 @@ interface BundleManifest {
     skipped?: Array<{ path: string; reason: string }>
   }
   requiredCredentialsCount?: number
+  // Names of the Context Files (e.g. "AGENTS.md") that were materialised at
+  // export time because they did not exist at the workspace root. Diagnostic
+  // only — the bundle is still a valid, self-contained project bundle.
+  contextFilesSeeded?: string[]
 }
 
 type ImportResult =
@@ -676,9 +681,34 @@ export async function runImport(
   // Post-import sanity checks → warnings. These are the things the user is
   // most likely to discover at first run: no memory, no skills, no .env.
   const projectDirAbs = resolve(projectDir)
-  if (!existsSync(join(projectDirAbs, 'memory', 'MEMORY.md')) && !existsSync(join(projectDirAbs, 'MEMORY.md'))) {
+  // Since the exporter now seeds a placeholder MEMORY.md when the source
+  // workspace never wrote one, mere existence is no longer a useful signal —
+  // a seeded stub is functionally empty. Warn when the file is missing OR
+  // when its content is the seed stub / blank.
+  const memoryPaths = [
+    join(projectDirAbs, 'memory', 'MEMORY.md'),
+    join(projectDirAbs, 'MEMORY.md'),
+  ]
+  const memoryIsEmpty = (() => {
+    for (const p of memoryPaths) {
+      if (!existsSync(p)) continue
+      try {
+        const body = readFileSync(p, 'utf8').trim()
+        if (body.length === 0) return true
+        // Treat the export-time seed stub as "empty" for warning purposes.
+        if (/^#\s*MEMORY\.md\s*$/im.test(body) && body.length < 200 && /not been populated yet/i.test(body)) {
+          return true
+        }
+        return false
+      } catch {
+        return false
+      }
+    }
+    return true
+  })()
+  if (memoryIsEmpty) {
     importWarnings.push(
-      'No MEMORY.md found in workspace — agent will start with empty memory.',
+      'No MEMORY.md content found in workspace — agent will start with empty memory.',
     )
   }
   // If we successfully auto-filled secrets, the items they covered no longer
@@ -1140,7 +1170,16 @@ export function projectExportImportRoutes() {
       try {
         const { getProjectPodUrl } = await import('../lib/knative-project-manager')
         const podUrl = await getProjectPodUrl(projectId)
-        const agent = new AgentClient({ baseUrl: podUrl })
+        // Pod-side workspace endpoints require the per-project runtime token —
+        // matches warm-pool-controller / heartbeat-scheduler / voice-context.
+        // Without this header the pod returns 401, the catch below flips
+        // sourceMode to `k8s-fallback-empty`, and the export ships with no
+        // workspace/* entries (including AGENTS.md / TOOLS.md / STACK.md /
+        // HEARTBEAT.md / MEMORY.md — the "Context Files").
+        const agent = new AgentClient({
+          baseUrl: podUrl,
+          headers: { 'x-runtime-token': deriveRuntimeToken(projectId) },
+        })
         const bundle: WorkspaceBundle = await agent.getWorkspaceBundle()
         const bundleFiles =
           bundle && typeof bundle === 'object' && bundle.files && typeof bundle.files === 'object'
@@ -1195,6 +1234,46 @@ export function projectExportImportRoutes() {
       for (const [relPath, data] of Object.entries(workspaceFiles)) {
         zipContents[`workspace/${relPath}`] = data
       }
+    }
+
+    // ─── Context Files seed ────────────────────────────────────────────
+    // The 5 Context Files surfaced in the Studio Status panel must always
+    // be present in the bundle, even when the source workspace never wrote
+    // one (the runtime materialises them lazily on first use — TOOLS.md
+    // when a tool is installed, MEMORY.md on first persist, etc.). If we
+    // shipped without them, a freshly-imported project would start with
+    // partial agent identity until the runtime regenerated the missing
+    // ones — which never happens for files the agent simply never touches.
+    //
+    // Rules:
+    //   • Never overwrite an existing entry (a 0-byte file is intentional).
+    //   • Skip if the path is shadowed by a directory of the same name.
+    //   • Prefer the workspace/.shogo/<name>.md template if it travelled
+    //     in the bundle (this is what the runtime would copy on first
+    //     write). Otherwise emit a minimal honest stub.
+    //   • Record what we seeded in manifest.contextFilesSeeded so the
+    //     reason a Context File looks generic is answerable from the zip
+    //     alone, without spelunking through pod logs.
+    const CONTEXT_FILES = ['AGENTS.md', 'TOOLS.md', 'STACK.md', 'HEARTBEAT.md', 'MEMORY.md']
+    const contextFilesSeeded: string[] = []
+    for (const name of CONTEXT_FILES) {
+      const key = `workspace/${name}`
+      if (zipContents[key] !== undefined) continue
+      // Defensive: don't seed if the workspace shipped a *directory* with
+      // this name (would produce two entries with conflicting types in the
+      // zip). Extremely unlikely but cheap to guard.
+      const shadowed = Object.keys(zipContents).some((k) => k.startsWith(`${key}/`))
+      if (shadowed) continue
+
+      const templateKey = `workspace/.shogo/${name}`
+      const template = zipContents[templateKey]
+      if (template !== undefined && template.byteLength > 0) {
+        zipContents[key] = template
+      } else {
+        const stub = `# ${name}\n\n_This Context File has not been populated yet._\n`
+        zipContents[key] = strToU8(stub)
+      }
+      contextFilesSeeded.push(name)
     }
 
     // ─── .env smart-split ──────────────────────────────────────────────
@@ -1353,6 +1432,7 @@ export function projectExportImportRoutes() {
       hasEncryptedSecrets: includeSecrets && !!(projectJson as any).encryptedSecrets,
       envPolicy: includeEnvRaw ? 'passthrough' : 'smart-split',
       warnings: exportWarnings,
+      contextFilesSeeded,
     }
     zipContents['manifest.json'] = strToU8(JSON.stringify(manifest, null, 2))
 
