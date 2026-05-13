@@ -2273,6 +2273,21 @@ const BUNDLE_EXCLUDED_DIRS = new Set([
 ])
 const BUNDLE_MAX_FILE_SIZE = 10 * 1024 * 1024
 
+// Per-machine state that must NOT round-trip through a bundle. Mirrors
+// `EXCLUDED_RELATIVE_PATHS` in apps/api/src/routes/project-export-import.ts;
+// keep these two lists in sync.
+//
+//   .shogo/install-marker — sha256(package.json) at last successful
+//     `bun install` on the EXPORTING machine. Restoring it on a fresh
+//     pod tricks `ensureWorkspaceDeps` and PreviewManager into thinking
+//     deps are installed against the imported package.json — even
+//     though the on-disk node_modules is whatever the warm pod was
+//     pre-seeded with. Surfaced as the 2026-05-12 imported-Expo
+//     "kind of works but never rebuilds" report.
+const BUNDLE_EXCLUDED_RELATIVE_PATHS = new Set<string>([
+  '.shogo/install-marker',
+])
+
 function collectBundleFiles(dir: string, baseDir: string): Record<string, string> {
   const files: Record<string, string> = {}
   if (!existsSync(dir)) return files
@@ -2288,6 +2303,7 @@ function collectBundleFiles(dir: string, baseDir: string): Record<string, string
     if (entry.isDirectory()) {
       Object.assign(files, collectBundleFiles(fullPath, baseDir))
     } else if (entry.isFile()) {
+      if (BUNDLE_EXCLUDED_RELATIVE_PATHS.has(relPath)) continue
       try {
         const stat = statSync(fullPath)
         if (stat.size > BUNDLE_MAX_FILE_SIZE) continue

@@ -54,8 +54,38 @@ const EXCLUDED_FILE_PATTERNS: RegExp[] = [
   /^\.shogo-cwd-/,
 ]
 
+// Per-workspace-relative paths that must NEVER round-trip through a
+// bundle. These are install/build markers whose meaning is bound to
+// the EXPORTING machine's `node_modules/`; trusting them on a fresh
+// machine causes silent dependency-state mismatches.
+//
+//   .shogo/install-marker — sha256(package.json) recorded after the
+//     exporter's last successful `bun install`. If we let it ride
+//     into the cloud, `ensureWorkspaceDeps` and
+//     `PreviewManager.installDepsIfNeeded` both find it matches the
+//     (also-imported) package.json hash, conclude "deps are good",
+//     and skip install — leaving the cloud pod's pre-seeded Vite
+//     `node_modules/` in place for what's actually an Expo workspace.
+//     Surfaced as the 2026-05-12 "imported Expo never rebuilds"
+//     report (project 5a9304ff in staging).
+const EXCLUDED_RELATIVE_PATHS = new Set<string>([
+  '.shogo/install-marker',
+])
+
 const isExcludedFile = (name: string): boolean =>
   EXCLUDED_FILE_PATTERNS.some((re) => re.test(name))
+
+/**
+ * Path-aware exclusion check. Use for the workspace bundle's relative
+ * paths (e.g. `.shogo/install-marker`, `prisma/dev.db-wal`); falls
+ * back to basename matching for the legacy `EXCLUDED_FILE_PATTERNS`
+ * list so callers don't need to remember to check both.
+ */
+const isExcludedRelPath = (relPath: string): boolean => {
+  if (EXCLUDED_RELATIVE_PATHS.has(relPath)) return true
+  const baseName = relPath.split('/').pop() || ''
+  return isExcludedFile(baseName)
+}
 
 // Bundle format. Bumped to 1.1 with: manifest.json, requiredCredentials,
 // sanitized (secret-stripped) channels, defensive path normalisation, and
@@ -148,7 +178,7 @@ function collectWorkspaceFiles(
     if (entry.isDirectory()) {
       Object.assign(files, collectWorkspaceFiles(fullPath, baseDir, skipped))
     } else if (entry.isFile()) {
-      if (isExcludedFile(entry.name)) {
+      if (isExcludedRelPath(relPath)) {
         skipped.push({ path: relPath, reason: 'excluded-pattern' })
         continue
       }
@@ -490,9 +520,10 @@ export async function runImport(
       continue
     }
     // Drop volatile / per-machine files that should never have shipped (in
-    // case an old or third-party bundle includes them).
-    const baseName = relPath.split('/').pop() || ''
-    if (isExcludedFile(baseName)) {
+    // case an old or third-party bundle includes them, or one was generated
+    // by an exporter on a Shogo build that pre-dates the export-side
+    // exclusion of `.shogo/install-marker`).
+    if (isExcludedRelPath(relPath)) {
       filesSkipped++
       continue
     }
@@ -1132,8 +1163,7 @@ export function projectExportImportRoutes() {
           const relPath = rawRelPath.replace(/\\/g, '/')
           if (relPath !== rawRelPath) backslashCount++
 
-          const baseName = relPath.split('/').pop() || ''
-          if (isExcludedFile(baseName)) {
+          if (isExcludedRelPath(relPath)) {
             fileSkipped.push({ path: relPath, reason: 'excluded-pattern' })
             continue
           }
