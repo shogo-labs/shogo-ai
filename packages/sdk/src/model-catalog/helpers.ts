@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import {
@@ -7,13 +7,12 @@ import {
   AUTO_MODEL_ID,
   type ModelEntry,
   type ImageModelEntry,
-  type ModelId,
-  type Provider,
   type ModelTier,
   type ModelFamily,
   type ModelGeneration,
   type AgentMode,
   type BillingModel,
+  type Provider,
 } from './models'
 import { MODEL_ALIASES, resolveAgentModeDefault } from './aliases'
 

@@ -1,5 +1,14 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * Single source of truth for LLM model IDs, display names, providers,
+ * tiers, and aliases.
+ *
+ * Lifted into the SDK from `@shogo/model-catalog` (was AGPL) under MIT.
+ * The original `@shogo/model-catalog` package is now a thin shim that
+ * re-exports `@shogo-ai/sdk/model-catalog`, so existing consumers
+ * continue to work without code changes.
+ */
 
 /** Special model ID that enables the intelligent model router. */
 export const AUTO_MODEL_ID = 'auto' as const
