@@ -628,12 +628,22 @@ export const AssistantContent = memo(
     [orderedParts],
   )
 
-  const firstTodoWriteId = useMemo(() => {
-    const first = groupedParts.find(
-      (p): p is Extract<GroupedMessagePart, { type: "tool" }> =>
-        p.type === "tool" && (p.tool.toolName === "TodoWrite" || p.tool.toolName === "todo_write"),
-    )
-    return first?.id
+  // Find the first and last todo_write tool parts. We render a single
+  // consolidated TodoWidget at the first position, but always feed it the
+  // *latest* tool call's data so the user sees up-to-date task statuses.
+  const { firstTodoWriteId, lastTodoTool } = useMemo(() => {
+    let firstId: string | undefined
+    let lastTool: ToolCallData | undefined
+    for (const p of groupedParts) {
+      if (
+        p.type === "tool" &&
+        (p.tool.toolName === "TodoWrite" || p.tool.toolName === "todo_write")
+      ) {
+        if (!firstId) firstId = p.id
+        lastTool = p.tool
+      }
+    }
+    return { firstTodoWriteId: firstId, lastTodoTool: lastTool }
   }, [groupedParts])
 
   if (groupedParts.length === 0) {
@@ -739,17 +749,20 @@ export const AssistantContent = memo(
           }
 
           if (part.tool.toolName === "TodoWrite" || part.tool.toolName === "todo_write") {
-            const isFirst = part.id === firstTodoWriteId
-            const isExpanded = isFirst
-              ? !expandedTools.has(part.id)
-              : expandedTools.has(part.id)
+            // Only render ONE consolidated widget at the first position;
+            // always use the latest todo_write's tool data so the user
+            // sees the most up-to-date task statuses.
+            if (part.id !== firstTodoWriteId) return null
+            const displayTool = lastTodoTool ?? part.tool
+            const isExpanded = !expandedTools.has(part.id)
 
             return (
               <TodoWidget
                 key={part.id}
-                tool={part.tool}
+                tool={displayTool}
                 isExpanded={isExpanded}
                 onToggle={getToggle(part.id)}
+                isMessageStreaming={isStreaming}
               />
             )
           }

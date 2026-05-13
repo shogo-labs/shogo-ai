@@ -34,6 +34,8 @@ export interface TodoWidgetProps {
   isExpanded?: boolean
   onToggle?: () => void
   className?: string
+  /** When false (message done streaming), in_progress tasks are shown as completed. */
+  isMessageStreaming?: boolean
 }
 
 function parseTodos(args?: Record<string, unknown>): TodoItem[] {
@@ -242,7 +244,8 @@ function todoToolPropsEqual(
   if (
     prev.isExpanded !== next.isExpanded ||
     prev.onToggle !== next.onToggle ||
-    prev.className !== next.className
+    prev.className !== next.className ||
+    prev.isMessageStreaming !== next.isMessageStreaming
   ) {
     return false
   }
@@ -265,8 +268,24 @@ function TodoWidgetImpl({
   isExpanded: controlledExpanded,
   onToggle,
   className,
+  isMessageStreaming,
 }: TodoWidgetProps) {
-  const todos = useMemo(() => parseTodos(tool.args), [tool.args])
+  const rawTodos = useMemo(() => parseTodos(tool.args), [tool.args])
+
+  // When the message is done streaming, auto-reconcile any remaining
+  // in_progress tasks to "completed" so the widget doesn't
+  // show stale spinners after the agent has finished.
+  const todos = useMemo(() => {
+    if (isMessageStreaming !== false) return rawTodos
+    const hasInProgress = rawTodos.some((t) => t.status === "in_progress")
+    if (!hasInProgress) return rawTodos
+    return rawTodos.map((t) =>
+      t.status === "in_progress"
+        ? { ...t, status: "completed" as const }
+        : t,
+    )
+  }, [rawTodos, isMessageStreaming])
+
   const isExpanded = controlledExpanded ?? true
 
   const handleToggle = () => {
