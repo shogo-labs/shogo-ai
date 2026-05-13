@@ -179,3 +179,62 @@ Five files to keep in sync:
 
 A future improvement is to drive (1)–(3) from a single source of
 truth (probably a `subpaths.json` in the SDK).
+
+### Worked example — Wave 1 lifts (May 2026)
+
+The Wave 1 lifts (`logger`, `instrumentation`, `stream-buffer`,
+`chat-message`, `model-catalog`) followed the canonical "lift from an
+AGPL workspace package" pattern. Each lift is six edits:
+
+1. **Copy** the source file from the AGPL package to
+   `packages/sdk/src/<subpath>(/index).ts`. Replace the SPDX header
+   with `MIT` and add a docblock noting where it was lifted from.
+2. **Add** the file to `packages/sdk/tsup.config.ts` `entry`. If the
+   module imports peer-dep packages that aren't already listed (e.g.
+   `@opentelemetry/*`), add them to the `external` array too.
+3. **Add** an `exports["./<subpath>"]` block in
+   `packages/sdk/package.json` with `types` / `development` /
+   `import` / `require`. If the module needs runtime peer packages
+   for typecheck (Bun monorepo doesn't hoist by default), also add
+   them to both `peerDependencies` (with `peerDependenciesMeta:
+   optional: true`) and `devDependencies` so the SDK's local
+   typecheck has them available.
+4. **Add** a `paths["@shogo-ai/sdk/<subpath>"]` entry in
+   `tsconfig.base.json`.
+5. **Replace** the original AGPL source file with a thin re-export
+   shim from `@shogo-ai/sdk/<subpath>`. Keep the AGPL SPDX header on
+   the shim — re-exporting from MIT is fine, the shim itself remains
+   AGPL because it lives inside an AGPL package.
+6. **Add** `@shogo-ai/sdk: workspace:*` to the AGPL package's
+   `dependencies` if it isn't already a dep, then `bun install` from
+   the monorepo root to symlink it in.
+
+Then `bun run build` from `packages/sdk/`, `bun run typecheck`,
+`bun test src/`, `bun run verify:license-isolation`, and finally
+spot-check the resulting tarball with `bun pm pack --dry-run`.
+
+Two recurring gotchas from Wave 1, both surfaced by the SDK's
+stricter DTS pass even though the original AGPL source typechecked
+clean:
+
+- **Implicit-`any` callback parameters** (e.g.
+  `tracer.startActiveSpan(name, opts, async (span) => …)`) — annotate
+  explicitly: `async (span: Span) => …`.
+- **`'unref' in handle` narrowing** on `setInterval` return types
+  doesn't survive the SDK's tsconfig (no `@types/node` or
+  `@types/bun` in scope by default). Cast to a structural type and
+  detect at runtime: `(handle as { unref?: () => void }).unref?.()`.
+
+Both fixes are local to the lifted file, don't change behaviour, and
+keep the file dependency-free of `@types/*`.
+
+For lifting an entire **separate package** (e.g. `@shogo/model-catalog`),
+the pattern is the same but step (5) replaces the package's
+`src/index.ts` with a single `export * from '@shogo-ai/sdk/<subpath>'`
+shim and **deletes** the now-redundant internal source files
+(`models.ts`, `aliases.ts`, `helpers.ts`, …). This breaks any code
+that was reaching into the internal files via relative path —
+search the monorepo for `packages/<pkg>/src/<filename>` after the
+delete and switch those imports to the public surface
+(`@shogo/<pkg>` or `@shogo-ai/sdk/<subpath>`). Generated/scaffolded
+code is the most likely place this hides.

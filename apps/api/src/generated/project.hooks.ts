@@ -8,7 +8,7 @@
  */
 import { getAgentTemplateById } from '../../../../packages/agent-runtime/src/agent-templates'
 import * as billingService from '../services/billing.service'
-import { getModelTier } from '../../../../packages/model-catalog/src/helpers'
+import { getModelTier } from '@shogo/model-catalog'
 import { getRuntimeManager } from '../lib/runtime/manager'
 
 /**

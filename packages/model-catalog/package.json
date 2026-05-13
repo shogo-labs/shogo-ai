@@ -10,6 +10,9 @@
     "test": "bun --no-env-file test",
     "test:coverage": "bun --no-env-file test --coverage"
   },
+  "dependencies": {
+    "@shogo-ai/sdk": "workspace:*"
+  },
   "devDependencies": {
     "typescript": "^6.0.2"
   }

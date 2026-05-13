@@ -1,6 +1,6 @@
 {
   "name": "@shogo-ai/sdk",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Shogo Platform SDK - Zero-boilerplate auth and database for Shogo apps",
   "type": "module",
   "main": "dist/index.cjs",
@@ -138,6 +138,36 @@
       "development": "./src/cli/pkg.ts",
       "import": "./dist/cli/pkg.js",
       "require": "./dist/cli/pkg.cjs"
+    },
+    "./logger": {
+      "types": "./dist/logger.d.ts",
+      "development": "./src/logger.ts",
+      "import": "./dist/logger.js",
+      "require": "./dist/logger.cjs"
+    },
+    "./instrumentation": {
+      "types": "./dist/instrumentation.d.ts",
+      "development": "./src/instrumentation.ts",
+      "import": "./dist/instrumentation.js",
+      "require": "./dist/instrumentation.cjs"
+    },
+    "./stream-buffer": {
+      "types": "./dist/stream-buffer.d.ts",
+      "development": "./src/stream-buffer.ts",
+      "import": "./dist/stream-buffer.js",
+      "require": "./dist/stream-buffer.cjs"
+    },
+    "./chat-message": {
+      "types": "./dist/chat-message.d.ts",
+      "development": "./src/chat-message.ts",
+      "import": "./dist/chat-message.js",
+      "require": "./dist/chat-message.cjs"
+    },
+    "./model-catalog": {
+      "types": "./dist/model-catalog/index.d.ts",
+      "development": "./src/model-catalog/index.ts",
+      "import": "./dist/model-catalog/index.js",
+      "require": "./dist/model-catalog/index.cjs"
     }
   },
   "bin": {
@@ -168,6 +198,12 @@
     "@ai-sdk/react": "^3.0.99",
     "@elevenlabs/react": "^1.1.1",
     "@elevenlabs/react-native": "^1.1.4",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.213.0",
+    "@opentelemetry/resources": "^2.5.1",
+    "@opentelemetry/sdk-node": "^0.213.0",
+    "@opentelemetry/sdk-trace-base": "^2.5.1",
+    "@opentelemetry/semantic-conventions": "^1.39.0",
     "ai": "^6.0.97",
     "@playwright/test": "^1.40.0",
     "@prisma/internals": "^7.3.0",
@@ -202,7 +238,13 @@
     "better-sqlite3": ">=11.0.0",
     "three": ">=0.160.0",
     "expo-gl": ">=15.0.0",
-    "expo-three": ">=8.0.0"
+    "expo-three": ">=8.0.0",
+    "@opentelemetry/api": ">=1.9.0",
+    "@opentelemetry/sdk-node": ">=0.213.0",
+    "@opentelemetry/exporter-trace-otlp-http": ">=0.213.0",
+    "@opentelemetry/sdk-trace-base": ">=2.5.0",
+    "@opentelemetry/resources": ">=2.5.0",
+    "@opentelemetry/semantic-conventions": ">=1.39.0"
   },
   "peerDependenciesMeta": {
     "nodemailer": {
@@ -248,6 +290,24 @@
       "optional": true
     },
     "expo-three": {
+      "optional": true
+    },
+    "@opentelemetry/api": {
+      "optional": true
+    },
+    "@opentelemetry/sdk-node": {
+      "optional": true
+    },
+    "@opentelemetry/exporter-trace-otlp-http": {
+      "optional": true
+    },
+    "@opentelemetry/sdk-trace-base": {
+      "optional": true
+    },
+    "@opentelemetry/resources": {
+      "optional": true
+    },
+    "@opentelemetry/semantic-conventions": {
       "optional": true
     }
   },

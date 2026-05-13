@@ -1,46 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-export {
-  MODEL_CATALOG,
-  IMAGE_MODEL_CATALOG,
-  AUTO_MODEL_ID,
-  type ModelEntry,
-  type ImageModelEntry,
-  type ModelId,
-  type ImageModelId,
-  type Provider,
-  type ImageProvider,
-  type ModelTier,
-  type ModelFamily,
-  type ModelGeneration,
-  type BillingModel,
-  type AgentMode,
-} from './models'
+/**
+ * Re-export shim. The implementation now lives in
+ * `@shogo-ai/sdk/model-catalog` under MIT, lifted from this package as
+ * part of Wave 1 of the SDK dogfood roadmap. Existing consumers that
+ * import from `@shogo/model-catalog` continue to work unchanged.
+ *
+ * New code should prefer the canonical SDK import:
+ *   import { MODEL_CATALOG, getModelEntry } from '@shogo-ai/sdk/model-catalog'
+ *
+ * The internal `models.ts`, `aliases.ts`, and `helpers.ts` files were
+ * removed when the lift landed — anything that was reaching into them
+ * directly should switch to the public surface above.
+ */
 
-export {
-  MODEL_ALIASES,
-  AGENT_MODE_DEFAULTS,
-  setAgentModeOverrides,
-  getAgentModeOverrides,
-  resolveAgentModeDefault,
-} from './aliases'
-
-export {
-  resolveModelId,
-  getModelEntry,
-  getImageModelEntry,
-  getModelDisplayName,
-  getModelShortDisplayName,
-  inferProviderFromModel,
-  getModelTier,
-  getModelBillingModel,
-  getModelFamily,
-  getMaxOutputTokens,
-  getAvailableModels,
-  getModelsByProvider,
-  isAutoModel,
-  MODEL_DOLLAR_COSTS,
-  calculateDollarCost,
-  type AvailableModelFilter,
-} from './helpers'
+export * from '@shogo-ai/sdk/model-catalog'
