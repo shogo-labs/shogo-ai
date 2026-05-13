@@ -24,7 +24,7 @@ describe('Guide Registry', () => {
   test('buildGuideRegistry returns all expected guides', () => {
     const registry = buildGuideRegistry()
     const expectedKeys = [
-      'subagent', 'browser', 'constraint-awareness',
+      'mcp-discovery', 'subagent', 'browser', 'constraint-awareness',
       'personality', 'skill-matching', 'self-evolution', 'tool-planning', 'memory',
     ]
     for (const key of expectedKeys) {
@@ -33,16 +33,9 @@ describe('Guide Registry', () => {
     }
   })
 
-  test('mcp-discovery is no longer registered as a guide', () => {
-    // tool_search / tool_install / mcp_install are top-level tools with their
-    // own descriptions; the standalone mcp-discovery guide was retired to keep
-    // the system prompt's Capabilities Index lean.
-    const registry = buildGuideRegistry()
-    expect(registry.has('mcp-discovery')).toBe(false)
-  })
-
   test('guides contain substantive content', () => {
     const registry = buildGuideRegistry()
+    expect(registry.get('mcp-discovery')).toContain('tool_search')
     expect(registry.get('subagent')).toContain('agent_spawn')
     expect(registry.get('browser')).toContain('snapshot')
     expect(registry.get('personality')).toContain('AGENTS.md')

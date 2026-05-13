@@ -10,6 +10,7 @@
  */
 
 import {
+  OPTIMIZED_MCP_DISCOVERY_GUIDE,
   OPTIMIZED_PERSONALITY_GUIDE,
   OPTIMIZED_TOOL_PLANNING_GUIDE,
   OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE,
@@ -22,7 +23,7 @@ import { SUBAGENT_GUIDE } from './subagent-prompts'
 
 // Re-export for use by gateway.ts when building the personality guide with
 // promptOverrides — the prefix is still prepended to the full guide content.
-export { OPTIMIZED_PERSONALITY_GUIDE }
+export { OPTIMIZED_PERSONALITY_GUIDE, OPTIMIZED_MCP_DISCOVERY_GUIDE }
 
 export const PERSONALITY_EVOLUTION_GUIDE_PREFIX = `## Personality Self-Update (MUST use read_file + edit_file)
 
@@ -91,8 +92,10 @@ export function buildGuideRegistry(promptOverrides?: Map<string, string>): Map<s
   const memoryGuide = promptOverrides?.get('memory_guide') ?? OPTIMIZED_MEMORY_GUIDE
   const skillMatchingGuide = promptOverrides?.get('skill_matching_guide') ?? OPTIMIZED_SKILL_MATCHING_GUIDE
   const constraintGuide = promptOverrides?.get('constraint_awareness_guide') ?? OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE
+  const mcpGuide = promptOverrides?.get('mcp_discovery_guide') ?? OPTIMIZED_MCP_DISCOVERY_GUIDE
 
   return new Map<string, string>([
+    ['mcp-discovery', mcpGuide],
     ['subagent', SUBAGENT_GUIDE],
     ['browser', BROWSER_TOOL_GUIDE],
     ['constraint-awareness', constraintGuide],
@@ -111,6 +114,7 @@ export function buildGuideRegistry(promptOverrides?: Map<string, string>): Map<s
 export const CAPABILITIES_INDEX = `## Capabilities Index
 Read the full guide with \`read_guide({ name: "..." })\` before using these capabilities for the first time.
 
+- **mcp-discovery**: Tool discovery via CLI-first tools, managed integrations (\`tool_search\` / \`tool_install\`), and MCP servers (\`mcp_search\` / \`mcp_install\`). Read before installing or searching for tools.
 - **subagent**: Agent orchestration — explore, general-purpose, code-reviewer, browser, integration, channel, media, devops, fork mode, and team swarm. Read before delegating tasks.
 - **browser**: Browser automation via snapshot/ref/click workflow. Delegated — use \`agent_spawn({ type: "browser", prompt: "..." })\`. The \`web\` tool for HTTP fetching is available directly. Read the guide before first browser delegation.
 - **constraint-awareness**: Track and enforce user constraints (budgets, dates, requirements). Read when user states explicit constraints.
