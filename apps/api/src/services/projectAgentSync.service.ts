@@ -75,7 +75,22 @@ export interface SyncProjectAgentsResult {
   created: string[]
   updated: string[]
   deleted: string[]
-  errors: Array<{ name: string; message: string }>
+  errors: Array<{
+    name: string
+    message: string
+    /**
+     * Upstream HTTP status (e.g. 400 from ElevenLabs) when the error
+     * originated from an external API client.
+     */
+    status?: number
+    /**
+     * Raw upstream response body. Present when the error was thrown by
+     * an external API client (e.g. `ElevenLabsApiError`). Lets the
+     * deploy CLI surface the actual provider validation error instead
+     * of just a bare status code.
+     */
+    upstreamBody?: string
+  }>
   dryRun: boolean
 }
 
@@ -468,9 +483,24 @@ export async function syncProjectAgents(
       }
       result.updated.push(name)
     } catch (err: any) {
+      // Duck-type `ElevenLabsApiError` (and any other upstream-API
+      // error class with the same shape): preserve `status` + `body`
+      // so the deploy CLI can surface the actual provider validation
+      // error instead of just a bare status code. Identity-checking
+      // via `instanceof` is unreliable across re-exported packages.
+      const status = typeof err?.status === 'number' ? err.status : undefined
+      const upstreamBody = typeof err?.body === 'string' ? err.body : undefined
+      if (status !== undefined || upstreamBody !== undefined) {
+        console.warn(
+          `[Agents Sync] ${name} failed (status=${status ?? '?'}):`,
+          upstreamBody ?? err?.message ?? err,
+        )
+      }
       result.errors.push({
         name,
         message: err?.message ?? String(err),
+        ...(status !== undefined ? { status } : {}),
+        ...(upstreamBody !== undefined ? { upstreamBody } : {}),
       })
     }
   }
@@ -497,9 +527,19 @@ export async function syncProjectAgents(
         }
         result.deleted.push(row.name)
       } catch (err: any) {
+        const status = typeof err?.status === 'number' ? err.status : undefined
+        const upstreamBody = typeof err?.body === 'string' ? err.body : undefined
+        if (status !== undefined || upstreamBody !== undefined) {
+          console.warn(
+            `[Agents Sync] ${row.name} delete failed (status=${status ?? '?'}):`,
+            upstreamBody ?? err?.message ?? err,
+          )
+        }
         result.errors.push({
           name: row.name,
           message: err?.message ?? String(err),
+          ...(status !== undefined ? { status } : {}),
+          ...(upstreamBody !== undefined ? { upstreamBody } : {}),
         })
       }
     }

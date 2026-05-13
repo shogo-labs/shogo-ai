@@ -2016,7 +2016,14 @@ export function voiceRoutes() {
    *
    * Response:
    *   { created: string[], updated: string[], deleted: string[],
-   *     errors: Array<{ name, message }>, dryRun: boolean }
+   *     errors: Array<{ name, message, status?, upstreamBody? }>,
+   *     dryRun: boolean }
+   *
+   * `status` and `upstreamBody` are populated when the failure
+   * originated from an external API client (e.g. ElevenLabs returning
+   * 4xx on createAgent). They give the deploy CLI the raw provider
+   * response so users can see the actual validation error rather than
+   * a bare status code.
    */
   router.post('/projects/:projectId/agents/sync', async (c) => {
     const projectId = c.req.param('projectId')
