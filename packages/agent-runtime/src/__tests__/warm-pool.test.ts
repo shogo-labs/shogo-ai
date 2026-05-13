@@ -163,6 +163,103 @@ describe('Warm Pool Mode', () => {
 })
 
 /**
+ * Regression test for the 2026-05-13 staging incident: a partial
+ * /pool/assign (env that sets AI_PROXY_URL without an AI_PROXY_TOKEN)
+ * called process.exit(1) inside the runtime, killing a healthy pod and
+ * letting the orchestrator strand 184 promoted-but-orphaned ksvc.
+ *
+ * After the fix the runtime returns 400 with a "Reconfigure failed"
+ * message and stays alive — so the next assign attempt with proper env
+ * can recover the pod in-place.
+ */
+describe('Warm Pool Mode — partial /pool/assign does not crash the pod', () => {
+  const TEST_PORT_3 = 19_300 + Math.floor(Math.random() * 100)
+  const TEST_AGENT_DIR_3 = `/tmp/test-warm-pool-partial-assign-${TEST_PORT_3}`
+  let serverProc3: Subprocess | null = null
+
+  beforeAll(async () => {
+    rmSync(TEST_AGENT_DIR_3, { recursive: true, force: true })
+    mkdirSync(TEST_AGENT_DIR_3, { recursive: true })
+
+    serverProc3 = spawn({
+      cmd: ['bun', 'run', SERVER_PATH],
+      env: {
+        ...process.env,
+        PROJECT_ID: '__POOL__',
+        WARM_POOL_MODE: 'true',
+        AGENT_DIR: TEST_AGENT_DIR_3,
+        PROJECT_DIR: TEST_AGENT_DIR_3,
+        PORT: String(TEST_PORT_3),
+        S3_WORKSPACES_BUCKET: '',
+        S3_BUCKET: '',
+        AI_PROXY_URL: '',
+        AI_PROXY_TOKEN: '',
+        ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || 'test-key',
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+
+    await waitForServer(TEST_PORT_3)
+  }, 20_000)
+
+  afterAll(() => {
+    if (serverProc3) {
+      serverProc3.kill()
+      serverProc3 = null
+    }
+    rmSync(TEST_AGENT_DIR_3, { recursive: true, force: true })
+  })
+
+  test('returns 400 (not exit) when env sets AI_PROXY_URL without AI_PROXY_TOKEN', async () => {
+    const testProjectId = `partial-assign-${Date.now()}`
+
+    const resp = await fetch(`http://localhost:${TEST_PORT_3}/pool/assign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        projectId: testProjectId,
+        env: {
+          AI_PROXY_URL: 'http://api.test.svc.cluster.local/api/ai/v1',
+          // No AI_PROXY_TOKEN — configureAIProxy must throw.
+        },
+      }),
+    })
+
+    expect(resp.status).toBe(400)
+    const data = await resp.json() as any
+    expect(data.error).toContain('Reconfigure failed')
+
+    // Pod must still be alive: a follow-up /health succeeds and reports
+    // pool mode (the failed assign got rolled back).
+    const health = await fetch(`http://localhost:${TEST_PORT_3}/health`)
+    expect(health.ok).toBe(true)
+    const healthData = await health.json() as any
+    expect(healthData.poolMode).toBe(true)
+    expect(healthData.projectId).toBe('__POOL__')
+  }, 15_000)
+
+  test('a subsequent valid /pool/assign succeeds after a partial one was rolled back', async () => {
+    const testProjectId = `recovered-assign-${Date.now()}`
+
+    const resp = await fetch(`http://localhost:${TEST_PORT_3}/pool/assign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        projectId: testProjectId,
+        // Empty env keeps the AI proxy unconfigured — assign should succeed.
+        env: {},
+      }),
+    })
+
+    expect(resp.ok).toBe(true)
+    const data = await resp.json() as any
+    expect(data.ok).toBe(true)
+    expect(data.projectId).toBe(testProjectId)
+  }, 30_000)
+})
+
+/**
  * Regression test for the /pool/assign latency incident on 2026-05-11.
  *
  * Before the fix: PreviewManager.start() awaited runSetupTasks → runPrismaIfNeeded

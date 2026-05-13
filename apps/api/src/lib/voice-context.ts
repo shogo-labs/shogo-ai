@@ -97,7 +97,15 @@ async function fetchPodFile(params: {
       headers: { 'x-runtime-token': deriveRuntimeToken(projectId) },
       signal: controller.signal,
     })
-    if (!res.ok) return null
+    if (!res.ok) {
+      // Self-heal stranded warm-pool pods. voice-context fetches always
+      // carry a valid runtime token, so a 401 with the missing-auth
+      // sentinel is unambiguously a stale assignment.
+      const body = await res.text().catch(() => '')
+      const { evictOnSingleMissingAuth } = await import('./warm-pool-self-heal')
+      await evictOnSingleMissingAuth(projectId, res.status, body)
+      return null
+    }
     const body = (await res.json()) as { content?: unknown }
     if (typeof body?.content !== 'string') return null
     return body.content

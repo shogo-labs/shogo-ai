@@ -76,6 +76,20 @@ const WARM_POOL_MIN_PODS = parseInt(process.env.WARM_POOL_MIN_PODS || '2', 10)
 
 // Promoted pod GC: clean up orphaned/idle promoted pods
 const PROMOTED_POD_GC_ENABLED = process.env.PROMOTED_POD_GC_ENABLED !== 'false'
+
+// Periodic reconcile of promoted-but-orphaned pods. Disabled by default —
+// the per-callsite self-heal helper (apps/api/src/lib/warm-pool-self-heal.ts)
+// + the boot-time whoami discovery (packages/shared-runtime/src/self-assign.ts)
+// recover stuck pods on the next user request, so the reconciler is only
+// useful as a belt-and-suspenders for races where the runtime can't reach
+// the API at boot. Set `WARM_POOL_RECONCILE_PROMOTED=true` to opt in.
+const PROMOTED_POD_RECONCILE_ENABLED = process.env.WARM_POOL_RECONCILE_PROMOTED === 'true'
+// Run the reconciler every N reconcile cycles. With the default 30s
+// reconcile interval, every 4 cycles ≈ every 2 minutes. Tunable.
+const PROMOTED_POD_RECONCILE_INTERVAL_CYCLES = parseInt(
+  process.env.WARM_POOL_RECONCILE_PROMOTED_INTERVAL_CYCLES || '4',
+  10,
+)
 const PROMOTED_POD_IDLE_TIMEOUT_MS = parseInt(
   process.env.PROMOTED_POD_IDLE_TIMEOUT_MS || String(30 * 60 * 1000),
   10
@@ -475,6 +489,22 @@ export class WarmPoolController {
       console.error('[WarmPool] Promoted pod GC failed (non-fatal):', err.message)
     })
 
+    // Periodic sweep for promoted-but-orphaned pods. Opt-in.
+    if (
+      PROMOTED_POD_RECONCILE_ENABLED &&
+      this.reconcileCycleCount % PROMOTED_POD_RECONCILE_INTERVAL_CYCLES === 0
+    ) {
+      await this.reconcilePromotedPods()
+        .then((s) => {
+          if (s.stuck > 0 || s.evicted > 0) {
+            console.log(`[WarmPool] reconcilePromotedPods: scanned=${s.scanned} stuck=${s.stuck} evicted=${s.evicted} errors=${s.errors}`)
+          }
+        })
+        .catch((err) => {
+          console.error('[WarmPool] reconcilePromotedPods failed (non-fatal):', err.message)
+        })
+    }
+
     // Full namespace GC: sweep ALL Knative services (including cold-start projects)
     // Runs every N cycles to avoid hammering the K8s API on every 30s reconcile
     if (this.reconcileCycleCount % NAMESPACE_GC_INTERVAL_CYCLES === 0) {
@@ -776,17 +806,51 @@ export class WarmPoolController {
           console.error(`[WarmPool] Collision check failed (non-fatal):`, dbErr.message)
         }
 
-        // STEP 2: reconfigure the pod runtime for this project.
-        const response = await fetch(`${pod.url}/pool/assign`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ projectId, env: envVars }),
-          signal: AbortSignal.timeout(60000),
-        })
+        // STEP 2: reconfigure the pod runtime for this project. If this
+        // step fails, we MUST undo the metadata PATCH from step 1 —
+        // otherwise the ksvc keeps the `promoted` label + per-project
+        // labels even though the pod is still in pool mode, producing
+        // the "promoted-but-orphaned" failure mode (the 2026-05-13
+        // staging incident, where 184 ksvc were left in this state).
+        try {
+          const response = await fetch(`${pod.url}/pool/assign`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, env: envVars }),
+            signal: AbortSignal.timeout(60000),
+          })
 
-        if (!response.ok) {
-          const body = await response.text()
-          throw new Error(`Assignment failed (${response.status}): ${body}`)
+          if (!response.ok) {
+            const body = await response.text()
+            throw new Error(`Assignment failed (${response.status}): ${body}`)
+          }
+        } catch (postErr: any) {
+          // Best-effort label rollback. We use `null` to delete keys via
+          // the merge-patch contract. If the rollback PATCH itself fails
+          // (e.g. the ksvc is gone), the namespace GC will clean up the
+          // orphan eventually — we still rethrow the original POST error
+          // so the caller's retry loop fires.
+          try {
+            await mergePatchKnativeService(this.namespace, pod.serviceName, {
+              metadata: {
+                annotations: { 'shogo.io/assigned-project': null },
+                labels: {
+                  [POOL_STATUS_LABEL_KEY]: 'available',
+                  'shogo.io/project': null,
+                  [ACTIVE_LABEL_KEY]: 'false',
+                },
+              },
+            })
+            console.warn(
+              `[WarmPool] Rolled back labels on ${pod.serviceName} after /pool/assign failure for ${projectId}`,
+            )
+          } catch (rollbackErr: any) {
+            console.error(
+              `[WarmPool] Label rollback PATCH failed for ${pod.serviceName} (will be GC'd):`,
+              rollbackErr?.message || rollbackErr,
+            )
+          }
+          throw postErr
         }
 
         pod.assignedAt = Date.now()
@@ -1015,6 +1079,39 @@ export class WarmPoolController {
     const mode = deleteService ? 'hard-evicted' : 'soft-evicted (service kept)'
     console.log(`[WarmPool] evictProject: ${mode} project ${projectId} from ${oldServiceName || '(not found)'}`)
     return { evicted: !!oldServiceName, oldService: oldServiceName }
+  }
+
+  /**
+   * Cluster-wide sweep for "promoted-but-orphaned" warm-pool pods — ksvc
+   * whose K8s metadata says they are assigned to a project but whose
+   * runtime is still in pool mode (`/health` returns `poolMode: true`).
+   *
+   * Belt-and-suspenders for the per-callsite self-heal: a recreated pod
+   * normally recovers via the boot-time whoami fallback in
+   * `packages/shared-runtime/src/self-assign.ts`. This reconciler catches
+   * the residual case where the runtime can't reach the API at boot
+   * (transient DNS, API restart) and would otherwise stay stuck until a
+   * user request hits a self-heal-enabled callsite.
+   *
+   * Disabled by default — opt in with `WARM_POOL_RECONCILE_PROMOTED=true`.
+   */
+  async reconcilePromotedPods(): Promise<{ scanned: number; stuck: number; evicted: number; errors: number }> {
+    const { rescueStuckPromotedPods } = await import('./warm-pool-rescue')
+    const summary = await rescueStuckPromotedPods({
+      namespace: this.namespace,
+      dryRun: false,
+      mode: 'evict',
+      // Tighter timeouts than the CLI rescue script — this runs hot and we
+      // don't want to block the reconcile loop on a single hung pod.
+      healthTimeoutMs: 3_000,
+      logger: console,
+    })
+    return {
+      scanned: summary.scanned,
+      stuck: summary.stuck,
+      evicted: summary.evicted,
+      errors: summary.errors,
+    }
   }
 
   /**
@@ -1961,6 +2058,23 @@ export class WarmPoolController {
       ...extraEnvEntries,
       { name: 'SCHEMAS_PATH', value: '/app/.schemas' },
       { name: 'WARM_POOL_MODE', value: 'true' },
+      // KNATIVE_SERVICE_NAME exposes the pod's stable identity (the ksvc
+      // it belongs to) into the runtime via the Kubernetes Downward API.
+      // This survives container restarts, OOM kills, node drains, and
+      // any other event that wipes emptyDir, which is what makes the
+      // `whoami` self-discovery fallback in
+      // packages/shared-runtime/src/self-assign.ts work — without it
+      // a recreated pod has no way to learn which project it is supposed
+      // to be serving and stays stuck in pool mode forever (the
+      // 2026-05-13 staging incident).
+      {
+        name: 'KNATIVE_SERVICE_NAME',
+        valueFrom: {
+          fieldRef: {
+            fieldPath: "metadata.labels['serving.knative.dev/service']",
+          },
+        },
+      },
     ]
 
     // AI Proxy URL (no token yet — assigned later)

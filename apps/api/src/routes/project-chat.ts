@@ -946,19 +946,18 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             // Detect permanently broken pods: "RUNTIME_AUTH_SECRET not configured"
             // means the container restarted and lost its assignment. Evict after
             // a grace period to allow self-assign to complete on the pod.
-            const isPodMissingAuth = response.status === 401 && errorText.includes('RUNTIME_AUTH_SECRET not configured')
+            // Threshold is intentionally higher than other callers because the
+            // chat path sees transient 401s during normal warm-pool transitions.
             const EVICT_AFTER_ATTEMPTS = 8
-
-            if (isPodMissingAuth && attempt >= EVICT_AFTER_ATTEMPTS) {
-              console.error(`[ProjectChat] Pod for ${projectId} is permanently broken (no auth secret after ${attempt} attempts) — evicting`)
-              try {
-                const { getWarmPoolController } = await import('../lib/warm-pool-controller')
-                const warmPool = getWarmPoolController()
-                await warmPool.evictProject(projectId)
-                console.log(`[ProjectChat] Evicted broken pod for ${projectId} — next request will get a fresh assignment`)
-              } catch (evictErr: any) {
-                console.error(`[ProjectChat] Failed to evict broken pod for ${projectId}:`, evictErr.message)
-              }
+            const { evictIfPodMissingAuth } = await import('../lib/warm-pool-self-heal')
+            const evicted = await evictIfPodMissingAuth(
+              projectId,
+              response.status,
+              errorText,
+              attempt,
+              EVICT_AFTER_ATTEMPTS,
+            )
+            if (evicted) {
               return c.json(
                 { error: { code: "pod_restarted", message: "Your session pod restarted. Please try again — a fresh pod will be assigned automatically." } },
                 503 as any

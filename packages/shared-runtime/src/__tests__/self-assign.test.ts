@@ -27,6 +27,7 @@ describe('Self-Assign', () => {
     delete process.env.SHOGO_API_URL
     delete process.env.API_URL
     delete process.env.AI_PROXY_URL
+    delete process.env.KNATIVE_SERVICE_NAME
     process.env.SYSTEM_NAMESPACE = 'test-system'
   })
 
@@ -104,5 +105,138 @@ describe('Self-Assign', () => {
     const { checkSelfAssign } = await import('../self-assign')
     const result = await checkSelfAssign('http://api.test.local')
     expect(result).toBeNull()
+  })
+})
+
+describe('Self-Assign whoami fallback', () => {
+  beforeEach(() => {
+    mockFetch.mockClear()
+    process.env = { ...originalEnv }
+    delete process.env.ASSIGNED_PROJECT
+    delete process.env.SHOGO_API_URL
+    delete process.env.API_URL
+    delete process.env.AI_PROXY_URL
+    delete process.env.WORKSPACE_DIR
+    process.env.SYSTEM_NAMESPACE = 'test-system'
+    // Override the K8s SA token so the whoami branch can authenticate
+    // without touching /var/run/secrets/...
+    process.env.K8S_SA_TOKEN_OVERRIDE = 'fake-sa-token'
+  })
+
+  afterEach(() => {
+    process.env = { ...originalEnv }
+  })
+
+  test('skips whoami when KNATIVE_SERVICE_NAME is unset', async () => {
+    delete process.env.KNATIVE_SERVICE_NAME
+    const { discoverAssignedProject } = await import('../self-assign')
+    const result = await discoverAssignedProject(undefined, 'http://api.test.local')
+    expect(result).toBeNull()
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
+
+  test('discovers project via whoami when env + marker are absent', async () => {
+    process.env.KNATIVE_SERVICE_NAME = 'warm-pool-abc123'
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ projectId: 'recovered-project-id' }),
+    } as any)
+
+    const { discoverAssignedProject } = await import('../self-assign')
+    const result = await discoverAssignedProject(undefined, 'http://api.test.local')
+
+    expect(result).toBe('recovered-project-id')
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    const call = mockFetch.mock.calls[0]
+    expect(call[0]).toBe('http://api.test.local/api/internal/whoami/warm-pool-abc123')
+    const init = call[1] as { headers: Record<string, string> }
+    expect(init.headers.Authorization).toBe('Bearer fake-sa-token')
+  })
+
+  test('treats whoami 200 with projectId=null as not assigned', async () => {
+    process.env.KNATIVE_SERVICE_NAME = 'warm-pool-pool-only'
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ projectId: null }),
+    } as any)
+
+    const { discoverAssignedProject } = await import('../self-assign')
+    const result = await discoverAssignedProject(undefined, 'http://api.test.local')
+    expect(result).toBeNull()
+  })
+
+  test('returns null when whoami returns non-2xx', async () => {
+    process.env.KNATIVE_SERVICE_NAME = 'warm-pool-xyz'
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      text: () => Promise.resolve('boom'),
+    } as any)
+
+    const { discoverAssignedProject } = await import('../self-assign')
+    const result = await discoverAssignedProject(undefined, 'http://api.test.local')
+    expect(result).toBeNull()
+  })
+
+  test('returns null when whoami fetch throws', async () => {
+    process.env.KNATIVE_SERVICE_NAME = 'warm-pool-net-fail'
+    mockFetch.mockRejectedValueOnce(new Error('ECONNREFUSED'))
+
+    const { discoverAssignedProject } = await import('../self-assign')
+    const result = await discoverAssignedProject(undefined, 'http://api.test.local')
+    expect(result).toBeNull()
+  })
+
+  test('skips whoami when SA token is unavailable', async () => {
+    process.env.KNATIVE_SERVICE_NAME = 'warm-pool-no-token'
+    delete process.env.K8S_SA_TOKEN_OVERRIDE
+
+    const { discoverAssignedProject } = await import('../self-assign')
+    const result = await discoverAssignedProject(undefined, 'http://api.test.local')
+    expect(result).toBeNull()
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
+
+  test('ASSIGNED_PROJECT takes priority over whoami', async () => {
+    process.env.ASSIGNED_PROJECT = 'env-project'
+    process.env.KNATIVE_SERVICE_NAME = 'warm-pool-should-be-ignored'
+
+    const { discoverAssignedProject } = await import('../self-assign')
+    const result = await discoverAssignedProject(undefined, 'http://api.test.local')
+
+    expect(result).toBe('env-project')
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
+
+  test('checkSelfAssign uses whoami fallback then fetches pod-config', async () => {
+    process.env.KNATIVE_SERVICE_NAME = 'warm-pool-recover'
+    process.env.SHOGO_API_URL = 'http://api.test.local'
+    // First call: whoami → projectId. Second call: pod-config → env.
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ projectId: 'recovered' }),
+      } as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          projectId: 'recovered',
+          env: {
+            PROJECT_ID: 'recovered',
+            AI_PROXY_TOKEN: 'fresh',
+            RUNTIME_AUTH_SECRET: 'fresh-secret',
+          },
+        }),
+      } as any)
+
+    const { checkSelfAssign } = await import('../self-assign')
+    const result = await checkSelfAssign('http://api.test.local')
+
+    expect(result).not.toBeNull()
+    expect(result!.projectId).toBe('recovered')
+    expect(result!.env.RUNTIME_AUTH_SECRET).toBe('fresh-secret')
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    expect(mockFetch.mock.calls[0][0]).toBe('http://api.test.local/api/internal/whoami/warm-pool-recover')
+    expect(mockFetch.mock.calls[1][0]).toBe('http://api.test.local/api/internal/pod-config/recovered')
   })
 })

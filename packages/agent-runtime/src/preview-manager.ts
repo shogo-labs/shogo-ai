@@ -1272,10 +1272,29 @@ export class PreviewManager {
       recordedHash != null &&
       expectedHash === recordedHash
     ) {
-      console.log(`[${LOG_PREFIX}] install-marker matches package.json sha256 — skipping bun install`)
-      timings.install = 0
-      this._markDepsSettled()
-      return
+      // Trust-but-verify: the marker says "I installed for this exact
+      // package.json", but in cloud mode the marker survives in the
+      // workspace-archive S3 sync while `node_modules/` does NOT (it's
+      // excluded from the project tar and lives in a separate deps-cache
+      // pointer that only populates after a full install). If a pod
+      // installed deps, wrote the marker, crashed before uploading the
+      // deps cache, then got recycled — the next pod inherits the
+      // marker but starts with the warm-pool's Vite template
+      // `node_modules`. Hash matches, deps don't. Without this probe
+      // we'd silently skip install forever and ship a workspace where
+      // `expo`, `@react-three/fiber`, etc. are missing — exactly the
+      // failure mode seen on 9e7ecdc7-... in staging on 2026-05-13.
+      const missing = findMissingTopLevelDeps(installCwd)
+      if (missing.length === 0) {
+        console.log(`[${LOG_PREFIX}] install-marker matches package.json sha256 — skipping bun install`)
+        timings.install = 0
+        this._markDepsSettled()
+        return
+      }
+      console.log(
+        `[${LOG_PREFIX}] install-marker matches but ${missing.length} declared dep(s) missing from node_modules (${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ', …' : ''}) — marker is stale, running install`,
+      )
+      // fall through to install
     }
 
     // First-ever start with a pre-installed node_modules and no marker:
