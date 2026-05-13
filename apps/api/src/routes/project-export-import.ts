@@ -24,6 +24,7 @@ import {
   parseEnvFile,
   type EncryptedSecretsBlob,
 } from '../lib/bundle-crypto'
+import { deriveRuntimeToken } from '../lib/runtime-token'
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
@@ -1140,7 +1141,16 @@ export function projectExportImportRoutes() {
       try {
         const { getProjectPodUrl } = await import('../lib/knative-project-manager')
         const podUrl = await getProjectPodUrl(projectId)
-        const agent = new AgentClient({ baseUrl: podUrl })
+        // Pod-side workspace endpoints require the per-project runtime token —
+        // matches warm-pool-controller / heartbeat-scheduler / voice-context.
+        // Without this header the pod returns 401, the catch below flips
+        // sourceMode to `k8s-fallback-empty`, and the export ships with no
+        // workspace/* entries (including AGENTS.md / TOOLS.md / STACK.md /
+        // HEARTBEAT.md / MEMORY.md — the "Context Files").
+        const agent = new AgentClient({
+          baseUrl: podUrl,
+          headers: { 'x-runtime-token': deriveRuntimeToken(projectId) },
+        })
         const bundle: WorkspaceBundle = await agent.getWorkspaceBundle()
         const bundleFiles =
           bundle && typeof bundle === 'object' && bundle.files && typeof bundle.files === 'object'
