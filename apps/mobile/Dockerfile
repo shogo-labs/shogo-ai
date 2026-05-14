@@ -90,14 +90,28 @@ COPY packages/shared-app ./packages/shared-app
 COPY packages/shared-ui ./packages/shared-ui
 COPY packages/ui-kit ./packages/ui-kit
 COPY packages/model-catalog ./packages/model-catalog
+# Source for the SDK-split workspace packages — needed so the SDK
+# can resolve cross-package type imports (e.g. `import { ... } from
+# '@shogo-ai/core/chat-message'`) during its tsup `dts: true` pass.
+# Without these, the dts build fails with TS2307 even though the
+# bundled JS would have been fine (they are external in tsup).
+COPY packages/core ./packages/core
+COPY packages/agent ./packages/agent
+COPY packages/db ./packages/db
+COPY packages/email ./packages/email
+COPY packages/voice ./packages/voice
+COPY packages/cli ./packages/cli
 COPY packages/sdk ./packages/sdk
 
 # Copy the mobile app source
 COPY apps/mobile ./apps/mobile
 
-# Build SDK (Metro resolves @shogo-ai/sdk → dist/index.js)
-WORKDIR /app/packages/sdk
-RUN bun run build
+# Build the SDK and its split-out workspace deps in dependency
+# order (core → agent → db → email → voice → cli → sdk). Metro
+# resolves `@shogo-ai/sdk → dist/index.js` for the Expo web export,
+# and the SDK's tsup dts pass needs each dep's `dist/*.d.ts` first.
+WORKDIR /app
+RUN bun run build:packages
 
 # Build Expo web export (Metro bundler outputs to apps/mobile/dist/)
 WORKDIR /app/apps/mobile

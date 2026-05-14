@@ -76,12 +76,27 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 COPY packages/shared-runtime ./packages/shared-runtime
 COPY packages/agent-runtime ./packages/agent-runtime
 COPY packages/model-catalog ./packages/model-catalog
+# Source for the SDK-split workspace packages — needed so the SDK
+# can resolve cross-package type imports (e.g. `import { ... } from
+# '@shogo-ai/core/chat-message'`) during its tsup `dts: true` pass.
+# Without these, the dts build fails with TS2307 even though the
+# bundled JS would have been fine (they are external in tsup).
+COPY packages/core ./packages/core
+COPY packages/agent ./packages/agent
+COPY packages/db ./packages/db
+COPY packages/email ./packages/email
+COPY packages/voice ./packages/voice
+COPY packages/cli ./packages/cli
 COPY packages/sdk ./packages/sdk
 COPY templates/runtime-template ./templates/runtime-template
 
-# Build @shogo-ai/sdk — its package.json "exports" resolve to ./dist/*,
-# so agent-runtime's `import '@shogo-ai/sdk/memory'` fails at runtime without this.
-RUN cd packages/sdk && bun install && bun run build
+# Build @shogo-ai/sdk and its split-out workspace deps in
+# dependency order (core → agent → db → email → voice → cli →
+# sdk). The SDK's package.json "exports" resolve to ./dist/*, so
+# `import '@shogo-ai/sdk/memory'` fails at agent-runtime startup
+# without this; and the SDK's tsup dts pass needs each dep's
+# `dist/*.d.ts` to be present first.
+RUN bun run build:packages
 
 # Pre-install runtime-template dependencies so workspaces get node_modules instantly.
 # This is the **single** template the runtime now seeds — the legacy
