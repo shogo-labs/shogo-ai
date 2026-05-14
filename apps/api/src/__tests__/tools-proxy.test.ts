@@ -16,8 +16,58 @@
  * Run: bun test apps/api/src/__tests__/tools-proxy.test.ts
  */
 
-import { describe, test, expect } from 'bun:test'
+import { afterEach, beforeEach, describe, test, expect, mock } from 'bun:test'
 import { Hono } from 'hono'
+
+const resolveApiKeyMock = mock(async (_key: string) => null as any)
+
+mock.module('../routes/api-keys', () => ({
+  resolveApiKey: resolveApiKeyMock,
+}))
+
+const ENV_KEYS = [
+  'AI_PROXY_SECRET',
+  'COMPOSIO_API_KEY',
+  'SERPER_API_KEY',
+  'OPENAI_API_KEY',
+  'SHOGO_API_KEY',
+  'SHOGO_CLOUD_URL',
+  'LOCAL_LLM_BASE_URL',
+  'LOCAL_EMBEDDING_MODEL',
+  'LOCAL_EMBEDDING_DIMENSIONS',
+] as const
+let savedEnv: Record<string, string | undefined> = {}
+
+beforeEach(() => {
+  savedEnv = {}
+  for (const key of ENV_KEYS) {
+    savedEnv[key] = process.env[key]
+    delete process.env[key]
+  }
+  process.env.AI_PROXY_SECRET = 'tools-proxy-test-secret'
+  resolveApiKeyMock.mockClear()
+  resolveApiKeyMock.mockImplementation(async () => null)
+})
+
+afterEach(() => {
+  for (const key of ENV_KEYS) {
+    if (savedEnv[key] === undefined) delete process.env[key]
+    else process.env[key] = savedEnv[key]
+  }
+  delete (globalThis as any).fetch
+})
+
+async function makeToken() {
+  const { generateProxyToken } = await import('../lib/ai-proxy-token')
+  return generateProxyToken('project-1', 'workspace-1', 'user-1')
+}
+
+async function makeApp() {
+  const { toolsProxyRoutes } = await import('../routes/tools-proxy')
+  const app = new Hono()
+  app.route('/', toolsProxyRoutes())
+  return app
+}
 
 describe('Tools Proxy', () => {
   describe('Response header sanitization (ZlibError regression)', () => {
@@ -118,9 +168,7 @@ describe('Tools Proxy', () => {
 
   describe('Auth enforcement', () => {
     test('rejects requests without a token', async () => {
-      const { toolsProxyRoutes } = await import('../routes/tools-proxy')
-      const app = new Hono()
-      app.route('/', toolsProxyRoutes())
+      const app = await makeApp()
 
       const res = await app.request('/tools/composio/api/v3/toolkits')
       expect(res.status).toBe(401)
@@ -129,9 +177,7 @@ describe('Tools Proxy', () => {
     })
 
     test('rejects requests with an invalid token', async () => {
-      const { toolsProxyRoutes } = await import('../routes/tools-proxy')
-      const app = new Hono()
-      app.route('/', toolsProxyRoutes())
+      const app = await makeApp()
 
       const res = await app.request('/tools/composio/api/v3/toolkits', {
         headers: { 'x-api-key': 'invalid-token' },
@@ -139,6 +185,151 @@ describe('Tools Proxy', () => {
       expect(res.status).toBe(401)
       const body = await res.json() as any
       expect(body.error).toContain('Invalid or expired')
+    })
+  })
+
+  describe('Forwarding routes', () => {
+    test('returns 503 when the upstream API key is not configured locally', async () => {
+      const app = await makeApp()
+      const token = await makeToken()
+
+      const res = await app.request('/tools/composio/api/v3/toolkits', {
+        headers: { 'x-api-key': token },
+      })
+
+      expect(res.status).toBe(503)
+      expect(await res.json()).toEqual({
+        error: 'COMPOSIO_API_KEY not configured on API server',
+      })
+    })
+
+    test('forwards local Composio requests with sanitized request and response headers', async () => {
+      const app = await makeApp()
+      const token = await makeToken()
+      const calls: any[] = []
+      process.env.COMPOSIO_API_KEY = 'real-composio-key'
+      globalThis.fetch = (async (url: string, init: any) => {
+        calls.push({ url, init })
+        return new Response('ok', {
+          status: 201,
+          statusText: 'Created',
+          headers: {
+            'content-type': 'application/json',
+            'content-encoding': 'gzip',
+            'content-length': '123',
+            'x-upstream-id': 'req-1',
+          },
+        })
+      }) as any
+
+      const res = await app.request('/tools/composio/api/v3/toolkits?limit=1', {
+        headers: {
+          'x-api-key': token,
+          host: 'api.local',
+          'x-custom': 'keep-me',
+        },
+      })
+
+      expect(calls[0].url).toBe('https://backend.composio.dev/api/v3/toolkits?limit=1')
+      expect(calls[0].init.headers.get('x-api-key')).toBe('real-composio-key')
+      expect(calls[0].init.headers.get('x-custom')).toBe('keep-me')
+      expect(calls[0].init.headers.get('host')).toBeNull()
+      expect(res.status).toBe(201)
+      expect(res.headers.get('content-encoding')).toBeNull()
+      expect(res.headers.get('content-length')).toBeNull()
+      expect(res.headers.get('x-upstream-id')).toBe('req-1')
+    })
+
+    test('forwards to Shogo Cloud when SHOGO_API_KEY is configured', async () => {
+      const app = await makeApp()
+      const token = await makeToken()
+      const calls: any[] = []
+      process.env.SHOGO_API_KEY = 'shogo-cloud-key'
+      process.env.SHOGO_CLOUD_URL = 'https://cloud.example/'
+      globalThis.fetch = (async (url: string, init: any) => {
+        calls.push({ url, init })
+        return new Response('cloud-ok', { headers: { 'x-cloud': 'yes' } })
+      }) as any
+
+      const res = await app.request('/tools/serper/search?q=agents', {
+        headers: {
+          authorization: `Bearer ${token}`,
+          'x-original': 'present',
+        },
+      })
+
+      expect(calls[0].url).toBe('https://cloud.example/api/tools/serper/search?q=agents')
+      expect(calls[0].init.headers.get('Authorization')).toBe('Bearer shogo-cloud-key')
+      expect(calls[0].init.headers.get('x-original')).toBe('present')
+      expect(await res.text()).toBe('cloud-ok')
+    })
+
+    test('rewrites local OpenAI embedding requests to the configured local model', async () => {
+      const app = await makeApp()
+      const token = await makeToken()
+      const calls: any[] = []
+      process.env.LOCAL_LLM_BASE_URL = 'http://localhost:11434/'
+      process.env.LOCAL_EMBEDDING_MODEL = 'nomic-embed-text'
+      process.env.LOCAL_EMBEDDING_DIMENSIONS = '768'
+      globalThis.fetch = (async (url: string, init: any) => {
+        calls.push({ url, init })
+        return Response.json({ data: [] })
+      }) as any
+
+      const res = await app.request('/tools/openai/v1/embeddings', {
+        method: 'POST',
+        headers: {
+          'x-api-key': token,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ input: 'hello', model: 'ignored' }),
+      })
+
+      expect(calls[0].url).toBe('http://localhost:11434/v1/embeddings')
+      expect(JSON.parse(calls[0].init.body)).toEqual({
+        input: 'hello',
+        model: 'nomic-embed-text',
+        dimensions: 768,
+      })
+      expect(res.status).toBe(200)
+    })
+
+    test('falls back to streaming request body when local embedding JSON parse fails', async () => {
+      const app = await makeApp()
+      const token = await makeToken()
+      const calls: any[] = []
+      process.env.LOCAL_LLM_BASE_URL = 'http://localhost:11434'
+      process.env.LOCAL_EMBEDDING_MODEL = 'nomic-embed-text'
+      globalThis.fetch = (async (url: string, init: any) => {
+        calls.push({ url, init })
+        return Response.json({ data: [] })
+      }) as any
+
+      const res = await app.request('/tools/openai/v1/embeddings', {
+        method: 'POST',
+        headers: { 'x-api-key': token },
+        body: 'not-json',
+      })
+
+      expect(calls[0].url).toBe('http://localhost:11434/v1/embeddings')
+      expect(calls[0].init.body).toBeDefined()
+      expect(res.status).toBe(200)
+    })
+
+    test('accepts shogo_sk API keys as legacy proxy auth', async () => {
+      resolveApiKeyMock.mockImplementationOnce(async () => ({
+        userId: 'user-1',
+        workspaceId: 'workspace-1',
+      }))
+      const app = await makeApp()
+      process.env.SERPER_API_KEY = 'serper-key'
+      globalThis.fetch = (async () => Response.json({ ok: true })) as any
+
+      const res = await app.request('/tools/serper/search', {
+        headers: { 'x-api-key': 'shogo_sk_test' },
+      })
+
+      expect(res.status).toBe(200)
     })
   })
 })

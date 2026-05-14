@@ -29,6 +29,7 @@ delete process.env.SHOGO_VM_ISOLATION
 let projectFixture: { id: string; name: string; workspaceId: string } | null = {
   id: 'p-1', name: 'Test', workspaceId: 'w-1',
 }
+let memberFixture: { id: string } | null = { id: 'member-1' }
 
 mock.module('../lib/prisma', () => ({
   prisma: {
@@ -42,12 +43,16 @@ mock.module('../lib/prisma', () => ({
     chatMessage: { create: async (args: any) => ({ id: 'm-1', ...args.data }) },
     chatSession: { findUnique: async () => ({ id: 's-1' }) },
     toolCallLog: { createMany: async () => ({ count: 0 }) },
+    member: { findFirst: async () => memberFixture },
   },
 }))
 
+let hasBalanceResult = true
+let hasAdvancedModelAccessResult = true
 mock.module('../services/billing.service', () => ({
   consumeUsage: async () => ({ success: true, remainingIncludedUsd: 99 }),
-  hasBalance: async () => true,
+  hasBalance: async () => hasBalanceResult,
+  hasAdvancedModelAccess: async () => hasAdvancedModelAccessResult,
 }))
 
 mock.module('../services/git.service', () => ({
@@ -79,7 +84,7 @@ mock.module('../lib/runtime-token', () => ({
 }))
 
 mock.module('../lib/project-user-context', () => ({
-  setProjectUser: () => {},
+  setProjectUser: (projectId: string, userId: string) => { setProjectUserCalls.push({ projectId, userId }) },
   getProjectUser: () => null,
 }))
 
@@ -87,10 +92,13 @@ mock.module('../lib/project-user-context', () => ({
 let nextFetchResponse: () => Response = () =>
   new Response(JSON.stringify({ status: 'running' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
 let lastFetchUrl: string | null = null
+let lastFetchInit: RequestInit | undefined
+const setProjectUserCalls: Array<{ projectId: string; userId: string }> = []
 const originalFetch = globalThis.fetch
 beforeAll(() => {
-  globalThis.fetch = (async (input: any, _init?: RequestInit) => {
+  globalThis.fetch = (async (input: any, init?: RequestInit) => {
     lastFetchUrl = typeof input === 'string' ? input : input.url
+    lastFetchInit = init
     return nextFetchResponse() as any
   }) as any
 })
@@ -100,8 +108,13 @@ afterAll(() => {
 
 beforeEach(() => {
   projectFixture = { id: 'p-1', name: 'Test', workspaceId: 'w-1' }
+  memberFixture = { id: 'member-1' }
+  hasBalanceResult = true
+  hasAdvancedModelAccessResult = true
   resolvePodUrlResult = { url: 'http://runtime-p-1.local' }
   lastFetchUrl = null
+  lastFetchInit = undefined
+  setProjectUserCalls.length = 0
   nextFetchResponse = () =>
     new Response(JSON.stringify({ status: 'running' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
 })
@@ -120,6 +133,108 @@ function buildApp() {
   app.route('/api', projectChatRoutes({ runtimeManager }))
   return app
 }
+
+// =========================================================================
+// primary chat proxy
+// =========================================================================
+
+describe('POST /projects/:projectId/chat', () => {
+  test('404 when project does not exist', async () => {
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/projects/p-missing/chat', {
+      method: 'POST',
+      body: '{}',
+    }))
+    expect(res.status).toBe(404)
+  })
+
+  test('402 when the workspace has no remaining balance', async () => {
+    hasBalanceResult = false
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
+      method: 'POST',
+      body: '{}',
+    }))
+    expect(res.status).toBe(402)
+    expect((await res.json() as any).error.code).toBe('usage_limit_reached')
+  })
+
+  test('503 with pod_starting when runtime URL resolution times out', async () => {
+    resolvePodUrlResult = new Error('Timeout waiting for runtime')
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
+      method: 'POST',
+      body: '{}',
+    }))
+
+    expect(res.status).toBe(503)
+    const body = await res.json() as any
+    expect(body.error.code).toBe('pod_starting')
+    expect(body.error.retryable).toBe(true)
+  })
+
+  test('streams a successful runtime response with trusted billing user and model downgrade', async () => {
+    hasAdvancedModelAccessResult = false
+    nextFetchResponse = () => new Response('data: {"type":"text","text":"hi"}\n\n', {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Content-Length': '999',
+        'X-Turn-Id': 'turn-1',
+      },
+    })
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer user-session',
+        'X-Session-Id': 'session-1',
+      },
+      body: JSON.stringify({
+        chatSessionId: 'chat-1',
+        userId: 'user-1',
+        agentMode: 'advanced',
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    }))
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Length')).toBeNull()
+    expect(res.headers.get('X-Turn-Id')).toBe('turn-1')
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*')
+    expect(await res.text()).toContain('data:')
+    expect(lastFetchUrl).toBe('http://runtime-p-1.local/agent/chat')
+    const headers = new Headers(lastFetchInit?.headers)
+    expect(headers.get('Authorization')).toBe('Bearer user-session')
+    expect(headers.get('X-Session-Id')).toBe('session-1')
+    expect(headers.get('X-Billing-User-Id')).toBe('user-1')
+    expect(headers.get('X-User-Id')).toBe('user-1')
+    expect(headers.get('x-runtime-token')).toBe('tok-1')
+    expect(JSON.parse(String(lastFetchInit?.body)).agentMode).toBe('claude-haiku-4-5-20251001')
+    expect(setProjectUserCalls).toEqual([{ projectId: 'p-1', userId: 'user-1' }])
+  })
+
+  test('does not forward X-User-Id when claimed user is not a workspace member', async () => {
+    memberFixture = null
+    nextFetchResponse = () => new Response('data: ok\n\n', {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Billing-User-Id': 'outsider' },
+      body: JSON.stringify({ chatSessionId: 'chat-1', messages: [] }),
+    }))
+
+    expect(res.status).toBe(200)
+    await res.text()
+    const headers = new Headers(lastFetchInit?.headers)
+    expect(headers.get('X-Billing-User-Id')).toBe('outsider')
+    expect(headers.get('X-User-Id')).toBeNull()
+  })
+})
 
 // =========================================================================
 // stream proxy

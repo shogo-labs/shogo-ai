@@ -35,6 +35,12 @@ let customGetError: any = null
 let customListResponse: any = { items: [] }
 let createConflict = false
 let deleteNotFound = false
+let projectRecordResponse: any = null
+let workspaceInstanceSize = 'small'
+let queryRawRows: any[] = [{ acquired: true }]
+const executeRawCalls: string[] = []
+const projectUpdateCalls: any[] = []
+let warmPoolMock: any
 
 mock.module('@kubernetes/client-node', () => withK8sExports({
   CustomObjectsApi: {
@@ -82,8 +88,28 @@ let projectKnativeServiceName: string | null = null
 mock.module('../lib/prisma', () => withPrismaExports({
   prisma: {
     project: {
-      findUnique: async () => ({ knativeServiceName: projectKnativeServiceName }),
-      update: async () => ({}),
+      findUnique: async (args: any) => {
+        const select = args?.select ?? {}
+        if ('templateId' in select || 'settings' in select || 'workspace' in select) {
+          return projectRecordResponse
+        }
+        if ('workspaceId' in select && !('knativeServiceName' in select)) {
+          return { workspaceId: projectRecordResponse?.workspaceId ?? 'ws-1' }
+        }
+        return { knativeServiceName: projectKnativeServiceName }
+      },
+      update: async (args: any) => {
+        projectUpdateCalls.push(args)
+        return {}
+      },
+    },
+    workspace: {
+      findUnique: async () => ({ instanceSize: workspaceInstanceSize }),
+    },
+    $queryRawUnsafe: async () => queryRawRows,
+    $executeRawUnsafe: async (sql: string) => {
+      executeRawCalls.push(sql)
+      return 1
     },
   },
 }))
@@ -99,12 +125,32 @@ mock.module('../services/database.service', () => ({
   getDatabaseUrl: () => null,
 }))
 
-mock.module('./ai-proxy-token', () => ({
+mock.module('../lib/ai-proxy-token', () => ({
   generateProxyToken: async () => 'proxy-token-test',
 }))
 
+mock.module('../lib/project-user-context', () => ({
+  getProjectOwnerUserId: async () => 'owner-user-test',
+}))
+
+mock.module('../services/instance.service', () => ({
+  buildProjectResourceOverrides: (_workspaceId: string, size: string) => ({
+    requests: { memory: `${size}-request-memory`, cpu: `${size}-request-cpu` },
+    limits: { memory: `${size}-limit-memory`, cpu: `${size}-limit-cpu` },
+    diskSizeLimit: `${size}-disk`,
+    minScale: 2,
+  }),
+}))
+
+mock.module('../config/instance-sizes', () => ({
+  applyTechStackFloor: (_size: string, techStackId: string | null) =>
+    techStackId === 'expo-app' ? 'mobile-floor' : 'small',
+  getMobileDiskSizeLimit: (size: string) => `${size}-mobile-disk`,
+  isMobileTechStack: (techStackId: string | null) => techStackId === 'expo-app',
+}))
+
 mock.module('../lib/warm-pool-controller', () => ({
-  getWarmPoolController: () => ({ tryClaimWarmPod: async () => null }),
+  getWarmPoolController: () => warmPoolMock,
 }))
 
 // Stub `fetch` so `mergePatchKnativeService`, `updatePreviewDomainMapping`,
@@ -128,6 +174,19 @@ beforeEach(() => {
   createConflict = false
   deleteNotFound = false
   projectKnativeServiceName = null
+  projectRecordResponse = null
+  workspaceInstanceSize = 'small'
+  queryRawRows = [{ acquired: true }]
+  executeRawCalls.length = 0
+  projectUpdateCalls.length = 0
+  warmPoolMock = {
+    getAssignedPod: () => null,
+    getStatus: () => ({ enabled: false }),
+    buildProjectEnv: async () => ({ PROJECT_ID: 'p1' }),
+    claim: () => null,
+    assign: async () => {},
+    evictProject: async () => ({ evicted: true }),
+  }
   nextFetch = () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
 })
 
@@ -440,6 +499,171 @@ describe('scaleProject', () => {
 })
 
 // =========================================================================
+// buildKnativeService / patchProjectResources
+// =========================================================================
+
+describe('buildKnativeService / patchProjectResources', () => {
+  test('builds runtime service env, resources, S3 sync, and runtime auth tokens', async () => {
+    process.env.BETTER_AUTH_URL = 'https://studio.example'
+    process.env.SHOGO_PUBLIC_API_URL = 'https://api-public.example'
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://otel.example'
+    projectRecordResponse = {
+      templateId: 'template-a',
+      name: 'Agent Name',
+      workspaceId: 'ws-1',
+      settings: { techStackId: 'expo-app' },
+      workspace: { composioScope: 'project' },
+    }
+    workspaceInstanceSize = 'micro'
+    const mgr = new KnativeProjectManager({
+      s3WorkspacesBucket: 'workspace-bucket',
+      s3Region: 'us-west-2',
+      s3Endpoint: 'https://s3.example',
+      s3ForcePathStyle: true,
+    })
+
+    try {
+      const service = await (mgr as any).buildKnativeService('p1')
+      const container = service.spec.template.spec.containers[0]
+      const env = Object.fromEntries(container.env.filter((e: any) => 'value' in e).map((e: any) => [e.name, e.value]))
+
+      expect(service.metadata.name).toBe('project-p1')
+      expect(env.TEMPLATE_ID).toBe('template-a')
+      expect(env.AGENT_NAME).toBe('Agent Name')
+      expect(env.WORKSPACE_ID).toBe('ws-1')
+      expect(env.COMPOSIO_USER_SCOPE).toBe('project')
+      expect(env.AI_PROXY_URL).toBe('http://api.shogo-system.svc.cluster.local/api/ai/v1')
+      expect(env.TOOLS_PROXY_URL).toBe('http://api.shogo-system.svc.cluster.local/api/tools')
+      expect(env.AI_PROXY_TOKEN).toBe('proxy-token-test')
+      expect(env.BETTER_AUTH_URL).toBe('https://studio.example')
+      expect(env.SHOGO_PUBLIC_API_URL).toBe('https://api-public.example')
+      expect(env.S3_WORKSPACES_BUCKET).toBe('workspace-bucket')
+      expect(env.S3_ENDPOINT).toBe('https://s3.example')
+      expect(env.S3_FORCE_PATH_STYLE).toBe('true')
+      expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBe('https://otel.example')
+      expect(container.resources).toEqual({
+        requests: { memory: 'mobile-floor-request-memory', cpu: 'mobile-floor-request-cpu' },
+        limits: { memory: 'mobile-floor-limit-memory', cpu: 'mobile-floor-limit-cpu' },
+      })
+      expect(service.spec.template.spec.volumes[0].emptyDir.sizeLimit).toBe('mobile-floor-mobile-disk')
+      expect(service.spec.template.metadata.annotations['autoscaling.knative.dev/min-scale']).toBe('2')
+    } finally {
+      delete process.env.BETTER_AUTH_URL
+      delete process.env.SHOGO_PUBLIC_API_URL
+      delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+    }
+  })
+
+  test('patchProjectResources updates resources, disk size, min-scale, and removes legacy scheduling', async () => {
+    customGetResponse = {
+      spec: {
+        template: {
+          metadata: { annotations: { 'autoscaling.knative.dev/min-scale': '1' } },
+          spec: {
+            containers: [{ resources: {} }],
+            volumes: [{ name: 'project-data', emptyDir: { sizeLimit: '2Gi' } }],
+            nodeSelector: { dedicated: 'legacy' },
+            tolerations: [{ key: 'legacy' }],
+          },
+        },
+      },
+    }
+    const mgr = new KnativeProjectManager()
+
+    await mgr.patchProjectResources('p1', {
+      requests: { memory: '1Gi', cpu: '250m' },
+      limits: { memory: '2Gi', cpu: '1' },
+      diskSizeLimit: '10Gi',
+      minScale: 0,
+    })
+
+    const replace = capture.find((c) => c.method === 'replaceNamespacedCustomObject')
+    const body = replace!.args[0].body
+    expect(body.spec.template.spec.containers[0].resources).toEqual({
+      requests: { memory: '1Gi', cpu: '250m' },
+      limits: { memory: '2Gi', cpu: '1' },
+    })
+    expect(body.spec.template.spec.volumes[0].emptyDir.sizeLimit).toBe('10Gi')
+    expect(body.spec.template.metadata.annotations['autoscaling.knative.dev/min-scale']).toBe('0')
+    expect(body.spec.template.spec.nodeSelector).toBeUndefined()
+    expect(body.spec.template.spec.tolerations).toBeUndefined()
+  })
+
+  test('patchProjectResources returns on missing services and no-container services', async () => {
+    customGetError = { response: { statusCode: 404 } }
+    const mgr = new KnativeProjectManager()
+    await expect(mgr.patchProjectResources('missing', {})).resolves.toBeUndefined()
+
+    customGetError = null
+    customGetResponse = { spec: { template: { spec: { containers: [] } } } }
+    await expect(mgr.patchProjectResources('no-container', {})).resolves.toBeUndefined()
+  })
+})
+
+// =========================================================================
+// Published services and mappings
+// =========================================================================
+
+describe('published service helpers', () => {
+  test('createPublishedService creates nginx static service and returns cluster URL', async () => {
+    process.env.PUBLISH_BUCKET = 'published-bucket'
+    const mgr = new KnativeProjectManager({
+      s3Region: 'eu-west-1',
+      s3Endpoint: 'https://s3.internal',
+    })
+    try {
+      const url = await mgr.createPublishedService('p1', 'my-app')
+      const create = capture.find((c) => c.method === 'createNamespacedCustomObject')
+      const body = create!.args[0].body
+      expect(url).toBe('http://published-p1.shogo-test.svc.cluster.local')
+      expect(body.metadata.name).toBe('published-p1')
+      expect(body.spec.template.spec.initContainers[0].command[2]).toContain('s3://published-bucket/my-app/')
+      expect(body.spec.template.spec.initContainers[0].env).toContainEqual({
+        name: 'AWS_ENDPOINT_URL',
+        value: 'https://s3.internal',
+      })
+      expect(body.spec.template.spec.containers[0].image).toBe('nginx:alpine')
+    } finally {
+      delete process.env.PUBLISH_BUCKET
+    }
+  })
+
+  test('createPublishedService replaces on AlreadyExists conflicts', async () => {
+    createConflict = true
+    const mgr = new KnativeProjectManager()
+
+    await mgr.createPublishedService('p1', 'my-app')
+
+    expect(capture.some((c) => c.method === 'replaceNamespacedCustomObject')).toBe(true)
+  })
+
+  test('published domain and revision helpers issue expected Kubernetes mutations', async () => {
+    process.env.PUBLISH_DOMAIN = 'apps.example'
+    let patchUrl = ''
+    globalThis.fetch = (async (input: any) => {
+      patchUrl = typeof input === 'string' ? input : input.url
+      return new Response('{}', { status: 200 }) as any
+    }) as any
+    const mgr = new KnativeProjectManager()
+
+    try {
+      await mgr.createPublishedDomainMapping('my-app', 'p1')
+      expect(capture.find((c) => c.method === 'createNamespacedCustomObject')!.args[0].body.metadata.name).toBe('my-app.apps.example')
+
+      await mgr.forcePublishedRevision('p1')
+      expect(patchUrl).toContain('/services/published-p1')
+
+      await mgr.deletePublishedDomainMapping('my-app')
+      await mgr.deletePublishedService('p1')
+      expect(capture.filter((c) => c.method === 'deleteNamespacedCustomObject').length).toBeGreaterThanOrEqual(2)
+    } finally {
+      delete process.env.PUBLISH_DOMAIN
+      globalThis.fetch = (async () => nextFetch() as any) as any
+    }
+  })
+})
+
+// =========================================================================
 // healthCheck
 // =========================================================================
 
@@ -501,5 +725,64 @@ describe('getProjectPodUrl (module-level helper)', () => {
     } finally {
       process.env.KUBERNETES_SERVICE_HOST = saved
     }
+  })
+
+  test('claims and assigns a warm pod when no DB mapping or legacy service exists', async () => {
+    customGetError = Object.assign(new Error('not found'), { code: 404 })
+    const pod = {
+      id: 'warm-1',
+      serviceName: 'warm-pod-1',
+      url: 'http://warm-pod-1.shogo-test.svc.cluster.local',
+      ready: true,
+      createdAt: Date.now(),
+    }
+    const assignCalls: any[] = []
+    warmPoolMock = {
+      getAssignedPod: () => null,
+      getStatus: () => ({ enabled: true }),
+      buildProjectEnv: async (projectId: string) => ({ PROJECT_ID: projectId, EXTRA: '1' }),
+      claim: () => pod,
+      assign: async (...args: any[]) => { assignCalls.push(args) },
+      evictProject: async () => ({ evicted: true }),
+    }
+
+    const url = await getProjectPodUrl('p-warm')
+
+    expect(url).toBe(pod.url)
+    expect(assignCalls[0]).toEqual([pod, 'p-warm', { PROJECT_ID: 'p-warm', EXTRA: '1' }])
+    expect(executeRawCalls).toContain('SELECT pg_advisory_unlock($1)')
+    expect(capture.some((c) => c.method === 'createNamespacedCustomObject' && c.args[0].plural === 'domainmappings')).toBe(true)
+  })
+
+  test('returns a recent assigned warm pod without probing health', async () => {
+    const assigned = {
+      id: 'warm-2',
+      serviceName: 'warm-pod-2',
+      url: 'http://warm-pod-2.shogo-test.svc.cluster.local',
+      ready: true,
+      createdAt: Date.now(),
+      assignedAt: Date.now(),
+    }
+    warmPoolMock = {
+      ...warmPoolMock,
+      getAssignedPod: () => assigned,
+    }
+
+    const url = await getProjectPodUrl('p-assigned')
+
+    expect(url).toBe(assigned.url)
+    expect(capture).toEqual([])
+  })
+
+  test('uses DB knativeServiceName mapping when mapped service still exists', async () => {
+    projectKnativeServiceName = 'warm-db-1'
+    customGetResponse = {
+      status: { conditions: [{ type: 'Ready', status: 'True' }], actualReplicas: 1 },
+      metadata: { generation: 1 },
+    }
+
+    const url = await getProjectPodUrl('p-db')
+
+    expect(url).toBe('http://warm-db-1.shogo-test.svc.cluster.local')
   })
 })

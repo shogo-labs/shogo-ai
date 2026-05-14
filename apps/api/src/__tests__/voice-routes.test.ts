@@ -34,6 +34,8 @@ const WORKSPACE = 'ws-1'
 let voiceCfg: any = null
 let calls: any[] = []
 let events: any[] = []
+let voiceCallCreateError: Error | null = null
+const voiceCallCreates: any[] = []
 
 const mockPrisma = {
   project: {
@@ -64,6 +66,11 @@ const mockPrisma = {
     }),
   },
   voiceCallMeter: {
+    create: mock(async (args: any) => {
+      voiceCallCreates.push(args)
+      if (voiceCallCreateError) throw voiceCallCreateError
+      return { id: 'meter-new', ...args.data }
+    }),
     findMany: mock(async () => calls),
     findFirst: mock(async ({ where }: any) => {
       const callId = where?.OR?.[0]?.id ?? null
@@ -84,10 +91,16 @@ mock.module('../routes/api-keys', () => ({
 }))
 
 // ElevenLabs / Twilio / agent-runtime persona stubs.
+let outboundCallResult: any = { callSid: 'CA_out', conversationId: 'conv_out' }
+let outboundCallError: Error | null = null
 class MockElevenLabsClient {
   constructor(_cfg: any) {}
   async getSignedUrl(_id: string) { return 'wss://mock/x' }
   async deletePhoneNumber(_id: string) { return undefined }
+  async outboundCall(_args: any) {
+    if (outboundCallError) throw outboundCallError
+    return outboundCallResult
+  }
 }
 mock.module('@shogo-ai/sdk/voice', () => ({ ElevenLabsClient: MockElevenLabsClient }))
 mock.module('@shogo/agent-runtime/src/voice-mode/translator-persona', () => ({
@@ -104,8 +117,9 @@ mock.module('../lib/twilio', () => ({
   verifyTwilioSignature: () => twilioSigOk,
 }))
 
+let usdBalance = 999
 mock.module('../lib/voice-cost', () => ({
-  getUsdBalance: async () => 999,
+  getUsdBalance: async () => usdBalance,
   resolvePlanIdForWorkspace: async () => 'plan_test',
   resolveVoiceRate: () => 0,
   calculateVoiceMinuteCost: () => ({ billedMinutes: 1, rawUsd: 0.1, billedUsd: 0.2, rawUsdPerMinute: 0.1, billedUsdPerMinute: 0.2 }),
@@ -155,9 +169,15 @@ beforeEach(() => {
   twilioResolve = { error: 'unconfigured' }
   twilioSigOk = true
   elSigOk = true
+  usdBalance = 999
+  outboundCallResult = { callSid: 'CA_out', conversationId: 'conv_out' }
+  outboundCallError = null
+  voiceCallCreateError = null
+  voiceCallCreates.length = 0
   mockPrisma.voiceProjectConfig.findUnique.mockClear()
   mockPrisma.voiceProjectConfig.findFirst.mockClear()
   mockPrisma.voiceProjectConfig.update.mockClear()
+  mockPrisma.voiceCallMeter.create.mockClear()
   mockPrisma.voiceCallMeter.findMany.mockClear()
   mockPrisma.voiceCallMeter.findFirst.mockClear()
   mockPrisma.usageEvent.findMany.mockClear()
@@ -205,6 +225,105 @@ describe('GET /voice/config/:projectId', () => {
     const app = buildApp()
     const res = await app.request(`/api/voice/config/${PROJECT}`)
     expect(res.status).toBe(401)
+  })
+})
+
+// =========================================================================
+// /voice/twilio/outbound/:projectId
+// =========================================================================
+
+describe('POST /voice/twilio/outbound/:projectId', () => {
+  test('rejects invalid JSON and invalid destination numbers', async () => {
+    const app = buildApp()
+    const invalidJson = await app.request(`/api/voice/twilio/outbound/${PROJECT}`, {
+      method: 'POST',
+      headers: { 'x-runtime-token': TOKEN },
+      body: '{',
+    })
+    expect(invalidJson.status).toBe(400)
+
+    const badNumber = await app.request(`/api/voice/twilio/outbound/${PROJECT}`, {
+      method: 'POST',
+      headers: { 'x-runtime-token': TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: 'abc' }),
+    })
+    expect(badNumber.status).toBe(400)
+    expect((await badNumber.json() as any).error.code).toBe('invalid_to_number')
+  })
+
+  test('rejects when the project has no provisioned phone number', async () => {
+    voiceCfg = { projectId: PROJECT, elevenlabsPhoneId: null, elevenlabsAgentId: null }
+    const app = buildApp()
+    const res = await app.request(`/api/voice/twilio/outbound/${PROJECT}`, {
+      method: 'POST',
+      headers: { 'x-runtime-token': TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: '+15551234567' }),
+    })
+
+    expect(res.status).toBe(409)
+    expect((await res.json() as any).error.code).toBe('no_number')
+  })
+
+  test('rejects when available usage balance cannot cover one outbound minute', async () => {
+    voiceCfg = { projectId: PROJECT, elevenlabsPhoneId: 'el-phone', elevenlabsAgentId: 'agent-1' }
+    usdBalance = 0
+    const app = buildApp()
+    const res = await app.request(`/api/voice/twilio/outbound/${PROJECT}`, {
+      method: 'POST',
+      headers: { 'x-runtime-token': TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: '+15551234567' }),
+    })
+
+    expect(res.status).toBe(402)
+    const body = await res.json() as any
+    expect(body.error.code).toBe('usage_limit_reached')
+    expect(body.error.availableUsd).toBe(0)
+  })
+
+  test('places an outbound call, pre-seeds the meter, and returns estimated cost', async () => {
+    voiceCfg = { projectId: PROJECT, elevenlabsPhoneId: 'el-phone', elevenlabsAgentId: 'agent-1' }
+    const app = buildApp()
+    const res = await app.request(`/api/voice/twilio/outbound/${PROJECT}`, {
+      method: 'POST',
+      headers: { 'x-runtime-token': TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: '+1 (555) 123-4567', dynamicVariables: { name: 'Ada' } }),
+    })
+
+    expect(res.status).toBe(200)
+    const body = await res.json() as any
+    expect(body.callSid).toBe('CA_out')
+    expect(body.conversationId).toBe('conv_out')
+    expect(body.estimatedBilledUsd).toBe(0.2)
+    expect(voiceCallCreates[0].data).toMatchObject({
+      projectId: PROJECT,
+      workspaceId: WORKSPACE,
+      conversationId: 'conv_out',
+      callSid: 'CA_out',
+      direction: 'outbound',
+      durationSeconds: 0,
+    })
+  })
+
+  test('still returns success if pre-seeding the meter fails, and maps outbound API errors to 502', async () => {
+    voiceCfg = { projectId: PROJECT, elevenlabsPhoneId: 'el-phone', elevenlabsAgentId: 'agent-1' }
+    voiceCallCreateError = new Error('db down')
+    const app = buildApp()
+    const success = await app.request(`/api/voice/twilio/outbound/${PROJECT}`, {
+      method: 'POST',
+      headers: { 'x-runtime-token': TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: '+15551234567' }),
+    })
+    expect(success.status).toBe(200)
+
+    voiceCallCreateError = null
+    outboundCallError = new Error('EL unavailable')
+    const failed = await app.request(`/api/voice/twilio/outbound/${PROJECT}`, {
+      method: 'POST',
+      headers: { 'x-runtime-token': TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: '+15551234567' }),
+    })
+    expect(failed.status).toBe(502)
+    expect((await failed.json() as any).detail).toBe('EL unavailable')
   })
 })
 

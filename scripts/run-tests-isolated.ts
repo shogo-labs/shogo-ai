@@ -121,6 +121,12 @@ function runOneSync(
   const childEnv = { ...process.env }
   delete childEnv.SHOGO_LOCAL_MODE
   delete childEnv.DATABASE_URL
+  // AI_PROXY_URL is inherited from the Shogo desktop app shell and
+  // makes modules that call configureAIProxy() at load time FATAL when
+  // AI_PROXY_TOKEN is missing. See run-all-tests.ts for the longer
+  // explanation. Drop both for test processes.
+  delete childEnv.AI_PROXY_URL
+  delete childEnv.AI_PROXY_TOKEN
   // `--no-env-file` must come BEFORE `test` (it's a runtime flag, not
   // a test-runner flag).
   const procArgs = ['--no-env-file', ...args]
@@ -194,6 +200,8 @@ function runOneAsync(
     const childEnv = { ...process.env }
     delete childEnv.SHOGO_LOCAL_MODE
     delete childEnv.DATABASE_URL
+    delete childEnv.AI_PROXY_URL
+    delete childEnv.AI_PROXY_TOKEN
     const procArgs = ['--no-env-file', 'test', relFile, ...extraArgs]
     const proc = spawn('bun', procArgs, { env: childEnv, cwd })
 

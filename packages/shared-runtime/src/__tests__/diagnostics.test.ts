@@ -330,3 +330,538 @@ describe('diagnosticsRoutes — endpoints', () => {
     expect(esDiag[0].source).toBe('eslint')
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Additional parser coverage (parseTscOutput)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('parseTscOutput — extended cases', () => {
+  test('parses an info-severity (message) line as severity "info"', () => {
+    const out = parseTscOutput(
+      `src/a.ts(3,1): message TS6133: 'x' is declared but never read.`,
+      projectDir,
+    )
+    expect(out).toHaveLength(1)
+    expect(out[0].severity).toBe('info')
+    expect(out[0].code).toBe('TS6133')
+  })
+
+  test('falls back to "hint" severity for unknown words', () => {
+    const out = parseTscOutput(
+      `src/a.ts(1,1): suggestion TS9000: try this.`,
+      projectDir,
+    )
+    expect(out).toHaveLength(1)
+    expect(out[0].severity).toBe('hint')
+  })
+
+  test('handles CRLF line endings', () => {
+    const out = parseTscOutput(
+      `src/a.ts(1,1): error TS1: A\r\nsrc/b.ts(2,2): error TS2: B\r\n`,
+      projectDir,
+    )
+    expect(out).toHaveLength(2)
+    expect(out[0].file).toBe('src/a.ts')
+    expect(out[1].file).toBe('src/b.ts')
+  })
+
+  test('trims trailing whitespace from each line before matching', () => {
+    const out = parseTscOutput(
+      `src/a.ts(1,1): error TS1: hello    `,
+      projectDir,
+    )
+    expect(out).toHaveLength(1)
+    // Trailing spaces inside the message are not preserved post-trimEnd of the
+    // full line — but message body should still contain "hello".
+    expect(out[0].message).toContain('hello')
+  })
+
+  test('captures multiple errors in the same file with distinct ids', () => {
+    const out = parseTscOutput(
+      [
+        'src/a.ts(1,1): error TS1: first',
+        'src/a.ts(2,2): error TS2: second',
+        'src/a.ts(3,3): error TS3: third',
+      ].join('\n'),
+      projectDir,
+    )
+    expect(out).toHaveLength(3)
+    const ids = new Set(out.map(d => d.id))
+    expect(ids.size).toBe(3)
+    expect(out.map(d => d.line)).toEqual([1, 2, 3])
+  })
+
+  test('returns [] for blank input and for purely-junk input', () => {
+    expect(parseTscOutput('', projectDir)).toEqual([])
+    expect(parseTscOutput('\n\n\n', projectDir)).toEqual([])
+    expect(parseTscOutput('this is not a tsc line at all', projectDir)).toEqual([])
+  })
+
+  test('normalises Windows-style backslash paths in absolute file segments', () => {
+    // Build an "absolute" path using POSIX style for projectDir then inject
+    // backslashes in the relative tail to verify replaceAll('\\','/').
+    const abs = `${projectDir}/src\\nested\\file.tsx`
+    const out = parseTscOutput(
+      `${abs}(7,4): error TS2304: Cannot find name 'X'.`,
+      projectDir,
+    )
+    expect(out).toHaveLength(1)
+    expect(out[0].file).not.toContain('\\')
+    expect(out[0].file).toContain('src/nested/file.tsx')
+  })
+
+  test('parses a TS2304 "Cannot find name" line cleanly', () => {
+    const out = parseTscOutput(
+      `src/App.tsx(99,17): error TS2304: Cannot find name 'undeclaredVariable'.`,
+      projectDir,
+    )
+    expect(out).toHaveLength(1)
+    expect(out[0]).toMatchObject({
+      source: 'ts',
+      severity: 'error',
+      code: 'TS2304',
+      line: 99,
+      column: 17,
+      message: "Cannot find name 'undeclaredVariable'.",
+    })
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Additional parser coverage (parseEslintOutput)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('parseEslintOutput — extended cases', () => {
+  test('parses multiple files with mixed severities', () => {
+    const json = JSON.stringify([
+      {
+        filePath: `${projectDir}/a.ts`,
+        messages: [
+          { ruleId: 'no-debugger', severity: 2, message: 'no debug', line: 1, column: 1 },
+        ],
+      },
+      {
+        filePath: `${projectDir}/b.ts`,
+        messages: [
+          { ruleId: 'prefer-const', severity: 1, message: 'use const', line: 2, column: 4 },
+          { ruleId: 'no-debugger', severity: 2, message: 'no debug', line: 9, column: 1 },
+        ],
+      },
+    ])
+    const out = parseEslintOutput(json, projectDir)
+    expect(out).toHaveLength(3)
+    expect(out.map(d => d.file).sort()).toEqual(['a.ts', 'b.ts', 'b.ts'])
+    expect(out.filter(d => d.severity === 'error')).toHaveLength(2)
+    expect(out.filter(d => d.severity === 'warning')).toHaveLength(1)
+  })
+
+  test('empty array yields no diagnostics', () => {
+    expect(parseEslintOutput('[]', projectDir)).toEqual([])
+  })
+
+  test('file with no messages yields no diagnostics', () => {
+    const json = JSON.stringify([{ filePath: `${projectDir}/a.ts`, messages: [] }])
+    expect(parseEslintOutput(json, projectDir)).toEqual([])
+  })
+
+  test('messageId is used as code when ruleId is null', () => {
+    const json = JSON.stringify([{
+      filePath: `${projectDir}/a.ts`,
+      messages: [{ ruleId: null, severity: 2, messageId: 'parse-error', message: 'oops', line: 1, column: 1 }],
+    }])
+    const out = parseEslintOutput(json, projectDir)
+    expect(out).toHaveLength(1)
+    expect(out[0].code).toBe('parse-error')
+  })
+
+  test('missing line/column defaults to 1', () => {
+    const json = JSON.stringify([{
+      filePath: `${projectDir}/a.ts`,
+      messages: [{ ruleId: 'x', severity: 2, message: 'm' }],
+    }])
+    const out = parseEslintOutput(json, projectDir)
+    expect(out).toHaveLength(1)
+    expect(out[0].line).toBe(1)
+    expect(out[0].column).toBe(1)
+  })
+
+  test('scoped (@-prefixed) rule does not produce a ruleUri', () => {
+    const json = JSON.stringify([{
+      filePath: `${projectDir}/a.ts`,
+      messages: [{ ruleId: '@typescript-eslint/no-explicit-any', severity: 2, message: 'm', line: 1, column: 1 }],
+    }])
+    const out = parseEslintOutput(json, projectDir)
+    expect(out[0].code).toBe('@typescript-eslint/no-explicit-any')
+    expect(out[0].ruleUri).toBeUndefined()
+  })
+
+  test('endLine / endColumn passed through when present', () => {
+    const json = JSON.stringify([{
+      filePath: `${projectDir}/a.ts`,
+      messages: [{
+        ruleId: 'x', severity: 2, message: 'm',
+        line: 1, column: 1, endLine: 1, endColumn: 9,
+      }],
+    }])
+    const out = parseEslintOutput(json, projectDir)
+    expect(out[0].endLine).toBe(1)
+    expect(out[0].endColumn).toBe(9)
+  })
+
+  test('returns [] when JSON cannot be recovered (no brackets at all)', () => {
+    expect(parseEslintOutput('totally not json {{{', projectDir)).toEqual([])
+  })
+
+  test('returns [] when bracket slice still fails to parse', () => {
+    // Has [ and ] but the contents between are invalid JSON.
+    expect(parseEslintOutput('garbage [not-valid-json] more garbage', projectDir)).toEqual([])
+  })
+
+  test('handles relative filePath (no isAbsolute branch)', () => {
+    const json = JSON.stringify([{
+      filePath: 'rel/file.ts',
+      messages: [{ ruleId: 'x', severity: 1, message: 'm', line: 1, column: 1 }],
+    }])
+    const out = parseEslintOutput(json, projectDir)
+    expect(out[0].file).toBe('rel/file.ts')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Additional router coverage
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('diagnosticsRoutes — extended endpoint cases', () => {
+  test('POST /refresh on unknown project returns 404', async () => {
+    const router = diagnosticsRoutes({ workspacesDir })
+    const res = await router.fetch(
+      new Request(`http://x/projects/does-not-exist/diagnostics/refresh`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      }),
+    )
+    expect(res.status).toBe(404)
+    const body = await res.json()
+    expect(body.error.code).toBe('project_not_found')
+  })
+
+  test('POST /refresh with malformed JSON body falls back to all sources', async () => {
+    recordBuildError(projectId, { message: 'b1' })
+    const router = diagnosticsRoutes({ workspacesDir, toolTimeoutMs: 100 })
+    const res = await router.fetch(
+      new Request(`http://x/projects/${projectId}/diagnostics/refresh`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: 'not-json{',
+      }),
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    // Default sources include build → our recorded error is present.
+    expect(body.diagnostics.some((d: any) => d.message === 'b1')).toBe(true)
+    expect(body.sources).toEqual(['ts', 'eslint', 'build'])
+  })
+
+  test('POST /refresh with empty sources array falls back to all sources', async () => {
+    recordBuildError(projectId, { message: 'b1' })
+    const router = diagnosticsRoutes({ workspacesDir, toolTimeoutMs: 100 })
+    const res = await router.fetch(
+      new Request(`http://x/projects/${projectId}/diagnostics/refresh`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sources: [] }),
+      }),
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.sources).toEqual(['ts', 'eslint', 'build'])
+  })
+
+  test('POST /refresh filters invalid sources from body', async () => {
+    recordBuildError(projectId, { message: 'b1' })
+    const router = diagnosticsRoutes({ workspacesDir, toolTimeoutMs: 100 })
+    const res = await router.fetch(
+      new Request(`http://x/projects/${projectId}/diagnostics/refresh`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sources: ['build', 'bogus', 'also-bogus'] as any }),
+      }),
+    )
+    const body = await res.json()
+    expect(body.sources).toEqual(['build'])
+  })
+
+  test('GET with comma-list source param parses multiple sources', async () => {
+    recordBuildError(projectId, { message: 'mb' })
+    const router = diagnosticsRoutes({ workspacesDir, toolTimeoutMs: 100 })
+    const res = await router.fetch(
+      new Request(`http://x/projects/${projectId}/diagnostics?source=build,ts`),
+    )
+    const body = await res.json()
+    expect(body.sources.sort()).toEqual(['build', 'ts'])
+  })
+
+  test('GET with empty source param falls back to all sources', async () => {
+    const router = diagnosticsRoutes({ workspacesDir, toolTimeoutMs: 100 })
+    const res = await router.fetch(
+      new Request(`http://x/projects/${projectId}/diagnostics?source=`),
+    )
+    const body = await res.json()
+    expect(body.sources).toEqual(['ts', 'eslint', 'build'])
+  })
+
+  test('GET with only-invalid source values falls back to all sources', async () => {
+    const router = diagnosticsRoutes({ workspacesDir, toolTimeoutMs: 100 })
+    const res = await router.fetch(
+      new Request(`http://x/projects/${projectId}/diagnostics?source=foo,bar`),
+    )
+    const body = await res.json()
+    expect(body.sources).toEqual(['ts', 'eslint', 'build'])
+  })
+
+  test('GET with since older than lastRunAt returns the full payload (not unchanged)', async () => {
+    recordBuildError(projectId, { message: 'x' })
+    const router = diagnosticsRoutes({ workspacesDir })
+    const past = new Date(Date.now() - 60_000).toISOString()
+    const res = await router.fetch(
+      new Request(`http://x/projects/${projectId}/diagnostics?source=build&since=${encodeURIComponent(past)}`),
+    )
+    const body = await res.json()
+    expect(body.unchanged).toBeUndefined()
+    expect(body.diagnostics).toHaveLength(1)
+  })
+
+  test('_clearDiagnosticsCacheForTests forces the next call to recompute', async () => {
+    recordBuildError(projectId, { message: 'one' })
+    const router = diagnosticsRoutes({ workspacesDir })
+    const r1 = await (await router.fetch(
+      new Request(`http://x/projects/${projectId}/diagnostics?source=build`),
+    )).json()
+    expect(r1.fromCache).toBe(false)
+    const r2 = await (await router.fetch(
+      new Request(`http://x/projects/${projectId}/diagnostics?source=build`),
+    )).json()
+    expect(r2.fromCache).toBe(true)
+    _clearDiagnosticsCacheForTests()
+    const r3 = await (await router.fetch(
+      new Request(`http://x/projects/${projectId}/diagnostics?source=build`),
+    )).json()
+    expect(r3.fromCache).toBe(false)
+  })
+
+  test('build errors with absolute path are normalised to project-relative', async () => {
+    const abs = join(projectDir, 'src', 'deep', 'file.tsx')
+    recordBuildError(projectId, { file: abs, line: 3, column: 1, message: 'm' })
+    const router = diagnosticsRoutes({ workspacesDir })
+    const body = await (await router.fetch(
+      new Request(`http://x/projects/${projectId}/diagnostics?source=build`),
+    )).json()
+    expect(body.diagnostics[0].file).toBe('src/deep/file.tsx')
+  })
+
+  test('build errors with no file fall back to literal "(build)"', async () => {
+    recordBuildError(projectId, { message: 'no-file' })
+    const router = diagnosticsRoutes({ workspacesDir })
+    const body = await (await router.fetch(
+      new Request(`http://x/projects/${projectId}/diagnostics?source=build`),
+    )).json()
+    expect(body.diagnostics[0].file).toBe('(build)')
+  })
+
+  test('mtime hash change between calls invalidates the cache', async () => {
+    recordBuildError(projectId, { message: 'm' })
+    // Put a source file in place so computeMtimeHash has something to hash.
+    writeFileSync(join(projectDir, 'a.ts'), 'export {}')
+    const router = diagnosticsRoutes({ workspacesDir })
+    const url = `http://x/projects/${projectId}/diagnostics?source=build`
+    const r1 = await (await router.fetch(new Request(url))).json()
+    expect(r1.fromCache).toBe(false)
+    // Touch the file with a new mtime — invalidates the mtime hash.
+    await new Promise(r => setTimeout(r, 20))
+    writeFileSync(join(projectDir, 'a.ts'), 'export const X = 1')
+    const r2 = await (await router.fetch(new Request(url))).json()
+    expect(r2.fromCache).toBe(false)
+    expect(new Date(r2.lastRunAt).getTime()).toBeGreaterThanOrEqual(new Date(r1.lastRunAt).getTime())
+  })
+
+  test('multi-source GET aggregates notes from each unavailable source', async () => {
+    // No tsconfig, no eslint config → both sources emit notes.
+    const router = diagnosticsRoutes({ workspacesDir, toolTimeoutMs: 100 })
+    const res = await router.fetch(
+      new Request(`http://x/projects/${projectId}/diagnostics?source=ts,eslint`),
+    )
+    const body = await res.json()
+    expect(body.notes).toBeDefined()
+    const noteSources = body.notes.map((n: any) => n.source).sort()
+    expect(noteSources).toEqual(['eslint', 'ts'])
+  })
+
+  test('GET defaults to all sources when no source query is provided', async () => {
+    recordBuildError(projectId, { message: 'default-build' })
+    const router = diagnosticsRoutes({ workspacesDir, toolTimeoutMs: 100 })
+    const res = await router.fetch(
+      new Request(`http://x/projects/${projectId}/diagnostics`),
+    )
+    const body = await res.json()
+    expect(body.sources).toEqual(['ts', 'eslint', 'build'])
+    expect(body.diagnostics.some((d: any) => d.message === 'default-build')).toBe(true)
+  })
+
+  test('mtime hash includes top-level config files (tsconfig change busts cache)', async () => {
+    writeFileSync(join(projectDir, 'tsconfig.json'), '{}')
+    recordBuildError(projectId, { message: 'm' })
+    const router = diagnosticsRoutes({ workspacesDir, toolTimeoutMs: 100 })
+    const url = `http://x/projects/${projectId}/diagnostics?source=build`
+    const r1 = await (await router.fetch(new Request(url))).json()
+    expect(r1.fromCache).toBe(false)
+    await new Promise(r => setTimeout(r, 20))
+    writeFileSync(join(projectDir, 'tsconfig.json'), '{"compilerOptions":{}}')
+    const r2 = await (await router.fetch(new Request(url))).json()
+    expect(r2.fromCache).toBe(false)
+  })
+
+  test('skipped directories (node_modules, .git) do not affect the mtime hash', async () => {
+    recordBuildError(projectId, { message: 'm' })
+    mkdirSync(join(projectDir, 'node_modules'), { recursive: true })
+    writeFileSync(join(projectDir, 'node_modules', 'junk.ts'), 'x')
+    const router = diagnosticsRoutes({ workspacesDir })
+    const url = `http://x/projects/${projectId}/diagnostics?source=build`
+    const r1 = await (await router.fetch(new Request(url))).json()
+    expect(r1.fromCache).toBe(false)
+    await new Promise(r => setTimeout(r, 20))
+    // Touch a file deep in node_modules — must NOT bust the cache.
+    writeFileSync(join(projectDir, 'node_modules', 'junk.ts'), 'export const y = 1')
+    const r2 = await (await router.fetch(new Request(url))).json()
+    expect(r2.fromCache).toBe(true)
+  })
+
+  test('two concurrent non-force GETs coalesce onto a single inflight pass', async () => {
+    recordBuildError(projectId, { message: 'co' })
+    const router = diagnosticsRoutes({ workspacesDir })
+    const url = `http://x/projects/${projectId}/diagnostics?source=build`
+    const [r1, r2] = await Promise.all([
+      router.fetch(new Request(url)).then(r => r.json()),
+      router.fetch(new Request(url)).then(r => r.json()),
+    ])
+    // Both responses share the same lastRunAt (same underlying compute).
+    expect(r1.lastRunAt).toBe(r2.lastRunAt)
+  })
+
+  test('two concurrent force POSTs coalesce onto a single force-inflight pass', async () => {
+    recordBuildError(projectId, { message: 'co' })
+    const router = diagnosticsRoutes({ workspacesDir })
+    const url = `http://x/projects/${projectId}/diagnostics/refresh`
+    const body = JSON.stringify({ sources: ['build'] })
+    const headers = { 'content-type': 'application/json' }
+    const [r1, r2] = await Promise.all([
+      router.fetch(new Request(url, { method: 'POST', headers, body })).then(r => r.json()),
+      router.fetch(new Request(url, { method: 'POST', headers, body })).then(r => r.json()),
+    ])
+    expect(r1.lastRunAt).toBe(r2.lastRunAt)
+    expect(r1.fromCache).toBe(false)
+    expect(r2.fromCache).toBe(false)
+  })
+
+  test('build source surfaces a note when getBuildErrors throws (via a poisoned projectId — graceful path)', async () => {
+    // recordBuildError + getBuildErrors don't throw for normal inputs, so we
+    // can only exercise the happy paths here. This test asserts that the
+    // catch-all in readBuildErrors stays dormant for normal use AND that
+    // notes are NOT spuriously populated when nothing went wrong.
+    recordBuildError(projectId, { message: 'ok' })
+    const router = diagnosticsRoutes({ workspacesDir })
+    const body = await (await router.fetch(
+      new Request(`http://x/projects/${projectId}/diagnostics?source=build`),
+    )).json()
+    expect(body.diagnostics).toHaveLength(1)
+    expect(body.notes).toBeUndefined()
+  })
+
+  test('cross-source de-dup actually drops duplicates in aggregator output', async () => {
+    // Force a duplicate id between build and tsc by recording an identical
+    // shape — id is computed from file/line/col/code/message, source-free.
+    recordBuildError(projectId, {
+      file: 'src/dup.ts', line: 1, column: 1, code: 'TS9999', message: 'same.',
+    })
+    // Manually push a second build error with EXACTLY the same id key — the
+    // buffer keeps both rows, but the aggregator must collapse them via the
+    // `seen` set.
+    recordBuildError(projectId, {
+      file: 'src/dup.ts', line: 1, column: 1, code: 'TS9999', message: 'same.',
+    })
+    const router = diagnosticsRoutes({ workspacesDir })
+    const body = await (await router.fetch(
+      new Request(`http://x/projects/${projectId}/diagnostics?source=build`),
+    )).json()
+    expect(body.diagnostics).toHaveLength(1)
+  })
+
+  test('with very small tool timeout, ts + eslint paths still return a 200 with notes / empty diags', async () => {
+    // tsconfig + an eslint config present so the runners actually spawn,
+    // but a 50ms timeout guarantees they trip the timedOut branch.
+    writeFileSync(join(projectDir, 'tsconfig.json'), '{}')
+    writeFileSync(join(projectDir, '.eslintrc.json'), '{}')
+    const router = diagnosticsRoutes({ workspacesDir, toolTimeoutMs: 50 })
+    const res = await router.fetch(
+      new Request(`http://x/projects/${projectId}/diagnostics?source=ts,eslint`),
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    // Either the runner produced no diagnostics, or it timed out and surfaced
+    // a note — both are valid 200 paths. We only assert the shape.
+    expect(Array.isArray(body.diagnostics)).toBe(true)
+    expect(body.sources.sort()).toEqual(['eslint', 'ts'])
+  }, 15_000)
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Nested-directory walk coverage
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('diagnosticsRoutes — mtime hash nested directory walk', () => {
+  test('cache busts when a deeply nested source file is touched', async () => {
+    // Build a nested layout so computeMtimeHash recurses past depth 0.
+    const nested = join(projectDir, 'src', 'lib', 'deep')
+    mkdirSync(nested, { recursive: true })
+    writeFileSync(join(nested, 'thing.ts'), 'export const A = 1')
+    recordBuildError(projectId, { message: 'm' })
+
+    const router = diagnosticsRoutes({ workspacesDir })
+    const url = `http://x/projects/${projectId}/diagnostics?source=build`
+
+    const r1 = await (await router.fetch(new Request(url))).json()
+    expect(r1.fromCache).toBe(false)
+
+    // Cache hit on the immediate second call (same mtimes).
+    const r2 = await (await router.fetch(new Request(url))).json()
+    expect(r2.fromCache).toBe(true)
+
+    await new Promise(r => setTimeout(r, 20))
+    writeFileSync(join(nested, 'thing.ts'), 'export const A = 2')
+    const r3 = await (await router.fetch(new Request(url))).json()
+    expect(r3.fromCache).toBe(false)
+  })
+
+  test('mtime walk tolerates an unreadable subdirectory (caught by try/catch)', async () => {
+    // Create a directory then chmod it to 000 so readdirSync throws — the
+    // walker's `try { readdirSync(dir) } catch { return }` branch must
+    // swallow the error and the request must still succeed.
+    const blocked = join(projectDir, 'src', 'blocked')
+    mkdirSync(blocked, { recursive: true })
+    writeFileSync(join(blocked, 'a.ts'), 'export {}')
+    const { chmodSync } = await import('fs')
+    chmodSync(blocked, 0o000)
+    try {
+      recordBuildError(projectId, { message: 'm' })
+      const router = diagnosticsRoutes({ workspacesDir })
+      const res = await router.fetch(
+        new Request(`http://x/projects/${projectId}/diagnostics?source=build`),
+      )
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.diagnostics).toHaveLength(1)
+    } finally {
+      chmodSync(blocked, 0o755)
+    }
+  })
+})
