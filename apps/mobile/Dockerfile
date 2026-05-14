@@ -52,6 +52,20 @@ COPY packages/shared-ui/package.json ./packages/shared-ui/
 COPY packages/ui-kit/package.json ./packages/ui-kit/
 COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
 COPY packages/model-catalog/package.json ./packages/model-catalog/
+# SDK was split into focused @shogo-ai/* workspace packages (refactor
+# 3a2798ab). The root workspaces glob is `packages/*`, so every
+# packages/<name>/package.json must be present here — `bun install`
+# fails fast with `error: Workspace dependency "@shogo-ai/<X>" not
+# found` for any missing one. Source is not copied because the SDK
+# bundles its own implementations into dist/, and Metro consumes the
+# SDK's built dist via its package.json "exports".
+COPY packages/agent/package.json ./packages/agent/
+COPY packages/cli/package.json ./packages/cli/
+COPY packages/core/package.json ./packages/core/
+COPY packages/db/package.json ./packages/db/
+COPY packages/email/package.json ./packages/email/
+COPY packages/voice/package.json ./packages/voice/
+COPY packages/shogo-worker/package.json ./packages/shogo-worker/
 COPY apps/api/package.json ./apps/api/
 COPY apps/mobile/package.json ./apps/mobile/
 

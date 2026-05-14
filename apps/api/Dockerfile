@@ -32,6 +32,20 @@ COPY packages/shared-ui/package.json ./packages/shared-ui/
 COPY packages/ui-kit/package.json ./packages/ui-kit/
 COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
 COPY packages/model-catalog/package.json ./packages/model-catalog/
+# SDK was split into focused @shogo-ai/* workspace packages (refactor
+# 3a2798ab). The root workspaces glob is `packages/*`, so every
+# packages/<name>/package.json must be present here — `bun install`
+# fails fast with `error: Workspace dependency "@shogo-ai/<X>" not
+# found` for any missing one. Source is not copied because the SDK
+# bundles its own implementations into dist/; these stays as stub
+# package.jsons throughout the build.
+COPY packages/agent/package.json ./packages/agent/
+COPY packages/cli/package.json ./packages/cli/
+COPY packages/core/package.json ./packages/core/
+COPY packages/db/package.json ./packages/db/
+COPY packages/email/package.json ./packages/email/
+COPY packages/voice/package.json ./packages/voice/
+COPY packages/shogo-worker/package.json ./packages/shogo-worker/
 COPY apps/api/package.json ./apps/api/
 COPY apps/mobile/package.json ./apps/mobile/
 
@@ -127,6 +141,16 @@ COPY packages/shared-ui/package.json ./packages/shared-ui/
 COPY packages/ui-kit/package.json ./packages/ui-kit/
 COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
 COPY packages/model-catalog/package.json ./packages/model-catalog/
+# Mirror the SDK-split package.jsons here too — the deps stage runs
+# its own `bun install` (line below) and would otherwise fail to
+# resolve @shogo-ai/{agent,cli,core,db,email,voice}.
+COPY packages/agent/package.json ./packages/agent/
+COPY packages/cli/package.json ./packages/cli/
+COPY packages/core/package.json ./packages/core/
+COPY packages/db/package.json ./packages/db/
+COPY packages/email/package.json ./packages/email/
+COPY packages/voice/package.json ./packages/voice/
+COPY packages/shogo-worker/package.json ./packages/shogo-worker/
 COPY apps/api/package.json ./apps/api/
 COPY apps/mobile/package.json ./apps/mobile/
 
@@ -188,6 +212,19 @@ COPY --chown=appuser:appgroup --from=builder /app/packages/shared-ui/package.jso
 COPY --chown=appuser:appgroup --from=builder /app/packages/ui-kit/package.json ./packages/ui-kit/
 COPY --chown=appuser:appgroup --from=builder /app/packages/canvas-runtime/package.json ./packages/canvas-runtime/
 COPY --chown=appuser:appgroup --from=builder /app/packages/model-catalog ./packages/model-catalog/
+# Stub package.jsons for the SDK-split workspace packages. The
+# `bun install --ignore-scripts` further down still resolves the
+# workspaces graph; without these the API image fails to build with
+# the same "@shogo-ai/<X>" workspace-resolution errors that broke CI.
+# The SDK ships its own bundled implementations, so source isn't
+# needed at runtime.
+COPY --chown=appuser:appgroup --from=builder /app/packages/agent/package.json ./packages/agent/
+COPY --chown=appuser:appgroup --from=builder /app/packages/cli/package.json ./packages/cli/
+COPY --chown=appuser:appgroup --from=builder /app/packages/core/package.json ./packages/core/
+COPY --chown=appuser:appgroup --from=builder /app/packages/db/package.json ./packages/db/
+COPY --chown=appuser:appgroup --from=builder /app/packages/email/package.json ./packages/email/
+COPY --chown=appuser:appgroup --from=builder /app/packages/voice/package.json ./packages/voice/
+COPY --chown=appuser:appgroup --from=builder /app/packages/shogo-worker/package.json ./packages/shogo-worker/
 COPY --chown=appuser:appgroup --from=builder /app/apps/mobile/package.json ./apps/mobile/
 
 # Same patches as builder/deps stages — bun install --ignore-scripts at line ~189
