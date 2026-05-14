@@ -93,8 +93,21 @@ export class RuntimeManager implements IRuntimeManager {
   /**
    * Kill any leftover processes from previous API server sessions on our port range.
    * Runs synchronously at construction so ports are free before any start() call.
+   *
+   * Guarded by `cleanupRanAtModuleScope` so it only ever runs ONCE per
+   * Node process — irrespective of how many RuntimeManager instances
+   * get constructed. Without this guard a second instance (whether
+   * accidentally created via the legacy dual-singleton path, or
+   * deliberately created in a unit test) would lsof the port range a
+   * second time, find the first manager's freshly-spawned child PIDs,
+   * and SIGKILL them. The visible symptom of the legacy bug was a
+   * 30-second waitForReady timeout against a Vite child that had
+   * already been killed by our own cleanup.
    */
   private cleanupStaleProcesses(): void {
+    if (cleanupRanAtModuleScope) return
+    cleanupRanAtModuleScope = true
+
     const rangesToClean = [
       { start: PORT_RANGE_START, end: PORT_RANGE_END },
       { start: PORT_RANGE_START + AGENT_PORT_OFFSET, end: PORT_RANGE_END + AGENT_PORT_OFFSET + 1 },
@@ -1201,7 +1214,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       // Wait for agent server
       if (runtime.agentProcess) {
         console.log(`[RuntimeManager] Waiting for agent server on port ${agentPort}...`)
-        await this.waitForAgentReady(projectId, agentPort, 30000)
+        await this.waitForAgentReady(projectId, agentPort, 30000, runtime.agentProcess)
         console.log(`[RuntimeManager] Agent server ready for ${projectId}`)
       }
 
@@ -1302,12 +1315,34 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   /**
    * Wait for the agent server to be ready and verify it's for the correct project.
    * This prevents routing to stale agent processes from other projects (e.g., after hot reload).
+   *
+   * The optional `process` ref is checked each iteration so a spawned
+   * agent that dies mid-wait short-circuits the 25-second poll loop
+   * with a descriptive error instead of the generic
+   * "Timeout waiting for agent server ... after 50 attempts". Mirrors
+   * the fix in `waitForReady()` for the Vite child; see that method's
+   * doc for the full rationale (dual-singleton + cleanupStaleProcesses
+   * race).
    */
-  private async waitForAgentReady(projectId: string, port: number, _timeoutMs: number): Promise<void> {
+  private async waitForAgentReady(
+    projectId: string,
+    port: number,
+    _timeoutMs: number,
+    process?: { exitCode: number | null; signalCode?: NodeJS.Signals | null; killed?: boolean },
+  ): Promise<void> {
     const MAX_RETRIES = 50
     const RETRY_DELAY_MS = 500
+    const isDead = (p: typeof process): boolean =>
+      !!p && (p.exitCode !== null || p.signalCode != null || p.killed === true)
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      if (isDead(process)) {
+        throw new Error(
+          `Agent process for runtime ${projectId} exited (code=${process!.exitCode}` +
+            (process!.signalCode ? `, signal=${process!.signalCode}` : '') +
+            `) before becoming ready on port ${port}`,
+        )
+      }
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 2000)
       try {
@@ -1341,6 +1376,13 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       }
     }
 
+    if (isDead(process)) {
+      throw new Error(
+        `Agent process for runtime ${projectId} exited (code=${process!.exitCode}` +
+          (process!.signalCode ? `, signal=${process!.signalCode}` : '') +
+          `) before becoming ready on port ${port}`,
+      )
+    }
     throw new Error(`Timeout waiting for agent server ${projectId} to start on port ${port} after ${MAX_RETRIES} attempts`)
   }
 
@@ -1525,6 +1567,17 @@ export function createRuntimeManager(overrides?: Partial<IRuntimeConfig>): Runti
   return new RuntimeManager(config)
 }
 
+/**
+ * Process-scope guard for `RuntimeManager.cleanupStaleProcesses()`. The
+ * cleanup is meant to run exactly once at API server boot — re-running
+ * it from a second instance would lsof-scan the port range, hit the
+ * first instance's freshly-spawned children, and SIGKILL them. See the
+ * doc on `cleanupStaleProcesses` for the failure mode this guard
+ * defends against. Exposed via `__resetRuntimeManagerInternalsForTests`
+ * so unit tests can opt into reproducing the legacy behaviour.
+ */
+let cleanupRanAtModuleScope = false
+
 /** Default singleton instance (lazy initialized) */
 let defaultManager: RuntimeManager | null = null
 
@@ -1570,4 +1623,14 @@ export function getRuntimeManager(): RuntimeManager {
  */
 export function setRuntimeManager(manager: RuntimeManager): void {
   defaultManager = manager
+}
+
+/**
+ * Test-only hook: clears the module-scope singleton and re-arms the
+ * one-shot `cleanupStaleProcesses` guard. Never call this from product
+ * code — it exists so unit tests can simulate fresh process boots.
+ */
+export function __resetRuntimeManagerInternalsForTests(): void {
+  defaultManager = null
+  cleanupRanAtModuleScope = false
 }

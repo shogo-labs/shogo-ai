@@ -11,6 +11,7 @@ export {
   createRuntimeManager,
   getRuntimeManager,
   setRuntimeManager,
+  __resetRuntimeManagerInternalsForTests,
 } from './manager'
 export type {
   IRuntimeManager,
