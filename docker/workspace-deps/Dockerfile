@@ -33,7 +33,7 @@ WORKDIR /app
 # from source.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        python3 make g++ nodejs npm git ca-certificates && \
+        python3 make g++ nodejs npm git curl ca-certificates && \
     npm install -g node-gyp && \
     rm -rf /var/lib/apt/lists/*
 
