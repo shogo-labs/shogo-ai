@@ -269,6 +269,61 @@ app.post('/validate-preview-token', async (c) => {
 })
 
 /**
+ * POST /api/internal/validate-runtime-token
+ *   body: { token: string, expectedProjectId?: string }
+ *
+ * Called by runtime pods to validate an incoming `x-runtime-token` whose
+ * byte-for-byte value does NOT match the pod's own `RUNTIME_AUTH_SECRET`.
+ * That mismatch is normal during:
+ *   - warm-pool reassignment races (pod env updated, in-flight request
+ *     still carries the previous project's token, or vice versa),
+ *   - signing-secret rotation windows where the API has dual-rotated but
+ *     a long-lived pod still holds the old derived token,
+ *   - stale-image pods inherited across a deploy.
+ *
+ * The pod can't HMAC-verify a v1 token itself without holding the platform
+ * signing secret (deliberately scoped to the API to keep blast radius tight
+ * — see `apps/api/src/lib/runtime-token.md`). So the pod delegates: hand
+ * the API the token, the API returns `{ valid, projectId }`. Mirrors the
+ * existing `/validate-preview-token` pattern.
+ *
+ * Authenticated like the rest of /internal: K8s SA bearer in cluster, or
+ * runtime-token in local mode.
+ */
+app.post('/validate-runtime-token', async (c) => {
+  if (!(await validateAuth(c))) {
+    return c.json({ valid: false, error: 'Unauthorized' }, 401)
+  }
+
+  let body: { token?: string; expectedProjectId?: string }
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ valid: false, error: 'Invalid request body' }, 400)
+  }
+
+  const token = body.token
+  if (!token || typeof token !== 'string') {
+    return c.json({ valid: false, error: 'token is required' }, 400)
+  }
+
+  try {
+    const { verifyRuntimeToken } = await import('../lib/runtime-token')
+    // v1 tokens self-identify, so expectedProjectId is only consulted as a
+    // legacy fallback. We pass it through but verifyRuntimeToken ignores it
+    // when the token is v1-formatted.
+    const verified = verifyRuntimeToken(token, body.expectedProjectId)
+    if (!verified.ok) {
+      return c.json({ valid: false, reason: verified.reason })
+    }
+    return c.json({ valid: true, projectId: verified.projectId, format: verified.format })
+  } catch (err: any) {
+    console.error('[Internal] Failed to validate runtime token:', err.message)
+    return c.json({ valid: false, error: 'Validation failed' }, 500)
+  }
+})
+
+/**
  * GET /api/internal/subagent-overrides/resolve
  *   ?workspaceId=...&projectId=...&agentType=...
  *
