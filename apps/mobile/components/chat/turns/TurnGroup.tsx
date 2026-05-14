@@ -145,7 +145,17 @@ export const TurnGroup = memo(
     >
       {/* User message */}
       {turn.userMessage && (
-        <View className="w-full flex-row items-end justify-end gap-2">
+        <View className="group w-full flex-row items-end justify-end gap-1">
+          <View
+            className={cn(
+              "items-center justify-center",
+              "opacity-100 web:opacity-0 web:pointer-events-none web:transition-opacity",
+              "web:group-hover:opacity-100 web:group-hover:pointer-events-auto",
+              "web:group-focus-within:opacity-100 web:group-focus-within:pointer-events-auto"
+            )}
+          >
+            <CopyButton text={extractTextContent(turn.userMessage)} />
+          </View>
           <MessageContent message={turn.userMessage} className="ml-0" />
         </View>
       )}
