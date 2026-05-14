@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7-labs
 # =============================================================================
 # Shogo API Server - Development Dockerfile
 # =============================================================================
@@ -8,6 +9,10 @@
 # - Hot reloading via bun --watch
 # - RuntimeManager for project previews (spawns Vite processes)
 # - Prisma migrations on startup
+#
+# Workspace package.jsons are glob-copied via BuildKit `COPY --parents`
+# (requires the `# syntax=docker/dockerfile:1.7-labs` directive above).
+# Adding a new `packages/<X>/` is automatic.
 # =============================================================================
 
 FROM oven/bun:1.3-alpine
@@ -24,18 +29,10 @@ COPY tsconfig.base.json ./
 # Copy Prisma schema (needed for migrations)
 COPY prisma ./prisma
 
-# Copy package.json files for dependency resolution
-COPY packages/agent-runtime/package.json ./packages/agent-runtime/
-COPY packages/shared-runtime/package.json ./packages/shared-runtime/
-COPY packages/sdk/package.json ./packages/sdk/
-COPY packages/domain-stores/package.json ./packages/domain-stores/
-COPY packages/shared-app/package.json ./packages/shared-app/
-COPY packages/shared-ui/package.json ./packages/shared-ui/
-COPY packages/ui-kit/package.json ./packages/ui-kit/
-COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
-COPY packages/model-catalog/package.json ./packages/model-catalog/
-COPY apps/api/package.json ./apps/api/
-COPY apps/mobile/package.json ./apps/mobile/
+# All workspace members must be present for bun install to resolve the
+# `packages/*` and `apps/*` workspaces glob in the root package.json.
+COPY --parents packages/*/package.json ./
+COPY --parents apps/*/package.json ./
 
 # Copy scripts needed for postinstall
 COPY scripts ./scripts

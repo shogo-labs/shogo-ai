@@ -163,6 +163,18 @@
       "import": "./dist/chat-message.js",
       "require": "./dist/chat-message.cjs"
     },
+    "./macos-junk": {
+      "types": "./dist/macos-junk.d.ts",
+      "development": "./src/macos-junk.ts",
+      "import": "./dist/macos-junk.js",
+      "require": "./dist/macos-junk.cjs"
+    },
+    "./tech-stack-registry": {
+      "types": "./dist/tech-stack-registry.d.ts",
+      "development": "./src/tech-stack-registry.ts",
+      "import": "./dist/tech-stack-registry.js",
+      "require": "./dist/tech-stack-registry.cjs"
+    },
     "./model-catalog": {
       "types": "./dist/model-catalog/index.d.ts",
       "development": "./src/model-catalog/index.ts",
@@ -216,6 +228,18 @@
       "development": "./src/agent-loop.ts",
       "import": "./dist/agent-loop.js",
       "require": "./dist/agent-loop.cjs"
+    },
+    "./ai-client": {
+      "types": "./dist/ai-client.d.ts",
+      "development": "./src/ai-client.ts",
+      "import": "./dist/ai-client.js",
+      "require": "./dist/ai-client.cjs"
+    },
+    "./ai-proxy": {
+      "types": "./dist/ai-proxy.d.ts",
+      "development": "./src/ai-proxy.ts",
+      "import": "./dist/ai-proxy.js",
+      "require": "./dist/ai-proxy.cjs"
     }
   },
   "bin": {

@@ -68,6 +68,18 @@
       "development": "./src/hooks/index.ts",
       "import": "./dist/hooks/index.js",
       "require": "./dist/hooks/index.cjs"
+    },
+    "./ai-client": {
+      "types": "./dist/ai-client.d.ts",
+      "development": "./src/ai-client.ts",
+      "import": "./dist/ai-client.js",
+      "require": "./dist/ai-client.cjs"
+    },
+    "./ai-proxy": {
+      "types": "./dist/ai-proxy.d.ts",
+      "development": "./src/ai-proxy.ts",
+      "import": "./dist/ai-proxy.js",
+      "require": "./dist/ai-proxy.cjs"
     }
   },
   "files": [
