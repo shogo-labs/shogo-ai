@@ -1,7 +1,7 @@
 # [Shogo AI](https://shogo.ai)
 
 <!-- coverage-badge -->
-[![Coverage](https://img.shields.io/badge/coverage-52.28%25-orange)](./coverage/lcov.info)
+[![Coverage](https://img.shields.io/badge/coverage-58.00%25-orange)](./coverage/lcov.info)
 <!-- /coverage-badge -->
 
 AI-first agent builder for chat-driven apps, persistent agents, and dynamic
