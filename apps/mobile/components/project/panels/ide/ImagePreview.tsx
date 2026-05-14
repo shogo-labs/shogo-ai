@@ -9,6 +9,10 @@ import {
 
 const IMAGE_EXTS = new Set([
   "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif", "svg",
+  // Less universally supported formats — we still route them here so the
+  // browser gets a chance to render them. If it can't, ImagePreview shows
+  // a clean "Could not load" message instead of an unhelpful toast.
+  "apng", "jxl", "heic", "heif", "tiff", "tif", "cur",
 ]);
 
 export function isImagePath(path: string): boolean {
