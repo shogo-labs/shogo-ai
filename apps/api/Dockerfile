@@ -53,6 +53,7 @@ COPY --from=workspace /app/packages/agent-runtime ./packages/agent-runtime
 COPY --from=workspace /app/packages/shared-runtime ./packages/shared-runtime
 COPY --from=workspace /app/packages/sdk ./packages/sdk
 COPY --from=workspace /app/packages/model-catalog ./packages/model-catalog
+COPY --from=workspace /app/packages/shogo-worker ./packages/shogo-worker
 COPY --from=workspace /app/apps/api ./apps/api
 COPY --from=workspace /app/package.json /app/bun.lock /app/tsconfig.base.json ./
 
