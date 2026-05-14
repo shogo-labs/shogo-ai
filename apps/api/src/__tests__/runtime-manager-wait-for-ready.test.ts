@@ -169,3 +169,66 @@ describe('RuntimeManager.waitForReady (private)', () => {
     )
   })
 })
+
+function callWaitForAgentReady(
+  rm: RuntimeManager,
+  port: number,
+  proc?: FakeProc,
+): Promise<void> {
+  return (rm as unknown as {
+    waitForAgentReady: (
+      projectId: string,
+      port: number,
+      timeoutMs: number,
+      process?: FakeProc,
+    ) => Promise<void>
+  }).waitForAgentReady('proj-test', port, 30_000, proc)
+}
+
+describe('RuntimeManager.waitForAgentReady (private) — mirror of the Vite-side fix', () => {
+  let rm: RuntimeManager
+
+  beforeEach(() => {
+    rm = new RuntimeManager()
+  })
+
+  afterEach(() => {
+    globalThis.fetch = ORIGINAL_FETCH
+  })
+
+  test('returns when /health responds 200 with the expected projectId', async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ projectId: 'proj-test' }), { status: 200 })) as typeof fetch
+    await callWaitForAgentReady(rm, 41234)
+  })
+
+  test('throws a descriptive error when the agent child dies mid-wait', async () => {
+    globalThis.fetch = (async () => {
+      throw new Error('ECONNREFUSED')
+    }) as typeof fetch
+    const proc: FakeProc = { exitCode: null }
+    const startedAt = Date.now()
+    setTimeout(() => {
+      proc.signalCode = 'SIGKILL'
+    }, 600)
+    await expect(callWaitForAgentReady(rm, 41234, proc)).rejects.toThrow(
+      /Agent process for runtime proj-test exited \(code=null, signal=SIGKILL\) before becoming ready on port 41234/,
+    )
+    // Without the fix this would have spun for the full 25s
+    // (50 * 500ms). 5s is a safe ceiling that still catches a
+    // regression to the legacy behaviour.
+    const elapsed = Date.now() - startedAt
+    expect(elapsed).toBeLessThan(5_000)
+  })
+
+  test('rejects immediately on cross-project stale-agent mismatch (no retry)', async () => {
+    // Confirms the existing project-ID guard still wins over the
+    // exit-code check: a mismatched projectId triggers an immediate
+    // throw, not the retry loop.
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ projectId: 'someone-else' }), { status: 200 })) as typeof fetch
+    await expect(callWaitForAgentReady(rm, 41234)).rejects.toThrow(
+      /occupied by agent for different project/,
+    )
+  })
+})
