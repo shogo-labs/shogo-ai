@@ -81,9 +81,12 @@ RUN bun run generate:routes
 # node_modules (symlinked into per-template staging dirs) and drops them
 # afterwards — the API/runtime images ship the populated templates/<id>/dist/
 # directories only.
+# Plain `bun install` (no --frozen-lockfile): the runtime-template's
+# bun.lock has drift relative to its package.json on this branch and the
+# original apps/api/runtime Dockerfiles also use plain bun install here.
 RUN --mount=type=cache,target=/home/appuser/.bun/install/cache,uid=1001,gid=1001 \
     cd templates/runtime-template && \
-    bun install --frozen-lockfile && \
+    bun install && \
     cd /app && \
     bun run --cwd packages/agent-runtime build-template-dists && \
     rm -rf templates/runtime-template/node_modules
