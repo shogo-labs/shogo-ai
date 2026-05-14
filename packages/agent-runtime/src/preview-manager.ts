@@ -62,6 +62,7 @@ import {
   INSTALL_PLATFORM_TAG,
   findMissingTopLevelDeps,
   migrateLegacyShogoSdkPin,
+  runWorkspaceInstall,
 } from './workspace-defaults'
 
 const LOG_PREFIX = 'preview-manager'
@@ -1360,13 +1361,19 @@ export class PreviewManager {
     const t0 = Date.now()
     try {
       console.log(`[${LOG_PREFIX}] Installing dependencies in ${installCwd}...`)
-      // installAsync (vs. installSync) lets the platform layer apply its
-      // Windows fallback policy — npm if available, else
-      // `bun install --backend=copyfile` to dodge the bun-1.x hardlink
-      // bug that produces empty package dirs (see platform-pkg.ts).
+      // `runWorkspaceInstall` (vs. raw `pkg.installAsync`) is the per-cwd
+      // mutex that prevents this call from racing `ensureWorkspaceDeps` —
+      // both ran concurrently on staging 2026-05-13 and bun crashed with
+      // "FileNotFound: copying file dist/WasmPanicRegistry.js" because the
+      // two installs stomped on each other's hardlink temp files. See
+      // workspace-defaults.ts mutex doc for the full failure trace.
+      //
       // No `frozen: true` here: we may be recovering from a stale
-      // template node_modules with no user-owned lockfile.
-      await pkg.installAsync(installCwd, { frozen: false })
+      // template node_modules with no user-owned lockfile. If a frozen
+      // install is in flight from `ensureWorkspaceDeps` we'll just join
+      // its promise — the resulting `node_modules/` is identical because
+      // both callers see the same `package.json`.
+      await runWorkspaceInstall(installCwd, { frozen: false })
       timings.install = Date.now() - t0
       console.log(`[${LOG_PREFIX}] Dependencies installed (${timings.install}ms)`)
 
