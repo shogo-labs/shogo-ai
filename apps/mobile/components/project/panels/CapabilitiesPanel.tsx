@@ -37,7 +37,8 @@ import {
   PopoverContent,
 } from '@/components/ui/popover'
 import { agentFetch } from '../../../lib/agent-fetch'
-import { getAvailableModels, getModelsByProvider, AUTO_MODEL_ID, type ModelTier } from '@shogo/model-catalog'
+import { getAvailableModels, AUTO_MODEL_ID, type ModelTier } from '@shogo/model-catalog'
+import { ModelPicker } from './ModelPicker'
 import { SkillsPanel } from './SkillsPanel'
 import { ToolsPanel } from './ToolsPanel'
 import { api, createHttpClient, type TechStackSummary } from '../../../lib/api'
@@ -186,22 +187,6 @@ const AVAILABLE_MODELS: ModelOption[] = getAvailableModels({ generation: 'curren
   tier: e.tier,
 }))
 
-const MODEL_GROUPS = getModelsByProvider().map(g => ({
-  label: g.label,
-  models: g.models.map(e => ({
-    provider: e.provider,
-    name: e.id,
-    displayName: e.displayName,
-    tier: e.tier,
-  })),
-}))
-
-const TIER_LABELS: Record<ModelTier, string> = {
-  premium: 'Premium',
-  standard: 'Standard',
-  economy: 'Economy',
-}
-
 type SubTab = 'built-in' | 'skills' | 'integrations'
 
 interface CapabilitiesPanelProps {
@@ -247,7 +232,6 @@ export function CapabilitiesPanel({
   const currentModel = isModelControlled
     ? (controlledModelEntry ? { provider: controlledModelEntry.provider, name: controlledModelEntry.name } : null)
     : internalModel
-  const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [modelUpdating, setModelUpdating] = useState(false)
   const fetchedRef = useRef(false)
 
@@ -318,14 +302,14 @@ export function CapabilitiesPanel({
     }
   }, [agentUrl, extensionToken])
 
-  const handleModelChange = useCallback(async (model: ModelOption) => {
-    if (currentModel?.name === model.name && currentModel?.provider === model.provider) {
-      setModelPickerOpen(false)
-      return
-    }
+  const handleModelChangeById = useCallback(async (modelId: string) => {
+    if (currentModel?.name === modelId) return
+    const resolved = modelId === AUTO_MODEL_ID
+      ? AUTO_MODEL_OPTION
+      : AVAILABLE_MODELS.find((m) => m.name === modelId) ?? null
+    if (!resolved) return
     if (controlledOnModelChange) {
-      controlledOnModelChange(model.name)
-      setModelPickerOpen(false)
+      controlledOnModelChange(resolved.name)
       return
     }
     if (!agentUrl) return
@@ -334,16 +318,15 @@ export function CapabilitiesPanel({
       const res = await agentFetch(`${agentUrl}/agent/config`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: { provider: model.provider, name: model.name } }),
+        body: JSON.stringify({ model: { provider: resolved.provider, name: resolved.name } }),
       })
       if (res.ok) {
-        setInternalModel({ provider: model.provider, name: model.name })
+        setInternalModel({ provider: resolved.provider, name: resolved.name })
       }
     } catch (err) {
       console.error('[CapabilitiesPanel] Failed to update model:', err)
     } finally {
       setModelUpdating(false)
-      setModelPickerOpen(false)
     }
   }, [agentUrl, currentModel, controlledOnModelChange])
 
@@ -363,13 +346,6 @@ export function CapabilitiesPanel({
   }, [pendingToggle, onCapabilityToggle])
 
   if (!visible) return null
-
-  const isAutoSelected = currentModel?.name === AUTO_MODEL_ID
-  const resolvedModel = isAutoSelected
-    ? AUTO_MODEL_OPTION
-    : AVAILABLE_MODELS.find(
-        m => m.name === currentModel?.name || (currentModel?.name && m.name === currentModel.name.replace(/-\d{8}$/, ''))
-      )
 
   const enabledCount = CAPABILITIES.filter(c => capabilities[c.key]).length
 
@@ -561,102 +537,17 @@ export function CapabilitiesPanel({
               </View>
               <View className="flex-1">
                 <Text className="text-xs text-muted-foreground">Model</Text>
-                <Popover
-                  placement="bottom left"
-                  isOpen={modelPickerOpen}
-                  onOpen={() => setModelPickerOpen(true)}
-                  onClose={() => setModelPickerOpen(false)}
-                  trigger={(triggerProps) => (
-                    <Pressable
-                      {...triggerProps}
-                      onPress={() => setModelPickerOpen(prev => !prev)}
-                      className="flex-row items-center gap-1.5 mt-0.5"
-                      disabled={modelUpdating}
-                    >
-                      {modelUpdating ? (
-                        <ActivityIndicator size="small" />
-                      ) : (
-                        <>
-                          <Text className="text-sm font-medium text-foreground">
-                            {resolvedModel?.displayName ?? currentModel?.name ?? 'Loading...'}
-                          </Text>
-                          <ChevronDown size={14} className="text-muted-foreground" />
-                        </>
-                      )}
-                    </Pressable>
-                  )}
-                >
-                  <PopoverBackdrop />
-                  <PopoverContent className="p-0 min-w-[220px]">
-                    <PopoverBody>
-                      <Pressable
-                        onPress={() => handleModelChange(AUTO_MODEL_OPTION)}
-                        className={cn(
-                          'flex-row items-center gap-2.5 px-3 py-2.5',
-                          'active:bg-muted',
-                          isAutoSelected && 'bg-accent',
-                        )}
-                      >
-                        <Zap size={14} className="text-primary" />
-                        <View className="flex-1">
-                          <Text className="text-sm font-medium text-foreground">Auto</Text>
-                          <Text className="text-[10px] text-muted-foreground">Picks the best model per turn to save cost</Text>
-                        </View>
-                        {isAutoSelected && <Check size={14} className="text-primary" />}
-                      </Pressable>
-                      <View className="h-px bg-border/50 mx-2" />
-                      {MODEL_GROUPS.map((group) => (
-                        <View key={group.label}>
-                          <View className="px-3 pt-2.5 pb-1">
-                            <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                              {group.label}
-                            </Text>
-                          </View>
-                          {group.models.map((model) => {
-                            const isSelected = currentModel?.name === model.name
-                              || (currentModel?.name && model.name === currentModel.name.replace(/-\d{8}$/, ''))
-                            const isLocked = !canSelectAllModels && model.tier !== 'economy'
-                            return (
-                              <Pressable
-                                key={model.name}
-                                onPress={() => !isLocked && handleModelChange(model)}
-                                className={cn(
-                                  'flex-row items-center gap-2.5 px-3 py-2',
-                                  isLocked ? 'opacity-50' : 'active:bg-muted',
-                                  isSelected && !isLocked && 'bg-accent',
-                                )}
-                              >
-                                <View className="flex-1">
-                                  <Text className={cn('text-sm', isLocked ? 'text-muted-foreground' : 'text-foreground')}>{model.displayName}</Text>
-                                </View>
-                                {isLocked ? (
-                                  <View className="flex-row items-center gap-1">
-                                    <Lock size={10} className="text-muted-foreground" />
-                                    <Text className="text-[10px] font-medium text-muted-foreground">Pro</Text>
-                                  </View>
-                                ) : (
-                                  <>
-                                    <Text className={cn(
-                                      'text-[10px]',
-                                      model.tier === 'premium' ? 'text-amber-500' :
-                                      model.tier === 'economy' ? 'text-emerald-500' :
-                                      'text-muted-foreground',
-                                    )}>
-                                      {TIER_LABELS[model.tier]}
-                                    </Text>
-                                    {isSelected && (
-                                      <Check size={14} className="text-primary" />
-                                    )}
-                                  </>
-                                )}
-                              </Pressable>
-                            )
-                          })}
-                        </View>
-                      ))}
-                    </PopoverBody>
-                  </PopoverContent>
-                </Popover>
+                <View className="mt-0.5">
+                  <ModelPicker
+                    selectedModelId={currentModel?.name ?? AUTO_MODEL_ID}
+                    onModelChange={handleModelChangeById}
+                    showAutoOption
+                    canSelectAllModels={canSelectAllModels}
+                    loading={modelUpdating}
+                    placement="bottom left"
+                    size="md"
+                  />
+                </View>
               </View>
             </View>
           </View>
