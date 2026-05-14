@@ -81,7 +81,8 @@ RUN bun run build:packages
 # This is the **single** template the runtime now seeds — the legacy
 # `templates/skill-server/` install was retired alongside the unified
 # server architecture (see migrations/skill-server-to-root.ts).
-RUN cd templates/runtime-template && bun install
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    cd templates/runtime-template && bun install
 
 # Pre-build per-template canvas dist/ bundles. Each agent template
 # (packages/agent-runtime/templates/<id>/) ships a `src/App.tsx` rendering
@@ -148,7 +149,8 @@ COPY prisma.config.local.ts ./prisma.config.local.ts
 # so all of node_modules is created with uid 1001 ownership from the start.
 RUN chown -R appuser:appgroup /app
 USER appuser
-RUN bun install
+RUN --mount=type=cache,target=/home/appuser/.bun/install/cache,uid=1001,gid=1001 \
+    bun install
 
 # =============================================================================
 # Stage 2: production image — layer source code onto base image
@@ -204,6 +206,8 @@ USER appuser
 
 # Rebuild bun's module resolution links from .bun/ cache (no downloads).
 # Running as appuser so output is correctly owned — no chown -R needed.
-RUN bun install --ignore-scripts
+# Cache target matches BUN_INSTALL_CACHE_DIR set in Dockerfile.base.
+RUN --mount=type=cache,target=/app/.bun/cache,uid=1001,gid=1001 \
+    bun install --ignore-scripts
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -51,7 +51,8 @@ COPY prisma.config.local.ts ./prisma.config.local.ts
 COPY shogo.config.json ./shogo.config.json
 
 # Install all dependencies (postinstall generates Prisma client)
-RUN bun install
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install
 
 # Source for everything we build. The SDK's `dts: true` tsup pass
 # needs every cross-package type import resolvable (e.g.
@@ -93,7 +94,8 @@ RUN bun run generate:routes
 # afterwards — the API doesn't need it at runtime, only the
 # (now-populated) `templates/<id>/dist/` directories.
 WORKDIR /app/templates/runtime-template
-RUN bun install
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install
 WORKDIR /app
 RUN bun run --cwd packages/agent-runtime build-template-dists && \
     rm -rf templates/runtime-template/node_modules
@@ -141,7 +143,8 @@ COPY prisma.config.local.ts ./prisma.config.local.ts
 
 RUN chown -R appuser:appgroup /app
 USER appuser
-RUN bun install
+RUN --mount=type=cache,target=/home/appuser/.bun/install/cache,uid=1001,gid=1001 \
+    bun install
 
 # =============================================================================
 # Production image
@@ -223,7 +226,8 @@ USER appuser
 
 # Rebuild per-package module resolution links from .bun/ cache (no downloads).
 # Running as appuser so output is correctly owned — no chown -R needed.
-RUN bun install --ignore-scripts
+RUN --mount=type=cache,target=/home/appuser/.bun/install/cache,uid=1001,gid=1001 \
+    bun install --ignore-scripts
 
 # Build hash for version detection (set at build time by CI)
 ARG BUILD_HASH=dev
