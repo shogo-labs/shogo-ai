@@ -2152,14 +2152,48 @@ export class WarmPoolController {
         template: {
           metadata: {
             annotations: {
-              'autoscaling.knative.dev/min-scale': '1',
+              // Scale-to-zero policy:
+              //
+              // Previously this was pinned `min-scale: 1` to dodge two
+              // problems:
+              //   1. Knative activator's hardcoded 5-min request timeout
+              //      cutting long agent chat streams mid-turn.
+              //   2. ~116s cold-start tar-extract of `node_modules` from
+              //      S3 blocking `/ready`, failing health probes.
+              // Both have been solved separately:
+              //   1. `project-chat.ts` runs a streamBufferStore + server-
+              //      side auto-resume against `/agent/chat/:id/stream`
+              //      so any HTTP cut (activator timeout included) is
+              //      transparently re-attached to the still-running
+              //      turn in the runtime's in-memory buffer.
+              //   2. Content-addressed `_deps-cache/<hash>.tar.gz` +
+              //      per-project `deps-hash.txt` (S3Sync.markDepsChanged)
+              //      makes second+ assignments hit a fast restore path,
+              //      not a cold `bun install`.
+              //
+              // Keeping `min-scale: 1` forever after that meant every
+              // project ever assigned kept a pod running 24/7 — staging
+              // was carrying ~200 always-on pods to serve ~30
+              // concurrent users (2026-05-14 incident root cause: 215
+              // pinned pods over-committing the cluster, triggering a
+              // node DiskPressure cascade). Allowing scale-to-zero lets
+              // the existing soft-evict GC (see `evictProject`'s
+              // `deleteService:false` path) actually free resources for
+              // long-idle projects.
+              'autoscaling.knative.dev/min-scale': '0',
               'autoscaling.knative.dev/max-scale': '1',
-              // Take the activator out of the request path. Knative's
-              // activator imposes a hardcoded 5-minute `defaultRequestTimeout`
-              // on in-flight requests (see `handler/timeout.go`), which was
-              // cutting long agent chat streams mid-turn. With burst-capacity=0
-              // the data-plane path is queue-proxy → user-container, with no
-              // activator-imposed deadline.
+              // Hold the pod for 30 min after last request before
+              // tearing down. Matches `PROMOTED_POD_IDLE_TIMEOUT_MS`
+              // and the `scale-to-zero-pod-retention-period` already
+              // used by `knative-project-manager.ts`, so a user who
+              // steps away and returns within their typical break
+              // never sees a cold start.
+              'autoscaling.knative.dev/scale-to-zero-pod-retention-period': '1800s',
+              // Keep the activator out of the steady-state data path
+              // (`queue-proxy → user-container` direct). It still goes
+              // through the activator for the cold-start request after
+              // a scale-up-from-zero, but only for the buffered request
+              // — once the pod is ready, the activator hands off.
               'autoscaling.knative.dev/target-burst-capacity': '0',
             },
           },
