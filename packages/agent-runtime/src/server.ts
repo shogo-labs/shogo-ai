@@ -510,6 +510,40 @@ function safeMoveSync(src: string, dest: string): void {
 }
 
 function ensureWorkspaceFiles(): void {
+  // External (VS Code-style) projects: WORKSPACE_DIR is the user's
+  // real repo on their machine. We MUST NOT run any of the seeding
+  // / migration / template-overlay below — every branch is destructive
+  // against a non-Shogo-shaped tree:
+  //
+  //   - `seedWorkspaceFromTemplate` / `seedRuntimeTemplate` would dump
+  //     a Vite + React scaffold (`index.html`, `src/`, `tsconfig.json`,
+  //     `vite.config.ts`, …) into the user's repo root, overwriting
+  //     existing files.
+  //   - The "legacy APP layout migration" further down would detect
+  //     the user's own `package.json` + missing `AGENTS.md` and
+  //     **move** the user's `package.json`, `bun.lock`, `.gitignore`,
+  //     `src/`, `prisma/`, `dist/`, `public/`, `node_modules/` into a
+  //     new `project/` subdirectory — surfaced on 2026-05-14 against
+  //     `shogo-ai` itself, which lost ~50 prisma migrations to this path.
+  //   - `seedTechStack` / `overlayAgentTemplateCodeDirs` similarly
+  //     overlay starter files onto the user's tree.
+  //   - `seedLSPConfig` writes a `pyrightconfig.json` the user never
+  //     asked for.
+  //
+  // For external projects the `.shogo/{skills,plans,local}` skeleton
+  // is already laid down by:
+  //   - apps/api/src/routes/local-projects.ts (POST /from-folders)
+  //   - RuntimeManager.ensureProjectDirectory (defense in depth)
+  //
+  // Re-running just the .shogo subdir creation here keeps the boot
+  // idempotent for older bound folders that pre-date that scaffolding.
+  if (WORKING_MODE === 'external') {
+    seedWorkspaceDefaults(WORKSPACE_DIR)
+    workspaceStatus.templateSeeded = true
+    logTiming('External project: skipped template seeding / legacy migration / LSP config')
+    return
+  }
+
   const templateMarker = join(WORKSPACE_DIR, '.template')
   const templateIdFromEnv = process.env.TEMPLATE_ID
   const templateIdFromFile = existsSync(templateMarker) ? readFileSync(templateMarker, 'utf-8').trim() : undefined
@@ -3736,8 +3770,14 @@ async function initializeEssentials(): Promise<void> {
   // Seed tech stack if specified (covers warm pool assignment path where
   // TECH_STACK_ID is injected after module-level code has already run).
   // seedTechStack is idempotent — only writes files that don't already exist.
+  //
+  // External (VS Code-style) projects: do NOT run any tech-stack seed.
+  // `seedTechStack` copies `starter/` (whole directory tree: package.json,
+  // tsconfig.json, src/, etc.) into the user's repo root. Even though it
+  // skips existing files, it still pollutes the repo with files the user
+  // never asked for — exactly the failure mode we're avoiding.
   const tsId = process.env.TECH_STACK_ID
-  if (tsId) {
+  if (tsId && WORKING_MODE !== 'external') {
     seedTechStack(WORKSPACE_DIR, tsId)
     logTiming(`Tech stack seeded: ${tsId}`)
   }
@@ -3764,7 +3804,16 @@ async function initializeEssentials(): Promise<void> {
   // Ensure workspace has node_modules. If S3 sync is restoring deps in the
   // background, skip the blocking install here — deps will be available
   // before the gateway starts (startGateway awaits waitForDeps).
-  if (s3SyncInstance && !s3SyncInstance.areDepsReady()) {
+  //
+  // External (VS Code-style) projects: never run `bun install` on the
+  // user's repo. `ensureWorkspaceDeps` also calls `migrateLegacyShogoSdkPin`
+  // which *rewrites* the user's `package.json` if it sees an old
+  // `@shogo-ai/sdk` pin or `bunx shogo …` script — categorically not
+  // something Shogo should be doing inside someone else's repo. The user
+  // owns their package manager workflow in external mode.
+  if (WORKING_MODE === 'external') {
+    logTiming('External project: skipped workspace deps install')
+  } else if (s3SyncInstance && !s3SyncInstance.areDepsReady()) {
     logTiming('Deps restoring in background — skipping blocking install')
   } else {
     try {
@@ -3776,14 +3825,21 @@ async function initializeEssentials(): Promise<void> {
     }
   }
 
-  const techStackMarkerPath = join(WORKSPACE_DIR, '.tech-stack')
-  if (existsSync(techStackMarkerPath)) {
-    const stackId = readFileSync(techStackMarkerPath, 'utf-8').trim()
-    try {
-      await runTechStackSetup(WORKSPACE_DIR, stackId)
-      logTiming(`Tech stack setup complete: ${stackId}`)
-    } catch (err: any) {
-      console.error(`[agent-runtime] Tech stack setup failed for ${stackId}:`, err.message)
+  // Run any pending tech-stack setup script. External projects can't
+  // arrive here with a `.tech-stack` marker (we never seeded one), but
+  // even if a user manually dropped one in, `setup.sh` is destructive
+  // by definition (the contract is "set this stack up"), so we don't
+  // execute it against an external repo.
+  if (WORKING_MODE !== 'external') {
+    const techStackMarkerPath = join(WORKSPACE_DIR, '.tech-stack')
+    if (existsSync(techStackMarkerPath)) {
+      const stackId = readFileSync(techStackMarkerPath, 'utf-8').trim()
+      try {
+        await runTechStackSetup(WORKSPACE_DIR, stackId)
+        logTiming(`Tech stack setup complete: ${stackId}`)
+      } catch (err: any) {
+        console.error(`[agent-runtime] Tech stack setup failed for ${stackId}:`, err.message)
+      }
     }
   }
 
@@ -3794,10 +3850,19 @@ async function initializeEssentials(): Promise<void> {
   // `<workspace>/project/package.json` (legacy Vite layout) or a workspace-
   // root `package.json` (Expo / React Native stacks place it there). The
   // PreviewManager itself owns the cwd disambiguation via `resolveBundlerCwd`.
+  //
+  // External projects: PreviewManager is gated by `RUNTIME_ENABLED` (set
+  // by the host RuntimeManager from `Project.runtimeEnabled`). We only
+  // honour the auto-start when the user has opted in via that flag.
+  // Without this guard, opening any external project with a top-level
+  // `package.json` would spawn Vite/Metro in the user's repo without
+  // their consent.
   const legacyProjectDir = join(WORKSPACE_DIR, 'project')
   const hasLegacyPkg = existsSync(join(legacyProjectDir, 'package.json'))
   const hasRootPkg = existsSync(join(WORKSPACE_DIR, 'package.json'))
-  if (hasLegacyPkg || hasRootPkg) {
+  const externalAutoPreviewBlocked =
+    WORKING_MODE === 'external' && process.env.RUNTIME_ENABLED !== 'true'
+  if ((hasLegacyPkg || hasRootPkg) && !externalAutoPreviewBlocked) {
     const pm = getPreviewManager()
     const status = pm.getStatus()
     if (!status.running) {
@@ -3807,6 +3872,8 @@ async function initializeEssentials(): Promise<void> {
         console.error('[agent-runtime] Auto-start preview failed:', err.message)
       })
     }
+  } else if (externalAutoPreviewBlocked && (hasLegacyPkg || hasRootPkg)) {
+    logTiming('External project with runtimeEnabled=false — skipping auto-preview-start')
   }
 }
 

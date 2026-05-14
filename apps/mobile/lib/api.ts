@@ -787,6 +787,47 @@ export const api = {
   },
 
   /**
+   * Server-side directory listing for the in-app folder picker. Only
+   * mounted in `SHOGO_LOCAL_MODE=true`; same validation gauntlet as
+   * `createLocalFolderProject` (must be under `$HOME`, not a system
+   * root, must exist, etc.) so anything the picker shows can also be
+   * passed straight into `paths` on create.
+   *
+   * Returns the raw API body on success and `{ error }` on failure so
+   * the modal can render a tasteful empty state without try/catch
+   * noise at the call site.
+   */
+  async browseLocalFolder(
+    http: HttpClient,
+    opts: { path?: string; includeFiles?: boolean } = {},
+  ): Promise<
+    | {
+        path: string
+        parent: string | null
+        home: string
+        entries: Array<{ name: string; isDirectory: boolean; isSymlink: boolean; hidden: boolean }>
+        truncated?: boolean
+      }
+    | { error: string; code?: string }
+  > {
+    const params = new URLSearchParams()
+    if (opts.path) params.set('path', opts.path)
+    if (opts.includeFiles) params.set('includeFiles', 'true')
+    const qs = params.toString()
+    try {
+      const res = await http.get<any>(`/api/local/projects/fs/browse${qs ? `?${qs}` : ''}`)
+      if (res.data && typeof res.data.path === 'string') return res.data
+      const errBody = (res.error ?? res.data ?? {}) as { error?: string; code?: string }
+      return {
+        error: typeof errBody.error === 'string' ? errBody.error : 'Browse failed',
+        code: typeof errBody.code === 'string' ? errBody.code : undefined,
+      }
+    } catch (err: any) {
+      return { error: err?.message ?? 'Browse failed' }
+    }
+  },
+
+  /**
    * Toggle a project's `trustLevel`. Wired to the TrustPrompt modal.
    * Returns the updated project on success.
    */
