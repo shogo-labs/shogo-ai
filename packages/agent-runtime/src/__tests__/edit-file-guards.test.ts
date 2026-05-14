@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, readFileSync, rmSync, utimesSync, statSync } from 'fs'
 import { join } from 'path'
 import { createTools, type ToolContext } from '../gateway-tools'
@@ -15,6 +15,7 @@ import {
   writeWithMetadata,
   getStructuredPatch,
 } from '../edit-file-utils'
+import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 
 const TEST_DIR = '/tmp/test-edit-file-guards'
 
@@ -47,6 +48,20 @@ async function exec(ctx: ToolContext, name: string, params: Record<string, any>)
   const result = await tool.execute('test-call', params)
   return result.details
 }
+
+// gateway-tools' assertAllowedPath() consults the global runtime-trust
+// config. Without this, every edit_file/read_file/write_file call below
+// returns "Path is outside the project's allowed folders" before the
+// read-before-edit guards (or any other behavior) gets exercised. This
+// applies to EVERY describe in this file, not just the top-level
+// `edit_file guards` block, so it lives at module scope.
+beforeAll(() => {
+  trustWorkspaceForTests(TEST_DIR)
+})
+
+afterAll(() => {
+  clearTrustForTests()
+})
 
 describe('edit_file guards', () => {
   beforeEach(() => {

@@ -9,9 +9,10 @@
  * 1.3 Permission Persistence (.shogo/permissions.json)
  */
 
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
+import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 
 // ---------------------------------------------------------------------------
 // 1.2 File State Cache
@@ -159,6 +160,18 @@ import { FileStateCache as FSC2 } from '../file-state-cache'
 
 describe('File State Cache — tool integration', () => {
   const tmpDir = '/tmp/test-fsc-tools'
+
+  beforeAll(() => {
+    // gateway-tools' assertAllowedPath() consults the global runtime-trust
+    // config; without this, every read_file/write_file/edit_file call
+    // returns "Path is outside the project's allowed folders" before the
+    // file-state-cache wiring even runs.
+    trustWorkspaceForTests(tmpDir)
+  })
+
+  afterAll(() => {
+    clearTrustForTests()
+  })
 
   function createCtx(overrides?: Partial<ToolContext>): ToolContext {
     return {

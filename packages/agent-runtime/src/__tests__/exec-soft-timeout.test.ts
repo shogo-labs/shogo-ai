@@ -18,6 +18,7 @@ import { tmpdir } from 'os'
 import { createTools, type ToolContext } from '../gateway-tools'
 import { CommandRegistry } from '../command-registry'
 import { sandboxExecAsync } from '../sandbox-exec'
+import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 
 const PLATFORM = process.platform
 
@@ -41,6 +42,10 @@ describe('exec soft-timeout', () => {
   beforeEach(() => {
     workDir = join(tmpdir(), `shogo-exec-soft-${Date.now()}-${Math.random().toString(36).slice(2)}`)
     mkdirSync(workDir, { recursive: true })
+    // gateway-tools' assertAllowedPath() consults the global runtime-trust
+    // config; mirror the freshly-minted workDir into it so the exec gate
+    // doesn't reject every command before it runs.
+    trustWorkspaceForTests(workDir)
     registry = new CommandRegistry()
     const cwdMap = new Map<string, string>()
     const sessionId = 'test-session'
@@ -73,11 +78,13 @@ describe('exec soft-timeout', () => {
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
         rmSync(workDir, { recursive: true, force: true })
+        clearTrustForTests()
         return
       } catch {
         await new Promise(r => setTimeout(r, 200))
       }
     }
+    clearTrustForTests()
     // Best-effort; OS tmpdir cleanup will handle anything left over.
   })
 

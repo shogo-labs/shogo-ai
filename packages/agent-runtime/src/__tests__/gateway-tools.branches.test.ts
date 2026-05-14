@@ -17,7 +17,7 @@
  * the gateway-tools layer reports >= 70% line coverage on its own.
  */
 
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, statSync } from 'fs'
 import { join } from 'path'
 
@@ -34,6 +34,7 @@ import {
   textResult,
 } from '../gateway-tools'
 import { MockChannel } from './helpers/mock-channel'
+import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 
 const TEST_DIR = '/tmp/test-gateway-tools-branches'
 
@@ -65,6 +66,19 @@ async function call(ctx: ToolContext, name: string, params: Record<string, any> 
   const result = await tool.execute('test-call', params)
   return result.details ?? result
 }
+
+// gateway-tools' assertAllowedPath() consults the global runtime-trust
+// config; see helpers/test-trust.ts. Without this, every exec/write_file/
+// edit_file call returns "Path is outside the project's allowed folders"
+// because the default workspaceDir is /app/workspace, not our /tmp test
+// fixture.
+beforeAll(() => {
+  trustWorkspaceForTests(TEST_DIR)
+})
+
+afterAll(() => {
+  clearTrustForTests()
+})
 
 beforeEach(() => {
   rmSync(TEST_DIR, { recursive: true, force: true })
