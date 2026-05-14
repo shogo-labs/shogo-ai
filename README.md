@@ -21,7 +21,8 @@ agentic products.
 Shogo uses a split-license model:
 
 - Core product code is licensed under `AGPL-3.0-or-later`
-- `packages/sdk/` and SDK examples are licensed under `Apache-2.0`
+- `packages/{sdk,core,agent,db,email,voice,cli}/` and SDK examples are
+  licensed under `MIT`
 - Documentation is licensed under `CC BY 4.0`
 - Infrastructure and deployment materials in `terraform/`, `k8s/`,
   `deploy-examples/`, and `.github/workflows/` are proprietary and licensed
@@ -33,20 +34,28 @@ details.
 
 ## Repository Layout
 
-| Path | Purpose |
-|------|---------|
-| `apps/api/` | Hono API server, auth, billing, runtime orchestration |
-| `apps/mobile/` | Expo app for web, iOS, and Android |
-| `apps/desktop/` | Local desktop distribution |
-| `apps/docs/` | Documentation site |
-| `packages/agent-runtime/` | Agent gateway, tools, integrations |
-| `packages/shared-runtime/` | Shared runtime helpers |
-| `packages/shared-app/` | Shared app/domain logic |
-| `packages/shared-ui/` | Shared UI components |
-| `packages/ui-kit/` | Theme and routing helpers |
-| `packages/domain-stores/` | Domain store layer |
-| `packages/sdk/` | Apache-licensed SDK |
-| `templates/runtime-template/` | Apache-licensed project template |
+License is shown inline so the AGPL/MIT boundary is visible at a glance.
+
+| Path | License | Purpose |
+|------|---------|---------|
+| `apps/api/` | AGPL | Hono API server, auth, billing, runtime orchestration |
+| `apps/mobile/` | AGPL | Expo app for web, iOS, and Android |
+| `apps/desktop/` | AGPL | Local desktop distribution |
+| `apps/docs/` | AGPL | Documentation site |
+| `packages/sdk/` | MIT | Client SDK; back-compat shims for moved subpaths |
+| `packages/core/` | MIT | Logger, OTEL instrumentation, stream-buffer, chat-message |
+| `packages/agent/` | MIT | Agent loop, model router, hooks, pi-ai adapter |
+| `packages/db/` | MIT | Prisma adapter helpers (PG / SQLite / libSQL) |
+| `packages/email/` | MIT | Transactional email (SES / SMTP / OCI) |
+| `packages/voice/` | MIT | ElevenLabs + Twilio voice infra; React + RN UI |
+| `packages/cli/` | MIT | `validateManifest` / `runDeploy` / `pkg` helpers |
+| `packages/agent-runtime/` | AGPL | Agent gateway, tools, integrations |
+| `packages/shared-runtime/` | AGPL | Shared runtime helpers |
+| `packages/shared-app/` | AGPL | Shared app/domain logic |
+| `packages/shared-ui/` | AGPL | Shared UI components |
+| `packages/ui-kit/` | AGPL | Theme and routing helpers |
+| `packages/domain-stores/` | AGPL | Domain store layer |
+| `templates/runtime-template/` | MIT | Project template |
 
 ## Quick Start
 
@@ -100,13 +109,29 @@ Local desktop/offline usage is documented in `apps/desktop/README.md`.
 
 ## Packages
 
+**Published to npm (MIT, lockstep release on the `sdk-v*` tag):**
+
+| Package | Description |
+|---------|-------------|
+| `@shogo-ai/sdk` | Client SDK — auth, db client, LLM gateway, voice client |
+| `@shogo-ai/core` | Logger, OTEL instrumentation, stream-buffer, chat-message |
+| `@shogo-ai/agent` | Agent loop, model catalog/router, hooks, pi-ai adapter |
+| `@shogo-ai/db` | Prisma adapter helpers (PG / SQLite / libSQL) |
+| `@shogo-ai/email` | Transactional email — SES / SMTP / OCI |
+| `@shogo-ai/voice` | ElevenLabs + Twilio voice; React + React Native UI |
+| `@shogo-ai/cli` | `validateManifest` / `runDeploy` / `pkg` helpers |
+
+Old `@shogo-ai/sdk/<subpath>` imports keep working through deprecated
+re-export shims; see [`packages/sdk/MIGRATION.md`](./packages/sdk/MIGRATION.md).
+
+**Workspace-only (AGPL):**
+
 | Package | Description |
 |---------|-------------|
 | `@shogo/api` | API server and platform orchestration |
 | `@shogo/mobile` | Primary client app |
 | `shogo` | Desktop packaging layer |
 | `@shogo/agent-runtime` | Agent runtime and tool gateway |
-| `@shogo-ai/sdk` | Developer SDK for auth, data, and email |
 
 ## Commands
 
@@ -117,6 +142,8 @@ Local desktop/offline usage is documented in `apps/desktop/README.md`.
 | `bun run docker:infra` | Start Postgres, Redis, and MinIO |
 | `bun run db:migrate:deploy` | Apply migrations |
 | `bun run build` | Build the monorepo |
+| `bun run build:packages` | Build all 7 published `@shogo-ai/*` packages |
+| `bun run build:sdk` / `:core` / `:agent` / `:db` / `:email` / `:voice` / `:cli` | Build a single package |
 | `bun run test` | Run tests |
 | `bun run typecheck` | Run TypeScript checks |
 | `bun run lint` | Run linters |

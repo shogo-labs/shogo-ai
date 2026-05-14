@@ -1,6 +1,9 @@
 # @shogo-ai/sdk
 
-Shogo Platform SDK - Zero-boilerplate auth, database, and email for Shogo apps.
+The Shogo client SDK — auth, typed database access, and the LLM gateway.
+Voice, email, agent-runtime, db adapters, and CLI helpers ship as
+separate `@shogo-ai/*` packages but remain importable via deprecated
+subpath shims here through v1.x. See [MIGRATION.md](./MIGRATION.md).
 
 ## Installation
 
@@ -9,6 +12,26 @@ npm install @shogo-ai/sdk
 # or
 bun add @shogo-ai/sdk
 ```
+
+## Package family
+
+The SDK was split in v1.6 into focused packages. All seven release in
+lockstep on the `sdk-v*` tag:
+
+| Package | Use when |
+| --- | --- |
+| `@shogo-ai/sdk` | Building a client (web / RN / Node consumer) |
+| `@shogo-ai/core` | Server primitives — logger, OTEL, streaming, chat-message |
+| `@shogo-ai/agent` | Building an agent backend on `pi-ai` / `pi-agent-core` |
+| `@shogo-ai/db` | Prisma adapter wiring (PG / SQLite / libSQL) |
+| `@shogo-ai/email` | Transactional email (SES / SMTP / OCI) |
+| `@shogo-ai/voice` | ElevenLabs + Twilio voice infra + React/RN UI |
+| `@shogo-ai/cli` | Deploy / manifest / packager helpers |
+
+Old `@shogo-ai/sdk/<subpath>` imports keep working through back-compat
+re-export shims. New code should import from the corresponding package
+directly. See [MIGRATION.md](./MIGRATION.md) for the full subpath →
+package map.
 
 ## Quick Start
 
@@ -33,14 +56,21 @@ await client.db.todos.delete(todo.id)
 
 ## Features
 
-- **Authentication** - Email/password auth with Better Auth integration
-- **Database** - Zero-config CRUD operations with MongoDB-style filtering
-- **Email** - SMTP and AWS SES support with templates
-- **Memory** - Hybrid SQLite FTS5 + TF-IDF search over per-user markdown
-- **LLM Gateway** - Drop-in Vercel AI SDK provider; one Shogo API key routes to Anthropic, OpenAI, Google, or a local LLM (see below)
-- **Voice** - Turnkey ElevenLabs convai proxy + React hook (see below)
-- **TypeScript** - Full type safety with generics
-- **Cross-Platform** - Works in browsers, Node.js, and React Native
+| Feature | Lives in |
+| --- | --- |
+| **Authentication** — email/password with Better Auth | `@shogo-ai/sdk` (`client.auth`) |
+| **Database client** — MongoDB-style CRUD with `client.db.<resource>` | `@shogo-ai/sdk` (`client.db`) |
+| **LLM Gateway** — drop-in Vercel AI SDK provider | `@shogo-ai/sdk` (`client.llm`) |
+| **Memory** — SQLite FTS5 + TF-IDF over per-user markdown | `@shogo-ai/sdk/memory` |
+| **Voice** — ElevenLabs convai proxy + React hooks | [`@shogo-ai/voice`](../voice) (also as `@shogo-ai/sdk/voice/*`) |
+| **Email** — SMTP / SES / OCI providers + templates | [`@shogo-ai/email`](../email) (also as `@shogo-ai/sdk/email/server`) |
+| **Prisma adapters** — PG / SQLite / libSQL auto-detection | [`@shogo-ai/db`](../db) (also as `@shogo-ai/sdk/db`) |
+| **Agent runtime** — `runAgentLoop`, model router, hooks | [`@shogo-ai/agent`](../agent) (also as `@shogo-ai/sdk/agent-loop` etc.) |
+| **TypeScript** | Full type safety with generics |
+| **Cross-Platform** | Browsers, Node, Bun, React Native |
+
+The right column tells you where the implementation lives in v1.6+;
+either path works at the import site.
 
 ## API Reference
 
@@ -240,6 +270,12 @@ const user: User | null = await client.db.users.get('123')
 ```
 
 ## Email (Server-Side)
+
+> **Moved.** This module now lives in
+> [`@shogo-ai/email`](../email/README.md). The
+> `@shogo-ai/sdk/email/server` import path shown below continues to
+> work via a deprecated re-export shim. New code should import from
+> `@shogo-ai/email/server` directly.
 
 The SDK includes a server-side email module for sending transactional emails via SMTP or AWS SES.
 
@@ -664,6 +700,13 @@ Pass `null` to clear the provider (e.g. on sign-out).
   OpenAI-compatible path loses fidelity on conversion.
 
 ## Voice (ElevenLabs convai)
+
+> **Moved.** This module now lives in
+> [`@shogo-ai/voice`](../voice/README.md). All `@shogo-ai/sdk/voice/*`
+> import paths shown below (incl. `/voice`, `/voice/server`,
+> `/voice/react`, `/voice/native`, `/voice/route/*`) continue to work
+> via deprecated re-export shims. New code should import from
+> `@shogo-ai/voice/<sub>` directly.
 
 Turn your Shogo app into a live voice agent with two files: one server mount
 and one React component. The SDK proxies to [ElevenLabs Conversational AI](https://elevenlabs.io/docs/conversational-ai/overview)
