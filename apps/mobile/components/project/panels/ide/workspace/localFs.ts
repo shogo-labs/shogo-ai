@@ -118,7 +118,15 @@ const BINARY_EXT = new Set([
   "pyc", "pyo", "pyd",
 ]);
 
-function isTextFile(name: string) {
+/** Classify a filename as text / binary by name alone.
+ *  - `true`  : known text (extension allow-list, dotfiles, conventional
+ *              no-extension files like README / Dockerfile / MEMORY).
+ *  - `false` : known binary (extension deny-list).
+ *  - `null`  : unknown — caller should fall back to a byte sniff.
+ *  Callers MUST treat the three return values explicitly (use
+ *  `=== true` / `=== false`), not truthy/falsy, so the unknown case is
+ *  routed through the sniff rather than silently dropped. */
+function isTextFile(name: string): boolean | null {
   // Treat common dotfiles as text (.env, .env.local, .gitignore, .prettierrc,
   // .editorconfig, .nvmrc, etc). The extension detector otherwise misclassifies
   // them because the leading dot makes "env"/"gitignore"/… look like an
@@ -128,8 +136,7 @@ function isTextFile(name: string) {
   if (!e) return /^(Dockerfile|Makefile|README|LICENSE|CHANGELOG|AUTHORS|CONTRIBUTING|NOTICE|COPYING|TODO|HEARTBEAT|AGENTS|TOOLS|MEMORY)/i.test(name);
   if (TEXT_EXT.has(e)) return true;
   if (BINARY_EXT.has(e)) return false;
-  // Unknown extension — caller should fall back to the byte sniff.
-  return null as unknown as boolean;
+  return null;
 }
 
 /** Heuristic content sniff: returns true if the first 8KB of `file` looks
@@ -274,7 +281,7 @@ export class LocalFs implements WorkspaceService {
         `\"${name}\" looks like a binary file and can't be opened in the text editor.`,
       );
     }
-    if (known !== true) {
+    if (known === null) {
       const sniff = await looksLikeText(file);
       if (!sniff) {
         throw new Error(
@@ -379,7 +386,11 @@ export class LocalFs implements WorkspaceService {
         if (kind === "directory") {
           if (DENY_DIRS.has(name)) continue;
           await walk(entry as FileSystemDirectoryHandle, childRel);
-        } else if (isTextFile(name)) {
+        } else if (isTextFile(name) === true) {
+          // Only index files we *know* are text. `null` (unknown extension)
+          // is intentionally skipped here — the search walker can't pay the
+          // per-file byte-sniff cost across an entire workspace, and a
+          // false positive would silently grep through binary data.
           allFiles.push(childRel);
         }
       }
