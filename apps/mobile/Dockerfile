@@ -1,9 +1,13 @@
+# syntax=docker/dockerfile:1.7-labs
 # =============================================================================
 # Shogo Web Frontend Dockerfile (Expo Web Export)
 # =============================================================================
 # Multi-stage build:
 # 1. Install workspace deps with Bun, build with Expo/Metro (requires Node)
 # 2. Serve static files with Nginx (reverse proxy for /api)
+#
+# Workspace package.jsons are glob-copied via BuildKit `COPY --parents`
+# (requires the `# syntax=docker/dockerfile:1.7-labs` directive above).
 # =============================================================================
 
 FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
@@ -42,32 +46,10 @@ RUN curl -sL https://sentry.io/get-cli/ | SENTRY_CLI_VERSION="3.3.4" sh
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
-# Copy all workspace member package.json files for dependency resolution
-COPY packages/agent-runtime/package.json ./packages/agent-runtime/
-COPY packages/shared-runtime/package.json ./packages/shared-runtime/
-COPY packages/sdk/package.json ./packages/sdk/
-COPY packages/domain-stores/package.json ./packages/domain-stores/
-COPY packages/shared-app/package.json ./packages/shared-app/
-COPY packages/shared-ui/package.json ./packages/shared-ui/
-COPY packages/ui-kit/package.json ./packages/ui-kit/
-COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
-COPY packages/model-catalog/package.json ./packages/model-catalog/
-# SDK was split into focused @shogo-ai/* workspace packages (refactor
-# 3a2798ab). The root workspaces glob is `packages/*`, so every
-# packages/<name>/package.json must be present here — `bun install`
-# fails fast with `error: Workspace dependency "@shogo-ai/<X>" not
-# found` for any missing one. Source is not copied because the SDK
-# bundles its own implementations into dist/, and Metro consumes the
-# SDK's built dist via its package.json "exports".
-COPY packages/agent/package.json ./packages/agent/
-COPY packages/cli/package.json ./packages/cli/
-COPY packages/core/package.json ./packages/core/
-COPY packages/db/package.json ./packages/db/
-COPY packages/email/package.json ./packages/email/
-COPY packages/voice/package.json ./packages/voice/
-COPY packages/shogo-worker/package.json ./packages/shogo-worker/
-COPY apps/api/package.json ./apps/api/
-COPY apps/mobile/package.json ./apps/mobile/
+# All workspace members must be present for bun install to resolve the
+# `packages/*` and `apps/*` workspaces glob in the root package.json.
+COPY --parents packages/*/package.json ./
+COPY --parents apps/*/package.json ./
 
 # Copy scripts needed for postinstall
 COPY scripts ./scripts
@@ -84,26 +66,12 @@ COPY prisma.config.local.ts ./prisma.config.local.ts
 # Install all dependencies (postinstall generates Prisma client)
 RUN bun install
 
-# Copy workspace packages consumed by the mobile app
-COPY packages/domain-stores ./packages/domain-stores
-COPY packages/shared-app ./packages/shared-app
-COPY packages/shared-ui ./packages/shared-ui
-COPY packages/ui-kit ./packages/ui-kit
-COPY packages/model-catalog ./packages/model-catalog
-# Source for the SDK-split workspace packages — needed so the SDK
-# can resolve cross-package type imports (e.g. `import { ... } from
-# '@shogo-ai/core/chat-message'`) during its tsup `dts: true` pass.
-# Without these, the dts build fails with TS2307 even though the
-# bundled JS would have been fine (they are external in tsup).
-COPY packages/core ./packages/core
-COPY packages/agent ./packages/agent
-COPY packages/db ./packages/db
-COPY packages/email ./packages/email
-COPY packages/voice ./packages/voice
-COPY packages/cli ./packages/cli
-COPY packages/sdk ./packages/sdk
+# Source for everything the mobile build touches. Metro resolves
+# `@shogo-ai/sdk → dist/index.js` and the SDK's `dts: true` tsup pass
+# needs every cross-package type import resolvable. Single COPY removes
+# per-package bleed and is cache-friendly when packages/ is unchanged.
+COPY packages ./packages
 
-# Copy the mobile app source
 COPY apps/mobile ./apps/mobile
 
 # Build the SDK and its split-out workspace deps in dependency

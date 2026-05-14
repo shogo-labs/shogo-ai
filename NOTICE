@@ -7,8 +7,11 @@ This product includes software developed at Shogo Technologies, Inc.
 Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
 See the LICENSE file in the root of this repository.
 
-The Shogo SDK (@shogo-ai/sdk) is licensed under Apache License 2.0.
-See packages/sdk/LICENSE for details.
+The Shogo SDK family — `@shogo-ai/sdk`, `@shogo-ai/core`,
+`@shogo-ai/agent`, `@shogo-ai/db`, `@shogo-ai/email`,
+`@shogo-ai/voice`, and `@shogo-ai/cli` — is licensed under the MIT
+License. See the per-package `LICENSE` file in each
+`packages/<name>/` directory for details.
 
 Documentation (apps/docs/, docs/) is licensed under Creative Commons
 Attribution 4.0 International (CC BY 4.0). See apps/docs/LICENSE for details.

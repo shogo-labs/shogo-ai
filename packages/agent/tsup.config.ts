@@ -16,6 +16,8 @@ export default defineConfig({
     'src/hooks/index.ts',
     'src/hooks/bundled/command-logger/handler.ts',
     'src/hooks/bundled/session-memory/handler.ts',
+    'src/ai-client.ts',
+    'src/ai-proxy.ts',
   ],
   format: ['cjs', 'esm'],
   dts: true,

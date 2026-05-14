@@ -7,9 +7,9 @@
 
 In v1.6 the monolithic `@shogo-ai/sdk` was split into seven focused
 packages so each domain (agent runtime, voice, db, email, CLI helpers)
-can evolve and version independently. **No code changes are required
-to upgrade**: every old subpath continues to work via deprecated
-re-export shims.
+can evolve and version independently.
+**No code changes are required to upgrade**: every old subpath continues
+to work via deprecated re-export shims.
 
 The shims will be removed in `@shogo-ai/sdk@2.0.0`. To prepare, swap
 your imports from `@shogo-ai/sdk/<subpath>` to the new package.
@@ -22,6 +22,8 @@ your imports from `@shogo-ai/sdk/<subpath>` to the new package.
 | `@shogo-ai/sdk/instrumentation` | `@shogo-ai/core/instrumentation` |
 | `@shogo-ai/sdk/stream-buffer` | `@shogo-ai/core/stream-buffer` |
 | `@shogo-ai/sdk/chat-message` | `@shogo-ai/core/chat-message` |
+| `@shogo-ai/sdk/macos-junk` | `@shogo-ai/core/macos-junk` |
+| `@shogo-ai/sdk/tech-stack-registry` | `@shogo-ai/core/tech-stack-registry` |
 | `@shogo-ai/sdk/agent-loop` | `@shogo-ai/agent/agent-loop` |
 | `@shogo-ai/sdk/pi-adapter` | `@shogo-ai/agent/pi-adapter` |
 | `@shogo-ai/sdk/model-catalog` | `@shogo-ai/agent/model-catalog` |
@@ -31,6 +33,8 @@ your imports from `@shogo-ai/sdk/<subpath>` to the new package.
 | `@shogo-ai/sdk/microcompact` | `@shogo-ai/agent/microcompact` |
 | `@shogo-ai/sdk/prefix-fingerprint` | `@shogo-ai/agent/prefix-fingerprint` |
 | `@shogo-ai/sdk/hooks` | `@shogo-ai/agent/hooks` |
+| `@shogo-ai/sdk/ai-client` | `@shogo-ai/agent/ai-client` |
+| `@shogo-ai/sdk/ai-proxy` | `@shogo-ai/agent/ai-proxy` |
 | `@shogo-ai/sdk/db` | `@shogo-ai/db` |
 | `@shogo-ai/sdk/email` | `@shogo-ai/email` |
 | `@shogo-ai/sdk/email/server` | `@shogo-ai/email/server` |
@@ -105,3 +109,24 @@ chat-message,agent-loop,pi-adapter,model-catalog,model-router,
 tool-orchestration,loop-detector,microcompact,prefix-fingerprint,hooks,
 db,email,voice,cli}/...` (and matching `tsup`/`exports` entries) is
 deletable in one PR.
+
+## v1.6 → v1.6.x — MIT carve-out from `@shogo/shared-runtime`
+
+Four AGPL files in `@shogo/shared-runtime` were lifted to MIT inside
+existing published packages (no new packages, no Docker / CI churn):
+
+Under `@shogo-ai/agent`:
+
+- `@shogo-ai/agent/ai-client` — Anthropic Messages API client for
+  one-shot LLM calls.
+- `@shogo-ai/agent/ai-proxy` — `configureAIProxy()` env helper.
+
+Under `@shogo-ai/core`:
+
+- `@shogo-ai/core/macos-junk` — `.DS_Store` / AppleDouble filter.
+- `@shogo-ai/core/tech-stack-registry` — typed registry of first-party
+  tech stacks.
+
+`@shogo/shared-runtime` continues to re-export every one of these
+symbols for AGPL workspace consumers, so no migration is required.
+Apps that want MIT can switch to the canonical packages directly.

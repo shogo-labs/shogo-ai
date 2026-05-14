@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * @deprecated Import from `@shogo-ai/core/macos-junk` directly. This
+ * re-export shim will be removed in `@shogo-ai/sdk@2.0.0`. See
+ * `packages/sdk/MIGRATION.md`.
+ */
+export * from '@shogo-ai/core/macos-junk'

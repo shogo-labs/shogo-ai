@@ -21,8 +21,8 @@ agentic products.
 Shogo uses a split-license model:
 
 - Core product code is licensed under `AGPL-3.0-or-later`
-- `packages/{sdk,core,agent,db,email,voice,cli}/` and SDK examples are
-  licensed under `MIT`
+- `packages/{sdk,core,agent,db,email,voice,cli}/` and SDK
+  examples are licensed under `MIT`
 - Documentation is licensed under `CC BY 4.0`
 - Infrastructure and deployment materials in `terraform/`, `k8s/`,
   `deploy-examples/`, and `.github/workflows/` are proprietary and licensed

@@ -38,6 +38,18 @@
       "development": "./src/chat-message.ts",
       "import": "./dist/chat-message.js",
       "require": "./dist/chat-message.cjs"
+    },
+    "./macos-junk": {
+      "types": "./dist/macos-junk.d.ts",
+      "development": "./src/macos-junk.ts",
+      "import": "./dist/macos-junk.js",
+      "require": "./dist/macos-junk.cjs"
+    },
+    "./tech-stack-registry": {
+      "types": "./dist/tech-stack-registry.d.ts",
+      "development": "./src/tech-stack-registry.ts",
+      "import": "./dist/tech-stack-registry.js",
+      "require": "./dist/tech-stack-registry.cjs"
     }
   },
   "files": [

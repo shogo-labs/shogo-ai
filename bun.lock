@@ -196,7 +196,7 @@
     },
     "packages/agent": {
       "name": "@shogo-ai/agent",
-      "version": "1.0.0",
+      "version": "1.6.0",
       "devDependencies": {
         "@mariozechner/pi-agent-core": "^0.67.6",
         "@mariozechner/pi-ai": "^0.67.6",
@@ -282,7 +282,7 @@
     },
     "packages/cli": {
       "name": "@shogo-ai/cli",
-      "version": "1.0.0",
+      "version": "1.6.0",
       "devDependencies": {
         "@types/node": "^25.5.0",
         "tsup": "^8.0.0",
@@ -291,7 +291,7 @@
     },
     "packages/core": {
       "name": "@shogo-ai/core",
-      "version": "1.0.0",
+      "version": "1.6.0",
       "devDependencies": {
         "@opentelemetry/api": "^1.9.0",
         "@opentelemetry/exporter-trace-otlp-http": "^0.213.0",
@@ -322,7 +322,7 @@
     },
     "packages/db": {
       "name": "@shogo-ai/db",
-      "version": "1.0.0",
+      "version": "1.6.0",
       "devDependencies": {
         "@prisma/adapter-libsql": "^7.3.0",
         "@types/node": "^25.5.0",
@@ -356,7 +356,7 @@
     },
     "packages/email": {
       "name": "@shogo-ai/email",
-      "version": "1.0.0",
+      "version": "1.6.0",
       "devDependencies": {
         "@types/node": "^25.5.0",
         "@types/nodemailer": "^7.0.11",
@@ -554,7 +554,7 @@
     },
     "packages/voice": {
       "name": "@shogo-ai/voice",
-      "version": "1.0.0",
+      "version": "1.6.0",
       "devDependencies": {
         "@ai-sdk/react": "^3.0.99",
         "@elevenlabs/react": "^1.1.1",

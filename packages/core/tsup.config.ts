@@ -9,6 +9,8 @@ export default defineConfig({
     'src/instrumentation.ts',
     'src/stream-buffer.ts',
     'src/chat-message.ts',
+    'src/macos-junk.ts',
+    'src/tech-stack-registry.ts',
   ],
   format: ['cjs', 'esm'],
   dts: true,

@@ -1,9 +1,17 @@
+# syntax=docker/dockerfile:1.7-labs
 # =============================================================================
 # Shogo API Server Dockerfile
 # =============================================================================
 # Multi-stage build for production-optimized API server
 # Runs Hono server on port 8002 (configurable via API_PORT)
 # Includes BetterAuth for authentication
+#
+# Workspace package.jsons are glob-copied via BuildKit `COPY --parents`
+# (requires `# syntax=docker/dockerfile:1.7-labs` directive above).
+# Adding a new `packages/<X>/` is now a no-op for this Dockerfile —
+# the glob picks it up automatically. The `--parents` flag preserves
+# the directory structure (without it, all package.jsons would land
+# in the same dest dir and clobber each other).
 # =============================================================================
 
 FROM oven/bun:1.3-alpine AS builder
@@ -21,33 +29,11 @@ RUN apk add --no-cache python3 make g++ nodejs npm && \
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
-# Copy package.json files for dependency resolution
-# All workspace members must be present for bun install to succeed
-COPY packages/agent-runtime/package.json ./packages/agent-runtime/
-COPY packages/shared-runtime/package.json ./packages/shared-runtime/
-COPY packages/sdk/package.json ./packages/sdk/
-COPY packages/domain-stores/package.json ./packages/domain-stores/
-COPY packages/shared-app/package.json ./packages/shared-app/
-COPY packages/shared-ui/package.json ./packages/shared-ui/
-COPY packages/ui-kit/package.json ./packages/ui-kit/
-COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
-COPY packages/model-catalog/package.json ./packages/model-catalog/
-# SDK was split into focused @shogo-ai/* workspace packages (refactor
-# 3a2798ab). The root workspaces glob is `packages/*`, so every
-# packages/<name>/package.json must be present here — `bun install`
-# fails fast with `error: Workspace dependency "@shogo-ai/<X>" not
-# found` for any missing one. Source is not copied because the SDK
-# bundles its own implementations into dist/; these stays as stub
-# package.jsons throughout the build.
-COPY packages/agent/package.json ./packages/agent/
-COPY packages/cli/package.json ./packages/cli/
-COPY packages/core/package.json ./packages/core/
-COPY packages/db/package.json ./packages/db/
-COPY packages/email/package.json ./packages/email/
-COPY packages/voice/package.json ./packages/voice/
-COPY packages/shogo-worker/package.json ./packages/shogo-worker/
-COPY apps/api/package.json ./apps/api/
-COPY apps/mobile/package.json ./apps/mobile/
+# All workspace members must be present for bun install to resolve the
+# `packages/*` and `apps/*` workspaces glob in the root package.json.
+# Single glob copy preserves directory structure thanks to --parents.
+COPY --parents packages/*/package.json ./
+COPY --parents apps/*/package.json ./
 
 # Copy scripts needed for postinstall
 COPY scripts ./scripts
@@ -67,22 +53,14 @@ COPY shogo.config.json ./shogo.config.json
 # Install all dependencies (postinstall generates Prisma client)
 RUN bun install
 
-# Copy source code
-COPY packages/agent-runtime ./packages/agent-runtime
-COPY packages/shared-runtime ./packages/shared-runtime
-# Source for the SDK-split workspace packages — needed so the SDK
-# can resolve cross-package type imports (e.g. `import { ... } from
-# '@shogo-ai/core/chat-message'`) during its tsup `dts: true` pass.
-# Without these, the dts build fails with TS2307 even though the
-# bundled JS would have been fine (they are external in tsup).
-COPY packages/core ./packages/core
-COPY packages/agent ./packages/agent
-COPY packages/db ./packages/db
-COPY packages/email ./packages/email
-COPY packages/voice ./packages/voice
-COPY packages/cli ./packages/cli
-COPY packages/sdk ./packages/sdk
-COPY packages/model-catalog ./packages/model-catalog
+# Source for everything we build. The SDK's `dts: true` tsup pass
+# needs every cross-package type import resolvable (e.g.
+# `import { ... } from '@shogo-ai/core/chat-message'`), so we copy
+# the lot rather than try to enumerate which ones each upstream
+# build touches. Build context size is dominated by node_modules
+# anyway, and BuildKit caches this layer across rebuilds when the
+# packages/ tree hasn't changed.
+COPY packages ./packages
 COPY apps/api ./apps/api
 COPY templates/runtime-template ./templates/runtime-template
 
@@ -147,27 +125,10 @@ RUN addgroup -g 1001 -S appgroup && adduser -u 1001 -S appuser -G appgroup
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
-COPY packages/agent-runtime/package.json ./packages/agent-runtime/
-COPY packages/shared-runtime/package.json ./packages/shared-runtime/
-COPY packages/sdk/package.json ./packages/sdk/
-COPY packages/domain-stores/package.json ./packages/domain-stores/
-COPY packages/shared-app/package.json ./packages/shared-app/
-COPY packages/shared-ui/package.json ./packages/shared-ui/
-COPY packages/ui-kit/package.json ./packages/ui-kit/
-COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
-COPY packages/model-catalog/package.json ./packages/model-catalog/
-# Mirror the SDK-split package.jsons here too — the deps stage runs
-# its own `bun install` (line below) and would otherwise fail to
-# resolve @shogo-ai/{agent,cli,core,db,email,voice}.
-COPY packages/agent/package.json ./packages/agent/
-COPY packages/cli/package.json ./packages/cli/
-COPY packages/core/package.json ./packages/core/
-COPY packages/db/package.json ./packages/db/
-COPY packages/email/package.json ./packages/email/
-COPY packages/voice/package.json ./packages/voice/
-COPY packages/shogo-worker/package.json ./packages/shogo-worker/
-COPY apps/api/package.json ./apps/api/
-COPY apps/mobile/package.json ./apps/mobile/
+# Single glob copy for all workspace package.jsons — same pattern as
+# the builder stage above. See the file header for why.
+COPY --parents packages/*/package.json ./
+COPY --parents apps/*/package.json ./
 
 COPY scripts ./scripts
 
@@ -220,27 +181,19 @@ RUN mkdir -p node_modules/@shogo && \
     ln -sf ../../../packages/model-catalog node_modules/@shogo/model-catalog && \
     chown -h appuser:appgroup node_modules/@shogo node_modules/@shogo/*
 
-# Stub package.jsons for workspace members not shipped in the image
-COPY --chown=appuser:appgroup --from=builder /app/packages/domain-stores/package.json ./packages/domain-stores/
-COPY --chown=appuser:appgroup --from=builder /app/packages/shared-app/package.json ./packages/shared-app/
-COPY --chown=appuser:appgroup --from=builder /app/packages/shared-ui/package.json ./packages/shared-ui/
-COPY --chown=appuser:appgroup --from=builder /app/packages/ui-kit/package.json ./packages/ui-kit/
-COPY --chown=appuser:appgroup --from=builder /app/packages/canvas-runtime/package.json ./packages/canvas-runtime/
+# Stub package.jsons for every workspace member not shipped in the image
+# (the `bun install --ignore-scripts` further down still walks the workspace
+# graph; missing package.jsons fail with `error: Workspace dependency not
+# found`). Single glob copy preserves directory structure thanks to
+# --parents; adding new packages is automatic. The `/app/./` pivot tells
+# BuildKit to preserve everything after `/app/` (i.e., `packages/X/...`).
+# Already-shipped source (agent-runtime, shared-runtime, sdk) gets its
+# package.json overwritten by this same line, which is fine because the
+# file content is identical.
+COPY --chown=appuser:appgroup --from=builder --parents /app/./packages/*/package.json ./
+COPY --chown=appuser:appgroup --from=builder --parents /app/./apps/*/package.json ./
+# model-catalog ships its source (canvas-runtime peer needs it at runtime)
 COPY --chown=appuser:appgroup --from=builder /app/packages/model-catalog ./packages/model-catalog/
-# Stub package.jsons for the SDK-split workspace packages. The
-# `bun install --ignore-scripts` further down still resolves the
-# workspaces graph; without these the API image fails to build with
-# the same "@shogo-ai/<X>" workspace-resolution errors that broke CI.
-# The SDK ships its own bundled implementations, so source isn't
-# needed at runtime.
-COPY --chown=appuser:appgroup --from=builder /app/packages/agent/package.json ./packages/agent/
-COPY --chown=appuser:appgroup --from=builder /app/packages/cli/package.json ./packages/cli/
-COPY --chown=appuser:appgroup --from=builder /app/packages/core/package.json ./packages/core/
-COPY --chown=appuser:appgroup --from=builder /app/packages/db/package.json ./packages/db/
-COPY --chown=appuser:appgroup --from=builder /app/packages/email/package.json ./packages/email/
-COPY --chown=appuser:appgroup --from=builder /app/packages/voice/package.json ./packages/voice/
-COPY --chown=appuser:appgroup --from=builder /app/packages/shogo-worker/package.json ./packages/shogo-worker/
-COPY --chown=appuser:appgroup --from=builder /app/apps/mobile/package.json ./apps/mobile/
 
 # Same patches as builder/deps stages — bun install --ignore-scripts at line ~189
 # also resolves `patchedDependencies` and fails without these files.

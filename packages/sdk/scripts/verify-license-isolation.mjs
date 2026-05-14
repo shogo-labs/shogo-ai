@@ -5,13 +5,13 @@
  * verify-license-isolation
  *
  * The published `@shogo-ai/*` packages (`sdk`, `core`, `agent`, `db`,
- * `email`, `voice`, `cli`) are MIT-licensed. The other monorepo
- * packages (`@shogo/shared-runtime`, `@shogo/agent-runtime`,
- * `@shogo/shared-app`, `@shogo/domain-stores`, etc.) are
- * AGPL-3.0-or-later. To prevent an AGPL leak — where any MIT package
- * either declares an AGPL `dependency` or `import`s an AGPL package
- * from a published code path — this script enforces, for each MIT
- * package:
+ * `email`, `voice`, `cli`, `diagnostics`, `lsp`) are MIT-licensed. The
+ * other monorepo packages (`@shogo/shared-runtime`,
+ * `@shogo/agent-runtime`, `@shogo/shared-app`, `@shogo/domain-stores`,
+ * etc.) are AGPL-3.0-or-later. To prevent an AGPL leak — where any MIT
+ * package either declares an AGPL `dependency` or `import`s an AGPL
+ * package from a published code path — this script enforces, for each
+ * MIT package:
  *
  *   1. Its `package.json` `dependencies` and `peerDependencies` contain
  *      no `@shogo/*` entries (only `@shogo-ai/*` is allowed, which is
