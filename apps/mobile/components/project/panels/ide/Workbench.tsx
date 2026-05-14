@@ -58,8 +58,16 @@ const BINARY_EXTENSIONS = new Set([
   "mp3","mp4","m4a","m4v","mov","avi","mkv","webm","wav","flac","ogg","aac",
   "woff","woff2","ttf","otf","eot",
   "exe","dll","so","dylib","bin","class","jar","wasm",
-  "sqlite","db","pack","idx","psd","ai","sketch","fig",
+  "pack","idx","psd","ai","sketch","fig",
 ]);
+
+/** SQLite database files are binary, but we render them in a read-only
+ *  SQLite preview (tables + sample rows) instead of refusing to open. */
+const SQLITE_EXTENSIONS = new Set(["db", "sqlite", "sqlite3"]);
+function isSqlitePath(path: string): boolean {
+  const ext = path.toLowerCase().split(".").pop() ?? "";
+  return SQLITE_EXTENSIONS.has(ext);
+}
 
 /** Resolve the theme preference to a concrete "light" | "dark" — mirrors the
  *  logic in ThemeProvider so the IDE's Monaco and chrome colours stay in sync
@@ -516,7 +524,8 @@ export function Workbench({
       if (node.kind !== "file") return;
       const ext = node.name.toLowerCase().split(".").pop() ?? "";
       const isImage = isImagePath(node.path);
-      if (!isImage && BINARY_EXTENSIONS.has(ext)) {
+      const isSqlite = isSqlitePath(node.path);
+      if (!isImage && !isSqlite && BINARY_EXTENSIONS.has(ext)) {
         showToast(`Cannot open binary file: ${node.name}`, 2500);
         return;
       }
@@ -537,7 +546,7 @@ export function Workbench({
         rootId: node.rootId,
         name: node.name,
         path: node.path,
-        language: isImage ? "image" : node.language ?? "plaintext",
+        language: isImage ? "image" : isSqlite ? "sqlite" : node.language ?? "plaintext",
         content: "",
         savedContent: "",
         dirty: false,
@@ -570,6 +579,34 @@ export function Workbench({
                       content: url,
                       savedContent: url,
                       language: "image",
+                      loading: false,
+                    }
+                  : f,
+              ),
+            })),
+          );
+          return;
+        }
+        if (isSqlite) {
+          // SQLite databases never hit readFile() — that path is text-only.
+          // Resolve a URL (blob: for local, http: for the agent download
+          // endpoint) and stash it as the file content. EditorGroupView
+          // notices language === "sqlite" and mounts <SqlitePreview>, which
+          // fetches the bytes and renders tables + sample rows read-only.
+          if (!svc.readFileUrl) {
+            throw new Error("SQLite preview not supported for this workspace");
+          }
+          const url = await svc.readFileUrl(node.path);
+          setGroups((prev) =>
+            prev.map((g) => ({
+              ...g,
+              files: g.files.map((f) =>
+                f.id === id
+                  ? {
+                      ...f,
+                      content: url,
+                      savedContent: url,
+                      language: "sqlite",
                       loading: false,
                     }
                   : f,
@@ -643,7 +680,10 @@ export function Workbench({
       if (f.dirty && !confirm(`Close ${f.name} without saving?`)) return prev;
       // Image tabs allocate a blob: URL on open — revoke it on close so long
       // browsing sessions don't leak one per image opened.
-      if (f.language === "image" && f.content.startsWith("blob:")) {
+      if (
+        (f.language === "image" || f.language === "sqlite") &&
+        f.content.startsWith("blob:")
+      ) {
         try { URL.revokeObjectURL(f.content); } catch { /* ignore */ }
       }
       const nextFiles = g.files.filter((x) => x.id !== id);

@@ -3,6 +3,7 @@ import { EditorTabs } from "./EditorTabs";
 import { Breadcrumbs } from "./Breadcrumbs";
 import { CodeEditor } from "./CodeEditor";
 import { ImagePreview } from "./ImagePreview";
+import { SqlitePreview } from "./SqlitePreview";
 import type { EditorGroup as GroupState, EditorSettings, OpenFile } from "./types";
 import type { editor } from "monaco-editor";
 
@@ -70,6 +71,8 @@ export function EditorGroupView({
             </div>
           ) : active.language === "image" ? (
             <ImagePreview url={active.content} name={active.name} path={active.path} />
+          ) : active.language === "sqlite" ? (
+            <SqlitePreview url={active.content} name={active.name} path={active.path} />
           ) : (
             <CodeEditor
               value={active.content}
