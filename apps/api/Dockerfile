@@ -54,6 +54,16 @@ COPY --from=workspace /app/packages/shared-runtime ./packages/shared-runtime
 COPY --from=workspace /app/packages/sdk ./packages/sdk
 COPY --from=workspace /app/packages/model-catalog ./packages/model-catalog
 COPY --from=workspace /app/packages/shogo-worker ./packages/shogo-worker
+# SDK split-out packages (3a2798abc "refactor(sdk): split monorepo into focused
+# packages"). packages/sdk re-exports from all six; without these, importing
+# anything from `@shogo-ai/sdk` chains into a missing module and crashes the
+# API at boot (`Cannot find module '@shogo-ai/email/server'` etc.).
+COPY --from=workspace /app/packages/core ./packages/core
+COPY --from=workspace /app/packages/agent ./packages/agent
+COPY --from=workspace /app/packages/db ./packages/db
+COPY --from=workspace /app/packages/email ./packages/email
+COPY --from=workspace /app/packages/voice ./packages/voice
+COPY --from=workspace /app/packages/cli ./packages/cli
 COPY --from=workspace /app/apps/api ./apps/api
 COPY --from=workspace /app/package.json /app/bun.lock /app/tsconfig.base.json ./
 
