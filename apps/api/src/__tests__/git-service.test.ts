@@ -313,6 +313,11 @@ describe('getHistory', () => {
     expect(history[2].message).toBe('Initial commit')
   })
 
+  // Five sequential `git commit`s + a `git log` against a brand-new repo
+  // routinely creep past the bun:test 5000ms default under parallel CPU
+  // contention (each spawn pays a fixed git process-startup cost of
+  // 80–200ms on macOS). Bump per-test budget to 30s so this test reflects
+  // the actual behavior under load instead of a framework timeout.
   test('respects limit parameter', async () => {
     for (let i = 0; i < 5; i++) {
       writeFileSync(join(workspacePath, `file-${i}.txt`), `content-${i}`)
@@ -321,7 +326,7 @@ describe('getHistory', () => {
 
     const history = await gitService.getHistory(workspacePath, { limit: 2 })
     expect(history.length).toBe(2)
-  })
+  }, 30000)
 
   test('handles pipe characters in commit messages', async () => {
     writeFileSync(join(workspacePath, 'pipe.txt'), 'x')

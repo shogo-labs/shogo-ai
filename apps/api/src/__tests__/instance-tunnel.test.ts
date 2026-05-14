@@ -129,7 +129,6 @@ async function markTunnelStarted() {
 
 describe('instance tunnel heartbeat and websocket client', () => {
   test('sendHeartbeat posts instance metadata and caches cloud-published websocket URL', async () => {
-    process.env.PORT = '8123'
     fetchQueue.push(() => new Response(JSON.stringify({
       instanceId: 'inst-1',
       nextPollIn: 7,
@@ -143,10 +142,15 @@ describe('instance tunnel heartbeat and websocket client', () => {
     expect(_testing.serverPublishedWsUrl).toBe('wss://tunnel.example/')
     expect(fetchCalls[0].url).toBe('https://cloud.example/api/instances/heartbeat')
     const body = JSON.parse(String(fetchCalls[0].init?.body))
+    // `collectMetadata()` in shogo-worker/lib/tunnel.ts populates these
+    // fields. Note: there is no `apiPort` — desktop callers can plumb
+    // their own ports in via the resolver, but the worker tunnel itself
+    // does not advertise one.
     expect(body.metadata).toMatchObject({
-      apiPort: 8123,
       activeProjects: 1,
       protocolVersion: _testing.TUNNEL_PROTOCOL_VERSION,
+      kind: 'desktop',
+      tunnelStatus: 'polling',
     })
     expect(body.metadata.projects[0]).toMatchObject({ projectId: 'active-1', agentPort: 9123 })
   })

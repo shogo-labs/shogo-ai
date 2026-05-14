@@ -184,6 +184,11 @@ describe('PTY end-to-end (real Bun.serve + real PTY)', () => {
     expect(ws.readyState).toBe(WebSocket.CLOSED)
   })
 
+  // The internal `waitFor` budgets below sum to >5s in the worst case
+  // (3000+3000+3000), so the bun:test default 5000ms timeout would trip
+  // before the test could even fail/pass on its own assertions. Bump
+  // the per-test budget to 30s so genuine failures show as assertion
+  // errors (with informative messages) rather than framework timeouts.
   test('reconnect with ?since=lastSeq replays missed bytes', async () => {
     const createRes = await fetch(`${baseHttpUrl}/terminal/sessions`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
@@ -204,9 +209,13 @@ describe('PTY end-to-end (real Bun.serve + real PTY)', () => {
       }
     })
 
-    await waitFor(() => seenChunks1.join('').length > 32, 2500)
+    // Internal waitFor budgets bumped from 2500/2000/1500 → 3000ms each.
+    // The original budgets were too tight for the test to be reliable
+    // under parallel CPU contention (the PTY's initial banner and shell
+    // prompt can take 1–2s on a busy mac).
+    await waitFor(() => seenChunks1.join('').length > 32, 3000)
     ws1.send(encodeClientData(new TextEncoder().encode('echo BEFORE_DROP\n')))
-    await waitFor(() => seenChunks1.join('').includes('BEFORE_DROP'), 2000)
+    await waitFor(() => seenChunks1.join('').includes('BEFORE_DROP'), 3000)
 
     // Drop ws1 without notifying the server (close path runs when the
     // socket actually closes). Sleep a tick so server processes close.
@@ -233,7 +242,7 @@ describe('PTY end-to-end (real Bun.serve + real PTY)', () => {
       }
     })
 
-    await waitFor(() => seenChunks2.join('').includes('AFTER_DROP'), 1500)
+    await waitFor(() => seenChunks2.join('').includes('AFTER_DROP'), 3000)
     const replayed = seenChunks2.join('')
     expect(replayed).toContain('AFTER_DROP')
     // The replay should NOT include bytes the client already saw before
@@ -244,7 +253,7 @@ describe('PTY end-to-end (real Bun.serve + real PTY)', () => {
 
     ws2.close()
     manager.kill(created.id)
-  })
+  }, 30000)
 })
 
 function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {
