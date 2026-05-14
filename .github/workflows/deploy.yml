@@ -693,7 +693,7 @@ jobs:
 
       - name: Apply Kubernetes manifests
         run: |
-          kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/ || true
+          kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
 
       - name: Ensure docs DomainMapping
         run: |
@@ -891,9 +891,45 @@ jobs:
 
       - name: Wait for rollout
         run: |
-          kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
-          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
-          kubectl wait --for=condition=ready ksvc/docs -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          # `kubectl wait --for=condition=ready ksvc/...` is NOT sufficient
+          # on its own: a Knative Service's Ready condition stays True even
+          # while its latest revision crashloops, because Knative keeps
+          # traffic on the previously-Ready revision. The staging API was
+          # stuck in exactly this state for ~6 weeks (api-00271 served
+          # traffic while api-00272..00282 silently crashlooped) before
+          # this gate was tightened. We must additionally check that the
+          # controller has observed our patch (observedGeneration ==
+          # metadata.generation) and that the latest created revision IS
+          # the latest Ready one.
+          wait_ksvc_ready() {
+            local name=$1 ns=$2 timeout_sec=${3:-600}
+            local target_gen lcre lread obs ready elapsed=0
+            target_gen=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.metadata.generation}')
+            echo "Waiting for ksvc/$name (gen=$target_gen) to roll out..."
+            while [ "$elapsed" -lt "$timeout_sec" ]; do
+              obs=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.observedGeneration}' 2>/dev/null || echo 0)
+              ready=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+              lcre=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestCreatedRevisionName}' 2>/dev/null || true)
+              lread=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestReadyRevisionName}' 2>/dev/null || true)
+              if [ "$obs" = "$target_gen" ] && [ "$ready" = "True" ] && [ -n "$lcre" ] && [ "$lcre" = "$lread" ]; then
+                echo "ksvc/$name rolled out to $lcre"
+                return 0
+              fi
+              sleep 10
+              elapsed=$((elapsed + 10))
+            done
+            echo "::error::ksvc/$name did not reach Ready within ${timeout_sec}s (gen=$target_gen obs=$obs ready=$ready latestCreated=$lcre latestReady=$lread)"
+            echo "::group::revision describe"
+            kubectl describe revision "$lcre" -n "$ns" || true
+            echo "::endgroup::"
+            echo "::group::revision logs"
+            kubectl logs --tail=200 -l "serving.knative.dev/revision=$lcre" -n "$ns" --all-containers || true
+            echo "::endgroup::"
+            return 1
+          }
+          for s in studio api docs; do
+            wait_ksvc_ready "$s" "${{ env.NS_SYSTEM }}" 600
+          done
 
       - name: Restart image prepuller
         if: needs.detect-changes.outputs.runtime_changed == 'true'
@@ -906,11 +942,6 @@ jobs:
           fi
           kubectl rollout restart daemonset/image-prepuller -n ${{ env.NS_SYSTEM }}
           kubectl rollout status daemonset/image-prepuller -n ${{ env.NS_SYSTEM }} --timeout=300s || echo "Prepuller rollout timeout"
-
-      - name: Verify deployment
-        run: |
-          kubectl get ksvc -n ${{ env.NS_SYSTEM }} -o name
-          echo "Staging deploy verified"
 
       - name: Post-deploy health check
         run: |
@@ -928,7 +959,8 @@ jobs:
             sleep 10
           done
           if [ "$HEALTHY" != "true" ]; then
-            echo "::warning::API health check did not return 200 after 20 attempts"
+            echo "::error::API health check did not return 200 after 20 attempts"
+            exit 1
           fi
 
   # --- Production: Deploy US (primary, runs migrations) ---
@@ -1058,7 +1090,7 @@ jobs:
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
 
       - name: Apply Kubernetes manifests
-        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/ || true
+        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
 
       - name: Ensure Kourier TLS configuration
         run: |
@@ -1202,8 +1234,36 @@ jobs:
 
       - name: Wait for rollout and health check
         run: |
-          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
-          kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          # See the staging block for the rationale behind this gate.
+          wait_ksvc_ready() {
+            local name=$1 ns=$2 timeout_sec=${3:-600}
+            local target_gen lcre lread obs ready elapsed=0
+            target_gen=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.metadata.generation}')
+            echo "Waiting for ksvc/$name (gen=$target_gen) to roll out..."
+            while [ "$elapsed" -lt "$timeout_sec" ]; do
+              obs=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.observedGeneration}' 2>/dev/null || echo 0)
+              ready=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+              lcre=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestCreatedRevisionName}' 2>/dev/null || true)
+              lread=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestReadyRevisionName}' 2>/dev/null || true)
+              if [ "$obs" = "$target_gen" ] && [ "$ready" = "True" ] && [ -n "$lcre" ] && [ "$lcre" = "$lread" ]; then
+                echo "ksvc/$name rolled out to $lcre"
+                return 0
+              fi
+              sleep 10
+              elapsed=$((elapsed + 10))
+            done
+            echo "::error::ksvc/$name did not reach Ready within ${timeout_sec}s (gen=$target_gen obs=$obs ready=$ready latestCreated=$lcre latestReady=$lread)"
+            echo "::group::revision describe"
+            kubectl describe revision "$lcre" -n "$ns" || true
+            echo "::endgroup::"
+            echo "::group::revision logs"
+            kubectl logs --tail=200 -l "serving.knative.dev/revision=$lcre" -n "$ns" --all-containers || true
+            echo "::endgroup::"
+            return 1
+          }
+          for s in api studio; do
+            wait_ksvc_ready "$s" "${{ env.NS_SYSTEM }}" 600
+          done
 
           sleep 30
           HEALTHY=false
@@ -1223,13 +1283,9 @@ jobs:
             sleep 10
           done
           if [ "$HEALTHY" != "true" ]; then
-            echo "::warning::US API health check failed after 20 attempts"
+            echo "::error::US API health check did not return 200 after 20 attempts"
+            exit 1
           fi
-
-      - name: Verify deployment
-        run: |
-          kubectl get ksvc -n ${{ env.NS_SYSTEM }} -o name
-          echo "US deploy verified"
 
       # ----------------------------------------------------------------------
       # Logical replication: keep the cross-region publication in sync.
@@ -1466,7 +1522,7 @@ jobs:
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
 
       - name: Apply Kubernetes manifests
-        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/ || true
+        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
 
       - name: Ensure Kourier TLS configuration
         run: |
@@ -1689,13 +1745,48 @@ jobs:
 
       - name: Wait for rollout and health check
         run: |
-          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
-          kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          # See the staging block for the rationale behind this gate.
+          wait_ksvc_ready() {
+            local name=$1 ns=$2 timeout_sec=${3:-600}
+            local target_gen lcre lread obs ready elapsed=0
+            target_gen=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.metadata.generation}')
+            echo "Waiting for ksvc/$name (gen=$target_gen) to roll out..."
+            while [ "$elapsed" -lt "$timeout_sec" ]; do
+              obs=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.observedGeneration}' 2>/dev/null || echo 0)
+              ready=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+              lcre=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestCreatedRevisionName}' 2>/dev/null || true)
+              lread=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestReadyRevisionName}' 2>/dev/null || true)
+              if [ "$obs" = "$target_gen" ] && [ "$ready" = "True" ] && [ -n "$lcre" ] && [ "$lcre" = "$lread" ]; then
+                echo "ksvc/$name rolled out to $lcre"
+                return 0
+              fi
+              sleep 10
+              elapsed=$((elapsed + 10))
+            done
+            echo "::error::ksvc/$name did not reach Ready within ${timeout_sec}s (gen=$target_gen obs=$obs ready=$ready latestCreated=$lcre latestReady=$lread)"
+            echo "::group::revision describe"
+            kubectl describe revision "$lcre" -n "$ns" || true
+            echo "::endgroup::"
+            echo "::group::revision logs"
+            kubectl logs --tail=200 -l "serving.knative.dev/revision=$lcre" -n "$ns" --all-containers || true
+            echo "::endgroup::"
+            return 1
+          }
+          for s in api studio; do
+            wait_ksvc_ready "$s" "${{ env.NS_SYSTEM }}" 600
+          done
+
           sleep 15
           KOURIER_IP=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-          if [ -n "$KOURIER_IP" ]; then
-            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/health" 2>/dev/null) || STATUS="000"
-            echo "EU health: HTTP $STATUS"
+          if [ -z "$KOURIER_IP" ]; then
+            echo "::error::Kourier LoadBalancer IP not assigned; cannot reach EU ingress"
+            exit 1
+          fi
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/health" 2>/dev/null) || STATUS="000"
+          echo "EU health: HTTP $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::EU /api/health returned HTTP $STATUS (expected 200) via Kourier ${KOURIER_IP}"
+            exit 1
           fi
 
       - name: Summary
@@ -1828,7 +1919,7 @@ jobs:
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
 
       - name: Apply Kubernetes manifests
-        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/ || true
+        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
 
       - name: Ensure Kourier TLS configuration
         run: |
@@ -2048,13 +2139,54 @@ jobs:
 
       - name: Wait for rollout and health check
         run: |
-          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
-          kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          # See the staging block for the rationale behind this gate.
+          # `kubectl wait --for=condition=ready ksvc/...` is NOT sufficient
+          # on its own: a Knative Service stays Ready=True while its latest
+          # revision crashloops because Knative keeps traffic on the prior
+          # Ready revision. We must additionally assert that the controller
+          # has seen our patch (observedGeneration == metadata.generation)
+          # and that the latest created revision IS the latest Ready one.
+          wait_ksvc_ready() {
+            local name=$1 ns=$2 timeout_sec=${3:-600}
+            local target_gen lcre lread obs ready elapsed=0
+            target_gen=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.metadata.generation}')
+            echo "Waiting for ksvc/$name (gen=$target_gen) to roll out..."
+            while [ "$elapsed" -lt "$timeout_sec" ]; do
+              obs=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.observedGeneration}' 2>/dev/null || echo 0)
+              ready=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+              lcre=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestCreatedRevisionName}' 2>/dev/null || true)
+              lread=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestReadyRevisionName}' 2>/dev/null || true)
+              if [ "$obs" = "$target_gen" ] && [ "$ready" = "True" ] && [ -n "$lcre" ] && [ "$lcre" = "$lread" ]; then
+                echo "ksvc/$name rolled out to $lcre"
+                return 0
+              fi
+              sleep 10
+              elapsed=$((elapsed + 10))
+            done
+            echo "::error::ksvc/$name did not reach Ready within ${timeout_sec}s (gen=$target_gen obs=$obs ready=$ready latestCreated=$lcre latestReady=$lread)"
+            echo "::group::revision describe"
+            kubectl describe revision "$lcre" -n "$ns" || true
+            echo "::endgroup::"
+            echo "::group::revision logs"
+            kubectl logs --tail=200 -l "serving.knative.dev/revision=$lcre" -n "$ns" --all-containers || true
+            echo "::endgroup::"
+            return 1
+          }
+          for s in api studio; do
+            wait_ksvc_ready "$s" "${{ env.NS_SYSTEM }}" 600
+          done
+
           sleep 15
           KOURIER_IP=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-          if [ -n "$KOURIER_IP" ]; then
-            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/health" 2>/dev/null) || STATUS="000"
-            echo "India health: HTTP $STATUS"
+          if [ -z "$KOURIER_IP" ]; then
+            echo "::error::Kourier LoadBalancer IP not assigned; cannot reach India ingress"
+            exit 1
+          fi
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/health" 2>/dev/null) || STATUS="000"
+          echo "India health: HTTP $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::India /api/health returned HTTP $STATUS (expected 200) via Kourier ${KOURIER_IP}"
+            exit 1
           fi
 
       - name: Summary
