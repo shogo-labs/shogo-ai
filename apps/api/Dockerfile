@@ -70,14 +70,29 @@ RUN bun install
 # Copy source code
 COPY packages/agent-runtime ./packages/agent-runtime
 COPY packages/shared-runtime ./packages/shared-runtime
+# Source for the SDK-split workspace packages — needed so the SDK
+# can resolve cross-package type imports (e.g. `import { ... } from
+# '@shogo-ai/core/chat-message'`) during its tsup `dts: true` pass.
+# Without these, the dts build fails with TS2307 even though the
+# bundled JS would have been fine (they are external in tsup).
+COPY packages/core ./packages/core
+COPY packages/agent ./packages/agent
+COPY packages/db ./packages/db
+COPY packages/email ./packages/email
+COPY packages/voice ./packages/voice
+COPY packages/cli ./packages/cli
 COPY packages/sdk ./packages/sdk
 COPY packages/model-catalog ./packages/model-catalog
 COPY apps/api ./apps/api
 COPY templates/runtime-template ./templates/runtime-template
 
-# Build SDK first (dependency of api)
-WORKDIR /app/packages/sdk
-RUN bun run build
+# Build the SDK and its split-out workspace deps in dependency
+# order (core → agent → db → email → voice → cli → sdk). The root
+# `build:packages` script encodes this graph and is the canonical
+# entry point — building only `packages/sdk` is no longer enough
+# because its tsup dts pass needs each dep's `dist/*.d.ts` first.
+WORKDIR /app
+RUN bun run build:packages
 
 # Regenerate Hono routes/hooks/admin-routes from prisma/schema.prisma so that
 # adding a model (e.g. WorkspaceGrant) only requires committing the schema
