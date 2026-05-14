@@ -10,6 +10,7 @@
 export * from "./user.types"
 export * from "./workspace.types"
 export * from "./project.types"
+export * from "./project-folder.types"
 export * from "./starred-project.types"
 export * from "./member.types"
 export * from "./billing-account.types"

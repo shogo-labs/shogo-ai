@@ -603,7 +603,19 @@ export async function trackUsageFromStream(
   // In Kubernetes the workspace lives on the agent pod, not on the API pod,
   // so the local path doesn't exist. Skip silently instead of logging a
   // warning on every streamed response.
-  if (hasFileModifyingTools(toolCallMap) && observedTurnComplete && !originalStreamErrored && isGitAvailable()) {
+  //
+  // External (VS Code-style) projects: NEVER auto-commit. The "workspace"
+  // is the user's own repo, and writing `AI: edit_file (3 tool calls)`
+  // commits into their branch is the cardinal sin every IDE-style tool
+  // explicitly avoids. External users keep their own git workflow; the
+  // CheckpointsPanel renders a "use your own git" banner instead.
+  if (
+    hasFileModifyingTools(toolCallMap) &&
+    observedTurnComplete &&
+    !originalStreamErrored &&
+    isGitAvailable() &&
+    (project as { workingMode?: string }).workingMode !== 'external'
+  ) {
     const workspacePath = resolve(WORKSPACES_DIR, project.id)
     if (existsSync(workspacePath)) {
       const toolNames = [...new Set([...toolCallMap.values()].map(tc => tc.toolName))].join(', ')

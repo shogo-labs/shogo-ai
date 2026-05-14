@@ -123,6 +123,13 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   getAppMode: () => ipcRenderer.invoke('get-app-mode'),
   getAppConfig: () => ipcRenderer.invoke('get-app-config'),
   setAppMode: (mode: 'local' | 'cloud') => ipcRenderer.invoke('set-app-mode', mode),
+
+  // Open the native folder picker for external/IDE-style projects.
+  // Returns `{ ok: true, paths: string[] }` on selection or
+  // `{ ok: false, error?: string }` on cancel/error.
+  pickFolders: (opts?: { multi?: boolean; defaultPath?: string }): Promise<
+    { ok: true; paths: string[] } | { ok: false; error?: string }
+  > => ipcRenderer.invoke('pick-folders', opts ?? {}),
   getVMImageStatus: () => ipcRenderer.invoke('get-vm-image-status'),
   downloadVMImages: () => ipcRenderer.invoke('download-vm-images'),
   skipVMDownload: () => ipcRenderer.invoke('skip-vm-download'),

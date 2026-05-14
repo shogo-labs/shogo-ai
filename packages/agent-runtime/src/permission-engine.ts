@@ -770,6 +770,53 @@ export function withPermissionGate(
 
 export function assertWithinWorkspace(workspaceDir: string, filePath: string): string {
   const resolved = resolve(workspaceDir, filePath)
+
+  // External (VS Code-style) projects: validate against the union of
+  // [WORKSPACE_DIR, ...linkedFolders]. We import lazily so tests that
+  // pull in `assertWithinWorkspace` directly don't drag the runtime
+  // config global onto themselves.
+  const linkedFoldersRaw = process.env.LINKED_FOLDERS
+  if (linkedFoldersRaw) {
+    let linkedFolders: string[] = []
+    try {
+      const parsed = JSON.parse(linkedFoldersRaw)
+      if (Array.isArray(parsed)) {
+        linkedFolders = parsed.filter((p): p is string => typeof p === 'string' && p.length > 0)
+      }
+    } catch {
+      /* fall through */
+    }
+    const roots = [workspaceDir, ...linkedFolders].map((r) => resolve(r))
+    const realRoots = roots.map((r) => {
+      try {
+        return realpathSync(r)
+      } catch {
+        return r
+      }
+    })
+    const ok = realRoots.some((root) => resolved === root || resolved.startsWith(root + '/'))
+    if (!ok) {
+      throw new Error(
+        `Path is outside the project's allowed folders: ${filePath}\n` +
+          `Allowed roots:\n  - ${roots.join('\n  - ')}`,
+      )
+    }
+    // Symlink-escape defense for files that already exist.
+    if (existsSync(resolved)) {
+      let real: string
+      try {
+        real = realpathSync(resolved)
+      } catch {
+        return resolved
+      }
+      const realOk = realRoots.some((root) => real === root || real.startsWith(root + '/'))
+      if (!realOk) {
+        throw new Error(`Symlink target outside allowed roots: ${filePath}`)
+      }
+    }
+    return resolved
+  }
+
   if (process.env.SHOGO_LOCAL_MODE === 'true') return resolved
   if (!resolved.startsWith(workspaceDir)) {
     throw new Error(`Path outside workspace: ${filePath}`)

@@ -16,6 +16,7 @@ import { FeatureSessionModel } from "./feature-session.model"
 import { ChatSessionModel } from "./chat-session.model"
 import { UsageEventModel } from "./usage-event.model"
 import { StarredProjectModel } from "./starred-project.model"
+import { ProjectFolderModel } from "./project-folder.model"
 
 // ============================================================================
 // Project Model
@@ -45,6 +46,9 @@ export const ProjectModel = types
     knativeServiceName: types.optional(types.string, ""),
     settings: types.optional(types.frozen(), {}),
     lastMessageAt: types.optional(types.number, 0),
+    workingMode: types.optional(types.string, ""),
+    runtimeEnabled: types.optional(types.boolean, false),
+    trustLevel: types.optional(types.string, ""),
     workspace: types.safeReference(types.late(() => WorkspaceModel)),
     folder: types.safeReference(types.late(() => FolderModel)),
     members: types.optional(types.array(types.safeReference(types.late(() => MemberModel))), []),
@@ -52,6 +56,7 @@ export const ProjectModel = types
     chatSessions: types.optional(types.array(types.safeReference(types.late(() => ChatSessionModel))), []),
     usageEvents: types.optional(types.array(types.safeReference(types.late(() => UsageEventModel))), []),
     starredBy: types.optional(types.array(types.safeReference(types.late(() => StarredProjectModel))), []),
+    projectFolders: types.optional(types.array(types.safeReference(types.late(() => ProjectFolderModel))), []),
   })
   .views(self => ({
     /** Check if this is a new/unsaved entity */

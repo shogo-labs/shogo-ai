@@ -47,8 +47,31 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
   async function validateProject(projectId: string) {
     return prisma.project.findUnique({
       where: { id: projectId },
-      select: { id: true, name: true, workspaceId: true },
+      select: { id: true, name: true, workspaceId: true, workingMode: true } as any,
     });
+  }
+
+  /**
+   * External (folder-linked) projects never have checkpoints — Shogo
+   * doesn't manage their git. Return a typed 409 so the CheckpointsPanel
+   * UI can render the "use your own git" banner with a single round
+   * trip (versus the 500 a `createCheckpoint` call would surface).
+   */
+  function externalModeResponse(c: any) {
+    return c.json(
+      {
+        error: {
+          code: 'checkpoints_disabled_in_external_mode',
+          message:
+            "Checkpoints are disabled for folder-linked projects. Use your own git workflow — Shogo doesn't manage the repo.",
+        },
+      },
+      409,
+    );
+  }
+
+  function isExternal(project: { workingMode?: string } | null | undefined): boolean {
+    return project?.workingMode === 'external';
   }
 
   /**
@@ -66,6 +89,7 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
           404
         );
       }
+      if (isExternal(project as any)) return externalModeResponse(c);
 
       const body = await c.req.json<{
         message: string;
@@ -122,6 +146,7 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
           404
         );
       }
+      if (isExternal(project as any)) return externalModeResponse(c);
 
       const checkpoints = await checkpointService.listCheckpoints(projectId, {
         limit: Math.min(limit, 100),
@@ -197,6 +222,7 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
           404
         );
       }
+      if (isExternal(project as any)) return externalModeResponse(c);
 
       const body = await c.req.json<{
         includeDatabase?: boolean;
@@ -251,6 +277,7 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
           404
         );
       }
+      if (isExternal(project as any)) return externalModeResponse(c);
 
       const diff = await checkpointService.getDiff(
         getWorkspacePath(projectId),
@@ -290,6 +317,7 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
           404
         );
       }
+      if (isExternal(project as any)) return externalModeResponse(c);
 
       const status = await checkpointService.getProjectStatus(
         getWorkspacePath(projectId)

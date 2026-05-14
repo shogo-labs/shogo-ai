@@ -739,6 +739,73 @@ export const api = {
     }
   },
 
+  // ─── Local "external folder" projects (Shogo Desktop only) ─────────────
+  /**
+   * Create an external (VS Code-style) project from a set of host
+   * folders. Returns either the new project, an existing project that
+   * was rebound (if the primary already had `.shogo/project.json`), or
+   * a `needsGitRootChoice` response when the picked folder is inside a
+   * git repo whose root the user hasn't confirmed yet.
+   *
+   * Callers should pass `acceptedGitRoot: true` to re-call with the
+   * repo root once the user picks "Use repo root", or
+   * `acceptedGitRoot: false` to keep the original subfolder.
+   */
+  async createLocalFolderProject(
+    http: HttpClient,
+    body: {
+      paths: string[]
+      name?: string
+      workspaceId?: string
+      acceptedGitRoot?: boolean
+    },
+  ): Promise<
+    | { project: unknown; rebound?: boolean; warning?: string; message?: string }
+    | { needsGitRootChoice: true; gitRoot: string; picked: string }
+    | { error: string; code?: string; message?: string }
+  > {
+    const res = await http.post<any>('/api/local/projects/from-folders', body)
+    // HttpClient surfaces JSON for 2xx and the body for 4xx via res.error?
+    // To keep the contract simple we return the raw body — callers
+    // distinguish on shape (needsGitRootChoice / project / error).
+    return (res.data ?? res.error ?? {}) as any
+  },
+
+  /**
+   * List recent external projects (folder-linked) for the "Open
+   * Recent…" picker on the home screen.
+   */
+  async listRecentLocalFolderProjects(http: HttpClient): Promise<
+    { id: string; name: string; projectFolders: { path: string; isPrimary: boolean }[] }[]
+  > {
+    try {
+      const res = await http.get<{ projects: any[] }>('/api/local/projects/recent')
+      return Array.isArray(res.data?.projects) ? res.data!.projects : []
+    } catch {
+      return []
+    }
+  },
+
+  /**
+   * Toggle a project's `trustLevel`. Wired to the TrustPrompt modal.
+   * Returns the updated project on success.
+   */
+  async setLocalFolderProjectTrust(
+    http: HttpClient,
+    projectId: string,
+    trusted: boolean,
+  ): Promise<{ project?: any; error?: string }> {
+    try {
+      const res = await http.post<{ project: any }>(
+        `/api/local/projects/${encodeURIComponent(projectId)}/trust`,
+        { trusted },
+      )
+      return { project: res.data?.project }
+    } catch (err: any) {
+      return { error: err?.message ?? 'Failed to update trust' }
+    }
+  },
+
   // ─── Templates ─────────────────────────────────────────────
 
   async getAgentTemplates(http: HttpClient) {

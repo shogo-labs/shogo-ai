@@ -190,6 +190,132 @@ const LovableGradient = memo(function LovableGradient({ isDark }: { isDark: bool
   )
 })
 
+/**
+ * "Open Folder…" CTA for VS Code-style external projects. Only renders
+ * when:
+ *   1. `localMode` is true (we're running inside Shogo Desktop / a
+ *      local-mode dev shell), AND
+ *   2. The renderer is web (Electron's webContents or `bun dev:all`'s
+ *      browser tab — anywhere `window` exists).
+ *
+ * The handler walks the user through:
+ *   - Folder picker: Electron's native `shogoDesktop.pickFolders` IPC
+ *     when present; otherwise a `window.prompt` fallback for typing an
+ *     absolute path (used during `bun dev:all` where Electron isn't
+ *     attached). The API validates every path either way.
+ *   - POST /from-folders, with the git-root walk-up prompt if the
+ *     picked path is inside a `.git` repo.
+ *   - Route to the new project page on success.
+ */
+const OpenFolderCta = memo(function OpenFolderCta({ visible }: { visible: boolean }) {
+  const router = useRouter()
+  const http = useDomainHttp()
+  const activeWorkspace = useActiveWorkspace()
+  const activeWorkspaceId: string | undefined = (activeWorkspace as { id?: string } | null)?.id
+  const [isPicking, setIsPicking] = useState(false)
+
+  if (!visible) return null
+  // Native folder picker is only present when Electron's preload has
+  // injected `window.shogoDesktop.pickFolders`. The web-only File System
+  // Access API doesn't expose absolute paths to JS, so it can't replace
+  // it. When running `bun dev:all` (web bundle in a regular browser, no
+  // Electron) we still want devs to be able to drive this flow end-to-end
+  // — the API validates every path (must be under `$HOME`, not a system
+  // root, must exist, …) so a typed-path fallback is safe.
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return null
+  const desktop = (window as any).shogoDesktop as
+    | { pickFolders?: (opts?: { multi?: boolean }) => Promise<any> }
+    | undefined
+  const hasNativePicker = Boolean(desktop?.pickFolders)
+
+  const pickViaPrompt = (): { ok: true; paths: string[] } | { ok: false } => {
+    const win = window as Window & { prompt: (msg?: string, def?: string) => string | null }
+    const input = win.prompt(
+      'Absolute path to the folder to open (e.g. /Users/you/projects/site):',
+      '',
+    )
+    if (!input) return { ok: false }
+    const trimmed = input.trim()
+    if (!trimmed) return { ok: false }
+    return { ok: true, paths: [trimmed] }
+  }
+
+  const handleOpenFolder = async () => {
+    if (isPicking) return
+    setIsPicking(true)
+    try {
+      const picked = hasNativePicker
+        ? await desktop!.pickFolders!({ multi: false })
+        : pickViaPrompt()
+      if (!picked?.ok || !Array.isArray(picked.paths) || picked.paths.length === 0) {
+        return
+      }
+      // First attempt — no git-root opinion yet.
+      let res = (await api.createLocalFolderProject(http, {
+        paths: picked.paths,
+        workspaceId: activeWorkspaceId,
+      })) as any
+
+      if (res?.needsGitRootChoice) {
+        // Confirm with the user inside an Alert. We can't use the same
+        // modal stack as ProjectExportModal because we'd have to wire
+        // it into the home page; an Alert is the right weight for a
+        // yes/no question, and matches how aider's CLI prompts you.
+        const choice = await new Promise<'parent' | 'subfolder' | null>((resolve) => {
+          Alert.alert(
+            'Use parent repo?',
+            `The folder you picked is inside a git repo:\n\n${res.gitRoot}\n\n` +
+              `Opening the repo root gives the agent context across the whole project. ` +
+              `Or stick with the subfolder you picked: ${res.picked}.`,
+            [
+              { text: 'Use repo root', onPress: () => resolve('parent') },
+              { text: 'Keep subfolder', onPress: () => resolve('subfolder') },
+              { text: 'Cancel', style: 'cancel', onPress: () => resolve(null) },
+            ],
+            { cancelable: true, onDismiss: () => resolve(null) },
+          )
+        })
+        if (!choice) return
+        res = (await api.createLocalFolderProject(http, {
+          paths: picked.paths,
+          workspaceId: activeWorkspaceId,
+          acceptedGitRoot: choice === 'parent',
+        })) as any
+      }
+
+      const project = res?.project as { id?: string } | undefined
+      if (project?.id) {
+        router.push({ pathname: '/(app)/projects/[id]' as any, params: { id: project.id } })
+      } else if (res?.error || res?.message) {
+        Alert.alert('Could not open folder', String(res.message ?? res.error))
+      }
+    } catch (err: any) {
+      console.error('[OpenFolderCta] open folder failed:', err)
+      Alert.alert('Could not open folder', err?.message ?? 'Unknown error')
+    } finally {
+      setIsPicking(false)
+    }
+  }
+
+  return (
+    <View className="mt-4 flex-row items-center justify-center">
+      <Pressable
+        onPress={handleOpenFolder}
+        disabled={isPicking}
+        className={cn(
+          'flex-row items-center gap-2 rounded-full px-4 py-2 border border-border',
+          isPicking ? 'opacity-60' : 'active:opacity-80',
+        )}
+      >
+        {isPicking ? <ActivityIndicator size="small" /> : null}
+        <Text className="text-xs font-medium text-foreground">
+          {hasNativePicker ? 'Open folder…' : 'Open folder… (type path)'}
+        </Text>
+      </Pressable>
+    </View>
+  )
+})
+
 // Tab descriptors are static — keep them at module scope so the array
 // reference doesn't churn on every render of HomeScreen.
 const TAB_ITEMS = [
@@ -837,6 +963,13 @@ const HomeScreen = observer(function HomeScreen() {
                 }
               />
             </View>
+
+            {/* "Open Folder…" — desktop local-mode CTA for VS Code-style
+                external projects. Uses the native Electron folder
+                picker when available, falls back to a typed-path prompt
+                in `bun dev:all` (plain browser, no Electron preload).
+                Hidden on non-web platforms. */}
+            <OpenFolderCta visible={localMode} />
           </View>
         </View>
 

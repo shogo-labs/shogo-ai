@@ -4,6 +4,7 @@
     "User",
     "Workspace",
     "Project",
+    "ProjectFolder",
     "Folder",
     "Member",
     "Invitation",
