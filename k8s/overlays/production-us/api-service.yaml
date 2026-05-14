@@ -355,10 +355,23 @@ spec:
                   optional: true
             - name: BUN_JSC_forceRAMSize
               value: "5905580032"
-          lifecycle:
-            preStop:
-              exec:
-                command: ["sleep", "15"]
+          # NOTE: `lifecycle.preStop` and pod-level `terminationGracePeriodSeconds`
+          # were previously declared here for graceful drain on rollout, but
+          # Knative Serving rejects them with `strict decoding error: unknown
+          # field` unless the cluster's knative-serving/config-defaults enables
+          # `kubernetes.podspec-lifecycle` and
+          # `kubernetes.podspec-terminationgraceperiodseconds`. They aren't
+          # enabled in this cluster, so `kubectl apply -k` for this Service
+          # was failing entirely on the strict-decoder — silently masked by
+          # the deploy workflow's `|| true` (since removed). The downstream
+          # `kubectl patch` (image / env vars) bypasses strict decoding via
+          # JSON patch and was the *only* reason new revisions kept being
+          # created, while every annotation change in this manifest (notably
+          # the activator-bypass fix) was being dropped. See the staging
+          # incident postmortem and commit fdb66207 for the matching fix.
+          # If/when graceful drain becomes a priority, enable both feature
+          # flags in `config-defaults` and add the stanzas back. Until then,
+          # the API uses the kubelet-default 30s termination grace period.
           resources:
             requests:
               memory: "1Gi"
@@ -366,5 +379,4 @@ spec:
             limits:
               memory: "6Gi"
               cpu: "3"
-      terminationGracePeriodSeconds: 630
       timeoutSeconds: 1800
