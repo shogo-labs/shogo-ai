@@ -1069,6 +1069,13 @@ export type ProjectImportProgress =
   | { phase: 'writeFiles'; done: number; total: number }
   | { phase: 'importChats'; done: number; total: number }
   | {
+      phase: 'syncToS3'
+      status: 'running' | 'ok' | 'failed' | 'skipped'
+      bytes?: number
+      durationMs?: number
+      message?: string
+    }
+  | {
       phase: 'done'
       project: { id: string; name: string; description?: string | null }
       stats: {
