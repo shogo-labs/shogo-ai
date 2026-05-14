@@ -64,7 +64,8 @@ COPY prisma.config.ts ./prisma.config.ts
 COPY prisma.config.local.ts ./prisma.config.local.ts
 
 # Install all dependencies (postinstall generates Prisma client)
-RUN bun install
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install
 
 # Source for everything the mobile build touches. Metro resolves
 # `@shogo-ai/sdk → dist/index.js` and the SDK's `dts: true` tsup pass
