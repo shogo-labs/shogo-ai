@@ -164,25 +164,12 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
         }
         return
       }
-      // Dev/browser fallback: open the authUrl in a new tab. The desktop
-      // bridge is required for the callback itself, so in dev we also poll
-      // local status so the UI picks up a manual key write.
-      const start = await platform.startCloudLogin({
-        id: 'onboarding-dev',
-        name: 'Onboarding (dev)',
-        platform: 'web',
-        appVersion: '0.0.0-dev',
-      })
-      if (!start.ok) {
-        setShogoLoginStatus('idle')
-        setShogoKeyError('Could not start sign-in')
-        return
-      }
-      if (typeof window !== 'undefined') {
-        window.open(start.authUrl, '_blank', 'noopener,noreferrer')
-      }
-      // Stay in 'connecting' state so the polling effect picks up the
-      // device key the moment the other tab finishes the handshake.
+      // No desktop bridge: this is a Metro/browser preview. Sign-in needs
+      // the desktop shell or the `shogo` CLI to drive the poll loop.
+      setShogoLoginStatus('idle')
+      setShogoKeyError(
+        'Browser preview can\u2019t complete sign-in. Open the Shogo Desktop app, or run `shogo login` in your terminal.',
+      )
     } catch (err: any) {
       setShogoLoginStatus('idle')
       setShogoKeyError(err?.message || 'Sign-in failed')

@@ -26,17 +26,40 @@ import {
 } from './recording'
 import { createTray, destroyTray } from './tray'
 
-// Shape of JSON responses from the local API's cloud-login endpoints.
-// Every field is optional because we also parse error bodies / empty 4xx
-// responses through the same path.
+// Shape of JSON responses from the local API's cloud-login endpoints
+// (used by the heartbeat + signout helpers below). Every field is optional
+// because we parse error bodies / empty 4xx responses through the same path.
 interface CloudLoginBody {
   ok?: boolean
   error?: string
   email?: string
   workspace?: string
-  authUrl?: string
   revoked?: boolean
   cloudKeyRejected?: boolean
+}
+
+// Shape of the cloud `/api/cli/login/*` endpoints. The desktop drives the
+// same poll-based device-flow the CLI uses (packages/shogo-worker uses
+// `lib/cloud-login.ts` with the same shapes) so the cloud only has to
+// understand one device flow.
+interface CloudCliLoginStartResponse {
+  ok?: boolean
+  error?: string
+  state?: string
+  userCode?: string
+  authUrl?: string
+  expiresInMs?: number
+  pollIntervalMs?: number
+}
+
+interface CloudCliLoginPollResponse {
+  ok?: boolean
+  status?: 'pending' | 'approved' | 'denied' | 'expired'
+  key?: string
+  email?: string | null
+  workspace?: string | null
+  deviceId?: string
+  error?: string
 }
 
 // --- Persistent file logging ---
@@ -71,6 +94,9 @@ process.on('unhandledRejection', (reason) => {
 console.log(`[Desktop] === Shogo starting (v${app.getVersion()}, packaged=${app.isPackaged}) ===`)
 
 // Must be called before app 'ready' — gives shogo:// a real origin instead of "null"
+// Used by the in-process protocol.handle for shogo://app/* asset serving
+// (see registerProtocol). The legacy shogo://auth-callback deep link is
+// no longer used now that sign-in is poll-based — see runCloudSignIn().
 protocol.registerSchemesAsPrivileged([
   {
     scheme: 'shogo',
@@ -83,35 +109,14 @@ protocol.registerSchemesAsPrivileged([
   },
 ])
 
-// Enforce single-instance so the OS-dispatched auth callback always reaches
-// the app that initiated the login rather than spawning a duplicate.
+// Single-instance: keep one Shogo window per user. Second-instance just
+// focuses the existing window (no auth-callback handling — sign-in is
+// now driven by polling the cloud, not a deep link).
 if (!ensureSingleInstanceLock()) {
-  // Parent instance will handle this launch; the spawned duplicate exits.
-  // (The second-instance listener below fires on the existing instance with
-  // the new argv, including any shogo://auth-callback URL.)
   process.exit(0)
 }
 
-// Register shogo:// as our OS protocol handler so redirects from the system
-// browser find their way back to Electron. Note: shogo://app/* is still served
-// by our in-process protocol.handle (see registerProtocol).
-registerDefaultProtocolClient()
-
-// macOS dispatches protocol URLs via open-url.
-app.on('open-url', (event, url) => {
-  event.preventDefault()
-  if (url.startsWith('shogo://auth-callback')) {
-    void handleAuthCallback(url)
-  }
-})
-
-// Windows & Linux pass the URL as the newest argv to a second-instance launch.
-app.on('second-instance', (_event, argv) => {
-  const callback = extractAuthCallback(argv)
-  if (callback) {
-    void handleAuthCallback(callback)
-    return
-  }
+app.on('second-instance', () => {
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore()
     mainWindow.focus()
@@ -123,13 +128,28 @@ const IS_DEV = !app.isPackaged
 let mainWindow: BrowserWindow | null = null
 let isCloudMode = false
 
-// --- OAuth deep-link support (shogo://auth-callback?state=...&key=...&...) ---
+// --- Cloud sign-in: poll-based device flow (no deep link) ---
 //
-// The local "Sign in to Shogo Cloud" flow opens the system browser, which
-// eventually redirects to shogo://auth-callback?... — the OS then dispatches
-// that URL back to us (via open-url on macOS, or second-instance argv on
-// Windows/Linux). We enforce a single-instance lock so the callback always
-// wakes the original running app instead of spawning a duplicate.
+// The desktop drives the same `/api/cli/login/{start,poll}` flow the CLI
+// uses (packages/shogo-worker/src/lib/cloud-login.ts). Sequence:
+//
+//   1. POST <cloud>/api/cli/login/start with device metadata + client='desktop'.
+//      Cloud returns { state, userCode, authUrl, expiresInMs, pollIntervalMs }.
+//   2. shell.openExternal(authUrl) → /auth/cli-link in the system browser.
+//   3. User signs in on cloud (Better Auth), picks workspace, clicks Approve.
+//      Bridge page calls POST /api/cli/login/approve which mints a
+//      `kind=device` API key and pins it to the state.
+//   4. We poll GET /api/cli/login/poll?state=... until status='approved'
+//      (or denied / expired / user-cancelled).
+//   5. Hand the minted key to the local API via PUT /api/local/shogo-key
+//      so the existing path (validate → persist localConfig → restart
+//      instance tunnel) runs unchanged.
+//   6. Notify the renderer via the same `cloud-login-result` IPC the
+//      old deep-link flow used so the Settings UI doesn't need changes.
+//
+// No localhost listener, no protocol handler — works behind firewalls
+// and over SSH-forwarded sessions. Mirrors the CLI exactly; cloud only
+// has to understand one device flow.
 
 function ensureSingleInstanceLock(): boolean {
   const gotLock = app.requestSingleInstanceLock()
@@ -140,74 +160,174 @@ function ensureSingleInstanceLock(): boolean {
   return true
 }
 
-function registerDefaultProtocolClient(): void {
-  // In dev on Windows/Linux, setAsDefaultProtocolClient needs the electron
-  // executable + the path to main.js so the OS can relaunch us correctly.
-  if (process.defaultApp && process.argv.length >= 2) {
-    app.setAsDefaultProtocolClient('shogo', process.execPath, [path.resolve(process.argv[1])])
-  } else {
-    app.setAsDefaultProtocolClient('shogo')
-  }
+const CLOUD_SIGNIN_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
+
+interface ActiveCloudSignIn {
+  abort: AbortController
+  state: string
 }
+let activeCloudSignIn: ActiveCloudSignIn | null = null
 
-function extractAuthCallback(urls: string[]): string | null {
-  for (const u of urls) {
-    if (typeof u === 'string' && u.startsWith('shogo://auth-callback')) {
-      return u
-    }
-  }
-  return null
-}
-
-async function handleAuthCallback(callbackUrl: string): Promise<void> {
-  try {
-    const parsed = new URL(callbackUrl)
-    const state = parsed.searchParams.get('state') || ''
-    const key = parsed.searchParams.get('key') || ''
-    const email = parsed.searchParams.get('email') || ''
-    const workspace = parsed.searchParams.get('workspace') || ''
-    const error = parsed.searchParams.get('error') || ''
-
-    if (error) {
-      console.warn('[Desktop] Cloud login returned error:', error)
-      notifyRendererLoginResult({ ok: false, error })
-      return
-    }
-
-    if (!key || !state) {
-      notifyRendererLoginResult({ ok: false, error: 'Malformed callback (missing key or state)' })
-      return
-    }
-
-    // The cloud endpoint is sourced from the local API's SHOGO_CLOUD_URL env
-    // var; we deliberately do not forward a `cloudUrl` from the callback URL.
-    const res = await fetch(`${getApiUrl()}/api/local/cloud-login/complete`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ state, key, email, workspace }),
-    })
-    const body = (await res.json().catch(() => ({}))) as CloudLoginBody
-    if (!res.ok || body?.ok === false) {
-      notifyRendererLoginResult({ ok: false, error: body?.error || `HTTP ${res.status}` })
-      return
-    }
-    notifyRendererLoginResult({ ok: true, email: body?.email || email, workspace: body?.workspace || workspace })
-
-    // Bring the main window to the front so the user sees the result.
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
-    }
-  } catch (err) {
-    console.error('[Desktop] Auth callback handling failed:', err)
-    notifyRendererLoginResult({ ok: false, error: (err as Error)?.message || 'Callback failed' })
-  }
-}
-
-function notifyRendererLoginResult(payload: { ok: boolean; error?: string; email?: string; workspace?: string }): void {
+function notifyRendererLoginResult(payload: {
+  ok: boolean
+  error?: string
+  email?: string
+  workspace?: string
+}): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('cloud-login-result', payload)
   }
+}
+
+async function runCloudSignIn(opts?: { workspaceId?: string }): Promise<{ ok: boolean; error?: string }> {
+  if (activeCloudSignIn) {
+    return { ok: false, error: 'A sign-in is already in progress. Cancel it first.' }
+  }
+  const cloudUrl = getCloudUrl().replace(/\/$/, '')
+  const device = getDeviceInfo()
+  const ac = new AbortController()
+
+  // 1. Start
+  let start: CloudCliLoginStartResponse
+  try {
+    const res = await fetch(`${cloudUrl}/api/cli/login/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        deviceId: device.id,
+        deviceName: device.name,
+        devicePlatform: device.platform,
+        deviceAppVersion: device.appVersion,
+        workspaceId: opts?.workspaceId,
+        client: 'desktop',
+      }),
+      signal: AbortSignal.timeout(10_000),
+    })
+    start = (await res.json().catch(() => ({} as any))) as CloudCliLoginStartResponse
+    if (!res.ok || !start?.ok || !start.state || !start.authUrl) {
+      const error = start?.error || `Cloud rejected /api/cli/login/start (HTTP ${res.status})`
+      return { ok: false, error }
+    }
+  } catch (err) {
+    return { ok: false, error: `Cannot reach Shogo Cloud at ${cloudUrl}: ${(err as Error)?.message ?? err}` }
+  }
+
+  activeCloudSignIn = { abort: ac, state: start.state }
+  try {
+    await shell.openExternal(start.authUrl)
+  } catch (err) {
+    console.warn('[Desktop] openExternal failed:', err)
+    // Continue anyway — the UI shows the URL so the user can copy/paste.
+  }
+
+  // 2. Poll until approved / denied / expired / user-cancelled / timeout.
+  const pollIntervalMs = clampPollInterval(start.pollIntervalMs ?? 2000)
+  const deadline = Date.now() + (start.expiresInMs ?? CLOUD_SIGNIN_DEFAULT_TIMEOUT_MS)
+  let mintedKey: string | null = null
+  let mintedEmail: string | null = null
+  let mintedWorkspace: string | null = null
+  try {
+    while (true) {
+      if (ac.signal.aborted) {
+        const result = { ok: false as const, error: 'Cancelled' }
+        notifyRendererLoginResult(result)
+        return result
+      }
+      if (Date.now() >= deadline) {
+        const result = { ok: false as const, error: 'Sign-in timed out before approval.' }
+        notifyRendererLoginResult(result)
+        return result
+      }
+      let poll: CloudCliLoginPollResponse | null = null
+      try {
+        const r = await fetch(
+          `${cloudUrl}/api/cli/login/poll?state=${encodeURIComponent(start.state)}`,
+          { method: 'GET', signal: AbortSignal.timeout(10_000) },
+        )
+        if (r.ok) {
+          poll = (await r.json().catch(() => null as any)) as CloudCliLoginPollResponse | null
+        }
+      } catch (err) {
+        // Soft network errors during polling shouldn't kill the flow.
+        console.warn('[Desktop] cloud-login poll error:', (err as Error)?.message)
+      }
+      if (poll?.status === 'approved' && poll.key) {
+        mintedKey = poll.key
+        mintedEmail = poll.email ?? null
+        mintedWorkspace = poll.workspace ?? null
+        break
+      }
+      if (poll?.status === 'denied') {
+        const result = { ok: false as const, error: 'Sign-in was denied in the browser.' }
+        notifyRendererLoginResult(result)
+        return result
+      }
+      if (poll?.status === 'expired') {
+        const result = { ok: false as const, error: 'Sign-in request expired before approval.' }
+        notifyRendererLoginResult(result)
+        return result
+      }
+      await sleepInterruptible(pollIntervalMs, ac.signal)
+    }
+  } finally {
+    activeCloudSignIn = null
+  }
+
+  // 3. Hand the minted key to the local API. The existing PUT handler
+  //    re-validates against cloud, persists localConfig, and restarts
+  //    the instance tunnel — all the things the old `/cloud-login/complete`
+  //    handler used to do, with no behavioral difference.
+  try {
+    const persistRes = await fetch(`${getApiUrl()}/api/local/shogo-key`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: mintedKey }),
+    })
+    const persistBody = (await persistRes.json().catch(() => ({}))) as CloudLoginBody
+    if (!persistRes.ok || persistBody?.ok === false) {
+      const error = persistBody?.error || `Local API rejected the minted key (HTTP ${persistRes.status})`
+      notifyRendererLoginResult({ ok: false, error })
+      return { ok: false, error }
+    }
+  } catch (err) {
+    const error = `Local API unreachable: ${(err as Error)?.message ?? err}`
+    notifyRendererLoginResult({ ok: false, error })
+    return { ok: false, error }
+  }
+
+  notifyRendererLoginResult({
+    ok: true,
+    email: mintedEmail ?? undefined,
+    workspace: mintedWorkspace ?? undefined,
+  })
+
+  // Bring the main window forward so the user sees the result.
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.focus()
+  }
+
+  return { ok: true }
+}
+
+function clampPollInterval(ms: number): number {
+  if (!Number.isFinite(ms) || ms <= 0) return 2000
+  return Math.min(Math.max(ms, 1000), 10_000)
+}
+
+function sleepInterruptible(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve()
+    const t = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(t)
+      resolve()
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 // Keep the cloud-minted device key fresh by pinging the local heartbeat
@@ -383,34 +503,28 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('get-device-info', () => getDeviceInfo())
 
-  // Cloud login: ask the local API for a one-shot authUrl (includes state
-  // nonce + device metadata), then open it in the user's default browser.
-  // Renderer may pass `{ workspaceId }` to pre-select a workspace on the
-  // bridge picker (e.g. for the "Switch workspace" affordance). When
-  // omitted, the bridge prompts the user if they have >1 workspace.
+  // Cloud sign-in: drive the same poll-based device flow the CLI uses
+  // (see runCloudSignIn() above). We open the system browser pointed at
+  // /auth/cli-link, poll cloud /api/cli/login/poll until approved or
+  // cancelled, then PUT the minted key into local /api/local/shogo-key.
+  // The renderer's `cloud-login-result` IPC fires exactly once.
+  // Pass `{ workspaceId }` to pre-select a workspace on the bridge picker.
   ipcMain.handle('start-cloud-login', async (_event, opts?: { workspaceId?: string }) => {
     try {
-      const device = getDeviceInfo()
-      const res = await fetch(`${getApiUrl()}/api/local/cloud-login/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          deviceId: device.id,
-          deviceName: device.name,
-          devicePlatform: device.platform,
-          deviceAppVersion: device.appVersion,
-          workspaceId: opts?.workspaceId,
-        }),
-      })
-      const body = (await res.json().catch(() => ({}))) as CloudLoginBody
-      if (!res.ok || !body?.authUrl) {
-        return { ok: false, error: body?.error || `HTTP ${res.status}` }
-      }
-      await shell.openExternal(body.authUrl)
-      return { ok: true }
+      return await runCloudSignIn(opts)
     } catch (err) {
+      console.error('[Desktop] start-cloud-login failed:', err)
       return { ok: false, error: (err as Error)?.message || 'Failed to start cloud login' }
     }
+  })
+
+  // Cancel an in-progress sign-in (the user closed the browser tab and
+  // wants to try a different workspace, etc.). Idempotent — no-op when
+  // nothing is in flight.
+  ipcMain.handle('cancel-cloud-login', () => {
+    if (!activeCloudSignIn) return { ok: true, cancelled: false }
+    activeCloudSignIn.abort.abort()
+    return { ok: true, cancelled: true }
   })
 
   ipcMain.handle('sign-out-cloud', async () => {
@@ -867,16 +981,6 @@ app.whenReady().then(async () => {
   }
 
   createWindow()
-
-  // If we were launched with a shogo://auth-callback in argv (Win/Linux cold
-  // boot via the default protocol client), dispatch it now that the local
-  // API is up. Give the window a beat to be ready to receive the IPC event.
-  if (!isCloudMode) {
-    const cold = extractAuthCallback(process.argv)
-    if (cold) {
-      setTimeout(() => void handleAuthCallback(cold), 1000)
-    }
-  }
 
   if (!isCloudMode) {
     createTray()

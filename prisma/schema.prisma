@@ -1398,6 +1398,12 @@ model Instance {
   hostname      String
   os            String?
   arch          String?
+  /// Connection kind: "desktop" = the Electron app, "cli-worker" = the
+  /// `shogo worker` CLI installed on a dev box / CI runner. Set on
+  /// register/heartbeat from the X-Shogo-Instance-Kind header. Defaults
+  /// to "desktop" for back-compat with existing rows + clients that
+  /// pre-date the header.
+  kind          InstanceKind   @default(desktop)
   status        InstanceStatus @default(offline)
   lastSeenAt    DateTime?
   wsRequestedAt DateTime?
@@ -1411,12 +1417,18 @@ model Instance {
 
   @@unique([workspaceId, hostname])
   @@index([workspaceId])
+  @@index([workspaceId, kind])
   @@map("instances")
 }
 
 enum InstanceStatus {
   online
   offline
+}
+
+enum InstanceKind {
+  desktop
+  cli_worker
 }
 
 model RemoteAction {

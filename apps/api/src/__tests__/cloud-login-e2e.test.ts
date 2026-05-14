@@ -3,20 +3,22 @@
 /**
  * Cloud Login E2E Test
  *
- * Exercises the full desktop "Sign in to Shogo Cloud" handshake end to end,
- * in-process, with mocked Prisma. Covers the cloud-side api-keys routes
- * (device minting + heartbeat + validate + revoke) AND the local-mode
- * cloud-login routes (start/complete/status/heartbeat/signout) on a single
- * Hono app, with `globalThis.fetch` rerouted so the local-auth `/complete`
- * handler's outbound calls land back on the same app.
+ * Exercises the cloud-side API key surface (mint / validate / heartbeat /
+ * revoke) plus the *local-mode* status+signout+heartbeat routes on a
+ * single Hono app, with `globalThis.fetch` rerouted so local-auth's
+ * outbound `/api/api-keys/heartbeat` calls land back on the same app.
+ *
+ * The interactive sign-in handshake itself (state nonce / poll / approve)
+ * lives in `cli-auth-routes.test.ts` — this file only validates the
+ * persistence + session shape that both the desktop and CLI worker land
+ * the minted key into.
  *
  * Scenarios:
  *   1. Device-kind key flow — mint, validate, dedupe, revoke
  *   2. resolveApiKey bumps lastSeenAt + deviceAppVersion for device keys
- *   3. Full local-mode happy path: start → complete persists localConfig
- *   4. State nonce: missing / unknown / single-use / expired
- *   5. Heartbeat with revoked key wipes local config (cloud-revoke takes effect)
- *   6. Signout wipes localConfig and status flips
+ *   3. Signout wipes localConfig and status flips back to signedIn=false
+ *   4. Heartbeat updates lastSeenAt and surfaces cloudKeyRejected
+ *   5. Remote revoke never auto-wipes local creds (warning-only behavior)
  *
  * Run: bun test apps/api/src/__tests__/cloud-login-e2e.test.ts
  */
@@ -502,302 +504,37 @@ describe('Cloud Login E2E', () => {
     })
   })
 
-  // ─── Local-mode: full handshake ────────────────────────────────────────
+  // ─── Local-mode: status only (handshake is in cli-auth-routes.test.ts) ──
+  //
+  // The legacy /api/local/cloud-login/{start,complete} handshake is gone —
+  // both the desktop and the CLI worker now drive the cloud
+  // /api/cli/login/{start,poll,approve} device flow directly and hand the
+  // minted key to PUT /api/local/shogo-key (which writes localConfig +
+  // restarts the tunnel). The handshake itself is covered by
+  // cli-auth-routes.test.ts; this file only validates status / signout /
+  // heartbeat against an already-persisted session.
 
-  describe('Local cloud-login handshake', () => {
+  describe('Local cloud-login status', () => {
     test('status is signedIn=false before the flow starts', async () => {
       const res = await app.request('/api/local/cloud-login/status')
       expect(res.status).toBe(200)
       const data = await res.json()
       expect(data.signedIn).toBe(false)
     })
-
-    test('happy path: start → complete writes localConfig and status flips', async () => {
-      // Step 1: local start. Note: the request body deliberately does NOT
-      // include a cloudUrl — the endpoint now only honors SHOGO_CLOUD_URL.
-      const startRes = await app.request('/api/local/cloud-login/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          deviceId: 'e2e-device-happy',
-          deviceName: 'E2E Mac',
-          devicePlatform: 'darwin',
-          deviceAppVersion: '0.1.0',
-        }),
-      })
-      expect(startRes.status).toBe(200)
-      const start = await startRes.json()
-      expect(start.ok).toBe(true)
-      expect(start.state).toHaveLength(64) // 32 random bytes as hex
-      expect(start.authUrl).toStartWith(`${CLOUD_HOST}/auth/local-link?`)
-      expect(start.cloudUrl).toBe(CLOUD_HOST)
-      const parsed = new URL(start.authUrl)
-      expect(parsed.searchParams.get('deviceId')).toBe('e2e-device-happy')
-      expect(parsed.searchParams.get('deviceName')).toBe('E2E Mac')
-      expect(parsed.searchParams.get('appVersion')).toBe('0.1.0')
-      expect(parsed.searchParams.get('callback')).toBe('shogo://auth-callback')
-
-      // Step 2: cloud bridge would have minted a device key for this user.
-      // Simulate by calling the cloud endpoint directly.
-      const mint = await app.request('/api/api-keys/device', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspaceId: 'ws-1',
-          deviceId: 'e2e-device-happy',
-          deviceName: 'E2E Mac',
-          devicePlatform: 'darwin',
-          deviceAppVersion: '0.1.0',
-        }),
-      })
-      const mintedKey = (await mint.json()).key as string
-
-      // Step 3: Electron main process POSTs /complete
-      const completeRes = await app.request('/api/local/cloud-login/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          state: start.state,
-          key: mintedKey,
-          email: 'e2e@test.com',
-          workspace: 'Personal',
-        }),
-      })
-      expect(completeRes.status).toBe(200)
-      const complete = await completeRes.json()
-      expect(complete.ok).toBe(true)
-      expect(complete.email).toBe('e2e@test.com')
-      expect(complete.workspace?.id).toBe('ws-1')
-      expect(complete.deviceId).toBe('e2e-device-happy')
-
-      // localConfig persisted: ONLY the key + key-info; the cloud URL is
-      // env-only and intentionally not persisted.
-      expect(localConfig.get('SHOGO_API_KEY')).toBe(mintedKey)
-      expect(localConfig.has('SHOGO_CLOUD_URL')).toBe(false)
-      const info = JSON.parse(localConfig.get('SHOGO_KEY_INFO')!)
-      expect(info.workspace?.id).toBe('ws-1')
-      expect(info.email).toBe('e2e@test.com')
-      expect(info.deviceId).toBe('e2e-device-happy')
-      expect(info.kind).toBe('device')
-
-      // process.env mirrors the stored key for the duration of the process.
-      // SHOGO_CLOUD_URL is not mutated by the handler — it stays whatever
-      // the operator set at process start.
-      expect(process.env.SHOGO_API_KEY).toBe(mintedKey)
-      expect(process.env.SHOGO_CLOUD_URL).toBe(CLOUD_HOST)
-
-      // Step 4: status flips to signed in
-      const statusRes = await app.request('/api/local/cloud-login/status')
-      const status = await statusRes.json()
-      expect(status.signedIn).toBe(true)
-      expect(status.email).toBe('e2e@test.com')
-      expect(status.workspace?.id).toBe('ws-1')
-      expect(status.deviceId).toBe('e2e-device-happy')
-      expect(status.keyPrefix).toStartWith('shogo_sk_')
-      expect(status.cloudUrl).toBe(CLOUD_HOST)
-    })
-
-    test('start echoes preselected workspaceId into the bridge URL', async () => {
-      // The desktop "Switch workspace" affordance passes a workspaceId so
-      // the bridge picker can pre-select. start must round-trip it as a
-      // query param on the generated authUrl.
-      const startRes = await app.request('/api/local/cloud-login/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          deviceId: 'e2e-preselect-ws',
-          workspaceId: 'ws-2',
-        }),
-      })
-      expect(startRes.status).toBe(200)
-      const start = await startRes.json()
-      const parsed = new URL(start.authUrl)
-      expect(parsed.searchParams.get('workspaceId')).toBe('ws-2')
-    })
-
-    test('start omits workspaceId when none provided', async () => {
-      // The default sign-in flow leaves workspaceId off so the bridge
-      // shows its picker (or auto-mints when the user has only one ws).
-      const startRes = await app.request('/api/local/cloud-login/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceId: 'e2e-no-preselect' }),
-      })
-      const start = await startRes.json()
-      const parsed = new URL(start.authUrl)
-      expect(parsed.searchParams.has('workspaceId')).toBe(false)
-    })
-
-    test('happy path: explicit workspaceId mints + persists for the chosen ws', async () => {
-      // Multi-workspace user picks ws-2 instead of the default ws-1
-      // (the user's first membership by createdAt). The minted key, the
-      // /complete response, and SHOGO_KEY_INFO must all reflect ws-2.
-      const startRes = await app.request('/api/local/cloud-login/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          deviceId: 'e2e-pick-ws-2',
-          deviceName: 'E2E Mac',
-          workspaceId: 'ws-2',
-        }),
-      })
-      const start = await startRes.json()
-
-      const mint = await app.request('/api/api-keys/device', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspaceId: 'ws-2',
-          deviceId: 'e2e-pick-ws-2',
-          deviceName: 'E2E Mac',
-        }),
-      })
-      const minted = await mint.json()
-      expect(minted.workspace?.id).toBe('ws-2')
-
-      const completeRes = await app.request('/api/local/cloud-login/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          state: start.state,
-          key: minted.key,
-        }),
-      })
-      expect(completeRes.status).toBe(200)
-      const complete = await completeRes.json()
-      expect(complete.workspace?.id).toBe('ws-2')
-
-      const info = JSON.parse(localConfig.get('SHOGO_KEY_INFO')!)
-      expect(info.workspace?.id).toBe('ws-2')
-      expect(info.workspace?.name).toBe('Team')
-    })
-
-    test('start ignores cloudUrl in body (env-only contract)', async () => {
-      // Even if a stale client sends a cloudUrl in the request body, the
-      // server must use process.env.SHOGO_CLOUD_URL.
-      const startRes = await app.request('/api/local/cloud-login/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          deviceId: 'e2e-env-only',
-          cloudUrl: 'https://attacker.example',
-        }),
-      })
-      expect(startRes.status).toBe(200)
-      const start = await startRes.json()
-      expect(start.cloudUrl).toBe(CLOUD_HOST)
-      expect(start.authUrl).toStartWith(`${CLOUD_HOST}/auth/local-link?`)
-    })
-
-    test('complete rejects unknown state', async () => {
-      const res = await app.request('/api/local/cloud-login/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          state: 'not-a-real-state',
-          key: 'shogo_sk_bogus',
-        }),
-      })
-      expect(res.status).toBe(400)
-      const data = await res.json()
-      expect(data.ok).toBe(false)
-      expect(data.error).toMatch(/expired state|Unknown/i)
-    })
-
-    test('complete rejects malformed key', async () => {
-      const start = await app
-        .request('/api/local/cloud-login/start', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ deviceId: 'e2e-bad-key' }),
-        })
-        .then((r) => r.json())
-
-      const res = await app.request('/api/local/cloud-login/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          state: start.state,
-          key: 'definitely-not-a-shogo-key',
-        }),
-      })
-      expect(res.status).toBe(400)
-    })
-
-    test('state nonce is single-use: second call with same state fails', async () => {
-      const start = await app
-        .request('/api/local/cloud-login/start', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ deviceId: 'e2e-single-use' }),
-        })
-        .then((r) => r.json())
-
-      const mint = await app
-        .request('/api/api-keys/device', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ workspaceId: 'ws-1', deviceId: 'e2e-single-use' }),
-        })
-        .then((r) => r.json())
-
-      const first = await app.request('/api/local/cloud-login/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          state: start.state,
-          key: mint.key,
-        }),
-      })
-      expect(first.status).toBe(200)
-
-      const second = await app.request('/api/local/cloud-login/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          state: start.state,
-          key: mint.key,
-        }),
-      })
-      expect(second.status).toBe(400)
-    })
-
-    test('complete rejects a key that fails cloud validation', async () => {
-      const start = await app
-        .request('/api/local/cloud-login/start', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ deviceId: 'e2e-bad-validate' }),
-        })
-        .then((r) => r.json())
-
-      // Key has the right shape but doesn't exist in the cloud DB
-      const res = await app.request('/api/local/cloud-login/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          state: start.state,
-          key: 'shogo_sk_' + 'a'.repeat(64),
-        }),
-      })
-      expect(res.status).toBe(400)
-      const data = await res.json()
-      expect(data.ok).toBe(false)
-      expect(localConfig.has('SHOGO_API_KEY')).toBe(false)
-    })
   })
 
   // ─── Local-mode: signout & heartbeat ─────────────────────────────────
 
   describe('Signout & heartbeat', () => {
+    /**
+     * Mint a device key on the cloud side and persist it the way
+     * PUT /api/local/shogo-key (apps/api/src/server.ts) would after
+     * the desktop / CLI worker hands the polled key to it. Directly
+     * populates the mocked localConfig + process.env so we can drive
+     * the surviving status/signout/heartbeat routes against a session
+     * that looks exactly like a real sign-in.
+     */
     async function signInHelper(): Promise<string> {
-      const start = await app
-        .request('/api/local/cloud-login/start', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ deviceId: 'e2e-signed-in' }),
-        })
-        .then((r) => r.json())
       const mint = await app
         .request('/api/api-keys/device', {
           method: 'POST',
@@ -809,14 +546,19 @@ describe('Cloud Login E2E', () => {
           }),
         })
         .then((r) => r.json())
-      await app.request('/api/local/cloud-login/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          state: start.state,
-          key: mint.key,
+
+      localConfig.set('SHOGO_API_KEY', mint.key)
+      localConfig.set(
+        'SHOGO_KEY_INFO',
+        JSON.stringify({
+          workspace: { id: 'ws-1', name: 'Personal', slug: 'personal' },
+          email: 'e2e@test.com',
+          deviceId: 'e2e-signed-in',
+          kind: 'device',
+          signedInAt: new Date().toISOString(),
         }),
-      })
+      )
+      process.env.SHOGO_API_KEY = mint.key
       return mint.key
     }
 
