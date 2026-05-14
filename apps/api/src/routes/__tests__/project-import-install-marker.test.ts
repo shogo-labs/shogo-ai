@@ -82,6 +82,13 @@ mock.module('@shogo/shared-runtime', () => ({
       archiveSize: 0,
     }),
   }),
+  // mock.module replaces the entire module — the route under test also
+  // imports isMacOSJunkName/isMacOSJunkPath, so we must re-export them
+  // or Bun raises `Export named '…' not found in module` at link time.
+  // No AppleDouble detritus in the install-marker bundle, so a no-op
+  // stub is correct.
+  isMacOSJunkName: (_name: string) => false,
+  isMacOSJunkPath: (_relPath: string) => false,
 }))
 
 const { runImport } = await import('../project-export-import')

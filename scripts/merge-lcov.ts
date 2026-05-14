@@ -293,47 +293,91 @@ function badgeColor(percent: number): string {
   return 'brightgreen'
 }
 
-function buildBadgeMarkdown(linePct: number): string {
+/**
+ * Render a shields.io static badge for `linePct` line coverage.
+ *
+ * `label` controls both the human-facing badge text ("backend
+ * coverage", "frontend coverage", or just "coverage" when omitted)
+ * and the alt text. `lcovPath` controls the GitHub-relative link the
+ * badge clicks through to. Splitting these two out lets a single
+ * README carry distinct backend / frontend badges that point at
+ * separate lcov shards in `coverage/`.
+ */
+function buildBadgeMarkdown(linePct: number, label: string, lcovPath: string): string {
   const color = badgeColor(linePct)
-  const url = `https://img.shields.io/badge/coverage-${linePct.toFixed(2)}%25-${color}`
-  // Link points at the merged lcov so curious readers cloning the repo
-  // can run `bun run test:coverage` and see the file the badge reflects.
-  return `[![Coverage](${url})](./coverage/lcov.info)`
+  // shields.io requires URL-encoding for spaces (label "backend
+  // coverage" becomes "backend%20coverage"). Hyphens in the label
+  // are themselves separators in the static-badge URL spec, so we
+  // also escape any literal `-` to `--`.
+  const labelEncoded = encodeURIComponent(label).replace(/-/g, '--')
+  const url = `https://img.shields.io/badge/${labelEncoded}-${linePct.toFixed(2)}%25-${color}`
+  const alt = label.charAt(0).toUpperCase() + label.slice(1)
+  return `[![${alt}](${url})](./${lcovPath})`
 }
 
-const README_BADGE_OPEN = '<!-- coverage-badge -->'
-const README_BADGE_CLOSE = '<!-- /coverage-badge -->'
+const DEFAULT_BADGE_KEY = 'coverage-badge'
 
-function updateReadmeBadge(readmePath: string, linePct: number): void {
+/**
+ * Replace the marker block (or insert one after the H1 if missing)
+ * in `readmePath` with a freshly-rendered badge for `linePct`.
+ *
+ * `key` selects the marker pair: e.g. `coverage-badge:backend`
+ * matches `<!-- coverage-badge:backend -->...<!-- /coverage-badge:backend -->`.
+ * The default `coverage-badge` key preserves the existing behaviour
+ * (legacy single-badge READMEs keep updating without any change).
+ *
+ * `label` and `lcovPath` are forwarded to `buildBadgeMarkdown` so a
+ * "backend" badge can render different text and link than a "frontend"
+ * badge in the same README.
+ */
+function updateReadmeBadge(
+  readmePath: string,
+  linePct: number,
+  opts: { key?: string; label?: string; lcovPath?: string } = {},
+): void {
   if (!existsSync(readmePath)) {
     console.error(`[badge] README not found at ${readmePath} — skipping update`)
     return
   }
+  const key = opts.key ?? DEFAULT_BADGE_KEY
+  const label = opts.label ?? 'coverage'
+  const lcovPath = opts.lcovPath ?? 'coverage/lcov.info'
+  const open = `<!-- ${key} -->`
+  const close = `<!-- /${key} -->`
   const text = readFileSync(readmePath, 'utf-8')
-  const badge = buildBadgeMarkdown(linePct)
-  const replacement = `${README_BADGE_OPEN}\n${badge}\n${README_BADGE_CLOSE}`
-  const marker = new RegExp(
-    `${README_BADGE_OPEN.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')}[\\s\\S]*?${README_BADGE_CLOSE.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')}`,
-  )
+  const badge = buildBadgeMarkdown(linePct, label, lcovPath)
+  const replacement = `${open}\n${badge}\n${close}`
+  const escapeRe = (s: string) => s.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')
+  const marker = new RegExp(`${escapeRe(open)}[\\s\\S]*?${escapeRe(close)}`)
   let next: string
   if (marker.test(text)) {
     next = text.replace(marker, replacement)
   } else {
     // First-time install: drop the marker block right after the H1 so
-    // readers see it without having to scroll.
+    // readers see it without having to scroll. When a sibling badge
+    // (e.g. backend's `<!-- coverage-badge:backend -->`) is already
+    // present, we splice the new one immediately after it so the
+    // group renders as a single line in GitHub.
     const lines = text.split('\n')
-    const h1Idx = lines.findIndex((l) => l.startsWith('# '))
-    if (h1Idx < 0) {
-      console.error(`[badge] no H1 found in ${readmePath} — appending badge at top`)
-      next = `${replacement}\n\n${text}`
-    } else {
-      lines.splice(h1Idx + 1, 0, '', replacement)
+    const siblingRe = new RegExp(`^<!-- /${escapeRe(DEFAULT_BADGE_KEY)}(:[^ ]+)? -->$`)
+    const siblingIdx = lines.findIndex((l) => siblingRe.test(l.trim()))
+    if (siblingIdx >= 0) {
+      lines.splice(siblingIdx + 1, 0, replacement)
       next = lines.join('\n')
+    } else {
+      const h1Idx = lines.findIndex((l) => l.startsWith('# '))
+      if (h1Idx < 0) {
+        console.error(`[badge] no H1 found in ${readmePath} — appending badge at top`)
+        next = `${replacement}\n\n${text}`
+      } else {
+        lines.splice(h1Idx + 1, 0, '', replacement)
+        next = lines.join('\n')
+      }
     }
   }
   if (next !== text) {
     writeFileSync(readmePath, next)
-    console.log(`[badge] updated ${readmePath} → ${linePct.toFixed(2)}%`)
+    console.log(`[badge] updated ${readmePath} (${key}) → ${linePct.toFixed(2)}%`)
   }
 }
 
@@ -349,11 +393,25 @@ interface CliArgs {
   // codebase with 32% coverage isn't going to hit 50% overnight. Set
   // --strict (or SHOGO_COVERAGE_STRICT=1) to enforce.
   strict: boolean
-  // Optional path to a README file. When set, the merger rewrites the
-  // `<!-- coverage-badge -->...<!-- /coverage-badge -->` block with a
-  // shields.io static badge for the current line coverage. Keeps the
-  // badge in sync without committing an SVG.
+  // Optional path to a README file. When set, the merger rewrites a
+  // marker block (default `<!-- coverage-badge -->...<!-- /coverage-badge -->`)
+  // with a shields.io static badge for the current line coverage.
+  // Keeps the badge in sync without committing an SVG.
   updateReadme: string | null
+  // Marker key for the badge block — `coverage-badge:backend` matches
+  // `<!-- coverage-badge:backend -->...<!-- /coverage-badge:backend -->`.
+  // Defaults to `coverage-badge` for backward compat with the
+  // historical single-badge READMEs.
+  badgeKey: string | null
+  // Human-facing label rendered in the badge (e.g. "backend coverage").
+  // Falls back to `"coverage"` so the legacy badge still reads
+  // `coverage 58%` after upgrading.
+  badgeLabel: string | null
+  // Repo-relative link target for the badge — usually the lcov file
+  // this run produced (`coverage/frontend-lcov.info` for the frontend
+  // pass, `coverage/lcov.info` for the backend pass). Defaults to
+  // `coverage/lcov.info` to match the historical layout.
+  badgeLcovPath: string | null
   // Optional path to a JSON summary written alongside the merged lcov.
   // Emits per-package + aggregate totals so PR checks can comment
   // file-level / per-package deltas without re-parsing lcov.
@@ -366,6 +424,16 @@ interface CliArgs {
   // addition to (not in place of) the aggregate threshold; breaches are
   // reported with the same WARN/BELOW severity model used at the top.
   perPackageFloors: Array<{ pkg: string; line: number }>
+  // When non-empty, only file records whose `packageKey()` matches one
+  // of these entries are kept in the merged output, the per-package
+  // summary, and the threshold/floor checks. Used by `run-all-tests.ts`
+  // to produce separate backend / frontend roll-ups from the same set
+  // of per-package lcov shards (Bun emits cross-package coverage when
+  // e.g. `agent-runtime` tests transitively load `shared-runtime`
+  // sources, so input-file partitioning isn't enough). Cross-package
+  // shard contamination is filtered post-merge via `packageKey()`.
+  // Repeatable via `--include-package <pkg>` (e.g. `apps/api`).
+  includePackages: string[]
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -377,8 +445,12 @@ function parseArgs(argv: string[]): CliArgs {
     silent: false,
     strict: process.env.SHOGO_COVERAGE_STRICT === '1',
     updateReadme: null,
+    badgeKey: null,
+    badgeLabel: null,
+    badgeLcovPath: null,
     summaryJson: null,
     perPackageFloors: [],
+    includePackages: [],
   }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -394,6 +466,12 @@ function parseArgs(argv: string[]): CliArgs {
       args.strict = true
     } else if (a === '--update-readme') {
       args.updateReadme = argv[++i]
+    } else if (a === '--badge-key') {
+      args.badgeKey = argv[++i] ?? null
+    } else if (a === '--badge-label') {
+      args.badgeLabel = argv[++i] ?? null
+    } else if (a === '--badge-lcov-path') {
+      args.badgeLcovPath = argv[++i] ?? null
     } else if (a === '--summary-json') {
       args.summaryJson = argv[++i]
     } else if (a === '--per-package-floor') {
@@ -410,6 +488,13 @@ function parseArgs(argv: string[]): CliArgs {
         process.exit(2)
       }
       args.perPackageFloors.push({ pkg, line: frac })
+    } else if (a === '--include-package') {
+      const pkg = argv[++i] ?? ''
+      if (!pkg) {
+        console.error('[merge-lcov] --include-package requires a value (e.g. "apps/api")')
+        process.exit(2)
+      }
+      args.includePackages.push(pkg)
     } else if (a === '--') {
       args.inputs.push(...argv.slice(i + 1))
       break
@@ -481,11 +566,29 @@ function main(): void {
     }
   }
 
+  // Apply --include-package filter (if any) BEFORE emitting the lcov
+  // and computing totals. We filter at the merged-record level rather
+  // than at the input-file level because Bun's per-package coverage
+  // shards routinely include source files from sibling packages
+  // (e.g. `agent-runtime`'s test loads `shared-runtime/src/foo.ts`,
+  // which then shows up under SF:packages/shared-runtime/src/foo.ts in
+  // agent-runtime's lcov). Filtering by `packageKey(sf)` is the only
+  // way to cleanly separate backend vs frontend roll-ups from the same
+  // pool of shards.
+  let scoped: Map<string, FileRecord> = merged
+  if (args.includePackages.length > 0) {
+    const allow = new Set(args.includePackages)
+    scoped = new Map()
+    for (const [sf, rec] of merged) {
+      if (allow.has(packageKey(sf))) scoped.set(sf, rec)
+    }
+  }
+
   const outPath = resolve(process.cwd(), args.out)
   mkdirSync(dirname(outPath), { recursive: true })
-  writeFileSync(outPath, emitLcov(merged))
+  writeFileSync(outPath, emitLcov(scoped))
 
-  const totals = computeTotals(merged)
+  const totals = computeTotals(scoped)
   const linePct = pct(totals.linesHit, totals.linesFound)
   const funcPct = pct(totals.funcsHit, totals.funcsFound)
 
@@ -502,9 +605,11 @@ function main(): void {
   }
 
   // Compute per-package totals once. Used for both `--summary-json`
-  // emission and `--per-package-floor` enforcement.
+  // emission and `--per-package-floor` enforcement. Iterates `scoped`
+  // (post `--include-package` filter) so summaries match the lcov
+  // that's actually written and the floors that are actually enforced.
   const perPackage = new Map<string, Map<string, FileRecord>>()
-  for (const [sf, rec] of merged) {
+  for (const [sf, rec] of scoped) {
     const key = packageKey(sf)
     let bucket = perPackage.get(key)
     if (!bucket) {
@@ -565,7 +670,11 @@ function main(): void {
 
   if (args.updateReadme) {
     const readmePath = resolve(process.cwd(), args.updateReadme)
-    updateReadmeBadge(readmePath, linePct)
+    updateReadmeBadge(readmePath, linePct, {
+      key: args.badgeKey ?? undefined,
+      label: args.badgeLabel ?? undefined,
+      lcovPath: args.badgeLcovPath ?? undefined,
+    })
   }
 
   if (args.summaryJson) {

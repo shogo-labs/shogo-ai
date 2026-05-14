@@ -442,6 +442,205 @@ describe('merge-lcov CLI', () => {
     expect(result.exitCode).toBe(1)
   })
 
+  test('--include-package filters merged output to only the listed packages', () => {
+    // Three shards spanning three packages. With --include-package
+    // set to two of them, the third must be dropped from the lcov,
+    // the per-package summary, AND the aggregate totals — the whole
+    // point of the flag is to produce honest backend/frontend roll-
+    // ups from the same shard pool.
+    const shardApi = writeShard(
+      'apps/api/coverage/lcov.info',
+      [
+        'TN:', 'SF:apps/api/src/a.ts',
+        'DA:1,1', 'DA:2,1', 'DA:3,0',
+        'LF:3', 'LH:2', 'end_of_record', '',
+      ].join('\n'),
+    )
+    const shardMobile = writeShard(
+      'apps/mobile/coverage/lcov.info',
+      [
+        'TN:', 'SF:apps/mobile/src/m.ts',
+        'DA:1,0', 'DA:2,0', 'DA:3,0', 'DA:4,0',
+        'LF:4', 'LH:0', 'end_of_record', '',
+      ].join('\n'),
+    )
+    const shardSdk = writeShard(
+      'packages/sdk/coverage/lcov.info',
+      [
+        'TN:', 'SF:packages/sdk/src/s.ts',
+        'DA:1,1', 'DA:2,1',
+        'LF:2', 'LH:2', 'end_of_record', '',
+      ].join('\n'),
+    )
+    const outFile = join(tmp, 'backend.lcov')
+    const summaryFile = join(tmp, 'backend-summary.json')
+    const result = runMerger([
+      '-o', outFile,
+      '--include-package', 'apps/api',
+      '--include-package', 'packages/sdk',
+      '--summary-json', summaryFile,
+      '--silent',
+      shardApi,
+      shardMobile,
+      shardSdk,
+    ])
+    expect(result.exitCode).toBe(0)
+    const merged = parseMergedLcov(readFileSync(outFile, 'utf-8'))
+    expect(merged.has('apps/api/src/a.ts')).toBe(true)
+    expect(merged.has('packages/sdk/src/s.ts')).toBe(true)
+    expect(merged.has('apps/mobile/src/m.ts')).toBe(false)
+    const summary = JSON.parse(readFileSync(summaryFile, 'utf-8'))
+    expect(Object.keys(summary.packages).sort()).toEqual(['apps/api', 'packages/sdk'])
+    // Aggregate totals must reflect the filtered set: 3+2 = 5 lines
+    // found, 2+2 = 4 hit. The dropped mobile shard's 4 unhit lines
+    // must NOT pollute the denominator.
+    expect(summary.aggregate).toMatchObject({
+      files: 2,
+      linesFound: 5,
+      linesHit: 4,
+    })
+  })
+
+  test('--include-package filters cross-package shard contamination', () => {
+    // Bun emits cross-package coverage when a test in package A
+    // transitively loads source from package B (e.g. agent-runtime
+    // tests load shared-runtime sources). The shard nominally
+    // belongs to A but the SF: keys point at B's source. The filter
+    // must operate on `packageKey(SF:)` — the actual source location —
+    // not on which input file the record came from.
+    const contaminatedShard = writeShard(
+      'apps/api/coverage/lcov.info',
+      [
+        // apps/api's own test exercising apps/api source
+        'TN:', 'SF:apps/api/src/api.ts',
+        'DA:1,1', 'LF:1', 'LH:1', 'end_of_record',
+        // …and incidentally pulling in apps/mobile source via an
+        // import chain. The mobile lines must be filtered out
+        // even though they live in apps/api's lcov shard.
+        'TN:', 'SF:apps/mobile/src/leak.ts',
+        'DA:1,1', 'LF:1', 'LH:1', 'end_of_record', '',
+      ].join('\n'),
+    )
+    const outFile = join(tmp, 'backend.lcov')
+    const summaryFile = join(tmp, 'backend-summary.json')
+    const result = runMerger([
+      '-o', outFile,
+      '--include-package', 'apps/api',
+      '--summary-json', summaryFile,
+      '--silent',
+      contaminatedShard,
+    ])
+    expect(result.exitCode).toBe(0)
+    const merged = parseMergedLcov(readFileSync(outFile, 'utf-8'))
+    expect(merged.has('apps/api/src/api.ts')).toBe(true)
+    expect(merged.has('apps/mobile/src/leak.ts')).toBe(false)
+    const summary = JSON.parse(readFileSync(summaryFile, 'utf-8'))
+    expect(summary.packages['apps/mobile']).toBeUndefined()
+  })
+
+  test('--update-readme rewrites the default badge marker', () => {
+    const shard = writeShard(
+      'packages/foo/coverage/lcov.info',
+      [
+        'TN:', 'SF:packages/foo/src/a.ts',
+        'DA:1,1', 'DA:2,1', 'DA:3,0',
+        'LF:3', 'LH:2', 'end_of_record', '',
+      ].join('\n'),
+    )
+    const readme = join(tmp, 'README.md')
+    writeFileSync(readme, [
+      '# Project',
+      '',
+      '<!-- coverage-badge -->',
+      '[![Coverage](https://img.shields.io/badge/coverage-1.00%25-red)](./coverage/lcov.info)',
+      '<!-- /coverage-badge -->',
+      '',
+      'Body.',
+    ].join('\n'))
+    const outFile = join(tmp, 'merged.lcov')
+    const result = runMerger([
+      '-o', outFile,
+      '--update-readme', readme,
+      '--silent',
+      shard,
+    ])
+    expect(result.exitCode).toBe(0)
+    const updated = readFileSync(readme, 'utf-8')
+    // 2/3 = 66.67% → yellow color tier; the badge link must still
+    // point at coverage/lcov.info (the legacy default).
+    expect(updated).toContain('coverage-66.67%25-yellow')
+    expect(updated).toContain('](./coverage/lcov.info)')
+    // Closing marker must still be present so a second update lands
+    // back into the same block instead of duplicating it.
+    expect(updated).toContain('<!-- /coverage-badge -->')
+  })
+
+  test('--badge-key supports labeled multi-badge READMEs (backend + frontend)', () => {
+    // Two shards, run the merger twice — once for backend, once for
+    // frontend — into the same README. The badges live under
+    // distinct marker keys so neither overwrites the other.
+    const backendShard = writeShard(
+      'packages/be/coverage/lcov.info',
+      [
+        'TN:', 'SF:apps/api/src/a.ts',
+        'DA:1,1', 'DA:2,1', 'DA:3,1', 'DA:4,0',
+        'LF:4', 'LH:3', 'end_of_record', '',
+      ].join('\n'),
+    )
+    const frontendShard = writeShard(
+      'packages/fe/coverage/lcov.info',
+      [
+        'TN:', 'SF:apps/mobile/src/m.ts',
+        'DA:1,1', 'DA:2,1',
+        'LF:2', 'LH:2', 'end_of_record', '',
+      ].join('\n'),
+    )
+    const readme = join(tmp, 'README.md')
+    writeFileSync(readme, '# Project\n\nBody.\n')
+
+    const backendOut = join(tmp, 'backend.lcov')
+    const backendResult = runMerger([
+      '-o', backendOut,
+      '--update-readme', readme,
+      '--badge-key', 'coverage-badge:backend',
+      '--badge-label', 'backend coverage',
+      '--badge-lcov-path', 'coverage/lcov.info',
+      '--include-package', 'apps/api',
+      '--silent',
+      backendShard,
+      frontendShard,
+    ])
+    expect(backendResult.exitCode).toBe(0)
+
+    const frontendOut = join(tmp, 'frontend.lcov')
+    const frontendResult = runMerger([
+      '-o', frontendOut,
+      '--update-readme', readme,
+      '--badge-key', 'coverage-badge:frontend',
+      '--badge-label', 'frontend coverage',
+      '--badge-lcov-path', 'coverage/frontend-lcov.info',
+      '--include-package', 'apps/mobile',
+      '--silent',
+      backendShard,
+      frontendShard,
+    ])
+    expect(frontendResult.exitCode).toBe(0)
+
+    const updated = readFileSync(readme, 'utf-8')
+    // Both marker blocks must coexist — the second update did NOT
+    // clobber the first.
+    expect(updated).toContain('<!-- coverage-badge:backend -->')
+    expect(updated).toContain('<!-- /coverage-badge:backend -->')
+    expect(updated).toContain('<!-- coverage-badge:frontend -->')
+    expect(updated).toContain('<!-- /coverage-badge:frontend -->')
+    // Backend: 3/4 = 75% → yellowgreen, label "backend coverage".
+    expect(updated).toContain('backend%20coverage-75.00%25-yellowgreen')
+    expect(updated).toContain('](./coverage/lcov.info)')
+    // Frontend: 2/2 = 100% → brightgreen, label "frontend coverage".
+    expect(updated).toContain('frontend%20coverage-100.00%25-brightgreen')
+    expect(updated).toContain('](./coverage/frontend-lcov.info)')
+  })
+
   test('handles missing shard files gracefully', () => {
     // The runner sometimes passes a path that didn't actually exist
     // (a shard whose tests didn't execute any source). merge-lcov.ts

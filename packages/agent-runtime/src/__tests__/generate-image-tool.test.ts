@@ -19,6 +19,18 @@ import { createTools, type ToolContext } from '../gateway-tools'
 
 const TEST_DIR = '/tmp/test-generate-image'
 
+// Stub global fetch so the tool never escapes to the network. Without
+// this, tests that pass a configured proxyUrl (default
+// `http://localhost:8002/api/ai/v1`) actually attempt a real HTTP
+// request — and when `bun dev:all` is running locally that endpoint
+// listens, accepts the request, and stalls waiting on the upstream LLM
+// for >5s, tripping the per-test timeout. We don't care about response
+// shape here; the assertions in this file all check effects that
+// happen before / instead of the fetch (filesystem creation,
+// path-sanitization error returns, etc.).
+const realFetch = globalThis.fetch
+let fetchSpy: ReturnType<typeof mock> | null = null
+
 function createCtx(overrides?: Partial<ToolContext>): ToolContext {
   return {
     workspaceDir: TEST_DIR,
@@ -48,9 +60,19 @@ describe('generate_image tool', () => {
   beforeEach(() => {
     rmSync(TEST_DIR, { recursive: true, force: true })
     mkdirSync(TEST_DIR, { recursive: true })
+    // Synthesise a non-ok response so the tool's error branch fires
+    // immediately. This keeps every test deterministic regardless of
+    // whether the dev server is running on port 8002.
+    fetchSpy = mock(async () => new Response('mocked: image generation disabled in tests', {
+      status: 503,
+      statusText: 'Service Unavailable',
+    }))
+    globalThis.fetch = fetchSpy as unknown as typeof fetch
   })
 
   afterEach(() => {
+    globalThis.fetch = realFetch
+    fetchSpy = null
     rmSync(TEST_DIR, { recursive: true, force: true })
   })
 
