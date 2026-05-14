@@ -18,19 +18,23 @@ agentic products.
 
 ## Open Source Model
 
-Shogo uses a split-license model:
+Shogo uses a split-license model. AGPL-3.0-or-later guards the
+cloud-service surface a competitor would need to ship a hosted clone;
+everything else is MIT so adoption is friction-free.
 
-- Core product code is licensed under `AGPL-3.0-or-later`
-- `packages/{sdk,core,agent,db,email,voice,cli}/` and SDK
-  examples are licensed under `MIT`
-- Documentation is licensed under `CC BY 4.0`
-- Infrastructure and deployment materials in `terraform/`, `k8s/`,
-  `deploy-examples/`, and `.github/workflows/` are proprietary and licensed
-  under `INFRASTRUCTURE-LICENSE.md`
+- AGPL-3.0-or-later: `apps/api/`, `packages/agent-runtime/`,
+  `packages/shared-runtime/`
+- MIT: the `@shogo-ai/*` libraries, `apps/mobile/`, `apps/desktop/`,
+  `packages/shared-app/`, `packages/shared-ui/`, `packages/ui-kit/`,
+  `packages/domain-stores/`, `templates/runtime-template/`
+- CC BY 4.0: `apps/docs/`, `docs/`
+- Proprietary: `terraform/`, `k8s/`, `deploy-examples/`,
+  `.github/workflows/` (see `INFRASTRUCTURE-LICENSE.md`)
 - The hosted Shogo Cloud offering is proprietary
 
-See `LICENSE`, `NOTICE`, `INFRASTRUCTURE-LICENSE.md`, and `TRADEMARK.md` for
-details.
+See [docs/LICENSING.md](./docs/LICENSING.md) for the full strategy and
+rationale, plus `LICENSE`, `NOTICE`, `INFRASTRUCTURE-LICENSE.md`, and
+`TRADEMARK.md`.
 
 ## Repository Layout
 
@@ -39,9 +43,9 @@ License is shown inline so the AGPL/MIT boundary is visible at a glance.
 | Path | License | Purpose |
 |------|---------|---------|
 | `apps/api/` | AGPL | Hono API server, auth, billing, runtime orchestration |
-| `apps/mobile/` | AGPL | Expo app for web, iOS, and Android |
-| `apps/desktop/` | AGPL | Local desktop distribution |
-| `apps/docs/` | AGPL | Documentation site |
+| `apps/mobile/` | MIT | Expo app for web, iOS, and Android |
+| `apps/desktop/` | MIT | Local desktop distribution |
+| `apps/docs/` | CC BY 4.0 | Documentation site |
 | `packages/sdk/` | MIT | Client SDK; back-compat shims for moved subpaths |
 | `packages/core/` | MIT | Logger, OTEL instrumentation, stream-buffer, chat-message |
 | `packages/agent/` | MIT | Agent loop, model router, hooks, pi-ai adapter |
@@ -49,12 +53,14 @@ License is shown inline so the AGPL/MIT boundary is visible at a glance.
 | `packages/email/` | MIT | Transactional email (SES / SMTP / OCI) |
 | `packages/voice/` | MIT | ElevenLabs + Twilio voice infra; React + RN UI |
 | `packages/cli/` | MIT | `validateManifest` / `runDeploy` / `pkg` helpers |
+| `packages/shogo-worker/` | MIT | `shogo-worker` self-host CLI |
+| `packages/model-catalog/` | MIT | Thin re-export shim (workspace-only) |
 | `packages/agent-runtime/` | AGPL | Agent gateway, tools, integrations |
-| `packages/shared-runtime/` | AGPL | Shared runtime helpers |
-| `packages/shared-app/` | AGPL | Shared app/domain logic |
-| `packages/shared-ui/` | AGPL | Shared UI components |
-| `packages/ui-kit/` | AGPL | Theme and routing helpers |
-| `packages/domain-stores/` | AGPL | Domain store layer |
+| `packages/shared-runtime/` | AGPL | Server-side glue (s3-sync, server framework) |
+| `packages/shared-app/` | MIT | Shared app/domain logic |
+| `packages/shared-ui/` | MIT | Shared UI components |
+| `packages/ui-kit/` | MIT | Theme and routing helpers |
+| `packages/domain-stores/` | MIT | Domain store layer |
 | `templates/runtime-template/` | MIT | Project template |
 
 ## Quick Start
@@ -129,9 +135,19 @@ re-export shims; see [`packages/sdk/MIGRATION.md`](./packages/sdk/MIGRATION.md).
 | Package | Description |
 |---------|-------------|
 | `@shogo/api` | API server and platform orchestration |
+| `@shogo/agent-runtime` | Agent runtime and tool gateway |
+| `@shogo/shared-runtime` | Server-side glue used only by the AGPL surface above |
+
+**Workspace-only (MIT):**
+
+| Package | Description |
+|---------|-------------|
 | `@shogo/mobile` | Primary client app |
 | `shogo` | Desktop packaging layer |
-| `@shogo/agent-runtime` | Agent runtime and tool gateway |
+| `@shogo/shared-app` | Shared app/domain logic |
+| `@shogo/shared-ui` | Shared UI components |
+| `@shogo/ui-kit` | Theme and routing helpers |
+| `@shogo/domain-stores` | Domain store layer |
 
 ## Commands
 

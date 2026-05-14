@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { memo, useState } from "react"
 import { ActivityIndicator, View, Text, Pressable, ScrollView } from "react-native"

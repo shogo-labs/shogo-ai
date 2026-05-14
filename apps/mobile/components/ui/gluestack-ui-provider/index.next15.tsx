@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 // This is a Next.js 15 compatible version of the GluestackUIProvider
 'use client';

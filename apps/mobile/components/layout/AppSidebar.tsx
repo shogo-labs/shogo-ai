@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * AppSidebar - Responsive navigation sidebar matching staging design

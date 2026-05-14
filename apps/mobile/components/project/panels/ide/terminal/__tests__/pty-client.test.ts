@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Unit tests for PtyClient. Uses an in-memory FakeWebSocket so we can drive

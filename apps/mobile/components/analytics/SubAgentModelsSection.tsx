@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Sub-Agent Models Section — Phase 1.2 (boss concern #2: user control)
