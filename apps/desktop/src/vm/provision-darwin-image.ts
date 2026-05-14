@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Provision a macOS-aarch64 base VM image with bun, templates, and deps

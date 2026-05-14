@@ -4,14 +4,25 @@ Copyright 2026 Shogo Technologies, Inc.
 This product includes software developed at Shogo Technologies, Inc.
 (https://shogo.ai/).
 
-Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
-See the LICENSE file in the root of this repository.
+This repository uses a split-license model. See `docs/LICENSING.md` for
+the full strategy and rationale.
+
+The cloud-service components — `apps/api/`, `packages/agent-runtime/`,
+and `packages/shared-runtime/` — are licensed under the GNU Affero
+General Public License v3.0 (AGPL-3.0-or-later). See the LICENSE file
+in the root of this repository.
 
 The Shogo SDK family — `@shogo-ai/sdk`, `@shogo-ai/core`,
 `@shogo-ai/agent`, `@shogo-ai/db`, `@shogo-ai/email`,
-`@shogo-ai/voice`, and `@shogo-ai/cli` — is licensed under the MIT
-License. See the per-package `LICENSE` file in each
-`packages/<name>/` directory for details.
+`@shogo-ai/voice`, `@shogo-ai/cli`, and `@shogo-ai/worker` — is
+licensed under the MIT License. See the per-package `LICENSE` file in
+each `packages/<name>/` directory for details.
+
+The clients and shared layers — `apps/mobile/`, `apps/desktop/`,
+`packages/shared-app/`, `packages/shared-ui/`, `packages/ui-kit/`,
+and `packages/domain-stores/` — are licensed under the MIT License.
+See the per-directory `LICENSE` file for details. The project template
+in `templates/runtime-template/` is also MIT.
 
 Documentation (apps/docs/, docs/) is licensed under Creative Commons
 Attribution 4.0 International (CC BY 4.0). See apps/docs/LICENSE for details.

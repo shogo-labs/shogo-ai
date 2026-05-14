@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react"
 import type { PlanData } from "./PlanCard"

@@ -47,10 +47,15 @@ authority to do so.
 
 ## 5. Project Licensing
 
-You understand that the repository may be distributed under open source
-licenses, including AGPL-3.0-or-later and Apache-2.0 for certain components,
-and that Shogo Technologies, Inc. may also distribute the project or your contribution as
-part of commercial or proprietary offerings.
+You understand that the repository is distributed under a split-license
+model: AGPL-3.0-or-later for the cloud-service components (`apps/api/`,
+`packages/agent-runtime/`, `packages/shared-runtime/`) and MIT for the
+libraries (`@shogo-ai/*`), clients (`apps/mobile/`, `apps/desktop/`),
+and shared layers (`packages/shared-app/`, `packages/shared-ui/`,
+`packages/ui-kit/`, `packages/domain-stores/`). See `docs/LICENSING.md`
+for the full map. You also understand that Shogo Technologies, Inc.
+may distribute the project or your contribution as part of commercial
+or proprietary offerings.
 
 ## 6. No Obligation
 
