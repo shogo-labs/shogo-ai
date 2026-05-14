@@ -29,7 +29,7 @@ import {
   accumulateUsage,
   accumulateImageUsage,
 } from '../lib/proxy-billing-session'
-import { trackChatStreamForBilling } from '../lib/chat-usage-tracker'
+import { teeChatStreamForBilling, trackChatStreamForBilling } from '../lib/chat-usage-tracker'
 
 function makeSseStream(frames: string[]): ReadableStream<Uint8Array> {
   const enc = new TextEncoder()
@@ -117,5 +117,92 @@ describe('trackChatStreamForBilling', () => {
     ])
     await trackChatStreamForBilling(stream, 'proj-no-session')
     expect(consumeUsageCalls.length).toBe(0)
+  })
+
+  test('parses event/id/retry metadata and AI SDK e:/d: compact frames', async () => {
+    const projectId = 'proj-compact-frames'
+    openSession(projectId, 'ws-compact', 'user-compact')
+    accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 25)
+
+    const stream = makeSseStream([
+      'event: message\n',
+      'id: 123\n',
+      'retry: 1000\n',
+      'data: [DONE]\n',
+      `data:${JSON.stringify({ type: 'data-turn-complete' })}\n`,
+      `e:${JSON.stringify({ usage: { success: false, loopDetected: true, responseEmpty: true } })}\n\n`,
+    ])
+
+    await trackChatStreamForBilling(stream, projectId)
+
+    expect(consumeUsageCalls).toHaveLength(1)
+    expect(consumeUsageCalls[0].actionType).toBe('chat_message')
+  })
+
+  test('direct finish fields override usage object quality signals', async () => {
+    const projectId = 'proj-direct-finish'
+    openSession(projectId, 'ws-direct', 'user-direct')
+    accumulateUsage(projectId, 'claude-sonnet-4-5', 80, 20)
+
+    const stream = makeSseStream([
+      `data: ${JSON.stringify({ type: 'data-turn-complete' })}\n`,
+      `data: ${JSON.stringify({
+        type: 'finish-step',
+        usage: { success: true },
+        success: false,
+        hitMaxTurns: true,
+        escalated: true,
+      })}\n\n`,
+    ])
+
+    await trackChatStreamForBilling(stream, projectId)
+
+    expect(consumeUsageCalls).toHaveLength(1)
+    expect(consumeUsageCalls[0].actionType).toBe('chat_message')
+  })
+
+  test('stream read interruption closes session without discardPartial', async () => {
+    const projectId = 'proj-interrupt'
+    openSession(projectId, 'ws-interrupt', 'user-interrupt')
+    accumulateUsage(projectId, 'claude-sonnet-4-5', 60, 20)
+
+    const stream = new ReadableStream<Uint8Array>({
+      pull() {
+        throw new Error('reader exploded')
+      },
+    })
+
+    await trackChatStreamForBilling(stream, projectId)
+
+    expect(hasSession(projectId)).toBe(false)
+    expect(consumeUsageCalls).toHaveLength(1)
+  })
+
+  test('teeChatStreamForBilling forwards client chunks while tracking billing in the background', async () => {
+    const projectId = 'proj-tee'
+    openSession(projectId, 'ws-tee', 'user-tee')
+    accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 40)
+
+    const upstream = makeSseStream([
+      `data: ${JSON.stringify({ type: 'data-turn-complete' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'finish', success: true })}\n\n`,
+    ])
+
+    const clientStream = teeChatStreamForBilling(upstream, projectId)
+    const reader = clientStream.getReader()
+    const decoder = new TextDecoder()
+    let body = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      body += decoder.decode(value)
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(body).toContain('data-turn-complete')
+    expect(body).toContain('finish')
+    expect(consumeUsageCalls).toHaveLength(1)
+    expect(hasSession(projectId)).toBe(false)
   })
 })

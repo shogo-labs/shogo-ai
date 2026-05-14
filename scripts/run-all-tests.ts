@@ -155,6 +155,16 @@ function runPackage(pkg: string, withCoverage: boolean): PackageResult {
   const childEnv = { ...process.env }
   delete childEnv.SHOGO_LOCAL_MODE
   delete childEnv.DATABASE_URL
+  // AI_PROXY_URL is exported by the Shogo desktop app's local shell so
+  // every child process inherits it. Modules that call
+  // configureAIProxy() at load time then see a URL with no matching
+  // AI_PROXY_TOKEN and FATAL out before tests run — which silently
+  // skips the package's coverage shard (the lcov is never written and
+  // the merge step picks up only incidental imports from sibling
+  // packages, dragging the roll-up down). Strip both for tests; the
+  // suites that need a proxy stub mock one themselves.
+  delete childEnv.AI_PROXY_URL
+  delete childEnv.AI_PROXY_TOKEN
   const proc = spawnSync('bun', ['run', scriptName], {
     stdio: 'inherit',
     cwd: pkgDir,
@@ -203,6 +213,12 @@ function runE2ESuite(
 
   console.log(`\n=== ${suite.name}: bun test ${suite.files.join(' ')} ${withCoverage ? '--coverage' : ''} ===`)
   const childEnv: NodeJS.ProcessEnv = { ...process.env, ...suite.env }
+  // Same scrub as runPackage() — keep proxy env vars out of test
+  // processes so configureAIProxy() doesn't FATAL on a partially-set
+  // proxy config inherited from the parent shell. The suite can
+  // re-set these via `suite.env` if it needs them.
+  delete childEnv.AI_PROXY_URL
+  delete childEnv.AI_PROXY_TOKEN
   // bun test writes coverage to <cwd>/coverage/lcov.info IF a bunfig
   // sets `coverageReporter = ["text", "lcov"]`. There's no bunfig at
   // the repo root (each package has its own), so the default reporter

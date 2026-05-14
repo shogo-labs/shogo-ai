@@ -10,7 +10,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, unlinkSync } from 'fs'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, unlinkSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -457,6 +457,64 @@ describe('branch operations', () => {
     const current = branches.find(b => b.isCurrent)
     expect(current?.name).toBe('main')
   })
+
+  test('createBranch reports failure and listBranches returns empty outside a repo', async () => {
+    const duplicate = await gitService.createBranch(workspacePath, 'main', { checkout: false })
+    expect(duplicate.success).toBe(false)
+    expect(duplicate.error).toBeDefined()
+
+    const nonRepo = mkdtempSync(join(tmpdir(), 'git-non-repo-'))
+    try {
+      expect(await gitService.listBranches(nonRepo)).toEqual([])
+    } finally {
+      rmSync(nonRepo, { recursive: true, force: true })
+    }
+  })
+})
+
+// =============================================================================
+// remote operations
+// =============================================================================
+
+describe('remote operations', () => {
+  let remotePath: string
+
+  beforeEach(async () => {
+    writeFileSync(join(workspacePath, 'initial.txt'), 'initial')
+    await gitService.initRepo(workspacePath)
+    remotePath = mkdtempSync(join(tmpdir(), 'git-remote-'))
+    const { execFileSync } = require('child_process')
+    execFileSync('git', ['init', '--bare'], { cwd: remotePath, stdio: 'pipe' })
+  })
+
+  afterEach(() => {
+    rmSync(remotePath, { recursive: true, force: true })
+  })
+
+  test('adds/removes remotes and supports push, fetch, and pull options', async () => {
+    await gitService.addRemote(workspacePath, 'origin', remotePath)
+    // Re-adding the same remote first removes the old value, covering that path.
+    await gitService.addRemote(workspacePath, 'origin', remotePath)
+
+    const pushed = await gitService.push(workspacePath, {
+      remote: 'origin',
+      branch: 'main',
+      setUpstream: true,
+    })
+    expect(pushed.success).toBe(true)
+
+    const fetched = await gitService.fetch(workspacePath, { remote: 'origin', prune: true })
+    expect(fetched.success).toBe(true)
+
+    const pulled = await gitService.pull(workspacePath, { remote: 'origin', branch: 'main', rebase: true })
+    expect(pulled.success).toBe(true)
+  })
+
+  test('remote commands return errors for missing remotes', async () => {
+    expect((await gitService.push(workspacePath, { remote: 'missing', branch: 'main', force: true })).success).toBe(false)
+    expect((await gitService.fetch(workspacePath, { remote: 'missing' })).success).toBe(false)
+    expect((await gitService.pull(workspacePath, { remote: 'missing', branch: 'main' })).success).toBe(false)
+  })
 })
 
 // =============================================================================
@@ -486,5 +544,11 @@ describe('checkpoint metadata', () => {
   test('returns null when no metadata exists', async () => {
     const read = await gitService.readCheckpointMetadata(workspacePath)
     expect(read).toBeNull()
+  })
+
+  test('returns null for corrupt checkpoint metadata', async () => {
+    mkdirSync(join(workspacePath, '.shogo'), { recursive: true })
+    writeFileSync(join(workspacePath, '.shogo', 'checkpoint.json'), '{bad json')
+    expect(await gitService.readCheckpointMetadata(workspacePath)).toBeNull()
   })
 })
