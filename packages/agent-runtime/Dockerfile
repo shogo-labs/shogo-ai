@@ -42,6 +42,19 @@ COPY packages/shared-app/package.json ./packages/shared-app/
 COPY packages/shared-ui/package.json ./packages/shared-ui/
 COPY packages/ui-kit/package.json ./packages/ui-kit/
 COPY packages/model-catalog/package.json ./packages/model-catalog/
+# SDK was split into focused @shogo-ai/* workspace packages (refactor
+# 3a2798ab). The root workspaces glob is `packages/*`, so every
+# packages/<name>/package.json must be present here — `bun install`
+# fails fast with `error: Workspace dependency "@shogo-ai/<X>" not
+# found` for any missing one. Source is not copied because the SDK
+# bundles its own implementations into dist/.
+COPY packages/agent/package.json ./packages/agent/
+COPY packages/cli/package.json ./packages/cli/
+COPY packages/core/package.json ./packages/core/
+COPY packages/db/package.json ./packages/db/
+COPY packages/email/package.json ./packages/email/
+COPY packages/voice/package.json ./packages/voice/
+COPY packages/shogo-worker/package.json ./packages/shogo-worker/
 COPY apps/api/package.json ./apps/api/
 COPY apps/mobile/package.json ./apps/mobile/
 
@@ -131,6 +144,15 @@ COPY packages/shared-app/package.json ./packages/shared-app/
 COPY packages/shared-ui/package.json ./packages/shared-ui/
 COPY packages/ui-kit/package.json ./packages/ui-kit/
 COPY packages/model-catalog/package.json ./packages/model-catalog/
+# SDK-split workspace packages — see builder stage above for the
+# full rationale.
+COPY packages/agent/package.json ./packages/agent/
+COPY packages/cli/package.json ./packages/cli/
+COPY packages/core/package.json ./packages/core/
+COPY packages/db/package.json ./packages/db/
+COPY packages/email/package.json ./packages/email/
+COPY packages/voice/package.json ./packages/voice/
+COPY packages/shogo-worker/package.json ./packages/shogo-worker/
 COPY apps/api/package.json ./apps/api/
 COPY apps/mobile/package.json ./apps/mobile/
 
@@ -173,6 +195,17 @@ COPY --chown=appuser:appgroup --from=builder /app/packages/domain-stores/package
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-app/package.json ./packages/shared-app/
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-ui/package.json ./packages/shared-ui/
 COPY --chown=appuser:appgroup --from=builder /app/packages/ui-kit/package.json ./packages/ui-kit/
+# Stub package.jsons for the SDK-split workspace packages. The
+# `bun install --ignore-scripts` further down still resolves the
+# workspaces graph; without these the runtime image fails with the
+# same workspace-resolution errors that broke CI.
+COPY --chown=appuser:appgroup --from=builder /app/packages/agent/package.json ./packages/agent/
+COPY --chown=appuser:appgroup --from=builder /app/packages/cli/package.json ./packages/cli/
+COPY --chown=appuser:appgroup --from=builder /app/packages/core/package.json ./packages/core/
+COPY --chown=appuser:appgroup --from=builder /app/packages/db/package.json ./packages/db/
+COPY --chown=appuser:appgroup --from=builder /app/packages/email/package.json ./packages/email/
+COPY --chown=appuser:appgroup --from=builder /app/packages/voice/package.json ./packages/voice/
+COPY --chown=appuser:appgroup --from=builder /app/packages/shogo-worker/package.json ./packages/shogo-worker/
 COPY --chown=appuser:appgroup --from=builder /app/apps/api/package.json ./apps/api/
 COPY --chown=appuser:appgroup --from=builder /app/apps/mobile/package.json ./apps/mobile/
 
