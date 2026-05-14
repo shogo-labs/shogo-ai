@@ -1606,7 +1606,7 @@ export class PreviewManager {
       let proc: ChildProcess
       try {
         proc = spawn(
-          invocation.cmd,
+          isWindows ? `"${invocation.cmd}"` : invocation.cmd,
           [...invocation.argsPrefix, 'build', '--outDir', DEFAULT_STAGING_DIR, '--emptyOutDir'],
           {
             cwd,
@@ -1690,7 +1690,7 @@ export class PreviewManager {
     let viteProcess: ChildProcess
     try {
       viteProcess = spawn(
-        invocation.cmd,
+        isWindows ? `"${invocation.cmd}"` : invocation.cmd,
         [...invocation.argsPrefix, 'build', '--watch', '--emptyOutDir', 'false'],
         {
           cwd,
@@ -2168,7 +2168,7 @@ export class PreviewManager {
     const exitCode = await new Promise<number | null>((resolveExport) => {
       let proc: ChildProcess
       try {
-        proc = spawn(expoBin, ['export', '--platform', 'web', '--output-dir', DEFAULT_STAGING_DIR], {
+        proc = spawn(isWindows ? `"${expoBin}"` : expoBin, ['export', '--platform', 'web', '--output-dir', DEFAULT_STAGING_DIR], {
           cwd,
           stdio: ['ignore', 'pipe', 'pipe'],
           // `.CMD` shims must go through cmd.exe on Windows.
@@ -2325,7 +2325,7 @@ export class PreviewManager {
     let proc: ChildProcess
     try {
       proc = spawn(
-        expoBin,
+        isWindows ? `"${expoBin}"` : expoBin,
         ['start', '--tunnel', ...portArgs],
         {
           cwd,

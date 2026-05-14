@@ -301,8 +301,9 @@ export class CanvasBuildManager {
     }
     try {
       await new Promise<void>((resolve, reject) => {
+        const cmd = isWindows ? `"${invocation.cmd}"` : invocation.cmd
         const proc: ChildProcess = spawn(
-          invocation.cmd,
+          cmd,
           [...invocation.argsPrefix, ...this.buildArgsFor(bundler.kind)],
           {
             cwd: this.workspaceDir,
