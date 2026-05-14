@@ -73,9 +73,27 @@ interface FileRecord {
  * merger can't combine the two and aggregate coverage looks worse than
  * it really is. We resolve against the shard's cwd and re-key by repo-
  * relative path, anchored at `repoRoot`.
+ *
+ * Special case: Bun sometimes emits paths that are *already* repo-
+ * relative (e.g. `packages/shared-runtime/src/foo.ts`) even when the
+ * shard cwd is `apps/api/`. Resolving those against the shard cwd
+ * produces nonsense double-prefixed keys like
+ * `apps/api/packages/shared-runtime/src/foo.ts`, which both inflates
+ * the denominator (same file shows up under three keys) and splits the
+ * coverage across them (the union of lines hit is lost). We detect the
+ * already-repo-relative shape up front and pass it through unchanged.
  */
-function normalizeSourceFile(sf: string, shardCwd: string, repoRoot: string): string {
-  const abs = isAbsolute(sf) ? sf : resolve(shardCwd, sf)
+const REPO_RELATIVE_PREFIX_RE = /^(packages|apps|e2e|scripts|templates|infra|terraform|k8s)\//
+export function normalizeSourceFile(sf: string, shardCwd: string, repoRoot: string): string {
+  if (isAbsolute(sf)) {
+    const rel = relative(repoRoot, sf)
+    return rel.startsWith('..') ? sf : rel
+  }
+  if (REPO_RELATIVE_PREFIX_RE.test(sf)) {
+    // Already keyed against the repo root — don't double-prefix it.
+    return sf
+  }
+  const abs = resolve(shardCwd, sf)
   const rel = relative(repoRoot, abs)
   // If the file lives outside the repo, keep the absolute path so we
   // don't end up with confusing `../../` keys that walk past the root.
@@ -213,6 +231,19 @@ interface Totals {
   funcsHit: number
 }
 
+/**
+ * Map a repo-relative source path to the "package" key the JSON summary
+ * groups by. Matches the buckets used in `scripts/run-all-tests.ts`'s
+ * `TEST_PACKAGES` so PR checks can show per-package deltas without a
+ * separate config. Anything not under `apps/<x>/` or `packages/<x>/`
+ * lands under `other`.
+ */
+function packageKey(sf: string): string {
+  const m = sf.match(/^(apps|packages)\/([^/]+)\//)
+  if (!m) return 'other'
+  return `${m[1]}/${m[2]}`
+}
+
 function computeTotals(records: Map<string, FileRecord>): Totals {
   let linesFound = 0
   let linesHit = 0
@@ -235,6 +266,19 @@ function computeTotals(records: Map<string, FileRecord>): Totals {
 
 function pct(hit: number, found: number): number {
   return found === 0 ? 100 : (hit / found) * 100
+}
+
+function packageSummary(records: Map<string, FileRecord>) {
+  const t = computeTotals(records)
+  return {
+    files: t.files,
+    linesFound: t.linesFound,
+    linesHit: t.linesHit,
+    linesPct: Number(pct(t.linesHit, t.linesFound).toFixed(2)),
+    funcsFound: t.funcsFound,
+    funcsHit: t.funcsHit,
+    funcsPct: Number(pct(t.funcsHit, t.funcsFound).toFixed(2)),
+  }
 }
 
 // Standard codecov-style color thresholds. Keeping these here (instead
@@ -310,6 +354,18 @@ interface CliArgs {
   // shields.io static badge for the current line coverage. Keeps the
   // badge in sync without committing an SVG.
   updateReadme: string | null
+  // Optional path to a JSON summary written alongside the merged lcov.
+  // Emits per-package + aggregate totals so PR checks can comment
+  // file-level / per-package deltas without re-parsing lcov.
+  summaryJson: string | null
+  // Per-package minimum line coverage floor. Each entry is parsed as
+  // `<package>:<fraction>` where `<package>` matches the keys emitted
+  // in `summary.json` (e.g. `apps/api`, `packages/agent-runtime`) and
+  // `<fraction>` is a number in [0,1]. Multiple floors may be given by
+  // passing `--per-package-floor` repeatedly. Floors are evaluated in
+  // addition to (not in place of) the aggregate threshold; breaches are
+  // reported with the same WARN/BELOW severity model used at the top.
+  perPackageFloors: Array<{ pkg: string; line: number }>
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -321,6 +377,8 @@ function parseArgs(argv: string[]): CliArgs {
     silent: false,
     strict: process.env.SHOGO_COVERAGE_STRICT === '1',
     updateReadme: null,
+    summaryJson: null,
+    perPackageFloors: [],
   }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -336,6 +394,22 @@ function parseArgs(argv: string[]): CliArgs {
       args.strict = true
     } else if (a === '--update-readme') {
       args.updateReadme = argv[++i]
+    } else if (a === '--summary-json') {
+      args.summaryJson = argv[++i]
+    } else if (a === '--per-package-floor') {
+      const raw = argv[++i] ?? ''
+      const colon = raw.lastIndexOf(':')
+      if (colon < 0) {
+        console.error(`[merge-lcov] invalid --per-package-floor "${raw}" (expected <package>:<fraction>)`)
+        process.exit(2)
+      }
+      const pkg = raw.slice(0, colon)
+      const frac = Number(raw.slice(colon + 1))
+      if (!Number.isFinite(frac) || frac < 0 || frac > 1) {
+        console.error(`[merge-lcov] invalid --per-package-floor fraction "${raw}" (must be 0..1)`)
+        process.exit(2)
+      }
+      args.perPackageFloors.push({ pkg, line: frac })
     } else if (a === '--') {
       args.inputs.push(...argv.slice(i + 1))
       break
@@ -427,6 +501,25 @@ function main(): void {
     console.log('─'.repeat(72))
   }
 
+  // Compute per-package totals once. Used for both `--summary-json`
+  // emission and `--per-package-floor` enforcement.
+  const perPackage = new Map<string, Map<string, FileRecord>>()
+  for (const [sf, rec] of merged) {
+    const key = packageKey(sf)
+    let bucket = perPackage.get(key)
+    if (!bucket) {
+      bucket = new Map()
+      perPackage.set(key, bucket)
+    }
+    bucket.set(sf, rec)
+  }
+  const packages: Record<string, ReturnType<typeof packageSummary>> = {}
+  for (const [key, bucket] of [...perPackage.entries()].sort((a, b) =>
+    a[0].localeCompare(b[0]),
+  )) {
+    packages[key] = packageSummary(bucket)
+  }
+
   let breached = false
   const breachLabel = args.strict ? 'BELOW' : 'WARN'
   if (args.thresholdLine != null) {
@@ -447,6 +540,23 @@ function main(): void {
       breached = true
     }
   }
+  for (const floor of args.perPackageFloors) {
+    const pkgSummary = packages[floor.pkg]
+    if (!pkgSummary) {
+      console.error(
+        `[${breachLabel}] per-package floor "${floor.pkg}" matched no source files (typo, or package not yet tested)`,
+      )
+      breached = true
+      continue
+    }
+    const required = floor.line * 100
+    if (pkgSummary.linesPct + 1e-9 < required) {
+      console.error(
+        `[${breachLabel}] package "${floor.pkg}" line coverage ${pkgSummary.linesPct.toFixed(2)}% is below floor ${required.toFixed(2)}%`,
+      )
+      breached = true
+    }
+  }
   if (breached && !args.strict) {
     console.error(
       'coverage: thresholds not met; running in soft-floor mode (set --strict or SHOGO_COVERAGE_STRICT=1 to enforce)',
@@ -458,7 +568,35 @@ function main(): void {
     updateReadmeBadge(readmePath, linePct)
   }
 
+  if (args.summaryJson) {
+    const summaryPath = resolve(process.cwd(), args.summaryJson)
+    mkdirSync(dirname(summaryPath), { recursive: true })
+    const summary = {
+      generatedAt: new Date().toISOString(),
+      aggregate: {
+        files: totals.files,
+        linesFound: totals.linesFound,
+        linesHit: totals.linesHit,
+        linesPct: Number(linePct.toFixed(2)),
+        funcsFound: totals.funcsFound,
+        funcsHit: totals.funcsHit,
+        funcsPct: Number(funcPct.toFixed(2)),
+      },
+      packages,
+    }
+    writeFileSync(summaryPath, JSON.stringify(summary, null, 2) + '\n')
+    if (!args.silent) {
+      console.log(`Wrote per-package summary: ${summaryPath}`)
+    }
+  }
+
   process.exit(breached && args.strict ? 1 : 0)
 }
 
-main()
+// Only execute the CLI entrypoint when this file is run directly as a
+// script. Importing it (e.g. from `scripts/__tests__/merge-lcov.test.ts`
+// to exercise `normalizeSourceFile` in isolation) must not trigger an
+// `process.exit(2)` for missing positional inputs.
+if (import.meta.main) {
+  main()
+}

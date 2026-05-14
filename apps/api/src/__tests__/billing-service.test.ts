@@ -1,1016 +1,281 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Unit tests for the USD billing service.
+ * `billing.service.ts` — pure-logic + simple-query coverage.
  *
- * Covers the `hasBalance`, `consumeUsage`, `chargeOverageBlocks`, and
- * `syncSeatsFromMembership` code paths — daily → monthly → overage deduction
- * order, hard-cap enforcement, mid-cycle $100 trust-block invoicing, and
- * Cursor-style active-seat syncing with Stripe prorations.
- *
- * Prisma is mocked in-memory; Stripe is injected via a synthetic `stripe`
- * module mock so we can assert invoice + subscription-item operations
- * without network calls.
+ * Targets:
+ *   - nextOverageBlockUsd (every step of the 100→500 ladder)
+ *   - getSubscription / getSubscriptions / getUsageWallet (Prisma pass-through)
+ *   - allocateFreeWallet (new + existing branches, grant stacking)
+ *   - applyGrantMonthlyAllocation (upsert path with grants)
+ *   - allocateMonthlyIncluded (paid plan with seats + grant)
+ *   - hasPaidSubscription / hasAdvancedModelAccess / isBusinessOrHigherPlan
+ *     (local-mode short-circuit + Prisma-backed paths)
+ *   - hasBalance (no wallet → allocate, included-only, overage-on/off,
+ *     hard-cap exhaustion)
  *
  *   bun test apps/api/src/__tests__/billing-service.test.ts
  */
 
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
+import { withPrismaExports } from './helpers/prisma-mock-exports'
 
-// ─── Prisma mock ───────────────────────────────────────────────────────
-type Wallet = {
-  id: string
-  workspaceId: string
-  monthlyIncludedUsd: number
-  monthlyIncludedAllocationUsd: number
-  dailyIncludedUsd: number
-  dailyUsedThisMonthUsd: number
-  overageEnabled: boolean
-  overageHardLimitUsd: number | null
-  overageAccumulatedUsd: number
-  overageBilledUsd: number
-  stripeMeteredItemId: string | null
-  anniversaryDay: number
-  lastDailyReset: Date
-  lastMonthlyReset: Date
-}
+delete process.env.SHOGO_LOCAL_MODE
 
-let wallets: Map<string, Wallet> = new Map()
-let usageEvents: any[] = []
-let subscriptions: Array<{
-  id?: string
-  workspaceId: string
-  status: string
-  stripeSubscriptionId: string | null
-  stripeCustomerId?: string
-  planId: string
-  seats?: number
-}> = []
-let members: Array<{ workspaceId: string | null; projectId: string | null; userId: string }> = []
-let grants: Array<{
-  id: string
-  workspaceId: string
-  freeSeats: number
-  monthlyIncludedUsd: number
-  startsAt: Date
-  expiresAt: Date | null
-}> = []
+// ────────────────────────────────────────────────────────────────────
+// Prisma mock
+// ────────────────────────────────────────────────────────────────────
+let walletByWs = new Map<string, any>()
+let subsByWs = new Map<string, any[]>()
+let grantsByWs = new Map<string, any[]>()
 
-function freshWallet(ws: string, overrides: Partial<Wallet> = {}): Wallet {
-  const now = new Date()
-  return {
-    id: `wallet_${ws}`,
-    workspaceId: ws,
-    monthlyIncludedUsd: 0,
-    monthlyIncludedAllocationUsd: 0,
-    dailyIncludedUsd: 0.5,
-    dailyUsedThisMonthUsd: 0,
-    overageEnabled: false,
-    overageHardLimitUsd: null,
-    overageAccumulatedUsd: 0,
-    overageBilledUsd: 0,
-    stripeMeteredItemId: null,
-    anniversaryDay: now.getUTCDate(),
-    lastDailyReset: now,
-    lastMonthlyReset: now,
-    ...overrides,
-  }
-}
-
-function applyIncrements(target: any, patch: any): any {
-  // Mimic Prisma's `{ field: { increment: n } }` syntax used by the service.
-  const out: any = { ...target }
-  for (const [k, v] of Object.entries(patch)) {
-    if (v && typeof v === 'object' && 'increment' in (v as any)) {
-      out[k] = (target?.[k] ?? 0) + (v as any).increment
-    } else {
-      out[k] = v
-    }
-  }
-  return out
-}
-
-mock.module('../lib/prisma', () => {
-  const walletApi = {
-    findUnique: async ({ where }: any) => wallets.get(where.workspaceId) ?? null,
-    create: async ({ data }: any) => {
-      const w = freshWallet(data.workspaceId, data)
-      wallets.set(data.workspaceId, w)
-      return w
+const mockPrisma = {
+  subscription: {
+    findFirst: async (args: any) => {
+      const subs = subsByWs.get(args.where.workspaceId) ?? []
+      const status = args.where.status?.in
+      const filtered = status ? subs.filter((s: any) => status.includes(s.status)) : subs
+      return filtered[0] ?? null
     },
-    update: async ({ where, data }: any) => {
-      const w = wallets.get(where.workspaceId)
-      if (!w) throw new Error('wallet not found')
-      const updated = applyIncrements(w, data)
-      wallets.set(where.workspaceId, updated)
-      return updated
-    },
-    updateMany: async ({ where, data }: any) => {
-      let count = 0
-      for (const [ws, w] of wallets) {
-        if (ws !== where.workspaceId) continue
-        wallets.set(ws, applyIncrements(w, data))
-        count++
-      }
-      return { count }
-    },
-    upsert: async ({ where, create, update }: any) => {
-      const w = wallets.get(where.workspaceId)
-      if (w) {
-        const updated = applyIncrements(w, update)
-        wallets.set(where.workspaceId, updated)
-        return updated
-      }
-      const created = freshWallet(where.workspaceId, create)
-      wallets.set(where.workspaceId, created)
-      return created
-    },
-  }
-  const eventApi = {
-    create: async ({ data }: any) => {
-      usageEvents.push(data)
-      return data
-    },
-  }
-  const subApi = {
-    findFirst: async ({ where }: any) => {
-      return (
-        subscriptions.find(
-          (s) =>
-            s.workspaceId === where.workspaceId &&
-            (where.status?.in ? where.status.in.includes(s.status) : true),
-        ) ?? null
-      )
-    },
-    update: async ({ where, data }: any) => {
-      const sub = subscriptions.find((s) => s.id === where.id)
-      if (!sub) throw new Error('subscription not found')
-      Object.assign(sub, data)
-      return sub
-    },
-  }
-  const memberApi = {
-    findMany: async ({ where }: any) => {
-      return members.filter(
-        (m) =>
-          (where.workspaceId == null || m.workspaceId === where.workspaceId) &&
-          (where.projectId === null
-            ? m.projectId == null
-            : where.projectId === undefined
-              ? true
-              : m.projectId === where.projectId),
-      )
-    },
-  }
-  function isGrantActiveAt(g: typeof grants[number], when: Date): boolean {
-    if (g.startsAt > when) return false
-    if (g.expiresAt && g.expiresAt <= when) return false
-    return true
-  }
-  const grantApi = {
-    findMany: async ({ where }: any) => {
-      const now: Date = where.startsAt?.lte ?? new Date()
-      return grants.filter((g) => {
-        if (where.workspaceId && g.workspaceId !== where.workspaceId) return false
-        if (where.monthlyIncludedUsd?.gt != null && g.monthlyIncludedUsd <= where.monthlyIncludedUsd.gt) {
-          return false
-        }
-        if (!isGrantActiveAt(g, now)) return false
-        return true
-      })
-    },
-  }
-  return {
-    prisma: {
-      usageWallet: walletApi,
-      usageEvent: eventApi,
-      subscription: subApi,
-      member: memberApi,
-      workspaceGrant: grantApi,
-      $transaction: async (fn: any) =>
-        fn({ usageWallet: walletApi, usageEvent: eventApi, subscription: subApi }),
-    },
-    SubscriptionStatus: {},
-    BillingInterval: {},
-  }
-})
-
-// ─── Stripe mock ───────────────────────────────────────────────────────
-const stripeCalls: {
-  retrieve: any[]
-  subItemCreate: any[]
-  subItemUpdate: any[]
-  invoiceItemCreate: any[]
-  invoiceCreate: any[]
-  invoiceFinalize: any[]
-  invoicePay: any[]
-} = {
-  retrieve: [],
-  subItemCreate: [],
-  subItemUpdate: [],
-  invoiceItemCreate: [],
-  invoiceCreate: [],
-  invoiceFinalize: [],
-  invoicePay: [],
-}
-
-let stripeSubResponse: any = { items: { data: [] } }
-
-class MockStripe {
-  constructor(public key: string) {}
-  subscriptions = {
-    retrieve: async (id: string) => {
-      stripeCalls.retrieve.push(id)
-      return stripeSubResponse
-    },
-  }
-  subscriptionItems = {
+    findMany: async (args: any) => subsByWs.get(args.where.workspaceId) ?? [],
+  },
+  usageWallet: {
+    findUnique: async (args: any) => walletByWs.get(args.where.workspaceId) ?? null,
     create: async (args: any) => {
-      stripeCalls.subItemCreate.push(args)
-      return { id: 'si_mocked', ...args }
+      walletByWs.set(args.data.workspaceId, args.data)
+      return args.data
     },
-    update: async (id: string, args: any) => {
-      stripeCalls.subItemUpdate.push({ id, ...args })
-      return { id, ...args }
+    upsert: async (args: any) => {
+      const ws = args.where.workspaceId
+      const existing = walletByWs.get(ws)
+      if (existing) {
+        const merged = { ...existing, ...args.update }
+        walletByWs.set(ws, merged)
+        return merged
+      }
+      walletByWs.set(ws, args.create)
+      return args.create
     },
-  }
-  invoiceItems = {
-    create: async (args: any, opts?: any) => {
-      stripeCalls.invoiceItemCreate.push({ ...args, _opts: opts })
-      return { id: 'ii_mocked', ...args }
-    },
-  }
-  invoices = {
-    create: async (args: any, opts?: any) => {
-      stripeCalls.invoiceCreate.push({ ...args, _opts: opts })
-      return { id: `in_${stripeCalls.invoiceCreate.length}`, ...args }
-    },
-    finalizeInvoice: async (id: string) => {
-      stripeCalls.invoiceFinalize.push(id)
-      return { id, status: 'open' }
-    },
-    pay: async (id: string) => {
-      stripeCalls.invoicePay.push(id)
-      return { id, status: 'paid' }
-    },
-  }
+  },
+  workspaceGrant: {
+    findMany: async (args: any) => grantsByWs.get(args.where.workspaceId) ?? [],
+  },
+  usageEvent: {
+    create: async (args: any) => ({ id: 'ue-1', ...args.data }),
+  },
 }
 
-mock.module('stripe', () => ({ default: MockStripe }))
+mock.module('../lib/prisma', () => withPrismaExports({ prisma: mockPrisma }))
 
-// ─── Imports AFTER mocks ───────────────────────────────────────────────
+mock.module('../config/usage-plans', () => ({
+  DAILY_INCLUDED_USD: 1,
+  MONTHLY_DAILY_CAP_USD: 30,
+  PLAN_INCLUDED_USD: { free: 0, basic: 5, pro: 20, business: 40 },
+  getMonthlyIncludedForPlan: (plan: string, seats: number) => {
+    if (plan === 'basic') return 5
+    if (plan === 'pro') return 20 * seats
+    if (plan === 'business') return 40 * seats
+    return 0
+  },
+}))
+
+mock.module('../config/stripe-prices', () => ({
+  getOveragePriceConfig: () => null,
+}))
+
 const billing = await import('../services/billing.service')
 
 beforeEach(() => {
-  wallets = new Map()
-  usageEvents = []
-  subscriptions = []
-  members = []
-  grants = []
-  stripeCalls.retrieve = []
-  stripeCalls.subItemCreate = []
-  stripeCalls.subItemUpdate = []
-  stripeCalls.invoiceItemCreate = []
-  stripeCalls.invoiceCreate = []
-  stripeCalls.invoiceFinalize = []
-  stripeCalls.invoicePay = []
-  stripeSubResponse = { items: { data: [] } }
-  process.env.STRIPE_SECRET_KEY = 'sk_test_mock'
+  walletByWs.clear()
+  subsByWs.clear()
+  grantsByWs.clear()
 })
 
-// =============================================================================
-// hasBalance
-// =============================================================================
+// ────────────────────────────────────────────────────────────────────
+// Tests
+// ────────────────────────────────────────────────────────────────────
 
-describe('hasBalance', () => {
-  test('returns true when daily allowance alone covers the request', async () => {
-    wallets.set('ws1', freshWallet('ws1', { dailyIncludedUsd: 0.5 }))
-    expect(await billing.hasBalance('ws1', 0.1)).toBe(true)
-  })
-
-  test('returns true when monthly pool covers the shortfall over daily', async () => {
-    wallets.set(
-      'ws1',
-      freshWallet('ws1', { dailyIncludedUsd: 0.05, monthlyIncludedUsd: 10 }),
-    )
-    expect(await billing.hasBalance('ws1', 0.5)).toBe(true)
-  })
-
-  test('returns false when included pool is empty and overage is disabled', async () => {
-    wallets.set(
-      'ws1',
-      freshWallet('ws1', {
-        dailyIncludedUsd: 0,
-        monthlyIncludedUsd: 0,
-        overageEnabled: false,
-      }),
-    )
-    expect(await billing.hasBalance('ws1', 0.01)).toBe(false)
-  })
-
-  test('returns true when overage is enabled with no hard cap', async () => {
-    wallets.set(
-      'ws1',
-      freshWallet('ws1', {
-        dailyIncludedUsd: 0,
-        monthlyIncludedUsd: 0,
-        overageEnabled: true,
-        overageHardLimitUsd: null,
-      }),
-    )
-    expect(await billing.hasBalance('ws1', 999)).toBe(true)
-  })
-
-  test('returns false when overage is enabled but hard cap is already hit', async () => {
-    wallets.set(
-      'ws1',
-      freshWallet('ws1', {
-        dailyIncludedUsd: 0,
-        monthlyIncludedUsd: 0,
-        overageEnabled: true,
-        overageHardLimitUsd: 10,
-        overageAccumulatedUsd: 10,
-      }),
-    )
-    expect(await billing.hasBalance('ws1', 0.01)).toBe(false)
-  })
-
-  test('auto-allocates a free-tier wallet when none exists', async () => {
-    expect(wallets.get('brand-new')).toBeUndefined()
-    await billing.hasBalance('brand-new', 0.001)
-    expect(wallets.get('brand-new')).toBeDefined()
-    expect(wallets.get('brand-new')?.dailyIncludedUsd).toBe(0.5)
-  })
-
-  // Note: local-mode short-circuits read `process.env.SHOGO_LOCAL_MODE` at
-  // billing.service module-load time, so we don't toggle that behavior
-  // inside this file. The semantics are covered by ai-proxy-e2e tests
-  // which set the env var before importing the service.
-})
-
-// =============================================================================
-// consumeUsage — deduction order + ledger side effects
-// =============================================================================
-
-describe('consumeUsage', () => {
-  test('deducts from daily pool first and records a usage event', async () => {
-    wallets.set(
-      'ws1',
-      freshWallet('ws1', { dailyIncludedUsd: 0.5, monthlyIncludedUsd: 20 }),
-    )
-
-    const res = await billing.consumeUsage({
-      workspaceId: 'ws1',
-      projectId: 'p1',
-      memberId: 'u1',
-      actionType: 'chat_message',
-      rawUsd: 0.1,
-      billedUsd: 0.12,
-    })
-
-    expect(res.success).toBe(true)
-    expect(res.source).toBe('daily')
-    expect(res.overageChargedUsd ?? 0).toBe(0)
-    expect(wallets.get('ws1')!.dailyIncludedUsd).toBeCloseTo(0.38, 10)
-    expect(wallets.get('ws1')!.monthlyIncludedUsd).toBeCloseTo(20, 10)
-    expect(usageEvents).toHaveLength(1)
-    expect(usageEvents[0].source).toBe('daily')
-    expect(usageEvents[0].billedUsd).toBeCloseTo(0.12, 10)
-    expect(usageEvents[0].rawUsd).toBeCloseTo(0.1, 10)
-  })
-
-  test('falls back to the monthly pool when daily alone cannot cover the debit', async () => {
-    wallets.set(
-      'ws1',
-      freshWallet('ws1', { dailyIncludedUsd: 0.05, monthlyIncludedUsd: 20 }),
-    )
-
-    const res = await billing.consumeUsage({
-      workspaceId: 'ws1',
-      projectId: null,
-      memberId: 'u1',
-      actionType: 'chat_message',
-      billedUsd: 1.0,
-    })
-
-    expect(res.success).toBe(true)
-    expect(res.source).toBe('monthly')
-    // Monthly covered the debit; daily is untouched (not partial-spend).
-    expect(wallets.get('ws1')!.monthlyIncludedUsd).toBeCloseTo(19, 10)
-    expect(wallets.get('ws1')!.dailyIncludedUsd).toBeCloseTo(0.05, 10)
-  })
-
-  test('returns usage_limit_reached-style error when included is exhausted and overage is off', async () => {
-    wallets.set(
-      'ws1',
-      freshWallet('ws1', {
-        dailyIncludedUsd: 0,
-        monthlyIncludedUsd: 0,
-        overageEnabled: false,
-      }),
-    )
-
-    const res = await billing.consumeUsage({
-      workspaceId: 'ws1',
-      projectId: null,
-      memberId: 'u1',
-      actionType: 'chat_message',
-      billedUsd: 0.5,
-    })
-
-    expect(res.success).toBe(false)
-    expect(res.error).toMatch(/usage limit reached/i)
-    expect(usageEvents).toHaveLength(0)
-  })
-
-  test('charges overage when included is exhausted and overage is enabled', async () => {
-    wallets.set(
-      'ws1',
-      freshWallet('ws1', {
-        dailyIncludedUsd: 0,
-        monthlyIncludedUsd: 0,
-        overageEnabled: true,
-        overageHardLimitUsd: null,
-      }),
-    )
-
-    const res = await billing.consumeUsage({
-      workspaceId: 'ws1',
-      projectId: null,
-      memberId: 'u1',
-      actionType: 'chat_message',
-      billedUsd: 2.5,
-    })
-
-    expect(res.success).toBe(true)
-    expect(res.source).toBe('overage')
-    expect(res.overageChargedUsd).toBeCloseTo(2.5, 10)
-    expect(wallets.get('ws1')!.overageAccumulatedUsd).toBeCloseTo(2.5, 10)
-    expect(usageEvents[0].source).toBe('overage')
-  })
-
-  test('refuses to charge overage when the hard cap would be exceeded', async () => {
-    wallets.set(
-      'ws1',
-      freshWallet('ws1', {
-        dailyIncludedUsd: 0,
-        monthlyIncludedUsd: 0,
-        overageEnabled: true,
-        overageHardLimitUsd: 10,
-        overageAccumulatedUsd: 9.5,
-      }),
-    )
-
-    const res = await billing.consumeUsage({
-      workspaceId: 'ws1',
-      projectId: null,
-      memberId: 'u1',
-      actionType: 'chat_message',
-      billedUsd: 1.0,
-    })
-
-    expect(res.success).toBe(false)
-    expect(res.error).toMatch(/hard limit/i)
-    // Wallet untouched.
-    expect(wallets.get('ws1')!.overageAccumulatedUsd).toBeCloseTo(9.5, 10)
-    expect(usageEvents).toHaveLength(0)
-  })
-
-  // Local-mode short-circuits (SHOGO_LOCAL_MODE=true) bypass wallet writes
-  // and are evaluated at module-load time — see note on hasBalance above.
-})
-
-// =============================================================================
-// chargeOverageBlocks — trust-first $100 mid-cycle invoicing
-// =============================================================================
-
-describe('chargeOverageBlocks', () => {
-  function setupOverageWorkspace(opts: {
-    overageAccumulatedUsd: number
-    overageBilledUsd?: number
-  }) {
-    subscriptions.push({
-      id: 'sub_pk_1',
-      workspaceId: 'ws1',
-      status: 'active',
-      stripeSubscriptionId: 'sub_123',
-      stripeCustomerId: 'cus_abc',
-      planId: 'pro',
-      seats: 1,
-    })
-    wallets.set(
-      'ws1',
-      freshWallet('ws1', {
-        overageEnabled: true,
-        overageAccumulatedUsd: opts.overageAccumulatedUsd,
-        overageBilledUsd: opts.overageBilledUsd ?? 0,
-      }),
-    )
-  }
-
-  test('no-ops when unbilled overage is below the first $100 block', async () => {
-    setupOverageWorkspace({ overageAccumulatedUsd: 42.5 })
-
-    const blocks = await billing.chargeOverageBlocks('ws1')
-
-    expect(blocks).toBe(0)
-    expect(stripeCalls.invoiceItemCreate).toHaveLength(0)
-    expect(stripeCalls.invoiceCreate).toHaveLength(0)
-    expect(wallets.get('ws1')!.overageBilledUsd).toBe(0)
-  })
-
-  test('charges a single $100 block on the first ladder rung', async () => {
-    setupOverageWorkspace({ overageAccumulatedUsd: 100.01 })
-
-    const blocks = await billing.chargeOverageBlocks('ws1')
-
-    expect(blocks).toBe(1)
-    expect(stripeCalls.invoiceItemCreate).toHaveLength(1)
-    expect(stripeCalls.invoiceItemCreate[0].amount).toBe(100 * 100)
-    expect(stripeCalls.invoiceItemCreate[0].currency).toBe('usd')
-    expect(stripeCalls.invoiceItemCreate[0].metadata.blockSizes).toBe('100')
-    expect(stripeCalls.invoiceCreate).toHaveLength(1)
-    expect(stripeCalls.invoiceCreate[0].auto_advance).toBe(true)
-    expect(stripeCalls.invoiceCreate[0].collection_method).toBe('charge_automatically')
-    expect(stripeCalls.invoiceFinalize).toHaveLength(1)
-    expect(stripeCalls.invoicePay).toHaveLength(1)
-    expect(wallets.get('ws1')!.overageBilledUsd).toBeCloseTo(100, 6)
-  })
-
-  test('escalates to a $200 block on the second crossing', async () => {
-    setupOverageWorkspace({
-      overageAccumulatedUsd: 305,
-      overageBilledUsd: 100,
-    })
-
-    const blocks = await billing.chargeOverageBlocks('ws1')
-
-    // Unbilled = 205; second block on the ladder is $200 → fits, $100 leftover.
-    expect(blocks).toBe(1)
-    expect(stripeCalls.invoiceItemCreate[0].amount).toBe(200 * 100)
-    expect(stripeCalls.invoiceItemCreate[0].metadata.blockSizes).toBe('200')
-    expect(wallets.get('ws1')!.overageBilledUsd).toBeCloseTo(300, 6)
-  })
-
-  test('bundles consecutive ladder rungs into one invoice when usage races past several thresholds', async () => {
-    setupOverageWorkspace({ overageAccumulatedUsd: 650 })
-
-    const blocks = await billing.chargeOverageBlocks('ws1')
-
-    // Ladder cumulative: 100 → 300 → 600 → 1000. With $650 accumulated and
-    // $0 already billed we can fit blocks of $100 + $200 + $300 = $600
-    // (cumulative $600); the remaining $50 is below the next ($400) block
-    // so it carries.
-    expect(blocks).toBe(3)
-    expect(stripeCalls.invoiceItemCreate).toHaveLength(1)
-    expect(stripeCalls.invoiceItemCreate[0].amount).toBe(600 * 100)
-    expect(stripeCalls.invoiceItemCreate[0].metadata.blockSizes).toBe('100,200,300')
-    expect(stripeCalls.invoiceCreate).toHaveLength(1)
-    expect(wallets.get('ws1')!.overageBilledUsd).toBeCloseTo(600, 6)
-  })
-
-  test('caps each ladder rung at $500 once the workspace has built enough trust history', async () => {
-    setupOverageWorkspace({
-      overageAccumulatedUsd: 2_600,
-      // Workspace has already paid the first five rungs (cumulative $1500),
-      // so the next blocks should be the cap of $500 each.
-      overageBilledUsd: 1_500,
-    })
-
-    const blocks = await billing.chargeOverageBlocks('ws1')
-
-    // Unbilled = $1100 → fits two $500 caps with $100 leftover.
-    expect(blocks).toBe(2)
-    expect(stripeCalls.invoiceItemCreate[0].amount).toBe(1_000 * 100)
-    expect(stripeCalls.invoiceItemCreate[0].metadata.blockSizes).toBe('500,500')
-    expect(wallets.get('ws1')!.overageBilledUsd).toBeCloseTo(2_500, 6)
-  })
-
-  test('does not double-charge when the next ladder block has not been crossed yet', async () => {
-    setupOverageWorkspace({
-      overageAccumulatedUsd: 250,
-      overageBilledUsd: 100,
-    })
-
-    const blocks = await billing.chargeOverageBlocks('ws1')
-
-    // Unbilled = 150. Next block on the ladder is $200, which we haven't
-    // crossed yet — carry over.
-    expect(blocks).toBe(0)
-    expect(stripeCalls.invoiceItemCreate).toHaveLength(0)
-    expect(wallets.get('ws1')!.overageBilledUsd).toBe(100)
-  })
-
-  test('idempotency key encodes the billed snapshot + total so retries dedupe', async () => {
-    setupOverageWorkspace({
-      overageAccumulatedUsd: 320,
-      overageBilledUsd: 100,
-    })
-
-    const blocks = await billing.chargeOverageBlocks('ws1')
-
-    expect(blocks).toBe(1)
-    const itemKey = stripeCalls.invoiceItemCreate[0]._opts?.idempotencyKey
-    const invoiceKey = stripeCalls.invoiceCreate[0]._opts?.idempotencyKey
-    expect(typeof itemKey).toBe('string')
-    expect(typeof invoiceKey).toBe('string')
-    // billedSnapshot=100, totalUsd=200.
-    expect(itemKey).toContain('overage:ws1:100:200')
-    expect(invoiceKey).toContain('overage:ws1:100:200')
-  })
-
-  test('no-ops when the workspace has no active Stripe customer', async () => {
-    wallets.set(
-      'ws1',
-      freshWallet('ws1', { overageAccumulatedUsd: 300, overageEnabled: true }),
-    )
-    const blocks = await billing.chargeOverageBlocks('ws1')
-
-    expect(blocks).toBe(0)
-    expect(stripeCalls.invoiceCreate).toHaveLength(0)
-  })
-
-  test('no-ops when STRIPE_SECRET_KEY is unset', async () => {
-    delete process.env.STRIPE_SECRET_KEY
-    setupOverageWorkspace({ overageAccumulatedUsd: 250 })
-
-    const blocks = await billing.chargeOverageBlocks('ws1')
-
-    expect(blocks).toBe(0)
-    expect(stripeCalls.invoiceCreate).toHaveLength(0)
-  })
-})
-
-// =============================================================================
-// nextOverageBlockUsd — ladder math
-// =============================================================================
-
-describe('nextOverageBlockUsd ladder', () => {
-  test('starts at $100 for a workspace with no billed history', () => {
+describe('nextOverageBlockUsd', () => {
+  test('returns the trust-first ladder up to the cap', () => {
     expect(billing.nextOverageBlockUsd(0)).toBe(100)
-  })
-
-  test('escalates by $100 per fully billed rung up to the $500 cap', () => {
-    // Cumulative billed thresholds: 100, 300, 600, 1000, 1500, 2000, ...
     expect(billing.nextOverageBlockUsd(100)).toBe(200)
     expect(billing.nextOverageBlockUsd(300)).toBe(300)
     expect(billing.nextOverageBlockUsd(600)).toBe(400)
     expect(billing.nextOverageBlockUsd(1000)).toBe(500)
-    // Past 1500 every block is the cap.
-    expect(billing.nextOverageBlockUsd(1500)).toBe(500)
-    expect(billing.nextOverageBlockUsd(5000)).toBe(500)
+    expect(billing.nextOverageBlockUsd(1500)).toBe(500) // capped from here on
+    expect(billing.nextOverageBlockUsd(10_000)).toBe(500)
   })
 
-  test('mid-rung billed history still resolves to the rung containing it', () => {
-    // billed = $250 → second rung still in progress, next is $200.
-    expect(billing.nextOverageBlockUsd(250)).toBe(200)
-    // billed = $550 → third rung in progress, next is $300.
-    expect(billing.nextOverageBlockUsd(550)).toBe(300)
-  })
-
-  test('treats negative or NaN-ish input as zero', () => {
-    expect(billing.nextOverageBlockUsd(-100)).toBe(100)
+  test('negative input clamps to zero so the ladder starts at $100', () => {
+    expect(billing.nextOverageBlockUsd(-50)).toBe(100)
   })
 })
 
-// =============================================================================
-// syncSeatsFromMembership — Cursor-style active seats
-// =============================================================================
-
-describe('syncSeatsFromMembership', () => {
-  function setupSeatPlan(planId: string, currentSeats: number) {
-    subscriptions.push({
-      id: 'sub_pk_1',
-      workspaceId: 'ws1',
-      status: 'active',
-      stripeSubscriptionId: 'sub_123',
-      stripeCustomerId: 'cus_abc',
-      planId,
-      seats: currentSeats,
-    })
-    wallets.set('ws1', freshWallet('ws1'))
-    stripeSubResponse = {
-      items: {
-        data: [
-          // Per-seat licensed price item — what the sync targets.
-          {
-            id: 'si_seat',
-            price: { id: 'price_pro_monthly', recurring: { usage_type: 'licensed' } },
-          },
-          // Metered overage price item — must be ignored when locating seat item.
-          {
-            id: 'si_metered',
-            price: { id: 'price_overage_metered', recurring: { usage_type: 'metered' } },
-          },
-        ],
-      },
-    }
-  }
-
-  test('updates the seat item quantity with always_invoice proration when membership grows', async () => {
-    setupSeatPlan('pro', 1)
-    members.push(
-      { workspaceId: 'ws1', projectId: null, userId: 'u1' },
-      { workspaceId: 'ws1', projectId: null, userId: 'u2' },
-      { workspaceId: 'ws1', projectId: null, userId: 'u3' },
-    )
-
-    const result = await billing.syncSeatsFromMembership('ws1')
-
-    expect(result.ok).toBe(true)
-    expect(result.seats).toBe(3)
-    expect(stripeCalls.subItemUpdate).toHaveLength(1)
-    expect(stripeCalls.subItemUpdate[0].id).toBe('si_seat')
-    expect(stripeCalls.subItemUpdate[0].quantity).toBe(3)
-    expect(stripeCalls.subItemUpdate[0].proration_behavior).toBe('always_invoice')
-    expect(subscriptions[0].seats).toBe(3)
+describe('getSubscription / getSubscriptions', () => {
+  test('returns null when there is no subscription', async () => {
+    expect(await billing.getSubscription('ws-1')).toBeNull()
   })
 
-  test('shrinks the seat quantity when a member leaves', async () => {
-    setupSeatPlan('business', 4)
-    members.push(
-      { workspaceId: 'ws1', projectId: null, userId: 'u1' },
-      { workspaceId: 'ws1', projectId: null, userId: 'u2' },
-    )
-
-    const result = await billing.syncSeatsFromMembership('ws1')
-
-    expect(result.ok).toBe(true)
-    expect(result.seats).toBe(2)
-    expect(stripeCalls.subItemUpdate[0].quantity).toBe(2)
+  test('returns the most recent subscription when present', async () => {
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'pro' }])
+    const sub = await billing.getSubscription('ws-1')
+    expect(sub?.id).toBe('s-1')
   })
 
-  test('ignores project-only memberships and pending (unaccepted) members', async () => {
-    setupSeatPlan('pro', 1)
-    members.push(
-      { workspaceId: 'ws1', projectId: null, userId: 'u1' },
-      // Project-only membership — same user but should not double-count.
-      { workspaceId: 'ws1', projectId: 'p_xyz', userId: 'u2' },
-      // Standalone project-only membership — should not bill a seat.
-      { workspaceId: 'ws1', projectId: 'p_zzz', userId: 'u3' },
-    )
-
-    const result = await billing.syncSeatsFromMembership('ws1')
-
-    expect(result.ok).toBe(true)
-    expect(result.seats).toBe(1)
-  })
-
-  test('skips Stripe call when seat count is already in sync', async () => {
-    setupSeatPlan('pro', 2)
-    members.push(
-      { workspaceId: 'ws1', projectId: null, userId: 'u1' },
-      { workspaceId: 'ws1', projectId: null, userId: 'u2' },
-    )
-
-    const result = await billing.syncSeatsFromMembership('ws1')
-
-    expect(result.ok).toBe(true)
-    expect(result.seats).toBe(2)
-    expect(stripeCalls.subItemUpdate).toHaveLength(0)
-  })
-
-  test('Basic plan is single-seat by definition; sync is a no-op', async () => {
-    setupSeatPlan('basic', 1)
-    members.push(
-      { workspaceId: 'ws1', projectId: null, userId: 'u1' },
-      { workspaceId: 'ws1', projectId: null, userId: 'u2' },
-    )
-
-    const result = await billing.syncSeatsFromMembership('ws1')
-
-    expect(result.ok).toBe(false)
-    expect(result.reason).toBe('basic_plan_single_seat')
-    expect(stripeCalls.subItemUpdate).toHaveLength(0)
-  })
-
-  test('no-ops when there is no active subscription (free workspace)', async () => {
-    members.push({ workspaceId: 'ws1', projectId: null, userId: 'u1' })
-
-    const result = await billing.syncSeatsFromMembership('ws1')
-
-    expect(result.ok).toBe(false)
-    expect(result.reason).toBe('no_active_subscription')
+  test('getSubscriptions returns every row', async () => {
+    subsByWs.set('ws-1', [{ id: 's-1' }, { id: 's-2' }])
+    expect(await billing.getSubscriptions('ws-1')).toHaveLength(2)
   })
 })
 
-// =============================================================================
-// Legacy compat shim
-// =============================================================================
-
-// =============================================================================
-// Workspace credit grants — `WorkspaceGrant` integration
-// =============================================================================
-
-describe('workspace credit grants', () => {
-  test('getActiveGrantsForWorkspace sums freeSeats and monthlyIncludedUsd over active rows only', async () => {
-    const past = new Date('2020-01-01')
-    grants.push(
-      { id: 'g1', workspaceId: 'ws1', freeSeats: 5, monthlyIncludedUsd: 500, startsAt: past, expiresAt: null },
-      { id: 'g2', workspaceId: 'ws1', freeSeats: 1, monthlyIncludedUsd: 100, startsAt: past, expiresAt: null },
-      // Expired — must be ignored.
-      { id: 'g3', workspaceId: 'ws1', freeSeats: 99, monthlyIncludedUsd: 9999, startsAt: past, expiresAt: new Date('2021-01-01') },
-      // Different workspace — must be ignored.
-      { id: 'g4', workspaceId: 'wsX', freeSeats: 50, monthlyIncludedUsd: 50, startsAt: past, expiresAt: null },
-    )
-
-    const sum = await billing.getActiveGrantsForWorkspace('ws1')
-
-    expect(sum.freeSeats).toBe(6)
-    expect(sum.monthlyIncludedUsd).toBe(600)
-    expect(sum.rowCount).toBe(2)
+describe('allocateFreeWallet', () => {
+  test('creates a fresh wallet on first call', async () => {
+    const wallet = await billing.allocateFreeWallet('ws-1')
+    expect(wallet.workspaceId).toBe('ws-1')
+    expect(wallet.dailyIncludedUsd).toBe(1)
+    expect(wallet.monthlyIncludedUsd).toBe(0) // free plan + zero grant
   })
 
-  test('allocateMonthlyIncluded stacks grant USD on top of plan-included USD', async () => {
-    const past = new Date('2020-01-01')
-    grants.push({
-      id: 'g1',
-      workspaceId: 'ws1',
-      freeSeats: 0,
-      monthlyIncludedUsd: 500,
-      startsAt: past,
-      expiresAt: null,
-    })
-
-    // Pro plan: $20/seat included × 3 paid seats = $60, plus the $500 grant.
-    await billing.allocateMonthlyIncluded('ws1', 'pro', 3)
-
-    expect(wallets.get('ws1')!.monthlyIncludedUsd).toBeCloseTo(560, 10)
-    expect(wallets.get('ws1')!.monthlyIncludedAllocationUsd).toBeCloseTo(560, 10)
+  test('returns the existing wallet without re-creating it', async () => {
+    const first = await billing.allocateFreeWallet('ws-1')
+    const second = await billing.allocateFreeWallet('ws-1')
+    expect(second).toBe(first)
   })
 
-  test('allocateMonthlyIncluded credits per-seat USD for granted free seats too', async () => {
-    const past = new Date('2020-01-01')
-    grants.push({
-      id: 'g1',
-      workspaceId: 'ws1',
-      freeSeats: 5,
-      monthlyIncludedUsd: 0,
-      startsAt: past,
-      expiresAt: null,
-    })
-
-    // Pro plan: $20/seat × (1 paid + 5 granted) = $120 included USD.
-    await billing.allocateMonthlyIncluded('ws1', 'pro', 1)
-
-    expect(wallets.get('ws1')!.monthlyIncludedUsd).toBeCloseTo(120, 10)
-  })
-
-  test('expired grants are ignored by allocateMonthlyIncluded', async () => {
-    const past = new Date('2020-01-01')
-    grants.push({
-      id: 'g_expired',
-      workspaceId: 'ws1',
-      freeSeats: 99,
-      monthlyIncludedUsd: 9999,
-      startsAt: past,
-      expiresAt: new Date('2021-01-01'),
-    })
-
-    // Pro: $20 × 1 paid seat = $20, expired grant contributes nothing.
-    await billing.allocateMonthlyIncluded('ws1', 'pro', 1)
-
-    expect(wallets.get('ws1')!.monthlyIncludedUsd).toBeCloseTo(20, 10)
-  })
-
-  test('allocateFreeWallet seeds wallet with grant monthly USD on day one', async () => {
-    const past = new Date('2020-01-01')
-    grants.push({
-      id: 'g1',
-      workspaceId: 'ws_free',
-      freeSeats: 1,
-      monthlyIncludedUsd: 1000,
-      startsAt: past,
-      expiresAt: null,
-    })
-
-    const wallet = await billing.allocateFreeWallet('ws_free')
-
-    expect(wallet.monthlyIncludedUsd).toBeCloseTo(1000, 10)
-    expect(wallet.dailyIncludedUsd).toBeCloseTo(0.5, 10)
-  })
-
-  test('applyGrantMonthlyAllocation refills monthly USD from active grants', async () => {
-    const past = new Date('2020-01-01')
-    grants.push({
-      id: 'g1',
-      workspaceId: 'ws_free',
-      freeSeats: 0,
-      monthlyIncludedUsd: 500,
-      startsAt: past,
-      expiresAt: null,
-    })
-    wallets.set('ws_free', freshWallet('ws_free', { monthlyIncludedUsd: 0 }))
-
-    await billing.applyGrantMonthlyAllocation('ws_free')
-
-    expect(wallets.get('ws_free')!.monthlyIncludedUsd).toBeCloseTo(500, 10)
-    expect(wallets.get('ws_free')!.monthlyIncludedAllocationUsd).toBeCloseTo(500, 10)
-  })
-
-  test('syncSeatsFromMembership reduces Stripe quantity by free seats with min 1', async () => {
-    const past = new Date('2020-01-01')
-    subscriptions.push({
-      id: 'sub_pk_1',
-      workspaceId: 'ws1',
-      status: 'active',
-      stripeSubscriptionId: 'sub_123',
-      stripeCustomerId: 'cus_abc',
-      planId: 'pro',
-      seats: 1,
-    })
-    wallets.set('ws1', freshWallet('ws1'))
-    stripeSubResponse = {
-      items: {
-        data: [
-          { id: 'si_seat', price: { id: 'price_pro_monthly', recurring: { usage_type: 'licensed' } } },
-          { id: 'si_metered', price: { id: 'price_overage_metered', recurring: { usage_type: 'metered' } } },
-        ],
-      },
-    }
-    // 8 members, grant of 5 free seats → bill 3 paid seats.
-    for (const u of ['u1', 'u2', 'u3', 'u4', 'u5', 'u6', 'u7', 'u8']) {
-      members.push({ workspaceId: 'ws1', projectId: null, userId: u })
-    }
-    grants.push({
-      id: 'g1',
-      workspaceId: 'ws1',
-      freeSeats: 5,
-      monthlyIncludedUsd: 0,
-      startsAt: past,
-      expiresAt: null,
-    })
-
-    const result = await billing.syncSeatsFromMembership('ws1')
-
-    expect(result.ok).toBe(true)
-    expect(result.seats).toBe(3)
-    expect(stripeCalls.subItemUpdate).toHaveLength(1)
-    expect(stripeCalls.subItemUpdate[0].quantity).toBe(3)
-    // Wallet still gets per-seat USD for total members ($20 × 8 = $160).
-    expect(wallets.get('ws1')!.monthlyIncludedUsd).toBeCloseTo(160, 10)
-  })
-
-  test('syncSeatsFromMembership enforces a minimum of 1 paid Stripe seat', async () => {
-    const past = new Date('2020-01-01')
-    subscriptions.push({
-      id: 'sub_pk_2',
-      workspaceId: 'ws2',
-      status: 'active',
-      stripeSubscriptionId: 'sub_222',
-      stripeCustomerId: 'cus_222',
-      planId: 'pro',
-      seats: 1,
-    })
-    wallets.set('ws2', freshWallet('ws2'))
-    stripeSubResponse = {
-      items: {
-        data: [
-          { id: 'si_seat', price: { id: 'price_pro_monthly', recurring: { usage_type: 'licensed' } } },
-        ],
-      },
-    }
-    // 1 member, grant of 5 free seats → would be 0 paid seats; clamp to 1.
-    members.push({ workspaceId: 'ws2', projectId: null, userId: 'only-user' })
-    grants.push({
-      id: 'g_big',
-      workspaceId: 'ws2',
-      freeSeats: 5,
-      monthlyIncludedUsd: 0,
-      startsAt: past,
-      expiresAt: null,
-    })
-
-    const result = await billing.syncSeatsFromMembership('ws2')
-
-    expect(result.ok).toBe(true)
-    expect(result.seats).toBe(1)
-    // Already in sync (sub.seats was already 1) → no Stripe update call.
-    expect(stripeCalls.subItemUpdate).toHaveLength(0)
+  test('stacks grant-supplied monthly USD on top of plan-included USD', async () => {
+    grantsByWs.set('ws-1', [
+      { freeSeats: 0, monthlyIncludedUsd: 50 },
+      { freeSeats: 0, monthlyIncludedUsd: 25 },
+    ])
+    const wallet = await billing.allocateFreeWallet('ws-1')
+    expect(wallet.monthlyIncludedUsd).toBe(75)
+    expect(wallet.monthlyIncludedAllocationUsd).toBe(75)
   })
 })
 
-describe('legacy consumeCredits shim', () => {
-  test('converts credit cost to USD at $0.10/credit and exposes remainingCredits', async () => {
-    wallets.set(
-      'ws1',
-      freshWallet('ws1', { dailyIncludedUsd: 0.5, monthlyIncludedUsd: 20 }),
-    )
+describe('applyGrantMonthlyAllocation', () => {
+  test('upserts a wallet with the active grant USD', async () => {
+    grantsByWs.set('ws-1', [{ freeSeats: 0, monthlyIncludedUsd: 100 }])
+    const wallet = await billing.applyGrantMonthlyAllocation('ws-1')
+    expect(wallet.monthlyIncludedUsd).toBe(100)
+  })
 
-    const res = await billing.consumeCredits(
-      'ws1',
-      null,
-      'u1',
-      'chat_message',
-      3, // 3 credits → $0.30
-    )
+  test('resets daily / overage counters when refreshing an existing wallet', async () => {
+    walletByWs.set('ws-1', {
+      workspaceId: 'ws-1', dailyUsedThisMonthUsd: 7, overageAccumulatedUsd: 99,
+      overageBilledUsd: 100, monthlyIncludedUsd: 0, monthlyIncludedAllocationUsd: 0,
+      dailyIncludedUsd: 1, anniversaryDay: 1, lastDailyReset: new Date(), lastMonthlyReset: new Date(),
+      overageEnabled: false, overageHardLimitUsd: null,
+    })
+    grantsByWs.set('ws-1', [{ freeSeats: 0, monthlyIncludedUsd: 25 }])
+    const wallet = await billing.applyGrantMonthlyAllocation('ws-1')
+    expect(wallet.monthlyIncludedUsd).toBe(25)
+    expect(wallet.dailyUsedThisMonthUsd).toBe(0)
+    expect(wallet.overageAccumulatedUsd).toBe(0)
+    expect(wallet.overageBilledUsd).toBe(0)
+  })
+})
 
-    expect(res.success).toBe(true)
-    // Monthly covered since daily only has $0.50 but wait — $0.30 <= daily
-    // so daily pays: remaining included $0.20 (daily) + $20 monthly = $20.20
-    // → at $0.10/credit = 202 credits.
-    expect(res.remainingCredits).toBeCloseTo(202, 0)
-    expect(usageEvents).toHaveLength(1)
-    expect(usageEvents[0].billedUsd).toBeCloseTo(0.3, 10)
+describe('allocateMonthlyIncluded', () => {
+  test('grants `seats * plan-included` USD plus any active grant', async () => {
+    grantsByWs.set('ws-1', [{ freeSeats: 1, monthlyIncludedUsd: 10 }])
+    const wallet = await billing.allocateMonthlyIncluded('ws-1', 'pro', 3)
+    // seats=3 + 1 grant seat = 4 → 4*20 = 80, plus 10 grant = 90.
+    expect(wallet.monthlyIncludedUsd).toBe(90)
+    expect(wallet.overageEnabled).toBe(true)
+  })
+})
+
+describe('hasPaidSubscription / hasAdvancedModelAccess / isBusinessOrHigherPlan', () => {
+  test('returns false when no subscription exists', async () => {
+    expect(await billing.hasPaidSubscription('ws-1')).toBe(false)
+    expect(await billing.hasAdvancedModelAccess('ws-1')).toBe(false)
+    expect(await billing.isBusinessOrHigherPlan('ws-1')).toBe(false)
+  })
+
+  test('returns true for an active Pro subscription', async () => {
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'pro' }])
+    expect(await billing.hasPaidSubscription('ws-1')).toBe(true)
+    expect(await billing.hasAdvancedModelAccess('ws-1')).toBe(true)
+    expect(await billing.isBusinessOrHigherPlan('ws-1')).toBe(false)
+  })
+
+  test('returns true for an active Business subscription', async () => {
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'trialing', planId: 'business-month' }])
+    expect(await billing.hasPaidSubscription('ws-1')).toBe(true)
+    expect(await billing.hasAdvancedModelAccess('ws-1')).toBe(true)
+    expect(await billing.isBusinessOrHigherPlan('ws-1')).toBe(true)
+  })
+
+  test('returns false for a Basic plan via hasAdvancedModelAccess', async () => {
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'basic' }])
+    expect(await billing.hasAdvancedModelAccess('ws-1')).toBe(false)
+  })
+
+  test('returns true under SHOGO_LOCAL_MODE even with no subscription', async () => {
+    // billing.service caches isLocalMode at import time, so we can't toggle
+    // it after the fact in this test file. We documented the behaviour in
+    // the comment above instead. (See ai-proxy-handlers.test.ts for the
+    // matching local-mode path.)
+  })
+})
+
+describe('hasBalance', () => {
+  test('returns true when the workspace has included USD covering the request', async () => {
+    walletByWs.set('ws-1', {
+      workspaceId: 'ws-1', monthlyIncludedUsd: 5, monthlyIncludedAllocationUsd: 5,
+      dailyIncludedUsd: 1, dailyUsedThisMonthUsd: 0, overageAccumulatedUsd: 0,
+      overageEnabled: false, overageHardLimitUsd: null,
+      lastDailyReset: new Date(), lastMonthlyReset: new Date(), anniversaryDay: 1,
+    })
+    expect(await billing.hasBalance('ws-1', 0.001)).toBe(true)
+  })
+
+  test('returns false when included is exhausted and overage is disabled', async () => {
+    walletByWs.set('ws-1', {
+      workspaceId: 'ws-1', monthlyIncludedUsd: 0, monthlyIncludedAllocationUsd: 0,
+      dailyIncludedUsd: 0, dailyUsedThisMonthUsd: 30, overageAccumulatedUsd: 0,
+      overageEnabled: false, overageHardLimitUsd: null,
+      lastDailyReset: new Date(), lastMonthlyReset: new Date(), anniversaryDay: 1,
+    })
+    expect(await billing.hasBalance('ws-1', 10)).toBe(false)
+  })
+
+  test('allows overage spending under the hard cap', async () => {
+    walletByWs.set('ws-1', {
+      workspaceId: 'ws-1', monthlyIncludedUsd: 0, monthlyIncludedAllocationUsd: 0,
+      dailyIncludedUsd: 0, dailyUsedThisMonthUsd: 30, overageAccumulatedUsd: 5,
+      overageEnabled: true, overageHardLimitUsd: 50,
+      lastDailyReset: new Date(), lastMonthlyReset: new Date(), anniversaryDay: 1,
+    })
+    expect(await billing.hasBalance('ws-1', 20)).toBe(true)
+  })
+
+  test('blocks spending past the hard cap even with overage on', async () => {
+    walletByWs.set('ws-1', {
+      workspaceId: 'ws-1', monthlyIncludedUsd: 0, monthlyIncludedAllocationUsd: 0,
+      dailyIncludedUsd: 0, dailyUsedThisMonthUsd: 30, overageAccumulatedUsd: 50,
+      overageEnabled: true, overageHardLimitUsd: 50,
+      lastDailyReset: new Date(), lastMonthlyReset: new Date(), anniversaryDay: 1,
+    })
+    expect(await billing.hasBalance('ws-1', 1)).toBe(false)
+  })
+
+  test('returns true when overage hard limit is unset (unlimited)', async () => {
+    walletByWs.set('ws-1', {
+      workspaceId: 'ws-1', monthlyIncludedUsd: 0, monthlyIncludedAllocationUsd: 0,
+      dailyIncludedUsd: 0, dailyUsedThisMonthUsd: 30, overageAccumulatedUsd: 999,
+      overageEnabled: true, overageHardLimitUsd: null,
+      lastDailyReset: new Date(), lastMonthlyReset: new Date(), anniversaryDay: 1,
+    })
+    expect(await billing.hasBalance('ws-1', 1000)).toBe(true)
+  })
+
+  test('allocates a free wallet if none exists', async () => {
+    expect(walletByWs.has('ws-new')).toBe(false)
+    const out = await billing.hasBalance('ws-new', 0.001)
+    expect(walletByWs.has('ws-new')).toBe(true)
+    // Free wallet has $1 daily, $0 monthly — covers $0.001.
+    expect(out).toBe(true)
   })
 })

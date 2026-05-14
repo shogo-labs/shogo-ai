@@ -25,10 +25,20 @@ coveragePathIgnorePatterns = [
   "**/*.test.tsx",
   "**/*.spec.ts",
   "**/*.spec.tsx",
+  "**/*.generated.ts",
+  "**/*.generated.tsx",
   "**/dist/**",
   "**/build/**",
   "**/generated/**",
   "**/node_modules/**",
   "**/scripts/**",
   "**/migrations/**",
+  # apps/api dynamically imports `apps/desktop/src/vm/index` for the
+  # local-mode VM path (apps/api/src/server.ts:6644, routes/vm.ts:184).
+  # That makes Bun's coverage instrumenter pick up apps/desktop sources
+  # whenever the import path is exercised, even though apps/desktop is
+  # not in TEST_PACKAGES and has no tests of its own. Drop it from
+  # apps/api's reported lines so the merged aggregate isn't dragged
+  # down by an untested sibling app.
+  "**/apps/desktop/**",
 ]

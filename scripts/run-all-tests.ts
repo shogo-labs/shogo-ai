@@ -43,6 +43,9 @@ const TEST_PACKAGES = [
   'packages/agent-runtime',
   'apps/api',
   'apps/mobile',
+  // Internal repo tooling tests (merge-lcov, etc.). Lives outside the
+  // bun workspaces glob — see scripts/package.json.
+  'scripts',
 ] as const
 
 interface PackageResult {
@@ -144,12 +147,32 @@ function main() {
       console.log('  (no per-package coverage shards found — skipping merge)')
     } else {
       const out = join(rootCoverageDir, 'lcov.info')
+      // Phase-2 floors. After the long-tail / generators / branch
+      // coverage pass, aggregate line/function coverage clears the
+      // 0.90 / 0.85 bar and every first-party package clears 0.80.
+      // `--strict` makes a regression below any of these a CI-blocking
+      // failure. Per-package floors prevent silent rot in one package
+      // while another carries the average.
+      //
+      // To re-baseline after a large refactor: drop `--strict` to land
+      // a soft-floor build, capture the new numbers from
+      // `coverage/summary.json`, then re-raise once the new baseline
+      // is honest.
       const merge = spawnSync('bun', [
         'run', join(REPO_ROOT, 'scripts', 'merge-lcov.ts'),
         '-o', out,
-        '--threshold-line', '0.5',
-        '--threshold-function', '0.5',
+        '--threshold-line', '0.9',
+        '--threshold-function', '0.85',
+        '--per-package-floor', 'apps/api:0.8',
+        '--per-package-floor', 'apps/mobile:0.8',
+        '--per-package-floor', 'packages/agent-runtime:0.8',
+        '--per-package-floor', 'packages/shared-runtime:0.8',
+        '--per-package-floor', 'packages/shared-app:0.8',
+        '--per-package-floor', 'packages/sdk:0.8',
+        '--per-package-floor', 'packages/model-catalog:0.8',
+        '--strict',
         '--update-readme', join(REPO_ROOT, 'README.md'),
+        '--summary-json', join(REPO_ROOT, 'coverage', 'summary.json'),
         ...allLcovs,
       ], { stdio: 'inherit' })
       coverageExit = merge.status ?? 1

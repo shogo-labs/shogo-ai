@@ -20,5 +20,6 @@ coveragePathIgnorePatterns = [
   "**/dist/**",
   "**/build/**",
   "**/generated/**",
+  "**/*.generated.ts",
   "**/node_modules/**",
 ]
