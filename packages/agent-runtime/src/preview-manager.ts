@@ -334,6 +334,13 @@ export class PreviewManager {
   private regenerating = false
   private pendingSchemaChange = false
   private lastGenerateError: string | null = null
+  // Surfaced via getStatus() so external observers (the API's import
+  // bootstrap bridge, debug UIs, etc.) can tell "install/prisma succeeded"
+  // apart from "install/prisma threw but phase marched forward anyway".
+  // The previous behaviour swallowed errors silently — the bridge would
+  // report every step as `ok` once the pod reached `ready` even when the
+  // project was fundamentally broken. See SHOG-592 review notes.
+  private lastInstallError: string | null = null
   /**
    * Crash-recovery state.
    *
@@ -1358,6 +1365,7 @@ export class PreviewManager {
     }
 
     this._phase = 'installing'
+    this.lastInstallError = null
     const t0 = Date.now()
     try {
       console.log(`[${LOG_PREFIX}] Installing dependencies in ${installCwd}...`)
@@ -1386,6 +1394,10 @@ export class PreviewManager {
       writeInstallPlatformMarker(installCwd)
     } catch (err: any) {
       timings.install = Date.now() - t0
+      // Capture for getStatus() so observers can tell that install actually
+      // failed even though `_phase` is about to march forward into the next
+      // stage. Truncated like lastGenerateError to keep wire payload bounded.
+      this.lastInstallError = (err?.message || String(err)).slice(0, 500)
       console.error(`[${LOG_PREFIX}] Dependency install failed:`, err.message)
     } finally {
       // Signal install-has-settled exactly once. Subsequent
@@ -1529,6 +1541,16 @@ export class PreviewManager {
     phase: PreviewPhase
     devServer: DevServerKind
     metroUrl: string | null
+    // Per-stage errors. `null` means that stage either has not run or
+    // completed successfully. PreviewManager catches and logs install /
+    // prisma failures rather than crashing — without surfacing them here,
+    // `phase === 'ready'` looks identical regardless of whether the
+    // project actually built. The import bootstrap bridge keys off these
+    // to emit `failed` for the right step instead of a misleading `ok`.
+    errors: {
+      install: string | null
+      generate: string | null
+    }
   } {
     const running = this.started && this._phase === 'ready'
     return {
@@ -1542,6 +1564,10 @@ export class PreviewManager {
       phase: this._phase,
       devServer: this.resolveDevServer(),
       metroUrl: running ? this.metroUrl : null,
+      errors: {
+        install: this.lastInstallError,
+        generate: this.lastGenerateError,
+      },
     }
   }
 

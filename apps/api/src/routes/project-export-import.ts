@@ -897,15 +897,22 @@ export async function runImport(
       )
     }
   } else if (options.runBootstrap !== false) {
+    // K8s mode. The pod owns install/generate/preview/health — running any
+    // of it on the API would be working against the wrong filesystem — but
+    // we still need to surface real progress to the import modal. Bridge
+    // the pod's PreviewManager lifecycle (GET /preview/status, phase field)
+    // onto the four ImportEvent steps the modal already understands.
     try {
-      await emit({
-        phase: 'bootstrap',
-        step: 'install',
-        status: 'skipped',
-        message: 'k8s mode — pod handles bootstrap',
-      })
-    } catch {
-      // SSE already closed; nothing to surface.
+      await bridgePodBootstrap(projectSummary.id, emit)
+    } catch (err: any) {
+      console.error(
+        `[project-import] k8s bootstrap bridge for ${projectSummary.id} threw:`,
+        err?.message || err,
+      )
+      // bridgePodBootstrap is its own try/catch on every emit; if it threw
+      // synchronously the modal will still have at least one terminal
+      // status per step. The project row + files exist, "Open project"
+      // remains the right next action — don't fail the import.
     }
   }
 
@@ -934,6 +941,230 @@ export async function runImport(
 //
 // When `package.json` doesn't exist in the bundle, install/generate are
 // skipped silently. Same for schema.prisma → prisma push.
+// ─── bridgePodBootstrap (k8s mode) ──────────────────────────────────
+//
+// In Kubernetes the API doesn't run `bun install` / `bun run generate` /
+// `vite build` itself — the agent pod owns its own PreviewManager and runs
+// the whole lifecycle on first boot against its own filesystem. The pod
+// already publishes its state at `GET /preview/status`:
+//
+//     { phase: 'idle' | 'installing' | 'generating-prisma' | 'pushing-db'
+//             | 'building' | 'starting-api' | 'ready', ... }
+//
+// This function walks that lifecycle and emits ImportEvent step events
+// the import modal already understands. The previous behaviour — emit a
+// single `install/skipped` and call it a day — left generate/preview/
+// health hanging on the modal forever (SHOG-592). This is the
+// contract-honest replacement.
+//
+// Termination:
+//   - All four steps reach a terminal status (`ok` | `failed` | `skipped`)
+//   - 5-minute overall cap; anything still non-terminal is flushed as
+//     `failed` so the modal can close
+//   - SSE socket closed mid-poll: emits become no-ops, polling stops on
+//     the next terminal-state check (no point logging into a dead pipe)
+export interface BridgePodBootstrapOptions {
+  /** Total budget for resolving a pod URL. Default 120s. */
+  podDeadlineMs?: number
+  /** Per-attempt timeout for getProjectPodUrl. Default 30s. */
+  podPerAttemptMs?: number
+  /** Total budget for the bootstrap polling loop. Default 5min. */
+  bootstrapDeadlineMs?: number
+  /** Sleep between polls of /preview/status. Default 1.5s. */
+  pollIntervalMs?: number
+  /** Sleep between getProjectPodUrl retries. Default 2s. */
+  podRetryIntervalMs?: number
+  /** Consecutive poll errors before giving up early. Default 20. */
+  maxConsecutiveErrors?: number
+}
+
+export async function bridgePodBootstrap(
+  projectId: string,
+  emit: (ev: ImportEvent) => void | Promise<void>,
+  opts: BridgePodBootstrapOptions = {},
+): Promise<void> {
+  const PER_ATTEMPT_MS = opts.podPerAttemptMs ?? 30_000
+  const POD_DEADLINE_MS = opts.podDeadlineMs ?? 120_000
+  const BOOTSTRAP_DEADLINE_MS = opts.bootstrapDeadlineMs ?? 5 * 60_000
+  const POLL_INTERVAL_MS = opts.pollIntervalMs ?? 1_500
+  const POD_RETRY_INTERVAL_MS = opts.podRetryIntervalMs ?? 2_000
+  const MAX_CONSEC_ERRORS = opts.maxConsecutiveErrors ?? 20
+  type Step = 'install' | 'generate' | 'preview' | 'health'
+  type Status = 'running' | 'ok' | 'failed' | 'skipped'
+  // Mirror of `PreviewPhase` from packages/agent-runtime/src/preview-manager.ts.
+  // Inlined deliberately to avoid coupling apps/api type-imports to runtime
+  // internals — the wire contract is a string anyway. Keep in sync with
+  // PreviewPhase if the pod ever adds a new value.
+  type PodPhase =
+    | 'idle'
+    | 'installing'
+    | 'generating-prisma'
+    | 'pushing-db'
+    | 'building'
+    | 'starting-api'
+    | 'ready'
+
+  const STEPS: readonly Step[] = ['install', 'generate', 'preview', 'health']
+  const lastEmitted: Record<Step, 'unset' | Status> = {
+    install: 'unset', generate: 'unset', preview: 'unset', health: 'unset',
+  }
+
+  const isTerminal = (s: 'unset' | Status): boolean =>
+    s === 'ok' || s === 'failed' || s === 'skipped'
+
+  const safeEmit = async (step: Step, status: Status, message?: string): Promise<void> => {
+    const prev = lastEmitted[step]
+    if (prev === status) return
+    // Terminal lock: once we've reported `ok`/`failed`/`skipped` for a
+    // step, never overwrite it with a different terminal — and never
+    // regress a terminal to `running`. Without this, a pod that silently
+    // fails install but still marches `phase` forward to `ready` would
+    // first get a real `install: failed` (from the errors payload), then
+    // a misleading `install: ok` (from the phase=ready mapping). Lock
+    // wins for whichever terminal fires first.
+    if (isTerminal(prev)) return
+    lastEmitted[step] = status
+    try {
+      await emit({ phase: 'bootstrap', step, status, message })
+    } catch {
+      // SSE closed — don't tear down the polling loop; we still log server-side.
+    }
+  }
+
+  // 1) Resolve a pod URL. getProjectPodUrl warms+assigns lazily and can
+  //    legitimately block for tens of seconds during cold-start. It has
+  //    no internal timeout — wrap each attempt in Promise.race so a stuck
+  //    knative call can't hijack the whole 5-min bootstrap budget.
+  //    Outer cap is 120s (cold-start in production has been observed up
+  //    to ~90s for first-image-pull on a new region; 60s was too tight).
+  await safeEmit('install', 'running', 'Waiting for runtime pod')
+  const podDeadline = Date.now() + POD_DEADLINE_MS
+  let podUrl: string | null = null
+  while (Date.now() < podDeadline && !podUrl) {
+    try {
+      const { getProjectPodUrl } = await import('../lib/knative-project-manager')
+      const remaining = Math.max(1, podDeadline - Date.now())
+      const perAttempt = Math.min(PER_ATTEMPT_MS, remaining)
+      podUrl = await Promise.race<string | null>([
+        getProjectPodUrl(projectId),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), perAttempt)),
+      ])
+      if (podUrl) break
+    } catch (err: any) {
+      console.warn(
+        `[project-import:bridge ${projectId}] getProjectPodUrl error:`,
+        err?.message || err,
+      )
+    }
+    await new Promise((r) => setTimeout(r, POD_RETRY_INTERVAL_MS))
+  }
+  if (!podUrl) {
+    for (const step of STEPS) {
+      await safeEmit(
+        step,
+        'failed',
+        `Runtime pod did not come up within ${Math.round(POD_DEADLINE_MS / 1000)}s. Open the project to retry.`,
+      )
+    }
+    return
+  }
+
+  // 2) Phase → per-step state. Any step not listed as 'pending' for a
+  //    given phase has reached its terminal `ok` and won't be re-emitted
+  //    (safeEmit dedupes). `health` only flips on `ready` arrival — the
+  //    pod reporting `ready` is itself the health check.
+  const PHASE_MAP: Record<PodPhase, Record<Step, 'running' | 'ok' | 'pending'>> = {
+    'idle':              { install: 'running', generate: 'pending', preview: 'pending', health: 'pending' },
+    'installing':        { install: 'running', generate: 'pending', preview: 'pending', health: 'pending' },
+    'generating-prisma': { install: 'ok',      generate: 'running', preview: 'pending', health: 'pending' },
+    'pushing-db':        { install: 'ok',      generate: 'running', preview: 'pending', health: 'pending' },
+    'building':          { install: 'ok',      generate: 'ok',      preview: 'running', health: 'pending' },
+    'starting-api':      { install: 'ok',      generate: 'ok',      preview: 'running', health: 'pending' },
+    'ready':             { install: 'ok',      generate: 'ok',      preview: 'ok',      health: 'ok'      },
+  }
+
+  // 3) Poll. Carry the pod's runtime-token so the bridge keeps working
+  //    even once /preview/* gets auth-gated (currently unauth on the
+  //    agent runtime, see packages/agent-runtime/src/server.ts:177 —
+  //    authPrefixes does not include `/preview`).
+  const runtimeToken = deriveRuntimeToken(projectId)
+  const bootstrapDeadline = Date.now() + BOOTSTRAP_DEADLINE_MS
+  let consecutiveErrors = 0
+  while (Date.now() < bootstrapDeadline) {
+    let phase: PodPhase | null = null
+    let errors: { install?: string | null; generate?: string | null } = {}
+    let pollWasUseful = false
+    try {
+      const res = await fetch(`${podUrl}/preview/status`, {
+        headers: { 'x-runtime-token': runtimeToken },
+        signal: AbortSignal.timeout(5_000),
+      })
+      if (res.ok) {
+        const body = (await res.json()) as {
+          phase?: PodPhase
+          errors?: { install?: string | null; generate?: string | null }
+        }
+        phase = body.phase ?? null
+        errors = body.errors ?? {}
+        // A poll only counts as "useful" if the pod returned a phase value
+        // we recognize. 200 OK with `phase: 'futuristic-new-phase'` (image
+        // skew across a deploy) or `phase: null` would otherwise reset the
+        // error counter forever and the bridge would spin silently until
+        // the outer bootstrap deadline.
+        if (phase && PHASE_MAP[phase]) pollWasUseful = true
+      }
+    } catch {
+      // Network/timeout — handled by pollWasUseful staying false below.
+    }
+    if (pollWasUseful) consecutiveErrors = 0
+    else consecutiveErrors++
+
+    // Surface per-stage errors BEFORE the phase mapping. PreviewManager
+    // catches install/prisma failures and lets `_phase` march forward,
+    // so without checking `errors` first we'd report `install: ok` on
+    // a pod that actually failed install. safeEmit's terminal lock then
+    // pins `failed` in place even when phase later reaches `ready`.
+    if (errors.install) await safeEmit('install', 'failed', `Install failed: ${errors.install}`)
+    if (errors.generate) await safeEmit('generate', 'failed', `Generate failed: ${errors.generate}`)
+
+    if (pollWasUseful && phase) {
+      const map = PHASE_MAP[phase]
+      for (const step of STEPS) {
+        const target = map[step]
+        if (target !== 'pending') await safeEmit(step, target)
+      }
+      if (STEPS.every((s) => isTerminal(lastEmitted[s]))) return
+    }
+
+    // Bail early if the pod is unreachable for too long — better to tell
+    // the user than to silently spin for 5 minutes.
+    if (consecutiveErrors >= MAX_CONSEC_ERRORS) {
+      for (const step of STEPS) {
+        if (!isTerminal(lastEmitted[step])) {
+          await safeEmit(
+            step,
+            'failed',
+            'Lost contact with runtime pod while polling /preview/status.',
+          )
+        }
+      }
+      return
+    }
+
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
+  }
+
+  for (const step of STEPS) {
+    if (!isTerminal(lastEmitted[step])) {
+      await safeEmit(
+        step,
+        'failed',
+        `Runtime bootstrap timed out after ${Math.round(BOOTSTRAP_DEADLINE_MS / 1000)}s. Open the project to inspect.`,
+      )
+    }
+  }
+}
+
 async function runImportBootstrap(
   projectDir: string,
   emit: (ev: ImportEvent) => void | Promise<void>,
