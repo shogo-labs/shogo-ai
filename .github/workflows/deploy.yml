@@ -280,7 +280,7 @@ jobs:
     needs: [resolve-config, detect-changes]
     if: needs.detect-changes.outputs.runtime_base_changed == 'true'
     environment: ${{ needs.resolve-config.outputs.environment == 'production' && 'production-us' || needs.resolve-config.outputs.environment }}
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     env:
       OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
@@ -346,7 +346,7 @@ jobs:
       needs.detect-changes.outputs.has_changes == 'true' &&
       (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped')
     environment: ${{ needs.resolve-config.outputs.environment == 'production' && 'production-us' || needs.resolve-config.outputs.environment }}
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     strategy:
       fail-fast: false
