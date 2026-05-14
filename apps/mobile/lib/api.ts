@@ -939,9 +939,6 @@ export interface RequiredCredential {
   label: string
 }
 
-export type BootstrapStep = 'install' | 'generate' | 'preview' | 'health'
-export type BootstrapStatus = 'pending' | 'running' | 'ok' | 'failed' | 'skipped'
-
 export interface ImportDoneResult {
   id: string
   name: string
@@ -963,12 +960,6 @@ export type ProjectImportProgress =
   | { phase: 'createProject' }
   | { phase: 'writeFiles'; done: number; total: number }
   | { phase: 'importChats'; done: number; total: number }
-  | {
-      phase: 'bootstrap'
-      step: BootstrapStep
-      status: BootstrapStatus
-      message?: string
-    }
   | {
       phase: 'done'
       project: { id: string; name: string; description?: string | null }
