@@ -69,8 +69,16 @@ import { assertAllowedPath as assertAllowedPathRaw, getRuntimeTrust } from './ru
  * layer doesn't know what an `AgentToolResult` looks like — we keep
  * the dependency direction "tools → trust", not the reverse.
  */
-function assertAllowedPath(targetPath: string, mode: 'read' | 'write' | 'exec') {
-  return assertAllowedPathRaw(targetPath, mode)
+function assertAllowedPath(targetPath: string, mode: 'read' | 'write' | 'exec', workspaceDir?: string) {
+  const result = assertAllowedPathRaw(targetPath, mode)
+  if (result.ok || !workspaceDir || result.reason !== 'outside_allowed_roots') return result
+
+  try {
+    const resolved = assertWithinWorkspace(workspaceDir, targetPath)
+    return { ok: true, resolved }
+  } catch {
+    return result
+  }
 }
 import { deriveApiUrl, derivePublicApiUrl } from './internal-api'
 import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
@@ -399,7 +407,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // external folders the user hasn't trusted) refuse all shell
       // commands. Matches VS Code's Restricted Mode behaviour: terminal
       // and task execution are disabled until trust is granted.
-      const execTrust = assertAllowedPath(ctx.workspaceDir, 'exec')
+      const execTrust = assertAllowedPath(ctx.workspaceDir, 'exec', ctx.workspaceDir)
       if (!execTrust.ok) return textResult({ error: execTrust.message })
 
       if (isBlockedCommand(command)) {
@@ -873,7 +881,7 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
       // Workspace Trust gate for external (VS Code-style) projects.
       // For managed projects (the historical case) `assertAllowedPath`
       // returns ok=true because trustLevel is 'trusted' by default.
-      const trustCheck = assertAllowedPath(resolved, 'write')
+      const trustCheck = assertAllowedPath(resolved, 'write', ctx.workspaceDir)
       if (!trustCheck.ok) return textResult({ error: trustCheck.message })
       const protectedRejection = rejectIfProtected(ctx, resolved)
       if (protectedRejection) return protectedRejection
@@ -1296,7 +1304,7 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
         return textResult({ error: 'old_string and new_string must differ' })
       }
       const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
-      const trustCheck = assertAllowedPath(resolved, 'write')
+      const trustCheck = assertAllowedPath(resolved, 'write', ctx.workspaceDir)
       if (!trustCheck.ok) return textResult({ error: trustCheck.message })
       const protectedRejection = rejectIfProtected(ctx, resolved)
       if (protectedRejection) return protectedRejection

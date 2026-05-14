@@ -11,9 +11,9 @@
  * Run: bun test packages/sdk/src/tools/__tests__/client-normalization.test.ts
  */
 
-import { describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
 
-import { ToolsClient } from '../client'
+import { ToolsClient, getServerToolsClient, getToolsClient } from '../client'
 
 function stubFetch(body: unknown, init: ResponseInit = {}): typeof fetch {
   return (async () =>
@@ -27,6 +27,18 @@ function stubFetch(body: unknown, init: ResponseInit = {}): typeof fetch {
 function client(body: unknown, init?: ResponseInit): ToolsClient {
   return new ToolsClient({ baseUrl: 'http://test.local', fetch: stubFetch(body, init) })
 }
+
+const ENV_KEYS = ['RUNTIME_AUTH_SECRET', 'RUNTIME_PORT'] as const
+const savedEnv: Record<string, string | undefined> = {}
+
+for (const key of ENV_KEYS) savedEnv[key] = process.env[key]
+
+afterEach(() => {
+  for (const key of ENV_KEYS) {
+    if (savedEnv[key] === undefined) delete process.env[key]
+    else process.env[key] = savedEnv[key]
+  }
+})
 
 describe('ToolsClient.execute() — data normalization', () => {
   test('parses string data of an object literal', async () => {
@@ -119,5 +131,94 @@ describe('ToolsClient.execute() — data normalization', () => {
     expect(res.ok).toBe(false)
     expect(res.error).toContain('502')
     expect(res.error).toContain('upstream blew up')
+  })
+})
+
+describe('ToolsClient listTools()', () => {
+  test('fetches tool schemas from the configured base URL with headers', async () => {
+    const calls: Array<{ url: string; headers: HeadersInit | undefined }> = []
+    const c = new ToolsClient({
+      baseUrl: 'http://runtime.local/',
+      headers: { 'x-test': 'yes' },
+      fetch: (async (url, init) => {
+        calls.push({ url: String(url), headers: init?.headers })
+        return new Response(JSON.stringify({
+          tools: [
+            { name: 'JIRA_SEARCH_ISSUES', description: 'Search issues', parameters: { type: 'object' } },
+          ],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }) as typeof fetch,
+    })
+
+    const tools = await c.listTools()
+
+    expect(calls[0].url).toBe('http://runtime.local/api/tools/schemas')
+    expect(calls[0].headers).toEqual({ 'x-test': 'yes' })
+    expect(tools[0].name).toBe('JIRA_SEARCH_ISSUES')
+  })
+
+  test('returns an empty list when the response omits tools', async () => {
+    const c = client({})
+    await expect(c.listTools()).resolves.toEqual([])
+  })
+
+  test('throws a useful error for non-2xx schema responses', async () => {
+    const c = new ToolsClient({
+      fetch: (async () => new Response('nope', { status: 503, statusText: 'Service Unavailable' })) as typeof fetch,
+    })
+
+    await expect(c.listTools()).rejects.toThrow('Tools list failed (503): nope')
+  })
+})
+
+describe('ToolsClient singletons and server-side config', () => {
+  test('getToolsClient reuses default client unless config is passed', () => {
+    const first = getToolsClient({ fetch: stubFetch({ tools: [] }) })
+    const second = getToolsClient()
+    const third = getToolsClient({ fetch: stubFetch({ tools: [] }) })
+
+    expect(second).toBe(first)
+    expect(third).not.toBe(first)
+  })
+
+  test('getServerToolsClient requires runtime env vars', () => {
+    delete process.env.RUNTIME_AUTH_SECRET
+    delete process.env.RUNTIME_PORT
+
+    expect(() => getServerToolsClient()).toThrow('RUNTIME_AUTH_SECRET and RUNTIME_PORT must be set')
+  })
+
+  test('getServerToolsClient validates runtime port', () => {
+    process.env.RUNTIME_AUTH_SECRET = 'secret'
+    process.env.RUNTIME_PORT = 'not-a-port'
+
+    expect(() => getServerToolsClient()).toThrow('invalid RUNTIME_PORT')
+  })
+
+  test('getServerToolsClient targets the runtime path and injects token', async () => {
+    process.env.RUNTIME_AUTH_SECRET = 'runtime-secret'
+    process.env.RUNTIME_PORT = '7123'
+    const calls: Array<{ url: string; headers: HeadersInit | undefined; body?: BodyInit | null }> = []
+
+    const c = getServerToolsClient({
+      fetch: (async (url, init) => {
+        calls.push({ url: String(url), headers: init?.headers, body: init?.body })
+        return new Response(JSON.stringify({ ok: true, data: '{"done":true}' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }) as typeof fetch,
+    })
+
+    const result = await c.execute<{ done: boolean }>('TOOL_NAME', { a: 1 })
+
+    expect(result.ok).toBe(true)
+    expect(result.data).toEqual({ done: true })
+    expect(calls[0].url).toBe('http://127.0.0.1:7123/agent/tools/execute')
+    expect(calls[0].headers).toEqual({
+      'Content-Type': 'application/json',
+      'x-runtime-token': 'runtime-secret',
+    })
+    expect(JSON.parse(String(calls[0].body))).toEqual({ tool: 'TOOL_NAME', args: { a: 1 } })
   })
 })

@@ -22,17 +22,19 @@ const mockPrisma = {
     findFirst: mock((_args: any) => Promise.resolve(null as any)),
   },
 }
+const authGetSessionMock = mock(() => Promise.resolve(null as any))
+const resolveApiKeyMock = mock(() => Promise.resolve(null as any))
 
 mock.module('../lib/prisma', () => ({ prisma: mockPrisma }))
 mock.module('../auth', () => ({
   auth: {
     api: {
-      getSession: mock(() => Promise.resolve(null)),
+      getSession: authGetSessionMock,
     },
   },
 }))
 mock.module('../routes/api-keys', () => ({
-  resolveApiKey: mock(() => Promise.resolve(null)),
+  resolveApiKey: resolveApiKeyMock,
 }))
 
 process.env.AI_PROXY_SECRET =
@@ -41,9 +43,15 @@ process.env.AI_PROXY_SECRET =
 const { deriveRuntimeToken, RUNTIME_TOKEN_V1_PREFIX } = await import(
   '../lib/runtime-token'
 )
-const { authMiddleware, authorizeProject, requireProjectAccess } = await import(
-  '../middleware/auth'
-)
+const {
+  apiKeyOrSession,
+  authMiddleware,
+  authorizeProject,
+  isProjectReservedTopLevelPath,
+  requireAuth,
+  requireProjectAccess,
+  requireRole,
+} = await import('../middleware/auth')
 
 /**
  * Helper: derive a legacy (pre-v1) bare-hex token for the same
@@ -104,6 +112,10 @@ beforeEach(() => {
   mockPrisma.project.findUnique.mockReset()
   mockPrisma.user.findUnique.mockReset()
   mockPrisma.member.findFirst.mockReset()
+  authGetSessionMock.mockReset()
+  authGetSessionMock.mockImplementation(() => Promise.resolve(null))
+  resolveApiKeyMock.mockReset()
+  resolveApiKeyMock.mockImplementation(() => Promise.resolve(null))
 })
 
 /**
@@ -130,6 +142,38 @@ function projectWithOwners(opts: {
 }
 
 describe('authMiddleware — runtime-token path', () => {
+  test('API key auth stamps workspace-scoped auth and skips later auth modes', async () => {
+    resolveApiKeyMock.mockImplementationOnce(() => Promise.resolve({
+      userId: 'user_api',
+      workspaceId: 'ws_api',
+    }))
+    const { c, stored, calledNext } = makeCtx({
+      headers: { authorization: 'Bearer shogo_sk_valid' },
+    })
+
+    await authMiddleware(c, async () => { calledNext.called = true })
+
+    expect(calledNext.called).toBe(true)
+    expect(stored.auth).toEqual({
+      userId: 'user_api',
+      workspaceId: 'ws_api',
+      isAuthenticated: true,
+      via: 'apiKey',
+    })
+    expect(authGetSessionMock).not.toHaveBeenCalled()
+  })
+
+  test('API key resolver errors fall through to unauthenticated session result', async () => {
+    resolveApiKeyMock.mockImplementationOnce(() => Promise.reject(new Error('api key db down')))
+    const { c, stored } = makeCtx({
+      headers: { authorization: 'Bearer shogo_sk_broken' },
+    })
+
+    await authMiddleware(c, async () => {})
+
+    expect(stored.auth?.isAuthenticated).toBe(false)
+  })
+
   test('v1 token sets via: runtimeToken with real owner userId (no query/param projectId needed)', async () => {
     const projectId = 'proj_abc'
     const ownerId = 'user_owner_abc'
@@ -352,9 +396,155 @@ describe('authMiddleware — runtime-token path', () => {
     // No session either (mocked to null) → isAuthenticated: false
     expect(stored.auth?.isAuthenticated).toBe(false)
   })
+
+  test('runtime token verifier errors are caught and session fallback still runs', async () => {
+    const saved = process.env.AI_PROXY_SECRET
+    delete process.env.AI_PROXY_SECRET
+    process.env.NODE_ENV = 'production'
+    try {
+      const { c, stored } = makeCtx({
+        headers: { 'x-runtime-token': 'legacy-token-needs-secret' },
+        query: { projectId: 'proj_secret' },
+      })
+
+      await authMiddleware(c, async () => {})
+
+      expect(stored.auth?.isAuthenticated).toBe(false)
+    } finally {
+      if (saved === undefined) delete process.env.AI_PROXY_SECRET
+      else process.env.AI_PROXY_SECRET = saved
+      delete process.env.NODE_ENV
+    }
+  })
+
+  test('tunnel headers stamp trusted tunnel auth context', async () => {
+    const { c, stored, calledNext } = makeCtx({
+      headers: {
+        'x-tunnel-auth-user-id': 'user_tunnel',
+        'x-tunnel-auth-email': 'tunnel@example.com',
+        'x-tunnel-auth-name': 'Tunnel User',
+      },
+    })
+
+    await authMiddleware(c, async () => { calledNext.called = true })
+
+    expect(calledNext.called).toBe(true)
+    expect(stored.auth).toEqual({
+      userId: 'user_tunnel',
+      email: 'tunnel@example.com',
+      name: 'Tunnel User',
+      isAuthenticated: true,
+      tunnelAuthenticated: true,
+      via: 'tunnel',
+    })
+  })
+
+  test('session auth stamps user metadata and session errors set authError', async () => {
+    authGetSessionMock.mockImplementationOnce(() => Promise.resolve({
+      user: { id: 'user_session', email: 's@example.com', name: null },
+    }))
+    const sessionCtx = makeCtx({})
+    await authMiddleware(sessionCtx.c, async () => {})
+    expect(sessionCtx.stored.auth).toEqual({
+      userId: 'user_session',
+      email: 's@example.com',
+      name: undefined,
+      isAuthenticated: true,
+      via: 'session',
+    })
+
+    authGetSessionMock.mockImplementationOnce(() => Promise.reject(new Error('session db down')))
+    const errorCtx = makeCtx({})
+    await authMiddleware(errorCtx.c, async () => {})
+    expect(errorCtx.stored.auth).toEqual({
+      isAuthenticated: false,
+      authError: true,
+    })
+  })
 })
 
 describe('authorizeProject — runtimeToken branch', () => {
+  test('rejects missing auth, invalid project ids, and unknown projects', async () => {
+    const unauth = makeCtx({})
+    expect(await authorizeProject(unauth.c, 'proj')).toMatchObject({
+      ok: false,
+      status: 401,
+      code: 'unauthorized',
+    })
+
+    const badProject = makeCtx({})
+    badProject.stored.auth = { isAuthenticated: true, userId: 'user_1' }
+    expect(await authorizeProject(badProject.c, '')).toMatchObject({
+      ok: false,
+      status: 400,
+      code: 'bad_request',
+    })
+
+    mockPrisma.project.findUnique.mockImplementationOnce(() => Promise.resolve(null))
+    expect(await authorizeProject(badProject.c, 'missing')).toMatchObject({
+      ok: false,
+      status: 404,
+      code: 'not_found',
+    })
+  })
+
+  test('API key authorization requires matching workspace', async () => {
+    mockPrisma.project.findUnique.mockImplementation(() =>
+      Promise.resolve({ id: 'proj_api', workspaceId: 'ws_project' }),
+    )
+    const { c, stored } = makeCtx({})
+    stored.auth = {
+      isAuthenticated: true,
+      userId: 'user_api',
+      workspaceId: 'ws_other',
+      via: 'apiKey',
+    }
+
+    expect(await authorizeProject(c, 'proj_api')).toMatchObject({
+      ok: false,
+      status: 403,
+      code: 'forbidden',
+    })
+
+    stored.auth.workspaceId = 'ws_project'
+    expect(await authorizeProject(c, 'proj_api')).toEqual({
+      ok: true,
+      workspaceId: 'ws_project',
+      projectId: 'proj_api',
+    })
+  })
+
+  test('tunnel auth is trusted and session auth checks workspace membership', async () => {
+    mockPrisma.project.findUnique.mockImplementation(() =>
+      Promise.resolve({ id: 'proj_session', workspaceId: 'ws_session' }),
+    )
+    const { c, stored } = makeCtx({})
+    stored.auth = {
+      isAuthenticated: true,
+      userId: 'user_tunnel',
+      tunnelAuthenticated: true,
+    }
+    expect(await authorizeProject(c, 'proj_session')).toEqual({
+      ok: true,
+      workspaceId: 'ws_session',
+      projectId: 'proj_session',
+    })
+
+    stored.auth = { isAuthenticated: true, userId: 'user_session', via: 'session' }
+    mockPrisma.member.findFirst.mockImplementationOnce(() => Promise.resolve(null))
+    expect(await authorizeProject(c, 'proj_session')).toMatchObject({
+      ok: false,
+      status: 403,
+    })
+
+    mockPrisma.member.findFirst.mockImplementationOnce(() => Promise.resolve({ id: 'member_1' }))
+    expect(await authorizeProject(c, 'proj_session')).toEqual({
+      ok: true,
+      workspaceId: 'ws_session',
+      projectId: 'proj_session',
+    })
+  })
+
   test('matching projectId → ok', async () => {
     const projectId = 'proj_ok'
     mockPrisma.project.findUnique.mockImplementation(() =>
@@ -423,6 +613,31 @@ describe('authorizeProject — runtimeToken branch', () => {
 })
 
 describe('requireProjectAccess — runtimeToken branch', () => {
+  test('rejects missing auth and allows tunnel-authenticated requests', async () => {
+    const unauth = makeCtx({ params: { projectId: 'proj' } })
+    await requireProjectAccess(unauth.c, async () => {})
+    expect(unauth.c._response().status).toBe(401)
+
+    let nextCalled = false
+    const tunnel = makeCtx({ params: { projectId: 'proj' } })
+    tunnel.stored.auth = {
+      isAuthenticated: true,
+      userId: 'user_tunnel',
+      tunnelAuthenticated: true,
+    }
+    await requireProjectAccess(tunnel.c, async () => { nextCalled = true })
+    expect(nextCalled).toBe(true)
+  })
+
+  test('rejects missing project id before database checks', async () => {
+    const { c, stored } = makeCtx({})
+    stored.auth = { isAuthenticated: true, userId: 'user_1' }
+
+    await requireProjectAccess(c, async () => {})
+
+    expect(c._response().status).toBe(400)
+  })
+
   test('matching projectId → calls next()', async () => {
     const projectId = 'proj_access_ok'
     let nextCalled = false
@@ -457,5 +672,108 @@ describe('requireProjectAccess — runtimeToken branch', () => {
     expect(nextCalled).toBe(false)
     const resp = (c as any)._response()
     expect(resp.status).toBe(403)
+  })
+
+  test('super admins bypass membership checks', async () => {
+    let nextCalled = false
+    const { c, stored } = makeCtx({ params: { projectId: 'proj_super' } })
+    stored.auth = { isAuthenticated: true, userId: 'user_super' }
+    mockPrisma.user.findUnique.mockImplementationOnce(() => Promise.resolve({ role: 'super_admin' }))
+
+    await requireProjectAccess(c, async () => { nextCalled = true })
+
+    expect(nextCalled).toBe(true)
+    expect(mockPrisma.project.findUnique).not.toHaveBeenCalled()
+  })
+
+  test('session project access handles missing project, missing member, and member success', async () => {
+    const missing = makeCtx({ params: { projectId: 'proj_missing' } })
+    missing.stored.auth = { isAuthenticated: true, userId: 'user_1' }
+    mockPrisma.user.findUnique.mockImplementationOnce(() => Promise.resolve({ role: 'user' }))
+    mockPrisma.project.findUnique.mockImplementationOnce(() => Promise.resolve(null))
+    await requireProjectAccess(missing.c, async () => {})
+    expect(missing.c._response().status).toBe(404)
+
+    const denied = makeCtx({ params: { projectId: 'proj_denied' } })
+    denied.stored.auth = { isAuthenticated: true, userId: 'user_1' }
+    mockPrisma.user.findUnique.mockImplementationOnce(() => Promise.resolve({ role: 'user' }))
+    mockPrisma.project.findUnique.mockImplementationOnce(() => Promise.resolve({ workspaceId: 'ws_1' }))
+    mockPrisma.member.findFirst.mockImplementationOnce(() => Promise.resolve(null))
+    await requireProjectAccess(denied.c, async () => {})
+    expect(denied.c._response().status).toBe(403)
+
+    let nextCalled = false
+    const allowed = makeCtx({ params: { projectId: 'proj_allowed' } })
+    allowed.stored.auth = { isAuthenticated: true, userId: 'user_1' }
+    mockPrisma.user.findUnique.mockImplementationOnce(() => Promise.resolve({ role: 'user' }))
+    mockPrisma.project.findUnique.mockImplementationOnce(() => Promise.resolve({ workspaceId: 'ws_1' }))
+    mockPrisma.member.findFirst.mockImplementationOnce(() => Promise.resolve({ id: 'member_1' }))
+    await requireProjectAccess(allowed.c, async () => { nextCalled = true })
+    expect(nextCalled).toBe(true)
+  })
+})
+
+describe('requireAuth, requireRole, apiKeyOrSession helpers', () => {
+  test('requireAuth allows public unauthenticated paths and rejects private paths', async () => {
+    let publicNext = false
+    const publicCtx = makeCtx({ url: 'http://localhost/api/health' })
+    publicCtx.stored.auth = { isAuthenticated: false }
+    await requireAuth(publicCtx.c, async () => { publicNext = true })
+    expect(publicNext).toBe(true)
+
+    const privateCtx = makeCtx({ url: 'http://localhost/api/projects' })
+    privateCtx.stored.auth = { isAuthenticated: false }
+    await requireAuth(privateCtx.c, async () => {})
+    expect(privateCtx.c._response().status).toBe(401)
+
+    const errorCtx = makeCtx({ url: 'http://localhost/api/projects' })
+    errorCtx.stored.auth = { isAuthenticated: false, authError: true }
+    await requireAuth(errorCtx.c, async () => {})
+    expect(errorCtx.c._response().status).toBe(503)
+  })
+
+  test('requireAuth and requireRole pass authenticated users through', async () => {
+    let authNext = false
+    const authCtx = makeCtx({})
+    authCtx.stored.auth = { isAuthenticated: true, userId: 'user_1' }
+    await requireAuth(authCtx.c, async () => { authNext = true })
+    expect(authNext).toBe(true)
+
+    const roleMiddleware = requireRole(['admin', 'member'])
+    let roleNext = false
+    await roleMiddleware(authCtx.c, async () => { roleNext = true })
+    expect(roleNext).toBe(true)
+  })
+
+  test('requireRole and apiKeyOrSession reject unauthenticated callers', async () => {
+    const roleCtx = makeCtx({})
+    roleCtx.stored.auth = { isAuthenticated: false }
+    await requireRole('admin')(roleCtx.c, async () => {})
+    expect(roleCtx.c._response().status).toBe(401)
+
+    const apiCtx = makeCtx({})
+    apiCtx.stored.auth = { isAuthenticated: false }
+    await apiKeyOrSession(apiCtx.c, async () => {})
+    expect(apiCtx.c._response().status).toBe(401)
+
+    const apiErrorCtx = makeCtx({})
+    apiErrorCtx.stored.auth = { isAuthenticated: false, authError: true }
+    await apiKeyOrSession(apiErrorCtx.c, async () => {})
+    expect(apiErrorCtx.c._response().status).toBe(503)
+  })
+
+  test('apiKeyOrSession allows any authenticated API key or session context', async () => {
+    let nextCalled = false
+    const { c, stored } = makeCtx({})
+    stored.auth = { isAuthenticated: true, userId: 'user_1', via: 'apiKey' }
+
+    await apiKeyOrSession(c, async () => { nextCalled = true })
+
+    expect(nextCalled).toBe(true)
+  })
+
+  test('isProjectReservedTopLevelPath recognizes reserved project routes exactly', () => {
+    expect(isProjectReservedTopLevelPath('/api/projects/import')).toBe(true)
+    expect(isProjectReservedTopLevelPath('/api/projects/import/extra')).toBe(false)
   })
 })

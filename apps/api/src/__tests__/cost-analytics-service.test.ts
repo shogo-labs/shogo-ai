@@ -58,28 +58,60 @@ const store: Store = {
 }
 
 let queryRawNext: 'flags' | 'trends' | null = null
+let throwMetricCreate = false
+let throwEvalFindFirst: any = null
+let throwExperimentFindMany: any = null
+let throwOverrideFindMany: any = null
+let throwEvalSetFindMany: any = null
 
 mock.module('../lib/prisma', () => withPrismaExports({
   prisma: {
     agentCostMetric: {
       groupBy: async () => store.groupByRows,
-      aggregate: async ({ where }: any) => ({
-        _sum: { creditCost: store.metrics
-          .filter((m) => m.workspaceId === where.workspaceId && (!where.createdAt?.gte || m.createdAt >= where.createdAt.gte))
-          .reduce((s, m) => s + m.creditCost, 0) },
-      }),
-      findMany: async () => store.metrics,
+      aggregate: async ({ where }: any) => {
+        const matched = store.metrics.filter((m) => {
+          if (where.workspaceId && m.workspaceId !== where.workspaceId) return false
+          if (where.agentType && m.agentType !== where.agentType) return false
+          if (where.projectId && m.projectId !== where.projectId) return false
+          if (where.createdAt?.gte && m.createdAt < where.createdAt.gte) return false
+          if (where.createdAt?.lt && m.createdAt >= where.createdAt.lt) return false
+          if (where.createdAt?.lte && m.createdAt > where.createdAt.lte) return false
+          return true
+        })
+        const sum = matched.reduce((s, m) => s + (m.creditCost ?? 0), 0)
+        return {
+          _sum: { creditCost: sum },
+          _avg: { creditCost: matched.length ? sum / matched.length : null },
+          _count: { _all: matched.length },
+        }
+      },
+      findMany: async ({ where }: any = {}) => {
+        if (!where) return store.metrics
+        return store.metrics.filter((m) => {
+          if (where.workspaceId && m.workspaceId !== where.workspaceId) return false
+          if (where.agentType && m.agentType !== where.agentType) return false
+          if (where.projectId && m.projectId !== where.projectId) return false
+          if (where.createdAt?.gte && m.createdAt < where.createdAt.gte) return false
+          if (where.createdAt?.lt && m.createdAt >= where.createdAt.lt) return false
+          if (where.createdAt?.lte && m.createdAt > where.createdAt.lte) return false
+          return true
+        })
+      },
       create: async (args: any) => {
+        if (throwMetricCreate) throw new Error('metric create failed')
         store.metricInserts.push(args.data)
         return args.data
       },
     },
     agentEvalResult: {
-      findFirst: async ({ where }: any) => store.agentEvalResults.find((r) =>
-        r.agentType === where.agentType
-        && r.model === where.model
-        && (where.workspaceId === null ? r.workspaceId == null : r.workspaceId === where.workspaceId)
-      ) ?? null,
+      findFirst: async ({ where }: any) => {
+        if (throwEvalFindFirst) throw throwEvalFindFirst
+        return store.agentEvalResults.find((r) =>
+          r.agentType === where.agentType
+          && r.model === where.model
+          && (where.workspaceId === null ? r.workspaceId == null : r.workspaceId === where.workspaceId)
+        ) ?? null
+      },
       findMany: async () => store.agentEvalResults,
       create: async (args: any) => args.data,
     },
@@ -121,7 +153,10 @@ mock.module('../lib/prisma', () => withPrismaExports({
         store.experiments.push(row)
         return row
       },
-      findMany: async ({ where }: any) => store.experiments.filter((e) => e.workspaceId === where.workspaceId),
+      findMany: async ({ where }: any) => {
+        if (throwExperimentFindMany) throw throwExperimentFindMany
+        return store.experiments.filter((e) => e.workspaceId === where.workspaceId)
+      },
       findFirst: async ({ where }: any) => store.experiments.find((e) => {
         if (where.workspaceId && e.workspaceId !== where.workspaceId) return false
         if (where.id && e.id !== where.id) return false
@@ -141,7 +176,10 @@ mock.module('../lib/prisma', () => withPrismaExports({
         && (where.projectId === undefined || o.projectId === where.projectId)
         && (where.agentType === undefined || o.agentType === where.agentType)
       ) ?? null,
-      findMany: async ({ where }: any) => store.subagentOverrides.filter((o) => o.workspaceId === where.workspaceId),
+      findMany: async ({ where }: any) => {
+        if (throwOverrideFindMany) throw throwOverrideFindMany
+        return store.subagentOverrides.filter((o) => o.workspaceId === where.workspaceId)
+      },
       create: async (args: any) => {
         const row = { id: `so_${store.subagentOverrides.length + 1}`, updatedAt: new Date(), ...args.data }
         store.subagentOverrides.push(row)
@@ -159,11 +197,14 @@ mock.module('../lib/prisma', () => withPrismaExports({
       },
     },
     agentEvalSet: {
-      findMany: async ({ where }: any) => store.agentEvalSets.filter((s) =>
-        s.workspaceId === where.workspaceId
-        && (where.agentType === undefined || s.agentType === where.agentType)
-        && (where.enabled === undefined || s.enabled === where.enabled)
-      ),
+      findMany: async ({ where }: any) => {
+        if (throwEvalSetFindMany) throw throwEvalSetFindMany
+        return store.agentEvalSets.filter((s) =>
+          s.workspaceId === where.workspaceId
+          && (where.agentType === undefined || s.agentType === where.agentType)
+          && (where.enabled === undefined || s.enabled === where.enabled)
+        )
+      },
       findFirst: async ({ where }: any) => store.agentEvalSets.find((s) => s.id === where.id && s.workspaceId === where.workspaceId) ?? null,
       create: async (args: any) => {
         const row = { id: `es_${store.agentEvalSets.length + 1}`, updatedAt: new Date(), ...args.data }
@@ -236,6 +277,11 @@ beforeEach(() => {
   store.metricInserts = []
   store.experimentUpdates = []
   queryRawNext = null
+  throwMetricCreate = false
+  throwEvalFindFirst = null
+  throwExperimentFindMany = null
+  throwOverrideFindMany = null
+  throwEvalSetFindMany = null
 })
 
 // =========================================================================
@@ -664,5 +710,453 @@ describe('recordAgentCostMetric', () => {
     // Wait a microtask cycle for the fire-and-forget recordExperimentResult.
     await new Promise((r) => setTimeout(r, 5))
     expect(store.experimentUpdates.length).toBeGreaterThan(0)
+  })
+})
+
+// =========================================================================
+// Additional coverage: recommendations downgrade path + eval anchor
+// =========================================================================
+
+describe('getCostRecommendations — downgrade path', () => {
+  test('suggests a downgrade when quality gate passes and savings exceed minimum', async () => {
+    store.groupByRows = [{
+      agentType: 'reviewer',
+      model: 'claude-sonnet-4-6',  // tier 3 → candidate tier 2 (haiku)
+      _count: { _all: 100 },
+      _sum: { inputTokens: 5_000_000, outputTokens: 1_000_000, cachedInputTokens: 0, toolCalls: 0, creditCost: 30, wallTimeMs: 0 },
+    }]
+    store.flagsRows = [{
+      agentType: 'reviewer', model: 'claude-sonnet-4-6',
+      promiseSuccesses: BigInt(100), qualitySuccesses: BigInt(95),
+      hitMaxTurns: BigInt(0), loopDetected: BigInt(0), escalated: BigInt(2), responseEmpty: BigInt(0),
+    }]
+    // Workspace-level eval anchor — should be picked over global ones.
+    store.agentEvalResults.push({
+      workspaceId: 'ws-1', agentType: 'reviewer', model: 'claude-haiku-4-5',
+      suite: 'pr-comments', passRate: 0.92, createdAt: new Date(),
+    })
+    const recs = await cost.getCostRecommendations('ws-1', '30d')
+    const downgrade = recs.find((r) => r.estimatedSavingsPercent > 0 && r.recommendedModel === 'claude-haiku-4-5')
+    expect(downgrade).toBeDefined()
+    expect(downgrade!.evidence.evalAnchor?.suite).toBe('pr-comments')
+    expect(downgrade!.confidence).toBe('high')  // passRate ≥ .85 and runs ≥ 50
+    expect(downgrade!.estimatedMonthlySavings).toBeGreaterThan(0)
+    expect(downgrade!.reason).toContain('Eval-anchored')
+  })
+
+  test('falls back to global eval anchor when no workspace-specific row exists', async () => {
+    store.groupByRows = [{
+      agentType: 'reviewer',
+      model: 'claude-sonnet-4-6',
+      _count: { _all: 100 },
+      _sum: { inputTokens: 200_000, outputTokens: 100_000, cachedInputTokens: 0, toolCalls: 0, creditCost: 30, wallTimeMs: 0 },
+    }]
+    store.flagsRows = [{
+      agentType: 'reviewer', model: 'claude-sonnet-4-6',
+      promiseSuccesses: BigInt(100), qualitySuccesses: BigInt(95),
+      hitMaxTurns: BigInt(0), loopDetected: BigInt(0), escalated: BigInt(0), responseEmpty: BigInt(0),
+    }]
+    store.agentEvalResults.push({
+      workspaceId: null, agentType: 'reviewer', model: 'claude-haiku-4-5',
+      suite: 'global-eval', passRate: 0.7, createdAt: new Date(),
+    })
+    const recs = await cost.getCostRecommendations('ws-1', '7d')
+    const downgrade = recs.find((r) => r.recommendedModel === 'claude-haiku-4-5')
+    expect(downgrade!.evidence.evalAnchor?.suite).toBe('global-eval')
+    // passRate < .85 → confidence is 'medium' (runs ≥ 20)
+    expect(downgrade!.confidence).toBe('medium')
+  })
+
+  test('emits a cache-utilization hint when cache ratio is low and tokens are high', async () => {
+    store.groupByRows = [{
+      agentType: 'reviewer',
+      model: 'claude-sonnet-4-6',
+      _count: { _all: 30 },
+      // Very low cache utilisation, big input volume → triggers cache hint.
+      _sum: { inputTokens: 500_000, outputTokens: 50_000, cachedInputTokens: 1000, toolCalls: 0, creditCost: 2, wallTimeMs: 0 },
+    }]
+    // Low quality success so downgrade doesn't fire; high quality so we don't get upgrade either.
+    store.flagsRows = [{
+      agentType: 'reviewer', model: 'claude-sonnet-4-6',
+      promiseSuccesses: BigInt(30), qualitySuccesses: BigInt(22),  // 73% → no downgrade, no upgrade
+      hitMaxTurns: BigInt(0), loopDetected: BigInt(0), escalated: BigInt(0), responseEmpty: BigInt(0),
+    }]
+    const recs = await cost.getCostRecommendations('ws-1')
+    const cacheHint = recs.find((r) => r.reason.includes('prompt cache'))
+    expect(cacheHint).toBeDefined()
+    expect(cacheHint!.estimatedSavingsPercent).toBe(20)
+  })
+
+  test('iterates correctly for 90d and 1y periods', async () => {
+    store.groupByRows = []
+    store.flagsRows = []
+    const recs90 = await cost.getCostRecommendations('ws-1', '90d')
+    const recs1y = await cost.getCostRecommendations('ws-1', '1y')
+    expect(recs90).toEqual([])
+    expect(recs1y).toEqual([])
+  })
+
+  test('getAgentCostBreakdown filters by projectId when provided', async () => {
+    store.groupByRows = []
+    store.flagsRows = []
+    const out = await cost.getAgentCostBreakdown('ws-1', '30d', 'proj-1')
+    expect(out.breakdown).toEqual([])
+  })
+
+  test('continues without eval anchor when eval lookup table is unavailable', async () => {
+    store.groupByRows = [{
+      agentType: 'reviewer',
+      model: 'claude-sonnet-4-6',
+      _count: { _all: 100 },
+      _sum: { inputTokens: 5_000_000, outputTokens: 1_000_000, cachedInputTokens: 0, toolCalls: 0, creditCost: 30, wallTimeMs: 0 },
+    }]
+    store.flagsRows = [{
+      agentType: 'reviewer', model: 'claude-sonnet-4-6',
+      promiseSuccesses: BigInt(100), qualitySuccesses: BigInt(95),
+      hitMaxTurns: BigInt(0), loopDetected: BigInt(0), escalated: BigInt(0), responseEmpty: BigInt(0),
+    }]
+    throwEvalFindFirst = Object.assign(new Error('no such table: agent_eval_results'), { code: 'P2021' })
+
+    const recs = await cost.getCostRecommendations('ws-1')
+
+    const downgrade = recs.find((r) => r.recommendedModel === 'claude-haiku-4-5')
+    expect(downgrade).toBeDefined()
+    expect(downgrade!.evidence.evalAnchor).toBeUndefined()
+  })
+})
+
+// =========================================================================
+// listSubagentOverrides / listAgentEvalResults
+// =========================================================================
+
+describe('listSubagentOverrides / listAgentEvalResults', () => {
+  test('listSubagentOverrides returns rows scoped to workspace', async () => {
+    await cost.upsertSubagentOverride('ws-1', { agentType: 'reviewer', model: 'a' })
+    await cost.upsertSubagentOverride('ws-1', { agentType: 'browser', model: 'b' })
+    const out = await cost.listSubagentOverrides('ws-1')
+    expect(out.length).toBe(2)
+  })
+
+  test('listAgentEvalResults returns global rows when no workspaceId is provided', async () => {
+    store.agentEvalResults.push(
+      { agentType: 'r', model: 'm', workspaceId: null, suite: 's', passRate: 1, totalCases: 1, createdAt: new Date() },
+    )
+    const out = await cost.listAgentEvalResults({})
+    expect(out.length).toBeGreaterThan(0)
+  })
+
+  test('listAgentEvalResults filters by workspaceId when supplied', async () => {
+    store.agentEvalResults.push(
+      { agentType: 'r', model: 'm', workspaceId: 'ws-1', suite: 's', passRate: 0.5, totalCases: 1, createdAt: new Date() },
+    )
+    const out = await cost.listAgentEvalResults({ workspaceId: 'ws-1', limit: 5 })
+    expect(out.length).toBeGreaterThan(0)
+  })
+
+  test('listSubagentOverrides and listAgentEvalSets return empty arrays when tables are unavailable', async () => {
+    throwOverrideFindMany = Object.assign(new Error('relation does not exist'), { code: 'P2021' })
+    await expect(cost.listSubagentOverrides('ws-1')).resolves.toEqual([])
+
+    throwEvalSetFindMany = Object.assign(new Error('no such table: agent_eval_sets'), { code: 'P2021' })
+    await expect(cost.listAgentEvalSets({ workspaceId: 'ws-1' })).resolves.toEqual([])
+  })
+
+  test('getExperiments returns empty array when experiment table is unavailable', async () => {
+    throwExperimentFindMany = Object.assign(new Error('model_experiments does not exist'), { code: 'P2021' })
+    await expect(cost.getExperiments('ws-1')).resolves.toEqual([])
+  })
+})
+
+// =========================================================================
+// Additional experiment branches
+// =========================================================================
+
+describe('experiments — additional branches', () => {
+  test('createExperiment normalises model aliases like opus-4.7', async () => {
+    const e = await cost.createExperiment('ws-1', {
+      name: 'alias', agentType: 'browser',
+      modelA: 'opus-4.7', modelB: 'haiku-4.5',
+    })
+    expect(e.modelA).toBe('claude-opus-4-7')
+    expect(e.modelB).toBe('claude-haiku-4-5')
+  })
+
+  test('normalizeExperimentAgentType resolves aliases (browser_qa, reviewer, generalpurpose)', async () => {
+    const a = await cost.createExperiment('ws-1', {
+      name: 'a', agentType: 'browserqa',
+      modelA: 'claude-sonnet-4-6', modelB: 'claude-haiku-4-5',
+    })
+    expect(a.agentType).toBe('browser_qa')
+    const b = await cost.createExperiment('ws-1', {
+      name: 'b', agentType: 'reviewer',
+      modelA: 'claude-sonnet-4-6', modelB: 'claude-haiku-4-5',
+    })
+    expect(b.agentType).toBe('code-reviewer')
+    const c = await cost.createExperiment('ws-1', {
+      name: 'c', agentType: 'generalpurpose',
+      modelA: 'claude-sonnet-4-6', modelB: 'claude-haiku-4-5',
+    })
+    expect(c.agentType).toBe('general-purpose')
+  })
+
+  test('getExperiments + getExperiment return rows from the store', async () => {
+    const e = await cost.createExperiment('ws-1', {
+      name: 'list', agentType: 'explore',
+      modelA: 'claude-haiku-4-5', modelB: 'claude-sonnet-4-6',
+    })
+    const list = await cost.getExperiments('ws-1')
+    expect(list.length).toBe(1)
+    const one = await cost.getExperiment(e.id, 'ws-1')
+    expect(one).toBeDefined()
+  })
+
+  test('pickExperimentModel without a bucketKey uses the random / ratio branch', async () => {
+    await cost.createExperiment('ws-1', {
+      name: 'r', agentType: 'explore',
+      modelA: 'claude-haiku-4-5', modelB: 'claude-sonnet-4-6',
+    })
+    const out = await cost.pickExperimentModel('ws-1', 'explore')
+    expect(out).not.toBeNull()
+    expect(['A', 'B']).toContain(out!.variant)
+  })
+
+  test('recordExperimentResult variant B path executes its SQL', async () => {
+    await cost.createExperiment('ws-1', {
+      name: 'rB', agentType: 'browser',
+      modelA: 'claude-haiku-4-5', modelB: 'claude-sonnet-4-6',
+    })
+    await cost.recordExperimentResult('exp_1', 'B', {
+      creditCost: 0.5, tokens: 100, success: false, latencyMs: 300,
+      hitMaxTurns: true, escalated: true, responseEmpty: true,
+    })
+    expect(store.experimentUpdates.length).toBe(1)
+  })
+
+  test('summarizeExperiment returns "A" when B is no cheaper than A', async () => {
+    const e = await cost.createExperiment('ws-1', {
+      name: 'eq', agentType: 'explore',
+      modelA: 'claude-haiku-4-5', modelB: 'claude-sonnet-4-6',
+    })
+    Object.assign(e, {
+      totalRunsA: 50, totalRunsB: 50,
+      totalCostA: 50, totalCostB: 60,  // B more expensive
+      successRateA: 90, successRateB: 90,
+      avgLatencyMsA: 250, avgLatencyMsB: 250,
+      escalationsA: 0, escalationsB: 0,
+      loopDetectedA: 0, loopDetectedB: 0,
+      hitMaxTurnsA: 0, hitMaxTurnsB: 0,
+      responseEmptyA: 0, responseEmptyB: 0,
+    })
+    const summary = await cost.summarizeExperiment(e.id, 'ws-1')
+    expect(summary!.verdict).toBe('A')
+  })
+
+  test('summarizeExperiment returns "tie" when quality is close but cost direction is ambiguous', async () => {
+    const e = await cost.createExperiment('ws-1', {
+      name: 'tie', agentType: 'explore',
+      modelA: 'claude-haiku-4-5', modelB: 'claude-sonnet-4-6',
+    })
+    Object.assign(e, {
+      totalRunsA: 50, totalRunsB: 50,
+      totalCostA: 50, totalCostB: 40,
+      successRateA: 90, successRateB: 85,
+      avgLatencyMsA: 250, avgLatencyMsB: 240,
+      // B loop rate slightly worse so qualityCloseEnough=false but not qualityWorse either.
+      escalationsA: 0, escalationsB: 0,
+      loopDetectedA: 0, loopDetectedB: 1,
+      hitMaxTurnsA: 0, hitMaxTurnsB: 0,
+      responseEmptyA: 0, responseEmptyB: 0,
+    })
+    const summary = await cost.summarizeExperiment(e.id, 'ws-1')
+    expect(summary!.verdict).toBe('tie')
+  })
+
+  test('summarizeExperiment returns null for an unknown experiment', async () => {
+    const out = await cost.summarizeExperiment('does-not-exist', 'ws-1')
+    expect(out).toBeNull()
+  })
+})
+
+// =========================================================================
+// Sub-agent override delete-with-projectId / agent eval set delete-existing
+// =========================================================================
+
+describe('sub-agent overrides — project scope', () => {
+  test('resolveSubagentModelOverride falls through to workspace level when project has none', async () => {
+    store.subagentOverrides.push({
+      id: 'so_x', workspaceId: 'ws-1', projectId: null, agentType: 'reviewer',
+      model: 'workspace-model', provider: null, updatedAt: new Date(),
+    })
+    const out = await cost.resolveSubagentModelOverride('ws-1', 'reviewer', 'proj-z')
+    // Project-level findFirst (with projectId='proj-z') returns null because
+    // the only row has projectId=null, so workspace-level lookup wins.
+    expect(out!.source).toBe('workspace')
+  })
+})
+
+describe('agent eval sets — extra branches', () => {
+  test('upsertAgentEvalSet with an id that does not exist returns null', async () => {
+    const out = await cost.upsertAgentEvalSet('ws-1', {
+      id: 'missing', agentType: 'r', name: 'n', examples: [],
+    })
+    expect(out).toBeNull()
+  })
+
+  test('deleteAgentEvalSet removes an existing row', async () => {
+    const row = await cost.upsertAgentEvalSet('ws-1', {
+      agentType: 'reviewer', name: 'r', examples: [],
+    })
+    const out = await cost.deleteAgentEvalSet('ws-1', row!.id)
+    expect(out!.id).toBe(row!.id)
+    expect(store.agentEvalSets.length).toBe(0)
+  })
+
+  test('listAgentEvalSets honours agentType / enabled / projectId filters', async () => {
+    store.agentEvalSets.push(
+      { id: 'es_a', workspaceId: 'ws-1', agentType: 'reviewer', enabled: true, projectId: null },
+      { id: 'es_b', workspaceId: 'ws-1', agentType: 'browser', enabled: false, projectId: null },
+    )
+    const filtered = await cost.listAgentEvalSets({
+      workspaceId: 'ws-1', agentType: 'reviewer', enabled: true, projectId: null,
+    })
+    expect(filtered.length).toBe(1)
+  })
+})
+
+// =========================================================================
+// getOptimizerInActionReport — large uncovered block
+// =========================================================================
+
+describe('getOptimizerInActionReport', () => {
+  test('returns empty arrays when the workspace has no data', async () => {
+    const report = await cost.getOptimizerInActionReport('ws-empty')
+    expect(report.overrides).toEqual([])
+    expect(report.evalScores).toEqual([])
+    expect(report.experiments).toEqual([])
+    expect(report.monthlySavingsUSD).toBe(0)
+    expect(report.workspaceId).toBe('ws-empty')
+  })
+
+  test('builds before/after windows for each override and rolls up monthly savings', async () => {
+    const cutoff = new Date('2026-06-15T00:00:00Z')
+    // Override row.
+    store.subagentOverrides.push({
+      id: 'so_opt', workspaceId: 'ws-opt', projectId: null,
+      agentType: 'reviewer', model: 'claude-haiku-4-5', provider: null,
+      updatedAt: cutoff, updatedBy: 'user-1',
+    })
+    // Pre-override (higher cost, lower quality).
+    const before = new Date(cutoff.getTime() - 10 * 24 * 60 * 60 * 1000)
+    store.metrics.push({
+      workspaceId: 'ws-opt', agentType: 'reviewer', createdAt: before,
+      creditCost: 1, success: true, hitMaxTurns: false, loopDetected: false, escalated: false, responseEmpty: false,
+    }, {
+      workspaceId: 'ws-opt', agentType: 'reviewer', createdAt: before,
+      creditCost: 1, success: false, hitMaxTurns: true, loopDetected: false, escalated: false, responseEmpty: false,
+    })
+    // Post-override (lower cost, full quality).
+    const after = new Date(cutoff.getTime() + 5 * 24 * 60 * 60 * 1000)
+    store.metrics.push({
+      workspaceId: 'ws-opt', agentType: 'reviewer', createdAt: after,
+      creditCost: 0.1, success: true, hitMaxTurns: false, loopDetected: false, escalated: false, responseEmpty: false,
+    }, {
+      workspaceId: 'ws-opt', agentType: 'reviewer', createdAt: after,
+      creditCost: 0.1, success: true, hitMaxTurns: false, loopDetected: false, escalated: false, responseEmpty: false,
+    })
+    // Eval rows — workspace shadows global of the same key.
+    store.agentEvalResults.push(
+      { workspaceId: null, agentType: 'reviewer', model: 'claude-haiku-4-5',
+        suite: 'global', passRate: 0.7, totalCases: 10, createdAt: new Date('2026-05-01') },
+      { workspaceId: 'ws-opt', agentType: 'reviewer', model: 'claude-haiku-4-5',
+        suite: 'ws', passRate: 0.92, totalCases: 10, createdAt: new Date('2026-06-01') },
+    )
+    // One running experiment + one completed-recent + one completed-old.
+    store.experiments.push(
+      { id: 'exp_run', workspaceId: 'ws-opt', name: 'live', agentType: 'explore',
+        modelA: 'claude-haiku-4-5', modelB: 'claude-sonnet-4-6', status: 'running',
+        expectedEndAt: null, updatedAt: new Date(),
+        totalRunsA: 5, totalRunsB: 5, totalCostA: 0, totalCostB: 0,
+        successRateA: 0, successRateB: 0, avgLatencyMsA: 0, avgLatencyMsB: 0,
+        escalationsA: 0, escalationsB: 0, loopDetectedA: 0, loopDetectedB: 0,
+        hitMaxTurnsA: 0, hitMaxTurnsB: 0, responseEmptyA: 0, responseEmptyB: 0 },
+    )
+
+    const report = await cost.getOptimizerInActionReport('ws-opt')
+    expect(report.overrides.length).toBe(1)
+    expect(report.overrides[0].toModel).toBe('claude-haiku-4-5')
+    expect(report.overrides[0].runsBefore).toBe(2)
+    expect(report.overrides[0].runsAfter).toBe(2)
+    expect(report.overrides[0].avgCostBefore).toBeCloseTo(1, 5)
+    expect(report.overrides[0].avgCostAfter).toBeCloseTo(0.1, 5)
+    expect(report.overrides[0].qualitySuccessAfter).toBe(100)
+    expect(report.monthlySavingsUSD).toBeGreaterThan(0)
+    // Eval scores — workspace row should appear (most recent first); we
+    // dedupe by (agentType, model) so only one row for the pair survives.
+    const pair = report.evalScores.find((s) => s.agentType === 'reviewer' && s.model === 'claude-haiku-4-5')
+    expect(pair).toBeDefined()
+    // Experiment summarised with an inconclusive verdict (under MIN_RUNS).
+    expect(report.experiments[0].verdict).toBe('inconclusive')
+  })
+
+  test('returns nulls when override window has no metrics', async () => {
+    store.subagentOverrides.push({
+      id: 'so_dry', workspaceId: 'ws-dry', projectId: null,
+      agentType: 'browser', model: 'claude-haiku-4-5', provider: null,
+      updatedAt: new Date(), updatedBy: null,
+    })
+    const report = await cost.getOptimizerInActionReport('ws-dry')
+    expect(report.overrides[0].avgCostBefore).toBeNull()
+    expect(report.overrides[0].avgCostAfter).toBeNull()
+    expect(report.overrides[0].qualitySuccessBefore).toBeNull()
+    expect(report.overrides[0].qualitySuccessAfter).toBeNull()
+    expect(report.monthlySavingsUSD).toBe(0)
+  })
+})
+
+// =========================================================================
+// recordAgentCostMetric — no-active-experiment branch
+// =========================================================================
+
+describe('recordAgentCostMetric — no active experiment', () => {
+  test('does not crash when no experiment matches the agent', async () => {
+    await cost.recordAgentCostMetric({
+      workspaceId: 'ws-noexp', agentType: 'browser',
+      model: 'claude-haiku-4-5',
+      inputTokens: 100, outputTokens: 50, toolCalls: 0,
+      creditCost: 0.1, wallTimeMs: 50, success: true,
+    })
+    expect(store.metricInserts.length).toBe(1)
+    // No experiment exists, so no SQL update should fire.
+    await new Promise((r) => setTimeout(r, 5))
+    expect(store.experimentUpdates.length).toBe(0)
+  })
+
+  test('skips experiment auto-attach when the recorded model matches neither variant', async () => {
+    await cost.createExperiment('ws-mismatch', {
+      name: 'mm', agentType: 'explore',
+      modelA: 'claude-haiku-4-5', modelB: 'claude-sonnet-4-6',
+    })
+    await cost.recordAgentCostMetric({
+      workspaceId: 'ws-mismatch', agentType: 'explore',
+      model: 'claude-opus-4-7',  // matches neither A nor B
+      inputTokens: 10, outputTokens: 5, toolCalls: 0,
+      creditCost: 1, wallTimeMs: 100, success: true,
+    })
+    await new Promise((r) => setTimeout(r, 5))
+    expect(store.experimentUpdates.length).toBe(0)
+  })
+
+  test('swallows metric insert errors because analytics recording is best effort', async () => {
+    throwMetricCreate = true
+
+    await cost.recordAgentCostMetric({
+      workspaceId: 'ws-error', agentType: 'reviewer',
+      model: 'claude-haiku-4-5',
+      inputTokens: 100, outputTokens: 50, toolCalls: 1,
+      creditCost: 0.1, wallTimeMs: 10, success: false,
+      metadata: { source: 'test' },
+    })
+
+    expect(store.metricInserts).toHaveLength(0)
   })
 })

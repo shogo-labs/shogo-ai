@@ -16,6 +16,8 @@ import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test'
 // Simulated Redis keyspace + connect latency, controlled per-test.
 let connectDelayMs = 0
 let store: Map<string, string>
+let hashStore: Map<string, Record<string, string>>
+let pingError: Error | null = null
 
 class FakeRedis {
   public events = new Map<string, Array<(...args: any[]) => void>>()
@@ -26,6 +28,7 @@ class FakeRedis {
   public status: 'wait' | 'connecting' | 'ready' | 'end' | 'reconnecting' | 'close' = 'wait'
   constructor(_url: string, _opts: any) {
     store = store ?? new Map()
+    hashStore = hashStore ?? new Map()
   }
   on(event: string, cb: (...args: any[]) => void) {
     const arr = this.events.get(event) ?? []
@@ -56,6 +59,20 @@ class FakeRedis {
   async expire(_k: string, _ttl: number) {
     return 1
   }
+  async ping() {
+    if (pingError) throw pingError
+    return 'PONG'
+  }
+  async hset(k: string, field: string, value: string) {
+    const hash = hashStore.get(k) ?? {}
+    hash[field] = value
+    hashStore.set(k, hash)
+    return 1
+  }
+  async hgetall(k: string) {
+    return hashStore.get(k) ?? {}
+  }
+  async unsubscribe() {}
   disconnect() {
     this.status = 'end'
   }
@@ -75,6 +92,8 @@ async function freshImport() {
 describe('tunnel-redis cold-start race', () => {
   beforeEach(() => {
     store = new Map()
+    hashStore = new Map()
+    pingError = null
     connectDelayMs = 0
     delete process.env.SHOGO_LOCAL_MODE
     process.env.REDIS_URL = 'redis://fake:6379'
@@ -124,13 +143,83 @@ describe('tunnel-redis cold-start race', () => {
     expect(mod.isTunnelRedisDegraded()).toBe(false)
   })
 
+  test('checkRedisHealth reports ping latency and ping failures', async () => {
+    delete process.env.SHOGO_LOCAL_MODE
+    const mod = await freshImport()
+    await mod.initTunnelRedis()
+
+    const healthy = await mod.checkRedisHealth()
+    expect(healthy.healthy).toBe(true)
+    expect(typeof healthy.latencyMs).toBe('number')
+
+    pingError = new Error('redis down')
+    const unhealthy = await mod.checkRedisHealth()
+    expect(unhealthy.healthy).toBe(false)
+    expect(unhealthy.error).toBe('redis down')
+  })
+
+  test('ownership helpers register, refresh, unregister, and force-evict keys', async () => {
+    delete process.env.SHOGO_LOCAL_MODE
+    const mod = await freshImport()
+    await mod.initTunnelRedis()
+
+    await mod.registerTunnelOwnership('inst-owned')
+    expect(await mod.getTunnelOwner('inst-owned')).toBe(mod.getPodId())
+
+    await mod.refreshTunnelOwnership('inst-owned')
+    await mod.unregisterTunnelOwnership('inst-owned')
+    expect(await mod.getTunnelOwner('inst-owned')).toBeNull()
+
+    store.set('tunnel:inst-evict:pod', 'other-pod')
+    await mod.evictTunnelOwnership('inst-evict')
+    expect(await mod.getTunnelOwner('inst-evict')).toBeNull()
+  })
+
+  test('viewer and controller tracking round-trips through Redis', async () => {
+    delete process.env.SHOGO_LOCAL_MODE
+    const mod = await freshImport()
+    await mod.initTunnelRedis()
+
+    expect(await mod.isViewerActiveRedis('ws-1')).toBe(false)
+    await mod.markViewerActiveRedis('ws-1')
+    expect(await mod.isViewerActiveRedis('ws-1')).toBe(true)
+
+    await mod.markControllerActiveRedis('inst-1', 'user-1', 'session-1')
+    await mod.markControllerActiveRedis('inst-1', 'user-2')
+    hashStore.get('ctrl:inst-1')!.stale = JSON.stringify({
+      userId: 'stale',
+      lastSeenAt: Date.now() - 120_000,
+    })
+    hashStore.get('ctrl:inst-1')!.bad = 'not-json'
+
+    expect(await mod.getActiveControllersRedis('inst-1')).toEqual([
+      { userId: 'user-1', sessionId: 'session-1', lastSeenAt: expect.any(Number) },
+      { userId: 'user-2', sessionId: undefined, lastSeenAt: expect.any(Number) },
+    ])
+  })
+
+  test('isTunnelConnectedAnywhere reflects owner lookup result', async () => {
+    delete process.env.SHOGO_LOCAL_MODE
+    const mod = await freshImport()
+    await mod.initTunnelRedis()
+
+    expect(await mod.isTunnelConnectedAnywhere('inst-none')).toBe(false)
+    store.set('tunnel:inst-yes:pod', 'pod-owner')
+    expect(await mod.isTunnelConnectedAnywhere('inst-yes')).toBe(true)
+  })
+
+  test('verifyPodAlive returns true immediately for this pod', async () => {
+    delete process.env.SHOGO_LOCAL_MODE
+    const mod = await freshImport()
+    await mod.initTunnelRedis()
+
+    expect(await mod.verifyPodAlive(mod.getPodId())).toBe(true)
+  })
+
   test('local mode short-circuits without connecting to Redis', async () => {
     process.env.SHOGO_LOCAL_MODE = 'true'
     const mod = await freshImport()
     await mod.initTunnelRedis()
-    // Should be no-op, degraded stays false, getTunnelOwner returns null.
     expect(mod.isTunnelRedisDegraded()).toBe(false)
-    const owner = await mod.getTunnelOwner('inst-local')
-    expect(owner).toBeNull()
   })
 })

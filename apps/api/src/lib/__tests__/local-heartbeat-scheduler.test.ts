@@ -1,13 +1,35 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test'
+import { Database } from 'bun:sqlite'
 import { randomUUID } from 'crypto'
+import { existsSync } from 'fs'
 
 // Force local mode so we use the SQLite Prisma client
 process.env.SHOGO_LOCAL_MODE = 'true'
+process.env.HEARTBEAT_BATCH_SIZE = '1000'
 
 let prisma: any
 let LocalHeartbeatScheduler: any
+
+function hasLocalSqliteSchema(): boolean {
+  if (!existsSync('shogo.db')) return false
+  try {
+    const db = new Database('shogo.db', { readonly: true })
+    try {
+      const row = db.query(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workspaces'",
+      ).get()
+      return !!row
+    } finally {
+      db.close()
+    }
+  } catch {
+    return false
+  }
+}
+
+const LOCAL_SQLITE_READY = hasLocalSqliteSchema()
 
 const createdWorkspaceIds: string[] = []
 const createdProjectIds: string[] = []
@@ -66,24 +88,24 @@ async function cleanup() {
   createdWorkspaceIds.length = 0
 }
 
-beforeAll(async () => {
-  const prismaModule = await import('../prisma')
-  prisma = prismaModule.prisma
+describe.skipIf(!LOCAL_SQLITE_READY)('LocalHeartbeatScheduler', () => {
+  beforeAll(async () => {
+    const prismaModule = await import('../prisma')
+    prisma = prismaModule.prisma
 
-  const schedulerModule = await import('../local-heartbeat-scheduler')
-  LocalHeartbeatScheduler = schedulerModule.LocalHeartbeatScheduler
-})
+    const schedulerModule = await import('../local-heartbeat-scheduler')
+    LocalHeartbeatScheduler = schedulerModule.LocalHeartbeatScheduler
+  })
 
-afterEach(async () => {
-  await cleanup()
-})
+  afterEach(async () => {
+    await cleanup()
+  })
 
-afterAll(async () => {
-  await cleanup()
-  await prisma.$disconnect?.()
-})
+  afterAll(async () => {
+    await cleanup()
+    await prisma.$disconnect?.()
+  })
 
-describe('LocalHeartbeatScheduler', () => {
   test('tick() picks up due agents and advances nextHeartbeatAt', async () => {
     const { projectId } = await createTestFixtures({
       heartbeatEnabled: true,

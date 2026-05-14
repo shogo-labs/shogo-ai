@@ -528,3 +528,545 @@ describe('storage quota', () => {
     expect(s3Store.has('test-bucket/test-prefix/project-src.tar.gz')).toBe(false)
   })
 })
+
+// ===========================================================================
+// EXPANDED COVERAGE  — appended tests targeting previously-uncovered branches
+// in `s3-sync.ts`. Each block is independent and uses the same mock S3 store
+// + per-test scratch dir already wired up above.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// extractTarFastNonBlocking — pure helper outside the class
+// ---------------------------------------------------------------------------
+
+import { extractTarFastNonBlocking } from '../s3-sync'
+
+describe('extractTarFastNonBlocking', () => {
+  test('uses the system tar binary on a real archive and returns usedBinary=true', async () => {
+    const tar = await import('tar')
+    const src = join(TEST_DIR, 'src-tar')
+    mkdirSync(src, { recursive: true })
+    writeFileSync(join(src, 'a.txt'), 'hello\n')
+    writeFileSync(join(src, 'b.txt'), 'world\n')
+    const archive = join(TEST_DIR, 'fast.tar.gz')
+    await tar.create({ gzip: true, file: archive, cwd: src }, ['a.txt', 'b.txt'])
+
+    const dest = join(TEST_DIR, 'dest-fast')
+    mkdirSync(dest, { recursive: true })
+    const out = await extractTarFastNonBlocking(archive, dest)
+    // On any host with `tar` on PATH this is the binary path.
+    expect(out.usedBinary).toBe(true)
+    expect(existsSync(join(dest, 'a.txt'))).toBe(true)
+    expect(existsSync(join(dest, 'b.txt'))).toBe(true)
+  })
+
+  test('rejects when the archive is corrupt (non-benign stderr)', async () => {
+    const corrupt = join(TEST_DIR, 'corrupt.tar.gz')
+    writeFileSync(corrupt, Buffer.from('this is not a gzip stream at all'))
+    const dest = join(TEST_DIR, 'dest-corrupt')
+    mkdirSync(dest, { recursive: true })
+    await expect(extractTarFastNonBlocking(corrupt, dest)).rejects.toBeDefined()
+  })
+
+  test('scrubs macOS junk that survives extraction', async () => {
+    // Build a tar containing an AppleDouble sidecar + a __MACOSX dir.
+    const tar = await import('tar')
+    const src = join(TEST_DIR, 'src-junk')
+    mkdirSync(src, { recursive: true })
+    mkdirSync(join(src, '__MACOSX'), { recursive: true })
+    writeFileSync(join(src, '__MACOSX', 'shouldgo.txt'), 'junk')
+    writeFileSync(join(src, '._foo.ts'), 'apple-double')
+    writeFileSync(join(src, 'real.ts'), 'export {}')
+    writeFileSync(join(src, '.DS_Store'), 'binary-junk')
+    const archive = join(TEST_DIR, 'junk.tar.gz')
+    await tar.create({ gzip: true, file: archive, cwd: src }, [
+      '__MACOSX',
+      '._foo.ts',
+      'real.ts',
+      '.DS_Store',
+    ])
+
+    const dest = join(TEST_DIR, 'dest-junk')
+    mkdirSync(dest, { recursive: true })
+    await extractTarFastNonBlocking(archive, dest)
+    expect(existsSync(join(dest, 'real.ts'))).toBe(true)
+    expect(existsSync(join(dest, '._foo.ts'))).toBe(false)
+    expect(existsSync(join(dest, '.DS_Store'))).toBe(false)
+    expect(existsSync(join(dest, '__MACOSX'))).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// downloadLayered — deps cache HIT, deps cache MISS, empty body, pointer error
+// ---------------------------------------------------------------------------
+
+describe('downloadAll layered branches', () => {
+  async function seedLayeredProject(): Promise<void> {
+    const tar = await import('tar')
+    const stagingDir = join(TEST_DIR, '.stage-src')
+    mkdirSync(stagingDir, { recursive: true })
+    writeFileSync(join(stagingDir, 'index.ts'), 'export const x = 1\n')
+    const tmp = join(TEST_DIR, '.stage-src.tar.gz')
+    await tar.create({ gzip: true, file: tmp, cwd: stagingDir }, ['index.ts'])
+    const { readFileSync } = await import('fs')
+    s3Store.set('test-bucket/test-prefix/project-src.tar.gz', readFileSync(tmp))
+  }
+
+  test('deps pointer present + deps archive present -> full deps restore (cache hit)', async () => {
+    await seedLayeredProject()
+    // Build a deps archive containing node_modules/.package-lock.json
+    const tar = await import('tar')
+    const depsSrc = join(TEST_DIR, '.deps-stage')
+    mkdirSync(join(depsSrc, 'node_modules'), { recursive: true })
+    writeFileSync(join(depsSrc, 'node_modules', '.package-lock.json'), '{}')
+    writeFileSync(join(depsSrc, 'node_modules', 'placeholder.txt'), 'x')
+    const tmpDeps = join(TEST_DIR, '.deps-stage.tar.gz')
+    await tar.create({ gzip: true, file: tmpDeps, cwd: depsSrc }, ['node_modules'])
+    const { readFileSync } = await import('fs')
+    s3Store.set('test-bucket/test-prefix/deps-hash.txt', Buffer.from('abcd1234deadbeef'))
+    s3Store.set('test-bucket/_deps-cache/abcd1234deadbeef.tar.gz', readFileSync(tmpDeps))
+
+    const sync = mkSync()
+    const stats = await sync.downloadAll()
+    expect(stats.errors).toEqual([])
+    await sync.waitForDeps()
+    // node_modules should now exist locally as a result of the deps restore.
+    expect(existsSync(join(TEST_DIR, 'node_modules', 'placeholder.txt'))).toBe(true)
+    const after = sync.getStats()
+    expect(after.depsCacheHit).toBe(true)
+  })
+
+  test('deps pointer present but deps archive missing -> warns and proceeds', async () => {
+    await seedLayeredProject()
+    s3Store.set('test-bucket/test-prefix/deps-hash.txt', Buffer.from('missingdeadbeef'))
+    const sync = mkSync()
+    const stats = await sync.downloadAll()
+    expect(stats.errors).toEqual([])
+    await sync.waitForDeps()
+    expect(existsSync(join(TEST_DIR, 'node_modules'))).toBe(false)
+  })
+
+  test('local node_modules already matches the deps hash -> skips download', async () => {
+    await seedLayeredProject()
+    // Pre-seed lockfile + node_modules so the hashes line up.
+    writeFileSync(join(TEST_DIR, 'bun.lock'), 'seed lockfile\n')
+    const { createHash } = await import('crypto')
+    const lockHash = createHash('sha256')
+      .update('seed lockfile\n')
+      .digest('hex')
+      .slice(0, 16)
+    s3Store.set('test-bucket/test-prefix/deps-hash.txt', Buffer.from(lockHash))
+    mkdirSync(join(TEST_DIR, 'node_modules'), { recursive: true })
+    writeFileSync(join(TEST_DIR, 'node_modules', '.package-lock.json'), '{}')
+
+    const sync = mkSync()
+    await sync.downloadAll()
+    await sync.waitForDeps()
+    const after = sync.getStats()
+    expect(after.depsCacheHit).toBe(true)
+    // No deps-archive GET should have happened.
+    const depsGets = s3Calls.filter(
+      (c) => c.command === 'GetObject' && c.key.startsWith('_deps-cache/'),
+    )
+    expect(depsGets.length).toBe(0)
+  })
+
+  test('pointer read non-404 error is caught and logged (sync proceeds)', async () => {
+    await seedLayeredProject()
+    const sync = mkSync()
+    const origSend = (sync as any).client.send.bind((sync as any).client)
+    ;(sync as any).client.send = async (cmd: any) => {
+      if (cmd.__type === 'GetObject' && cmd.Key === 'test-prefix/deps-hash.txt') {
+        throw new Error('500 transient')
+      }
+      return origSend(cmd)
+    }
+    const stats = await sync.downloadAll()
+    expect(stats.errors).toEqual([])
+    await sync.waitForDeps()
+  })
+
+  test('layered project body is empty -> aborts cleanly with no error', async () => {
+    // HeadObject must say it exists, but GetObject returns Body: null.
+    s3Store.set('test-bucket/test-prefix/project-src.tar.gz', Buffer.from('sentinel'))
+    const sync = mkSync()
+    const origSend = (sync as any).client.send.bind((sync as any).client)
+    ;(sync as any).client.send = async (cmd: any) => {
+      if (cmd.__type === 'GetObject' && cmd.Key === 'test-prefix/project-src.tar.gz') {
+        return { ContentLength: 0, Body: null }
+      }
+      return origSend(cmd)
+    }
+    const stats = await sync.downloadAll()
+    expect(stats.errors).toEqual([])
+  })
+
+  test('legacy archive body is empty -> aborts cleanly with no error', async () => {
+    s3Store.set('test-bucket/test-prefix/project.tar.gz', Buffer.from('sentinel'))
+    const sync = mkSync()
+    const origSend = (sync as any).client.send.bind((sync as any).client)
+    ;(sync as any).client.send = async (cmd: any) => {
+      if (cmd.__type === 'GetObject' && cmd.Key === 'test-prefix/project.tar.gz') {
+        return { ContentLength: 0, Body: null }
+      }
+      return origSend(cmd)
+    }
+    const stats = await sync.downloadAll()
+    expect(stats.errors).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// uploadDepsIfNeeded — exercises lockfile-driven deps upload branches
+// ---------------------------------------------------------------------------
+
+describe('uploadDepsIfNeeded', () => {
+  test('uploads deps archive + pointer when node_modules exists and lockfile is new', async () => {
+    writeFileSync(join(TEST_DIR, 'bun.lock'), 'lock content v1\n')
+    writeFileSync(join(TEST_DIR, 'index.ts'), 'export {}\n')
+    mkdirSync(join(TEST_DIR, 'node_modules', 'lib'), { recursive: true })
+    writeFileSync(join(TEST_DIR, 'node_modules', 'lib', 'index.js'), 'module.exports = 1')
+    const sync = mkSync()
+    ;(sync as any).depsNeedUpload = true
+    const stats = await sync.uploadAll(false)
+    expect(stats.errors).toEqual([])
+    // Pointer should be written + at least one deps archive PUT under _deps-cache/.
+    const puts = s3Calls.filter((c) => c.command === 'PutObject')
+    expect(puts.some((c) => c.key === 'test-prefix/deps-hash.txt')).toBe(true)
+    expect(puts.some((c) => c.key.startsWith('_deps-cache/'))).toBe(true)
+  })
+
+  test('skips deps upload when the same hash is already in S3 (pointer-only update)', async () => {
+    writeFileSync(join(TEST_DIR, 'bun.lock'), 'lock content v2\n')
+    writeFileSync(join(TEST_DIR, 'index.ts'), 'export {}\n')
+    mkdirSync(join(TEST_DIR, 'node_modules'), { recursive: true })
+    writeFileSync(join(TEST_DIR, 'node_modules', 'placeholder.txt'), 'x')
+    // Pre-populate the deps archive under the matching hash so the upload
+    // path short-circuits into the pointer-only branch.
+    const { createHash } = await import('crypto')
+    const hash = createHash('sha256').update('lock content v2\n').digest('hex').slice(0, 16)
+    s3Store.set(`test-bucket/_deps-cache/${hash}.tar.gz`, Buffer.from('preexisting'))
+    const sync = mkSync()
+    ;(sync as any).depsNeedUpload = false
+    // Force the path: clear the in-instance hash so it doesn't early-return.
+    ;(sync as any).currentLockfileHash = ''
+    await sync.uploadAll(false)
+    const puts = s3Calls.filter((c) => c.command === 'PutObject')
+    // Pointer PUT should exist, deps archive PUT should NOT (already there).
+    expect(puts.some((c) => c.key === 'test-prefix/deps-hash.txt')).toBe(true)
+    expect(puts.filter((c) => c.key.startsWith('_deps-cache/')).length).toBe(0)
+  })
+
+  test('returns early when node_modules does not exist', async () => {
+    writeFileSync(join(TEST_DIR, 'bun.lock'), 'lock content v3\n')
+    writeFileSync(join(TEST_DIR, 'index.ts'), 'export {}\n')
+    const sync = mkSync()
+    ;(sync as any).depsNeedUpload = true
+    await sync.uploadAll(false)
+    const puts = s3Calls.filter((c) => c.command === 'PutObject')
+    // Only the project archive should have been uploaded — no deps key.
+    expect(puts.some((c) => c.key.startsWith('_deps-cache/'))).toBe(false)
+    expect(puts.some((c) => c.key === 'test-prefix/deps-hash.txt')).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// uploadAll error + re-run paths
+// ---------------------------------------------------------------------------
+
+describe('uploadAll error + re-run paths', () => {
+  test('records upload error into stats.errors when PutObject throws', async () => {
+    writeFileSync(join(TEST_DIR, 'index.ts'), 'export {}\n')
+    const sync = mkSync()
+    const origSend = (sync as any).client.send.bind((sync as any).client)
+    ;(sync as any).client.send = async (cmd: any) => {
+      if (cmd.__type === 'PutObject') throw new Error('s3 down')
+      return origSend(cmd)
+    }
+    const stats = await sync.uploadAll(false)
+    expect(stats.errors.length).toBeGreaterThan(0)
+    expect(stats.errors[0]).toContain('s3 down')
+  })
+
+  test('uploadRequestedDuringUpload flag is set when guard path is hit', async () => {
+    writeFileSync(join(TEST_DIR, 'index.ts'), 'export const a = 1\n')
+    const sync = mkSync()
+    // Force the in-flight flag and call uploadAll — the guard sets
+    // uploadRequestedDuringUpload=true and returns immediately.
+    ;(sync as any).isUploading = true
+    const stats = await sync.uploadAll(false)
+    expect(stats.uploaded).toBe(0)
+    expect((sync as any).uploadRequestedDuringUpload).toBe(true)
+    ;(sync as any).isUploading = false
+  })
+
+  test('uploadAll schedules a follow-up when changes arrive mid-upload', async () => {
+    writeFileSync(join(TEST_DIR, 'index.ts'), 'export const a = 1\n')
+    const sync = mkSync()
+    let uploadAllCalls = 0
+    const origSend = (sync as any).client.send.bind((sync as any).client)
+    ;(sync as any).client.send = async (cmd: any) => {
+      if (cmd.__type === 'PutObject') {
+        // Simulate a write arriving DURING the upload: caller A is
+        // running, caller B re-enters uploadAll which trips the guard
+        // and sets uploadRequestedDuringUpload=true.
+        if (uploadAllCalls === 0) {
+          uploadAllCalls++
+          // Re-enter while still inside the first uploadAll.
+          await sync.uploadAll(false)
+        }
+      }
+      return origSend(cmd)
+    }
+    await sync.uploadAll(false)
+    // Allow the setTimeout(0)-scheduled re-run to settle.
+    await new Promise((r) => setTimeout(r, 30))
+    sync.shutdown()
+    // The PutObject for project-src.tar.gz should have been issued at
+    // least once and the re-run scheduling did not throw.
+    const puts = s3Calls.filter(
+      (c) => c.command === 'PutObject' && c.key === 'test-prefix/project-src.tar.gz',
+    )
+    expect(puts.length).toBeGreaterThanOrEqual(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// initializeS3Sync — error paths (critical vs non-critical)
+// ---------------------------------------------------------------------------
+
+describe('initializeS3Sync error paths', () => {
+  test('non-critical download error -> returns instance with downloadSucceeded=false', async () => {
+    process.env.S3_WORKSPACES_BUCKET = 'b'
+    process.env.PROJECT_ID = 'p'
+    process.env.S3_WATCH_ENABLED = 'false'
+    // Seed a project archive but force GetObject to throw a generic error.
+    s3Store.set('b/p/project-src.tar.gz', Buffer.from('not-a-tar'))
+    // Patch S3Client.prototype.send for any newly-constructed client. Easier:
+    // construct manually after monkey-patching the prototype.
+    const origProto = (MockS3Client as any).prototype.send
+    ;(MockS3Client as any).prototype.send = async function (cmd: any) {
+      if (cmd.__type === 'GetObject') throw new Error('flaky network')
+      return origProto.call(this, cmd)
+    }
+    try {
+      const result = await initializeS3Sync(TEST_DIR)
+      expect(result).not.toBeNull()
+      expect(result!.downloadSucceeded).toBe(false)
+      result!.sync.shutdown()
+    } finally {
+      ;(MockS3Client as any).prototype.send = origProto
+    }
+  })
+
+  test('critical AccessDenied error -> returns null', async () => {
+    process.env.S3_WORKSPACES_BUCKET = 'b'
+    process.env.PROJECT_ID = 'p'
+    process.env.S3_WATCH_ENABLED = 'false'
+    s3Store.set('b/p/project-src.tar.gz', Buffer.from('not-a-tar'))
+    const origProto = (MockS3Client as any).prototype.send
+    ;(MockS3Client as any).prototype.send = async function (cmd: any) {
+      if (cmd.__type === 'GetObject') throw new Error('AccessDenied: nope')
+      return origProto.call(this, cmd)
+    }
+    try {
+      const result = await initializeS3Sync(TEST_DIR)
+      expect(result).toBeNull()
+    } finally {
+      ;(MockS3Client as any).prototype.send = origProto
+    }
+  })
+
+  test('starts periodic + watcher on successful new-project download', async () => {
+    process.env.S3_WORKSPACES_BUCKET = 'b'
+    process.env.PROJECT_ID = 'p'
+    process.env.S3_WATCH_ENABLED = 'false' // keep watcher off to avoid OS handles
+    process.env.S3_SYNC_INTERVAL = '999999'
+    const result = await initializeS3Sync(TEST_DIR)
+    expect(result).not.toBeNull()
+    expect(result!.downloadSucceeded).toBe(true)
+    result!.sync.shutdown()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// startWatcher with a path that exists but is a file, not a directory
+// ---------------------------------------------------------------------------
+
+describe('startWatcher edge cases', () => {
+  test('logs a warning when localDir is a file, not a directory', () => {
+    const filePath = join(TEST_DIR, 'not-a-dir')
+    writeFileSync(filePath, 'just a file')
+    const sync = new S3Sync({
+      bucket: 'b', prefix: 'p', localDir: filePath,
+      syncInterval: 0, watchEnabled: true,
+    })
+    sync.startWatcher()
+    sync.shutdown()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// formatBytes + shouldExclude — exercise every branch via the private getter
+// ---------------------------------------------------------------------------
+
+describe('private helper branches', () => {
+  test('formatBytes handles bytes, KB, and MB ranges', () => {
+    const sync = mkSync()
+    const f = (sync as any).formatBytes.bind(sync)
+    expect(f(0)).toBe('0 B')
+    expect(f(500)).toBe('500 B')
+    expect(f(2048)).toMatch(/KB/)
+    expect(f(1024 * 1024 * 5)).toMatch(/MB/)
+  })
+
+  test('shouldExclude matches *.ext, exact match, prefix, and path-segment patterns', () => {
+    const sync = mkSync({ exclude: ['*.log', 'node_modules', 'dist'] })
+    const s = (sync as any).shouldExclude.bind(sync)
+    expect(s('foo.log')).toBe(true)               // *.ext
+    expect(s('node_modules')).toBe(true)          // exact
+    expect(s('dist/index.js')).toBe(true)         // startsWith pattern/
+    expect(s('apps/api/node_modules/x')).toBe(true) // includes /pattern/
+    expect(s('apps/api/dist')).toBe(true)         // includes /pattern (no slash)
+    expect(s('src/index.ts')).toBe(false)         // no match
+  })
+
+  test('countFiles + countFilesExcluding ignore missing directories cleanly', async () => {
+    const sync = mkSync()
+    const missing = join(TEST_DIR, 'never-existed')
+    const cf = (sync as any).countFiles.bind(sync)
+    const cfx = (sync as any).countFilesExcluding.bind(sync)
+    expect(await cf(missing)).toBe(0)
+    expect(await cfx(missing, ['node_modules'])).toBe(0)
+  })
+
+  test('listLocalFiles drops macOS junk and respects excludeDirs', async () => {
+    writeFileSync(join(TEST_DIR, 'real.ts'), 'export {}')
+    writeFileSync(join(TEST_DIR, '._real.ts'), 'apple-double')
+    mkdirSync(join(TEST_DIR, 'node_modules', 'lib'), { recursive: true })
+    writeFileSync(join(TEST_DIR, 'node_modules', 'lib', 'index.js'), 'x')
+    const sync = mkSync()
+    const list = await (sync as any).listLocalFiles(undefined, ['node_modules'])
+    expect(list.some((p: string) => p.endsWith('real.ts'))).toBe(true)
+    expect(list.some((p: string) => p.endsWith('._real.ts'))).toBe(false)
+    expect(list.some((p: string) => p.includes('node_modules'))).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Round-trip: upload then download produces the original files
+// ---------------------------------------------------------------------------
+
+describe('upload -> download round trip', () => {
+  test('content uploaded by uploadAll is restored by downloadAll', async () => {
+    writeFileSync(join(TEST_DIR, 'index.ts'), 'export const v = 42\n')
+    writeFileSync(join(TEST_DIR, 'README.md'), '# hello\n')
+    mkdirSync(join(TEST_DIR, 'src'), { recursive: true })
+    writeFileSync(join(TEST_DIR, 'src', 'inner.ts'), 'export const inner = 1\n')
+
+    const uploader = mkSync()
+    const upStats = await uploader.uploadAll(false)
+    expect(upStats.uploaded).toBeGreaterThan(0)
+    uploader.shutdown()
+
+    // Now download into a fresh directory and compare.
+    const restoreDir = join(TEST_DIR, '.restore')
+    mkdirSync(restoreDir, { recursive: true })
+    const restorer = new S3Sync({
+      bucket: 'test-bucket', prefix: 'test-prefix', localDir: restoreDir,
+      syncInterval: 0, watchEnabled: false,
+    })
+    const dlStats = await restorer.downloadAll()
+    await restorer.waitForDeps()
+    expect(dlStats.errors).toEqual([])
+    expect(existsSync(join(restoreDir, 'index.ts'))).toBe(true)
+    expect(existsSync(join(restoreDir, 'README.md'))).toBe(true)
+    expect(existsSync(join(restoreDir, 'src', 'inner.ts'))).toBe(true)
+    restorer.shutdown()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Lockfile hash discovery — exercises every lockfile fallback branch
+// ---------------------------------------------------------------------------
+
+describe('computeLockfileHash branches', () => {
+  test('hashes bun.lock (first in list)', async () => {
+    writeFileSync(join(TEST_DIR, 'bun.lock'), 'real lockfile')
+    const sync = mkSync()
+    const h: string = await (sync as any).computeLockfileHash()
+    expect(h).toMatch(/^[a-f0-9]{16}$/)
+  })
+
+  test('hashes package-lock.json when only that lockfile is present', async () => {
+    writeFileSync(join(TEST_DIR, 'package-lock.json'), '{"lockfileVersion":3}')
+    const sync = mkSync()
+    const h: string = await (sync as any).computeLockfileHash()
+    expect(h).toMatch(/^[a-f0-9]{16}$/)
+  })
+
+  test('hashes yarn.lock when no other lockfile is present', async () => {
+    writeFileSync(join(TEST_DIR, 'yarn.lock'), '# yarn lockfile\n')
+    const sync = mkSync()
+    const h: string = await (sync as any).computeLockfileHash()
+    expect(h).toMatch(/^[a-f0-9]{16}$/)
+  })
+
+  test('falls back to package.json deps when no lockfile exists', async () => {
+    writeFileSync(
+      join(TEST_DIR, 'package.json'),
+      JSON.stringify({ dependencies: { a: '1.0.0' }, devDependencies: { b: '2.0.0' } }),
+    )
+    const sync = mkSync()
+    const h: string = await (sync as any).computeLockfileHash()
+    expect(h).toMatch(/^[a-f0-9]{16}$/)
+  })
+
+  test('falls back to no-lockfile sentinel when neither lockfile nor package.json exists', async () => {
+    const sync = mkSync()
+    const h: string = await (sync as any).computeLockfileHash()
+    expect(h).toBe('no-lockfile')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// S3 key helpers — verify the layered + legacy + deps key shapes
+// ---------------------------------------------------------------------------
+
+describe('S3 key helpers', () => {
+  test('layered, legacy, and deps keys are formed from prefix + lockfile hash', () => {
+    const sync = mkSync({ prefix: 'proj-XYZ' })
+    expect((sync as any).getLegacyArchiveKey()).toBe('proj-XYZ/project.tar.gz')
+    expect((sync as any).getProjectArchiveKey()).toBe('proj-XYZ/project-src.tar.gz')
+    expect((sync as any).getDepsArchiveKey('hashHASH')).toBe('_deps-cache/hashHASH.tar.gz')
+    expect((sync as any).getDepsPointerKey()).toBe('proj-XYZ/deps-hash.txt')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// objectExists — propagates non-404 errors
+// ---------------------------------------------------------------------------
+
+describe('objectExists error propagation', () => {
+  test('throws when HeadObject returns a non-404 error', async () => {
+    const sync = mkSync()
+    ;(sync as any).client.send = async () => {
+      const err = new StubS3Error('InternalError', 500)
+      throw err
+    }
+    await expect((sync as any).objectExists('any/key')).rejects.toBeDefined()
+  })
+
+  test('returns false when HeadObject says 404 NotFound', async () => {
+    const sync = mkSync()
+    const result = await (sync as any).objectExists('test-prefix/never-stored.tar.gz')
+    expect(result).toBe(false)
+  })
+
+  test('returns true when HeadObject succeeds', async () => {
+    s3Store.set('test-bucket/test-prefix/anything.gz', Buffer.from('exists'))
+    const sync = mkSync()
+    const result = await (sync as any).objectExists('test-prefix/anything.gz')
+    expect(result).toBe(true)
+  })
+})
