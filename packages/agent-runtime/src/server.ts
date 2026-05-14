@@ -51,6 +51,7 @@ import {
   runTechStackSetup,
   wipeProjectFiles,
   getTechStackPath,
+  workspaceUsesVite,
 } from './workspace-defaults'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
@@ -3789,9 +3790,22 @@ async function initializeEssentials(): Promise<void> {
       const result = await initializeS3Sync(WORKSPACE_DIR)
       if (result) {
         s3SyncInstance = result.sync
-        // If node_modules were seeded from the template (not from S3), mark deps
-        // as pre-seeded so S3 sync won't try to tar.gz 37K+ files and OOM.
-        if (existsSync(join(WORKSPACE_DIR, 'node_modules', '.bin', 'vite'))) {
+        // If node_modules were seeded from the template AND the user's
+        // package.json actually depends on Vite, the template's
+        // node_modules is the user's deps — mark pre-seeded so the first
+        // periodic sync doesn't try to tar.gz 37K+ files and OOM the pod.
+        //
+        // The previous heuristic only checked `existsSync(.bin/vite)`,
+        // but the warm-pool template ALWAYS has that bin regardless of
+        // whether the user uses Vite. For non-Vite workspaces (Expo, RN,
+        // etc.) ensureWorkspaceDeps() below will actually reinstall the
+        // correct deps, and we need the post-install hook to upload them
+        // with a per-project pointer. See the 2026-05-14 staging
+        // disk-pressure incident write-up.
+        if (
+          existsSync(join(WORKSPACE_DIR, 'node_modules', '.bin', 'vite'))
+          && workspaceUsesVite(WORKSPACE_DIR)
+        ) {
           await s3SyncInstance.markDepsPreSeeded()
         }
         logTiming('S3 sync initialized')
@@ -3817,8 +3831,17 @@ async function initializeEssentials(): Promise<void> {
     logTiming('Deps restoring in background — skipping blocking install')
   } else {
     try {
-      await ensureWorkspaceDeps(WORKSPACE_DIR)
+      const { didInstall } = await ensureWorkspaceDeps(WORKSPACE_DIR)
       workspaceStatus.depsInstalled = true
+      // If ensureWorkspaceDeps actually ran an install (template deps
+      // didn't match the user's package.json — common after a warm-pool
+      // assignment where the template was Vite but the project is Expo
+      // or vice-versa), invalidate the pre-seeded marker so the next
+      // periodic S3 sync uploads the freshly-installed deps and writes
+      // the per-project deps-hash.txt pointer.
+      if (didInstall && s3SyncInstance) {
+        s3SyncInstance.markDepsChanged()
+      }
       logTiming('Workspace deps ready')
     } catch (err: any) {
       console.error('[agent-runtime] Workspace deps install failed:', err.message)
@@ -3916,8 +3939,11 @@ async function startGateway(): Promise<void> {
     logTiming('Background deps ready')
     // Now run ensureWorkspaceDeps in case the S3 deps didn't fully satisfy
     try {
-      await ensureWorkspaceDeps(WORKSPACE_DIR)
+      const { didInstall } = await ensureWorkspaceDeps(WORKSPACE_DIR)
       workspaceStatus.depsInstalled = true
+      if (didInstall && s3SyncInstance) {
+        s3SyncInstance.markDepsChanged()
+      }
     } catch (err: any) {
       console.error('[agent-runtime] Post-deps-restore install failed:', err.message)
     }
