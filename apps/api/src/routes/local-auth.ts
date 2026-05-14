@@ -31,18 +31,12 @@
 
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
-
-const SHOGO_CLOUD_URL_DEFAULT = 'https://studio.shogo.ai'
+import { getShogoCloudUrl } from '../lib/cloud-urls'
 
 /** Tracks whether the cloud has rejected our key so the UI can show a
  * degraded-connection banner without wiping credentials. Only an explicit
  * user-initiated sign-out deletes the stored key. */
 let cloudKeyRejected = false
-
-/** Single source of truth for the Shogo Cloud endpoint. */
-function getCloudUrl(): string {
-  return (process.env.SHOGO_CLOUD_URL || SHOGO_CLOUD_URL_DEFAULT).replace(/\/$/, '')
-}
 
 async function readStoredKey(localDb: any): Promise<string | null> {
   const row = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_API_KEY' } }).catch(() => null)
@@ -90,7 +84,7 @@ export function localAuthRoutes() {
     if (!storedKey) {
       return c.json({ ok: false, error: 'Not signed in' }, 401)
     }
-    const cloudUrl = getCloudUrl()
+    const cloudUrl = getShogoCloudUrl()
 
     const body = await c.req.json<{ deviceAppVersion?: string }>().catch(() => ({} as any))
 
@@ -129,12 +123,12 @@ export function localAuthRoutes() {
   router.get('/local/cloud-login/status', async (c) => {
     const storedKey = await readStoredKey(localDb)
     if (!storedKey) {
-      return c.json({ signedIn: false, cloudUrl: getCloudUrl() })
+      return c.json({ signedIn: false, cloudUrl: getShogoCloudUrl() })
     }
     const info = await readStoredKeyInfo(localDb)
     return c.json({
       signedIn: true,
-      cloudUrl: getCloudUrl(),
+      cloudUrl: getShogoCloudUrl(),
       email: info?.email || null,
       workspace: info?.workspace || null,
       deviceId: info?.deviceId || null,

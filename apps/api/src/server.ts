@@ -64,6 +64,7 @@ import { projectExportImportRoutes } from './routes/project-export-import'
 import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
 import { apiKeyRoutes } from './routes/api-keys'
 import { cliAuthRoutes } from './routes/cli-auth'
+import { getFrontendUrl, getShogoCloudUrl } from './lib/cloud-urls'
 import { localAuthRoutes } from './routes/local-auth'
 import { meetingRoutes } from './routes/meetings'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
@@ -303,21 +304,9 @@ function convertUIMessagesToModelMessages(messages: any[]): ModelMessage[] {
 const API_PORT = parseInt(process.env.API_PORT || '8002', 10)
 const VITE_PORT = parseInt(process.env.VITE_PORT || '3000', 10)
 
-// Get the frontend URL for redirects (Stripe checkout, etc.)
-// Priority: APP_URL > first ALLOWED_ORIGINS > localhost fallback
-const getFrontendUrl = (): string => {
-  if (process.env.APP_URL) {
-    return process.env.APP_URL
-  }
-  const allowedOrigins = process.env.ALLOWED_ORIGINS
-  if (allowedOrigins) {
-    const firstOrigin = allowedOrigins.split(',')[0]?.trim()
-    if (firstOrigin) {
-      return firstOrigin
-    }
-  }
-  return `http://localhost:${VITE_PORT}`
-}
+// Frontend URL resolution (used for Stripe redirects, etc.) lives in
+// `./lib/cloud-urls` so cli-auth, marketplace, and the rest of the
+// codebase share one definition.
 
 // Compute project root from this file's location
 // This file is at: apps/api/src/server.ts
@@ -955,14 +944,11 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
   })
 
   // ── Local mode: Shogo Cloud API key ──────────────────────────────────────
-  // Cloud endpoint selection is centralized: it is sourced ONLY from
-  // `process.env.SHOGO_CLOUD_URL` (default: production studio). Request
-  // bodies, persisted localConfig rows, and UI inputs are NOT honored — to
-  // target staging or self-hosted, set the env var on the API process.
-  const SHOGO_CLOUD_URL_DEFAULT = 'https://studio.shogo.ai'
-  const getShogoCloudUrl = (): string =>
-    (process.env.SHOGO_CLOUD_URL || SHOGO_CLOUD_URL_DEFAULT).replace(/\/$/, '')
-
+  // Cloud endpoint selection is centralized in `./lib/cloud-urls`: it is
+  // sourced ONLY from `process.env.SHOGO_CLOUD_URL` (default: production
+  // studio). Request bodies, persisted localConfig rows, and UI inputs
+  // are NOT honored — to target staging or self-hosted, set the env var
+  // on the API process.
   app.get('/api/local/shogo-key', async (c) => {
     try {
       const row = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_API_KEY' } })

@@ -21,44 +21,50 @@ import { Hono } from 'hono'
 
 describe('Tools Proxy', () => {
   describe('Response header sanitization (ZlibError regression)', () => {
-    test('RESPONSE_SKIP_HEADERS contains content-encoding and content-length', async () => {
-      const source = await Bun.file(
-        require.resolve('../routes/tools-proxy.ts'),
-      ).text()
+    // The actual skip-list constants live in `apps/api/src/lib/proxy-headers.ts`
+    // (shared with marketplace.ts and integrations.ts). These tests assert
+    // that tools-proxy uses the response-flavoured skip list (which strips
+    // content-encoding/content-length) when building the response, and the
+    // request-flavoured skip list (which doesn't) when forwarding.
 
-      expect(source).toContain("'content-encoding'")
-      expect(source).toContain("'content-length'")
-      expect(source).toContain('RESPONSE_SKIP_HEADERS')
-
-      // Verify RESPONSE_SKIP_HEADERS is used for response header filtering
-      expect(source).toContain('RESPONSE_SKIP_HEADERS.has(lower)')
+    test('RESPONSE_FORWARD_SKIP_HEADERS contains content-encoding and content-length', async () => {
+      const { RESPONSE_FORWARD_SKIP_HEADERS } = await import('../lib/proxy-headers')
+      expect(RESPONSE_FORWARD_SKIP_HEADERS.has('content-encoding')).toBe(true)
+      expect(RESPONSE_FORWARD_SKIP_HEADERS.has('content-length')).toBe(true)
+      expect(RESPONSE_FORWARD_SKIP_HEADERS.has('transfer-encoding')).toBe(true)
     })
 
-    test('response headers are filtered using RESPONSE_SKIP_HEADERS not FORWARDED_SKIP_HEADERS', async () => {
+    test('REQUEST_FORWARD_SKIP_HEADERS does not strip content-encoding (request bodies are passed through verbatim)', async () => {
+      const { REQUEST_FORWARD_SKIP_HEADERS } = await import('../lib/proxy-headers')
+      expect(REQUEST_FORWARD_SKIP_HEADERS.has('content-encoding')).toBe(false)
+      expect(REQUEST_FORWARD_SKIP_HEADERS.has('content-length')).toBe(false)
+      // Hop-by-hop headers ARE stripped from requests too.
+      expect(REQUEST_FORWARD_SKIP_HEADERS.has('host')).toBe(true)
+      expect(REQUEST_FORWARD_SKIP_HEADERS.has('transfer-encoding')).toBe(true)
+    })
+
+    test('tools-proxy uses shouldSkipResponseHeader for response filtering and shouldSkipForwardedHeader for request forwarding', async () => {
       const source = await Bun.file(
         require.resolve('../routes/tools-proxy.ts'),
       ).text()
 
-      // The response filtering block should use RESPONSE_SKIP_HEADERS
       const responseBlock = source.match(
         /const responseHeaders[\s\S]*?return new Response/,
       )
       expect(responseBlock).toBeTruthy()
-      expect(responseBlock![0]).toContain('RESPONSE_SKIP_HEADERS')
-      expect(responseBlock![0]).not.toContain('FORWARDED_SKIP_HEADERS')
+      expect(responseBlock![0]).toContain('shouldSkipResponseHeader')
+      expect(responseBlock![0]).not.toContain('shouldSkipForwardedHeader')
+
+      const requestBlock = source.match(
+        /const headers = new Headers\(\)[\s\S]*?const upstream/,
+      )
+      expect(requestBlock).toBeTruthy()
+      expect(requestBlock![0]).toContain('shouldSkipForwardedHeader')
+      expect(requestBlock![0]).not.toContain('shouldSkipResponseHeader')
     })
 
-    test('simulated header filtering strips encoding headers', () => {
-      // Replicate the exact header filtering logic from tools-proxy.ts
-      const FORWARDED_SKIP_HEADERS = new Set([
-        'host', 'connection', 'keep-alive', 'transfer-encoding',
-        'te', 'trailer', 'upgrade',
-      ])
-      const RESPONSE_SKIP_HEADERS = new Set([
-        ...FORWARDED_SKIP_HEADERS,
-        'content-encoding',
-        'content-length',
-      ])
+    test('simulated header filtering strips encoding headers from responses', async () => {
+      const { shouldSkipResponseHeader } = await import('../lib/proxy-headers')
 
       // Simulate upstream response headers (what Composio actually returns)
       const upstreamHeaders = new Map([
@@ -69,10 +75,9 @@ describe('Tools Proxy', () => {
         ['transfer-encoding', 'chunked'],
       ])
 
-      // Apply RESPONSE_SKIP_HEADERS filtering (our fix)
       const filtered = new Map<string, string>()
       for (const [key, value] of upstreamHeaders) {
-        if (!RESPONSE_SKIP_HEADERS.has(key.toLowerCase())) {
+        if (!shouldSkipResponseHeader(key)) {
           filtered.set(key, value)
         }
       }
@@ -83,20 +88,6 @@ describe('Tools Proxy', () => {
       expect(filtered.has('content-type')).toBe(true)
       expect(filtered.get('content-type')).toBe('application/json')
       expect(filtered.has('x-request-id')).toBe(true)
-    })
-
-    test('request headers still use FORWARDED_SKIP_HEADERS (no content-encoding stripping)', async () => {
-      const source = await Bun.file(
-        require.resolve('../routes/tools-proxy.ts'),
-      ).text()
-
-      // The request forwarding block should use FORWARDED_SKIP_HEADERS
-      const requestBlock = source.match(
-        /const headers = new Headers\(\)[\s\S]*?const upstream/,
-      )
-      expect(requestBlock).toBeTruthy()
-      expect(requestBlock![0]).toContain('FORWARDED_SKIP_HEADERS')
-      expect(requestBlock![0]).not.toContain('RESPONSE_SKIP_HEADERS')
     })
   })
 

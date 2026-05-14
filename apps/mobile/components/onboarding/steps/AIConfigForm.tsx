@@ -200,8 +200,10 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
     setShogoKeyError('')
     try {
       if (aiMode === 'shogo-cloud') {
-        // Cloud login handshake already persisted the device key via the
-        // deep-link callback, so there's nothing to save here — just move on.
+        // The poll-based cloud sign-in (Electron `runCloudSignIn` /
+        // `shogo login` CLI) already persisted the minted device key
+        // to local storage via PUT /api/local/shogo-key, so there's
+        // nothing to save here — just move on.
       } else if (aiMode === 'api-keys') {
         const body: Record<string, string> = {}
         if (anthropicKey) body.anthropicApiKey = anthropicKey

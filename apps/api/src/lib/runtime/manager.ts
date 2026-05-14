@@ -23,6 +23,7 @@ import type {
   IHealthStatus,
   RuntimeStatus,
 } from './types'
+import { getShogoCloudUrl } from '../cloud-urls'
 
 /** Get the directory where this module is located */
 const __filename = fileURLToPath(import.meta.url)
@@ -1348,7 +1349,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         // bare-hex default, and PUBLIC_PREVIEW_URL / SECURITY_POLICY /
         // AI_PROXY_TOKEN reach the runtime untouched.
         const spawnConfig: ProjectSpawnConfig = {
-          cloudUrl: process.env.SHOGO_CLOUD_URL || 'https://studio.shogo.ai',
+          cloudUrl: getShogoCloudUrl(),
           apiKey: process.env.SHOGO_API_KEY || '',
           projectDir,
           techStackId: projectInfo.techStackId,

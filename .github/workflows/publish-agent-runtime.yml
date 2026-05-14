@@ -1,16 +1,24 @@
 # =============================================================================
 # Publish shogo-agent-runtime prebuilt binaries
 # =============================================================================
-# Triggered when a `runtime-v*` tag is pushed. Builds the AGPL
-# @shogo/agent-runtime as a single self-contained `bun build --compile`
-# binary for each of the four supported targets, then uploads the four
-# tarballs (+ SHA-256 sidecars) to a GitHub Release attached to the tag.
+# Triggered alongside the rest of the app on `v[0-9]*` tag pushes — the
+# runtime is versioned in lockstep with the desktop app, the worker, and
+# the SDK. Builds the AGPL @shogo/agent-runtime as a single self-contained
+# `bun build --compile` binary for each of the four supported targets,
+# then *appends* the four tarballs (+ SHA-256 sidecars) to the same
+# GitHub Release the desktop-release-{macos,windows} workflows attach to:
 #
-#   runtime-v0.1.0  →  uploads
-#                        shogo-agent-runtime-darwin-arm64.tar.gz   (+ .sha256)
-#                        shogo-agent-runtime-darwin-x64.tar.gz     (+ .sha256)
-#                        shogo-agent-runtime-linux-arm64.tar.gz    (+ .sha256)
-#                        shogo-agent-runtime-linux-x64.tar.gz      (+ .sha256)
+#   v0.5.2  →  appends to release `v0.5.2`
+#                shogo-agent-runtime-darwin-arm64.tar.gz   (+ .sha256)
+#                shogo-agent-runtime-darwin-x64.tar.gz     (+ .sha256)
+#                shogo-agent-runtime-linux-arm64.tar.gz    (+ .sha256)
+#                shogo-agent-runtime-linux-x64.tar.gz      (+ .sha256)
+#
+# The release-create step uses softprops/action-gh-release with no `name:`
+# so multiple workflows can land assets at the same tag without racing on
+# the title — whichever workflow creates the release first wins the title,
+# everyone else just adds files. softprops never deletes assets it didn't
+# upload, so the desktop .dmg / .exe / .nupkg artifacts stay intact.
 #
 # These tarballs are what `shogo runtime install` (in @shogo-ai/worker)
 # downloads and unpacks into ~/.shogo/runtime/. The install command
@@ -25,7 +33,7 @@
 #
 # Bun cross-compiles all four targets from a single ubuntu-latest host
 # via `--target=bun-{darwin,linux}-{arm64,x64}`, so this workflow does
-# not need a matrix. Speed matters less than reproducibility here:
+# not need a build matrix. Speed matters less than reproducibility:
 # every binary in a release was built from the same checkout.
 # =============================================================================
 
@@ -34,15 +42,15 @@ name: Publish agent-runtime binaries
 on:
   push:
     tags:
-      - 'runtime-v[0-9]*'
+      - 'v[0-9]*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to publish (e.g. runtime-v0.1.0). Must already exist.'
+        description: 'Existing app tag to publish runtime for (e.g. v0.5.2). Must already exist.'
         required: true
         type: string
       channel:
-        description: 'Release channel (stable | beta | nightly). Affects only release notes & dist-tag UI.'
+        description: 'Release channel (stable | beta | nightly). Affects only release notes — channel detection is normally driven by the tag suffix (`-beta.*` / `-nightly.*`).'
         required: false
         default: 'stable'
         type: choice
@@ -59,8 +67,11 @@ on:
 permissions:
   contents: write # required to create the GitHub Release & upload assets
 
+# Keyed on the tag (not branch) so a re-run of the same tag waits for
+# the previous run, but a tag push doesn't block desktop-release jobs
+# running on the same tag in parallel.
 concurrency:
-  group: publish-agent-runtime-${{ github.ref_name }}
+  group: publish-agent-runtime-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
@@ -97,19 +108,25 @@ jobs:
         id: version
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          if [[ ! "$TAG" =~ ^runtime-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Tag '$TAG' is not a valid agent-runtime tag (expected runtime-vX.Y.Z[-prerelease])"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$TAG' is not a valid app version tag (expected vX.Y.Z[-prerelease])"
             exit 1
           fi
-          VERSION="${TAG#runtime-v}"
+          VERSION="${TAG#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-          # Stable unless the version is a prerelease or the dispatch
-          # input explicitly asked for a different channel.
+          # Channel detection from the version suffix:
+          #   X.Y.Z              -> stable
+          #   X.Y.Z-beta.N        -> beta
+          #   X.Y.Z-nightly.N     -> nightly
+          #   X.Y.Z-anything-else -> beta (default for unrecognised prerelease tags)
+          # workflow_dispatch can override.
           INPUT_CHANNEL="${{ github.event.inputs.channel }}"
           if [ -n "$INPUT_CHANNEL" ]; then
             CHANNEL="$INPUT_CHANNEL"
+          elif [[ "$VERSION" == *-nightly* ]]; then
+            CHANNEL="nightly"
           elif [[ "$VERSION" == *-* ]]; then
             CHANNEL="beta"
           else
@@ -172,49 +189,33 @@ jobs:
           path: packages/agent-runtime/dist/release/*
           retention-days: 30
 
-      - name: Create or update GitHub Release
+      - name: Append runtime tarballs to the v* GitHub Release
         if: github.event.inputs.dry_run != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.version.outputs.tag }}
-          VERSION: ${{ steps.version.outputs.version }}
-          CHANNEL: ${{ steps.version.outputs.channel }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          # Mark non-stable channels as `--prerelease` so the GitHub UI
-          # surfaces them correctly and `shogo runtime install` can
-          # filter them when channel != channel from the user.
-          PRERELEASE_FLAG=""
-          if [ "$CHANNEL" != "stable" ]; then
-            PRERELEASE_FLAG="--prerelease"
-          fi
-          NOTES_FILE=$(mktemp)
-          {
-            echo "Prebuilt binaries for shogo-agent-runtime $VERSION."
-            echo
-            echo "- Channel: $CHANNEL"
-            echo "- License: AGPL-3.0-or-later"
-            echo "- Source: https://github.com/$REPO/tree/$TAG/packages/agent-runtime"
-            echo
-            echo "Install via the worker:"
-            echo
-            echo '```'
-            echo "shogo runtime install --channel $CHANNEL"
-            echo '```'
-          } > "$NOTES_FILE"
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        with:
+          # NB: deliberately no `name:` — desktop-release-{macos,windows}
+          # also publish to this same tag and set the release title.
+          # softprops leaves the name alone when the release already
+          # exists, so whoever wins the create-race owns the title and
+          # the rest of us just append files.
+          tag_name: ${{ steps.version.outputs.tag }}
+          prerelease: ${{ steps.version.outputs.channel != 'stable' }}
+          # `body` is appended only on first creation; on subsequent
+          # workflow runs against the same tag softprops leaves the
+          # release notes untouched. The desktop workflow currently
+          # creates the release without a body, so this lands first
+          # only when the runtime workflow happens to win the race.
+          body: |
+            Includes prebuilt agent-runtime binaries (channel: ${{ steps.version.outputs.channel }}, AGPL-3.0-or-later).
 
-          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
-            echo "Release $TAG already exists — updating assets."
-            gh release upload "$TAG" packages/agent-runtime/dist/release/* --repo "$REPO" --clobber
-          else
-            gh release create "$TAG" \
-              --repo "$REPO" \
-              --title "agent-runtime $VERSION" \
-              --notes-file "$NOTES_FILE" \
-              $PRERELEASE_FLAG \
-              packages/agent-runtime/dist/release/*
-          fi
+            Install with the worker:
+
+            ```
+            shogo runtime install --channel ${{ steps.version.outputs.channel }}
+            ```
+          files: packages/agent-runtime/dist/release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Summary
         if: always()
@@ -232,7 +233,7 @@ jobs:
             echo "- Channel: \`$CHANNEL\`"
             echo "- Dry run: \`${DRY:-false}\`"
             echo
-            echo "### Built artifacts"
+            echo "### Built artifacts (appended to release \`$TAG\`)"
             for TARGET in $TARGETS; do
               echo "- \`shogo-agent-runtime-$TARGET.tar.gz\` (+ \`.sha256\`)"
             done

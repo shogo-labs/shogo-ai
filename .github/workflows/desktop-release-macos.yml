@@ -201,7 +201,13 @@ jobs:
 
       - name: Build TypeScript
         working-directory: apps/desktop
-        run: npx tsc
+        # `npx tsc` emits dist/{main,preload,...}.js. The follow-up
+        # `bundle:main` step re-bundles dist/main.js with `bun build` so
+        # workspace TS imports (notably @shogo-ai/worker/cloud-login)
+        # get inlined; tsc on its own can't resolve them because
+        # apps/desktop is npm-installed, not a bun workspace member.
+        # See apps/desktop/scripts/bundle-main.mjs for details.
+        run: npx tsc && npm run bundle:main
 
       - name: Prepare macOS Code Signing
         env:

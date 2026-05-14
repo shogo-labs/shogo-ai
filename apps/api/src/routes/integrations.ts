@@ -19,19 +19,12 @@
 
 import { Hono } from 'hono'
 import { Composio } from '@composio/core'
+import { getShogoCloudUrl } from '../lib/cloud-urls'
+import { shouldSkipForwardedHeader } from '../lib/proxy-headers'
 
 // =============================================================================
 // Cloud forwarding for local mode with SHOGO_API_KEY
 // =============================================================================
-
-const CLOUD_SKIP_HEADERS = new Set([
-  'host', 'connection', 'keep-alive', 'transfer-encoding',
-  'te', 'trailer', 'upgrade', 'cookie',
-])
-
-function getShogoCloudUrl(): string {
-  return (process.env.SHOGO_CLOUD_URL || 'https://studio.shogo.ai').replace(/\/$/, '')
-}
 
 function shouldForwardToCloud(): boolean {
   return !!process.env.SHOGO_API_KEY
@@ -50,7 +43,7 @@ async function forwardIntegrationsToCloud(
 
   const headers = new Headers()
   originalReq.headers.forEach((value, key) => {
-    if (!CLOUD_SKIP_HEADERS.has(key.toLowerCase())) {
+    if (!shouldSkipForwardedHeader(key)) {
       headers.set(key, value)
     }
   })
