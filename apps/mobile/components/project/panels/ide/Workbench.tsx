@@ -6,6 +6,12 @@ import { FileTree, type FileTreeHandlers } from "./FileTree";
 import { StatusBar } from "./StatusBar";
 import { EditorGroupView } from "./EditorGroup";
 import { isImagePath } from "./ImagePreview";
+import {
+  isAudioPath,
+  isFontPath,
+  isPdfPath,
+  isVideoPath,
+} from "./MediaPreview";
 import { Palette, type PaletteItem } from "./Palette";
 import {
   ideBottomPanelStore,
@@ -49,16 +55,15 @@ import {
 
 let groupSeq = 1;
 const newGroupId = () => `g${groupSeq++}`;
-/** Binary files we refuse to open at all — Monaco can't render them and we
- *  have no viewer. Images are handled separately (see isImagePath) and open
- *  in the in-editor ImagePreview instead. */
+/** Binary files we refuse to open at all — we have no viewer for them and
+ *  Monaco can't render them as text. Anything with a dedicated preview
+ *  (images, pdf, audio, video, fonts, sqlite) is handled by the
+ *  previewLanguageFor() switch below and is intentionally NOT in this set. */
 const BINARY_EXTENSIONS = new Set([
-  "heic","tiff","tif",
-  "pdf","zip","gz","tar","tgz","bz2","xz","7z","rar",
-  "mp3","mp4","m4a","m4v","mov","avi","mkv","webm","wav","flac","ogg","aac",
-  "woff","woff2","ttf","otf","eot",
+  "zip","gz","tar","tgz","bz2","xz","7z","rar","zst","lz4",
   "exe","dll","so","dylib","bin","class","jar","wasm",
-  "pack","idx","psd","ai","sketch","fig",
+  "pack","idx","psd","ai","sketch","fig","blend","obj","fbx",
+  "pyc","pyo","pyd",
 ]);
 
 /** SQLite database files are binary, but we render them in a read-only
@@ -68,6 +73,33 @@ function isSqlitePath(path: string): boolean {
   const ext = path.toLowerCase().split(".").pop() ?? "";
   return SQLITE_EXTENSIONS.has(ext);
 }
+
+/** Preview "languages" — pseudo-Monaco-language tags we stash on an OpenFile
+ *  to tell EditorGroupView which preview component to mount. Any file whose
+ *  language matches one of these is opened via svc.readFileUrl() (not
+ *  readFile()) and its OpenFile.content holds a URL rather than text. */
+type PreviewLanguage = "image" | "sqlite" | "pdf" | "audio" | "video" | "font";
+const PREVIEW_LANGUAGES: ReadonlySet<string> = new Set<PreviewLanguage>([
+  "image", "sqlite", "pdf", "audio", "video", "font",
+]);
+function previewLanguageFor(path: string): PreviewLanguage | null {
+  if (isImagePath(path)) return "image";
+  if (isSqlitePath(path)) return "sqlite";
+  if (isPdfPath(path)) return "pdf";
+  if (isAudioPath(path)) return "audio";
+  if (isVideoPath(path)) return "video";
+  if (isFontPath(path)) return "font";
+  return null;
+}
+/** Human-friendly viewer name for error toasts when readFileUrl is missing. */
+const PREVIEW_LABEL: Record<PreviewLanguage, string> = {
+  image: "Image",
+  sqlite: "SQLite",
+  pdf: "PDF",
+  audio: "Audio",
+  video: "Video",
+  font: "Font",
+};
 
 /** Resolve the theme preference to a concrete "light" | "dark" — mirrors the
  *  logic in ThemeProvider so the IDE's Monaco and chrome colours stay in sync
@@ -523,9 +555,8 @@ export function Workbench({
     async (node: TreeNode, groupIdx: number) => {
       if (node.kind !== "file") return;
       const ext = node.name.toLowerCase().split(".").pop() ?? "";
-      const isImage = isImagePath(node.path);
-      const isSqlite = isSqlitePath(node.path);
-      if (!isImage && !isSqlite && BINARY_EXTENSIONS.has(ext)) {
+      const previewLang = previewLanguageFor(node.path);
+      if (!previewLang && BINARY_EXTENSIONS.has(ext)) {
         showToast(`Cannot open binary file: ${node.name}`, 2500);
         return;
       }
@@ -546,7 +577,7 @@ export function Workbench({
         rootId: node.rootId,
         name: node.name,
         path: node.path,
-        language: isImage ? "image" : isSqlite ? "sqlite" : node.language ?? "plaintext",
+        language: previewLang ?? node.language ?? "plaintext",
         content: "",
         savedContent: "",
         dirty: false,
@@ -559,14 +590,17 @@ export function Workbench({
       }));
       setActiveGroupIdx(groupIdx);
       try {
-        if (isImage) {
-          // Images never hit readFile() — that path is text-only and rejects
-          // binaries. Instead resolve a URL (blob: for local, http: for the
-          // agent download endpoint) and stash it as the file content. The
-          // EditorGroupView notices language === "image" and mounts
-          // <ImagePreview> instead of Monaco.
+        if (previewLang) {
+          // Preview-language files (images, pdf, audio, video, fonts,
+          // sqlite) never hit readFile() — that path is text-only and rejects
+          // binaries. Instead we resolve a URL (blob: for local, http: for
+          // the agent download endpoint) and stash it as the file content.
+          // EditorGroupView routes by `language` and mounts the matching
+          // preview component instead of Monaco.
           if (!svc.readFileUrl) {
-            throw new Error("Image preview not supported for this workspace");
+            throw new Error(
+              `${PREVIEW_LABEL[previewLang]} preview not supported for this workspace`,
+            );
           }
           const url = await svc.readFileUrl(node.path);
           setGroups((prev) =>
@@ -578,35 +612,7 @@ export function Workbench({
                       ...f,
                       content: url,
                       savedContent: url,
-                      language: "image",
-                      loading: false,
-                    }
-                  : f,
-              ),
-            })),
-          );
-          return;
-        }
-        if (isSqlite) {
-          // SQLite databases never hit readFile() — that path is text-only.
-          // Resolve a URL (blob: for local, http: for the agent download
-          // endpoint) and stash it as the file content. EditorGroupView
-          // notices language === "sqlite" and mounts <SqlitePreview>, which
-          // fetches the bytes and renders tables + sample rows read-only.
-          if (!svc.readFileUrl) {
-            throw new Error("SQLite preview not supported for this workspace");
-          }
-          const url = await svc.readFileUrl(node.path);
-          setGroups((prev) =>
-            prev.map((g) => ({
-              ...g,
-              files: g.files.map((f) =>
-                f.id === id
-                  ? {
-                      ...f,
-                      content: url,
-                      savedContent: url,
-                      language: "sqlite",
+                      language: previewLang,
                       loading: false,
                     }
                   : f,
@@ -678,10 +684,11 @@ export function Workbench({
       if (idx < 0) return prev;
       const f = g.files[idx];
       if (f.dirty && !confirm(`Close ${f.name} without saving?`)) return prev;
-      // Image tabs allocate a blob: URL on open — revoke it on close so long
-      // browsing sessions don't leak one per image opened.
+      // Preview tabs (image/sqlite/pdf/audio/video/font) allocate a blob:
+      // URL on open — revoke it on close so long browsing sessions don't
+      // leak one per file opened.
       if (
-        (f.language === "image" || f.language === "sqlite") &&
+        PREVIEW_LANGUAGES.has(f.language) &&
         f.content.startsWith("blob:")
       ) {
         try { URL.revokeObjectURL(f.content); } catch { /* ignore */ }
