@@ -3,13 +3,14 @@
 /**
  * CLI cloud-login — pure poll-based device flow.
  *
- * Unlike the desktop sign-in (which receives the minted key via a
- * `shogo://auth-callback` deep link), the CLI cannot register protocol
- * handlers and does not run an inbound HTTP listener. Instead it asks
- * the cloud to mint a one-time pending-state, opens the bridge page in
- * the user's browser, then polls the cloud until the bridge page
- * approves the request — at which point the cloud returns the minted
- * device-tagged API key exactly once and discards the state.
+ * The CLI asks the cloud to mint a one-time pending-state, opens the
+ * bridge page in the user's browser, then polls the cloud until the
+ * bridge page approves the request — at which point the cloud returns
+ * the minted device-tagged API key exactly once and discards the
+ * state. The Shogo desktop app uses the exact same handshake (driven
+ * from `apps/desktop/src/main.ts → runCloudSignIn`); the only thing
+ * that differs is the `client=cli` URL hint we send so the bridge
+ * page renders the right copy.
  *
  * Sequence:
  *   1. CLI → POST /api/cli/login/start (with device metadata)
@@ -30,8 +31,8 @@
  *   - The userCode (last 6 hex of state, uppercased) is shown in both
  *     the CLI and the browser so the user can confirm the device they
  *     are approving matches the terminal they typed `shogo login` in.
- *   - No localhost listener — works behind firewalls / over SSH / from
- *     a remote tmux session.
+ *   - No localhost listener, no protocol handler, no deep links —
+ *     works behind firewalls / over SSH / from a remote tmux session.
  */
 import { spawn } from 'node:child_process';
 import { hostname, platform as osPlatform, arch } from 'node:os';
@@ -50,8 +51,15 @@ export interface CloudLoginResult {
 
 export interface CloudLoginOptions {
   cloudUrl: string;
+  /** "cli" | "desktop" — hint sent to the cloud and echoed on the
+   * bridge page so the UI can label the approval flow correctly.
+   * Default: "cli". */
+  client?: 'cli' | 'desktop';
   /** Override the device label shown in the dashboard. Defaults to hostname. */
   deviceName?: string;
+  /** Override the platform string shown in the dashboard
+   * (e.g. "darwin-arm64"). Defaults to `${os.platform()}-${os.arch()}`. */
+  devicePlatform?: string;
   /** Stable id for this machine. Caller should persist this so re-logins
    * dedupe to the same device row. */
   deviceId: string;
@@ -61,12 +69,24 @@ export interface CloudLoginOptions {
   workspaceId?: string;
   /** Cap on total wait — defaults to whatever the cloud says (usually 5min). */
   timeoutMs?: number;
-  /** If false, do not auto-open the browser. */
-  openBrowser?: boolean;
+  /** Browser-open behaviour. Three modes:
+   *   - undefined / true: spawn the platform default opener (open /
+   *     xdg-open / cmd start). Suitable for the CLI.
+   *   - false: never open the browser; caller surfaces the URL.
+   *   - function: custom opener (e.g. Electron's `shell.openExternal`).
+   *     Errors thrown from the function are swallowed so flaky openers
+   *     don't kill the flow — the URL is still printed via `log`. */
+  openBrowser?: boolean | ((url: string) => void | Promise<void>);
   /** Custom logger — defaults to console.log. */
   log?: (line: string) => void;
   /** Override poll interval in ms. Defaults to whatever the cloud returns. */
   pollIntervalMs?: number;
+  /** Install process-level SIGINT/SIGTERM handlers that abort the poll
+   * loop. Default: true (right for the CLI). Set false when embedding
+   * inside a long-lived host process (e.g. Electron main) where the
+   * caller already manages signal lifecycle and an unrelated Ctrl+C
+   * shouldn't unwind the host. */
+  installSignalHandlers?: boolean;
   /** Test seam: replace the real fetch. */
   fetchImpl?: typeof fetch;
   /** Test seam: an AbortSignal to stop polling early. */
@@ -105,8 +125,9 @@ interface PollResponse {
 
 export async function runCloudLogin(opts: CloudLoginOptions): Promise<CloudLoginResult> {
   const cloudUrl = opts.cloudUrl.replace(/\/$/, '');
+  const client = opts.client ?? 'cli';
   const deviceName = opts.deviceName ?? hostname();
-  const devicePlatform = `${osPlatform()}-${arch()}`;
+  const devicePlatform = opts.devicePlatform ?? `${osPlatform()}-${arch()}`;
   const appVersion = opts.appVersion ?? readWorkerVersion();
   const log = opts.log ?? ((line: string) => console.log(line));
   const fetchImpl = opts.fetchImpl ?? fetch;
@@ -121,7 +142,7 @@ export async function runCloudLogin(opts: CloudLoginOptions): Promise<CloudLogin
       devicePlatform,
       deviceAppVersion: appVersion,
       workspaceId: opts.workspaceId,
-      client: 'cli',
+      client,
     }),
     signal: AbortSignal.timeout(10_000),
   }).catch((err) => {
@@ -161,22 +182,44 @@ export async function runCloudLogin(opts: CloudLoginOptions): Promise<CloudLogin
   log('');
 
   if (opts.openBrowser !== false) {
-    openInBrowser(start.authUrl).catch(() => { /* user can copy/paste */ });
+    if (typeof opts.openBrowser === 'function') {
+      // Caller-supplied opener (e.g. Electron `shell.openExternal`). We
+      // intentionally swallow errors here so a flaky opener doesn't
+      // kill the flow — the URL is already in `log` for copy/paste.
+      try {
+        await opts.openBrowser(start.authUrl);
+      } catch { /* user can copy/paste */ }
+    } else {
+      openInBrowser(start.authUrl).catch(() => { /* user can copy/paste */ });
+    }
   }
 
   log(pc.dim('Waiting for approval...'));
 
   // 3. Poll loop
-  const onAbort = () => {
-    throw new CloudLoginError('Interrupted.', 'cancelled');
+  const installSignals = opts.installSignalHandlers ?? true;
+  const sigHandler = () => {
+    // We can't actually throw out of a signal handler — Node won't
+    // propagate it up the stack. Setting the abort signal is the right
+    // way to unwind the poll loop.
+    abortLocal.abort();
   };
-  const sigHandler = () => onAbort();
-  process.once('SIGINT', sigHandler);
-  process.once('SIGTERM', sigHandler);
+  // Internal abort controller composes the caller's signal with our
+  // own signal-handler-driven cancellation, so the poll loop only
+  // needs to watch one signal.
+  const abortLocal = new AbortController();
+  if (opts.abortSignal) {
+    if (opts.abortSignal.aborted) abortLocal.abort();
+    else opts.abortSignal.addEventListener('abort', () => abortLocal.abort(), { once: true });
+  }
+  if (installSignals) {
+    process.once('SIGINT', sigHandler);
+    process.once('SIGTERM', sigHandler);
+  }
 
   try {
     while (true) {
-      if (opts.abortSignal?.aborted) {
+      if (abortLocal.signal.aborted) {
         throw new CloudLoginError('Aborted by caller.', 'cancelled');
       }
       if (Date.now() >= deadline) {
@@ -219,11 +262,13 @@ export async function runCloudLogin(opts: CloudLoginOptions): Promise<CloudLogin
         // status === 'pending' (or unknown) → keep polling
       }
 
-      await sleep(pollIntervalMs, opts.abortSignal);
+      await sleep(pollIntervalMs, abortLocal.signal);
     }
   } finally {
-    process.removeListener('SIGINT', sigHandler);
-    process.removeListener('SIGTERM', sigHandler);
+    if (installSignals) {
+      process.removeListener('SIGINT', sigHandler);
+      process.removeListener('SIGTERM', sigHandler);
+    }
   }
 }
 

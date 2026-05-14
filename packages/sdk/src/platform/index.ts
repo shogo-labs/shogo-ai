@@ -341,9 +341,10 @@ export class PlatformApi {
   // status the Settings UI needs.
 
   /** List workspaces the signed-in cloud user is a member of.
-   * Used by the local-link bridge to render a workspace picker when the
-   * user has more than one membership. Requires an authenticated cloud
-   * session (cookie); returns an empty list if unauthenticated. */
+   * Used by the device-login bridge page (apps/mobile/app/auth/cli-link.tsx,
+   * shared between desktop and CLI) to render a workspace picker when
+   * the user has more than one membership. Requires an authenticated
+   * cloud session (cookie); returns an empty list if unauthenticated. */
   async listMyWorkspaces(): Promise<WorkspaceSummary[]> {
     const res = await this.http.get<{ ok?: boolean; items?: WorkspaceSummary[] }>(
       '/api/workspaces',

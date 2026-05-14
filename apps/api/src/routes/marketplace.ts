@@ -8,47 +8,14 @@ import * as marketplaceService from '../services/marketplace.service'
 import * as installService from '../services/marketplace-install.service'
 import * as stripeConnect from '../services/stripe-connect.service'
 import * as gamification from '../services/creator-gamification.service'
+import { getShogoCloudUrl, getFrontendUrl } from '../lib/cloud-urls'
+import {
+  shouldSkipForwardedHeader,
+  shouldSkipResponseHeader,
+} from '../lib/proxy-headers'
 
 const PRICING_MODELS = new Set<string>(['free', 'one_time', 'subscription'])
 const LISTING_SORTS = new Set<string>(['popular', 'rating', 'newest', 'featured'])
-
-// Headers stripped from forwarded requests/responses. Mirrors the skip lists
-// used in tools-proxy.ts; we add `cookie` because the local browser's cookies
-// are meaningless against cloud.
-const FORWARDED_SKIP_HEADERS = new Set([
-  'host',
-  'connection',
-  'keep-alive',
-  'transfer-encoding',
-  'te',
-  'trailer',
-  'upgrade',
-  'cookie',
-])
-const RESPONSE_SKIP_HEADERS = new Set([
-  ...FORWARDED_SKIP_HEADERS,
-  'content-encoding',
-  'content-length',
-])
-
-function getShogoCloudUrl(): string {
-  return (process.env.SHOGO_CLOUD_URL || 'https://studio.shogo.ai').replace(/\/$/, '')
-}
-
-function getFrontendUrl(): string {
-  if (process.env.APP_URL) {
-    return process.env.APP_URL
-  }
-  const allowed = process.env.ALLOWED_ORIGINS
-  if (allowed) {
-    const first = allowed.split(',')[0]?.trim()
-    if (first) {
-      return first
-    }
-  }
-  const vite = parseInt(process.env.VITE_PORT || '3000', 10)
-  return `http://localhost:${vite}`
-}
 
 function parseIntParam(v: string | undefined, fallback: number): number {
   if (v == null || v === '') return fallback
@@ -104,7 +71,7 @@ export function marketplaceRoutes() {
     const headers = new Headers()
     c.req.raw.headers.forEach((value, key) => {
       const lower = key.toLowerCase()
-      if (FORWARDED_SKIP_HEADERS.has(lower)) return
+      if (shouldSkipForwardedHeader(lower)) return
       // Strip the local-mode Authorization (browser cookies / shogo_sk_*
       // values that are only valid against the local API). Cloud only
       // accepts a cloud-issued SHOGO_API_KEY.
@@ -145,7 +112,7 @@ export function marketplaceRoutes() {
 
     const responseHeaders = new Headers()
     upstream.headers.forEach((value, key) => {
-      if (RESPONSE_SKIP_HEADERS.has(key.toLowerCase())) return
+      if (shouldSkipResponseHeader(key)) return
       responseHeaders.set(key, value)
     })
     return new Response(upstream.body, {

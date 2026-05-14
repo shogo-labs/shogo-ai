@@ -11,9 +11,10 @@
  * separate OS process. See packages/shogo-worker/README.md.
  *
  * Source layout the workflow `.github/workflows/publish-agent-runtime.yml`
- * produces:
- *   <baseUrl>/runtime-v<version>/shogo-agent-runtime-<target>.tar.gz
- *   <baseUrl>/runtime-v<version>/shogo-agent-runtime-<target>.tar.gz.sha256
+ * produces. Runtime tarballs ride the same `v*` tag as the rest of the
+ * app (desktop, worker, sdk all share one version):
+ *   <baseUrl>/v<version>/shogo-agent-runtime-<target>.tar.gz
+ *   <baseUrl>/v<version>/shogo-agent-runtime-<target>.tar.gz.sha256
  *
  * Each tarball contains:
  *   ./agent-runtime           (executable, single self-contained `bun build --compile`)
@@ -49,13 +50,15 @@ import {
 export type Channel = 'stable' | 'beta' | 'nightly';
 
 /**
- * Default release base URL. The publish workflow uploads to GitHub
- * Releases attached to `runtime-v*` tags on the canonical repo. Users
- * with a self-hosted CDN (e.g. releases.shogo.ai) can override via
- * `--base-url` on `shogo runtime install` or `SHOGO_RUNTIME_RELEASES_URL`.
+ * Default release base URL. The publish workflow appends agent-runtime
+ * tarballs to GitHub Releases attached to the app's `v*` tags on the
+ * canonical repo (same release that ships the desktop installers).
+ * Users with a self-hosted CDN (e.g. releases.shogo.ai) can override
+ * via `--base-url` on `shogo runtime install` or
+ * `SHOGO_RUNTIME_RELEASES_URL`.
  *
  * Layout assumed by `buildAssetUrls()`:
- *   ${baseUrl}/runtime-v${version}/${assetName}
+ *   ${baseUrl}/v${version}/${assetName}
  */
 export const DEFAULT_RELEASES_BASE_URL = 'https://github.com/shogo-ai/shogo/releases/download';
 
@@ -166,24 +169,27 @@ export async function resolveLatestVersion(
     return tagToVersion(data.tag_name);
   }
 
-  // For prerelease channels, walk page 1 of /releases.
+  // For prerelease channels, walk page 1 of /releases. The runtime now
+  // ships on the same `v*` tag as the rest of the app, so we filter by
+  // a strict `vX.Y.Z-` prefix to avoid accidentally matching legacy
+  // `runtime-v*` tags or unrelated prerelease tag schemes.
   const url = `https://api.github.com/repos/${owner}/${repo}/releases?per_page=30`;
   const resp = await fetch(url, { headers: { Accept: 'application/vnd.github+json' } });
   if (!resp.ok) throw new Error(`GitHub API ${resp.status} for ${url}`);
   const releases = (await resp.json()) as { tag_name: string; prerelease: boolean }[];
   const wanted = channel === 'beta' ? '-beta' : '-nightly';
   const match = releases.find(
-    (r) => r.prerelease && r.tag_name.startsWith('runtime-v') && r.tag_name.includes(wanted),
+    (r) => r.prerelease && /^v\d+\.\d+\.\d+-/.test(r.tag_name) && r.tag_name.includes(wanted),
   );
   if (!match) throw new Error(`No ${channel} runtime release found`);
   return tagToVersion(match.tag_name);
 }
 
 function tagToVersion(tag: string): string {
-  if (!tag.startsWith('runtime-v')) {
-    throw new Error(`Unexpected runtime tag '${tag}' (expected runtime-v*)`);
+  if (!/^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(tag)) {
+    throw new Error(`Unexpected app tag '${tag}' (expected vX.Y.Z[-prerelease])`);
   }
-  return tag.slice('runtime-v'.length);
+  return tag.slice(1);
 }
 
 interface AssetUrls {
@@ -194,7 +200,7 @@ interface AssetUrls {
 
 function buildAssetUrls(version: string, target: string, baseUrl: string): AssetUrls {
   const assetName = `shogo-agent-runtime-${target}.tar.gz`;
-  const tag = `runtime-v${version}`;
+  const tag = `v${version}`;
   const tarball = `${baseUrl.replace(/\/$/, '')}/${tag}/${assetName}`;
   return {
     tarball,

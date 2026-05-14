@@ -8,8 +8,9 @@
   "license": "AGPL-3.0-or-later",
   "main": "dist/main.js",
   "scripts": {
-    "dev": "tsc && electron .",
-    "build": "tsc",
+    "dev": "tsc && npm run bundle:main && electron .",
+    "build": "tsc && npm run bundle:main",
+    "bundle:main": "node scripts/bundle-main.mjs",
     "start": "electron .",
     "package": "electron-forge package",
     "make": "electron-forge make",
@@ -23,6 +24,7 @@
     "test:vm-pool-host-cap": "RUN_VM_E2E=1 bun test-vm-pool-host-cap.ts",
     "test:vm-pool-idle-memory": "RUN_VM_E2E=1 bun test-vm-pool-idle-memory.ts"
   },
+  "//comment": "Note: apps/desktop is installed via `npm install` (not the bun workspace) — see local package-lock.json. Workspace TS deps like @shogo-ai/worker are NOT a node_modules entry here; they're resolved via tsconfig `paths` for type-checking and inlined into dist/main.js by `scripts/bundle-main.mjs` (which runs `bun build` from the repo root where workspace symlinks DO exist).",
   "dependencies": {
     "bonjour-service": "^1.2.1",
     "fflate": "^0.8.2",

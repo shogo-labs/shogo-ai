@@ -20,6 +20,11 @@
 import { Hono } from 'hono'
 import { verifyProxyToken } from '../lib/ai-proxy-token'
 import { resolveApiKey } from './api-keys'
+import { getShogoCloudUrl } from '../lib/cloud-urls'
+import {
+  shouldSkipForwardedHeader,
+  shouldSkipResponseHeader,
+} from '../lib/proxy-headers'
 
 // =============================================================================
 // Configuration
@@ -49,21 +54,9 @@ const TARGETS: Record<string, ProxyTarget> = {
   },
 }
 
-const FORWARDED_SKIP_HEADERS = new Set([
-  'host',
-  'connection',
-  'keep-alive',
-  'transfer-encoding',
-  'te',
-  'trailer',
-  'upgrade',
-])
-
-const RESPONSE_SKIP_HEADERS = new Set([
-  ...FORWARDED_SKIP_HEADERS,
-  'content-encoding',
-  'content-length',
-])
+// Header skip-lists are shared with marketplace.ts and integrations.ts via
+// `lib/proxy-headers.ts`. See that module's header for the rationale on
+// what's stripped where (hop-by-hop vs. cookie vs. content-encoding).
 
 // =============================================================================
 // JWT extraction
@@ -83,10 +76,6 @@ function extractToken(req: Request): string | null {
 // Cloud forwarding helpers
 // =============================================================================
 
-function getShogoCloudUrl(): string {
-  return (process.env.SHOGO_CLOUD_URL || 'https://studio.shogo.ai').replace(/\/$/, '')
-}
-
 function isShogoCloudForwarding(): boolean {
   return !!process.env.SHOGO_API_KEY
 }
@@ -103,7 +92,7 @@ async function forwardToCloud(
   const headers = new Headers()
   req.headers.forEach((value, key) => {
     const lower = key.toLowerCase()
-    if (FORWARDED_SKIP_HEADERS.has(lower)) return
+    if (shouldSkipForwardedHeader(lower)) return
     if (lower === 'x-api-key' || lower === 'authorization') return
     headers.set(key, value)
   })
@@ -120,7 +109,7 @@ async function forwardToCloud(
   const responseHeaders = new Headers()
   upstream.headers.forEach((value, key) => {
     const lower = key.toLowerCase()
-    if (RESPONSE_SKIP_HEADERS.has(lower)) return
+    if (shouldSkipResponseHeader(lower)) return
     responseHeaders.set(key, value)
   })
 
@@ -158,7 +147,7 @@ async function forwardRequest(
   const headers = new Headers()
   req.headers.forEach((value, key) => {
     const lower = key.toLowerCase()
-    if (FORWARDED_SKIP_HEADERS.has(lower)) return
+    if (shouldSkipForwardedHeader(lower)) return
     if (lower === 'x-api-key' || lower === 'authorization') return
     headers.set(key, value)
   })
@@ -180,7 +169,7 @@ async function forwardRequest(
   const responseHeaders = new Headers()
   upstream.headers.forEach((value, key) => {
     const lower = key.toLowerCase()
-    if (RESPONSE_SKIP_HEADERS.has(lower)) return
+    if (shouldSkipResponseHeader(lower)) return
     responseHeaders.set(key, value)
   })
 
@@ -252,7 +241,7 @@ async function forwardLocalEmbedding(
   const headers = new Headers()
   req.headers.forEach((value, key) => {
     const lower = key.toLowerCase()
-    if (FORWARDED_SKIP_HEADERS.has(lower)) return
+    if (shouldSkipForwardedHeader(lower)) return
     if (lower === 'x-api-key' || lower === 'authorization') return
     headers.set(key, value)
   })
@@ -267,7 +256,7 @@ async function forwardLocalEmbedding(
   const responseHeaders = new Headers()
   upstream.headers.forEach((value, key) => {
     const lower = key.toLowerCase()
-    if (RESPONSE_SKIP_HEADERS.has(lower)) return
+    if (shouldSkipResponseHeader(lower)) return
     responseHeaders.set(key, value)
   })
 

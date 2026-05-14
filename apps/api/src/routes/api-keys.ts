@@ -29,24 +29,12 @@
 
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
-
-const KEY_PREFIX = 'shogo_sk_'
-const KEY_RANDOM_BYTES = 32
-
-async function hashKey(key: string): Promise<string> {
-  const data = new TextEncoder().encode(key)
-  const hash = await crypto.subtle.digest('SHA-256', data)
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
-}
-
-function generateRawKey(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(KEY_RANDOM_BYTES))
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
-}
+import {
+  SHOGO_API_KEY_PREFIX,
+  generateApiKey,
+  hashApiKey,
+  mintDeviceApiKey,
+} from '../lib/api-keys-mint'
 
 export function apiKeyRoutes() {
   const router = new Hono()
@@ -70,10 +58,7 @@ export function apiKeyRoutes() {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
-    const rawKey = generateRawKey()
-    const fullKey = `${KEY_PREFIX}${rawKey}`
-    const keyHash = await hashKey(fullKey)
-    const keyPrefix = fullKey.slice(0, KEY_PREFIX.length + 8)
+    const { fullKey, keyHash, keyPrefix } = await generateApiKey()
 
     const expiresAt = body.expiresInDays
       ? new Date(Date.now() + body.expiresInDays * 24 * 60 * 60 * 1000)
@@ -148,43 +133,15 @@ export function apiKeyRoutes() {
       workspaceId = member.workspaceId
     }
 
-    const rawKey = generateRawKey()
-    const fullKey = `${KEY_PREFIX}${rawKey}`
-    const keyHash = await hashKey(fullKey)
-    const keyPrefix = fullKey.slice(0, KEY_PREFIX.length + 8)
-
-    const deviceName = body.deviceName?.slice(0, 120) || 'Shogo Desktop'
-    const devicePlatform = body.devicePlatform?.slice(0, 32)
-    const deviceAppVersion = body.deviceAppVersion?.slice(0, 32)
-
-    const apiKey = await prisma.$transaction(async (tx) => {
-      // Revoke any prior device key for this (workspaceId, deviceId).
-      // We don't hard-delete so audit/billing history stays intact.
-      await tx.apiKey.updateMany({
-        where: {
-          workspaceId: workspaceId!,
-          deviceId: body.deviceId,
-          kind: 'device',
-          revokedAt: null,
-        },
-        data: { revokedAt: new Date() },
-      })
-
-      return tx.apiKey.create({
-        data: {
-          name: deviceName,
-          keyHash,
-          keyPrefix,
-          workspaceId: workspaceId!,
-          userId: auth.userId,
-          kind: 'device',
-          deviceId: body.deviceId,
-          deviceName,
-          devicePlatform,
-          deviceAppVersion,
-          lastSeenAt: new Date(),
-        },
-      })
+    const { fullKey, apiKey, keyPrefix } = await mintDeviceApiKey({
+      prisma,
+      workspaceId: workspaceId!,
+      userId: auth.userId,
+      deviceId: body.deviceId,
+      deviceName: body.deviceName,
+      devicePlatform: body.devicePlatform,
+      deviceAppVersion: body.deviceAppVersion,
+      defaultDeviceName: 'Shogo Desktop',
     })
 
     const workspace = await prisma.workspace.findUnique({
@@ -290,11 +247,11 @@ export function apiKeyRoutes() {
   // POST /api-keys/validate — Validate an API key (public endpoint)
   router.post('/api-keys/validate', async (c) => {
     const body = await c.req.json<{ key: string }>()
-    if (!body.key || !body.key.startsWith(KEY_PREFIX)) {
+    if (!body.key || !body.key.startsWith(SHOGO_API_KEY_PREFIX)) {
       return c.json({ valid: false, error: 'Invalid key format' }, 400)
     }
 
-    const keyHash = await hashKey(body.key)
+    const keyHash = await hashApiKey(body.key)
     const apiKey = await prisma.apiKey.findUnique({
       where: { keyHash },
       include: {
@@ -336,10 +293,10 @@ export function apiKeyRoutes() {
   // so this is a public endpoint.
   router.post('/api-keys/heartbeat', async (c) => {
     const body = await c.req.json<{ key: string; deviceAppVersion?: string }>().catch(() => ({} as any))
-    if (!body?.key || !body.key.startsWith(KEY_PREFIX)) {
+    if (!body?.key || !body.key.startsWith(SHOGO_API_KEY_PREFIX)) {
       return c.json({ ok: false, error: 'Invalid key format' }, 400)
     }
-    const keyHash = await hashKey(body.key)
+    const keyHash = await hashApiKey(body.key)
     const apiKey = await prisma.apiKey.findUnique({
       where: { keyHash },
       select: { id: true, revokedAt: true, expiresAt: true, kind: true },
@@ -383,9 +340,9 @@ export async function resolveApiKey(
   kind: string
   deviceId: string | null
 } | null> {
-  if (!key.startsWith(KEY_PREFIX)) return null
+  if (!key.startsWith(SHOGO_API_KEY_PREFIX)) return null
 
-  const keyHash = await hashKey(key)
+  const keyHash = await hashApiKey(key)
   const apiKey = await prisma.apiKey.findUnique({
     where: { keyHash },
     select: {

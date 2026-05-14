@@ -36,6 +36,7 @@ import {
 } from '../lib/ai-proxy-token'
 import { resolveApiKey } from './api-keys'
 import { wipeCloudKey } from '../lib/cloud-key-wipe'
+import { getShogoCloudUrl } from '../lib/cloud-urls'
 import {
   MODEL_CATALOG,
   MODEL_ALIASES,
@@ -1765,10 +1766,6 @@ export function aiProxyRoutes() {
     const aiMode = process.env.AI_MODE
     if (aiMode === 'api-keys' || aiMode === 'local-llm') return false
     return true
-  }
-
-  function getShogoCloudUrl(): string {
-    return (process.env.SHOGO_CLOUD_URL || 'https://studio.shogo.ai').replace(/\/$/, '')
   }
 
   /**

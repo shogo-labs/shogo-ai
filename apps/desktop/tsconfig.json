@@ -13,6 +13,7 @@
     "declaration": false,
     "sourceMap": true
   },
+  "//comment": "Type info for `@shogo-ai/worker/cloud-login` comes from the ambient `declare module` block in src/types/shogo-worker-cloud-login.d.ts (auto-included via `src/**/*`). At build time tsc emits a require() that's later overwritten by `scripts/bundle-main.mjs` (see that file's header).",
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "resources", "src/**/__tests__/**"]
 }

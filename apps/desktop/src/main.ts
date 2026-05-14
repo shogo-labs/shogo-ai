@@ -25,6 +25,7 @@ import {
   startRecordingHttpBridge,
 } from './recording'
 import { createTray, destroyTray } from './tray'
+import { runCloudLogin, CloudLoginError } from '@shogo-ai/worker/cloud-login'
 
 // Shape of JSON responses from the local API's cloud-login endpoints
 // (used by the heartbeat + signout helpers below). Every field is optional
@@ -36,30 +37,6 @@ interface CloudLoginBody {
   workspace?: string
   revoked?: boolean
   cloudKeyRejected?: boolean
-}
-
-// Shape of the cloud `/api/cli/login/*` endpoints. The desktop drives the
-// same poll-based device-flow the CLI uses (packages/shogo-worker uses
-// `lib/cloud-login.ts` with the same shapes) so the cloud only has to
-// understand one device flow.
-interface CloudCliLoginStartResponse {
-  ok?: boolean
-  error?: string
-  state?: string
-  userCode?: string
-  authUrl?: string
-  expiresInMs?: number
-  pollIntervalMs?: number
-}
-
-interface CloudCliLoginPollResponse {
-  ok?: boolean
-  status?: 'pending' | 'approved' | 'denied' | 'expired'
-  key?: string
-  email?: string | null
-  workspace?: string | null
-  deviceId?: string
-  error?: string
 }
 
 // --- Persistent file logging ---
@@ -130,26 +107,25 @@ let isCloudMode = false
 
 // --- Cloud sign-in: poll-based device flow (no deep link) ---
 //
-// The desktop drives the same `/api/cli/login/{start,poll}` flow the CLI
-// uses (packages/shogo-worker/src/lib/cloud-login.ts). Sequence:
+// The actual handshake (POST /api/cli/login/start → open browser →
+// poll /api/cli/login/poll → return minted key) lives in the MIT
+// `@shogo-ai/worker/cloud-login` module so the desktop and the
+// `shogo login` CLI share one implementation. The cloud only has to
+// understand one device flow.
 //
-//   1. POST <cloud>/api/cli/login/start with device metadata + client='desktop'.
-//      Cloud returns { state, userCode, authUrl, expiresInMs, pollIntervalMs }.
-//   2. shell.openExternal(authUrl) → /auth/cli-link in the system browser.
-//   3. User signs in on cloud (Better Auth), picks workspace, clicks Approve.
-//      Bridge page calls POST /api/cli/login/approve which mints a
-//      `kind=device` API key and pins it to the state.
-//   4. We poll GET /api/cli/login/poll?state=... until status='approved'
-//      (or denied / expired / user-cancelled).
-//   5. Hand the minted key to the local API via PUT /api/local/shogo-key
-//      so the existing path (validate → persist localConfig → restart
-//      instance tunnel) runs unchanged.
-//   6. Notify the renderer via the same `cloud-login-result` IPC the
-//      old deep-link flow used so the Settings UI doesn't need changes.
+// Desktop-specific glue we keep here:
+//   - `shell.openExternal` instead of the worker's child_process opener
+//     (Electron has a first-class API and macOS sandboxing prefers it)
+//   - `installSignalHandlers: false` — the worker would otherwise hook
+//     SIGINT/SIGTERM, which would race with Electron's lifecycle
+//   - PUT the minted key to the local API at /api/local/shogo-key
+//     (validates against cloud, persists localConfig, restarts the
+//     instance tunnel)
+//   - Notify the renderer via `cloud-login-result` IPC
+//   - `activeCloudSignIn` cancel handle used by the IPC cancel path
 //
 // No localhost listener, no protocol handler — works behind firewalls
-// and over SSH-forwarded sessions. Mirrors the CLI exactly; cloud only
-// has to understand one device flow.
+// and over SSH-forwarded sessions.
 
 function ensureSingleInstanceLock(): boolean {
   const gotLock = app.requestSingleInstanceLock()
@@ -160,13 +136,10 @@ function ensureSingleInstanceLock(): boolean {
   return true
 }
 
-const CLOUD_SIGNIN_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
-
-interface ActiveCloudSignIn {
-  abort: AbortController
-  state: string
-}
-let activeCloudSignIn: ActiveCloudSignIn | null = null
+// In-flight sign-in handle so the renderer can cancel via IPC. The
+// handshake itself runs inside @shogo-ai/worker/cloud-login — we just
+// thread an AbortController through to its `abortSignal` option.
+let activeCloudSignIn: { abort: AbortController } | null = null
 
 function notifyRendererLoginResult(payload: {
   ok: boolean
@@ -183,100 +156,49 @@ async function runCloudSignIn(opts?: { workspaceId?: string }): Promise<{ ok: bo
   if (activeCloudSignIn) {
     return { ok: false, error: 'A sign-in is already in progress. Cancel it first.' }
   }
-  const cloudUrl = getCloudUrl().replace(/\/$/, '')
+  const cloudUrl = getCloudUrl()
   const device = getDeviceInfo()
   const ac = new AbortController()
+  activeCloudSignIn = { abort: ac }
 
-  // 1. Start
-  let start: CloudCliLoginStartResponse
+  let mintedKey: string
+  let mintedEmail: string | null
+  let mintedWorkspace: string | null
   try {
-    const res = await fetch(`${cloudUrl}/api/cli/login/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        deviceId: device.id,
-        deviceName: device.name,
-        devicePlatform: device.platform,
-        deviceAppVersion: device.appVersion,
-        workspaceId: opts?.workspaceId,
-        client: 'desktop',
-      }),
-      signal: AbortSignal.timeout(10_000),
+    const result = await runCloudLogin({
+      cloudUrl,
+      client: 'desktop',
+      deviceId: device.id,
+      deviceName: device.name,
+      devicePlatform: device.platform,
+      appVersion: device.appVersion,
+      workspaceId: opts?.workspaceId,
+      // Use Electron's first-class shell helper instead of the worker's
+      // child_process opener (macOS sandboxing prefers it).
+      openBrowser: (url) => shell.openExternal(url).then(() => undefined),
+      // Don't let the worker steal SIGINT/SIGTERM from Electron's lifecycle.
+      installSignalHandlers: false,
+      abortSignal: ac.signal,
+      log: (line) => writeLog('info', '[CloudLogin]', line),
     })
-    start = (await res.json().catch(() => ({} as any))) as CloudCliLoginStartResponse
-    if (!res.ok || !start?.ok || !start.state || !start.authUrl) {
-      const error = start?.error || `Cloud rejected /api/cli/login/start (HTTP ${res.status})`
-      return { ok: false, error }
-    }
+    mintedKey = result.key
+    mintedEmail = result.email
+    mintedWorkspace = result.workspace
   } catch (err) {
-    return { ok: false, error: `Cannot reach Shogo Cloud at ${cloudUrl}: ${(err as Error)?.message ?? err}` }
-  }
-
-  activeCloudSignIn = { abort: ac, state: start.state }
-  try {
-    await shell.openExternal(start.authUrl)
-  } catch (err) {
-    console.warn('[Desktop] openExternal failed:', err)
-    // Continue anyway — the UI shows the URL so the user can copy/paste.
-  }
-
-  // 2. Poll until approved / denied / expired / user-cancelled / timeout.
-  const pollIntervalMs = clampPollInterval(start.pollIntervalMs ?? 2000)
-  const deadline = Date.now() + (start.expiresInMs ?? CLOUD_SIGNIN_DEFAULT_TIMEOUT_MS)
-  let mintedKey: string | null = null
-  let mintedEmail: string | null = null
-  let mintedWorkspace: string | null = null
-  try {
-    while (true) {
-      if (ac.signal.aborted) {
-        const result = { ok: false as const, error: 'Cancelled' }
-        notifyRendererLoginResult(result)
-        return result
-      }
-      if (Date.now() >= deadline) {
-        const result = { ok: false as const, error: 'Sign-in timed out before approval.' }
-        notifyRendererLoginResult(result)
-        return result
-      }
-      let poll: CloudCliLoginPollResponse | null = null
-      try {
-        const r = await fetch(
-          `${cloudUrl}/api/cli/login/poll?state=${encodeURIComponent(start.state)}`,
-          { method: 'GET', signal: AbortSignal.timeout(10_000) },
-        )
-        if (r.ok) {
-          poll = (await r.json().catch(() => null as any)) as CloudCliLoginPollResponse | null
-        }
-      } catch (err) {
-        // Soft network errors during polling shouldn't kill the flow.
-        console.warn('[Desktop] cloud-login poll error:', (err as Error)?.message)
-      }
-      if (poll?.status === 'approved' && poll.key) {
-        mintedKey = poll.key
-        mintedEmail = poll.email ?? null
-        mintedWorkspace = poll.workspace ?? null
-        break
-      }
-      if (poll?.status === 'denied') {
-        const result = { ok: false as const, error: 'Sign-in was denied in the browser.' }
-        notifyRendererLoginResult(result)
-        return result
-      }
-      if (poll?.status === 'expired') {
-        const result = { ok: false as const, error: 'Sign-in request expired before approval.' }
-        notifyRendererLoginResult(result)
-        return result
-      }
-      await sleepInterruptible(pollIntervalMs, ac.signal)
-    }
+    const error =
+      err instanceof CloudLoginError
+        ? mapCloudLoginError(err)
+        : `Sign-in failed: ${(err as Error)?.message ?? err}`
+    const out = { ok: false as const, error }
+    notifyRendererLoginResult(out)
+    return out
   } finally {
     activeCloudSignIn = null
   }
 
-  // 3. Hand the minted key to the local API. The existing PUT handler
-  //    re-validates against cloud, persists localConfig, and restarts
-  //    the instance tunnel — all the things the old `/cloud-login/complete`
-  //    handler used to do, with no behavioral difference.
+  // Hand the minted key to the local API. The existing PUT handler
+  // re-validates against cloud, persists localConfig, and restarts
+  // the instance tunnel.
   try {
     const persistRes = await fetch(`${getApiUrl()}/api/local/shogo-key`, {
       method: 'PUT',
@@ -310,24 +232,19 @@ async function runCloudSignIn(opts?: { workspaceId?: string }): Promise<{ ok: bo
   return { ok: true }
 }
 
-function clampPollInterval(ms: number): number {
-  if (!Number.isFinite(ms) || ms <= 0) return 2000
-  return Math.min(Math.max(ms, 1000), 10_000)
-}
-
-function sleepInterruptible(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted) return resolve()
-    const t = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort)
-      resolve()
-    }, ms)
-    const onAbort = () => {
-      clearTimeout(t)
-      resolve()
-    }
-    signal.addEventListener('abort', onAbort, { once: true })
-  })
+/** Translate the worker's typed CloudLoginError into the user-facing
+ * strings the renderer's Settings UI expects. Keeps the strings in one
+ * place (the previous duplicate had them inlined at five different
+ * `return { ok: false, error: '...' }` sites). */
+function mapCloudLoginError(err: CloudLoginError): string {
+  switch (err.kind) {
+    case 'denied': return 'Sign-in was denied in the browser.'
+    case 'expired': return 'Sign-in request expired before approval.'
+    case 'timeout': return 'Sign-in timed out before approval.'
+    case 'cancelled': return 'Cancelled'
+    case 'transport': return err.message
+    default: return err.message
+  }
 }
 
 // Keep the cloud-minted device key fresh by pinging the local heartbeat

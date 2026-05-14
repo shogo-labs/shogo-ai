@@ -1,33 +1,37 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * CLI Cloud-Login Routes
+ * Device-Code Cloud-Login Routes
  *
- * Cloud-side endpoints that back the `shogo login` device-code flow
- * (see `packages/shogo-worker/src/lib/cloud-login.ts`).
+ * Cloud-side endpoints that back the device-code sign-in flow used by
+ * BOTH the `shogo login` CLI (see
+ * `packages/shogo-worker/src/lib/cloud-login.ts`) and the Electron
+ * desktop app (see `apps/desktop/src/main.ts` → `runCloudSignIn`).
  *
- * Unlike the desktop sign-in (which receives the minted key via a
- * `shogo://auth-callback` deep link), the CLI cannot register protocol
- * handlers and does not run an inbound HTTP listener. So instead of
- * being pushed the key, the CLI:
+ * Both clients use the same poll-based handshake — neither relies on
+ * inbound HTTP, deep links, or protocol handlers. The `client` field
+ * (`'desktop' | 'cli'`) is just a hint that lets the browser bridge
+ * page label the approval UI correctly.
  *
  *   1. POST /api/cli/login/start (no auth) — registers a pending state.
  *      Cloud returns { state, userCode, authUrl, expiresInMs, pollIntervalMs }.
- *   2. Opens authUrl in the browser. The bridge page is
+ *   2. Client opens authUrl in the browser. The bridge page is
  *      <cloudUrl>/auth/cli-link?state=...&userCode=... and lives in
- *      `apps/mobile/app/auth/cli-link.tsx`.
+ *      `apps/mobile/app/auth/cli-link.tsx` (shared between desktop/CLI;
+ *      the URL is historical — both clients use it).
  *   3. User signs in (Better Auth), picks a workspace, clicks Approve.
  *      The bridge calls POST /api/cli/login/approve with cookie auth;
  *      we mint a device-tagged API key and pin it to `state`.
- *   4. CLI polls GET /api/cli/login/poll?state=... every pollIntervalMs.
+ *   4. Client polls GET /api/cli/login/poll?state=... every pollIntervalMs.
  *      Once approved we hand the key over exactly once (single-use)
- *      and delete the entry.
+ *      and delete the entry. The desktop app then PUTs the key to its
+ *      local API at /api/local/shogo-key for on-disk persistence; the
+ *      CLI writes it directly to ~/.shogo/credentials.json.
  *
- * The minted key is identical to what the desktop flow produces — same
- * `apiKey.kind = 'device'` rows, same dedupe by (workspaceId, deviceId),
- * same revocation behavior. Anything that already understands desktop
- * device keys (Devices UI, AI proxy, instance tunnel) handles CLI
- * device keys with no changes.
+ * Minted keys are uniform across clients: same `apiKey.kind = 'device'`
+ * rows, same dedupe by (workspaceId, deviceId), same revocation. The
+ * only differentiator persisted is the device row's friendly name
+ * (e.g. "Russell's MacBook Pro" vs "shogo CLI on …").
  *
  * Pending state is in-memory only — small (<1KB per pending login),
  * short-lived (5-min TTL), and it would create more cleanup churn
@@ -39,13 +43,12 @@
 import { Hono } from 'hono'
 import crypto from 'crypto'
 import { prisma } from '../lib/prisma'
+import { getFrontendUrl } from '../lib/cloud-urls'
+import { mintDeviceApiKey } from '../lib/api-keys-mint'
 
-const SHOGO_CLOUD_URL_DEFAULT = 'https://studio.shogo.ai'
 const STATE_TTL_MS = 5 * 60 * 1000
 const STATE_BYTE_LENGTH = 16
 const POLL_INTERVAL_MS = 2_000
-const KEY_PREFIX = 'shogo_sk_'
-const KEY_RANDOM_BYTES = 32
 
 type PendingStatus = 'pending' | 'approved' | 'denied' | 'expired'
 
@@ -89,29 +92,11 @@ function userCodeFor(state: string): string {
   return state.slice(-6).toUpperCase()
 }
 
-function getCloudUrl(): string {
-  return (process.env.SHOGO_CLOUD_URL || SHOGO_CLOUD_URL_DEFAULT).replace(/\/$/, '')
-}
-
-async function hashKey(key: string): Promise<string> {
-  const data = new TextEncoder().encode(key)
-  const hash = await crypto.subtle.digest('SHA-256', data)
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
-}
-
-function generateRawKey(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(KEY_RANDOM_BYTES))
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
-}
-
 export function cliAuthRoutes() {
   const router = new Hono()
 
-  // POST /api/cli/login/start — kick off a CLI login flow. Public.
+  // POST /api/cli/login/start — kick off a device-code login flow
+  // (called by both Shogo Desktop and the CLI worker). Public.
   router.post('/cli/login/start', async (c) => {
     purgeExpiredStates()
 
@@ -164,10 +149,15 @@ export function cliAuthRoutes() {
     if (body.deviceAppVersion) params.set('appVersion', body.deviceAppVersion)
     if (body.workspaceId) params.set('workspaceId', body.workspaceId)
 
-    const cloudUrl = getCloudUrl()
-    // Path stays /auth/cli-link for backward compat with worker clients
-    // already in the wild — copy on the page is now neutral.
-    const authUrl = `${cloudUrl}/auth/cli-link?${params.toString()}`
+    // The bridge page is part of this api node's own frontend, so use
+    // the frontend URL (APP_URL / ALLOWED_ORIGINS) rather than the
+    // upstream-cloud URL — they coincide on the production cloud node
+    // but the frontend URL is the conceptually correct one for a
+    // browser redirect target. Path stays /auth/cli-link for backward
+    // compat with worker clients already in the wild — page copy is
+    // now client-neutral.
+    const frontendUrl = getFrontendUrl().replace(/\/$/, '')
+    const authUrl = `${frontendUrl}/auth/cli-link?${params.toString()}`
 
     return c.json({
       ok: true,
@@ -303,38 +293,20 @@ export function cliAuthRoutes() {
       workspaceId = member.workspaceId
     }
 
-    // Mint the device key — same flow as POST /api-keys/device so the
-    // resulting row is indistinguishable from the desktop flow's keys.
-    const rawKey = generateRawKey()
-    const fullKey = `${KEY_PREFIX}${rawKey}`
-    const keyHash = await hashKey(fullKey)
-    const keyPrefix = fullKey.slice(0, KEY_PREFIX.length + 8)
-
-    const apiKey = await prisma.$transaction(async (tx) => {
-      await tx.apiKey.updateMany({
-        where: {
-          workspaceId: workspaceId!,
-          deviceId: record.deviceId,
-          kind: 'device',
-          revokedAt: null,
-        },
-        data: { revokedAt: new Date() },
-      })
-      return tx.apiKey.create({
-        data: {
-          name: record.deviceName || 'Shogo CLI',
-          keyHash,
-          keyPrefix,
-          workspaceId: workspaceId!,
-          userId: auth.userId,
-          kind: 'device',
-          deviceId: record.deviceId,
-          deviceName: record.deviceName,
-          devicePlatform: record.devicePlatform,
-          deviceAppVersion: record.deviceAppVersion,
-          lastSeenAt: new Date(),
-        },
-      })
+    // Mint the device key via the shared helper so the resulting row is
+    // byte-identical to what POST /api-keys/device produces — same
+    // dedupe rules, same hash strategy, same key shape. The bridge page
+    // for desktop sign-ins surfaces a different default name when the
+    // user didn't already pass one.
+    const { fullKey, apiKey, keyPrefix } = await mintDeviceApiKey({
+      prisma,
+      workspaceId: workspaceId!,
+      userId: auth.userId,
+      deviceId: record.deviceId,
+      deviceName: record.deviceName,
+      devicePlatform: record.devicePlatform,
+      deviceAppVersion: record.deviceAppVersion,
+      defaultDeviceName: record.client === 'desktop' ? 'Shogo Desktop' : 'Shogo CLI',
     })
 
     const workspace = await prisma.workspace.findUnique({

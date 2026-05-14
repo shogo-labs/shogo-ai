@@ -1,21 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Device Cloud-Login Bridge Page (used by both Shogo Desktop and the
- * Shogo CLI worker — the page route is /auth/cli-link for backward
- * compat, but the copy is client-agnostic).
+ * Device Cloud-Login Bridge Page — used by both Shogo Desktop
+ * (Electron `runCloudSignIn` in `apps/desktop/src/main.ts`) and the
+ * Shogo CLI worker (`shogo login` in
+ * `packages/shogo-worker/src/lib/cloud-login.ts`). Both clients drive
+ * the same poll-based device-code handshake; the only difference is
+ * the `client=desktop|cli` URL hint that tweaks the heading copy.
  *
- * Where the legacy `local-link.tsx` page minted a key and redirected
- * via a `shogo://auth-callback` deep link, this one mints a key and
- * POSTs it back to `/api/cli/login/approve` so a polling client can
- * pick it up. No protocol handler / no localhost listener required —
- * works behind firewalls, over SSH, on devboxes, etc.
+ * The page route is `/auth/cli-link` for backward compat with the
+ * earliest CLI-only revision; treat it as the generic device bridge.
+ *
+ * Mints a key and POSTs it back to `/api/cli/login/approve` so a
+ * polling client can pick it up. No protocol handler / no localhost
+ * listener required — works behind firewalls, over SSH, on devboxes,
+ * and inside sandboxed Electron processes alike.
  *
  * Flow:
- *   1. CLI runs `shogo login` → POSTs /api/cli/login/start with device
- *      metadata; cloud creates a pending state and returns
- *      `<cloudUrl>/auth/cli-link?state=...&userCode=...`.
- *   2. CLI opens that URL in the user's browser.
+ *   1. Client runs `shogo login` (CLI) or clicks "Sign in" (desktop) →
+ *      POSTs /api/cli/login/start with device metadata; cloud creates
+ *      a pending state and returns
+ *      `<cloudUrl>/auth/cli-link?state=...&userCode=...&client=...`.
+ *   2. Client opens that URL in the user's default browser.
  *   3. This page:
  *        - Checks Better Auth session (redirects to /sign-in if needed,
  *          preserving the URL so we land back here on success).
@@ -25,15 +31,15 @@
  *          or only one).
  *        - On Approve → POST /api/cli/login/approve → cloud mints the
  *          device-tagged API key and pins it to the state.
- *        - Shows a "you can close this tab" confirmation. The CLI
- *          poll picks up the key on its next tick.
+ *        - Shows a "you can close this tab" confirmation. The waiting
+ *          client picks up the key on its next poll tick.
  *
  * Single security check that matters: `state` is a 16-byte random
  * nonce we never display to the user — anyone with the URL effectively
- * controls the CLI session, so the only way to get it is to be on the
- * machine that initiated the flow. The 6-char userCode IS shown as a
- * cross-check so the human can confirm the device matches the terminal
- * they typed `shogo login` in.
+ * controls the pending session, so the only way to get it is to be on
+ * the machine that initiated the flow. The 6-char userCode IS shown as
+ * a cross-check so the human can confirm the device matches the
+ * terminal/desktop window they started the sign-in from.
  */
 
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'

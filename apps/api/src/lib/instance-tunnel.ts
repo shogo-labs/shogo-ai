@@ -34,6 +34,7 @@ import {
 import { getRuntimeManager } from './runtime'
 import { wipeCloudKey } from './cloud-key-wipe'
 import { deriveRuntimeToken } from './runtime-token'
+import { getShogoCloudUrl } from './cloud-urls'
 
 // Re-export the worker's symbols so existing callers keep working.
 export const TUNNEL_PROTOCOL_VERSION = _TUNNEL_PROTOCOL_VERSION
@@ -132,7 +133,7 @@ let activeTunnel: WorkerTunnel | null = null
 function getOrCreateTunnel(): WorkerTunnel {
   if (activeTunnel) return activeTunnel
   const apiKey = process.env.SHOGO_API_KEY ?? ''
-  const cloudUrl = (process.env.SHOGO_CLOUD_URL || 'https://studio.shogo.ai').replace(/\/$/, '')
+  const cloudUrl = getShogoCloudUrl()
   const name = process.env.SHOGO_INSTANCE_NAME || osHostname()
   activeTunnel = new WorkerTunnel({
     apiKey,
@@ -198,14 +199,15 @@ export const _testing = {
 
   // Methods — bound to the active tunnel. `getCloudUrl()` is the one
   // exception: tests delete SHOGO_CLOUD_URL between imports and expect
-  // the next read to default to `studio.shogo.ai`. Reading directly
-  // from env (instead of routing through the tunnel's construction-time
-  // cached value) preserves that contract.
+  // the next read to default to the studio URL. Routing through the
+  // shared `getShogoCloudUrl()` (which re-reads `process.env`) instead
+  // of the tunnel's construction-time cached value preserves that
+  // contract.
   sendHeartbeat: () => getOrCreateTunnel()._testing().sendHeartbeat(),
   heartbeatLoop: () => getOrCreateTunnel()._testing().heartbeatLoop(),
   connectWs: () => getOrCreateTunnel()._testing().connectWs(),
   cleanupWs: () => getOrCreateTunnel()._testing().cleanupWs(),
-  getCloudUrl: () => (process.env.SHOGO_CLOUD_URL || 'https://studio.shogo.ai').replace(/\/$/, ''),
+  getCloudUrl: () => getShogoCloudUrl(),
   getWsBaseUrl: () => getOrCreateTunnel()._testing().getWsBaseUrl(),
   buildWsUrl: () => getOrCreateTunnel()._testing().buildWsUrl(),
   getReconnectDelay: () => getOrCreateTunnel()._testing().getReconnectDelayMs(),
