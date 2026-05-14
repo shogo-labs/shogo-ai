@@ -845,7 +845,7 @@ export function writeInstallPlatformMarker(dir: string): void {
  * (the conservative choice — we'd rather attempt an install than
  * incorrectly skip one).
  */
-function workspaceUsesVite(dir: string): boolean {
+export function workspaceUsesVite(dir: string): boolean {
   try {
     const pkgPath = join(dir, 'package.json')
     if (!existsSync(pkgPath)) return false
@@ -1179,8 +1179,8 @@ export function migrateLegacyShogoSdkPin(dir: string): { upgraded: boolean; befo
  *
  * Fallback: runs `bun install` when no pre-built modules are available.
  */
-export async function ensureWorkspaceDeps(dir: string): Promise<void> {
-  if (!existsSync(join(dir, 'package.json'))) return
+export async function ensureWorkspaceDeps(dir: string): Promise<{ didInstall: boolean }> {
+  if (!existsSync(join(dir, 'package.json'))) return { didInstall: false }
 
   // Run BEFORE the install-marker check so an upgrade trips a reinstall
   // (the marker is a sha256 of package.json — rewriting the SDK pin or
@@ -1210,7 +1210,7 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
     console.log(`[workspace-defaults] node_modules built for ${installedPlatform}, need ${PLATFORM_TAG} — reinstalling`)
     try { rmSync(nodeModules, { recursive: true, force: true }) } catch {}
   } else if (existsSync(viteBin) && workspaceDependsOnVite) {
-    if (installedPlatform === PLATFORM_TAG) return
+    if (installedPlatform === PLATFORM_TAG) return { didInstall: false }
     // No marker — check for wrong-platform native binaries (rollup)
     if (!installedPlatform && existsSync(nodeModules)) {
       const wrongPlatform = detectWrongPlatformNativeDeps(dir)
@@ -1219,7 +1219,7 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
         try { rmSync(nodeModules, { recursive: true, force: true }) } catch {}
       } else {
         writePlatformMarker(dir)
-        return
+        return { didInstall: false }
       }
     }
   } else if (existsSync(viteBin) && !workspaceDependsOnVite) {
@@ -1262,7 +1262,7 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
       if (missing.length === 0) {
         if (!installedPlatform) writePlatformMarker(dir)
         console.log('[workspace-defaults] install-marker matches package.json — skipping reinstall')
-        return
+        return { didInstall: false }
       }
       console.log(
         `[workspace-defaults] install-marker matches but ${missing.length} declared dep(s) missing from node_modules (${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ', …' : ''}) — marker is stale, running install`,
@@ -1294,7 +1294,7 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
       writePlatformMarker(dir)
       if (existsSync(viteBin)) {
         console.log('[workspace-defaults] Pre-installed deps ready (copied from template)')
-        return
+        return { didInstall: false }
       }
     } catch (err: any) {
       console.warn(`[workspace-defaults] Failed to copy template node_modules: ${err.message}`)
@@ -1335,6 +1335,7 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
   // hash changed" path even though we just installed the right deps.
   writeInstallMarker(dir)
   console.log('[workspace-defaults] Workspace dependencies installed')
+  return { didInstall: true }
 }
 
 // ---------------------------------------------------------------------------

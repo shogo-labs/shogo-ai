@@ -2170,6 +2170,25 @@ export class WarmPoolController {
             timeoutSeconds: 3600,
             responseStartTimeoutSeconds: 600,
             securityContext: { fsGroup: 999 },
+            // Spread warm-pool pods evenly across nodes. Without this,
+            // the scheduler happily clusters multiple replicas on the
+            // same node (32+ on a single 88.8 GiB node was the trigger
+            // for the 2026-05-14 staging DiskPressure cascade). With
+            // `maxSkew: 1` + `ScheduleAnyway`, the scheduler prefers
+            // empty/under-loaded nodes for the next pool pod but won't
+            // block scheduling if every node is "full" (we'd rather
+            // overpack than refuse to start a warm pod). The label
+            // selector matches POOL_LABEL_KEY (`shogo.io/warm-pool`)
+            // so this only spreads pool pods against each other, not
+            // against unrelated namespace workloads.
+            topologySpreadConstraints: [
+              {
+                maxSkew: 1,
+                topologyKey: 'kubernetes.io/hostname',
+                whenUnsatisfiable: 'ScheduleAnyway',
+                labelSelector: { matchLabels: { [POOL_LABEL_KEY]: 'true' } },
+              },
+            ],
             containers: [
               {
                 name: RUNTIME_CONFIG.containerName,
@@ -2197,8 +2216,23 @@ export class WarmPoolController {
                   // the smallest envelope that doesn't crash any current
                   // tech stack. Request stays low so we still bin-pack
                   // efficiently — the limit is only an upper bound.
-                  requests: { memory: '768Mi', cpu: '200m' },
-                  limits: { memory: '5Gi', cpu: '1000m' },
+                  //
+                  // ephemeral-storage: the scheduler ignores `emptyDir.sizeLimit`
+                  // when bin-packing. Without an explicit request, kubelet
+                  // happily co-tenants ~34 of these pods onto an 88.8 GiB node
+                  // (each carrying the 7 GiB runtime image + a 5 GiB emptyDir
+                  // ceiling + bun's install cache); the node hits 85% used,
+                  // ImageGC fails, DiskPressure flips True, and every
+                  // `bun install` after that point fails with
+                  // `FileNotFound: copying file dist/chunk-*.js` because the
+                  // overlay truncates files mid-copy. inotify add_watch then
+                  // returns ENOSPC and the preview-manager can't see Lindsey's
+                  // edits to trigger a rebuild. (Staging incident 2026-05-14.)
+                  // 2 GiB request is the typical actual usage (template deps
+                  // + project + dist), well under the 5 GiB ceiling, but it
+                  // tells the scheduler the truth so it stops overpacking.
+                  requests: { memory: '768Mi', cpu: '200m', 'ephemeral-storage': '2Gi' },
+                  limits: { memory: '5Gi', cpu: '1000m', 'ephemeral-storage': '5Gi' },
                 },
                 volumeMounts: [{ name: 'project-data', mountPath: workDir }],
                 startupProbe: {

@@ -363,6 +363,26 @@ export class S3Sync {
     }
   }
 
+  /**
+   * Signal that the workspace's node_modules has just been re-installed
+   * (typically by `ensureWorkspaceDeps` because the warm-pool template's
+   * pre-seeded deps didn't match the user's `package.json`). Clears the
+   * pre-seeded marker so the next `uploadDepsIfNeeded` actually tars and
+   * uploads the new deps + writes the per-project pointer.
+   *
+   * Without this, a warm pool pod that came up with a Vite template and
+   * then got re-installed for an Expo project would forever skip the
+   * deps upload, leaving `_deps-cache/<hash>.tar.gz` + `deps-hash.txt`
+   * unwritten in S3. Subsequent pool assignments for the same project
+   * would then have to run a full `bun install` cold every time — which
+   * is what fell over on the 2026-05-14 staging disk-pressure incident.
+   */
+  markDepsChanged(): void {
+    this.currentLockfileHash = ''
+    this.depsNeedUpload = true
+    console.log('[S3Sync] Deps marked as changed; next periodic sync will re-upload deps + pointer')
+  }
+
   /** Wait for background deps restoration to complete. Resolves immediately if deps are already ready. */
   async waitForDeps(): Promise<void> {
     if (this._depsReady) return
