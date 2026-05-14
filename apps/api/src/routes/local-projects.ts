@@ -23,6 +23,8 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -32,6 +34,56 @@ import { cpSync } from 'fs'
 import { dirname, isAbsolute, join, resolve, sep } from 'path'
 import os from 'os'
 import { prisma } from '../lib/prisma'
+
+// =============================================================================
+// Runtime pre-warm
+// =============================================================================
+//
+// The agent-runtime is a Bun subprocess that has to load thousands of
+// TypeScript modules on cold start (~25–30 s on a typical Mac laptop —
+// see RuntimeManager.waitForAgentReady's 50 × 500 ms budget). When the
+// user picks a folder, the frontend lands on the project page and
+// immediately polls `/agent/chat/:cid/turn`, `/agent/quick-actions`,
+// etc. Each of those proxies hits `getProjectUrl` which awaits
+// `manager.start()`. The first poll triggers the spawn; subsequent
+// polls hit `waitForRuntimeReady` (30 s timeout) and warn with
+// `Timeout waiting for runtime <id> to become ready` if the agent
+// hasn't bound /health within that window.
+//
+// Kicking the start off the moment we return the `Project` row buys
+// the runtime ~the round-trip-to-frontend + first-poll-interval head
+// start (typically 200–1000 ms) — enough that the second poll usually
+// arrives after the agent has bound /health and the warning never
+// fires.
+//
+// Fire-and-forget: we never await the promise (`start()` only resolves
+// when the runtime is fully ready, which is up to 30 s). Errors are
+// logged but don't fail the API response — the user can still see
+// their project in the dashboard even if the runtime can't start.
+function prewarmRuntimeBackground(projectId: string, hint: string): void {
+  // Async-import the manager so we never crash a route on a module
+  // resolution failure. Local-only mount, but defensive nonetheless.
+  import('../lib/runtime/manager')
+    .then(({ getRuntimeManager }) => {
+      try {
+        const manager = getRuntimeManager()
+        // start() deduplicates concurrent calls on the same projectId
+        // via `startingPromises`, so this is safe even if the user is
+        // racing the chat panel's own start() call.
+        manager.start(projectId).catch((err: any) => {
+          console.warn(
+            `[local-projects] prewarm: runtime start for ${projectId} (${hint}) failed: ${err?.message ?? err}`,
+          )
+        })
+        console.log(`[local-projects] prewarm: kicked off runtime for ${projectId} (${hint})`)
+      } catch (err: any) {
+        console.warn(`[local-projects] prewarm: getRuntimeManager threw: ${err?.message ?? err}`)
+      }
+    })
+    .catch((err) => {
+      console.warn(`[local-projects] prewarm: import of runtime/manager failed: ${err?.message ?? err}`)
+    })
+}
 
 // =============================================================================
 // Constants
@@ -228,6 +280,145 @@ export function localProjectsRoutes(): Hono {
   const router = new Hono()
 
   /**
+   * GET /fs/browse?path=<absolute>&includeFiles=<bool>&showHidden=<bool>
+   *
+   * Mounted at `/api/local/projects/fs/browse` (alongside the other
+   * local-projects routes — the picker is only ever used to feed
+   * `POST /from-folders`).
+   *
+   * Server-side directory listing for the in-app folder picker — the
+   * standard pattern (JupyterLab's `FileDialog.getExistingDirectory`,
+   * jupyter-host-file-picker) used when the browser can't return
+   * absolute paths and the backend runs on the same machine as the
+   * picker. In Shogo's case `SHOGO_LOCAL_MODE=true` is the gate that
+   * makes "API process == user's machine" true.
+   *
+   * Safety:
+   *   - Uses `validatePath` (same gauntlet as POST /from-folders): must
+   *     be absolute, must exist, must be a directory, must be under
+   *     `$HOME`, must not be a system root.
+   *   - Realpaths the resolved path BEFORE listing so a symlink that
+   *     escapes `$HOME` is rejected even if the link itself sits under
+   *     `$HOME`.
+   *   - Per-entry symlink status is exposed (`isSymlink`) so the UI can
+   *     warn before descending, but we don't follow them in this
+   *     listing — that's the agent-runtime trust layer's job once the
+   *     project is bound.
+   *
+   * Caps the entry count at 1000; this keeps `node_modules` /
+   * `Downloads` browsable but prevents an accidental huge directory
+   * (e.g. the user's `~/Library/Caches/...`) from streaming megabytes
+   * to the renderer. The UI shows a "truncated" hint when this trips.
+   */
+  router.get('/fs/browse', async (c) => {
+    const auth = c.get('auth' as never) as { userId?: string } | undefined
+    if (!auth?.userId) return c.json({ error: 'unauthenticated' }, 401)
+
+    const home = os.homedir()
+    const requested = c.req.query('path')
+    const includeFiles = c.req.query('includeFiles') === 'true'
+    // `showHidden` is informational for the API — we always include
+    // dot-files in the response and tag them with `hidden: true`; the
+    // client decides whether to render them. Kept as a query param so
+    // it shows up in server-side telemetry alongside the path.
+    void c.req.query('showHidden')
+
+    // Default to $HOME when the client passes nothing. This keeps the
+    // first request after opening the modal a single round-trip.
+    const target = requested && requested.length > 0 ? requested : home
+
+    const validated = validatePath(target)
+    if (!validated.ok || !validated.path) {
+      return c.json({ error: validated.error, code: validated.code }, 400)
+    }
+
+    // Realpath defeats symlink escapes. We then re-check the post-link
+    // path is still under $HOME — symlink could otherwise point at /etc.
+    let real: string
+    try {
+      real = realpathSync(validated.path)
+    } catch (err: any) {
+      return c.json(
+        { error: `Cannot resolve real path: ${err?.message ?? String(err)}`, code: 'not_found' },
+        400,
+      )
+    }
+    if (!isUnderHome(real)) {
+      return c.json(
+        {
+          error: `Folder resolves outside your home directory (symlink): ${real}`,
+          code: 'outside_home',
+        },
+        400,
+      )
+    }
+    if (isForbiddenRoot(real)) {
+      return c.json(
+        { error: `Refusing to browse sensitive system path: ${real}`, code: 'forbidden_root' },
+        400,
+      )
+    }
+
+    // Parent: null when we're at $HOME (no "up" past home) so the UI's
+    // Up button can be disabled. Same rule the picker walks down from.
+    const parent = real === home ? null : dirname(real)
+
+    const MAX_ENTRIES = 1000
+    let rawEntries: import('fs').Dirent[]
+    try {
+      rawEntries = readdirSync(real, { withFileTypes: true })
+    } catch (err: any) {
+      return c.json(
+        { error: `Cannot read directory: ${err?.message ?? String(err)}`, code: 'not_found' },
+        400,
+      )
+    }
+
+    const truncated = rawEntries.length > MAX_ENTRIES
+    const limited = truncated ? rawEntries.slice(0, MAX_ENTRIES) : rawEntries
+
+    type Entry = { name: string; isDirectory: boolean; isSymlink: boolean; hidden: boolean }
+    const entries: Entry[] = []
+    for (const dirent of limited) {
+      const name = dirent.name
+      const isSymlink = dirent.isSymbolicLink()
+      let isDirectory = dirent.isDirectory()
+      // Symlinks need a follow-up stat to know if they point at a dir.
+      // We do that lazily and tolerate failure (dangling symlink, EACCES
+      // on the target, …) by leaving `isDirectory` false.
+      if (isSymlink) {
+        try {
+          isDirectory = statSync(join(real, name)).isDirectory()
+        } catch {
+          isDirectory = false
+        }
+      }
+      if (!includeFiles && !isDirectory) continue
+      entries.push({
+        name,
+        isDirectory,
+        isSymlink,
+        hidden: name.startsWith('.'),
+      })
+    }
+
+    // Directories first, then case-insensitive name. Matches the order
+    // every OS file picker uses, so muscle memory carries over.
+    entries.sort((a, b) => {
+      if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+    })
+
+    return c.json({
+      path: real,
+      parent,
+      home,
+      entries,
+      truncated,
+    })
+  })
+
+  /**
    * POST /from-folders
    *
    * Create a new external project from a set of host folders. Returns
@@ -310,7 +501,27 @@ export function localProjectsRoutes(): Hono {
         )
       }
       // Rebind: refresh lastOpenedAt on the primary folder, sync linked
-      // folders with the new selection.
+      // folders with the new selection, and backfill chat-only IDE
+      // defaults for any project that was created before they were the
+      // default (so reopening an older folder project doesn't surface a
+      // "Connection timed out" canvas / drag along a stale tech stack).
+      const existingSettings: Record<string, unknown> = (() => {
+        const raw = existingProject.settings as any
+        if (raw && typeof raw === 'object' && !Array.isArray(raw)) return { ...raw }
+        if (typeof raw === 'string') {
+          try { return JSON.parse(raw) } catch { return {} }
+        }
+        return {}
+      })()
+      const mergedSettings = {
+        ...existingSettings,
+        workingMode: 'external',
+        canvasEnabled: false,
+        activeMode: 'none',
+      }
+      // Drop any auto-seeded tech stack so the agent doesn't try to
+      // overlay a template into the user's real working tree.
+      delete (mergedSettings as any).techStackId
       await prisma.$transaction(async (tx) => {
         await tx.projectFolder.updateMany({
           where: { projectId: existingProject.id, path: finalPrimary },
@@ -324,11 +535,16 @@ export function localProjectsRoutes(): Hono {
             })
           }
         }
+        await tx.project.update({
+          where: { id: existingProject.id },
+          data: { settings: jsonField(mergedSettings) },
+        })
       })
       const reloaded = await prisma.project.findUnique({
         where: { id: existingProject.id },
         include: { projectFolders: true },
       })
+      prewarmRuntimeBackground(existingProject.id, 'rebind')
       return c.json({ project: reloaded, rebound: true })
     }
 
@@ -370,7 +586,22 @@ export function localProjectsRoutes(): Hono {
             status: 'active',
             tier: 'starter',
             accessLevel: 'private',
-            settings: jsonField({ workingMode: 'external' }),
+            // External (folder-linked) projects open as a chat-only IDE:
+            //   - canvasEnabled=false: the canvas/preview panel is hidden so
+            //     we don't poll a non-existent Vite/Metro preview (which
+            //     otherwise surfaces as "Connection timed out" because
+            //     runtimeEnabled=false skips the dev server).
+            //   - activeMode='none': no canvas/app mode is active by
+            //     default; the user can opt into a tech stack later.
+            //   - techStackId intentionally omitted: external repos already
+            //     have their own toolchain. We must not auto-pick a stack
+            //     and seed `package.json` / config files into the user's
+            //     working tree.
+            settings: jsonField({
+              workingMode: 'external',
+              canvasEnabled: false,
+              activeMode: 'none',
+            }),
           },
         })
         // Insert linked folders. First wins primary.
@@ -418,6 +649,7 @@ export function localProjectsRoutes(): Hono {
       where: { id: project.id },
       include: { projectFolders: true },
     })
+    prewarmRuntimeBackground(project.id, 'new-project')
     return c.json({ project: reloaded, rebound: false }, 201)
   })
 

@@ -228,10 +228,43 @@ export function seedWorkspaceDefaults(dir: string): void {
   //
   // The .shogo skeleton itself is already created in
   // RuntimeManager.ensureProjectDirectory for external projects, so
-  // this branch is a no-op. We still touch `.shogo/local/` for any
-  // legacy bootstrap path that landed here without going through the
-  // RuntimeManager.
+  // this branch is a no-op when the layout already matches. We re-run
+  // the `mkdir -p` for each subdir so:
+  //   - Old folders bound before a subdir was added still end up
+  //     with the modern shape.
+  //   - The user's existing `.shogo/project.json`, custom skills, or
+  //     plans are left strictly untouched (no file writes in this
+  //     branch — see test `pre-existing complete .shogo` for the
+  //     enforced invariant).
+  //
+  // Pre-conditions on `.shogo` worth defending against:
+  //
+  //   1. **Broken symlink** — e.g. a stale `.shogo -> /tmp/shogo-local/<id>/.shogo`
+  //      left over from a previous VM 9p mount. `removeStaleShogoSymlink`
+  //      only deletes the link when its target is gone, so a *valid*
+  //      symlink (e.g. user-curated `.shogo -> ../shared-shogo`) is
+  //      preserved. Without this, `mkdirSync(recursive:true)` fails
+  //      with ENOENT trying to traverse the dead link.
+  //
+  //   2. **`.shogo` is a regular file** — a Mac stray `.DS_Store`-shaped
+  //      mistake, or a user who created a file by that name on purpose.
+  //      `mkdirSync` would surface this as a cryptic ENOTDIR; we throw
+  //      a clear, actionable error instead. We deliberately do NOT
+  //      delete the file — the user might have something important
+  //      there that they need to inspect before we touch anything.
   if (process.env.WORKING_MODE === 'external') {
+    removeStaleShogoSymlink(dir)
+    const shogoPath = join(dir, '.shogo')
+    if (existsSync(shogoPath)) {
+      const st = lstatSync(shogoPath)
+      if (!st.isDirectory() && !st.isSymbolicLink()) {
+        throw new Error(
+          `Cannot bind external project: '${shogoPath}' exists and is not a directory. ` +
+            `Shogo needs to create a '.shogo' folder there to store agent state. ` +
+            `Move or rename the existing file (e.g. \`mv .shogo .shogo.bak\`), then re-open the folder.`,
+        )
+      }
+    }
     mkdirSync(join(dir, '.shogo', 'skills'), { recursive: true })
     mkdirSync(join(dir, '.shogo', 'plans'), { recursive: true })
     mkdirSync(join(dir, '.shogo', 'local'), { recursive: true })

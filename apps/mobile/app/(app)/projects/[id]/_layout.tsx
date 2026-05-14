@@ -990,6 +990,15 @@ export default observer(function ProjectLayout() {
       ) {
         setActiveTab('chat')
       }
+      // Canvas is off (e.g. external folder project): the default
+      // `dynamic-app` tab would render an empty right panel and, on
+      // wide screens, leave the chat squeezed alongside it. Flip the
+      // preview tab to chat-fullscreen so the user lands in a clean
+      // chat-only IDE view. The user can still pick any non-canvas
+      // sub-tab (Files, IDE, Capabilities, …) from the top bar.
+      if (previewTab === 'dynamic-app') {
+        setPreviewTab('chat-fullscreen')
+      }
     } else if (canvasEnabled) {
       if (previewTab === 'app-preview') setPreviewTab('dynamic-app')
     }
