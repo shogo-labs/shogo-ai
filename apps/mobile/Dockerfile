@@ -36,10 +36,14 @@ ENV SENTRY_AUTH_TOKEN=$SENTRY_AUTH_TOKEN
 ENV SENTRY_ORG=$SENTRY_ORG
 ENV SENTRY_PROJECT=$SENTRY_PROJECT
 
-# Sentry CLI standalone binary (statically linked, works on glibc/musl).
-# Installed as root so it lands in /usr/local/bin (workspace's USER is appuser).
+# Sentry CLI standalone binary. The get-cli/ install script doesn't reliably
+# land sentry-cli in PATH on this debian base, so download the prebuilt
+# arm64 binary directly. Installed as root so it lands in /usr/local/bin
+# (workspace's USER is appuser).
 USER root
-RUN curl -sL https://sentry.io/get-cli/ | SENTRY_CLI_VERSION="3.3.4" sh
+RUN curl -fsSL "https://github.com/getsentry/sentry-cli/releases/download/3.3.4/sentry-cli-Linux-aarch64" \
+        -o /usr/local/bin/sentry-cli && \
+    chmod +x /usr/local/bin/sentry-cli
 USER appuser
 
 # apps/mobile source — workspace-deps does not bake this in (workspace-deps
