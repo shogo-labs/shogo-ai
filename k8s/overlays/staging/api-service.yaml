@@ -83,24 +83,31 @@ spec:
       annotations:
         autoscaling.knative.dev/min-scale: "1"
         autoscaling.knative.dev/max-scale: "5"
-        # ─── Long-lived WebSocket support for desktop tunnel ───────────────
-        # The desktop tunnel WebSocket no longer flows through the
-        # Knative DomainMapping path (see api-tunnel-ingress.yaml — it
-        # uses a label-selector Service that bypasses the
-        # `rewriteHost` + ExternalName loopback that breaks WS Upgrade).
-        # The remaining annotations make sure pods that are mid-WS-session
-        # are not yanked under us when an autoscaler or revision rollout
-        # decides to recycle them.
+        # ─── Long-lived chat stream + WebSocket support ────────────────────
+        # The desktop tunnel WebSocket bypasses Knative entirely via
+        # api-tunnel-ingress.yaml (label-selector Service direct to the
+        # revision pod on :8012), so we don't need the activator pinned
+        # on the data path for WS Upgrade survival.
         #
-        # target-burst-capacity=-1  keep the activator on the HTTP data
-        #                           path so heartbeat HTTP/2 traffic
-        #                           survives scale transitions cleanly
-        #                           (the tunnel WS bypasses the activator
-        #                           entirely via api-tunnel-direct → 8012)
+        # target-burst-capacity=0   Take the activator OUT of the request
+        #                           path once a replica is Ready. Knative's
+        #                           activator imposes a hardcoded ~5-minute
+        #                           `defaultRequestTimeout` (handler/timeout.go)
+        #                           on in-flight requests that ignores the
+        #                           revision-level `timeoutSeconds` below.
+        #                           Long agent chat responses proxied through
+        #                           the API (project-chat.ts streams from the
+        #                           runtime pod back to the client over a
+        #                           single long-lived HTTP response) were
+        #                           getting severed at exactly the 5-minute
+        #                           mark in staging. Matches the fix already
+        #                           applied to runtime pods in
+        #                           knative-project-manager.ts and to warm
+        #                           pool services in warm-pool-controller.ts.
         # scale-down-delay=5m       don't reap pods immediately on idle;
         #                           gives desktops time to reconnect gracefully
         # window=60s                standard smoothing
-        autoscaling.knative.dev/target-burst-capacity: "-1"
+        autoscaling.knative.dev/target-burst-capacity: "0"
         autoscaling.knative.dev/scale-down-delay: "5m"
         autoscaling.knative.dev/window: "60s"
     spec:
