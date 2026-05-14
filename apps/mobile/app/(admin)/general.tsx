@@ -112,8 +112,9 @@ export default function AdminGeneralPage() {
       })
       .catch(() => {})
 
-    // The Electron main process fires this when the shogo://auth-callback
-    // deep link completes. Reload status to pick up the new signed-in state.
+    // The Electron main process fires this once the poll-based cloud
+    // sign-in completes (see apps/desktop/src/main.ts → runCloudSignIn).
+    // Reload status to pick up the new signed-in state.
     const desktop = (typeof window !== 'undefined' ? (window as any).shogoDesktop : null) as
       | {
           onCloudLoginResult?: (
@@ -155,9 +156,9 @@ export default function AdminGeneralPage() {
     setLoginError('')
     try {
       if (hasDesktopBridge()) {
-        // Electron main process does the full handshake: mints a device key
-        // via the cloud bridge page, writes it to local config, then fires
-        // `cloud-login-result`. We just wait for that event.
+        // Electron main process drives the cloud /api/cli/login/{start,poll}
+        // device flow, persists the minted key via PUT /api/local/shogo-key,
+        // then fires `cloud-login-result`. We just wait for that event.
         const result = await (window as any).shogoDesktop.startCloudLogin()
         if (!result?.ok) {
           setLoginStatus('error')
@@ -165,25 +166,13 @@ export default function AdminGeneralPage() {
         }
         return
       }
-      // Dev fallback (Metro/browser): ask the local API to produce an authUrl
-      // and open it in a new tab. The bridge page will still redirect to
-      // shogo://auth-callback, which won't work without the desktop shell —
-      // so we also surface a hint so devs can paste the callback manually.
-      const start = await platform.startCloudLogin({
-        id: 'dev-browser',
-        name: 'Dev Browser',
-        platform: 'web',
-        appVersion: '0.0.0-dev',
-      })
-      if (!start.ok) {
-        setLoginStatus('error')
-        setLoginError('Could not start sign-in')
-        return
-      }
-      if (typeof window !== 'undefined') {
-        window.open(start.authUrl, '_blank', 'noopener,noreferrer')
-      }
-      setLoginStatus('idle')
+      // No desktop bridge: this build is running in a plain browser (Metro
+      // dev preview). Sign-in needs the desktop shell or the `shogo` CLI
+      // to drive the poll loop and persist the minted key.
+      setLoginStatus('error')
+      setLoginError(
+        'Browser preview can\u2019t complete sign-in. Use the Shogo Desktop app, or run `shogo login` in your terminal.',
+      )
     } catch (err: any) {
       setLoginStatus('error')
       setLoginError(err?.message || 'Sign-in failed')
@@ -215,23 +204,10 @@ export default function AdminGeneralPage() {
         }
         return
       }
-      // Dev fallback (Metro/browser): same as handleStartLogin — open the
-      // bridge in a new tab and let the user complete it manually.
-      const start = await platform.startCloudLogin({
-        id: 'dev-browser',
-        name: 'Dev Browser',
-        platform: 'web',
-        appVersion: '0.0.0-dev',
-      })
-      if (!start.ok) {
-        setLoginStatus('error')
-        setLoginError('Could not start workspace switch')
-        return
-      }
-      if (typeof window !== 'undefined') {
-        window.open(start.authUrl, '_blank', 'noopener,noreferrer')
-      }
-      setLoginStatus('idle')
+      setLoginStatus('error')
+      setLoginError(
+        'Browser preview can\u2019t switch workspaces. Use the Shogo Desktop app, or rerun `shogo login` in your terminal.',
+      )
     } catch (err: any) {
       setLoginStatus('error')
       setLoginError(err?.message || 'Workspace switch failed')

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
 # Shogo Worker installer for Windows.
 # Usage:
 #   irm https://install.shogo.ai/ps | iex

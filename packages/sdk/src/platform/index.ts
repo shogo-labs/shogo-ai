@@ -118,9 +118,24 @@ export interface ApiKeyValidation {
 export interface CloudLoginStart {
   ok: boolean
   state: string
+  userCode?: string
   authUrl: string
-  cloudUrl: string
+  /** Suggested poll cadence in ms (clamp to >=1s on the client). */
+  pollIntervalMs?: number
   expiresInMs: number
+  /** Resolved cloud URL the SDK reached. Useful for surface-level UI hints. */
+  cloudUrl?: string
+}
+
+export interface CloudLoginPoll {
+  ok: boolean
+  status: 'pending' | 'approved' | 'denied' | 'expired'
+  /** Present iff status === 'approved'. The minted shogo_sk_* device key. */
+  key?: string
+  email?: string | null
+  workspace?: string | null
+  deviceId?: string
+  error?: string
 }
 
 /** Minimal workspace fields surfaced by the bridge picker and admin switcher. */
@@ -303,41 +318,27 @@ export class PlatformApi {
   }
 
   // ===========================================================================
-  // Local: Cloud Login (replacement for the manual connectShogoKey paste flow)
+  // Cloud Login (poll-based device flow)
   // ===========================================================================
   //
-  // The desktop "Sign in to Shogo Cloud" button uses startCloudLogin to get
-  // an authUrl it hands to the system browser. The browser eventually
-  // redirects to shogo://auth-callback which Electron main catches and
-  // completes via POST /api/local/cloud-login/complete (no separate SDK
-  // method — that step is driven by the Electron IPC layer).
+  // The interactive sign-in flow is no longer driven through the SDK
+  // because both real consumers — Shogo Desktop and the Shogo CLI worker —
+  // need to talk to *both* the cloud and a local persistence layer, which
+  // doesn't fit cleanly behind a single `this.http` base URL. Use the
+  // dedicated implementations instead:
   //
-  // The legacy connectShogoKey / disconnectShogoKey methods above remain for
-  // CLI / headless contexts that paste a raw shogo_sk_ key.
-
-  /** Start a cloud login flow. Opens the returned authUrl in the system
-   * browser to complete sign-in.
-   *
-   * Pass `opts.workspaceId` to pre-select a workspace on the bridge picker
-   * (the desktop-side "Switch workspace" button uses this). When omitted,
-   * the bridge prompts the user to pick if they have >1 workspace, and
-   * silently picks the only one otherwise. */
-  async startCloudLogin(
-    device: DeviceInfo,
-    opts?: { workspaceId?: string },
-  ): Promise<CloudLoginStart> {
-    const res = await this.http.post<CloudLoginStart>(
-      '/api/local/cloud-login/start',
-      {
-        deviceId: device.id,
-        deviceName: device.name,
-        devicePlatform: device.platform,
-        deviceAppVersion: device.appVersion,
-        workspaceId: opts?.workspaceId,
-      },
-    )
-    return res.data!
-  }
+  //   - Desktop: apps/desktop/src/main.ts → runCloudSignIn()
+  //   - CLI:    packages/shogo-worker/src/lib/cloud-login.ts → runCloudLogin()
+  //
+  // Both drive the cloud `/api/cli/login/{start,poll,approve}` endpoints
+  // directly (no protocol handler / no localhost listener) and then PUT
+  // the minted key into `/api/local/shogo-key` (which validates the key
+  // against cloud, writes localConfig, and restarts the instance tunnel).
+  //
+  // The `connectShogoKey` / `disconnectShogoKey` / `cloudLoginStatus` /
+  // `signOutCloud` / `heartbeatCloudLogin` helpers below remain for the
+  // CLI / headless / API-key paste paths and for the local-mode session
+  // status the Settings UI needs.
 
   /** List workspaces the signed-in cloud user is a member of.
    * Used by the local-link bridge to render a workspace picker when the

@@ -230,6 +230,8 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     ipcRenderer.invoke('get-device-info'),
   startCloudLogin: (opts?: { workspaceId?: string }): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('start-cloud-login', opts),
+  cancelCloudLogin: (): Promise<{ ok: boolean; cancelled?: boolean }> =>
+    ipcRenderer.invoke('cancel-cloud-login'),
   signOutCloud: (): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('sign-out-cloud'),
   onCloudLoginResult: (

@@ -73,6 +73,16 @@ export const PRICING_MODEL = {
   subscription: 'subscription',
 } as const
 
+export const INSTANCE_STATUS = {
+  online: 'online',
+  offline: 'offline',
+} as const
+
+export const INSTANCE_KIND = {
+  desktop: 'desktop',
+  cli_worker: 'cli_worker',
+} as const
+
 export interface PrismaMockOptions {
   prisma: any
   /** Override any of the named exports below if a test needs custom values. */
@@ -81,6 +91,8 @@ export interface PrismaMockOptions {
   BillingInterval?: typeof BILLING_INTERVAL | Record<string, string>
   InstanceSize?: typeof INSTANCE_SIZE | Record<string, string>
   PricingModel?: typeof PRICING_MODEL | Record<string, string>
+  InstanceStatus?: typeof INSTANCE_STATUS | Record<string, string>
+  InstanceKind?: typeof INSTANCE_KIND | Record<string, string>
 }
 
 /**
@@ -96,5 +108,7 @@ export function withPrismaExports(opts: PrismaMockOptions) {
     BillingInterval: opts.BillingInterval ?? BILLING_INTERVAL,
     InstanceSize: opts.InstanceSize ?? INSTANCE_SIZE,
     PricingModel: opts.PricingModel ?? PRICING_MODEL,
+    InstanceStatus: opts.InstanceStatus ?? INSTANCE_STATUS,
+    InstanceKind: opts.InstanceKind ?? INSTANCE_KIND,
   }
 }

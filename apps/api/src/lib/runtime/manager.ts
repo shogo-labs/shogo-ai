@@ -12,6 +12,10 @@ import { existsSync, cpSync, mkdirSync, writeFileSync, readFileSync, unlinkSync,
 import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { pkg, isMobileTechStack, stackSeedsItself } from '@shogo/shared-runtime'
+import {
+  WorkerRuntimeManager,
+  type ProjectSpawnConfig,
+} from '@shogo-ai/worker/runtime-manager'
 import type {
   IRuntimeManager,
   IProjectRuntime,
@@ -71,6 +75,15 @@ const DEFAULT_CONFIG: IRuntimeConfig = {
 /** Internal runtime state with process handles */
 interface InternalRuntime extends IProjectRuntime {
   process: ChildProcess | null
+  /**
+   * Agent-runtime ChildProcess handle — historical field. Since
+   * 2026-05-14 the agent process is owned by the embedded
+   * `WorkerRuntimeManager` (from `@shogo-ai/worker`) so this is
+   * always `null` for new spawns. Kept on the interface to avoid
+   * breaking the (very few) AGPL-internal call sites that introspected
+   * it; consult `agentPort` + `agentManager.status(projectId)` for the
+   * authoritative agent state.
+   */
   agentProcess: ChildProcess | null
   agentPort: number | undefined
 }
@@ -84,10 +97,46 @@ export class RuntimeManager implements IRuntimeManager {
   private usedPorts: Set<number> = new Set()
   private healthCheckTimers: Map<string, NodeJS.Timeout> = new Map()
   private startingPromises: Map<string, Promise<IProjectRuntime>> = new Map()
+  /**
+   * Embedded MIT WorkerRuntimeManager that owns the agent-runtime
+   * spawn lifecycle (port allocation in its own range, env injection,
+   * Bun.spawn, /health wait, restart-with-backoff, idle eviction).
+   *
+   * The desktop manager handles everything OTHER than the agent
+   * process — Vite dev server, workspace seeding, template overlays,
+   * dependency installs, security policy and AI proxy token derivation.
+   * The split mirrors the process-boundary that the cli-worker uses,
+   * so there is exactly one canonical implementation of "spawn an
+   * agent-runtime in a child process and proxy /agent/* to it" across
+   * desktop and cli-worker.
+   */
+  private agentManager: WorkerRuntimeManager
+  /**
+   * Track which projects we have asked the WorkerRuntimeManager to
+   * run, so that desktop-side `start()` / `stop()` callers can hand
+   * off cleanly even when the embedded manager has restarted the child
+   * process under the hood.
+   */
+  private agentManagedProjects: Set<string> = new Set()
 
   constructor(config: Partial<IRuntimeConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
     this.cleanupStaleProcesses()
+    this.agentManager = new WorkerRuntimeManager({
+      // Spawn `bun run <RUNTIME_SERVER>` so the desktop dev path can
+      // use the source bundle / TS entry directly without depending on
+      // a prebuilt agent-runtime binary on disk.
+      spawnCommand: (entry: string) => ({ command: pkg.bunBinary, args: ['run', entry] }),
+      // Bypass the worker's binary-resolution chain (which expects a
+      // compiled `agent-runtime` under ~/.shogo/runtime/) and point at
+      // the in-tree source. AGENT_RUNTIME_ENTRY env override still
+      // wins (matches the legacy desktop behaviour).
+      resolveBin: () => {
+        const path = process.env.AGENT_RUNTIME_ENTRY || RUNTIME_SERVER
+        if (!existsSync(path)) return null
+        return { path, source: 'env' as const }
+      },
+    })
   }
 
   /**
@@ -1140,17 +1189,28 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         })
       }
 
-      // Spawn unified runtime server for local development
-      const runtimeServerPath = RUNTIME_SERVER
+      // Spawn unified runtime server for local development.
+      //
+      // Since 2026-05-14 the spawn is delegated to the embedded
+      // WorkerRuntimeManager (from `@shogo-ai/worker`) so the desktop
+      // and the cli-worker share one canonical agent-spawn implementation
+      // (port allocation, /health wait, restart-with-backoff, idle
+      // eviction). The desktop still owns env composition — Prisma
+      // reads, AI proxy token derivation, security policy etc. — and
+      // forwards the result via `extraEnv`.
+      const runtimeServerPath = process.env.AGENT_RUNTIME_ENTRY || RUNTIME_SERVER
       if (existsSync(runtimeServerPath)) {
-        console.log(`[RuntimeManager] Starting unified runtime for ${projectId} on port ${agentPort}`)
-        
-        // Build environment for runtime
+        console.log(`[RuntimeManager] Composing agent-runtime env for ${projectId}`)
+
+        // Desktop-specific extra env. The WorkerRuntimeManager itself
+        // injects PROJECT_ID / PORT / API_SERVER_PORT / SKILL_SERVER_PORT
+        // / RUNTIME_AUTH_SECRET / WEBHOOK_TOKEN / SHOGO_API_URL /
+        // SHOGO_API_KEY / NODE_ENV (=production) and passes
+        // PROJECT_DIR + WORKSPACE_DIR from the spawn config. We
+        // overwrite NODE_ENV below (desktop dev) and append the
+        // desktop-only keys (Vite preview URL, working-mode metadata,
+        // AI proxy token, security policy, v1 runtime-token, etc.).
         const runtimeEnv: Record<string, string> = {
-          ...process.env as Record<string, string>,
-          PROJECT_ID: projectId,
-          PROJECT_DIR: projectDir,
-          WORKSPACE_DIR: projectDir,
           // External (VS Code-style) projects: tell the agent-runtime
           // which folders the user has explicitly opened so file tools,
           // the indexer, and watchers can scope to that union (see
@@ -1168,15 +1228,12 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           ...(projectInfo.templateId ? { TEMPLATE_ID: projectInfo.templateId } : {}),
           ...(projectInfo.name ? { AGENT_NAME: projectInfo.name } : {}),
           ...(projectInfo.techStackId ? { TECH_STACK_ID: projectInfo.techStackId } : {}),
-          PORT: String(agentPort),
-          // Per-project API server port. PreviewManager reads
-          // API_SERVER_PORT (preferred) or SKILL_SERVER_PORT (legacy alias
-          // kept for rolled-back binaries / older runtime templates) and
-          // binds Bun.serve to it. Without this each project would fall
-          // back to PreviewManager's static 3001 default and the second
-          // concurrent project would crash with EADDRINUSE.
-          API_SERVER_PORT: String(agentPort + 1),
-          SKILL_SERVER_PORT: String(agentPort + 1),
+          // PORT / API_SERVER_PORT / SKILL_SERVER_PORT are injected by
+          // WorkerRuntimeManager.buildEnv() based on its own per-project
+          // port allocation. Setting them here would override and
+          // double-bind. PreviewManager still reads API_SERVER_PORT
+          // (preferred) and the SKILL_SERVER_PORT alias the worker
+          // sets the same value to.
           // Single source of truth for "where is the running app?".
           // The agent-runtime injects this into its system prompt so QA /
           // browser-use subagents navigate to the right URL instead of
@@ -1277,40 +1334,43 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           }
         }
         
-        const agentProc = spawn(pkg.bunBinary, ['run', runtimeServerPath], {
-          cwd: projectDir,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          detached: false,
-          env: runtimeEnv,
-        })
+        // Hand off to the embedded WorkerRuntimeManager. It allocates
+        // its own port (in the same 37100-37900 range — collisions
+        // surface via its `isPortListening` probe), spawns the runtime
+        // via `bun run <runtimeServerPath>` (configured in the desktop
+        // RuntimeManager constructor), forwards stdout/stderr to the
+        // console with a `[runtime:<short8>]` prefix, waits for
+        // /health, and propagates exit/restart-with-backoff state.
+        //
+        // We forward the desktop-composed env via `extraEnv`, which is
+        // applied AFTER the worker's standard injection — so v1
+        // `RUNTIME_AUTH_SECRET` (desktop) overrides the worker's
+        // bare-hex default, and PUBLIC_PREVIEW_URL / SECURITY_POLICY /
+        // AI_PROXY_TOKEN reach the runtime untouched.
+        const spawnConfig: ProjectSpawnConfig = {
+          cloudUrl: process.env.SHOGO_CLOUD_URL || 'https://studio.shogo.ai',
+          apiKey: process.env.SHOGO_API_KEY || '',
+          projectDir,
+          techStackId: projectInfo.techStackId,
+          templateId: projectInfo.templateId,
+          name: projectInfo.name,
+          workspaceId: runtimeEnv.WORKSPACE_ID,
+          extraEnv: runtimeEnv,
+        }
 
-        runtime.agentProcess = agentProc
+        const agentStatus = await this.agentManager.ensureRunning(projectId, spawnConfig)
+        this.agentManagedProjects.add(projectId)
 
-        agentProc.on('error', (err) => {
-          console.error(`[RuntimeManager] Agent process error for ${projectId}:`, err)
-        })
-
-        agentProc.on('exit', (code, signal) => {
-          console.log(`[RuntimeManager] Agent process exited for ${projectId}: code=${code}, signal=${signal}`)
-          if (runtime.status !== 'stopping' && runtime.status !== 'stopped') {
-            runtime.status = 'stopped'
-          }
-        })
-
-        const agentPrefix = `[Agent:${projectId.slice(0, 8)}]`
-        agentProc.stdout?.on('data', (data) => {
-          const lines = data.toString().trimEnd().split('\n')
-          for (const line of lines) {
-            if (line) console.log(`${agentPrefix} ${line}`)
-          }
-        })
-
-        agentProc.stderr?.on('data', (data) => {
-          const lines = data.toString().trimEnd().split('\n')
-          for (const line of lines) {
-            if (line) console.error(`${agentPrefix} ${line}`)
-          }
-        })
+        // Reflect the worker-allocated agent port back onto the
+        // desktop's IProjectRuntime — instance-tunnel.ts and the
+        // /api/projects/:id/agent-proxy/* route both read this.
+        runtime.agentPort = agentStatus.agentPort
+        if (!agentStatus.agentPort) {
+          throw new Error(
+            `agent-runtime for ${projectId} returned no port (status=${agentStatus.status}` +
+              (agentStatus.lastError ? `, error=${agentStatus.lastError}` : '') + ')'
+          )
+        }
       } else {
         console.warn(`[RuntimeManager] Runtime server not found at ${runtimeServerPath}, skipping startup`)
       }
@@ -1324,12 +1384,12 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         console.warn(`[RuntimeManager] Vite process already exited for ${projectId} (code=${runtime.process.exitCode}), skipping waitForReady`)
       }
 
-      // Wait for agent server
-      if (runtime.agentProcess) {
-        console.log(`[RuntimeManager] Waiting for agent server on port ${agentPort}...`)
-        await this.waitForAgentReady(projectId, agentPort, 30000, runtime.agentProcess)
-        console.log(`[RuntimeManager] Agent server ready for ${projectId}`)
-      }
+      // No explicit agent-readiness wait: WorkerRuntimeManager.ensureRunning()
+      // already polled /health to completion before resolving above.
+      // The legacy `waitForAgentReady` (and its stale-projectId guard)
+      // is preserved on this class for any AGPL-internal caller that
+      // still wants to invoke it directly, but it's no longer part of
+      // the start path.
 
       runtime.status = 'running'
       this.startHealthCheck(projectId)
@@ -1341,8 +1401,13 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       if (runtime.process) {
         runtime.process.kill('SIGTERM')
       }
-      if (runtime.agentProcess) {
-        runtime.agentProcess.kill('SIGTERM')
+      // Tear down the agent-runtime via the embedded worker manager.
+      // It owns the ChildProcess and the per-project port reservation.
+      if (this.agentManagedProjects.has(projectId)) {
+        this.agentManagedProjects.delete(projectId)
+        await this.agentManager.stop(projectId).catch((stopErr: any) => {
+          console.warn(`[RuntimeManager] agent stop on error path failed: ${stopErr?.message ?? stopErr}`)
+        })
       }
       throw err
     }
@@ -1509,8 +1574,21 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     this.stopHealthCheck(projectId)
     runtime.status = 'stopping'
 
-    // Stop agent process first
-    if (runtime.agentProcess) {
+    // Stop the agent-runtime via the embedded WorkerRuntimeManager.
+    // It owns the ChildProcess + idle/restart timers and waits for
+    // the spawned process to exit (with SIGKILL after a grace window
+    // — same semantics as the legacy agentProcess.kill loop here).
+    if (this.agentManagedProjects.has(projectId)) {
+      this.agentManagedProjects.delete(projectId)
+      try {
+        await this.agentManager.stop(projectId)
+      } catch (err: any) {
+        console.warn(`[RuntimeManager] agentManager.stop(${projectId}) failed: ${err?.message ?? err}`)
+      }
+    } else if (runtime.agentProcess) {
+      // Backwards-compat: if some legacy code path attached an
+      // agentProcess directly to this runtime record without going
+      // through the worker manager, fall back to killing it inline.
       runtime.agentProcess.kill('SIGTERM')
       await new Promise<void>((resolve) => {
         const timeout = setTimeout(() => {

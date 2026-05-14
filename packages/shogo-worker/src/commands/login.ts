@@ -1,26 +1,37 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * `shogo login` — saves an API key to ~/.shogo/config.json.
+ * `shogo login` — pair this machine with Shogo Cloud.
  *
- * Three ways to supply the key, highest precedence first:
- *   1. `--api-key <key>`  — flag
- *   2. `SHOGO_API_KEY`    — env var (useful in CI)
- *   3. interactive prompt — stdin read; echo suppressed
+ * Two modes, in priority order:
  *
- * Users create the key in studio.shogo.ai → Settings → API Keys
- * (the page already backed by apps/api/src/routes/api-keys.ts), then
- * paste it here. The key is written with mode 0600 so other local
- * users can't read it.
+ *   1. `--api-key <key>` flag, or `SHOGO_API_KEY` env var
+ *      → CI / headless mode. Validate against cloud, save, done.
+ *
+ *   2. Interactive (default)
+ *      → Poll-based device flow (see lib/cloud-login.ts):
+ *          POST /api/cli/login/start  → state + authUrl
+ *          open authUrl in browser    → user approves on cloud
+ *          GET  /api/cli/login/poll   → key once approved
+ *
+ * The minted key is written to ~/.shogo/config.json with mode 0600 so
+ * other local users can't read it. The same file is what
+ * `shogo worker start` reads on boot.
+ *
+ * The legacy "paste a shogo_sk_ key at the prompt" flow is still
+ * supported via `--api-key`; it just isn't the default any more.
  */
 import pc from 'picocolors';
-import { createInterface } from 'node:readline';
 import { loadConfig, saveConfig } from '../lib/config.ts';
+import { runCloudLogin, CloudLoginError } from '../lib/cloud-login.ts';
+import { getOrCreateDeviceId } from '../lib/device-id.ts';
 
 export interface LoginFlags {
   apiKey?: string;
   cloudUrl?: string;
   name?: string;
+  workspace?: string;
+  noBrowser?: boolean;
 }
 
 const DEFAULT_CLOUD_URL = 'https://studio.shogo.ai';
@@ -29,63 +40,87 @@ export async function runLogin(flags: LoginFlags): Promise<void> {
   const cfg = loadConfig();
   const cloudUrl = (flags.cloudUrl || cfg.cloudUrl || DEFAULT_CLOUD_URL).replace(/\/$/, '');
 
-  const key = flags.apiKey || process.env.SHOGO_API_KEY || (await promptForKey(cloudUrl));
-  if (!key) {
-    throw new Error('No API key provided. Aborting.');
-  }
-  if (!/^shogo_sk_/.test(key)) {
-    throw new Error('API key should start with "shogo_sk_". Copy it verbatim from the API Keys page.');
+  const escapeKey = flags.apiKey || process.env.SHOGO_API_KEY;
+  if (escapeKey) {
+    await loginWithApiKey({ key: escapeKey, cloudUrl, cfg, name: flags.name });
+    return;
   }
 
-  cfg.apiKey = key;
+  const deviceId = getOrCreateDeviceId();
+  let result;
+  try {
+    result = await runCloudLogin({
+      cloudUrl,
+      deviceId,
+      deviceName: flags.name,
+      workspaceId: flags.workspace,
+      openBrowser: !flags.noBrowser,
+    });
+  } catch (err: any) {
+    if (err instanceof CloudLoginError) {
+      console.error(pc.red(`✗ ${err.message}`));
+      if (err.kind === 'transport') {
+        console.error(pc.dim(`  If your network blocks browsers, run with --api-key <key> instead.`));
+      }
+      process.exit(1);
+    }
+    throw err;
+  }
+
+  cfg.apiKey = result.key;
   cfg.cloudUrl = cloudUrl;
   if (flags.name) cfg.name = flags.name;
   saveConfig(cfg);
 
-  console.log(pc.green('\n✓ API key saved to ~/.shogo/config.json'));
-  console.log(pc.dim('  next: shogo worker start'));
+  console.log('');
+  console.log(pc.green('✓ Signed in to Shogo Cloud'));
+  if (result.workspace) console.log(pc.dim('  workspace: ') + result.workspace);
+  if (result.email) console.log(pc.dim('  email:     ') + result.email);
+  console.log(pc.dim('  saved to:  ') + '~/.shogo/config.json');
+  console.log('');
+  console.log(pc.dim('  next: ') + 'shogo worker start');
 }
 
-async function promptForKey(cloudUrl: string): Promise<string> {
-  console.log(pc.bold('\nShogo Worker — Login'));
-  console.log(pc.dim(`Create a key at ${cloudUrl}/api-keys, then paste it below.\n`));
+interface ApiKeyOpts {
+  key: string;
+  cloudUrl: string;
+  cfg: ReturnType<typeof loadConfig>;
+  name?: string;
+}
 
-  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-  try {
-    // Hide echo while the user pastes/types the secret.
-    const stdin = process.stdin as NodeJS.ReadStream & { isTTY?: boolean };
-    const wasRaw = stdin.isTTY ? stdin.isRaw : undefined;
-    if (stdin.isTTY) stdin.setRawMode?.(true);
-    process.stdout.write('API key: ');
-
-    const answer = await new Promise<string>((resolve) => {
-      let buf = '';
-      const onData = (chunk: Buffer) => {
-        const str = chunk.toString('utf8');
-        for (const ch of str) {
-          if (ch === '\r' || ch === '\n') {
-            process.stdin.removeListener('data', onData);
-            process.stdout.write('\n');
-            resolve(buf);
-            return;
-          }
-          if (ch === '\u0003') { // Ctrl-C
-            process.stdout.write('\n');
-            process.exit(130);
-          }
-          if (ch === '\u007f' || ch === '\b') {
-            buf = buf.slice(0, -1);
-            continue;
-          }
-          buf += ch;
-        }
-      };
-      process.stdin.on('data', onData);
-    });
-
-    if (stdin.isTTY) stdin.setRawMode?.(wasRaw ?? false);
-    return answer.trim();
-  } finally {
-    rl.close();
+async function loginWithApiKey({ key, cloudUrl, cfg, name }: ApiKeyOpts): Promise<void> {
+  if (!/^shogo_sk_/.test(key)) {
+    console.error(pc.red('✗ API key should start with "shogo_sk_". Copy it verbatim from the API Keys page.'));
+    process.exit(1);
   }
+
+  // Mirror apps/api/src/routes/local-auth.ts: re-validate against cloud
+  // before persisting so the user gets immediate feedback on a bad key.
+  let validation: { valid?: boolean; error?: string; workspace?: { name?: string } | null; user?: { email?: string } | null };
+  try {
+    const res = await fetch(`${cloudUrl}/api/api-keys/validate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    validation = await res.json().catch(() => ({} as any)) as typeof validation;
+    if (!res.ok || !validation?.valid) {
+      console.error(pc.red(`✗ ${validation?.error || `Cloud rejected the key (HTTP ${res.status}).`}`));
+      process.exit(1);
+    }
+  } catch (err: any) {
+    console.error(pc.red(`✗ Cannot reach Shogo Cloud at ${cloudUrl}: ${err?.message ?? err}`));
+    process.exit(1);
+  }
+
+  cfg.apiKey = key;
+  cfg.cloudUrl = cloudUrl;
+  if (name) cfg.name = name;
+  saveConfig(cfg);
+
+  console.log(pc.green('✓ API key saved to ~/.shogo/config.json'));
+  if (validation.workspace?.name) console.log(pc.dim('  workspace: ') + validation.workspace.name);
+  if (validation.user?.email) console.log(pc.dim('  email:     ') + validation.user.email);
+  console.log(pc.dim('  next: ') + 'shogo worker start');
 }

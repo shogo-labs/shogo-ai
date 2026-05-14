@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
 # Shogo Worker installer.
 # Mirrors Cursor's `curl https://cursor.com/install | bash` UX.
 #

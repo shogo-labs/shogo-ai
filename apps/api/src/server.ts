@@ -63,6 +63,7 @@ import { evalOutputRoutes } from './routes/eval-outputs'
 import { projectExportImportRoutes } from './routes/project-export-import'
 import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
 import { apiKeyRoutes } from './routes/api-keys'
+import { cliAuthRoutes } from './routes/cli-auth'
 import { localAuthRoutes } from './routes/local-auth'
 import { meetingRoutes } from './routes/meetings'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
@@ -1137,6 +1138,11 @@ app.route('/api/internal', evalInternalRoutes())
 
 // API key management (for Shogo Local → Cloud authentication)
 app.route('/api', apiKeyRoutes())
+
+// CLI device-code login flow (POST start / GET poll / POST approve|deny)
+// Public start+poll, cookie-authed approve+deny. Mounted on the cloud
+// tier — see packages/shogo-worker/src/lib/cloud-login.ts for the client.
+app.route('/api', cliAuthRoutes())
 
 // Remote Control — Instance registry, tunnel proxy, audit trail, push subscriptions
 app.route('/api', instanceRoutes())

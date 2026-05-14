@@ -36,6 +36,7 @@
     "@prisma/client": "^7.3.0",
     "@prisma/instrumentation": "^7.4.1",
     "@shogo-ai/sdk": "workspace:*",
+    "@shogo-ai/worker": "workspace:*",
     "@shogo/agent-runtime": "workspace:*",
     "@shogo/model-catalog": "workspace:*",
     "@shogo/shared-runtime": "workspace:*",
