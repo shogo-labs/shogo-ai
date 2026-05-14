@@ -92,14 +92,19 @@ const PHASE_BANDS: Record<
   parse: [25, 35, 'Parsing archive'],
   createProject: [35, 45, 'Creating project'],
   writeFiles: [45, 80, 'Writing files'],
-  importChats: [80, 100, 'Importing chats'],
+  importChats: [80, 95, 'Importing chats'],
+  syncToS3: [95, 99, 'Syncing workspace'],
   done: [100, 100, 'Done'],
   error: [0, 0, 'Error'],
 }
 
+function phaseBand(phase: ProjectImportProgress['phase']): [number, number, string] {
+  return PHASE_BANDS[phase] ?? [0, 0, 'Working']
+}
+
 function computePercent(ev: ProjectImportProgress | null): number {
   if (!ev) return 0
-  const [start, end] = PHASE_BANDS[ev.phase]
+  const [start, end] = phaseBand(ev.phase)
   if (ev.phase === 'writeFiles' || ev.phase === 'importChats') {
     const frac = ev.total > 0 ? ev.done / ev.total : 0
     return Math.round(start + (end - start) * frac)
@@ -108,17 +113,26 @@ function computePercent(ev: ProjectImportProgress | null): number {
     const frac = ev.total > 0 ? ev.loaded / ev.total : 0
     return Math.round(start + (end - start) * frac)
   }
+  if (ev.phase === 'syncToS3') {
+    return ev.status === 'ok' || ev.status === 'skipped' ? end : start
+  }
   return end
 }
 
 function phaseLabel(ev: ProjectImportProgress | null): string {
   if (!ev) return ''
-  const [, , label] = PHASE_BANDS[ev.phase]
+  const [, , label] = phaseBand(ev.phase)
   if (ev.phase === 'writeFiles') return `${label} (${ev.done} / ${ev.total})`
   if (ev.phase === 'importChats') return `${label} (${ev.done} / ${ev.total})`
   if (ev.phase === 'upload') {
     const mb = (n: number) => (n / (1024 * 1024)).toFixed(1)
     return `${label} (${mb(ev.loaded)} / ${mb(ev.total)} MB)`
+  }
+  if (ev.phase === 'syncToS3') {
+    if (ev.status === 'ok') return 'Workspace synced'
+    if (ev.status === 'skipped') return 'Workspace sync skipped'
+    if (ev.status === 'failed') return 'Workspace sync failed'
+    return label
   }
   return label
 }
