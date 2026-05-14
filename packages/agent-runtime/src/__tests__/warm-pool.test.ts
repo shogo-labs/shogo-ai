@@ -27,6 +27,44 @@ import { mkdirSync, rmSync, writeFileSync, chmodSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { createHash } from 'crypto'
 
+/**
+ * Tear down a server subprocess cleanly so the surrounding `afterAll`
+ * hook completes within Bun's default 5s budget — even when this test
+ * file is the 101st in a serial isolated-coverage run and the macOS
+ * scheduler is contended.
+ *
+ * Why we can't just call `serverProc.kill()`:
+ *
+ *  1. The agent-runtime registers a SIGTERM handler in
+ *     `shared-runtime/src/server-framework.ts` that schedules
+ *     `process.exit(0)` after a hard 5_000ms delay. A polite SIGTERM
+ *     therefore makes the child sit on the wire for a full 5 seconds
+ *     before exiting — which trips Bun's hook timeout.
+ *
+ *  2. Even with SIGKILL, the parent's `serverProc.stdout` / `.stderr`
+ *     ReadableStreams stay open until the kernel finishes reaping the
+ *     process. Bun's test runner waits for those streams to drain
+ *     before declaring the hook done. Under load (100+ prior test
+ *     files in the same isolated run) that drain itself can take
+ *     hundreds of ms. We explicitly cancel both streams *before*
+ *     awaiting `.exited` so the hook doesn't get blocked on slow stdio
+ *     close.
+ */
+async function teardownServerProc(proc: Subprocess | null, timeoutMs = 3_000): Promise<void> {
+  if (!proc) return
+  try {
+    proc.stdout?.cancel().catch(() => {})
+    proc.stderr?.cancel().catch(() => {})
+  } catch { /* the streams may already be closed; ignore */ }
+  proc.kill('SIGKILL')
+  try {
+    await Promise.race([
+      proc.exited,
+      new Promise((resolve) => setTimeout(resolve, timeoutMs).unref()),
+    ])
+  } catch { /* exited may reject if already collected — that's fine */ }
+}
+
 const TEST_PORT = 18_900 + Math.floor(Math.random() * 100)
 const TEST_AGENT_DIR = `/tmp/test-warm-pool-agent-${TEST_PORT}`
 const SERVER_PATH = join(import.meta.dir, '..', 'server.ts')
@@ -79,11 +117,9 @@ describe('Warm Pool Mode', () => {
     await waitForServer(TEST_PORT)
   }, 20_000)
 
-  afterAll(() => {
-    if (serverProc) {
-      serverProc.kill()
-      serverProc = null
-    }
+  afterAll(async () => {
+    await teardownServerProc(serverProc)
+    serverProc = null
     rmSync(TEST_AGENT_DIR, { recursive: true, force: true })
   })
 
@@ -203,11 +239,9 @@ describe('Warm Pool Mode — partial /pool/assign does not crash the pod', () =>
     await waitForServer(TEST_PORT_3)
   }, 20_000)
 
-  afterAll(() => {
-    if (serverProc3) {
-      serverProc3.kill()
-      serverProc3 = null
-    }
+  afterAll(async () => {
+    await teardownServerProc(serverProc3)
+    serverProc3 = null
     rmSync(TEST_AGENT_DIR_3, { recursive: true, force: true })
   })
 
@@ -369,11 +403,9 @@ describe('Warm Pool Mode — assign latency with slow prisma', () => {
     await waitForServer(TEST_PORT_2)
   }, 20_000)
 
-  afterAll(() => {
-    if (serverProc2) {
-      serverProc2.kill()
-      serverProc2 = null
-    }
+  afterAll(async () => {
+    await teardownServerProc(serverProc2)
+    serverProc2 = null
     rmSync(TEST_AGENT_DIR_2, { recursive: true, force: true })
   })
 

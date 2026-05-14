@@ -121,6 +121,13 @@ mock.module('@shogo/shared-runtime', () => ({
       },
     }
   },
+  // mock.module replaces the entire module — the route under test also
+  // imports isMacOSJunkName/isMacOSJunkPath, so we must re-export them
+  // or Bun raises `Export named '…' not found in module` at link time.
+  // The test fixtures don't contain AppleDouble (`._foo`) detritus, so a
+  // no-op stub is correct.
+  isMacOSJunkName: (_name: string) => false,
+  isMacOSJunkPath: (_relPath: string) => false,
 }))
 
 // Dynamic import AFTER mocks so the route module captures the mocked deps.
