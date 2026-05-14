@@ -2,9 +2,87 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { existsSync, mkdirSync, writeFileSync, cpSync, readFileSync, copyFileSync, readdirSync, statSync, lstatSync, realpathSync, unlinkSync, rmSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { join, dirname } from 'node:path'
+import { join, dirname, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { pkg } from '@shogo/shared-runtime'
+
+// =============================================================================
+// Per-workspace install mutex
+// =============================================================================
+//
+// `bun install` is NOT safe to run concurrently against the same workspace.
+// On 2026-05-13 (project 865f99fa) we observed two parallel callers race
+// each other:
+//
+//   Path A: server.ts:initializeEssentials → fire-and-forget
+//           pm.start() → PreviewManager.installDepsIfNeeded
+//           → bun install (frozen=false)
+//   Path B: server.ts:startGateway        → await waitForDeps
+//           → ensureWorkspaceDeps         → bun install (frozen=true)
+//
+// Both detected the 25 missing top-level deps simultaneously. Bun 1.3.x
+// uses atomic rename + hardlink/copy from its global cache, and two
+// concurrent installs against the same `node_modules/` step on each
+// other's temp files. The first install crashed with:
+//   "FileNotFound: copying file dist/WasmPanicRegistry.js"
+// Without `expo` actually installed, `expo export` was skipped, no
+// `dist/` was produced, and the user saw nothing on preview.
+//
+// `runWorkspaceInstall` keeps a process-wide `Map<absoluteCwd, Promise>`
+// of in-flight installs. The first caller starts `pkg.installAsync`; any
+// concurrent caller for the same workspace joins that promise instead of
+// kicking off a second `bun install`. If the install fails, we throw to
+// every joined caller so they can each apply their own recovery (e.g.
+// `ensureWorkspaceDeps` wipes `node_modules/` on failure).
+// =============================================================================
+
+const inFlightInstalls = new Map<string, Promise<void>>()
+
+export interface RunWorkspaceInstallOptions {
+  /**
+   * Mirrors `pkg.installAsync`'s `frozen` flag. When two callers race,
+   * the first caller's value wins (the second joins the in-flight
+   * promise). In practice both callers operate on the same workspace
+   * with the same `package.json`, so they'd produce identical
+   * `node_modules/` either way; the stricter caller is just preferring
+   * lockfile-respecting failure when the lockfile drifts.
+   */
+  frozen: boolean
+}
+
+/**
+ * Run `pkg.installAsync(dir, opts)` exactly once per workspace at a time.
+ * Concurrent callers for the same `dir` share the in-flight promise.
+ * See file-level mutex doc for the failure mode this protects against.
+ */
+export async function runWorkspaceInstall(
+  dir: string,
+  opts: RunWorkspaceInstallOptions,
+): Promise<void> {
+  const key = resolvePath(dir)
+  const existing = inFlightInstalls.get(key)
+  if (existing) {
+    console.log(
+      `[workspace-defaults] install already in flight for ${key} — joining ` +
+        `existing promise (frozen=${opts.frozen} caller is the second)`,
+    )
+    return existing
+  }
+  const promise = pkg.installAsync(dir, opts).finally(() => {
+    inFlightInstalls.delete(key)
+  })
+  inFlightInstalls.set(key, promise)
+  return promise
+}
+
+/**
+ * Test-only: clear the in-flight map between cases. Calling this in
+ * production code is a bug — it can drop a real in-flight install on
+ * the floor.
+ */
+export function _resetWorkspaceInstallMutex(): void {
+  inFlightInstalls.clear()
+}
 import { getAgentTemplateById } from './agent-templates'
 import { getTemplateShogoDir, getTemplateCanvasStatePath, getTemplateCanvasCodeDir, getTemplateSrcDir, getTemplatePrismaDir, getTemplateDistDir } from './template-loader'
 
@@ -1185,7 +1263,7 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
   // also means we no longer need this file's hand-rolled --frozen-lockfile
   // dance — installAsync owns the retry policy.
   try {
-    await pkg.installAsync(dir, { frozen: true })
+    await runWorkspaceInstall(dir, { frozen: true })
   } catch (err) {
     // If install fails (timeout, crash) it can leave a partially-populated
     // node_modules behind. PreviewManager / subsequent reads will then hit
