@@ -14,6 +14,7 @@ import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
 import { mkdirSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { createTools } from '../gateway-tools'
+import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 
 const TEST_DIR = '/tmp/test-path-prefix-hint'
 
@@ -22,10 +23,16 @@ beforeAll(() => {
   mkdirSync(join(TEST_DIR, 'src'), { recursive: true })
   writeFileSync(join(TEST_DIR, 'src', 'App.tsx'), 'export default function App() {}\n')
   writeFileSync(join(TEST_DIR, 'custom-routes.ts'), '// routes\n')
+  // gateway-tools' assertAllowedPath() consults the global runtime-trust
+  // config; without this, every read_file/edit_file/delete_file call
+  // returns "Path is outside the project's allowed folders" before the
+  // path-prefix hint logic even fires.
+  trustWorkspaceForTests(TEST_DIR)
 })
 
 afterAll(() => {
   rmSync(TEST_DIR, { recursive: true, force: true })
+  clearTrustForTests()
 })
 
 function ctx() {

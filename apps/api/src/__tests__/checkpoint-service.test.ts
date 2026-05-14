@@ -23,8 +23,16 @@ let findFirstResult: any = null
 let findUniqueResult: any = null
 let findManyResult: any[] = []
 let deleteManyResult = { count: 0 }
+// `createCheckpoint` now consults `project.workingMode` as a defense-in-depth
+// guard before writing a commit (so it never accidentally writes into an
+// external/user-owned repo). Default to a managed project; tests that need
+// an external project can mutate this in their setup.
+let projectFindUniqueResult: any = { workingMode: 'managed' }
 
 const mockPrisma = {
+  project: {
+    findUnique: async () => projectFindUniqueResult,
+  },
   projectCheckpoint: {
     create: async ({ data }: any) => {
       const record = {
@@ -65,6 +73,7 @@ beforeEach(() => {
   findFirstResult = null
   findUniqueResult = null
   findManyResult = []
+  projectFindUniqueResult = { workingMode: 'managed' }
 })
 
 afterEach(() => {

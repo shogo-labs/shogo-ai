@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, realpathSync, symlinkSync } from 'fs'
 import { join } from 'path'
 import { createTools, TOOL_GROUP_MAP, ALL_TOOL_NAMES, resolveToolNames, hostToContainer, containerToHost, type ToolContext } from '../gateway-tools'
 import { FileStateCache } from '../file-state-cache'
 import { MCPClientManager } from '../mcp-client'
 import { MockChannel } from './helpers/mock-channel'
+import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 
 const TEST_DIR = '/tmp/test-gateway-tools'
 
@@ -40,6 +41,18 @@ async function exec(ctx: ToolContext, name: string, params: Record<string, any>)
 }
 
 describe('gateway-tools', () => {
+  beforeAll(() => {
+    // gateway-tools' assertAllowedPath() consults the global runtime-trust
+    // config. Without this, every exec/write_file/edit_file call returns
+    // "Path is outside the project's allowed folders" because the default
+    // workspaceDir is /app/workspace, not our /tmp test fixture.
+    trustWorkspaceForTests(TEST_DIR)
+  })
+
+  afterAll(() => {
+    clearTrustForTests()
+  })
+
   beforeEach(() => {
     rmSync(TEST_DIR, { recursive: true, force: true })
     mkdirSync(TEST_DIR, { recursive: true })
