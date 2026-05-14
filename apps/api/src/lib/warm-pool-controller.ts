@@ -2212,10 +2212,19 @@ export class WarmPoolController {
                   //     is the worst offender we ship templates for.)
                   //
                   // 2 GiB OOM-killed every Expo build with code 137 (the
-                  // 9e7ecdc7 staging incident). 5 GiB / 1.5 GiB request is
-                  // the smallest envelope that doesn't crash any current
-                  // tech stack. Request stays low so we still bin-pack
-                  // efficiently — the limit is only an upper bound.
+                  // 9e7ecdc7 staging incident). 5 GiB was the smallest
+                  // envelope that didn't crash any current tech stack at
+                  // the time, but it sits *right* at the Expo+R3F+VRM
+                  // peak — Lindsey's Rae project repeatedly OOM-killed
+                  // mid-`expo export` (2026-05-14 staging incident) with
+                  // a 5 GiB limit. Bumped to 8 GiB to give ~3 GiB of
+                  // headroom over the worst-case stack so the next heavy
+                  // bundle (or future R3F/VRM template growth) doesn't
+                  // tip back over. Request stays low (768 MiB) so we
+                  // still bin-pack efficiently — the limit is only an
+                  // upper bound. Nodes are ~20 GiB allocatable so even
+                  // with three peak-bundling pods co-tenant the limits
+                  // don't approach the floor.
                   //
                   // ephemeral-storage: the scheduler ignores `emptyDir.sizeLimit`
                   // when bin-packing. Without an explicit request, kubelet
@@ -2232,7 +2241,7 @@ export class WarmPoolController {
                   // + project + dist), well under the 5 GiB ceiling, but it
                   // tells the scheduler the truth so it stops overpacking.
                   requests: { memory: '768Mi', cpu: '200m', 'ephemeral-storage': '2Gi' },
-                  limits: { memory: '5Gi', cpu: '1000m', 'ephemeral-storage': '5Gi' },
+                  limits: { memory: '8Gi', cpu: '1000m', 'ephemeral-storage': '5Gi' },
                 },
                 volumeMounts: [{ name: 'project-data', mountPath: workDir }],
                 startupProbe: {
