@@ -871,7 +871,7 @@ export function CapabilitiesPanel({
       {/* Skills tab */}
       {subTab === 'skills' && (
         <View className="flex-1 relative">
-          <SkillsPanel projectId={projectId} agentUrl={agentUrl} visible />
+          <SkillsPanel projectId={projectId} agentUrl={agentUrl} visible capabilities={capabilities} />
         </View>
       )}
 

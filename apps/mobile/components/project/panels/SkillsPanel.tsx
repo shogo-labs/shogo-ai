@@ -2,9 +2,11 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { View, Text, Pressable, ScrollView, ActivityIndicator, TextInput } from 'react-native'
-import { Zap, RefreshCw, BookOpen, Download, Check, Trash2, Plus, ChevronDown, ChevronRight, Search, Globe, FileCode } from 'lucide-react-native'
+import { Zap, RefreshCw, BookOpen, Download, Check, Trash2, Plus, ChevronDown, ChevronRight, Search, Globe, FileCode, AlertTriangle } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { agentFetch } from '../../../lib/agent-fetch'
+import type { CapabilitySettings } from './CapabilitiesPanel'
+import { findDisabledCapabilities } from './tool-categories'
 
 interface Skill {
   name: string
@@ -38,9 +40,10 @@ interface SkillsPanelProps {
   projectId: string
   agentUrl: string | null
   visible: boolean
+  capabilities?: CapabilitySettings
 }
 
-export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) {
+export function SkillsPanel({ projectId, agentUrl, visible, capabilities }: SkillsPanelProps) {
   const [skills, setSkills] = useState<Skill[]>([])
   const [bundledSkills, setBundledSkills] = useState<BundledSkill[]>([])
   const [registrySkills, setRegistrySkills] = useState<RegistrySkill[]>([])
@@ -494,6 +497,19 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                               ))}
                             </View>
                           ) : null}
+
+                          {capabilities && skill.tools?.length > 0 && (() => {
+                            const disabled = findDisabledCapabilities(skill.tools, capabilities)
+                            if (disabled.length === 0) return null
+                            return (
+                              <View className="flex-row items-center gap-1.5 mt-2 ml-5 px-2 py-1.5 rounded-md bg-amber-500/10">
+                                <AlertTriangle size={12} className="text-amber-500" />
+                                <Text className="text-[10px] text-amber-600 dark:text-amber-400 flex-1">
+                                  Requires disabled: {disabled.join(' · ')}
+                                </Text>
+                              </View>
+                            )
+                          })()}
                         </Pressable>
 
                         {isExpanded && skill.content ? (
@@ -559,6 +575,8 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
               const isExpanded = expandedSkill === skill.name
               const content = skillContent[skill.name]
               const isLoadingThis = loadingContent === skill.name
+              const bundledMatch = bundledSkills.find((b) => b.name === skill.name)
+              const installedTools = bundledMatch?.tools ?? []
 
               return (
                 <View key={skill.name} className="border border-border rounded-lg">
@@ -610,6 +628,19 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                         ))}
                       </View>
                     ) : null}
+
+                    {capabilities && installedTools.length > 0 && (() => {
+                      const disabled = findDisabledCapabilities(installedTools, capabilities)
+                      if (disabled.length === 0) return null
+                      return (
+                        <View className="flex-row items-center gap-1.5 mt-2 ml-5 px-2 py-1.5 rounded-md bg-amber-500/10">
+                          <AlertTriangle size={12} className="text-amber-500" />
+                          <Text className="text-[10px] text-amber-600 dark:text-amber-400 flex-1">
+                            Requires disabled: {disabled.join(' · ')}
+                          </Text>
+                        </View>
+                      )
+                    })()}
                   </Pressable>
 
                   {isExpanded && (
