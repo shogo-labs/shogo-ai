@@ -345,6 +345,10 @@ jobs:
     name: Build Workspace Deps Image
     runs-on: ubuntu-24.04-arm
     needs: [resolve-config, detect-changes]
+    # Runs whenever any matrix image is set to build. Docs doesn't consume
+    # workspace-deps, but on a cache hit this rebuild is ~30s and we'd need
+    # the matrix `if:` to special-case docs (matrix context isn't available
+    # at job level), which gets ugly. Pay the small cost.
     if: needs.detect-changes.outputs.has_changes == 'true'
     environment: ${{ needs.resolve-config.outputs.environment == 'production' && 'production-us' || needs.resolve-config.outputs.environment }}
     timeout-minutes: 30
@@ -391,13 +395,14 @@ jobs:
   build-and-push:
     name: Build ${{ matrix.image }}
     runs-on: ubuntu-24.04-arm
-    needs: [resolve-config, detect-changes, build-base-image]
+    needs: [resolve-config, detect-changes, build-base-image, build-workspace-deps]
     if: |
       always() &&
       needs.resolve-config.result == 'success' &&
       needs.detect-changes.result == 'success' &&
       needs.detect-changes.outputs.has_changes == 'true' &&
-      (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped')
+      (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped') &&
+      needs.build-workspace-deps.result == 'success'
     environment: ${{ needs.resolve-config.outputs.environment == 'production' && 'production-us' || needs.resolve-config.outputs.environment }}
     timeout-minutes: 60
 
@@ -459,6 +464,7 @@ jobs:
             ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/${{ matrix.image_name }}:${{ steps.tag-prefix.outputs.prefix }}-latest
             ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/${{ matrix.image_name }}:${{ steps.tag-prefix.outputs.prefix }}-${{ github.sha }}
           build-args: |
+            ${{ matrix.build_args != '' && format('WORKSPACE_DEPS={0}/shogo/shogo-workspace-deps:{1}', needs.resolve-config.outputs.ocir_registry, github.sha) || '' }}
             ${{ matrix.build_args == 'api' && format('ALLOWED_ORIGINS={0}', vars.ALLOWED_ORIGINS) || '' }}
             ${{ matrix.build_args == 'api' && format('BUILD_HASH={0}', github.sha) || '' }}
             ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_API_URL={0}', vars.EXPO_PUBLIC_API_URL) || '' }}

@@ -2,19 +2,21 @@
 # =============================================================================
 # Shogo Web Frontend Dockerfile (Expo Web Export)
 # =============================================================================
-# Multi-stage build:
-# 1. Install workspace deps with Bun, build with Expo/Metro (requires Node)
-# 2. Serve static files with Nginx (reverse proxy for /api)
+# Phase B refactor: builder is now FROM the pre-baked shogo-workspace-deps
+# image (debian, bun, full install + build:packages applied). We just COPY
+# in apps/mobile and run expo export.
 #
-# Workspace package.jsons are glob-copied via BuildKit `COPY --parents`
-# (requires the `# syntax=docker/dockerfile:1.7-labs` directive above).
+# Production stage is unchanged: nginx-alpine serving the exported static
+# files. The builder stage's libc doesn't matter for production because the
+# only thing that crosses the boundary is the JS/CSS/HTML bundle.
 # =============================================================================
 
-FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
+ARG WORKSPACE_DEPS
+
+FROM ${WORKSPACE_DEPS} AS builder
 
 WORKDIR /app
 
-# Build arguments — empty defaults produce relative URLs (proxied by nginx)
 ARG EXPO_PUBLIC_API_URL=
 ARG EXPO_PUBLIC_BUILD_HASH=dev
 ARG EXPO_PUBLIC_APP_ENV=development
@@ -34,63 +36,27 @@ ENV SENTRY_AUTH_TOKEN=$SENTRY_AUTH_TOKEN
 ENV SENTRY_ORG=$SENTRY_ORG
 ENV SENTRY_PROJECT=$SENTRY_PROJECT
 
-# Install Bun (used for fast dependency installation)
-RUN apk add --no-cache bash curl && \
-    curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.3.9" && \
-    rm -rf /root/.bun
-
-# Install Sentry CLI standalone binary (statically linked, works on Alpine/musl)
+# Sentry CLI standalone binary (statically linked, works on glibc/musl).
+# Installed as root so it lands in /usr/local/bin (workspace's USER is appuser).
+USER root
 RUN curl -sL https://sentry.io/get-cli/ | SENTRY_CLI_VERSION="3.3.4" sh
+USER appuser
 
-# Copy workspace root files
-COPY package.json bun.lock ./
-COPY tsconfig.base.json ./
+# apps/mobile source — workspace-deps does not bake this in (workspace-deps
+# only bakes apps/api source because that's the only one needing
+# generate:routes). Mobile source is shallow enough to copy directly.
+COPY --chown=appuser:appgroup apps/mobile ./apps/mobile
 
-# All workspace members must be present for bun install to resolve the
-# `packages/*` and `apps/*` workspaces glob in the root package.json.
-COPY --parents packages/*/package.json ./
-COPY --parents apps/*/package.json ./
-
-# Copy scripts needed for postinstall
-COPY scripts ./scripts
-
-# Copy patches required by `patchedDependencies` in package.json — bun install
-# fails fast if a referenced .patch file isn't present in the build context.
-COPY patches ./patches
-
-# Copy prisma schema and config before install (postinstall runs db:generate:all)
-COPY prisma ./prisma
-COPY prisma.config.ts ./prisma.config.ts
-COPY prisma.config.local.ts ./prisma.config.local.ts
-
-# Install all dependencies (postinstall generates Prisma client)
-RUN --mount=type=cache,target=/root/.bun/install/cache \
-    bun install
-
-# Source for everything the mobile build touches. Metro resolves
-# `@shogo-ai/sdk → dist/index.js` and the SDK's `dts: true` tsup pass
-# needs every cross-package type import resolvable. Single COPY removes
-# per-package bleed and is cache-friendly when packages/ is unchanged.
-COPY packages ./packages
-
-COPY apps/mobile ./apps/mobile
-
-# Build the SDK and its split-out workspace deps in dependency
-# order (core → agent → db → email → voice → cli → sdk). Metro
-# resolves `@shogo-ai/sdk → dist/index.js` for the Expo web export,
-# and the SDK's tsup dts pass needs each dep's `dist/*.d.ts` first.
-WORKDIR /app
-RUN bun run build:packages
-
-# Build Expo web export (Metro bundler outputs to apps/mobile/dist/)
+# Build Expo web export (Metro bundler outputs to apps/mobile/dist/).
+# packages/*/dist are already pre-built in workspace-deps.
 WORKDIR /app/apps/mobile
 RUN npx expo export --platform web
 
 # Inject analytics scripts into the exported HTML (Expo "single" mode strips
-# <script> tags from +html.tsx, so we inject them post-export)
+# <script> tags from +html.tsx, so we inject them post-export).
 RUN node scripts/inject-analytics.js
 
-# Upload source maps to Sentry (inject debug IDs, upload, then strip maps)
+# Upload source maps to Sentry (inject debug IDs, upload, then strip maps).
 # Upload is non-fatal: a Sentry misconfiguration should not block a deploy.
 RUN if [ -n "$SENTRY_AUTH_TOKEN" ]; then \
       sentry-cli sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
@@ -108,10 +74,8 @@ ENV API_UPSTREAM=http://shogo-api.shogo-system.svc.cluster.local:8002
 ENV API_HOST=shogo-api.shogo-system.svc.cluster.local
 ENV DNS_RESOLVER=kube-dns.kube-system.svc.cluster.local
 
-# Copy built static files
 COPY --from=builder /app/apps/mobile/dist /usr/share/nginx/html
 
-# Copy nginx configuration template
 COPY apps/mobile/nginx.conf /etc/nginx/nginx.conf.template
 
 EXPOSE 80
