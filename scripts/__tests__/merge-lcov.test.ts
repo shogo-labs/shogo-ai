@@ -22,7 +22,7 @@ import { join, resolve } from 'path'
 import { spawnSync } from 'child_process'
 import { tmpdir } from 'os'
 
-import { normalizeSourceFile } from '../merge-lcov'
+import { normalizeSourceFile, isExcludedSourceFile } from '../merge-lcov'
 
 const REPO_ROOT = '/repo'
 
@@ -89,6 +89,55 @@ describe('normalizeSourceFile', () => {
       const sf = `${prefix}/foo/bar.ts`
       expect(normalizeSourceFile(sf, '/repo/apps/api', REPO_ROOT)).toBe(sf)
     }
+  })
+})
+
+describe('isExcludedSourceFile', () => {
+  // The matcher treats each path SEGMENT as a unit (basename excluded
+  // from the directory check), so "templates" as a directory is
+  // dropped but "templates.ts" as a file is kept. These tests pin
+  // both halves of that contract.
+  const dirs = new Set([
+    'dist', 'build', 'generated', 'examples', 'templates',
+    'playgrounds', '__fixtures__', '__tests__', '__mocks__',
+  ])
+  const suffixes = ['.test.ts', '.spec.ts', '.generated.ts']
+
+  test('drops files under an excluded directory anywhere in the path', () => {
+    expect(isExcludedSourceFile('packages/sdk/dist/chat-message.js', dirs, suffixes)).toBe(true)
+    expect(isExcludedSourceFile('apps/api/src/generated/prisma-pg/client.ts', dirs, suffixes)).toBe(true)
+    expect(isExcludedSourceFile('packages/sdk/examples/todo-app/src/main.ts', dirs, suffixes)).toBe(true)
+    expect(isExcludedSourceFile('templates/runtime-template/src/index.ts', dirs, suffixes)).toBe(true)
+    expect(isExcludedSourceFile('packages/agent-runtime/src/__tests__/foo.ts', dirs, suffixes)).toBe(true)
+    expect(isExcludedSourceFile('packages/agent-runtime/src/__fixtures__/bar.ts', dirs, suffixes)).toBe(true)
+  })
+
+  test('keeps files whose basename happens to match an excluded directory name', () => {
+    // `templates.ts` is a regular source file even though `templates`
+    // would match as a directory. The basename is intentionally
+    // excluded from the dir-segment check.
+    expect(isExcludedSourceFile('packages/agent-runtime/src/templates.ts', dirs, suffixes)).toBe(false)
+    expect(isExcludedSourceFile('packages/sdk/src/examples.ts', dirs, suffixes)).toBe(false)
+    expect(isExcludedSourceFile('packages/sdk/src/generated-file-license-header.ts', dirs, suffixes)).toBe(false)
+    expect(isExcludedSourceFile('packages/agent-runtime/src/agent-templates.ts', dirs, suffixes)).toBe(false)
+  })
+
+  test('drops files matching an excluded filename suffix', () => {
+    expect(isExcludedSourceFile('packages/foo/src/x.test.ts', dirs, suffixes)).toBe(true)
+    expect(isExcludedSourceFile('packages/foo/src/x.spec.ts', dirs, suffixes)).toBe(true)
+    expect(isExcludedSourceFile('apps/api/src/routes/foo.generated.ts', dirs, suffixes)).toBe(true)
+  })
+
+  test('keeps regular source files', () => {
+    expect(isExcludedSourceFile('packages/sdk/src/index.ts', dirs, suffixes)).toBe(false)
+    expect(isExcludedSourceFile('apps/api/src/routes/voice.ts', dirs, suffixes)).toBe(false)
+    expect(isExcludedSourceFile('packages/agent-runtime/src/template-loader.ts', dirs, suffixes)).toBe(false)
+  })
+
+  test('with empty exclusion sets, nothing is excluded', () => {
+    const empty = new Set<string>()
+    expect(isExcludedSourceFile('packages/sdk/dist/chat-message.js', empty, [])).toBe(false)
+    expect(isExcludedSourceFile('packages/foo/src/x.test.ts', empty, [])).toBe(false)
   })
 })
 
@@ -639,6 +688,114 @@ describe('merge-lcov CLI', () => {
     // Frontend: 2/2 = 100% → brightgreen, label "frontend coverage".
     expect(updated).toContain('frontend%20coverage-100.00%25-brightgreen')
     expect(updated).toContain('](./coverage/frontend-lcov.info)')
+  })
+
+  test('default excludes drop dist/, generated/, examples/, templates/ records', () => {
+    // Reproduces the contamination patterns we actually saw in the
+    // backend lcov: SDK dist files leaking via apps/api's transitive
+    // import of `@shogo-ai/sdk`, and Prisma client files under
+    // `apps/api/src/generated/...`. The merged output and per-package
+    // summary must reflect ONLY the hand-written source.
+    const shard = writeShard(
+      'apps/api/coverage/lcov.info',
+      [
+        'TN:', 'SF:apps/api/src/routes/voice.ts',
+        'DA:1,1', 'DA:2,1', 'LF:2', 'LH:2', 'end_of_record',
+        'TN:', 'SF:apps/api/src/generated/prisma-pg/client.ts',
+        'DA:1,0', 'DA:2,0', 'DA:3,0', 'DA:4,0',
+        'LF:4', 'LH:0', 'end_of_record',
+        'TN:', 'SF:packages/sdk/dist/chat-message.js',
+        'DA:1,1', 'DA:2,0', 'DA:3,0',
+        'LF:3', 'LH:1', 'end_of_record',
+        'TN:', 'SF:packages/sdk/examples/todo-app/src/main.ts',
+        'DA:1,0', 'LF:1', 'LH:0', 'end_of_record',
+        'TN:', 'SF:templates/runtime-template/src/index.ts',
+        'DA:1,0', 'LF:1', 'LH:0', 'end_of_record', '',
+      ].join('\n'),
+    )
+    const outFile = join(tmp, 'merged.lcov')
+    const summaryFile = join(tmp, 'summary.json')
+    const result = runMerger([
+      '-o', outFile,
+      '--summary-json', summaryFile,
+      '--silent',
+      shard,
+    ])
+    expect(result.exitCode).toBe(0)
+
+    const merged = parseMergedLcov(readFileSync(outFile, 'utf-8'))
+    expect(merged.has('apps/api/src/routes/voice.ts')).toBe(true)
+    expect(merged.has('apps/api/src/generated/prisma-pg/client.ts')).toBe(false)
+    expect(merged.has('packages/sdk/dist/chat-message.js')).toBe(false)
+    expect(merged.has('packages/sdk/examples/todo-app/src/main.ts')).toBe(false)
+    expect(merged.has('templates/runtime-template/src/index.ts')).toBe(false)
+
+    const summary = JSON.parse(readFileSync(summaryFile, 'utf-8'))
+    // The aggregate must reflect only the kept file (2/2), NOT the
+    // dropped denominators (would otherwise be 11 lines / 3 hit).
+    expect(summary.aggregate).toMatchObject({
+      files: 1,
+      linesFound: 2,
+      linesHit: 2,
+    })
+    // packages/sdk had only excluded files; it must not appear at all.
+    expect(summary.packages['packages/sdk']).toBeUndefined()
+    expect(summary.packages['apps/api']).toMatchObject({
+      files: 1,
+      linesFound: 2,
+      linesHit: 2,
+    })
+  })
+
+  test('--exclude-dir adds to defaults (does not replace them)', () => {
+    const shard = writeShard(
+      'pkg/coverage/lcov.info',
+      [
+        'TN:', 'SF:packages/foo/src/a.ts',
+        'DA:1,1', 'LF:1', 'LH:1', 'end_of_record',
+        'TN:', 'SF:packages/foo/dist/a.js',
+        'DA:1,1', 'LF:1', 'LH:1', 'end_of_record',
+        'TN:', 'SF:packages/foo/sandbox/a.ts',
+        'DA:1,1', 'LF:1', 'LH:1', 'end_of_record', '',
+      ].join('\n'),
+    )
+    const outFile = join(tmp, 'merged.lcov')
+    const result = runMerger([
+      '-o', outFile,
+      '--exclude-dir', 'sandbox',
+      '--silent',
+      shard,
+    ])
+    expect(result.exitCode).toBe(0)
+    const merged = parseMergedLcov(readFileSync(outFile, 'utf-8'))
+    expect(merged.has('packages/foo/src/a.ts')).toBe(true)
+    expect(merged.has('packages/foo/dist/a.js')).toBe(false)
+    expect(merged.has('packages/foo/sandbox/a.ts')).toBe(false)
+  })
+
+  test('--no-default-excludes turns off the built-in filter', () => {
+    // Useful for callers that want to inspect the raw merged shard
+    // without any opinions baked in (e.g. debugging coverage drops).
+    const shard = writeShard(
+      'pkg/coverage/lcov.info',
+      [
+        'TN:', 'SF:packages/foo/src/a.ts',
+        'DA:1,1', 'LF:1', 'LH:1', 'end_of_record',
+        'TN:', 'SF:packages/foo/dist/a.js',
+        'DA:1,1', 'LF:1', 'LH:1', 'end_of_record', '',
+      ].join('\n'),
+    )
+    const outFile = join(tmp, 'merged.lcov')
+    const result = runMerger([
+      '-o', outFile,
+      '--no-default-excludes',
+      '--silent',
+      shard,
+    ])
+    expect(result.exitCode).toBe(0)
+    const merged = parseMergedLcov(readFileSync(outFile, 'utf-8'))
+    expect(merged.has('packages/foo/src/a.ts')).toBe(true)
+    expect(merged.has('packages/foo/dist/a.js')).toBe(true)
   })
 
   test('handles missing shard files gracefully', () => {

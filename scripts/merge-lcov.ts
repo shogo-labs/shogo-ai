@@ -244,6 +244,93 @@ function packageKey(sf: string): string {
   return `${m[1]}/${m[2]}`
 }
 
+// ---------------------------------------------------------------------------
+// Global exclusion filter
+// ---------------------------------------------------------------------------
+// Per-package `bunfig.toml`'s `coveragePathIgnorePatterns` only catch
+// files loaded by tests INSIDE that package. They miss two routine
+// sources of contamination:
+//
+//   1. Cross-package transitive imports — e.g. `apps/api` and
+//      `packages/agent-runtime` both `import from '@shogo-ai/sdk'`,
+//      which Bun resolves through the package's `exports.import`
+//      condition to `packages/sdk/dist/*.js`. The coverage
+//      instrumenter then reports those built artifacts as "covered
+//      source" and they appear under the SDK's bucket in the merged
+//      lcov, dragging the SDK's denominator down with non-source code.
+//   2. Generated source files (Prisma client, route generators, etc.)
+//      that tests legitimately exercise but shouldn't count toward
+//      hand-written coverage. Bun's bunfig pattern matching for
+//      `**/generated/**` is also unreliable when the file is loaded
+//      via a transitive import — the path it sees can be the
+//      already-resolved repo-relative form rather than the package-
+//      relative one the glob expects.
+//
+// This filter is the single source of truth: any record whose `SF:`
+// path contains one of these directory segments (other than the
+// basename) is dropped from the merged lcov, the per-package summary,
+// and the threshold checks. Defaults are conservative — adding a
+// directory here means "this is build output / examples / templates,
+// not production code under test".
+const DEFAULT_EXCLUDE_DIRS: readonly string[] = [
+  'dist',
+  'build',
+  'generated',
+  'examples',
+  'templates',
+  'playgrounds',
+  '__fixtures__',
+  '__tests__',
+  '__mocks__',
+]
+
+// Filename suffixes we never want in coverage. Test/spec files SHOULD
+// already be filtered at test time by `coverageSkipTestFiles`, but the
+// flag has been silently broken in past Bun versions and the cost of a
+// belt-and-braces check here is negligible.
+const DEFAULT_EXCLUDE_SUFFIXES: readonly string[] = [
+  '.test.ts',
+  '.test.tsx',
+  '.test.js',
+  '.test.jsx',
+  '.test.mjs',
+  '.test.cjs',
+  '.spec.ts',
+  '.spec.tsx',
+  '.spec.js',
+  '.spec.jsx',
+  '.spec.mjs',
+  '.spec.cjs',
+  '.generated.ts',
+  '.generated.tsx',
+  '.generated.js',
+]
+
+/**
+ * Returns true when `sourceFile` matches one of the excluded directory
+ * segments or filename suffixes. Directory match is on path SEGMENTS
+ * (not raw substrings) so a legitimate file named `templates.ts` at
+ * `packages/foo/src/templates.ts` is NOT excluded — only `templates/`
+ * as a directory is. The basename is intentionally excluded from the
+ * directory check for the same reason.
+ */
+export function isExcludedSourceFile(
+  sourceFile: string,
+  excludeDirs: ReadonlySet<string>,
+  excludeSuffixes: readonly string[],
+): boolean {
+  const segments = sourceFile.split('/')
+  const dirSegments = segments.slice(0, -1)
+  for (const seg of dirSegments) {
+    if (excludeDirs.has(seg)) return true
+  }
+  const basename = segments[segments.length - 1] ?? ''
+  for (const suffix of excludeSuffixes) {
+    if (basename.endsWith(suffix)) return true
+  }
+  return false
+}
+
 function computeTotals(records: Map<string, FileRecord>): Totals {
   let linesFound = 0
   let linesHit = 0
@@ -434,6 +521,17 @@ interface CliArgs {
   // shard contamination is filtered post-merge via `packageKey()`.
   // Repeatable via `--include-package <pkg>` (e.g. `apps/api`).
   includePackages: string[]
+  // Extra directory segments to exclude on top of `DEFAULT_EXCLUDE_DIRS`.
+  // Repeatable via `--exclude-dir <segment>`. Matched against PATH
+  // SEGMENTS (not arbitrary substrings), so `--exclude-dir foo` drops
+  // `packages/x/foo/y.ts` but not `packages/x/src/foo.ts`.
+  extraExcludeDirs: string[]
+  // Extra filename suffixes to exclude on top of
+  // `DEFAULT_EXCLUDE_SUFFIXES`. Repeatable via `--exclude-suffix .x.ts`.
+  extraExcludeSuffixes: string[]
+  // When true, start with empty exclusion sets — useful for tests or
+  // for callers that want full control over what's filtered.
+  noDefaultExcludes: boolean
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -451,6 +549,9 @@ function parseArgs(argv: string[]): CliArgs {
     summaryJson: null,
     perPackageFloors: [],
     includePackages: [],
+    extraExcludeDirs: [],
+    extraExcludeSuffixes: [],
+    noDefaultExcludes: false,
   }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -495,6 +596,22 @@ function parseArgs(argv: string[]): CliArgs {
         process.exit(2)
       }
       args.includePackages.push(pkg)
+    } else if (a === '--exclude-dir') {
+      const dir = argv[++i] ?? ''
+      if (!dir) {
+        console.error('[merge-lcov] --exclude-dir requires a value (e.g. "fixtures")')
+        process.exit(2)
+      }
+      args.extraExcludeDirs.push(dir)
+    } else if (a === '--exclude-suffix') {
+      const suffix = argv[++i] ?? ''
+      if (!suffix) {
+        console.error('[merge-lcov] --exclude-suffix requires a value (e.g. ".gen.ts")')
+        process.exit(2)
+      }
+      args.extraExcludeSuffixes.push(suffix)
+    } else if (a === '--no-default-excludes') {
+      args.noDefaultExcludes = true
     } else if (a === '--') {
       args.inputs.push(...argv.slice(i + 1))
       break
@@ -566,22 +683,40 @@ function main(): void {
     }
   }
 
-  // Apply --include-package filter (if any) BEFORE emitting the lcov
-  // and computing totals. We filter at the merged-record level rather
-  // than at the input-file level because Bun's per-package coverage
-  // shards routinely include source files from sibling packages
-  // (e.g. `agent-runtime`'s test loads `shared-runtime/src/foo.ts`,
-  // which then shows up under SF:packages/shared-runtime/src/foo.ts in
-  // agent-runtime's lcov). Filtering by `packageKey(sf)` is the only
-  // way to cleanly separate backend vs frontend roll-ups from the same
-  // pool of shards.
-  let scoped: Map<string, FileRecord> = merged
-  if (args.includePackages.length > 0) {
-    const allow = new Set(args.includePackages)
-    scoped = new Map()
-    for (const [sf, rec] of merged) {
-      if (allow.has(packageKey(sf))) scoped.set(sf, rec)
+  // Apply directory / suffix exclusion + --include-package filter
+  // BEFORE emitting the lcov and computing totals. We filter at the
+  // merged-record level rather than at the input-file level because
+  // Bun's per-package coverage shards routinely include source files
+  // from sibling packages (e.g. `agent-runtime`'s test loads
+  // `shared-runtime/src/foo.ts`, which then shows up under
+  // SF:packages/shared-runtime/src/foo.ts in agent-runtime's lcov).
+  // Filtering by `packageKey(sf)` is the only way to cleanly separate
+  // backend vs frontend roll-ups from the same pool of shards, and
+  // filtering by directory segment (`dist/`, `generated/`, `examples/`,
+  // `templates/`, …) is the only way to keep cross-package transitive
+  // imports of build artifacts from polluting the source coverage.
+  const excludeDirs = new Set<string>([
+    ...(args.noDefaultExcludes ? [] : DEFAULT_EXCLUDE_DIRS),
+    ...args.extraExcludeDirs,
+  ])
+  const excludeSuffixes: string[] = [
+    ...(args.noDefaultExcludes ? [] : DEFAULT_EXCLUDE_SUFFIXES),
+    ...args.extraExcludeSuffixes,
+  ]
+  const includeAllow = args.includePackages.length > 0 ? new Set(args.includePackages) : null
+  let droppedByExclude = 0
+  let droppedByInclude = 0
+  const scoped: Map<string, FileRecord> = new Map()
+  for (const [sf, rec] of merged) {
+    if (isExcludedSourceFile(sf, excludeDirs, excludeSuffixes)) {
+      droppedByExclude++
+      continue
     }
+    if (includeAllow && !includeAllow.has(packageKey(sf))) {
+      droppedByInclude++
+      continue
+    }
+    scoped.set(sf, rec)
   }
 
   const outPath = resolve(process.cwd(), args.out)
@@ -601,6 +736,16 @@ function main(): void {
     )
     console.log(`  lines:     ${totals.linesHit}/${totals.linesFound} (${linePct.toFixed(2)}%)`)
     console.log(`  functions: ${totals.funcsHit}/${totals.funcsFound} (${funcPct.toFixed(2)}%)`)
+    if (droppedByExclude > 0 || droppedByInclude > 0) {
+      const parts: string[] = []
+      if (droppedByExclude > 0) {
+        parts.push(`${droppedByExclude} by exclude-dir/suffix`)
+      }
+      if (droppedByInclude > 0) {
+        parts.push(`${droppedByInclude} by --include-package`)
+      }
+      console.log(`  dropped:   ${parts.join(', ')}`)
+    }
     console.log('─'.repeat(72))
   }
 
