@@ -542,7 +542,35 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     projectId: string,
     techStackId?: string,
     templateId?: string,
+    externalProject?: {
+      primaryPath: string
+    },
   ): Promise<string> {
+    // External (VS Code-style) projects: the user picked a folder on
+    // their machine and that folder IS the project directory. We never
+    // create `workspaces/<projectId>`, never seed a bundled template,
+    // never install dependencies on their behalf — anything else would
+    // be hostile to the user's existing tree. We only ensure the per-
+    // project `.shogo/` skeleton + the gitignore entry, both of which
+    // the /api/local/projects/from-folders route already wrote on bind.
+    // We re-run them here so an old project bound by a previous Shogo
+    // version still ends up with the modern layout.
+    if (externalProject?.primaryPath) {
+      const primary = externalProject.primaryPath
+      const shogoDir = join(primary, '.shogo')
+      if (!existsSync(shogoDir)) mkdirSync(shogoDir, { recursive: true })
+      for (const sub of ['skills', 'plans', 'local']) {
+        const subPath = join(shogoDir, sub)
+        if (!existsSync(subPath)) mkdirSync(subPath, { recursive: true })
+      }
+      // `.shogo/local/dist/` is where PreviewManager + build-output-commit
+      // stage build output for external projects (see plan §5). Create
+      // it eagerly so PreviewManager doesn't race on first start.
+      const distDir = join(shogoDir, 'local', 'dist')
+      if (!existsSync(distDir)) mkdirSync(distDir, { recursive: true })
+      return primary
+    }
+
     const workspacesDir = resolve(this.config.workspacesDir || join(PROJECT_ROOT, 'workspaces'))
     const projectDir = join(workspacesDir, projectId)
     const workspaceTemplateDir = join(workspacesDir, this.config.templateDir || '_template')
@@ -713,13 +741,36 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     return projectDir
   }
 
-  private async getProjectInfo(projectId: string): Promise<{ templateId?: string; name?: string; techStackId?: string }> {
+  private async getProjectInfo(projectId: string): Promise<{
+    templateId?: string
+    name?: string
+    techStackId?: string
+    workingMode?: 'managed' | 'external'
+    runtimeEnabled?: boolean
+    trustLevel?: 'trusted' | 'restricted'
+    folders?: { path: string; isPrimary: boolean }[]
+  }> {
     try {
       const { prisma } = await import('../prisma')
-      const project = await prisma.project.findUnique({
+      // `workingMode` / `runtimeEnabled` / `trustLevel` may not exist on
+      // every deployment yet (schema migration is in
+      // 20260513000000_external_folder_projects). Cast through `any` so
+      // the prisma generated client doesn't lock us into the new shape
+      // before the migration has been applied on cloud.
+      const project = (await prisma.project.findUnique({
         where: { id: projectId },
-        select: { templateId: true, name: true, settings: true },
-      })
+        select: {
+          templateId: true,
+          name: true,
+          settings: true,
+          workingMode: true,
+          runtimeEnabled: true,
+          trustLevel: true,
+          projectFolders: {
+            select: { path: true, isPrimary: true },
+          },
+        } as any,
+      })) as any
       const settings = project?.settings as Record<string, unknown> | null
       let techStackId = settings?.techStackId as string | undefined
       if (!techStackId && project?.templateId) {
@@ -727,10 +778,21 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         const template = getAgentTemplateById(project.templateId)
         if (template?.techStack) techStackId = template.techStack
       }
+      const workingMode = (project?.workingMode as 'managed' | 'external' | undefined) ?? 'managed'
+      const runtimeEnabled =
+        typeof project?.runtimeEnabled === 'boolean' ? project.runtimeEnabled : workingMode !== 'external'
+      const trustLevel = (project?.trustLevel as 'trusted' | 'restricted' | undefined) ?? 'trusted'
+      const folders: { path: string; isPrimary: boolean }[] = Array.isArray(project?.projectFolders)
+        ? project.projectFolders.map((f: any) => ({ path: String(f.path), isPrimary: !!f.isPrimary }))
+        : []
       return {
         templateId: project?.templateId ?? undefined,
         name: project?.name ?? undefined,
         techStackId,
+        workingMode,
+        runtimeEnabled,
+        trustLevel,
+        folders,
       }
     } catch {
       return {}
@@ -865,12 +927,38 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   private async doStart(projectId: string): Promise<IProjectRuntime> {
     const projectInfo = await this.getProjectInfo(projectId)
 
+    // External (VS Code-style) projects: the project directory is the
+    // primary linked folder, not workspaces/<projectId>. ensureProjectDirectory
+    // short-circuits on this. We compute the primary outside so a missing
+    // primary (folder deleted / unmounted) surfaces as a typed error
+    // before we allocate ports / spawn anything.
+    const isExternal = projectInfo.workingMode === 'external'
+    let externalPrimary: string | undefined
+    if (isExternal) {
+      externalPrimary = projectInfo.folders?.find((f) => f.isPrimary)?.path
+      if (!externalPrimary) {
+        throw new Error(
+          `External project ${projectId} has no primary linked folder. Re-bind a folder via POST /api/local/projects/${projectId}/primary { folderId } before starting.`,
+        )
+      }
+      if (!existsSync(externalPrimary)) {
+        throw new Error(
+          `Primary folder for project ${projectId} no longer exists on disk: ${externalPrimary}. Relocate the folder before starting.`,
+        )
+      }
+    }
+
     // Ensure project directory exists with dependencies. We pass techStackId
     // through so non-Vite stacks (Expo / Python / Unity) skip the bundled
     // React+Vite template copy and let the agent-runtime's seedTechStack do
     // the right thing. Without this, an expo-three project ends up with a
     // Frankenstein workspace (Vite package.json + Expo `app/`/`metro.config.js`).
-    const projectDir = await this.ensureProjectDirectory(projectId, projectInfo.techStackId, projectInfo.templateId)
+    const projectDir = await this.ensureProjectDirectory(
+      projectId,
+      projectInfo.techStackId,
+      projectInfo.templateId,
+      isExternal ? { primaryPath: externalPrimary! } : undefined,
+    )
 
     // Allocate ports (async to check for stale processes)
     const port = await this.allocatePortAsync()
@@ -961,7 +1049,18 @@ export class ShogoErrorBoundary extends Component<Props, State> {
 
       let proc: ReturnType<typeof spawn> | null = null
 
-      if (isExpoProject) {
+      if (isExternal && projectInfo.runtimeEnabled === false) {
+        // VS Code-style external project with the live preview toggle
+        // off. We deliberately don't spawn Vite or Metro — running a
+        // bundler in the user's repo without an explicit opt-in is the
+        // "polluted my node_modules" failure mode every IDE-like tool
+        // tries to avoid. PreviewManager will also no-op (see plan §5).
+        // The agent-runtime still starts so chat / file tools work.
+        console.log(
+          `[RuntimeManager] External project ${projectId} has runtimeEnabled=false — skipping Vite/Metro. ` +
+            `Toggle "Enable live preview" in project settings to opt in.`,
+        )
+      } else if (isExpoProject) {
         console.log(
           `[RuntimeManager] Detected Expo project ${projectId} — skipping Vite. ` +
           `agent-runtime PreviewManager will run Metro + expo export -p web.`,
@@ -1052,6 +1151,20 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           PROJECT_ID: projectId,
           PROJECT_DIR: projectDir,
           WORKSPACE_DIR: projectDir,
+          // External (VS Code-style) projects: tell the agent-runtime
+          // which folders the user has explicitly opened so file tools,
+          // the indexer, and watchers can scope to that union (see
+          // gateway-tools.ts `assertAllowedPath`). For managed projects
+          // these are unset so the runtime falls back to the historical
+          // `[WORKSPACE_DIR]` single-root behaviour.
+          WORKING_MODE: projectInfo.workingMode ?? 'managed',
+          ...(projectInfo.workingMode === 'external'
+            ? {
+                LINKED_FOLDERS: JSON.stringify((projectInfo.folders ?? []).map((f) => f.path)),
+                TRUST_LEVEL: projectInfo.trustLevel ?? 'restricted',
+                RUNTIME_ENABLED: projectInfo.runtimeEnabled ? 'true' : 'false',
+              }
+            : {}),
           ...(projectInfo.templateId ? { TEMPLATE_ID: projectInfo.templateId } : {}),
           ...(projectInfo.name ? { AGENT_NAME: projectInfo.name } : {}),
           ...(projectInfo.techStackId ? { TECH_STACK_ID: projectInfo.techStackId } : {}),

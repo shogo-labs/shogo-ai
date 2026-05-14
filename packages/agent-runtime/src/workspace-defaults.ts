@@ -219,6 +219,25 @@ function removeStaleShogoSymlink(dir: string): void {
 }
 
 export function seedWorkspaceDefaults(dir: string): void {
+  // External (VS Code-style) projects: NEVER seed default workspace
+  // files into the user's repo root. The user's tree gets:
+  //   - `.shogo/` (skills/, plans/, local/, project.json, AGENTS.md)
+  // and nothing else. Anything we'd add at the top level (App.tsx,
+  // package.json, README.md, etc.) would conflict with the user's
+  // existing scaffold or pollute a clean repo.
+  //
+  // The .shogo skeleton itself is already created in
+  // RuntimeManager.ensureProjectDirectory for external projects, so
+  // this branch is a no-op. We still touch `.shogo/local/` for any
+  // legacy bootstrap path that landed here without going through the
+  // RuntimeManager.
+  if (process.env.WORKING_MODE === 'external') {
+    mkdirSync(join(dir, '.shogo', 'skills'), { recursive: true })
+    mkdirSync(join(dir, '.shogo', 'plans'), { recursive: true })
+    mkdirSync(join(dir, '.shogo', 'local'), { recursive: true })
+    return
+  }
+
   mkdirSync(dir, { recursive: true })
   mkdirSync(join(dir, 'memory'), { recursive: true })
   removeStaleShogoSymlink(dir)

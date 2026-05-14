@@ -165,6 +165,11 @@ model Project {
   knativeServiceName String?
   settings           String?
   lastMessageAt      DateTime?
+  // External / IDE-style project mode. See prisma/schema.prisma for the
+  // canonical comment.
+  workingMode    String  @default("managed")
+  runtimeEnabled Boolean @default(true)
+  trustLevel     String  @default("trusted")
 
   workspace              Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   folder                 Folder?                 @relation(fields: [folderId], references: [id], onDelete: SetNull)
@@ -185,10 +190,27 @@ model Project {
   modelExperiments       ModelExperiment[]
   subagentModelOverrides SubagentModelOverride[]
   agentEvalSets          AgentEvalSet[]
+  projectFolders         ProjectFolder[]
 
   @@index([workspaceId])
   @@index([folderId])
   @@map("projects")
+}
+
+/// External host folder linked to a project (workingMode='external').
+/// See prisma/schema.prisma for the canonical comment.
+model ProjectFolder {
+  id           String    @id @default(uuid())
+  projectId    String
+  path         String
+  isPrimary    Boolean   @default(false)
+  addedAt      DateTime  @default(now())
+  lastOpenedAt DateTime?
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("project_folders")
 }
 
 model AgentConfig {

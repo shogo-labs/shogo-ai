@@ -86,6 +86,62 @@ const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
 const PORT = parseInt(process.env.PORT || '8080', 10)
 
 /**
+ * External (VS Code-style) project mode. When set to `'external'`, the
+ * agent-runtime treats `WORKSPACE_DIR` as the user's primary linked
+ * folder, skips template seeding / auto-install, and obeys the trust
+ * level encoded in `TRUST_LEVEL`.
+ *
+ * `LINKED_FOLDERS` is a JSON-encoded `string[]` of every host folder
+ * the user has explicitly opened on this project — the union of these
+ * paths plus `WORKSPACE_DIR` forms the agent's "allowed roots" set
+ * (see `assertAllowedPath()` in gateway-tools.ts).
+ */
+const WORKING_MODE: 'managed' | 'external' =
+  process.env.WORKING_MODE === 'external' ? 'external' : 'managed'
+
+/**
+ * VS Code-style Workspace Trust gate. `restricted` blocks all write
+ * and exec tools until the user explicitly trusts the folder via
+ * POST /api/local/projects/:id/trust. Defaults to `restricted` for
+ * external projects (defense in depth — the API mutation also sets it)
+ * and `trusted` for managed projects (they live in our sandbox).
+ */
+const TRUST_LEVEL: 'trusted' | 'restricted' =
+  process.env.TRUST_LEVEL === 'restricted'
+    ? 'restricted'
+    : process.env.TRUST_LEVEL === 'trusted'
+      ? 'trusted'
+      : WORKING_MODE === 'external'
+        ? 'restricted'
+        : 'trusted'
+
+/**
+ * The list of host folders the agent is allowed to read/write inside,
+ * in addition to `WORKSPACE_DIR`. Parsed once at boot; gateway-tools
+ * imports this via `getAllowedRoots()` from agent-runtime-config.ts.
+ */
+const LINKED_FOLDERS: string[] = (() => {
+  const raw = process.env.LINKED_FOLDERS
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((p): p is string => typeof p === 'string' && p.length > 0)
+  } catch (err) {
+    console.warn(`[agent-runtime] Could not parse LINKED_FOLDERS env: ${err}`)
+    return []
+  }
+})()
+
+// Export for sibling modules (gateway-tools, watchers, indexer).
+;(globalThis as any).__SHOGO_AGENT_RUNTIME_CONFIG__ = {
+  workingMode: WORKING_MODE,
+  trustLevel: TRUST_LEVEL,
+  linkedFolders: LINKED_FOLDERS,
+  workspaceDir: WORKSPACE_DIR,
+}
+
+/**
  * Defensive sanity check on WORKSPACE_DIR.
  *
  * Backstory: the host-side RuntimeManager once defaulted its
@@ -100,6 +156,20 @@ const PORT = parseInt(process.env.PORT || '8080', 10)
  * missing chips three days later.
  */
 function checkWorkspaceDirSanity(): void {
+  // External (VS Code-style) projects: WORKSPACE_DIR is the user's
+  // primary linked folder by design (e.g. `/Users/jane/my-app`), not a
+  // path ending in `<projectId>`. The historical sanity check would
+  // emit a warning on every boot which would be noise the user can't
+  // act on. Log an info line so we still have a breadcrumb in support
+  // tickets without the alarming WARNING prefix.
+  if (WORKING_MODE === 'external') {
+    console.log(
+      `[agent-runtime] External (folder-linked) project: WORKSPACE_DIR='${WORKSPACE_DIR}' ` +
+        `(trustLevel=${TRUST_LEVEL}, linkedFolders=${LINKED_FOLDERS.length})`,
+    )
+    return
+  }
+
   const expectedProjectId = process.env.PROJECT_ID
   const workspaceBase = basename(WORKSPACE_DIR.replace(/\/+$/, ''))
   const isContainerDefault = WORKSPACE_DIR === '/app/workspace'

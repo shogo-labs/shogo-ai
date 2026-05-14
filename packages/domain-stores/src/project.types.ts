@@ -37,6 +37,9 @@ export interface ProjectType {
   knativeServiceName?: string
   settings?: Record<string, unknown>
   lastMessageAt?: Date
+  workingMode: string
+  runtimeEnabled: boolean
+  trustLevel: string
 }
 
 export interface ProjectCreateInput {
@@ -59,6 +62,9 @@ export interface ProjectCreateInput {
   knativeServiceName?: string
   settings?: Record<string, unknown>
   lastMessageAt?: Date
+  workingMode?: string
+  runtimeEnabled?: boolean
+  trustLevel?: string
 }
 
 export interface ProjectUpdateInput {
@@ -81,4 +87,7 @@ export interface ProjectUpdateInput {
   knativeServiceName?: string
   settings?: Record<string, unknown>
   lastMessageAt?: Date
+  workingMode?: string
+  runtimeEnabled?: boolean
+  trustLevel?: string
 }

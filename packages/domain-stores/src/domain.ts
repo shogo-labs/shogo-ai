@@ -14,6 +14,7 @@ import type { HttpClient } from "@shogo-ai/sdk"
 import { UserCollection, type IUserCollection } from "./user.collection"
 import { WorkspaceCollection, type IWorkspaceCollection } from "./workspace.collection"
 import { ProjectCollection, type IProjectCollection } from "./project.collection"
+import { ProjectFolderCollection, type IProjectFolderCollection } from "./project-folder.collection"
 import { StarredProjectCollection, type IStarredProjectCollection } from "./starred-project.collection"
 import { MemberCollection, type IMemberCollection } from "./member.collection"
 import { BillingAccountCollection, type IBillingAccountCollection } from "./billing-account.collection"
@@ -33,6 +34,7 @@ import { FeatureSessionCollection, type IFeatureSessionCollection } from "./feat
 export { UserModel, type IUser, type IUserSnapshotIn, type IUserSnapshotOut } from "./user.model"
 export { WorkspaceModel, type IWorkspace, type IWorkspaceSnapshotIn, type IWorkspaceSnapshotOut } from "./workspace.model"
 export { ProjectModel, type IProject, type IProjectSnapshotIn, type IProjectSnapshotOut } from "./project.model"
+export { ProjectFolderModel, type IProjectFolder, type IProjectFolderSnapshotIn, type IProjectFolderSnapshotOut } from "./project-folder.model"
 export { StarredProjectModel, type IStarredProject, type IStarredProjectSnapshotIn, type IStarredProjectSnapshotOut } from "./starred-project.model"
 export { MemberModel, type IMember, type IMemberSnapshotIn, type IMemberSnapshotOut } from "./member.model"
 export { BillingAccountModel, type IBillingAccount, type IBillingAccountSnapshotIn, type IBillingAccountSnapshotOut } from "./billing-account.model"
@@ -52,6 +54,7 @@ export { FeatureSessionModel, type IFeatureSession, type IFeatureSessionSnapshot
 export { UserCollection, type IUserCollection }
 export { WorkspaceCollection, type IWorkspaceCollection }
 export { ProjectCollection, type IProjectCollection }
+export { ProjectFolderCollection, type IProjectFolderCollection }
 export { StarredProjectCollection, type IStarredProjectCollection }
 export { MemberCollection, type IMemberCollection }
 export { BillingAccountCollection, type IBillingAccountCollection }
@@ -97,6 +100,7 @@ export const DomainStore = types
     userCollection: types.optional(UserCollection, { items: {} }),
     workspaceCollection: types.optional(WorkspaceCollection, { items: {} }),
     projectCollection: types.optional(ProjectCollection, { items: {} }),
+    projectFolderCollection: types.optional(ProjectFolderCollection, { items: {} }),
     starredProjectCollection: types.optional(StarredProjectCollection, { items: {} }),
     memberCollection: types.optional(MemberCollection, { items: {} }),
     billingAccountCollection: types.optional(BillingAccountCollection, { items: {} }),
@@ -120,6 +124,7 @@ export const DomainStore = types
         "userCollection",
         "workspaceCollection",
         "projectCollection",
+        "projectFolderCollection",
         "starredProjectCollection",
         "memberCollection",
         "billingAccountCollection",
@@ -144,6 +149,7 @@ export const DomainStore = types
       self.userCollection.clear()
       self.workspaceCollection.clear()
       self.projectCollection.clear()
+      self.projectFolderCollection.clear()
       self.starredProjectCollection.clear()
       self.memberCollection.clear()
       self.billingAccountCollection.clear()
@@ -165,6 +171,7 @@ export const DomainStore = types
       self.userCollection.clearError()
       self.workspaceCollection.clearError()
       self.projectCollection.clearError()
+      self.projectFolderCollection.clearError()
       self.starredProjectCollection.clearError()
       self.memberCollection.clearError()
       self.billingAccountCollection.clearError()

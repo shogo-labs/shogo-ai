@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { Hono } from 'hono'
+import { HTTPException } from 'hono/http-exception'
 import { cors } from 'hono/cors'
 import { csrf } from 'hono/csrf'
 import { secureHeaders } from 'hono/secure-headers'
@@ -71,6 +72,7 @@ import { syncRoutes } from './routes/sync'
 import internalRoutes from './routes/internal'
 import internalE2eRoutes from './routes/internal-e2e'
 import { vmRoutes, triggerVMImageDownload } from './routes/vm'
+import { localProjectsRoutes } from './routes/local-projects'
 import { requireSuperAdmin } from './middleware/super-admin'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
 import { createAdminRoutes } from './generated/admin-routes'
@@ -359,7 +361,20 @@ app.use('*', bodyLimit({ maxSize: 200 * 1024 * 1024 }))
 // =============================================================================
 // Hono-level error handler: catches unhandled errors in route handlers and
 // returns a structured JSON response instead of crashing the Bun process.
+//
+// IMPORTANT: HTTPException must be passed through (not swallowed as 500).
+// Framework middlewares — hono/csrf, hono/jwt, validators, the body-limit
+// middleware, etc. — signal client errors by throwing HTTPException with a
+// specific status (typically 401/403/413/422). Hono would normally call
+// `.getResponse()` on those automatically, but when we register `app.onError`
+// it takes precedence and would otherwise convert a clean 403 into a
+// confusing 500 with an empty body. That bug masked the csrf-blocks-DELETE
+// issue for a long time; route every HTTPException through `getResponse()`
+// so the original status + body reach the client unmodified.
 app.onError((err, c) => {
+  if (err instanceof HTTPException) {
+    return err.getResponse()
+  }
   console.error(`[API] Unhandled route error on ${c.req.method} ${c.req.path}:`, err.message)
   // Don't expose internal error details in production
   const isProduction = process.env.NODE_ENV === 'production'
@@ -434,19 +449,22 @@ app.use('/*', cors({
 // CSRF protection — validates Origin header on state-changing requests (POST/PUT/PATCH/DELETE).
 // Skips webhook and internal endpoints that use their own auth (signatures, tokens).
 //
-// NOTE: hono's csrf() always rejects form-body POSTs with no Origin header
-// BEFORE our custom origin handler runs (see node_modules/hono/.../csrf/index.js
-// isAllowedOrigin: `if (origin === undefined) return false`). Provider webhooks
-// (Twilio status callbacks in particular) post form-urlencoded bodies with no
-// Origin header and are authenticated by request signature, not CSRF. We skip
-// the csrf middleware entirely for those paths.
+// Hono's csrf middleware has a sharp edge: when `Origin` is undefined it
+// short-circuits to "deny" before ever calling our `origin` handler (see
+// node_modules/hono/.../csrf/index.js isAllowedOrigin:
+// `if (origin === undefined) return false`). That means the
+// `if (!origin) return true` below was dead code from inside the csrf options
+// alone. The wrapper middleware further down implements that fall-through
+// explicitly so server-to-server callers, the mobile app (React Native fetch
+// doesn't set Origin), curl, and provider webhooks reach the route handler.
 const csrfMiddleware = csrf({
   origin: (origin, c) => {
     const csrfPath = new URL(c.req.url).pathname
     if (/\/api\/projects\/[^/]+\/agent-proxy\/agent\/channels\/webchat\//.test(csrfPath)) {
       return true
     }
-    // Allow requests with no origin (server-to-server, mobile apps, curl)
+    // Hono never passes `undefined` here — the wrapper below handles that
+    // case before we get called. Kept defensively in case of upstream changes.
     if (!origin) return true
     const isDevOrLocal = process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOCAL_MODE === 'true'
     if (isDevOrLocal && (origin === 'null' || origin.startsWith('http://localhost:') || origin.startsWith('shogo://'))) {
@@ -467,6 +485,16 @@ app.use('/api/*', async (c, next) => {
     path === '/api/voice/elevenlabs/webhook' ||
     path.startsWith('/api/voice/twilio/status/')
   ) {
+    return next()
+  }
+  // Requests with no Origin AND no Referer cannot have been triggered by a
+  // browser cross-origin attack — they're from non-browser clients (mobile
+  // app, server-to-server callers, curl/CLI tools, the desktop app's main
+  // process). Authentication for these is handled downstream by the auth
+  // middleware (session cookie, runtime token, or API key). Skipping csrf
+  // for them mirrors the intent of `if (!origin) return true` in the csrf
+  // options above, which hono's middleware silently ignores.
+  if (!c.req.header('origin') && !c.req.header('referer')) {
     return next()
   }
   return csrfMiddleware(c, next)
@@ -722,6 +750,12 @@ app.get('/api/config', async (c) => {
 // ── Local mode: VM management endpoints ──────────────────────────────────────
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
   app.route('/api/vm', vmRoutes())
+
+  // External / IDE-style folder projects (see apps/api/src/routes/local-projects.ts).
+  // Mounted here, next to /api/vm, because they share the same "only
+  // makes sense in local mode" trait — the cloud build doesn't expose
+  // a folder picker.
+  app.route('/api/local/projects', localProjectsRoutes())
 
   // Auto-download VM images in the background if not present
   setTimeout(() => {

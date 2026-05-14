@@ -358,6 +358,29 @@ function registerIpcHandlers(): void {
     app.exit(0)
   })
 
+  // Folder picker for "external" (VS Code-style) projects. Bound to a
+  // single visible window so the OS sheet attaches to the right frame on
+  // macOS. Returns absolute paths; the caller is responsible for POSTing
+  // them to /api/local/projects/from-folders.
+  ipcMain.handle('pick-folders', async (event, opts?: { multi?: boolean; defaultPath?: string }) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow()
+    const properties: Array<
+      'openDirectory' | 'multiSelections' | 'createDirectory' | 'showHiddenFiles'
+    > = ['openDirectory', 'createDirectory']
+    if (opts?.multi) properties.push('multiSelections')
+    try {
+      const res = win
+        ? await dialog.showOpenDialog(win, { properties, defaultPath: opts?.defaultPath })
+        : await dialog.showOpenDialog({ properties, defaultPath: opts?.defaultPath })
+      if (res.canceled || res.filePaths.length === 0) return { ok: false as const }
+      return { ok: true as const, paths: res.filePaths }
+    } catch (err) {
+      console.error('[Desktop] pick-folders failed:', err)
+      const message = err instanceof Error ? err.message : String(err)
+      return { ok: false as const, error: message }
+    }
+  })
+
   ipcMain.handle('get-device-info', () => getDeviceInfo())
 
   // Cloud login: ask the local API for a one-shot authUrl (includes state

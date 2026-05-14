@@ -184,6 +184,17 @@ model Project {
   knativeServiceName String?
   settings           Json?
   lastMessageAt      DateTime?
+  // External / IDE-style project mode. `managed` keeps the historical
+  // workspaces/<projectId> sandbox behavior. `external` points the project
+  // at one or more folders on the user's machine (see ProjectFolder); the
+  // Vite/Metro runtime + auto-checkpoints are disabled by default to match
+  // VS Code / Cursor expectations.
+  workingMode    String  @default("managed")
+  runtimeEnabled Boolean @default(true)
+  // VS Code Workspace Trust model. `restricted` blocks write/exec tools
+  // until the user explicitly trusts the folder. Managed projects are
+  // implicitly trusted (they live in our sandbox).
+  trustLevel     String  @default("trusted")
 
   // Relations
   workspace              Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -205,10 +216,29 @@ model Project {
   agentEvalSets          AgentEvalSet[]
   voiceConfig            VoiceProjectConfig?
   agents                 ProjectAgent[]
+  projectFolders         ProjectFolder[]
 
   @@index([workspaceId])
   @@index([folderId])
   @@map("projects")
+}
+
+/// External host folder linked to a project (workingMode='external').
+/// One folder is `isPrimary` and hosts `<path>/.shogo/`. All folders are
+/// available as agent path roots. See `assertAllowedPath()` in
+/// packages/agent-runtime/src/gateway-tools.ts.
+model ProjectFolder {
+  id           String    @id @default(uuid())
+  projectId    String
+  path         String
+  isPrimary    Boolean   @default(false)
+  addedAt      DateTime  @default(now())
+  lastOpenedAt DateTime?
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("project_folders")
 }
 
 model AgentConfig {
