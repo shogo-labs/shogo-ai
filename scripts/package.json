@@ -1,0 +1,12 @@
+{
+  "name": "@shogo/repo-scripts",
+  "version": "0.0.0",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "description": "Internal repo scripts (test runner, lcov merger, dev helpers). Not a workspace package — sits outside the bun workspaces glob so it has no dependency tree of its own. The `test` script here exists purely so `scripts/run-all-tests.ts` can include `scripts/__tests__/` in the per-package fan-out.",
+  "type": "module",
+  "scripts": {
+    "test": "bun --no-env-file test __tests__",
+    "test:coverage": "bun --no-env-file test __tests__ --coverage"
+  }
+}

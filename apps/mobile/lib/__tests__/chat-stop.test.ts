@@ -10,7 +10,7 @@
  */
 
 import { describe, test, expect } from 'bun:test'
-import { buildStopRequest } from '../chat-stop'
+import { buildStopRequest, buildSubagentStopRequest } from '../chat-stop'
 
 const API_BASE = 'https://api.example.com'
 
@@ -123,6 +123,73 @@ describe('buildStopRequest', () => {
       })
 
       expect(result).not.toBeNull()
+      expect((result!.init.headers as Record<string, string>).Cookie).toBeUndefined()
+    })
+  })
+
+  describe('buildSubagentStopRequest (sibling helper)', () => {
+    test('returns null when instanceId is empty', () => {
+      const result = buildSubagentStopRequest({
+        projectId: 'proj-123',
+        apiBaseUrl: API_BASE,
+        platform: 'web',
+        instanceId: '',
+      })
+      expect(result).toBeNull()
+    })
+
+    test('returns null when neither localAgentUrl nor projectId is given', () => {
+      const result = buildSubagentStopRequest({
+        apiBaseUrl: API_BASE,
+        platform: 'web',
+        instanceId: 'inst-1',
+      })
+      expect(result).toBeNull()
+    })
+
+    test('builds the local URL when localAgentUrl is set, omits auth', () => {
+      const result = buildSubagentStopRequest({
+        localAgentUrl: 'http://localhost:8080',
+        apiBaseUrl: API_BASE,
+        platform: 'web',
+        instanceId: 'inst with space',
+      })
+      expect(result!.url).toBe('http://localhost:8080/agent/subagents/inst%20with%20space/stop')
+      expect(result!.init.credentials).toBeUndefined()
+    })
+
+    test('routes through the API and sets credentials=include on web', () => {
+      const result = buildSubagentStopRequest({
+        projectId: 'proj-123',
+        apiBaseUrl: API_BASE,
+        platform: 'web',
+        instanceId: 'inst-1',
+      })
+      expect(result!.url).toBe(`${API_BASE}/api/projects/proj-123/chat/subagents/inst-1/stop`)
+      expect(result!.init.credentials).toBe('include')
+      expect(result!.init.body).toBe('{}')
+    })
+
+    test('routes through the API and adds Cookie header on native', () => {
+      const result = buildSubagentStopRequest({
+        projectId: 'proj-123',
+        apiBaseUrl: API_BASE,
+        platform: 'ios',
+        getCookie: () => 'session=native',
+        instanceId: 'inst-1',
+      })
+      expect((result!.init.headers as Record<string, string>).Cookie).toBe('session=native')
+      expect(result!.init.credentials).toBeUndefined()
+    })
+
+    test('omits Cookie when getCookie returns null', () => {
+      const result = buildSubagentStopRequest({
+        projectId: 'proj-123',
+        apiBaseUrl: API_BASE,
+        platform: 'ios',
+        getCookie: () => null,
+        instanceId: 'inst-1',
+      })
       expect((result!.init.headers as Record<string, string>).Cookie).toBeUndefined()
     })
   })

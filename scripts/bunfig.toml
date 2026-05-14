@@ -1,0 +1,16 @@
+# Test + coverage configuration for the internal repo-scripts test
+# suite. Mirrors `packages/shared-runtime/bunfig.toml` minus per-package
+# specifics. Aggregate coverage thresholds are enforced by
+# `scripts/merge-lcov.ts` against the merged repo-wide lcov.
+[test]
+coverageReporter = ["text", "lcov"]
+coverageDir = "coverage"
+coverageSkipTestFiles = true
+coveragePathIgnorePatterns = [
+  "**/__tests__/**",
+  "**/__mocks__/**",
+  "**/*.test.ts",
+  "**/*.spec.ts",
+  "**/dist/**",
+  "**/node_modules/**",
+]

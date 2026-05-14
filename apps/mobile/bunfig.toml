@@ -22,6 +22,8 @@ coveragePathIgnorePatterns = [
   "**/dist/**",
   "**/build/**",
   "**/generated/**",
+  "**/*.generated.ts",
+  "**/*.generated.tsx",
   "**/node_modules/**",
   "**/.expo/**",
   "**/android/**",

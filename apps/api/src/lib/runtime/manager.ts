@@ -1193,7 +1193,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       // If the process already exited (e.g. vite binary missing during dep install),
       // skip the wait — the agent server alone is sufficient for chat.
       if (runtime.process && !runtime.process.killed && runtime.process.exitCode === null) {
-        await this.waitForReady(projectId, port, 30000)
+        await this.waitForReady(projectId, port, 30000, runtime.process)
       } else if (runtime.process) {
         console.warn(`[RuntimeManager] Vite process already exited for ${projectId} (code=${runtime.process.exitCode}), skipping waitForReady`)
       }
@@ -1227,12 +1227,47 @@ export class ShogoErrorBoundary extends Component<Props, State> {
    * Accepts any HTTP response (including 500) as "server is ready" because:
    * - Vite returns 500 when the app has runtime errors (e.g., missing DATABASE_URL)
    * - The server is still functional and can serve the error page
+   *
+   * If `process` is provided, the wait short-circuits the moment the
+   * spawned child exits — the previous behaviour was to spin for the
+   * full 30s and throw a generic "Timeout waiting for runtime X on port
+   * P" error even when the Vite process had already died mid-startup
+   * (port conflict, missing native binding, missing dependency, etc.).
+   * The 30s blackout also blocked every concurrent `start()` caller via
+   * `startingPromises`, surfacing in the dev log as repeated
+   * "Waiting on in-flight start" lines followed by a cascade of
+   * `[ProjectChat]` proxy timeouts when chat requests piled up behind
+   * the doomed start. Bailing out as soon as the child exits turns this
+   * 30s+cascade into an immediate, descriptive failure that the caller
+   * can retry against a fresh port allocation.
    */
-  private async waitForReady(projectId: string, port: number, timeoutMs: number): Promise<void> {
+  private async waitForReady(
+    projectId: string,
+    port: number,
+    timeoutMs: number,
+    process?: { exitCode: number | null; signalCode?: NodeJS.Signals | null; killed?: boolean },
+  ): Promise<void> {
     const startTime = Date.now()
     const checkInterval = 500
 
+    // A spawned child can die two distinct ways:
+    //   - cleanly: `exitCode` flips to a number, `signalCode` stays null
+    //   - by signal (incl. SIGKILL from our own `cleanupStaleProcesses`
+    //     scanner if a second RuntimeManager is constructed): `exitCode`
+    //     stays `null`, `signalCode` flips to the signal name. Checking
+    //     only `exitCode !== null` misses the signal case entirely and
+    //     reverts to the 30s generic-timeout error.
+    const isDead = (p: typeof process): boolean =>
+      !!p && (p.exitCode !== null || p.signalCode != null || p.killed === true)
+
     while (Date.now() - startTime < timeoutMs) {
+      if (isDead(process)) {
+        throw new Error(
+          `Vite process for runtime ${projectId} exited (code=${process!.exitCode}` +
+            (process!.signalCode ? `, signal=${process!.signalCode}` : '') +
+            `) before becoming ready on port ${port}`,
+        )
+      }
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 1000)
       try {
@@ -1243,6 +1278,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         clearTimeout(timer)
         // Accept any response - server is running even if app has errors
         // This includes 200, 404, 500, etc.
+        void response
         return
       } catch {
         clearTimeout(timer)
@@ -1251,6 +1287,15 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       await new Promise((resolve) => setTimeout(resolve, checkInterval))
     }
 
+    // One last exit-code check before declaring a timeout: covers the
+    // race where Vite died inside the final 500ms sleep tick.
+    if (isDead(process)) {
+      throw new Error(
+        `Vite process for runtime ${projectId} exited (code=${process!.exitCode}` +
+          (process!.signalCode ? `, signal=${process!.signalCode}` : '') +
+          `) before becoming ready on port ${port}`,
+      )
+    }
     throw new Error(`Timeout waiting for runtime ${projectId} to start on port ${port}`)
   }
 
@@ -1491,4 +1536,38 @@ export function getRuntimeManager(): RuntimeManager {
     defaultManager = createRuntimeManager()
   }
   return defaultManager
+}
+
+/**
+ * Install an externally-constructed RuntimeManager as the module-level
+ * singleton.
+ *
+ * This exists because the project historically had TWO singletons that
+ * lazy-initialised independently:
+ *
+ *   1. `apps/api/src/server.ts` — owns env-var parsing
+ *      (`RUNTIME_MAX_COUNT`, `RUNTIME_DOMAIN_SUFFIX`, `WORKSPACES_DIR`)
+ *      and the `"[Runtime] RuntimeManager initialized"` log line, then
+ *      stored its result in a module-local `runtimeManager` variable.
+ *
+ *   2. `apps/api/src/lib/runtime/index.ts` — re-exports `getRuntimeManager`
+ *      from this file, which lazy-creates its OWN `defaultManager` with
+ *      a different (and slightly less specific) config.
+ *
+ * `resolve-pod-url.ts` falls back to (2) when no `opts.runtimeManager`
+ * is passed, so the first chat request after the API boot triggered a
+ * second `new RuntimeManager(...)` whose constructor runs
+ * `cleanupStaleProcesses()`. That lsof-by-port-range scan happily
+ * SIGKILLed the still-starting Vite child the first manager had just
+ * spawned, leaving the first manager's `runtime.process` dead but
+ * still-being-awaited inside `waitForReady()`. The visible symptoms
+ * were the cascade of `[ProjectChat] turn snapshot proxy error`
+ * lines and the eventual SIGTERM of the agent process.
+ *
+ * The fix: have the canonical entry point (`server.ts`) call this
+ * setter immediately after construction so both module-level
+ * singletons resolve to the same instance.
+ */
+export function setRuntimeManager(manager: RuntimeManager): void {
+  defaultManager = manager
 }

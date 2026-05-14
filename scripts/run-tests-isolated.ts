@@ -27,7 +27,8 @@
 
 import { readdirSync, statSync, existsSync, mkdirSync, rmSync, renameSync, readFileSync, writeFileSync } from 'fs'
 import { join, relative, resolve } from 'path'
-import { spawnSync } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
+import { cpus } from 'os'
 
 const TEST_FILE_RE = /\.(test|spec)\.(ts|tsx|js|jsx)$/
 const SKIP_DIR_RE = /(?:^|\/)(?:node_modules|dist|build|generated|\.next|coverage)(?:\/|$)/
@@ -79,7 +80,7 @@ function parseSummary(output: string): { passed: number; failed: number; skipped
   return { passed, failed, skipped }
 }
 
-function runOne(
+function runOneSync(
   file: string,
   extraArgs: string[],
   cwd: string,
@@ -172,7 +173,128 @@ interface CoverageOpts {
   outFile: string
 }
 
-function main() {
+/**
+ * Async variant of {@link runOneSync} that spawns a child without blocking
+ * the loop. Used by the parallel pool below.
+ *
+ * Coverage runs intentionally fall back to the sync variant — Bun writes
+ * `coverage/lcov.info` relative to cwd and ignores CLI overrides, so two
+ * children running in the same package's cwd would clobber each other's
+ * shard. The parallel pool detects this and serialises coverage-bearing
+ * children.
+ */
+function runOneAsync(
+  file: string,
+  extraArgs: string[],
+  cwd: string,
+): Promise<FileResult> {
+  return new Promise((resolveFn) => {
+    const start = Date.now()
+    const relFile = relative(cwd, file)
+    const childEnv = { ...process.env }
+    delete childEnv.SHOGO_LOCAL_MODE
+    delete childEnv.DATABASE_URL
+    const procArgs = ['--no-env-file', 'test', relFile, ...extraArgs]
+    const proc = spawn('bun', procArgs, { env: childEnv, cwd })
+
+    let stdout = ''
+    let stderr = ''
+    proc.stdout?.on('data', (d) => { stdout += d.toString() })
+    proc.stderr?.on('data', (d) => { stderr += d.toString() })
+
+    proc.on('close', (code) => {
+      const durationMs = Date.now() - start
+      const combined = stderr + '\n' + stdout
+      const { passed, failed, skipped } = parseSummary(combined)
+      const exitCode = code ?? 1
+      if (exitCode !== 0) {
+        process.stdout.write(stdout)
+        process.stderr.write(stderr)
+      }
+      resolveFn({ file, passed, failed, skipped, durationMs, exitCode })
+    })
+
+    proc.on('error', () => {
+      resolveFn({
+        file,
+        passed: 0,
+        failed: 1,
+        skipped: 0,
+        durationMs: Date.now() - start,
+        exitCode: 1,
+      })
+    })
+  })
+}
+
+/**
+ * Drain `files` through a pool of {@link concurrency} parallel workers.
+ * Each worker pulls the next file from the queue and runs it via
+ * {@link runOneAsync}. Returns results in completion order (not input
+ * order); the caller sorts by file name for the summary.
+ */
+async function runPool(
+  files: string[],
+  extraArgs: string[],
+  cwd: string,
+  concurrency: number,
+): Promise<FileResult[]> {
+  const results: FileResult[] = []
+  let cursor = 0
+  const workers: Promise<void>[] = []
+  for (let i = 0; i < Math.min(concurrency, files.length); i++) {
+    workers.push((async () => {
+      while (true) {
+        const idx = cursor++
+        if (idx >= files.length) return
+        const file = files[idx]
+        const rel = relative(process.cwd(), file)
+        process.stdout.write(`  ${rel} ... `)
+        const result = await runOneAsync(file, extraArgs, cwd)
+        const tag = result.exitCode === 0 ? 'OK' : 'FAIL'
+        process.stdout.write(
+          `${tag} (${result.passed} pass, ${result.failed} fail, ${result.skipped} skip, ${result.durationMs}ms)\n`,
+        )
+        results.push(result)
+      }
+    })())
+  }
+  await Promise.all(workers)
+  return results
+}
+
+/**
+ * Resolve the `--parallel <N>` flag from argv. Defaults to half the
+ * available CPUs (capped at 8) when omitted — empirically that's the
+ * sweet spot for an apps/api shard that ~30 test files where each
+ * subprocess fork-bombs sqlite, OpenAI mocks, and node:child_process.
+ *
+ * Coverage runs always force N=1 because Bun writes `coverage/lcov.info`
+ * relative to cwd and ignores CLI overrides, so parallel children in
+ * the same package cwd would clobber each other's shard.
+ */
+function parseParallel(argv: string[]): { parallel: number; rest: string[] } {
+  const rest: string[] = []
+  let parallel = Math.max(1, Math.min(8, Math.ceil(cpus().length / 2)))
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (a === '--parallel' && argv[i + 1]) {
+      const n = parseInt(argv[i + 1], 10)
+      if (Number.isFinite(n) && n >= 1) parallel = n
+      i++
+      continue
+    }
+    if (a.startsWith('--parallel=')) {
+      const n = parseInt(a.split('=')[1] ?? '', 10)
+      if (Number.isFinite(n) && n >= 1) parallel = n
+      continue
+    }
+    rest.push(a)
+  }
+  return { parallel, rest }
+}
+
+async function main() {
   const argv = process.argv.slice(2)
   const dashIdx = argv.indexOf('--')
   const positionalRaw = dashIdx === -1 ? argv : argv.slice(0, dashIdx)
@@ -182,11 +304,14 @@ function main() {
   //   bun ../../scripts/run-tests-isolated.ts . --coverage
   // and end up with merged `coverage/lcov.info`.
   const wantCoverage = positionalRaw.includes('--coverage')
-  const positional = positionalRaw.filter((a) => a !== '--coverage')
+  const filteredRaw = positionalRaw.filter((a) => a !== '--coverage')
+  const { parallel: parallelFlag, rest: positional } = parseParallel(filteredRaw)
+  // Coverage forces serial — Bun writes lcov.info relative to cwd.
+  const effectiveParallel = wantCoverage ? 1 : parallelFlag
 
   const target = positional[0]
   if (!target) {
-    console.error('usage: run-tests-isolated.ts <packageDir> [--coverage] [-- ...extraBunTestArgs]')
+    console.error('usage: run-tests-isolated.ts <packageDir> [--coverage] [--parallel N] [-- ...extraBunTestArgs]')
     process.exit(2)
   }
 
@@ -218,26 +343,38 @@ function main() {
     process.exit(1)
   }
 
-  console.log(`running ${allFiles.length} test files isolated under ${target}${wantCoverage ? ' (with coverage)' : ''}...`)
+  const modeNote = wantCoverage
+    ? ' (with coverage; serial)'
+    : effectiveParallel > 1
+      ? ` (parallel ×${effectiveParallel})`
+      : ''
+  console.log(`running ${allFiles.length} test files isolated under ${target}${modeNote}...`)
   console.log()
 
-  const results: FileResult[] = []
+  let results: FileResult[]
+  if (wantCoverage || effectiveParallel <= 1) {
+    results = []
+    for (const file of allFiles) {
+      const rel = relative(process.cwd(), file)
+      process.stdout.write(`  ${rel} ... `)
+      const result = runOneSync(file, extraArgs, root, coverageOpts)
+      results.push(result)
+      const tag = result.exitCode === 0 ? 'OK' : 'FAIL'
+      process.stdout.write(
+        `${tag} (${result.passed} pass, ${result.failed} fail, ${result.skipped} skip, ${result.durationMs}ms)\n`,
+      )
+    }
+  } else {
+    results = await runPool(allFiles, extraArgs, root, effectiveParallel)
+  }
+
   let totalPassed = 0
   let totalFailed = 0
   let totalSkipped = 0
-
-  for (const file of allFiles) {
-    const rel = relative(process.cwd(), file)
-    process.stdout.write(`  ${rel} ... `)
-    const result = runOne(file, extraArgs, root, coverageOpts)
-    results.push(result)
-    totalPassed += result.passed
-    totalFailed += result.failed
-    totalSkipped += result.skipped
-    const tag = result.exitCode === 0 ? 'OK' : 'FAIL'
-    process.stdout.write(
-      `${tag} (${result.passed} pass, ${result.failed} fail, ${result.skipped} skip, ${result.durationMs}ms)\n`,
-    )
+  for (const r of results) {
+    totalPassed += r.passed
+    totalFailed += r.failed
+    totalSkipped += r.skipped
   }
 
   console.log()
@@ -288,4 +425,7 @@ function main() {
   process.exit(coverageExit)
 }
 
-main()
+main().catch((err) => {
+  console.error('run-tests-isolated.ts failed:', err)
+  process.exit(1)
+})

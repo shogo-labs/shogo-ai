@@ -75,7 +75,7 @@ import { requireSuperAdmin } from './middleware/super-admin'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
 import { createAdminRoutes } from './generated/admin-routes'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
-import { createRuntimeManager, type IRuntimeManager } from './lib/runtime'
+import { createRuntimeManager, setRuntimeManager, type IRuntimeManager } from './lib/runtime'
 // Generated routes (v2 API)
 import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
@@ -196,6 +196,15 @@ function getRuntimeManager(): IRuntimeManager {
       workspacesDir,
       templateDir: '_template',
     })
+    // Install as the module-level singleton in lib/runtime so the
+    // fallback path in resolve-pod-url.ts (and any other consumer that
+    // imports `getRuntimeManager` from `./lib/runtime/index`) resolves
+    // to this same instance. Without this, the fallback creates a
+    // second RuntimeManager whose constructor's cleanupStaleProcesses()
+    // SIGKILLs the still-starting Vite child this manager just spawned.
+    // See lib/runtime/manager.ts:setRuntimeManager for the full
+    // rationale.
+    setRuntimeManager(runtimeManager as ReturnType<typeof createRuntimeManager>)
     console.log('[Runtime] RuntimeManager initialized:', {
       portRange: '37100-37900 (random)',
       maxRuntimes: process.env.RUNTIME_MAX_COUNT || '10',
