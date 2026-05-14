@@ -68,10 +68,16 @@ mock.module('../../lib/prisma', () => ({
 
 const { evalOutputRoutes } = await import('../eval-outputs')
 
-// EVAL_OUTPUTS_DIR is resolved at module load time relative to import.meta.dir
-// of the SUT. We discover it by checking what existsSync is queried for and
-// stub accordingly via an absolute prefix.
-const EVAL_DIR = '/tmp/shogo-ai/packages/agent-runtime/eval-outputs'
+// `EVAL_OUTPUTS_DIR` in the SUT is resolved at module-load time relative
+// to its own `import.meta.dir`:
+//   resolve(<routes>, '../../../../packages/agent-runtime/eval-outputs')
+// The mock only matches existsSync/readdirSync queries by exact string,
+// so we must mirror the same resolved absolute path or every directory
+// lookup will miss and `body.runs` will always be empty. The test file
+// lives one level deeper than the route (in `__tests__/`), so we hop one
+// extra `..` to land on the same physical directory.
+const { resolve } = await import('node:path')
+const EVAL_DIR = resolve(import.meta.dir, '..', '../../../../packages/agent-runtime/eval-outputs')
 
 beforeEach(() => {
   fs.exists = new Set()
