@@ -6,17 +6,18 @@ import { Socket } from 'net'
 
 const TEST_DB_URL = process.env.DATABASE_URL || 'postgres://shogo:shogo_dev@127.0.0.1:5432/shogo'
 process.env.DATABASE_URL = TEST_DB_URL
+process.env.HEARTBEAT_BATCH_SIZE = '1000'
 
 // This whole file talks to a real Postgres instance — `LocalHeartbeatScheduler`
 // owns the SQLite path, this `HeartbeatScheduler` is the production /
-// pg-backed variant. Skip when Postgres isn't reachable so devs without a
-// local pg can still run the unit suite. CI brings up Postgres explicitly.
-async function isPostgresReachable(): Promise<boolean> {
+// pg-backed variant. Skip when Postgres isn't reachable or the local schema
+// is stale so devs without a migrated pg can still run the unit suite.
+async function isPostgresReady(): Promise<boolean> {
   try {
     const url = new URL(TEST_DB_URL)
     const host = url.hostname
     const port = parseInt(url.port || '5432', 10)
-    return await new Promise<boolean>((resolve) => {
+    const reachable = await new Promise<boolean>((resolve) => {
       const sock = new Socket()
       const done = (ok: boolean) => {
         sock.destroy()
@@ -28,18 +29,36 @@ async function isPostgresReachable(): Promise<boolean> {
       sock.once('timeout', () => done(false))
       sock.connect(port, host)
     })
+    if (!reachable) return false
+
+    const { Client } = await import('pg')
+    const client = new Client({ connectionString: TEST_DB_URL })
+    await client.connect()
+    try {
+      const result = await client.query(`
+        SELECT
+          to_regclass('public.workspaces') IS NOT NULL AS has_workspaces,
+          to_regclass('public.subscriptions') IS NOT NULL AS has_subscriptions,
+          to_regclass('public.idx_agent_configs_heartbeat_schedule') IS NOT NULL AS has_heartbeat_index
+      `)
+      const row = result.rows[0]
+      return Boolean(row?.has_workspaces && row?.has_subscriptions && row?.has_heartbeat_index)
+    } finally {
+      await client.end()
+    }
   } catch {
     return false
   }
 }
 
-const POSTGRES_REACHABLE = await isPostgresReachable()
+const POSTGRES_READY = await isPostgresReady()
 
 let prisma: any
 let HeartbeatScheduler: any
 
 const createdWorkspaceIds: string[] = []
 const createdProjectIds: string[] = []
+const createdSubscriptionIds: string[] = []
 
 async function createTestFixtures(overrides: {
   heartbeatEnabled?: boolean
@@ -80,10 +99,30 @@ async function createTestFixtures(overrides: {
     },
   })
 
+  const subscriptionId = randomUUID()
+  await prisma.subscription.create({
+    data: {
+      id: subscriptionId,
+      workspaceId,
+      stripeSubscriptionId: `test-sub-${subscriptionId}`,
+      stripeCustomerId: `test-cus-${workspaceId}`,
+      planId: 'pro',
+      seats: 1,
+      status: 'active',
+      billingInterval: 'monthly',
+      currentPeriodStart: new Date(Date.now() - 86_400_000),
+      currentPeriodEnd: new Date(Date.now() + 86_400_000),
+    },
+  })
+  createdSubscriptionIds.push(subscriptionId)
+
   return { workspaceId, projectId }
 }
 
 async function cleanup() {
+  for (const id of createdSubscriptionIds) {
+    await prisma.subscription.deleteMany({ where: { id } }).catch(() => {})
+  }
   for (const projectId of createdProjectIds) {
     await prisma.agentConfig.deleteMany({ where: { projectId } }).catch(() => {})
     await prisma.project.deleteMany({ where: { id: projectId } }).catch(() => {})
@@ -93,26 +132,27 @@ async function cleanup() {
   }
   createdProjectIds.length = 0
   createdWorkspaceIds.length = 0
+  createdSubscriptionIds.length = 0
 }
 
-beforeAll(async () => {
-  const prismaModule = await import('../prisma')
-  prisma = prismaModule.prisma
+describe.skipIf(!POSTGRES_READY)('HeartbeatScheduler e2e', () => {
+  beforeAll(async () => {
+    const prismaModule = await import('../prisma')
+    prisma = prismaModule.prisma
 
-  const schedulerModule = await import('../heartbeat-scheduler')
-  HeartbeatScheduler = schedulerModule.HeartbeatScheduler
-})
+    const schedulerModule = await import('../heartbeat-scheduler')
+    HeartbeatScheduler = schedulerModule.HeartbeatScheduler
+  })
 
-afterEach(async () => {
-  await cleanup()
-})
+  afterEach(async () => {
+    await cleanup()
+  })
 
-afterAll(async () => {
-  await cleanup()
-  await prisma.$disconnect?.()
-})
+  afterAll(async () => {
+    await cleanup()
+    await prisma.$disconnect?.()
+  })
 
-describe.skipIf(!POSTGRES_REACHABLE)('HeartbeatScheduler e2e', () => {
   test('tick() picks up due agents and advances nextHeartbeatAt', async () => {
     const { projectId } = await createTestFixtures({
       heartbeatEnabled: true,

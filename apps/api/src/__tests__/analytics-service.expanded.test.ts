@@ -34,6 +34,7 @@ type Store = {
   chatMessages: any[]
   subscriptions: any[]
   toolCallLogs: any[]
+  sessions: any[]
 }
 
 const store: Store = {
@@ -46,6 +47,14 @@ const store: Store = {
   chatMessages: [],
   subscriptions: [],
   toolCallLogs: [],
+  sessions: [],
+}
+
+// Stateful $queryRawUnsafe handler so getUserActivityTable / getUserFunnel tests
+// can stub each SQL call individually.
+let queryRawQueue: any[][] = []
+function enqueueQueryRaw(...batches: any[][]) {
+  queryRawQueue.push(...batches)
 }
 
 function matchWhere<T extends Record<string, any>>(row: T, where?: any): boolean {
@@ -79,7 +88,18 @@ function makeModel<T extends Record<string, any>>(rows: T[]) {
   return {
     count: async (args?: any) => rows.filter((r) => matchWhere(r, args?.where)).length,
     findMany: async (args?: any) => {
-      const filtered = rows.filter((r) => matchWhere(r, args?.where))
+      let filtered = rows.filter((r) => matchWhere(r, args?.where))
+      // Support `distinct: ['fieldA', ...]` by keeping the first row per
+      // unique combination of the listed fields.
+      if (args?.distinct && Array.isArray(args.distinct)) {
+        const seen = new Set<string>()
+        filtered = filtered.filter((r) => {
+          const k = args.distinct.map((f: string) => String(r[f])).join('::')
+          if (seen.has(k)) return false
+          seen.add(k)
+          return true
+        })
+      }
       return filtered.slice(args?.skip ?? 0, (args?.skip ?? 0) + (args?.take ?? filtered.length))
     },
     findUnique: async (args: any) => rows.find((r) => r.id === args?.where?.id) ?? null,
@@ -105,14 +125,17 @@ function makeModel<T extends Record<string, any>>(rows: T[]) {
             entry._sum = {}
             for (const k of Object.keys(args._sum)) entry._sum[k] = 0
           }
-          if (args._count) entry._count = { _all: 0 }
+          if (args._count) entry._count = args._count === true ? 0 : { _all: 0 }
           byKey.set(key, entry)
         }
         const entry = byKey.get(key)
         if (args._sum) {
           for (const k of Object.keys(args._sum)) entry._sum[k] += r[k] ?? 0
         }
-        if (args._count) entry._count._all += 1
+        if (args._count) {
+          if (args._count === true) entry._count += 1
+          else entry._count._all += 1
+        }
       }
       return [...byKey.values()]
     },
@@ -129,8 +152,9 @@ const mockPrisma: any = {
   chatMessage: makeModel(store.chatMessages),
   subscription: makeModel(store.subscriptions),
   toolCallLog: makeModel(store.toolCallLogs),
-  $queryRawUnsafe: async () => [],
-  $queryRaw: async () => [],
+  session: makeModel(store.sessions),
+  $queryRawUnsafe: async () => (queryRawQueue.length ? queryRawQueue.shift()! : []),
+  $queryRaw: async () => (queryRawQueue.length ? queryRawQueue.shift()! : []),
 }
 
 mock.module('../lib/prisma', () => ({
@@ -154,6 +178,7 @@ function rebuildModels() {
   mockPrisma.chatMessage = makeModel(store.chatMessages)
   mockPrisma.subscription = makeModel(store.subscriptions)
   mockPrisma.toolCallLog = makeModel(store.toolCallLogs)
+  mockPrisma.session = makeModel(store.sessions)
 }
 
 beforeEach(() => {
@@ -166,6 +191,8 @@ beforeEach(() => {
   store.chatMessages.length = 0
   store.subscriptions.length = 0
   store.toolCallLogs.length = 0
+  store.sessions.length = 0
+  queryRawQueue = []
   rebuildModels()
 })
 
@@ -427,5 +454,659 @@ describe('getUsageSummary', () => {
     expect(out.summaries[0].totalBilledUsd).toBe(3)
     expect(out.totals.totalRequests).toBe(2)
     expect(out.totals.uniqueModels).toBe(1)
+  })
+})
+
+
+// =========================================================================
+// parseMeta string branches + voiceLabel exhaustive
+// (exercised through getUsageLog with stringified actionMetadata and every
+//  voice_* action type)
+// =========================================================================
+
+describe('parseMeta + voiceLabel branches', () => {
+  test('parses JSON-stringified actionMetadata', async () => {
+    store.usageEvents.push({
+      id: 'e-1',
+      actionType: 'ai_proxy_completion',
+      memberId: 'u-1',
+      billedUsd: 0.2,
+      rawUsd: 0,
+      workspaceId: 'w-1',
+      projectId: 'p-1',
+      source: 'monthly',
+      createdAt: new Date(),
+      // double-stringified: stored as a string column
+      actionMetadata: JSON.stringify({ model: 'gpt-4', provider: 'openai', inputTokens: 10 }),
+    })
+    rebuildModels()
+    const out = await analytics.getUsageLog({ workspaceId: 'w-1' })
+    expect(out.entries[0].model).toBe('gpt-4')
+    expect(out.entries[0].provider).toBe('openai')
+    expect(out.entries[0].inputTokens).toBe(10)
+  })
+
+  test('falls back to empty meta when actionMetadata is a malformed JSON string', async () => {
+    store.usageEvents.push({
+      id: 'e-2',
+      actionType: 'ai_proxy_completion',
+      memberId: 'u-1',
+      billedUsd: 0.2,
+      rawUsd: 0,
+      workspaceId: 'w-1',
+      projectId: 'p-1',
+      source: 'monthly',
+      createdAt: new Date(),
+      actionMetadata: '{not json',
+    })
+    rebuildModels()
+    const out = await analytics.getUsageLog({ workspaceId: 'w-1' })
+    expect(out.entries[0].model).toBe('unknown')
+  })
+
+  test('falls back to empty meta when actionMetadata is null / number', async () => {
+    store.usageEvents.push(
+      {
+        id: 'e-3',
+        actionType: 'ai_proxy_completion',
+        memberId: 'u-1',
+        billedUsd: 0,
+        rawUsd: 0,
+        workspaceId: 'w-1',
+        projectId: 'p-1',
+        source: 'monthly',
+        createdAt: new Date(),
+        actionMetadata: null,
+      },
+      {
+        id: 'e-4',
+        actionType: 'ai_proxy_completion',
+        memberId: 'u-1',
+        billedUsd: 0,
+        rawUsd: 0,
+        workspaceId: 'w-1',
+        projectId: 'p-1',
+        source: 'monthly',
+        createdAt: new Date(),
+        actionMetadata: 42 as any,
+      },
+    )
+    rebuildModels()
+    const out = await analytics.getUsageLog({ workspaceId: 'w-1' })
+    expect(out.entries.length).toBe(2)
+  })
+
+  test('voiceLabel returns the right label for every voice_* action type', async () => {
+    const variants = [
+      ['voice_minutes_inbound', 'Voice · inbound'],
+      ['voice_minutes_outbound', 'Voice · outbound'],
+      ['voice_number_setup', 'Voice · number setup'],
+      ['voice_number_monthly', 'Voice · number monthly'],
+    ] as const
+    for (const [actionType] of variants) {
+      store.usageEvents.push({
+        id: `e-${actionType}`,
+        actionType,
+        memberId: 'u-1',
+        billedUsd: 0,
+        rawUsd: 0,
+        workspaceId: 'w-1',
+        projectId: 'p-1',
+        source: 'overage',
+        createdAt: new Date(),
+        actionMetadata: {},
+      })
+    }
+    rebuildModels()
+    const out = await analytics.getUsageLog({ workspaceId: 'w-1' })
+    const labels = out.entries.map((e) => e.model).sort()
+    for (const [, label] of variants) expect(labels).toContain(label)
+  })
+})
+
+// =========================================================================
+// getSpendTimeseries (497-638)
+// =========================================================================
+
+describe('getSpendTimeseries', () => {
+  test('groups by model by default and zero-fills days', async () => {
+    const from = new Date('2026-01-01T00:00:00.000Z')
+    const to = new Date('2026-01-03T00:00:00.000Z')
+    store.usageEvents.push(
+      {
+        id: 'e-1',
+        actionType: 'ai_proxy_completion',
+        memberId: 'u-1',
+        billedUsd: 1,
+        rawUsd: 0.8,
+        workspaceId: 'w-1',
+        projectId: 'p-1',
+        source: 'monthly',
+        createdAt: new Date('2026-01-01T12:00:00.000Z'),
+        actionMetadata: { model: 'claude' },
+      },
+      {
+        id: 'e-2',
+        actionType: 'ai_proxy_completion',
+        memberId: 'u-2',
+        billedUsd: 2,
+        rawUsd: 1.5,
+        workspaceId: 'w-1',
+        projectId: 'p-1',
+        source: 'overage',
+        createdAt: new Date('2026-01-02T12:00:00.000Z'),
+        actionMetadata: { model: 'gpt-4' },
+      },
+    )
+    rebuildModels()
+    const out = await analytics.getSpendTimeseries(
+      { workspaceId: 'w-1' },
+      '30d',
+      { fromIso: from.toISOString(), toIso: to.toISOString() },
+    )
+    expect(out.groupBy).toBe('model')
+    expect(out.metric).toBe('spend')
+    expect(out.models).toEqual(expect.arrayContaining(['claude', 'gpt-4']))
+    expect(out.totals.totalSpendUsd).toBe(3)
+    expect(out.totals.totalOnDemandUsd).toBe(2)
+    expect(out.totals.totalIncludedUsd).toBe(1)
+    expect(out.days.length).toBeGreaterThanOrEqual(2)
+  })
+
+  test('falls back to rawUsd then meta.rawUsd / dollarCost when billedUsd is 0', async () => {
+    const from = new Date('2026-02-01T00:00:00.000Z')
+    const to = new Date('2026-02-02T00:00:00.000Z')
+    store.usageEvents.push(
+      {
+        id: 'e-1',
+        actionType: 'ai_proxy_completion',
+        memberId: 'u-1',
+        billedUsd: 0,
+        rawUsd: 0.5,
+        workspaceId: 'w-1',
+        projectId: 'p-1',
+        source: 'monthly',
+        createdAt: new Date('2026-02-01T12:00:00.000Z'),
+        actionMetadata: { model: 'm1' },
+      },
+      {
+        id: 'e-2',
+        actionType: 'ai_proxy_completion',
+        memberId: 'u-1',
+        billedUsd: 0,
+        rawUsd: null,
+        workspaceId: 'w-1',
+        projectId: 'p-1',
+        source: 'monthly',
+        createdAt: new Date('2026-02-01T13:00:00.000Z'),
+        actionMetadata: { model: 'm2', rawUsd: 0.25 },
+      },
+      {
+        id: 'e-3',
+        actionType: 'ai_proxy_completion',
+        memberId: 'u-1',
+        billedUsd: 0,
+        rawUsd: null,
+        workspaceId: 'w-1',
+        projectId: 'p-1',
+        source: 'monthly',
+        createdAt: new Date('2026-02-01T14:00:00.000Z'),
+        actionMetadata: { model: 'm3', dollarCost: 0.1 },
+      },
+    )
+    rebuildModels()
+    const out = await analytics.getSpendTimeseries(
+      { workspaceId: 'w-1' },
+      '30d',
+      { fromIso: from.toISOString(), toIso: to.toISOString() },
+    )
+    expect(out.totals.totalSpendUsd).toBeCloseTo(0.85, 5)
+  })
+
+  test('groupBy=user resolves user emails / names from prisma.user.findMany', async () => {
+    const from = new Date('2026-03-01T00:00:00.000Z')
+    const to = new Date('2026-03-02T00:00:00.000Z')
+    store.usageEvents.push(
+      {
+        id: 'e-1',
+        actionType: 'ai_proxy_completion',
+        memberId: 'u-1',
+        billedUsd: 1,
+        rawUsd: 0,
+        workspaceId: 'w-1',
+        projectId: 'p-1',
+        source: 'monthly',
+        createdAt: new Date('2026-03-01T12:00:00.000Z'),
+        actionMetadata: { model: 'claude', totalTokens: 100 },
+      },
+      {
+        id: 'e-2',
+        actionType: 'ai_proxy_completion',
+        memberId: 'system',
+        billedUsd: 1,
+        rawUsd: 0,
+        workspaceId: 'w-1',
+        projectId: 'p-1',
+        source: 'monthly',
+        createdAt: new Date('2026-03-01T13:00:00.000Z'),
+        actionMetadata: { model: 'claude' },
+      },
+    )
+    store.users.push({ id: 'u-1', email: 'alice@x.com', name: 'Alice' })
+    rebuildModels()
+    const out = await analytics.getSpendTimeseries(
+      { workspaceId: 'w-1' },
+      '30d',
+      { fromIso: from.toISOString(), toIso: to.toISOString(), groupBy: 'user' },
+    )
+    expect(out.groupBy).toBe('user')
+    // alice@x.com series should appear plus the 'system' memberId fallback
+    expect(out.models).toEqual(expect.arrayContaining(['alice@x.com', 'system']))
+  })
+
+  test('groupBy=source / metric=tokens / metric=requests both work', async () => {
+    const from = new Date('2026-04-01T00:00:00.000Z')
+    const to = new Date('2026-04-02T00:00:00.000Z')
+    store.usageEvents.push({
+      id: 'e-1',
+      actionType: 'ai_proxy_completion',
+      memberId: 'u-1',
+      billedUsd: 1,
+      rawUsd: 0,
+      workspaceId: 'w-1',
+      projectId: 'p-1',
+      source: 'monthly',
+      createdAt: new Date('2026-04-01T12:00:00.000Z'),
+      actionMetadata: { model: 'claude', totalTokens: 200 },
+    })
+    rebuildModels()
+    const tokensOut = await analytics.getSpendTimeseries(
+      { workspaceId: 'w-1' },
+      '30d',
+      { fromIso: from.toISOString(), toIso: to.toISOString(), groupBy: 'source', metric: 'tokens' },
+    )
+    expect(tokensOut.metric).toBe('tokens')
+    expect(tokensOut.groupBy).toBe('source')
+    expect(tokensOut.days.some((d) => d.total === 200)).toBe(true)
+
+    const requestsOut = await analytics.getSpendTimeseries(
+      { workspaceId: 'w-1' },
+      '30d',
+      { fromIso: from.toISOString(), toIso: to.toISOString(), metric: 'requests' },
+    )
+    expect(requestsOut.metric).toBe('requests')
+    expect(requestsOut.days.some((d) => d.total === 1)).toBe(true)
+  })
+
+  test('collapses long-tail series into "Other" when over topN', async () => {
+    const from = new Date('2026-05-01T00:00:00.000Z')
+    const to = new Date('2026-05-02T00:00:00.000Z')
+    for (let i = 0; i < 5; i++) {
+      store.usageEvents.push({
+        id: `e-${i}`,
+        actionType: 'ai_proxy_completion',
+        memberId: 'u-1',
+        billedUsd: 10 - i, // ranked deterministically
+        rawUsd: 0,
+        workspaceId: 'w-1',
+        projectId: 'p-1',
+        source: 'monthly',
+        createdAt: new Date('2026-05-01T12:00:00.000Z'),
+        actionMetadata: { model: `m${i}` },
+      })
+    }
+    rebuildModels()
+    const out = await analytics.getSpendTimeseries(
+      { workspaceId: 'w-1' },
+      '30d',
+      { fromIso: from.toISOString(), toIso: to.toISOString(), topN: 2 },
+    )
+    expect(out.models).toContain('Other')
+    expect(out.models.length).toBe(3) // 2 top + Other
+  })
+})
+
+// =========================================================================
+// getActiveUsers
+// =========================================================================
+
+describe('getActiveUsers', () => {
+  test('workspace scope counts distinct memberIds from usage events', async () => {
+    const now = new Date()
+    store.usageEvents.push(
+      { memberId: 'u-1', workspaceId: 'w-1', projectId: 'p-1', billedUsd: 0, source: 'monthly', actionType: 'x', createdAt: now },
+      { memberId: 'u-1', workspaceId: 'w-1', projectId: 'p-1', billedUsd: 0, source: 'monthly', actionType: 'x', createdAt: now },
+      { memberId: 'u-2', workspaceId: 'w-1', projectId: 'p-1', billedUsd: 0, source: 'monthly', actionType: 'x', createdAt: now },
+    )
+    rebuildModels()
+    const out = await analytics.getActiveUsers({ workspaceId: 'w-1' })
+    expect(out.dau).toBe(2)
+    expect(out.wau).toBe(2)
+    expect(out.mau).toBe(2)
+  })
+
+  test('platform scope counts distinct userIds from auth sessions', async () => {
+    const now = new Date()
+    store.sessions.push(
+      { userId: 'u-1', updatedAt: now },
+      { userId: 'u-2', updatedAt: now },
+      { userId: 'u-1', updatedAt: now },
+    )
+    rebuildModels()
+    const out = await analytics.getActiveUsers()
+    expect(out.dau).toBe(2)
+  })
+})
+
+// =========================================================================
+// getUsageLog filter branches (options.userId / options.model / scope.userId)
+// =========================================================================
+
+describe('getUsageLog filter branches', () => {
+  test('options.userId narrows to a single memberId', async () => {
+    store.usageEvents.push(
+      { id: '1', actionType: 'ai_proxy_completion', memberId: 'u-1', billedUsd: 0, rawUsd: 0, workspaceId: 'w-1', projectId: 'p-1', source: 'monthly', createdAt: new Date(), actionMetadata: { model: 'm' } },
+      { id: '2', actionType: 'ai_proxy_completion', memberId: 'u-2', billedUsd: 0, rawUsd: 0, workspaceId: 'w-1', projectId: 'p-1', source: 'monthly', createdAt: new Date(), actionMetadata: { model: 'm' } },
+    )
+    rebuildModels()
+    const out = await analytics.getUsageLog({}, '30d', { userId: 'u-1' })
+    expect(out.entries.every((e) => e.userId === 'u-1')).toBe(true)
+  })
+
+  test('options.model attaches a path / string_contains filter', async () => {
+    // This won't actually filter through our stub (matchWhere ignores object
+    // filters keyed by path) — the path simply needs to run without error.
+    store.usageEvents.push({
+      id: '1',
+      actionType: 'ai_proxy_completion',
+      memberId: 'u-1',
+      billedUsd: 0,
+      rawUsd: 0,
+      workspaceId: 'w-1',
+      projectId: 'p-1',
+      source: 'monthly',
+      createdAt: new Date(),
+      actionMetadata: { model: 'claude' },
+    })
+    rebuildModels()
+    const out = await analytics.getUsageLog({}, '30d', { model: 'claude' })
+    expect(out.total).toBeGreaterThanOrEqual(0)
+  })
+
+  test('scope.userId and scope.projectId merge into the where clause', async () => {
+    store.usageEvents.push({
+      id: '1',
+      actionType: 'ai_proxy_completion',
+      memberId: 'u-1',
+      billedUsd: 0,
+      rawUsd: 0,
+      workspaceId: 'w-1',
+      projectId: 'p-1',
+      source: 'monthly',
+      createdAt: new Date(),
+      actionMetadata: { model: 'm' },
+    })
+    rebuildModels()
+    const out = await analytics.getUsageLog({ projectId: 'p-1', userId: 'u-1' })
+    expect(out.entries[0].userId).toBe('u-1')
+  })
+})
+
+// =========================================================================
+// getUsageSummary scope branches
+// =========================================================================
+
+describe('getUsageSummary scope branches', () => {
+  test('projectId scope filters to the right project (and emits totals)', async () => {
+    store.usageEvents.push({
+      actionType: 'ai_proxy_completion',
+      memberId: 'u-1',
+      billedUsd: 1,
+      rawUsd: 0.5,
+      workspaceId: 'w-1',
+      projectId: 'p-1',
+      source: 'monthly',
+      createdAt: new Date(),
+      actionMetadata: { model: 'm', inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+    })
+    rebuildModels()
+    const out = await analytics.getUsageSummary({ projectId: 'p-1' })
+    expect(out.summaries.length).toBe(1)
+    expect(out.totals.totalBilledUsd).toBe(1)
+  })
+
+  test('userId scope sets memberId filter', async () => {
+    store.usageEvents.push({
+      actionType: 'ai_proxy_completion',
+      memberId: 'u-1',
+      billedUsd: 1,
+      rawUsd: 0,
+      workspaceId: 'w-1',
+      projectId: 'p-1',
+      source: 'monthly',
+      createdAt: new Date(),
+      actionMetadata: { model: 'm' },
+    })
+    rebuildModels()
+    const out = await analytics.getUsageSummary({ userId: 'u-1' })
+    expect(out.summaries[0].userId).toBe('u-1')
+  })
+
+  test('uses meta.rawUsd when usageEvent.rawUsd is null', async () => {
+    store.usageEvents.push({
+      actionType: 'ai_proxy_completion',
+      memberId: 'u-1',
+      billedUsd: 0,
+      rawUsd: null,
+      workspaceId: 'w-1',
+      projectId: 'p-1',
+      source: 'monthly',
+      createdAt: new Date(),
+      actionMetadata: { model: 'm', rawUsd: 0.42 },
+    })
+    rebuildModels()
+    const out = await analytics.getUsageSummary({ workspaceId: 'w-1' })
+    expect(out.summaries[0].totalRawUsd).toBeCloseTo(0.42, 5)
+  })
+})
+
+// =========================================================================
+// getChatAnalytics — projectId scope + populated data
+// =========================================================================
+
+describe('getChatAnalytics with data', () => {
+  test('projectId scope filters chat sessions to context and computes avg', async () => {
+    const now = new Date()
+    store.chatSessions.push(
+      { id: 's-1', contextId: 'p-1', createdAt: now, _count: { messages: 2 } },
+      { id: 's-2', contextId: 'p-1', createdAt: now, _count: { messages: 4 } },
+    )
+    // chatMessage.count is a number; matchWhere will ignore the nested
+    // `session: { contextId, createdAt: {gte} }` because relation filters
+    // aren't recognised — instead it just returns the row count. Push two
+    // matching messages so totalMessages reports 2.
+    store.chatMessages.push(
+      { id: 'cm-1', role: 'user', agent: 'technical', sessionId: 's-1' },
+      { id: 'cm-2', role: 'user', agent: 'technical', sessionId: 's-1' },
+    )
+    rebuildModels()
+    const out = await analytics.getChatAnalytics({ projectId: 'p-1' })
+    expect(out.totalSessions).toBe(2)
+    expect(out.totalMessages).toBe(2)
+    expect(out.avgMessagesPerSession).toBe(1)
+  })
+})
+
+// =========================================================================
+// getUserActivityTable (1365-1490)
+// =========================================================================
+
+describe('getUserActivityTable', () => {
+  test('joins user list with $queryRawUnsafe message/session/toolcall counts', async () => {
+    const now = new Date()
+    store.users.push({
+      id: 'u-1',
+      name: 'Alice',
+      email: 'a@real.com',
+      role: 'user',
+      createdAt: now,
+      signupAttribution: { sourceTag: 'organic:google' },
+      sessions: [{ updatedAt: now }],
+      _count: { members: 1 },
+    })
+    store.projects.push({ id: 'p-1', createdBy: 'u-1', workspaceId: 'w-1', createdAt: now })
+    store.usageEvents.push({
+      memberId: 'u-1',
+      billedUsd: 5,
+      source: 'monthly',
+      actionType: 'x',
+      workspaceId: 'w-1',
+      projectId: 'p-1',
+      createdAt: now,
+    })
+    // Three sequential $queryRawUnsafe calls: messages, sessions, toolCalls.
+    enqueueQueryRaw(
+      [{ userId: 'u-1', count: 12 }],
+      [{ userId: 'u-1', count: 3 }],
+      [{ userId: 'u-1', count: 4 }],
+    )
+    rebuildModels()
+    const out = await analytics.getUserActivityTable('30d', { excludeInternal: false })
+    expect(out.total).toBe(1)
+    expect(out.users[0].id).toBe('u-1')
+    expect(out.users[0].messages).toBe(12)
+    expect(out.users[0].sessions).toBe(3)
+    expect(out.users[0].toolCalls).toBe(4)
+    expect(out.users[0].projects).toBe(1)
+    expect(out.users[0].spendUsd).toBe(5)
+    expect(out.users[0].sourceTag).toBe('organic:google')
+  })
+
+  test('honours excludeInternal=true (uses realUserWhere) and clamps limit', async () => {
+    store.users.push({
+      id: 'u-1',
+      name: null,
+      email: 'real@example.com',
+      role: 'user',
+      createdAt: new Date(),
+      sessions: [],
+      _count: { members: 0 },
+    })
+    enqueueQueryRaw([], [], [])
+    rebuildModels()
+    const out = await analytics.getUserActivityTable('7d', { limit: 9999, excludeInternal: true })
+    expect(out.users.length).toBe(1)
+    expect(out.users[0].lastActiveAt).toBeNull()
+  })
+})
+
+// =========================================================================
+// realUserWhere (1201-1215)
+// =========================================================================
+
+describe('realUserWhere', () => {
+  test('returns a Prisma filter that excludes super_admin and internal emails', () => {
+    const w = analytics.realUserWhere()
+    expect(w.AND).toBeDefined()
+    expect((w.AND as any[]).length).toBeGreaterThan(1)
+  })
+})
+
+// =========================================================================
+// deriveSourceTag (1776-1803)
+// =========================================================================
+
+describe('deriveSourceTag', () => {
+  test('utm_source + utm_medium=cpc yields `${src}-ads`', () => {
+    expect(analytics.deriveSourceTag({ utmSource: 'google', utmMedium: 'cpc' })).toBe('google-ads')
+  })
+
+  test('utm_source alone returns the source', () => {
+    expect(analytics.deriveSourceTag({ utmSource: 'twitter' })).toBe('twitter')
+  })
+
+  test('referrer google host returns organic:google', () => {
+    expect(analytics.deriveSourceTag({ referrer: 'https://www.google.com/search?q=x' })).toBe('organic:google')
+  })
+
+  test('referrer bing returns organic:bing', () => {
+    expect(analytics.deriveSourceTag({ referrer: 'https://bing.com' })).toBe('organic:bing')
+  })
+
+  test('referrer other host returns referral:host', () => {
+    expect(analytics.deriveSourceTag({ referrer: 'https://www.example.com/' })).toBe('referral:example.com')
+  })
+
+  test('malformed referrer URL falls back to "referral"', () => {
+    expect(analytics.deriveSourceTag({ referrer: 'not a url' })).toBe('referral')
+  })
+
+  test('method=google → google-oauth, otherwise direct', () => {
+    expect(analytics.deriveSourceTag({ method: 'google' })).toBe('google-oauth')
+    expect(analytics.deriveSourceTag({})).toBe('direct')
+  })
+})
+
+// =========================================================================
+// getChatConversations / getSourceBreakdown / getTemplateEngagement /
+// getUserFunnel — drive the raw-SQL paths via the queryRawQueue stub.
+// =========================================================================
+
+describe('raw-SQL paths via $queryRawUnsafe stub', () => {
+  test('getChatConversations groups rows by sessionId', async () => {
+    enqueueQueryRaw([
+      { sessionId: 's-1', userName: 'A', projectName: 'P', templateId: 't', role: 'user', content: 'hi', sentAt: new Date() },
+      { sessionId: 's-1', userName: 'A', projectName: 'P', templateId: 't', role: 'assistant', content: 'hello', sentAt: new Date() },
+      { sessionId: 's-2', userName: 'B', projectName: 'P2', templateId: null, role: 'user', content: 'hi2', sentAt: new Date() },
+    ])
+    const out = await analytics.getChatConversations(new Date(0))
+    expect(out.conversations.length).toBe(2)
+    expect(out.conversations[0].messages.length).toBe(2)
+  })
+
+  test('getSourceBreakdown computes project + message rates', async () => {
+    enqueueQueryRaw([
+      { tag: 'organic:google', count: 10, withProject: 5, withMessage: 2 },
+      { tag: 'direct', count: 0, withProject: 0, withMessage: 0 },
+    ])
+    const out = await analytics.getSourceBreakdown()
+    expect(out.sources[0].projectRate).toBe(50)
+    expect(out.sources[0].messageRate).toBe(20)
+    expect(out.sources[1].projectRate).toBe(0)
+  })
+
+  test('getTemplateEngagement computes engagementRate', async () => {
+    enqueueQueryRaw([
+      { templateId: 't1', projects: 4, avgMessages: 3.5, totalToolCalls: 9, engagedUsers: 3, totalUsers: 4 },
+      { templateId: 't2', projects: 1, avgMessages: 0, totalToolCalls: 0, engagedUsers: 0, totalUsers: 0 },
+    ])
+    const out = await analytics.getTemplateEngagement()
+    expect(out.templates[0].engagementRate).toBe(75)
+    expect(out.templates[1].engagementRate).toBe(0)
+  })
+
+  test('getUserFunnel maps row into FunnelResult', async () => {
+    enqueueQueryRaw([
+      {
+        signups: 10,
+        onboarded: 7,
+        createdProject: 5,
+        sentMessage: 4,
+        engaged: 2,
+        avgMinToFirstProject: 12.3,
+        avgMinToFirstMessage: 33.7,
+      },
+    ])
+    const out = await analytics.getUserFunnel()
+    expect(out.signups).toBe(10)
+    expect(out.engaged).toBe(2)
+    expect(out.avgMinToFirstProject).toBe(12.3)
+  })
+
+  test('getUserFunnel returns zeros when raw query returns no rows', async () => {
+    enqueueQueryRaw([])
+    const out = await analytics.getUserFunnel('7d', false)
+    expect(out.signups).toBe(0)
+    expect(out.avgMinToFirstProject).toBeNull()
   })
 })

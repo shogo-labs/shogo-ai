@@ -1,0 +1,156 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+
+import { describe, expect, it } from 'bun:test'
+import {
+  DAILY_INCLUDED_USD,
+  MONTHLY_DAILY_CAP_USD,
+  PLAN_INCLUDED_USD,
+  PLAN_VOICE_RATE_OVERRIDES,
+  SEAT_INCLUDED_USD,
+  VOICE_RAW_USD,
+  getMonthlyIncludedForPlan,
+} from '../usage-plans'
+
+describe('constants', () => {
+  it('DAILY_INCLUDED_USD is 0.50', () => {
+    expect(DAILY_INCLUDED_USD).toBe(0.5)
+  })
+
+  it('MONTHLY_DAILY_CAP_USD is 3.00', () => {
+    expect(MONTHLY_DAILY_CAP_USD).toBe(3.0)
+  })
+
+  it('SEAT_INCLUDED_USD covers all five plan tiers', () => {
+    expect(SEAT_INCLUDED_USD).toEqual({
+      free: 0,
+      basic: 5,
+      pro: 20,
+      business: 40,
+      enterprise: 2000,
+    })
+  })
+
+  it('PLAN_INCLUDED_USD (deprecated) is exported with legacy business=20', () => {
+    expect(PLAN_INCLUDED_USD.business).toBe(20)
+    expect(PLAN_INCLUDED_USD.basic).toBe(5)
+  })
+
+  it('VOICE_RAW_USD has the four required telephony keys', () => {
+    expect(VOICE_RAW_USD.minutesInbound).toBe(0.2)
+    expect(VOICE_RAW_USD.minutesOutbound).toBe(0.24)
+    expect(VOICE_RAW_USD.numberSetup).toBe(2.0)
+    expect(VOICE_RAW_USD.numberMonthly).toBe(3.0)
+  })
+
+  it('PLAN_VOICE_RATE_OVERRIDES is empty by default', () => {
+    expect(PLAN_VOICE_RATE_OVERRIDES).toEqual({})
+  })
+
+  it('plan ladder is monotonically non-decreasing free<basic<pro<business<enterprise', () => {
+    expect(SEAT_INCLUDED_USD.free).toBeLessThan(SEAT_INCLUDED_USD.basic)
+    expect(SEAT_INCLUDED_USD.basic).toBeLessThan(SEAT_INCLUDED_USD.pro)
+    expect(SEAT_INCLUDED_USD.pro).toBeLessThan(SEAT_INCLUDED_USD.business)
+    expect(SEAT_INCLUDED_USD.business).toBeLessThan(SEAT_INCLUDED_USD.enterprise)
+  })
+})
+
+describe('getMonthlyIncludedForPlan — known plans', () => {
+  it('returns 0 for free plan regardless of seats', () => {
+    expect(getMonthlyIncludedForPlan('free')).toBe(0)
+    expect(getMonthlyIncludedForPlan('free', 5)).toBe(0)
+    expect(getMonthlyIncludedForPlan('free', 100)).toBe(0)
+  })
+
+  it('returns 5 for basic plan and ignores seats (single-user)', () => {
+    expect(getMonthlyIncludedForPlan('basic')).toBe(5)
+    expect(getMonthlyIncludedForPlan('basic', 1)).toBe(5)
+    expect(getMonthlyIncludedForPlan('basic', 50)).toBe(5)
+  })
+
+  it('multiplies pro plan by seats', () => {
+    expect(getMonthlyIncludedForPlan('pro')).toBe(20)
+    expect(getMonthlyIncludedForPlan('pro', 1)).toBe(20)
+    expect(getMonthlyIncludedForPlan('pro', 3)).toBe(60)
+    expect(getMonthlyIncludedForPlan('pro', 10)).toBe(200)
+  })
+
+  it('multiplies business plan by seats', () => {
+    expect(getMonthlyIncludedForPlan('business', 1)).toBe(40)
+    expect(getMonthlyIncludedForPlan('business', 2)).toBe(80)
+    expect(getMonthlyIncludedForPlan('business', 25)).toBe(1000)
+  })
+
+  it('multiplies enterprise plan by seats', () => {
+    expect(getMonthlyIncludedForPlan('enterprise', 1)).toBe(2000)
+    expect(getMonthlyIncludedForPlan('enterprise', 4)).toBe(8000)
+  })
+})
+
+describe('getMonthlyIncludedForPlan — seat coercion', () => {
+  it('treats 0 seats as 1', () => {
+    expect(getMonthlyIncludedForPlan('pro', 0)).toBe(20)
+  })
+
+  it('treats negative seats as 1', () => {
+    expect(getMonthlyIncludedForPlan('pro', -3)).toBe(20)
+  })
+
+  it('floors fractional seats', () => {
+    expect(getMonthlyIncludedForPlan('pro', 3.9)).toBe(60)
+    expect(getMonthlyIncludedForPlan('pro', 1.4)).toBe(20)
+  })
+
+  it('treats NaN seats as 1', () => {
+    expect(getMonthlyIncludedForPlan('pro', NaN)).toBe(20)
+  })
+
+  it('defaults seats to 1 when omitted', () => {
+    expect(getMonthlyIncludedForPlan('business')).toBe(40)
+  })
+})
+
+describe('getMonthlyIncludedForPlan — legacy tier ids', () => {
+  it('decodes pro_200 to $20 ($0.10/credit × 200)', () => {
+    expect(getMonthlyIncludedForPlan('pro_200')).toBe(20)
+  })
+
+  it('decodes business_1200 to $120', () => {
+    expect(getMonthlyIncludedForPlan('business_1200')).toBeCloseTo(120, 10)
+  })
+
+  it('decodes basic_50 to $5', () => {
+    expect(getMonthlyIncludedForPlan('basic_50')).toBe(5)
+  })
+
+  it('ignores seats for legacy tier ids', () => {
+    expect(getMonthlyIncludedForPlan('pro_200', 5)).toBe(20)
+  })
+
+  it('does not match similar-but-invalid legacy patterns', () => {
+    expect(getMonthlyIncludedForPlan('enterprise_1000')).toBe(0)
+    expect(getMonthlyIncludedForPlan('PRO_200')).toBe(0)
+    expect(getMonthlyIncludedForPlan('pro_')).toBe(0)
+    expect(getMonthlyIncludedForPlan('pro_abc')).toBe(0)
+    expect(getMonthlyIncludedForPlan('pro_200_extra')).toBe(0)
+  })
+})
+
+describe('getMonthlyIncludedForPlan — unknown plan ids', () => {
+  it('returns 0 for empty string', () => {
+    expect(getMonthlyIncludedForPlan('')).toBe(0)
+  })
+
+  it('returns 0 for unknown plan', () => {
+    expect(getMonthlyIncludedForPlan('platinum')).toBe(0)
+  })
+
+  it('returns 0 for whitespace', () => {
+    expect(getMonthlyIncludedForPlan('  pro  ')).toBe(0)
+  })
+
+  it('is case-sensitive on canonical plan ids', () => {
+    expect(getMonthlyIncludedForPlan('PRO')).toBe(0)
+    expect(getMonthlyIncludedForPlan('Pro')).toBe(0)
+  })
+})

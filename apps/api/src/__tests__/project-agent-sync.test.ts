@@ -161,6 +161,53 @@ describe('syncProjectAgents — create branch', () => {
     expect(out.created).toEqual([])
     expect(rows).toEqual([])
   })
+
+  test('reports malformed values and missing EL client for voice-bearing creates', async () => {
+    const out = await syncProjectAgents({
+      projectId: 'p',
+      workspaceId: 'ws',
+      manifest: {
+        malformed: null,
+        narrator: { voiceId: 'voice_a', firstMessage: 'hi' },
+      },
+      prune: false,
+      dryRun: false,
+      elClient: null,
+    })
+
+    expect(out.errors.map((e) => e.name)).toEqual(['malformed', 'narrator'])
+    expect(out.errors[0]!.message).toContain("value must be an object")
+    expect(out.errors[1]!.message).toContain('ELEVENLABS_API_KEY')
+    expect(out.created).toEqual(['malformed', 'narrator'])
+    expect(rows.find((r) => r.name === 'narrator')?.elevenlabsAgentId).toBeNull()
+  })
+
+  test('captures upstream status/body when EL create fails', async () => {
+    const client = makeClient()
+    client.createAgent.mockImplementationOnce(async () => {
+      const err: any = new Error('EL rejected create')
+      err.status = 400
+      err.body = '{"error":"bad voice"}'
+      throw err
+    })
+
+    const out = await syncProjectAgents({
+      projectId: 'p',
+      workspaceId: 'ws',
+      manifest: { narrator: { voiceId: 'voice_a', firstMessage: 'hi' } },
+      prune: false,
+      dryRun: false,
+      elClient: client,
+    })
+
+    expect(out.created).toEqual([])
+    expect(out.errors[0]).toMatchObject({
+      name: 'narrator',
+      message: 'EL rejected create',
+      status: 400,
+      upstreamBody: '{"error":"bad voice"}',
+    })
+  })
 })
 
 describe('syncProjectAgents — update branch', () => {
@@ -205,6 +252,162 @@ describe('syncProjectAgents — update branch', () => {
     // firstMessage unchanged → not part of patch payload
     expect('firstMessage' in patch).toBe(false)
     expect(rows[0]!.systemPrompt).toBe('new prompt')
+  })
+
+  test('patches all EL-visible fields and ignores non-string manifest fields', async () => {
+    rows = [
+      {
+        id: 'pa_existing',
+        projectId: 'p',
+        workspaceId: 'ws',
+        name: 'narrator',
+        systemPrompt: 'old',
+        toolsAllowlist: null,
+        tools: null,
+        characterName: 'Old',
+        displayName: 'Old Display',
+        voiceId: 'voice_old',
+        firstMessage: 'old hi',
+        elevenlabsAgentId: 'agent_pre',
+        model: 'claude-old',
+      },
+    ]
+    const client = makeClient()
+    const out = await syncProjectAgents({
+      projectId: 'p',
+      workspaceId: 'ws',
+      manifest: {
+        narrator: {
+          systemPrompt: 123,
+          characterName: 'New',
+          displayName: 'New Display',
+          voiceId: 'voice_new',
+          firstMessage: 'new hi',
+          model: 'claude-new',
+        },
+      },
+      prune: false,
+      dryRun: false,
+      elClient: client,
+    })
+
+    expect(out.updated).toEqual(['narrator'])
+    expect(client.patchAgent).toHaveBeenCalledWith('agent_pre', {
+      characterName: 'New',
+      displayName: 'New Display',
+      voiceId: 'voice_new',
+      firstMessage: 'new hi',
+    })
+    expect(rows[0]!.model).toBe('claude-new')
+  })
+
+  test('model-only updates do not patch ElevenLabs', async () => {
+    rows = [
+      {
+        id: 'pa_model',
+        projectId: 'p',
+        workspaceId: 'ws',
+        name: 'default',
+        systemPrompt: null,
+        toolsAllowlist: null,
+        tools: null,
+        characterName: null,
+        displayName: null,
+        voiceId: null,
+        firstMessage: null,
+        elevenlabsAgentId: 'agent_pre',
+        model: 'old-model',
+      },
+    ]
+    const client = makeClient()
+
+    const out = await syncProjectAgents({
+      projectId: 'p',
+      workspaceId: 'ws',
+      manifest: { default: { model: 'new-model' } },
+      prune: false,
+      dryRun: false,
+      elClient: client,
+    })
+
+    expect(out.updated).toEqual(['default'])
+    expect(client.patchAgent).not.toHaveBeenCalled()
+  })
+
+  test('invalid stored tools JSON is treated as null before diffing', async () => {
+    rows = [
+      {
+        id: 'pa_tools',
+        projectId: 'p',
+        workspaceId: 'ws',
+        name: 'default',
+        systemPrompt: null,
+        toolsAllowlist: 'not-json',
+        tools: 'also-not-json',
+        characterName: null,
+        displayName: null,
+        voiceId: null,
+        firstMessage: null,
+        elevenlabsAgentId: null,
+        model: null,
+      },
+    ]
+    const client = makeClient()
+
+    const out = await syncProjectAgents({
+      projectId: 'p',
+      workspaceId: 'ws',
+      manifest: { default: { tools: null } },
+      prune: false,
+      dryRun: false,
+      elClient: client,
+    })
+
+    expect(out.updated).toEqual([])
+    expect(updateMock).not.toHaveBeenCalled()
+  })
+
+  test('captures upstream status/body when EL patch fails', async () => {
+    rows = [
+      {
+        id: 'pa_existing',
+        projectId: 'p',
+        workspaceId: 'ws',
+        name: 'narrator',
+        systemPrompt: 'old',
+        toolsAllowlist: null,
+        tools: null,
+        characterName: null,
+        displayName: null,
+        voiceId: 'voice_a',
+        firstMessage: 'hi',
+        elevenlabsAgentId: 'agent_pre',
+        model: null,
+      },
+    ]
+    const client = makeClient()
+    client.patchAgent.mockImplementationOnce(async () => {
+      const err: any = new Error('EL rejected patch')
+      err.status = 422
+      err.body = '{"error":"bad patch"}'
+      throw err
+    })
+
+    const out = await syncProjectAgents({
+      projectId: 'p',
+      workspaceId: 'ws',
+      manifest: { narrator: { systemPrompt: 'new' } },
+      prune: false,
+      dryRun: false,
+      elClient: client,
+    })
+
+    expect(out.updated).toEqual([])
+    expect(out.errors[0]).toMatchObject({
+      name: 'narrator',
+      status: 422,
+      upstreamBody: '{"error":"bad patch"}',
+    })
   })
 
   test('promotes a chat-only row to voice-capable on first deploy with voiceId', async () => {
@@ -464,6 +667,86 @@ describe('syncProjectAgents — prune branch', () => {
     expect(out.deleted).toEqual(['architect'])
     expect(client.deleteAgent).toHaveBeenCalledWith('agent_a')
     expect(rows).toEqual([])
+  })
+
+  test('continues pruning when EL delete fails best-effort', async () => {
+    rows = [
+      {
+        id: 'pa_a',
+        projectId: 'p',
+        workspaceId: 'ws',
+        name: 'architect',
+        systemPrompt: null,
+        toolsAllowlist: null,
+        tools: null,
+        characterName: null,
+        displayName: null,
+        voiceId: null,
+        firstMessage: null,
+        elevenlabsAgentId: 'agent_a',
+        model: null,
+      },
+    ]
+    const client = makeClient()
+    client.deleteAgent.mockImplementationOnce(async () => {
+      throw new Error('already gone')
+    })
+
+    const out = await syncProjectAgents({
+      projectId: 'p',
+      workspaceId: 'ws',
+      manifest: {},
+      prune: true,
+      dryRun: false,
+      elClient: client,
+    })
+
+    expect(out.deleted).toEqual(['architect'])
+    expect(rows).toEqual([])
+  })
+
+  test('captures delete errors with upstream status and body', async () => {
+    rows = [
+      {
+        id: 'pa_a',
+        projectId: 'p',
+        workspaceId: 'ws',
+        name: 'architect',
+        systemPrompt: null,
+        toolsAllowlist: null,
+        tools: null,
+        characterName: null,
+        displayName: null,
+        voiceId: null,
+        firstMessage: null,
+        elevenlabsAgentId: null,
+        model: null,
+      },
+    ]
+    deleteMock.mockImplementationOnce(async () => {
+      const err: any = new Error('delete rejected')
+      err.status = 500
+      err.body = 'db down'
+      throw err
+    })
+    const client = makeClient()
+
+    const out = await syncProjectAgents({
+      projectId: 'p',
+      workspaceId: 'ws',
+      manifest: {},
+      prune: true,
+      dryRun: false,
+      elClient: client,
+    })
+
+    expect(out.deleted).toEqual([])
+    expect(out.errors[0]).toMatchObject({
+      name: 'architect',
+      message: 'delete rejected',
+      status: 500,
+      upstreamBody: 'db down',
+    })
   })
 
   test('does NOT prune the `default` row even when missing from the manifest', async () => {

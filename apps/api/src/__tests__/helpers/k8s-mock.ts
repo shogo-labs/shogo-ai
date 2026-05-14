@@ -36,6 +36,7 @@ export type K8sCallLog = { api: string; method: string; args: any[] }[]
 
 const STANDARD_NOOP_METHODS = {
   CoreV1Api: [
+    'listNode',
     'listPodForAllNamespaces', 'listNamespacedPod', 'readNamespacedPod', 'createNamespacedPod',
     'deleteNamespacedPod', 'patchNamespacedPod', 'replaceNamespacedPod',
     'listNamespace', 'readNamespace', 'createNamespace', 'deleteNamespace',
