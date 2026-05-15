@@ -52,6 +52,12 @@ export interface StartFlags {
   runtimeBin?: string;
   debug?: boolean;
   foreground?: boolean;
+  /** Set to `true` to disable the on-first-request auto-pull of project
+   *  workspaces from cloud. Auto-pull is ON by default for `cli_worker`
+   *  workers so a freshly-paired VPS can serve pinned projects without
+   *  the operator first running `shogo project pull`. */
+  noAutoPull?: boolean;
+  projectsDir?: string;
 }
 
 export async function runStart(flags: StartFlags): Promise<void> {
@@ -61,6 +67,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
     apiKey: flags.apiKey,
     cloudUrl: flags.cloudUrl,
     port: flags.port ? parseInt(flags.port, 10) : undefined,
+    projectsDir: flags.projectsDir,
   });
 
   const proxy = resolveProxy(flags.proxy);
@@ -97,11 +104,14 @@ export async function runStart(flags: StartFlags): Promise<void> {
     if (!ok) process.exit(1);
   }
 
+  const autoPullEnabled = !flags.noAutoPull;
+
   console.log(pc.bold('\nShogo Worker — Starting'));
   console.log(pc.dim('  name        ') + cfg.name);
   console.log(pc.dim('  worker-dir  ') + cfg.workerDir);
   console.log(pc.dim('  cloud       ') + cfg.cloudUrl);
   console.log(pc.dim('  runtime     ') + `${resolved.path} ${pc.dim(`(via ${resolved.source})`)}`);
+  console.log(pc.dim('  auto-pull   ') + (autoPullEnabled ? pc.green('on') + pc.dim(` → ${cfg.projectsDir}`) : pc.yellow('off')));
   if (flags.project) console.log(pc.dim('  project     ') + flags.project);
   if (proxy) {
     console.log(pc.dim('  proxy       ') + `${proxy.url} ${pc.dim(`(from ${proxy.source})`)}`);
@@ -111,14 +121,19 @@ export async function runStart(flags: StartFlags): Promise<void> {
   const defaultSpawnConfig: ProjectSpawnConfig = {
     cloudUrl: cfg.cloudUrl,
     apiKey: cfg.apiKey,
-    // No projectDir on the worker — the agent-runtime fetches workspace
-    // state from the cloud using its API key. CWD defaults to a tmp
-    // dir per `WorkerRuntimeManager.resolveCwd()`.
+    // No projectDir up front — the runtime manager's `maybeAutoPull`
+    // sets PROJECT_DIR per-project to <projectsDir>/<projectId>/ once
+    // the clone completes. CWD defaults to that same directory.
   };
 
   const runtimeManager = new WorkerRuntimeManager({
     runtimeBin: flags.runtimeBin,
     defaultSpawnConfig,
+    autoPull: {
+      enabled: autoPullEnabled,
+      projectsDir: cfg.projectsDir,
+      watch: true,
+    },
   });
 
   // Eagerly resolve so the cached `resolved` is reused — also exits early
@@ -223,6 +238,8 @@ function buildChildArgv(flags: StartFlags): string[] {
   if (flags.project) out.push('--project', flags.project);
   if (flags.runtimeBin) out.push('--runtime-bin', flags.runtimeBin);
   if (flags.debug) out.push('--debug');
+  if (flags.noAutoPull) out.push('--no-auto-pull');
+  if (flags.projectsDir) out.push('--projects-dir', flags.projectsDir);
   return out;
 }
 

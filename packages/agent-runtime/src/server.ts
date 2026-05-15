@@ -3785,7 +3785,19 @@ async function initializeEssentials(): Promise<void> {
 
   // Initialize S3 sync BEFORE loading canvas state so that downloaded files
   // (including .canvas-state.json and api-runtimes/*.db) are available on disk.
-  if (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET) {
+  //
+  // SHOGO_CLOUD_SYNC=1 tells us a parent worker process (shogo-worker) is
+  // already running a CloudFileTransport watcher against this same WORKSPACE_DIR.
+  // Initializing our own S3Sync on top of that would cause double-uploads and
+  // a feedback loop where the watcher pushes files we just downloaded. The
+  // worker is the source of truth in cli_worker deployments — skip the
+  // runtime-internal sync entirely in that mode.
+  const skipInternalSync = process.env.SHOGO_CLOUD_SYNC === '1' || process.env.SHOGO_CLOUD_SYNC === 'true'
+  if (skipInternalSync) {
+    console.log('[agent-runtime] SHOGO_CLOUD_SYNC set; skipping runtime-internal S3Sync (worker owns sync)')
+    logTiming('S3 sync skipped: owned by worker')
+  }
+  if (!skipInternalSync && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
     try {
       const result = await initializeS3Sync(WORKSPACE_DIR)
       if (result) {

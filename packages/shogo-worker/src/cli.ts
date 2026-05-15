@@ -24,6 +24,8 @@ import {
   runRuntimeVersion,
   runRuntimeWhere,
 } from './commands/runtime.ts';
+import { runProjectPull } from './commands/project-pull.ts';
+import { runProjectPush } from './commands/project-push.ts';
 
 const VERSION = '0.1.0';
 
@@ -58,6 +60,8 @@ worker
   .option('--runtime-bin <path>', 'Override the agent-runtime binary path')
   .option('--debug', 'Run preflight checks before starting')
   .option('--foreground', 'Run in foreground (don\'t detach)')
+  .option('--no-auto-pull', 'Disable auto-clone of project workspaces on first request')
+  .option('--projects-dir <path>', 'Root directory for cloned project workspaces (default: ~/.shogo/projects)')
   .action((flags) => handle(() => runStart(flags)));
 
 worker
@@ -110,8 +114,28 @@ config
   .action(() => handle(runConfigShow));
 config
   .command('set <key> <value>')
-  .description('Set apiKey / cloudUrl / name / workerDir / port')
+  .description('Set apiKey / cloudUrl / name / workerDir / port / projectsDir')
   .action((k: string, v: string) => handle(() => runConfigSet(k, v)));
+
+const project = program.command('project').description('Clone/sync project workspaces between Shogo Cloud and this machine');
+project
+  .command('pull <projectId>')
+  .description('Clone a project from Shogo Cloud into ~/.shogo/projects/<projectId>/')
+  .option('--into <dir>', 'Destination directory (default: ~/.shogo/projects/<projectId>)')
+  .option('--watch', 'After pull, watch the local dir and push edits back to cloud')
+  .option('--include <patterns>', 'Comma-separated glob patterns (e.g. "src/**,*.md")')
+  .option('--api-key <key>', 'Override API key for this run')
+  .option('--cloud-url <url>', 'Override Shogo Cloud URL for this run')
+  .action((id: string, flags) => handle(() => runProjectPull(id, flags)));
+project
+  .command('push <projectId>')
+  .description('Upload local workspace edits back to Shogo Cloud')
+  .option('--from <dir>', 'Source directory (default: ~/.shogo/projects/<projectId>)')
+  .option('--delete-remote', 'Mirror local deletions to cloud (DESTRUCTIVE)')
+  .option('--include <patterns>', 'Comma-separated glob patterns')
+  .option('--api-key <key>', 'Override API key for this run')
+  .option('--cloud-url <url>', 'Override Shogo Cloud URL for this run')
+  .action((id: string, flags) => handle(() => runProjectPush(id, flags)));
 
 program.showHelpAfterError(pc.dim('\n(use --help for usage)'));
 program.parseAsync(process.argv);

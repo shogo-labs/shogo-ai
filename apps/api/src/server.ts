@@ -2685,6 +2685,28 @@ app.post('/api/projects/:projectId/s3/presign', async (c) => {
   return router.fetch(newReq)
 })
 
+// Full workspace manifest (used by `shogo project pull` + worker auto-pull)
+app.get('/api/projects/:projectId/workspace/manifest', async (c) => {
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = filesRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/workspace/manifest`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// Delete file (used by `shogo project push --delete-remote`)
+app.delete('/api/projects/:projectId/files/*', async (c) => {
+  const projectId = c.req.param('projectId')
+  const filePath = c.req.path.replace(`/api/projects/${projectId}/files/`, '')
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = filesRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/files/${filePath}`
+  const newReq = new Request(url.toString(), { method: 'DELETE' })
+  return router.fetch(newReq)
+})
+
 // =============================================================================
 // Terminal routes - Execute preset shell commands on project workspaces
 // =============================================================================

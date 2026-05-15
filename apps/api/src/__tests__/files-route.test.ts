@@ -34,8 +34,13 @@ mock.module('../lib/prisma', () => ({ prisma: prismaMock }))
 const s3Mock = {
   getPresignedReadUrl: mock(async (key: string, _opts: any) => `https://s3.test/read/${key}`),
   getPresignedWriteUrl: mock(async (key: string, _opts: any) => `https://s3.test/write/${key}`),
-  listAllObjectsInS3: mock(async (_prefix: string, _bucket: string) => [] as Array<{ relativePath: string; size: number }>),
-  isS3Enabled: () => true,
+  listAllObjectsInS3: mock(async (_prefix: string, _bucket: string) => [] as Array<{
+    relativePath: string
+    size: number
+    lastModified?: Date
+  }>),
+  deleteFromS3: mock(async (_key: string) => {}),
+  isS3Enabled: mock(() => true),
 }
 mock.module('../lib/s3', () => s3Mock)
 
@@ -113,6 +118,14 @@ mock.module('fs/promises', () => ({
     }
     return { size: e.size ?? 0, isDirectory: () => e.type === 'dir', isFile: () => e.type === 'file' }
   },
+  unlink: async (path: string) => {
+    if (!fsState.has(path)) {
+      const err: any = new Error(`ENOENT: ${path}`)
+      err.code = 'ENOENT'
+      throw err
+    }
+    fsState.delete(path)
+  },
 }))
 
 // ─── Import after mocks ──────────────────────────────────────────────
@@ -130,6 +143,10 @@ beforeEach(() => {
   s3Mock.getPresignedWriteUrl.mockClear()
   s3Mock.listAllObjectsInS3.mockClear()
   s3Mock.listAllObjectsInS3.mockImplementation(async () => [])
+  s3Mock.deleteFromS3.mockClear()
+  s3Mock.deleteFromS3.mockImplementation(async () => {})
+  s3Mock.isS3Enabled.mockClear()
+  s3Mock.isS3Enabled.mockImplementation(() => true)
 })
 
 afterAll(() => mock.restore())
@@ -456,5 +473,148 @@ describe('POST /projects/:id/s3/presign', () => {
     const res = await presign({ files: [{ path: 'a.ts', action: 'read' }] })
     expect(res.status).toBe(500)
     expect((await res.json()).error.code).toBe('s3_presign_failed')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// GET /projects/:id/workspace/manifest
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('GET /projects/:id/workspace/manifest', () => {
+  test('returns the full project tree with no extension filter', async () => {
+    s3Mock.listAllObjectsInS3.mockImplementation(async () => [
+      { relativePath: 'package.json', size: 100, lastModified: new Date('2026-01-01') },
+      { relativePath: 'src/App.tsx', size: 200, lastModified: new Date('2026-01-02') },
+      { relativePath: 'config.json', size: 50, lastModified: new Date('2026-01-03') },
+      // Files outside INCLUDED_EXTENSIONS that the narrower /s3/files would skip:
+      { relativePath: 'public/logo.png', size: 1024, lastModified: new Date('2026-01-04') },
+      { relativePath: 'plans/2026.yaml', size: 300, lastModified: new Date('2026-01-05') },
+    ])
+    const res = await router.request('/projects/p_m/workspace/manifest')
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    const paths = body.files.map((f: any) => f.path).sort()
+    expect(paths).toContain('public/logo.png')
+    expect(paths).toContain('plans/2026.yaml')
+    expect(paths).toContain('src/App.tsx')
+    expect(body.projectId).toBe('p_m')
+    expect(body.source).toBe('s3')
+  })
+
+  test('excludes files inside EXCLUDED_DIRS', async () => {
+    s3Mock.listAllObjectsInS3.mockImplementation(async () => [
+      { relativePath: 'src/App.tsx', size: 1, lastModified: new Date() },
+      { relativePath: 'node_modules/lib.js', size: 1, lastModified: new Date() },
+      { relativePath: 'dist/bundle.js', size: 1, lastModified: new Date() },
+      { relativePath: '.git/HEAD', size: 1, lastModified: new Date() },
+    ])
+    const res = await router.request('/projects/p_m/workspace/manifest')
+    const paths = (await res.json()).files.map((f: any) => f.path)
+    expect(paths).toContain('src/App.tsx')
+    expect(paths).not.toContain('node_modules/lib.js')
+    expect(paths).not.toContain('dist/bundle.js')
+    expect(paths).not.toContain('.git/HEAD')
+  })
+
+  test('excludes SENSITIVE_FILE_PATTERNS', async () => {
+    s3Mock.listAllObjectsInS3.mockImplementation(async () => [
+      { relativePath: 'src/App.tsx', size: 1, lastModified: new Date() },
+      { relativePath: '.env', size: 1, lastModified: new Date() },
+      { relativePath: '.env.local', size: 1, lastModified: new Date() },
+      { relativePath: 'secrets/server.pem', size: 1, lastModified: new Date() },
+      { relativePath: 'keys/id_rsa', size: 1, lastModified: new Date() },
+    ])
+    const res = await router.request('/projects/p_m/workspace/manifest')
+    const paths = (await res.json()).files.map((f: any) => f.path)
+    expect(paths).toContain('src/App.tsx')
+    expect(paths).not.toContain('.env')
+    expect(paths).not.toContain('.env.local')
+    expect(paths).not.toContain('secrets/server.pem')
+    expect(paths).not.toContain('keys/id_rsa')
+  })
+
+  test('entries carry size + lastModified', async () => {
+    s3Mock.listAllObjectsInS3.mockImplementation(async () => [
+      { relativePath: 'a.ts', size: 42, lastModified: new Date('2026-05-15T00:00:00Z') },
+    ])
+    const res = await router.request('/projects/p_m/workspace/manifest')
+    const body = await res.json()
+    expect(body.files[0]).toEqual({
+      path: 'a.ts',
+      size: 42,
+      lastModified: '2026-05-15T00:00:00.000Z',
+      etag: null,
+    })
+  })
+
+  test('500 on S3 error with manifest_failed code', async () => {
+    s3Mock.listAllObjectsInS3.mockImplementation(async () => { throw new Error('s3 down') })
+    const res = await router.request('/projects/p_m/workspace/manifest')
+    expect(res.status).toBe(500)
+    expect((await res.json()).error.code).toBe('manifest_failed')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// DELETE /projects/:id/files/*
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('DELETE /projects/:id/files/*', () => {
+  function del(path: string) {
+    return router.request(`/projects/p_d/files/${path}`, { method: 'DELETE' })
+  }
+
+  test('400 when path is empty or invalid', async () => {
+    setDir('/ws/p_d')
+    const r1 = await del('..%2Fsecret')
+    expect(r1.status).toBe(400)
+    const r2 = await del('node_modules/lib.js')
+    expect(r2.status).toBe(400)
+  })
+
+  test('403 when path matches SENSITIVE_FILE_PATTERNS', async () => {
+    setDir('/ws/p_d')
+    const res = await del('.env')
+    expect(res.status).toBe(403)
+    expect((await res.json()).error.code).toBe('forbidden_path')
+  })
+
+  test('happy path: removes from S3 and best-effort unlink locally', async () => {
+    setDir('/ws/p_d')
+    setFile('/ws/p_d/src/old.ts', 'old')
+    const res = await del('src/old.ts')
+    expect(res.status).toBe(200)
+    expect(s3Mock.deleteFromS3).toHaveBeenCalledTimes(1)
+    expect(s3Mock.deleteFromS3.mock.calls[0][0]).toBe('p_d/src/old.ts')
+    expect(fsState.has('/ws/p_d/src/old.ts')).toBe(false)
+  })
+
+  test('treats S3 NotFound as idempotent success', async () => {
+    setDir('/ws/p_d')
+    s3Mock.deleteFromS3.mockImplementation(async () => {
+      const err: any = new Error('not there')
+      err.$metadata = { httpStatusCode: 404 }
+      throw err
+    })
+    const res = await del('src/missing.ts')
+    expect(res.status).toBe(200)
+  })
+
+  test('500 when S3 delete throws unexpectedly', async () => {
+    setDir('/ws/p_d')
+    s3Mock.deleteFromS3.mockImplementation(async () => { throw new Error('s3 down') })
+    const res = await del('src/oops.ts')
+    expect(res.status).toBe(500)
+    expect((await res.json()).error.code).toBe('delete_failed')
+  })
+
+  test('skips S3 when isS3Enabled() returns false (dev mode unlink only)', async () => {
+    s3Mock.isS3Enabled.mockImplementation(() => false)
+    setDir('/ws/p_d')
+    setFile('/ws/p_d/src/local.ts', 'x')
+    const res = await del('src/local.ts')
+    expect(res.status).toBe(200)
+    expect(s3Mock.deleteFromS3).not.toHaveBeenCalled()
+    expect(fsState.has('/ws/p_d/src/local.ts')).toBe(false)
   })
 })

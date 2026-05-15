@@ -61,6 +61,7 @@ const sidebars: SidebarsConfig = {
           items: [
             "features/my-machines/quickstart",
             "features/my-machines/networking",
+            "features/my-machines/project-pull",
             "features/my-machines/troubleshooting",
           ],
         },

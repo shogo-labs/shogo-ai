@@ -33,11 +33,13 @@
  */
 import { type ChildProcess, spawn } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveRuntime, type ResolvedRuntime } from './runtime-resolver.ts';
 import type { RuntimeResolver } from './tunnel.ts';
+import { CloudFileTransport } from '@shogo-ai/sdk';
+import { CloudSyncWatcher } from './cloud-sync-watcher.ts';
 
 /** Port range for random allocation (mirrors apps/api desktop manager). */
 const PORT_RANGE_START = 37100;
@@ -149,6 +151,28 @@ export interface WorkerRuntimeManagerOptions {
    * Prisma-derived secrets (AI proxy token, security policy, etc.).
    */
   enrichSpawnConfig?: (projectId: string, base: ProjectSpawnConfig) => Promise<ProjectSpawnConfig>;
+  /**
+   * Auto-pull configuration. When enabled, the manager will clone a
+   * project's workspace from Shogo Cloud into `<projectsDir>/<projectId>/`
+   * on first request, then keep edits in sync via a {@link CloudSyncWatcher}.
+   *
+   * This is what makes "pin a staging project to a paired VPS, send a
+   * webhook" work end-to-end without the user manually running
+   * `shogo project pull` first.
+   */
+  autoPull?: AutoPullOptions;
+}
+
+export interface AutoPullOptions {
+  /** Master switch. Defaults to false; the `worker start` command flips
+   *  it on for `cli_worker` instances unless `--no-auto-pull` is passed. */
+  enabled: boolean;
+  /** Directory under which each project's workspace lives. Required when enabled. */
+  projectsDir: string;
+  /** Watch the pulled workspace and push edits back to cloud. Default: true. */
+  watch?: boolean;
+  /** Optional logger. Defaults to the manager's logger. */
+  logger?: Pick<Console, 'log' | 'warn' | 'error'>;
 }
 
 /** Internal per-project runtime record. */
@@ -203,6 +227,16 @@ function splitPathAndQuery(pathWithQuery: string): { pathname: string; search: s
   return { pathname: pathWithQuery.slice(0, q), search: pathWithQuery.slice(q) };
 }
 
+/** True if the directory exists and contains no entries (or doesn't exist). */
+function isDirEmpty(dir: string): boolean {
+  try {
+    const entries = readdirSync(dir);
+    return entries.length === 0;
+  } catch {
+    return true;
+  }
+}
+
 export class WorkerRuntimeManager implements RuntimeResolver {
   private readonly opts: WorkerRuntimeManagerOptions;
   private readonly log: Pick<Console, 'log' | 'warn' | 'error'>;
@@ -211,6 +245,11 @@ export class WorkerRuntimeManager implements RuntimeResolver {
   private readonly spawnCommand: SpawnCommandFactory;
   private resolved: ResolvedRuntime | null = null;
   private stopped = false;
+
+  /** Active watchers per projectId, keyed by projectId. Stopped in stopAll. */
+  private readonly watchers = new Map<string, CloudSyncWatcher>();
+  /** Projects we've already pulled (or attempted to pull) this lifetime. */
+  private readonly pulledProjects = new Set<string>();
 
   constructor(opts: WorkerRuntimeManagerOptions = {}) {
     this.opts = opts;
@@ -283,9 +322,20 @@ export class WorkerRuntimeManager implements RuntimeResolver {
   /**
    * Idempotently ensure a runtime exists for this projectId. Concurrent
    * callers share the in-flight spawn promise.
+   *
+   * Side effect: if `opts.autoPull.enabled` is true and this is the first
+   * time we've seen this projectId, we'll clone the workspace from cloud
+   * BEFORE spawning the runtime. Failures are non-fatal — the runtime
+   * still spawns and falls back to template-seeded defaults so the worker
+   * never bricks because the cloud Files API was momentarily down.
    */
   async ensureRunning(projectId: string, config: ProjectSpawnConfig): Promise<RuntimeStatusInfo> {
     if (this.stopped) throw new Error('WorkerRuntimeManager is stopped');
+
+    // Apply auto-pull before any runtime spawn so the runtime's PROJECT_DIR
+    // points at a fully-cloned workspace. Idempotent: subsequent calls hit
+    // the `pulledProjects` short-circuit.
+    config = await this.maybeAutoPull(projectId, config);
 
     const existing = this.runtimes.get(projectId);
     if (existing?.status === 'running') {
@@ -307,6 +357,83 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     } finally {
       slot.startPromise = null;
     }
+  }
+
+  /**
+   * Public entry point for tests + the `worker start` command to pre-warm
+   * a project's workspace without spawning anything. Internally idempotent.
+   */
+  async ensurePulled(projectId: string, config: ProjectSpawnConfig): Promise<ProjectSpawnConfig> {
+    return this.maybeAutoPull(projectId, config);
+  }
+
+  private async maybeAutoPull(projectId: string, config: ProjectSpawnConfig): Promise<ProjectSpawnConfig> {
+    const auto = this.opts.autoPull;
+    if (!auto?.enabled) return config;
+    if (this.pulledProjects.has(projectId)) return config;
+
+    const projectDir = join(auto.projectsDir, projectId);
+    const log = auto.logger ?? this.log;
+
+    // Mark before attempting so failures don't cause repeated re-pulls
+    // on every single request — the runtime will still start with an
+    // empty WORKSPACE_DIR and seed templates as a fallback.
+    this.pulledProjects.add(projectId);
+
+    try {
+      mkdirSync(projectDir, { recursive: true });
+      const isEmpty = isDirEmpty(projectDir);
+
+      if (isEmpty) {
+        log.log(`[WorkerRuntimeManager] auto-pull: cloning project ${projectId} from cloud into ${projectDir}`);
+        const transport = new CloudFileTransport({
+          apiUrl: config.cloudUrl,
+          apiKey: config.apiKey,
+          projectId,
+          localDir: projectDir,
+        });
+        const stats = await transport.downloadAll();
+        log.log(
+          `[WorkerRuntimeManager] auto-pull: ${projectId} downloaded ${stats.downloaded} files ` +
+            `(${stats.errors.length} errors)`,
+        );
+      } else {
+        log.log(`[WorkerRuntimeManager] auto-pull: ${projectId} workspace already populated; skipping clone`);
+      }
+
+      // Spin up a watcher so locally written files (config.json edits,
+      // skill writes, etc.) sync back to cloud. We only need ONE watcher
+      // per project regardless of how many runtimes spawn for it.
+      if (auto.watch !== false && !this.watchers.has(projectId)) {
+        try {
+          const transport = new CloudFileTransport({
+            apiUrl: config.cloudUrl,
+            apiKey: config.apiKey,
+            projectId,
+            localDir: projectDir,
+          });
+          const watcher = new CloudSyncWatcher({
+            rootDir: projectDir,
+            transport,
+            logger: log,
+          });
+          watcher.start();
+          this.watchers.set(projectId, watcher);
+        } catch (err: any) {
+          log.warn(`[WorkerRuntimeManager] auto-pull: watcher start failed for ${projectId}: ${err?.message ?? err}`);
+        }
+      }
+    } catch (err: any) {
+      log.warn(
+        `[WorkerRuntimeManager] auto-pull: failed for ${projectId} — runtime will fall back to template defaults. ` +
+          `(${err?.message ?? err})`,
+      );
+    }
+
+    // Always set projectDir so the runtime points at the (possibly empty)
+    // persistent location instead of a tmpdir. This keeps the runtime
+    // crash-resilient — restarts find the same workspace.
+    return { ...config, projectDir };
   }
 
   status(projectId: string): RuntimeStatusInfo | null {
@@ -345,6 +472,21 @@ export class WorkerRuntimeManager implements RuntimeResolver {
 
   async stopAll(signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
     this.stopped = true;
+    // Stop watchers FIRST so their final flush has a chance to PUT before
+    // we tear down processes. We don't await individual stops in parallel
+    // with runtime stops because watcher.stop() does network IO and we
+    // want it to complete before the runtime kill.
+    const watcherIds = Array.from(this.watchers.keys());
+    await Promise.all(watcherIds.map(async (id) => {
+      const w = this.watchers.get(id);
+      this.watchers.delete(id);
+      if (w) {
+        try { await w.stop(); } catch (err: any) {
+          this.log.warn(`[WorkerRuntimeManager] watcher stop ${id}: ${err?.message ?? err}`);
+        }
+      }
+    }));
+
     const ids = Array.from(this.runtimes.keys());
     await Promise.all(ids.map((id) => this.stop(id, signal).catch((err) => {
       this.log.error(`[WorkerRuntimeManager] Failed to stop ${id}: ${err?.message ?? err}`);
@@ -460,6 +602,13 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     if (cfg.projectDir) {
       env.PROJECT_DIR = cfg.projectDir;
       env.WORKSPACE_DIR = cfg.projectDir;
+    }
+    // Tell the agent-runtime to skip its built-in S3Sync — the worker is
+    // already running a CloudFileTransport watcher against this WORKSPACE_DIR.
+    // Without this both sides upload the same files and the watcher loops on
+    // its own writes.
+    if (this.opts.autoPull?.enabled) {
+      env.SHOGO_CLOUD_SYNC = '1';
     }
     if (cfg.aiProxyUrl) env.AI_PROXY_URL = cfg.aiProxyUrl;
     if (cfg.aiProxyToken) env.AI_PROXY_TOKEN = cfg.aiProxyToken;

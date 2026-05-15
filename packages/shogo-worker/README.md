@@ -246,6 +246,38 @@ I/O, MCP servers) execute on **this machine**.
 See [Webhook channel reference](https://docs.shogo.ai/docs/features/external-triggers/webhook-channel)
 for the request/response shape, secret handling, and async callback mode.
 
+## Cloning a staging project (`shogo project pull`)
+
+When you pin a staging project to this machine, the worker needs the
+project's workspace files on disk to spawn the agent against. By default
+the worker **auto-clones** the project on first request:
+
+```bash
+shogo worker start                       # auto-pull is ON
+shogo worker start --no-auto-pull        # opt out (e.g. for git-backed projects)
+shogo worker start --projects-dir /mnt/big-disk/shogo   # override default ~/.shogo/projects
+```
+
+You can also clone manually ahead of time:
+
+```bash
+# Clones to ~/.shogo/projects/<projectId>/ by default
+shogo project pull <projectId>
+
+# Pull-then-watch: keeps a local editor and cloud in sync
+shogo project pull <projectId> --watch
+
+# Push local edits back
+shogo project push <projectId>
+shogo project push <projectId> --delete-remote   # mirror local deletions
+```
+
+The clone goes through Shogo Cloud's Files API — no AWS credentials are
+ever needed on this machine. Sensitive paths (`.env*`, `*.pem`, etc.) are
+filtered out server-side. See
+[Cloning projects to a paired machine](https://docs.shogo.ai/docs/features/my-machines/project-pull)
+for the end-to-end walkthrough.
+
 ## Troubleshooting
 
 ```bash
