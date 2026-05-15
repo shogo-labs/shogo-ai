@@ -163,35 +163,120 @@ export class RuntimeManager implements IRuntimeManager {
       { start: PORT_RANGE_START + AGENT_PORT_OFFSET, end: PORT_RANGE_END + AGENT_PORT_OFFSET + 1 },
     ]
 
-    for (const range of rangesToClean) {
-      try {
-        const result = execSync(
-          `lsof -iTCP:${range.start}-${range.end} -sTCP:LISTEN -t 2>/dev/null || true`,
-          { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
-        ).trim()
+    const isWindows = process.platform === 'win32'
+    const selfPid = String(process.pid)
+    const parentPid = String(process.ppid)
 
-        const selfPid = String(process.pid)
-        const parentPid = String(process.ppid)
-        // Some lsof builds (notably inside the minimal runtime container
-        // images) silently ignore `-t` when another flag isn't honored and
-        // fall back to verbose tabular output. If any non-numeric tokens
-        // reach `kill -9`, sh will choke on unescaped characters like `(`
-        // and spray `/bin/sh: syntax error: unexpected "("` into the logs.
-        // Defensively keep only pure integer PIDs.
-        const pids = result
+    for (const range of rangesToClean) {
+      const pids = isWindows
+        ? this.findStalePidsWindows(range.start, range.end, selfPid, parentPid)
+        : this.findStalePidsPosix(range.start, range.end, selfPid, parentPid)
+
+      if (pids.length === 0) continue
+
+      console.log(`[RuntimeManager] Cleaning up ${pids.length} stale process(es) on ports ${range.start}-${range.end}: ${pids.join(', ')}`)
+      for (const pid of pids) {
+        try {
+          if (isWindows) {
+            // taskkill is the Windows equivalent of `kill -9`. We
+            // intentionally swallow stderr and stdio to keep the
+            // module-level cleanup quiet on a normal boot where
+            // every PID we found has already exited by the time
+            // we get here.
+            execSync(`taskkill /F /PID ${pid}`, { stdio: ['pipe', 'pipe', 'pipe'] })
+          } else {
+            execSync(`kill -9 ${pid} 2>/dev/null || true`)
+          }
+        } catch {
+          // Process already exited / permission denied — fine.
+        }
+      }
+    }
+  }
+
+  /**
+   * POSIX path of `cleanupStaleProcesses`. Some lsof builds (notably
+   * inside the minimal runtime container images) silently ignore
+   * `-t` when another flag isn't honored and fall back to verbose
+   * tabular output. If any non-numeric tokens reach `kill -9`, sh
+   * will choke on unescaped characters like `(` and spray
+   * `/bin/sh: syntax error: unexpected "("` into the logs.
+   * Defensively keep only pure integer PIDs.
+   */
+  private findStalePidsPosix(
+    start: number,
+    end: number,
+    selfPid: string,
+    parentPid: string,
+  ): string[] {
+    try {
+      const result = execSync(
+        `lsof -iTCP:${start}-${end} -sTCP:LISTEN -t 2>/dev/null || true`,
+        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+      ).trim()
+      return [...new Set(
+        result
           .split(/\s+/)
           .map((p) => p.trim())
-          .filter((p) => /^\d+$/.test(p) && p !== selfPid && p !== parentPid && p !== '1')
-
-        if (pids.length > 0) {
-          const uniquePids = [...new Set(pids)]
-          console.log(`[RuntimeManager] Cleaning up ${uniquePids.length} stale process(es) on ports ${range.start}-${range.end}: ${uniquePids.join(', ')}`)
-          for (const pid of uniquePids) {
-            try { execSync(`kill -9 ${pid} 2>/dev/null || true`) } catch {}
-          }
-        }
-      } catch {}
+          .filter((p) => /^\d+$/.test(p) && p !== selfPid && p !== parentPid && p !== '1'),
+      )]
+    } catch {
+      return []
     }
+  }
+
+  /**
+   * Windows path of `cleanupStaleProcesses`. The previous unconditional
+   * use of `lsof -iTCP:... -t 2>/dev/null || true` via execSync (which
+   * defaults to cmd.exe on Windows) sprayed `'true' is not recognized
+   * as an internal or external command` and `The system cannot find the
+   * path specified.` (×2 for the redirections) into the runtime log on
+   * every API-server boot — harmless but alarming and easy to mistake
+   * for an actual runtime crash.
+   *
+   * `netstat -ano` is universally available on Windows and emits lines
+   * shaped like
+   *   `  TCP    127.0.0.1:8080         0.0.0.0:0              LISTENING       12345`
+   * — the trailing whitespace-separated token is the PID. We piped
+   * through `findstr LISTENING` to drop CLOSE_WAIT/TIME_WAIT entries
+   * and then filter the port number ourselves so we can match a
+   * range rather than a single port.
+   */
+  private findStalePidsWindows(
+    start: number,
+    end: number,
+    selfPid: string,
+    parentPid: string,
+  ): string[] {
+    let stdout = ''
+    try {
+      stdout = execSync(
+        'netstat -ano | findstr LISTENING',
+        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+      )
+    } catch {
+      // findstr exits 1 when nothing matches — i.e. nothing is
+      // listening anywhere. Treat as empty rather than fatal.
+      return []
+    }
+
+    const out: string[] = []
+    for (const line of stdout.split(/\r?\n/)) {
+      const tokens = line.trim().split(/\s+/)
+      if (tokens.length < 4) continue
+      // Tokens: [proto, local, remote, state, pid]
+      // local is `IP:port` or `[::]:port`; pull the trailing `:port`.
+      const local = tokens[1]
+      const portMatch = /:(\d+)$/.exec(local)
+      if (!portMatch) continue
+      const port = Number(portMatch[1])
+      if (port < start || port > end) continue
+      const pid = tokens[tokens.length - 1]
+      if (!/^\d+$/.test(pid)) continue
+      if (pid === '0' || pid === selfPid || pid === parentPid) continue
+      out.push(pid)
+    }
+    return [...new Set(out)]
   }
 
   /**
