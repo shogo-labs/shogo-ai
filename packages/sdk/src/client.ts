@@ -10,6 +10,7 @@
 import { HttpClient } from './http/client.js'
 import { ShogoAuth } from './auth/index.js'
 import { PlatformApi } from './platform/index.js'
+import { MachinesApi } from './machines/index.js'
 import {
   getDefaultStorageAdapter,
   type StorageAdapter,
@@ -53,6 +54,17 @@ export interface ShogoClient<DB = unknown> {
 
   /** Platform API: API keys, local config, feature flags */
   platform: PlatformApi
+
+  /**
+   * Machines API: list paired desktops + `shogo worker` VPS sign-ins,
+   * and manage per-project "Run on" routing for external triggers.
+   *
+   * ```ts
+   * const machines = await client.machines.list({ workspaceId })
+   * await client.machines.pinProject(projectId, { instanceId: vps.id })
+   * ```
+   */
+  machines: MachinesApi
 
   /** Database - direct pass-through to your Prisma client */
   db: DB
@@ -107,6 +119,7 @@ export interface ShogoClient<DB = unknown> {
 class ShogoClientImpl<DB> implements ShogoClient<DB> {
   auth: ShogoAuth
   platform: PlatformApi
+  machines: MachinesApi
   db: DB
   llm: ShogoLlmProvider | null
   voice: ShogoVoiceModule
@@ -132,6 +145,9 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
 
     // Create platform API
     this.platform = new PlatformApi(this._http)
+
+    // Create machines API (powers the "Run on" / external-trigger story).
+    this.machines = new MachinesApi(this._http)
 
     // Wire up token getter from auth to HTTP client
     this._http.setTokenGetter(() => this.auth.getToken())

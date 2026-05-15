@@ -93,6 +93,19 @@ export {
   type FeatureFlagPatch,
 } from './platform/index.js'
 
+// Machines API (paired desktops / VPS workers + per-project "Run on" routing)
+export {
+  MachinesApi,
+  type Machine,
+  type MachineKind,
+  type MachineStatus,
+  type OnlineMachine,
+  type PinProjectOptions,
+  type PinProjectResult,
+  type PreferredInstancePolicy,
+  type ProjectPin,
+} from './machines/index.js'
+
 // Errors
 export {
   ShogoError,

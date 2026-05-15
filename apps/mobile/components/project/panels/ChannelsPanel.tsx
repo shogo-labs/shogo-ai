@@ -25,6 +25,7 @@ import {
 import * as Clipboard from 'expo-clipboard'
 import { agentFetch } from '../../../lib/agent-fetch'
 import { usePlatformConfig } from '../../../lib/platform-config'
+import { API_URL } from '../../../lib/api'
 import { PhonePanel } from './PhonePanel'
 
 interface ChannelInfo {
@@ -37,9 +38,31 @@ interface ChannelInfo {
 
 interface ChannelsPanelProps {
   projectId: string
+  /** Workspace owning this project — required for the "Run on" selector
+   * to list paired machines. Undefined while the project record is still
+   * loading; the selector gracefully no-ops in that case. */
+  workspaceId?: string | null
   agentUrl: string | null
   visible: boolean
   hasAdvancedModelAccess?: boolean
+}
+
+interface RunOnInstance {
+  id: string
+  name: string
+  hostname: string
+  kind: 'desktop' | 'cli_worker' | string
+  status: 'online' | 'heartbeat' | 'offline' | string
+}
+
+interface RunOnState {
+  loading: boolean
+  /** `null` instance = cloud-routed (the default). */
+  pinnedInstance: RunOnInstance | null
+  policy: 'pinned' | 'prefer'
+  candidates: RunOnInstance[]
+  error: string | null
+  saving: boolean
 }
 
 interface ChannelField {
@@ -113,10 +136,18 @@ const CHANNEL_DEFS: Record<string, ChannelDef> = {
   webhook: {
     name: 'Webhook / HTTP',
     emoji: '🔗',
-    setupUrl: '',
-    setupLabel: '',
-    description: 'Connect any app via Zapier, Make, n8n, or direct HTTP',
-    fields: [],
+    setupUrl: 'https://docs.shogo.ai/docs/features/external-triggers/webhook-channel',
+    setupLabel: 'Webhook channel docs',
+    description: 'Trigger this agent from Jira, Linear, Zapier, n8n, or any HTTP client',
+    fields: [
+      // Shared secret — REQUIRED for any externally-reachable channel. If
+      // blank the runtime rejects every inbound webhook with 401, which is
+      // the safer default than "open to the world".
+      { key: 'secret', label: 'Shared Secret', placeholder: 'A long random string (e.g. openssl rand -hex 32)', secret: true },
+      // Optional default callback URL — if set, every reply gets POSTed
+      // back there instead of (or in addition to) returning synchronously.
+      { key: 'callbackUrl', label: 'Default Callback URL (optional)', placeholder: 'https://your-app.example.com/agent-reply', secret: false },
+    ],
   },
   teams: {
     name: 'Microsoft Teams',
@@ -141,7 +172,7 @@ const CHANNEL_DEFS: Record<string, ChannelDef> = {
   },
 }
 
-export function ChannelsPanel({ projectId, agentUrl, visible, hasAdvancedModelAccess = false }: ChannelsPanelProps) {
+export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAdvancedModelAccess = false }: ChannelsPanelProps) {
   const { features } = usePlatformConfig()
   const [channels, setChannels] = useState<ChannelInfo[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -154,7 +185,97 @@ export function ChannelsPanel({ projectId, agentUrl, visible, hasAdvancedModelAc
   const [savingModel, setSavingModel] = useState<string | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
   const [copiedSnippet, setCopiedSnippet] = useState(false)
+  const [copiedWebhookUrl, setCopiedWebhookUrl] = useState(false)
   const [phoneExpanded, setPhoneExpanded] = useState(false)
+
+  /**
+   * Canonical, externally-callable webhook URL for this project.
+   *
+   * This stays stable regardless of where the agent actually runs (cloud
+   * pod or a paired VPS via `client.machines.pinProject`), which is the
+   * whole point of the project-scoped agent-proxy. We compose it from the
+   * cloud `API_URL` and `projectId` directly — NOT from `agentUrl`, which
+   * may already be wrapped in `/api/instances/:id/p/` when the user has
+   * an active remote-instance selection. That wrapped form is a
+   * power-user escape hatch, never the URL you paste into Jira.
+   *
+   * See: apps/docs/docs/features/external-triggers/webhook-channel.md
+   */
+  const publicWebhookUrl = API_URL
+    ? `${API_URL.replace(/\/$/, '')}/api/projects/${projectId}/agent-proxy/agent/channels/webhook/incoming`
+    : null
+
+  // ── "Run on" routing ──────────────────────────────────────────────
+  // Reads `Project.preferredInstanceId` and offers a picker over the
+  // workspace's paired machines (desktops + `shogo worker` CLI sign-ins).
+  // The selection persists server-side; from then on every external call
+  // to `publicWebhookUrl` (or any other agent-proxy path) is relayed
+  // through that machine's tunnel.
+  const [runOn, setRunOn] = useState<RunOnState>({
+    loading: false,
+    pinnedInstance: null,
+    policy: 'pinned',
+    candidates: [],
+    error: null,
+    saving: false,
+  })
+  const [runOnPickerOpen, setRunOnPickerOpen] = useState(false)
+
+  const loadRunOn = useCallback(async () => {
+    if (!visible || !API_URL || !workspaceId) return
+    setRunOn((prev) => ({ ...prev, loading: true, error: null }))
+    try {
+      const [pinRes, instancesRes] = await Promise.all([
+        fetch(`${API_URL}/api/projects/${projectId}/preferred-instance`, { credentials: 'include' }),
+        fetch(`${API_URL}/api/instances?workspaceId=${encodeURIComponent(workspaceId)}`, { credentials: 'include' }),
+      ])
+      if (!pinRes.ok) throw new Error(`pin: ${pinRes.status}`)
+      if (!instancesRes.ok) throw new Error(`instances: ${instancesRes.status}`)
+      const pin = await pinRes.json()
+      const list = (await instancesRes.json()) as { instances?: RunOnInstance[] }
+      setRunOn({
+        loading: false,
+        pinnedInstance: pin.instance ?? null,
+        policy: (pin.preferredInstancePolicy ?? 'pinned') as 'pinned' | 'prefer',
+        candidates: list.instances ?? [],
+        error: null,
+        saving: false,
+      })
+    } catch (err: any) {
+      setRunOn((prev) => ({ ...prev, loading: false, error: err?.message ?? 'Failed to load' }))
+    }
+  }, [projectId, workspaceId, visible])
+
+  useEffect(() => {
+    loadRunOn()
+  }, [loadRunOn])
+
+  const setPin = useCallback(
+    async (instanceId: string | null) => {
+      if (!API_URL) return
+      setRunOn((prev) => ({ ...prev, saving: true, error: null }))
+      try {
+        const url = `${API_URL}/api/projects/${projectId}/preferred-instance`
+        const res = instanceId
+          ? await fetch(url, {
+              method: 'PUT',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ instanceId, policy: 'pinned' }),
+            })
+          : await fetch(url, { method: 'DELETE', credentials: 'include' })
+        if (!res.ok) {
+          const body = await res.json().catch(() => null)
+          throw new Error(body?.error?.message ?? `HTTP ${res.status}`)
+        }
+        setRunOnPickerOpen(false)
+        await loadRunOn()
+      } catch (err: any) {
+        setRunOn((prev) => ({ ...prev, saving: false, error: err?.message ?? 'Failed to save' }))
+      }
+    },
+    [projectId, loadRunOn],
+  )
 
   const loadChannels = useCallback(async () => {
     if (!agentUrl) return
@@ -309,6 +430,104 @@ export function ChannelsPanel({ projectId, agentUrl, visible, hasAdvancedModelAc
         </Pressable>
       </View>
 
+      {/* "Run on" routing — pin this project to a paired machine so all
+          external triggers (webhooks, scheduled jobs) land there instead
+          of a cloud pod. See features/external-triggers/quickstart.md. */}
+      {workspaceId && (
+        <View className="px-4 py-2 border-b border-border">
+          <View className="flex-row items-center gap-2">
+            <Text className="text-[11px] text-muted-foreground">Run on:</Text>
+            <Pressable
+              onPress={() => setRunOnPickerOpen((open) => !open)}
+              className="flex-1 flex-row items-center gap-1.5 px-2 py-1 border border-border rounded-md active:bg-muted"
+              disabled={runOn.loading || runOn.saving}
+            >
+              <Text className="text-xs text-foreground flex-1" numberOfLines={1}>
+                {runOn.loading
+                  ? 'Loading…'
+                  : runOn.pinnedInstance
+                    ? runOn.pinnedInstance.name
+                    : 'Cloud (default)'}
+              </Text>
+              {(runOn.loading || runOn.saving) ? (
+                <ActivityIndicator size="small" />
+              ) : (
+                <ChevronDown size={12} className="text-muted-foreground" />
+              )}
+            </Pressable>
+            {runOn.pinnedInstance && !runOn.saving && (
+              <Pressable
+                onPress={() => setPin(null)}
+                className="px-2 py-1 border border-border rounded-md active:bg-muted"
+              >
+                <Text className="text-[10px] text-muted-foreground">Unpin</Text>
+              </Pressable>
+            )}
+          </View>
+          {runOn.error && (
+            <Text className="text-[10px] text-destructive mt-1">{runOn.error}</Text>
+          )}
+          {runOnPickerOpen && (
+            <View className="mt-2 border border-border rounded-md overflow-hidden">
+              {/* Cloud (unpin) option — always available. */}
+              <Pressable
+                onPress={() => setPin(null)}
+                className="px-3 py-2 flex-row items-center gap-2 active:bg-muted"
+              >
+                <View className="flex-1">
+                  <Text className="text-xs text-foreground">Cloud (default)</Text>
+                  <Text className="text-[10px] text-muted-foreground">
+                    Shogo cold-starts a runtime pod on demand
+                  </Text>
+                </View>
+                {!runOn.pinnedInstance && <Check size={12} className="text-emerald-500" />}
+              </Pressable>
+              {runOn.candidates.length === 0 ? (
+                <View className="px-3 py-3 border-t border-border">
+                  <Text className="text-[10px] text-muted-foreground">
+                    No paired machines yet. Run{' '}
+                    <Text className="font-mono text-foreground">shogo worker start</Text> on a
+                    VPS or laptop to pair one.
+                  </Text>
+                </View>
+              ) : (
+                runOn.candidates.map((inst) => {
+                  const selected = runOn.pinnedInstance?.id === inst.id
+                  const offline = inst.status === 'offline'
+                  return (
+                    <Pressable
+                      key={inst.id}
+                      onPress={() => !offline && setPin(inst.id)}
+                      disabled={offline}
+                      className="px-3 py-2 flex-row items-center gap-2 border-t border-border active:bg-muted"
+                      style={offline ? { opacity: 0.5 } : undefined}
+                    >
+                      <View
+                        className={`h-2 w-2 rounded-full ${
+                          inst.status === 'online'
+                            ? 'bg-emerald-500'
+                            : inst.status === 'heartbeat'
+                              ? 'bg-yellow-500'
+                              : 'bg-muted-foreground/40'
+                        }`}
+                      />
+                      <View className="flex-1">
+                        <Text className="text-xs text-foreground">{inst.name}</Text>
+                        <Text className="text-[10px] text-muted-foreground">
+                          {inst.kind === 'cli_worker' ? 'Worker' : 'Desktop'} · {inst.hostname}
+                          {offline ? ' · offline' : ''}
+                        </Text>
+                      </View>
+                      {selected && <Check size={12} className="text-emerald-500" />}
+                    </Pressable>
+                  )
+                })
+              )}
+            </View>
+          )}
+        </View>
+      )}
+
       {error && (
         <View className="px-4 py-2 bg-destructive/10">
           <Text className="text-xs text-destructive">{error}</Text>
@@ -402,6 +621,59 @@ export function ChannelsPanel({ projectId, agentUrl, visible, hasAdvancedModelAc
                       </Pressable>
                     ) : null}
                   </Pressable>
+
+                  {/* Webhook public URL — visible whenever the user opens
+                      the channel, even before connecting, so they can wire
+                      external services in parallel. */}
+                  {type === 'webhook' && isExpanded && publicWebhookUrl && (
+                    <View className="px-3 pb-3 border-t border-border">
+                      <View className="mt-3 gap-2">
+                        <Text className="text-[11px] font-medium text-foreground">
+                          Public webhook URL
+                        </Text>
+                        <Text className="text-[10px] text-muted-foreground">
+                          Paste this into Jira, Linear, Zapier, n8n, or any caller. Always
+                          send <Text className="font-mono">Authorization: Bearer shogo_sk_…</Text>{' '}
+                          plus <Text className="font-mono">X-Webhook-Secret</Text> with the
+                          secret below.
+                        </Text>
+                        <View className="bg-muted/50 rounded-md p-2.5 border border-border">
+                          <Text className="text-[10px] text-foreground font-mono" selectable>
+                            {publicWebhookUrl}
+                          </Text>
+                        </View>
+                        <View className="flex-row items-center gap-2">
+                          <Pressable
+                            onPress={async () => {
+                              await Clipboard.setStringAsync(publicWebhookUrl)
+                              setCopiedWebhookUrl(true)
+                              setTimeout(() => setCopiedWebhookUrl(false), 2000)
+                            }}
+                            className="flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
+                          >
+                            {copiedWebhookUrl ? (
+                              <>
+                                <Check size={12} className="text-emerald-500" />
+                                <Text className="text-[10px] text-emerald-500">Copied!</Text>
+                              </>
+                            ) : (
+                              <>
+                                <Copy size={12} className="text-muted-foreground" />
+                                <Text className="text-[10px] text-muted-foreground">Copy URL</Text>
+                              </>
+                            )}
+                          </Pressable>
+                          <Pressable
+                            onPress={() => Linking.openURL('https://docs.shogo.ai/docs/features/external-triggers/quickstart')}
+                            className="flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
+                          >
+                            <ExternalLink size={12} className="text-muted-foreground" />
+                            <Text className="text-[10px] text-muted-foreground">Quickstart</Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    </View>
+                  )}
 
                   {/* WebChat embed snippet (shown when connected) */}
                   {type === 'webchat' && isConnected && agentUrl && (

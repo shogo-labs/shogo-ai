@@ -2068,14 +2068,77 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   if (!resolution.ok) {
     return c.json(resolution.body, resolution.status)
   }
+
+  // Shared between cloud-pod and tunnel branches: header capture, runtime
+  // token derivation, and the billing-session lifecycle. Hoisting them
+  // here keeps the two branches semantically identical from the runtime's
+  // perspective (same auth, same billing) — the only difference is the
+  // transport.
+  const contentType = c.req.header('content-type')
+  const accept = c.req.header('accept')
+  const { deriveRuntimeToken } = await import('./lib/runtime-token')
+  const runtimeToken = deriveRuntimeToken(projectId)
+
+  // Open the billing session for chat turns before fanning out to either
+  // branch. The handler-level `finally` guard closes it if neither branch
+  // hands it off to a tracker (e.g. retry exhaustion, client disconnect).
+  let billingSessionHandedOff = false
+  if (isChatStream && authedWorkspaceId && authedUserId) {
+    openSession(projectId, authedWorkspaceId, authedUserId)
+  }
+
+  // ─── Tunnel branch ─────────────────────────────────────────────────
+  // The project is pinned to a paired Instance (VPS / laptop) and the
+  // tunnel is live. Forward through the worker's outbound WebSocket
+  // instead of fetching a cloud pod — this is what makes a single
+  // canonical project URL work for external webhooks regardless of
+  // where the agent actually runs.
+  if (resolution.kind === 'tunnel') {
+    try {
+      const { relayAgentProxyViaTunnel } = await import('./lib/tunnel-relay')
+      const tunnelHeaders: Record<string, string> = {}
+      if (contentType) tunnelHeaders['content-type'] = contentType
+      if (accept) tunnelHeaders['accept'] = accept
+      tunnelHeaders['x-runtime-token'] = runtimeToken
+      if (isChatStream && authedUserId) tunnelHeaders['x-billing-user-id'] = authedUserId
+      if (isWebchatPath) {
+        for (const h of ['origin', 'x-webchat-widget-key', 'x-webchat-session-token', 'x-webchat-session'] as const) {
+          const v = c.req.header(h)
+          if (v) tunnelHeaders[h] = v
+        }
+      }
+      const tunnelBody = c.req.method === 'GET' || c.req.method === 'HEAD'
+        ? undefined
+        : await c.req.text()
+      return await relayAgentProxyViaTunnel({
+        c,
+        instanceId: resolution.instanceId,
+        workspaceId: resolution.workspaceId,
+        projectId,
+        agentPath: `${path}${qs}`,
+        cleanPath: path,
+        method: c.req.method,
+        body: tunnelBody,
+        headers: tunnelHeaders,
+        userId: authedUserId,
+        isChatTurn: isChatStream,
+        onBillingHandoff: () => { billingSessionHandedOff = true },
+      })
+    } finally {
+      if (isChatStream && !billingSessionHandedOff && hasSession(projectId)) {
+        closeSession(projectId, { discardPartial: true }).catch((err) =>
+          console.error(`[AgentProxy] Failed to close orphaned tunnel billing session for ${projectId}:`, err),
+        )
+      }
+    }
+  }
+
   const podUrl = resolution.url
 
   const targetUrl = `${podUrl}${path}${qs}`
 
   const headers = new Headers()
-  const contentType = c.req.header('content-type')
   if (contentType) headers.set('content-type', contentType)
-  const accept = c.req.header('accept')
   if (accept) headers.set('accept', accept)
   if (isWebchatPath) {
     const fwdHeaders = ['origin', 'x-webchat-widget-key', 'x-webchat-session-token', 'x-webchat-session'] as const
@@ -2084,8 +2147,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
       if (v) headers.set(h, v)
     }
   }
-  const { deriveRuntimeToken } = await import('./lib/runtime-token')
-  headers.set('x-runtime-token', deriveRuntimeToken(projectId))
+  headers.set('x-runtime-token', runtimeToken)
 
   // Forward the real billing user so the runtime can include it in AI proxy
   // calls — same convention as `project-chat.ts`.
@@ -2096,15 +2158,6 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   let requestBody: ArrayBuffer | undefined
   if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
     requestBody = await c.req.arrayBuffer()
-  }
-
-  // Open a billing session for this chat turn so the AI proxy accumulates
-  // tokens (and image-generation USD) across all calls in the agentic loop
-  // and emits a single `chat_message` `usage_events` row when the session
-  // closes after the stream ends.
-  let billingSessionHandedOff = false
-  if (isChatStream && authedWorkspaceId && authedUserId) {
-    openSession(projectId, authedWorkspaceId, authedUserId)
   }
 
   try {
@@ -2245,6 +2298,128 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
       )
     }
   }
+})
+
+// =============================================================================
+// Preferred-instance routes — "Run on" selector for external-trigger routing
+//
+// PUT  /api/projects/:projectId/preferred-instance { instanceId, policy? }
+//   Pins a project to a paired Instance. Future /agent-proxy/* requests
+//   relay through that Instance's tunnel until cleared. Used by Studio's
+//   "Run on" selector and by SDK callers (`client.machines.pinProject`).
+//
+// DELETE /api/projects/:projectId/preferred-instance
+//   Unpins, restoring cloud-pod routing.
+//
+// Auth: standard `/api/*` middleware applies; we re-verify project
+// access (workspace membership) the same way `agent-proxy` does.
+// =============================================================================
+
+app.get('/api/projects/:projectId/preferred-instance', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const workspaceId = await verifyProjectAccess(userId, projectId)
+  if (!workspaceId) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      preferredInstanceId: true,
+      preferredInstancePolicy: true,
+      preferredInstance: { select: { id: true, name: true, kind: true, hostname: true } },
+    },
+  })
+  if (!project) {
+    return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+  }
+
+  return c.json({
+    preferredInstanceId: project.preferredInstanceId,
+    preferredInstancePolicy: project.preferredInstancePolicy,
+    instance: project.preferredInstance,
+  })
+})
+
+app.put('/api/projects/:projectId/preferred-instance', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const projectWorkspaceId = await verifyProjectAccess(userId, projectId)
+  if (!projectWorkspaceId) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+
+  const body = await c.req
+    .json<{ instanceId?: string; policy?: string }>()
+    .catch(() => ({}) as { instanceId?: string; policy?: string })
+  if (!body.instanceId || typeof body.instanceId !== 'string') {
+    return c.json({ error: { code: 'invalid_request', message: 'instanceId required' } }, 400)
+  }
+
+  // Whitelist policy strings here (not on the column) so the API stays
+  // backward-compatible as we grow the set. See agent-proxy-resolver.ts
+  // for how each value behaves at request time.
+  const policy = body.policy ?? 'pinned'
+  if (policy !== 'pinned' && policy !== 'prefer') {
+    return c.json(
+      { error: { code: 'invalid_request', message: "policy must be 'pinned' or 'prefer'" } },
+      400,
+    )
+  }
+
+  // Tie the pin to an Instance the caller actually owns. Anything else
+  // would let workspace A route requests through workspace B's worker.
+  const instance = await prisma.instance.findUnique({
+    where: { id: body.instanceId },
+    select: { id: true, workspaceId: true, name: true },
+  })
+  if (!instance || instance.workspaceId !== projectWorkspaceId) {
+    return c.json({ error: { code: 'not_found', message: 'Instance not found in workspace' } }, 404)
+  }
+
+  await prisma.project.update({
+    where: { id: projectId },
+    data: {
+      preferredInstanceId: instance.id,
+      preferredInstancePolicy: policy,
+    },
+  })
+
+  return c.json({
+    ok: true,
+    preferredInstanceId: instance.id,
+    preferredInstancePolicy: policy,
+    instance: { id: instance.id, name: instance.name },
+  })
+})
+
+app.delete('/api/projects/:projectId/preferred-instance', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const projectWorkspaceId = await verifyProjectAccess(userId, projectId)
+  if (!projectWorkspaceId) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+
+  await prisma.project.update({
+    where: { id: projectId },
+    data: {
+      preferredInstanceId: null,
+      preferredInstancePolicy: 'pinned',
+    },
+  })
+
+  return c.json({ ok: true })
 })
 
 // =============================================================================

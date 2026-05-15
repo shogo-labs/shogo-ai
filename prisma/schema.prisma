@@ -196,6 +196,18 @@ model Project {
   // implicitly trusted (they live in our sandbox).
   trustLevel     String  @default("trusted")
 
+  // External-trigger routing: when set, /api/projects/:id/agent-proxy/*
+  // requests are relayed through the paired Instance's tunnel instead of
+  // a cloud pod. Lets external services (Jira, Zapier, cron) hit one
+  // stable URL per project regardless of where the agent actually runs.
+  //   - `preferredInstanceId` references an Instance in the same workspace.
+  //   - `preferredInstancePolicy` controls offline behavior:
+  //       `pinned` (default) -> 503 if the instance is offline (caller retries).
+  //       `prefer`           -> fall back to the cloud pod when offline.
+  // See apps/api/src/lib/agent-proxy-resolver.ts for the resolution order.
+  preferredInstanceId     String?
+  preferredInstancePolicy String  @default("pinned")
+
   // Relations
   workspace              Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   folder                 Folder?                 @relation(fields: [folderId], references: [id], onDelete: SetNull)
@@ -217,9 +229,11 @@ model Project {
   voiceConfig            VoiceProjectConfig?
   agents                 ProjectAgent[]
   projectFolders         ProjectFolder[]
+  preferredInstance      Instance?               @relation("ProjectPreferredInstance", fields: [preferredInstanceId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId])
   @@index([folderId])
+  @@index([preferredInstanceId])
   @@map("projects")
 }
 
@@ -1414,6 +1428,7 @@ model Instance {
   workspace         Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   remoteActions     RemoteAction[]
   pushSubscriptions PushSubscription[]
+  preferredByProjects Project[]        @relation("ProjectPreferredInstance")
 
   @@unique([workspaceId, hostname])
   @@index([workspaceId])
