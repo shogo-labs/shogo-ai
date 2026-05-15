@@ -23,6 +23,13 @@ variable "oci_private_key_path" {
   type = string
 }
 
+variable "cloudflare_api_token" {
+  description = "Cloudflare API token. India does not manage Cloudflare resources directly, but the `oci-region` composite transitively requires the provider so an api_token is required even though it goes unused."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "signoz_endpoint" {
   type    = string
   default = "ingest.us.signoz.cloud:443"

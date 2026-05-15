@@ -14,6 +14,13 @@ terraform {
       source  = "oracle/oci"
       version = "~> 8.0"
     }
+    # India doesn't manage any Cloudflare resources directly (tier=light,
+    # no publish-hosting), but the `oci-region` composite transitively
+    # requires the provider so a config block is required.
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 4.0"
+    }
     kubernetes = {
       source  = "hashicorp/kubernetes"
       version = "~> 2.35"
@@ -52,6 +59,10 @@ provider "oci" {
   fingerprint      = var.oci_fingerprint
   private_key_path = var.oci_private_key_path
   region           = "ap-mumbai-1"
+}
+
+provider "cloudflare" {
+  api_token = var.cloudflare_api_token
 }
 
 data "oci_containerengine_cluster_kube_config" "main" {
@@ -124,13 +135,61 @@ module "india" {
 
   # No Cloudflare publish-hosting in Tier 2
   # cloudflare_zone_id and cloudflare_account_id left empty
+
+  # =============================================================
+  # Live-state overrides (production-india reconciliation, 2026-05)
+  # =============================================================
+
+  # Live node pool was bootstrapped as `shogo-prod-india-arm-4ocpu` at
+  # max_pods_per_node = 93.
+  oke_main_node_pool_name_override = "shogo-prod-india-arm-4ocpu"
+  oke_main_node_pool_max_pods      = 93
+
+  # Live cluster has no NSGs attached (endpoint nsg-ids: []).
+  vcn_enable_oke_nsgs = false
+
+  # VCN security lists already in state — keep enabled.
+  vcn_enable_security_lists = true
+
+  # India was bootstrapped with a dedicated /28 subnet for the OKE API
+  # endpoint (live cidr 10.2.0.0/28).
+  vcn_enable_dedicated_api_subnet = true
+  vcn_api_endpoint_cidr           = "10.2.0.0/28"
+
+  # OCIR has 5 repos live (module default would destroy
+  # `shogo-runtime-base`).
+  ocir_repositories = [
+    "shogo-api",
+    "shogo-docs",
+    "shogo-runtime",
+    "shogo-runtime-base",
+    "shogo-web",
+  ]
+
+  # Knative + Kourier installed live (kubectl shows knative-serving,
+  # kourier-system namespaces 55+ days old). Skip the installer.
+  knative_manage_install = false
+
+  # India is tier="light" — module.cnpg, module.object_storage,
+  # module.file_storage, module.publish_hosting are not instantiated by
+  # the composite, so no flags needed for those.
 }
 
 # =============================================================================
 # Cross-Region Peering (accept US peering — optional, for private DB access)
+#
+# DEFERRED until production-us flips `enable_drg_peering_to_india = true`
+# and emits a non-null `rpc_india_id` output.
 # =============================================================================
 
+variable "enable_drg_peering_from_us" {
+  description = "Create the DRG + VCN attachment that accepts the US-side RPC. Defaults to false until production-us has been flipped to publish its RPC."
+  type        = bool
+  default     = false
+}
+
 module "drg_from_us" {
+  count  = var.enable_drg_peering_from_us ? 1 : 0
   source = "../../modules/drg-peering"
 
   name           = "shogo-production-in"
