@@ -16,6 +16,12 @@ module.exports = function (api) {
           },
         },
       ],
+      // MUST be last. Without this, react-native-worklets cannot initialize
+      // its native binding and any screen that uses Reanimated (chat composer,
+      // gestures, animations) throws "Native part of Worklets doesn't seem to
+      // be initialized" on first render — which was crashing the in-project
+      // chat flow on iPad.
+      'react-native-worklets/plugin',
     ],
   }
 }

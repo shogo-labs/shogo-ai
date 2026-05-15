@@ -6,7 +6,7 @@
  * Required environment variables:
  *   APPLE_IAP_SHARED_SECRET   App-Specific Shared Secret from App Store Connect
  *   APPLE_IAP_BUNDLE_ID       (optional) Expected bundle ID for receipt validation
- *                             — defaults to com.odin.ai
+ *                             — defaults to ai.shogo.app
  */
 import { prisma, type SubscriptionStatus, type BillingInterval } from '../lib/prisma';
 import * as billingService from './billing.service';
@@ -16,16 +16,16 @@ import { readFileSync } from 'node:fs';
 const APPLE_PROD_URL = 'https://buy.itunes.apple.com/verifyReceipt';
 const APPLE_SANDBOX_URL = 'https://sandbox.itunes.apple.com/verifyReceipt';
 const SANDBOX_RETRY_STATUS = 21007;
-const DEFAULT_BUNDLE_ID = 'com.odin.ai';
+const DEFAULT_BUNDLE_ID = 'ai.shogo.app';
 const MAX_RECEIPT_LENGTH = 200_000; // ~200KB — Apple receipts are usually <10KB
 
 const PRODUCT_MAP: Record<string, { planId: 'basic' | 'pro' | 'business'; interval: 'monthly' | 'annual' }> = {
-  'ai.shogo.basic.monthly':    { planId: 'basic',    interval: 'monthly' },
-  'ai.shogo.basic.annual':     { planId: 'basic',    interval: 'annual' },
-  'ai.shogo.pro.monthly':      { planId: 'pro',      interval: 'monthly' },
-  'ai.shogo.pro.annual':       { planId: 'pro',      interval: 'annual' },
-  'ai.shogo.business.monthly': { planId: 'business', interval: 'monthly' },
-  'ai.shogo.business.annual':  { planId: 'business', interval: 'annual' },
+  'ai.shogo.app.basic.monthly':    { planId: 'basic',    interval: 'monthly' },
+  'ai.shogo.app.basic.annual':     { planId: 'basic',    interval: 'annual' },
+  'ai.shogo.app.pro.monthly':      { planId: 'pro',      interval: 'monthly' },
+  'ai.shogo.app.pro.annual':       { planId: 'pro',      interval: 'annual' },
+  'ai.shogo.app.business.monthly': { planId: 'business', interval: 'monthly' },
+  'ai.shogo.app.business.annual':  { planId: 'business', interval: 'annual' },
 };
 
 export function resolveProduct(productId: string) {
