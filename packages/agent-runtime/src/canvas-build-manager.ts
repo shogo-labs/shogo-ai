@@ -44,7 +44,7 @@ import { join } from 'path'
 import { existsSync, readFileSync } from 'fs'
 import { resolveBinInvocation } from '@shogo/shared-runtime'
 import {
-  commitBuildOutput,
+  commitBuildOutputAsync,
   cleanupStagingOutput,
 } from './build-output-commit'
 
@@ -378,9 +378,13 @@ export class CanvasBuildManager {
       })
 
       // Bundler succeeded — promote the staging dir into `dist/` atomically.
-      // A swap failure (e.g. a locked file on Windows) is non-fatal: the
-      // previous `dist/` keeps serving and the next rebuild will retry.
-      const committed = commitBuildOutput(this.workspaceDir, CANVAS_STAGING_DIR)
+      // Routes through the workspace-scoped commit mutex so PreviewManager's
+      // boot-time expo/vite seed and our own canvas builds can't race on
+      // `dist.prev/` rotation. A swap failure (e.g. a locked file on
+      // Windows that outlasted the retry budget AND the force-replace
+      // fallback) is non-fatal: the previous `dist/` keeps serving and the
+      // next rebuild will retry.
+      const committed = await commitBuildOutputAsync(this.workspaceDir, CANVAS_STAGING_DIR)
       if (!committed) {
         console.warn(
           `${LOG_PREFIX} Build succeeded but commit into dist/ failed — previous build remains live`,
