@@ -72,9 +72,31 @@ terraform/
 
 ## State Management
 
-Terraform state is stored locally (`backend "local"`). State files are
-gitignored. If you need to manage existing infrastructure, use `terraform import`
-to bootstrap state from the live resources.
+Terraform state is stored remotely on **OCI Object Storage** (S3-compat) in the
+`shogo-tfstate` bucket (`us-ashburn-1`, versioning enabled). One key per
+environment: `<env>/terraform.tfstate`.
+
+The backend is configured via the `s3` backend in each environment's `main.tf`,
+with the OCI namespace endpoint passed in at `terraform init` time:
+
+```bash
+export AWS_ACCESS_KEY_ID=$OCI_S3_ACCESS_KEY      # GH secret
+export AWS_SECRET_ACCESS_KEY=$OCI_S3_SECRET_KEY  # GH secret
+export OCI_S3_ENDPOINT=https://idin4oltblww.compat.objectstorage.us-ashburn-1.oraclecloud.com
+
+cd terraform/environments/staging
+terraform init -backend-config="endpoint=$OCI_S3_ENDPOINT"
+terraform plan
+```
+
+The credentials are S3-compatible OCI Customer Secret Keys associated with the
+existing `shogo-production-s3` IAM key (also used by the application for
+Object Storage access). They are stored in GitHub as repo-level secrets
+(`OCI_S3_ACCESS_KEY`, `OCI_S3_SECRET_KEY`) and exposed to CI as the standard
+`AWS_*` env vars the `s3` backend expects.
+
+If you need to manage existing infrastructure that isn't yet tracked, use
+`terraform import` to bootstrap state from the live resources.
 
 ## Configuration
 
