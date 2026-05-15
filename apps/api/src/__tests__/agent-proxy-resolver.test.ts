@@ -38,7 +38,7 @@ describe('resolveAgentProxyPodUrl — happy path', () => {
   test('returns ok:true with the resolved URL when the resolver succeeds', async () => {
     const resolver = mock(async () => ({ url: 'http://10.0.0.5:3001' }))
     const out = await resolveAgentProxyPodUrl('proj_1', deps({ resolver: resolver as any }))
-    expect(out).toEqual({ ok: true, url: 'http://10.0.0.5:3001' })
+    expect(out).toEqual({ ok: true, kind: 'pod', url: 'http://10.0.0.5:3001' })
     expect(resolver).toHaveBeenCalledTimes(1)
   })
 

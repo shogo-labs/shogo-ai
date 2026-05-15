@@ -114,12 +114,12 @@ beforeEach(() => {
 
 describe('resolveProduct', () => {
   test.each([
-    ['ai.shogo.basic.monthly', { planId: 'basic', interval: 'monthly' }],
-    ['ai.shogo.basic.annual', { planId: 'basic', interval: 'annual' }],
-    ['ai.shogo.pro.monthly', { planId: 'pro', interval: 'monthly' }],
-    ['ai.shogo.pro.annual', { planId: 'pro', interval: 'annual' }],
-    ['ai.shogo.business.monthly', { planId: 'business', interval: 'monthly' }],
-    ['ai.shogo.business.annual', { planId: 'business', interval: 'annual' }],
+    ['ai.shogo.app.basic.monthly', { planId: 'basic', interval: 'monthly' }],
+    ['ai.shogo.app.basic.annual', { planId: 'basic', interval: 'annual' }],
+    ['ai.shogo.app.pro.monthly', { planId: 'pro', interval: 'monthly' }],
+    ['ai.shogo.app.pro.annual', { planId: 'pro', interval: 'annual' }],
+    ['ai.shogo.app.business.monthly', { planId: 'business', interval: 'monthly' }],
+    ['ai.shogo.app.business.annual', { planId: 'business', interval: 'annual' }],
   ])('maps %s correctly', (productId, expected) => {
     expect(svc.resolveProduct(productId as string)).toEqual(expected as any)
   })
@@ -187,7 +187,7 @@ describe('verifyAndDecodeJws (skip-verify mode)', () => {
 const RECEIPT = 'base64-receipt-data'
 const VALID_ARGS = {
   workspaceId: 'ws_1',
-  productId: 'ai.shogo.pro.monthly',
+  productId: 'ai.shogo.app.pro.monthly',
   transactionId: 'tx_1',
   transactionReceipt: RECEIPT,
 }
@@ -234,7 +234,7 @@ const FUTURE = NOW + 30 * 24 * 60 * 60 * 1000
 
 function makeInfo(over: Partial<any> = {}) {
   return {
-    product_id: 'ai.shogo.pro.monthly',
+    product_id: 'ai.shogo.app.pro.monthly',
     transaction_id: 'tx_1',
     original_transaction_id: 'otx_1',
     purchase_date_ms: String(NOW),
@@ -258,7 +258,7 @@ describe('verifyAndSyncReceipt — Apple response branching', () => {
     appleResponseQueue.push({ status: 21007 })
     appleResponseQueue.push({
       status: 0,
-      receipt: { bundle_id: 'com.odin.ai', in_app: [makeInfo()] },
+      receipt: { bundle_id: 'ai.shogo.app', in_app: [makeInfo()] },
       latest_receipt_info: [makeInfo()],
       pending_renewal_info: [],
     })
@@ -301,7 +301,7 @@ describe('verifyAndSyncReceipt — Apple response branching', () => {
   test('no matching transaction → ok=false', async () => {
     appleResponseQueue.push({
       status: 0,
-      receipt: { bundle_id: 'com.odin.ai', in_app: [] },
+      receipt: { bundle_id: 'ai.shogo.app', in_app: [] },
       latest_receipt_info: [],
     })
     const out = await svc.verifyAndSyncReceipt(VALID_ARGS)
@@ -311,7 +311,7 @@ describe('verifyAndSyncReceipt — Apple response branching', () => {
   test('app_account_token mismatch → ok=false', async () => {
     appleResponseQueue.push({
       status: 0,
-      receipt: { bundle_id: 'com.odin.ai', in_app: [] },
+      receipt: { bundle_id: 'ai.shogo.app', in_app: [] },
       latest_receipt_info: [makeInfo({ app_account_token: 'someone-else' })],
     })
     const out = await svc.verifyAndSyncReceipt(VALID_ARGS)
@@ -321,7 +321,7 @@ describe('verifyAndSyncReceipt — Apple response branching', () => {
   test('app_account_token case-insensitive match passes', async () => {
     appleResponseQueue.push({
       status: 0,
-      receipt: { bundle_id: 'com.odin.ai', in_app: [] },
+      receipt: { bundle_id: 'ai.shogo.app', in_app: [] },
       latest_receipt_info: [makeInfo({ app_account_token: 'WS_1' })],
     })
     const out = await svc.verifyAndSyncReceipt(VALID_ARGS)
@@ -331,7 +331,7 @@ describe('verifyAndSyncReceipt — Apple response branching', () => {
   test('happy path: calls billingService.syncFromStripe with apple: prefix', async () => {
     appleResponseQueue.push({
       status: 0,
-      receipt: { bundle_id: 'com.odin.ai', in_app: [] },
+      receipt: { bundle_id: 'ai.shogo.app', in_app: [] },
       latest_receipt_info: [makeInfo()],
     })
     const out = await svc.verifyAndSyncReceipt(VALID_ARGS)
@@ -346,7 +346,7 @@ describe('verifyAndSyncReceipt — Apple response branching', () => {
   test('expired receipt → status=past_due', async () => {
     appleResponseQueue.push({
       status: 0,
-      receipt: { bundle_id: 'com.odin.ai', in_app: [] },
+      receipt: { bundle_id: 'ai.shogo.app', in_app: [] },
       latest_receipt_info: [makeInfo({ expires_date_ms: String(NOW - 1000) })],
     })
     const out = await svc.verifyAndSyncReceipt(VALID_ARGS)
@@ -357,7 +357,7 @@ describe('verifyAndSyncReceipt — Apple response branching', () => {
   test('trial period → status=trialing', async () => {
     appleResponseQueue.push({
       status: 0,
-      receipt: { bundle_id: 'com.odin.ai', in_app: [] },
+      receipt: { bundle_id: 'ai.shogo.app', in_app: [] },
       latest_receipt_info: [makeInfo({ is_trial_period: 'true' })],
     })
     const out = await svc.verifyAndSyncReceipt(VALID_ARGS)
@@ -367,7 +367,7 @@ describe('verifyAndSyncReceipt — Apple response branching', () => {
   test('cancelled receipt → status=canceled', async () => {
     appleResponseQueue.push({
       status: 0,
-      receipt: { bundle_id: 'com.odin.ai', in_app: [] },
+      receipt: { bundle_id: 'ai.shogo.app', in_app: [] },
       latest_receipt_info: [makeInfo({ cancellation_date_ms: String(NOW - 1000) })],
     })
     const out = await svc.verifyAndSyncReceipt(VALID_ARGS)
@@ -377,7 +377,7 @@ describe('verifyAndSyncReceipt — Apple response branching', () => {
   test('auto_renew_status=0 in renewal info → cancelAtPeriodEnd=true', async () => {
     appleResponseQueue.push({
       status: 0,
-      receipt: { bundle_id: 'com.odin.ai', in_app: [] },
+      receipt: { bundle_id: 'ai.shogo.app', in_app: [] },
       latest_receipt_info: [makeInfo()],
       pending_renewal_info: [{ original_transaction_id: 'otx_1', auto_renew_status: '0' }],
     })
@@ -388,7 +388,7 @@ describe('verifyAndSyncReceipt — Apple response branching', () => {
   test('billing retry period → status=past_due', async () => {
     appleResponseQueue.push({
       status: 0,
-      receipt: { bundle_id: 'com.odin.ai', in_app: [] },
+      receipt: { bundle_id: 'ai.shogo.app', in_app: [] },
       latest_receipt_info: [makeInfo({ expires_date_ms: String(NOW - 1000) })],
       pending_renewal_info: [
         { original_transaction_id: 'otx_1', is_in_billing_retry_period: '1' },
@@ -411,7 +411,7 @@ describe('verifyAndSyncReceipt — Apple response branching', () => {
     })
     appleResponseQueue.push({
       status: 0,
-      receipt: { bundle_id: 'com.odin.ai', in_app: [] },
+      receipt: { bundle_id: 'ai.shogo.app', in_app: [] },
       latest_receipt_info: [makeInfo()],
     })
     lastSyncArgs = null
@@ -423,7 +423,7 @@ describe('verifyAndSyncReceipt — Apple response branching', () => {
   test('falls back to receipt.in_app when latest_receipt_info empty', async () => {
     appleResponseQueue.push({
       status: 0,
-      receipt: { bundle_id: 'com.odin.ai', in_app: [makeInfo()] },
+      receipt: { bundle_id: 'ai.shogo.app', in_app: [makeInfo()] },
       latest_receipt_info: [],
     })
     const out = await svc.verifyAndSyncReceipt(VALID_ARGS)
@@ -442,7 +442,7 @@ function makeNotificationJws(
 ) {
   const tx = makeJwsLike({
     originalTransactionId: 'otx_1',
-    productId: 'ai.shogo.pro.monthly',
+    productId: 'ai.shogo.app.pro.monthly',
     expiresDate: FUTURE,
     ...txOver,
   })
@@ -584,7 +584,7 @@ describe('handleAppStoreNotification', () => {
       updatedAt: new Date(0),
     })
     const jws = makeNotificationJws('SUBSCRIBED', {
-      productId: 'ai.shogo.business.annual',
+      productId: 'ai.shogo.app.business.annual',
     })
     await svc.handleAppStoreNotification(jws)
     expect(subscriptions.get('apple:otx_1').planId).toBe('business')
