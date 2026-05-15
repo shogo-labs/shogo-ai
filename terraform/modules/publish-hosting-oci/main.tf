@@ -88,7 +88,14 @@ resource "oci_objectstorage_preauthrequest" "published_apps" {
   time_expires          = timeadd(timestamp(), "8760h") # 1 year
 
   lifecycle {
-    ignore_changes = [time_expires]
+    # `bucket_listing_action` is set correctly on create (verified via the
+    # OCI CLI) but the provider's Read implementation never populates it
+    # back into state, so every subsequent plan sees `null -> "Deny"` and
+    # flags it as a force-new replacement. Ignoring it pins state to
+    # whatever was set on the original create.
+    # `time_expires` is set to `timestamp() + 1y` which would also drift
+    # every plan.
+    ignore_changes = [time_expires, bucket_listing_action]
   }
 }
 
