@@ -121,5 +121,15 @@
     "model-router",
     "ai",
     "pi-ai"
-  ]
+  ],
+  "author": "Shogo Labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shogo-labs/shogo-ai.git",
+    "directory": "packages/agent"
+  },
+  "homepage": "https://github.com/shogo-labs/shogo-ai/tree/main/packages/agent#readme",
+  "bugs": {
+    "url": "https://github.com/shogo-labs/shogo-ai/issues"
+  }
 }
