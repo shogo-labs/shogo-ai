@@ -226,6 +226,11 @@ jobs:
           # Networking
           TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
           TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
+          # Fallback kubeconfig for the kubernetes/helm providers if their
+          # inline config (host = module.oke.cluster_endpoint) ever resolves
+          # to null during plan — for example on the first plan after a
+          # provider upgrade when the cluster resource hasn't refreshed yet.
+          KUBE_CONFIG_PATH: /home/runner/.kube/config
         run: terraform plan -no-color
 
       - name: terraform apply
@@ -240,4 +245,5 @@ jobs:
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
           TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
+          KUBE_CONFIG_PATH: /home/runner/.kube/config
         run: terraform apply -no-color -auto-approve
