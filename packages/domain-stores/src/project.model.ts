@@ -49,6 +49,8 @@ export const ProjectModel = types
     workingMode: types.optional(types.string, ""),
     runtimeEnabled: types.optional(types.boolean, false),
     trustLevel: types.optional(types.string, ""),
+    preferredInstanceId: types.optional(types.string, ""),
+    preferredInstancePolicy: types.optional(types.string, ""),
     workspace: types.safeReference(types.late(() => WorkspaceModel)),
     folder: types.safeReference(types.late(() => FolderModel)),
     members: types.optional(types.array(types.safeReference(types.late(() => MemberModel))), []),
