@@ -112,7 +112,13 @@ locals {
 resource "cloudflare_worker_script" "subdomain_router" {
   account_id = var.cloudflare_account_id
   name       = "shogo-subdomain-router-${var.environment}"
-  content    = <<-JS
+  # `module = true` switches the Worker runtime to ES Modules syntax
+  # (the `export default { fetch(...) }` form below). Without it, the
+  # Worker runtime treats the content as a legacy service-worker script
+  # and rejects the file with "Uncaught SyntaxError: Unexpected token
+  # 'export'" at deploy time.
+  module  = true
+  content = <<-JS
     export default {
       async fetch(request) {
         const url = new URL(request.url);
