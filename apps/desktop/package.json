@@ -3,7 +3,7 @@
   "productName": "Shogo",
   "version": "1.2.20",
   "description": "Shogo Desktop - Local open-source edition",
-  "author": "Shogo Team",
+  "author": "Shogo Labs",
   "private": true,
   "license": "MIT",
   "main": "dist/main.js",

@@ -58,5 +58,15 @@
     "ses",
     "transactional",
     "nodemailer"
-  ]
+  ],
+  "author": "Shogo Labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shogo-labs/shogo-ai.git",
+    "directory": "packages/email"
+  },
+  "homepage": "https://github.com/shogo-labs/shogo-ai/tree/main/packages/email#readme",
+  "bugs": {
+    "url": "https://github.com/shogo-labs/shogo-ai/issues"
+  }
 }

@@ -168,7 +168,7 @@ jobs:
           done
 
       - name: Upload build artifacts (workflow scope)
-        uses: actions/upload-artifact@cd2207e0fa7c08c4ae8898a85d8da307ee48aaf2 # v5.0.0
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: shogo-worker-${{ steps.version.outputs.version }}
           path: packages/shogo-worker/dist/release/*

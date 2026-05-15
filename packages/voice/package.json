@@ -125,5 +125,15 @@
     "react",
     "react-native",
     "three"
-  ]
+  ],
+  "author": "Shogo Labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shogo-labs/shogo-ai.git",
+    "directory": "packages/voice"
+  },
+  "homepage": "https://github.com/shogo-labs/shogo-ai/tree/main/packages/voice#readme",
+  "bugs": {
+    "url": "https://github.com/shogo-labs/shogo-ai/issues"
+  }
 }
