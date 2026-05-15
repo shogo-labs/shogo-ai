@@ -37,6 +37,19 @@ COPY --from=workspace /app/packages/shared-runtime ./packages/shared-runtime
 COPY --from=workspace /app/packages/agent-runtime ./packages/agent-runtime
 COPY --from=workspace /app/packages/model-catalog ./packages/model-catalog
 COPY --from=workspace /app/packages/sdk ./packages/sdk
+COPY --from=workspace /app/packages/shogo-worker ./packages/shogo-worker
+# SDK split-out packages (3a2798abc "refactor(sdk): split monorepo into focused
+# packages"). packages/sdk re-exports from all six; without these, importing
+# anything from `@shogo-ai/sdk` chains into a missing module and crashes the
+# runtime at project boot (`Cannot find module '@shogo-ai/agent/pi-adapter'`
+# from `/app/packages/sdk/dist/pi-adapter.js` was the staging incident on
+# 2026-05-14 — same root cause as 27619a00 for the API image).
+COPY --from=workspace /app/packages/core ./packages/core
+COPY --from=workspace /app/packages/agent ./packages/agent
+COPY --from=workspace /app/packages/db ./packages/db
+COPY --from=workspace /app/packages/email ./packages/email
+COPY --from=workspace /app/packages/voice ./packages/voice
+COPY --from=workspace /app/packages/cli ./packages/cli
 COPY --from=workspace /app/templates/runtime-template ./templates/runtime-template
 COPY --from=workspace /app/package.json /app/bun.lock /app/tsconfig.base.json ./
 
