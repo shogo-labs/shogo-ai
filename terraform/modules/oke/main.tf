@@ -379,6 +379,13 @@ resource "oci_containerengine_node_pool" "main" {
       node_metadata,
       node_config_details[0].size,
       node_config_details[0].placement_configs,
+      # OCI 8.x worker node images dictate the kubernetes version: the
+      # node-pool update API refuses an explicit version change with
+      # "Cannot update Kubernetes version which has already been set by
+      # OKE worker node image." (409 Conflict). Cluster version is
+      # still managed at the cluster resource — pools follow their
+      # node image.
+      kubernetes_version,
     ]
   }
 }
