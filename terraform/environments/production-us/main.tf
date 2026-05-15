@@ -198,7 +198,38 @@ module "us" {
 # US is the requestor — EU and India accept using this RPC ID
 # =============================================================================
 
+# =============================================================================
+# Cross-region peering and replication
+#
+# DEFERRED to the EU / India reconciliation follow-up sessions. The DRG
+# resources are regionally local and could be created standalone, but
+# `object-storage-replication` needs destination buckets in
+# eu-frankfurt-1 to exist first, and there's no value in creating the
+# DRG + RPC half-attachments without a peer to accept them. Each module
+# is gated behind a flag so the EU session can flip a single bool when
+# the time comes.
+# =============================================================================
+
+variable "enable_drg_peering_to_eu" {
+  description = "Create the DRG + VCN attachment + RPC for peering to production-eu. Defaults to false until production-eu is brought up."
+  type        = bool
+  default     = false
+}
+
+variable "enable_drg_peering_to_india" {
+  description = "Create the DRG + VCN attachment + RPC for peering to production-india. Defaults to false until production-india is brought up."
+  type        = bool
+  default     = false
+}
+
+variable "enable_replication_to_eu" {
+  description = "Create cross-region Object Storage replication policies (US -> EU). Requires destination buckets to exist in eu-frankfurt-1. Defaults to false."
+  type        = bool
+  default     = false
+}
+
 module "drg_to_eu" {
+  count  = var.enable_drg_peering_to_eu ? 1 : 0
   source = "../../modules/drg-peering"
 
   name           = "shogo-production-us"
@@ -208,6 +239,7 @@ module "drg_to_eu" {
 }
 
 module "drg_to_india" {
+  count  = var.enable_drg_peering_to_india ? 1 : 0
   source = "../../modules/drg-peering"
 
   name           = "shogo-production-us"
@@ -216,12 +248,8 @@ module "drg_to_india" {
   peer_region    = "ap-mumbai-1"
 }
 
-# =============================================================================
-# Object Storage Replication (US → EU)
-# EU is the only Tier 1 replica; India (Tier 2) reads from US directly
-# =============================================================================
-
 module "replication_to_eu" {
+  count  = var.enable_replication_to_eu ? 1 : 0
   source = "../../modules/object-storage-replication"
 
   compartment_id     = var.compartment_id
@@ -237,5 +265,9 @@ output "cluster_endpoint" { value = module.us.cluster_endpoint }
 output "cluster_id"       { value = module.us.cluster_id }
 output "ocir_prefix"      { value = module.us.ocir_prefix }
 output "s3_endpoint"      { value = module.us.s3_endpoint }
-output "rpc_eu_id"        { value = module.drg_to_eu.rpc_id }
-output "rpc_india_id"     { value = module.drg_to_india.rpc_id }
+output "rpc_eu_id" {
+  value = var.enable_drg_peering_to_eu ? module.drg_to_eu[0].rpc_id : null
+}
+output "rpc_india_id" {
+  value = var.enable_drg_peering_to_india ? module.drg_to_india[0].rpc_id : null
+}
