@@ -82,6 +82,14 @@ resource "oci_file_storage_export_set" "main" {
   mount_target_id  = oci_file_storage_mount_target.main.id
   display_name     = "${var.name}-export-set"
   max_fs_stat_bytes = 0 # unlimited
+
+  lifecycle {
+    # OCI silently rewrites `max_fs_stat_bytes = 0` to int64 max
+    # (9223372036854775807) on the backend, so every subsequent plan
+    # shows live=9223372036854775807 -> config=0 drift. Ignore the
+    # field so plans go quiet.
+    ignore_changes = [max_fs_stat_bytes, max_fs_stat_files]
+  }
 }
 
 resource "oci_file_storage_export" "main" {
