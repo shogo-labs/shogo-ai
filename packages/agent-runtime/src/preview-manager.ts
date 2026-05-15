@@ -21,7 +21,7 @@ import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync, wat
 import { recordBuildEntry } from './runtime-log-dispatcher'
 import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
 import {
-  commitBuildOutput,
+  commitBuildOutputAsync,
   cleanupStagingOutput,
   DEFAULT_STAGING_DIR,
 } from './build-output-commit'
@@ -1641,7 +1641,7 @@ export class PreviewManager {
     })
 
     if (exitCode === 0) {
-      const committed = commitBuildOutput(cwd, DEFAULT_STAGING_DIR)
+      const committed = await commitBuildOutputAsync(cwd, DEFAULT_STAGING_DIR)
       if (!committed) {
         console.warn(
           `[${LOG_PREFIX}] One-shot vite build succeeded but commit into dist/ failed`,
@@ -2305,7 +2305,7 @@ export class PreviewManager {
         )
         cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
       } else {
-        const committed = commitBuildOutput(cwd, DEFAULT_STAGING_DIR)
+        const committed = await commitBuildOutputAsync(cwd, DEFAULT_STAGING_DIR)
         if (!committed) {
           console.warn(
             `[${LOG_PREFIX}] expo export succeeded but commit into dist/ failed — ` +
