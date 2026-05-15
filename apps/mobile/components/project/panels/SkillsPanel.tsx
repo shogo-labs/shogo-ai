@@ -5,11 +5,13 @@ import { View, Text, Pressable, ScrollView, ActivityIndicator, TextInput } from 
 import { Zap, RefreshCw, BookOpen, Download, Check, Trash2, Plus, ChevronDown, ChevronRight, Search, Globe, FileCode } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { agentFetch } from '../../../lib/agent-fetch'
+import { GroupedToolTags } from './GroupedToolTags'
 
 interface Skill {
   name: string
   description: string
   trigger: string
+  tools?: string[]
 }
 
 interface SkillScript {
@@ -106,6 +108,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
           name: s.name,
           description: s.description || '',
           trigger: s.trigger || '',
+          tools: Array.isArray(s.tools) ? s.tools : undefined,
         })),
       )
       if (bundledRes.ok) {
@@ -220,6 +223,22 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
     }
     return counts
   }, [registrySkills])
+
+  const bundledToolsByName = useMemo(() => {
+    const map = new Map<string, string[]>()
+    for (const s of bundledSkills) {
+      if (s.tools?.length) map.set(s.name, s.tools)
+    }
+    return map
+  }, [bundledSkills])
+
+  const resolveSkillTools = useCallback(
+    (name: string, tools?: string[]) => {
+      if (tools?.length) return tools
+      return bundledToolsByName.get(name) ?? []
+    },
+    [bundledToolsByName],
+  )
 
   return (
     <View className="absolute inset-0 flex-col" style={{ display: visible ? 'flex' : 'none' }}>
@@ -486,13 +505,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                           ) : null}
 
                           {skill.tools?.length > 0 ? (
-                            <View className="flex-row flex-wrap gap-1 mt-1.5 ml-5">
-                              {skill.tools.map((tool) => (
-                                <View key={tool} className="px-1.5 py-0.5 bg-muted rounded">
-                                  <Text className="text-muted-foreground text-[10px]">{tool}</Text>
-                                </View>
-                              ))}
-                            </View>
+                            <GroupedToolTags tools={skill.tools} className="ml-5" />
                           ) : null}
                         </Pressable>
 
@@ -559,6 +572,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
               const isExpanded = expandedSkill === skill.name
               const content = skillContent[skill.name]
               const isLoadingThis = loadingContent === skill.name
+              const installedTools = resolveSkillTools(skill.name, skill.tools)
 
               return (
                 <View key={skill.name} className="border border-border rounded-lg">
@@ -609,6 +623,10 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                           </View>
                         ))}
                       </View>
+                    ) : null}
+
+                    {installedTools.length > 0 ? (
+                      <GroupedToolTags tools={installedTools} className="ml-5" />
                     ) : null}
                   </Pressable>
 
