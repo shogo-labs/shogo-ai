@@ -204,7 +204,7 @@ export const auth = betterAuth({
     //
     // APPLE_CLIENT_ID         = the Service ID (e.g. ai.shogo.web) for
     //                           web OAuth, OR the iOS bundle id
-    //                           (ai.shogo.mobile) for native ID-token flow.
+    //                           (com.odin.ai) for native ID-token flow.
     //                           We use the bundle id since native is the
     //                           only entry point right now.
     // APPLE_CLIENT_SECRET     = ES256 JWT signed with the .p8 Sign in
@@ -212,7 +212,7 @@ export const auth = betterAuth({
     //                           tooling (or rotated via cron — Apple
     //                           caps secret lifetime at 6 months).
     // APPLE_APP_BUNDLE_ID     = additional audience accepted on ID
-    //                           token verification (ai.shogo.mobile). Set
+    //                           token verification (com.odin.ai). Set
     //                           even when CLIENT_ID is the bundle id —
     //                           better-auth checks both.
     ...(process.env.APPLE_CLIENT_ID && process.env.APPLE_CLIENT_SECRET
@@ -220,7 +220,7 @@ export const auth = betterAuth({
           apple: {
             clientId: process.env.APPLE_CLIENT_ID,
             clientSecret: process.env.APPLE_CLIENT_SECRET,
-            appBundleIdentifier: process.env.APPLE_APP_BUNDLE_ID || 'ai.shogo.mobile',
+            appBundleIdentifier: process.env.APPLE_APP_BUNDLE_ID || 'com.odin.ai',
           },
         }
       : {}),
