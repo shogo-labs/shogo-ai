@@ -14,6 +14,12 @@ terraform {
   }
 }
 
+variable "manage_install" {
+  description = "When true, run the Knative + Kourier install/patch null_resources. Set to false for environments where Knative was bootstrapped out-of-band and we don't want tf to re-run kubectl on every apply. The install is idempotent (kubectl apply), so flipping this back to true later is safe but will re-execute the full install sequence."
+  type        = bool
+  default     = true
+}
+
 variable "knative_version" {
   description = "Knative Serving version (latest: 1.20.0 as of Jan 2026)"
   type        = string
@@ -42,6 +48,8 @@ variable "scale_to_zero_grace_period" {
 # Knative Serving Installation via kubectl
 # -----------------------------------------------------------------------------
 resource "null_resource" "knative_serving" {
+  count = var.manage_install ? 1 : 0
+
   triggers = {
     knative_version = var.knative_version
   }
@@ -68,6 +76,7 @@ resource "null_resource" "knative_serving" {
 # Kourier Ingress Installation
 # -----------------------------------------------------------------------------
 resource "null_resource" "kourier" {
+  count      = var.manage_install ? 1 : 0
   depends_on = [null_resource.knative_serving]
 
   triggers = {
@@ -110,6 +119,7 @@ resource "null_resource" "kourier" {
 #   continuously corrected. The trade-off is that `terraform plan` will
 #   always show 1 pending change for this resource — that is intentional.
 resource "null_resource" "kourier_toleration_strip" {
+  count      = var.manage_install ? 1 : 0
   depends_on = [null_resource.kourier]
 
   triggers = {
@@ -130,6 +140,7 @@ resource "null_resource" "kourier_toleration_strip" {
 # OCI LB Controller provisions a public flexible LB from service annotations
 # -----------------------------------------------------------------------------
 resource "null_resource" "kourier_oci_lb" {
+  count      = var.manage_install ? 1 : 0
   depends_on = [null_resource.kourier]
 
   provisioner "local-exec" {
@@ -168,6 +179,7 @@ variable "enable_pvc_support" {
 }
 
 resource "null_resource" "knative_config" {
+  count      = var.manage_install ? 1 : 0
   depends_on = [null_resource.kourier]
 
   triggers = {
@@ -232,7 +244,7 @@ resource "null_resource" "knative_config" {
 # Configures both platform domain (shogo.ai) and publish domain (shogo.one)
 # -----------------------------------------------------------------------------
 resource "null_resource" "knative_domain" {
-  count = var.domain != "" || var.publish_domain != "" ? 1 : 0
+  count = var.manage_install && (var.domain != "" || var.publish_domain != "") ? 1 : 0
 
   depends_on = [null_resource.knative_config]
 
@@ -275,7 +287,7 @@ variable "relax_pdbs" {
 }
 
 resource "null_resource" "knative_pdb_patches" {
-  count      = var.relax_pdbs ? 1 : 0
+  count      = var.manage_install && var.relax_pdbs ? 1 : 0
   depends_on = [null_resource.kourier]
 
   triggers = {

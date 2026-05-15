@@ -29,6 +29,12 @@ terraform {
   }
 }
 
+variable "manage_install" {
+  description = "When true, run the `kubectl apply` provisioner that installs/upgrades the CNPG operator from the upstream release manifest. Set to false for environments where the operator was bootstrapped out-of-band so tf doesn't re-run kubectl on every apply. Idempotent either way."
+  type        = bool
+  default     = true
+}
+
 variable "operator_version" {
   description = "CloudNativePG operator version (matches the GitHub release tag, e.g. \"1.25.0\")"
   type        = string
@@ -81,6 +87,7 @@ resource "kubernetes_namespace" "cnpg" {
 # performs an in-place upgrade. The `triggers` field re-runs the provisioner
 # only when the version changes, so day-to-day applies don't churn.
 resource "null_resource" "operator" {
+  count      = var.manage_install ? 1 : 0
   depends_on = [kubernetes_namespace.cnpg]
 
   triggers = {
