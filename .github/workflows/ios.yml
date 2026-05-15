@@ -443,7 +443,7 @@ jobs:
       - name: Build archive
         working-directory: apps/mobile/ios
         env:
-          BUNDLE_ID: com.odin.ai
+          BUNDLE_ID: ai.shogo.app
           # JS bundling runs inside xcodebuild's "Bundle React Native code
           # and images" build phase, which calls Metro. Metro reads
           # EXPO_PUBLIC_* from process.env at bundle time and bakes them
@@ -557,7 +557,7 @@ jobs:
             <string>Apple Distribution</string>
             <key>provisioningProfiles</key>
             <dict>
-              <key>com.odin.ai</key>
+              <key>ai.shogo.app</key>
               <string>$PROFILE_NAME</string>
             </dict>
             <key>uploadSymbols</key>
