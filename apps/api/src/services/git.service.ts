@@ -105,6 +105,7 @@ node_modules/
 # Build outputs
 dist/
 dist.staging/
+dist.canvas.staging/
 dist.prev/
 build/
 .output/
@@ -215,16 +216,21 @@ const REQUIRED_IGNORE_ENTRIES = [
   'node_modules/',
   '.bun/',
   // Build outputs from the agent-runtime canvas builder. Vite/Expo stacks
-  // emit into `dist.staging/`, then `commitBuildOutput` rotates the old
-  // `dist/` to `dist.prev/` and renames the staging dir into place. All
-  // three are regenerated on every build and should never be checkpointed:
-  // leaving them tracked bloats every commit, slows rollbacks, lets a
-  // rollback restore stale build artifacts that no longer match source,
-  // and — most acutely — races `git add -A` against the bundler renaming
-  // files mid-walk, leaving a stale `.git/index.lock` that breaks every
-  // subsequent checkpoint. See `packages/agent-runtime/src/build-output-commit.ts`.
+  // emit into a staging dir, then `commitBuildOutput` rotates the old
+  // `dist/` to `dist.prev/` and renames the staging dir into place.
+  // PreviewManager owns `dist.staging/`; CanvasBuildManager owns
+  // `dist.canvas.staging/` (separate name so their concurrent
+  // cleanups can't race — see canvas-build-manager.ts docstring).
+  // All four are regenerated on every build and should never be
+  // checkpointed: leaving them tracked bloats every commit, slows
+  // rollbacks, lets a rollback restore stale build artifacts that no
+  // longer match source, and — most acutely — races `git add -A`
+  // against the bundler renaming files mid-walk, leaving a stale
+  // `.git/index.lock` that breaks every subsequent checkpoint. See
+  // `packages/agent-runtime/src/build-output-commit.ts`.
   'dist/',
   'dist.staging/',
+  'dist.canvas.staging/',
   'dist.prev/',
   'build/',
   '.output/',
@@ -260,6 +266,7 @@ const UNTRACK_IF_TRACKED: readonly string[] = [
   '.bun',
   'dist',
   'dist.staging',
+  'dist.canvas.staging',
   'dist.prev',
   'build',
   '.output',

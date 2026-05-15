@@ -2044,15 +2044,34 @@ export class PreviewManager {
    * Force-kill any process listening on the API port. Used before
    * spawning a fresh server so a leaked previous process (or an
    * unrelated user-spawned binary) can't squat the port and EADDRINUSE
-   * the new spawn. Falls back to `lsof` and `fuser`; both are
-   * universally available on Linux pods and macOS dev machines.
+   * the new spawn.
    *
-   * Best-effort: any failure (missing binary, permission denied) is
-   * swallowed. The caller already polls the port via
-   * {@link waitForPortRelease} and a leaked process will then surface
-   * as a crash loop the operator can investigate.
+   * Cross-platform:
+   *   - POSIX: tries `lsof -ti` first, then falls back to `fuser`;
+   *     both are universally available on Linux pods and macOS dev
+   *     machines. Failure (missing binary, permission denied) is
+   *     swallowed via `|| true` and the empty stdout returns early.
+   *   - Windows: uses `netstat -ano | findstr :<port> | findstr LISTENING`
+   *     to enumerate PIDs and `taskkill /F /PID` to kill them.
+   *     Going through cmd.exe with the POSIX one-liner above used
+   *     to spray three lines of "system cannot find the path
+   *     specified" / "'true' is not recognized" into the runtime
+   *     log on every `restartApiServerOnly()` (custom-routes save,
+   *     schema change, crash recovery) — harmless but alarming.
+   *
+   * Best-effort regardless of platform: the caller already polls the
+   * port via {@link waitForPortRelease} and a leaked process will
+   * then surface as a crash loop the operator can investigate.
    */
   private async forceKillPort(): Promise<void> {
+    if (process.platform === 'win32') {
+      this.forceKillPortWindows()
+      return
+    }
+    this.forceKillPortPosix()
+  }
+
+  private forceKillPortPosix(): void {
     try {
       const result = execSync(
         `lsof -ti :${this.apiPort} 2>/dev/null || fuser ${this.apiPort}/tcp 2>/dev/null || true`,
@@ -2072,6 +2091,55 @@ export class PreviewManager {
     } catch {
       // lsof / fuser missing on this platform; waitForPortRelease will
       // still give the kernel time to clean up the socket.
+    }
+  }
+
+  /**
+   * Windows analog of `forceKillPortPosix`. `findstr` on stdin from
+   * `netstat -ano` returns lines shaped like
+   *   `  TCP    127.0.0.1:3001         0.0.0.0:0              LISTENING       12345`
+   * — the trailing whitespace-separated token is the PID. We pass
+   *   `2>nul` to suppress findstr's "no match" stderr and rely on
+   * `taskkill /F /PID`'s own exit code (already swallowed by the
+   * outer try/catch) for cleanup. The execSync call is wrapped in
+   * try/catch because findstr exits 1 when no lines match — i.e.
+   * the port is already free, which is the *expected* fast path.
+   */
+  private forceKillPortWindows(): void {
+    let stdout = ''
+    try {
+      stdout = execSync(
+        `netstat -ano | findstr :${this.apiPort} | findstr LISTENING`,
+        { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] },
+      )
+    } catch {
+      // findstr exit 1 = no listening process. Nothing to kill.
+      return
+    }
+
+    // Defensively keep only numeric PIDs. Skip 0 (idle process) and
+    // self/parent — we never want to taskkill the runtime itself.
+    const selfPid = String(process.pid)
+    const parentPid = String(process.ppid)
+    const pids = [...new Set(
+      stdout
+        .split('\n')
+        .map((line) => line.trim().split(/\s+/).pop() ?? '')
+        .filter((pid) => /^\d+$/.test(pid) && pid !== '0' && pid !== selfPid && pid !== parentPid),
+    )]
+
+    for (const pid of pids) {
+      try {
+        execSync(`taskkill /F /PID ${pid}`, {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: 5000,
+        })
+        console.log(`[${LOG_PREFIX}] Force-killed leaked process ${pid} on port ${this.apiPort}`)
+      } catch {
+        // Process already exited / access denied — fine; the next
+        // waitForPortRelease tick will tell us if the port is still
+        // occupied.
+      }
     }
   }
 

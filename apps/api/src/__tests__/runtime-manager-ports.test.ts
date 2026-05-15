@@ -92,10 +92,25 @@ describe('RuntimeManager private port helpers', () => {
       return 0 as any
     }) as typeof setTimeout
     ;(rm as any).isPortListening = mock(async () => false)
-    execPlan = ['43210\n', '', '']
+    // The pid-discovery exec returns a single line containing "43210". On
+    // Windows that's the trailing column of a netstat -ano LISTENING row,
+    // on POSIX it's the bare lsof -t output. Both shapes parse to PID
+    // 43210 in the implementation.
+    const isWindows = process.platform === 'win32'
+    execPlan = isWindows
+      ? ['  TCP    127.0.0.1:37123        0.0.0.0:0              LISTENING       43210\n', '', '']
+      : ['43210\n', '', '']
 
     await expect(rm.killProcessOnPort(37123)).resolves.toBe(true)
-    expect(execCalls).toContain('kill -15 43210 2>/dev/null || true')
+    if (isWindows) {
+      // Windows path: taskkill /F goes straight to a hard kill — there's
+      // no SIGTERM-equivalent on win32, so killProcessOnPort skips the
+      // graceful step and only emits one taskkill.
+      expect(execCalls.some((cmd) => cmd.includes('taskkill /F /PID 43210'))).toBe(true)
+      expect(execCalls.some((cmd) => cmd.startsWith('kill '))).toBe(false)
+    } else {
+      expect(execCalls).toContain('kill -15 43210 2>/dev/null || true')
+    }
   })
 
   test('allocatePortAsync skips used ports, checks companion ports, and releases allocated ports', async () => {
