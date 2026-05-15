@@ -103,6 +103,9 @@ module "eu" {
   compartment_id = var.compartment_id
   tenancy_id     = var.tenancy_id
 
+  oke_api_allowed_cidrs = var.oke_api_allowed_cidrs
+  nfs_allowed_cidr      = var.nfs_allowed_cidr
+
   # ARM64 custom OKE image (A2 Flex) — EU region
   image_id           = "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaaiufb7tfc5olbaeerhukwj72ppir3yzigxp26cp2hqqzjtugf2sbq"
   placement_ad_names = ["XYpk:EU-FRANKFURT-1-AD-1"]

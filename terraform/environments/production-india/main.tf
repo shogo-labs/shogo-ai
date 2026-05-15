@@ -99,6 +99,9 @@ module "india" {
   compartment_id = var.compartment_id
   tenancy_id     = var.tenancy_id
 
+  oke_api_allowed_cidrs = var.oke_api_allowed_cidrs
+  nfs_allowed_cidr      = var.nfs_allowed_cidr
+
   # ARM64 custom OKE image (A4 Flex)
   image_id           = "ocid1.image.oc1.ap-mumbai-1.aaaaaaaaifagpks5y3kwx4ks6vjmhb5tfexqvrznf4uq44pnaduyqlysogkq"
   placement_ad_names = ["XYpk:AP-MUMBAI-1-AD-1"]

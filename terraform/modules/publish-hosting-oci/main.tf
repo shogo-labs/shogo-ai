@@ -44,6 +44,12 @@ variable "cloudflare_zone_id" {
   default     = null
 }
 
+variable "publish_zone" {
+  description = "Cloudflare zone name that hosts `publish_domain`. Defaults to `publish_domain`. Set explicitly when `publish_domain` is a subdomain of the actual CF zone (e.g. `publish_domain = staging.shogo.one`, `publish_zone = shogo.one`). The zone is then looked up by name via `data.cloudflare_zone.publish` and used as the zone_id on both the worker_route and the wildcard A record."
+  type        = string
+  default     = null
+}
+
 variable "cloudflare_account_id" {
   description = "Cloudflare account ID (for Workers)"
   type        = string
@@ -67,12 +73,18 @@ data "oci_objectstorage_namespace" "current" {
   compartment_id = var.compartment_id
 }
 
-# Look up the publish zone (e.g. shogo.one) by name. The token used for tf
-# needs `Zone:Read` on this zone in addition to `Workers Routes:Edit` and
-# `Zone DNS:Edit`. Sourcing by name keeps callers from having to thread a
-# second zone-id variable through every env.
+# Look up the publish zone by name. The token used for tf needs `Zone:Read`
+# on this zone in addition to `Workers Routes:Edit` and `Zone DNS:Edit`.
+# Sourcing by name keeps callers from having to thread a second zone-id
+# variable through every env.
+#
+# When `publish_domain` is itself a CF zone (e.g. `shogo.one`), the default
+# null `publish_zone` falls through to `publish_domain`. When `publish_domain`
+# is a subdomain (e.g. `staging.shogo.one`), set `publish_zone = "shogo.one"`
+# so the lookup resolves and the wildcard A record + worker_route still land
+# in the correct zone.
 data "cloudflare_zone" "publish" {
-  name = var.publish_domain
+  name = coalesce(var.publish_zone, var.publish_domain)
 }
 
 # -----------------------------------------------------------------------------
