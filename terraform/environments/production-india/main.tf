@@ -170,6 +170,10 @@ module "india" {
   # kourier-system namespaces 55+ days old). Skip the installer.
   knative_manage_install = false
 
+  # The tenancy-scoped `github-actions-deploy` IAM group + policy is
+  # owned by production-us. Disable here to avoid a name collision.
+  enable_github_oidc = false
+
   # India is tier="light" — module.cnpg, module.object_storage,
   # module.file_storage, module.publish_hosting are not instantiated by
   # the composite, so no flags needed for those.
