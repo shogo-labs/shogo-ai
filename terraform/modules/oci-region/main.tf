@@ -85,8 +85,10 @@ module "vcn" {
   oke_api_allowed_cidrs = var.oke_api_allowed_cidrs
   tags                  = local.region_tags
 
-  enable_security_lists = var.vcn_enable_security_lists
-  enable_oke_nsgs       = var.vcn_enable_oke_nsgs
+  enable_security_lists       = var.vcn_enable_security_lists
+  enable_oke_nsgs             = var.vcn_enable_oke_nsgs
+  enable_dedicated_api_subnet = var.vcn_enable_dedicated_api_subnet
+  api_endpoint_cidr           = var.vcn_api_endpoint_cidr
 }
 
 # =============================================================================
@@ -100,6 +102,7 @@ module "oke" {
   compartment_id            = var.compartment_id
   vcn_id                    = module.vcn.vcn_id
   public_subnet_id          = module.vcn.public_subnet_id
+  api_endpoint_subnet_id    = module.vcn.api_endpoint_subnet_id
   private_workers_subnet_id = module.vcn.private_workers_subnet_id
   private_pods_subnet_id    = module.vcn.private_pods_subnet_id
   api_nsg_id                = module.vcn.oke_api_nsg_id
@@ -136,7 +139,7 @@ module "ocir" {
   source = "../ocir"
 
   compartment_id = var.compartment_id
-  repositories   = ["shogo-api", "shogo-web", "shogo-runtime", "shogo-docs"]
+  repositories   = var.ocir_repositories
   tags           = local.region_tags
 }
 

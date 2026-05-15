@@ -267,6 +267,18 @@ variable "vcn_enable_oke_nsgs" {
   default     = true
 }
 
+variable "vcn_enable_dedicated_api_subnet" {
+  description = "Create a small dedicated subnet for the OKE API endpoint (instead of placing it on the public subnet). Forwarded to vcn submodule and used as `api_endpoint_subnet_id` on the OKE cluster. Defaults to false."
+  type        = bool
+  default     = false
+}
+
+variable "vcn_api_endpoint_cidr" {
+  description = "CIDR for the dedicated API endpoint subnet when `vcn_enable_dedicated_api_subnet = true`. Defaults to null (= first /28 in the VCN range)."
+  type        = string
+  default     = null
+}
+
 # -----------------------------------------------------------------------------
 # OKE module options
 # -----------------------------------------------------------------------------
@@ -347,6 +359,16 @@ variable "enable_github_oidc" {
   description = "Create the OCI identity group + policy that lets GH Actions assume role via OIDC. Default true matches the historical behavior."
   type        = bool
   default     = true
+}
+
+# -----------------------------------------------------------------------------
+# OCIR repositories
+# -----------------------------------------------------------------------------
+
+variable "ocir_repositories" {
+  description = "List of OCIR repository names to create under `shogo/`. Default tracks the canonical greenfield set; envs with additional live repos (e.g. agent-runtime, shogo-runtime-base) should override to include them so tf doesn't try to destroy them."
+  type        = list(string)
+  default     = ["shogo-api", "shogo-web", "shogo-runtime", "shogo-docs"]
 }
 
 # -----------------------------------------------------------------------------

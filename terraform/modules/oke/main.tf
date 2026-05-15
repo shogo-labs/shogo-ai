@@ -36,8 +36,14 @@ variable "vcn_id" {
 }
 
 variable "public_subnet_id" {
-  description = "Public subnet OCID (for K8s API endpoint and LBs)"
+  description = "Public subnet OCID (for LBs and for the K8s API endpoint when no dedicated api_endpoint subnet is provided)"
   type        = string
+}
+
+variable "api_endpoint_subnet_id" {
+  description = "Optional dedicated subnet OCID for the Kubernetes API endpoint. When null (default), the API endpoint is placed in `public_subnet_id`. Set when adopting clusters that were bootstrapped with a separate api-endpoint subnet."
+  type        = string
+  default     = null
 }
 
 variable "private_workers_subnet_id" {
@@ -232,7 +238,7 @@ resource "oci_containerengine_cluster" "main" {
 
   endpoint_config {
     is_public_ip_enabled = true
-    subnet_id            = var.public_subnet_id
+    subnet_id            = coalesce(var.api_endpoint_subnet_id, var.public_subnet_id)
     nsg_ids              = compact([var.api_nsg_id])
   }
 
@@ -253,6 +259,21 @@ resource "oci_containerengine_cluster" "main" {
   }
 
   freeform_tags = var.tags
+
+  # `endpoint_config` and `options.service_lb_subnet_ids` are immutable
+  # in OCI — any difference between config and live forces full cluster
+  # replacement (and cascades to node pools). Production-us was
+  # bootstrapped with a dedicated /28 api_endpoint subnet that is now
+  # plumbed via `api_endpoint_subnet_id`, but other envs may have
+  # bootstrap-time differences too (NSG attachments, public-vs-private
+  # endpoint, etc.). Lock the whole block out of drift detection so the
+  # tf state stays adoptable.
+  lifecycle {
+    ignore_changes = [
+      endpoint_config,
+      options[0].service_lb_subnet_ids,
+    ]
+  }
 }
 
 # -----------------------------------------------------------------------------
