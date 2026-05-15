@@ -191,6 +191,14 @@ resource "cloudflare_record" "wildcard" {
   content = "192.0.2.1"
   type    = "A"
   proxied = true
+
+  # The `*.shogo.one` record was created manually before this module
+  # adopted it. Without `allow_overwrite`, the cloudflare provider's
+  # Create errors with "expected DNS record to not already be present
+  # but already exists" instead of taking ownership of the existing
+  # record. Flipping this on lets tf adopt the live record on first
+  # apply, after which subsequent plans reconcile normally.
+  allow_overwrite = true
 }
 
 # -----------------------------------------------------------------------------
