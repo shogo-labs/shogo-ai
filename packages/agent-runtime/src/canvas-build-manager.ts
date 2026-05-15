@@ -8,10 +8,10 @@
  *
  * Concretely today:
  *   - Vite stacks (`react-app`, `threejs-game`, `phaser-game`) — invokes
- *     `vite build --outDir dist.staging --emptyOutDir` and atomically
+ *     `vite build --outDir dist.canvas.staging --emptyOutDir` and atomically
  *     swaps the result into `dist/`.
  *   - Metro stacks (`expo-app`, `expo-three`) — invokes
- *     `expo export --platform web --output-dir dist.staging` and atomically
+ *     `expo export --platform web --output-dir dist.canvas.staging` and atomically
  *     swaps the result into `dist/`.
  *
  * The historical implementation ran `bun run build` and let package.json
@@ -21,6 +21,20 @@
  * rebuild) left users staring at a 404. We now invoke the bundler
  * ourselves so we control the output dir and can promote it atomically;
  * see `build-output-commit.ts`.
+ *
+ * Why `dist.canvas.staging/` and not the shared `dist.staging/`:
+ * `PreviewManager.runExpoExportWeb` (Metro stacks) and
+ * `PreviewManager.runViteOneShotBuild` (Vite stacks) also build into a
+ * staging dir at boot to seed `dist/` for the runtime's preview iframe.
+ * Both calls run in parallel with `CanvasBuildManager.start()`'s first
+ * build, and both call `cleanupStagingOutput` (a recursive `rmSync`)
+ * before spawning their bundler. With a shared staging name, one
+ * builder's cleanup can wipe the other's in-progress output mid-copy —
+ * surfaces as `ENOENT … copyfile 'public/<asset>' -> 'dist.staging/<asset>'`
+ * from CopyFileW when the destination directory disappears under a
+ * large-file copy (e.g. a multi-megabyte GLB in `public/`). Giving the
+ * canvas builder its own staging dir keeps both managers' cleanups
+ * disjoint without changing the rest of the architecture.
  *
  * Builds are debounced so rapid file writes don't cause build storms.
  */
@@ -32,8 +46,18 @@ import { resolveBinInvocation } from '@shogo/shared-runtime'
 import {
   commitBuildOutput,
   cleanupStagingOutput,
-  DEFAULT_STAGING_DIR,
 } from './build-output-commit'
+
+/**
+ * Staging directory name owned exclusively by `CanvasBuildManager`.
+ *
+ * Distinct from `DEFAULT_STAGING_DIR` (`dist.staging/`) which is owned
+ * by `PreviewManager`. See the file-level docstring for the race this
+ * separation prevents. Must stay in sync with the gitignore /
+ * UNTRACK_IF_TRACKED entries in `apps/api/src/services/git.service.ts`
+ * — otherwise it'd get checkpointed on every chat turn.
+ */
+const CANVAS_STAGING_DIR = 'dist.canvas.staging'
 
 const BUILD_DEBOUNCE_MS = 500
 const LOG_PREFIX = '[CanvasBuildManager]'
@@ -234,16 +258,16 @@ export class CanvasBuildManager {
   }
 
   /**
-   * Build args that route output into `dist.staging/` instead of
+   * Build args that route output into `CANVAS_STAGING_DIR` instead of
    * `dist/` so we can atomically swap on success. `--emptyOutDir` is
    * passed to Vite explicitly to suppress its "outDir outside project
    * root" warning when users seed exotic vite.config.ts setups.
    */
   private buildArgsFor(kind: BundlerKind): string[] {
     if (kind === 'vite') {
-      return ['build', '--outDir', DEFAULT_STAGING_DIR, '--emptyOutDir']
+      return ['build', '--outDir', CANVAS_STAGING_DIR, '--emptyOutDir']
     }
-    return ['export', '--platform', 'web', '--output-dir', DEFAULT_STAGING_DIR]
+    return ['export', '--platform', 'web', '--output-dir', CANVAS_STAGING_DIR]
   }
 
   private async runBuild(): Promise<void> {
@@ -285,8 +309,10 @@ export class CanvasBuildManager {
     }
 
     // Wipe any leftover staging dir from a prior crashed build so the
-    // bundler starts from a clean slate.
-    cleanupStagingOutput(this.workspaceDir, DEFAULT_STAGING_DIR)
+    // bundler starts from a clean slate. Only touches our own
+    // `CANVAS_STAGING_DIR`; PreviewManager's `dist.staging/` is its
+    // problem to clean up.
+    cleanupStagingOutput(this.workspaceDir, CANVAS_STAGING_DIR)
 
     const isWindows = process.platform === 'win32'
     // Route through bundled `bun` when the system has no `node` on PATH
@@ -354,7 +380,7 @@ export class CanvasBuildManager {
       // Bundler succeeded — promote the staging dir into `dist/` atomically.
       // A swap failure (e.g. a locked file on Windows) is non-fatal: the
       // previous `dist/` keeps serving and the next rebuild will retry.
-      const committed = commitBuildOutput(this.workspaceDir, DEFAULT_STAGING_DIR)
+      const committed = commitBuildOutput(this.workspaceDir, CANVAS_STAGING_DIR)
       if (!committed) {
         console.warn(
           `${LOG_PREFIX} Build succeeded but commit into dist/ failed — previous build remains live`,
@@ -367,7 +393,7 @@ export class CanvasBuildManager {
     } catch (err: any) {
       // Failed build: drop the partial staging output so it doesn't
       // poison the next swap, and leave `dist/` untouched.
-      cleanupStagingOutput(this.workspaceDir, DEFAULT_STAGING_DIR)
+      cleanupStagingOutput(this.workspaceDir, CANVAS_STAGING_DIR)
       const message = String(err?.message ?? err ?? '(no error message)')
       // Slice generously — see ERROR_SLICE_LIMIT comment. The 200-char
       // cap dropped vite/rollup's actual error frame, which is what
