@@ -13,6 +13,7 @@ import {
   ActivityIndicator,
   TextInput,
 } from 'react-native'
+import { Linking } from 'react-native'
 import {
   Cloud,
   CheckCircle,
@@ -28,6 +29,8 @@ import {
   Flag,
   RotateCcw,
   RefreshCw,
+  KeyRound,
+  ExternalLink,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { PlatformApi, type InstanceInfo, type FeatureFlagOverrides } from '@shogo-ai/sdk'
@@ -56,6 +59,13 @@ export default function AdminGeneralPage() {
   const [loginError, setLoginError] = useState('')
   const [isDisconnecting, setIsDisconnecting] = useState(false)
   const [cloudKeyRejected, setCloudKeyRejected] = useState(false)
+  // Browser-preview fallback: when no Electron bridge is present we can't
+  // drive the device-flow, so the user pastes a `shogo_sk_` API key minted
+  // from the cloud dashboard. We POST it to PUT /api/local/shogo-key, which
+  // validates against cloud, persists to localConfig, and restarts the
+  // instance tunnel — same end state as the desktop sign-in flow.
+  const [apiKeyDraft, setApiKeyDraft] = useState('')
+  const [isSubmittingKey, setIsSubmittingKey] = useState(false)
   // Cloud URL is read-only; it reflects the API server's `SHOGO_CLOUD_URL`
   // env var (default https://studio.shogo.ai) and is not user-editable.
   const [cloudUrl, setCloudUrl] = useState(SHOGO_CLOUD_URL_DEFAULT)
@@ -176,6 +186,60 @@ export default function AdminGeneralPage() {
     } catch (err: any) {
       setLoginStatus('error')
       setLoginError(err?.message || 'Sign-in failed')
+    }
+  }
+
+  /**
+   * Browser-preview sign-in fallback: persist a `shogo_sk_` API key the user
+   * minted from the cloud dashboard. Hits the same `PUT /api/local/shogo-key`
+   * endpoint the desktop bridge calls after its device-flow completes, so the
+   * resulting state — `localConfig.SHOGO_API_KEY`, instance tunnel restart,
+   * General-page status — is identical.
+   *
+   * Only invoked when `!hasDesktopBridge()`. The desktop shell uses
+   * `handleStartLogin` instead.
+   */
+  const handleSubmitApiKey = async () => {
+    const key = apiKeyDraft.trim()
+    if (!key) {
+      setLoginStatus('error')
+      setLoginError('Paste a Shogo Cloud API key (starts with shogo_sk_).')
+      return
+    }
+    if (!key.startsWith('shogo_sk_')) {
+      setLoginStatus('error')
+      setLoginError('Invalid key format. Cloud API keys start with shogo_sk_.')
+      return
+    }
+    setIsSubmittingKey(true)
+    setLoginStatus('connecting')
+    setLoginError('')
+    try {
+      const res = await fetch(`${API_URL}/api/local/shogo-key`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key }),
+        credentials: 'include',
+      })
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean
+        error?: string
+      }
+      if (!res.ok || !data.ok) {
+        setLoginStatus('error')
+        setLoginError(
+          data.error || `Cloud rejected the key (HTTP ${res.status}).`,
+        )
+        return
+      }
+      setApiKeyDraft('')
+      setLoginStatus('idle')
+      await loadStatus()
+    } catch (err: any) {
+      setLoginStatus('error')
+      setLoginError(err?.message || 'Could not reach the local API.')
+    } finally {
+      setIsSubmittingKey(false)
     }
   }
 
@@ -326,23 +390,28 @@ export default function AdminGeneralPage() {
                 ) : (
                   <View className="flex-1" />
                 )}
-                <Pressable
-                  onPress={handleSwitchWorkspace}
-                  disabled={loginStatus === 'connecting' || isDisconnecting}
-                  className={cn(
-                    'flex-row items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border',
-                    (loginStatus === 'connecting' || isDisconnecting) && 'opacity-50',
-                  )}
-                >
-                  {loginStatus === 'connecting' ? (
-                    <ActivityIndicator size="small" />
-                  ) : (
-                    <RefreshCw size={14} className="text-foreground" />
-                  )}
-                  <Text className="text-sm text-foreground">
-                    {loginStatus === 'connecting' ? 'Switching…' : 'Switch workspace'}
-                  </Text>
-                </Pressable>
+                {hasDesktopBridge() && (
+                  // Switch-workspace re-runs the device flow, which only the
+                  // Electron shell can drive. Browser-preview users get the
+                  // same outcome via Sign out → paste a different key.
+                  <Pressable
+                    onPress={handleSwitchWorkspace}
+                    disabled={loginStatus === 'connecting' || isDisconnecting}
+                    className={cn(
+                      'flex-row items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border',
+                      (loginStatus === 'connecting' || isDisconnecting) && 'opacity-50',
+                    )}
+                  >
+                    {loginStatus === 'connecting' ? (
+                      <ActivityIndicator size="small" />
+                    ) : (
+                      <RefreshCw size={14} className="text-foreground" />
+                    )}
+                    <Text className="text-sm text-foreground">
+                      {loginStatus === 'connecting' ? 'Switching…' : 'Switch workspace'}
+                    </Text>
+                  </Pressable>
+                )}
                 <Pressable
                   onPress={handleDisconnectShogoKey}
                   disabled={isDisconnecting}
@@ -375,42 +444,132 @@ export default function AdminGeneralPage() {
                 Sign in with your Shogo Cloud account to use cloud models, share
                 instances, and manage this machine from your dashboard.
               </Text>
-              <Pressable
-                onPress={handleStartLogin}
-                disabled={loginStatus === 'connecting'}
-                className={cn(
-                  'flex-row items-center justify-center gap-2 px-4 py-2.5 rounded-lg',
-                  loginStatus === 'connecting' ? 'bg-muted' : 'bg-primary',
-                )}
-              >
-                {loginStatus === 'connecting' ? (
-                  <ActivityIndicator size="small" />
-                ) : (
-                  <LogIn size={16} className="text-primary-foreground" />
-                )}
-                <Text
-                  className={cn(
-                    'text-sm font-medium',
-                    loginStatus === 'connecting'
-                      ? 'text-muted-foreground'
-                      : 'text-primary-foreground',
-                  )}
-                >
-                  {loginStatus === 'connecting'
-                    ? 'Waiting for browser…'
-                    : 'Sign in to Shogo Cloud'}
-                </Text>
-              </Pressable>
-              {loginError ? (
-                <View className="flex-row items-center gap-1.5">
-                  <AlertTriangle size={14} className="text-destructive" />
-                  <Text className="text-sm text-destructive">{loginError}</Text>
+              {hasDesktopBridge() ? (
+                <>
+                  <Pressable
+                    onPress={handleStartLogin}
+                    disabled={loginStatus === 'connecting'}
+                    className={cn(
+                      'flex-row items-center justify-center gap-2 px-4 py-2.5 rounded-lg',
+                      loginStatus === 'connecting' ? 'bg-muted' : 'bg-primary',
+                    )}
+                  >
+                    {loginStatus === 'connecting' ? (
+                      <ActivityIndicator size="small" />
+                    ) : (
+                      <LogIn size={16} className="text-primary-foreground" />
+                    )}
+                    <Text
+                      className={cn(
+                        'text-sm font-medium',
+                        loginStatus === 'connecting'
+                          ? 'text-muted-foreground'
+                          : 'text-primary-foreground',
+                      )}
+                    >
+                      {loginStatus === 'connecting'
+                        ? 'Waiting for browser…'
+                        : 'Sign in to Shogo Cloud'}
+                    </Text>
+                  </Pressable>
+                  {loginError ? (
+                    <View className="flex-row items-center gap-1.5">
+                      <AlertTriangle size={14} className="text-destructive" />
+                      <Text className="text-sm text-destructive">{loginError}</Text>
+                    </View>
+                  ) : null}
+                  <Text className="text-xs text-muted-foreground">
+                    Your browser will open to {cloudUrl.replace(/^https?:\/\//, '')}. After
+                    you sign in, this app will automatically reconnect.
+                  </Text>
+                </>
+              ) : (
+                // Browser-preview path: no Electron IPC, so the device-flow
+                // can't run. Let the user paste a key minted from the cloud
+                // dashboard. Mirrors the desktop sign-in's end state via the
+                // same PUT /api/local/shogo-key endpoint.
+                <View className="gap-3">
+                  <View className="flex-row items-start gap-2 bg-muted/40 border border-border rounded-lg p-3">
+                    <Info size={14} className="text-muted-foreground mt-0.5" />
+                    <Text className="text-xs text-muted-foreground flex-1">
+                      Browser preview can't drive the device sign-in flow. Paste an
+                      API key from the cloud dashboard — it has the same effect as
+                      signing in from the desktop app.
+                    </Text>
+                  </View>
+
+                  <View className="gap-1">
+                    <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                      Shogo Cloud API key
+                    </Text>
+                    <TextInput
+                      value={apiKeyDraft}
+                      onChangeText={(v) => {
+                        setApiKeyDraft(v)
+                        if (loginError) {
+                          setLoginError('')
+                          setLoginStatus('idle')
+                        }
+                      }}
+                      onSubmitEditing={handleSubmitApiKey}
+                      placeholder="shogo_sk_..."
+                      placeholderTextColor="rgba(115,115,115,0.6)"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      secureTextEntry
+                      editable={!isSubmittingKey}
+                      className="border border-border rounded-lg px-3 py-2 text-sm text-foreground bg-background font-mono web:outline-none"
+                    />
+                  </View>
+
+                  <View className="flex-row items-center gap-2">
+                    <Pressable
+                      onPress={handleSubmitApiKey}
+                      disabled={isSubmittingKey || !apiKeyDraft.trim()}
+                      className={cn(
+                        'flex-row items-center justify-center gap-2 px-4 py-2.5 rounded-lg flex-1',
+                        isSubmittingKey || !apiKeyDraft.trim() ? 'bg-muted' : 'bg-primary',
+                      )}
+                    >
+                      {isSubmittingKey ? (
+                        <ActivityIndicator size="small" />
+                      ) : (
+                        <KeyRound size={16} className="text-primary-foreground" />
+                      )}
+                      <Text
+                        className={cn(
+                          'text-sm font-medium',
+                          isSubmittingKey || !apiKeyDraft.trim()
+                            ? 'text-muted-foreground'
+                            : 'text-primary-foreground',
+                        )}
+                      >
+                        {isSubmittingKey ? 'Connecting…' : 'Connect with API key'}
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => Linking.openURL(`${cloudUrl}/api-keys`)}
+                      className="flex-row items-center gap-1.5 px-3 py-2.5 rounded-lg border border-border"
+                    >
+                      <ExternalLink size={14} className="text-foreground" />
+                      <Text className="text-sm text-foreground">Open dashboard</Text>
+                    </Pressable>
+                  </View>
+
+                  {loginError ? (
+                    <View className="flex-row items-start gap-1.5">
+                      <AlertTriangle size={14} className="text-destructive mt-0.5" />
+                      <Text className="text-sm text-destructive flex-1">{loginError}</Text>
+                    </View>
+                  ) : null}
+
+                  <Text className="text-xs text-muted-foreground">
+                    Mint a key at {cloudUrl.replace(/^https?:\/\//, '')}/api-keys, paste it above,
+                    and the local API will validate it against {cloudUrl.replace(/^https?:\/\//, '')} before saving.
+                    To use the one-click flow instead, install the Shogo Desktop app.
+                  </Text>
                 </View>
-              ) : null}
-              <Text className="text-xs text-muted-foreground">
-                Your browser will open to {cloudUrl.replace(/^https?:\/\//, '')}. After
-                you sign in, this app will automatically reconnect.
-              </Text>
+              )}
               <View className="gap-1">
                 <Text className="text-xs font-medium text-muted-foreground">Cloud URL</Text>
                 <Text className="text-sm text-foreground" numberOfLines={1}>
