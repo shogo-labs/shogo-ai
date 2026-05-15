@@ -213,6 +213,13 @@ module "object_storage" {
   # in the staging compartment on the next apply.
   workspaces_compartment_id = "ocid1.compartment.oc1..aaaaaaaaalshoan7geg7q32jpr5dbwbvrnu3vqjfqvtqkgyc6ydznxqigbza"
   pg_backups_compartment_id = var.tenancy_id
+
+  # Create the tenancy-scoped IAM policy that grants
+  # objectstorage-<region> permission to enact lifecycle rules. Only
+  # needs to live in one env (this one); production envs leave the
+  # default (null) and re-use this same policy.
+  lifecycle_service_policy_compartment_id = var.tenancy_id
+  lifecycle_service_policy_scope          = "tenancy"
 }
 
 # =============================================================================
@@ -341,6 +348,13 @@ module "publish_hosting" {
   cloudflare_account_id = var.cloudflare_account_id
   oci_region            = var.region
   tags                  = local.tags
+
+  # The PAR (pre-authenticated request) created inside this module is
+  # scoped to `shogo-published-apps-${env}`, which the object_storage
+  # module creates. Without this depends_on, terraform parallelizes the
+  # bucket creation and the PAR creation, and OCI's PAR API returns 404
+  # before object storage replication has propagated the new bucket.
+  depends_on = [module.object_storage]
 }
 
 # =============================================================================

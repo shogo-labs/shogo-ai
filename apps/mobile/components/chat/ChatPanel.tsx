@@ -82,6 +82,7 @@ import {
   saveInteractionModePreference,
 } from "../../lib/interaction-mode-preference"
 import { useDualPlan } from "../../lib/dual-plan-preference"
+import { todoStateStore } from "../../lib/todo-state-store"
 import {
   loadModelPreference,
   saveModelPreference,
@@ -1051,6 +1052,7 @@ export const ChatPanel = observer(function ChatPanel({
     setPendingPlan(null)
     setConfirmedPlan(null)
     confirmedPlanRef.current = null
+    todoStateStore.clear()
   }, [currentSessionId])
 
   // Load session metadata from API if not already cached. Gated on
