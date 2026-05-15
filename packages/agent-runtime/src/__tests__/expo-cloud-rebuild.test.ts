@@ -72,12 +72,17 @@ function freshTmp(label: string): string {
   return dir
 }
 
+// Must match `CANVAS_STAGING_DIR` in canvas-build-manager.ts. Distinct
+// from PreviewManager's `dist.staging/` so the two managers' cleanups
+// can't collide; see the file-level docstring on canvas-build-manager.ts.
+const CANVAS_STAGING_DIR = 'dist.canvas.staging'
+
 /**
  * Drop a fake bundler shim that:
  *   - appends its `name` to `invocationLog` (so A3 can prove the Vite
  *     shim was never invoked, even if no output landed in dist/), and
- *   - writes `dist.staging/index.html` with a body that names the
- *     bundler (so A1/A2 can prove which shim produced the dist
+ *   - writes `<CANVAS_STAGING_DIR>/index.html` with a body that names
+ *     the bundler (so A1/A2 can prove which shim produced the dist
  *     contents currently being served).
  *
  * Cross-platform: POSIX gets a `#!/bin/sh` script with exec bit set;
@@ -87,7 +92,7 @@ function freshTmp(label: string): string {
 function writeBundlerShim(workspaceDir: string, name: 'vite' | 'expo'): void {
   const binDir = join(workspaceDir, 'node_modules', '.bin')
   mkdirSync(binDir, { recursive: true })
-  const stagingDir = join(workspaceDir, 'dist.staging')
+  const stagingDir = join(workspaceDir, CANVAS_STAGING_DIR)
   const indexPath = join(stagingDir, 'index.html')
   const body = `<html>${name}-built-this</html>`
 
