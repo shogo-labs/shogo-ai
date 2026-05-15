@@ -1,0 +1,96 @@
+// =============================================================================
+// releases.shogo.ai — resolver Worker
+// =============================================================================
+// Resolves /cli/<channel>/shogo-<target>.<ext>(.sha256)? to the latest
+// matching v* GitHub Release asset and 302-redirects.
+//
+// 302 (not proxy) keeps the Worker off the data path so checksums stay
+// GitHub-signed and bandwidth doesn't bill against Cloudflare.
+//
+// Cache key is (channel, asset) so a windows-zip request doesn't pin a
+// tag that lacks them for the darwin/linux callers. Per-channel cache
+// TTL keeps GH API calls well under the 5000/hr authenticated quota
+// even with no warm cache across PoPs.
+// =============================================================================
+
+const OWNER = '${github_owner}';
+const REPO = '${github_repo}';
+const PATH_RE = /^\/cli\/(stable|beta|nightly)\/(shogo-(?:darwin|linux|win)-(?:arm64|x64|x86)\.(?:tar\.gz|zip)(?:\.sha256)?)$/;
+
+const CHANNEL_TTL = { stable: 3600, beta: 600, nightly: 60 };
+
+function matchChannel(tag, channel) {
+  if (!/^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/.test(tag)) return false;
+  const isPrerelease = tag.slice(1).includes('-');
+  if (channel === 'stable') return !isPrerelease;
+  if (channel === 'nightly') return /-nightly\./.test(tag);
+  if (channel === 'beta') return isPrerelease && !/-nightly\./.test(tag);
+  return false;
+}
+
+async function resolveTag(channel, asset, env, ctx) {
+  const cache = caches.default;
+  const cacheKey = new Request('https://internal/resolve/' + channel + '/' + asset);
+  const cached = await cache.match(cacheKey);
+  if (cached) return cached.text();
+
+  const headers = {
+    'user-agent': 'install.shogo.ai-resolver',
+    accept: 'application/vnd.github+json',
+  };
+  if (env.GITHUB_TOKEN) headers.authorization = 'Bearer ' + env.GITHUB_TOKEN;
+
+  const res = await fetch(
+    'https://api.github.com/repos/' + OWNER + '/' + REPO + '/releases?per_page=30',
+    { headers },
+  );
+  if (!res.ok) return null;
+  const releases = await res.json();
+
+  const hit = releases.find((r) =>
+    !r.draft &&
+    matchChannel(r.tag_name, channel) &&
+    Array.isArray(r.assets) &&
+    r.assets.some((a) => a.name === asset),
+  );
+  if (!hit) return null;
+
+  const ttl = CHANNEL_TTL[channel];
+  const resp = new Response(hit.tag_name, {
+    headers: { 'cache-control': 'public, max-age=' + ttl },
+  });
+  ctx.waitUntil(cache.put(cacheKey, resp.clone()));
+  return hit.tag_name;
+}
+
+export default {
+  async fetch(request, env, ctx) {
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      return new Response('Method Not Allowed', {
+        status: 405,
+        headers: { Allow: 'GET, HEAD' },
+      });
+    }
+    const url = new URL(request.url);
+    if (url.pathname === '/' || url.pathname === '') {
+      return new Response(
+        'releases.shogo.ai\n\nGET /cli/<channel>/shogo-<target>.<ext>\n  channel: stable | beta | nightly\n  target:  darwin-arm64 | darwin-x64 | linux-arm64 | linux-x64 | win-x64 | win-x86\n  ext:     tar.gz | zip (+ optional .sha256)\n',
+        { headers: { 'content-type': 'text/plain; charset=utf-8' } },
+      );
+    }
+    const m = url.pathname.match(PATH_RE);
+    if (!m) return new Response('Not Found', { status: 404 });
+    const [, channel, asset] = m;
+    const tag = await resolveTag(channel, asset, env, ctx);
+    if (!tag) {
+      return new Response(
+        'No release found for channel=' + channel + ' asset=' + asset,
+        { status: 503 },
+      );
+    }
+    return Response.redirect(
+      'https://github.com/' + OWNER + '/' + REPO + '/releases/download/' + tag + '/' + asset,
+      302,
+    );
+  },
+};

@@ -1,6 +1,6 @@
 {
   "name": "@shogo-ai/worker",
-  "version": "0.1.0",
+  "version": "0.0.0-replaced-by-ci",
   "description": "Shogo Cloud Agent Worker \u2014 run Shogo agents on your own machine (laptop, devbox, CI).",
   "license": "MIT",
   "author": "Shogo Technologies, Inc.",

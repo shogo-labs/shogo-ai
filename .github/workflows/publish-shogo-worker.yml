@@ -1,23 +1,34 @@
 # =============================================================================
 # Publish @shogo-ai/worker (npm + per-platform tarballs)
 # =============================================================================
-# Triggered when a `worker-v*` tag is pushed. Two artifacts ship from
-# the same job so versions stay in lock-step:
+# Triggered on the same `v*` tags as the desktop app and the agent-runtime,
+# so the worker version is in lock-step with the rest of the platform. Two
+# artifact families ship from this workflow:
 #
 #   1. npm package: @shogo-ai/worker@<version>
 #      - Source TS + Node-loadable bundle (dist/cli.mjs).
 #      - Falls back to spawning bun/tsx for `bun link`ed monorepo dev.
 #      - Pure JS — no native binaries — so any Node 20+ install works.
+#      - Version in packages/shogo-worker/package.json is rewritten from
+#        the tag at CI time, so the source value is a sentinel and the
+#        published version always matches the tag.
 #
-#   2. Per-platform tarballs uploaded to the GitHub Release for
-#      `worker-v<version>`:
-#        shogo-worker-darwin-arm64.tar.gz   (+ .sha256)
-#        shogo-worker-darwin-x64.tar.gz     (+ .sha256)
-#        shogo-worker-linux-arm64.tar.gz    (+ .sha256)
-#        shogo-worker-linux-x64.tar.gz      (+ .sha256)
+#   2. Per-platform tarballs *appended* to the `v<version>` GitHub Release
+#      that the desktop-release-{macos,windows} and publish-agent-runtime
+#      workflows also write to:
+#        shogo-darwin-arm64.tar.gz   (+ .sha256)
+#        shogo-darwin-x64.tar.gz     (+ .sha256)
+#        shogo-linux-arm64.tar.gz    (+ .sha256)
+#        shogo-linux-x64.tar.gz      (+ .sha256)
 #      Each contains a single self-contained `shogo` binary built via
-#      `bun build --compile`. Used by the install.sh + Homebrew formula
-#      so users without Bun on PATH can still get a one-shot install.
+#      `bun build --compile`. Used by install.sh / install.ps1 +
+#      releases.shogo.ai resolver so users without Bun on PATH can still
+#      get a one-shot install.
+#
+# Release uploads use softprops/action-gh-release with no `name:` so the
+# three workflows hitting the same `v*` tag don't race on the title —
+# whichever wins the create wins the title, everyone else just appends
+# files. softprops never deletes assets it didn't upload.
 #
 # Both artifact families are MIT-licensed (matches packages/shogo-worker
 # source) and they spawn the AGPL agent-runtime as a separate OS process.
@@ -28,15 +39,15 @@ name: Publish shogo-worker
 on:
   push:
     tags:
-      - 'worker-v[0-9]*'
+      - 'v[0-9]*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to publish (e.g. worker-v0.1.0)'
+        description: 'Existing tag to publish (e.g. v0.5.3)'
         required: true
         type: string
       channel:
-        description: 'npm dist-tag (latest | beta | nightly)'
+        description: 'npm dist-tag (latest | beta | nightly). Normally driven by the tag suffix; override here only if needed.'
         required: false
         default: 'latest'
         type: choice
@@ -97,20 +108,24 @@ jobs:
         id: version
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          if [[ ! "$TAG" =~ ^worker-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Tag '$TAG' is not a valid worker tag (expected worker-vX.Y.Z[-prerelease])"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$TAG' is not a valid app version tag (expected vX.Y.Z[-prerelease])"
             exit 1
           fi
-          VERSION="${TAG#worker-v}"
-          PKG_VERSION=$(node -p "require('./packages/shogo-worker/package.json').version")
-          if [ "$VERSION" != "$PKG_VERSION" ]; then
-            echo "::error::Tag version ($VERSION) does not match package.json ($PKG_VERSION). Bump package.json first."
-            exit 1
-          fi
+          VERSION="${TAG#v}"
 
+          # Channel detection mirrors publish-agent-runtime.yml so the
+          # worker, runtime, and desktop builds all classify the same tag
+          # the same way:
+          #   X.Y.Z              -> latest  (stable on npm)
+          #   X.Y.Z-nightly.N    -> nightly
+          #   X.Y.Z-anything     -> beta    (any other prerelease suffix)
+          # workflow_dispatch can override.
           INPUT_CHANNEL="${{ github.event.inputs.channel }}"
           if [ -n "$INPUT_CHANNEL" ]; then
             CHANNEL="$INPUT_CHANNEL"
+          elif [[ "$VERSION" == *-nightly* ]]; then
+            CHANNEL="nightly"
           elif [[ "$VERSION" == *-* ]]; then
             CHANNEL="beta"
           else
@@ -119,6 +134,18 @@ jobs:
           echo "tag=$TAG"          >> "$GITHUB_OUTPUT"
           echo "version=$VERSION"  >> "$GITHUB_OUTPUT"
           echo "channel=$CHANNEL"  >> "$GITHUB_OUTPUT"
+
+      - name: Write tag version into packages/shogo-worker/package.json
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The committed `version` in packages/shogo-worker/package.json
+          # is a sentinel (see file). CI rewrites it from the tag so npm
+          # publishes the right version without needing manual bumps in
+          # PRs. Mirrors the pattern used in desktop-release-windows.yml.
+          node -e "const p=require('./packages/shogo-worker/package.json'); p.version=process.env.VERSION; require('fs').writeFileSync('packages/shogo-worker/package.json', JSON.stringify(p, null, 2)+'\n')"
+          echo "Set @shogo-ai/worker version to $VERSION"
 
       - name: Typecheck
         run: bun run --filter @shogo-ai/worker typecheck
@@ -186,49 +213,30 @@ jobs:
           # like `beta`/`nightly` should NOT overwrite it — pass --tag.
           npm publish --access public --provenance --tag "$CHANNEL"
 
-      - name: Create or update GitHub Release
+      - name: Append worker tarballs to v* GitHub Release
         if: github.event.inputs.dry_run != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.version.outputs.tag }}
-          VERSION: ${{ steps.version.outputs.version }}
-          CHANNEL: ${{ steps.version.outputs.channel }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          PRERELEASE_FLAG=""
-          if [ "$CHANNEL" != "latest" ]; then
-            PRERELEASE_FLAG="--prerelease"
-          fi
-          NOTES_FILE=$(mktemp)
-          {
-            echo "Prebuilt \`shogo\` binaries for @shogo-ai/worker $VERSION."
-            echo
-            echo "- npm: \`npm i -g @shogo-ai/worker@$VERSION\`"
-            echo "- Channel: $CHANNEL"
-            echo "- License: MIT"
-            echo "- Source: https://github.com/$REPO/tree/$TAG/packages/shogo-worker"
-            echo
-            echo "## Quick install"
-            echo
-            echo '```'
-            echo "npm i -g @shogo-ai/worker"
-            echo "shogo login"
-            echo "shogo runtime install"
-            echo "shogo worker start"
-            echo '```'
-          } > "$NOTES_FILE"
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        with:
+          # NB: deliberately no `name:` — desktop-release-{macos,windows}
+          # and publish-agent-runtime also publish to this same tag.
+          # softprops leaves the name + body alone when the release
+          # already exists, so whoever wins the create-race owns the
+          # title and the rest of us just append files.
+          tag_name: ${{ steps.version.outputs.tag }}
+          prerelease: ${{ steps.version.outputs.channel != 'latest' }}
+          body: |
+            Includes prebuilt `shogo` worker binaries (channel: ${{ steps.version.outputs.channel }}, MIT).
 
-          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
-            gh release upload "$TAG" packages/shogo-worker/dist/release/* --repo "$REPO" --clobber
-          else
-            gh release create "$TAG" \
-              --repo "$REPO" \
-              --title "shogo-worker $VERSION" \
-              --notes-file "$NOTES_FILE" \
-              $PRERELEASE_FLAG \
-              packages/shogo-worker/dist/release/*
-          fi
+            Install via:
+
+            ```
+            curl -fsSL https://install.shogo.ai | bash
+            # or
+            npm i -g @shogo-ai/worker
+            ```
+          files: packages/shogo-worker/dist/release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Summary
         if: always()
