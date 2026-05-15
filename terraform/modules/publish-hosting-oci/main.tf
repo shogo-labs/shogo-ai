@@ -197,9 +197,24 @@ resource "cloudflare_worker_route" "published_apps" {
 # A record that CF will accept. `192.0.2.1` (RFC 5737 TEST-NET-1
 # documentation range) is the standard "this IP intentionally
 # unreachable" choice that CF accepts for proxied records.
+locals {
+  # Compute the relative record name so that the FQDN ends up as
+  # `*.${publish_domain}` regardless of zone depth.
+  #   publish_domain == zone        -> "*"           (FQDN = *.shogo.one)
+  #   publish_domain  = sub.zone    -> "*.sub"       (FQDN = *.sub.shogo.one)
+  #   publish_domain  = a.b.zone    -> "*.a.b"       (FQDN = *.a.b.shogo.one)
+  # Cloudflare appends the zone for non-FQDN-looking names, so this
+  # is the canonical form.
+  wildcard_record_name = (
+    var.publish_domain == data.cloudflare_zone.publish.name
+    ? "*"
+    : "*.${trimsuffix(var.publish_domain, ".${data.cloudflare_zone.publish.name}")}"
+  )
+}
+
 resource "cloudflare_record" "wildcard" {
   zone_id = data.cloudflare_zone.publish.id
-  name    = "*"
+  name    = local.wildcard_record_name
   content = "192.0.2.1"
   type    = "A"
   proxied = true
