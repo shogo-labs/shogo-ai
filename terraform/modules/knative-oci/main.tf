@@ -79,21 +79,48 @@ resource "null_resource" "kourier" {
       # Install Kourier
       kubectl apply -f https://github.com/knative/net-kourier/releases/download/knative-v${var.knative_version}/kourier.yaml
 
-      # Strip the upstream `node.kubernetes.io/disk-pressure:NoSchedule:Exists`
-      # toleration from the gateway. Upstream ships this toleration so the
-      # ingress can keep landing on disk-pressured nodes "for availability",
-      # but in practice that's exactly the wrong behavior: kubelet auto-applies
-      # the disk-pressure taint to keep pods OFF those nodes, and the tolerated
-      # gateway pod gets immediately evicted once it lands. We saw this loop
-      # generate ~9,959 Evicted gateway pods over ~13 days in staging, with
-      # zero Running replicas and complete ingress outage. Removing the
-      # toleration causes the gateway to schedule onto a healthy node instead.
+      # Wait for Kourier
+      kubectl wait --for=condition=Available deployment/3scale-kourier-gateway -n kourier-system --timeout=300s || true
+    EOT
+  }
+}
+
+# Strips the upstream `node.kubernetes.io/disk-pressure:NoSchedule:Exists`
+# toleration from the Kourier gateway. Upstream ships this toleration on the
+# theory that it keeps the ingress available during disk pressure, but the
+# kubelet auto-applies the disk-pressure taint specifically to keep pods OFF
+# those nodes, so the tolerated gateway pod just lands on a doomed node and
+# gets evicted within seconds. Staging accumulated ~9,959 Evicted gateway
+# pods over ~13 days (zero Running replicas, complete ingress outage —
+# Cloudflare 525 to all users) before this was caught.
+#
+# Why this is a separate `null_resource` from `null_resource.kourier`:
+#
+#   `null_resource.kourier`'s only `triggers` value is `knative_version`, so
+#   its provisioner only re-runs when the Knative version is bumped. If we
+#   inlined the patch there, any out-of-band reapply of the upstream
+#   `kourier.yaml` (manual ops, drift, accidental `kubectl apply`) would
+#   reintroduce the toleration and Terraform would not detect it until the
+#   next Knative upgrade.
+#
+#   `triggers.always_run = timestamp()` forces this resource to re-run on
+#   every `terraform apply`. The `kubectl patch` is idempotent (replacing
+#   `tolerations` with `[]` is a no-op when it's already `[]`), so the cost
+#   of running every time is negligible and the benefit is that drift is
+#   continuously corrected. The trade-off is that `terraform plan` will
+#   always show 1 pending change for this resource — that is intentional.
+resource "null_resource" "kourier_toleration_strip" {
+  depends_on = [null_resource.kourier]
+
+  triggers = {
+    always_run = timestamp()
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
       kubectl patch deployment 3scale-kourier-gateway -n kourier-system \
         --type=json \
         -p='[{"op":"replace","path":"/spec/template/spec/tolerations","value":[]}]'
-
-      # Wait for Kourier
-      kubectl wait --for=condition=Available deployment/3scale-kourier-gateway -n kourier-system --timeout=300s || true
     EOT
   }
 }
