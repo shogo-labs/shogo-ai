@@ -18,21 +18,8 @@ terraform {
     }
   }
 
-  # Remote state on OCI Object Storage (S3-compat), same bucket as the
-  # four OCI envs. Initial migration from the prior `backend "local"` is
-  # a one-time `terraform init -migrate-state` from the laptop that
-  # currently owns terraform.tfstate; see docs/cloudflare-dns-per-preview.md
-  # for the operator runbook.
-  backend "s3" {
-    bucket = "shogo-tfstate"
-    key    = "production-global/terraform.tfstate"
-    region = "us-ashburn-1"
-
-    skip_credentials_validation = true
-    skip_metadata_api_check     = true
-    skip_region_validation      = true
-    skip_requesting_account_id  = true
-    force_path_style            = true
+  backend "local" {
+    path = "terraform.tfstate"
   }
 }
 
@@ -213,23 +200,6 @@ resource "cloudflare_record" "india_tunnel" {
 }
 
 # =============================================================================
-# install.shogo.ai + releases.shogo.ai
-# =============================================================================
-# Two Workers + their DNS + routes. install.shogo.ai serves the
-# install.sh / install.ps1 from packages/shogo-worker/ (via file()),
-# releases.shogo.ai 302-redirects /cli/<channel>/shogo-<target>.<ext>
-# to the matching v* GitHub Release asset.
-module "install_shogo_ai" {
-  source = "../../modules/install-shogo-ai"
-
-  cloudflare_account_id = var.cloudflare_account_id
-  cloudflare_zone_id    = var.cloudflare_zone_id
-  domain                = "shogo.ai"
-  github_token          = var.github_token
-  environment           = "production"
-}
-
-# =============================================================================
 # Outputs
 # =============================================================================
 
@@ -248,5 +218,3 @@ output "pool_ids" {
   }
 }
 
-output "install_url" { value = module.install_shogo_ai.install_url }
-output "releases_url" { value = module.install_shogo_ai.releases_url }
