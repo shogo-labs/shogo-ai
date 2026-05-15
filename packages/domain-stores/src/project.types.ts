@@ -40,6 +40,8 @@ export interface ProjectType {
   workingMode: string
   runtimeEnabled: boolean
   trustLevel: string
+  preferredInstanceId?: string
+  preferredInstancePolicy: string
 }
 
 export interface ProjectCreateInput {
@@ -65,6 +67,8 @@ export interface ProjectCreateInput {
   workingMode?: string
   runtimeEnabled?: boolean
   trustLevel?: string
+  preferredInstanceId?: string
+  preferredInstancePolicy?: string
 }
 
 export interface ProjectUpdateInput {
@@ -90,4 +94,6 @@ export interface ProjectUpdateInput {
   workingMode?: string
   runtimeEnabled?: boolean
   trustLevel?: string
+  preferredInstanceId?: string
+  preferredInstancePolicy?: string
 }
