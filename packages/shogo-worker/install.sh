@@ -76,20 +76,24 @@ fi
 mkdir -p "$PREFIX"
 
 install_binary() {
-  local url="$RELEASE_HOST/cli/$CHANNEL/shogo-$TARGET.tar.gz"
+  local tarball="shogo-$TARGET.tar.gz"
+  local url="$RELEASE_HOST/cli/$CHANNEL/$tarball"
   local sha_url="$url.sha256"
   local tmp; tmp="$(mktemp -d)"
   info "Downloading $url"
-  if ! curl -fsSL "$url" -o "$tmp/shogo.tar.gz"; then
+  # Save under the canonical tarball filename so the published .sha256
+  # sidecar (which has the form `<hash>  shogo-<target>.tar.gz`) verifies
+  # against the file on disk without us having to rewrite the line.
+  if ! curl -fsSL "$url" -o "$tmp/$tarball"; then
     return 1
   fi
-  if curl -fsSL "$sha_url" -o "$tmp/shogo.sha256" 2>/dev/null; then
+  if curl -fsSL "$sha_url" -o "$tmp/$tarball.sha256" 2>/dev/null; then
     info "Verifying checksum"
-    ( cd "$tmp" && verify_checksum shogo.sha256 ) || die "Checksum mismatch"
+    ( cd "$tmp" && verify_checksum "$tarball.sha256" ) || die "Checksum mismatch"
   else
     warn "No checksum published yet; skipping verification"
   fi
-  tar -xzf "$tmp/shogo.tar.gz" -C "$tmp"
+  tar -xzf "$tmp/$tarball" -C "$tmp"
   install -m 0755 "$tmp/shogo" "$BIN_PATH"
   rm -rf "$tmp"
   ok "Installed binary to $BIN_PATH"
