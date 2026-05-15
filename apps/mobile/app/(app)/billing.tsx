@@ -665,12 +665,12 @@ export default observer(function BillingPage() {
       </View>
 
       {/* Plan Cards — keep iPad portrait single-column; use columns only on wider layouts. */}
-      <View className="gap-6 md:flex-row md:flex-wrap md:items-stretch xl:flex-nowrap" testID="plan-cards-row">
+      <View className="gap-6 lg:flex-row lg:flex-wrap lg:items-stretch xl:flex-nowrap" testID="plan-cards-row">
         {/* Basic Plan */}
-        <View className="md:w-[calc(50%-12px)] md:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col" testID="plan-card-basic">
+        <View className="lg:w-[calc(50%-12px)] lg:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col w-full max-w-[640px] self-center lg:max-w-none lg:self-auto" testID="plan-card-basic">
           <View className="hidden lg:block lg:min-h-8" />
-          <Card className="md:flex-1 flex flex-col">
-            <CardContent className="md:flex-1 flex flex-col p-5 gap-5">
+          <Card className="lg:flex-1 flex flex-col">
+            <CardContent className="lg:flex-1 flex flex-col p-5 gap-5">
               <View className="flex-row items-center gap-2">
                 <Sparkles size={20} className="text-green-500" />
                 <Text className="text-lg font-semibold text-foreground">Basic</Text>
@@ -712,7 +712,7 @@ export default observer(function BillingPage() {
                 </Text>
               </Pressable>
 
-              <View className="md:flex-1 gap-2">
+              <View className="lg:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
                   {formatUsd(SEAT_INCLUDED_USD.basic)} of usage / month
                 </Text>
@@ -726,10 +726,10 @@ export default observer(function BillingPage() {
         </View>
 
         {/* Pro Plan */}
-        <View className="md:w-[calc(50%-12px)] md:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col" testID="plan-card-pro">
+        <View className="lg:w-[calc(50%-12px)] lg:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col w-full max-w-[640px] self-center lg:max-w-none lg:self-auto" testID="plan-card-pro">
           <View className="hidden lg:block lg:min-h-8" />
-          <Card className="md:flex-1 flex flex-col">
-            <CardContent className="md:flex-1 flex flex-col p-5 gap-5">
+          <Card className="lg:flex-1 flex flex-col">
+            <CardContent className="lg:flex-1 flex flex-col p-5 gap-5">
               <View className="flex-row items-center gap-2">
                 <Zap size={20} className="text-blue-500" />
                 <Text className="text-lg font-semibold text-foreground">Pro</Text>
@@ -791,7 +791,7 @@ export default observer(function BillingPage() {
                 </Text>
               </Pressable>
 
-              <View className="md:flex-1 gap-2">
+              <View className="lg:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
                   {formatUsd(SEAT_INCLUDED_USD.pro * proSeats)} of usage / month
                 </Text>
@@ -805,14 +805,14 @@ export default observer(function BillingPage() {
         </View>
 
         {/* Business Plan */}
-        <View className="md:w-[calc(50%-12px)] md:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col" testID="plan-card-business">
+        <View className="lg:w-[calc(50%-12px)] lg:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col w-full max-w-[640px] self-center lg:max-w-none lg:self-auto" testID="plan-card-business">
           <View className="min-h-8 items-center justify-center px-1">
             <Badge className="bg-primary">
               <Text className="text-xs text-primary-foreground font-medium">Most Popular</Text>
             </Badge>
           </View>
-          <Card className="md:flex-1 flex flex-col border-primary">
-            <CardContent className="md:flex-1 flex flex-col p-5 gap-5">
+          <Card className="lg:flex-1 flex flex-col border-primary">
+            <CardContent className="lg:flex-1 flex flex-col p-5 gap-5">
               <View className="flex-row items-center gap-2">
                 <Building2 size={20} className="text-purple-500" />
                 <Text className="text-lg font-semibold text-foreground">Business</Text>
@@ -874,7 +874,7 @@ export default observer(function BillingPage() {
                 </Text>
               </Pressable>
 
-              <View className="md:flex-1 gap-2">
+              <View className="lg:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
                   {formatUsd(SEAT_INCLUDED_USD.business * businessSeats)} of usage / month
                 </Text>
@@ -885,10 +885,10 @@ export default observer(function BillingPage() {
         </View>
 
         {/* Enterprise Plan */}
-        <View className="md:w-[calc(50%-12px)] md:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col" testID="plan-card-enterprise">
+        <View className="lg:w-[calc(50%-12px)] lg:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col w-full max-w-[640px] self-center lg:max-w-none lg:self-auto" testID="plan-card-enterprise">
           <View className="hidden lg:block lg:min-h-8" />
-          <Card className="md:flex-1 flex flex-col">
-            <CardContent className="md:flex-1 flex flex-col p-5 gap-5">
+          <Card className="lg:flex-1 flex flex-col">
+            <CardContent className="lg:flex-1 flex flex-col p-5 gap-5">
               <View className="flex-row items-center gap-2">
                 <Crown size={20} className="text-amber-500" />
                 <Text className="text-lg font-semibold text-foreground">Enterprise</Text>
@@ -911,7 +911,7 @@ export default observer(function BillingPage() {
                 <Text className="text-sm font-medium text-foreground">Book a demo</Text>
               </Pressable>
 
-              <View className="md:flex-1">
+              <View className="lg:flex-1">
                 <FeatureList features={ENTERPRISE_FEATURES} />
               </View>
             </CardContent>
