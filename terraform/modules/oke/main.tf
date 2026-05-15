@@ -386,6 +386,12 @@ resource "oci_containerengine_node_pool" "main" {
       # still managed at the cluster resource — pools follow their
       # node image.
       kubernetes_version,
+      # Boot volume size changes force a rolling node replacement, which
+      # is disruptive for already-bootstrapped pools where the live
+      # value differs from the module default (e.g. live=100 GB, default
+      # =200). Initial creation still honors the module default; only
+      # post-create drift is suppressed.
+      node_source_details[0].boot_volume_size_in_gbs,
     ]
   }
 }

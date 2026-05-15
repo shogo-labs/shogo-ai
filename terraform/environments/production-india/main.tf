@@ -117,6 +117,12 @@ module "india" {
   image_id           = "ocid1.image.oc1.ap-mumbai-1.aaaaaaaaifagpks5y3kwx4ks6vjmhb5tfexqvrznf4uq44pnaduyqlysogkq"
   placement_ad_names = ["XYpk:AP-MUMBAI-1-AD-1"]
 
+  # Live pool runs on the older Ampere A1 shape (cluster was bootstrapped
+  # before A4 was generally available in ap-mumbai-1). The OCI 8.x
+  # provider refuses a shape change from A1 -> A4 against the existing
+  # node image with "Invalid nodeShape: Node shape and image are not
+  # compatible." Keep India on A1 until a deliberate image swap.
+  system_node_shape     = "VM.Standard.A1.Flex"
   system_node_ocpus     = 4
   system_node_memory_gb = 24
   system_pool_size      = 4
