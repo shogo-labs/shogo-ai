@@ -140,12 +140,19 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
+          # `--external electron` skips bundling Electron, which playwright-core
+          # only `require()`s from its electron loader behind the never-reached
+          # Playwright-Electron launch API. Without this, bun --compile fails
+          # at: playwright-core/lib/server/electron/loader.js:2.
+          # NB: playwright-core itself MUST be bundled (used at runtime via
+          # `await import('playwright-core')` in src/gateway-tools.ts).
           for TARGET in $TARGETS; do
             echo "::group::compile shogo-agent-runtime-$TARGET"
             OUT="dist/shogo-agent-runtime-$TARGET"
             bun build src/server.ts \
               --compile \
               --target="bun-$TARGET" \
+              --external electron \
               --outfile "$OUT"
             ls -lh "$OUT"
             echo "::endgroup::"

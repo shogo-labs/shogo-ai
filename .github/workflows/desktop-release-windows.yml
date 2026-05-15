@@ -42,7 +42,7 @@ jobs:
         run: bun install
 
       - name: Build workspace packages
-        run: cd packages/sdk && bun run build
+        run: bun run build:packages
 
       - name: Build web
         run: bun run web:build
@@ -123,7 +123,7 @@ jobs:
 
       - name: Build workspace packages
         shell: bash
-        run: cd packages/sdk && bun run build
+        run: bun run build:packages
 
       - name: Generate Prisma clients (PG + SQLite)
         shell: bash

@@ -42,7 +42,7 @@ jobs:
         run: bun install
 
       - name: Build workspace packages
-        run: cd packages/sdk && bun run build
+        run: bun run build:packages
 
       - name: Build web
         run: bun run web:build
@@ -177,7 +177,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build workspace packages
-        run: cd packages/sdk && bun run build
+        run: bun run build:packages
 
       - name: Generate Prisma clients (PG + SQLite)
         run: bun run db:generate:all
