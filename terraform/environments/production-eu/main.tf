@@ -170,9 +170,12 @@ module "eu" {
   knative_manage_install = false
   cnpg_manage_install    = false
 
-  # The tenancy-scoped `objectstorage-<region> manage object-family`
-  # IAM policy is owned by the staging env's tf state. Don't recreate.
-  object_storage_lifecycle_service_policy_compartment_id = null
+  # The Object Storage lifecycle service-principal IAM policy is
+  # region-scoped (the statement names `objectstorage-eu-frankfurt-1`).
+  # Staging's policy only covers us-ashburn-1, so EU must create its
+  # own (named `...-production-eu-frankfurt-1` to coexist at the
+  # tenancy level).
+  object_storage_lifecycle_service_policy_compartment_id = var.tenancy_id
 
   # The tenancy-scoped `github-actions-deploy` IAM group + policy is
   # owned by production-us (created during its reconciliation). Disable
