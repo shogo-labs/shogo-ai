@@ -250,21 +250,31 @@ describe('POST /projects/:id/thumbnail/capture (Playwright)', () => {
     expect(body.error.message).toBe('private IP not allowed')
   })
 
-  it('falls back to the publish URL when no URL is in the body (and returns non-2xx when no browser can screenshot it)', async () => {
+  it('falls back to the publish URL when no URL is in the body', async () => {
     ps.project = { id: 'p-1', publishedSubdomain: 'demo', type: 'app' }
     const res = await makeApp().fetch(captureReq())
-    // Two acceptable outcomes:
-    //  - 501 'playwright_missing' when playwright-core / @playwright/test
-    //    aren't installed in the test runtime
-    //  - 500 'capture_failed' when playwright IS installed but cannot
-    //    actually navigate to https://demo.shogo.one in the sandbox
-    // The contract under test is: the route consults publishedSubdomain
-    // when body.url is absent, and never returns 2xx without a real
-    // screenshot.
-    expect([500, 501]).toContain(res.status)
-    const body = await res.json()
-    expect(['playwright_missing', 'capture_failed']).toContain(body.error.code)
-  })
+    // Three acceptable outcomes — the contract being tested is "the
+    // route consulted publishedSubdomain when body.url was absent",
+    // and ALL of these prove that (each one means the resolver got
+    // past the no_url guard and actually invoked the capture path):
+    //  - 200             playwright is installed AND demo.shogo.one is
+    //                    reachable → screenshot succeeded.
+    //  - 501 'playwright_missing'  playwright-core / @playwright/test
+    //                              aren't installed in this runtime.
+    //  - 500 'capture_failed'      playwright IS installed but couldn't
+    //                              navigate (sandbox / DNS / offline).
+    // What would fail the contract is 400 'no_url', which would mean
+    // the route never derived a URL from publishedSubdomain at all.
+    expect([200, 500, 501]).toContain(res.status)
+    if (res.status !== 200) {
+      const body = await res.json()
+      expect(['playwright_missing', 'capture_failed']).toContain(body.error.code)
+    }
+  }, 30_000) // ↑ bun's default per-test timeout is 5s; the 200 branch
+  // actually launches Chromium and 5s isn't enough on a loaded CI box
+  // or a fresh checkout where the browser binary hasn't been warmed
+  // yet. 30s matches the timeout used in the sibling Playwright
+  // assertions in this file.
 
   it('returns 400 (no_url) when no body URL, no publishedSubdomain, and no preview-URL', async () => {
     ps.project = { id: 'p-1', publishedSubdomain: null, type: 'agent' }
