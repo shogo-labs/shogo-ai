@@ -42,6 +42,7 @@ import { WriteFileWidget } from "./WriteFileWidget"
 import { EditFileWidget } from "./EditFileWidget"
 import { PlanCard, type PlanData } from "../PlanCard"
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
+import { todoStateStore, parseTodos as parseTodosForStore } from "../../../lib/todo-state-store"
 import { logScreencast } from "../../../lib/screencast-debug"
 import { FileViewerModal } from "../FileViewerModal"
 
@@ -585,6 +586,13 @@ export const AssistantContent = memo(
   // Populate subagentStreamStore from agent_spawn tool results for the Agents panel
   useEffect(() => {
     for (const part of orderedParts) {
+      if (part.type === "tool" && (part.tool.toolName === "TodoWrite" || part.tool.toolName === "todo_write")) {
+        const todos = parseTodosForStore(part.tool.args)
+        if (todos.length > 0) {
+          todoStateStore.registerWrite(part.tool.id, todos)
+        }
+        continue
+      }
       if (part.type !== "tool" || !TASK_TOOL_NAMES.has(part.tool.toolName)) continue
       const tool = part.tool
       const args = tool.args as Record<string, unknown> | undefined
@@ -627,14 +635,6 @@ export const AssistantContent = memo(
     () => groupConsecutiveParts(orderedParts),
     [orderedParts],
   )
-
-  const firstTodoWriteId = useMemo(() => {
-    const first = groupedParts.find(
-      (p): p is Extract<GroupedMessagePart, { type: "tool" }> =>
-        p.type === "tool" && (p.tool.toolName === "TodoWrite" || p.tool.toolName === "todo_write"),
-    )
-    return first?.id
-  }, [groupedParts])
 
   if (groupedParts.length === 0) {
     return null
@@ -739,16 +739,12 @@ export const AssistantContent = memo(
           }
 
           if (part.tool.toolName === "TodoWrite" || part.tool.toolName === "todo_write") {
-            const isFirst = part.id === firstTodoWriteId
-            const isExpanded = isFirst
-              ? !expandedTools.has(part.id)
-              : expandedTools.has(part.id)
-
+            const userToggled = expandedTools.has(part.id)
             return (
               <TodoWidget
                 key={part.id}
                 tool={part.tool}
-                isExpanded={isExpanded}
+                userToggled={userToggled}
                 onToggle={getToggle(part.id)}
               />
             )

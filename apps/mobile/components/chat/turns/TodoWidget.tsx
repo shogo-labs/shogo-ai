@@ -7,7 +7,7 @@
  * Shows task list with status indicators, collapsible details, and progress tracking.
  */
 
-import { useMemo, memo } from "react"
+import { useMemo, memo, useSyncExternalStore } from "react"
 import { View, Text, Pressable } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
@@ -20,69 +20,26 @@ import {
   ListTodo,
 } from "lucide-react-native"
 import type { ToolCallData } from "../tools/types"
+import {
+  todoStateStore,
+  parseTodos,
+  type TodoItem,
+  type TodoStatus,
+} from "../../../lib/todo-state-store"
 
-export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled"
-
-export interface TodoItem {
-  id: string
-  content: string
-  status: TodoStatus
-}
+export type { TodoStatus, TodoItem }
 
 export interface TodoWidgetProps {
   tool: ToolCallData
-  isExpanded?: boolean
+  /**
+   * True when the user has manually toggled this card via the chevron.
+   * The widget XORs this against its store-derived default (expanded
+   * for the first writer in the session, collapsed for everyone else)
+   * so a user click always flips the visible state.
+   */
+  userToggled?: boolean
   onToggle?: () => void
   className?: string
-}
-
-function parseTodos(args?: Record<string, unknown>): TodoItem[] {
-  if (!args) return []
-
-  let todosArray: unknown[] | undefined
-
-  if (Array.isArray(args.todos)) {
-    todosArray = args.todos
-  } else if (typeof args.todos === "string") {
-    try {
-      const parsed = JSON.parse(args.todos)
-      if (Array.isArray(parsed)) todosArray = parsed
-    } catch {
-      /* ignore */
-    }
-  } else if (args.input && typeof args.input === "object") {
-    const input = args.input as Record<string, unknown>
-    if (Array.isArray(input.todos)) {
-      todosArray = input.todos
-    }
-  }
-
-  if (!todosArray || todosArray.length === 0) return []
-
-  return todosArray
-    .filter((item): item is Record<string, unknown> => {
-      if (!item || typeof item !== "object") return false
-      const t = item as Record<string, unknown>
-      return typeof t.content === "string" && t.content.length > 0
-    })
-    .map((item, index): TodoItem => {
-      const t = item as Record<string, unknown>
-      const rawStatus = typeof t.status === "string" ? t.status : ""
-      const validStatuses: TodoStatus[] = [
-        "pending",
-        "in_progress",
-        "completed",
-        "cancelled",
-      ]
-
-      return {
-        id: typeof t.id === "string" ? t.id : `todo-${index}`,
-        content: t.content as string,
-        status: validStatuses.includes(rawStatus as TodoStatus)
-          ? (rawStatus as TodoStatus)
-          : "pending",
-      }
-    })
 }
 
 function getStatusIcon(status: TodoStatus) {
@@ -232,15 +189,20 @@ function stableStringify(val: unknown): string {
 
 // Same memo strategy as InlineToolWidget / EditFileWidget. AssistantContent
 // rebuilds the outer `tool` wrapper on every 50ms streaming-throttle tick,
-// so reference equality on `tool` is useless. Cheap primitives first, then
-// a terminal-state fast path, then JSON content compare for the actively-
-// streaming todo list.
+// so reference equality on `tool` is useless. Compare cheap primitives plus
+// the args content — the widget also subscribes to `todoStateStore` via
+// `useSyncExternalStore`, so store-driven updates re-render through that
+// path even when the memoized props are unchanged.
+//
+// Note: no terminal-state fast path here. The first widget needs to keep
+// re-rendering after `tool.state === "success"` so that later TodoWrite
+// calls registering newer snapshots into the store flow into its body.
 function todoToolPropsEqual(
   prev: TodoWidgetProps,
   next: TodoWidgetProps,
 ) {
   if (
-    prev.isExpanded !== next.isExpanded ||
+    prev.userToggled !== next.userToggled ||
     prev.onToggle !== next.onToggle ||
     prev.className !== next.className
   ) {
@@ -248,12 +210,7 @@ function todoToolPropsEqual(
   }
   if (prev.tool.state !== next.tool.state) return false
   if (prev.tool.error !== next.tool.error) return false
-  if (
-    prev.tool.id === next.tool.id &&
-    next.tool.state !== "streaming"
-  ) {
-    return true
-  }
+  if (prev.tool.id !== next.tool.id) return false
   return (
     stableStringify(prev.tool.args) === stableStringify(next.tool.args) &&
     stableStringify(prev.tool.result) === stableStringify(next.tool.result)
@@ -262,25 +219,40 @@ function todoToolPropsEqual(
 
 function TodoWidgetImpl({
   tool,
-  isExpanded: controlledExpanded,
+  userToggled = false,
   onToggle,
   className,
 }: TodoWidgetProps) {
-  const todos = useMemo(() => parseTodos(tool.args), [tool.args])
-  const isExpanded = controlledExpanded ?? true
+  useSyncExternalStore(todoStateStore.subscribe, todoStateStore.getVersion, todoStateStore.getVersion)
+
+  // Own snapshot drives the collapsed header — that's the milestone
+  // label for this specific TodoWrite call ("you were at 4/10 here").
+  const ownTodos = useMemo(() => parseTodos(tool.args), [tool.args])
+
+  // Latest store snapshot drives the expanded body so every card
+  // expands to the same shared, up-to-date task list.
+  const latestTodos = todoStateStore.getLatest()
+  const bodyTodos = latestTodos.length > 0 ? latestTodos : ownTodos
+
+  const isFirst = todoStateStore.isFirst(tool.id)
+  const defaultExpanded = isFirst
+  const isExpanded = userToggled ? !defaultExpanded : defaultExpanded
 
   const handleToggle = () => {
     onToggle?.()
   }
 
+  // Header counts come from whichever data set we're showing so the
+  // totals never disagree with what's rendered below.
+  const headerSource = isExpanded ? bodyTodos : ownTodos
   const stats = useMemo(() => {
-    const total = todos.length
-    const completed = todos.filter((t) => t.status === "completed").length
-    const inProgress = todos.filter((t) => t.status === "in_progress").length
+    const total = headerSource.length
+    const completed = headerSource.filter((t) => t.status === "completed").length
+    const inProgress = headerSource.filter((t) => t.status === "in_progress").length
     return { total, completed, inProgress }
-  }, [todos])
+  }, [headerSource])
 
-  const isStreaming = tool.state === "streaming" && todos.length === 0
+  const isStreaming = tool.state === "streaming" && ownTodos.length === 0 && bodyTodos.length === 0
 
   if (isStreaming) {
     return (
@@ -303,7 +275,7 @@ function TodoWidgetImpl({
     )
   }
 
-  if (todos.length === 0) {
+  if (ownTodos.length === 0 && bodyTodos.length === 0) {
     return (
       <View
         className={cn(
@@ -380,11 +352,11 @@ function TodoWidgetImpl({
       {isExpanded && (
         <View className="border-t border-border/50">
           <View className="px-3 pt-2">
-            <ProgressBar todos={todos} />
+            <ProgressBar todos={bodyTodos} />
           </View>
 
           <View className="py-1">
-            {todos.map((todo, index) => (
+            {bodyTodos.map((todo, index) => (
               <TodoItemRow key={todo.id} todo={todo} index={index} />
             ))}
           </View>

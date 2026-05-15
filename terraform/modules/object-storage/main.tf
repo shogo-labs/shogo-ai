@@ -69,6 +69,18 @@ variable "tags" {
   default     = {}
 }
 
+variable "lifecycle_service_policy_compartment_id" {
+  description = "Compartment OCID where the `Allow service objectstorage-<region> to manage object-family ...` IAM policy is created. Required when any bucket in this module has a lifecycle policy, because the OCI service principal needs explicit permission to enact lifecycle rules against the bucket. Recommended value: tenancy root OCID, with policy scope=tenancy, so a single policy covers buckets in any compartment. Pass null to skip policy creation (e.g. when the policy already exists in the tenancy)."
+  type        = string
+  default     = null
+}
+
+variable "lifecycle_service_policy_scope" {
+  description = "Compartment scope for the service-principal lifecycle policy. Use `\"tenancy\"` to cover every bucket in the tenancy regardless of compartment, or a compartment name (e.g. `\"shogo-staging\"`) to scope tighter. Only used when `lifecycle_service_policy_compartment_id != null`."
+  type        = string
+  default     = "tenancy"
+}
+
 data "oci_objectstorage_namespace" "current" {
   compartment_id = var.compartment_id
 }
@@ -122,9 +134,35 @@ resource "oci_objectstorage_bucket" "pg_backups" {
   })
 }
 
+# -----------------------------------------------------------------------------
+# IAM policy granting the Object Storage service principal permission to
+# execute lifecycle policy actions (transition to infrequent access, delete
+# expired objects, etc) across the tenancy.
+#
+# Without this policy, `oci_objectstorage_object_lifecycle_policy.*` resources
+# return `400-InsufficientServicePermissions` at PutObjectLifecyclePolicy
+# time, because the service principal `objectstorage-<region>` has no
+# default rights against the bucket. One tenancy-scoped policy covers every
+# bucket in every compartment, so it's safe to set this once on the first
+# env that needs it and leave the rest with `lifecycle_service_policy_compartment_id = null`.
+# -----------------------------------------------------------------------------
+resource "oci_identity_policy" "lifecycle_service_principal" {
+  count = var.lifecycle_service_policy_compartment_id != null ? 1 : 0
+
+  compartment_id = var.lifecycle_service_policy_compartment_id
+  name           = "objectstorage-lifecycle-service-principal-${var.environment}"
+  description    = "Grant the Object Storage service principal permission to execute lifecycle rules against buckets in this ${var.lifecycle_service_policy_scope}. Required for oci_objectstorage_object_lifecycle_policy resources."
+
+  statements = [
+    "Allow service objectstorage-${var.region} to manage object-family in ${var.lifecycle_service_policy_scope}",
+  ]
+}
+
 resource "oci_objectstorage_object_lifecycle_policy" "pg_backups_lifecycle" {
-  namespace  = local.namespace
-  bucket     = oci_objectstorage_bucket.pg_backups.name
+  depends_on = [oci_identity_policy.lifecycle_service_principal]
+
+  namespace = local.namespace
+  bucket    = oci_objectstorage_bucket.pg_backups.name
 
   rules {
     name        = "archive-old-backups"
@@ -161,8 +199,10 @@ resource "oci_objectstorage_bucket" "published_apps" {
 }
 
 resource "oci_objectstorage_object_lifecycle_policy" "published_apps_lifecycle" {
-  namespace  = local.namespace
-  bucket     = oci_objectstorage_bucket.published_apps.name
+  depends_on = [oci_identity_policy.lifecycle_service_principal]
+
+  namespace = local.namespace
+  bucket    = oci_objectstorage_bucket.published_apps.name
 
   rules {
     name        = "cleanup-old-versions"

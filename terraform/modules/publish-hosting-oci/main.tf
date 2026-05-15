@@ -152,11 +152,21 @@ resource "cloudflare_worker_route" "published_apps" {
   script_name = cloudflare_worker_script.subdomain_router.name
 }
 
-# Wildcard DNS record pointing to Cloudflare (proxied for CDN + SSL)
+# Wildcard DNS record pointing to Cloudflare (proxied for CDN + SSL).
+#
+# Cloudflare rejects proxied records that target reserved CIDRs
+# (RFC 1918, CGNAT 100.64.0.0/10, etc) with API error 9003. The actual
+# routing is handled by the Worker (`cloudflare_worker_route` above)
+# which intercepts every request that matches `*.${publish_domain}/*`
+# *before* the proxy ever attempts a fetch against this origin, so the
+# IP itself never resolves — it just needs to be a syntactically valid
+# A record that CF will accept. `192.0.2.1` (RFC 5737 TEST-NET-1
+# documentation range) is the standard "this IP intentionally
+# unreachable" choice that CF accepts for proxied records.
 resource "cloudflare_record" "wildcard" {
   zone_id = var.cloudflare_zone_id
   name    = "*"
-  content = "100.64.0.1" # Dummy IP — Worker intercepts all traffic
+  content = "192.0.2.1"
   type    = "A"
   proxied = true
 }
