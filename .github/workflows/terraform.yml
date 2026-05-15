@@ -110,7 +110,12 @@ jobs:
           TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
           TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
           TF_VAR_oci_private_key_path: /home/runner/.oci/oci_api_key.pem
+          TF_VAR_compartment_id: ${{ vars.COMPARTMENT_ID }}
           TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
+          TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
         run: |
           set +e
           terraform plan -no-color -detailed-exitcode -out=tfplan 2>&1 | tee plan.txt
@@ -208,10 +213,19 @@ jobs:
       - name: terraform plan
         if: inputs.action == 'plan'
         env:
+          # OCI auth
           TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
           TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
           TF_VAR_oci_private_key_path: /home/runner/.oci/oci_api_key.pem
+          # OCI scope (env-scoped GH vars)
+          TF_VAR_compartment_id: ${{ vars.COMPARTMENT_ID }}
+          # Cloudflare (repo-scoped)
           TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          # Networking
+          TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
+          TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
         run: terraform plan -no-color
 
       - name: terraform apply
@@ -220,5 +234,10 @@ jobs:
           TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
           TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
           TF_VAR_oci_private_key_path: /home/runner/.oci/oci_api_key.pem
+          TF_VAR_compartment_id: ${{ vars.COMPARTMENT_ID }}
           TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
+          TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
         run: terraform apply -no-color -auto-approve
