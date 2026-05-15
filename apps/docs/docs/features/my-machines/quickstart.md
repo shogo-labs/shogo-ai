@@ -34,8 +34,37 @@ curl -fsSL https://install.shogo.ai | bash
 irm https://install.shogo.ai/ps | iex
 ```
 
-The installer drops a single binary at `~/.shogo/bin/shogo` (or
-`%USERPROFILE%\.shogo\bin\shogo.exe` on Windows) and adds it to `PATH`.
+The installer drops a single self-contained binary at `~/.shogo/bin/shogo`
+(`%USERPROFILE%\.shogo\bin\shogo.exe` on Windows), verifies its SHA-256
+against the published checksum, and adds the bin dir to `PATH`. No Node or
+Bun on your machine required.
+
+<details>
+<summary>Already have Node 20+? Or want a specific channel?</summary>
+
+The script accepts flags after `--`:
+
+```bash
+curl -fsSL https://install.shogo.ai | bash -s -- --channel beta
+curl -fsSL https://install.shogo.ai | bash -s -- --prefix ~/bin --force
+```
+
+| Flag | Effect |
+|------|--------|
+| `--channel stable\|beta` | Pick a release channel (default `stable`). |
+| `--prefix <dir>` | Install into `<dir>/shogo` instead of `~/.shogo/bin/`. |
+| `--force` | Overwrite an existing install. |
+| `--no-binary` | Skip the prebuilt binary; install the npm package via `npm i -g @shogo-ai/worker` (needs Node ≥ 20). |
+
+Equivalent npm one-liner if you'd rather skip the script entirely:
+
+```bash
+npm i -g @shogo-ai/worker
+```
+
+Air-gapped? The binary tarballs live on the [v\* GitHub release](https://github.com/shogo-labs/shogo-ai/releases) — same artifacts the installer pulls.
+
+</details>
 
 ## 3. Log in and start the worker
 
@@ -60,3 +89,6 @@ Shogo's tool calls execute on your laptop and stream output back into chat.
 
 - [Networking & allowlist](./networking) — what the worker talks to
 - [Troubleshooting](./troubleshooting) — fixing login/heartbeat/tunnel errors
+- [External triggers](../external-triggers/quickstart) — let Jira, Linear,
+  GitHub or your own services send messages to an agent running on this
+  machine.
