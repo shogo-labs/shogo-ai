@@ -5,6 +5,11 @@
   "license": "MIT",
   "author": "Shogo Technologies, Inc.",
   "homepage": "https://shogo.ai/docs/cloud-agent/my-machines",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shogo-labs/shogo-ai.git",
+    "directory": "packages/shogo-worker"
+  },
   "bin": {
     "shogo": "./bin/shogo.mjs"
   },
