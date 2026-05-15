@@ -6684,10 +6684,17 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
         const crypto = require('crypto') as typeof import('crypto')
         const password = crypto.randomBytes(24).toString('base64')
 
+        // Allow overriding the seeded local user via env so a developer can
+        // sign in as their real cloud email locally (so cloud-side artifacts
+        // like ProjectAgent rows match by email when they later sync). Falls
+        // back to local@shogo.local for fresh installs that don't set it.
+        const seedEmail = process.env.SHOGO_LOCAL_USER_EMAIL || 'local@shogo.local'
+        const seedName = process.env.SHOGO_LOCAL_USER_NAME || 'Local User'
+
         const signUpRes = await auth.api.signUpEmail({
           body: {
-            name: 'Local User',
-            email: 'local@shogo.local',
+            name: seedName,
+            email: seedEmail,
             password,
           },
         })
@@ -6698,7 +6705,7 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
             update: { value: password },
             create: { key: 'local_user_password', value: password },
           })
-          console.log('[LocalMode] Auto-seeded default user local@shogo.local')
+          console.log(`[LocalMode] Auto-seeded default user ${seedEmail}`)
         }
       }
     } catch (err: any) {
