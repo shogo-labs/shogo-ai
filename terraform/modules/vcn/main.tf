@@ -253,8 +253,16 @@ resource "oci_core_security_list" "public" {
 
   freeform_tags = var.tags
 
+  # Security list rules are bootstrap-time + operator-managed in OCI.
+  # Adopted environments routinely add port-specific allows (kubectl
+  # API 6443, internal monitoring ports, NodePort ranges) outside the
+  # module's awareness. Ignoring rules drift here lets the module own
+  # the SL container without trying to prune live rules that were
+  # added intentionally. To genuinely manage rules from tf, set
+  # `enable_security_lists = false` and add an `oci_core_security_list`
+  # at the env level with the full rule set.
   lifecycle {
-    ignore_changes = [display_name]
+    ignore_changes = [display_name, ingress_security_rules, egress_security_rules]
   }
 }
 
@@ -292,8 +300,9 @@ resource "oci_core_security_list" "private" {
 
   freeform_tags = var.tags
 
+  # See note on `oci_core_security_list.public.lifecycle`.
   lifecycle {
-    ignore_changes = [display_name]
+    ignore_changes = [display_name, ingress_security_rules, egress_security_rules]
   }
 }
 
