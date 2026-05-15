@@ -27,8 +27,21 @@ terraform {
     }
   }
 
-  backend "local" {
-    path = "terraform.tfstate"
+  # Remote state on OCI Object Storage (S3-compat).
+  # Endpoint is supplied via -backend-config at `terraform init` time:
+  #   terraform init -backend-config="endpoint=$OCI_S3_ENDPOINT"
+  # Credentials come from $AWS_ACCESS_KEY_ID / $AWS_SECRET_ACCESS_KEY env vars
+  # (see GH secrets OCI_S3_ACCESS_KEY / OCI_S3_SECRET_KEY).
+  backend "s3" {
+    bucket = "shogo-tfstate"
+    key    = "production-eu/terraform.tfstate"
+    region = "us-ashburn-1"
+
+    skip_credentials_validation = true
+    skip_metadata_api_check     = true
+    skip_region_validation      = true
+    skip_requesting_account_id  = true
+    force_path_style            = true
   }
 }
 
