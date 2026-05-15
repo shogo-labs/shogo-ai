@@ -12,11 +12,6 @@ import {
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
-  getModelsByProvider,
-  getModelShortDisplayName,
-  type ModelTier,
-} from "@shogo/model-catalog"
-import {
   ClipboardList,
   ArrowLeft,
   Circle,
@@ -25,9 +20,11 @@ import {
   Search,
   RefreshCw,
   Play,
-  ChevronDown,
-  Check,
   Languages,
+  GitCompareArrows,
+  CheckSquare,
+  Square,
+  X,
 } from "lucide-react-native"
 import { MarkdownText } from "../../chat/MarkdownText"
 import { AgentClient, type AgentPlanSummary } from "@shogo-ai/sdk/agent"
@@ -36,22 +33,51 @@ import { API_URL } from "../../../lib/api"
 import { DEFAULT_MODEL_PRO } from "../../chat/ChatInput"
 import type { PlanData } from "../../chat/PlanCard"
 import { useDualPlan } from "../../../lib/dual-plan-preference"
-
-const PLAN_MODEL_GROUPS = getModelsByProvider().map((g) => ({
-  label: g.label,
-  models: g.models.map((e) => ({
-    id: e.id,
-    displayName: e.displayName,
-    tier: e.tier as ModelTier,
-  })),
-}))
-
-const TIER_LABELS: Record<ModelTier, string> = {
-  premium: "Premium",
-  standard: "Standard",
-  economy: "Economy",
-}
+import { ModelPicker } from "./ModelPicker"
 import { usePlanStreamSafe } from "../../chat/PlanStreamContext"
+
+/* ─── Status badge helper ─────────────────────────────────────────── */
+
+const STATUS_BADGE_STYLES: Record<string, { bg: string; text: string; label: string }> = {
+  draft:     { bg: "bg-zinc-500/15",   text: "text-zinc-400",    label: "Draft"     },
+  active:    { bg: "bg-blue-500/15",    text: "text-blue-400",    label: "Active"    },
+  completed: { bg: "bg-emerald-500/15", text: "text-emerald-400", label: "Completed" },
+  building:  { bg: "bg-amber-500/15",   text: "text-amber-400",   label: "Building"  },
+  error:     { bg: "bg-red-500/15",     text: "text-red-400",     label: "Error"     },
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const s = STATUS_BADGE_STYLES[status.toLowerCase()] ?? STATUS_BADGE_STYLES.draft
+  return (
+    <View className={cn("rounded-full px-2 py-0.5", s.bg)}>
+      <Text className={cn("text-[10px] font-semibold", s.text)}>
+        {s.label}
+      </Text>
+    </View>
+  )
+}
+
+/* ─── Progress bar for tasks ──────────────────────────────────────── */
+
+function TaskProgressBar({ todos }: { todos: Array<{ status: string }> }) {
+  if (todos.length === 0) return null
+  const completed = todos.filter((t) => t.status === "completed").length
+  const pct = Math.round((completed / todos.length) * 100)
+  return (
+    <View className="flex-row items-center gap-2 mt-1">
+      <View className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+        <View
+          className={cn(
+            "h-full rounded-full",
+            pct === 100 ? "bg-emerald-500" : "bg-primary"
+          )}
+          style={{ width: `${pct}%` }}
+        />
+      </View>
+      <Text className="text-[10px] text-muted-foreground">{completed}/{todos.length}</Text>
+    </View>
+  )
+}
 
 interface PlansPanelProps {
   visible: boolean
@@ -147,18 +173,22 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
   const [detailLoading, setDetailLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [buildMode, setBuildMode] = useState<string>(selectedModel || DEFAULT_MODEL_PRO)
-  const [showModelPicker, setShowModelPicker] = useState(false)
   const [buildStarted, setBuildStarted] = useState(false)
   const [activeTab, setActiveTab] = useState<"technical" | "business">("technical")
-  // Mirror of the global Dual Plan preference — singleton-backed so any
-  // change here is reflected immediately in the chat input and user
-  // settings page (and vice versa).
   const [dualPlan, setDualPlanAsync] = useDualPlan()
-  // On-demand translation lifecycle for the currently open plan, keyed by
-  // filename so navigating between plans doesn't show a stale spinner.
   const [translateLoading, setTranslateLoading] = useState<string | null>(null)
   const [translateError, setTranslateError] = useState<string | null>(null)
   const prevSelectedPlanRef = useRef<string | null>(null)
+
+  // Bulk selection state
+  const [bulkMode, setBulkMode] = useState(false)
+  const [selectedForBulk, setSelectedForBulk] = useState<Set<string>>(new Set())
+
+  // Diff / comparison state
+  const [diffMode, setDiffMode] = useState(false)
+  const [diffTargets, setDiffTargets] = useState<[string | null, string | null]>([null, null])
+  const [diffContents, setDiffContents] = useState<[string | null, string | null]>([null, null])
+  const [diffLoading, setDiffLoading] = useState(false)
 
   const handleDualPlanToggle = useCallback(() => {
     void setDualPlanAsync(!dualPlan)
@@ -237,6 +267,58 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
     },
     [agentClient, selectedPlan]
   )
+
+  const handleBulkDelete = useCallback(async () => {
+    if (selectedForBulk.size === 0) return
+    const filenames = [...selectedForBulk]
+    try {
+      await Promise.all(filenames.map((f) => agentClient.deletePlan(f)))
+      setPlans((prev) => prev.filter((p) => !selectedForBulk.has(p.filename)))
+      if (selectedPlan && selectedForBulk.has(selectedPlan)) {
+        setSelectedPlan(null)
+        setPlanContent(null)
+      }
+    } catch (err) {
+      console.error("[PlansPanel] Bulk delete failed:", err)
+    } finally {
+      setSelectedForBulk(new Set())
+      setBulkMode(false)
+    }
+  }, [agentClient, selectedForBulk, selectedPlan])
+
+  const toggleBulkSelection = useCallback((filename: string) => {
+    setSelectedForBulk((prev) => {
+      const next = new Set(prev)
+      if (next.has(filename)) next.delete(filename)
+      else next.add(filename)
+      return next
+    })
+  }, [])
+
+  const handleStartDiff = useCallback(async () => {
+    const [a, b] = diffTargets
+    if (!a || !b) return
+    setDiffLoading(true)
+    try {
+      const [planA, planB] = await Promise.all([
+        agentClient.getPlan(a),
+        agentClient.getPlan(b),
+      ])
+      setDiffContents([planA.content, planB.content])
+    } catch (err) {
+      console.error("[PlansPanel] Diff fetch failed:", err)
+      setDiffContents([null, null])
+    } finally {
+      setDiffLoading(false)
+    }
+  }, [agentClient, diffTargets])
+
+  const exitDiffMode = useCallback(() => {
+    setDiffMode(false)
+    setDiffTargets([null, null])
+    setDiffContents([null, null])
+    setDiffLoading(false)
+  }, [])
 
   useEffect(() => {
     if (visible) {
@@ -380,7 +462,6 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
             onPress={() => {
               setSelectedPlan(null)
               setPlanContent(null)
-              setShowModelPicker(false)
             }}
             className="h-8 w-8 items-center justify-center rounded-lg"
           >
@@ -396,75 +477,21 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
             {isStreamingDetail ? (
               <Text className="text-xs text-primary">Generating...</Text>
             ) : plan ? (
-              <Text className="text-xs text-muted-foreground">
-                {formatDate(plan.createdAt)} · {plan.status}
-              </Text>
+              <View className="flex-row items-center gap-1.5 mt-0.5">
+                <Text className="text-xs text-muted-foreground">
+                  {formatDate(plan.createdAt)}
+                </Text>
+                <StatusBadge status={plan.status} />
+              </View>
             ) : null}
           </View>
 
-          {/* Model selector */}
-          <View className="relative">
-            <Pressable
-              onPress={() => setShowModelPicker((p) => !p)}
-              className="flex-row items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 bg-muted/30"
-            >
-              <Text className="text-xs font-medium text-foreground">
-                {getModelShortDisplayName(buildMode)}
-              </Text>
-              <ChevronDown className="h-3 w-3 text-muted-foreground" size={12} />
-            </Pressable>
-
-            {showModelPicker && (
-              <>
-              <Pressable
-                onPress={() => setShowModelPicker(false)}
-                style={{ position: "fixed" as any, top: 0, left: 0, right: 0, bottom: 0, zIndex: 40 }}
-              />
-              <ScrollView className="absolute right-0 top-9 z-50 w-56 max-h-[280px] rounded-lg border border-border bg-popover shadow-lg">
-                {PLAN_MODEL_GROUPS.map((group) => (
-                  <View key={group.label}>
-                    <View className="px-3 pt-2.5 pb-1">
-                      <Text className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-                        {group.label}
-                      </Text>
-                    </View>
-                    {group.models.map((model) => {
-                      const isSelected = buildMode === model.id
-                      return (
-                        <Pressable
-                          key={model.id}
-                          onPress={() => { setBuildMode(model.id); setShowModelPicker(false) }}
-                          className={cn(
-                            "flex-row items-center gap-2.5 px-3 py-2",
-                            isSelected && "bg-accent"
-                          )}
-                        >
-                          <View className="flex-1">
-                            <Text className="text-xs text-foreground">{model.displayName}</Text>
-                          </View>
-                          {isSelected ? (
-                            <Check className="h-3.5 w-3.5 text-primary" size={14} />
-                          ) : (
-                            <Text
-                              className={cn(
-                                "text-[10px]",
-                                model.tier === "premium" ? "text-amber-500" :
-                                model.tier === "economy" ? "text-emerald-500" :
-                                "text-muted-foreground"
-                              )}
-                            >
-                              {TIER_LABELS[model.tier]}
-                            </Text>
-                          )}
-                        </Pressable>
-                      )
-                    })}
-                  </View>
-                ))}
-              </ScrollView>
-              </>
-            )}
-          </View>
+          {/* Model selector — shared Popover-based component */}
+          <ModelPicker
+            selectedModelId={buildMode}
+            onModelChange={setBuildMode}
+            placement="bottom right"
+          />
 
           {/* Generate business summary — sits beside Build so it's the
               primary discovery surface for historic plans without a
@@ -553,7 +580,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
         )}
 
         {/* Detail body */}
-        <ScrollView className="flex-1 px-4 py-3" onScrollBeginDrag={() => setShowModelPicker(false)}>
+        <ScrollView className="flex-1 px-4 py-3">
           {!isStreamingDetail && detailLoading ? (
             <ActivityIndicator className="mt-8" />
           ) : isBusinessTab ? (
@@ -580,31 +607,34 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
 
               {todos.length > 0 && (
                 <View className="mt-4 border-t border-border pt-4">
-                  <Text className="text-xs font-semibold text-muted-foreground mb-2">
+                  <Text className="text-xs font-semibold text-muted-foreground mb-1">
                     TASKS ({todos.length})
                   </Text>
-                  {todos.map((todo) => (
-                    <View key={todo.id} className="flex-row items-start gap-2 py-1.5">
-                      {todo.status === "completed" ? (
-                        <CheckCircle2
-                          className="h-3.5 w-3.5 text-green-600 dark:text-green-400 mt-0.5"
-                          size={14}
-                        />
-                      ) : (
-                        <Circle className="h-3.5 w-3.5 text-muted-foreground mt-0.5" size={14} />
-                      )}
-                      <Text
-                        className={cn(
-                          "text-xs flex-1",
-                          todo.status === "completed"
-                            ? "text-muted-foreground line-through"
-                            : "text-foreground"
+                  <TaskProgressBar todos={todos} />
+                  <View className="mt-2">
+                    {todos.map((todo) => (
+                      <View key={todo.id} className="flex-row items-start gap-2 py-1.5">
+                        {todo.status === "completed" ? (
+                          <CheckCircle2
+                            className="h-3.5 w-3.5 text-green-600 dark:text-green-400 mt-0.5"
+                            size={14}
+                          />
+                        ) : (
+                          <Circle className="h-3.5 w-3.5 text-muted-foreground mt-0.5" size={14} />
                         )}
-                      >
-                        {todo.content}
-                      </Text>
-                    </View>
-                  ))}
+                        <Text
+                          className={cn(
+                            "text-xs flex-1",
+                            todo.status === "completed"
+                              ? "text-muted-foreground line-through"
+                              : "text-foreground"
+                          )}
+                        >
+                          {todo.content}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
                 </View>
               )}
             </>
@@ -614,7 +644,155 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
     )
   }
 
-  // List view
+  // ── Diff comparison view ────────────────────────────────────────────
+  if (diffMode && diffContents[0] && diffContents[1]) {
+    const nameA = plans.find((p) => p.filename === diffTargets[0])?.name ?? diffTargets[0] ?? ""
+    const nameB = plans.find((p) => p.filename === diffTargets[1])?.name ?? diffTargets[1] ?? ""
+    const bodyA = extractPlanBody(diffContents[0])
+    const bodyB = extractPlanBody(diffContents[1])
+
+    const linesA = bodyA.split("\n")
+    const linesB = bodyB.split("\n")
+    const maxLen = Math.max(linesA.length, linesB.length)
+    const diffLines: Array<{ type: "same" | "added" | "removed"; text: string }> = []
+    for (let i = 0; i < maxLen; i++) {
+      const la = linesA[i] ?? ""
+      const lb = linesB[i] ?? ""
+      if (la === lb) {
+        diffLines.push({ type: "same", text: la })
+      } else {
+        if (la) diffLines.push({ type: "removed", text: la })
+        if (lb) diffLines.push({ type: "added", text: lb })
+      }
+    }
+
+    return (
+      <View className="flex-1 bg-background">
+        <View className="flex-row items-center gap-2 px-4 py-3 border-b border-border">
+          <Pressable onPress={exitDiffMode} className="h-8 w-8 items-center justify-center rounded-lg">
+            <ArrowLeft className="h-4 w-4 text-foreground" size={16} />
+          </Pressable>
+          <GitCompareArrows className="h-4 w-4 text-foreground" size={16} />
+          <View className="flex-1 min-w-0">
+            <Text className="font-semibold text-sm text-foreground" numberOfLines={1}>
+              Comparing Plans
+            </Text>
+            <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+              {nameA} vs {nameB}
+            </Text>
+          </View>
+        </View>
+        <ScrollView className="flex-1 px-4 py-3">
+          {diffLines.map((line, idx) => (
+            <View
+              key={idx}
+              className={cn(
+                "px-2 py-0.5 rounded-sm mb-0.5",
+                line.type === "added" && "bg-emerald-500/10",
+                line.type === "removed" && "bg-red-500/10"
+              )}
+            >
+              <Text
+                className={cn(
+                  "text-xs font-mono",
+                  line.type === "added" && "text-emerald-400",
+                  line.type === "removed" && "text-red-400",
+                  line.type === "same" && "text-foreground"
+                )}
+              >
+                {line.type === "added" ? "+ " : line.type === "removed" ? "- " : "  "}
+                {line.text}
+              </Text>
+            </View>
+          ))}
+        </ScrollView>
+      </View>
+    )
+  }
+
+  // ── Diff target selection UI ──────────────────────────────────────
+  if (diffMode) {
+    return (
+      <View className="flex-1 bg-background">
+        <View className="flex-row items-center gap-2 px-4 py-3 border-b border-border">
+          <Pressable onPress={exitDiffMode} className="h-8 w-8 items-center justify-center rounded-lg">
+            <ArrowLeft className="h-4 w-4 text-foreground" size={16} />
+          </Pressable>
+          <GitCompareArrows className="h-4 w-4 text-foreground" size={16} />
+          <Text className="flex-1 font-semibold text-sm text-foreground">Select two plans to compare</Text>
+          <Pressable
+            onPress={handleStartDiff}
+            disabled={!diffTargets[0] || !diffTargets[1] || diffLoading}
+            className={cn(
+              "rounded-lg px-3 py-1.5",
+              diffTargets[0] && diffTargets[1] ? "bg-primary" : "bg-muted opacity-50"
+            )}
+          >
+            {diffLoading ? (
+              <ActivityIndicator size="small" />
+            ) : (
+              <Text className="text-xs font-bold text-primary-foreground">Compare</Text>
+            )}
+          </Pressable>
+        </View>
+
+        <View className="px-4 py-2 border-b border-border/60">
+          <View className="flex-row items-center gap-2">
+            <View className={cn("flex-1 rounded-md border px-2 py-1", diffTargets[0] ? "border-primary bg-primary/5" : "border-border")}>
+              <Text className="text-[10px] text-muted-foreground">Plan A</Text>
+              <Text className="text-xs text-foreground" numberOfLines={1}>
+                {diffTargets[0] ? (plans.find((p) => p.filename === diffTargets[0])?.name ?? diffTargets[0]) : "Tap a plan"}
+              </Text>
+            </View>
+            <Text className="text-xs text-muted-foreground">vs</Text>
+            <View className={cn("flex-1 rounded-md border px-2 py-1", diffTargets[1] ? "border-primary bg-primary/5" : "border-border")}>
+              <Text className="text-[10px] text-muted-foreground">Plan B</Text>
+              <Text className="text-xs text-foreground" numberOfLines={1}>
+                {diffTargets[1] ? (plans.find((p) => p.filename === diffTargets[1])?.name ?? diffTargets[1]) : "Tap a plan"}
+              </Text>
+            </View>
+          </View>
+        </View>
+
+        <ScrollView className="flex-1">
+          {plans.map((plan) => {
+            const isA = diffTargets[0] === plan.filename
+            const isB = diffTargets[1] === plan.filename
+            return (
+              <Pressable
+                key={plan.filename}
+                onPress={() => {
+                  setDiffTargets(([a, b]) => {
+                    if (isA) return [null, b]
+                    if (isB) return [a, null]
+                    if (!a) return [plan.filename, b]
+                    if (!b && plan.filename !== a) return [a, plan.filename]
+                    return [plan.filename, b]
+                  })
+                }}
+                className={cn(
+                  "flex-row items-center gap-3 px-4 py-3 border-b border-border/40",
+                  (isA || isB) && "bg-primary/5"
+                )}
+              >
+                <View className={cn("h-5 w-5 items-center justify-center rounded-full border", isA ? "border-primary bg-primary" : isB ? "border-sky-400 bg-sky-400" : "border-border")}>
+                  {isA && <Text className="text-[9px] font-bold text-primary-foreground">A</Text>}
+                  {isB && <Text className="text-[9px] font-bold text-white">B</Text>}
+                </View>
+                <View className="flex-1 min-w-0">
+                  <Text className="font-medium text-sm text-foreground" numberOfLines={1}>{plan.name || plan.filename}</Text>
+                  <Text className="text-xs text-muted-foreground/70 mt-0.5">{formatDate(plan.createdAt)}</Text>
+                </View>
+                <StatusBadge status={plan.status} />
+              </Pressable>
+            )
+          })}
+        </ScrollView>
+      </View>
+    )
+  }
+
+  // ── List view ─────────────────────────────────────────────────────
   return (
     <View className="flex-1 bg-background">
       {/* Header */}
@@ -624,9 +802,6 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
           <Text className="font-semibold text-sm text-foreground">Plans</Text>
         </View>
         <View className="flex-row items-center gap-1.5">
-          {/* Persistent Dual Plan toggle — mirror of the same preference the
-              chat input controls, surfaced here so users can manage the
-              feature from the Plans view too. */}
           <Pressable
             testID="plans-dual-plan-toggle"
             onPress={handleDualPlanToggle}
@@ -654,11 +829,85 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
               Business
             </Text>
           </Pressable>
+
+          {/* Compare button */}
+          {filteredPlans.length >= 2 && (
+            <Pressable
+              onPress={() => { setDiffMode(true); setBulkMode(false); setSelectedForBulk(new Set()) }}
+              className="h-7 w-7 items-center justify-center rounded-md bg-muted/50"
+            >
+              <GitCompareArrows className="h-3.5 w-3.5 text-muted-foreground" size={14} />
+            </Pressable>
+          )}
+
+          {/* Bulk select toggle */}
+          {filteredPlans.length > 0 && (
+            <Pressable
+              onPress={() => {
+                setBulkMode((v) => !v)
+                setSelectedForBulk(new Set())
+                setDiffMode(false)
+              }}
+              className={cn(
+                "h-7 w-7 items-center justify-center rounded-md",
+                bulkMode ? "bg-destructive/10" : "bg-muted/50"
+              )}
+            >
+              <CheckSquare
+                className={cn("h-3.5 w-3.5", bulkMode ? "text-destructive" : "text-muted-foreground")}
+                size={14}
+              />
+            </Pressable>
+          )}
+
           <Pressable onPress={fetchPlans} className="h-8 w-8 items-center justify-center rounded-lg">
             <RefreshCw className="h-3.5 w-3.5 text-muted-foreground" size={14} />
           </Pressable>
         </View>
       </View>
+
+      {/* Bulk actions toolbar */}
+      {bulkMode && (
+        <View className="flex-row items-center justify-between px-4 py-2 border-b border-destructive/20 bg-destructive/5">
+          <View className="flex-row items-center gap-2">
+            <Pressable
+              onPress={() => {
+                if (selectedForBulk.size === filteredPlans.length) {
+                  setSelectedForBulk(new Set())
+                } else {
+                  setSelectedForBulk(new Set(filteredPlans.map((p) => p.filename)))
+                }
+              }}
+            >
+              <Text className="text-xs font-medium text-foreground">
+                {selectedForBulk.size === filteredPlans.length ? "Deselect all" : "Select all"}
+              </Text>
+            </Pressable>
+            <Text className="text-xs text-muted-foreground">
+              {selectedForBulk.size} selected
+            </Text>
+          </View>
+          <View className="flex-row items-center gap-2">
+            <Pressable
+              onPress={() => { setBulkMode(false); setSelectedForBulk(new Set()) }}
+              className="h-7 w-7 items-center justify-center rounded-md"
+            >
+              <X className="h-3.5 w-3.5 text-muted-foreground" size={14} />
+            </Pressable>
+            <Pressable
+              onPress={handleBulkDelete}
+              disabled={selectedForBulk.size === 0}
+              className={cn(
+                "flex-row items-center gap-1.5 rounded-lg px-3 py-1.5",
+                selectedForBulk.size > 0 ? "bg-destructive" : "bg-muted opacity-50"
+              )}
+            >
+              <Trash2 className="h-3 w-3 text-white" size={12} />
+              <Text className="text-xs font-semibold text-white">Delete</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
 
       {/* Search */}
       <View className="px-4 py-2 border-b border-border/60">
@@ -731,27 +980,51 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
             </Text>
           </View>
         ) : filteredPlans.length > 0 ? (
-          filteredPlans.map((plan) => (
-            <Pressable
-              key={plan.filename}
-              onPress={() => setSelectedPlan(plan.filename)}
-              className="flex-row items-center gap-3 px-4 py-3 border-b border-border/40 active:bg-accent"
-            >
-              <View className="flex-1 min-w-0">
-                <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
-                  {plan.name || plan.filename}
-                </Text>
-                {plan.overview ? (
-                  <Text className="text-xs text-muted-foreground mt-0.5" numberOfLines={2}>
-                    {plan.overview}
+          filteredPlans.map((plan) => {
+            const isChecked = selectedForBulk.has(plan.filename)
+            return (
+              <Pressable
+                key={plan.filename}
+                onPress={() => bulkMode ? toggleBulkSelection(plan.filename) : setSelectedPlan(plan.filename)}
+                onLongPress={() => {
+                  if (!bulkMode) {
+                    setBulkMode(true)
+                    setSelectedForBulk(new Set([plan.filename]))
+                  }
+                }}
+                className={cn(
+                  "flex-row items-center gap-3 px-4 py-3 border-b border-border/40",
+                  bulkMode && isChecked ? "bg-destructive/5" : "active:bg-accent"
+                )}
+              >
+                {bulkMode && (
+                  <View className="items-center justify-center">
+                    {isChecked ? (
+                      <CheckSquare className="h-4 w-4 text-destructive" size={16} />
+                    ) : (
+                      <Square className="h-4 w-4 text-muted-foreground" size={16} />
+                    )}
+                  </View>
+                )}
+                <View className="flex-1 min-w-0">
+                  <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
+                    {plan.name || plan.filename}
                   </Text>
-                ) : null}
-                <Text className="text-xs text-muted-foreground/70 mt-1">
-                  {formatDate(plan.createdAt)} · {plan.status}
-                </Text>
-              </View>
-            </Pressable>
-          ))
+                  {plan.overview ? (
+                    <Text className="text-xs text-muted-foreground mt-0.5" numberOfLines={2}>
+                      {plan.overview}
+                    </Text>
+                  ) : null}
+                  <View className="flex-row items-center gap-2 mt-1">
+                    <Text className="text-xs text-muted-foreground/70">
+                      {formatDate(plan.createdAt)}
+                    </Text>
+                    <StatusBadge status={plan.status} />
+                  </View>
+                </View>
+              </Pressable>
+            )
+          })
         ) : null}
       </ScrollView>
     </View>
