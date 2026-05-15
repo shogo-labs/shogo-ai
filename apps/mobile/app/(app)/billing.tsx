@@ -18,6 +18,7 @@ import {
   Pressable,
   Linking,
   Platform,
+  useWindowDimensions,
 } from 'react-native'
 import * as WebBrowser from 'expo-web-browser'
 import * as ExpoLinking from 'expo-linking'
@@ -102,6 +103,10 @@ export default observer(function BillingPage() {
   const [isRestoreLoading, setIsRestoreLoading] = useState(false)
   const iapTransactionsInFlightRef = useRef<Map<string, Promise<'processed' | 'failed'>>>(new Map())
   const toast = useToast()
+  const { width } = useWindowDimensions()
+  const isTabletWidth = width >= 768
+  const contentHorizontalPadding = isTabletWidth ? 32 : 16
+  const contentMaxWidth = width >= 1024 ? 1120 : 760
 
   type IapToastVariant = 'success' | 'error' | 'info'
   const showIapToast = useCallback((variant: IapToastVariant, title: string, description: string) => {
@@ -275,9 +280,23 @@ export default observer(function BillingPage() {
     if (!regionalPricing || !planKey) return `$${usdAmount}`
     const localPlan = regionalPricing.plans[planKey]
     if (!localPlan) return `$${usdAmount}`
+    const basePlan = PLAN_PRICING[planKey as keyof typeof PLAN_PRICING]
+    const baseAmount = billingInterval === 'monthly'
+      ? basePlan?.monthly
+      : (basePlan?.annual ? Math.round(basePlan.annual / 12) : undefined)
+    const quantity = baseAmount ? Math.max(1, Math.round(usdAmount / baseAmount)) : 1
     const localAmount = billingInterval === 'monthly' ? localPlan.monthly : Math.round(localPlan.annual / 12)
-    return `~${formatCurrencyPrice(localAmount, regionalPricing.currency)}`
+    return `~${formatCurrencyPrice(localAmount * quantity, regionalPricing.currency)}`
   }, [regionalPricing, billingInterval])
+
+  const fmtAnnualPrice = useCallback((usdAmount: number, planKey?: string) => {
+    if (!regionalPricing || !planKey) return `$${usdAmount}`
+    const localPlan = regionalPricing.plans[planKey]
+    if (!localPlan) return `$${usdAmount}`
+    const basePlan = PLAN_PRICING[planKey as keyof typeof PLAN_PRICING]
+    const quantity = basePlan?.annual ? Math.max(1, Math.round(usdAmount / basePlan.annual)) : 1
+    return formatCurrencyPrice(localPlan.annual * quantity, regionalPricing.currency)
+  }, [regionalPricing])
 
   const handleCheckout = useCallback(async (planType: 'pro' | 'business' | 'basic', seats: number) => {
     if (!currentWorkspace?.id) return
@@ -487,9 +506,15 @@ export default observer(function BillingPage() {
   return (
     <ScrollView
       className="flex-1 bg-background"
-      contentContainerStyle={{ padding: 16, paddingBottom: 60 }}
+      contentContainerStyle={{
+        paddingHorizontal: contentHorizontalPadding,
+        paddingVertical: 16,
+        paddingBottom: 60,
+        alignItems: 'center',
+      }}
       showsVerticalScrollIndicator={false}
     >
+      <View style={{ width: '100%', maxWidth: contentMaxWidth }}>
       {/* Header */}
       <View className="flex-row items-center gap-3 mb-6">
         <Pressable onPress={() => router.canGoBack() ? router.back() : router.replace('/(app)')}>
@@ -638,38 +663,43 @@ export default observer(function BillingPage() {
         </View>
       </View>
 
-      {/* Plan Cards — md row: equal-height columns; tier slot reserves space so CTAs align */}
-      <View className="gap-6 md:flex-row md:flex-wrap md:items-stretch xl:flex-nowrap" testID="plan-cards-row">
+      {/* Plan Cards — keep iPad portrait single-column; use columns only on wider layouts. */}
+      <View className="gap-6 lg:flex-row lg:flex-wrap lg:items-stretch xl:flex-nowrap" testID="plan-cards-row">
         {/* Basic Plan */}
-        <View className="md:w-[calc(50%-12px)] md:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col" testID="plan-card-basic">
-          <View className="hidden md:block md:min-h-8" />
-          <Card className="md:flex-1 flex flex-col">
-            <CardContent className="md:flex-1 flex flex-col p-5 gap-5">
+        <View className="lg:w-[calc(50%-12px)] lg:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col" testID="plan-card-basic">
+          <View className="hidden lg:block lg:min-h-8" />
+          <Card className="lg:flex-1 flex flex-col">
+            <CardContent className="lg:flex-1 flex flex-col p-5 gap-5">
               <View className="flex-row items-center gap-2">
                 <Sparkles size={20} className="text-green-500" />
                 <Text className="text-lg font-semibold text-foreground">Basic</Text>
               </View>
-              <Text className="md:min-h-[44px] text-sm text-muted-foreground">
+              <Text className="lg:min-h-[44px] text-sm text-muted-foreground">
                 More usage with the fast AI model for individuals getting started.
               </Text>
 
-              <View className="md:min-h-[100px]">
-                <View className="flex-row items-baseline gap-1">
-                  <Text className="text-4xl font-bold text-foreground">
+              <View className="lg:min-h-[100px] gap-1">
+                <View className="gap-1">
+                  <Text className="text-3xl lg:text-4xl font-bold text-foreground">
                     {regionalPricing
                       ? fmtPrice(billingInterval === 'monthly' ? basicPricing.monthly : Math.round(basicPricing.annual / 12), 'basic')
                       : `$${billingInterval === 'monthly' ? basicPricing.monthly : Math.round(basicPricing.annual / 12)}`}
                   </Text>
-                  <Text className="text-sm text-muted-foreground">per month</Text>
                 </View>
+                <Text className="text-sm text-muted-foreground">per month</Text>
                 {billingInterval === 'annual' && !regionalPricing && (
                   <Text className="text-sm text-muted-foreground">
                     ${basicPricing.annual}/year (save ~17%)
                   </Text>
                 )}
+                {billingInterval === 'annual' && regionalPricing && (
+                  <Text className="text-sm text-muted-foreground">
+                    {fmtAnnualPrice(basicPricing.annual, 'basic')}/year
+                  </Text>
+                )}
               </View>
 
-              <View className="hidden md:block md:min-h-[76px]" />
+              <View className="hidden lg:block lg:min-h-[76px]" />
 
               <Pressable
                 onPress={() => handleCheckout('basic', 1)}
@@ -681,7 +711,7 @@ export default observer(function BillingPage() {
                 </Text>
               </Pressable>
 
-              <View className="md:flex-1 gap-2">
+              <View className="lg:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
                   {formatUsd(SEAT_INCLUDED_USD.basic)} of usage / month
                 </Text>
@@ -695,21 +725,21 @@ export default observer(function BillingPage() {
         </View>
 
         {/* Pro Plan */}
-        <View className="md:w-[calc(50%-12px)] md:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col" testID="plan-card-pro">
-          <View className="hidden md:block md:min-h-8" />
-          <Card className="md:flex-1 flex flex-col">
-            <CardContent className="md:flex-1 flex flex-col p-5 gap-5">
+        <View className="lg:w-[calc(50%-12px)] lg:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col" testID="plan-card-pro">
+          <View className="hidden lg:block lg:min-h-8" />
+          <Card className="lg:flex-1 flex flex-col">
+            <CardContent className="lg:flex-1 flex flex-col p-5 gap-5">
               <View className="flex-row items-center gap-2">
                 <Zap size={20} className="text-blue-500" />
                 <Text className="text-lg font-semibold text-foreground">Pro</Text>
               </View>
-              <Text className="md:min-h-[44px] text-sm text-muted-foreground">
+              <Text className="lg:min-h-[44px] text-sm text-muted-foreground">
                 Designed for fast-moving teams building together in real time.
               </Text>
 
-              <View className="md:min-h-[100px]">
-                <View className="flex-row items-baseline gap-1">
-                  <Text className="text-4xl font-bold text-foreground">
+              <View className="lg:min-h-[100px] gap-1">
+                <View className="gap-1">
+                  <Text className="text-3xl lg:text-4xl font-bold text-foreground">
                     {regionalPricing
                       ? fmtPrice(
                           billingInterval === 'monthly' ? proPricing.monthly * proSeats : Math.round((proPricing.annual / 12) * proSeats),
@@ -717,16 +747,21 @@ export default observer(function BillingPage() {
                         )
                       : `$${billingInterval === 'monthly' ? proPricing.monthly * proSeats : Math.round((proPricing.annual / 12) * proSeats)}`}
                   </Text>
-                  <Text className="text-sm text-muted-foreground">per month</Text>
                 </View>
+                <Text className="text-sm text-muted-foreground">per month</Text>
                 <Text className="text-sm text-muted-foreground">
                   {Platform.OS === 'ios'
                     ? `$${proPricing.monthly}/seat`
                     : `$${proPricing.monthly}/seat × ${proSeats} seat${proSeats === 1 ? '' : 's'} — raw cost + 20% on usage`}
                 </Text>
+                {billingInterval === 'annual' && regionalPricing && (
+                  <Text className="text-sm text-muted-foreground">
+                    {fmtAnnualPrice(proPricing.annual * proSeats, 'pro')}/year
+                  </Text>
+                )}
               </View>
 
-              <View className="md:min-h-[76px]">
+              <View className="lg:min-h-[76px]">
                 <Text className="text-sm font-medium text-foreground mb-2">
                   Seats
                 </Text>
@@ -755,7 +790,7 @@ export default observer(function BillingPage() {
                 </Text>
               </Pressable>
 
-              <View className="md:flex-1 gap-2">
+              <View className="lg:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
                   {formatUsd(SEAT_INCLUDED_USD.pro * proSeats)} of usage / month
                 </Text>
@@ -769,25 +804,25 @@ export default observer(function BillingPage() {
         </View>
 
         {/* Business Plan */}
-        <View className="md:w-[calc(50%-12px)] md:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col" testID="plan-card-business">
+        <View className="lg:w-[calc(50%-12px)] lg:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col" testID="plan-card-business">
           <View className="min-h-8 items-center justify-center px-1">
             <Badge className="bg-primary">
               <Text className="text-xs text-primary-foreground font-medium">Most Popular</Text>
             </Badge>
           </View>
-          <Card className="md:flex-1 flex flex-col border-primary">
-            <CardContent className="md:flex-1 flex flex-col p-5 gap-5">
+          <Card className="lg:flex-1 flex flex-col border-primary">
+            <CardContent className="lg:flex-1 flex flex-col p-5 gap-5">
               <View className="flex-row items-center gap-2">
                 <Building2 size={20} className="text-purple-500" />
                 <Text className="text-lg font-semibold text-foreground">Business</Text>
               </View>
-              <Text className="md:min-h-[44px] text-sm text-muted-foreground">
+              <Text className="lg:min-h-[44px] text-sm text-muted-foreground">
                 Advanced controls and power features for growing departments
               </Text>
 
-              <View className="md:min-h-[100px]">
-                <View className="flex-row items-baseline gap-1">
-                  <Text className="text-4xl font-bold text-foreground">
+              <View className="lg:min-h-[100px] gap-1">
+                <View className="gap-1">
+                  <Text className="text-3xl lg:text-4xl font-bold text-foreground">
                     {regionalPricing
                       ? fmtPrice(
                           billingInterval === 'monthly' ? businessPricing.monthly * businessSeats : Math.round((businessPricing.annual / 12) * businessSeats),
@@ -795,16 +830,21 @@ export default observer(function BillingPage() {
                         )
                       : `$${billingInterval === 'monthly' ? businessPricing.monthly * businessSeats : Math.round((businessPricing.annual / 12) * businessSeats)}`}
                   </Text>
-                  <Text className="text-sm text-muted-foreground">per month</Text>
                 </View>
+                <Text className="text-sm text-muted-foreground">per month</Text>
                 <Text className="text-sm text-muted-foreground">
                   {Platform.OS === 'ios'
                     ? `$${businessPricing.monthly}/seat`
                     : `$${businessPricing.monthly}/seat × ${businessSeats} seat${businessSeats === 1 ? '' : 's'} — raw cost + 20% on usage`}
                 </Text>
+                {billingInterval === 'annual' && regionalPricing && (
+                  <Text className="text-sm text-muted-foreground">
+                    {fmtAnnualPrice(businessPricing.annual * businessSeats, 'business')}/year
+                  </Text>
+                )}
               </View>
 
-              <View className="md:min-h-[76px]">
+              <View className="lg:min-h-[76px]">
                 <Text className="text-sm font-medium text-foreground mb-2">
                   Seats
                 </Text>
@@ -833,7 +873,7 @@ export default observer(function BillingPage() {
                 </Text>
               </Pressable>
 
-              <View className="md:flex-1 gap-2">
+              <View className="lg:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
                   {formatUsd(SEAT_INCLUDED_USD.business * businessSeats)} of usage / month
                 </Text>
@@ -844,24 +884,24 @@ export default observer(function BillingPage() {
         </View>
 
         {/* Enterprise Plan */}
-        <View className="md:w-[calc(50%-12px)] md:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col" testID="plan-card-enterprise">
-          <View className="hidden md:block md:min-h-8" />
-          <Card className="md:flex-1 flex flex-col">
-            <CardContent className="md:flex-1 flex flex-col p-5 gap-5">
+        <View className="lg:w-[calc(50%-12px)] lg:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col" testID="plan-card-enterprise">
+          <View className="hidden lg:block lg:min-h-8" />
+          <Card className="lg:flex-1 flex flex-col">
+            <CardContent className="lg:flex-1 flex flex-col p-5 gap-5">
               <View className="flex-row items-center gap-2">
                 <Crown size={20} className="text-amber-500" />
                 <Text className="text-lg font-semibold text-foreground">Enterprise</Text>
               </View>
-              <Text className="md:min-h-[44px] text-sm text-muted-foreground">
+              <Text className="lg:min-h-[44px] text-sm text-muted-foreground">
                 Built for large orgs needing flexibility, scale, and governance.
               </Text>
 
-              <View className="md:min-h-[100px]">
-                <Text className="text-4xl font-bold text-foreground">Custom</Text>
+              <View className="lg:min-h-[100px]">
+                <Text className="text-3xl lg:text-4xl font-bold text-foreground">Custom</Text>
                 <Text className="text-sm text-muted-foreground">Flexible plans</Text>
               </View>
 
-              <View className="hidden md:block md:min-h-[76px]" />
+              <View className="hidden lg:block lg:min-h-[76px]" />
 
               <Pressable
                 onPress={() => Linking.openURL('mailto:sales@shogo.ai')}
@@ -870,7 +910,7 @@ export default observer(function BillingPage() {
                 <Text className="text-sm font-medium text-foreground">Book a demo</Text>
               </Pressable>
 
-              <View className="md:flex-1">
+              <View className="lg:flex-1">
                 <FeatureList features={ENTERPRISE_FEATURES} />
               </View>
             </CardContent>
@@ -894,6 +934,7 @@ export default observer(function BillingPage() {
         </Card>
       )}
 
+      </View>
     </ScrollView>
   )
 })
