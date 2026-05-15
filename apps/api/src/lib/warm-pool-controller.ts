@@ -2204,25 +2204,22 @@ export class WarmPoolController {
             timeoutSeconds: 3600,
             responseStartTimeoutSeconds: 600,
             securityContext: { fsGroup: 999 },
-            // Spread warm-pool pods evenly across nodes. Without this,
-            // the scheduler happily clusters multiple replicas on the
-            // same node (32+ on a single 88.8 GiB node was the trigger
-            // for the 2026-05-14 staging DiskPressure cascade). With
-            // `maxSkew: 1` + `ScheduleAnyway`, the scheduler prefers
-            // empty/under-loaded nodes for the next pool pod but won't
-            // block scheduling if every node is "full" (we'd rather
-            // overpack than refuse to start a warm pod). The label
-            // selector matches POOL_LABEL_KEY (`shogo.io/warm-pool`)
-            // so this only spreads pool pods against each other, not
-            // against unrelated namespace workloads.
-            topologySpreadConstraints: [
-              {
-                maxSkew: 1,
-                topologyKey: 'kubernetes.io/hostname',
-                whenUnsatisfiable: 'ScheduleAnyway',
-                labelSelector: { matchLabels: { [POOL_LABEL_KEY]: 'true' } },
-              },
-            ],
+            // NOTE: `topologySpreadConstraints` was previously declared here
+            // to spread warm-pool pods across nodes (anti-co-tenancy belt-
+            // and-suspenders after the 2026-05-14 DiskPressure cascade), but
+            // Knative's admission webhook rejects that field unless the
+            // cluster opts in via `kubernetes.podspec-topologyspreadconstraints:
+            // enabled` in `config-features`. Without the flag, every warm-pool
+            // create returned HTTP 400, the controller's circuit breaker
+            // tripped at 5 failures, and the pool stayed at 0 (staging
+            // incident 2026-05-15). The cascade's root causes were addressed
+            // by other fixes — ephemeral-storage requests below, 200 GB boot
+            // volumes (terraform/modules/oke), the s3-sync deps-hash fix, and
+            // the oci-growfs patch — so the spread constraint isn't load-
+            // bearing for the original incident. If/when we want it back, use
+            // `affinity.podAntiAffinity` instead (the `kubernetes.podspec-
+            // affinity` flag is already enabled in
+            // `terraform/modules/knative-oci/main.tf`).
             containers: [
               {
                 name: RUNTIME_CONFIG.containerName,
