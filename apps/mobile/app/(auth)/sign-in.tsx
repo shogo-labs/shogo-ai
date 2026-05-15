@@ -24,6 +24,7 @@ export default function SignInScreen() {
   const { signIn, signUp, signInWithGoogle, signInWithApple, isLoading, error, clearError } = useAuth()
   const { features } = usePlatformConfig()
   const { theme } = useTheme()
+  const shouldShowOAuth = features.oauth || Platform.OS === 'ios'
   const systemColorScheme = useColorScheme()
   const resolvedColorScheme: 'light' | 'dark' = theme === 'system'
     ? (systemColorScheme === 'dark' ? 'dark' : 'light')
@@ -143,8 +144,8 @@ export default function SignInScreen() {
         onSignIn={handleSignIn}
         onSignUp={handleSignUp}
         onForgotPassword={handleForgotPassword}
-        onGoogleSignIn={features.oauth ? handleGoogleSignIn : undefined}
-        onAppleSignIn={features.oauth && Platform.OS === 'ios' ? handleAppleSignIn : undefined}
+        onGoogleSignIn={shouldShowOAuth ? handleGoogleSignIn : undefined}
+        onAppleSignIn={Platform.OS === 'ios' ? handleAppleSignIn : undefined}
         isLoading={isLoading}
         error={error}
         onClearError={clearError}

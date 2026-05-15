@@ -522,7 +522,7 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
         )}
       >
         <PopoverBackdrop />
-        <PopoverContent className="max-w-[224px] p-0">
+        <PopoverContent className="w-[280px] max-w-[320px] p-0">
           <PopoverBody>
             <UserMenuContent
               user={user}
