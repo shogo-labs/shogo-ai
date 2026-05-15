@@ -238,6 +238,12 @@ module "file_storage" {
 module "cnpg" {
   source = "../../modules/cnpg"
 
+  # CNPG operator was installed manually before tf adopted it. Skip the
+  # kubectl-apply provisioner so plans don't show a perpetual "to be
+  # created" null_resource. The namespace (cnpg-system) is still imported
+  # and managed for label drift.
+  manage_install = false
+
   tags = local.tags
 }
 
@@ -248,8 +254,16 @@ module "cnpg" {
 module "knative" {
   source = "../../modules/knative-oci"
 
-  domain          = local.domain
-  publish_domain  = "shogo.one"
+  # Staging's Knative + Kourier install was bootstrapped manually and the
+  # kourier-toleration fix was hand-applied during the disk-pressure outage.
+  # Live state already matches what these null_resources would install, so we
+  # set `manage_install = false` to keep them out of state and keep plans
+  # quiet. If we ever need to bump the Knative version or re-apply the
+  # toleration strip, flip this back to true.
+  manage_install = false
+
+  domain             = local.domain
+  publish_domain     = "shogo.one"
   enable_pvc_support = true
 }
 
@@ -270,15 +284,14 @@ module "signoz" {
 # =============================================================================
 # GitHub OIDC (CI/CD Authentication)
 # =============================================================================
-
-module "github_oidc" {
-  source = "../../modules/oci-github-oidc"
-
-  compartment_id = var.compartment_id
-  tenancy_id     = var.tenancy_id
-  oke_cluster_id = module.oke.cluster_id
-  tags           = local.tags
-}
+#
+# Staging's CI auth uses OCI user creds (OCI_USER_OCID + OCI_PRIVATE_KEY),
+# not workload-identity-style OIDC federation. The
+# `modules/oci-github-oidc` group + policy don't exist in staging's OCI
+# tenancy and creating them wouldn't migrate any workflow automatically.
+# Removed in 2026-05 as part of the live-state reconciliation. Re-add this
+# block (and run terraform apply) if/when we wire up OIDC federation for
+# CI workflows targeting staging.
 
 # =============================================================================
 # Autoscaler IAM (dynamic group + policy for OKE instance principal)
@@ -303,8 +316,15 @@ module "dns" {
   cloudflare_zone_id = var.cloudflare_zone_id
   domain             = local.domain
   subdomain          = "staging"
-  lb_ip_or_hostname  = "0.0.0.0" # Populated after initial apply via kubectl get svc
+  lb_ip_or_hostname  = "0.0.0.0" # Unused: staging.shogo.ai records are owned out-of-band.
   additional_records = []
+
+  # staging.shogo.ai's `studio.*` and `docs.*` records resolve to proxied
+  # Cloudflare IPs that chain back to studio-staging.shogo.ai (which itself
+  # points at a multi-region AWS ELB). They're owned by external-dns / the
+  # legacy AWS deploy, not by this terraform. Don't let the module recreate
+  # them with a placeholder 0.0.0.0 content.
+  manage_platform_records = false
 }
 
 # =============================================================================
@@ -367,7 +387,4 @@ output "file_system_export_path" {
   value       = module.file_storage.export_path
 }
 
-output "github_actions_group" {
-  description = "IAM group for GitHub Actions CI/CD"
-  value       = module.github_oidc.group_name
-}
+# github_actions_group output removed alongside module.github_oidc.
