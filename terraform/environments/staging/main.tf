@@ -324,8 +324,8 @@ output "cluster_id" {
 }
 
 output "registry_namespace" {
-  description = "OCIR namespace"
-  value       = module.ocir.registry_namespace
+  description = "OCIR namespace (derived from the object-storage namespace, which is identical tenancy-wide)"
+  value       = module.object_storage.namespace
 }
 
 output "schemas_bucket" {
