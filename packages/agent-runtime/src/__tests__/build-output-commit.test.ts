@@ -12,15 +12,24 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync as realRenameSync,
   rmSync,
+  rmSync as realRmSync,
   writeFileSync,
+  type PathLike,
+  type RmOptions,
 } from 'fs'
 import { join } from 'path'
 import {
   commitBuildOutput,
+  commitBuildOutputAsync,
   cleanupStagingOutput,
   withFsRetry,
   DEFAULT_STAGING_DIR,
+  __resetCommitQueuesForTest,
+  __setRetryDelaysForTest,
+  __setFsImplForTest,
+  __getRetryScheduleLengthForTest,
 } from '../build-output-commit'
 
 const TMP = '/tmp/test-build-output-commit'
@@ -157,15 +166,34 @@ describe('withFsRetry', () => {
   })
 
   test('rethrows after the retry budget is exhausted', () => {
-    let calls = 0
-    expect(() => {
-      withFsRetry(() => {
-        calls++
-        throw eperm()
-      })
-    }).toThrow(/EPERM/)
-    // 1 initial attempt + 7 retry slots = 8 total before giving up.
-    expect(calls).toBe(8)
+    // Pin to a tiny synthetic schedule so this test doesn't sit on the
+    // full Windows ~12s backoff. The *count* is what we're regressing —
+    // wall-clock between attempts is sleep, not behavior.
+    const restore = __setRetryDelaysForTest([0, 0, 0, 0, 0, 0, 0])
+    try {
+      let calls = 0
+      expect(() => {
+        withFsRetry(() => {
+          calls++
+          throw eperm()
+        })
+      }).toThrow(/EPERM/)
+      // 1 initial attempt + N retry slots = N+1 total before giving up.
+      expect(calls).toBe(__getRetryScheduleLengthForTest() + 1)
+    } finally {
+      restore()
+    }
+  })
+
+  test('Windows default schedule is materially longer than POSIX (handles AV scans of large assets)', () => {
+    // We don't pin the *exact* Windows budget (it's tunable), but it must
+    // be at least 5x POSIX or it regresses to the previous failure mode
+    // where 1.6s was empirically not enough to outlast a Defender scan
+    // of a multi-megabyte asset (e.g. a 172 MB GLB in `public/`) and
+    // `commitBuildOutput` returned false leaving the new build orphaned
+    // in `dist.staging/`.
+    if (process.platform !== 'win32') return
+    expect(__getRetryScheduleLengthForTest()).toBeGreaterThanOrEqual(10)
   })
 
   test('does not retry non-transient errors (ENOENT bubbles immediately)', () => {
@@ -179,6 +207,187 @@ describe('withFsRetry', () => {
       })
     }).toThrow(/ENOENT/)
     expect(calls).toBe(1)
+  })
+})
+
+// Force-replace fallback. When `rename(dist, dist.prev)` exhausts the
+// retry budget on Windows (the user-visible failure was an EPERM from a
+// 172 MB GLB asset being scanned by Defender + the runtime's static
+// handler streaming the file to the preview iframe), the commit must
+// not give up: it must `rmSync(dist) + rename(staging, dist)` so the
+// freshly-built output still lands. The trade-off — losing the
+// `dist.prev/` rollback dir for that build only — is documented in the
+// build-output-commit docstring.
+describe('commitBuildOutput force-replace fallback', () => {
+  let restoreSchedule: (() => void) | null = null
+  let restoreFs: (() => void) | null = null
+
+  beforeEach(() => {
+    freshWorkspace()
+    // Tight schedule so we exhaust retries fast; the test isn't about
+    // backoff timing.
+    restoreSchedule = __setRetryDelaysForTest([0, 0, 0])
+  })
+
+  afterEach(() => {
+    restoreFs?.()
+    restoreFs = null
+    restoreSchedule?.()
+    restoreSchedule = null
+    rmSync(TMP, { recursive: true, force: true })
+  })
+
+  test('falls back to rmSync(dist) + rename(staging, dist) when rotation rename keeps throwing EPERM', () => {
+    seedDir('dist', { 'index.html': 'old-locked' })
+    seedDir(DEFAULT_STAGING_DIR, { 'index.html': 'new' })
+
+    const distPath = join(TMP, 'dist')
+    const prevPath = join(TMP, 'dist.prev')
+    let rotationAttempts = 0
+
+    restoreFs = __setFsImplForTest({
+      renameSync: (from: PathLike, to: PathLike) => {
+        // Only fail the dist→dist.prev rotation; staging→dist on the
+        // fallback path should still succeed via the real fs.
+        if (from === distPath && to === prevPath) {
+          rotationAttempts++
+          const err: NodeJS.ErrnoException = new Error('EPERM: simulated lock')
+          err.code = 'EPERM'
+          throw err
+        }
+        return realRenameSync(from, to)
+      },
+    })
+
+    const ok = commitBuildOutput(TMP, DEFAULT_STAGING_DIR)
+    expect(ok).toBe(true)
+
+    // The new build landed despite the persistent rotation failure —
+    // this is the whole point of the fallback.
+    expect(readFileSync(join(TMP, 'dist', 'index.html'), 'utf-8')).toBe('new')
+    expect(existsSync(join(TMP, DEFAULT_STAGING_DIR))).toBe(false)
+    // `dist.prev/` should NOT exist: the fallback skipped rotation
+    // entirely, removing dist directly. Pinning this means a future
+    // change that preserves `dist.prev` even on the fallback path will
+    // need to update this expectation explicitly.
+    expect(existsSync(join(TMP, 'dist.prev'))).toBe(false)
+    // We exhausted retries before falling back, not bailed on first try.
+    expect(rotationAttempts).toBeGreaterThanOrEqual(2)
+  })
+
+  test('returns false (and keeps old dist serving) when even the fallback rmSync cannot break the lock', () => {
+    seedDir('dist', { 'index.html': 'old-locked' })
+    seedDir(DEFAULT_STAGING_DIR, { 'index.html': 'new' })
+
+    const distPath = join(TMP, 'dist')
+    const prevPath = join(TMP, 'dist.prev')
+
+    restoreFs = __setFsImplForTest({
+      renameSync: (from: PathLike, to: PathLike) => {
+        if (from === distPath && to === prevPath) {
+          const err: NodeJS.ErrnoException = new Error('EPERM: rename locked')
+          err.code = 'EPERM'
+          throw err
+        }
+        return realRenameSync(from, to)
+      },
+      rmSync: (target: PathLike, opts?: RmOptions) => {
+        // Only deny the dist removal — the dist.prev cleanup at step 1
+        // (when no prev exists) still needs to succeed (well, no-op)
+        // and the post-swap prev cleanup is moot since we never get
+        // there in this test.
+        if (target === distPath) {
+          const err: NodeJS.ErrnoException = new Error('EPERM: rm locked')
+          err.code = 'EPERM'
+          throw err
+        }
+        return realRmSync(target, opts)
+      },
+    })
+
+    const ok = commitBuildOutput(TMP, DEFAULT_STAGING_DIR)
+
+    expect(ok).toBe(false)
+    // Old build must still be serveable. This is the contract.
+    expect(readFileSync(join(TMP, 'dist', 'index.html'), 'utf-8')).toBe('old-locked')
+    // Fresh build remains in staging for the next attempt.
+    expect(readFileSync(join(TMP, DEFAULT_STAGING_DIR, 'index.html'), 'utf-8')).toBe('new')
+  })
+})
+
+// Workspace-scoped commit mutex. PreviewManager (boot-time
+// expo/vite seed) and CanvasBuildManager (per-edit canvas rebuilds)
+// both call `commitBuildOutputAsync` against the same workspace's
+// `dist/` and `dist.prev/`. Running them concurrently used to lose
+// `dist.prev/` cleanup races — one's rmSync would delete the other's
+// in-flight rename target. The mutex pins them into a queue so the
+// second commit only starts after the first finishes its full
+// rotation sequence.
+describe('commitBuildOutputAsync workspace mutex', () => {
+  beforeEach(() => {
+    freshWorkspace()
+    __resetCommitQueuesForTest()
+  })
+
+  afterEach(() => {
+    __resetCommitQueuesForTest()
+    rmSync(TMP, { recursive: true, force: true })
+  })
+
+  test('serializes concurrent commits against the same workspace', async () => {
+    // Two staging dirs (PreviewManager + CanvasBuildManager pattern),
+    // both committing into the same `dist/`.
+    seedDir('dist', { 'index.html': 'gen-0' })
+    seedDir('dist.staging', { 'index.html': 'gen-1-preview' })
+    seedDir('dist.canvas.staging', { 'index.html': 'gen-2-canvas' })
+
+    // Fire both in parallel. Whichever wins the lock first commits
+    // first; the second sees `dist/` already populated and rotates
+    // it normally. Without the mutex, both interleave inside step 1
+    // (rmSync(dist.prev)) / step 2 (rename(dist, dist.prev)) and one
+    // ends up clobbering the other's promoted output.
+    const [okA, okB] = await Promise.all([
+      commitBuildOutputAsync(TMP, 'dist.staging'),
+      commitBuildOutputAsync(TMP, 'dist.canvas.staging'),
+    ])
+
+    expect(okA).toBe(true)
+    expect(okB).toBe(true)
+
+    // Whichever ran second wins `dist/`. Both staging dirs must be
+    // gone; `dist.prev/` must be cleaned up. Most importantly: `dist/`
+    // contains EXACTLY ONE of the two builds, never a mix or empty.
+    const finalIndex = readFileSync(join(TMP, 'dist', 'index.html'), 'utf-8')
+    expect(['gen-1-preview', 'gen-2-canvas']).toContain(finalIndex)
+    expect(existsSync(join(TMP, 'dist.staging'))).toBe(false)
+    expect(existsSync(join(TMP, 'dist.canvas.staging'))).toBe(false)
+    expect(existsSync(join(TMP, 'dist.prev'))).toBe(false)
+  })
+
+  test('does not block commits in different workspaces (per-workspace queue, not global)', async () => {
+    const wsA = join(TMP, 'workspace-a')
+    const wsB = join(TMP, 'workspace-b')
+    mkdirSync(wsA, { recursive: true })
+    mkdirSync(wsB, { recursive: true })
+    mkdirSync(join(wsA, DEFAULT_STAGING_DIR), { recursive: true })
+    writeFileSync(join(wsA, DEFAULT_STAGING_DIR, 'index.html'), 'a')
+    mkdirSync(join(wsB, DEFAULT_STAGING_DIR), { recursive: true })
+    writeFileSync(join(wsB, DEFAULT_STAGING_DIR, 'index.html'), 'b')
+
+    // No mock — just confirm both complete without one waiting on the
+    // other unnecessarily. (We can't easily assert "ran in parallel"
+    // without a synthetic delay; the regression we're guarding is
+    // "one workspace's queue blocks another", which would manifest
+    // as the second commit's tail Promise depending on the first's.)
+    const [okA, okB] = await Promise.all([
+      commitBuildOutputAsync(wsA, DEFAULT_STAGING_DIR),
+      commitBuildOutputAsync(wsB, DEFAULT_STAGING_DIR),
+    ])
+
+    expect(okA).toBe(true)
+    expect(okB).toBe(true)
+    expect(readFileSync(join(wsA, 'dist', 'index.html'), 'utf-8')).toBe('a')
+    expect(readFileSync(join(wsB, 'dist', 'index.html'), 'utf-8')).toBe('b')
   })
 })
 

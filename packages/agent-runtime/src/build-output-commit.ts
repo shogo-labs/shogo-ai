@@ -25,18 +25,59 @@
  * with `EPERM` / `EBUSY` if any process holds an open handle inside the
  * tree (antivirus real-time scanning, the static handler reading from
  * `dist/` for an in-flight preview request, chokidar's recursive
- * `ReadDirectoryChangesW` on the workspace root, etc.). To stay
- * resilient on Windows we wrap each fs call in a short retry loop with
- * exponential backoff — those locks typically clear within a few
- * hundred milliseconds.
+ * `ReadDirectoryChangesW` on the workspace root, etc.).
+ *
+ * Windows resilience strategy (POSIX paths are unaffected — `rename(2)`
+ * doesn't care about open handles):
+ *
+ *   1. Per-call retries with exponential backoff. Many transient locks
+ *      (AV scan of a single bundle chunk, chokidar's awaitWriteFinish
+ *      stat polling) clear within a second; longer retries cover slower
+ *      disks, large assets being scanned, and heavy AV configurations.
+ *      The Windows budget is intentionally an order of magnitude
+ *      larger than POSIX to handle real workspaces with multi-megabyte
+ *      assets (e.g. GLB / video files in `public/`).
+ *
+ *   2. Workspace-scoped commit mutex. PreviewManager and
+ *      CanvasBuildManager both call `commitBuildOutput` against the
+ *      same `<workspaceDir>/dist/` at boot — without serialization
+ *      they can win/lose `dist.prev/` cleanup against each other and
+ *      one's promoted output gets clobbered by the other's rotation.
+ *      The mutex queues callers per workspace so the rotation
+ *      sequence is observed atomically end-to-end.
+ *
+ *   3. Force-replace fallback. If `rename(dist, dist.prev)` exhausts
+ *      retries we still have a freshly-built `<staging>/` ready to
+ *      ship. Rather than refusing to swap (which leaves the new
+ *      build orphaned and the user staring at the previous build),
+ *      we fall back to `rmSync(dist, {recursive,force})` followed
+ *      by `rename(staging, dist)`. This trades the rollback dir for
+ *      forward progress: if the user needs to revert they always have
+ *      git, but they can't get a successful build to render at all
+ *      without the new dist landing.
  *
  * All helpers swallow errors with a logged warning rather than throwing:
  * a swap failure is recoverable (the stale `dist/` keeps serving) and
  * must never crash the runtime.
  */
 
-import { existsSync, renameSync, rmSync } from 'fs'
+import {
+  existsSync as fsExistsSync,
+  renameSync as fsRenameSync,
+  rmSync as fsRmSync,
+  type RmOptions,
+  type PathLike,
+} from 'fs'
 import { join } from 'path'
+
+// Indirection so tests can swap in failure-injecting fs functions
+// without monkey-patching `node:fs` (which is a readonly ESM
+// namespace under Bun and rejects assignment). Production code path
+// goes straight through to the real fs functions; only
+// `__setFsImplForTest` rewires these refs.
+let renameSync: (from: PathLike, to: PathLike) => void = fsRenameSync
+let rmSync: (path: PathLike, options?: RmOptions) => void = fsRmSync
+let existsSync: (path: PathLike) => boolean = fsExistsSync
 
 const LOG_PREFIX = 'build-output-commit'
 const PREV_DIR_NAME = 'dist.prev'
@@ -51,11 +92,32 @@ const FINAL_DIR_NAME = 'dist'
 // these effectively never fire there.
 const TRANSIENT_FS_ERRORS = new Set(['EPERM', 'EBUSY', 'EACCES', 'ENOTEMPTY'])
 
-// Cumulative backoff in ms: ~25, 50, 100, 200, 400, 400, 400 → ~1.6s
-// total before giving up. AV scans and in-flight `readFileSync` calls
-// against `dist/` typically clear within a few hundred ms; the long tail
-// covers slower disks and heavier AV configs.
-const RETRY_DELAYS_MS = [25, 50, 100, 200, 400, 400, 400] as const
+// POSIX retry schedule. Cumulative ~1.6s. AV scans and in-flight
+// `readFileSync` calls against `dist/` typically clear within a few
+// hundred ms on POSIX (and rename(2) doesn't care about open files
+// anyway), so this short tail is enough to cover the rare cases where
+// `ENOTEMPTY` shows up from a parallel `rmSync` walking the same dir.
+const RETRY_DELAYS_POSIX_MS = [25, 50, 100, 200, 400, 400, 400] as const
+
+// Windows retry schedule. Cumulative ~12s. Sized to outlast Defender
+// real-time scans on multi-megabyte assets dropped into `public/`
+// (e.g. a 172 MB GLB) which routinely hold a handle for several
+// seconds, plus the worst-case awaitWriteFinish window from chokidar.
+// The progression starts as aggressive as POSIX so the common case
+// (sub-second clears) remains fast, then ramps to second-scale waits
+// for the long tail. Past ~12s the lock is almost certainly not
+// transient and the force-replace fallback below will kick in.
+const RETRY_DELAYS_WIN32_MS = [25, 50, 100, 200, 400, 800, 1500, 2000, 3000, 4000] as const
+
+const DEFAULT_RETRY_DELAYS_MS: readonly number[] =
+  process.platform === 'win32' ? RETRY_DELAYS_WIN32_MS : RETRY_DELAYS_POSIX_MS
+
+// Mutable so test helpers can install a tight schedule (e.g. all-zero
+// delays) without having to wait the full Windows ~12s budget every
+// time a regression test exhausts retries. Production code never
+// touches this variable directly — only `withFsRetry` reads it and
+// `__setRetryDelaysForTest` writes it.
+let currentRetryDelaysMs: readonly number[] = DEFAULT_RETRY_DELAYS_MS
 
 // Shared sleep buffer reused across retries. Atomics.wait gives us a
 // clean synchronous sleep without burning a CPU core in a busy loop —
@@ -71,23 +133,66 @@ function sleepSync(ms: number): void {
  * Run a synchronous fs operation with exponential backoff on transient
  * Windows file-locking errors. Non-transient errors (ENOENT, EISDIR,
  * etc.) bubble out on the first attempt — we only retry the codes that
- * empirically clear on their own within a second.
+ * empirically clear on their own within the budgeted window.
  *
  * Exported for testing. Production callers should not import this
  * directly; use `commitBuildOutput` / `cleanupStagingOutput` instead.
  */
 export function withFsRetry<T>(op: () => T): T {
+  const schedule = currentRetryDelaysMs
   let lastErr: any
-  for (let i = 0; i <= RETRY_DELAYS_MS.length; i++) {
+  for (let i = 0; i <= schedule.length; i++) {
     try {
       return op()
     } catch (err: any) {
       lastErr = err
-      if (!TRANSIENT_FS_ERRORS.has(err?.code) || i === RETRY_DELAYS_MS.length) throw err
-      sleepSync(RETRY_DELAYS_MS[i])
+      if (!TRANSIENT_FS_ERRORS.has(err?.code) || i === schedule.length) throw err
+      sleepSync(schedule[i])
     }
   }
   throw lastErr
+}
+
+/**
+ * Workspace-scoped commit mutex. PreviewManager (`expo export` /
+ * `vite build` for the iframe seed) and CanvasBuildManager (the
+ * canvas-driven rebuilds) both call `commitBuildOutput` against the
+ * same `<workspaceDir>/dist/` and `<workspaceDir>/dist.prev/`. Without
+ * serialization they race on:
+ *
+ *   • `rmSync(dist.prev)` — if A finished step 1 and is mid-rename(B's
+ *     step 2 may delete-as-it-arrives the dir A's about to rename
+ *     into.
+ *   • `rename(dist, dist.prev)` — only one can succeed; the loser sees
+ *     dist disappear and may then `rename(staging, dist)` clobbering
+ *     the winner's promoted output.
+ *
+ * The map keys on `workspaceDir` so distinct workspaces (cloud
+ * multi-tenant case) don't share a queue. Each entry is the
+ * tail Promise of the queue; new callers chain onto it and update the
+ * tail. Solves only the *concurrent* case — nothing here helps with
+ * out-of-process locks (AV, browser, chokidar OS-level handle), which
+ * is what the per-call retries + force-replace fallback are for.
+ */
+const commitQueues = new Map<string, Promise<void>>()
+
+async function withWorkspaceLock<T>(workspaceDir: string, op: () => T): Promise<T> {
+  const prev = commitQueues.get(workspaceDir) ?? Promise.resolve()
+  let resolveTail!: () => void
+  const tail = new Promise<void>((r) => { resolveTail = r })
+  commitQueues.set(workspaceDir, tail)
+  try {
+    await prev
+    return op()
+  } finally {
+    resolveTail()
+    // If we're still the tail (no one chained after us), drop the
+    // entry so the map doesn't grow unbounded across many short-lived
+    // workspaces.
+    if (commitQueues.get(workspaceDir) === tail) {
+      commitQueues.delete(workspaceDir)
+    }
+  }
 }
 
 /**
@@ -97,11 +202,31 @@ export function withFsRetry<T>(op: () => T): T {
  * old build in `dist.prev/` for manual recovery rather than silently
  * losing it.
  *
+ * Synchronous return value preserved for callers that aren't async.
  * Returns `true` when the swap completed (new dist is in place),
- * `false` otherwise. Callers don't need the return value for
- * correctness — it's exposed for tests and metrics.
+ * `false` otherwise.
  */
 export function commitBuildOutput(workspaceDir: string, stagingName: string): boolean {
+  return commitBuildOutputImpl(workspaceDir, stagingName)
+}
+
+/**
+ * Async variant that respects the workspace-scoped commit mutex.
+ * Preferred for callers that can `await` (PreviewManager,
+ * CanvasBuildManager). The sync `commitBuildOutput` is retained for
+ * tests and any legacy synchronous callers; mixing the two is safe
+ * because the underlying impl is reentrant per-workspace from a
+ * single-threaded event loop's perspective, but only the async path
+ * benefits from cross-manager serialization.
+ */
+export async function commitBuildOutputAsync(
+  workspaceDir: string,
+  stagingName: string,
+): Promise<boolean> {
+  return withWorkspaceLock(workspaceDir, () => commitBuildOutputImpl(workspaceDir, stagingName))
+}
+
+function commitBuildOutputImpl(workspaceDir: string, stagingName: string): boolean {
   const staging = join(workspaceDir, stagingName)
   const dist = join(workspaceDir, FINAL_DIR_NAME)
   const prev = join(workspaceDir, PREV_DIR_NAME)
@@ -122,30 +247,71 @@ export function commitBuildOutput(workspaceDir: string, stagingName: string): bo
   }
 
   // Move the existing dist out of the way. Skipped on first-ever build.
+  let rotated = false
   if (existsSync(dist)) {
     try {
       withFsRetry(() => renameSync(dist, prev))
+      rotated = true
     } catch (err: any) {
-      console.warn(`[${LOG_PREFIX}] could not move ${dist} to ${prev}: ${err?.message ?? err}`)
-      return false
+      // Final retry exhausted. On Windows this is overwhelmingly an
+      // out-of-process file lock (Defender, browser keep-alive on
+      // dist/index.html, chokidar OS handle) that simply isn't going
+      // to clear inside a build cycle. Fall through to the
+      // force-replace path below rather than abandoning the
+      // freshly-built staging dir.
+      console.warn(
+        `[${LOG_PREFIX}] could not move ${dist} to ${prev} after retries (${err?.code ?? 'UNKNOWN'}: ${err?.message ?? err}) — falling back to in-place replace`,
+      )
     }
   }
 
-  // Promote the staging dir to dist.
-  try {
-    withFsRetry(() => renameSync(staging, dist))
-  } catch (err: any) {
-    console.warn(`[${LOG_PREFIX}] could not move ${staging} to ${dist}: ${err?.message ?? err}`)
-    // Try to roll back so the runtime keeps serving the previous build
-    // rather than nothing at all.
+  if (rotated || !existsSync(dist)) {
+    // Happy path (or first-ever build): staging → dist via rename.
     try {
-      if (existsSync(prev)) withFsRetry(() => renameSync(prev, dist))
-    } catch (rollbackErr: any) {
-      console.error(
-        `[${LOG_PREFIX}] rollback failed; previous build is in ${prev}: ${rollbackErr?.message ?? rollbackErr}`,
-      )
+      withFsRetry(() => renameSync(staging, dist))
+    } catch (err: any) {
+      console.warn(`[${LOG_PREFIX}] could not move ${staging} to ${dist}: ${err?.message ?? err}`)
+      // Try to roll back so the runtime keeps serving the previous build
+      // rather than nothing at all.
+      if (rotated) {
+        try {
+          if (existsSync(prev)) withFsRetry(() => renameSync(prev, dist))
+        } catch (rollbackErr: any) {
+          console.error(
+            `[${LOG_PREFIX}] rollback failed; previous build is in ${prev}: ${rollbackErr?.message ?? rollbackErr}`,
+          )
+        }
+      }
+      return false
     }
-    return false
+  } else {
+    // Fallback: rotation failed but dist still exists (locked).
+    // Force-delete dist in place — `rmSync` on Windows can sometimes
+    // succeed where `renameSync` fails because individual file deletes
+    // only need delete-share permission, while a directory rename
+    // requires no concurrent enumeration of the parent. If even
+    // rmSync can't break through the lock, there's nothing else we
+    // can do without restarting the runtime, so we surface the
+    // failure and leave the existing dist serving.
+    try {
+      withFsRetry(() => rmSync(dist, { recursive: true, force: true }))
+    } catch (err: any) {
+      console.error(
+        `[${LOG_PREFIX}] force-replace failed: could not remove locked ${dist} (${err?.code ?? 'UNKNOWN'}: ${err?.message ?? err}). New build remains in ${staging}; previous build keeps serving.`,
+      )
+      return false
+    }
+    try {
+      withFsRetry(() => renameSync(staging, dist))
+      console.warn(
+        `[${LOG_PREFIX}] force-replaced ${dist} (rollback dir not preserved this cycle).`,
+      )
+    } catch (err: any) {
+      console.error(
+        `[${LOG_PREFIX}] force-replace promote failed: ${err?.message ?? err}. Workspace dist/ is now empty until the next successful build.`,
+      )
+      return false
+    }
   }
 
   // Best-effort cleanup of the previous build. A failure here just
@@ -171,6 +337,75 @@ export function cleanupStagingOutput(workspaceDir: string, stagingName: string):
     withFsRetry(() => rmSync(staging, { recursive: true, force: true }))
   } catch (err: any) {
     console.warn(`[${LOG_PREFIX}] could not remove staging ${staging}: ${err?.message ?? err}`)
+  }
+}
+
+/**
+ * Test-only: drain the workspace commit queue map. Production code
+ * never needs this — the map self-cleans as queues drain. Tests need
+ * it because they construct fresh workspaces in afterEach and don't
+ * want the previous test's tail Promise to anchor a stale queue
+ * entry that delays the next test's await.
+ */
+export function __resetCommitQueuesForTest(): void {
+  commitQueues.clear()
+}
+
+/**
+ * Test-only: swap the retry schedule. Returns a restore function the
+ * caller MUST invoke (typically in `afterEach`) so subsequent tests
+ * see the platform-default schedule again. Used to skip the multi-
+ * second Windows backoff in regression tests that intentionally
+ * exhaust the budget — the *count* of attempts is what matters there,
+ * not the wall time between them.
+ */
+export function __setRetryDelaysForTest(delays: readonly number[]): () => void {
+  const before = currentRetryDelaysMs
+  currentRetryDelaysMs = delays
+  return () => {
+    currentRetryDelaysMs = before
+  }
+}
+
+/**
+ * Test-only: read the active retry schedule's length so tests that
+ * pin "calls === schedule.length + 1" stay correct across the
+ * platform-asymmetric default (POSIX: 7 retries, Windows: 10).
+ */
+export function __getRetryScheduleLengthForTest(): number {
+  return currentRetryDelaysMs.length
+}
+
+/**
+ * Test-only: override the fs primitives this module uses for the
+ * rotation/replace dance. Returns a restore function that the caller
+ * MUST invoke (typically in `afterEach`) to put the real fs back.
+ *
+ * We expose this as an explicit seam — instead of relying on
+ * `mock.module('fs', …)` — because:
+ *   1. Bun's ESM namespace for `node:fs` is readonly, so direct
+ *      property assignment (`fs.renameSync = mockedFn`) throws
+ *      `TypeError: Attempted to assign to readonly property`.
+ *   2. `mock.module` hot-swaps the module for *all* importers in the
+ *      same test process, which can quietly affect other helpers and
+ *      makes test isolation fragile.
+ * A typed setter that flips three internal `let` bindings is the
+ * minimum-surface alternative that lets tests drive the
+ * EPERM/EBUSY paths deterministically.
+ */
+export function __setFsImplForTest(impl: {
+  renameSync?: (from: PathLike, to: PathLike) => void
+  rmSync?: (path: PathLike, options?: RmOptions) => void
+  existsSync?: (path: PathLike) => boolean
+}): () => void {
+  const before = { renameSync, rmSync, existsSync }
+  if (impl.renameSync) renameSync = impl.renameSync
+  if (impl.rmSync) rmSync = impl.rmSync
+  if (impl.existsSync) existsSync = impl.existsSync
+  return () => {
+    renameSync = before.renameSync
+    rmSync = before.rmSync
+    existsSync = before.existsSync
   }
 }
 
