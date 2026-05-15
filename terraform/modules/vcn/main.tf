@@ -60,6 +60,18 @@ variable "enable_oke_nsgs" {
   default     = true
 }
 
+variable "enable_dedicated_api_subnet" {
+  description = "Create a separate small subnet (`var.api_endpoint_cidr`, defaults to a /28 carved from the VCN) for the OKE Kubernetes API endpoint. When true, the api_endpoint subnet OCID is exposed via `api_endpoint_subnet_id`; when false (default), the OKE cluster uses the public subnet for its endpoint. Mostly relevant for adopting clusters that were bootstrapped with a dedicated /28 api-endpoint subnet."
+  type        = bool
+  default     = false
+}
+
+variable "api_endpoint_cidr" {
+  description = "CIDR for the dedicated API endpoint subnet (only used when `enable_dedicated_api_subnet = true`). Defaults to the first /28 in the VCN range, which is the bootstrap default."
+  type        = string
+  default     = null
+}
+
 # OCI subnets can be regional (span all ADs) — no need to enumerate ADs
 # for subnet placement. We create one public and one private regional subnet.
 
@@ -73,6 +85,16 @@ resource "oci_core_vcn" "main" {
   dns_label      = replace(substr(var.name, 0, 15), "-", "")
 
   freeform_tags = var.tags
+
+  # `display_name` and `dns_label` are bootstrap-time decisions in OCI:
+  # `dns_label` is immutable (any change forces full VCN replacement), and
+  # `display_name` was often customized by the original operator. Lock
+  # them out of drift detection so envs adopted from a pre-tf bootstrap
+  # don't try to recreate the entire VCN (and every downstream subnet,
+  # gateway, route table, security list, etc.) just for cosmetic names.
+  lifecycle {
+    ignore_changes = [display_name, dns_label]
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -85,6 +107,10 @@ resource "oci_core_internet_gateway" "main" {
   enabled        = true
 
   freeform_tags = var.tags
+
+  lifecycle {
+    ignore_changes = [display_name]
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -97,6 +123,10 @@ resource "oci_core_nat_gateway" "main" {
   display_name   = "${var.name}-nat"
 
   freeform_tags = var.tags
+
+  lifecycle {
+    ignore_changes = [display_name]
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -121,6 +151,10 @@ resource "oci_core_service_gateway" "main" {
   }
 
   freeform_tags = var.tags
+
+  lifecycle {
+    ignore_changes = [display_name]
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -138,6 +172,10 @@ resource "oci_core_route_table" "public" {
   }
 
   freeform_tags = var.tags
+
+  lifecycle {
+    ignore_changes = [display_name]
+  }
 }
 
 resource "oci_core_route_table" "private" {
@@ -158,6 +196,10 @@ resource "oci_core_route_table" "private" {
   }
 
   freeform_tags = var.tags
+
+  lifecycle {
+    ignore_changes = [display_name]
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -210,6 +252,10 @@ resource "oci_core_security_list" "public" {
   }
 
   freeform_tags = var.tags
+
+  lifecycle {
+    ignore_changes = [display_name]
+  }
 }
 
 resource "oci_core_security_list" "private" {
@@ -245,6 +291,10 @@ resource "oci_core_security_list" "private" {
   }
 
   freeform_tags = var.tags
+
+  lifecycle {
+    ignore_changes = [display_name]
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -267,9 +317,14 @@ resource "oci_core_subnet" "public" {
   # be done because OCI requires every subnet to have at least one.
   security_list_ids = var.enable_security_lists ? [oci_core_security_list.public[0].id] : null
 
-  # See note on `oci_core_subnet.private_workers.lifecycle`.
+  # Bootstrap-time attributes (display_name, dns_label) are immutable in
+  # OCI for subnets. Live envs frequently bootstrap with different names
+  # than the module defaults (e.g. dns_label "lb" vs "pub" in production-us);
+  # any change forces full subnet replacement which cascades to the OKE
+  # cluster + node pools. Lock those out alongside security_list_ids
+  # (see note above) so the module can adopt live subnets cleanly.
   lifecycle {
-    ignore_changes = [security_list_ids]
+    ignore_changes = [security_list_ids, display_name, dns_label]
   }
 
   freeform_tags = var.tags
@@ -294,9 +349,11 @@ resource "oci_core_subnet" "private_workers" {
   # Security-list attachment is a bootstrap-time decision; ignore drift so
   # envs that disabled module-owned SLs aren't forced to swap off the
   # default SL, and envs that enabled them aren't surprised by manual
-  # additions in OCI console.
+  # additions in OCI console. display_name/dns_label are also locked
+  # because they are immutable in OCI — see note on
+  # `oci_core_subnet.public.lifecycle` for the full rationale.
   lifecycle {
-    ignore_changes = [security_list_ids]
+    ignore_changes = [security_list_ids, display_name, dns_label]
   }
 
   freeform_tags = var.tags
@@ -320,7 +377,37 @@ resource "oci_core_subnet" "private_pods" {
 
   # See note on `oci_core_subnet.private_workers.lifecycle`.
   lifecycle {
-    ignore_changes = [security_list_ids]
+    ignore_changes = [security_list_ids, display_name, dns_label]
+  }
+
+  freeform_tags = var.tags
+}
+
+# -----------------------------------------------------------------------------
+# Dedicated API Endpoint Subnet (optional)
+#
+# Some OKE clusters were bootstrapped with a separate /28 subnet for the
+# Kubernetes API endpoint (separate from the LB/public subnet). The OKE
+# cluster's `endpoint_config.subnet_id` references this subnet and is
+# immutable, so a missing-from-config api_endpoint subnet would cause tf
+# to destroy it (and force OKE cluster replacement). Gate behind a flag
+# so greenfield envs don't get a stray subnet.
+# -----------------------------------------------------------------------------
+resource "oci_core_subnet" "api_endpoint" {
+  count = var.enable_dedicated_api_subnet ? 1 : 0
+
+  compartment_id             = var.compartment_id
+  vcn_id                     = oci_core_vcn.main.id
+  cidr_block                 = coalesce(var.api_endpoint_cidr, cidrsubnet(var.cidr, 12, 0))
+  display_name               = "${var.name}-api-endpoint"
+  dns_label                  = "api"
+  prohibit_public_ip_on_vnic = false
+  route_table_id             = oci_core_route_table.public.id
+
+  security_list_ids = var.enable_security_lists ? [oci_core_security_list.public[0].id] : null
+
+  lifecycle {
+    ignore_changes = [security_list_ids, display_name, dns_label]
   }
 
   freeform_tags = var.tags
@@ -447,6 +534,11 @@ output "private_workers_subnet_id" {
 output "private_pods_subnet_id" {
   description = "Private pods subnet OCID (for VCN-native pod networking)"
   value       = oci_core_subnet.private_pods.id
+}
+
+output "api_endpoint_subnet_id" {
+  description = "Dedicated API endpoint subnet OCID, or null when `enable_dedicated_api_subnet = false`. Callers should fall back to `public_subnet_id` for the OKE cluster's endpoint when null."
+  value       = var.enable_dedicated_api_subnet ? oci_core_subnet.api_endpoint[0].id : null
 }
 
 output "oke_api_nsg_id" {

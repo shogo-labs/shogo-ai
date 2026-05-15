@@ -35,9 +35,10 @@ variable "subnet_id" {
 }
 
 variable "nsg_ids" {
-  description = "NSG OCIDs to attach to the mount target"
+  description = "NSG OCIDs to attach to the mount target. Accepts list, or null/empty when no NSGs are in use (mount target relies on subnet security lists)."
   type        = list(string)
   default     = []
+  nullable    = true
 }
 
 variable "tags" {
@@ -70,7 +71,12 @@ resource "oci_file_storage_mount_target" "main" {
   availability_domain = var.availability_domain
   subnet_id           = var.subnet_id
   display_name        = "${var.name}-mount"
-  nsg_ids             = var.nsg_ids
+
+  # `nsg_ids` requires a non-null list; `compact()` strips any null
+  # elements and falls through to an empty list when callers (e.g.
+  # `oci-region` composite when `enable_oke_nsgs = false`) wire a
+  # null in.
+  nsg_ids = var.nsg_ids == null ? [] : compact(var.nsg_ids)
 
   freeform_tags = var.tags
 }

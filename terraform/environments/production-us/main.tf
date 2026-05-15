@@ -153,6 +153,26 @@ module "us" {
   # and `private`) — keep them enabled to match the existing imports.
   vcn_enable_security_lists = true
 
+  # Production-us was bootstrapped with a separate /28 subnet for the
+  # OKE Kubernetes API endpoint (live cidr 10.0.0.0/28). That subnet
+  # is already in state as `oci_core_subnet.api_endpoint[0]`. Without
+  # this flag, the module would not declare the resource and tf would
+  # destroy it (which would also force the OKE cluster to be replaced
+  # because its endpoint_config.subnet_id points at this subnet).
+  vcn_enable_dedicated_api_subnet = true
+  vcn_api_endpoint_cidr           = "10.0.0.0/28"
+
+  # OCIR has 7 repos live (the module's 4-repo default would destroy 3).
+  ocir_repositories = [
+    "agent-runtime",
+    "project-runtime",
+    "shogo-api",
+    "shogo-docs",
+    "shogo-runtime",
+    "shogo-runtime-base",
+    "shogo-web",
+  ]
+
   # Knative + Kourier + CNPG are all installed live in the
   # us-ashburn-1 cluster (kubectl shows knative-serving,
   # kourier-system, cnpg-system namespaces, all 55+ days old). Skip
