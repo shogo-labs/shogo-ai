@@ -13,7 +13,7 @@ terraform {
   required_providers {
     oci = {
       source  = "oracle/oci"
-      version = "~> 6.0"
+      version = "~> 8.0"
     }
     cloudflare = {
       source  = "cloudflare/cloudflare"
@@ -71,14 +71,21 @@ data "oci_objectstorage_namespace" "current" {
 # but we reference it here for the PAR)
 # -----------------------------------------------------------------------------
 
-# Pre-authenticated request for Cloudflare to access the bucket
-# This creates a read-only URL that doesn't require OCI credentials
+# Pre-authenticated request for Cloudflare to access the bucket.
+# This creates a read-only URL that doesn't require OCI credentials.
+#
+# `access_type = "AnyObjectRead"` lets the Worker GET any key it knows;
+# `bucket_listing_action = "Deny"` prevents enumeration of the bucket
+# contents via that same PAR. Together they're equivalent to the old
+# `AnyObjectReadWithoutList` (which was not a real OCI API value and
+# fails provider validation — see commit history).
 resource "oci_objectstorage_preauthrequest" "published_apps" {
-  namespace    = data.oci_objectstorage_namespace.current.namespace
-  bucket       = "shogo-published-apps-${var.environment}"
-  name         = "cloudflare-cdn-access"
-  access_type  = "AnyObjectReadWithoutList"
-  time_expires = timeadd(timestamp(), "8760h") # 1 year
+  namespace             = data.oci_objectstorage_namespace.current.namespace
+  bucket                = "shogo-published-apps-${var.environment}"
+  name                  = "cloudflare-cdn-access"
+  access_type           = "AnyObjectRead"
+  bucket_listing_action = "Deny"
+  time_expires          = timeadd(timestamp(), "8760h") # 1 year
 
   lifecycle {
     ignore_changes = [time_expires]
