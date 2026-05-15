@@ -174,6 +174,11 @@ module "eu" {
   # IAM policy is owned by the staging env's tf state. Don't recreate.
   object_storage_lifecycle_service_policy_compartment_id = null
 
+  # The tenancy-scoped `github-actions-deploy` IAM group + policy is
+  # owned by production-us (created during its reconciliation). Disable
+  # here to avoid a tenancy-level name collision.
+  enable_github_oidc = false
+
   # EU does NOT own a publish-hosting wildcard. Production-us owns
   # `*.shogo.one`; staging owns `*.staging.shogo.one`. EU could later
   # gain `*.eu.shogo.one` as a regional publish target but that's a
