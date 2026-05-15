@@ -8,14 +8,45 @@ Outbound-only: the worker dials Shogo Cloud over HTTPS, never the other way arou
 
 ## Install
 
+**macOS / Linux**
+
 ```bash
-# Requires node >= 20 (or bun >= 1.3)
-npm i -g @shogo-ai/worker
+curl -fsSL https://install.shogo.ai | bash
 ```
 
-> Prefer a single self-contained binary? Grab the prebuilt tarball for your
-> OS / arch from the [latest worker release](https://github.com/shogo-ai/shogo-ai/releases?q=worker-v)
-> — it has no Node / Bun dependency.
+**Windows (PowerShell)**
+
+```powershell
+irm https://install.shogo.ai/ps | iex
+```
+
+The installer drops a single self-contained binary at `~/.shogo/bin/shogo`
+(`%USERPROFILE%\.shogo\bin\shogo.exe` on Windows), verifies its SHA-256 against
+the published sidecar, and adds the bin dir to `PATH`. No Node or Bun on the
+target machine required.
+
+### Installer flags
+
+```bash
+curl -fsSL https://install.shogo.ai | bash -s -- [flags]
+
+  --channel <stable|beta>   release channel (default: stable)
+  --prefix <dir>            install dir (default: $HOME/.shogo/bin)
+  --force                   overwrite existing install
+  --no-binary               force npm install even if a prebuilt binary exists
+```
+
+### Alternate paths
+
+| Method | When to use |
+|--------|-------------|
+| `npm i -g @shogo-ai/worker` | Node ≥ 20 already on the machine; you want lockstep with `package.json` in a project repo. |
+| `gh release download v<X.Y.Z> -p 'shogo-<target>.tar.gz'` from [github.com/shogo-labs/shogo-ai/releases](https://github.com/shogo-labs/shogo-ai/releases) | Air-gapped / proxy-locked environments where `install.shogo.ai` is blocked. |
+| `bash packages/shogo-worker/install.sh` from a repo checkout | Self-mirror; pass `SHOGO_RELEASE_HOST=...` to pull tarballs from your own CDN. |
+
+The single binary, the npm package, and the GitHub Release tarballs all ship
+from the same `v*` tag, so the version you get is identical regardless of
+install method.
 
 ## Quick start
 
@@ -159,6 +190,62 @@ const tunnel = new WorkerTunnel({
 tunnel.start()
 ```
 
+## External triggers
+
+The worker lets external services (Jira, Linear, Zapier, n8n, your own
+HTTP clients) send messages to a Shogo agent **running on this machine**,
+without exposing any inbound port. Combine `shogo worker start` with a
+project pin in Studio (or via the SDK) and the cloud-side
+`/api/projects/:id/agent-proxy/*` becomes a stable public URL routed
+through the worker's outbound tunnel:
+
+```
+External caller ──HTTPS──▶  Shogo Cloud  ──tunnel──▶  shogo worker  ──▶  agent-runtime
+                                                                         (this machine)
+```
+
+### Pin a project to this machine
+
+From Studio: open the project → **Channels → Run on** → pick this machine.
+From a script (uses `@shogo-ai/sdk`):
+
+```ts
+import { createClient } from '@shogo-ai/sdk'
+
+const client = createClient({
+  apiUrl: 'https://api.shogo.ai',
+  shogoApiKey: process.env.SHOGO_API_KEY!,
+})
+
+const machines = await client.machines.list({ workspaceId })
+const me = machines.find((m) => m.kind === 'cli_worker' && m.name === 'my-devbox')!
+
+await client.machines.pinProject(projectId, {
+  instanceId: me.id,
+  policy: 'pinned',   // 503 instance_offline if this machine goes down
+                      // (use 'prefer' to fall back to a cloud pod instead)
+})
+```
+
+### Trigger the agent
+
+```bash
+curl -X POST \
+  "https://api.shogo.ai/api/projects/$PROJECT_ID/agent-proxy/agent/channels/webhook/incoming" \
+  -H "Authorization: Bearer $SHOGO_API_KEY" \
+  -H "X-Webhook-Secret: $CHANNEL_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Triage Jira ticket ABC-123"}'
+```
+
+The cloud verifies the bearer key, looks up the project pin, and relays
+the request through this worker's existing outbound WebSocket into the
+agent-runtime that the worker spawned on demand. Tool calls (shell, file
+I/O, MCP servers) execute on **this machine**.
+
+See [Webhook channel reference](https://docs.shogo.ai/docs/features/external-triggers/webhook-channel)
+for the request/response shape, secret handling, and async callback mode.
+
 ## Troubleshooting
 
 ```bash
@@ -176,4 +263,4 @@ shogo runtime install   # (re)download the latest stable binary
 - [Cloud Agent: My Machines guide](../../docs/cloud-agent-my-machines.md) — full
   walk-through, security model, deploy patterns
 - [Networking & firewall guide](../../docs/my-machines-networking.md)
-- Source: [github.com/shogo-ai/shogo-ai](https://github.com/shogo-ai/shogo-ai)
+- Source: [github.com/shogo-labs/shogo-ai](https://github.com/shogo-labs/shogo-ai)
