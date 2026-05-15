@@ -103,6 +103,11 @@ module "us" {
   compartment_id = var.compartment_id
   tenancy_id     = var.tenancy_id
 
+  # Network access controls — sourced from GH env vars
+  # (TF_VAR_oke_api_allowed_cidrs, TF_VAR_nfs_allowed_cidr).
+  oke_api_allowed_cidrs = var.oke_api_allowed_cidrs
+  nfs_allowed_cidr      = var.nfs_allowed_cidr
+
   # ARM64 custom OKE image (A4 Flex) — AD-1 to match existing PVs
   image_id           = "ocid1.image.oc1.iad.aaaaaaaaxlqapo7gpvnvfndkhfnixrnvlumdgaexjvakamdmhiegulsypa5a"
   placement_ad_names = ["XYpk:US-ASHBURN-AD-1"]
@@ -126,6 +131,46 @@ module "us" {
   # Cloudflare (for publish-hosting)
   cloudflare_zone_id    = var.cloudflare_zone_id
   cloudflare_account_id = var.cloudflare_account_id
+
+  # =============================================================
+  # Live-state overrides (production-us reconciliation, 2026-05)
+  # =============================================================
+
+  # Live node pool was bootstrapped as `shogo-prod-us-arm-4ocpu`
+  # at max_pods_per_node = 93 (not the module's default 110), and
+  # without NSGs attached (live cluster endpoint shows `nsg-ids: []`).
+  # See the staging reconciliation for the equivalent pattern.
+  oke_main_node_pool_name_override = "shogo-prod-us-arm-4ocpu"
+  oke_main_node_pool_max_pods      = 93
+
+  # Cluster + node pool live without NSGs; keep tf from trying to
+  # attach the module-default NSGs (which would replace nothing in
+  # practice since OKE security comes from subnet security lists,
+  # but the empty-to-default switch would still cause plan churn).
+  vcn_enable_oke_nsgs = false
+
+  # VCN has module-owned security lists already in state (`public`
+  # and `private`) — keep them enabled to match the existing imports.
+  vcn_enable_security_lists = true
+
+  # Knative + Kourier + CNPG are all installed live in the
+  # us-ashburn-1 cluster (kubectl shows knative-serving,
+  # kourier-system, cnpg-system namespaces, all 55+ days old). Skip
+  # the installer null_resources so plans stay quiet.
+  knative_manage_install = false
+  cnpg_manage_install    = false
+
+  # The tenancy-scoped `objectstorage-<region> manage object-family`
+  # IAM policy is owned by the staging env's tf state. Don't
+  # recreate it here.
+  object_storage_lifecycle_service_policy_compartment_id = null
+
+  # Production-us owns the bare `*.shogo.one` wildcard (staging
+  # migrates to `*.staging.shogo.one` as part of the same change).
+  # Enable publish-hosting explicitly; the data source resolves the
+  # publish zone by name so no explicit zone_id is needed.
+  enable_publish_hosting = true
+  publish_zone           = null # defaults to publish_domain="shogo.one"
 }
 
 # =============================================================================

@@ -218,7 +218,7 @@ variable "s3_primary_region" {
 # -----------------------------------------------------------------------------
 
 variable "cloudflare_zone_id" {
-  description = "Cloudflare zone ID"
+  description = "Cloudflare zone ID. DEPRECATED in this composite — the publish-hosting submodule now looks up the zone by name. Kept here for backwards compatibility with existing env wiring. Reading this var is what gates `enable_publish_hosting`'s default (empty string => disabled)."
   type        = string
   default     = ""
 }
@@ -229,6 +229,18 @@ variable "cloudflare_account_id" {
   default     = ""
 }
 
+variable "publish_zone" {
+  description = "Cloudflare zone name that hosts `publish_domain`. Forwarded to `publish-hosting-oci` so subdomain publish_domains (e.g. `staging.shogo.one`) can still resolve their zone lookup against the parent (e.g. `shogo.one`). Defaults to null which makes the submodule fall back to `publish_domain`."
+  type        = string
+  default     = null
+}
+
+variable "enable_publish_hosting" {
+  description = "Enable the publish-hosting submodule (Cloudflare Worker + Route + wildcard DNS + bucket PAR). Defaults to `null` which preserves the legacy `cloudflare_zone_id != \"\"` gate. Set explicitly to `false` to disable on environments where publish-hosting is owned elsewhere (e.g. EU/India, which use US for publish_apps)."
+  type        = bool
+  default     = null
+}
+
 # -----------------------------------------------------------------------------
 # Autoscaler IAM
 # -----------------------------------------------------------------------------
@@ -237,6 +249,104 @@ variable "create_autoscaler_iam" {
   description = "Create the OCI dynamic group and IAM policy for the cluster autoscaler. Enable in only one region per tenancy (typically the primary)."
   type        = bool
   default     = false
+}
+
+# -----------------------------------------------------------------------------
+# Network module options (VCN)
+# -----------------------------------------------------------------------------
+
+variable "vcn_enable_security_lists" {
+  description = "Create module-owned security lists and attach them to subnets. Default true (greenfield production). Set false for environments where the VCN was bootstrapped against OCI's default security list and a network-rule rewrite would be disruptive."
+  type        = bool
+  default     = true
+}
+
+variable "vcn_enable_oke_nsgs" {
+  description = "Create the OKE API + worker NSGs (and their rules). Default true. Set false for environments where the cluster was bootstrapped without NSGs."
+  type        = bool
+  default     = true
+}
+
+# -----------------------------------------------------------------------------
+# OKE module options
+# -----------------------------------------------------------------------------
+
+variable "oke_main_node_pool_name_override" {
+  description = "Override the main (system) node pool name. Defaults to null which uses the module's standard <cluster_name>-system naming. Set when adopting a live pool that was named differently (e.g. shogo-prod-us-arm-4ocpu in production-us)."
+  type        = string
+  default     = null
+}
+
+variable "oke_main_node_pool_max_pods" {
+  description = "Override `max_pods_per_node` on the main node pool. Defaults to 110 (OCI default for VCN-native CNI). Live production pools were bootstrapped at 93."
+  type        = number
+  default     = 110
+}
+
+# -----------------------------------------------------------------------------
+# Operator install gating (Knative / CNPG)
+# -----------------------------------------------------------------------------
+
+variable "knative_manage_install" {
+  description = "Run the Knative + Kourier install/patch null_resources. Set false for environments where Knative was bootstrapped out-of-band so tf doesn't re-run kubectl on every apply. Idempotent either way."
+  type        = bool
+  default     = true
+}
+
+variable "cnpg_manage_install" {
+  description = "Run the CNPG operator install null_resource. Set false for environments where the operator was bootstrapped out-of-band."
+  type        = bool
+  default     = true
+}
+
+# -----------------------------------------------------------------------------
+# Object Storage compartment + lifecycle overrides
+# -----------------------------------------------------------------------------
+
+variable "object_storage_workspaces_compartment_id" {
+  description = "Override compartment for the workspaces bucket. Defaults to `var.compartment_id`."
+  type        = string
+  default     = null
+}
+
+variable "object_storage_pg_backups_compartment_id" {
+  description = "Override compartment for the pg-backups bucket. Defaults to `var.compartment_id`."
+  type        = string
+  default     = null
+}
+
+variable "object_storage_schemas_compartment_id" {
+  description = "Override compartment for the schemas bucket. Defaults to `var.compartment_id`."
+  type        = string
+  default     = null
+}
+
+variable "object_storage_published_apps_compartment_id" {
+  description = "Override compartment for the published-apps bucket. Defaults to `var.compartment_id`."
+  type        = string
+  default     = null
+}
+
+variable "object_storage_lifecycle_service_policy_compartment_id" {
+  description = "Compartment for the tenancy-scoped `Allow service objectstorage-<region> to manage object-family ...` IAM policy that lifecycle rules require. Set to `var.tenancy_id` on one env per tenancy; null on the rest. The staging env already owns this policy at tenancy scope so production envs default to null."
+  type        = string
+  default     = null
+}
+
+variable "object_storage_lifecycle_service_policy_scope" {
+  description = "Compartment scope for the lifecycle service-principal IAM policy. `\"tenancy\"` or a compartment name."
+  type        = string
+  default     = "tenancy"
+}
+
+# -----------------------------------------------------------------------------
+# GitHub OIDC gating
+# -----------------------------------------------------------------------------
+
+variable "enable_github_oidc" {
+  description = "Create the OCI identity group + policy that lets GH Actions assume role via OIDC. Default true matches the historical behavior."
+  type        = bool
+  default     = true
 }
 
 # -----------------------------------------------------------------------------

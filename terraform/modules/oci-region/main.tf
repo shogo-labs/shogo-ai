@@ -84,6 +84,9 @@ module "vcn" {
   single_nat_gateway    = true
   oke_api_allowed_cidrs = var.oke_api_allowed_cidrs
   tags                  = local.region_tags
+
+  enable_security_lists = var.vcn_enable_security_lists
+  enable_oke_nsgs       = var.vcn_enable_oke_nsgs
 }
 
 # =============================================================================
@@ -119,6 +122,9 @@ module "oke" {
   workload_pool_min         = var.workload_pool_min
   workload_pool_max         = var.workload_pool_max
 
+  main_node_pool_name_override = var.oke_main_node_pool_name_override
+  main_node_pool_max_pods      = var.oke_main_node_pool_max_pods
+
   tags = local.region_tags
 }
 
@@ -146,6 +152,14 @@ module "object_storage" {
   environment    = var.environment
   region         = var.region
   tags           = local.region_tags
+
+  workspaces_compartment_id     = var.object_storage_workspaces_compartment_id
+  pg_backups_compartment_id     = var.object_storage_pg_backups_compartment_id
+  schemas_compartment_id        = var.object_storage_schemas_compartment_id
+  published_apps_compartment_id = var.object_storage_published_apps_compartment_id
+
+  lifecycle_service_policy_compartment_id = var.object_storage_lifecycle_service_policy_compartment_id
+  lifecycle_service_policy_scope          = var.object_storage_lifecycle_service_policy_scope
 }
 
 # =============================================================================
@@ -173,6 +187,8 @@ module "cnpg" {
   count  = local.is_full ? 1 : 0
   source = "../cnpg"
 
+  manage_install = var.cnpg_manage_install
+
   tags = local.region_tags
 }
 
@@ -183,6 +199,7 @@ module "cnpg" {
 module "knative" {
   source = "../knative-oci"
 
+  manage_install     = var.knative_manage_install
   domain             = var.domain
   publish_domain     = var.publish_domain
   enable_pvc_support = true
@@ -193,16 +210,29 @@ module "knative" {
 # =============================================================================
 
 module "publish_hosting" {
-  count  = local.is_full && var.cloudflare_zone_id != "" ? 1 : 0
+  # Gating:
+  #   - Always disabled for Tier 2 regions (no Object Storage to back it).
+  #   - When `enable_publish_hosting` is set explicitly, it wins.
+  #   - Otherwise default to the legacy gate (`cloudflare_zone_id != ""`)
+  #     for backwards compat with envs that haven't been updated yet.
+  count = local.is_full && coalesce(var.enable_publish_hosting, var.cloudflare_zone_id != "") ? 1 : 0
+
   source = "../publish-hosting-oci"
 
   compartment_id        = var.compartment_id
   environment           = var.environment
   publish_domain        = var.publish_domain
+  publish_zone          = var.publish_zone
   cloudflare_zone_id    = var.cloudflare_zone_id
   cloudflare_account_id = var.cloudflare_account_id
   oci_region            = var.region
   tags                  = local.region_tags
+
+  # OCI Object Storage's PAR API has eventual consistency against bucket
+  # creation. Without this depends_on, terraform parallelizes the
+  # published_apps bucket creation and the PAR creation, and the PAR
+  # gets a 404 before propagation completes.
+  depends_on = [module.object_storage]
 }
 
 # =============================================================================
@@ -224,6 +254,7 @@ module "signoz" {
 # =============================================================================
 
 module "github_oidc" {
+  count  = var.enable_github_oidc ? 1 : 0
   source = "../oci-github-oidc"
 
   compartment_id = var.compartment_id

@@ -133,6 +133,6 @@ output "database_endpoint" {
 # -----------------------------------------------------------------------------
 
 output "github_actions_group" {
-  description = "IAM group for GitHub Actions"
-  value       = module.github_oidc.group_name
+  description = "IAM group for GitHub Actions (null when `enable_github_oidc = false`)"
+  value       = var.enable_github_oidc ? module.github_oidc[0].group_name : null
 }
