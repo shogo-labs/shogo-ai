@@ -120,6 +120,16 @@ module "vcn" {
   single_nat_gateway    = true
   oke_api_allowed_cidrs = var.oke_api_allowed_cidrs
   tags                  = local.tags
+
+  # Staging was bootstrapped without module-owned security lists or NSGs.
+  # The live VCN uses OCI's default security list for all three subnets and
+  # the OKE cluster + node pool have no NSGs attached. Flipping these to
+  # `true` for staging would re-attach security lists (replacing the
+  # defaults, which changes the effective network policy) and create NSGs
+  # the cluster doesn't reference. Keep them off here; production envs
+  # leave the defaults (`true`) and get the full network surface.
+  enable_security_lists = false
+  enable_oke_nsgs       = false
 }
 
 # =============================================================================
@@ -148,12 +158,16 @@ module "oke" {
   node_pool_min  = 1
   node_pool_max  = 6
 
-  enable_workload_pool      = true
-  workload_node_ocpus       = 4
-  workload_node_memory_gb   = 24
-  workload_pool_size        = 1
-  workload_pool_min         = 1
-  workload_pool_max         = 10
+  # Staging was provisioned before the system-vs-workloads pool split landed.
+  # The live pool is named `shogo-staging-arm` (not `-system`) and runs at
+  # max_pods_per_node = 93 (not the OCI default 110). These overrides keep
+  # tf-managed state in sync with the live pool so day-to-day plans don't
+  # show cosmetic drift; the workloads pool is left disabled because every
+  # workload currently runs on the main pool. Reconciling staging to the
+  # production split is a separate migration.
+  main_node_pool_name_override = "${local.cluster_name}-arm"
+  main_node_pool_max_pods      = 93
+  enable_workload_pool         = false
 
   tags = local.tags
 }
@@ -212,7 +226,7 @@ module "file_storage" {
   compartment_id      = var.compartment_id
   availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
   subnet_id           = module.vcn.private_workers_subnet_id
-  nsg_ids             = [module.vcn.oke_workers_nsg_id]
+  nsg_ids             = compact([module.vcn.oke_workers_nsg_id])
   nfs_allowed_cidr    = var.nfs_allowed_cidr
   tags                = local.tags
 }

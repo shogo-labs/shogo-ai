@@ -48,6 +48,18 @@ variable "oke_api_allowed_cidrs" {
   type        = list(string)
 }
 
+variable "enable_security_lists" {
+  description = "Create module-owned security lists and attach them to the subnets. When false, subnets keep whatever security lists they were created with (typically the VCN's default), and rules-enforcement is expected to come from NSGs or downstream policy. Defaults to true; set false for environments that were bootstrapped against the default security list and don't want a network-rule rewrite during state reconciliation."
+  type        = bool
+  default     = true
+}
+
+variable "enable_oke_nsgs" {
+  description = "Create the OKE API + worker network security groups (and their rules), and emit their OCIDs via `oke_api_nsg_id` / `oke_workers_nsg_id` outputs. When false, those outputs are null and the OKE module attaches no NSGs to the cluster endpoint or node pools. Defaults to true; set false for environments that were bootstrapped without NSGs and where rules-enforcement is intentionally handled by security lists or external firewalls."
+  type        = bool
+  default     = true
+}
+
 # OCI subnets can be regional (span all ADs) — no need to enumerate ADs
 # for subnet placement. We create one public and one private regional subnet.
 
@@ -152,6 +164,8 @@ resource "oci_core_route_table" "private" {
 # Security Lists
 # -----------------------------------------------------------------------------
 resource "oci_core_security_list" "public" {
+  count = var.enable_security_lists ? 1 : 0
+
   compartment_id = var.compartment_id
   vcn_id         = oci_core_vcn.main.id
   display_name   = "${var.name}-public-sl"
@@ -199,6 +213,8 @@ resource "oci_core_security_list" "public" {
 }
 
 resource "oci_core_security_list" "private" {
+  count = var.enable_security_lists ? 1 : 0
+
   compartment_id = var.compartment_id
   vcn_id         = oci_core_vcn.main.id
   display_name   = "${var.name}-private-sl"
@@ -243,7 +259,18 @@ resource "oci_core_subnet" "public" {
   dns_label                  = "pub"
   prohibit_public_ip_on_vnic = false
   route_table_id             = oci_core_route_table.public.id
-  security_list_ids          = [oci_core_security_list.public.id]
+
+  # When module-owned security lists are disabled (`enable_security_lists =
+  # false`), leave `security_list_ids` unmanaged so OCI keeps whatever was
+  # attached at provisioning time (typically the VCN's default security
+  # list). Specifying `null` here would clear all attachments, which can't
+  # be done because OCI requires every subnet to have at least one.
+  security_list_ids = var.enable_security_lists ? [oci_core_security_list.public[0].id] : null
+
+  # See note on `oci_core_subnet.private_workers.lifecycle`.
+  lifecycle {
+    ignore_changes = [security_list_ids]
+  }
 
   freeform_tags = var.tags
 }
@@ -260,7 +287,17 @@ resource "oci_core_subnet" "private_workers" {
   dns_label                  = "workers"
   prohibit_public_ip_on_vnic = true
   route_table_id             = oci_core_route_table.private.id
-  security_list_ids          = [oci_core_security_list.private.id]
+
+  # See note on `oci_core_subnet.public.security_list_ids`.
+  security_list_ids = var.enable_security_lists ? [oci_core_security_list.private[0].id] : null
+
+  # Security-list attachment is a bootstrap-time decision; ignore drift so
+  # envs that disabled module-owned SLs aren't forced to swap off the
+  # default SL, and envs that enabled them aren't surprised by manual
+  # additions in OCI console.
+  lifecycle {
+    ignore_changes = [security_list_ids]
+  }
 
   freeform_tags = var.tags
 }
@@ -277,15 +314,28 @@ resource "oci_core_subnet" "private_pods" {
   dns_label                  = "pods"
   prohibit_public_ip_on_vnic = true
   route_table_id             = oci_core_route_table.private.id
-  security_list_ids          = [oci_core_security_list.private.id]
+
+  # See note on `oci_core_subnet.public.security_list_ids`.
+  security_list_ids = var.enable_security_lists ? [oci_core_security_list.private[0].id] : null
+
+  # See note on `oci_core_subnet.private_workers.lifecycle`.
+  lifecycle {
+    ignore_changes = [security_list_ids]
+  }
 
   freeform_tags = var.tags
 }
 
 # -----------------------------------------------------------------------------
 # Network Security Group — OKE API Endpoint
+#
+# NSGs are gated by `enable_oke_nsgs` because the live staging cluster was
+# bootstrapped without them (OKE security comes from default security lists
+# in that case). Production / greenfield envs should leave this `true`.
 # -----------------------------------------------------------------------------
 resource "oci_core_network_security_group" "oke_api" {
+  count = var.enable_oke_nsgs ? 1 : 0
+
   compartment_id = var.compartment_id
   vcn_id         = oci_core_vcn.main.id
   display_name   = "${var.name}-oke-api-nsg"
@@ -294,9 +344,9 @@ resource "oci_core_network_security_group" "oke_api" {
 }
 
 resource "oci_core_network_security_group_security_rule" "oke_api_ingress" {
-  for_each = toset(var.oke_api_allowed_cidrs)
+  for_each = var.enable_oke_nsgs ? toset(var.oke_api_allowed_cidrs) : toset([])
 
-  network_security_group_id = oci_core_network_security_group.oke_api.id
+  network_security_group_id = oci_core_network_security_group.oke_api[0].id
   direction                 = "INGRESS"
   protocol                  = "6" # TCP
   source                    = each.value
@@ -312,7 +362,9 @@ resource "oci_core_network_security_group_security_rule" "oke_api_ingress" {
 }
 
 resource "oci_core_network_security_group_security_rule" "oke_api_egress" {
-  network_security_group_id = oci_core_network_security_group.oke_api.id
+  count = var.enable_oke_nsgs ? 1 : 0
+
+  network_security_group_id = oci_core_network_security_group.oke_api[0].id
   direction                 = "EGRESS"
   protocol                  = "all"
   destination               = "0.0.0.0/0"
@@ -324,6 +376,8 @@ resource "oci_core_network_security_group_security_rule" "oke_api_egress" {
 # Network Security Group — OKE Workers
 # -----------------------------------------------------------------------------
 resource "oci_core_network_security_group" "oke_workers" {
+  count = var.enable_oke_nsgs ? 1 : 0
+
   compartment_id = var.compartment_id
   vcn_id         = oci_core_vcn.main.id
   display_name   = "${var.name}-oke-workers-nsg"
@@ -332,7 +386,9 @@ resource "oci_core_network_security_group" "oke_workers" {
 }
 
 resource "oci_core_network_security_group_security_rule" "workers_ingress_from_vcn" {
-  network_security_group_id = oci_core_network_security_group.oke_workers.id
+  count = var.enable_oke_nsgs ? 1 : 0
+
+  network_security_group_id = oci_core_network_security_group.oke_workers[0].id
   direction                 = "INGRESS"
   protocol                  = "all"
   source                    = var.cidr
@@ -341,7 +397,9 @@ resource "oci_core_network_security_group_security_rule" "workers_ingress_from_v
 }
 
 resource "oci_core_network_security_group_security_rule" "workers_egress" {
-  network_security_group_id = oci_core_network_security_group.oke_workers.id
+  count = var.enable_oke_nsgs ? 1 : 0
+
+  network_security_group_id = oci_core_network_security_group.oke_workers[0].id
   direction                 = "EGRESS"
   protocol                  = "all"
   destination               = "0.0.0.0/0"
@@ -351,7 +409,9 @@ resource "oci_core_network_security_group_security_rule" "workers_egress" {
 
 # Allow load balancer health checks to reach workers (NodePort range)
 resource "oci_core_network_security_group_security_rule" "workers_ingress_lb" {
-  network_security_group_id = oci_core_network_security_group.oke_workers.id
+  count = var.enable_oke_nsgs ? 1 : 0
+
+  network_security_group_id = oci_core_network_security_group.oke_workers[0].id
   direction                 = "INGRESS"
   protocol                  = "6"
   source                    = cidrsubnet(var.cidr, 4, 0) # public subnet CIDR
@@ -390,13 +450,13 @@ output "private_pods_subnet_id" {
 }
 
 output "oke_api_nsg_id" {
-  description = "NSG OCID for OKE API endpoint"
-  value       = oci_core_network_security_group.oke_api.id
+  description = "NSG OCID for OKE API endpoint (null when `enable_oke_nsgs = false`)"
+  value       = var.enable_oke_nsgs ? oci_core_network_security_group.oke_api[0].id : null
 }
 
 output "oke_workers_nsg_id" {
-  description = "NSG OCID for OKE worker nodes"
-  value       = oci_core_network_security_group.oke_workers.id
+  description = "NSG OCID for OKE worker nodes (null when `enable_oke_nsgs = false`)"
+  value       = var.enable_oke_nsgs ? oci_core_network_security_group.oke_workers[0].id : null
 }
 
 output "nat_gateway_id" {
