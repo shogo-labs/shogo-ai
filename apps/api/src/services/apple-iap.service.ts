@@ -20,12 +20,12 @@ const DEFAULT_BUNDLE_ID = 'ai.shogo.app';
 const MAX_RECEIPT_LENGTH = 200_000; // ~200KB — Apple receipts are usually <10KB
 
 const PRODUCT_MAP: Record<string, { planId: 'basic' | 'pro' | 'business'; interval: 'monthly' | 'annual' }> = {
-  'ai.shogo.basic.monthly':    { planId: 'basic',    interval: 'monthly' },
-  'ai.shogo.basic.annual':     { planId: 'basic',    interval: 'annual' },
-  'ai.shogo.pro.monthly':      { planId: 'pro',      interval: 'monthly' },
-  'ai.shogo.pro.annual':       { planId: 'pro',      interval: 'annual' },
-  'ai.shogo.business.monthly': { planId: 'business', interval: 'monthly' },
-  'ai.shogo.business.annual':  { planId: 'business', interval: 'annual' },
+  'ai.shogo.app.basic.monthly':    { planId: 'basic',    interval: 'monthly' },
+  'ai.shogo.app.basic.annual':     { planId: 'basic',    interval: 'annual' },
+  'ai.shogo.app.pro.monthly':      { planId: 'pro',      interval: 'monthly' },
+  'ai.shogo.app.pro.annual':       { planId: 'pro',      interval: 'annual' },
+  'ai.shogo.app.business.monthly': { planId: 'business', interval: 'monthly' },
+  'ai.shogo.app.business.annual':  { planId: 'business', interval: 'annual' },
 };
 
 export function resolveProduct(productId: string) {
