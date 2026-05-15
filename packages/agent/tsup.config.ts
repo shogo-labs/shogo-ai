@@ -33,8 +33,22 @@ export default defineConfig({
   // Copy bundled hook metadata (HOOK.md) into dist so loadAllHooks works
   // when the package is consumed from `dist/`. Source-mode consumers
   // (tsconfig paths, `development` export condition) read them from `src/`.
-  onSuccess:
-    'mkdir -p dist/hooks/bundled/command-logger dist/hooks/bundled/session-memory && ' +
-    'cp src/hooks/bundled/command-logger/HOOK.md dist/hooks/bundled/command-logger/HOOK.md && ' +
-    'cp src/hooks/bundled/session-memory/HOOK.md dist/hooks/bundled/session-memory/HOOK.md',
+  //
+  // Implemented via Node's fs.* (instead of `mkdir -p` / `cp`) so the build
+  // works on Windows PowerShell — the Unix shim was failing with "A
+  // subdirectory or file ... already exists" on incremental rebuilds, which
+  // bubbled up as a `bun run build:packages` failure.
+  onSuccess: async () => {
+    const { mkdirSync, copyFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const pairs: Array<[string, string]> = [
+      ['command-logger', 'HOOK.md'],
+      ['session-memory', 'HOOK.md'],
+    ]
+    for (const [hook, file] of pairs) {
+      const dstDir = join('dist', 'hooks', 'bundled', hook)
+      mkdirSync(dstDir, { recursive: true })
+      copyFileSync(join('src', 'hooks', 'bundled', hook, file), join(dstDir, file))
+    }
+  },
 })
