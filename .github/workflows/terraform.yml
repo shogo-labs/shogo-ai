@@ -177,6 +177,9 @@ jobs:
           printf '%s' "${{ secrets.OCI_PRIVATE_KEY }}" > "$HOME/.oci/oci_api_key.pem"
           chmod 600 "$HOME/.oci/oci_api_key.pem"
 
+      - name: Install OCI CLI
+        run: pip install oci-cli --quiet
+
       # Provision a kubeconfig for the env's OKE cluster so provisioners
       # like null_resource.kourier_toleration_strip (which shells out to
       # kubectl) can talk to the cluster.
