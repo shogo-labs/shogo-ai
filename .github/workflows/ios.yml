@@ -328,6 +328,11 @@ jobs:
       - name: Build workspace packages
         run: bun run build
 
+      - name: App Store compliance pre-flight
+        # Blocks the build if Sign in with Apple wiring, bundle id, or IAP
+        # product IDs regress. Prevents repeating Apple rejection d7d85854.
+        run: bash scripts/check-ios-store-compliance.sh
+
       - name: Sync app version and bump buildNumber
         working-directory: apps/mobile
         env:

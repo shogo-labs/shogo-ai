@@ -7,7 +7,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { View, Text, ScrollView, Pressable, ActivityIndicator } from 'react-native'
+import { View, Text, ScrollView, Pressable, ActivityIndicator, useWindowDimensions } from 'react-native'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
@@ -62,6 +62,9 @@ export default observer(function ProfilePage() {
   const store = useDomain() as IDomainStore
   const workspaces = useWorkspaceCollection()
   const members = useMemberCollection()
+  const { width } = useWindowDimensions()
+  const profileMaxWidth = width >= 1280 ? 880 : width >= 768 ? 760 : width
+  const profilePadH = width >= 768 ? 24 : 16
 
   const currentUser = user
 
@@ -120,7 +123,14 @@ export default observer(function ProfilePage() {
   return (
     <ScrollView
       className="flex-1 bg-background"
-      contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+      contentContainerStyle={{
+        paddingTop: 16,
+        paddingBottom: 40,
+        paddingHorizontal: profilePadH,
+        maxWidth: profileMaxWidth,
+        width: '100%',
+        alignSelf: 'center',
+      }}
       showsVerticalScrollIndicator={false}
     >
       {/* Header */}
