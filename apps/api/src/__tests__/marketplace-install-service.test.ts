@@ -1,0 +1,618 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * Tests for `src/services/marketplace-install.service.ts`.
+ *
+ * Covers every public function:
+ *   - getWorkspacesDir (env override + default)
+ *   - copyWorkspaceFiles (source missing branch, filter rules)
+ *   - installAgent (access denied / not-found / not-published / happy path /
+ *     fs-failure rollback)
+ *   - checkForUpdates (missing install / non-linked / has update + changelog
+ *     fetch / up-to-date)
+ *   - applyUpdate (missing install / non-linked / target=current / missing
+ *     version row / snapshot apply / snapshot throws)
+ *   - getInstallsForUser
+ *   - getInstallsForListing (pagination clamping)
+ *
+ * `node:fs` and the Prisma client are stubbed. `workspace.service.ts`
+ * (only `hasWorkspaceAccess` is used) is also stubbed so the test owns
+ * the access-control answer.
+ */
+
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { withPrismaExports } from './helpers/prisma-mock-exports'
+
+// ─── fs mock ──────────────────────────────────────────────────────────
+
+type FsCall = { kind: string; args: any[] }
+const fsCalls: FsCall[] = []
+let sourceExists = true
+let cpFilter: ((src: string) => boolean) | null = null
+let cpThrow: Error | null = null
+let writeFileThrow: Error | null = null
+
+const fsMock = {
+  cpSync: (src: string, dest: string, opts: any) => {
+    fsCalls.push({ kind: 'cpSync', args: [src, dest, opts] })
+    cpFilter = opts?.filter ?? null
+    if (cpThrow) throw cpThrow
+  },
+  existsSync: (p: string) => {
+    fsCalls.push({ kind: 'existsSync', args: [p] })
+    return sourceExists
+  },
+  mkdirSync: (p: string, opts: any) => {
+    fsCalls.push({ kind: 'mkdirSync', args: [p, opts] })
+  },
+  writeFileSync: (p: string, data: any) => {
+    fsCalls.push({ kind: 'writeFileSync', args: [p, data] })
+    if (writeFileThrow) throw writeFileThrow
+  },
+}
+mock.module('node:fs', () => fsMock)
+mock.module('fs', () => fsMock)
+
+// ─── Prisma mock ──────────────────────────────────────────────────────
+
+let listings: Map<string, any>
+let installs: any[]
+let versions: any[]
+let projects: Map<string, any>
+let agentConfigs: any[]
+let projectDeleteThrow: Error | null = null
+
+function resetStores() {
+  listings = new Map()
+  installs = []
+  versions = []
+  projects = new Map()
+  agentConfigs = []
+  fsCalls.length = 0
+  cpFilter = null
+  cpThrow = null
+  writeFileThrow = null
+  sourceExists = true
+  projectDeleteThrow = null
+}
+resetStores()
+
+const listingTable = {
+  findUnique: async (args: any) => {
+    const l = listings.get(args.where.id)
+    if (!l) return null
+    if (args.include?.project) {
+      const proj = projects.get(l.projectId) ?? null
+      const includedProj = proj
+        ? { ...proj, agentConfig: agentConfigs.find((c) => c.projectId === proj.id) ?? null }
+        : null
+      return { ...l, project: includedProj }
+    }
+    return l
+  },
+  update: async (args: any) => {
+    const existing = listings.get(args.where.id)
+    if (!existing) throw new Error('listing not found')
+    if (args.data.installCount?.increment) {
+      existing.installCount = (existing.installCount ?? 0) + args.data.installCount.increment
+    }
+    return existing
+  },
+}
+
+const projectTable = {
+  create: async (args: any) => {
+    const id = `proj_${projects.size + 1}`
+    const row = { id, ...args.data }
+    projects.set(id, row)
+    return row
+  },
+  delete: async (args: any) => {
+    if (projectDeleteThrow) throw projectDeleteThrow
+    projects.delete(args.where.id)
+    return { id: args.where.id }
+  },
+}
+
+const agentConfigTable = {
+  create: async (args: any) => {
+    const row = { id: `ac_${agentConfigs.length + 1}`, ...args.data }
+    agentConfigs.push(row)
+    return row
+  },
+}
+
+const installTable = {
+  create: async (args: any) => {
+    const row = { id: `inst_${installs.length + 1}`, ...args.data, createdAt: new Date() }
+    installs.push(row)
+    return row
+  },
+  findUnique: async (args: any) => {
+    const inst = installs.find((i) => i.id === args.where.id)
+    if (!inst) return null
+    if (args.include?.listing) {
+      return { ...inst, listing: listings.get(inst.listingId) ?? null }
+    }
+    return inst
+  },
+  findMany: async (args: any) => {
+    let out = installs.filter((i) => {
+      if (args.where?.userId && i.userId !== args.where.userId) return false
+      if (args.where?.listingId && i.listingId !== args.where.listingId) return false
+      return true
+    })
+    if (args.skip) out = out.slice(args.skip)
+    if (args.take) out = out.slice(0, args.take)
+    return out
+  },
+  count: async (args: any) => {
+    return installs.filter((i) =>
+      args.where?.listingId ? i.listingId === args.where.listingId : true,
+    ).length
+  },
+  update: async (args: any) => {
+    const inst = installs.find((i) => i.id === args.where.id)
+    if (!inst) throw new Error('not found')
+    Object.assign(inst, args.data)
+    return inst
+  },
+}
+
+const versionTable = {
+  findFirst: async (args: any) => {
+    return (
+      versions.find(
+        (v) => v.listingId === args.where.listingId && v.version === args.where.version,
+      ) ?? null
+    )
+  },
+}
+
+const prismaStub: any = {
+  marketplaceListing: listingTable,
+  marketplaceInstall: installTable,
+  marketplaceListingVersion: versionTable,
+  project: projectTable,
+  agentConfig: agentConfigTable,
+  $transaction: async (fn: any) =>
+    fn({
+      marketplaceListing: listingTable,
+      marketplaceInstall: installTable,
+      marketplaceListingVersion: versionTable,
+      project: projectTable,
+      agentConfig: agentConfigTable,
+    }),
+}
+
+mock.module('../lib/prisma', () => withPrismaExports({ prisma: prismaStub }))
+
+// ─── workspace.service mock (only hasWorkspaceAccess) ─────────────────
+
+let workspaceAccessAnswer = true
+mock.module('../services/workspace.service', () => ({
+  hasWorkspaceAccess: async (_ws: string, _u: string) => workspaceAccessAnswer,
+}))
+
+const svc = await import('../services/marketplace-install.service')
+
+beforeEach(() => {
+  resetStores()
+  workspaceAccessAnswer = true
+})
+
+afterEach(() => {
+  delete process.env.WORKSPACES_DIR
+})
+
+// ──────────────────────────────────────────────────────────────────────
+// getWorkspacesDir
+// ──────────────────────────────────────────────────────────────────────
+
+describe('getWorkspacesDir', () => {
+  test('returns env override when WORKSPACES_DIR is set', () => {
+    process.env.WORKSPACES_DIR = '/custom/path'
+    expect(svc.getWorkspacesDir()).toBe('/custom/path')
+  })
+
+  test('returns project-root default when env not set', () => {
+    delete process.env.WORKSPACES_DIR
+    const out = svc.getWorkspacesDir()
+    expect(out).toMatch(/workspaces$/)
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────
+// copyWorkspaceFiles
+// ──────────────────────────────────────────────────────────────────────
+
+describe('copyWorkspaceFiles', () => {
+  test('mkdir always, but skips cp when source does not exist', () => {
+    sourceExists = false
+    svc.copyWorkspaceFiles('src1', 'dest1')
+    expect(fsCalls.find((c) => c.kind === 'mkdirSync')).toBeTruthy()
+    expect(fsCalls.find((c) => c.kind === 'cpSync')).toBeFalsy()
+  })
+
+  test('cp is called when source exists, filter rejects excluded dirs', () => {
+    svc.copyWorkspaceFiles('src1', 'dest1')
+    const cp = fsCalls.find((c) => c.kind === 'cpSync')!
+    expect(cp).toBeTruthy()
+    expect(cpFilter).toBeTruthy()
+    const srcDir = cp.args[0] as string
+    // Filter behavior
+    expect(cpFilter!(srcDir)).toBe(true) // root passes
+    expect(cpFilter!(`${srcDir}/node_modules`)).toBe(false)
+    expect(cpFilter!(`${srcDir}/dist`)).toBe(false)
+    expect(cpFilter!(`${srcDir}/.git`)).toBe(false)
+    expect(cpFilter!(`${srcDir}/.install-foo`)).toBe(false)
+    expect(cpFilter!(`${srcDir}/src/components/Button.tsx`)).toBe(true)
+    expect(cpFilter!(`${srcDir}/src/node_modules/leaked.js`)).toBe(false)
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────
+// installAgent
+// ──────────────────────────────────────────────────────────────────────
+
+function seedListing(overrides: any = {}) {
+  const projId = 'src_proj'
+  projects.set(projId, {
+    id: projId,
+    tier: 'pro',
+    status: 'active',
+    schemas: [],
+    accessLevel: 'public',
+    category: 'biz',
+    siteTitle: 'st',
+    siteDescription: 'sd',
+    templateId: null,
+    settings: { activeMode: 'agent' },
+  })
+  agentConfigs.push({
+    projectId: projId,
+    heartbeatInterval: 999,
+    heartbeatEnabled: true,
+    modelProvider: 'anthropic',
+    modelName: 'claude-haiku-4-5',
+    channels: [],
+    quietHoursStart: null,
+    quietHoursEnd: null,
+    quietHoursTimezone: null,
+  })
+  listings.set('lst_1', {
+    id: 'lst_1',
+    title: 'Cool Agent',
+    shortDescription: 'short',
+    projectId: projId,
+    installModel: 'fork',
+    currentVersion: '1.0.0',
+    status: 'published',
+    installCount: 0,
+    ...overrides,
+  })
+}
+
+describe('installAgent', () => {
+  test('throws workspace_access_denied when hasWorkspaceAccess=false', async () => {
+    workspaceAccessAnswer = false
+    await expect(
+      svc.installAgent({ listingId: 'lst_1', userId: 'u', workspaceId: 'ws' }),
+    ).rejects.toThrow('workspace_access_denied')
+  })
+
+  test('throws listing_not_found when listing missing', async () => {
+    await expect(
+      svc.installAgent({ listingId: 'missing', userId: 'u', workspaceId: 'ws' }),
+    ).rejects.toThrow('listing_not_found')
+  })
+
+  test('throws listing_not_published when status != published', async () => {
+    seedListing({ status: 'draft' })
+    await expect(
+      svc.installAgent({ listingId: 'lst_1', userId: 'u', workspaceId: 'ws' }),
+    ).rejects.toThrow('listing_not_published')
+  })
+
+  test('happy path: creates project + agent-config, copies files, bumps installCount', async () => {
+    seedListing()
+    const out = await svc.installAgent({ listingId: 'lst_1', userId: 'u', workspaceId: 'ws' })
+    expect(out.projectId).toMatch(/^proj_/)
+    expect(out.installId).toMatch(/^inst_/)
+    const proj = projects.get(out.projectId)
+    expect(proj.name).toBe('Cool Agent')
+    expect(proj.workspaceId).toBe('ws')
+    expect(proj.createdBy).toBe('u')
+    // agent config inherited
+    const ac = agentConfigs.find((c) => c.projectId === out.projectId)
+    expect(ac?.heartbeatInterval).toBe(999)
+    expect(ac?.heartbeatEnabled).toBe(true)
+    // install row + listing.installCount incremented
+    expect(installs).toHaveLength(1)
+    expect(listings.get('lst_1').installCount).toBe(1)
+    // file copy was attempted
+    expect(fsCalls.find((c) => c.kind === 'cpSync')).toBeTruthy()
+  })
+
+  test('rolls back project when copyWorkspaceFiles throws', async () => {
+    seedListing()
+    cpThrow = new Error('disk full')
+    await expect(
+      svc.installAgent({ listingId: 'lst_1', userId: 'u', workspaceId: 'ws' }),
+    ).rejects.toThrow('disk full')
+    expect(projects.size).toBe(1) // only the source project; created was deleted
+    expect(installs).toHaveLength(0)
+  })
+
+  test('handles null agentConfig + missing src.schemas with defaults', async () => {
+    seedListing()
+    // strip agent config + schemas off source project
+    agentConfigs.length = 0
+    const sp = projects.get('src_proj')!
+    sp.schemas = undefined
+    const out = await svc.installAgent({ listingId: 'lst_1', userId: 'u', workspaceId: 'ws' })
+    const proj = projects.get(out.projectId)
+    expect(proj.schemas).toEqual([])
+    const ac = agentConfigs.find((c) => c.projectId === out.projectId)
+    expect(ac?.heartbeatInterval).toBe(1800) // default
+    expect(ac?.modelProvider).toBe('anthropic') // default
+  })
+
+  test('normalizes string settings as JSON', async () => {
+    seedListing()
+    const sp = projects.get('src_proj')!
+    sp.settings = '{"foo":"bar"}'
+    const out = await svc.installAgent({ listingId: 'lst_1', userId: 'u', workspaceId: 'ws' })
+    expect((projects.get(out.projectId) as any).settings).toEqual({ foo: 'bar' })
+  })
+
+  test('falls back to defaults when settings string is invalid JSON', async () => {
+    seedListing()
+    const sp = projects.get('src_proj')!
+    sp.settings = 'not-json'
+    const out = await svc.installAgent({ listingId: 'lst_1', userId: 'u', workspaceId: 'ws' })
+    expect((projects.get(out.projectId) as any).settings).toMatchObject({
+      activeMode: 'none',
+      canvasMode: 'code',
+      canvasEnabled: false,
+    })
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────
+// checkForUpdates
+// ──────────────────────────────────────────────────────────────────────
+
+describe('checkForUpdates', () => {
+  test('throws install_not_found when install missing', async () => {
+    await expect(svc.checkForUpdates('nope')).rejects.toThrow('install_not_found')
+  })
+
+  test('non-linked install: never reports updates', async () => {
+    listings.set('lst_1', { id: 'lst_1', currentVersion: '2.0.0' })
+    installs.push({
+      id: 'inst_1',
+      listingId: 'lst_1',
+      installModel: 'fork',
+      installedVersion: '1.0.0',
+    })
+    const out = await svc.checkForUpdates('inst_1')
+    expect(out.hasUpdate).toBe(false)
+    expect(out.installedVersion).toBe('1.0.0')
+    expect(out.currentVersion).toBe('2.0.0')
+  })
+
+  test('linked install with newer version: returns hasUpdate + changelog', async () => {
+    listings.set('lst_1', { id: 'lst_1', currentVersion: '2.0.0' })
+    installs.push({
+      id: 'inst_1',
+      listingId: 'lst_1',
+      installModel: 'linked',
+      installedVersion: '1.0.0',
+    })
+    versions.push({ listingId: 'lst_1', version: '2.0.0', changelog: 'new things' })
+    const out = await svc.checkForUpdates('inst_1')
+    expect(out.hasUpdate).toBe(true)
+    expect(out.changelog).toBe('new things')
+  })
+
+  test('linked install already at current version: no update', async () => {
+    listings.set('lst_1', { id: 'lst_1', currentVersion: '2.0.0' })
+    installs.push({
+      id: 'inst_1',
+      listingId: 'lst_1',
+      installModel: 'linked',
+      installedVersion: '2.0.0',
+    })
+    const out = await svc.checkForUpdates('inst_1')
+    expect(out.hasUpdate).toBe(false)
+    expect(out.changelog).toBeUndefined()
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────
+// applyUpdate
+// ──────────────────────────────────────────────────────────────────────
+
+describe('applyUpdate', () => {
+  test('install_not_found', async () => {
+    expect(await svc.applyUpdate('nope')).toEqual({ ok: false, error: 'install_not_found' })
+  })
+
+  test('not_linked_install', async () => {
+    listings.set('lst_1', { id: 'lst_1', currentVersion: '1.0.0' })
+    installs.push({
+      id: 'inst_1',
+      listingId: 'lst_1',
+      installModel: 'fork',
+      installedVersion: '1.0.0',
+    })
+    expect(await svc.applyUpdate('inst_1')).toEqual({ ok: false, error: 'not_linked_install' })
+  })
+
+  test('already up to date: returns ok=true with no fs work', async () => {
+    listings.set('lst_1', { id: 'lst_1', currentVersion: '2.0.0' })
+    installs.push({
+      id: 'inst_1',
+      listingId: 'lst_1',
+      installModel: 'linked',
+      installedVersion: '2.0.0',
+    })
+    expect(await svc.applyUpdate('inst_1')).toEqual({ ok: true })
+    expect(fsCalls.find((c) => c.kind === 'writeFileSync')).toBeFalsy()
+  })
+
+  test('version_not_found when target version missing', async () => {
+    listings.set('lst_1', { id: 'lst_1', currentVersion: '2.0.0' })
+    installs.push({
+      id: 'inst_1',
+      listingId: 'lst_1',
+      installModel: 'linked',
+      installedVersion: '1.0.0',
+      projectId: 'proj_x',
+    })
+    expect(await svc.applyUpdate('inst_1')).toEqual({ ok: false, error: 'version_not_found' })
+  })
+
+  test('applies snapshot with utf8 string entries, advances installedVersion', async () => {
+    listings.set('lst_1', { id: 'lst_1', currentVersion: '2.0.0' })
+    installs.push({
+      id: 'inst_1',
+      listingId: 'lst_1',
+      installModel: 'linked',
+      installedVersion: '1.0.0',
+      projectId: 'proj_x',
+    })
+    versions.push({
+      listingId: 'lst_1',
+      version: '2.0.0',
+      workspaceSnapshot: {
+        files: {
+          'src/index.ts': 'console.log("hi")',
+          'binary.bin': { data: Buffer.from('hello').toString('base64'), encoding: 'base64' },
+          '../etc/passwd': 'no',
+          '/abs/path': 'no',
+          '': 'no',
+        },
+      },
+    })
+    const out = await svc.applyUpdate('inst_1')
+    expect(out).toEqual({ ok: true })
+    expect(installs[0].installedVersion).toBe('2.0.0')
+    const writes = fsCalls.filter((c) => c.kind === 'writeFileSync')
+    expect(writes).toHaveLength(2)
+    expect(writes.some((w) => (w.args[0] as string).endsWith('src/index.ts'))).toBe(true)
+    expect(writes.some((w) => (w.args[0] as string).endsWith('binary.bin'))).toBe(true)
+  })
+
+  test('snapshot apply throwing converts to ok=false:apply_failed', async () => {
+    listings.set('lst_1', { id: 'lst_1', currentVersion: '2.0.0' })
+    installs.push({
+      id: 'inst_1',
+      listingId: 'lst_1',
+      installModel: 'linked',
+      installedVersion: '1.0.0',
+      projectId: 'proj_x',
+    })
+    versions.push({
+      listingId: 'lst_1',
+      version: '2.0.0',
+      workspaceSnapshot: { files: { 'ok.txt': 'data' } },
+    })
+    writeFileThrow = new Error('fs fail')
+    const out = await svc.applyUpdate('inst_1')
+    expect(out).toEqual({ ok: false, error: 'apply_failed' })
+  })
+
+  test('null snapshot is a no-op success path', async () => {
+    listings.set('lst_1', { id: 'lst_1', currentVersion: '2.0.0' })
+    installs.push({
+      id: 'inst_1',
+      listingId: 'lst_1',
+      installModel: 'linked',
+      installedVersion: '1.0.0',
+      projectId: 'proj_x',
+    })
+    versions.push({ listingId: 'lst_1', version: '2.0.0', workspaceSnapshot: null })
+    const out = await svc.applyUpdate('inst_1')
+    expect(out).toEqual({ ok: true })
+    expect(installs[0].installedVersion).toBe('2.0.0')
+  })
+
+  test('flat snapshot (no .files wrapper) is treated as the file map', async () => {
+    listings.set('lst_1', { id: 'lst_1', currentVersion: '2.0.0' })
+    installs.push({
+      id: 'inst_1',
+      listingId: 'lst_1',
+      installModel: 'linked',
+      installedVersion: '1.0.0',
+      projectId: 'proj_x',
+    })
+    versions.push({
+      listingId: 'lst_1',
+      version: '2.0.0',
+      workspaceSnapshot: { 'a.txt': 'hello' },
+    })
+    const out = await svc.applyUpdate('inst_1')
+    expect(out).toEqual({ ok: true })
+    expect(fsCalls.find((c) => c.kind === 'writeFileSync')).toBeTruthy()
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────
+// getInstallsForUser
+// ──────────────────────────────────────────────────────────────────────
+
+describe('getInstallsForUser', () => {
+  test('returns only this user’s installs', async () => {
+    installs.push(
+      { id: 'i1', userId: 'u1', listingId: 'lst_1' },
+      { id: 'i2', userId: 'u1', listingId: 'lst_2' },
+      { id: 'i3', userId: 'u2', listingId: 'lst_1' },
+    )
+    const out = await svc.getInstallsForUser('u1')
+    expect(out.map((i: any) => i.id).sort()).toEqual(['i1', 'i2'])
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────
+// getInstallsForListing
+// ──────────────────────────────────────────────────────────────────────
+
+describe('getInstallsForListing', () => {
+  beforeEach(() => {
+    for (let i = 1; i <= 25; i++) {
+      installs.push({ id: `i${i}`, listingId: 'lst_x', userId: `u${i}` })
+    }
+  })
+
+  test('returns page 1 with default limit', async () => {
+    const out = await svc.getInstallsForListing('lst_x', 1, 10)
+    expect(out.total).toBe(25)
+    expect(out.installs).toHaveLength(10)
+    expect(out.page).toBe(1)
+    expect(out.limit).toBe(10)
+  })
+
+  test('clamps page below 1 up to 1', async () => {
+    const out = await svc.getInstallsForListing('lst_x', 0, 10)
+    expect(out.page).toBe(1)
+  })
+
+  test('clamps limit above 100 down to 100', async () => {
+    const out = await svc.getInstallsForListing('lst_x', 1, 500)
+    expect(out.limit).toBe(100)
+  })
+
+  test('clamps limit below 1 up to 1', async () => {
+    const out = await svc.getInstallsForListing('lst_x', 1, 0)
+    expect(out.limit).toBe(1)
+    expect(out.installs).toHaveLength(1)
+  })
+
+  test('returns empty page when skip exceeds total', async () => {
+    const out = await svc.getInstallsForListing('lst_x', 99, 10)
+    expect(out.installs).toHaveLength(0)
+    expect(out.total).toBe(25)
+  })
+})
