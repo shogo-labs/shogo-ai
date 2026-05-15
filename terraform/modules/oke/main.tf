@@ -51,13 +51,15 @@ variable "private_pods_subnet_id" {
 }
 
 variable "api_nsg_id" {
-  description = "NSG OCID for the K8s API endpoint"
+  description = "NSG OCID for the K8s API endpoint. Pass `null` to attach no NSG (relies on subnet security lists instead)."
   type        = string
+  default     = null
 }
 
 variable "workers_nsg_id" {
-  description = "NSG OCID for worker nodes"
+  description = "NSG OCID for worker nodes. Pass `null` to attach no NSG to the node pool / pod subnets (relies on subnet security lists instead)."
   type        = string
+  default     = null
 }
 
 variable "node_shape" {
@@ -113,6 +115,26 @@ variable "enable_workload_pool" {
   description = "Enable a separate node pool for user workloads (project runtimes)"
   type        = bool
   default     = false
+}
+
+# --- main node pool overrides for environments that pre-date the
+# system-vs-workloads pool split ---------------------------------------------
+#
+# These vars exist so an environment that was originally provisioned as a
+# single-pool cluster can keep its pool's name + density settings under
+# terraform management without forcing an in-place "rename" or a node
+# replacement just for state hygiene. Production envs use the defaults.
+
+variable "main_node_pool_name_override" {
+  description = "Override the main node pool's name. Defaults to \"<cluster_name>-system\". Set to e.g. \"<cluster_name>-arm\" when adopting tf-management of a pre-existing pool that has a different name in OCI."
+  type        = string
+  default     = null
+}
+
+variable "main_node_pool_max_pods" {
+  description = "Maximum pods per node on the main pool. OCI ships 110 for fresh pools; older pools may have been created with a lower bound (e.g. 93 on staging). Setting this to match the live value avoids an in-place change that would only take effect on node replacement."
+  type        = number
+  default     = 110
 }
 
 variable "workload_node_shape" {
@@ -211,7 +233,7 @@ resource "oci_containerengine_cluster" "main" {
   endpoint_config {
     is_public_ip_enabled = true
     subnet_id            = var.public_subnet_id
-    nsg_ids              = [var.api_nsg_id]
+    nsg_ids              = compact([var.api_nsg_id])
   }
 
   options {
@@ -240,7 +262,7 @@ resource "oci_containerengine_node_pool" "main" {
   compartment_id     = var.compartment_id
   cluster_id         = oci_containerengine_cluster.main.id
   kubernetes_version = var.kubernetes_version
-  name               = "${var.cluster_name}-system"
+  name               = coalesce(var.main_node_pool_name_override, "${var.cluster_name}-system")
 
   node_shape = var.node_shape
   node_shape_config {
@@ -259,13 +281,13 @@ resource "oci_containerengine_node_pool" "main" {
       }
     }
 
-    nsg_ids = [var.workers_nsg_id]
+    nsg_ids = compact([var.workers_nsg_id])
 
     node_pool_pod_network_option_details {
       cni_type          = "OCI_VCN_IP_NATIVE"
-      max_pods_per_node = 110
+      max_pods_per_node = var.main_node_pool_max_pods
       pod_subnet_ids    = [var.private_pods_subnet_id]
-      pod_nsg_ids       = [var.workers_nsg_id]
+      pod_nsg_ids       = compact([var.workers_nsg_id])
     }
 
     freeform_tags = merge(var.tags, {
@@ -312,6 +334,20 @@ resource "oci_containerengine_node_pool" "main" {
   # NODE_POOL_OCID GH Actions var BEFORE the next deploy.
   lifecycle {
     prevent_destroy = true
+
+    # `node_metadata` (the cloud-init user_data) only takes effect on new
+    # nodes, so a drift between tf and the live setting is invisible until
+    # the pool scales out. Pre-existing pools that were provisioned with a
+    # custom user_data script will look "drifted" against this module's
+    # auto-init script even though existing nodes are healthy; setting
+    # `main_node_pool_ignore_node_metadata = true` opts out of that diff
+    # so day-to-day applies don't fight the live setting.
+    #
+    # Terraform doesn't allow dynamic ignore_changes per-instance, so this
+    # is implemented as an unconditional ignore (matches every env). Pools
+    # that genuinely want the module's user_data emitted still get it on
+    # initial create — only subsequent drift is suppressed.
+    ignore_changes = [node_metadata]
   }
 }
 
@@ -344,13 +380,13 @@ resource "oci_containerengine_node_pool" "workloads" {
       }
     }
 
-    nsg_ids = [var.workers_nsg_id]
+    nsg_ids = compact([var.workers_nsg_id])
 
     node_pool_pod_network_option_details {
       cni_type          = "OCI_VCN_IP_NATIVE"
       max_pods_per_node = 110
       pod_subnet_ids    = [var.private_pods_subnet_id]
-      pod_nsg_ids       = [var.workers_nsg_id]
+      pod_nsg_ids       = compact([var.workers_nsg_id])
     }
 
     freeform_tags = merge(var.tags, {
