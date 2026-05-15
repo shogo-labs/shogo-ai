@@ -124,16 +124,79 @@ module "eu" {
   signoz_endpoint      = var.signoz_endpoint
   signoz_ingestion_key = var.signoz_ingestion_key
 
-  # Cloudflare (for publish-hosting)
+  # Cloudflare (for publish-hosting — kept for signature parity even though
+  # EU does not own a publish wildcard; production-us owns `*.shogo.one`).
   cloudflare_zone_id    = var.cloudflare_zone_id
   cloudflare_account_id = var.cloudflare_account_id
+
+  # =============================================================
+  # Live-state overrides (production-eu reconciliation, 2026-05)
+  # =============================================================
+
+  # Live node pool was bootstrapped as `shogo-prod-eu-arm-4ocpu` at
+  # max_pods_per_node = 93 (not the module's default 110). Same pattern
+  # as production-us. Without these, tf would force-update the pool name
+  # and try to bump max pods, which OCI may refuse on existing pools.
+  oke_main_node_pool_name_override = "shogo-prod-eu-arm-4ocpu"
+  oke_main_node_pool_max_pods      = 93
+
+  # Live cluster endpoint shows `nsg-ids: []`. State has NSG resources
+  # but they're not attached. Disabling matches live and avoids churn.
+  vcn_enable_oke_nsgs = false
+
+  # VCN security lists already in state — keep enabled.
+  vcn_enable_security_lists = true
+
+  # EU was bootstrapped with a dedicated /28 subnet for the OKE API
+  # endpoint (live cidr 10.1.0.0/28). Already in state as
+  # `oci_core_subnet.api_endpoint[0]` — disabling would destroy it and
+  # force a cluster replacement.
+  vcn_enable_dedicated_api_subnet = true
+  vcn_api_endpoint_cidr           = "10.1.0.0/28"
+
+  # OCIR has 5 repos live (module's 4-repo default would destroy
+  # `shogo-runtime-base`).
+  ocir_repositories = [
+    "shogo-api",
+    "shogo-docs",
+    "shogo-runtime",
+    "shogo-runtime-base",
+    "shogo-web",
+  ]
+
+  # Knative + Kourier + CNPG are all installed live in eu-frankfurt-1
+  # (kubectl shows knative-serving, kourier-system, cnpg-system
+  # namespaces, all 55+ days old). Skip the installer null_resources.
+  knative_manage_install = false
+  cnpg_manage_install    = false
+
+  # The tenancy-scoped `objectstorage-<region> manage object-family`
+  # IAM policy is owned by the staging env's tf state. Don't recreate.
+  object_storage_lifecycle_service_policy_compartment_id = null
+
+  # EU does NOT own a publish-hosting wildcard. Production-us owns
+  # `*.shogo.one`; staging owns `*.staging.shogo.one`. EU could later
+  # gain `*.eu.shogo.one` as a regional publish target but that's a
+  # follow-up.
+  enable_publish_hosting = false
 }
 
 # =============================================================================
 # Cross-Region Peering (accept US peering)
+#
+# DEFERRED until production-us flips `enable_drg_peering_to_eu = true` and
+# emits a non-null `rpc_eu_id` output. Until then the DRG/RPC pair would
+# create a regional DRG with no peer to accept, which is wasted state.
 # =============================================================================
 
+variable "enable_drg_peering_from_us" {
+  description = "Create the DRG + VCN attachment that accepts the US-side RPC. Defaults to false until production-us has been flipped to publish its RPC."
+  type        = bool
+  default     = false
+}
+
 module "drg_from_us" {
+  count  = var.enable_drg_peering_from_us ? 1 : 0
   source = "../../modules/drg-peering"
 
   name           = "shogo-production-eu"
