@@ -116,7 +116,7 @@ interface ActiveController {
 const activeControllers = new Map<string, Map<string, ActiveController>>()
 const CONTROLLER_TTL_MS = 60_000
 
-async function markControllerActive(instanceId: string, userId: string, sessionId?: string) {
+export async function markControllerActive(instanceId: string, userId: string, sessionId?: string) {
   if (!activeControllers.has(instanceId)) {
     activeControllers.set(instanceId, new Map())
   }
@@ -159,7 +159,7 @@ interface TunnelConnection {
   streamHandlers: Map<string, (chunk: TunnelStreamChunk) => void>
 }
 
-interface TunnelRequest {
+export interface TunnelRequest {
   type: 'request'
   requestId: string
   method: string
@@ -170,7 +170,7 @@ interface TunnelRequest {
   projectId?: string
 }
 
-interface TunnelResponse {
+export interface TunnelResponse {
   type: 'response'
   requestId: string
   status: number
@@ -178,7 +178,7 @@ interface TunnelResponse {
   body?: string
 }
 
-interface TunnelStreamChunk {
+export interface TunnelStreamChunk {
   type: 'stream-chunk' | 'stream-end' | 'stream-error'
   requestId: string
   data?: string
@@ -194,7 +194,7 @@ type TunnelMessage = TunnelResponse | TunnelStreamChunk | TunnelHeartbeat | { ty
 
 const tunnels = new Map<string, TunnelConnection>()
 
-function generateRequestId(): string {
+export function generateRequestId(): string {
   return `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
 }
 
@@ -484,7 +484,7 @@ function sendLocalTunnelRequest(instanceId: string, req: TunnelRequest): Promise
   })
 }
 
-async function sendTunnelRequest(instanceId: string, req: TunnelRequest): Promise<TunnelResponse> {
+export async function sendTunnelRequest(instanceId: string, req: TunnelRequest): Promise<TunnelResponse> {
   const conn = tunnels.get(instanceId)
   if (conn) return sendLocalTunnelRequest(instanceId, req)
 
@@ -569,7 +569,7 @@ function sendLocalTunnelStreamRequest(
   }
 }
 
-function sendTunnelStreamRequest(
+export function sendTunnelStreamRequest(
   instanceId: string,
   req: TunnelRequest,
   onChunk: (chunk: TunnelStreamChunk) => void,

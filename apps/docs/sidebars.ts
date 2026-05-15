@@ -64,6 +64,14 @@ const sidebars: SidebarsConfig = {
             "features/my-machines/troubleshooting",
           ],
         },
+        {
+          type: "category",
+          label: "External Triggers",
+          items: [
+            "features/external-triggers/quickstart",
+            "features/external-triggers/webhook-channel",
+          ],
+        },
       ],
     },
     {

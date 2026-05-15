@@ -171,6 +171,10 @@ model Project {
   runtimeEnabled Boolean @default(true)
   trustLevel     String  @default("trusted")
 
+  // External-trigger routing. See prisma/schema.prisma for the canonical comment.
+  preferredInstanceId     String?
+  preferredInstancePolicy String  @default("pinned")
+
   workspace              Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   folder                 Folder?                 @relation(fields: [folderId], references: [id], onDelete: SetNull)
   members                Member[]
@@ -191,9 +195,11 @@ model Project {
   subagentModelOverrides SubagentModelOverride[]
   agentEvalSets          AgentEvalSet[]
   projectFolders         ProjectFolder[]
+  preferredInstance      Instance?               @relation("ProjectPreferredInstance", fields: [preferredInstanceId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId])
   @@index([folderId])
+  @@index([preferredInstanceId])
   @@map("projects")
 }
 
@@ -1100,6 +1106,7 @@ model Instance {
   workspace         Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   remoteActions     RemoteAction[]
   pushSubscriptions PushSubscription[]
+  preferredByProjects Project[]        @relation("ProjectPreferredInstance")
 
   @@unique([workspaceId, hostname])
   @@index([workspaceId])

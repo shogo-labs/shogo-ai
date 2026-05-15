@@ -15,16 +15,24 @@ function makeResolver(impl: (projectId: string, opts: any) => any) {
   return mock(async (projectId: string, opts: any) => impl(projectId, opts))
 }
 
+/** Default: no instance pin (mirrors a fresh Project row). */
+const noPin = async () => ({
+  workspaceId: 'ws-1',
+  preferredInstanceId: null,
+  preferredInstancePolicy: 'pinned',
+})
+
 describe('resolveAgentProxyPodUrl', () => {
-  describe('success', () => {
-    it('returns ok with url from resolver', async () => {
+  describe('cloud-pod success', () => {
+    it('returns ok with kind=pod + url from resolver when no pin', async () => {
       const resolver = makeResolver(() => ({ url: 'http://10.0.0.1:8080', mode: 'k8s' }))
       const res = await resolveAgentProxyPodUrl('proj-1', {
         resolver: resolver as any,
         isVMIsolation: () => false,
         isKubernetes: () => true,
+        loadProject: noPin,
       })
-      expect(res).toEqual({ ok: true, url: 'http://10.0.0.1:8080' })
+      expect(res).toEqual({ ok: true, kind: 'pod', url: 'http://10.0.0.1:8080' })
       expect(resolver).toHaveBeenCalledTimes(1)
     })
 
@@ -41,6 +49,7 @@ describe('resolveAgentProxyPodUrl', () => {
         isKubernetes: () => false,
         runtimeManager: fakeRm,
         logTag: 'CustomTag',
+        loadProject: noPin,
       })
       expect(capturedOpts.logTag).toBe('CustomTag')
       expect(capturedOpts.onVMPermanentlyDisabled).toBe('fallback-to-host')
@@ -57,8 +66,129 @@ describe('resolveAgentProxyPodUrl', () => {
         resolver: resolver as any,
         isVMIsolation: () => false,
         isKubernetes: () => false,
+        loadProject: noPin,
       })
       expect(capturedOpts.logTag).toBe('AgentProxy')
+    })
+  })
+
+  describe('instance pin', () => {
+    it('returns kind=tunnel when pinned + online', async () => {
+      const resolver = makeResolver(() => {
+        throw new Error('cloud resolver should not be called when pinned + online')
+      })
+      const res = await resolveAgentProxyPodUrl('proj-pin', {
+        resolver: resolver as any,
+        loadProject: async () => ({
+          workspaceId: 'ws-9',
+          preferredInstanceId: 'inst-vps-1',
+          preferredInstancePolicy: 'pinned',
+        }),
+        isTunnelOnline: async () => true,
+        isVMIsolation: () => true,  // pinning beats VM isolation
+        isKubernetes: () => true,
+      })
+      expect(res).toEqual({
+        ok: true,
+        kind: 'tunnel',
+        instanceId: 'inst-vps-1',
+        workspaceId: 'ws-9',
+        projectId: 'proj-pin',
+      })
+      expect(resolver).not.toHaveBeenCalled()
+    })
+
+    it('returns 503 instance_offline when pinned + offline + policy=pinned', async () => {
+      const resolver = makeResolver(() => ({ url: 'http://10.0.0.1:8080' }))
+      const res = await resolveAgentProxyPodUrl('proj-pin', {
+        resolver: resolver as any,
+        loadProject: async () => ({
+          workspaceId: 'ws-9',
+          preferredInstanceId: 'inst-vps-1',
+          preferredInstancePolicy: 'pinned',
+        }),
+        isTunnelOnline: async () => false,
+      })
+      expect(res.ok).toBe(false)
+      if (!res.ok) {
+        expect(res.status).toBe(503)
+        expect(res.body.error.code).toBe('instance_offline')
+      }
+      expect(resolver).not.toHaveBeenCalled()
+    })
+
+    it('treats unrecognized policy as pinned (fail closed)', async () => {
+      const resolver = makeResolver(() => ({ url: 'http://10.0.0.1:8080' }))
+      const res = await resolveAgentProxyPodUrl('proj-pin', {
+        resolver: resolver as any,
+        loadProject: async () => ({
+          workspaceId: 'ws-9',
+          preferredInstanceId: 'inst-vps-1',
+          preferredInstancePolicy: 'something-new',  // unknown -> fail closed
+        }),
+        isTunnelOnline: async () => false,
+      })
+      expect(res.ok).toBe(false)
+      if (!res.ok) expect(res.body.error.code).toBe('instance_offline')
+      expect(resolver).not.toHaveBeenCalled()
+    })
+
+    it('falls through to cloud resolver when pinned + offline + policy=prefer', async () => {
+      const resolver = makeResolver(() => ({ url: 'http://cloud-pod:8080' }))
+      const res = await resolveAgentProxyPodUrl('proj-pin', {
+        resolver: resolver as any,
+        loadProject: async () => ({
+          workspaceId: 'ws-9',
+          preferredInstanceId: 'inst-vps-1',
+          preferredInstancePolicy: 'prefer',
+        }),
+        isTunnelOnline: async () => false,
+        isVMIsolation: () => false,
+        isKubernetes: () => false,
+      })
+      expect(res).toEqual({ ok: true, kind: 'pod', url: 'http://cloud-pod:8080' })
+      expect(resolver).toHaveBeenCalledTimes(1)
+    })
+
+    it('treats isTunnelOnline throw as offline (best-effort) and applies policy', async () => {
+      const resolver = makeResolver(() => ({ url: 'http://cloud-pod:8080' }))
+      const res = await resolveAgentProxyPodUrl('proj-pin', {
+        resolver: resolver as any,
+        loadProject: async () => ({
+          workspaceId: 'ws-9',
+          preferredInstanceId: 'inst-vps-1',
+          preferredInstancePolicy: 'pinned',
+        }),
+        isTunnelOnline: async () => {
+          throw new Error('redis down')
+        },
+      })
+      expect(res.ok).toBe(false)
+      if (!res.ok) expect(res.body.error.code).toBe('instance_offline')
+    })
+
+    it('falls through to cloud when loadProject throws (best-effort)', async () => {
+      const resolver = makeResolver(() => ({ url: 'http://cloud-pod:8080' }))
+      const res = await resolveAgentProxyPodUrl('proj-pin', {
+        resolver: resolver as any,
+        loadProject: async () => {
+          throw new Error('db down')
+        },
+        isVMIsolation: () => false,
+        isKubernetes: () => false,
+      })
+      expect(res).toEqual({ ok: true, kind: 'pod', url: 'http://cloud-pod:8080' })
+    })
+
+    it('falls through to cloud when loadProject returns null', async () => {
+      const resolver = makeResolver(() => ({ url: 'http://cloud-pod:8080' }))
+      const res = await resolveAgentProxyPodUrl('proj-missing', {
+        resolver: resolver as any,
+        loadProject: async () => null,
+        isVMIsolation: () => false,
+        isKubernetes: () => false,
+      })
+      expect(res).toEqual({ ok: true, kind: 'pod', url: 'http://cloud-pod:8080' })
     })
   })
 
@@ -71,6 +201,7 @@ describe('resolveAgentProxyPodUrl', () => {
         resolver: resolver as any,
         isVMIsolation: () => false,
         isKubernetes: () => false,
+        loadProject: noPin,
       })
       expect(res.ok).toBe(false)
       if (!res.ok) {
@@ -88,6 +219,7 @@ describe('resolveAgentProxyPodUrl', () => {
         resolver: resolver as any,
         isVMIsolation: () => true,
         isKubernetes: () => false,
+        loadProject: noPin,
       })
       expect(res.ok).toBe(false)
       if (!res.ok) {
@@ -105,6 +237,7 @@ describe('resolveAgentProxyPodUrl', () => {
         resolver: resolver as any,
         isVMIsolation: () => false,
         isKubernetes: () => true,
+        loadProject: noPin,
       })
       expect(res.ok).toBe(false)
       if (!res.ok) {
@@ -124,6 +257,7 @@ describe('resolveAgentProxyPodUrl', () => {
         resolver: resolver as any,
         isVMIsolation: () => false,
         isKubernetes: () => true,
+        loadProject: noPin,
       })
       expect(res.ok).toBe(false)
       if (!res.ok) {
@@ -140,6 +274,7 @@ describe('resolveAgentProxyPodUrl', () => {
         resolver: resolver as any,
         isVMIsolation: () => false,
         isKubernetes: () => false,
+        loadProject: noPin,
       })
       expect(res.ok).toBe(false)
       if (!res.ok) {
@@ -157,6 +292,7 @@ describe('resolveAgentProxyPodUrl', () => {
         resolver: resolver as any,
         isVMIsolation: () => false,
         isKubernetes: () => false,
+        loadProject: noPin,
       })
       expect(res.ok).toBe(false)
       if (!res.ok) {
@@ -172,6 +308,7 @@ describe('resolveAgentProxyPodUrl', () => {
         resolver: resolver as any,
         isVMIsolation: () => true,
         isKubernetes: () => true,
+        loadProject: noPin,
       })
       expect(res.ok).toBe(false)
       if (!res.ok) {
@@ -189,6 +326,7 @@ describe('resolveAgentProxyPodUrl', () => {
         resolver: resolver as any,
         isVMIsolation: () => true,
         isKubernetes: () => true,
+        loadProject: noPin,
       })
       expect(res.ok).toBe(false)
       if (!res.ok) {
@@ -208,7 +346,10 @@ describe('resolveAgentProxyPodUrl', () => {
         const resolver = makeResolver(() => {
           throw new Error('x')
         })
-        const res = await resolveAgentProxyPodUrl('proj-1', { resolver: resolver as any })
+        const res = await resolveAgentProxyPodUrl('proj-1', {
+          resolver: resolver as any,
+          loadProject: noPin,
+        })
         expect(res.ok).toBe(false)
         if (!res.ok) expect(res.body.error.code).toBe('vm_pool_unavailable')
       } finally {

@@ -61,6 +61,7 @@ await client.db.todos.delete(todo.id)
 | **Authentication** — email/password with Better Auth | `@shogo-ai/sdk` (`client.auth`) |
 | **Database client** — MongoDB-style CRUD with `client.db.<resource>` | `@shogo-ai/sdk` (`client.db`) |
 | **LLM Gateway** — drop-in Vercel AI SDK provider | `@shogo-ai/sdk` (`client.llm`) |
+| **Machines & external triggers** — pair desktops + VPS workers, pin projects for webhooks | `@shogo-ai/sdk` (`client.machines`) |
 | **Memory** — SQLite FTS5 + TF-IDF over per-user markdown | `@shogo-ai/sdk/memory` |
 | **Voice** — ElevenLabs convai proxy + React hooks | [`@shogo-ai/voice`](../voice) (also as `@shogo-ai/sdk/voice/*`) |
 | **Email** — SMTP / SES / OCI providers + templates | [`@shogo-ai/email`](../email) (also as `@shogo-ai/sdk/email/server`) |
@@ -698,6 +699,81 @@ Pass `null` to clear the provider (e.g. on sign-out).
   native `tool_use` blocks), call `POST /api/ai/anthropic/v1/messages`
   on the cloud directly with your Shogo key as `x-api-key`; the
   OpenAI-compatible path loses fidelity on conversion.
+
+## Machines & external triggers
+
+`client.machines` exposes the workspace's paired desktops + `shogo worker`
+CLI sign-ins ("machines"), and lets you pin a project to a specific
+machine. Once pinned, every external request that hits the canonical
+project URL —
+
+```
+https://api.shogo.ai/api/projects/<projectId>/agent-proxy/...
+```
+
+— is relayed through that machine's outbound tunnel into the
+`agent-runtime` running on it. This is what makes Jira webhooks, Zapier
+zaps, cron jobs, etc. trigger an agent running on **your** VPS without
+ever exposing an inbound port on that VPS.
+
+See [External Triggers](https://docs.shogo.ai/docs/features/external-triggers/quickstart)
+in the user docs for the end-to-end story (Studio "Run on" UI + curl
+recipes). The SDK surface below is the programmatic equivalent.
+
+### List paired machines
+
+```ts
+const machines = await client.machines.list({ workspaceId })
+// → Array<{ id, name, hostname, kind: 'desktop' | 'cli_worker',
+//           status: 'online' | 'heartbeat' | 'offline', ... }>
+
+// Trimmed shape for pickers (only online ones):
+const online = await client.machines.listOnline({ workspaceId })
+```
+
+### Pin a project to a machine
+
+```ts
+const vps = machines.find((m) => m.kind === 'cli_worker' && m.name === 'prod-vps-1')!
+
+await client.machines.pinProject(projectId, {
+  instanceId: vps.id,
+  policy: 'pinned',   // 503 instance_offline if the worker goes down
+                      // (use 'prefer' to fall back to a cloud pod)
+})
+```
+
+The pin persists on `Project.preferredInstanceId` server-side, so it
+survives client reloads and is honored by every cloud pod / region.
+
+### Inspect / clear the pin
+
+```ts
+const pin = await client.machines.getProjectPin(projectId)
+// → { preferredInstanceId: 'inst-xyz' | null,
+//     preferredInstancePolicy: 'pinned' | 'prefer',
+//     instance: { id, name, hostname, kind } | null }
+
+await client.machines.unpinProject(projectId)  // back to cloud routing
+```
+
+### Trigger the agent from anywhere
+
+Once the project is pinned, **any HTTP client** can drive the agent over
+plain HTTPS — no SDK install required on the caller side:
+
+```bash
+curl -X POST \
+  "https://api.shogo.ai/api/projects/$PROJECT_ID/agent-proxy/agent/channels/webhook/incoming" \
+  -H "Authorization: Bearer $SHOGO_API_KEY" \
+  -H "X-Webhook-Secret: $CHANNEL_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Triage Jira ticket ABC-123"}'
+```
+
+See [Webhook channel reference](https://docs.shogo.ai/docs/features/external-triggers/webhook-channel)
+for the full request/response shape, sync vs. async reply modes, and
+status-code matrix.
 
 ## Voice (ElevenLabs convai)
 
