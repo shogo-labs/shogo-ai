@@ -368,7 +368,18 @@ resource "oci_containerengine_node_pool" "main" {
     # is implemented as an unconditional ignore (matches every env). Pools
     # that genuinely want the module's user_data emitted still get it on
     # initial create — only subsequent drift is suppressed.
-    ignore_changes = [node_metadata]
+    #
+    # `node_config_details.size` is owned by the cluster autoscaler at
+    # runtime, so locking it out of drift detection prevents tf from
+    # scaling the cluster down (or up) on every apply. Likewise
+    # `placement_configs` is sometimes adjusted by the autoscaler when
+    # AD capacity shifts; preserving the live placement avoids node
+    # churn during reconciliation.
+    ignore_changes = [
+      node_metadata,
+      node_config_details[0].size,
+      node_config_details[0].placement_configs,
+    ]
   }
 }
 
