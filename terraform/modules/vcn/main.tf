@@ -317,14 +317,17 @@ resource "oci_core_subnet" "public" {
   # be done because OCI requires every subnet to have at least one.
   security_list_ids = var.enable_security_lists ? [oci_core_security_list.public[0].id] : null
 
-  # Bootstrap-time attributes (display_name, dns_label) are immutable in
-  # OCI for subnets. Live envs frequently bootstrap with different names
-  # than the module defaults (e.g. dns_label "lb" vs "pub" in production-us);
-  # any change forces full subnet replacement which cascades to the OKE
-  # cluster + node pools. Lock those out alongside security_list_ids
-  # (see note above) so the module can adopt live subnets cleanly.
+  # Bootstrap-time attributes (display_name, dns_label, cidr_block) are
+  # immutable in OCI subnets. Live envs frequently bootstrap with different
+  # names + cidrs than the module defaults (e.g. production-us public was
+  # bootstrapped at 10.0.1.0/24 with dns_label "lb", whereas the module
+  # would compute 10.0.0.0/20 with dns_label "pub"). The OCI provider
+  # incorrectly treats cidr_block as in-place-mutable, so without this
+  # ignore the API rejects the UpdateSubnet call with `400-InvalidParameter,
+  # Invalid cidr block`. Lock those out alongside security_list_ids (see
+  # note above) so the module can adopt live subnets cleanly.
   lifecycle {
-    ignore_changes = [security_list_ids, display_name, dns_label]
+    ignore_changes = [security_list_ids, display_name, dns_label, cidr_block]
   }
 
   freeform_tags = var.tags
@@ -349,11 +352,11 @@ resource "oci_core_subnet" "private_workers" {
   # Security-list attachment is a bootstrap-time decision; ignore drift so
   # envs that disabled module-owned SLs aren't forced to swap off the
   # default SL, and envs that enabled them aren't surprised by manual
-  # additions in OCI console. display_name/dns_label are also locked
-  # because they are immutable in OCI — see note on
+  # additions in OCI console. display_name/dns_label/cidr_block are also
+  # locked because they are immutable in OCI — see note on
   # `oci_core_subnet.public.lifecycle` for the full rationale.
   lifecycle {
-    ignore_changes = [security_list_ids, display_name, dns_label]
+    ignore_changes = [security_list_ids, display_name, dns_label, cidr_block]
   }
 
   freeform_tags = var.tags
@@ -377,7 +380,7 @@ resource "oci_core_subnet" "private_pods" {
 
   # See note on `oci_core_subnet.private_workers.lifecycle`.
   lifecycle {
-    ignore_changes = [security_list_ids, display_name, dns_label]
+    ignore_changes = [security_list_ids, display_name, dns_label, cidr_block]
   }
 
   freeform_tags = var.tags
@@ -407,7 +410,7 @@ resource "oci_core_subnet" "api_endpoint" {
   security_list_ids = var.enable_security_lists ? [oci_core_security_list.public[0].id] : null
 
   lifecycle {
-    ignore_changes = [security_list_ids, display_name, dns_label]
+    ignore_changes = [security_list_ids, display_name, dns_label, cidr_block]
   }
 
   freeform_tags = var.tags
