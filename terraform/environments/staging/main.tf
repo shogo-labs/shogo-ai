@@ -161,14 +161,19 @@ module "oke" {
 # =============================================================================
 # Container Registry — OCIR
 # =============================================================================
-
-module "ocir" {
-  source = "../../modules/ocir"
-
-  compartment_id = var.compartment_id
-  repositories   = ["shogo-api", "shogo-web", "agent-runtime", "shogo-docs"]
-  tags           = local.tags
-}
+#
+# OCIR repositories (shogo/shogo-api, shogo/shogo-web, shogo/agent-runtime,
+# shogo/shogo-docs) are tenancy-shared and live in the tenancy root
+# compartment, NOT the staging compartment. They serve images for every
+# environment (staging + the three production regions) so they're owned by
+# whatever bootstrap created the tenancy and intentionally not managed from
+# any env-specific terraform.
+#
+# The active production environments (production-us, -eu, -india) already
+# don't declare an ocir module for the same reason. Staging previously did,
+# which produced a 4-resource "to be created" entry in every plan that would
+# have failed at apply time (the registries already exist by display name).
+# Removed in 2026-05 along with the rest of the state reconciliation work.
 
 # =============================================================================
 # Object Storage
@@ -181,6 +186,19 @@ module "object_storage" {
   environment    = local.environment
   region         = var.region
   tags           = local.tags
+
+  # Per-bucket compartment overrides — see module doc for why these exist.
+  # Two of the four staging buckets were bootstrapped outside the staging
+  # compartment, and these overrides let the tf config match the live
+  # placement so the buckets can be imported without an enforced compartment
+  # move on the next plan.
+  #   shogo-workspaces-staging  -> production compartment
+  #   shogo-pg-backups-staging  -> tenancy root
+  # shogo-schemas-staging and shogo-published-apps-staging do not exist
+  # live yet; they fall through to var.compartment_id and will be created
+  # in the staging compartment on the next apply.
+  workspaces_compartment_id = "ocid1.compartment.oc1..aaaaaaaaalshoan7geg7q32jpr5dbwbvrnu3vqjfqvtqkgyc6ydznxqigbza"
+  pg_backups_compartment_id = var.tenancy_id
 }
 
 # =============================================================================
