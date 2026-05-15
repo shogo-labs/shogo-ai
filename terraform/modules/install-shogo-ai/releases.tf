@@ -16,8 +16,14 @@ resource "cloudflare_worker_script" "releases" {
   # Without it the resolver falls back to the 60/hr anonymous GitHub
   # quota — fine for staging but tight for production once the install
   # one-liner is in the wild.
+  #
+  # NB: also treat the empty string as "unset". GH Actions resolves a
+  # missing secret to "" rather than to a real null, and the Cloudflare
+  # API rejects a binding whose text is empty ("text for binding
+  # GITHUB_TOKEN cannot be empty"). Without this guard the resolver
+  # Worker fails to create on first apply.
   dynamic "secret_text_binding" {
-    for_each = var.github_token == null ? [] : [var.github_token]
+    for_each = var.github_token == null || var.github_token == "" ? [] : [var.github_token]
     content {
       name = "GITHUB_TOKEN"
       text = secret_text_binding.value
