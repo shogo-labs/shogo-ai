@@ -40,6 +40,7 @@ on:
           - production-us
           - production-eu
           - production-india
+          - production-global
       action:
         description: 'Terraform action to run'
         required: true
@@ -176,19 +177,26 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
+      # production-global is a Cloudflare-only env (no OCI/OKE resources),
+      # so skip the OCI key + OKE kubeconfig setup steps for it. Every
+      # other env needs them because its main.tf instantiates OKE/OCI
+      # modules that hit the oracle/oci + kubernetes providers.
       - name: Write OCI API key
+        if: inputs.environment != 'production-global'
         run: |
           mkdir -p "$HOME/.oci"
           printf '%s' "${{ secrets.OCI_PRIVATE_KEY }}" > "$HOME/.oci/oci_api_key.pem"
           chmod 600 "$HOME/.oci/oci_api_key.pem"
 
       - name: Install OCI CLI
+        if: inputs.environment != 'production-global'
         run: pip install oci-cli --quiet
 
       # Provision a kubeconfig for the env's OKE cluster so provisioners
       # like null_resource.kourier_toleration_strip (which shells out to
       # kubectl) can talk to the cluster.
       - name: Configure kubectl for OKE
+        if: inputs.environment != 'production-global'
         env:
           OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
           OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
@@ -215,7 +223,8 @@ jobs:
         env:
           # OCI auth (used both by oracle/oci provider via TF_VAR_* and by
           # the OCI CLI sub-process the kubernetes provider `exec`s to
-          # generate a cluster auth token).
+          # generate a cluster auth token). Harmless for production-global
+          # which doesn't read any of these.
           TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
           TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
           TF_VAR_oci_private_key_path: /home/runner/.oci/oci_api_key.pem
@@ -230,6 +239,12 @@ jobs:
           TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          # production-global only — Kourier LB IPs from each regional env
+          # and the releases.shogo.ai resolver's optional GitHub token.
+          TF_VAR_us_lb_ip: ${{ vars.US_LB_IP }}
+          TF_VAR_eu_lb_ip: ${{ vars.EU_LB_IP }}
+          TF_VAR_india_lb_ip: ${{ vars.INDIA_LB_IP }}
+          TF_VAR_github_token: ${{ secrets.RELEASES_RESOLVER_GH_TOKEN }}
           # Networking
           TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
           TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
@@ -251,6 +266,10 @@ jobs:
           TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          TF_VAR_us_lb_ip: ${{ vars.US_LB_IP }}
+          TF_VAR_eu_lb_ip: ${{ vars.EU_LB_IP }}
+          TF_VAR_india_lb_ip: ${{ vars.INDIA_LB_IP }}
+          TF_VAR_github_token: ${{ secrets.RELEASES_RESOLVER_GH_TOKEN }}
           TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
           TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
           KUBE_CONFIG_PATH: /home/runner/.kube/config
