@@ -172,10 +172,16 @@ module "eu" {
 
   # The Object Storage lifecycle service-principal IAM policy is
   # region-scoped (the statement names `objectstorage-eu-frankfurt-1`).
-  # Staging's policy only covers us-ashburn-1, so EU must create its
-  # own (named `...-production-eu-frankfurt-1` to coexist at the
-  # tenancy level).
-  object_storage_lifecycle_service_policy_compartment_id = var.tenancy_id
+  # Staging's policy only covers us-ashburn-1. EU's policy must be
+  # created out-of-band against the tenancy home region (us-ashburn-1
+  # / IAD) — the OCI Identity service only accepts policy CREATE
+  # against the home region, and EU's provider is pinned to
+  # eu-frankfurt-1. The policy already exists as
+  # `objectstorage-lifecycle-service-principal-production-eu-frankfurt-1`
+  # (created via `oci iam policy create --region us-ashburn-1`). Skip
+  # tf management here; refactor the object-storage module to accept a
+  # home-region provider alias in a follow-up.
+  object_storage_lifecycle_service_policy_compartment_id = null
 
   # The tenancy-scoped `github-actions-deploy` IAM group + policy is
   # owned by production-us (created during its reconciliation). Disable
