@@ -213,10 +213,17 @@ jobs:
       - name: terraform plan
         if: inputs.action == 'plan'
         env:
-          # OCI auth
+          # OCI auth (used both by oracle/oci provider via TF_VAR_* and by
+          # the OCI CLI sub-process the kubernetes provider `exec`s to
+          # generate a cluster auth token).
           TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
           TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
           TF_VAR_oci_private_key_path: /home/runner/.oci/oci_api_key.pem
+          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
           # OCI scope (env-scoped GH vars)
           TF_VAR_compartment_id: ${{ vars.COMPARTMENT_ID }}
           # Cloudflare (repo-scoped)
@@ -226,10 +233,6 @@ jobs:
           # Networking
           TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
           TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
-          # Fallback kubeconfig for the kubernetes/helm providers if their
-          # inline config (host = module.oke.cluster_endpoint) ever resolves
-          # to null during plan — for example on the first plan after a
-          # provider upgrade when the cluster resource hasn't refreshed yet.
           KUBE_CONFIG_PATH: /home/runner/.kube/config
         run: terraform plan -no-color
 
@@ -239,6 +242,11 @@ jobs:
           TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
           TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
           TF_VAR_oci_private_key_path: /home/runner/.oci/oci_api_key.pem
+          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
           TF_VAR_compartment_id: ${{ vars.COMPARTMENT_ID }}
           TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
