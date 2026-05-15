@@ -78,7 +78,20 @@ resource "null_resource" "kourier" {
     command = <<-EOT
       # Install Kourier
       kubectl apply -f https://github.com/knative/net-kourier/releases/download/knative-v${var.knative_version}/kourier.yaml
-      
+
+      # Strip the upstream `node.kubernetes.io/disk-pressure:NoSchedule:Exists`
+      # toleration from the gateway. Upstream ships this toleration so the
+      # ingress can keep landing on disk-pressured nodes "for availability",
+      # but in practice that's exactly the wrong behavior: kubelet auto-applies
+      # the disk-pressure taint to keep pods OFF those nodes, and the tolerated
+      # gateway pod gets immediately evicted once it lands. We saw this loop
+      # generate ~9,959 Evicted gateway pods over ~13 days in staging, with
+      # zero Running replicas and complete ingress outage. Removing the
+      # toleration causes the gateway to schedule onto a healthy node instead.
+      kubectl patch deployment 3scale-kourier-gateway -n kourier-system \
+        --type=json \
+        -p='[{"op":"replace","path":"/spec/template/spec/tolerations","value":[]}]'
+
       # Wait for Kourier
       kubectl wait --for=condition=Available deployment/3scale-kourier-gateway -n kourier-system --timeout=300s || true
     EOT
