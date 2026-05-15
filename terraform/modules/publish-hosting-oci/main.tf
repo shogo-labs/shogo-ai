@@ -39,8 +39,9 @@ variable "publish_domain" {
 }
 
 variable "cloudflare_zone_id" {
-  description = "Cloudflare zone ID for the publish domain"
+  description = "DEPRECATED: this module now looks up the publish zone by name via `data.cloudflare_zone.publish`, so this variable is unused. Kept for backwards-compat with the production envs' module call signature; remove next time those envs get touched."
   type        = string
+  default     = null
 }
 
 variable "cloudflare_account_id" {
@@ -64,6 +65,14 @@ variable "tags" {
 # -----------------------------------------------------------------------------
 data "oci_objectstorage_namespace" "current" {
   compartment_id = var.compartment_id
+}
+
+# Look up the publish zone (e.g. shogo.one) by name. The token used for tf
+# needs `Zone:Read` on this zone in addition to `Workers Routes:Edit` and
+# `Zone DNS:Edit`. Sourcing by name keeps callers from having to thread a
+# second zone-id variable through every env.
+data "cloudflare_zone" "publish" {
+  name = var.publish_domain
 }
 
 # -----------------------------------------------------------------------------
@@ -160,7 +169,7 @@ resource "cloudflare_worker_script" "subdomain_router" {
 
 # Route *.shogo.one traffic through the Worker
 resource "cloudflare_worker_route" "published_apps" {
-  zone_id     = var.cloudflare_zone_id
+  zone_id     = data.cloudflare_zone.publish.id
   pattern     = "*.${var.publish_domain}/*"
   script_name = cloudflare_worker_script.subdomain_router.name
 }
@@ -177,7 +186,7 @@ resource "cloudflare_worker_route" "published_apps" {
 # documentation range) is the standard "this IP intentionally
 # unreachable" choice that CF accepts for proxied records.
 resource "cloudflare_record" "wildcard" {
-  zone_id = var.cloudflare_zone_id
+  zone_id = data.cloudflare_zone.publish.id
   name    = "*"
   content = "192.0.2.1"
   type    = "A"
