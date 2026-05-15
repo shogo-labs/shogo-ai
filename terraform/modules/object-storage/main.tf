@@ -150,7 +150,11 @@ resource "oci_identity_policy" "lifecycle_service_principal" {
   count = var.lifecycle_service_policy_compartment_id != null ? 1 : 0
 
   compartment_id = var.lifecycle_service_policy_compartment_id
-  name           = "objectstorage-lifecycle-service-principal-${var.environment}"
+  # The policy is per-region because the statement names the region-scoped
+  # service principal (`objectstorage-<region>`). Include region in the
+  # policy name so multiple regions can coexist at the tenancy level
+  # without a name collision.
+  name           = "objectstorage-lifecycle-service-principal-${var.environment}-${var.region}"
   description    = "Grant the Object Storage service principal permission to execute lifecycle rules against buckets in this ${var.lifecycle_service_policy_scope}. Required for oci_objectstorage_object_lifecycle_policy resources."
 
   statements = [
