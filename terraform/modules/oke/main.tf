@@ -97,9 +97,16 @@ variable "node_pool_max" {
 }
 
 variable "boot_volume_gb" {
+  # Sized for the warm-pool workload: each node hosts ~15 user workspaces, and a
+  # single workspace can pull a multi-GB project image, run `bun install` into
+  # node_modules, build, then layer overlayfs deltas. 100 GB was hitting
+  # DiskPressure repeatedly on staging (see incident 2026-05-14 — kubelet started
+  # evicting pods at 80%+ disk and image GC removed layers other ksvc revisions
+  # still referenced, breaking routes). 200 GB gives ~6 GB of working space per
+  # co-tenant before pressure kicks in.
   description = "Boot volume size in GB"
   type        = number
-  default     = 100
+  default     = 200
 }
 
 variable "enable_workload_pool" {
