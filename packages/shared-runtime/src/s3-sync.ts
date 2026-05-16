@@ -238,6 +238,18 @@ export interface S3SyncConfig {
   syncInterval?: number
   /** Enable file watcher for real-time sync */
   watchEnabled?: boolean
+  /**
+   * When true, the Layer 2 (`project-src.tar.gz`) uploader no-ops on every
+   * code path: the file watcher's debounce trigger, the periodic interval,
+   * and explicit `triggerSync()` calls. Layer 1 (deps cache) is unaffected.
+   *
+   * Used by `agent-runtime` in `git_only` mode: the per-turn diff is
+   * pushed to the smart-HTTP backend via `GitWorkspaceSync`, and S3
+   * stays armed only to write the final cold-start snapshot at evict
+   * time (`flushAndShutdown({ forceProjectArchive: true })`) AND as an
+   * automatic fallback when git fails (see `setSuppressProjectArchive`).
+   */
+  suppressProjectArchive?: boolean
 }
 
 export interface SyncStats {
@@ -291,7 +303,17 @@ export class S3Sync {
   private _depsReadyResolve: (() => void) | null = null
   private _depsReady: boolean = true
 
+  /**
+   * Runtime-mutable suppression of Layer 2 (project archive) uploads.
+   * Initialized from `S3SyncConfig.suppressProjectArchive`. Can be
+   * toggled at any time via `setSuppressProjectArchive` — used by
+   * `GitWorkspaceSync.onDegrade` to re-enable Layer 2 as a fallback
+   * when git is unhealthy.
+   */
+  private suppressProjectArchive: boolean = false
+
   constructor(config: S3SyncConfig) {
+    this.suppressProjectArchive = config.suppressProjectArchive ?? false
     this.config = {
       bucket: config.bucket,
       prefix: config.prefix,
@@ -328,6 +350,7 @@ export class S3Sync {
       ],
       syncInterval: config.syncInterval ?? 30000, // 30 seconds default
       watchEnabled: config.watchEnabled ?? true,
+      suppressProjectArchive: config.suppressProjectArchive ?? false,
     }
 
     this.client = new S3Client({
@@ -778,7 +801,7 @@ export class S3Sync {
    *
    * Uses an upload lock to prevent concurrent uploads.
    */
-  async uploadAll(deleteOrphans: boolean = false): Promise<SyncStats> {
+  async uploadAll(deleteOrphans: boolean = false, opts: { forceProjectArchive?: boolean } = {}): Promise<SyncStats> {
     // Prevent concurrent uploads
     if (this.isUploading) {
       console.log(`[S3Sync] Upload already in progress, will re-run after completion`)
@@ -797,8 +820,11 @@ export class S3Sync {
         return this.getStats()
       }
 
-      // Upload project archive (source + dist, NO node_modules)
-      await this.uploadProjectArchive()
+      // Upload project archive (source + dist, NO node_modules).
+      // The optional force flag lets `flushAndShutdown` write a final
+      // cold-start tarball even when Layer 2 is suppressed for the
+      // session (git_only mode's normal steady state).
+      await this.uploadProjectArchive(opts.forceProjectArchive ?? false)
 
       // Upload deps archive if lockfile changed
       await this.uploadDepsIfNeeded()
@@ -826,8 +852,19 @@ export class S3Sync {
    * Upload project-src.tar.gz (everything EXCEPT node_modules).
    * This is small (~2-10MB) and fast to create.
    * Skips the S3 upload if the archive hash hasn't changed since the last upload.
+   *
+   * `forceWriteWhenSuppressed=true` (used by `flushAndShutdown` in
+   * `git_only` mode) overrides the suppression flag so the cold-start
+   * snapshot always lands at evict, even when Layer 2 was disabled for
+   * the duration of the session.
    */
-  private async uploadProjectArchive(): Promise<void> {
+  private async uploadProjectArchive(forceWriteWhenSuppressed: boolean = false): Promise<void> {
+    if (this.suppressProjectArchive && !forceWriteWhenSuppressed) {
+      // Honor the suppress flag: agent-runtime is in git_only mode and
+      // owns Layer 2 via GitWorkspaceSync. No-op on every path that
+      // would otherwise re-tar + PUT.
+      return
+    }
     const startTime = Date.now()
     const tempArchive = join('/tmp', `project-${this.config.prefix}-src-upload.tar.gz`)
 
@@ -1177,8 +1214,21 @@ export class S3Sync {
    * Flush any pending changes to S3, then shutdown.
    * Use this on SIGTERM to avoid losing recently-written files
    * (e.g., MCP server config) that are still in the debounce window.
+   *
+   * `forceProjectArchive` overrides `suppressProjectArchive` for this
+   * one call only — used by `agent-runtime` in `git_only` mode to land
+   * the cold-start snapshot tarball at evict regardless of whether
+   * git was healthy during the session.
+   *
+   * Accepts either a number (legacy: timeout only) or an options object.
    */
-  async flushAndShutdown(timeoutMs: number = 10_000): Promise<void> {
+  async flushAndShutdown(
+    timeoutMsOrOpts: number | { timeoutMs?: number; forceProjectArchive?: boolean } = 10_000,
+  ): Promise<void> {
+    const opts = typeof timeoutMsOrOpts === 'number'
+      ? { timeoutMs: timeoutMsOrOpts, forceProjectArchive: false }
+      : { timeoutMs: timeoutMsOrOpts.timeoutMs ?? 10_000, forceProjectArchive: !!timeoutMsOrOpts.forceProjectArchive }
+
     this.stopPeriodicSync()
     this.stopWatcher()
 
@@ -1187,22 +1237,109 @@ export class S3Sync {
       this.uploadDebounceTimer = null
     }
 
-    if (!this.hasPendingChanges() && this.pendingUploads.size === 0) {
+    // In `git_only` mode the suppress flag means triggerSync paths
+    // never marked anything as pending — but we still want to land the
+    // cold-start snapshot. The `forceProjectArchive` opt bypasses both
+    // the "no pending changes" early-return and the suppress check.
+    if (!opts.forceProjectArchive && !this.hasPendingChanges() && this.pendingUploads.size === 0) {
       console.log(`[S3Sync] flushAndShutdown: no pending changes`)
       return
     }
 
-    console.log(`[S3Sync] flushAndShutdown: flushing pending changes to S3 (timeout ${timeoutMs}ms)...`)
+    console.log(
+      `[S3Sync] flushAndShutdown: flushing pending changes to S3 (timeout ${opts.timeoutMs}ms, forceProjectArchive=${opts.forceProjectArchive})...`,
+    )
     try {
-      const uploadPromise = this.uploadAll(false)
+      const uploadPromise = this.uploadAll(false, { forceProjectArchive: opts.forceProjectArchive })
       const timeoutPromise = new Promise<void>((_, reject) =>
-        setTimeout(() => reject(new Error('flush timeout')), timeoutMs)
+        setTimeout(() => reject(new Error('flush timeout')), opts.timeoutMs)
       )
       await Promise.race([uploadPromise, timeoutPromise])
       console.log(`[S3Sync] flushAndShutdown: flush complete`)
     } catch (err: any) {
       console.error(`[S3Sync] flushAndShutdown: ${err.message}`)
     }
+  }
+
+  // ===========================================================================
+  // git_only mode helpers
+  // ===========================================================================
+
+  /**
+   * Toggle Layer 2 (`project-src.tar.gz`) uploads at runtime.
+   *
+   * Wired to `GitWorkspaceSync.onDegrade` so a stretch of failing git
+   * pushes can re-enable the S3 fallback writer mid-session. On
+   * recovery (`onRecovered`), the agent-runtime flips this back to
+   * `true` so we return to the normal `git_only` steady state.
+   */
+  setSuppressProjectArchive(suppress: boolean): void {
+    if (this.suppressProjectArchive === suppress) return
+    this.suppressProjectArchive = suppress
+    console.log(`[S3Sync] suppressProjectArchive=${suppress}`)
+  }
+
+  /** Read the current suppression state (useful for tests + diagnostics). */
+  isProjectArchiveSuppressed(): boolean {
+    return this.suppressProjectArchive
+  }
+
+  /**
+   * Produce the cold-start tarball from `git archive HEAD` instead of
+   * from the live workspace. Used at evict time when `GitWorkspaceSync`
+   * is healthy and HEAD is therefore the authoritative tree.
+   *
+   * Falls back to throwing if `git` isn't available or the workspace
+   * isn't a git repo — caller should catch and use the live-workspace
+   * path (`flushAndShutdown({ forceProjectArchive: true })`) instead.
+   */
+  async snapshotProjectArchiveFromGit(): Promise<void> {
+    const tempArchive = join('/tmp', `project-${this.config.prefix}-git-snapshot.tar.gz`)
+    const startTime = Date.now()
+
+    // `git archive HEAD --format=tar.gz` is equivalent to `git archive | gzip`
+    // and respects the `.gitignore` (untracked files are excluded by
+    // definition). We accept this trade-off: in git_only mode, the
+    // gitignored files (`.shogo/` SQLite, `.canvas-state.json`) are
+    // restored separately by the file-API path on cold-start.
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(
+        'git',
+        ['archive', '--format=tar.gz', '-o', tempArchive, 'HEAD'],
+        { cwd: this.config.localDir, stdio: ['ignore', 'pipe', 'pipe'] },
+      )
+      let stderr = ''
+      child.stderr.setEncoding('utf-8')
+      child.stderr.on('data', (c) => { stderr += c })
+      child.on('error', reject)
+      child.on('close', (code) => {
+        if (code === 0) resolve()
+        else reject(new Error(`git archive exited ${code}: ${stderr.slice(0, 500)}`))
+      })
+    })
+
+    const archiveContent = await readFile(tempArchive)
+    const archiveSize = archiveContent.length
+    console.log(
+      `[S3Sync] snapshotFromGit: created ${this.formatBytes(archiveSize)} archive in ${Date.now() - startTime}ms`,
+    )
+
+    const archiveKey = this.getProjectArchiveKey()
+    const uploadStart = Date.now()
+    await this.client.send(new PutObjectCommand({
+      Bucket: this.config.bucket,
+      Key: archiveKey,
+      Body: archiveContent,
+      ContentType: 'application/gzip',
+    }))
+    console.log(`[S3Sync] snapshotFromGit: uploaded to s3://${this.config.bucket}/${archiveKey} in ${Date.now() - uploadStart}ms`)
+
+    await unlink(tempArchive).catch(() => { })
+
+    // Update our hash tracker so a subsequent `uploadAll` doesn't
+    // re-PUT an identical archive on top.
+    this.lastUploadHash = createHash('sha256').update(archiveContent).digest('hex')
+    this.stats.archiveSize = archiveSize
   }
 
   // ===========================================================================
@@ -1315,7 +1452,10 @@ export class S3Sync {
 /**
  * Create an S3Sync instance from environment variables.
  */
-export function createS3SyncFromEnv(localDir: string): S3Sync | null {
+export function createS3SyncFromEnv(
+  localDir: string,
+  opts: { suppressProjectArchive?: boolean } = {},
+): S3Sync | null {
   const bucket = process.env.S3_WORKSPACES_BUCKET
   const prefix = process.env.PROJECT_ID
 
@@ -1328,7 +1468,7 @@ export function createS3SyncFromEnv(localDir: string): S3Sync | null {
   const region = process.env.S3_REGION
   const endpoint = process.env.S3_ENDPOINT
 
-  console.log(`[S3Sync] [createFromEnv] Creating S3Sync instance (bucket=${bucket}, prefix=${prefix}, region=${region}, endpoint=${endpoint ?? 'default'}, localDir=${localDir})`)
+  console.log(`[S3Sync] [createFromEnv] Creating S3Sync instance (bucket=${bucket}, prefix=${prefix}, region=${region}, endpoint=${endpoint ?? 'default'}, localDir=${localDir}, suppressProjectArchive=${opts.suppressProjectArchive ?? false})`)
 
   return new S3Sync({
     bucket,
@@ -1339,6 +1479,7 @@ export function createS3SyncFromEnv(localDir: string): S3Sync | null {
     forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
     syncInterval: parseInt(process.env.S3_SYNC_INTERVAL || '30000', 10),
     watchEnabled,
+    suppressProjectArchive: opts.suppressProjectArchive ?? false,
   })
 }
 
@@ -1386,10 +1527,13 @@ export function createS3SyncForProject(localDir: string, projectId: string): S3S
  * we must NOT start the uploader/watcher. Otherwise, the default template
  * files get uploaded to S3, overwriting the user's actual project data.
  */
-export async function initializeS3Sync(localDir: string): Promise<{ sync: S3Sync, downloadSucceeded: boolean } | null> {
+export async function initializeS3Sync(
+  localDir: string,
+  opts: { suppressProjectArchive?: boolean } = {},
+): Promise<{ sync: S3Sync, downloadSucceeded: boolean } | null> {
   const initStart = Date.now()
   console.log(`[S3Sync] [initializeS3Sync] Starting (localDir=${localDir})`)
-  const sync = createS3SyncFromEnv(localDir)
+  const sync = createS3SyncFromEnv(localDir, opts)
 
   if (!sync) {
     console.log(`[S3Sync] [initializeS3Sync] No sync instance created — returning null`)

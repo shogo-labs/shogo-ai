@@ -10,6 +10,15 @@ export {
 } from './s3-sync'
 
 export {
+  GitWorkspaceSync,
+  createGitSyncFromEnv,
+  resolveCloudSyncMode,
+  type GitWorkspaceSyncConfig,
+  type SpawnGitFn,
+  type CloudSyncMode,
+} from './git-sync'
+
+export {
   initializePostgresBackup,
   createPostgresBackupFromEnv,
   waitForPostgres,

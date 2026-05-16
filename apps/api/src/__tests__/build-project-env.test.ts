@@ -254,6 +254,33 @@ describe('buildProjectEnv — project-derived fields', () => {
     expect(getAgentTemplateByIdMock).toHaveBeenCalledWith('tmpl-y')
   })
 
+  test('omits SHOGO_CLOUD_SYNC_MODE when cloudSyncMode is the default ("s3")', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      cloudSyncMode: 's3',
+    }))
+    const env = await buildProjectEnv('proj-sync-default')
+    expect(env.SHOGO_CLOUD_SYNC_MODE).toBeUndefined()
+  })
+
+  test('injects SHOGO_CLOUD_SYNC_MODE when cloudSyncMode is "dual_shadow"', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      cloudSyncMode: 'dual_shadow',
+    }))
+    const env = await buildProjectEnv('proj-sync-dual')
+    expect(env.SHOGO_CLOUD_SYNC_MODE).toBe('dual_shadow')
+  })
+
+  test('injects SHOGO_CLOUD_SYNC_MODE when cloudSyncMode is "git_only"', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      cloudSyncMode: 'git_only',
+    }))
+    const env = await buildProjectEnv('proj-sync-git-only')
+    expect(env.SHOGO_CLOUD_SYNC_MODE).toBe('git_only')
+  })
+
   test('omits TECH_STACK_ID when neither settings nor template has one', async () => {
     findUniqueProjectMock.mockImplementation(async () => ({
       workspaceId: 'ws-1',
