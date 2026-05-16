@@ -147,8 +147,8 @@ project `<id>` arrives:
    Files API to download `.shogo/*` (SQLite state, gitignored). This is the
    "full sync" path — your agent sees a coherent DB even though the rest of
    the workspace came in over the git wire.
-3. It starts a {@link CloudSyncWatcher} on that directory so writes made by
-   the local `agent-runtime` sync back to cloud automatically:
+3. It starts a `CloudSyncWatcher` on that directory so writes made by the
+   local `agent-runtime` sync back to cloud automatically:
    - **In git mode** the watcher batches edits and `git add -A && git commit
      && git push`es the result. Each push records a `ProjectCheckpoint` row
      via the cloud's post-receive hook.
