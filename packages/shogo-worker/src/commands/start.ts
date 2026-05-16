@@ -58,6 +58,10 @@ export interface StartFlags {
    *  the operator first running `shogo project pull`. */
   noAutoPull?: boolean;
   projectsDir?: string;
+  /** Disable the git smart-HTTP sync path even when `git` is on PATH.
+   *  When set, auto-pull falls back to the CloudFileTransport file-pump.
+   *  Useful when outbound HTTPS to git pack RPC endpoints is firewalled. */
+  noGit?: boolean;
 }
 
 export async function runStart(flags: StartFlags): Promise<void> {
@@ -105,6 +109,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
   }
 
   const autoPullEnabled = !flags.noAutoPull;
+  const useGit = !flags.noGit;
 
   console.log(pc.bold('\nShogo Worker — Starting'));
   console.log(pc.dim('  name        ') + cfg.name);
@@ -112,6 +117,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
   console.log(pc.dim('  cloud       ') + cfg.cloudUrl);
   console.log(pc.dim('  runtime     ') + `${resolved.path} ${pc.dim(`(via ${resolved.source})`)}`);
   console.log(pc.dim('  auto-pull   ') + (autoPullEnabled ? pc.green('on') + pc.dim(` → ${cfg.projectsDir}`) : pc.yellow('off')));
+  console.log(pc.dim('  sync mode   ') + (useGit ? pc.green('git') + pc.dim(' (falls back to file transport if git is missing)') : pc.yellow('files-only')));
   if (flags.project) console.log(pc.dim('  project     ') + flags.project);
   if (proxy) {
     console.log(pc.dim('  proxy       ') + `${proxy.url} ${pc.dim(`(from ${proxy.source})`)}`);
@@ -133,6 +139,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
       enabled: autoPullEnabled,
       projectsDir: cfg.projectsDir,
       watch: true,
+      useGit,
     },
   });
 
@@ -240,6 +247,7 @@ function buildChildArgv(flags: StartFlags): string[] {
   if (flags.debug) out.push('--debug');
   if (flags.noAutoPull) out.push('--no-auto-pull');
   if (flags.projectsDir) out.push('--projects-dir', flags.projectsDir);
+  if (flags.noGit) out.push('--no-git');
   return out;
 }
 

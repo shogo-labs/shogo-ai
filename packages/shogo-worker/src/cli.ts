@@ -26,6 +26,7 @@ import {
 } from './commands/runtime.ts';
 import { runProjectPull } from './commands/project-pull.ts';
 import { runProjectPush } from './commands/project-push.ts';
+import { runProjectCheckout } from './commands/project-checkout.ts';
 
 const VERSION = '0.1.0';
 
@@ -62,6 +63,7 @@ worker
   .option('--foreground', 'Run in foreground (don\'t detach)')
   .option('--no-auto-pull', 'Disable auto-clone of project workspaces on first request')
   .option('--projects-dir <path>', 'Root directory for cloned project workspaces (default: ~/.shogo/projects)')
+  .option('--no-git', 'Force the file-transport sync path even when git is available')
   .action((flags) => handle(() => runStart(flags)));
 
 worker
@@ -136,6 +138,15 @@ project
   .option('--api-key <key>', 'Override API key for this run')
   .option('--cloud-url <url>', 'Override Shogo Cloud URL for this run')
   .action((id: string, flags) => handle(() => runProjectPush(id, flags)));
+project
+  .command('checkout <projectId>')
+  .description('Roll the local workspace to a specific git checkpoint (SHA or named checkpoint)')
+  .option('--at <ref>', 'Target SHA or checkpoint name (default: remote HEAD)')
+  .option('--unshallow', 'Fetch full history before checking out (needed for old SHAs)')
+  .option('--into <dir>', 'Local dir override (default: ~/.shogo/projects/<projectId>)')
+  .option('--api-key <key>', 'Override API key for this run')
+  .option('--cloud-url <url>', 'Override Shogo Cloud URL for this run')
+  .action((id: string, flags) => handle(() => runProjectCheckout(id, flags)));
 
 program.showHelpAfterError(pc.dim('\n(use --help for usage)'));
 program.parseAsync(process.argv);

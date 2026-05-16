@@ -40,6 +40,7 @@ import { resolveRuntime, type ResolvedRuntime } from './runtime-resolver.ts';
 import type { RuntimeResolver } from './tunnel.ts';
 import { CloudFileTransport } from '@shogo-ai/sdk';
 import { CloudSyncWatcher } from './cloud-sync-watcher.ts';
+import { cloneProject, gitIsAvailable, isGitRepo } from './git-cloner.ts';
 
 /** Port range for random allocation (mirrors apps/api desktop manager). */
 const PORT_RANGE_START = 37100;
@@ -171,9 +172,34 @@ export interface AutoPullOptions {
   projectsDir: string;
   /** Watch the pulled workspace and push edits back to cloud. Default: true. */
   watch?: boolean;
+  /**
+   * Prefer the git smart-HTTP backend over the file transport for the
+   * initial clone and the watcher's flush path. Defaults to `true`:
+   * the worker will probe `git --version` and fall back to the file
+   * transport if git isn't installed. Set to `false` (via `--no-git` on
+   * `worker start`) to force the file-transport path even when git is
+   * available — useful for environments where outbound HTTPS to git's
+   * pack RPC endpoints is blocked at the firewall.
+   */
+  useGit?: boolean;
   /** Optional logger. Defaults to the manager's logger. */
   logger?: Pick<Console, 'log' | 'warn' | 'error'>;
+  /** Test seam: swap in fakes for the git-cloner ops without resorting
+   *  to module-level mocking (which leaks across bun:test files). Each
+   *  field falls back to the real implementation when not provided. */
+  gitOps?: Partial<GitOpsAdapter>;
 }
+
+/** Subset of git-cloner that the runtime-manager actually calls. */
+export interface GitOpsAdapter {
+  cloneProject: typeof cloneProject;
+  gitIsAvailable: typeof gitIsAvailable;
+  isGitRepo: typeof isGitRepo;
+}
+
+/** Per-project sync strategy. Recorded so the watcher (or stopAll) can
+ *  branch on it without re-probing `git --version`. */
+export type SyncMode = 'git' | 'files';
 
 /** Internal per-project runtime record. */
 interface InternalRuntime {
@@ -250,6 +276,9 @@ export class WorkerRuntimeManager implements RuntimeResolver {
   private readonly watchers = new Map<string, CloudSyncWatcher>();
   /** Projects we've already pulled (or attempted to pull) this lifetime. */
   private readonly pulledProjects = new Set<string>();
+  /** Which sync strategy each project ended up using. Used by the watcher
+   *  to pick between git commit-push and file-transport flush modes. */
+  private readonly syncModes = new Map<string, SyncMode>();
 
   constructor(opts: WorkerRuntimeManagerOptions = {}) {
     this.opts = opts;
@@ -374,6 +403,11 @@ export class WorkerRuntimeManager implements RuntimeResolver {
 
     const projectDir = join(auto.projectsDir, projectId);
     const log = auto.logger ?? this.log;
+    const git = {
+      cloneProject: auto.gitOps?.cloneProject ?? cloneProject,
+      gitIsAvailable: auto.gitOps?.gitIsAvailable ?? gitIsAvailable,
+      isGitRepo: auto.gitOps?.isGitRepo ?? isGitRepo,
+    };
 
     // Mark before attempting so failures don't cause repeated re-pulls
     // on every single request — the runtime will still start with an
@@ -383,27 +417,67 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     try {
       mkdirSync(projectDir, { recursive: true });
       const isEmpty = isDirEmpty(projectDir);
+      const alreadyGitRepo = git.isGitRepo(projectDir);
 
-      if (isEmpty) {
-        log.log(`[WorkerRuntimeManager] auto-pull: cloning project ${projectId} from cloud into ${projectDir}`);
-        const transport = new CloudFileTransport({
-          apiUrl: config.cloudUrl,
-          apiKey: config.apiKey,
-          projectId,
-          localDir: projectDir,
-        });
-        const stats = await transport.downloadAll();
-        log.log(
-          `[WorkerRuntimeManager] auto-pull: ${projectId} downloaded ${stats.downloaded} files ` +
-            `(${stats.errors.length} errors)`,
-        );
+      // Strategy:
+      //   1. If git is available AND the dir is empty (no .git, no files):
+      //        clone via smart-HTTP, then top-up `.shogo/` (SQLite, gitignored)
+      //        via the file transport.
+      //   2. If git is available AND the dir already has a .git/: trust
+      //        the existing clone. The watcher / a later `shogo project
+      //        checkout` brings refs forward.
+      //   3. Otherwise (git unavailable, useGit=false, OR the dir has
+      //        non-empty content with no .git/): fall back to file transport.
+      const wantGit = auto.useGit !== false;
+      const gitAvailable = wantGit ? await git.gitIsAvailable() : false;
+      const mode: SyncMode = (gitAvailable && (isEmpty || alreadyGitRepo)) ? 'git' : 'files';
+      this.syncModes.set(projectId, mode);
+
+      if (mode === 'git') {
+        if (isEmpty) {
+          log.log(`[WorkerRuntimeManager] auto-pull: git clone project ${projectId} into ${projectDir}`);
+          try {
+            const res = await git.cloneProject({
+              apiUrl: config.cloudUrl,
+              apiKey: config.apiKey,
+              projectId,
+              localDir: projectDir,
+              shallow: true,
+              logger: log,
+            });
+            log.log(`[WorkerRuntimeManager] auto-pull: ${projectId} cloned at ${res.commitSha.slice(0, 8)}`);
+          } catch (err: any) {
+            // Git clone failed — try the file transport as a fallback.
+            // We DON'T retry git on subsequent runs: the mode flip is
+            // sticky for this projectId's lifetime to avoid bouncing.
+            log.warn(
+              `[WorkerRuntimeManager] auto-pull: git clone failed for ${projectId} (${err?.message ?? err}); ` +
+                `falling back to CloudFileTransport.downloadAll`,
+            );
+            this.syncModes.set(projectId, 'files');
+            await this.fileTransportClone(projectId, projectDir, config, log);
+          }
+        } else if (alreadyGitRepo) {
+          log.log(`[WorkerRuntimeManager] auto-pull: ${projectId} already has .git/; skipping clone`);
+        }
+
+        // After a git clone, top-up gitignored `.shogo/` SQLite state via
+        // the file transport. `.shogo/` is excluded from git but the
+        // agent-runtime requires it for state continuity across pins.
+        if (this.syncModes.get(projectId) === 'git') {
+          await this.topUpShogoState(projectId, projectDir, config, log);
+        }
+      } else if (isEmpty) {
+        // Pure file-transport path (git unavailable or disabled).
+        await this.fileTransportClone(projectId, projectDir, config, log);
       } else {
         log.log(`[WorkerRuntimeManager] auto-pull: ${projectId} workspace already populated; skipping clone`);
       }
 
-      // Spin up a watcher so locally written files (config.json edits,
-      // skill writes, etc.) sync back to cloud. We only need ONE watcher
-      // per project regardless of how many runtimes spawn for it.
+      // Spin up a watcher so locally written files sync back to cloud.
+      // We only need ONE watcher per project regardless of how many
+      // runtimes spawn for it. The watcher's mode mirrors the chosen
+      // sync strategy: git → commit+push on flush, files → PUT per file.
       if (auto.watch !== false && !this.watchers.has(projectId)) {
         try {
           const transport = new CloudFileTransport({
@@ -412,10 +486,19 @@ export class WorkerRuntimeManager implements RuntimeResolver {
             projectId,
             localDir: projectDir,
           });
+          const finalMode = this.syncModes.get(projectId) ?? 'files';
           const watcher = new CloudSyncWatcher({
             rootDir: projectDir,
             transport,
             logger: log,
+            mode: finalMode,
+            git: finalMode === 'git'
+              ? {
+                  apiUrl: config.cloudUrl,
+                  apiKey: config.apiKey,
+                  projectId,
+                }
+              : undefined,
           });
           watcher.start();
           this.watchers.set(projectId, watcher);
@@ -434,6 +517,60 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     // persistent location instead of a tmpdir. This keeps the runtime
     // crash-resilient — restarts find the same workspace.
     return { ...config, projectDir };
+  }
+
+  /** File-transport clone of an entire project workspace into `projectDir`. */
+  private async fileTransportClone(
+    projectId: string,
+    projectDir: string,
+    config: ProjectSpawnConfig,
+    log: Pick<Console, 'log' | 'warn' | 'error'>,
+  ): Promise<void> {
+    log.log(`[WorkerRuntimeManager] auto-pull: file-transport clone of ${projectId} into ${projectDir}`);
+    const transport = new CloudFileTransport({
+      apiUrl: config.cloudUrl,
+      apiKey: config.apiKey,
+      projectId,
+      localDir: projectDir,
+    });
+    const stats = await transport.downloadAll();
+    log.log(
+      `[WorkerRuntimeManager] auto-pull: ${projectId} downloaded ${stats.downloaded} files ` +
+        `(${stats.errors.length} errors)`,
+    );
+  }
+
+  /**
+   * After a git clone, the worker's workspace is missing `.shogo/`
+   * (the per-project SQLite state directory) because `.shogo/` is
+   * gitignored. Pull just those entries via the file transport so the
+   * agent-runtime sees consistent DB state on first spawn.
+   */
+  private async topUpShogoState(
+    projectId: string,
+    projectDir: string,
+    config: ProjectSpawnConfig,
+    log: Pick<Console, 'log' | 'warn' | 'error'>,
+  ): Promise<void> {
+    try {
+      const transport = new CloudFileTransport({
+        apiUrl: config.cloudUrl,
+        apiKey: config.apiKey,
+        projectId,
+        localDir: projectDir,
+      });
+      const manifest = await transport.listManifest();
+      const shogoEntries = manifest.filter((e) => e.path === '.shogo' || e.path.startsWith('.shogo/'));
+      if (shogoEntries.length === 0) return;
+      const stats = await transport.downloadFiles(shogoEntries);
+      log.log(
+        `[WorkerRuntimeManager] auto-pull: ${projectId} .shogo/ top-up downloaded ${stats.downloaded} ` +
+          `files (${stats.errors.length} errors)`,
+      );
+    } catch (err: any) {
+      // Non-fatal: the runtime will create a fresh SQLite db if needed.
+      log.warn(`[WorkerRuntimeManager] auto-pull: .shogo top-up failed for ${projectId}: ${err?.message ?? err}`);
+    }
   }
 
   status(projectId: string): RuntimeStatusInfo | null {

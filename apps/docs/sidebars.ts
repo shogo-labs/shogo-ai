@@ -62,6 +62,7 @@ const sidebars: SidebarsConfig = {
             "features/my-machines/quickstart",
             "features/my-machines/networking",
             "features/my-machines/project-pull",
+            "features/my-machines/checkpoints-on-the-vps",
             "features/my-machines/troubleshooting",
           ],
         },

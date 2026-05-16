@@ -43,6 +43,7 @@ import { testsRoutes } from './routes/tests'
 import { securityRoutes } from './routes/security'
 import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
+import { gitHttpRoutes } from './routes/git-http'
 import { thumbnailRoutes } from './routes/thumbnail'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
@@ -3918,6 +3919,11 @@ const workspacesDirResolved = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT
 // Mount checkpoint routes
 const checkpointRouter = checkpointRoutes({ workspacesDir: workspacesDirResolved })
 app.route('/api', checkpointRouter)
+
+// Mount git smart-HTTP backend (clone/fetch/push from paired workers).
+// See routes/git-http.ts for the wire-protocol bridge to `git http-backend`.
+const gitHttpRouter = gitHttpRoutes({ workspacesDir: workspacesDirResolved })
+app.route('/api', gitHttpRouter)
 
 // Mount GitHub routes
 const githubRouter = githubRoutes({ workspacesDir: workspacesDirResolved })

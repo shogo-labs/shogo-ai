@@ -105,7 +105,7 @@ describe('WorkerRuntimeManager auto-pull', () => {
     ]);
 
     const mgr = new WorkerRuntimeManager({
-      autoPull: { enabled: true, projectsDir: dir, watch: false },
+      autoPull: { enabled: true, projectsDir: dir, watch: false, useGit: false },
     });
     const result = await mgr.ensurePulled('proj-2', {
       cloudUrl: 'https://api.test',
@@ -130,7 +130,7 @@ describe('WorkerRuntimeManager auto-pull', () => {
     scriptedFetch = scriptManifest([{ path: 'fresh.md', size: 5, content: 'NEW' }]);
 
     const mgr = new WorkerRuntimeManager({
-      autoPull: { enabled: true, projectsDir: dir, watch: false },
+      autoPull: { enabled: true, projectsDir: dir, watch: false, useGit: false },
     });
     const result = await mgr.ensurePulled('proj-3', {
       cloudUrl: 'https://api.test',
@@ -154,7 +154,7 @@ describe('WorkerRuntimeManager auto-pull', () => {
       error: () => {},
     };
     const mgr = new WorkerRuntimeManager({
-      autoPull: { enabled: true, projectsDir: dir, watch: false, logger },
+      autoPull: { enabled: true, projectsDir: dir, watch: false, logger, useGit: false },
     });
     const result = await mgr.ensurePulled('proj-4', {
       cloudUrl: 'https://api.test',
@@ -178,7 +178,7 @@ describe('WorkerRuntimeManager auto-pull', () => {
     }) as unknown as typeof fetch;
 
     const mgr = new WorkerRuntimeManager({
-      autoPull: { enabled: true, projectsDir: dir, watch: false },
+      autoPull: { enabled: true, projectsDir: dir, watch: false, useGit: false },
     });
     const config = { cloudUrl: 'https://api.test', apiKey: 'shogo_sk_x' };
     await mgr.ensurePulled('proj-5', config);

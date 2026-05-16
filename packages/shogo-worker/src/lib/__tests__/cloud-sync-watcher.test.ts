@@ -18,7 +18,15 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CloudSyncWatcher, _isExcluded } from '../cloud-sync-watcher.ts';
+import { CloudSyncWatcher, _isExcluded, type CommitAndPushFn } from '../cloud-sync-watcher.ts';
+
+/** Tests inject a fake `commitAndPush` rather than mocking the module
+ *  (mock.module leaks across files in bun:test). */
+const commitAndPushCalls: any[] = [];
+const commitAndPushFake: CommitAndPushFn = async (opts) => {
+  commitAndPushCalls.push(opts);
+  return { committed: true, commitSha: 'deadbeef1234' };
+};
 
 function fakeTransport() {
   const calls: { paths: string[] }[] = [];
@@ -117,6 +125,65 @@ describe('CloudSyncWatcher', () => {
 
     const allPaths = calls.flatMap((c) => c.paths);
     expect(allPaths).toContain('just-in-time.txt');
+  });
+
+  it('git mode: flushes call commitAndPush instead of uploadFiles', async () => {
+    commitAndPushCalls.length = 0;
+    const { transport, calls } = fakeTransport();
+    const watcher = new CloudSyncWatcher({
+      rootDir: dir,
+      transport,
+      debounceMs: 100,
+      mode: 'git',
+      git: { apiUrl: 'https://api.shogo.ai', apiKey: 'shogo_sk_test', projectId: 'p_abc' },
+      commitAndPush: commitAndPushFake,
+    });
+    watcher.start();
+    await wait(50);
+
+    writeFileSync(join(dir, 'src.tsx'), 'CODE');
+    await wait(400);
+    await watcher.stop();
+
+    expect(commitAndPushCalls.length).toBeGreaterThanOrEqual(1);
+    expect(commitAndPushCalls[0]!.projectId).toBe('p_abc');
+    expect(commitAndPushCalls[0]!.localDir).toBe(dir);
+    expect(commitAndPushCalls[0]!.apiKey).toBe('shogo_sk_test');
+    // Non-.shogo paths should NOT go through uploadFiles in git mode.
+    const fileTransportPaths = calls.flatMap((c) => c.paths);
+    expect(fileTransportPaths.includes('src.tsx')).toBe(false);
+  });
+
+  it('git mode: .shogo/ writes still route through the file transport', async () => {
+    commitAndPushCalls.length = 0;
+    const { transport, calls } = fakeTransport();
+    mkdirSync(join(dir, '.shogo'), { recursive: true });
+    const watcher = new CloudSyncWatcher({
+      rootDir: dir,
+      transport,
+      debounceMs: 100,
+      mode: 'git',
+      git: { apiUrl: 'https://api.shogo.ai', apiKey: 'shogo_sk_test', projectId: 'p_xyz' },
+      commitAndPush: commitAndPushFake,
+    });
+    watcher.start();
+    await wait(50);
+
+    writeFileSync(join(dir, '.shogo', 'db.sqlite'), 'SQLITE');
+    writeFileSync(join(dir, 'App.tsx'), 'APP');
+    await wait(400);
+    await watcher.stop();
+
+    const fileTransportPaths = calls.flatMap((c) => c.paths);
+    expect(fileTransportPaths.some((p) => p.startsWith('.shogo'))).toBe(true);
+    // App.tsx commits go to git, NOT the file transport.
+    expect(fileTransportPaths.includes('App.tsx')).toBe(false);
+    expect(commitAndPushCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('git mode: throws when constructed without git options', () => {
+    const { transport } = fakeTransport();
+    expect(() => new CloudSyncWatcher({ rootDir: dir, transport, mode: 'git' as const })).toThrow();
   });
 
   it('invokes onFlush with the uploaded batch + error count', async () => {

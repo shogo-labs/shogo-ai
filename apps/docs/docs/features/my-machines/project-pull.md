@@ -31,34 +31,76 @@ shogo project pull <projectId>
 shogo worker start
 ```
 
-## How it works
+## How it works — two transports, one experience
 
-Workspace files for every Shogo project live in cloud-side S3, behind the
-**Files API** at `https://api.shogo.ai/api/projects/<id>/...`. `shogo project
-pull` walks the project's manifest via:
+Every Shogo project's workspace is **both** a git repo on the cloud side
+(`workspaces/<id>/.git`) AND a set of object-store files behind the Files API.
+The worker picks the right transport depending on what's available and what
+you're doing:
+
+| Operation | Transport | Why |
+|---|---|---|
+| Auto-pull (first inbound request) | **git smart-HTTP** (default) | Pack-based delta sync; full checkpoint history reachable locally |
+| `shogo project pull/push --watch` | Files API (presigned URLs) | Per-file granularity, `--include` filters, `.shogo/` SQLite |
+| `agent-runtime` writes during a session | **git commit + push** (worker mode) | Cloud's post-receive hook materializes one `ProjectCheckpoint` per push |
+| `.shogo/` SQLite state | Files API (always) | gitignored; needs byte-for-byte file copy |
+
+### git mode (default when `git` is on PATH)
+
+The worker shells out to local `git` against the cloud's smart-HTTP backend:
+
+```
+GET  /api/projects/:id/git/info/refs?service=git-upload-pack
+POST /api/projects/:id/git/git-upload-pack   ← clone / fetch
+POST /api/projects/:id/git/git-receive-pack  ← push
+```
+
+The bearer token rides in `-c http.extraHeader=Authorization: Bearer …` so
+your API key never appears in `git remote -v` or `ps`. After each successful
+push, the cloud's post-receive hook reads the new HEAD and writes a
+`ProjectCheckpoint` row — so the desktop UI's checkpoint timeline reflects
+what the agent did on the worker, with no extra round trips.
+
+```mermaid
+flowchart LR
+  subgraph cloud [Shogo Cloud]
+    GitBackend["git http-backend\nbehind /api/projects/:id/git/*"]
+    Repo[("workspaces/<id>/.git")]
+    FilesAPI[/Files API\n/workspace/manifest\n/files/* presign/]
+    GitBackend --- Repo
+    GitBackend -.post-receive hook.-> Checkpoints[("ProjectCheckpoint rows")]
+  end
+  subgraph worker [Paired machine]
+    Manager["shogo worker"]
+    Runtime["agent-runtime"]
+    Watcher["watcher\n(commit + push mode)"]
+    LocalRepo[("~/.shogo/projects/<id>/.git")]
+    Manager --> Runtime
+    Manager --> Watcher
+    Watcher --> LocalRepo
+  end
+  Manager -- "git clone --depth=1" --> GitBackend
+  Manager -- ".shogo/* SQLite bytes" --> FilesAPI
+  Watcher -- "git push origin HEAD" --> GitBackend
+```
+
+### Files-only mode
+
+When `git` isn't on PATH, or you pass `--no-git` to `shogo worker start`, the
+worker walks the project's manifest via the Files API:
 
 ```
 GET    /api/projects/:id/workspace/manifest      ← list every file in the project
 POST   /api/projects/:id/s3/presign              ← batch read URLs
 ```
 
-then downloads each file in parallel using your paired machine's
-`shogo_sk_*` API key. No AWS credentials are exchanged with your machine — the
-cloud mints short-lived presigned URLs per request, and they're scoped to your
-workspace.
+then downloads each file in parallel. No AWS credentials are exchanged with
+your machine — the cloud mints short-lived presigned URLs per request, and
+they're scoped to your workspace.
 
-```mermaid
-flowchart LR
-  CLI["shogo project pull <id>"] --> Cloud["Shogo Cloud Files API\nGET /workspace/manifest\nPOST /s3/presign"]
-  Cloud --> S3[("S3 / object store")]
-  Cloud --> Local["~/.shogo/projects/<id>/"]
-```
-
-The same code path drives the worker's **auto-pull**: when an inbound request
-(a pinned webhook, a Jira ticket, a chat message) arrives for a project the
-worker hasn't seen before, it pulls the workspace into
-`~/.shogo/projects/<id>/` and then spawns the `agent-runtime` against that
-directory.
+Manual `shogo project pull/push` always uses this path so `--include`
+patterns and `--watch` debounced uploads work the same way regardless of
+whether you have git installed.
 
 ## Manual pull / push
 
@@ -97,31 +139,66 @@ strict mirror — any file present in cloud but absent locally is deleted.
 `shogo worker start` enables auto-pull by default. When a tunneled request for
 project `<id>` arrives:
 
-1. If `~/.shogo/projects/<id>/` is empty, the worker calls the same
-   `CloudFileTransport.downloadAll()` the CLI uses.
-2. It starts a {@link CloudSyncWatcher} on that directory so writes made by
-   the local `agent-runtime` (channel config edits, skill writes, etc.) sync
-   back to cloud automatically.
-3. It then spawns the `agent-runtime` with `PROJECT_DIR=<that dir>` and
+1. If `~/.shogo/projects/<id>/` is empty, the worker tries `git clone
+   --depth=1` against the smart-HTTP backend. If git isn't installed (or you
+   passed `--no-git`), it falls back to the Files API and runs
+   `CloudFileTransport.downloadAll()` instead.
+2. **After a successful git clone**, the worker makes one more pass via the
+   Files API to download `.shogo/*` (SQLite state, gitignored). This is the
+   "full sync" path — your agent sees a coherent DB even though the rest of
+   the workspace came in over the git wire.
+3. It starts a {@link CloudSyncWatcher} on that directory so writes made by
+   the local `agent-runtime` sync back to cloud automatically:
+   - **In git mode** the watcher batches edits and `git add -A && git commit
+     && git push`es the result. Each push records a `ProjectCheckpoint` row
+     via the cloud's post-receive hook.
+   - **In files mode** the watcher PUTs individual files to the Files API.
+   - Either way, `.shogo/` SQLite writes always go through the Files API
+     because they're gitignored.
+4. It then spawns the `agent-runtime` with `PROJECT_DIR=<that dir>` and
    `SHOGO_CLOUD_SYNC=1`. The latter tells the runtime to skip its own
-   built-in S3Sync — the worker already owns sync, and running both would
-   double-upload.
+   built-in S3Sync **and** its own checkpoint insertion — the worker (and
+   the cloud's post-receive hook) own sync now.
 
 If the cloud is unreachable when the request arrives, auto-pull fails
 **softly**: the runtime still starts with an empty workspace and falls back to
 template defaults. The next request retries the pull.
 
-### Disabling auto-pull
+### Disabling auto-pull or git
 
-For users who manage their workspaces externally (git-backed projects, NFS
-mounts, etc.), pass `--no-auto-pull`:
+For users who manage their workspaces externally, pass `--no-auto-pull`:
 
 ```bash
 shogo worker start --no-auto-pull --worker-dir /path/to/my/repo
 ```
 
-The worker will still route tunneled traffic — it just won't try to clone
-anything.
+To force the Files API path even when `git` is available (e.g. your VPS
+firewall blocks outbound HTTPS to git pack-RPC endpoints, or you don't want
+the worker shelling out to git), use `--no-git`:
+
+```bash
+shogo worker start --no-git
+```
+
+The worker will still route tunneled traffic — it just won't try to clone via
+git.
+
+### Rolling back to an earlier checkpoint
+
+When the worker is in git mode, every commit pushed (including auto-checkpoints
+made by the agent-runtime during a chat turn) is reachable as a regular git
+SHA on the worker. `shogo project checkout` wraps the git ceremony:
+
+```bash
+shogo project checkout <projectId>                  # fast-forward to remote HEAD
+shogo project checkout <projectId> --at abc1234     # check out a specific SHA
+shogo project checkout <projectId> --at "before refactor"   # resolve checkpoint by name
+shogo project checkout <projectId> --unshallow      # convert shallow clone to full
+```
+
+`--at` resolves against `GET /api/projects/:id/checkpoints` — the same list
+the desktop checkpoint panel uses. See
+[Checkpoints on the VPS](./checkpoints-on-the-vps.md) for examples.
 
 ### Changing the projects directory
 
