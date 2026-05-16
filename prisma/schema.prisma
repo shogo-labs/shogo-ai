@@ -208,6 +208,23 @@ model Project {
   preferredInstanceId     String?
   preferredInstancePolicy String  @default("pinned")
 
+  // Cloud workspace sync mode. Controls how the cloud agent-runtime pod
+  // syncs the workspace back to durable storage.
+  //   - `s3`          (default) — today's behavior. S3Sync writes both
+  //                   layers; ProjectCheckpoint inserted by project-chat.ts.
+  //   - `dual_shadow` — verification. S3Sync still authoritative; the pod
+  //                   ALSO pushes commits via the smart-HTTP backend so the
+  //                   post-receive hook writes ProjectCheckpoint rows. Used
+  //                   to compare git-side vs S3-side checkpoints before
+  //                   flipping a project to `git_only`.
+  //   - `git_only`    — git is the primary writer for per-turn diffs. S3
+  //                   Layer 2 stays suppressed but armed as an automatic
+  //                   fallback if push fails repeatedly, and always writes
+  //                   the cold-start snapshot at evict.
+  // Operationally additive: existing projects keep `s3` semantics.
+  // See apps/docs/docs/architecture/cloud-pod-sync.md.
+  cloudSyncMode CloudSyncMode @default(s3)
+
   // Relations
   workspace              Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   folder                 Folder?                 @relation(fields: [folderId], references: [id], onDelete: SetNull)
@@ -274,6 +291,13 @@ model AgentConfig {
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@map("agent_configs")
+}
+
+/// Cloud workspace sync strategy. See Project.cloudSyncMode.
+enum CloudSyncMode {
+  s3
+  dual_shadow
+  git_only
 }
 
 enum ProjectTier {

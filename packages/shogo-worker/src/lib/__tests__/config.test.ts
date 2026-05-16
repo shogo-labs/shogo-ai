@@ -30,12 +30,17 @@ function setupTmpHome(): string {
     RUNTIME_DIR: join(homeDir, 'runtime'),
     RUNTIME_BIN: join(homeDir, 'runtime', 'agent-runtime'),
     RUNTIME_VERSION_FILE: join(homeDir, 'runtime', 'version.json'),
+    PROJECTS_DIR: join(homeDir, 'projects'),
+    projectDirFor: (id: string, base = join(homeDir, 'projects')) => join(base, id),
     ensureHome: () => {
       mkdirSync(homeDir, { recursive: true, mode: 0o700 });
       mkdirSync(join(homeDir, 'logs'), { recursive: true, mode: 0o700 });
     },
     ensureRuntimeDir: () => {
       mkdirSync(join(homeDir, 'runtime'), { recursive: true, mode: 0o700 });
+    },
+    ensureProjectsDir: (base = join(homeDir, 'projects')) => {
+      mkdirSync(base, { recursive: true, mode: 0o700 });
     },
   }));
   return configFile;

@@ -24,6 +24,7 @@ import {
   getPresignedReadUrl,
   getPresignedWriteUrl,
   listAllObjectsInS3,
+  deleteFromS3,
   isS3Enabled,
 } from "../lib/s3"
 
@@ -51,6 +52,28 @@ const INCLUDED_EXTENSIONS = new Set([
 const EXCLUDED_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', '.vite', '.cache'
 ])
+
+/**
+ * Path patterns excluded from the full workspace manifest. These are
+ * potentially-sensitive files we do NOT want to expose via the cloud
+ * Files API to anyone holding a workspace-scoped `shogo_sk_*` key.
+ *
+ * Used by `GET /workspace/manifest` (full-workspace listing). The narrower
+ * Studio listing endpoint (`GET /s3/files`) still applies INCLUDED_EXTENSIONS
+ * on top of this so the matrix is conservative either way.
+ */
+const SENSITIVE_FILE_PATTERNS: RegExp[] = [
+  /(^|\/)\.env(\.|$)/,
+  /(^|\/)\.env$/,
+  /\.pem$/i,
+  /\.key$/i,
+  /(^|\/)id_rsa($|\.)/,
+  /(^|\/)credentials($|\.)/,
+]
+
+function isSensitivePath(relativePath: string): boolean {
+  return SENSITIVE_FILE_PATTERNS.some((re) => re.test(relativePath))
+}
 
 /**
  * Map file extensions to MIME types for binary/media files.
@@ -539,6 +562,137 @@ export function filesRoutes(config: FilesRoutesConfig) {
       return c.json(
         { error: { code: "s3_presign_failed", message: error.message || "Failed to generate pre-signed URLs" } },
         500
+      )
+    }
+  })
+
+  // =========================================================================
+  // Full-workspace clone endpoints
+  //
+  // These power `shogo project pull/push` and the worker's auto-pull hook.
+  // They differ from the Studio-oriented `/s3/files` listing above:
+  //   - Manifest returns the FULL tree (no extension allowlist), still
+  //     filtered to skip dependency / build artifact directories AND
+  //     sensitive files (.env, *.pem, …).
+  //   - Entries carry `{ size, lastModified, etag }` so clients can do
+  //     skip-unchanged diffing without re-downloading every file.
+  //   - DELETE is added for the push direction (mirror local deletes).
+  // =========================================================================
+
+  /**
+   * GET /projects/:projectId/workspace/manifest
+   *
+   * Returns every project file in S3 modulo SENSITIVE_FILE_PATTERNS +
+   * EXCLUDED_DIRS, with size/lastModified/etag so the caller can decide
+   * what to (re)download. Used by `shogo project pull` and the worker's
+   * auto-pull path.
+   */
+  router.get("/projects/:projectId/workspace/manifest", async (c) => {
+    try {
+      const projectId = c.req.param("projectId")
+      const prefix = `${projectId}/`
+
+      const objects = await listAllObjectsInS3(prefix, S3_WORKSPACES_BUCKET)
+
+      const files = objects
+        .filter((obj) => {
+          // Exclude files inside dependency / build directories.
+          const parts = obj.relativePath.split('/')
+          return !parts.some((part) => EXCLUDED_DIRS.has(part))
+        })
+        .filter((obj) => !isSensitivePath(obj.relativePath))
+        .map((obj) => ({
+          path: obj.relativePath,
+          size: obj.size,
+          lastModified: obj.lastModified?.toISOString() ?? null,
+          // We don't have ETag in our listAllObjectsInS3 helper; clients
+          // should use `${size}:${lastModified}` as their diff cursor.
+          etag: null as string | null,
+        }))
+
+      return c.json(
+        {
+          ok: true,
+          projectId,
+          files,
+          source: 's3',
+          generatedAt: new Date().toISOString(),
+        },
+        200,
+      )
+    } catch (error: any) {
+      console.error("[Files] Manifest error:", error)
+      return c.json(
+        { error: { code: "manifest_failed", message: error.message || "Failed to build workspace manifest" } },
+        500,
+      )
+    }
+  })
+
+  /**
+   * DELETE /projects/:projectId/files/*
+   *
+   * Removes a file from S3 (and the filesystem fallback in dev mode). Used
+   * by `shogo project push --delete-remote` to mirror local deletions back
+   * to staging. Path validation matches GET/PUT to prevent traversal.
+   */
+  router.delete("/projects/:projectId/files/*", async (c) => {
+    try {
+      const projectId = c.req.param("projectId")
+      const filePath = c.req.path.replace(`/projects/${projectId}/files/`, '')
+
+      if (!filePath) {
+        return c.json(
+          { error: { code: "invalid_path", message: "File path is required" } },
+          400,
+        )
+      }
+      if (!validateFilePath(filePath)) {
+        return c.json(
+          { error: { code: "invalid_path", message: "Invalid file path" } },
+          400,
+        )
+      }
+      if (isSensitivePath(filePath)) {
+        return c.json(
+          { error: { code: "forbidden_path", message: "Cannot delete sensitive path via API" } },
+          403,
+        )
+      }
+
+      if (isS3Enabled()) {
+        const key = buildProjectFileKey(projectId, filePath)
+        try {
+          await deleteFromS3(key)
+        } catch (err: any) {
+          // S3 returns 204 even on missing keys, but if the helper throws
+          // for any other reason surface it as a 500. Treat NotFound as
+          // idempotent success.
+          if (err?.name !== 'NotFound' && err?.$metadata?.httpStatusCode !== 404) {
+            throw err
+          }
+        }
+      }
+
+      // Filesystem fallback (dev mode): best-effort unlink. We don't fail
+      // the request if the file is missing locally — S3 is authoritative.
+      const projectPath = await getProjectPath(projectId)
+      if (projectPath) {
+        const fullPath = join(projectPath, filePath)
+        try {
+          const { unlink } = await import('fs/promises')
+          await unlink(fullPath)
+        } catch {
+          /* ignore */
+        }
+      }
+
+      return c.json({ ok: true, path: filePath }, 200)
+    } catch (error: any) {
+      console.error("[Files] Delete error:", error)
+      return c.json(
+        { error: { code: "delete_failed", message: error.message || "Failed to delete file" } },
+        500,
       )
     }
   })

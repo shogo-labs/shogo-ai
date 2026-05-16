@@ -35,6 +35,7 @@ export async function buildProjectEnv(
         templateId: true,
         name: true,
         settings: true,
+        cloudSyncMode: true,
         workspace: { select: { composioScope: true } },
       } as any,
     }) as (Record<string, any> & {
@@ -42,12 +43,21 @@ export async function buildProjectEnv(
       templateId?: string | null
       name?: string | null
       settings?: unknown
+      cloudSyncMode?: string | null
       workspace?: { composioScope?: string | null } | null
     }) | null
     if (project) {
       if (project.workspaceId) env.WORKSPACE_ID = project.workspaceId
       if (project.templateId) env.TEMPLATE_ID = project.templateId
       if (project.name) env.AGENT_NAME = project.name
+
+      // Per-project cloud sync strategy. Default `s3` is omitted so
+      // existing pods boot with identical env to today (no behavioral
+      // change unless a project explicitly opts into the new modes).
+      // Routed by `agent-runtime/src/server.ts` `resolveCloudSyncMode`.
+      if (project.cloudSyncMode && project.cloudSyncMode !== 's3') {
+        env.SHOGO_CLOUD_SYNC_MODE = project.cloudSyncMode
+      }
 
       // Tell the runtime which scope to use for Composio user IDs.
       // Falls back to 'workspace' (the new default) when the workspace
@@ -74,7 +84,7 @@ export async function buildProjectEnv(
       const ownerUserId = await getProjectOwnerUserId(projectId)
       env.AI_PROXY_TOKEN = await generateProxyToken(
         projectId,
-        project.workspaceId,
+        project.workspaceId ?? 'local-dev',
         ownerUserId,
         7 * 24 * 60 * 60 * 1000,
       )

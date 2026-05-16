@@ -89,6 +89,10 @@ From the network's point of view, this is still one outbound TLS connection to `
 
 To enable: pair the machine (`shogo worker start`), then in Studio open the project → **Channels → Run on**, or call `client.machines.pinProject(projectId, { instanceId })` from `@shogo-ai/sdk`. See [External Triggers](https://docs.shogo.ai/docs/features/external-triggers/quickstart) for the end-to-end walk-through.
 
+### What about the project's workspace files?
+
+When the worker handles a request for a project for the first time, it clones the project's workspace from cloud over the same outbound HTTPS connection (no inbound port, no AWS credentials) and stores it in `~/.shogo/projects/<projectId>/`. A live file watcher pushes local edits back to cloud as the `agent-runtime` writes files. See [Cloning projects to a paired machine](https://docs.shogo.ai/docs/features/my-machines/project-pull) for details, or pass `--no-auto-pull` to manage workspaces yourself.
+
 ## FAQ
 
 **Why is there no inbound port?**

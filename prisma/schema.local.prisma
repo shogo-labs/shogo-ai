@@ -175,6 +175,12 @@ model Project {
   preferredInstanceId     String?
   preferredInstancePolicy String  @default("pinned")
 
+  // Cloud workspace sync mode. SQLite has no native enum type, so we
+  // store it as TEXT with the same allowed values used by the PG enum:
+  //   's3' | 'dual_shadow' | 'git_only'. The check constraint lives in
+  //   the migration. See prisma/schema.prisma for the canonical comment.
+  cloudSyncMode String @default("s3")
+
   workspace              Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   folder                 Folder?                 @relation(fields: [folderId], references: [id], onDelete: SetNull)
   members                Member[]

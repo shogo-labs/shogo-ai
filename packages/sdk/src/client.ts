@@ -11,6 +11,7 @@ import { HttpClient } from './http/client.js'
 import { ShogoAuth } from './auth/index.js'
 import { PlatformApi } from './platform/index.js'
 import { MachinesApi } from './machines/index.js'
+import { ProjectsApi } from './projects/index.js'
 import {
   getDefaultStorageAdapter,
   type StorageAdapter,
@@ -66,6 +67,17 @@ export interface ShogoClient<DB = unknown> {
    */
   machines: MachinesApi
 
+  /**
+   * Projects API: clone/sync a project's workspace between cloud and
+   * local. Used by `shogo project pull/push` and the worker's auto-pull.
+   *
+   * ```ts
+   * await client.projects.pull(projectId, { into: './myproj' })
+   * await client.projects.push(projectId, { from: './myproj' })
+   * ```
+   */
+  projects: ProjectsApi
+
   /** Database - direct pass-through to your Prisma client */
   db: DB
 
@@ -120,12 +132,14 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
   auth: ShogoAuth
   platform: PlatformApi
   machines: MachinesApi
+  projects: ProjectsApi
   db: DB
   llm: ShogoLlmProvider | null
   voice: ShogoVoiceModule
   _http: HttpClient
 
   private shogoCloudUrl: string | undefined
+  private shogoApiKey: string | null
   private config: ShogoClientConfig<DB>
 
   constructor(config: ShogoClientConfig<DB>) {
@@ -148,6 +162,16 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
 
     // Create machines API (powers the "Run on" / external-trigger story).
     this.machines = new MachinesApi(this._http)
+
+    // Projects API: workspace clone/sync (`shogo project pull/push`).
+    // Both apiKey and apiUrl are resolved lazily so `setShogoApiKey` keeps
+    // working without re-instantiating.
+    this.shogoApiKey = config.shogoApiKey ?? null
+    this.projects = new ProjectsApi(
+      this._http,
+      () => this.shogoApiKey,
+      () => config.apiUrl,
+    )
 
     // Wire up token getter from auth to HTTP client
     this._http.setTokenGetter(() => this.auth.getToken())
@@ -231,6 +255,7 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
   }
 
   setShogoApiKey(key: string | null): void {
+    this.shogoApiKey = key
     this.llm = key
       ? createShogoLlmProvider({ apiKey: key, baseUrl: this.shogoCloudUrl })
       : null

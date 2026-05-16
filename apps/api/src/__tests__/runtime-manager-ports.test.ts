@@ -13,6 +13,16 @@ mock.module('child_process', () => ({
     if (next instanceof Error) throw next
     return next ?? ''
   },
+  // Newer code paths reachable from RuntimeManager (e.g. via
+  // services/git.service.ts) reference execFile/execFileSync/exec. Bun's
+  // `mock.module` replaces the *entire* module shape with whatever we
+  // return here, so if these names aren't present the static import in
+  // the consumer fails with `Export named 'execFile' not found in module
+  // 'node:child_process'`. Stub them as no-op so the import resolves;
+  // the actual ports test doesn't exercise these paths.
+  execFile: () => {},
+  execFileSync: () => '',
+  exec: () => {},
   spawn: mock(() => ({
     stdout: { on: () => {} },
     stderr: { on: () => {} },

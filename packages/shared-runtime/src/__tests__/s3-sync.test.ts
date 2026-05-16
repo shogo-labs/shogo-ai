@@ -491,6 +491,108 @@ describe('periodic + watcher lifecycle', () => {
 })
 
 // ---------------------------------------------------------------------------
+// suppressProjectArchive (git_only mode plumbing)
+// ---------------------------------------------------------------------------
+
+describe('suppressProjectArchive', () => {
+  test('uploadAll skips Layer 2 when constructed with suppress=true', async () => {
+    writeFileSync(join(TEST_DIR, 'a.ts'), 'export const a = 1\n')
+    const sync = mkSync({ suppressProjectArchive: true })
+    const stats = await sync.uploadAll(false)
+    expect(s3Store.has('test-bucket/test-prefix/project-src.tar.gz')).toBe(false)
+    // Depds path still runs but won't write (no lockfile → no node_modules tarball).
+    expect(stats.errors).toEqual([])
+    expect(sync.isProjectArchiveSuppressed()).toBe(true)
+  })
+
+  test('setSuppressProjectArchive(false) re-enables Layer 2 mid-session', async () => {
+    writeFileSync(join(TEST_DIR, 'a.ts'), 'export const a = 1\n')
+    const sync = mkSync({ suppressProjectArchive: true })
+    await sync.uploadAll(false)
+    expect(s3Store.has('test-bucket/test-prefix/project-src.tar.gz')).toBe(false)
+
+    sync.setSuppressProjectArchive(false)
+    expect(sync.isProjectArchiveSuppressed()).toBe(false)
+    await sync.uploadAll(false)
+    expect(s3Store.has('test-bucket/test-prefix/project-src.tar.gz')).toBe(true)
+  })
+
+  test('setSuppressProjectArchive(true) re-suppresses after a recovery', async () => {
+    writeFileSync(join(TEST_DIR, 'a.ts'), 'export const a = 1\n')
+    const sync = mkSync({ suppressProjectArchive: false })
+    await sync.uploadAll(false)
+    expect(s3Store.has('test-bucket/test-prefix/project-src.tar.gz')).toBe(true)
+    s3Store.delete('test-bucket/test-prefix/project-src.tar.gz')
+
+    sync.setSuppressProjectArchive(true)
+    writeFileSync(join(TEST_DIR, 'b.ts'), 'export const b = 2\n')
+    await sync.uploadAll(false)
+    expect(s3Store.has('test-bucket/test-prefix/project-src.tar.gz')).toBe(false)
+  })
+
+  test('flushAndShutdown({ forceProjectArchive: true }) overrides suppression for the cold-start snapshot', async () => {
+    writeFileSync(join(TEST_DIR, 'a.ts'), 'export const a = 1\n')
+    const sync = mkSync({ suppressProjectArchive: true })
+    // Mark something as pending so flushAndShutdown doesn't early-return.
+    ;(sync as any).pendingUploads.add('a.ts')
+    await sync.flushAndShutdown({ timeoutMs: 5000, forceProjectArchive: true })
+    expect(s3Store.has('test-bucket/test-prefix/project-src.tar.gz')).toBe(true)
+  })
+
+  test('flushAndShutdown number-form is still supported (back-compat)', async () => {
+    writeFileSync(join(TEST_DIR, 'a.ts'), 'export const a = 1\n')
+    const sync = mkSync()
+    ;(sync as any).pendingUploads.add('a.ts')
+    await sync.flushAndShutdown(5000)
+    expect(s3Store.has('test-bucket/test-prefix/project-src.tar.gz')).toBe(true)
+  })
+
+  test('flushAndShutdown with forceProjectArchive=true uploads even when there are no pending changes', async () => {
+    writeFileSync(join(TEST_DIR, 'cold-start.ts'), 'export {}\n')
+    const sync = mkSync({ suppressProjectArchive: true })
+    await sync.flushAndShutdown({ timeoutMs: 5000, forceProjectArchive: true })
+    expect(s3Store.has('test-bucket/test-prefix/project-src.tar.gz')).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// snapshotProjectArchiveFromGit
+// ---------------------------------------------------------------------------
+
+describe('snapshotProjectArchiveFromGit', () => {
+  // This spawns the real `git` binary; skip cleanly on environments
+  // that don't have one (extremely rare in our CI / dev hosts).
+  test('uploads `git archive HEAD` output to the project archive key', async () => {
+    const { spawnSync } = await import('child_process')
+    if (spawnSync('git', ['--version']).status !== 0) {
+      console.warn('skipping snapshotProjectArchiveFromGit: git not available')
+      return
+    }
+
+    // Materialize a tiny git repo inside the test dir.
+    writeFileSync(join(TEST_DIR, 'main.ts'), 'export const main = 1\n')
+    const run = (args: string[]) => {
+      const r = spawnSync('git', args, { cwd: TEST_DIR, env: { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t' } })
+      if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr.toString()}`)
+    }
+    run(['init', '-b', 'main'])
+    run(['add', '-A'])
+    run(['commit', '-m', 'init', '--no-verify'])
+
+    const sync = mkSync({ suppressProjectArchive: true })
+    await sync.snapshotProjectArchiveFromGit()
+    expect(s3Store.has('test-bucket/test-prefix/project-src.tar.gz')).toBe(true)
+    const tarball = s3Store.get('test-bucket/test-prefix/project-src.tar.gz')!
+    expect(tarball.length).toBeGreaterThan(0)
+  })
+
+  test('rejects when localDir is not a git repo', async () => {
+    const sync = mkSync({ suppressProjectArchive: true })
+    await expect(sync.snapshotProjectArchiveFromGit()).rejects.toBeDefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
 // shouldExclude branches — exercised via overriding the exclude list.
 // ---------------------------------------------------------------------------
 

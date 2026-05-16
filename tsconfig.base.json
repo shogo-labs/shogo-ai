@@ -10,7 +10,14 @@
     "declarationMap": true,
     "sourceMap": true,
     "composite": true,
+    // `baseUrl` here lets `paths` below resolve from the repo root in
+    // every workspace that extends this config. TS 7.0 plans to make
+    // `paths` work without `baseUrl`, but we still target TS 6.x; the
+    // explicit opt-in via `ignoreDeprecations` silences the TS5101
+    // forward-compat warning so CI typecheck stays green until we
+    // upgrade.
     "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
     // SDK source-map paths.
     //
     // These redirect any `import ... from '@shogo-ai/sdk/...'` in

@@ -1,64 +1,90 @@
-<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
-<!-- Copyright (C) 2026 Shogo Technologies, Inc. -->
-
 # `@shogo/shared-runtime`
 
-Workspace-only AGPL package containing the runtime helpers that glue the
-hosted Shogo platform together — S3 sync, Postgres backup, K8s
-self-assignment, the runtime Hono application factory, and the cluster /
-control-plane types that pin them to the hosted topology.
+Shared utilities used by both `apps/api` and `packages/agent-runtime`.
+Everything in this package is **AGPL-3.0** — it ships inside the cloud
+pod, not into customer-distributed binaries.
 
-This package is **not published to npm** and is licensed under
-`AGPL-3.0-or-later`.
+## Cloud workspace sync
 
-## File-level license map
+The agent-runtime pod has two complementary sync mechanisms. Which
+one writes per-turn depends on `Project.cloudSyncMode` (see
+[Cloud pod sync architecture](../../apps/docs/docs/architecture/cloud-pod-sync.md)
+for the user-facing design doc).
 
-Most of the canonical, generic, dependency-light helpers that used to
-live here have been **lifted into MIT-licensed packages** so external
-consumers can use them without the AGPL constraint. The files below are
-thin AGPL re-export shims so existing workspace AGPL consumers
-(`@shogo/agent-runtime`, `@shogo/api`) continue to import from
-`@shogo/shared-runtime` unchanged.
+### `S3Sync` (`src/s3-sync.ts`)
 
-### MIT (re-export shims pointing to a published `@shogo-ai/*` package)
+Two-layer tarball strategy with content-addressed deps caching. Public surface used by the runtime:
 
-| File | Canonical MIT home |
-| --- | --- |
-| `src/chat-message.ts` | `@shogo-ai/core/chat-message` |
-| `src/instrumentation.ts` | `@shogo-ai/core/instrumentation` |
-| `src/logger.ts` | `@shogo-ai/core/logger` |
-| `src/stream-buffer.ts` | `@shogo-ai/core/stream-buffer` |
-| `src/macos-junk.ts` | `@shogo-ai/core/macos-junk` |
-| `src/tech-stack-registry.ts` | `@shogo-ai/core/tech-stack-registry` |
-| `src/platform-pkg.ts` | `@shogo-ai/cli/pkg` |
-| `src/ai-client.ts` | `@shogo-ai/agent/ai-client` |
-| `src/ai-proxy.ts` | `@shogo-ai/agent/ai-proxy` |
+- `initializeS3Sync(localDir, { suppressProjectArchive? })` — download
+  layered archives, restore deps in the background, optionally skip
+  the Layer 2 uploader. Returns `{ sync, downloadSucceeded }` or
+  `null` if S3 isn't configured.
+- `S3Sync.triggerSync(immediate)` — fire-and-forget upload trigger.
+- `S3Sync.flushAndShutdown(timeoutMs)` — number form, back-compat.
+- `S3Sync.flushAndShutdown({ timeoutMs, forceProjectArchive })` — opts
+  form. When `forceProjectArchive=true`, the cold-start tarball is
+  uploaded even if Layer 2 is suppressed and even if there are no
+  pending file changes (used by the runtime at evict in `git_only`).
+- `S3Sync.setSuppressProjectArchive(boolean)` — runtime-mutable toggle
+  for Layer 2 uploads. Wired to `GitWorkspaceSync.onDegrade` /
+  `onRecovered` so the project-archive uploader engages automatically
+  when git push starts failing and re-suppresses on recovery.
+- `S3Sync.snapshotProjectArchiveFromGit()` — write a cold-start
+  tarball by running `git archive HEAD` over the workspace. Used at
+  evict in healthy `git_only` mode.
 
-The shims themselves carry an `AGPL-3.0-or-later` SPDX header (since
-they live inside an AGPL package) but compile to a one-line `export *`
-that resolves to MIT code at runtime.
+### `GitWorkspaceSync` (`src/git-sync.ts`)
 
-### Stay AGPL — hosted-platform glue
+Per-turn `git push` to the smart-HTTP backend at
+`/api/projects/:id/git/*`. Mirrors `S3Sync`'s public shape so call
+sites in `agent-runtime/server.ts` are uniform.
 
-These files have hard cluster / control-plane / SaaS coupling and stay
-AGPL inside this package. Do not move these to MIT without lifting the
-hosted-only assumptions out first.
+- `triggerSync(immediate)` — debounced (1.5 s) by default, immediate
+  bypasses the debounce.
+- `flushAndShutdown(timeoutMs)` — one last push attempt, returns
+  within `timeoutMs` even if the push hangs.
+- `isDegraded` / `consecutiveFailures` — read-only diagnostics.
+- Config callbacks `onDegrade(reason)` and `onRecovered()` for the
+  S3-fallback wiring. After `degradeAfterFailures` (default 3)
+  consecutive push failures, `onDegrade` fires once. After the next
+  successful push, `onRecovered` fires.
 
-| File | Why AGPL |
-| --- | --- |
-| `src/s3-sync.ts` | `S3_WORKSPACES_BUCKET`, layered tar keys, Knative readiness model |
-| `src/postgres-backup.ts` | `S3_WORKSPACES_BUCKET`, `postgres-backups/...` key layout |
-| `src/self-assign.ts` | K8s SA token, `/api/internal/pod-config/...`, pool assignment marker |
-| `src/token-refresh.ts` | Internal API + SA auth |
-| `src/server-framework.ts` | `createRuntimeApp` with warm-pool routes, `WARM_POOL_MODE`, `RUNTIME_AUTH_SECRET`, internal preview-token validation |
-| `src/runtime-types.ts` | Knative `componentLabel` / `containerName`, `RUNTIME_IMAGE`, K8s env array shape |
-| `src/preview-token.ts` | Hosted preview-iframe auth |
-| `src/diagnostics.ts` | `tsc` + `eslint` + build-buffer Hono router (still AGPL — kept here to avoid +20 Docker COPY lines and a new npm publish target) |
-| `src/diagnostics-build-buffer.ts` | Per-project diagnostic ring buffer (paired with `diagnostics.ts`) |
-| `src/lsp-service.ts` | `typescript-language-server` / `pyright` orchestration (still AGPL — same reason as above) |
+### Mode helper
 
-## License
+`resolveCloudSyncMode(env?)` reads `SHOGO_CLOUD_SYNC_MODE` from the
+environment (defaults to `s3`, clamps unknown values).
 
-`AGPL-3.0-or-later` — see the repo-root `LICENSE`. The `MIT`
-re-exports above link back to per-package `LICENSE` files in
-`packages/<name>/LICENSE`.
+### License boundary
+
+The worker has a similar `commitAndPush` helper at
+`packages/shogo-worker/src/lib/git-cloner.ts`, but it's MIT (the
+worker ships into customer environments). The git-sync code in
+**this** package is duplicated rather than imported to keep that
+licensing surface clean.
+
+## Other modules
+
+- `s3-sync.ts` — described above
+- `git-sync.ts` — described above
+- `postgres-backup.ts` — pg_dump-based backup/restore
+- `lsp-service.ts` — TS language server lifecycle
+- `diagnostics.ts` — tsc + eslint runner used by the chat tool
+- `preview-token.ts` — preview deployments token verification
+- `server-framework.ts` — shared OTEL/CORS/auth wiring used by both
+  `apps/api` and `packages/agent-runtime`
+- `instrumentation.ts` — OpenTelemetry bootstrap
+- `ai-proxy.ts`, `ai-client.ts` — model proxy and client
+- `runtime-types.ts` — pool/template enum
+- `tech-stack-registry.ts` — supported tech stacks
+- `platform-pkg.ts` — bun/pnpm/yarn shim
+- `stream-buffer.ts` — durable stream resume
+
+## Tests
+
+```
+bun run test
+```
+
+Uses `scripts/run-tests-isolated.ts` (one Bun process per file) to
+avoid `mock.module` cross-file leakage. Don't `bun test` directly
+unless you're running a single file.
