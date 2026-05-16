@@ -61,17 +61,30 @@ jobs:
         run: bun run build:packages
 
       - name: Build runtime-template (Vite dist for workspace-seeding tests)
-        # `templates/runtime-template/dist/` is gitignored — it's a
-        # Vite build artifact. Several agent-runtime tests (notably
+        # `templates/runtime-template/dist/` is gitignored — it's a Vite
+        # build artifact. Several agent-runtime tests (notably
         # workspace-seeding.test.ts) assert that `seedRuntimeTemplate`
         # copies `dist/index.html` into a fresh workspace. Without the
-        # build the tests see an empty source tree and fail. The template
-        # has its own `bun install` because it's outside the root
-        # workspaces glob.
+        # build the tests see an empty source tree and fail. The
+        # template has its own `bun install` because it's outside the
+        # root workspaces glob.
         run: |
           cd templates/runtime-template
           bun install --frozen-lockfile
           bun run build
+
+      - name: Build one agent template (sales-bdr-pipeline) for overlay tests
+        # `packages/agent-runtime/templates/<id>/dist/` is also gitignored.
+        # workspace-seeding.test.ts > "overlays the template-shipped
+        # pre-built dist over the runtime-template stub" depends on
+        # `sales-bdr-pipeline`'s dist existing (it cps it onto the runtime
+        # template stub and asserts the bundle text changes). The script
+        # below stages the runtime-template + agent template src in a
+        # tmpdir and runs vite build into the right output. We pass a
+        # specific id so CI doesn't pay for all ~30 templates — that's
+        # the build-templates.sh job in deploy.yml, which is too heavy
+        # for PR CI.
+        run: bun run packages/agent-runtime/scripts/build-template-dists.ts sales-bdr-pipeline
 
       - name: Typecheck
         run: bun run typecheck
