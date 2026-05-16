@@ -39,7 +39,26 @@ jobs:
           restore-keys: bun-ci-
 
       - name: Install dependencies
+        # `bun install --frozen-lockfile` triggers `scripts/postinstall.ts`
+        # which runs `db-generate-all.ts` to produce both the PG-backed
+        # Prisma client (`apps/api/src/generated/prisma-pg`) and the
+        # SQLite one (`apps/api/src/generated/prisma-sqlite`) and links
+        # the default `prisma/` symlink to `prisma-pg`. Without this,
+        # `@prisma/client` imports in apps/api fail to resolve under
+        # typecheck and test.
         run: bun install --frozen-lockfile
+
+      - name: Build workspace packages
+        # Required before typecheck so cross-package imports of
+        # `@shogo-ai/sdk`, `@shogo-ai/agent`, etc. resolve to compiled
+        # `dist/` artifacts. Without this step, `packages/sdk` (which
+        # re-exports from `@shogo-ai/agent`, `@shogo-ai/core`, etc.)
+        # and downstream packages (`packages/shogo-worker`,
+        # `packages/cli`) fail typecheck with TS2307 module-not-found.
+        # The `paths` aliases in `tsconfig.base.json` only redirect a
+        # subset of workspace packages to source; published-shape
+        # imports still need `dist/`.
+        run: bun run build:packages
 
       - name: Typecheck
         run: bun run typecheck

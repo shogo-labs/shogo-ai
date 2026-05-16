@@ -84,7 +84,7 @@ export async function buildProjectEnv(
       const ownerUserId = await getProjectOwnerUserId(projectId)
       env.AI_PROXY_TOKEN = await generateProxyToken(
         projectId,
-        project.workspaceId,
+        project.workspaceId ?? 'local-dev',
         ownerUserId,
         7 * 24 * 60 * 60 * 1000,
       )

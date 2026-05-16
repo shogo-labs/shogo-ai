@@ -447,6 +447,9 @@ export function gitHttpRoutes(config: GitHttpRoutesConfig) {
    */
   router.get('/projects/:projectId/git/info/refs', async (c) => {
     const projectId = c.req.param('projectId')
+    if (!projectId) {
+      return c.json({ error: { code: 'missing_project_id', message: 'projectId is required' } }, 400)
+    }
     const denied = await authorize(c, projectId)
     if (denied) return denied
 
@@ -484,6 +487,9 @@ export function gitHttpRoutes(config: GitHttpRoutesConfig) {
   function makePostHandler(service: 'git-upload-pack' | 'git-receive-pack') {
     return async (c: Context) => {
       const projectId = c.req.param('projectId')
+      if (!projectId) {
+        return c.json({ error: { code: 'missing_project_id', message: 'projectId is required' } }, 400)
+      }
       const denied = await authorize(c, projectId)
       if (denied) return denied
 
