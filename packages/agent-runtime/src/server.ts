@@ -1284,6 +1284,29 @@ app.post('/agent/chat', async (c) => {
         } as any)
         writer.write({ type: 'finish', finishReason: 'stop' })
         turnSucceeded = true
+
+        // Per-turn git push: in `dual_shadow` / `git_only` modes,
+        // flush the workspace once the agent finishes its turn. This
+        // is the natural ProjectCheckpoint granularity — one row per
+        // assistant turn, materialized via the smart-HTTP backend's
+        // post-receive hook (see apps/api/src/routes/git-http.ts).
+        //
+        // We deliberately do NOT hook the S3Sync filesystem watcher
+        // for git: that fires per file event and would push 5–50
+        // commits per turn (every tool call, every edit). The
+        // turn-complete site is the same boundary the checkpoints
+        // system has always used.
+        //
+        // `triggerSync(false)` is debounced internally (~1.5s) and
+        // returns immediately, so this is a fire-and-forget that
+        // doesn't add latency to the turn-complete response.
+        if (gitSyncInstance) {
+          try {
+            gitSyncInstance.triggerSync(false)
+          } catch (err: any) {
+            console.warn('[agent-runtime] gitSync triggerSync at turn-complete threw:', err?.message ?? err)
+          }
+        }
       } catch (error: any) {
         writer.write({
           type: 'data-turn-complete',
