@@ -1098,18 +1098,31 @@ export class KnativeProjectManager {
 
     // Generate a long-lived proxy token for this project (7 days, refreshed on pod creation)
     try {
-      // Look up the project's workspace for billing context
+      // Look up the project's workspace for billing context AND its per-project
+      // cloud sync mode (see PR #576). The warm-pool assignment path injects
+      // SHOGO_CLOUD_SYNC_MODE via buildProjectEnv → /pool/assign env payload;
+      // this non-warm-pool ksvc creation path has to do it inline because it
+      // builds the Pod spec directly.
       const { prisma } = await import('./prisma')
       const project = await prisma.project.findUnique({
         where: { id: projectId },
-        select: { workspaceId: true },
-      })
+        select: { workspaceId: true, cloudSyncMode: true } as any,
+      }) as ({ workspaceId: string | null; cloudSyncMode?: string | null }) | null
       if (project) {
+        // Per-project cloud sync strategy: only inject when non-default so
+        // existing pods boot with identical env (no behavior change unless a
+        // project explicitly opts into dual_shadow / git_only). Resolved by
+        // packages/agent-runtime/src/server.ts → resolveCloudSyncMode().
+        if (project.cloudSyncMode && project.cloudSyncMode !== 's3') {
+          env.push({ name: "SHOGO_CLOUD_SYNC_MODE", value: project.cloudSyncMode })
+          console.log(`[KnativeProjectManager] Injected SHOGO_CLOUD_SYNC_MODE=${project.cloudSyncMode} for project ${projectId}`)
+        }
+
         const { getProjectOwnerUserId } = await import('./project-user-context')
         const ownerUserId = await getProjectOwnerUserId(projectId)
         const proxyToken = await generateProxyToken(
           projectId,
-          project.workspaceId,
+          project.workspaceId ?? 'local-dev',
           ownerUserId,
           7 * 24 * 60 * 60 * 1000 // 7 days
         )
