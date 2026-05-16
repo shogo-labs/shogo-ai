@@ -189,18 +189,29 @@ describe('PtySession (real /bin/sh)', () => {
   })
 
   test('signal("INT") interrupts the foreground process', async () => {
-    // `&&` (not `;`) so the next command only runs if sleep returns 0;
-    // INT makes sleep exit non-zero, so SHOULD_NOT_PRINT must NOT appear.
+    // Use the prompt + an explicit echo *after* the sleep finishes as
+    // success markers. On macOS /bin/sh is bash, where `sleep 30 || echo
+    // INTERRUPTED` runs the `||` arm after SIGINT exits sleep non-zero.
+    // On Ubuntu /bin/sh is dash, which treats SIGINT in an interactive
+    // shell as "stop the whole command list and return to prompt", so
+    // the `||` arm never runs — we'd never see INTERRUPTED. The robust
+    // signal-handling guarantee is: SIGINT kills `sleep 30` within a
+    // second or two, then we see the prompt come back and a subsequent
+    // `echo` runs. Don't depend on `||` chain semantics.
     const t0 = Date.now()
-    session.write('sleep 30 && echo SHOULD_NOT_PRINT || echo INTERRUPTED\n')
-    await new Promise((r) => setTimeout(r, 150))
+    session.write('sleep 30 && echo SHOULD_NOT_PRINT\n')
+    await new Promise((r) => setTimeout(r, 200))
     session.signal('INT')
-    const got = await waitForOutput((s) => /INTERRUPTED|SHOULD_NOT_PRINT/.test(s), 2000)
+    // Wait until the post-INT prompt reappears, then probe with a
+    // sentinel echo so we know the shell is interactive again.
+    await new Promise((r) => setTimeout(r, 250))
+    session.write('echo INT_OK\n')
+    const got = await waitForOutput((s) => /INT_OK|SHOULD_NOT_PRINT/.test(s), 5000)
     const elapsed = Date.now() - t0
-    expect(got).toMatch(/INTERRUPTED/)
+    expect(got).toMatch(/INT_OK/)
     expect(got).not.toMatch(/SHOULD_NOT_PRINT\r?\n/)
     // Sanity: the sleep was interrupted long before its 30s natural end.
-    expect(elapsed).toBeLessThan(5000)
+    expect(elapsed).toBeLessThan(10000)
   })
 
   test('exit propagates via onExit', async () => {

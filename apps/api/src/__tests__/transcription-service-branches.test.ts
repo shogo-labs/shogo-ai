@@ -111,7 +111,16 @@ describe('transcribeLocal', () => {
     expect(spawnCalls[0].binaryPath).toBe('/tmp/sherpa/bin/sherpa-onnx-offline')
     expect(spawnCalls[0].args).toContain('/audio/input.wav')
     expect(spawnCalls[0].args).toContain('--num-threads=4')
-    expect(spawnCalls[0].options.env.DYLD_LIBRARY_PATH).toContain('/tmp/sherpa/lib')
+    // transcription.service.ts picks DYLD_LIBRARY_PATH on darwin, PATH on
+    // win32, and LD_LIBRARY_PATH everywhere else. Assert against whichever
+    // one the host OS actually sets so CI (Linux) and dev (macOS) both pass.
+    const libEnvKey =
+      process.platform === 'darwin'
+        ? 'DYLD_LIBRARY_PATH'
+        : process.platform === 'win32'
+          ? 'PATH'
+          : 'LD_LIBRARY_PATH'
+    expect(spawnCalls[0].options.env[libEnvKey]).toContain('/tmp/sherpa/lib')
     expect(result).toEqual({
       text: 'hello world',
       language: 'en',

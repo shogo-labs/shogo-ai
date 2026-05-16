@@ -28,6 +28,13 @@ If you haven't already, follow the [My Machines quickstart](../my-machines/quick
 to install `shogo` on the machine that should handle the work and run
 `shogo worker start`.
 
+:::tip Cloning a project
+Want a local copy of the project's workspace files on the machine ahead of
+time? Run `shogo project pull <projectId>` — see
+[Cloning projects to a paired machine](../my-machines/project-pull). The
+worker also auto-clones on first request by default, so this is optional.
+:::
+
 ## 2. Pin the project to that machine
 
 In studio, open the project, then **Settings → Run on** and pick the

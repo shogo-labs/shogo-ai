@@ -609,7 +609,15 @@ export async function trackUsageFromStream(
   // commits into their branch is the cardinal sin every IDE-style tool
   // explicitly avoids. External users keep their own git workflow; the
   // CheckpointsPanel renders a "use your own git" banner instead.
+  // SHOGO_CLOUD_SYNC=1 indicates a paired worker (cli_worker) is the source
+  // of truth for this project's git history — its watcher pushes commits
+  // through /api/projects/:id/git/git-receive-pack, and the post-receive
+  // hook in routes/git-http.ts inserts ProjectCheckpoint rows. Skip the
+  // chat-turn auto-checkpoint to avoid a second row with the same SHA.
+  const workerOwnsSync =
+    process.env.SHOGO_CLOUD_SYNC === '1' || process.env.SHOGO_CLOUD_SYNC === 'true'
   if (
+    !workerOwnsSync &&
     hasFileModifyingTools(toolCallMap) &&
     observedTurnComplete &&
     !originalStreamErrored &&

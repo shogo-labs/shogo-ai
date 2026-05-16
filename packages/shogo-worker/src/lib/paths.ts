@@ -24,6 +24,19 @@ export const RUNTIME_DIR = join(HOME_DIR, 'runtime');
 export const RUNTIME_BIN = join(RUNTIME_DIR, process.platform === 'win32' ? 'agent-runtime.exe' : 'agent-runtime');
 export const RUNTIME_VERSION_FILE = join(RUNTIME_DIR, 'version.json');
 
+/**
+ * Default root for cloned project workspaces. The worker stores
+ * each pulled project under `<PROJECTS_DIR>/<projectId>/`.
+ *
+ * Persistent (NOT in tmpdir) so a pinned project doesn't have to
+ * re-pull from cloud after a reboot.
+ */
+export const PROJECTS_DIR = join(HOME_DIR, 'projects');
+
+export function projectDirFor(projectId: string, baseDir: string = PROJECTS_DIR): string {
+  return join(baseDir, projectId);
+}
+
 export function ensureHome(): void {
   mkdirSync(HOME_DIR, { recursive: true, mode: 0o700 });
   mkdirSync(LOGS_DIR, { recursive: true, mode: 0o700 });
@@ -32,4 +45,9 @@ export function ensureHome(): void {
 export function ensureRuntimeDir(): void {
   ensureHome();
   mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 });
+}
+
+export function ensureProjectsDir(baseDir: string = PROJECTS_DIR): void {
+  ensureHome();
+  mkdirSync(baseDir, { recursive: true, mode: 0o700 });
 }

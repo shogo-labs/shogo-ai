@@ -62,6 +62,7 @@ await client.db.todos.delete(todo.id)
 | **Database client** — MongoDB-style CRUD with `client.db.<resource>` | `@shogo-ai/sdk` (`client.db`) |
 | **LLM Gateway** — drop-in Vercel AI SDK provider | `@shogo-ai/sdk` (`client.llm`) |
 | **Machines & external triggers** — pair desktops + VPS workers, pin projects for webhooks | `@shogo-ai/sdk` (`client.machines`) |
+| **Project clone / sync** — pull a project's workspace cloud→local, push edits back | `@shogo-ai/sdk` (`client.projects`) |
 | **Memory** — SQLite FTS5 + TF-IDF over per-user markdown | `@shogo-ai/sdk/memory` |
 | **Voice** — ElevenLabs convai proxy + React hooks | [`@shogo-ai/voice`](../voice) (also as `@shogo-ai/sdk/voice/*`) |
 | **Email** — SMTP / SES / OCI providers + templates | [`@shogo-ai/email`](../email) (also as `@shogo-ai/sdk/email/server`) |
@@ -774,6 +775,76 @@ curl -X POST \
 See [Webhook channel reference](https://docs.shogo.ai/docs/features/external-triggers/webhook-channel)
 for the full request/response shape, sync vs. async reply modes, and
 status-code matrix.
+
+## Project clone / sync (`client.projects`)
+
+`client.projects` is the SDK companion to `shogo project pull/push`. It uses
+the cloud Files API to move a project's workspace between cloud and a local
+directory — **no AWS credentials required**.
+
+### Pull a project locally
+
+```ts
+const stats = await client.projects.pull(projectId, {
+  into: './staging-snapshot',
+  include: ['src/**', 'AGENTS.md', 'config.json'],
+  onProgress: ({ kind, path, index, total }) => {
+    console.log(`[${kind}] ${index + 1}/${total} ${path}`)
+  },
+})
+
+console.log(`Pulled ${stats.downloaded} files (${stats.errors.length} errors)`)
+```
+
+The pull is atomic — files land in `<into>.shogo-pull-tmp/` first and rename
+over the target on success, so a Ctrl-C mid-pull never leaves a half-populated
+workspace.
+
+### Push edits back
+
+```ts
+await client.projects.push(projectId, {
+  from: './staging-snapshot',
+  deleteRemote: false,   // set to true to mirror local deletions (DESTRUCTIVE)
+})
+```
+
+### Low-level helpers
+
+For ad-hoc reads/writes without a full sync, use the per-file helpers:
+
+```ts
+await client.projects.listFiles(projectId)      // Studio-style listing
+await client.projects.manifest(projectId)       // full workspace manifest
+await client.projects.readFile(projectId, 'src/App.tsx')
+await client.projects.writeFile(projectId, 'src/App.tsx', '// new content')
+await client.projects.deleteFile(projectId, 'src/old.tsx')
+```
+
+### Custom transports (edge, browser, tests)
+
+Both `pull` and `push` accept injected `fetch` and `fs` adapters so the same
+code path runs inside an edge function, a unit test, or a custom environment
+that doesn't have `node:fs/promises`:
+
+```ts
+import { CloudFileTransport } from '@shogo-ai/sdk'
+
+const transport = new CloudFileTransport({
+  apiUrl: 'https://api.shogo.ai',
+  apiKey: process.env.SHOGO_API_KEY!,
+  projectId,
+  localDir: '/virtual/fs/proj',
+  fetchImpl: myCustomFetch,
+  fs: myInMemoryFsAdapter,
+})
+
+await transport.downloadAll()
+```
+
+The `agent-runtime` running on a paired machine reuses this same transport
+under the hood when auto-pull is enabled — see
+[Cloning projects to a paired machine](https://docs.shogo.ai/docs/features/my-machines/project-pull).
 
 ## Voice (ElevenLabs convai)
 

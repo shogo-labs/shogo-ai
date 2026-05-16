@@ -38,6 +38,10 @@ import {
   configureAIProxy,
   StreamBufferStore,
   isMacOSJunkName,
+  GitWorkspaceSync,
+  createGitSyncFromEnv,
+  resolveCloudSyncMode,
+  type CloudSyncMode,
 } from '@shogo/shared-runtime'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import {
@@ -216,6 +220,7 @@ async function reportHeartbeatComplete(projectId: string): Promise<void> {
 
 let agentGateway: any = null
 let s3SyncInstance: import('@shogo/shared-runtime').S3Sync | null = null
+let gitSyncInstance: GitWorkspaceSync | null = null
 
 const workspaceStatus: {
   templateSeeded: boolean
@@ -3785,9 +3790,48 @@ async function initializeEssentials(): Promise<void> {
 
   // Initialize S3 sync BEFORE loading canvas state so that downloaded files
   // (including .canvas-state.json and api-runtimes/*.db) are available on disk.
-  if (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET) {
+  //
+  // SHOGO_CLOUD_SYNC=1 tells us a parent worker process (shogo-worker) is
+  // already syncing this WORKSPACE_DIR back to Shogo Cloud. This single env
+  // var disables TWO independent code paths:
+  //   1. The runtime-internal S3Sync below (would feedback-loop with the
+  //      worker's CloudFileTransport / git watcher).
+  //   2. Any runtime-side ProjectCheckpoint insertion. In git-sync mode
+  //      the cloud's smart-HTTP post-receive hook (apps/api/src/routes/
+  //      git-http.ts → runPostReceiveHook) is now the SINGLE source of
+  //      truth for ProjectCheckpoint rows — every push from the worker's
+  //      watcher materializes exactly one row, and the desktop UI's
+  //      checkpoint timeline picks it up from the same Postgres table.
+  // See packages/shogo-worker/src/lib/runtime-manager.ts for the env-var
+  // origin (set when AutoPullOptions.enabled is true).
+  const skipInternalSync = process.env.SHOGO_CLOUD_SYNC === '1' || process.env.SHOGO_CLOUD_SYNC === 'true'
+  if (skipInternalSync) {
+    console.log('[agent-runtime] SHOGO_CLOUD_SYNC set; skipping runtime-internal S3Sync + checkpoint inserts (worker owns sync)')
+    logTiming('S3 sync skipped: owned by worker')
+  }
+
+  // Per-project cloud sync mode:
+  //   - 's3'          → today's behavior. Both S3 layers active. No git.
+  //   - 'dual_shadow' → S3 authoritative + git push for verification.
+  //   - 'git_only'    → git authoritative for Layer 2. S3 Layer 2 stays
+  //                     SUPPRESSED but armed: it will be re-enabled at
+  //                     runtime if git push fails repeatedly (see the
+  //                     onDegrade wiring below), AND it always writes
+  //                     a cold-start snapshot at evict via
+  //                     `flushAndShutdown({ forceProjectArchive: true })`.
+  //                     Layer 1 (deps cache) is unaffected.
+  const cloudSyncMode = resolveCloudSyncMode()
+  const wantS3Layer2 = cloudSyncMode === 's3' || cloudSyncMode === 'dual_shadow'
+  const wantGitSync = cloudSyncMode === 'dual_shadow' || cloudSyncMode === 'git_only'
+  if (cloudSyncMode !== 's3') {
+    console.log(`[agent-runtime] cloudSyncMode=${cloudSyncMode} (wantS3Layer2=${wantS3Layer2}, wantGit=${wantGitSync})`)
+  }
+
+  if (!skipInternalSync && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
     try {
-      const result = await initializeS3Sync(WORKSPACE_DIR)
+      const result = await initializeS3Sync(WORKSPACE_DIR, {
+        suppressProjectArchive: !wantS3Layer2,
+      })
       if (result) {
         s3SyncInstance = result.sync
         // If node_modules were seeded from the template AND the user's
@@ -3812,6 +3856,40 @@ async function initializeEssentials(): Promise<void> {
       }
     } catch (error: any) {
       console.error('[agent-runtime] S3 sync init failed:', error.message)
+    }
+  }
+
+  // Instantiate GitWorkspaceSync in dual_shadow / git_only mode. The
+  // onDegrade callback ensures S3 stays armed as a fallback: if 3
+  // consecutive git pushes fail we re-enable S3 Layer 2 for the rest
+  // of the session. On recovery we re-suppress (only in git_only mode;
+  // dual_shadow always keeps S3 Layer 2 active).
+  if (!skipInternalSync && wantGitSync) {
+    try {
+      gitSyncInstance = createGitSyncFromEnv(WORKSPACE_DIR, {
+        onDegrade: (reason) => {
+          console.warn(
+            `[agent-runtime] cloud-sync degraded (mode=${cloudSyncMode}): ${reason}`,
+          )
+          // In dual_shadow S3 Layer 2 is already on, so this is a no-op.
+          // In git_only it flips Layer 2 back on as the durability fallback.
+          s3SyncInstance?.setSuppressProjectArchive(false)
+        },
+        onRecovered: () => {
+          console.log(`[agent-runtime] cloud-sync recovered (mode=${cloudSyncMode})`)
+          // Only re-suppress in git_only mode; dual_shadow always wants both writers.
+          if (cloudSyncMode === 'git_only') {
+            s3SyncInstance?.setSuppressProjectArchive(true)
+          }
+        },
+      })
+      if (gitSyncInstance) {
+        logTiming('Git sync initialized')
+      } else {
+        console.warn('[agent-runtime] Git sync requested but env incomplete (SHOGO_API_URL/RUNTIME_AUTH_SECRET/PROJECT_ID); falling back to S3 only')
+      }
+    } catch (error: any) {
+      console.error('[agent-runtime] Git sync init failed:', error.message)
     }
   }
 
@@ -3961,9 +4039,13 @@ async function startGateway(): Promise<void> {
     }
   })
 
-  if (s3SyncInstance) {
+  if (s3SyncInstance || gitSyncInstance) {
     agentGateway.getMCPClientManager().setOnConfigPersisted(() => {
+      // Fire both writers when either is present. In git_only mode
+      // s3SyncInstance.triggerSync no-ops on Layer 2 (suppressed) but
+      // still gates Layer 1 deps. In dual_shadow both write.
       s3SyncInstance?.triggerSync(true)
+      gitSyncInstance?.triggerSync(true)
     })
   }
 
@@ -4024,12 +4106,47 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
   streamBufferStore.dispose()
 
+  // Cloud sync shutdown order matters in `git_only` mode:
+  //   1. GitWorkspaceSync.flushAndShutdown — last attempt at a clean push.
+  //      If it succeeds we exit degraded state and can snapshot from HEAD.
+  //      If it fails we stay degraded and must tar the live workspace.
+  //   2. If we ended healthy AND in git_only mode, write the cold-start
+  //      snapshot from `git archive HEAD` (no node_modules, no junk).
+  //   3. Otherwise (s3, dual_shadow, or degraded git_only) run S3 flush
+  //      with `forceProjectArchive: true` so a tarball always lands.
   try {
+    const mode = resolveCloudSyncMode()
+    if (gitSyncInstance) {
+      try {
+        await gitSyncInstance.flushAndShutdown(5_000)
+      } catch (err: any) {
+        console.error(`[agent-runtime] Git flush error during shutdown:`, err?.message ?? err)
+      }
+    }
+
     if (s3SyncInstance) {
-      await s3SyncInstance.flushAndShutdown(10_000)
+      const gitHealthy = gitSyncInstance != null && !gitSyncInstance.isDegraded
+      if (mode === 'git_only' && gitHealthy) {
+        // Healthy git_only path: HEAD is authoritative, so snapshot from
+        // it. We still run flushAndShutdown() for the dep-cache (Layer 1)
+        // pointer, since Layer 2 stays suppressed.
+        try {
+          await s3SyncInstance.snapshotProjectArchiveFromGit()
+        } catch (snapErr: any) {
+          console.warn(
+            `[agent-runtime] snapshotFromGit failed; falling back to live-workspace tarball: ${snapErr?.message ?? snapErr}`,
+          )
+          await s3SyncInstance.flushAndShutdown({ timeoutMs: 10_000, forceProjectArchive: true })
+        }
+      } else {
+        // s3 / dual_shadow / degraded git_only: always force the project
+        // archive so the cold-start tarball reflects current disk state.
+        const forceProjectArchive = mode === 'git_only'
+        await s3SyncInstance.flushAndShutdown({ timeoutMs: 10_000, forceProjectArchive })
+      }
     }
   } catch (err: any) {
-    console.error(`[agent-runtime] S3 flush error during shutdown:`, err.message)
+    console.error(`[agent-runtime] Cloud sync flush error during shutdown:`, err.message)
   }
 
   try {

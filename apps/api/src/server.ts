@@ -43,6 +43,7 @@ import { testsRoutes } from './routes/tests'
 import { securityRoutes } from './routes/security'
 import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
+import { gitHttpRoutes } from './routes/git-http'
 import { thumbnailRoutes } from './routes/thumbnail'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
@@ -2685,6 +2686,28 @@ app.post('/api/projects/:projectId/s3/presign', async (c) => {
   return router.fetch(newReq)
 })
 
+// Full workspace manifest (used by `shogo project pull` + worker auto-pull)
+app.get('/api/projects/:projectId/workspace/manifest', async (c) => {
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = filesRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/workspace/manifest`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// Delete file (used by `shogo project push --delete-remote`)
+app.delete('/api/projects/:projectId/files/*', async (c) => {
+  const projectId = c.req.param('projectId')
+  const filePath = c.req.path.replace(`/api/projects/${projectId}/files/`, '')
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = filesRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/files/${filePath}`
+  const newReq = new Request(url.toString(), { method: 'DELETE' })
+  return router.fetch(newReq)
+})
+
 // =============================================================================
 // Terminal routes - Execute preset shell commands on project workspaces
 // =============================================================================
@@ -3896,6 +3919,11 @@ const workspacesDirResolved = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT
 // Mount checkpoint routes
 const checkpointRouter = checkpointRoutes({ workspacesDir: workspacesDirResolved })
 app.route('/api', checkpointRouter)
+
+// Mount git smart-HTTP backend (clone/fetch/push from paired workers).
+// See routes/git-http.ts for the wire-protocol bridge to `git http-backend`.
+const gitHttpRouter = gitHttpRoutes({ workspacesDir: workspacesDirResolved })
+app.route('/api', gitHttpRouter)
 
 // Mount GitHub routes
 const githubRouter = githubRoutes({ workspacesDir: workspacesDirResolved })

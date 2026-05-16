@@ -246,6 +246,48 @@ I/O, MCP servers) execute on **this machine**.
 See [Webhook channel reference](https://docs.shogo.ai/docs/features/external-triggers/webhook-channel)
 for the request/response shape, secret handling, and async callback mode.
 
+## Cloning a staging project (`shogo project pull`)
+
+When you pin a staging project to this machine, the worker needs the
+project's workspace files on disk to spawn the agent against. By default
+the worker **auto-clones** the project on first request:
+
+```bash
+shogo worker start                       # auto-pull is ON, git transport by default
+shogo worker start --no-auto-pull        # opt out (e.g. for git-backed projects)
+shogo worker start --no-git              # force the Files API path even when git is on PATH
+shogo worker start --projects-dir /mnt/big-disk/shogo   # override default ~/.shogo/projects
+```
+
+You can also clone manually ahead of time:
+
+```bash
+# Clones to ~/.shogo/projects/<projectId>/ by default
+shogo project pull <projectId>
+
+# Pull-then-watch: keeps a local editor and cloud in sync
+shogo project pull <projectId> --watch
+
+# Push local edits back
+shogo project push <projectId>
+shogo project push <projectId> --delete-remote   # mirror local deletions
+
+# Roll the local workspace back to a specific git checkpoint
+shogo project checkout <projectId>                             # fast-forward to remote HEAD
+shogo project checkout <projectId> --at "before refactor"      # resolve by checkpoint name
+shogo project checkout <projectId> --at <sha> --unshallow      # full history
+```
+
+**Two transports.** Auto-pull uses git's smart-HTTP protocol by default
+(`git clone --depth=1` against `https://api.shogo.ai/api/projects/<id>/git`)
+so the worker gets a full checkpoint history and delta-sized pushes for free.
+If `git` isn't available, the worker falls back to the Files API. Manual
+`shogo project pull/push` always uses the Files API so `--include` filters
+and `.shogo/` SQLite state work the same way. See
+[Cloning projects to a paired machine](https://docs.shogo.ai/docs/features/my-machines/project-pull)
+and [Checkpoints on the VPS](https://docs.shogo.ai/docs/features/my-machines/checkpoints-on-the-vps)
+for the end-to-end walkthrough.
+
 ## Troubleshooting
 
 ```bash
