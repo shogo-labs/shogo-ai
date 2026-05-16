@@ -166,13 +166,17 @@ describe('PTY end-to-end (real Bun.serve + real PTY)', () => {
     await new Promise((r) => setTimeout(r, 50))
     expect(ws.readyState).toBe(WebSocket.OPEN)
 
-    // 6. Send INT (no foreground process; just bumps cancel-line). Then exit.
+    // 6. Send INT (no foreground process; just bumps cancel-line). Then
+    // pause so the shell processes the signal + redisplays the prompt
+    // before we send `exit`. On dash (Ubuntu /bin/sh) the post-INT prompt
+    // can race with stdin reads — the back-to-back send below was causing
+    // CI to see `^Cexit 0` glued together and the shell to ignore `exit`.
     ws.send(encodeClientSignal('INT'))
+    await new Promise((r) => setTimeout(r, 250))
     ws.send(encodeClientData(new TextEncoder().encode('exit 0\n')))
 
-    // Wait for EXIT frame
     try {
-      await waitFor(() => exitInfo !== null, 3000)
+      await waitFor(() => exitInfo !== null, 5000)
     } catch {
       throw new Error(`no EXIT frame; combined=${JSON.stringify(combined.slice(-300))}`)
     }

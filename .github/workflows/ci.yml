@@ -60,6 +60,19 @@ jobs:
         # imports still need `dist/`.
         run: bun run build:packages
 
+      - name: Build runtime-template (Vite dist for workspace-seeding tests)
+        # `templates/runtime-template/dist/` is gitignored — it's a
+        # Vite build artifact. Several agent-runtime tests (notably
+        # workspace-seeding.test.ts) assert that `seedRuntimeTemplate`
+        # copies `dist/index.html` into a fresh workspace. Without the
+        # build the tests see an empty source tree and fail. The template
+        # has its own `bun install` because it's outside the root
+        # workspaces glob.
+        run: |
+          cd templates/runtime-template
+          bun install --frozen-lockfile
+          bun run build
+
       - name: Typecheck
         run: bun run typecheck
 
