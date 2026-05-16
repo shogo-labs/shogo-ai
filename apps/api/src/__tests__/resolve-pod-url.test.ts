@@ -579,3 +579,194 @@ describe('logTag plumbing', () => {
     }
   })
 })
+
+// ──────────────────────────────────────────────────────────────────────
+// Extended coverage — defensive edges & invariants
+// (added in tests/backend-unit-coverage)
+// ──────────────────────────────────────────────────────────────────────
+
+describe('host branch — URL parsing edge cases', () => {
+  test('runtime.url with explicit port keeps the URL.hostname (port comes from agentPort)', async () => {
+    const { manager } = makeManager({
+      start: makeRuntime({ url: 'http://10.0.0.5:8765', agentPort: 9100, port: 8765 }),
+    })
+    const res = await resolveProjectPodUrl('proj-host', {
+      _isKubernetes: () => false, _isVMIsolation: () => false, runtimeManager: manager,
+    })
+    expect(res).toEqual({
+      mode: 'host', url: 'http://10.0.0.5:9100',
+      runtime: expect.objectContaining({ agentPort: 9100 }),
+    } as any)
+  })
+
+  test('IPv4 hostname preserved (not localhost)', async () => {
+    const { manager } = makeManager({
+      start: makeRuntime({ url: 'http://192.168.1.42:8000', agentPort: 9001 }),
+    })
+    const res = await resolveProjectPodUrl('p', {
+      _isKubernetes: () => false, _isVMIsolation: () => false, runtimeManager: manager,
+    })
+    expect(res.url).toBe('http://192.168.1.42:9001')
+  })
+
+  test('non-URL runtime.url string falls back to localhost without throwing', async () => {
+    const { manager } = makeManager({
+      start: makeRuntime({ url: 'not://a valid url' as any, agentPort: 9002 }),
+    })
+    const res = await resolveProjectPodUrl('p', {
+      _isKubernetes: () => false, _isVMIsolation: () => false, runtimeManager: manager,
+    })
+    expect(res.url).toBe('http://localhost:9002')
+  })
+
+  test('missing runtime.url falls back to localhost', async () => {
+    const { manager } = makeManager({
+      start: makeRuntime({ url: undefined as any, agentPort: 9003 }),
+    })
+    const res = await resolveProjectPodUrl('p', {
+      _isKubernetes: () => false, _isVMIsolation: () => false, runtimeManager: manager,
+    })
+    expect(res.url).toBe('http://localhost:9003')
+  })
+
+  test('missing agentPort derives agent port as port + 1000', async () => {
+    const { manager } = makeManager({
+      start: makeRuntime({ port: 7777, agentPort: undefined as any, url: 'http://localhost:7777' }),
+    })
+    const res = await resolveProjectPodUrl('p', {
+      _isKubernetes: () => false, _isVMIsolation: () => false, runtimeManager: manager,
+    })
+    expect(res.url).toBe('http://localhost:8777')
+  })
+
+  test('error-status runtime triggers a fresh manager.start() call', async () => {
+    const { manager, startMock } = makeManager({
+      status: makeRuntime({ status: 'error', agentPort: 0 }),
+      start: makeRuntime({ status: 'running', agentPort: 9090, url: 'http://localhost:8000' }),
+    })
+    const res = await resolveProjectPodUrl('p', {
+      _isKubernetes: () => false, _isVMIsolation: () => false, runtimeManager: manager,
+    })
+    expect(startMock).toHaveBeenCalled()
+    expect(res.url).toBe('http://localhost:9090')
+  })
+
+  test('stopped-status runtime triggers a fresh manager.start() call', async () => {
+    const { manager, startMock } = makeManager({
+      status: makeRuntime({ status: 'stopped', agentPort: 0 }),
+      start: makeRuntime({ status: 'running', agentPort: 9099, url: 'http://localhost:8000' }),
+    })
+    await resolveProjectPodUrl('p', {
+      _isKubernetes: () => false, _isVMIsolation: () => false, runtimeManager: manager,
+    })
+    expect(startMock).toHaveBeenCalledTimes(1)
+  })
+
+  test('running-status runtime with agentPort=0 (falsy) triggers a fresh start', async () => {
+    const { manager, startMock } = makeManager({
+      status: makeRuntime({ status: 'running', agentPort: 0 }),
+      start: makeRuntime({ agentPort: 9100, url: 'http://localhost:8000' }),
+    })
+    await resolveProjectPodUrl('p', {
+      _isKubernetes: () => false, _isVMIsolation: () => false, runtimeManager: manager,
+    })
+    expect(startMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('VM branch — defensive edges', () => {
+  test('maxVMRetries < 1 is clamped to 1 (no infinite-budget bug)', async () => {
+    const vmResolver = mock(async (_: string) => { throw new Error('transient') })
+    await expect(resolveProjectPodUrl('p', {
+      _isKubernetes: () => false, _isVMIsolation: () => true,
+      _vmResolver: vmResolver, _vmPoolPermanentlyDisabledError: FakeVMPoolPermanentlyDisabledError,
+      maxVMRetries: 0,
+    })).rejects.toThrow('transient')
+    expect(vmResolver).toHaveBeenCalledTimes(1)
+  })
+
+  test('non-Error rejection still propagates after retry budget exhausted', async () => {
+    const vmResolver = mock(async (_: string) => { throw 'string error' as unknown as Error })
+    await expect(resolveProjectPodUrl('p', {
+      _isKubernetes: () => false, _isVMIsolation: () => true,
+      _vmResolver: vmResolver, _vmPoolPermanentlyDisabledError: FakeVMPoolPermanentlyDisabledError,
+      maxVMRetries: 2, vmRetryDelayMs: 0,
+    })).rejects.toBe('string error')
+    expect(vmResolver).toHaveBeenCalledTimes(2)
+  })
+
+  test('zero retry delay does not call setTimeout (synchronous retry path)', async () => {
+    let attempts = 0
+    const vmResolver = mock(async (_: string) => {
+      attempts++
+      if (attempts < 3) throw new Error('transient')
+      return 'http://vm.local:8000'
+    })
+    const t0 = Date.now()
+    const res = await resolveProjectPodUrl('p', {
+      _isKubernetes: () => false, _isVMIsolation: () => true,
+      _vmResolver: vmResolver, _vmPoolPermanentlyDisabledError: FakeVMPoolPermanentlyDisabledError,
+      maxVMRetries: 3, vmRetryDelayMs: 0,
+    })
+    expect(res.mode).toBe('vm')
+    expect(Date.now() - t0).toBeLessThan(50) // no delay incurred
+    expect(attempts).toBe(3)
+  })
+})
+
+describe('K8s branch — defensive edges', () => {
+  test('K8s takes priority over VM_ISOLATION when both flags are true', async () => {
+    const k8sResolver = mock(async (_: string) => 'http://from-k8s')
+    const vmResolver = mock(async (_: string) => 'http://from-vm')
+    const res = await resolveProjectPodUrl('p', {
+      _isKubernetes: () => true, _isVMIsolation: () => true,
+      _k8sResolver: k8sResolver, _vmResolver: vmResolver,
+    })
+    expect(res.url).toBe('http://from-k8s')
+    expect(vmResolver).not.toHaveBeenCalled()
+  })
+
+  test('K8s resolver errors propagate (no silent host fallback)', async () => {
+    const k8sResolver = mock(async (_: string) => { throw new Error('kube unreachable') })
+    await expect(resolveProjectPodUrl('p', {
+      _isKubernetes: () => true, _isVMIsolation: () => false,
+      _k8sResolver: k8sResolver,
+    })).rejects.toThrow('kube unreachable')
+  })
+})
+
+describe('default mode probes', () => {
+  test('defaultIsKubernetes reads KUBERNETES_SERVICE_HOST', async () => {
+    const prev = process.env.KUBERNETES_SERVICE_HOST
+    try {
+      process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+      const k8sResolver = mock(async (_: string) => 'http://k8s-default')
+      const res = await resolveProjectPodUrl('p', {
+        _k8sResolver: k8sResolver,
+        // intentionally omit _isKubernetes to exercise the default
+        _isVMIsolation: () => false,
+      })
+      expect(res.mode).toBe('k8s')
+    } finally {
+      if (prev === undefined) delete process.env.KUBERNETES_SERVICE_HOST
+      else process.env.KUBERNETES_SERVICE_HOST = prev
+    }
+  })
+
+  test('defaultIsVMIsolation reads SHOGO_VM_ISOLATION === "true" (string match, not boolean coerce)', async () => {
+    const prev = process.env.SHOGO_VM_ISOLATION
+    try {
+      process.env.SHOGO_VM_ISOLATION = '1' // truthy but not the literal "true"
+      const { manager } = makeManager({ start: makeRuntime({ agentPort: 9050 }) })
+      const res = await resolveProjectPodUrl('p', {
+        _isKubernetes: () => false,
+        // intentionally omit _isVMIsolation to exercise the default
+        runtimeManager: manager,
+      })
+      expect(res.mode).toBe('host') // SHOGO_VM_ISOLATION='1' is rejected, falls to host
+    } finally {
+      if (prev === undefined) delete process.env.SHOGO_VM_ISOLATION
+      else process.env.SHOGO_VM_ISOLATION = prev
+    }
+  })
+})
