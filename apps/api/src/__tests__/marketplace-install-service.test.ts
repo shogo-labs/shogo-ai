@@ -232,6 +232,34 @@ mock.module('../services/marketplace-snapshot-storage.service', () => ({
   },
 }))
 
+// ─── shared-runtime S3 sync mock ─────────────────────────────────
+// `pushWorkspaceToS3` is gated on `KUBERNETES_SERVICE_HOST` +
+// `S3_WORKSPACES_BUCKET` and otherwise returns `skipped`. Tests that
+// want to exercise the k8s path flip both env vars + can override
+// `s3SyncBehavior` to simulate upload failures.
+type S3SyncStub = {
+  uploadAll: (force: boolean) => Promise<{ uploaded: number; archiveSize?: number; errors?: string[] }>
+  shutdown: () => void
+}
+let s3SyncFactoryCalls: Array<{ localDir: string; projectId: string }> = []
+let s3SyncBehavior: 'ok' | 'errors' | 'throws' | 'null-factory' = 'ok'
+mock.module('@shogo/shared-runtime', () => ({
+  createS3SyncForProject: (localDir: string, projectId: string): S3SyncStub | null => {
+    s3SyncFactoryCalls.push({ localDir, projectId })
+    if (s3SyncBehavior === 'null-factory') return null
+    return {
+      uploadAll: async () => {
+        if (s3SyncBehavior === 'throws') throw new Error('s3 down')
+        if (s3SyncBehavior === 'errors') {
+          return { uploaded: 0, archiveSize: 0, errors: ['put failed: 503'] }
+        }
+        return { uploaded: 12, archiveSize: 4096, errors: [] }
+      },
+      shutdown: () => undefined,
+    }
+  },
+}))
+
 // ─── workspace.service mock (only hasWorkspaceAccess) ─────────────────
 
 let workspaceAccessAnswer = true
@@ -247,6 +275,11 @@ beforeEach(() => {
   manifestOverrides = {}
   extractCalls.length = 0
   extractThrow = null
+  s3SyncFactoryCalls = []
+  s3SyncBehavior = 'ok'
+  delete process.env.KUBERNETES_SERVICE_HOST
+  delete process.env.S3_WORKSPACES_BUCKET
+  delete process.env.MARKETPLACE_PURGE_LOCAL_AFTER_S3
 })
 
 afterEach(() => {
@@ -414,6 +447,50 @@ describe('installAgent', () => {
     // Source project (src_proj) survived; new project was deleted.
     expect(projects.size).toBe(1)
     expect(installs).toHaveLength(0)
+  })
+
+  test('K8s mode: pushes the new workspace to S3 after materialization', async () => {
+    seedListing()
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    process.env.S3_WORKSPACES_BUCKET = 'shogo-workspaces-staging'
+    const out = await svc.installAgent({ listingId: 'lst_1', userId: 'u', workspaceId: 'ws' })
+    expect(s3SyncFactoryCalls).toHaveLength(1)
+    expect(s3SyncFactoryCalls[0].projectId).toBe(out.projectId)
+    expect(s3SyncFactoryCalls[0].localDir).toContain(out.projectId)
+    // Default: keep local copy (so applyUpdate's drift gate works).
+    expect(installs).toHaveLength(1)
+  })
+
+  test('K8s mode: rolls back the project when S3 push fails', async () => {
+    seedListing()
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    process.env.S3_WORKSPACES_BUCKET = 'shogo-workspaces-staging'
+    s3SyncBehavior = 'throws'
+    await expect(
+      svc.installAgent({ listingId: 'lst_1', userId: 'u', workspaceId: 'ws' }),
+    ).rejects.toThrow('marketplace_install_s3_push_failed')
+    expect(installs).toHaveLength(0)
+    // Source project (src_proj) survived; new project was deleted.
+    expect(projects.size).toBe(1)
+  })
+
+  test('K8s mode: returns failure when S3 reports per-file errors', async () => {
+    seedListing()
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    process.env.S3_WORKSPACES_BUCKET = 'shogo-workspaces-staging'
+    s3SyncBehavior = 'errors'
+    await expect(
+      svc.installAgent({ listingId: 'lst_1', userId: 'u', workspaceId: 'ws' }),
+    ).rejects.toThrow('marketplace_install_s3_push_failed')
+    expect(installs).toHaveLength(0)
+  })
+
+  test('Local mode: skips the S3 push when not in k8s', async () => {
+    seedListing()
+    // KUBERNETES_SERVICE_HOST unset → skipped.
+    const out = await svc.installAgent({ listingId: 'lst_1', userId: 'u', workspaceId: 'ws' })
+    expect(out.installId).toMatch(/^inst_/)
+    expect(s3SyncFactoryCalls).toHaveLength(0)
   })
 
   test('JSON snapshot fallback: legacy versions still install via applyWorkspaceSnapshot', async () => {
@@ -729,6 +806,50 @@ describe('applyUpdate', () => {
       expect(inst.installedVersion).toBe('2.0.0')
       // Baseline refreshed to the new on-disk manifest.
       expect(inst.baselineManifest).toEqual({ 'a.txt': 'POST_APPLY' })
+    })
+
+    test('K8s mode: applyUpdate pushes the updated workspace to S3 after writing files', async () => {
+      listings.set('lst_p', { id: 'lst_p', currentVersion: '2.0.0' })
+      installs.push({
+        id: 'inst_p',
+        listingId: 'lst_p',
+        installModel: 'fork',
+        installedVersion: '1.0.0',
+        projectId: 'proj_p',
+      })
+      versions.push({
+        listingId: 'lst_p',
+        version: '2.0.0',
+        workspaceSnapshot: { files: { 'a.txt': 'beta' } },
+      })
+      process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+      process.env.S3_WORKSPACES_BUCKET = 'shogo-workspaces-staging'
+      const out = await svc.applyUpdate('inst_p')
+      expect(out.ok).toBe(true)
+      expect(s3SyncFactoryCalls.find((c) => c.projectId === 'proj_p')).toBeTruthy()
+      expect(installs[0].installedVersion).toBe('2.0.0')
+    })
+
+    test('K8s mode: applyUpdate fails apply when S3 push fails (no version advance)', async () => {
+      listings.set('lst_pf', { id: 'lst_pf', currentVersion: '2.0.0' })
+      installs.push({
+        id: 'inst_pf',
+        listingId: 'lst_pf',
+        installModel: 'fork',
+        installedVersion: '1.0.0',
+        projectId: 'proj_pf',
+      })
+      versions.push({
+        listingId: 'lst_pf',
+        version: '2.0.0',
+        workspaceSnapshot: { files: { 'a.txt': 'beta' } },
+      })
+      process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+      process.env.S3_WORKSPACES_BUCKET = 'shogo-workspaces-staging'
+      s3SyncBehavior = 'errors'
+      const out = await svc.applyUpdate('inst_pf')
+      expect(out).toEqual({ ok: false, error: 'apply_failed' })
+      expect(installs[0].installedVersion).toBe('1.0.0')
     })
 
     test('S3 path: applyUpdate extracts tarball when version row has a key', async () => {

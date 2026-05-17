@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
 import { prisma } from '../lib/prisma'
 import { hasWorkspaceAccess } from './workspace.service'
@@ -13,6 +13,51 @@ import {
 import {
   extractSnapshotToProject,
 } from './marketplace-snapshot-storage.service'
+import { createS3SyncForProject } from '@shogo/shared-runtime'
+
+const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
+
+/**
+ * In k8s mode the API pod and the warm-pool runtime pod do NOT share
+ * a filesystem. If we stop after writing `projectDir/` to the API
+ * pod's local disk, the warm pod's `S3Sync.downloadAll()` finds
+ * NOTHING at `s3://${S3_WORKSPACES_BUCKET}/<projectId>/project-src.tar.gz`
+ * and silently seeds the warm-pool default template — which the user
+ * then sees as the "Project is ready" scaffold instead of the agent
+ * they just installed. This is the same fix `project-export-import`
+ * uses for ZIP imports; the marketplace install path needs the
+ * exact same treatment.
+ *
+ * Returns `'ok' | 'skipped' | { error }`. `skipped` covers local-mode
+ * (no k8s, no bucket) where the API and runtime DO share a filesystem
+ * and the on-disk install is sufficient.
+ */
+async function pushWorkspaceToS3(
+  projectId: string,
+): Promise<{ status: 'ok'; bytes: number } | { status: 'skipped' } | { status: 'failed'; error: string }> {
+  if (!isKubernetes() || !process.env.S3_WORKSPACES_BUCKET) {
+    return { status: 'skipped' }
+  }
+  const projectDir = join(getWorkspacesDir(), projectId)
+  const sync = createS3SyncForProject(projectDir, projectId)
+  if (!sync) {
+    return {
+      status: 'failed',
+      error: 'S3 sync misconfigured (bucket env truthy but factory returned null)',
+    }
+  }
+  try {
+    const stats = await sync.uploadAll(false)
+    if (stats.errors && stats.errors.length > 0) {
+      return { status: 'failed', error: stats.errors.join('; ') }
+    }
+    return { status: 'ok', bytes: stats.archiveSize ?? 0 }
+  } catch (err: any) {
+    return { status: 'failed', error: err?.message || 'unknown S3 sync error' }
+  } finally {
+    sync.shutdown()
+  }
+}
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
 
@@ -217,10 +262,55 @@ export async function installAgent(params: {
 
   // Capture the on-disk manifest right after extraction. This is the
   // baseline applyUpdate diffs against to detect user drift before
-  // overwriting files. Done outside the install-create transaction so
-  // a failure here doesn't roll back the project / agentConfig that
-  // already exist on disk.
+  // overwriting files. Captured BEFORE the S3 push because we want to
+  // record what we just *wrote*, not what S3Sync's exclusion filter
+  // happens to upload (those filters strip a couple of cache dirs that
+  // we don't include in the manifest either, but defending against
+  // future divergence is cheap).
   const baselineManifest = computeWorkspaceManifest(newProject.id)
+
+  // K8s push: the runtime pod is a separate container with its own
+  // ephemeral filesystem and discovers the workspace via S3. If this
+  // step is skipped or fails, the user lands on the warm-pool default
+  // ("Project is ready" scaffold) instead of the agent they just
+  // installed. Hard-fail the install so the caller sees a real error
+  // — silently returning a project pointing at the default scaffold
+  // is the bug we are explicitly fixing here.
+  const pushResult = await pushWorkspaceToS3(newProject.id)
+  if (pushResult.status === 'failed') {
+    await prisma.project.delete({ where: { id: newProject.id } }).catch(() => {})
+    throw new Error(`marketplace_install_s3_push_failed: ${pushResult.error}`)
+  }
+  // We deliberately KEEP the local workspace copy after a successful
+  // S3 push (unlike `project-export-import`, which deletes its local
+  // copy by default). Reasons:
+  //
+  //   1. Drift detection in `applyUpdate` reads from the local copy
+  //      via `computeWorkspaceManifest(projectId)`. If we purged here,
+  //      every subsequent applyUpdate would see an empty dir and
+  //      report every baseline file as `deleted`, falsely tripping
+  //      the drift gate.
+  //   2. Marketplace install workspaces are typically <5MB; the
+  //      ephemeral-storage pressure that motivated the import-flow
+  //      purge isn't an issue at this size.
+  //
+  // Setting MARKETPLACE_PURGE_LOCAL_AFTER_S3=true overrides this
+  // default for ops triage. The general PURGE_LOCAL_AFTER_S3 flag is
+  // intentionally NOT honored here so an incident-response toggle
+  // for the import flow can't silently break drift detection.
+  if (
+    pushResult.status === 'ok'
+    && process.env.MARKETPLACE_PURGE_LOCAL_AFTER_S3 === 'true'
+  ) {
+    try {
+      rmSync(join(getWorkspacesDir(), newProject.id), { recursive: true, force: true })
+    } catch (cleanupErr: any) {
+      console.warn(
+        `[marketplace-install] local cleanup failed for ${newProject.id} (non-fatal):`,
+        cleanupErr?.message || cleanupErr,
+      )
+    }
+  }
 
   const install = await prisma.$transaction(async (tx) => {
     const row = await tx.marketplaceInstall.create({
@@ -346,12 +436,17 @@ export async function applyUpdate(
     return { ok: true, alreadyOnLatest: true, installedVersion: targetVersion }
   }
 
-  // Drift gate — only meaningful when we have a baseline to compare
-  // against. Installs that pre-date the manifest field skip the gate
-  // (we have no signal to act on); the next apply will write a fresh
-  // baseline so subsequent updates honor the gate.
+  // Drift gate — only meaningful when we have a baseline AND a local
+  // workspace to compare against. Installs that pre-date the manifest
+  // field skip the gate. We ALSO skip when the API pod's local copy
+  // is missing (e.g. someone flipped `MARKETPLACE_PURGE_LOCAL_AFTER_S3`
+  // on, or the pod cycled and the workspace landed on a different
+  // pod's ephemeral disk) rather than falsely flagging every baseline
+  // file as deleted. The runtime pod's view of "drift" lives behind a
+  // future S3-side comparison; for now, no-local == no-drift-signal.
   const baseline = (install.baselineManifest ?? null) as Record<string, string> | null
-  if (baseline && !force) {
+  const localExists = existsSync(join(getWorkspacesDir(), install.projectId))
+  if (baseline && localExists && !force) {
     const current = computeWorkspaceManifest(install.projectId)
     const diff = diffManifests(baseline, current)
     if (diff.modified.length + diff.added.length + diff.deleted.length > 0) {
@@ -384,9 +479,25 @@ export async function applyUpdate(
     }
     // Refresh the baseline from the new on-disk state so the next
     // applyUpdate compares against the version we just shipped, not
-    // the pre-update state. Done before the DB update so we never
-    // record `installedVersion` advancing without a fresh baseline.
+    // the pre-update state. Captured BEFORE the S3 push so the
+    // baseline records exactly what we wrote to disk, independent of
+    // S3Sync's exclusion filter behavior.
     const refreshed = computeWorkspaceManifest(install.projectId)
+
+    // Push the new workspace contents to S3 so the runtime pod
+    // re-syncs to the updated version on its next assignment. Same
+    // failure-mode reasoning as installAgent — without this push the
+    // user would visibly stay on the old version (or the warm-pool
+    // default) until the runtime cycles for unrelated reasons.
+    const pushResult = await pushWorkspaceToS3(install.projectId)
+    if (pushResult.status === 'failed') {
+      console.error(
+        `[marketplace-install] applyUpdate S3 push failed for install=${installId}:`,
+        pushResult.error,
+      )
+      return { ok: false, error: 'apply_failed' }
+    }
+
     await prisma.marketplaceInstall.update({
       where: { id: installId },
       data: {
