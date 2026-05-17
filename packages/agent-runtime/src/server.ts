@@ -45,9 +45,7 @@ import {
 } from '@shogo/shared-runtime'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import {
-  overlayAgentTemplateCodeDirs,
   seedWorkspaceDefaults,
-  seedWorkspaceFromTemplate,
   seedLSPConfig,
   seedRuntimeTemplate,
   ensureWorkspaceDeps,
@@ -550,26 +548,18 @@ function ensureWorkspaceFiles(): void {
     return
   }
 
-  const templateMarker = join(WORKSPACE_DIR, '.template')
-  const templateIdFromEnv = process.env.TEMPLATE_ID
-  const templateIdFromFile = existsSync(templateMarker) ? readFileSync(templateMarker, 'utf-8').trim() : undefined
-  const templateId = templateIdFromEnv || templateIdFromFile
-
-  if (templateId) {
-    const seeded = seedWorkspaceFromTemplate(WORKSPACE_DIR, templateId, process.env.AGENT_NAME)
-    if (seeded) {
-      logTiming(`Workspace seeded from template: ${templateId}`)
-    } else {
-      logTiming(`Template "${templateId}" not found, falling back to defaults`)
-      seedWorkspaceDefaults(WORKSPACE_DIR)
-      seedLSPConfig(WORKSPACE_DIR)
-      logTiming('Workspace defaults seeded')
-    }
-  } else {
-    seedWorkspaceDefaults(WORKSPACE_DIR)
-    seedLSPConfig(WORKSPACE_DIR)
-    logTiming('Workspace defaults seeded')
-  }
+  // Templates → marketplace consolidation (2026-05): the runtime no
+  // longer reads TEMPLATE_ID or the `.template` marker file. Workspaces
+  // are seeded by `copyWorkspaceFiles` at marketplace install time, so
+  // by the time the runtime boots there is nothing template-specific
+  // left for it to do — every workspace is just "the bundled defaults
+  // plus whatever the install put on top". A leftover `.template`
+  // marker from a pre-consolidation install is ignored (the file is
+  // harmless and gets included in any future workspace snapshot
+  // unchanged).
+  seedWorkspaceDefaults(WORKSPACE_DIR)
+  seedLSPConfig(WORKSPACE_DIR)
+  logTiming('Workspace defaults seeded')
 
   // Migrate legacy APP layout: if package.json exists at workspace root (no AGENTS.md),
   // this is a legacy APP project — move app files into project/ subdirectory
@@ -632,14 +622,14 @@ function ensureWorkspaceFiles(): void {
     workspaceStatus.templateSeeded = true
   }
 
-  // Agent templates curated `src/` is applied in `seedWorkspaceFromTemplate`
-  // **before** the block above — but fresh workspaces had no package.json yet,
-  // so `seedRuntimeTemplate` just laid down generic `Project Ready` App.tsx on
-  // top. Re-merge template `src/` (and optional `prisma/`) here so the canvas
-  // matches the bundled template surfaces.
-  if (templateId && overlayAgentTemplateCodeDirs(WORKSPACE_DIR, templateId)) {
-    logTiming(`Agent template code overlay reapplied (${templateId})`)
-  }
+  // Agent template overlay used to live here (it pasted the bundled
+  // `templates/<id>/src` over the runtime-template's `Project Ready`
+  // App.tsx so the canvas matched the template surface). After the
+  // templates → marketplace consolidation the workspace already arrives
+  // with the right `src/` baked in via `copyWorkspaceFiles`, so the
+  // overlay is a no-op for new projects. Existing template workspaces
+  // stay correct because the listing version snapshot was produced
+  // from the same overlay output.
 
   // One-shot migration: any workspace that still has `.shogo/server/` from
   // the legacy skill-server era is folded into root `prisma/schema.prisma`
@@ -2655,9 +2645,6 @@ app.post('/agent/workspace/reindex', async (c) => {
 import { MCP_CATALOG, MCP_CATEGORIES, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
 import { isComposioEnabled, findComposioToolkit, initComposioSession, registerToolkitProxyTools } from './composio'
 
-// Agent Templates API — powers the templates gallery
-import { getTemplateSummaries, getAgentTemplateById, TEMPLATE_CATEGORIES } from './agent-templates'
-
 app.get('/agent/mcp-catalog', (c) => {
   return c.json({ catalog: MCP_CATALOG, categories: MCP_CATEGORIES })
 })
@@ -2873,19 +2860,9 @@ app.delete('/agent/quick-actions/:label', (c) => {
   }
 })
 
-// ---------------------------------------------------------------------------
-// Templates
-// ---------------------------------------------------------------------------
-
-app.get('/agent/templates', (c) => {
-  return c.json({ templates: getTemplateSummaries(), categories: TEMPLATE_CATEGORIES })
-})
-
-app.get('/agent/templates/:id', (c) => {
-  const template = getAgentTemplateById(c.req.param('id'))
-  if (!template) return c.json({ error: 'Template not found' }, 404)
-  return c.json({ template })
-})
+// The legacy `/agent/templates` and `/agent/templates/:id` routes were
+// removed in the templates → marketplace consolidation. The mobile app
+// reads first-party agents from the API's `/api/marketplace` instead.
 
 app.post('/agent/mcp-servers/toggle', async (c) => {
   const { serverId, enabled, env } = await c.req.json() as {

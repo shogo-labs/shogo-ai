@@ -59,7 +59,7 @@ import { marketplaceRoutes } from './routes/marketplace'
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { costAnalyticsRoutes } from './routes/cost-analytics'
 import { integrationRoutes } from './routes/integrations'
-import { agentTemplateRoutes } from './routes/agent-templates'
+import { techStackRoutes } from './routes/tech-stacks'
 import { evalOutputRoutes } from './routes/eval-outputs'
 import { projectExportImportRoutes } from './routes/project-export-import'
 import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
@@ -540,7 +540,6 @@ app.use(
       '/api/tools/',
       '/api/api-keys/validate',
       '/api/marketplace',
-      '/api/agent-templates',
       '/api/tech-stacks',
       '/api/instances/heartbeat',
       '/api/instances/ws',
@@ -1107,8 +1106,11 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
 // Marketplace
 app.route('/api/marketplace', marketplaceRoutes())
 
-// Agent template catalog — public, no auth required
-app.route('/api', agentTemplateRoutes())
+// Tech stack catalog — public, no auth required. (The legacy
+// /api/agent-templates surface was removed in the templates →
+// marketplace consolidation; the mobile app now reads first-party
+// agents from /api/marketplace?creatorId=<shogo-official>.)
+app.route('/api', techStackRoutes())
 
 // Eval output listing + import — for local dev/testing
 app.route('/api', evalOutputRoutes())
@@ -6776,6 +6778,46 @@ await (async () => {
     console.log('[AgentModels] No model overrides loaded (non-fatal):', err.message)
   }
 })()
+
+// Run the templates → marketplace data migration on every boot. The
+// script is idempotent (every write is upsert-shaped), so a no-op on
+// the second+ run. We deliberately swallow errors here: a failed
+// migration must not gate the API from accepting requests, since the
+// fallback (no marketplace listings for built-in templates) only
+// affects the marketplace surface, not the wider product. The script
+// can be re-invoked manually via
+// `bun apps/api/scripts/migrate-templates-to-marketplace.ts`.
+//
+// Skipped in test environments to keep test boot times tight.
+if (process.env.NODE_ENV !== 'test' && process.env.SHOGO_SKIP_TEMPLATE_MIGRATION !== 'true') {
+  void (async () => {
+    try {
+      const { runMigration } = await import('../scripts/migrate-templates-to-marketplace')
+      await runMigration({ quiet: true })
+    } catch (err: any) {
+      console.error('[BootMigrate] templates → marketplace migration failed (non-fatal):', err.message)
+    }
+  })()
+}
+
+// JSON-snapshot → S3 backfill. Picks up versions that still have a
+// jsonb `workspaceSnapshot` but no `workspaceSnapshotKey` and uploads
+// them to S3. Must run AFTER the templates → marketplace migration
+// (above) because that's what creates v1.0.0 rows in the first
+// place. Both are idempotent and run sequentially under the same
+// non-test guard. Skipped automatically when S3 isn't configured.
+if (process.env.NODE_ENV !== 'test' && process.env.SHOGO_SKIP_SNAPSHOT_BACKFILL !== 'true') {
+  void (async () => {
+    try {
+      const { runSnapshotBackfill } = await import(
+        '../scripts/backfill-marketplace-snapshots-to-s3'
+      )
+      await runSnapshotBackfill({ quiet: true })
+    } catch (err: any) {
+      console.error('[BootMigrate] snapshot S3 backfill failed (non-fatal):', err.message)
+    }
+  })()
+}
 
 // Match a path like `/api/projects/<projectId>/terminal/sessions/<id>/ws`.
 const PTY_WS_PATH_RE = /^\/api\/projects\/([^/]+)\/terminal\/sessions\/([^/]+)\/ws$/

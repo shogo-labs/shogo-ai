@@ -189,7 +189,7 @@ export const HomePage = observer(function HomePage({
               variant="link"
               size="xs"
               action="secondary"
-              onPress={() => router.push('/(app)/templates' as any)}
+              onPress={() => router.push('/(app)/marketplace' as any)}
             >
               <ButtonText className="text-sm text-typography-500">Browse all</ButtonText>
               <ButtonIcon as={ChevronRight} className="text-typography-500" height={16} width={16} />

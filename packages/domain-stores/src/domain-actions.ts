@@ -10,6 +10,11 @@
 import { flow, getEnv } from "mobx-state-tree"
 import type { IDomainStore, ISDKEnvironment } from "./domain"
 
+interface MarketplaceInstallResponse {
+  install?: { id: string }
+  project?: { id: string; name?: string }
+}
+
 // ============================================================================
 // Domain Action Helpers
 // ============================================================================
@@ -84,23 +89,24 @@ export function createDomainActions(store: IDomainStore) {
     // =========================================================================
 
     /**
-     * Create a project in a workspace
+     * Create a blank project in a workspace.
+     *
+     * The legacy templateId / techStackId / templateSettings parameters
+     * were removed when the templates surface was consolidated into the
+     * marketplace — first-party templates are now real listings, so
+     * "create from template" callers go through `installListing` below
+     * instead. Plain blank-project creation (e.g. from the projects
+     * page's "+ New project" button) stays here.
      */
     createProject: async (
       name: string,
       workspaceId: string,
       description: string | undefined,
       userId: string,
-      _type?: string,
-      templateId?: string,
-      techStackId?: string,
-      templateSettings?: Record<string, unknown>
     ) => {
       const settings = JSON.stringify({
         activeMode: 'canvas',
         canvasMode: 'code',
-        ...(templateSettings ?? {}),
-        ...(techStackId ? { techStackId } : {}),
       })
 
       const project = await store.projectCollection.create({
@@ -112,11 +118,36 @@ export function createDomainActions(store: IDomainStore) {
         status: "draft",
         accessLevel: "anyone",
         schemas: [],
-        ...(templateId ? { templateId } : {}),
-        ...(settings ? { settings } : {}),
+        settings,
       })
 
       return project
+    },
+
+    /**
+     * Install a marketplace listing into the given workspace. Hits
+     * `POST /api/marketplace/:slug/install` and returns the new
+     * `{ project }` so the caller can navigate into it.
+     *
+     * In local/desktop mode the API proxies the call to the cloud, so
+     * this requires network access (the consolidation traded offline
+     * template installs for a single source of truth).
+     */
+    installListing: async (
+      slug: string,
+      workspaceId: string,
+    ): Promise<{ projectId: string; installId?: string } | null> => {
+      const env = getEnv<ISDKEnvironment>(store)
+      const res = await env.http.post<MarketplaceInstallResponse>(
+        `/api/marketplace/${encodeURIComponent(slug)}/install`,
+        { workspaceId },
+      )
+      const projectId = res.data?.project?.id
+      if (!projectId) return null
+      // Refresh the project collection so the navigator can find the
+      // newly-installed project by id without a manual reload.
+      await store.projectCollection.loadAll().catch(() => undefined)
+      return { projectId, installId: res.data?.install?.id }
     },
 
     /**

@@ -41,14 +41,20 @@ import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { usePlatformConfig } from '../../lib/platform-config'
-import { api, getOnboardingMessage, type AgentTemplateSummary } from '../../lib/api'
+import { api, getOnboardingMessage } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { safeGetItem, safeRemoveItem } from '../../lib/safe-storage'
-import { AgentTemplateGalleryCard } from '../../components/templates/agent-template-card'
+import type { AgentTileListing } from '../../components/marketplace/AgentTile'
 import { FolderPickerModal } from '../../components/local/FolderPickerModal'
-// APP_MODE_DISABLED: import { AppTemplateGalleryCard } from '../../components/templates/app-template-card'
 
-type AgentTemplate = AgentTemplateSummary
+/**
+ * Home-rail listing shape. Mirrors `AgentTileListing` plus the
+ * `description` we render in card layouts. Sourced from the
+ * `/api/marketplace/featured` endpoint after the templates →
+ * marketplace consolidation; what was once `getAgentTemplates()` now
+ * comes from the same listings the marketplace browse surface uses.
+ */
+type HomeListing = AgentTileListing & { description?: string }
 
 /**
  * Reads the dark class directly from the DOM and observes mutations.
@@ -336,8 +342,13 @@ const OpenFolderCta = memo(function OpenFolderCta({ visible }: { visible: boolea
 
 // Tab descriptors are static — keep them at module scope so the array
 // reference doesn't churn on every render of HomeScreen.
+//
+// The "Templates" tab was removed when built-in templates were folded
+// into the marketplace; the surface the user sees is now exclusively
+// their own projects, plus shared. Marketplace browsing happens on
+// the dedicated `/marketplace` route and via the marketing-site
+// `pending_template_id` deep-link below.
 const TAB_ITEMS = [
-  { key: 'templates' as const, label: 'Templates' },
   { key: 'projects' as const, label: 'My projects' },
   { key: 'shared' as const, label: 'Shared with me' },
 ]
@@ -393,9 +404,8 @@ const HomeScreen = observer(function HomeScreen() {
   const draftPrewarmedRef = useRef<Set<string>>(new Set())
   const draftTypeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
-  const [homeTemplates, setHomeTemplates] = useState<AgentTemplate[]>([])
   // APP_MODE_DISABLED: homeAppTemplates state removed
-  const [activeTab, setActiveTab] = useState<'projects' | 'shared' | 'templates'>('templates')
+  const [activeTab, setActiveTab] = useState<'projects' | 'shared'>('projects')
 
   const [workspaceError, setWorkspaceError] = useState(false)
 
@@ -439,19 +449,8 @@ const HomeScreen = observer(function HomeScreen() {
 
     loadData()
 
-    async function fetchTemplates() {
-      try {
-        const agentData = await api.getAgentTemplates(http)
-        const templates = Array.isArray(agentData) ? agentData : []
-        setHomeTemplates(templates.slice(0, 6))
-      } catch (err) {
-        console.error('[Home] Failed to fetch templates:', err)
-      }
-    }
-    fetchTemplates()
-
     return () => { cancelled = true }
-  }, [isAuthenticated, user?.id, http])
+  }, [isAuthenticated, user?.id])
 
   const currentWorkspace = useActiveWorkspace()
   const billingData = useBillingData(currentWorkspace?.id)
@@ -467,34 +466,28 @@ const HomeScreen = observer(function HomeScreen() {
     })
   }, [hasAdvancedModelAccess])
 
-  // Deep-link: auto-create project from pending template (website referral)
+  // Deep-link: auto-install a marketplace listing referred from the
+  // marketing site. The storage slot is still named
+  // `pending_template_id` so existing marketing-site links keep
+  // working — the slug matches the legacy template id 1:1 after the
+  // templates → marketplace migration. We always fetch the listing
+  // detail directly via `/api/marketplace/:slug` (the homepage no
+  // longer pre-loads a featured rail to look up against).
   useEffect(() => {
     if (Platform.OS !== 'web') return
-    const pendingId = safeGetItem('pending_template_id')
-    if (!pendingId || !currentWorkspace?.id || !user?.id) return
-    if (homeTemplates.length === 0) return
+    const pendingSlug = safeGetItem('pending_template_id')
+    if (!pendingSlug || !currentWorkspace?.id || !user?.id) return
 
-    const template = homeTemplates.find(t => t.id === pendingId)
-    if (!template) {
-      // Template not in the first 6; fetch full list to find it
-      api.getAgentTemplates(http).then((raw) => {
-        const all = Array.isArray(raw) ? raw : []
-        const found = all.find((t: AgentTemplate) => t.id === pendingId)
-        if (found) {
-          safeRemoveItem('pending_template_id')
-          handleTemplatePress(found)
-        } else {
-          safeRemoveItem('pending_template_id')
-        }
-      }).catch(() => {
+    http.get<{ listing?: HomeListing }>(`/api/marketplace/${encodeURIComponent(pendingSlug)}`)
+      .then((res) => {
+        safeRemoveItem('pending_template_id')
+        const found = res.data?.listing
+        if (found) handleTemplatePress(found)
+      })
+      .catch(() => {
         safeRemoveItem('pending_template_id')
       })
-      return
-    }
-
-    safeRemoveItem('pending_template_id')
-    handleTemplatePress(template)
-  }, [homeTemplates, currentWorkspace?.id, user?.id])
+  }, [currentWorkspace?.id, user?.id])
 
   // APP_MODE_DISABLED: pending_app_template deep-link removed
 
@@ -578,10 +571,13 @@ const HomeScreen = observer(function HomeScreen() {
           currentWorkspace.id,
           undefined,
           user.id,
-          undefined,
-          undefined,
-          'react-app',
         )
+        // The legacy createProject signature took a techStackId hint
+        // ('react-app'). After the templates → marketplace consolidation
+        // createProject builds plain blank projects only — the
+        // marketplace install path is the source of tech-stack-aware
+        // seeding. The runtime defaults to react-app for projects with
+        // no settings.techStackId, matching the old fallback.
         const chatSession = await actions.createChatSession({
           inferredName: 'Untitled',
           contextType: 'project',
@@ -666,9 +662,6 @@ const HomeScreen = observer(function HomeScreen() {
             currentWorkspace.id,
             undefined,
             user.id,
-            undefined,
-            undefined,
-            'react-app',
           )
           const chatSession = await actions.createChatSession({
             inferredName: 'Untitled',
@@ -800,49 +793,46 @@ const HomeScreen = observer(function HomeScreen() {
     [createProjectFromPrompt, interactionMode],
   )
 
-  const handleTemplatePress = useCallback(async (template: AgentTemplate) => {
+  const handleTemplatePress = useCallback(async (listing: HomeListing) => {
     if (!user?.id || !currentWorkspace?.id) {
       Alert.alert('Not ready', 'Still loading your workspace. Please try again in a moment.')
       return
     }
-    setLoadingTemplate(template.id)
+    setLoadingTemplate(listing.slug)
     try {
-      const newProject = await actions.createProject(
-        template.name,
-        currentWorkspace.id,
-        template.description,
-        user.id,
-        'AGENT',
-        template.id,
-        template.techStack,
-        template.settings,
-      )
+      const installed = await actions.installListing(listing.slug, currentWorkspace.id)
+      if (!installed?.projectId) {
+        throw new Error('Install did not return a project id')
+      }
       const chatSession = await actions.createChatSession({
         inferredName: 'Untitled',
         contextType: 'project',
-        contextId: newProject.id,
+        contextId: installed.projectId,
       })
       trackEvent(posthog, EVENTS.PROJECT_CREATED, {
-        source: 'template',
-        template_id: template.id,
-        template_name: template.name,
+        source: 'marketplace',
+        listing_slug: listing.slug,
+        listing_title: listing.title,
       })
 
-      const onboardingMessage = getOnboardingMessage(template.name, template.id)
-      const hasIntegrations = Array.isArray(template.integrations) && template.integrations.length > 0
+      const onboardingMessage = getOnboardingMessage(listing.title, listing.slug)
+      // Marketplace browse-card payload doesn't include integrations —
+      // we let the project layout fetch them from /api/marketplace/:slug
+      // when `showIntegrations=1` is set, so always pass it through and
+      // let the layout decide whether to actually render the card.
       projects.loadAll()
       router.push({
         pathname: '/(app)/projects/[id]',
         params: {
-          id: newProject.id,
+          id: installed.projectId,
           chatSessionId: chatSession.id,
           initialMessage: onboardingMessage,
-          ...(hasIntegrations ? { showIntegrations: '1' } : {}),
+          showIntegrations: '1',
         },
       } as any)
     } catch (error) {
-      console.error('[Home] Failed to create project from template:', error)
-      Alert.alert('Error', 'Failed to create project from template')
+      console.error('[Home] Failed to install marketplace listing:', error)
+      Alert.alert('Error', 'Failed to install agent from marketplace')
     } finally {
       setLoadingTemplate(null)
     }
@@ -1033,17 +1023,6 @@ const HomeScreen = observer(function HomeScreen() {
               ))}
             </ScrollView>
 
-            {activeTab === 'templates' && (
-              <Pressable
-                onPress={() => router.push('/(app)/templates' as any)}
-                className="flex-row items-center gap-1 active:opacity-70 flex-shrink-0"
-              >
-                <Text className="text-[13px] font-medium text-foreground">
-                  Browse
-                </Text>
-                <ArrowRight size={14} className="text-foreground" />
-              </Pressable>
-            )}
             {activeTab === 'shared' && (
               <Pressable
                 onPress={() => router.push('/(app)/shared' as any)}
@@ -1058,27 +1037,6 @@ const HomeScreen = observer(function HomeScreen() {
           </View>
 
           <View style={tabContentPaddingStyle}>
-            {activeTab === 'templates' && (
-              homeTemplates.length > 0 ? (
-                <View className="gap-3" style={gridContainerStyle}>
-                  {homeTemplates.map((template) => (
-                    <AgentTemplateGalleryCard
-                      key={template.id}
-                      template={template}
-                      isLoading={loadingTemplate === template.id}
-                      onPress={() => handleTemplatePress(template)}
-                      isDark={isDark}
-                      compact={isMobile}
-                    />
-                  ))}
-                </View>
-              ) : (
-                <View className="items-center py-12">
-                  <ActivityIndicator size="small" className="text-muted-foreground" />
-                </View>
-              )
-            )}
-
             {activeTab === 'projects' && (
               myProjects.length > 0 ? (
                 <View className="gap-3" style={gridContainerStyle}>

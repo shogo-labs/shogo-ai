@@ -1026,14 +1026,12 @@ export class KnativeProjectManager {
     const projectRecord = await prisma.project.findUnique({
       where: { id: projectId },
       select: {
-        templateId: true,
         name: true,
         workspaceId: true,
         settings: true,
         workspace: { select: { composioScope: true } },
       } as any,
     }) as (Record<string, any> & {
-      templateId?: string | null
       name?: string | null
       workspaceId?: string | null
       settings?: unknown
@@ -1066,7 +1064,6 @@ export class KnativeProjectManager {
       // to http://localhost:${PORT}/ when this is unset.
       { name: "PUBLIC_PREVIEW_URL", value: getPreviewUrl(projectId) },
       ...extraEnvEntries,
-      ...(projectRecord?.templateId ? [{ name: "TEMPLATE_ID", value: projectRecord.templateId }] : []),
       ...(projectRecord?.name ? [{ name: "AGENT_NAME", value: projectRecord.name }] : []),
       ...(projectRecord?.workspaceId ? [{ name: "WORKSPACE_ID", value: projectRecord.workspaceId }] : []),
       // Tell the runtime which Composio scope to use for OAuth user IDs.

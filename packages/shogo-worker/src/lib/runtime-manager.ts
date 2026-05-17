@@ -86,8 +86,6 @@ export interface ProjectSpawnConfig {
   aiProxyToken?: string;
   /** Tech-stack id (for runtime to seed correct template if PROJECT_DIR is empty). */
   techStackId?: string;
-  /** Template id passed through to the runtime. */
-  templateId?: string;
   /** Friendly project name. */
   name?: string;
   /** Workspace id for this project. */
@@ -750,7 +748,6 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     if (cfg.aiProxyUrl) env.AI_PROXY_URL = cfg.aiProxyUrl;
     if (cfg.aiProxyToken) env.AI_PROXY_TOKEN = cfg.aiProxyToken;
     if (cfg.techStackId) env.TECH_STACK_ID = cfg.techStackId;
-    if (cfg.templateId) env.TEMPLATE_ID = cfg.templateId;
     if (cfg.name) env.AGENT_NAME = cfg.name;
     if (cfg.workspaceId) env.WORKSPACE_ID = cfg.workspaceId;
 

@@ -301,10 +301,12 @@ export function resetWorkspaceDefaults(dir: string): void {
 }
 
 /**
- * Seed workspace from a template. Copies the template's .shogo/ directory
- * and .canvas-state.json into the workspace.
- * Only writes files that don't already exist (preserves customizations).
- * Also writes a .template marker file so the runtime knows which template was used.
+ * Seed workspace from a template. DEPRECATED — kept only as a no-op
+ * shim while the consolidation rolls out. The marketplace install
+ * flow's `copyWorkspaceFiles` already lays down everything this used
+ * to copy (the source project's workspace was materialized with
+ * exactly the same overlays at migration time). New callers should
+ * not reach this function.
  */
 export function seedWorkspaceFromTemplate(dir: string, templateId: string, agentName?: string): boolean {
   const template = getAgentTemplateById(templateId)
@@ -384,20 +386,12 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
 }
 
 /**
- * Re-merge a template's `src/`, `prisma/` and pre-built `dist/` onto an
- * existing workspace.
- *
- * Must run **after** `seedRuntimeTemplate` on first boot: the runtime skeleton
- * copies generic `src/App.tsx` (`Project Ready`). Agent templates ship curated
- * surfaces under `templates/<id>/src/` — those must win over that starter file.
- *
- * The pre-built `dist/` overlay is the second half of that fix: the canvas
- * iframe paints whatever `dist/` is on disk during Vite's cold rebuild, so
- * without overlaying the template's dist the user sees `Project Ready`
- * flash for ~1-3s even after `src/` is correct. See `getTemplateDistDir`.
- *
- * Same copy rules as inside `seedWorkspaceFromTemplate`; safe to repeat when
- * the workspace already matched the overlay (cpSync force is idempotent).
+ * DEPRECATED. Kept only as a no-op shim during the templates →
+ * marketplace consolidation rollout — both call-sites
+ * (RuntimeManager, agent-runtime/server) were already removed. The
+ * marketplace install flow stamps the same overlay bytes via
+ * `copyWorkspaceFiles` from the source project's pre-merged
+ * workspace, so reapplying it on every boot is now redundant.
  */
 export function overlayAgentTemplateCodeDirs(dir: string, templateId: string): boolean {
   const template = getAgentTemplateById(templateId)

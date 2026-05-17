@@ -11,7 +11,13 @@
  *  - Workspace switcher
  *  - Primary nav: Home + Search (Cmd+K)
  *  - PROJECTS section: Recent (5 projects), All Projects (with New Folder), Starred, Shared
- *  - RESOURCES section: Templates, Instance Picker, API Keys, Docs (external)
+ *  - RESOURCES section: Marketplace, Instance Picker, API Keys, Docs (external)
+ *
+ * Templates were folded into the marketplace — every former built-in
+ * template is now a `MarketplaceListing` row owned by the official
+ * "Shogo" creator. The standalone Templates nav entry was removed
+ * once that consolidation landed; users discover and install the same
+ * content through Marketplace.
  *  - Upgrade to Pro CTA
  *  - User avatar + Sign Out
  */
@@ -49,7 +55,6 @@ import {
   Star,
   Users,
   User,
-  FileCode2,
   ExternalLink,
   ChevronDown,
   ChevronRight,
@@ -1378,14 +1383,6 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
         {/* RESOURCES section */}
         <NavSection title="Resources" collapsed={collapsed}>
           <View className="px-2">
-            <NavItem
-              icon={FileCode2}
-              label="Templates"
-              href="/(app)/templates"
-              active={isRouteActive(pathname, '/(app)/templates')}
-              collapsed={collapsed}
-              onNavPress={onNavPress}
-            />
             {features.marketplace && (
               <NavItem
                 icon={Store}

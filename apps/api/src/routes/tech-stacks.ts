@@ -1,26 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * Tech-stack discovery routes — extracted from the deleted
+ * `agent-templates` route module during the templates → marketplace
+ * consolidation. Stacks describe the language/runtime each project
+ * boots into (Vite/React, Expo, Python, Unity, …) and are independent
+ * from any first-party template; they continue to exist as a separate
+ * resource the mobile project-creation flow queries.
+ */
 import { Hono } from 'hono'
-import { getTemplateSummaries, getAgentTemplateById, TEMPLATE_CATEGORIES } from '../../../../packages/agent-runtime/src/agent-templates'
 import { listTechStacks, loadTechStackMeta } from '../../../../packages/agent-runtime/src/workspace-defaults'
 
-export function agentTemplateRoutes() {
+export function techStackRoutes() {
   const app = new Hono()
-
-  app.get('/agent-templates', (c) => {
-    return c.json({
-      templates: getTemplateSummaries(),
-      categories: TEMPLATE_CATEGORIES,
-    })
-  })
-
-  app.get('/agent-templates/:id', (c) => {
-    const template = getAgentTemplateById(c.req.param('id'))
-    if (!template) {
-      return c.json({ error: 'Template not found' }, 404)
-    }
-    return c.json({ template })
-  })
 
   app.get('/tech-stacks', (c) => {
     return c.json({ stacks: listTechStacks() })

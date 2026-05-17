@@ -1371,6 +1371,10 @@ model MarketplaceListing {
   reviewCount          Int       @default(0)
   publishedAt          DateTime?
   featuredAt           DateTime?
+  // Phase 7 admin review queue.
+  rejectionReason String?
+  reviewedAt      DateTime?
+  reviewedBy      String?
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
@@ -1396,7 +1400,23 @@ model MarketplaceListingVersion {
   listingId         String
   version           String
   changelog         String?
-  workspaceSnapshot String?
+  // Phase 7 audit pipeline. SQLite has no enum/Json — auditStatus is one of
+  // 'none' | 'pending' | 'passed' | 'flagged' | 'errored'; auditFindings is
+  // a JSON-encoded string. See prisma/schema.prisma for the shape.
+  auditStatus   String  @default("none")
+  auditedAt     DateTime?
+  auditedBy     String?
+  auditFindings String?
+  auditModel    String?
+
+  // S3-backed workspace snapshot — see prisma/schema.prisma for the
+  // narrative. Local SQLite stores the JSON snapshot as a String column
+  // for backward compatibility; the new S3 fields are mirrored as
+  // String? / Int? for installs that talk to a remote API.
+  workspaceSnapshot         String?
+  workspaceSnapshotKey      String?
+  workspaceSnapshotBytes    Int?
+  workspaceSnapshotChecksum String?
 
   createdAt DateTime @default(now())
 
@@ -1415,6 +1435,8 @@ model MarketplaceInstall {
   userId               String
   installModel         String
   installedVersion     String
+  // Phase 6 drift detection. JSON-encoded manifest of relPath -> sha256.
+  baselineManifest     String?
   stripeSubscriptionId String?
   status               String   @default("active")
   createdAt            DateTime @default(now())

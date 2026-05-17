@@ -676,7 +676,6 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   private async ensureProjectDirectory(
     projectId: string,
     techStackId?: string,
-    templateId?: string,
     externalProject?: {
       primaryPath: string
     },
@@ -787,26 +786,14 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       }
     }
 
-    // Agent-template overlay: must apply BEFORE Vite spawns, otherwise the
-    // canvas iframe paints the bundled `Project Ready` App.tsx until the
-    // agent-runtime later re-seeds and Vite HMR catches up. Overlays both
-    // `src/` (so HMR rebuilds the right surface) and the template's
-    // pre-built `dist/` (so the canvas iframe paints the right surface
-    // *immediately*, before Vite finishes its cold rebuild). We re-apply
-    // on every start (idempotent — `cpSync(force:true)`) so a template-
-    // source edit in the repo propagates to existing local projects on
-    // next start.
-    if (templateId) {
-      try {
-        const { overlayAgentTemplateCodeDirs } = await import('@shogo/agent-runtime/src/workspace-defaults')
-        const applied = overlayAgentTemplateCodeDirs(projectDir, templateId)
-        if (applied) {
-          console.log(`[RuntimeManager] Applied agent template overlay (${templateId}) to ${projectId}`)
-        }
-      } catch (err: any) {
-        console.warn(`[RuntimeManager] Agent template overlay failed for ${templateId}: ${err.message}`)
-      }
-    }
+    // Agent-template overlay used to live here (it pasted
+    // `templates/<id>/{src,prisma,dist}` over the bundled Vite starter
+    // before Vite spawned). The marketplace install flow now hands us a
+    // pre-merged workspace via `copyWorkspaceFiles`, so the overlay is
+    // unconditionally a no-op for new projects. Existing template
+    // workspaces stay correct because the snapshot baked into
+    // `MarketplaceListingVersion.workspaceSnapshot` was produced from
+    // the same overlay output.
 
     // Install dependencies if needed.
     //
@@ -877,7 +864,6 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   }
 
   private async getProjectInfo(projectId: string): Promise<{
-    templateId?: string
     name?: string
     techStackId?: string
     workingMode?: 'managed' | 'external'
@@ -895,7 +881,6 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       const project = (await prisma.project.findUnique({
         where: { id: projectId },
         select: {
-          templateId: true,
           name: true,
           settings: true,
           workingMode: true,
@@ -907,12 +892,11 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         } as any,
       })) as any
       const settings = project?.settings as Record<string, unknown> | null
-      let techStackId = settings?.techStackId as string | undefined
-      if (!techStackId && project?.templateId) {
-        const { getAgentTemplateById } = await import('@shogo/agent-runtime/src/agent-templates')
-        const template = getAgentTemplateById(project.templateId)
-        if (template?.techStack) techStackId = template.techStack
-      }
+      // Tech stack is sourced exclusively from settings.techStackId now.
+      // The legacy templateId fallback was removed during the templates →
+      // marketplace consolidation; marketplace installs persist
+      // techStackId at install time so every new project carries it.
+      const techStackId = settings?.techStackId as string | undefined
       const workingMode = (project?.workingMode as 'managed' | 'external' | undefined) ?? 'managed'
       const runtimeEnabled =
         typeof project?.runtimeEnabled === 'boolean' ? project.runtimeEnabled : workingMode !== 'external'
@@ -921,7 +905,6 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         ? project.projectFolders.map((f: any) => ({ path: String(f.path), isPrimary: !!f.isPrimary }))
         : []
       return {
-        templateId: project?.templateId ?? undefined,
         name: project?.name ?? undefined,
         techStackId,
         workingMode,
@@ -1091,7 +1074,6 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     const projectDir = await this.ensureProjectDirectory(
       projectId,
       projectInfo.techStackId,
-      projectInfo.templateId,
       isExternal ? { primaryPath: externalPrimary! } : undefined,
     )
 
@@ -1311,7 +1293,6 @@ export class ShogoErrorBoundary extends Component<Props, State> {
                 RUNTIME_ENABLED: projectInfo.runtimeEnabled ? 'true' : 'false',
               }
             : {}),
-          ...(projectInfo.templateId ? { TEMPLATE_ID: projectInfo.templateId } : {}),
           ...(projectInfo.name ? { AGENT_NAME: projectInfo.name } : {}),
           ...(projectInfo.techStackId ? { TECH_STACK_ID: projectInfo.techStackId } : {}),
           // PORT / API_SERVER_PORT / SKILL_SERVER_PORT are injected by
@@ -1438,7 +1419,6 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           apiKey: process.env.SHOGO_API_KEY || '',
           projectDir,
           techStackId: projectInfo.techStackId,
-          templateId: projectInfo.templateId,
           name: projectInfo.name,
           workspaceId: runtimeEnv.WORKSPACE_ID,
           extraEnv: runtimeEnv,

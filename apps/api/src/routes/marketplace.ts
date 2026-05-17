@@ -6,6 +6,9 @@ import { prisma, PricingModel, type Prisma } from '../lib/prisma'
 import type { AuthContext } from '../middleware/auth'
 import * as marketplaceService from '../services/marketplace.service'
 import * as installService from '../services/marketplace-install.service'
+import { snapshotProjectWorkspace } from '../services/marketplace-manifest.service'
+import * as snapshotStorage from '../services/marketplace-snapshot-storage.service'
+import * as auditService from '../services/marketplace-audit.service'
 import * as stripeConnect from '../services/stripe-connect.service'
 import * as gamification from '../services/creator-gamification.service'
 import { getShogoCloudUrl, getFrontendUrl } from '../lib/cloud-urls'
@@ -274,13 +277,25 @@ export function marketplaceRoutes() {
       if (!install || install.userId !== authCtx.userId) {
         return c.json({ error: 'Forbidden' }, 403)
       }
-      const result = await installService.applyUpdate(installId)
+      // Phase 6 — accept `{ force?: boolean }` to allow callers to
+      // confirm "yes, overwrite my changes" after `drift_detected`.
+      let force = false
+      try {
+        const body = (await c.req.json().catch(() => null)) as { force?: boolean } | null
+        force = body?.force === true
+      } catch {
+        // Body is optional; treat as { force: false }.
+      }
+      const result = await installService.applyUpdate(installId, { force })
       if (!result.ok) {
         if (result.error === 'install_not_found') {
           return c.json({ error: result.error }, 404)
         }
-        if (result.error === 'not_linked_install' || result.error === 'version_not_found') {
+        if (result.error === 'version_not_found') {
           return c.json({ error: result.error }, 400)
+        }
+        if (result.error === 'drift_detected') {
+          return c.json({ error: result.error, diverged: result.diverged }, 409)
         }
         return c.json({ error: result.error }, 500)
       }
@@ -591,12 +606,49 @@ export function marketplaceRoutes() {
       if (!owned) {
         return c.json({ error: 'Listing not found' }, 404)
       }
+      // Phase 6 — capture a snapshot of the source workspace.
+      //
+      // Phase "S3 backing": we now upload a tarball to S3 and persist
+      // only the object key + size + checksum on the row. The legacy
+      // `workspaceSnapshot Json?` is still set (a) when the caller
+      // explicitly provides one (back-compat for any external tooling
+      // that drove this endpoint manually) or (b) on S3-upload failure
+      // (so the version still has *something* — `applyUpdate` falls
+      // back to the JSON column when the key is missing). New default:
+      // S3-only, JSON column null.
+      let snapshotKey: string | null = null
+      let snapshotBytes: number | null = null
+      let snapshotChecksum: string | null = null
+      let legacySnapshot: Prisma.InputJsonValue | undefined
+      try {
+        const result = await snapshotStorage.uploadProjectSnapshot(
+          owned.projectId,
+          listingId,
+          body.version,
+        )
+        snapshotKey = result.key
+        snapshotBytes = result.bytes
+        snapshotChecksum = result.checksum
+      } catch (uploadErr) {
+        // S3 misconfigured or transient failure — keep the JSON
+        // fallback path alive so version creation still works.
+        console.error('[marketplace] snapshot upload failed, falling back to JSON:', uploadErr)
+        legacySnapshot =
+          body.workspaceSnapshot ?? (snapshotProjectWorkspace(owned.projectId) as Prisma.InputJsonValue)
+      }
+      // Caller-supplied snapshot overrides whatever we just captured.
+      if (body.workspaceSnapshot) {
+        legacySnapshot = body.workspaceSnapshot
+      }
       const versionRow = await prisma.marketplaceListingVersion.create({
         data: {
           listingId,
           version: body.version,
           changelog: body.changelog ?? undefined,
-          workspaceSnapshot: body.workspaceSnapshot ?? undefined,
+          workspaceSnapshot: legacySnapshot,
+          workspaceSnapshotKey: snapshotKey,
+          workspaceSnapshotBytes: snapshotBytes,
+          workspaceSnapshotChecksum: snapshotChecksum,
         },
       })
       await prisma.marketplaceListing.update({
@@ -613,6 +665,110 @@ export function marketplaceRoutes() {
       }
       console.error('[marketplace] push listing version', err)
       return c.json({ error: 'Failed to create version' }, 500)
+    }
+  })
+
+  // Phase 7 — advisory audit pass over a specific version. Does NOT
+  // change the listing's status; the result is persisted onto the
+  // version row so the admin review queue can show it later, and
+  // returned to the caller so the creator UI can render findings
+  // inline (highlighting files / lines the creator should clean up
+  // before submitting for review).
+  app.post('/creator/listings/:id/versions/:vid/audit', async (c) => {
+    const authCtx = c.get('auth') as AuthContext | undefined
+    if (!authCtx?.isAuthenticated || !authCtx.userId) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    try {
+      const profile = await marketplaceService.getCreatorProfile(authCtx.userId)
+      if (!profile) {
+        return c.json({ error: 'Creator profile not found' }, 404)
+      }
+      const listingId = c.req.param('id')
+      const versionId = c.req.param('vid')
+      const owned = await prisma.marketplaceListing.findFirst({
+        where: { id: listingId, creatorId: profile.id },
+        select: { id: true },
+      })
+      if (!owned) {
+        return c.json({ error: 'Listing not found' }, 404)
+      }
+      const version = await prisma.marketplaceListingVersion.findFirst({
+        where: { id: versionId, listingId },
+        select: { id: true },
+      })
+      if (!version) {
+        return c.json({ error: 'Version not found' }, 404)
+      }
+      const result = await auditService.auditListingVersion(versionId, authCtx.userId)
+      return c.json({ audit: result })
+    } catch (err) {
+      console.error('[marketplace] auditListingVersion', err)
+      return c.json({ error: 'Failed to run audit' }, 500)
+    }
+  })
+
+  // Phase 7 — submit a draft listing for human admin review.
+  //
+  // We always queue for admin (the auditor is advisory only), but we
+  // also auto-run the auditor against the latest version on the way
+  // in so the admin sees fresh findings. A failed audit (errored)
+  // does not block submission — admins still need to see the
+  // listing.
+  app.post('/creator/listings/:id/submit-for-review', async (c) => {
+    const authCtx = c.get('auth') as AuthContext | undefined
+    if (!authCtx?.isAuthenticated || !authCtx.userId) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    try {
+      const profile = await marketplaceService.getCreatorProfile(authCtx.userId)
+      if (!profile) {
+        return c.json({ error: 'Creator profile not found' }, 404)
+      }
+      const listingId = c.req.param('id')
+      const owned = await prisma.marketplaceListing.findFirst({
+        where: { id: listingId, creatorId: profile.id },
+      })
+      if (!owned) {
+        return c.json({ error: 'Listing not found' }, 404)
+      }
+      if (owned.status !== 'draft' && owned.status !== 'rejected') {
+        return c.json(
+          {
+            error: 'invalid_state',
+            message: `Listing is in '${owned.status}' state; only draft / rejected listings can be submitted`,
+          },
+          409,
+        )
+      }
+      const latest = await prisma.marketplaceListingVersion.findFirst({
+        where: { listingId },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true },
+      })
+      let auditResult: auditService.AuditResult | null = null
+      if (latest) {
+        try {
+          auditResult = await auditService.auditListingVersion(latest.id, authCtx.userId)
+        } catch (auditErr) {
+          // Don't block submission on auditor outages — record the
+          // error but still queue for human review.
+          console.error('[marketplace] submit-for-review auditor failed (non-fatal):', auditErr)
+        }
+      }
+      const updated = await prisma.marketplaceListing.update({
+        where: { id: listingId },
+        data: {
+          status: 'pending_review',
+          rejectionReason: null,
+          reviewedAt: null,
+          reviewedBy: null,
+        },
+      })
+      return c.json({ listing: updated, audit: auditResult })
+    } catch (err) {
+      console.error('[marketplace] submitForReview', err)
+      return c.json({ error: 'Failed to submit for review' }, 500)
     }
   })
 
