@@ -4,14 +4,28 @@
 import { Hono } from 'hono'
 
 import { prisma } from '../lib/prisma'
-import { authMiddleware, requireAuth } from '../middleware/auth'
+import { authMiddleware, requireAuth, type AuthContext } from '../middleware/auth'
 import { requireSuperAdmin } from '../middleware/super-admin'
 import * as stripeConnect from '../services/stripe-connect.service'
 
-const ADMIN_LISTING_STATUSES = ['published', 'suspended', 'archived'] as const
+// Phase 7 — admins can move listings between published / suspended /
+// archived directly, plus reject pending_review submissions back to
+// draft. Approving a pending_review listing is its own
+// `/listings/:id/approve` endpoint (it also flips currentVersion's
+// auditedBy to the admin), so it isn't part of this status patch
+// allow-list.
+const ADMIN_LISTING_STATUSES = ['published', 'suspended', 'archived', 'rejected'] as const
 type AdminListingStatus = (typeof ADMIN_LISTING_STATUSES)[number]
 
-const ALL_LISTING_STATUSES = ['draft', 'in_review', 'published', 'suspended', 'archived'] as const
+const ALL_LISTING_STATUSES = [
+  'draft',
+  'in_review',
+  'pending_review',
+  'published',
+  'suspended',
+  'archived',
+  'rejected',
+] as const
 type AnyListingStatus = (typeof ALL_LISTING_STATUSES)[number]
 
 function normalizePagination(page?: number, limit?: number): {
@@ -351,6 +365,147 @@ export function adminMarketplaceRoutes() {
     } catch {
       return c.json({ error: { code: 'not_found', message: 'Listing not found' } }, 404)
     }
+  })
+
+  // Phase 7 — admin review queue.
+  //
+  // The queue is just `MarketplaceListing` rows in `pending_review`
+  // status, sorted oldest-first so admins drain the backlog FIFO. We
+  // include the latest version + its audit findings so the admin UI
+  // can render the Haiku auditor's suggestions inline without a
+  // second round-trip.
+  app.get('/listings/review-queue', async (c) => {
+    const url = new URL(c.req.url)
+    const { page, limit, skip } = normalizePagination(
+      parseOptionalInt(url.searchParams.get('page')),
+      parseOptionalInt(url.searchParams.get('limit')),
+    )
+
+    const where = { status: 'pending_review' as const }
+    const [items, total] = await Promise.all([
+      prisma.marketplaceListing.findMany({
+        where,
+        orderBy: { updatedAt: 'asc' },
+        skip,
+        take: limit,
+        include: {
+          creator: { include: { user: { select: { id: true, email: true, name: true } } } },
+          // We surface only the most recent version's audit data —
+          // older versions' findings are still available via the
+          // version-detail endpoint if the admin wants the full trail.
+          versions: {
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: {
+              id: true,
+              version: true,
+              changelog: true,
+              auditStatus: true,
+              auditModel: true,
+              auditedAt: true,
+              auditFindings: true,
+              createdAt: true,
+            },
+          },
+        },
+      }),
+      prisma.marketplaceListing.count({ where }),
+    ])
+
+    const totalPages = Math.ceil(total / limit) || 1
+    return c.json({ ok: true, data: { items, total, page, limit, totalPages } })
+  })
+
+  app.post('/listings/:id/approve', async (c) => {
+    const id = c.req.param('id')
+    const authCtx = c.get('auth') as AuthContext | undefined
+    const adminId = authCtx?.userId ?? null
+
+    const listing = await prisma.marketplaceListing.findUnique({
+      where: { id },
+      select: { id: true, status: true },
+    })
+    if (!listing) {
+      return c.json({ error: { code: 'not_found', message: 'Listing not found' } }, 404)
+    }
+    if (listing.status !== 'pending_review') {
+      return c.json(
+        {
+          error: {
+            code: 'invalid_state',
+            message: `Listing is in '${listing.status}' state, not pending_review`,
+          },
+        },
+        409,
+      )
+    }
+
+    const updated = await prisma.marketplaceListing.update({
+      where: { id },
+      data: {
+        status: 'published',
+        rejectionReason: null,
+        reviewedAt: new Date(),
+        reviewedBy: adminId,
+        publishedAt: new Date(),
+      },
+      include: {
+        creator: { include: { user: { select: { id: true, email: true, name: true } } } },
+      },
+    })
+    return c.json({ ok: true, data: updated })
+  })
+
+  app.post('/listings/:id/reject', async (c) => {
+    const id = c.req.param('id')
+    const authCtx = c.get('auth') as AuthContext | undefined
+    const adminId = authCtx?.userId ?? null
+
+    let body: { reason?: unknown }
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: { code: 'invalid_json', message: 'Invalid JSON body' } }, 400)
+    }
+    if (typeof body.reason !== 'string' || body.reason.trim() === '') {
+      return c.json(
+        { error: { code: 'invalid_body', message: 'reason is required' } },
+        400,
+      )
+    }
+
+    const listing = await prisma.marketplaceListing.findUnique({
+      where: { id },
+      select: { id: true, status: true },
+    })
+    if (!listing) {
+      return c.json({ error: { code: 'not_found', message: 'Listing not found' } }, 404)
+    }
+    if (listing.status !== 'pending_review') {
+      return c.json(
+        {
+          error: {
+            code: 'invalid_state',
+            message: `Listing is in '${listing.status}' state, not pending_review`,
+          },
+        },
+        409,
+      )
+    }
+
+    const updated = await prisma.marketplaceListing.update({
+      where: { id },
+      data: {
+        status: 'rejected',
+        rejectionReason: body.reason,
+        reviewedAt: new Date(),
+        reviewedBy: adminId,
+      },
+      include: {
+        creator: { include: { user: { select: { id: true, email: true, name: true } } } },
+      },
+    })
+    return c.json({ ok: true, data: updated })
   })
 
   app.post('/listings/:id/feature', async (c) => {

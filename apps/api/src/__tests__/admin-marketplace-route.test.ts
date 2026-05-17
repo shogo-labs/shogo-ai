@@ -44,6 +44,7 @@ mock.module('../services/stripe-connect.service', () => stripeSpies)
 let creators: Map<string, any>
 let listings: any[]
 let txns: any[]
+let versions: any[] = []
 let txnCreateThrow: Error | null = null
 let updateThrow: Error | null = null
 
@@ -51,6 +52,7 @@ function resetState() {
   creators = new Map()
   listings = []
   txns = []
+  versions = []
   txnCreateThrow = null
   updateThrow = null
   stripeSpies.getAccountBalance.mockClear()
@@ -97,11 +99,16 @@ const listingTable = {
         args.orderBy?.createdAt === 'asc' ? a.createdAt - b.createdAt : b.createdAt - a.createdAt,
       )[0] ?? null
   },
+  findUnique: async (args: any) => {
+    return listings.find((l) => l.id === args.where.id) ?? null
+  },
   findMany: async (args: any) => {
     let rows = listings.slice()
     if (args.where?.status) rows = rows.filter((l) => l.status === args.where.status)
     if (args.orderBy?.updatedAt === 'desc') {
       rows.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+    } else if (args.orderBy?.updatedAt === 'asc') {
+      rows.sort((a, b) => (a.updatedAt ?? 0) - (b.updatedAt ?? 0))
     }
     if (args.skip) rows = rows.slice(args.skip)
     if (args.take) rows = rows.slice(0, args.take)
@@ -115,6 +122,17 @@ const listingTable = {
     if (!l) throw new Error('listing not found')
     Object.assign(l, args.data)
     return l
+  },
+}
+
+const versionTable = {
+  findMany: async (args: any) => {
+    let rows = versions.filter((v) => !args.where?.listingId || v.listingId === args.where.listingId)
+    if (args.orderBy?.createdAt === 'desc') {
+      rows.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+    }
+    if (args.take) rows = rows.slice(0, args.take)
+    return rows
   },
 }
 
@@ -140,6 +158,7 @@ mock.module('../lib/prisma', () => ({
   prisma: {
     creatorProfile: creatorProfileTable,
     marketplaceListing: listingTable,
+    marketplaceListingVersion: versionTable,
     marketplaceTransaction: txnTable,
     $transaction: async (fn: any) => fn({
       creatorProfile: creatorProfileTable,
@@ -595,5 +614,97 @@ describe('POST /listings/:id/feature', () => {
     const res = await call('POST', '/listings/missing/feature')
     expect(res.status).toBe(404)
     expect(res.body.error.code).toBe('not_found')
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────
+// Phase 7 — admin review queue
+// ──────────────────────────────────────────────────────────────────────
+
+describe('GET /listings/review-queue', () => {
+  test('returns only pending_review listings, oldest first', async () => {
+    listings.push(
+      {
+        id: 'l1',
+        status: 'pending_review',
+        updatedAt: 100,
+        creator: { user: {} },
+      },
+      {
+        id: 'l2',
+        status: 'pending_review',
+        updatedAt: 50,
+        creator: { user: {} },
+      },
+      { id: 'l3', status: 'draft', updatedAt: 200, creator: { user: {} } },
+      { id: 'l4', status: 'published', updatedAt: 300, creator: { user: {} } },
+    )
+    const res = await call('GET', '/listings/review-queue')
+    expect(res.status).toBe(200)
+    expect(res.body.data.items.map((i: any) => i.id)).toEqual(['l2', 'l1'])
+    expect(res.body.data.total).toBe(2)
+  })
+})
+
+describe('POST /listings/:id/approve', () => {
+  test('flips pending_review → published with reviewedAt + reviewedBy', async () => {
+    listings.push({
+      id: 'l1',
+      status: 'pending_review',
+      updatedAt: 100,
+      creator: { user: {} },
+    })
+    const res = await call('POST', '/listings/l1/approve')
+    expect(res.status).toBe(200)
+    expect(res.body.data.status).toBe('published')
+    expect(res.body.data.reviewedAt).toBeTruthy()
+    expect(res.body.data.publishedAt).toBeTruthy()
+    expect(res.body.data.rejectionReason).toBeNull()
+  })
+
+  test('404 when listing missing', async () => {
+    const res = await call('POST', '/listings/missing/approve')
+    expect(res.status).toBe(404)
+  })
+
+  test('409 when listing is in any status other than pending_review', async () => {
+    listings.push({ id: 'l1', status: 'draft', creator: { user: {} } })
+    const res = await call('POST', '/listings/l1/approve')
+    expect(res.status).toBe(409)
+    expect(res.body.error.code).toBe('invalid_state')
+  })
+})
+
+describe('POST /listings/:id/reject', () => {
+  test('400 when reason missing', async () => {
+    listings.push({ id: 'l1', status: 'pending_review', creator: { user: {} } })
+    const res = await call('POST', '/listings/l1/reject', {})
+    expect(res.status).toBe(400)
+  })
+
+  test('400 on whitespace-only reason', async () => {
+    listings.push({ id: 'l1', status: 'pending_review', creator: { user: {} } })
+    const res = await call('POST', '/listings/l1/reject', { reason: '   ' })
+    expect(res.status).toBe(400)
+  })
+
+  test('flips pending_review → rejected, stores reason + reviewedAt', async () => {
+    listings.push({ id: 'l1', status: 'pending_review', creator: { user: {} } })
+    const res = await call('POST', '/listings/l1/reject', { reason: 'Has API key' })
+    expect(res.status).toBe(200)
+    expect(res.body.data.status).toBe('rejected')
+    expect(res.body.data.rejectionReason).toBe('Has API key')
+    expect(res.body.data.reviewedAt).toBeTruthy()
+  })
+
+  test('404 when listing missing', async () => {
+    const res = await call('POST', '/listings/missing/reject', { reason: 'x' })
+    expect(res.status).toBe(404)
+  })
+
+  test('409 when listing is not pending_review', async () => {
+    listings.push({ id: 'l1', status: 'published', creator: { user: {} } })
+    const res = await call('POST', '/listings/l1/reject', { reason: 'x' })
+    expect(res.status).toBe(409)
   })
 })

@@ -1589,9 +1589,19 @@ enum InstallModel {
 enum ListingStatus {
   draft
   in_review
+  pending_review
   published
   suspended
   archived
+  rejected
+}
+
+enum AuditStatus {
+  none
+  pending
+  passed
+  flagged
+  errored
 }
 
 enum InstallStatus {
@@ -1688,6 +1698,14 @@ model MarketplaceListing {
   reviewCount          Int           @default(0)
   publishedAt          DateTime?
   featuredAt           DateTime?
+  // Admin review queue (Phase 7). When the listing is rejected the admin's
+  // reason is shown to the creator on the listing card; reviewedAt /
+  // reviewedBy are populated on both approve and reject so we have an
+  // auditable per-listing trail without standing up a separate review-event
+  // table. See marketplace-audit.service for how findings flow in.
+  rejectionReason String?
+  reviewedAt      DateTime?
+  reviewedBy      String?
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt
 
@@ -1709,11 +1727,40 @@ model MarketplaceListing {
 }
 
 model MarketplaceListingVersion {
-  id                String  @id @default(cuid())
-  listingId         String
-  version           String
-  changelog         String? @db.Text
-  workspaceSnapshot Json?
+  id        String  @id @default(cuid())
+  listingId String
+  version   String
+  changelog String? @db.Text
+
+  // Workspace storage. Snapshots used to live in `workspaceSnapshot Json?`,
+  // which doesn't scale past trivial templates (Postgres jsonb chokes on
+  // multi-MB tarballs and JSON-encoded base64 wastes ~33% on every binary
+  // file). Production storage is now S3 — `workspaceSnapshotKey` is the
+  // tarball's object key under `${S3_WORKSPACES_BUCKET}/marketplace/`,
+  // `workspaceSnapshotBytes` is the compressed size for UI display +
+  // future per-listing quotas, and `workspaceSnapshotChecksum` is a
+  // sha256 of the tarball for integrity verification at download time.
+  // The legacy `workspaceSnapshot Json?` column stays for one release
+  // as a read-fallback; the boot-time backfiller materializes those
+  // rows into S3, after which a follow-up migration drops the column.
+  workspaceSnapshot         Json?
+  workspaceSnapshotKey      String?
+  workspaceSnapshotBytes    Int?
+  workspaceSnapshotChecksum String?
+
+  // Phase 7 audit pipeline. Each version row carries its own audit state
+  // because we re-audit on every new version. `auditedBy` is either the
+  // sentinel string `'haiku-auto'` or an admin userId when a human re-runs
+  // the audit. `auditFindings` is an array of
+  //   { severity: 'secret' | 'non_generic' | 'info',
+  //     file: string, line?: number, snippet?: string,
+  //     reason: string, suggestion?: string }
+  // Findings are advisory — submission to admin review is never blocked.
+  auditStatus   AuditStatus @default(none)
+  auditedAt     DateTime?
+  auditedBy     String?
+  auditFindings Json?
+  auditModel    String?
 
   createdAt DateTime @default(now())
 
@@ -1732,6 +1779,12 @@ model MarketplaceInstall {
   userId               String
   installModel         InstallModel
   installedVersion     String
+  // Per-file sha256 manifest captured at install + after each apply-update.
+  // Shape: { "<relPath>": "<sha256-hex>", ... }. Used by Phase 6 drift
+  // detection: applyUpdate compares the current on-disk manifest to this
+  // baseline and refuses to overwrite when files diverge unless the user
+  // passes { force: true }. See marketplace-manifest.service.ts.
+  baselineManifest     Json?
   stripeSubscriptionId String?
   status               InstallStatus @default(active)
   createdAt            DateTime      @default(now())

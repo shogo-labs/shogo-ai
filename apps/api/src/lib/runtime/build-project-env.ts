@@ -9,7 +9,6 @@
 
 import { generateProxyToken } from '../ai-proxy-token'
 import { getAgentModeOverrides } from '@shogo/model-catalog'
-import { getAgentTemplateById } from '@shogo/agent-runtime/src/agent-templates'
 
 /**
  * Build the environment variables needed for assigning a project to a runtime pod or VM.
@@ -32,7 +31,6 @@ export async function buildProjectEnv(
       where: { id: projectId },
       select: {
         workspaceId: true,
-        templateId: true,
         name: true,
         settings: true,
         cloudSyncMode: true,
@@ -40,7 +38,6 @@ export async function buildProjectEnv(
       } as any,
     }) as (Record<string, any> & {
       workspaceId?: string | null
-      templateId?: string | null
       name?: string | null
       settings?: unknown
       cloudSyncMode?: string | null
@@ -48,7 +45,10 @@ export async function buildProjectEnv(
     }) | null
     if (project) {
       if (project.workspaceId) env.WORKSPACE_ID = project.workspaceId
-      if (project.templateId) env.TEMPLATE_ID = project.templateId
+      // TEMPLATE_ID intentionally not exported. The marketplace install
+      // flow pre-seeds the workspace, so the runtime no longer needs a
+      // template id at boot. The `.template` marker file (legacy) is
+      // also no longer read — see agent-runtime/src/server.ts.
       if (project.name) env.AGENT_NAME = project.name
 
       // Per-project cloud sync strategy. Default `s3` is omitted so
@@ -72,12 +72,15 @@ export async function buildProjectEnv(
         env.MOUNT_WORKSPACE = 'false'
       }
 
+      // Tech stack is sourced exclusively from project.settings.techStackId
+      // now that templateId is gone. Marketplace installs (the only flow
+      // that creates new projects) populate this field directly from the
+      // listing's source project at install time. Workspaces that pre-date
+      // the consolidation already had it copied across by the
+      // migrate-templates-to-marketplace script.
       const techStackFromSettings = settings?.techStackId as string | undefined
       if (techStackFromSettings) {
         env.TECH_STACK_ID = techStackFromSettings
-      } else if (project.templateId) {
-        const template = getAgentTemplateById(project.templateId)
-        if (template?.techStack) env.TECH_STACK_ID = template.techStack
       }
 
       const { getProjectOwnerUserId } = await import('../project-user-context')

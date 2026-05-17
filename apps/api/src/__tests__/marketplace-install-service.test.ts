@@ -187,6 +187,51 @@ const prismaStub: any = {
 
 mock.module('../lib/prisma', () => withPrismaExports({ prisma: prismaStub }))
 
+// ─── manifest service mock (Phase 6) ────────────────────────────────
+// installAgent now calls computeWorkspaceManifest after copying
+// files; applyUpdate uses both compute + diff for drift detection.
+// Tests override these via `manifestOverrides` between cases.
+let manifestOverrides: {
+  computeWorkspaceManifest?: () => Record<string, string>
+  diffManifests?: (
+    a: Record<string, string>,
+    b: Record<string, string>,
+  ) => { added: string[]; modified: string[]; deleted: string[] }
+} = {}
+
+mock.module('../services/marketplace-manifest.service', () => ({
+  computeWorkspaceManifest: (projectId: string) =>
+    manifestOverrides.computeWorkspaceManifest
+      ? manifestOverrides.computeWorkspaceManifest()
+      : { [`fingerprint-${projectId}`]: 'sha256-stub' },
+  diffManifests: (a: Record<string, string>, b: Record<string, string>) =>
+    manifestOverrides.diffManifests
+      ? manifestOverrides.diffManifests(a, b)
+      : { added: [], modified: [], deleted: [] },
+  snapshotProjectWorkspace: () => ({}),
+}))
+
+// ─── snapshot storage mock ──────────────────────────────────────
+// Records every S3 extract so tests can assert install/applyUpdate
+// take the S3 path when a `workspaceSnapshotKey` is present on the
+// version row. JSON-snapshot tests leave `extractCalls` empty.
+const extractCalls: Array<{ key: string; destProjectId: string; expectedChecksum?: string | null }> = []
+let extractThrow: Error | null = null
+mock.module('../services/marketplace-snapshot-storage.service', () => ({
+  extractSnapshotToProject: async (
+    key: string,
+    destProjectId: string,
+    opts?: { expectedChecksum?: string | null },
+  ) => {
+    extractCalls.push({
+      key,
+      destProjectId,
+      expectedChecksum: opts?.expectedChecksum ?? null,
+    })
+    if (extractThrow) throw extractThrow
+  },
+}))
+
 // ─── workspace.service mock (only hasWorkspaceAccess) ─────────────────
 
 let workspaceAccessAnswer = true
@@ -199,6 +244,9 @@ const svc = await import('../services/marketplace-install.service')
 beforeEach(() => {
   resetStores()
   workspaceAccessAnswer = true
+  manifestOverrides = {}
+  extractCalls.length = 0
+  extractThrow = null
 })
 
 afterEach(() => {
@@ -314,7 +362,7 @@ describe('installAgent', () => {
     ).rejects.toThrow('listing_not_published')
   })
 
-  test('happy path: creates project + agent-config, copies files, bumps installCount', async () => {
+  test('happy path (legacy on-disk copy): no version row, no S3 key, falls back to copyWorkspaceFiles', async () => {
     seedListing()
     const out = await svc.installAgent({ listingId: 'lst_1', userId: 'u', workspaceId: 'ws' })
     expect(out.projectId).toMatch(/^proj_/)
@@ -330,8 +378,57 @@ describe('installAgent', () => {
     // install row + listing.installCount incremented
     expect(installs).toHaveLength(1)
     expect(listings.get('lst_1').installCount).toBe(1)
-    // file copy was attempted
+    // No version row → fall back to direct workspace copy.
     expect(fsCalls.find((c) => c.kind === 'cpSync')).toBeTruthy()
+    expect(extractCalls).toHaveLength(0)
+  })
+
+  test('S3 path: version with workspaceSnapshotKey extracts from storage instead of copying', async () => {
+    seedListing()
+    versions.push({
+      listingId: 'lst_1',
+      version: '1.0.0',
+      workspaceSnapshotKey: 'marketplace/listings/lst_1/1.0.0.tar.gz',
+      workspaceSnapshotChecksum: 'sha256-stub',
+    })
+    const out = await svc.installAgent({ listingId: 'lst_1', userId: 'u', workspaceId: 'ws' })
+    expect(extractCalls).toHaveLength(1)
+    expect(extractCalls[0].key).toBe('marketplace/listings/lst_1/1.0.0.tar.gz')
+    expect(extractCalls[0].destProjectId).toBe(out.projectId)
+    expect(extractCalls[0].expectedChecksum).toBe('sha256-stub')
+    // We did NOT fall back to the direct workspace copy.
+    expect(fsCalls.find((c) => c.kind === 'cpSync')).toBeFalsy()
+  })
+
+  test('S3 extraction failure rolls back project, propagates error', async () => {
+    seedListing()
+    versions.push({
+      listingId: 'lst_1',
+      version: '1.0.0',
+      workspaceSnapshotKey: 'marketplace/listings/lst_1/1.0.0.tar.gz',
+    })
+    extractThrow = new Error('s3 down')
+    await expect(
+      svc.installAgent({ listingId: 'lst_1', userId: 'u', workspaceId: 'ws' }),
+    ).rejects.toThrow('s3 down')
+    // Source project (src_proj) survived; new project was deleted.
+    expect(projects.size).toBe(1)
+    expect(installs).toHaveLength(0)
+  })
+
+  test('JSON snapshot fallback: legacy versions still install via applyWorkspaceSnapshot', async () => {
+    seedListing()
+    versions.push({
+      listingId: 'lst_1',
+      version: '1.0.0',
+      workspaceSnapshot: { files: { 'a.txt': 'legacy' } },
+    })
+    const out = await svc.installAgent({ listingId: 'lst_1', userId: 'u', workspaceId: 'ws' })
+    expect(extractCalls).toHaveLength(0)
+    // applyWorkspaceSnapshot writes one file via writeFileSync.
+    const writes = fsCalls.filter((c) => c.kind === 'writeFileSync')
+    expect(writes.some((w) => (w.args[0] as string).endsWith('a.txt'))).toBe(true)
+    expect(installs.find((i) => i.id === out.installId)).toBeTruthy()
   })
 
   test('rolls back project when copyWorkspaceFiles throws', async () => {
@@ -388,7 +485,10 @@ describe('checkForUpdates', () => {
     await expect(svc.checkForUpdates('nope')).rejects.toThrow('install_not_found')
   })
 
-  test('non-linked install: never reports updates', async () => {
+  // Phase 6 — fork installs now report updates the same way linked
+  // installs do (the install_model split was retired). Whether to
+  // surface the prompt is a UI decision, not a service decision.
+  test('fork install reports update + changelog when available', async () => {
     listings.set('lst_1', { id: 'lst_1', currentVersion: '2.0.0' })
     installs.push({
       id: 'inst_1',
@@ -396,10 +496,12 @@ describe('checkForUpdates', () => {
       installModel: 'fork',
       installedVersion: '1.0.0',
     })
+    versions.push({ listingId: 'lst_1', version: '2.0.0', changelog: 'fork update' })
     const out = await svc.checkForUpdates('inst_1')
-    expect(out.hasUpdate).toBe(false)
+    expect(out.hasUpdate).toBe(true)
     expect(out.installedVersion).toBe('1.0.0')
     expect(out.currentVersion).toBe('2.0.0')
+    expect(out.changelog).toBe('fork update')
   })
 
   test('linked install with newer version: returns hasUpdate + changelog', async () => {
@@ -439,17 +541,6 @@ describe('applyUpdate', () => {
     expect(await svc.applyUpdate('nope')).toEqual({ ok: false, error: 'install_not_found' })
   })
 
-  test('not_linked_install', async () => {
-    listings.set('lst_1', { id: 'lst_1', currentVersion: '1.0.0' })
-    installs.push({
-      id: 'inst_1',
-      listingId: 'lst_1',
-      installModel: 'fork',
-      installedVersion: '1.0.0',
-    })
-    expect(await svc.applyUpdate('inst_1')).toEqual({ ok: false, error: 'not_linked_install' })
-  })
-
   test('already up to date: returns ok=true with no fs work', async () => {
     listings.set('lst_1', { id: 'lst_1', currentVersion: '2.0.0' })
     installs.push({
@@ -458,8 +549,30 @@ describe('applyUpdate', () => {
       installModel: 'linked',
       installedVersion: '2.0.0',
     })
-    expect(await svc.applyUpdate('inst_1')).toEqual({ ok: true })
+    const result = await svc.applyUpdate('inst_1')
+    expect(result.ok).toBe(true)
     expect(fsCalls.find((c) => c.kind === 'writeFileSync')).toBeFalsy()
+  })
+
+  // Phase 6 — fork installs no longer short-circuit; they go through
+  // the same drift gate as linked.
+  test('fork install with no baseline applies snapshot like linked', async () => {
+    listings.set('lst_1', { id: 'lst_1', currentVersion: '2.0.0' })
+    installs.push({
+      id: 'inst_1',
+      listingId: 'lst_1',
+      installModel: 'fork',
+      installedVersion: '1.0.0',
+      projectId: 'proj_fork',
+    })
+    versions.push({
+      listingId: 'lst_1',
+      version: '2.0.0',
+      workspaceSnapshot: { files: { 'a.txt': 'fresh' } },
+    })
+    const out = await svc.applyUpdate('inst_1')
+    expect(out.ok).toBe(true)
+    expect(installs[0].installedVersion).toBe('2.0.0')
   })
 
   test('version_not_found when target version missing', async () => {
@@ -497,7 +610,7 @@ describe('applyUpdate', () => {
       },
     })
     const out = await svc.applyUpdate('inst_1')
-    expect(out).toEqual({ ok: true })
+    expect(out.ok).toBe(true)
     expect(installs[0].installedVersion).toBe('2.0.0')
     const writes = fsCalls.filter((c) => c.kind === 'writeFileSync')
     expect(writes).toHaveLength(2)
@@ -535,7 +648,7 @@ describe('applyUpdate', () => {
     })
     versions.push({ listingId: 'lst_1', version: '2.0.0', workspaceSnapshot: null })
     const out = await svc.applyUpdate('inst_1')
-    expect(out).toEqual({ ok: true })
+    expect(out.ok).toBe(true)
     expect(installs[0].installedVersion).toBe('2.0.0')
   })
 
@@ -554,8 +667,116 @@ describe('applyUpdate', () => {
       workspaceSnapshot: { 'a.txt': 'hello' },
     })
     const out = await svc.applyUpdate('inst_1')
-    expect(out).toEqual({ ok: true })
+    expect(out.ok).toBe(true)
     expect(fsCalls.find((c) => c.kind === 'writeFileSync')).toBeTruthy()
+  })
+
+  // Phase 6 — drift detection. We override the manifest service via
+  // `manifestOverrides` (see the top-of-file mock) to simulate
+  // baseline ≠ current without needing real files on disk.
+  describe('drift detection', () => {
+    test('detects drift and refuses without force', async () => {
+      manifestOverrides = {
+        computeWorkspaceManifest: () => ({ 'a.txt': 'NEW_HASH' }),
+        diffManifests: () => ({ added: [], modified: ['a.txt'], deleted: [] }),
+      }
+      listings.set('lst_d', { id: 'lst_d', currentVersion: '2.0.0' })
+      installs.push({
+        id: 'inst_d',
+        listingId: 'lst_d',
+        installModel: 'linked',
+        installedVersion: '1.0.0',
+        projectId: 'proj_d',
+        baselineManifest: { 'a.txt': 'OLD_HASH' },
+      })
+      versions.push({
+        listingId: 'lst_d',
+        version: '2.0.0',
+        workspaceSnapshot: { files: { 'a.txt': 'fresh' } },
+      })
+      const out = await svc.applyUpdate('inst_d')
+      expect(out.ok).toBe(false)
+      if (!out.ok) {
+        expect(out.error).toBe('drift_detected')
+        expect(out.diverged?.modified).toEqual(['a.txt'])
+      }
+      // Snapshot must NOT have been written.
+      expect(fsCalls.find((c) => c.kind === 'writeFileSync')).toBeFalsy()
+    })
+
+    test('force overrides drift and writes snapshot', async () => {
+      manifestOverrides = {
+        computeWorkspaceManifest: () => ({ 'a.txt': 'POST_APPLY' }),
+        diffManifests: () => ({ added: [], modified: ['a.txt'], deleted: [] }),
+      }
+      listings.set('lst_f', { id: 'lst_f', currentVersion: '2.0.0' })
+      installs.push({
+        id: 'inst_f',
+        listingId: 'lst_f',
+        installModel: 'linked',
+        installedVersion: '1.0.0',
+        projectId: 'proj_f',
+        baselineManifest: { 'a.txt': 'OLD' },
+      })
+      versions.push({
+        listingId: 'lst_f',
+        version: '2.0.0',
+        workspaceSnapshot: { files: { 'a.txt': 'forced' } },
+      })
+      const out = await svc.applyUpdate('inst_f', { force: true })
+      expect(out.ok).toBe(true)
+      const inst = installs.find((i) => i.id === 'inst_f')!
+      expect(inst.installedVersion).toBe('2.0.0')
+      // Baseline refreshed to the new on-disk manifest.
+      expect(inst.baselineManifest).toEqual({ 'a.txt': 'POST_APPLY' })
+    })
+
+    test('S3 path: applyUpdate extracts tarball when version row has a key', async () => {
+      listings.set('lst_s', { id: 'lst_s', currentVersion: '2.0.0' })
+      installs.push({
+        id: 'inst_s',
+        listingId: 'lst_s',
+        installModel: 'linked',
+        installedVersion: '1.0.0',
+        projectId: 'proj_s',
+      })
+      versions.push({
+        listingId: 'lst_s',
+        version: '2.0.0',
+        workspaceSnapshotKey: 'marketplace/listings/lst_s/2.0.0.tar.gz',
+        workspaceSnapshotChecksum: 'sha256-foo',
+      })
+      const out = await svc.applyUpdate('inst_s')
+      expect(out.ok).toBe(true)
+      expect(extractCalls).toHaveLength(1)
+      expect(extractCalls[0].key).toBe('marketplace/listings/lst_s/2.0.0.tar.gz')
+      expect(extractCalls[0].destProjectId).toBe('proj_s')
+      expect(extractCalls[0].expectedChecksum).toBe('sha256-foo')
+      expect(installs[0].installedVersion).toBe('2.0.0')
+    })
+
+    test('install with no baseline (legacy install) skips drift gate', async () => {
+      manifestOverrides = {
+        computeWorkspaceManifest: () => ({ 'a.txt': 'X' }),
+        diffManifests: () => ({ added: [], modified: ['a.txt'], deleted: [] }),
+      }
+      listings.set('lst_n', { id: 'lst_n', currentVersion: '2.0.0' })
+      installs.push({
+        id: 'inst_n',
+        listingId: 'lst_n',
+        installModel: 'linked',
+        installedVersion: '1.0.0',
+        projectId: 'proj_n',
+        // NO baselineManifest - simulates pre-Phase-6 install.
+      })
+      versions.push({
+        listingId: 'lst_n',
+        version: '2.0.0',
+        workspaceSnapshot: { files: { 'a.txt': 'data' } },
+      })
+      const out = await svc.applyUpdate('inst_n')
+      expect(out.ok).toBe(true)
+    })
   })
 })
 

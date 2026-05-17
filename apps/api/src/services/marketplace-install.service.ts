@@ -5,6 +5,14 @@ import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
 import { prisma } from '../lib/prisma'
 import { hasWorkspaceAccess } from './workspace.service'
+import {
+  computeWorkspaceManifest,
+  diffManifests,
+  type ManifestDiff,
+} from './marketplace-manifest.service'
+import {
+  extractSnapshotToProject,
+} from './marketplace-snapshot-storage.service'
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
 
@@ -145,7 +153,6 @@ export async function installAgent(params: {
         category: srcProject.category,
         siteTitle: srcProject.siteTitle,
         siteDescription: srcProject.siteDescription,
-        templateId: srcProject.templateId,
         settings: settingsJson as object,
       },
     })
@@ -168,12 +175,52 @@ export async function installAgent(params: {
     return project
   })
 
+  // Materialize the install's workspace.
+  //
+  // S3 path (preferred): every published listing has a current
+  // version row with a `workspaceSnapshotKey` pointing at the tarball
+  // in S3. We extract that into the new project's workspace dir.
+  // This decouples installs from the source-project-on-disk
+  // dependency — creators can iterate on their source workspace
+  // without affecting in-flight installs.
+  //
+  // Legacy path: rows that pre-date the S3 columns (or that were
+  // created during a brief S3 outage) keep working via either
+  // `applyWorkspaceSnapshot(json)` or a direct `copyWorkspaceFiles`
+  // from the source project. The order is intentional — JSON
+  // snapshots are the canonical legacy fallback; on-disk copy is the
+  // ancient pre-versioning path that only matters until the boot
+  // backfill runs everywhere.
   try {
-    copyWorkspaceFiles(listing.projectId, newProject.id)
+    const versionRow = await prisma.marketplaceListingVersion.findFirst({
+      where: { listingId: listing.id, version: listing.currentVersion },
+      select: {
+        workspaceSnapshot: true,
+        workspaceSnapshotKey: true,
+        workspaceSnapshotChecksum: true,
+      },
+    })
+    if (versionRow?.workspaceSnapshotKey) {
+      await extractSnapshotToProject(versionRow.workspaceSnapshotKey, newProject.id, {
+        expectedChecksum: versionRow.workspaceSnapshotChecksum,
+      })
+    } else if (versionRow?.workspaceSnapshot != null) {
+      mkdirSync(join(getWorkspacesDir(), newProject.id), { recursive: true })
+      applyWorkspaceSnapshot(newProject.id, versionRow.workspaceSnapshot)
+    } else {
+      copyWorkspaceFiles(listing.projectId, newProject.id)
+    }
   } catch (err) {
     await prisma.project.delete({ where: { id: newProject.id } }).catch(() => {})
     throw err
   }
+
+  // Capture the on-disk manifest right after extraction. This is the
+  // baseline applyUpdate diffs against to detect user drift before
+  // overwriting files. Done outside the install-create transaction so
+  // a failure here doesn't roll back the project / agentConfig that
+  // already exist on disk.
+  const baselineManifest = computeWorkspaceManifest(newProject.id)
 
   const install = await prisma.$transaction(async (tx) => {
     const row = await tx.marketplaceInstall.create({
@@ -185,6 +232,7 @@ export async function installAgent(params: {
         installModel: listing.installModel,
         installedVersion: listing.currentVersion,
         status: 'active',
+        baselineManifest: baselineManifest as object,
       },
     })
     await tx.marketplaceListing.update({
@@ -197,12 +245,26 @@ export async function installAgent(params: {
   return { projectId: newProject.id, installId: install.id }
 }
 
-export async function checkForUpdates(installId: string): Promise<{
+export interface CheckForUpdatesResult {
   hasUpdate: boolean
   currentVersion: string
   installedVersion: string
+  /** Populated when an update is available. */
   changelog?: string
-}> {
+  /** Drift detected vs the install's `baselineManifest`, if any. */
+  drift?: ManifestDiff
+}
+
+/**
+ * Report whether a newer version of the install's listing is available
+ * (and how many local files have diverged from the baseline). After
+ * the templates → marketplace consolidation this also covers
+ * `installModel: 'fork'` — the previous `'linked'`-only early return
+ * was removed because `fork` is now the dominant install path. The
+ * caller can decide whether to surface "Update available" + a
+ * "force" toggle based on `drift`.
+ */
+export async function checkForUpdates(installId: string): Promise<CheckForUpdatesResult> {
   const install = await prisma.marketplaceInstall.findUnique({
     where: { id: installId },
     include: { listing: true },
@@ -213,12 +275,8 @@ export async function checkForUpdates(installId: string): Promise<{
 
   const currentVersion = install.listing.currentVersion
   const installedVersion = install.installedVersion
-
-  if (install.installModel !== 'linked') {
-    return { hasUpdate: false, currentVersion, installedVersion }
-  }
-
   const hasUpdate = installedVersion !== currentVersion
+
   let changelog: string | undefined
   if (hasUpdate) {
     const ver = await prisma.marketplaceListingVersion.findFirst({
@@ -228,22 +286,77 @@ export async function checkForUpdates(installId: string): Promise<{
     changelog = ver?.changelog ?? undefined
   }
 
-  return { hasUpdate, currentVersion, installedVersion, changelog }
+  // Drift = on-disk content vs the baseline we captured at last
+  // install/apply-update. We compute it even when no update is
+  // available so the caller can decide whether to render a "you've
+  // modified this agent" indicator separately from the update prompt.
+  const baseline = (install.baselineManifest ?? null) as Record<string, string> | null
+  let drift: ManifestDiff | undefined
+  if (baseline) {
+    const current = computeWorkspaceManifest(install.projectId)
+    drift = diffManifests(baseline, current)
+  }
+
+  return { hasUpdate, currentVersion, installedVersion, changelog, drift }
 }
 
+export type ApplyUpdateResult =
+  | { ok: true; alreadyOnLatest?: boolean; installedVersion: string }
+  | {
+      ok: false
+      error:
+        | 'install_not_found'
+        | 'version_not_found'
+        | 'drift_detected'
+        | 'apply_failed'
+      diverged?: ManifestDiff
+    }
+
+export interface ApplyUpdateOptions {
+  /**
+   * When true, overwrite diverged files with the new version's
+   * snapshot bytes. The on-disk file listing is left intact otherwise
+   * (no files are deleted by the force path — locally-added files
+   * outside the snapshot survive).
+   */
+  force?: boolean
+}
+
+/**
+ * Apply the listing's current version to an install. Drift detection
+ * (Phase 6) — when the on-disk workspace differs from the install's
+ * `baselineManifest` and `force` is not set, we return
+ * `drift_detected` with the diverged file list so the caller can
+ * confirm with the user before clobbering their changes.
+ */
 export async function applyUpdate(
   installId: string,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+  opts: ApplyUpdateOptions = {},
+): Promise<ApplyUpdateResult> {
+  const { force = false } = opts
+
   const install = await prisma.marketplaceInstall.findUnique({
     where: { id: installId },
     include: { listing: true },
   })
   if (!install) return { ok: false, error: 'install_not_found' }
-  if (install.installModel !== 'linked') return { ok: false, error: 'not_linked_install' }
 
   const targetVersion = install.listing.currentVersion
   if (install.installedVersion === targetVersion) {
-    return { ok: true }
+    return { ok: true, alreadyOnLatest: true, installedVersion: targetVersion }
+  }
+
+  // Drift gate — only meaningful when we have a baseline to compare
+  // against. Installs that pre-date the manifest field skip the gate
+  // (we have no signal to act on); the next apply will write a fresh
+  // baseline so subsequent updates honor the gate.
+  const baseline = (install.baselineManifest ?? null) as Record<string, string> | null
+  if (baseline && !force) {
+    const current = computeWorkspaceManifest(install.projectId)
+    const diff = diffManifests(baseline, current)
+    if (diff.modified.length + diff.added.length + diff.deleted.length > 0) {
+      return { ok: false, error: 'drift_detected', diverged: diff }
+    }
   }
 
   const versionRow = await prisma.marketplaceListingVersion.findFirst({
@@ -252,14 +365,36 @@ export async function applyUpdate(
   if (!versionRow) return { ok: false, error: 'version_not_found' }
 
   try {
-    if (versionRow.workspaceSnapshot != null) {
-      applyWorkspaceSnapshot(install.projectId, versionRow.workspaceSnapshot)
+    // Same key-then-json fallback as installAgent — see that comment
+    // for the full rationale. The shape of `versionRow` is wider than
+    // we strictly need here (the type comes from the implicit Prisma
+    // return), so we read each field defensively.
+    const v = versionRow as unknown as {
+      workspaceSnapshot?: unknown
+      workspaceSnapshotKey?: string | null
+      workspaceSnapshotChecksum?: string | null
     }
+    if (v.workspaceSnapshotKey) {
+      mkdirSync(join(getWorkspacesDir(), install.projectId), { recursive: true })
+      await extractSnapshotToProject(v.workspaceSnapshotKey, install.projectId, {
+        expectedChecksum: v.workspaceSnapshotChecksum ?? null,
+      })
+    } else if (v.workspaceSnapshot != null) {
+      applyWorkspaceSnapshot(install.projectId, v.workspaceSnapshot)
+    }
+    // Refresh the baseline from the new on-disk state so the next
+    // applyUpdate compares against the version we just shipped, not
+    // the pre-update state. Done before the DB update so we never
+    // record `installedVersion` advancing without a fresh baseline.
+    const refreshed = computeWorkspaceManifest(install.projectId)
     await prisma.marketplaceInstall.update({
       where: { id: installId },
-      data: { installedVersion: targetVersion },
+      data: {
+        installedVersion: targetVersion,
+        baselineManifest: refreshed as object,
+      },
     })
-    return { ok: true }
+    return { ok: true, installedVersion: targetVersion }
   } catch {
     return { ok: false, error: 'apply_failed' }
   }
