@@ -24,11 +24,42 @@ import type { ReactNode } from 'react'
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
+/**
+ * Discriminator for the two kinds of remote machines a workspace can
+ * have:
+ *
+ *  - `desktop`     The Shogo desktop app, hosting a local apps/api +
+ *                  project database. Stateful API calls
+ *                  (`/api/projects`, `/api/chat-sessions`, etc.) are
+ *                  served by the desktop and must be tunneled when
+ *                  Studio targets it remotely.
+ *  - `cli-worker`  A `shogo worker` CLI instance on a self-hosted host
+ *                  (VPS, dev VM, paired CI runner). cli-workers are
+ *                  execution targets only — they do NOT host an
+ *                  apps/api, so stateful data still lives in the cloud.
+ *                  Studio must NOT tunnel `/api/projects` etc. through
+ *                  a cli-worker; those calls go to cloud directly.
+ *
+ * Wire format matches `formatInstanceKind` in
+ * `apps/api/src/routes/instances.ts`.
+ */
+export type InstanceKind = 'desktop' | 'cli-worker'
+
 export interface ActiveInstance {
   instanceId: string
   name: string
   hostname: string
   workspaceId: string
+  /**
+   * Kind of remote (desktop vs cli-worker). Optional for backward-
+   * compatibility with state persisted by older clients that didn't
+   * record this field; consumers that need to gate on it should treat
+   * `undefined` as "unknown" and fall back to safe-for-both behavior
+   * (no remote tunneling of stateful APIs). The validation poll re-
+   * fetches `/api/instances/:id` and rehydrates the kind, so the
+   * window where this is unknown is at most one poll.
+   */
+  kind?: InstanceKind
 }
 
 export type InstanceStatus = 'online' | 'heartbeat' | 'offline' | 'unknown'
@@ -115,8 +146,17 @@ export function ActiveInstanceProvider({
             validation.fetchOptions,
           )
           if (result.valid) {
-            setInstanceState(restored)
+            // Hydrate `kind` from the validation response. Older clients
+            // persisted instances without this field and the SDKDomainProvider's
+            // remote-API gating depends on it — re-storing here keeps
+            // subsequent loads on the new shape so the gate kicks in
+            // immediately on the next mount instead of after the first poll.
+            const hydrated: ActiveInstance = result.kind ? { ...restored, kind: result.kind } : restored
+            setInstanceState(hydrated)
             setInstanceStatus(result.status ?? 'unknown')
+            if (result.kind && restored.kind !== result.kind) {
+              storage.setItem(STORAGE_KEY, JSON.stringify(hydrated)).catch(() => {})
+            }
           } else {
             storage.removeItem(STORAGE_KEY).catch(() => {})
           }
@@ -154,6 +194,14 @@ export function ActiveInstanceProvider({
         return
       }
       setInstanceStatus(result.status ?? 'unknown')
+      // Late-arriving `kind` (older clients persisted without it). Update
+      // the in-memory instance so SDKDomainProvider's remote gating
+      // takes effect on the next render without waiting for re-mount.
+      if (result.kind && instance.kind !== result.kind) {
+        const refreshed = { ...instance, kind: result.kind }
+        setInstanceState(refreshed)
+        storage.setItem(STORAGE_KEY, JSON.stringify(refreshed)).catch(() => {})
+      }
     }
     void tick()
     const id = setInterval(tick, 15000)
@@ -161,7 +209,7 @@ export function ActiveInstanceProvider({
       cancelled = true
       clearInterval(id)
     }
-  }, [instance, apiUrl])
+  }, [instance, apiUrl, storage])
 
   const setInstance = useCallback(
     (inst: ActiveInstance) => {
@@ -206,7 +254,7 @@ async function validateInstance(
   apiUrl: string,
   fetchFn: typeof fetch,
   fetchOptions?: RequestInit,
-): Promise<{ valid: boolean; status?: InstanceStatus }> {
+): Promise<{ valid: boolean; status?: InstanceStatus; kind?: InstanceKind }> {
   if (!apiUrl) return { valid: false }
   try {
     const res = await fetchFn(`${apiUrl}/api/instances/${inst.instanceId}`, {
@@ -219,10 +267,59 @@ async function validateInstance(
       data.status === 'online' || data.status === 'heartbeat' || data.status === 'offline'
         ? data.status
         : 'unknown'
-    return { valid: true, status }
+    const kind: InstanceKind | undefined =
+      data.kind === 'desktop' || data.kind === 'cli-worker' ? data.kind : undefined
+    return { valid: true, status, kind }
   } catch {
     return { valid: false }
   }
+}
+
+// ─── Remote-routing gate ───────────────────────────────────────────────────
+
+/**
+ * Decide whether Studio should route stateful API calls
+ * (`/api/projects`, `/api/chat-sessions`, `/api/chat-messages`,
+ * `/api/folders`, `/api/starred-projects`, `/api/tool-call-logs`) through
+ * the cloud's transparent proxy `/api/instances/<id>/p/*` to the
+ * currently-selected remote instance, or keep them on the cloud
+ * backend.
+ *
+ * Returns the URL to pass as `SDKDomainProvider`'s `remoteProxyBaseUrl`,
+ * or `null` to leave the interceptor disabled (Studio fetches data from
+ * cloud).
+ *
+ * Decision matrix:
+ *
+ *   instance.kind     | remoteProxyBaseUrl   | rationale
+ *   ──────────────────┼──────────────────────┼──────────────────────────────
+ *   undefined (local) | null                 | no remote — cloud is canonical
+ *   'desktop'         | remoteAgentBaseUrl   | desktop hosts apps/api locally;
+ *                     |                      | tunnel to it for fresh data
+ *   'cli-worker'      | null                 | cli-worker is execution-only
+ *                     |                      | (no apps/api locally); tunnel
+ *                     |                      | would 502 with code
+ *                     |                      | CLI_WORKER_HAS_NO_DATA_API
+ *   undefined (older  | null                 | safe default — better to read
+ *   client persisted  |                      | from cloud than to brick the
+ *   without `kind`)   |                      | sidebar with 502s
+ *
+ * Note that this only gates the SDKDomainProvider data API. Agent
+ * execution still flows through `remoteAgentBaseUrl` regardless of
+ * kind — see `apps/mobile/app/(app)/projects/[id]/_layout.tsx`'s
+ * construction of `${remoteAgentBaseUrl}/api/projects/<id>/agent-proxy`,
+ * which the worker tunnel forwards to the agent-runtime as `/agent/*`.
+ *
+ * Pure function on purpose: it has no React deps so unit tests can
+ * exercise the decision matrix directly.
+ */
+export function computeRemoteProxyBaseUrl(
+  instance: ActiveInstance | null | undefined,
+  remoteAgentBaseUrl: string | null,
+): string | null {
+  if (!instance || !remoteAgentBaseUrl) return null
+  if (instance.kind === 'desktop') return remoteAgentBaseUrl
+  return null
 }
 
 // ─── localStorage adapter (for web / desktop) ──────────────────────────────

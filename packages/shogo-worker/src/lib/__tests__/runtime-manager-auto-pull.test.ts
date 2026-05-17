@@ -81,20 +81,105 @@ describe('WorkerRuntimeManager auto-pull', () => {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
-  it('does nothing when autoPull is disabled', async () => {
+  it('throws a loud, multi-line error when auto-pull is disabled and no workspace was pre-pulled', async () => {
     const { WorkerRuntimeManager } = await import('../runtime-manager.ts');
     scriptedFetch = scriptManifest([{ path: 'a.ts', size: 1, content: 'A' }]);
 
     const mgr = new WorkerRuntimeManager({
       autoPull: { enabled: false, projectsDir: dir },
     });
-    const result = await mgr.ensurePulled('proj-1', {
+
+    let caught: Error | null = null;
+    try {
+      await mgr.ensurePulled('proj-1', {
+        cloudUrl: 'https://api.test',
+        apiKey: 'shogo_sk_x',
+      });
+    } catch (err: any) {
+      caught = err;
+    }
+
+    expect(caught).not.toBeNull();
+    const msg = caught!.message;
+    // Multi-line so a future debugger reading the worker's stderr can
+    // see the full menu of fixes without log archaeology.
+    expect(msg.split('\n').length).toBeGreaterThan(5);
+    expect(msg).toContain('auto-pull was disabled');
+    expect(msg).toContain('--no-auto-pull');
+    expect(msg).toContain('shogo project pull');
+    expect(msg).toContain('--projects-dir');
+    expect(msg).toContain('SHOGO_PROJECTS_DIR');
+    expect(msg).toContain(join(dir, 'proj-1'));
+    expect(msg).toContain('https://shogo.ai/docs/self-hosted-worker');
+
+    // The ask was loud-failure, not silent-mkdir: the dir must NOT have
+    // been touched (so a follow-up `shogo project pull` lands cleanly).
+    expect(existsSync(join(dir, 'proj-1'))).toBe(false);
+  });
+
+  it('honours a pre-pulled workspace when auto-pull is disabled', async () => {
+    const { WorkerRuntimeManager } = await import('../runtime-manager.ts');
+    // No scripted fetch — the manager must NOT try to clone.
+    scriptedFetch = (async () => {
+      throw new Error('auto-pull is disabled, no fetch should fire');
+    }) as unknown as typeof fetch;
+
+    const target = join(dir, 'proj-prepulled');
+    mkdirSync(target, { recursive: true });
+    writeFileSync(join(target, 'AGENTS.md'), 'pre-pulled by `shogo project pull`');
+
+    const mgr = new WorkerRuntimeManager({
+      autoPull: { enabled: false, projectsDir: dir },
+    });
+    const result = await mgr.ensurePulled('proj-prepulled', {
       cloudUrl: 'https://api.test',
       apiKey: 'shogo_sk_x',
     });
 
-    expect(result.projectDir).toBeUndefined();
-    expect(existsSync(join(dir, 'proj-1'))).toBe(false);
+    expect(result.projectDir).toBe(target);
+    expect(readFileSync(join(target, 'AGENTS.md'), 'utf-8')).toBe(
+      'pre-pulled by `shogo project pull`',
+    );
+  });
+
+  it('throws when no autoPull config and no caller-provided projectDir', async () => {
+    const { WorkerRuntimeManager } = await import('../runtime-manager.ts');
+
+    const mgr = new WorkerRuntimeManager({});
+
+    let caught: Error | null = null;
+    try {
+      await mgr.ensurePulled('proj-x', {
+        cloudUrl: 'https://api.test',
+        apiKey: 'shogo_sk_x',
+      });
+    } catch (err: any) {
+      caught = err;
+    }
+
+    expect(caught).not.toBeNull();
+    expect(caught!.message).toContain('without an `autoPull` config');
+  });
+
+  it('honours an existing caller-provided projectDir without touching autoPull', async () => {
+    const { WorkerRuntimeManager } = await import('../runtime-manager.ts');
+    scriptedFetch = (async () => {
+      throw new Error('caller-provided projectDir — no fetch should fire');
+    }) as unknown as typeof fetch;
+
+    const target = join(dir, 'desktop-managed');
+    mkdirSync(target, { recursive: true });
+
+    const mgr = new WorkerRuntimeManager({
+      // autoPull intentionally omitted — desktop adapter case.
+    });
+    const result = await mgr.ensurePulled('proj-desktop', {
+      cloudUrl: 'https://api.test',
+      apiKey: 'shogo_sk_x',
+      projectDir: target,
+    });
+
+    expect(result.projectDir).toBe(target);
   });
 
   it('clones into <projectsDir>/<projectId> when the dir is empty', async () => {

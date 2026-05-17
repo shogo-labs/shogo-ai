@@ -17,11 +17,13 @@ export {
 } from './useFeaturePolling'
 export {
   ActiveInstanceProvider,
+  computeRemoteProxyBaseUrl,
   useActiveInstance,
   localStorageAdapter,
   type ActiveInstance,
   type ActiveInstanceContextValue,
   type ActiveInstanceProviderProps,
+  type InstanceKind,
   type InstanceStorageAdapter,
 } from './useActiveInstance'
 export {

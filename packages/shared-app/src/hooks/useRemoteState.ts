@@ -21,31 +21,27 @@
  */
 
 import { useMemo } from 'react'
-import { useActiveInstance } from './useActiveInstance'
+import { computeRemoteProxyBaseUrl, useActiveInstance, type ActiveInstance } from './useActiveInstance'
 
 export interface RemoteState {
   /** Whether a remote desktop instance is currently active */
   isRemote: boolean
   /** The active instance details (null if local) */
-  instance: {
-    instanceId: string
-    name: string
-    hostname: string
-    workspaceId: string
-  } | null
+  instance: ActiveInstance | null
   /** Display name for the connected instance */
   instanceName: string
-  /** The transparent proxy base URL for routing API requests */
+  /**
+   * The transparent proxy base URL the SDKDomainProvider should use to
+   * route stateful API calls through the tunnel.
+   *
+   * `null` for cli-worker instances even when `remoteAgentBaseUrl` is
+   * set — see `computeRemoteProxyBaseUrl` for the decision matrix.
+   */
   remoteProxyBaseUrl: string | null
   /** The transparent proxy base URL for agent requests (includes /api/projects/:id/agent-proxy) */
   remoteAgentBaseUrl: string | null
   /** Set a new active instance */
-  setInstance: (inst: {
-    instanceId: string
-    name: string
-    hostname: string
-    workspaceId: string
-  }) => void
+  setInstance: (inst: ActiveInstance) => void
   /** Disconnect from remote instance (back to local/cloud) */
   disconnect: () => void
 }
@@ -59,11 +55,7 @@ export function useRemoteState(): RemoteState {
       isRemote: !!instance,
       instance,
       instanceName: instance?.name ?? 'This device',
-      remoteProxyBaseUrl: remoteAgentBaseUrl
-        ? // remoteAgentBaseUrl is `${apiUrl}/api/instances/${id}/p`
-          // which is exactly what SDKDomainProvider needs
-          remoteAgentBaseUrl
-        : null,
+      remoteProxyBaseUrl: computeRemoteProxyBaseUrl(instance, remoteAgentBaseUrl),
       remoteAgentBaseUrl,
       setInstance,
       disconnect: clearInstance,
