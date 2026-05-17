@@ -105,10 +105,51 @@ SHOGO_API_KEY=shogo_sk_... shogo worker start --foreground
 ├── logs/
 │   ├── worker.log
 │   └── worker.err.log
-└── runtime/
-    ├── agent-runtime  # AGPL binary, downloaded by `shogo runtime install`
-    └── version.json
+├── runtime/
+│   ├── agent-runtime    # AGPL binary, downloaded by `shogo runtime install`
+│   ├── runtime-template/  # Vite/React/Tailwind scaffolding the runtime seeds
+│   │                      # into new project workspaces. MUST live next to the
+│   │                      # binary — `getRuntimeTemplatePath()` looks here
+│   │                      # second (after the `RUNTIME_TEMPLATE_DIR` env
+│   │                      # override). The agent-runtime release tarball
+│   │                      # ships binary + this directory together.
+│   ├── tree-sitter-wasm/  # Tree-sitter parser core + per-language grammars
+│   │                      # (`tree-sitter.wasm` + `tree-sitter-${lang}.wasm`).
+│   │                      # `bun build --compile` bakes the build-machine path
+│   │                      # for these into the binary; we ship the WASMs
+│   │                      # next to the binary so it can dlopen them at
+│   │                      # runtime regardless of where the operator put it.
+│   │                      # The worker also exports
+│   │                      # `TREE_SITTER_WASM_DIR=<this dir>` to the spawned
+│   │                      # runtime so the resolved location is observable
+│   │                      # via `env | grep TREE_SITTER`.
+│   └── version.json
+└── projects/<projectId>/  # cloned project workspaces (auto-pulled on first
+                           # request, override with `--projects-dir` /
+                           # `SHOGO_PROJECTS_DIR`)
 ```
+
+### Workspace seeding (cli-worker)
+
+When the worker spawns the agent-runtime for a project, it MUST point that
+runtime at a real on-disk workspace via `WORKSPACE_DIR` / `PROJECT_DIR`.
+Three knobs control where that workspace comes from, in priority order:
+
+1. **Auto-pull (default).** On the first inbound request for a project,
+   `WorkerRuntimeManager` clones the cloud snapshot into
+   `<projectsDir>/<projectId>/`, watches it via `CloudSyncWatcher`, and
+   pushes local edits back. No operator action required.
+2. **`--projects-dir <path>` / `SHOGO_PROJECTS_DIR=<path>`.** Override the
+   root directory under which workspaces live. Useful when you want
+   workspaces on a faster disk or backed-up volume.
+3. **`shogo project pull <projectId>` (manual pre-pull).** When you've
+   passed `--no-auto-pull` (e.g. slow or metered connection), the worker
+   refuses to spawn until the canonical workspace exists at
+   `<projectsDir>/<projectId>/`. Pre-pulling is how you get there.
+
+If you disable auto-pull and **don't** pre-pull, the worker fails loudly
+with a multi-line error pointing you at all three options instead of
+silently falling back to an empty workspace.
 
 ## Networking
 
@@ -168,16 +209,54 @@ port allocation, env injection, restart-with-backoff, idle eviction, and health
 checks. The same code path is consumed by Shogo Desktop (`apps/api`) for its own
 agent runtimes — so any improvement made here ships to both.
 
+### What the cli-worker tunnel does — and doesn't — handle
+
+A cli-worker is an **execution target**: it forwards `/agent/*` paths to
+the per-project agent-runtime and nothing else. Stateful data
+(`/api/projects`, `/api/chat-sessions`, etc.) lives in Shogo Cloud and
+is served by the cloud backend, not by the worker. Studio's
+`SDKDomainProvider` checks `instance.kind` and only tunnels stateful
+APIs through the desktop adapter; for cli-workers it reads from cloud
+directly.
+
+If a request for a non-`/agent/*` path does reach the cli-worker tunnel
+(e.g. an out-of-date Studio client), the worker replies with a
+structured 502 body so future debuggers can read the rejection without
+log access:
+
+```json
+{
+  "code": "CLI_WORKER_HAS_NO_DATA_API",
+  "message": "cli-worker only serves /agent/* paths; tried: /api/projects",
+  "path": "/api/projects?workspaceId=ws-1"
+}
+```
+
 ## Programmatic use
 
 Both core classes are exposed for direct embedding (e.g. building your own
 desktop wrapper):
 
 ```ts
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { WorkerTunnel, WorkerRuntimeManager } from '@shogo-ai/worker'
 
+// `WorkerRuntimeManager` refuses to spawn a runtime unless it knows
+// where the workspace lives on disk. For embedders that just want
+// the cli-worker default behaviour, set `autoPull` and the manager
+// will clone each project's workspace from cloud on first request.
+// Embedders that manage workspaces themselves should set `projectDir`
+// inside `defaultSpawnConfig` (or via `enrichSpawnConfig`) instead.
 const runtimeManager = new WorkerRuntimeManager({
-  defaultSpawnConfig: { cloudUrl: 'https://studio.shogo.ai', apiKey: process.env.SHOGO_API_KEY! },
+  defaultSpawnConfig: {
+    cloudUrl: 'https://studio.shogo.ai',
+    apiKey: process.env.SHOGO_API_KEY!,
+  },
+  autoPull: {
+    enabled: true,
+    projectsDir: join(homedir(), '.shogo', 'projects'),
+  },
 })
 
 const tunnel = new WorkerTunnel({

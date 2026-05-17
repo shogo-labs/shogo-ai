@@ -448,16 +448,34 @@ const RUNTIME_TEMPLATE_SKIP = new Set([
  * Resolve the path to the runtime-template directory.
  *
  * Candidate paths (checked in order, first with package.json wins):
- * - RUNTIME_TEMPLATE_DIR env override (any environment)
- * - Relative to source tree (local dev: __dirname is packages/agent-runtime/src/)
- * - Adjacent to bundled server.js (VM guest: __dirname is /opt/shogo/)
- * - /app/templates/runtime-template (Docker / K8s)
- * - /opt/shogo/templates/runtime-template (VM pre-provisioned rootfs)
+ *   1. RUNTIME_TEMPLATE_DIR env override (any environment, escape hatch).
+ *   2. `<dirname(process.execPath)>/runtime-template` — the
+ *      "shipped-with-the-binary" location used by self-hosted cli-workers.
+ *      The agent-runtime build pipeline post-compile-copies the template
+ *      tree next to each binary so a single tarball ships both. Without
+ *      this, a compiled standalone binary on a VPS has no way to find
+ *      the template (its source-tree path resolves into the bundled
+ *      virtual filesystem; `/app/templates/...` is a Docker convention
+ *      that doesn't exist on a bare host).
+ *   3. Relative to source tree (local dev: `__dirname` is
+ *      `packages/agent-runtime/src/`).
+ *   4. Adjacent to bundled server.js (VM guest: `__dirname` is
+ *      `/opt/shogo/`).
+ *   5. `/app/templates/runtime-template` — Docker / K8s convention.
+ *   6. `/opt/shogo/templates/runtime-template` — VM pre-provisioned
+ *      rootfs. Symlink target of the K8s path on the VM image.
  */
 export function getRuntimeTemplatePath(): string | null {
   const envOverride = process.env.RUNTIME_TEMPLATE_DIR
+  let execAdjacent: string | null = null
+  try {
+    if (process.execPath) {
+      execAdjacent = join(dirname(process.execPath), 'runtime-template')
+    }
+  } catch { /* execPath unavailable (e.g. test stub) */ }
   const candidates = [
     ...(envOverride ? [envOverride] : []),
+    ...(execAdjacent ? [execAdjacent] : []),
     join(__dirname, '..', '..', '..', 'templates', 'runtime-template'),
     join(__dirname, 'templates', 'runtime-template'),
     '/app/templates/runtime-template',

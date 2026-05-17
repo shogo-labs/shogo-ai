@@ -35,9 +35,9 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { resolveRuntime, type ResolvedRuntime } from './runtime-resolver.ts';
-import type { RuntimeResolver } from './tunnel.ts';
+import type { ResolveRejection, RuntimeResolver } from './tunnel.ts';
 import { CloudFileTransport } from '@shogo-ai/sdk';
 import { CloudSyncWatcher } from './cloud-sync-watcher.ts';
 import { cloneProject, gitIsAvailable, isGitRepo } from './git-cloner.ts';
@@ -261,6 +261,71 @@ function isDirEmpty(dir: string): boolean {
   }
 }
 
+/**
+ * Render the operator-facing multi-line error the worker raises when it
+ * cannot determine a real on-disk workspace for a project.
+ *
+ * Why it's verbose: every branch here represents a real misconfig the
+ * operator has to fix before the worker can serve traffic, and the
+ * runtime's own `WORKSPACE_DIR fell back to '/app/workspace'` warning
+ * is only visible in the spawned child's stderr (often hidden behind
+ * the worker's logging seam). Surfacing the full menu of fixes — flag,
+ * env var, manual `shogo project pull` — at the throw site means an
+ * operator's first sight of the failure is also their fix.
+ */
+export function formatWorkspaceMisconfigError(
+  projectId: string,
+  reason: 'no-auto-pull-config' | 'no-projects-dir' | 'auto-pull-disabled',
+  expectedDir: string | null,
+): string {
+  const lines: string[] = [];
+  lines.push(`Cannot spawn agent-runtime for project ${projectId}: no workspace directory available.`);
+  lines.push('');
+  switch (reason) {
+    case 'no-auto-pull-config':
+      lines.push(
+        '  Reason: WorkerRuntimeManager was constructed without an `autoPull` config and ' +
+          'no caller-provided `projectDir` was found on disk.',
+      );
+      lines.push(
+        '          This usually means a programmatic embedder forgot to wire up enrichSpawnConfig ' +
+          'or autoPull. CLI users should not see this — please file a bug.',
+      );
+      break;
+    case 'no-projects-dir':
+      lines.push(
+        '  Reason: auto-pull is configured but `projectsDir` is empty. The worker needs a ' +
+          'persistent root directory under which it can store cloned project workspaces.',
+      );
+      break;
+    case 'auto-pull-disabled':
+      lines.push(
+        '  Reason: auto-pull was disabled (--no-auto-pull) and the expected pre-pulled ' +
+          `workspace at ${expectedDir} is missing or empty.`,
+      );
+      break;
+  }
+  lines.push('');
+  lines.push('  How to fix (pick one):');
+  lines.push('    1. Re-enable auto-pull (default).  Drop the --no-auto-pull flag and restart');
+  lines.push('       the worker.  The first inbound request for this project will clone its');
+  lines.push('       workspace from Shogo Cloud into <projectsDir>/<projectId>/.');
+  lines.push('');
+  lines.push('    2. Pre-pull manually with `shogo project pull <projectId>` before starting');
+  lines.push('       the worker.  Use this when you want full control over when the clone runs');
+  lines.push('       (slow links, scheduled maintenance windows, etc.).');
+  lines.push('');
+  lines.push('    3. Point the worker at an existing workspace by setting either:');
+  lines.push('         --projects-dir <path>           (per-invocation flag)');
+  lines.push('         SHOGO_PROJECTS_DIR=<path>       (env var, persists across restarts)');
+  lines.push('         shogo config set projectsDir <path>');
+  lines.push('       Whichever path you pick must contain a subdirectory named after the ');
+  lines.push(`       project id (e.g. <path>/${projectId}/) populated with the project's source.`);
+  lines.push('');
+  lines.push('  Docs: https://shogo.ai/docs/self-hosted-worker#workspace-seeding');
+  return lines.join('\n');
+}
+
 export class WorkerRuntimeManager implements RuntimeResolver {
   private readonly opts: WorkerRuntimeManagerOptions;
   private readonly log: Pick<Console, 'log' | 'warn' | 'error'>;
@@ -331,6 +396,42 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     return deriveRuntimeToken(projectId);
   }
 
+  /**
+   * Tell the {@link WorkerTunnel} why we returned `null` from
+   * `resolveLocalUrl`. The tunnel echoes this into the structured 502
+   * body so a Studio client reading the response can tell whether the
+   * request hit a path the worker has no opinion about
+   * (`/api/projects`) versus an /agent path that lacked a project
+   * context.
+   *
+   * Stable codes:
+   *   CLI_WORKER_HAS_NO_DATA_API     — non-/agent path; cli-worker
+   *                                    instances are execution targets,
+   *                                    not data sources. Studio is
+   *                                    expected to gate stateful API
+   *                                    routing on `instance.kind` and
+   *                                    fall back to cloud for these.
+   *   CLI_WORKER_NO_PROJECT_FOR_PATH — /agent path arrived without a
+   *                                    `projectId` and we don't have a
+   *                                    single active project to fall
+   *                                    back to.
+   */
+  describeRejection(pathWithQuery: string, projectId?: string): ResolveRejection {
+    const { pathname } = splitPathAndQuery(pathWithQuery);
+    if (!(pathname.startsWith('/agent/') || pathname === '/agent')) {
+      return {
+        code: 'CLI_WORKER_HAS_NO_DATA_API',
+        message: `cli-worker only serves /agent/* paths; tried: ${pathname}`,
+      };
+    }
+    return {
+      code: 'CLI_WORKER_NO_PROJECT_FOR_PATH',
+      message:
+        `cli-worker received an /agent path without a single active project; ` +
+        `projectId=${projectId ?? 'none'}, path=${pathname}`,
+    };
+  }
+
   private async spawnConfigFor(projectId: string): Promise<ProjectSpawnConfig | null> {
     const base = this.opts.defaultSpawnConfig;
     if (!base) return null;
@@ -396,8 +497,62 @@ export class WorkerRuntimeManager implements RuntimeResolver {
 
   private async maybeAutoPull(projectId: string, config: ProjectSpawnConfig): Promise<ProjectSpawnConfig> {
     const auto = this.opts.autoPull;
-    if (!auto?.enabled) return config;
-    if (this.pulledProjects.has(projectId)) return config;
+
+    // ── Workspace-locatability invariants for the cli-worker ──
+    //
+    // The agent-runtime hard-falls-back to `/app/workspace` (a Docker
+    // convention) when none of WORKSPACE_DIR / AGENT_DIR / PROJECT_DIR
+    // are set. On a self-hosted VPS that path doesn't exist, so the
+    // runtime boots but every project-aware route silently serves
+    // empty state. To keep that bug from ever shipping again, the
+    // worker spawn path is required to either:
+    //
+    //   (a) populate `cfg.projectDir` itself before reaching here
+    //       (desktop AGPL adapter does this through `enrichSpawnConfig`,
+    //       cloud sets WORKSPACE_DIR via Knative env vars), OR
+    //   (b) carry an `autoPull` config with a `projectsDir` so this
+    //       method can synthesise a per-project workspace path on
+    //       disk and clone the cloud snapshot into it.
+    //
+    // Anything else is a misconfiguration — the runtime would either
+    // not find the workspace or scribble into a co-tenant's tree —
+    // so we throw with a multi-line operator-facing message instead
+    // of letting the agent-runtime print a deceptively-mild warning.
+    //
+    // The bypass for `enrichSpawnConfig` callers is deliberate: the
+    // desktop AGPL adapter wires up its own per-project Prisma-derived
+    // workspace path and does NOT need autoPull. We honour `projectDir`
+    // when the directory actually exists.
+    if (config.projectDir && existsSync(config.projectDir)) {
+      return config;
+    }
+
+    if (!auto) {
+      throw new Error(formatWorkspaceMisconfigError(projectId, 'no-auto-pull-config', null));
+    }
+
+    if (!auto.projectsDir) {
+      throw new Error(formatWorkspaceMisconfigError(projectId, 'no-projects-dir', null));
+    }
+
+    if (!auto.enabled) {
+      // Operator opted out of auto-pull. Honour a pre-pulled workspace
+      // (`shogo project pull <id>` lays one down at the canonical path);
+      // anything else is a misconfig because the runtime has nothing to
+      // operate on.
+      const candidate = join(auto.projectsDir, projectId);
+      if (existsSync(candidate) && !isDirEmpty(candidate)) {
+        return { ...config, projectDir: candidate };
+      }
+      throw new Error(formatWorkspaceMisconfigError(projectId, 'auto-pull-disabled', candidate));
+    }
+
+    if (this.pulledProjects.has(projectId)) {
+      // Already attempted in this process — return the canonical path
+      // so a previous failure doesn't strand the runtime on the
+      // /app/workspace fallback.
+      return { ...config, projectDir: join(auto.projectsDir, projectId) };
+    }
 
     const projectDir = join(auto.projectsDir, projectId);
     const log = auto.logger ?? this.log;
@@ -660,7 +815,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       slot.apiServerPort = slot.agentPort + API_PORT_OFFSET;
     }
 
-    const env = this.buildEnv(slot);
+    const env = this.buildEnv(slot, resolved.path);
     const cwd = this.resolveCwd(slot);
     const { command, args } = this.spawnCommand(resolved.path);
 
@@ -718,7 +873,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     }
   }
 
-  private buildEnv(slot: InternalRuntime): NodeJS.ProcessEnv {
+  private buildEnv(slot: InternalRuntime, runtimeBinPath: string): NodeJS.ProcessEnv {
     const cfg = slot.spawnConfig;
     const env: NodeJS.ProcessEnv = {
       ...(this.opts.env ?? process.env),
@@ -750,6 +905,29 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     if (cfg.techStackId) env.TECH_STACK_ID = cfg.techStackId;
     if (cfg.name) env.AGENT_NAME = cfg.name;
     if (cfg.workspaceId) env.WORKSPACE_ID = cfg.workspaceId;
+
+    // Belt-and-suspenders: explicitly point the spawned agent-runtime at
+    // the WASM sidecar that ships next to its binary. The runtime's own
+    // `code-extractor.ts:getWasmDir()` would derive the same path from
+    // `dirname(process.execPath)` as a fallback, but exporting it here:
+    //
+    //   (a) makes the resolved location observable via `env | grep
+    //       TREE_SITTER` for an operator debugging a self-hosted box,
+    //   (b) survives a future build-script regression that breaks the
+    //       sidecar copy on a per-platform basis (the env var still
+    //       points to the expected directory, so the loud failure in
+    //       `code-extractor.ts:getLanguage()` reports the right path),
+    //   (c) keeps explicit operator overrides working — the runtime
+    //       reads `process.env.TREE_SITTER_WASM_DIR` first, so an
+    //       operator who sets it externally still wins.
+    //
+    // We do NOT verify the directory exists here. The runtime's
+    // resolver does that check; if it's missing we want the loud
+    // runtime error (which lists every override knob), not a silent
+    // worker-side `process.env` deletion that hides the bundling bug.
+    if (!env.TREE_SITTER_WASM_DIR) {
+      env.TREE_SITTER_WASM_DIR = join(dirname(runtimeBinPath), 'tree-sitter-wasm');
+    }
 
     if (cfg.extraEnv) Object.assign(env, cfg.extraEnv);
     return env;
