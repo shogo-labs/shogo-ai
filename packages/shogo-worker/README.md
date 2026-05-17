@@ -113,6 +113,16 @@ SHOGO_API_KEY=shogo_sk_... shogo worker start --foreground
 │   │                      # second (after the `RUNTIME_TEMPLATE_DIR` env
 │   │                      # override). The agent-runtime release tarball
 │   │                      # ships binary + this directory together.
+│   ├── tree-sitter-wasm/  # Tree-sitter parser core + per-language grammars
+│   │                      # (`tree-sitter.wasm` + `tree-sitter-${lang}.wasm`).
+│   │                      # `bun build --compile` bakes the build-machine path
+│   │                      # for these into the binary; we ship the WASMs
+│   │                      # next to the binary so it can dlopen them at
+│   │                      # runtime regardless of where the operator put it.
+│   │                      # The worker also exports
+│   │                      # `TREE_SITTER_WASM_DIR=<this dir>` to the spawned
+│   │                      # runtime so the resolved location is observable
+│   │                      # via `env | grep TREE_SITTER`.
 │   └── version.json
 └── projects/<projectId>/  # cloned project workspaces (auto-pulled on first
                            # request, override with `--projects-dir` /

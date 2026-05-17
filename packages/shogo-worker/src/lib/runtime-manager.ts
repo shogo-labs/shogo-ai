@@ -35,7 +35,7 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { resolveRuntime, type ResolvedRuntime } from './runtime-resolver.ts';
 import type { ResolveRejection, RuntimeResolver } from './tunnel.ts';
 import { CloudFileTransport } from '@shogo-ai/sdk';
@@ -817,7 +817,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       slot.apiServerPort = slot.agentPort + API_PORT_OFFSET;
     }
 
-    const env = this.buildEnv(slot);
+    const env = this.buildEnv(slot, resolved.path);
     const cwd = this.resolveCwd(slot);
     const { command, args } = this.spawnCommand(resolved.path);
 
@@ -875,7 +875,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     }
   }
 
-  private buildEnv(slot: InternalRuntime): NodeJS.ProcessEnv {
+  private buildEnv(slot: InternalRuntime, runtimeBinPath: string): NodeJS.ProcessEnv {
     const cfg = slot.spawnConfig;
     const env: NodeJS.ProcessEnv = {
       ...(this.opts.env ?? process.env),
@@ -908,6 +908,29 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     if (cfg.templateId) env.TEMPLATE_ID = cfg.templateId;
     if (cfg.name) env.AGENT_NAME = cfg.name;
     if (cfg.workspaceId) env.WORKSPACE_ID = cfg.workspaceId;
+
+    // Belt-and-suspenders: explicitly point the spawned agent-runtime at
+    // the WASM sidecar that ships next to its binary. The runtime's own
+    // `code-extractor.ts:getWasmDir()` would derive the same path from
+    // `dirname(process.execPath)` as a fallback, but exporting it here:
+    //
+    //   (a) makes the resolved location observable via `env | grep
+    //       TREE_SITTER` for an operator debugging a self-hosted box,
+    //   (b) survives a future build-script regression that breaks the
+    //       sidecar copy on a per-platform basis (the env var still
+    //       points to the expected directory, so the loud failure in
+    //       `code-extractor.ts:getLanguage()` reports the right path),
+    //   (c) keeps explicit operator overrides working — the runtime
+    //       reads `process.env.TREE_SITTER_WASM_DIR` first, so an
+    //       operator who sets it externally still wins.
+    //
+    // We do NOT verify the directory exists here. The runtime's
+    // resolver does that check; if it's missing we want the loud
+    // runtime error (which lists every override knob), not a silent
+    // worker-side `process.env` deletion that hides the bundling bug.
+    if (!env.TREE_SITTER_WASM_DIR) {
+      env.TREE_SITTER_WASM_DIR = join(dirname(runtimeBinPath), 'tree-sitter-wasm');
+    }
 
     if (cfg.extraEnv) Object.assign(env, cfg.extraEnv);
     return env;

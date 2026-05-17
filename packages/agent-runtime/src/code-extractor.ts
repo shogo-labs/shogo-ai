@@ -12,6 +12,7 @@
 
 import type { Extractor, ExtractedData } from './workspace-graph'
 import { dirname, join, extname, basename } from 'path'
+import { existsSync } from 'fs'
 
 // ---------------------------------------------------------------------------
 // Language + AST type mappings
@@ -112,10 +113,73 @@ let _initPromise: Promise<void> | null = null
 let _initialized = false
 const _langCache = new Map<string, any>()
 
-function getWasmDir(): string {
-  if (process.env.TREE_SITTER_WASM_DIR) return process.env.TREE_SITTER_WASM_DIR
-  const path = require('path')
-  return path.join(path.dirname(require.resolve('tree-sitter-wasms/package.json')), 'out')
+/**
+ * Resolve the directory that holds tree-sitter WASM assets — both the
+ * parser-core (`tree-sitter.wasm`, shipped by `web-tree-sitter`) and
+ * the language grammars (`tree-sitter-${lang}.wasm`, shipped by
+ * `tree-sitter-wasms`). The directory must contain BOTH; the post-
+ * compile bundling script in `packages/agent-runtime/scripts/copy-
+ * tree-sitter-wasm-to-dist.ts` produces exactly that layout.
+ *
+ * Candidate priority (first hit wins):
+ *
+ *   1. `TREE_SITTER_WASM_DIR` env var. Set by the desktop bundle (see
+ *      `apps/desktop/src/local-server.ts`), the VM cloud-init image
+ *      (`apps/desktop/src/vm/cloud-init.ts`), and the worker-spawn
+ *      env (`packages/shogo-worker/src/lib/runtime-manager.ts`). This
+ *      stays first so explicit operator overrides keep working.
+ *
+ *   2. `dirname(process.execPath)/tree-sitter-wasm`. When the runtime
+ *      is launched from the compiled `bun build --compile` artifact,
+ *      `process.execPath` is the agent-runtime binary and the bundled
+ *      WASMs live next to it. This is the cli-worker default — see
+ *      Patch B in PR #1 for the same idiom applied to runtime-template.
+ *
+ *   3. Source-tree fallback. In dev (`bun run src/server.ts`) the WASMs
+ *      live wherever Bun resolved their npm packages; we use the
+ *      LANGUAGE WASMs' package as the canonical dir because most
+ *      lookups go through `getLanguage` and that's the dir all language
+ *      grammars share. The parser core's own filesystem location can
+ *      still drift inside web-tree-sitter; for the dev path we let
+ *      web-tree-sitter's internal `__dirname + "/tree-sitter.wasm"`
+ *      resolve naturally (which works in dev because `__dirname` points
+ *      at the real package dir). The compiled-binary path NEVER hits
+ *      this fallback because candidate 2 short-circuits.
+ *
+ * Returns `null` only when none of those exist. Callers must handle
+ * null by either skipping language detection (gracefully degraded
+ * symbol extraction) or surfacing a loud error.
+ */
+function getWasmDir(): string | null {
+  const envOverride = process.env.TREE_SITTER_WASM_DIR
+  if (envOverride && existsSync(envOverride)) return envOverride
+
+  // Compiled-binary sidecar candidate. Guarded against the test stubs
+  // some `process` mocks use — `execPath` is always defined on real
+  // Bun/Node but defensive `try` keeps a malformed test env from
+  // crashing the runtime.
+  try {
+    if (process.execPath) {
+      const adjacent = join(dirname(process.execPath), 'tree-sitter-wasm')
+      if (existsSync(adjacent) && existsSync(join(adjacent, 'tree-sitter.wasm'))) {
+        return adjacent
+      }
+    }
+  } catch { /* execPath unavailable */ }
+
+  // Dev / source-tree fallback. `tree-sitter-wasms/out/` only contains
+  // language WASMs; the parser-core `tree-sitter.wasm` is in a sibling
+  // package (`web-tree-sitter`). We return the language dir because
+  // that's what `getLanguage()` reads from; `Parser.init`'s locateFile
+  // will short-circuit for the parser core via the no-op fallthrough
+  // below, letting web-tree-sitter resolve its own `__dirname`-relative
+  // path (which works in dev).
+  try {
+    const path = require('path')
+    return path.join(path.dirname(require.resolve('tree-sitter-wasms/package.json')), 'out')
+  } catch {
+    return null
+  }
 }
 
 async function ensureInit(): Promise<void> {
@@ -126,9 +190,19 @@ async function ensureInit(): Promise<void> {
     _Parser = mod.Parser
     _Language = mod.Language
 
+    // Always wire `locateFile` when we have a usable wasm dir so the
+    // parser core uses our resolution, not web-tree-sitter's
+    // `__dirname + "/tree-sitter.wasm"` which bakes the build-machine
+    // path into compiled binaries.
+    //
+    // For dev where the wasm dir is `tree-sitter-wasms/out/` (no
+    // parser-core WASM), we still skip wiring locateFile so
+    // web-tree-sitter's own `__dirname` resolution (which IS correct
+    // in dev) handles the parser core. The sentinel is whether
+    // `tree-sitter.wasm` exists in the resolved dir.
+    const wasmDir = getWasmDir()
     const initOpts: Record<string, unknown> = {}
-    if (process.env.TREE_SITTER_WASM_DIR) {
-      const wasmDir = process.env.TREE_SITTER_WASM_DIR
+    if (wasmDir && existsSync(join(wasmDir, 'tree-sitter.wasm'))) {
       initOpts.locateFile = (file: string) => join(wasmDir, file)
     }
     await _Parser.init(initOpts)
@@ -144,7 +218,21 @@ async function getLanguage(langId: string): Promise<any> {
   const wasmName = langId === 'typescript' ? 'tree-sitter-typescript'
     : langId === 'tsx' ? 'tree-sitter-tsx'
     : `tree-sitter-${langId}`
-  const wasmPath = join(getWasmDir(), `${wasmName}.wasm`)
+  const wasmDir = getWasmDir()
+  if (!wasmDir) {
+    // No reachable WASM directory — surface a clear error so the
+    // caller (CodeExtractor) can decide to skip language-aware
+    // extraction rather than crashing the entire runtime. The error
+    // message names every override knob to keep operator triage fast.
+    throw new Error(
+      `tree-sitter WASM dir is unreachable. Looked for, in order: ` +
+        `$TREE_SITTER_WASM_DIR (env), dirname(process.execPath)/tree-sitter-wasm, and ` +
+        `the source-tree tree-sitter-wasms/out/ package. Set TREE_SITTER_WASM_DIR ` +
+        `or rebuild the agent-runtime with the post-compile WASM bundling step ` +
+        `(see scripts/copy-tree-sitter-wasm-to-dist.ts).`,
+    )
+  }
+  const wasmPath = join(wasmDir, `${wasmName}.wasm`)
   lang = await _Language.load(wasmPath)
   _langCache.set(langId, lang)
   return lang
