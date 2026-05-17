@@ -22,6 +22,20 @@
 import { hostname as osHostname, platform, arch as osArch } from 'node:os';
 
 /**
+ * Structured reason returned to the cloud (and ultimately to a Studio
+ * client) when {@link RuntimeResolver.resolveLocalUrl} declines to
+ * forward a tunneled request. Surfaced verbatim in the 502 body so a
+ * future debugger reading the response without log access can tell
+ * what happened.
+ */
+export interface ResolveRejection {
+  /** Stable machine-readable identifier (UPPER_SNAKE_CASE). */
+  code: string;
+  /** Human-readable explanation. Should reference the actual path. */
+  message: string;
+}
+
+/**
  * Pluggable resolver for the tunnel — provided by whoever owns the local
  * services that the cloud's tunneled requests should be forwarded to.
  *
@@ -55,6 +69,14 @@ export interface RuntimeResolver {
 
   /** Status snapshot for a single project — used in metadata payloads. */
   status(projectId: string): { status: string; agentPort?: number } | null;
+
+  /**
+   * Describe why a path was rejected. Called by the tunnel after a
+   * `resolveLocalUrl` returned null so the structured 502 body can
+   * carry an actionable code + message. Optional — when absent the
+   * tunnel falls back to a generic `NO_LOCAL_RUNTIME` payload.
+   */
+  describeRejection?(pathWithQuery: string, projectId?: string): ResolveRejection;
 }
 
 interface TunnelRequest {
@@ -391,11 +413,24 @@ export class WorkerTunnel {
     try {
       const url = await this.resolveLocalUrl(msg.path, msg.projectId);
       if (!url) {
+        // Structured 502 body so future debuggers reading the response
+        // (without access to worker logs) can tell what happened. The
+        // resolver provides the code/message; the tunnel always echoes
+        // back the original path so the operator doesn't have to
+        // correlate request-ids to figure out which fetch failed.
+        const rejection: ResolveRejection = this.opts.resolver.describeRejection
+          ? this.opts.resolver.describeRejection(msg.path, msg.projectId)
+          : { code: 'NO_LOCAL_RUNTIME', message: `no local runtime available for path: ${msg.path}` };
         this.sendFrame({
           type: 'response',
           requestId: msg.requestId,
           status: 502,
-          body: JSON.stringify({ error: 'No local runtime available for path' }),
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            code: rejection.code,
+            message: rejection.message,
+            path: msg.path,
+          }),
         });
         return;
       }
@@ -636,6 +671,10 @@ export class WorkerTunnel {
       heartbeatLoop: () => self.heartbeatLoop(),
       connectWs: () => self.connectWs(),
       cleanupWs: () => self.cleanupWs(),
+      handleRequest: (msg: TunnelRequest) => self.handleRequest(msg),
+      installFakeWs: (fake: WebSocket) => {
+        self.ws = fake;
+      },
       getCloudUrl: () => self.getCloudUrl(),
       getWsBaseUrl: () => self.getWsBaseUrl(),
       buildWsUrl: () => self.buildWsUrl(),

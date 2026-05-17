@@ -65,6 +65,80 @@ describe('getRuntimeTemplatePath', () => {
     expect(result).not.toBeNull()
   })
 
+  test('finds dirname(process.execPath)/runtime-template before the source-tree candidate', () => {
+    // Models the self-hosted cli-worker layout: a compiled
+    // `agent-runtime` binary on a VPS lives at
+    // `~/.shogo/runtime/agent-runtime` with the post-compile-bundled
+    // template at `~/.shogo/runtime/runtime-template/`. The exec-adjacent
+    // candidate must win over the source-tree candidate (which doesn't
+    // exist on the VPS but DOES in this CI process) so we don't
+    // accidentally pull a build-machine path into a runtime workspace.
+    delete process.env.RUNTIME_TEMPLATE_DIR
+
+    const fakeRuntimeDir = '/tmp/test-runtime-template-execpath'
+    const bundledTemplate = join(fakeRuntimeDir, 'runtime-template')
+    rmSync(fakeRuntimeDir, { recursive: true, force: true })
+    mkdirSync(bundledTemplate, { recursive: true })
+    writeFileSync(join(bundledTemplate, 'package.json'), JSON.stringify({ name: 'execpath-fixture' }))
+
+    const originalExecPath = process.execPath
+    Object.defineProperty(process, 'execPath', {
+      configurable: true,
+      writable: true,
+      value: join(fakeRuntimeDir, 'agent-runtime'),
+    })
+    try {
+      const result = getRuntimeTemplatePath()
+      expect(result).not.toBeNull()
+      // Node may resolve /tmp via /private/tmp on macOS — match by suffix.
+      expect(result!.endsWith('runtime-template')).toBe(true)
+      expect(JSON.parse(readFileSync(join(result!, 'package.json'), 'utf-8')).name).toBe('execpath-fixture')
+    } finally {
+      Object.defineProperty(process, 'execPath', {
+        configurable: true,
+        writable: true,
+        value: originalExecPath,
+      })
+      rmSync(fakeRuntimeDir, { recursive: true, force: true })
+    }
+  })
+
+  test('RUNTIME_TEMPLATE_DIR still wins over the dirname(process.execPath) candidate', () => {
+    // The env var is the documented escape hatch for operators who
+    // ship a custom template — it must beat the bundled one even
+    // when both exist next to the binary.
+    const envDir = '/tmp/test-runtime-template-env-vs-execpath'
+    const execDir = '/tmp/test-runtime-template-execpath-loser'
+    const execTemplate = join(execDir, 'runtime-template')
+    rmSync(envDir, { recursive: true, force: true })
+    rmSync(execDir, { recursive: true, force: true })
+    mkdirSync(envDir, { recursive: true })
+    mkdirSync(execTemplate, { recursive: true })
+    writeFileSync(join(envDir, 'package.json'), JSON.stringify({ name: 'env-wins' }))
+    writeFileSync(join(execTemplate, 'package.json'), JSON.stringify({ name: 'should-not-win' }))
+
+    process.env.RUNTIME_TEMPLATE_DIR = envDir
+    const originalExecPath = process.execPath
+    Object.defineProperty(process, 'execPath', {
+      configurable: true,
+      writable: true,
+      value: join(execDir, 'agent-runtime'),
+    })
+    try {
+      const result = getRuntimeTemplatePath()
+      expect(result).not.toBeNull()
+      expect(JSON.parse(readFileSync(join(result!, 'package.json'), 'utf-8')).name).toBe('env-wins')
+    } finally {
+      Object.defineProperty(process, 'execPath', {
+        configurable: true,
+        writable: true,
+        value: originalExecPath,
+      })
+      rmSync(envDir, { recursive: true, force: true })
+      rmSync(execDir, { recursive: true, force: true })
+    }
+  })
+
   test('resolves symlinks so cpSync does not choke on symlink-to-directory', () => {
     // Reproduces the VM crash: /opt/shogo/templates/runtime-template is a symlink
     // to /app/templates/runtime-template/. Without realpathSync, cpSync throws
