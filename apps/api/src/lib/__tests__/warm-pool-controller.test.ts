@@ -735,7 +735,7 @@ describe('WarmPoolController', () => {
       expect(result.oldService).toBe('warm-pool-evict-hard')
     })
 
-    test('soft eviction keeps DB mapping AND the Knative service alive', async () => {
+    test('soft eviction keeps DB mapping AND the Knative service alive (but flips shogo.io/active=false)', async () => {
       const mockPod: WarmPodInfo = {
         id: 'evict-pod-soft',
         serviceName: 'warm-pool-evict-soft',
@@ -760,11 +760,24 @@ describe('WarmPoolController', () => {
       // pod when they return — no destructive Prisma write should fire.
       expect(mockPrismaProjectUpdate).not.toHaveBeenCalled()
 
-      // Give async finally-blocks a tick (none should fire) and assert nothing
-      // tried to delete the live service.
+      // Give async fire-and-forget tasks a tick to flush.
       await new Promise(resolve => setTimeout(resolve, 50))
+
+      // The live ksvc must NOT be deleted — soft-evict's whole point is to
+      // let a returning user reuse the pod within Knative's
+      // scale-to-zero-pod-retention-period.
       expect(mockK8sCustomApi.deleteNamespacedCustomObject).not.toHaveBeenCalled()
-      expect(mockMergePatch).not.toHaveBeenCalled()
+
+      // But the `shogo.io/active=true` label MUST be flipped to `false` so
+      // the namespace GC's scaled-to-zero sweeper can reap the ksvc once
+      // Knative drops the pod. Without this flip every idle project leaks
+      // a permanent ksvc — see the staging incident postmortem
+      // (240 cumulative idle evictions, 0 namespace deletions).
+      expect(mockMergePatch).toHaveBeenCalledTimes(1)
+      const [ns, name, patch] = mockMergePatch.mock.calls[0]
+      expect(name).toBe('warm-pool-evict-soft')
+      expect(patch).toEqual({ metadata: { labels: { 'shogo.io/active': 'false' } } })
+      expect(ns).toBeDefined()
 
       // The function still reports the service it soft-evicted.
       expect(result.evicted).toBe(true)
