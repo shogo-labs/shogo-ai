@@ -22,7 +22,7 @@ export const SubscriptionModel = types
     stripeSubscriptionId: types.string,
     stripeCustomerId: types.string,
     planId: types.string,
-    seats: types.optional(types.number, 0),
+    seats: types.optional(types.number, 1),
     status: types.enumeration("SubscriptionStatus", ["active", "past_due", "canceled", "trialing", "paused"]),
     billingInterval: types.enumeration("BillingInterval", ["monthly", "annual"]),
     currentPeriodStart: types.number,
