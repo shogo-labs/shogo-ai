@@ -7,6 +7,10 @@
  *                     Staging: https://studio-staging.shogo.ai/api/projects/<id>/agent-proxy
  *   AUTH_COOKIE     — Session cookie for authenticated environments (staging/prod)
  *                     e.g. "shogo.session_token=abc123..."
+ *   SHOGO_API_KEY   — Workspace API key (`shogo_sk_*`) for header-based cloud
+ *                     auth. Use this instead of (or in addition to) AUTH_COOKIE
+ *                     when exercising the cloud agent-proxy from a non-browser
+ *                     client — Jira, GitHub Actions, CI, etc. all use this path.
  *   WEBHOOK_SECRET  — Shared secret for webhook channel auth (if configured)
  *   TEST_TIMEOUT    — Per-test timeout in ms (default: 120000)
  */
@@ -14,6 +18,7 @@
 export interface TestEnv {
   agentUrl: string
   authCookie?: string
+  shogoApiKey?: string
   webhookSecret?: string
   testTimeout: number
 }
@@ -31,14 +36,27 @@ export function getTestEnv(): TestEnv {
   return {
     agentUrl: agentUrl.replace(/\/$/, ''),
     authCookie: process.env.AUTH_COOKIE,
+    shogoApiKey: process.env.SHOGO_API_KEY,
     webhookSecret: process.env.WEBHOOK_SECRET,
     testTimeout: parseInt(process.env.TEST_TIMEOUT || '120000', 10),
   }
 }
 
 /**
- * Build headers for requests. Includes auth cookie when targeting
- * staging/production through the API proxy.
+ * Whether `AGENT_URL` points at the cloud agent-proxy (rather than a
+ * direct pod / local runtime). Used to gate the cloud-proxy-only test
+ * blocks that exercise header forwarding.
+ */
+export function isCloudProxyAgentUrl(agentUrl: string): boolean {
+  return /\/api\/projects\/[^/]+\/agent-proxy$/.test(agentUrl)
+}
+
+/**
+ * Build headers for requests. Includes auth cookie / Bearer key when
+ * targeting staging/production through the API proxy. When both are
+ * present, the cookie is included for browser-emulation parity and
+ * the Bearer for the API-key code path — the cloud accepts either
+ * but real external integrations always use the Bearer.
  */
 export function buildHeaders(env: TestEnv, extra?: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = {
@@ -48,6 +66,10 @@ export function buildHeaders(env: TestEnv, extra?: Record<string, string>): Reco
 
   if (env.authCookie) {
     headers['Cookie'] = env.authCookie
+  }
+
+  if (env.shogoApiKey && !headers['Authorization'] && !headers['authorization']) {
+    headers['Authorization'] = `Bearer ${env.shogoApiKey}`
   }
 
   return headers

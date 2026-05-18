@@ -140,9 +140,17 @@ const CHANNEL_DEFS: Record<string, ChannelDef> = {
     setupLabel: 'Webhook channel docs',
     description: 'Trigger this agent from Jira, Linear, Zapier, n8n, or any HTTP client',
     fields: [
-      // Shared secret — REQUIRED for any externally-reachable channel. If
-      // blank the runtime rejects every inbound webhook with 401, which is
-      // the safer default than "open to the world".
+      // Shared secret — when set, external callers must supply it as
+      // `X-Webhook-Secret` (forwarded through the cloud agent-proxy to
+      // `WebhookAdapter.verifyAuth`). When blank, the runtime accepts
+      // every inbound request that already passed cloud auth (workspace
+      // membership + `shogo_sk_*` Bearer). Leaving it blank is allowed
+      // but discouraged for any externally-reachable channel — the
+      // empty-secret warning rendered below the input nudges the user
+      // toward setting one. See:
+      //   - apps/docs/.../external-triggers/webhook-channel.md
+      //   - apps/api/src/lib/agent-proxy-headers.ts
+      //   - packages/agent-runtime/src/channels/webhook.ts:verifyAuth
       { key: 'secret', label: 'Shared Secret', placeholder: 'A long random string (e.g. openssl rand -hex 32)', secret: true },
       // Optional default callback URL — if set, every reply gets POSTed
       // back there instead of (or in addition to) returning synchronously.
@@ -800,21 +808,41 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                   {isExpanded && !isConnected && hasForm && (
                     <View className="px-3 pb-3 border-t border-border">
                       <View className="mt-3 gap-2.5">
-                        {def.fields.map(field => (
-                          <View key={field.key}>
-                            <Text className="text-[11px] text-muted-foreground mb-1">
-                              {field.label}
-                            </Text>
-                            <TextInput
-                              secureTextEntry={field.secret}
-                              placeholder={field.placeholder}
-                              placeholderTextColor="#666"
-                              value={formInputs[type]?.[field.key] || ''}
-                              onChangeText={(text) => updateInput(type, field.key, text)}
-                              className="px-2.5 py-1.5 text-xs border border-border rounded-md bg-background text-foreground"
-                            />
-                          </View>
-                        ))}
+                        {def.fields.map(field => {
+                          // Empty shared-secret warning for the webhook channel.
+                          // The runtime accepts every inbound request that
+                          // already passed cloud auth when `secret` is blank
+                          // (see WebhookAdapter.verifyAuth) — that means any
+                          // workspace member can trigger the channel, which
+                          // is rarely what a user setting up an external
+                          // integration actually wants. Nudge them toward
+                          // setting one without forcing it (legitimate
+                          // dev/CI use cases exist).
+                          const showEmptyWebhookSecretWarning =
+                            type === 'webhook' &&
+                            field.key === 'secret' &&
+                            !(formInputs[type]?.[field.key] || '').trim()
+                          return (
+                            <View key={field.key}>
+                              <Text className="text-[11px] text-muted-foreground mb-1">
+                                {field.label}
+                              </Text>
+                              <TextInput
+                                secureTextEntry={field.secret}
+                                placeholder={field.placeholder}
+                                placeholderTextColor="#666"
+                                value={formInputs[type]?.[field.key] || ''}
+                                onChangeText={(text) => updateInput(type, field.key, text)}
+                                className="px-2.5 py-1.5 text-xs border border-border rounded-md bg-background text-foreground"
+                              />
+                              {showEmptyWebhookSecretWarning && (
+                                <Text className="text-[10px] text-amber-600 dark:text-amber-500 mt-1">
+                                  Leaving this blank lets any workspace member with a Shogo API key trigger this channel. Recommended for production: a long random string (e.g. <Text className="font-mono">openssl rand -hex 32</Text>).
+                                </Text>
+                              )}
+                            </View>
+                          )
+                        })}
 
                         <View>
                           <Text className="text-[11px] text-muted-foreground mb-1">

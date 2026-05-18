@@ -2039,13 +2039,8 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   const path = c.req.path.replace(`/api/projects/${projectId}/agent-proxy`, '') || '/'
   const qs = new URL(c.req.url).search
 
-  const isWebchatPath =
-    path === '/agent/channels/webchat/widget.js' ||
-    path === '/agent/channels/webchat/health' ||
-    path === '/agent/channels/webchat/config' ||
-    path === '/agent/channels/webchat/session' ||
-    path === '/agent/channels/webchat/message' ||
-    path.startsWith('/agent/channels/webchat/events/')
+  const { buildAgentProxyForwardHeaders, isAgentProxyWebchatPath } = await import('./lib/agent-proxy-headers')
+  const isWebchatPath = isAgentProxyWebchatPath(path)
   let authedUserId: string | null = null
   let authedWorkspaceId: string | null = null
   if (!isWebchatPath) {
@@ -2072,13 +2067,12 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     return c.json(resolution.body, resolution.status)
   }
 
-  // Shared between cloud-pod and tunnel branches: header capture, runtime
-  // token derivation, and the billing-session lifecycle. Hoisting them
-  // here keeps the two branches semantically identical from the runtime's
-  // perspective (same auth, same billing) — the only difference is the
-  // transport.
-  const contentType = c.req.header('content-type')
-  const accept = c.req.header('accept')
+  // Shared between cloud-pod and tunnel branches: runtime token derivation
+  // and the billing-session lifecycle. Hoisting them here keeps the two
+  // branches semantically identical from the runtime's perspective (same
+  // auth, same billing) — the only difference is the transport. Header
+  // construction is delegated to `buildAgentProxyForwardHeaders` in each
+  // branch so the allow-list lives in exactly one place.
   const { deriveRuntimeToken } = await import('./lib/runtime-token')
   const runtimeToken = deriveRuntimeToken(projectId)
 
@@ -2099,17 +2093,13 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   if (resolution.kind === 'tunnel') {
     try {
       const { relayAgentProxyViaTunnel } = await import('./lib/tunnel-relay')
-      const tunnelHeaders: Record<string, string> = {}
-      if (contentType) tunnelHeaders['content-type'] = contentType
-      if (accept) tunnelHeaders['accept'] = accept
-      tunnelHeaders['x-runtime-token'] = runtimeToken
-      if (isChatStream && authedUserId) tunnelHeaders['x-billing-user-id'] = authedUserId
-      if (isWebchatPath) {
-        for (const h of ['origin', 'x-webchat-widget-key', 'x-webchat-session-token', 'x-webchat-session'] as const) {
-          const v = c.req.header(h)
-          if (v) tunnelHeaders[h] = v
-        }
-      }
+      const tunnelHeaders = buildAgentProxyForwardHeaders({
+        readHeader: (name) => c.req.header(name),
+        runtimeToken,
+        cleanPath: path,
+        isChatStream,
+        billingUserId: authedUserId,
+      })
       const tunnelBody = c.req.method === 'GET' || c.req.method === 'HEAD'
         ? undefined
         : await c.req.text()
@@ -2140,23 +2130,19 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
 
   const targetUrl = `${podUrl}${path}${qs}`
 
-  const headers = new Headers()
-  if (contentType) headers.set('content-type', contentType)
-  if (accept) headers.set('accept', accept)
-  if (isWebchatPath) {
-    const fwdHeaders = ['origin', 'x-webchat-widget-key', 'x-webchat-session-token', 'x-webchat-session'] as const
-    for (const h of fwdHeaders) {
-      const v = c.req.header(h)
-      if (v) headers.set(h, v)
-    }
-  }
-  headers.set('x-runtime-token', runtimeToken)
-
-  // Forward the real billing user so the runtime can include it in AI proxy
-  // calls — same convention as `project-chat.ts`.
-  if (isChatStream && authedUserId) {
-    headers.set('x-billing-user-id', authedUserId)
-  }
+  // Forward header construction is shared with the tunnel branch above —
+  // see `lib/agent-proxy-headers.ts` for the (intentionally small)
+  // allow-list. The helper handles webchat-only headers, the per-channel
+  // `x-webhook-secret` passthrough, the per-project `x-runtime-token`,
+  // and the chat-turn `x-billing-user-id` attribution that matches
+  // `project-chat.ts`.
+  const headers = buildAgentProxyForwardHeaders({
+    readHeader: (name) => c.req.header(name),
+    runtimeToken,
+    cleanPath: path,
+    isChatStream,
+    billingUserId: authedUserId,
+  })
 
   let requestBody: ArrayBuffer | undefined
   if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
