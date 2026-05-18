@@ -64,7 +64,11 @@ function getSysAudioBinaryPath(): string | null {
   if (process.platform !== 'darwin') return null
   const arch = process.arch === 'arm64' ? 'arm64' : 'amd64'
   if (IS_DEV) {
-    const nativeDir = path.join(__dirname, '..', 'native', 'shogo-sysaudio')
+    // `app.getAppPath()` returns `apps/desktop/` in dev. We deliberately don't
+    // use `__dirname` here because `bun build` inlines it as a build-time
+    // absolute path when this file is bundled into `dist/main.js` (see the
+    // post-bundle safety check in `scripts/bundle-main.mjs`).
+    const nativeDir = path.join(app.getAppPath(), 'native', 'shogo-sysaudio')
     const candidates = [
       path.join(nativeDir, `shogo-sysaudio-${arch}`),
       path.join(nativeDir, '.build', 'release', 'shogo-sysaudio'),
