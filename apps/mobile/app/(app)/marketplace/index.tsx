@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   FlatList,
   ActivityIndicator,
   Image,
+  Platform,
 } from 'react-native'
 import * as Lucide from 'lucide-react-native'
 import { observer } from 'mobx-react-lite'
@@ -114,6 +115,25 @@ const SORT_SECTION_TITLES: Record<SortMode, string> = {
   featured: 'Featured first',
 }
 
+/** Rail "See all" targets — sort API param may differ from the section label. */
+type BrowseFocus = 'trending' | 'newest'
+
+const BROWSE_FOCUS_META: Record<
+  BrowseFocus,
+  { title: string; subtitle: string; sort: SortMode }
+> = {
+  trending: {
+    title: 'Trending this week',
+    subtitle: 'Most-installed agents over the last 7 days',
+    sort: 'popular',
+  },
+  newest: {
+    title: 'New & noteworthy',
+    subtitle: 'Recently published agents from the community',
+    sort: 'newest',
+  },
+}
+
 function toTileListing(item: ListingFromAPI): AgentTileListing {
   return {
     slug: item.slug,
@@ -164,6 +184,8 @@ export default observer(function MarketplaceHomeScreen() {
   const [filterFree, setFilterFree] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('grid')
   const [sortMenuOpen, setSortMenuOpen] = useState(false)
+  /** Which rail's "See all" expanded the full browse grid (null = editorial home). */
+  const [browseFocus, setBrowseFocus] = useState<BrowseFocus | null>(null)
 
   const [featured, setFeatured] = useState<ListingFromAPI[]>([])
   const [trending, setTrending] = useState<ListingFromAPI[]>([])
@@ -185,10 +207,34 @@ export default observer(function MarketplaceHomeScreen() {
     searchQuery.trim() !== debouncedSearchTrimmed
   const showRails =
     sortMode === 'popular' &&
+    browseFocus === null &&
     !isSearching &&
     activeCategory === 'all' &&
     !filterFeatured &&
     !filterFree
+
+  const browseSectionMeta = useMemo(() => {
+    if (filterFeatured) {
+      return { title: 'Built for Shogo', subtitle: undefined as string | undefined }
+    }
+    if (filterFree) {
+      return { title: 'Free agents', subtitle: undefined }
+    }
+    if (activeCategory !== 'all') {
+      return {
+        title:
+          MARKETPLACE_CATEGORIES.find((c) => c.slug === activeCategory)?.label ?? 'Browse',
+        subtitle: undefined,
+      }
+    }
+    if (browseFocus) {
+      return {
+        title: BROWSE_FOCUS_META[browseFocus].title,
+        subtitle: BROWSE_FOCUS_META[browseFocus].subtitle,
+      }
+    }
+    return { title: SORT_SECTION_TITLES[sortMode], subtitle: undefined }
+  }, [activeCategory, browseFocus, filterFeatured, filterFree, sortMode])
 
   const loadGrid = useCallback(
     async (pageNum: number, append = false) => {
@@ -261,8 +307,40 @@ export default observer(function MarketplaceHomeScreen() {
   }, [activeCategory, sortMode, filterFeatured, filterFree, debouncedSearchQuery])
 
   useEffect(() => {
+    setBrowseFocus(null)
+  }, [activeCategory, filterFeatured, filterFree, debouncedSearchQuery])
+
+  useEffect(() => {
     loadEditorial()
   }, [loadEditorial])
+
+  const browseListRef = useRef<FlatList>(null)
+
+  const scrollBrowseToTop = useCallback(() => {
+    const scroll = () => {
+      browseListRef.current?.scrollToOffset({ offset: 0, animated: false })
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+      }
+    }
+    requestAnimationFrame(() => {
+      scroll()
+      requestAnimationFrame(scroll)
+    })
+  }, [])
+
+  const focusBrowse = useCallback(
+    (focus: BrowseFocus) => {
+      setSortMode(BROWSE_FOCUS_META[focus].sort)
+      setBrowseFocus(focus)
+    },
+    [],
+  )
+
+  useEffect(() => {
+    if (!browseFocus && !filterFeatured && !filterFree && activeCategory === 'all') return
+    scrollBrowseToTop()
+  }, [browseFocus, filterFeatured, filterFree, activeCategory, viewMode, scrollBrowseToTop])
 
   const spotlight = featured[0]
   const builtForShogo = featured.slice(1, 6)
@@ -380,7 +458,7 @@ export default observer(function MarketplaceHomeScreen() {
             viewMode={viewMode}
             title="Trending this week"
             subtitle="Most-installed agents over the last 7 days"
-            onSeeAll={() => setSortMode('popular')}
+            onSeeAll={() => focusBrowse('trending')}
             items={trending}
             onPress={handleCardPress}
           />
@@ -392,7 +470,7 @@ export default observer(function MarketplaceHomeScreen() {
             viewMode={viewMode}
             title="New & noteworthy"
             subtitle="Recently published agents from the community"
-            onSeeAll={() => setSortMode('newest')}
+            onSeeAll={() => focusBrowse('newest')}
             items={newAgents}
             onPress={handleCardPress}
           />
@@ -474,19 +552,12 @@ export default observer(function MarketplaceHomeScreen() {
         {/* Bottom grid header */}
         <View className="px-5 mt-2 mb-3">
           <SectionHeader
-            title={
-              filterFeatured
-                ? 'Built for Shogo'
-                : filterFree
-                  ? 'Free agents'
-                  : activeCategory === 'all'
-                    ? SORT_SECTION_TITLES[sortMode]
-                    : MARKETPLACE_CATEGORIES.find((c) => c.slug === activeCategory)?.label ?? 'Browse'
-            }
+            title={browseSectionMeta.title}
             subtitle={
               loading
                 ? 'Loading…'
-                : `${listings.length} agent${listings.length === 1 ? '' : 's'}`
+                : browseSectionMeta.subtitle ??
+                  `${listings.length} agent${listings.length === 1 ? '' : 's'}`
             }
             padded={false}
           />
@@ -499,6 +570,8 @@ export default observer(function MarketplaceHomeScreen() {
     listings.length,
     debouncedSearchTrimmed,
     isSearchPending,
+    browseFocus,
+    browseSectionMeta,
     showRails,
     spotlight,
     builtForShogo,
@@ -578,6 +651,7 @@ export default observer(function MarketplaceHomeScreen() {
             onOpenChange={setSortMenuOpen}
             onChange={(v) => {
               setSortMode(v)
+              setBrowseFocus(null)
               setSortMenuOpen(false)
             }}
           />
@@ -640,6 +714,7 @@ export default observer(function MarketplaceHomeScreen() {
       ) : (
         viewMode === 'grid' ? (
           <FlatList
+            ref={browseListRef}
             key={`grid-${numColumns}-${sortMode}`}
             data={paddedData}
             keyExtractor={(item, index) => item?.slug ?? `spacer-${index}`}
@@ -690,6 +765,7 @@ export default observer(function MarketplaceHomeScreen() {
           />
         ) : (
           <FlatList
+            ref={browseListRef}
             key={`list-${sortMode}`}
             data={tileListings}
             keyExtractor={(item) => item.slug}
