@@ -142,6 +142,41 @@ function loadTemplateMeta(templateDir: string): TemplateMeta {
   }
 }
 
+/**
+ * Load the project-level UI settings from the template's
+ * `.shogo/config.json`. These fields drive the studio canvas:
+ *
+ *   - `activeMode`  — selects which top tab the studio opens to
+ *                    ('canvas' / 'app' / 'none'). Defaults to 'canvas'.
+ *   - `canvasMode`  — selects the renderer inside the canvas tab.
+ *                    'code' loads the runtime's `dist/index.html` in an
+ *                    iframe (used by every first-party template that
+ *                    ships a pre-built bundle); 'json' renders the
+ *                    surfaces UI from the agent's JSON state.
+ *
+ * If we omit `canvasMode` from the source project's `Project.settings`,
+ * the studio falls back to 'json', which renders the empty surfaces
+ * placeholder ("Connected" with no preview). This was the staging
+ * incident where every newly installed marketplace template appeared
+ * blank — the workspace had `dist/index.html` and the runtime was
+ * serving it, but the studio never asked for it.
+ */
+function loadShogoProjectSettings(
+  templateDir: string,
+): { activeMode?: string; canvasMode?: string } {
+  const path = join(templateDir, '.shogo', 'config.json')
+  if (!existsSync(path)) return {}
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf-8'))
+    const out: { activeMode?: string; canvasMode?: string } = {}
+    if (typeof raw.activeMode === 'string') out.activeMode = raw.activeMode
+    if (typeof raw.canvasMode === 'string') out.canvasMode = raw.canvasMode
+    return out
+  } catch {
+    return {}
+  }
+}
+
 // ─── Workspace materialization ────────────────────────────────────────────
 
 const COPY_FILTER_SKIP = new Set(['node_modules', '.git', '.shogo', 'src/generated'])
@@ -302,6 +337,18 @@ async function upsertTemplateListing(
   const listingSlug = templateId
   const workspaceDir = join(getWorkspacesRoot(), projectId)
 
+  // The studio reads `activeMode` + `canvasMode` from the project's
+  // settings to decide whether to render the canvas iframe (`code`)
+  // or the surfaces placeholder (`json`). The first-party templates
+  // declare these in `.shogo/config.json`; we lift them into the DB
+  // here so installs inherit them automatically (the install service
+  // copies `srcProject.settings` verbatim onto the fork).
+  const shogoSettings = loadShogoProjectSettings(templateDir)
+  const desiredSettings = {
+    techStackId: meta.techStack ?? 'react-app',
+    ...shogoSettings,
+  } as object
+
   // 1. Source project + agent config. Stable id keeps re-runs idempotent.
   const existingProject = await prisma.project.findUnique({ where: { id: projectId } })
   if (!existingProject && !dryRun) {
@@ -313,7 +360,7 @@ async function upsertTemplateListing(
         workspaceId: ids.workspaceId,
         createdBy: ids.userId,
         status: 'active',
-        settings: { techStackId: meta.techStack ?? 'react-app' } as object,
+        settings: desiredSettings,
       },
     })
     await prisma.agentConfig.create({
@@ -328,6 +375,23 @@ async function upsertTemplateListing(
         quietHoursEnd: meta.settings?.quietHours?.end ?? null,
         quietHoursTimezone: meta.settings?.quietHours?.timezone ?? null,
       },
+    })
+  } else if (existingProject && !dryRun) {
+    // Re-run path: existing source project from a prior migration that
+    // ran before we lifted `.shogo/config.json` into the DB. Merge the
+    // desired keys into whatever's already there, preserving any other
+    // settings a future migration adds. Without this, every existing
+    // staging/prod source project would be permanently stuck without
+    // `canvasMode`, and every fresh install of those templates would
+    // render the empty surfaces placeholder ("Connected" with no
+    // preview).
+    const merged = {
+      ...((existingProject.settings as Record<string, unknown> | null) ?? {}),
+      ...desiredSettings,
+    }
+    await prisma.project.update({
+      where: { id: projectId },
+      data: { settings: merged as object },
     })
   }
 
@@ -585,7 +649,115 @@ export async function runMigration(opts: RunMigrationOptions = {}): Promise<RunM
     `skippedSeedMarker=${backfill.skippedSeedMarker}`,
   )
 
+  log(`backfilling Project.settings (canvasMode/activeMode) on existing installs...`)
+  const settingsBackfill = await backfillInstallSettings(dryRun)
+  log(
+    `settings backfill: inspected=${settingsBackfill.inspected} ` +
+    `updated=${settingsBackfill.updated} ` +
+    `skippedComplete=${settingsBackfill.skippedComplete} ` +
+    `skippedNoSource=${settingsBackfill.skippedNoSource}`,
+  )
+
   return { templates: results, backfill, ranAt: new Date() }
+}
+
+interface SettingsBackfillStats {
+  inspected: number
+  updated: number
+  skippedComplete: number
+  skippedNoSource: number
+}
+
+/**
+ * Walk every `MarketplaceInstall` row and copy missing UI-mode keys
+ * (`canvasMode`, `activeMode`) from the listing's source project
+ * settings down to the installed project's settings. Idempotent: rows
+ * that already have both keys are left alone.
+ *
+ * Why this exists: the migration script's first run on staging/prod
+ * created source projects without `canvasMode` (the value lived in
+ * `.shogo/config.json`, not in the DB). Every install made before
+ * we lifted that field into `Project.settings` rendered the empty
+ * surfaces placeholder ("Connected" with no preview) instead of the
+ * canvas iframe. This backfill repairs them in place.
+ */
+async function backfillInstallSettings(
+  dryRun: boolean,
+): Promise<SettingsBackfillStats> {
+  const stats: SettingsBackfillStats = {
+    inspected: 0,
+    updated: 0,
+    skippedComplete: 0,
+    skippedNoSource: 0,
+  }
+
+  const PAGE = 200
+  let cursor: string | null = null
+  while (true) {
+    const installs: Array<{
+      id: string
+      projectId: string
+      project: { id: string; settings: unknown } | null
+      listing: { project: { settings: unknown } | null } | null
+    }> = await prisma.marketplaceInstall.findMany({
+      take: PAGE,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      orderBy: { id: 'asc' },
+      select: {
+        id: true,
+        projectId: true,
+        project: { select: { id: true, settings: true } },
+        listing: { select: { project: { select: { settings: true } } } },
+      },
+    })
+    if (installs.length === 0) break
+
+    for (const inst of installs) {
+      stats.inspected++
+      if (!inst.project) continue
+      const projSettings =
+        (inst.project.settings as Record<string, unknown> | null) ?? {}
+      const srcSettings =
+        (inst.listing?.project?.settings as Record<string, unknown> | null) ?? null
+
+      const needsCanvas = projSettings.canvasMode == null
+      const needsActive = projSettings.activeMode == null
+      if (!needsCanvas && !needsActive) {
+        stats.skippedComplete++
+        continue
+      }
+      if (!srcSettings) {
+        stats.skippedNoSource++
+        continue
+      }
+
+      const patch: Record<string, unknown> = {}
+      if (needsCanvas && typeof srcSettings.canvasMode === 'string') {
+        patch.canvasMode = srcSettings.canvasMode
+      }
+      if (needsActive && typeof srcSettings.activeMode === 'string') {
+        patch.activeMode = srcSettings.activeMode
+      }
+      if (Object.keys(patch).length === 0) {
+        stats.skippedNoSource++
+        continue
+      }
+
+      const merged = { ...projSettings, ...patch }
+      if (!dryRun) {
+        await prisma.project.update({
+          where: { id: inst.project.id },
+          data: { settings: merged as object },
+        })
+      }
+      stats.updated++
+    }
+
+    cursor = installs[installs.length - 1].id
+    if (installs.length < PAGE) break
+  }
+
+  return stats
 }
 
 function emptyBackfill(): BackfillStats {
