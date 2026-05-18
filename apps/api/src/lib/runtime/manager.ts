@@ -137,6 +137,17 @@ export class RuntimeManager implements IRuntimeManager {
         if (!existsSync(path)) return null
         return { path, source: 'env' as const }
       },
+      // Local/desktop mode is single-user with no resource pressure to
+      // recycle for; the default 15-min idle eviction was killing
+      // in-flight chat streams whenever the agent-proxy didn't see a
+      // fresh request inside the window. The activity-touch hooks in
+      // server.ts (agent-proxy) and routes/ai-proxy.ts (AI proxy)
+      // refresh `lastUsedAt` on every chunk forwarded and every model
+      // call from the agent, so cloud's 15-min reaper now only fires
+      // on a genuinely-idle slot. Local mode additionally disables
+      // the reaper outright as a belt-and-suspenders since there is
+      // no resource motivation to ever reap there.
+      idleMs: process.env.SHOGO_LOCAL_MODE === 'true' ? 0 : undefined,
     })
   }
 
@@ -1766,6 +1777,30 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       const runtime = this.runtimes.get(id)
       return runtime && (runtime.status === 'running' || runtime.status === 'starting')
     })
+  }
+
+  /**
+   * Mark a project as recently active so the embedded
+   * {@link WorkerRuntimeManager} resets its idle-eviction window.
+   *
+   * Production bug this exists to fix: a long Opus / Claude turn (or
+   * any chat stream that runs >15min without a fresh agent-proxy
+   * request) was getting reaped mid-stream by `WorkerRuntimeManager`
+   * because nothing in the proxy hot path refreshed `lastUsedAt`.
+   * Callers (agent-proxy in `server.ts`, AI proxy in
+   * `routes/ai-proxy.ts`) now invoke this on every forwarded SSE
+   * chunk and on every project-scoped model call so the reaper only
+   * sees a slot as "idle" when the user really has stepped away.
+   *
+   * Safe no-op if `projectId` has no runtime.
+   */
+  touch(projectId: string): void {
+    if (!projectId || projectId === 'api-key') return
+    try {
+      this.agentManager.touch(projectId)
+    } catch (err: any) {
+      console.warn(`[RuntimeManager] touch(${projectId}) failed: ${err?.message ?? err}`)
+    }
   }
 
   private startHealthCheck(projectId: string): void {

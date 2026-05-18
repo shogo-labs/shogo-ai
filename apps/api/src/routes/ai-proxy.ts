@@ -38,6 +38,7 @@ import { verifyRuntimeToken } from '../lib/runtime-token'
 import { resolveApiKey } from './api-keys'
 import { wipeCloudKey } from '../lib/cloud-key-wipe'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
+import { getRuntimeManager } from '../lib/runtime'
 import {
   MODEL_CATALOG,
   MODEL_ALIASES,
@@ -1775,6 +1776,30 @@ export function aiProxyRoutes() {
   }
 
   /**
+   * Refresh the agent-runtime idle window for a successful proxy auth.
+   *
+   * Every successful `/ai/v1/*` or `/ai/anthropic/v1/*` request is the
+   * agent inside that project actively making a model call (tool use,
+   * streaming completion, embeddings) — that is the strongest possible
+   * signal that the runtime is alive and being used. Touching here
+   * means a long Opus turn whose only outbound traffic is one big
+   * model call still resets the 15-min reaper, even though the user's
+   * agent-proxy connection is silent during that span.
+   *
+   * `'api-key'` payloads come from workspace-scoped Shogo API keys
+   * (no project context) and have no local runtime to touch — skip.
+   */
+  function touchRuntimeFor(payload: ProxyTokenPayload | null): void {
+    if (!payload || !payload.projectId || payload.projectId === 'api-key') return
+    try {
+      getRuntimeManager().touch(payload.projectId)
+    } catch {
+      // RuntimeManager isn't local, isn't constructed yet, or threw —
+      // never block an auth on the touch hook.
+    }
+  }
+
+  /**
    * Middleware: Validate proxy token on all /ai/v1/* routes.
    * Accepts:
    *   - Shogo API keys (`shogo_sk_*`, workspace-scoped),
@@ -1782,6 +1807,12 @@ export function aiProxyRoutes() {
    *   - signed project-scoped proxy JWTs (legacy / browser previews).
    */
   async function validateProxyAuth(c: any): Promise<ProxyTokenPayload | null> {
+    const payload = await validateProxyAuthImpl(c)
+    touchRuntimeFor(payload)
+    return payload
+  }
+
+  async function validateProxyAuthImpl(c: any): Promise<ProxyTokenPayload | null> {
     const authHeader = c.req.header('Authorization')
     if (!authHeader?.startsWith('Bearer ')) {
       return null
@@ -2332,6 +2363,12 @@ export function aiProxyRoutes() {
    *   - signed project-scoped proxy JWTs.
    */
   async function validateAnthropicAuth(c: any): Promise<ProxyTokenPayload | null> {
+    const payload = await validateAnthropicAuthImpl(c)
+    touchRuntimeFor(payload)
+    return payload
+  }
+
+  async function validateAnthropicAuthImpl(c: any): Promise<ProxyTokenPayload | null> {
     const apiKey = c.req.header('x-api-key')
     if (!apiKey) {
       return null
