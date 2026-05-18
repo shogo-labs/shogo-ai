@@ -147,6 +147,18 @@ jobs:
           node -e "const p=require('./packages/shogo-worker/package.json'); p.version=process.env.VERSION; require('fs').writeFileSync('packages/shogo-worker/package.json', JSON.stringify(p, null, 2)+'\n')"
           echo "Set @shogo-ai/worker version to $VERSION"
 
+      # The worker `Typecheck` step below runs `tsc --noEmit`, which resolves
+      # the workspace dep `@shogo-ai/sdk` via its `exports.types` field —
+      # `./dist/index.d.ts`. Without an explicit build, that file doesn't
+      # exist in CI and every `import ... from '@shogo-ai/sdk'` blows up
+      # with TS2307 "Cannot find module" (which in turn surfaces downstream
+      # implicit-any errors). `build:packages` builds the SDK and its
+      # transitive workspace deps in dependency order so the typecheck —
+      # and the subsequent `build:js` / `bun build --compile` steps — have
+      # the type information they need.
+      - name: Build workspace packages (so @shogo-ai/sdk types resolve)
+        run: bun run build:packages
+
       - name: Typecheck
         run: bun run --filter @shogo-ai/worker typecheck
 

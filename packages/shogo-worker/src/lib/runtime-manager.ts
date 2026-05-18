@@ -713,7 +713,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
         localDir: projectDir,
       });
       const manifest = await transport.listManifest();
-      const shogoEntries = manifest.filter((e) => e.path === '.shogo' || e.path.startsWith('.shogo/'));
+      const shogoEntries = manifest.filter((e: { path: string }) => e.path === '.shogo' || e.path.startsWith('.shogo/'));
       if (shogoEntries.length === 0) return;
       const stats = await transport.downloadFiles(shogoEntries);
       log.log(
