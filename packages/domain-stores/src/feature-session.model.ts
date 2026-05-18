@@ -20,7 +20,7 @@ export const FeatureSessionModel = types
     id: types.identifier,
     name: types.string,
     intent: types.string,
-    status: types.enumeration("FeatureStatus", ["discovery", "analysis", "classification", "design", "spec", "implementation", "testing", "complete"]),
+    status: types.optional(types.enumeration("FeatureStatus", ["discovery", "analysis", "classification", "design", "spec", "implementation", "testing", "complete"]), "discovery"),
     affectedPackages: types.optional(types.array(types.string), []),
     schemaName: types.optional(types.string, ""),
     initialAssessment: types.optional(types.frozen(), {}),
