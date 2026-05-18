@@ -102,4 +102,22 @@ export interface IRuntimeManager {
    * Get list of all active project IDs.
    */
   getActiveProjects(): string[]
+
+  /**
+   * Mark a project's runtime as recently used so its idle-eviction
+   * timer is reset.
+   *
+   * Called from the agent-proxy streaming path so that long-lived SSE
+   * responses (e.g. `/agent/canvas/stream`, `/agent/chat`) keep the
+   * underlying child process alive while bytes are still flowing — the
+   * embedded `WorkerRuntimeManager` only auto-resets the timer when a
+   * fresh proxy resolution happens, so a single stream that lasts
+   * longer than `RUNTIME_IDLE_MS` would otherwise be SIGTERM'd
+   * mid-flight.
+   *
+   * Implementations MUST be safe to call for project IDs that have no
+   * locally-managed runtime (cloud-pod / k8s mode) — the call should
+   * be a no-op rather than throwing.
+   */
+  touch(projectId: string): void
 }

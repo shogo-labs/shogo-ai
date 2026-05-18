@@ -1768,6 +1768,25 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     })
   }
 
+  /**
+   * Reset the idle-eviction timer on the embedded {@link WorkerRuntimeManager}'s
+   * slot for `projectId`. Safe to call for unknown project IDs — the
+   * downstream `WorkerRuntimeManager.touch()` already short-circuits when
+   * it has no slot, so the agent-proxy can fire this on every stream
+   * heartbeat without first checking whether the request was routed to a
+   * local runtime vs. a cloud pod.
+   */
+  touch(projectId: string): void {
+    try {
+      this.agentManager.touch(projectId)
+    } catch (err: any) {
+      // Defensive: a future refactor that makes touch() throw must not
+      // be allowed to abort an in-flight stream just because the keep-
+      // alive ping failed.
+      console.warn(`[RuntimeManager] touch(${projectId}) failed: ${err?.message ?? err}`)
+    }
+  }
+
   private startHealthCheck(projectId: string): void {
     const timer = setInterval(() => {
       this.getHealth(projectId).catch((err) =>
