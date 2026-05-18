@@ -29,9 +29,9 @@ here.
 phase — never down):
 
 ```
-aggregate                    line 0.71  func 0.77
+aggregate                    line 0.71  func 0.78
 apps/api                     0.72
-packages/agent-runtime       0.67   (Phase 1: was 0.64)
+packages/agent-runtime       0.68   (Phase 2: was 0.67; Phase 1: was 0.64)
 packages/shared-runtime      0.63   (Phase 1 surfaced git-sync.ts; Phase 6 will cover)
 packages/sdk                 0.86
 packages/model-catalog       1.00
