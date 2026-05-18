@@ -33,11 +33,12 @@
  * only differentiator persisted is the device row's friendly name
  * (e.g. "Russell's MacBook Pro" vs "shogo CLI on …").
  *
- * Pending state is in-memory only — small (<1KB per pending login),
- * short-lived (5-min TTL), and it would create more cleanup churn
- * persisted to Postgres than it saves. If we ever shard the API tier
- * we'll need to either move this to Redis or pin login-poll requests
- * to the start node via state-prefix routing.
+ * Pending state lives in `../lib/pending-login-store.ts`. In cloud mode
+ * the store writes to Redis (with a Redis-native TTL so we don't need
+ * a cleanup job) so the four endpoints above can be served by any pod
+ * in the multi-replica API tier; in local mode (Electron-bundled API)
+ * it falls back to an in-process Map. The store's docstring covers
+ * the regression history (cross-pod 404s on `/state` in v1.7.x).
  */
 
 import { Hono } from 'hono'
@@ -45,44 +46,19 @@ import crypto from 'crypto'
 import { prisma } from '../lib/prisma'
 import { getFrontendUrl } from '../lib/cloud-urls'
 import { mintDeviceApiKey } from '../lib/api-keys-mint'
+import {
+  type PendingState,
+  type PendingStatus,
+  _testing as storeTesting,
+  deletePendingState,
+  getPendingState,
+  purgeExpiredStates,
+  setPendingState,
+} from '../lib/pending-login-store'
 
 const STATE_TTL_MS = 5 * 60 * 1000
 const STATE_BYTE_LENGTH = 16
 const POLL_INTERVAL_MS = 2_000
-
-type PendingStatus = 'pending' | 'approved' | 'denied' | 'expired'
-
-interface PendingState {
-  status: PendingStatus
-  deviceId: string
-  deviceName: string
-  devicePlatform?: string
-  deviceAppVersion?: string
-  /** "desktop" | "cli" — hint for the bridge page UI only. */
-  client: 'desktop' | 'cli'
-  preselectedWorkspaceId?: string
-  expiresAt: number
-
-  // Populated on approval; cleared after the client polls for it once.
-  mintedKey?: string
-  email?: string | null
-  workspace?: string | null
-  approvedAt?: number
-}
-
-const pendingStates = new Map<string, PendingState>()
-
-function purgeExpiredStates(): void {
-  const now = Date.now()
-  for (const [state, record] of pendingStates) {
-    if (record.expiresAt <= now) {
-      // We don't bump status to 'expired' first because there's no one
-      // to read it once we've blown the TTL — the pending CLI process
-      // would have given up via its own deadline by now.
-      pendingStates.delete(state)
-    }
-  }
-}
 
 function generateState(): string {
   return crypto.randomBytes(STATE_BYTE_LENGTH).toString('hex')
@@ -124,7 +100,7 @@ export function cliAuthRoutes() {
     const defaultDeviceName = client === 'desktop' ? 'Shogo Desktop' : 'Shogo CLI'
 
     const state = generateState()
-    pendingStates.set(state, {
+    await setPendingState(state, {
       status: 'pending',
       deviceId: body.deviceId,
       deviceName: (body.deviceName || defaultDeviceName).slice(0, 120),
@@ -176,21 +152,21 @@ export function cliAuthRoutes() {
     if (!state) {
       return c.json({ ok: false, error: 'state query param required' }, 400)
     }
-    const record = pendingStates.get(state)
+    const record = await getPendingState(state)
     if (!record) {
       return c.json({ ok: true, status: 'expired' as PendingStatus })
     }
     if (record.expiresAt <= Date.now()) {
-      pendingStates.delete(state)
+      await deletePendingState(state)
       return c.json({ ok: true, status: 'expired' as PendingStatus })
     }
     if (record.status === 'denied') {
-      pendingStates.delete(state)
+      await deletePendingState(state)
       return c.json({ ok: true, status: 'denied' as PendingStatus })
     }
     if (record.status === 'approved' && record.mintedKey) {
       // Single-use: hand the key over and burn the entry.
-      pendingStates.delete(state)
+      await deletePendingState(state)
       return c.json({
         ok: true,
         status: 'approved' as PendingStatus,
@@ -212,7 +188,7 @@ export function cliAuthRoutes() {
     if (!state) {
       return c.json({ ok: false, error: 'state required' }, 400)
     }
-    const record = pendingStates.get(state)
+    const record = await getPendingState(state)
     if (!record || record.expiresAt <= Date.now()) {
       return c.json({ ok: false, error: 'expired' }, 404)
     }
@@ -248,12 +224,12 @@ export function cliAuthRoutes() {
       return c.json({ ok: false, error: 'state required' }, 400)
     }
 
-    const record = pendingStates.get(state)
+    const record = await getPendingState(state)
     if (!record) {
       return c.json({ ok: false, error: 'Unknown or expired state' }, 404)
     }
     if (record.expiresAt <= Date.now()) {
-      pendingStates.delete(state)
+      await deletePendingState(state)
       return c.json({ ok: false, error: 'Sign-in request expired' }, 410)
     }
     if (record.status === 'approved') {
@@ -326,6 +302,14 @@ export function cliAuthRoutes() {
     // Keep the record around just long enough for the CLI's next poll
     // to grab the key; the poll handler deletes it on success.
     record.expiresAt = Math.min(record.expiresAt, Date.now() + 60_000)
+    // Persist the mutations back to the store. In local mode `record`
+    // is the same Map-stored object reference and this is a no-op write,
+    // but in cloud mode `getPendingState` handed back a JSON-parsed
+    // copy and the changes above only live in this stack frame until we
+    // write them through. Without this, the CLI's `/poll` lands on a
+    // sibling pod, hits Redis directly, sees `status: 'pending'`, and
+    // the user's browser shows "Sign-in approved" while the CLI hangs.
+    await setPendingState(state, record)
 
     return c.json({
       ok: true,
@@ -348,11 +332,15 @@ export function cliAuthRoutes() {
     const body = await c.req.json<{ state?: string }>().catch(() => ({} as any))
     const state = typeof body?.state === 'string' ? body.state : ''
     if (!state) return c.json({ ok: false, error: 'state required' }, 400)
-    const record = pendingStates.get(state)
+    const record = await getPendingState(state)
     if (!record) return c.json({ ok: true })
     if (record.status === 'pending') {
       record.status = 'denied'
       record.expiresAt = Math.min(record.expiresAt, Date.now() + 30_000)
+      // Same write-through reasoning as `/approve` above: in cloud mode
+      // the in-stack mutations don't reach the next poller until we
+      // persist back to Redis.
+      await setPendingState(state, record)
     }
     return c.json({ ok: true })
   })
@@ -360,8 +348,14 @@ export function cliAuthRoutes() {
   return router
 }
 
-/** Test seam — clears in-memory pending states between tests. */
-export const _testing = {
-  pendingStates,
-  purgeExpiredStates,
-}
+// Re-export the store's test seam under the historical `_testing` name
+// from this module. The existing cli-auth-routes*.test.ts suites poke
+// at `_testing.pendingStates` directly — keeping that surface intact
+// here means the routes refactor is purely additive for tests, and
+// they continue to seed / inspect the same in-memory Map that the
+// store uses in local mode (which is the mode tests run in).
+export const _testing = storeTesting
+// Re-export internals used by tests that still type-import the route
+// module (PendingState shape, etc.). Avoids forcing every test file to
+// path-import from `lib/pending-login-store.ts`.
+export type { PendingState, PendingStatus }
