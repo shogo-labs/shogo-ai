@@ -659,7 +659,22 @@ function createWindow(): void {
     title: 'Shogo',
     autoHideMenuBar: true,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      // ⚠️ Do NOT use `path.join(__dirname, 'preload.js')` here. `scripts/bundle-main.mjs`
+      // runs `bun build --target node --format cjs` over this file, and Bun inlines
+      // `__dirname` as a string literal of the source file's directory at build time
+      // rather than leaving it as Node's runtime CJS builtin. On a CI runner that
+      // means `__dirname` ships as `/Users/runner/work/<org>/<repo>/apps/desktop/src`
+      // baked into `app.asar`, so on every other machine Electron tries to load a
+      // preload script from a path that doesn't exist — no IPC bridge gets installed,
+      // `window.shogoDesktop` is undefined, and the renderer fails over to the
+      // default `localhost:8002` API URL, which is wrong for the packaged desktop
+      // (it uses a dynamic port from `getApiPort()`). v1.7.8 shipped that regression.
+      //
+      // `app.getAppPath()` is supplied by Electron at runtime and is NOT subject to
+      // bundler inlining. It returns the directory containing the loaded
+      // `package.json` — `apps/desktop/` in dev, `…/Contents/Resources/app.asar/` in
+      // a packaged build — and `preload.js` is at `<that>/dist/preload.js` in both.
+      preload: path.join(app.getAppPath(), 'dist', 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       // sandbox is disabled so the preload script can require the audio
