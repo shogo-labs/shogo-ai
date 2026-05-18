@@ -732,6 +732,26 @@ describe('requireAuth, requireRole, apiKeyOrSession helpers', () => {
     expect(errorCtx.c._response().status).toBe(503)
   })
 
+  // Regression for the desktop/CLI Cloud-sign-in flow: anonymous calls to
+  // /api/cli/login/start (and /poll, /state) must pass through requireAuth.
+  // If anything 401s these in middleware before the route handler runs, the
+  // user-facing failure is `Cloud rejected /api/cli/login/start (HTTP 401):
+  // {"error":{"code":"unauthorized","message":"Authentication required"}}`
+  // — that exact symptom shipped in v1.7.x. See ../middleware/auth.ts.
+  test('requireAuth allows /api/cli/login/{start,poll,state} unauthenticated', async () => {
+    for (const path of [
+      '/api/cli/login/start',
+      '/api/cli/login/poll',
+      '/api/cli/login/state',
+    ]) {
+      let nextCalled = false
+      const ctx = makeCtx({ url: `http://localhost${path}` })
+      ctx.stored.auth = { isAuthenticated: false }
+      await requireAuth(ctx.c, async () => { nextCalled = true })
+      expect(nextCalled).toBe(true)
+    }
+  })
+
   test('requireAuth and requireRole pass authenticated users through', async () => {
     let authNext = false
     const authCtx = makeCtx({})
