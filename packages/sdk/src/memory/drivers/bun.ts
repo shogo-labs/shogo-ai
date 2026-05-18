@@ -33,6 +33,7 @@ export function isBunRuntime(): boolean {
 }
 
 export const createBunDriver: CreateSqliteDriver = (dbPath: string): SqliteDriver => {
+  /* c8 ignore next 3 */ // Unreachable under `bun test` — globalThis.Bun is a hard binding.
   if (!isBunRuntime()) {
     throw new Error('[@shogo-ai/sdk/memory] bun:sqlite driver requires Bun runtime')
   }

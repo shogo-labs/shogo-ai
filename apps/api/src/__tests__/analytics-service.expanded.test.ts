@@ -1109,4 +1109,52 @@ describe('raw-SQL paths via $queryRawUnsafe stub', () => {
     expect(out.signups).toBe(0)
     expect(out.avgMinToFirstProject).toBeNull()
   })
+
+  // -----------------------------------------------------------------------
+  // Coverage gap: toNum() / toNumOrNull() must handle bigint and string
+  // -----------------------------------------------------------------------
+  test('getUserFunnel coerces bigint, string, and NaN cells via toNum/toNumOrNull', async () => {
+    enqueueQueryRaw([
+      {
+        signups: BigInt(11), // -> toNum bigint branch (line 1187)
+        onboarded: '8',       // -> toNum string Number(v) (line 1189)
+        createdProject: 5,
+        sentMessage: 0,
+        engaged: 0,
+        avgMinToFirstProject: BigInt(2), // -> toNumOrNull bigint
+        avgMinToFirstMessage: 'not-a-number', // -> toNumOrNull NaN -> null
+      },
+    ])
+    const out = await analytics.getUserFunnel()
+    expect(out.signups).toBe(11)
+    expect(out.onboarded).toBe(8)
+    expect(out.avgMinToFirstProject).toBe(2)
+    expect(out.avgMinToFirstMessage).toBeNull()
+  })
+
+  // -----------------------------------------------------------------------
+  // Coverage gap: mergeTimeSeries sort comparator only fires when
+  // there are 2+ date buckets in the merged map (line 151).
+  // -----------------------------------------------------------------------
+  test('getGrowthTimeSeries sorts multi-day buckets in ascending order', async () => {
+    store.users.length = 0
+    store.workspaces.length = 0
+    store.projects.length = 0
+    const now = Date.now()
+    const day1 = new Date(now - 3 * 24 * 60 * 60 * 1000)
+    const day2 = new Date(now - 2 * 24 * 60 * 60 * 1000)
+    const day3 = new Date(now - 1 * 24 * 60 * 60 * 1000)
+    store.users.push(
+      { id: 'u-1', createdAt: day1 },
+      { id: 'u-2', createdAt: day3 },
+    )
+    store.workspaces.push({ id: 'w-1', createdAt: day2 })
+    store.projects.push({ id: 'p-1', createdAt: day2 })
+    rebuildModels()
+    const out = (await analytics.getGrowthTimeSeries()) as Array<Record<string, unknown>>
+    expect(out.length).toBeGreaterThanOrEqual(2)
+    const dates = out.map((r) => r.date as string)
+    const sorted = [...dates].sort((a, b) => a.localeCompare(b))
+    expect(dates).toEqual(sorted)
+  })
 })
