@@ -93,6 +93,22 @@ describe('runtimeDiagnosticsRoutes', () => {
     expect(b2.diagnostics).toHaveLength(2)
   })
 
+  test('overlay mode — workspaceDir basename != projectId still serves diagnostics', async () => {
+    // Create a workspace dir whose basename is NOT the projectId (overlay/symlink mode).
+    const overlayDir = join(workspacesRoot, 'overlay-leaf')
+    mkdirSync(overlayDir, { recursive: true })
+    recordBuildError('overlay-leaf', { file: 'src/x.ts', line: 1, message: 'overlay err' })
+    const app = runtimeDiagnosticsRoutes({
+      workspaceDir: overlayDir,
+      getCurrentProjectId: () => projectId, // != basename
+    })
+    const res = await app.fetch(new Request('http://x/diagnostics?source=build'))
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(Array.isArray(body.diagnostics)).toBe(true)
+    expect(body.diagnostics.some((d: { message: string }) => d.message === 'overlay err')).toBe(true)
+  })
+
   test('paths other than /diagnostics fall through to next() (no body)', async () => {
     const app = runtimeDiagnosticsRoutes({
       workspaceDir,

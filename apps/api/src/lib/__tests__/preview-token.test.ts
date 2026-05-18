@@ -158,6 +158,33 @@ describe('preview-token', () => {
       const payload = await verifyPreviewToken(token)
       expect(payload?.projectId).toBe('proj-roundtrip')
     })
+
+    it('returns null and hits the catch when an unexpected error is thrown mid-verify', async () => {
+      // Build a token whose signature is valid HMAC over header.payload, but the
+      // payload itself decodes to non-JSON. Signature verify passes → JSON.parse
+      // throws → the catch arm (which logs and returns null) runs.
+      const b64url = (data: string | ArrayBuffer) => {
+        const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : new Uint8Array(data)
+        return btoa(String.fromCharCode(...bytes))
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=+$/, '')
+      }
+      const h = b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))
+      const p = b64url('{not json at all') // valid base64url, invalid JSON
+      const signingInput = `${h}.${p}`
+      const key = await crypto.subtle.importKey(
+        'raw',
+        new TextEncoder().encode(process.env.BETTER_AUTH_SECRET ?? TEST_SECRET),
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign'],
+      )
+      const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signingInput))
+      const token = `${signingInput}.${b64url(sig)}`
+
+      expect(await verifyPreviewToken(token)).toBeNull()
+    })
   })
 
   describe('extractProjectIdFromToken', () => {

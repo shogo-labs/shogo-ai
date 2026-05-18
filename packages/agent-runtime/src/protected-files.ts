@@ -46,6 +46,7 @@ export function isProtectedFile(workspaceDir: string, absPath: string): boolean 
   const rel = relative(resolve(workspaceDir), resolve(absPath))
   if (!rel || rel.startsWith('..' + sep) || rel === '..') return false
   // Reject absolute remainders too (Windows: "C:\..." after relative).
+  /* c8 ignore next */ // Windows-only guard; runtime is *nix-only.
   if (sep === '\\' && /^[a-z]:/i.test(rel)) return false
   if (rel.startsWith(sep)) return false
   const normalized = rel.split(sep).join('/')
