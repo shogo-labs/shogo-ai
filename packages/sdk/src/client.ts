@@ -83,8 +83,15 @@ export interface ShogoClient<DB = unknown> {
 
   /**
    * Vercel AI SDK provider routed through the Shogo Cloud LLM gateway.
-   * `null` until a Shogo API key is configured via `shogoApiKey` in
-   * `createClient()` or {@link ShogoClient.setShogoApiKey}.
+   *
+   * Resolves to a working provider when **either**:
+   *   - `process.env.RUNTIME_AUTH_SECRET` is present (pod-native; default
+   *     inside generated apps — no API key required), or
+   *   - `shogoApiKey` was supplied to `createClient()` /
+   *     {@link ShogoClient.setShogoApiKey} (local dev / external sites).
+   *
+   * Runtime token wins when both are present; a warning is logged.
+   * `null` only when neither credential is available.
    *
    * ```ts
    * import { streamText } from 'ai'
@@ -179,16 +186,47 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
     // Database is a direct pass-through to Prisma
     this.db = config.db
 
-    // LLM gateway: only provisioned when a Shogo API key is present.
+    // LLM gateway: prefer pod-native `RUNTIME_AUTH_SECRET` when present;
+    // fall back to `shogoApiKey`; otherwise leave `null`. See
+    // `buildLlm` for precedence + warning rules (mirrors voice).
     this.shogoCloudUrl = config.shogoCloudUrl
-    this.llm = config.shogoApiKey
-      ? createShogoLlmProvider({
-          apiKey: config.shogoApiKey,
-          baseUrl: this.shogoCloudUrl,
-        })
-      : null
+    this.llm = this.buildLlm(config.shogoApiKey ?? null)
 
     this.voice = { telephony: this.buildTelephony(config.shogoApiKey) }
+  }
+
+  private buildLlm(
+    shogoApiKey: string | undefined | null,
+  ): ShogoLlmProvider | null {
+    // Server-only: guard `typeof process` so this code never runs in a
+    // browser bundle (where `process.env.RUNTIME_AUTH_SECRET` would be
+    // undefined or, worse, inlined by a bundler).
+    const runtimeToken =
+      typeof process !== 'undefined'
+        ? process.env?.RUNTIME_AUTH_SECRET
+        : undefined
+    const hasRuntime = Boolean(runtimeToken)
+    const hasApiKey = Boolean(shogoApiKey)
+
+    if (hasRuntime && hasApiKey) {
+      console.warn(
+        '[shogo] createClient received both RUNTIME_AUTH_SECRET env + shogoApiKey for client.llm; using runtime-token (pod-native). Drop shogoApiKey to silence this warning.',
+      )
+    }
+
+    if (hasRuntime) {
+      return createShogoLlmProvider({
+        runtimeToken: runtimeToken as string,
+        baseUrl: this.shogoCloudUrl,
+      })
+    }
+    if (hasApiKey) {
+      return createShogoLlmProvider({
+        apiKey: shogoApiKey as string,
+        baseUrl: this.shogoCloudUrl,
+      })
+    }
+    return null
   }
 
   private buildTelephony(
@@ -256,9 +294,7 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
 
   setShogoApiKey(key: string | null): void {
     this.shogoApiKey = key
-    this.llm = key
-      ? createShogoLlmProvider({ apiKey: key, baseUrl: this.shogoCloudUrl })
-      : null
+    this.llm = this.buildLlm(key)
     this.voice = { telephony: this.buildTelephony(key) }
   }
 }
