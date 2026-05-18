@@ -107,6 +107,13 @@ const SORT_LABELS: Record<SortMode, string> = {
   featured: 'Featured first',
 }
 
+const SORT_SECTION_TITLES: Record<SortMode, string> = {
+  popular: 'Popular this month',
+  rating: 'Top rated',
+  newest: 'Newest',
+  featured: 'Featured first',
+}
+
 function toTileListing(item: ListingFromAPI): AgentTileListing {
   return {
     slug: item.slug,
@@ -176,13 +183,22 @@ export default observer(function MarketplaceHomeScreen() {
   const isSearching = debouncedSearchTrimmed.length > 0
   const isSearchPending =
     searchQuery.trim() !== debouncedSearchTrimmed
-  const showRails = !isSearching && activeCategory === 'all' && !filterFeatured && !filterFree
+  const showRails =
+    sortMode === 'popular' &&
+    !isSearching &&
+    activeCategory === 'all' &&
+    !filterFeatured &&
+    !filterFree
 
   const loadGrid = useCallback(
     async (pageNum: number, append = false) => {
       try {
-        if (pageNum === 1) setLoading(true)
-        else setLoadingMore(true)
+        if (pageNum === 1) {
+          setLoading(true)
+          if (!append) setListings([])
+        } else {
+          setLoadingMore(true)
+        }
 
         const params = new URLSearchParams()
         params.set('page', String(pageNum))
@@ -464,7 +480,7 @@ export default observer(function MarketplaceHomeScreen() {
                 : filterFree
                   ? 'Free agents'
                   : activeCategory === 'all'
-                    ? 'Popular this month'
+                    ? SORT_SECTION_TITLES[sortMode]
                     : MARKETPLACE_CATEGORIES.find((c) => c.slug === activeCategory)?.label ?? 'Browse'
             }
             subtitle={
@@ -494,6 +510,7 @@ export default observer(function MarketplaceHomeScreen() {
     activeCategory,
     filterFeatured,
     filterFree,
+    sortMode,
     handleCardPress,
     router,
     numColumns,
@@ -623,10 +640,11 @@ export default observer(function MarketplaceHomeScreen() {
       ) : (
         viewMode === 'grid' ? (
           <FlatList
-            key={`grid-${numColumns}`}
+            key={`grid-${numColumns}-${sortMode}`}
             data={paddedData}
             keyExtractor={(item, index) => item?.slug ?? `spacer-${index}`}
             renderItem={renderGridItem}
+            extraData={sortMode}
             numColumns={numColumns}
             columnWrapperStyle={numColumns > 1 ? { gap: 0 } : undefined}
             contentContainerStyle={{ paddingBottom: 32, paddingHorizontal: 12 }}
@@ -672,10 +690,11 @@ export default observer(function MarketplaceHomeScreen() {
           />
         ) : (
           <FlatList
-            key="list"
+            key={`list-${sortMode}`}
             data={tileListings}
             keyExtractor={(item) => item.slug}
             renderItem={renderListItem}
+            extraData={sortMode}
             contentContainerStyle={{ paddingBottom: 32 }}
             ListHeaderComponent={ListHeader}
             onEndReached={handleLoadMore}
