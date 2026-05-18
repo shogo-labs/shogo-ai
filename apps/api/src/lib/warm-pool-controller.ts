@@ -1029,6 +1029,32 @@ export class WarmPoolController {
       }
       if (oldServiceName) {
         this.softEvictedAt.set(oldServiceName, Date.now())
+        // Flip shogo.io/active=false so the namespace GC's scaled-to-zero
+        // sweeper can reap the ksvc once Knative drops the pod (after the
+        // scale-to-zero-pod-retention-period). Without this, every idle
+        // project leaks a permanent ksvc — staging accumulated 51 of them
+        // before the leak was noticed (240 cumulative idle evictions, 0
+        // namespace deletions) and the resulting webhook/route churn took
+        // node 10.0.31.16 NotReady, surfacing as Cloudflare 525s. Done as
+        // a fire-and-forget background task to mirror the hard-evict
+        // path; a 404 here just means a concurrent hard-evict already
+        // removed the service.
+        const serviceToPatch = oldServiceName
+        ;(async () => {
+          try {
+            const { mergePatchKnativeService } = await import('./knative-project-manager')
+            await mergePatchKnativeService(this.namespace, serviceToPatch, {
+              metadata: { labels: { [ACTIVE_LABEL_KEY]: 'false' } },
+            })
+          } catch (err: any) {
+            if (!err?.message?.includes('404') && !err?.message?.includes('not found')) {
+              console.error(
+                `[WarmPool] evictProject(soft): failed to clear active label on ${serviceToPatch} (non-fatal):`,
+                err.message,
+              )
+            }
+          }
+        })()
       }
     }
 
