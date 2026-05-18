@@ -281,4 +281,18 @@ describe('MemoryStore', () => {
       store.close()
     })
   })
+
+  describe('reindex()', () => {
+    test('reindex() picks up bullets added directly to MEMORY.md', () => {
+      const store = new MemoryStore({ dir, userId: 'alice' })
+      store.add('initial fact')
+      writeFileSync(
+        join(store.workspaceDir, 'MEMORY.md'),
+        '# Memory\n\n- searches for kayaking trips\n',
+      )
+      store.reindex()
+      expect(store.search('kayaking').length).toBeGreaterThan(0)
+      store.close()
+    })
+  })
 })

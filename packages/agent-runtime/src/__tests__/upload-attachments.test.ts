@@ -186,6 +186,86 @@ describe('saveUploadedFileParts', () => {
     expect(existsSync(join(workspaceDir, saved[0].savedPath))).toBe(true)
   })
 
+  test('formatBytes: bytes summary uses B for tiny files and KB for ~1KB+ files', () => {
+    const tinyParts: UploadedFilePart[] = [
+      {
+        type: 'file',
+        mediaType: 'text/plain',
+        name: 'tiny.txt',
+        url: dataUrl('text/plain', Buffer.from('a'.repeat(10))), // 10 B
+      },
+    ]
+    const r1 = saveUploadedFileParts({
+      workspaceDir,
+      parts: tinyParts,
+      log: SILENT_LOG,
+      logError: SILENT_ERR,
+    })
+    expect(r1.savedSummaries[0]).toMatch(/10 B\)/)
+
+    const kbParts: UploadedFilePart[] = [
+      {
+        type: 'file',
+        mediaType: 'text/plain',
+        name: 'medium.txt',
+        url: dataUrl('text/plain', Buffer.from('x'.repeat(2048))), // 2 KB
+      },
+    ]
+    const r2 = saveUploadedFileParts({
+      workspaceDir,
+      parts: kbParts,
+      log: SILENT_LOG,
+      logError: SILENT_ERR,
+    })
+    expect(r2.savedSummaries[0]).toMatch(/KB\)/)
+
+    // Push past line 80 — an MB-sized payload exercises formatBytes's MB branch
+    // and ensures the line-80 condition is evaluated `false` so the line is
+    // recorded as hit even under Bun's per-statement instrumentation.
+    const mbParts: UploadedFilePart[] = [
+      {
+        type: 'file',
+        mediaType: 'application/octet-stream',
+        name: 'big.bin',
+        url: dataUrl('application/octet-stream', Buffer.alloc(1024 * 1024 + 16, 0x41)),
+      },
+    ]
+    const r3 = saveUploadedFileParts({
+      workspaceDir,
+      parts: mbParts,
+      log: SILENT_LOG,
+      logError: SILENT_ERR,
+    })
+    expect(r3.savedSummaries[0]).toMatch(/MB\)/)
+  })
+
+  test('per-part write failure is caught and reported via logError', () => {
+    // Pre-create a DIRECTORY at the target path so writeFileSync fails (EISDIR).
+    const { mkdirSync: mk } = require('fs')
+    mk(join(workspaceDir, 'files', 'blocker.txt'), { recursive: true })
+
+    const errs: Array<{ msg: string; err: unknown }> = []
+    const parts: UploadedFilePart[] = [
+      {
+        type: 'file',
+        mediaType: 'text/plain',
+        name: 'blocker.txt',
+        url: dataUrl('text/plain', 'hi'),
+      },
+    ]
+
+    const { saved } = saveUploadedFileParts({
+      workspaceDir,
+      parts,
+      log: SILENT_LOG,
+      logError: (msg, err) => errs.push({ msg, err }),
+    })
+
+    expect(saved).toHaveLength(0)
+    expect(errs).toHaveLength(1)
+    expect(errs[0].msg).toContain('Failed to save uploaded file')
+  })
+
   test('skips parts without a base64 data URL', () => {
     const parts: UploadedFilePart[] = [
       { type: 'file', mediaType: 'application/zip', name: 'remote.zip', url: 'https://example.com/x.zip' },
