@@ -55,9 +55,17 @@ export function SectionHeader({
       </View>
       {onSeeAll && (
         <Pressable
-          onPress={onSeeAll}
-          hitSlop={6}
-          className="flex-row items-center gap-1 active:opacity-60"
+          onPress={(e) => {
+            if ('stopPropagation' in e && typeof e.stopPropagation === 'function') {
+              e.stopPropagation()
+            }
+            onSeeAll()
+          }}
+          hitSlop={10}
+          className="flex-row items-center gap-1 active:opacity-60 relative z-20"
+          style={Platform.OS === 'web' ? { cursor: 'pointer' } : undefined}
+          accessibilityRole="button"
+          accessibilityLabel={`${seeAllLabel} ${title}`}
         >
           <Text className="text-sm font-medium text-primary">{seeAllLabel}</Text>
           <ChevronRight size={14} color="#e27927" />
