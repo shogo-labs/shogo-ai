@@ -331,10 +331,12 @@ export default observer(function MarketplaceHomeScreen() {
 
   const focusBrowse = useCallback(
     (focus: BrowseFocus) => {
-      setSortMode(BROWSE_FOCUS_META[focus].sort)
+      const meta = BROWSE_FOCUS_META[focus]
       setBrowseFocus(focus)
+      setSortMode(meta.sort)
+      scrollBrowseToTop()
     },
-    [],
+    [scrollBrowseToTop],
   )
 
   useEffect(() => {
@@ -433,7 +435,10 @@ export default observer(function MarketplaceHomeScreen() {
             viewMode={viewMode}
             title="Built for Shogo"
             subtitle="Editor-curated agents that meet our quality bar"
-            onSeeAll={() => setFilterFeatured(true)}
+            onSeeAll={() => {
+              setBrowseFocus(null)
+              setFilterFeatured(true)
+            }}
             items={builtForShogo}
             railTileSize="featured"
             railItemWidth={260}
@@ -482,7 +487,10 @@ export default observer(function MarketplaceHomeScreen() {
             viewMode={viewMode}
             title="Free agents"
             subtitle="Try without paying anything"
-            onSeeAll={() => setFilterFree(true)}
+            onSeeAll={() => {
+              setBrowseFocus(null)
+              setFilterFree(true)
+            }}
             items={freeAgents}
             onPress={handleCardPress}
           />
@@ -715,11 +723,11 @@ export default observer(function MarketplaceHomeScreen() {
         viewMode === 'grid' ? (
           <FlatList
             ref={browseListRef}
-            key={`grid-${numColumns}-${sortMode}`}
+            key={`grid-${numColumns}-${sortMode}-${browseFocus ?? 'home'}`}
             data={paddedData}
             keyExtractor={(item, index) => item?.slug ?? `spacer-${index}`}
             renderItem={renderGridItem}
-            extraData={sortMode}
+            extraData={`${sortMode}-${browseFocus ?? 'home'}`}
             numColumns={numColumns}
             columnWrapperStyle={numColumns > 1 ? { gap: 0 } : undefined}
             contentContainerStyle={{ paddingBottom: 32, paddingHorizontal: 12 }}
@@ -766,11 +774,11 @@ export default observer(function MarketplaceHomeScreen() {
         ) : (
           <FlatList
             ref={browseListRef}
-            key={`list-${sortMode}`}
+            key={`list-${sortMode}-${browseFocus ?? 'home'}`}
             data={tileListings}
             keyExtractor={(item) => item.slug}
             renderItem={renderListItem}
-            extraData={sortMode}
+            extraData={`${sortMode}-${browseFocus ?? 'home'}`}
             contentContainerStyle={{ paddingBottom: 32 }}
             ListHeaderComponent={ListHeader}
             onEndReached={handleLoadMore}
@@ -841,7 +849,9 @@ function AgentCollectionSection({
 }) {
   return (
     <View className="mb-8">
-      <SectionHeader title={title} subtitle={subtitle} onSeeAll={onSeeAll} />
+      <View className="relative z-20 bg-background">
+        <SectionHeader title={title} subtitle={subtitle} onSeeAll={onSeeAll} />
+      </View>
       {viewMode === 'grid' ? (
         <HorizontalRail
           items={items}
