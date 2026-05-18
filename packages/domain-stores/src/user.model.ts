@@ -24,7 +24,7 @@ export const UserModel = types
     email: types.string,
     emailVerified: types.optional(types.boolean, false),
     image: types.optional(types.string, ""),
-    role: types.enumeration("UserRole", ["user", "super_admin"]),
+    role: types.optional(types.enumeration("UserRole", ["user", "super_admin"]), "user"),
     onboardingCompleted: types.optional(types.boolean, false),
     createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
