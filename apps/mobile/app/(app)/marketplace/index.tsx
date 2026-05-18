@@ -344,6 +344,25 @@ export default observer(function MarketplaceHomeScreen() {
     scrollBrowseToTop()
   }, [browseFocus, filterFeatured, filterFree, activeCategory, viewMode, scrollBrowseToTop])
 
+  const returnToEditorialHome = useCallback(() => {
+    setBrowseFocus(null)
+    setSortMode('popular')
+    setFilterFeatured(false)
+    setFilterFree(false)
+    setActiveCategory('all')
+    setSearchQuery('')
+    setSortMenuOpen(false)
+    scrollBrowseToTop()
+  }, [scrollBrowseToTop])
+
+  const handleTopBarBack = useCallback(() => {
+    if (showRails) {
+      router.back()
+    } else {
+      returnToEditorialHome()
+    }
+  }, [showRails, router, returnToEditorialHome])
+
   const spotlight = featured[0]
   const builtForShogo = featured.slice(1, 6)
 
@@ -410,6 +429,20 @@ export default observer(function MarketplaceHomeScreen() {
 
     return (
       <View>
+        {!showRails && !isSearching && (
+          <View className="px-5 pt-2 pb-3">
+            <Pressable
+              onPress={returnToEditorialHome}
+              className="flex-row items-center gap-1.5 self-start active:opacity-70"
+              accessibilityRole="button"
+              accessibilityLabel="Back to marketplace"
+            >
+              <ArrowLeft size={16} color="#e27927" />
+              <Text className="text-sm font-medium text-primary">Back to marketplace</Text>
+            </Pressable>
+          </View>
+        )}
+
         {/* Spotlight */}
         {spotlight && showRails && (
           <View className="px-5 mt-2 mb-8">
@@ -592,6 +625,7 @@ export default observer(function MarketplaceHomeScreen() {
     filterFeatured,
     filterFree,
     sortMode,
+    returnToEditorialHome,
     handleCardPress,
     router,
     numColumns,
@@ -602,7 +636,7 @@ export default observer(function MarketplaceHomeScreen() {
     <View className="flex-1 bg-background">
       {/* Top bar */}
       <View className="flex-row items-center gap-3 px-5 pt-3 pb-2">
-        <Pressable onPress={() => router.back()} hitSlop={6} className="p-1">
+        <Pressable onPress={handleTopBarBack} hitSlop={6} className="p-1">
           <ArrowLeft size={20} color="#71717a" />
         </Pressable>
         <Text className="text-base font-semibold text-foreground flex-1">
