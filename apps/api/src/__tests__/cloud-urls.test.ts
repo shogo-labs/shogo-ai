@@ -143,3 +143,82 @@ describe('getFrontendUrl', () => {
     expect(result.startsWith('http://localhost:')).toBe(true)
   })
 })
+
+// ──────────────────────────────────────────────────────────────────────
+// Extended coverage — defensive edge cases & invariants
+// (added in tests/backend-unit-coverage)
+// ──────────────────────────────────────────────────────────────────────
+
+describe('getShogoCloudUrl — defensive edges', () => {
+  test('strips multiple trailing slashes (regex only removes one — pin behavior)', () => {
+    process.env.SHOGO_CLOUD_URL = 'https://cloud.example.com//'
+    // /\/$/ only strips a single trailing slash — document & pin.
+    expect(getShogoCloudUrl()).toBe('https://cloud.example.com/')
+  })
+
+  test('preserves explicit port + path', () => {
+    process.env.SHOGO_CLOUD_URL = 'https://staging.shogo.ai:8443/api'
+    expect(getShogoCloudUrl()).toBe('https://staging.shogo.ai:8443/api')
+  })
+
+  test('empty SHOGO_CLOUD_URL falls back to default (not to empty string)', () => {
+    process.env.SHOGO_CLOUD_URL = ''
+    expect(getShogoCloudUrl()).toBe(SHOGO_CLOUD_URL_DEFAULT)
+  })
+
+  test('falls back to default after env var is unset', () => {
+    process.env.SHOGO_CLOUD_URL = 'https://override'
+    delete process.env.SHOGO_CLOUD_URL
+    expect(getShogoCloudUrl()).toBe(SHOGO_CLOUD_URL_DEFAULT)
+  })
+
+  test('result never ends in a slash (concat-safe)', () => {
+    for (const v of ['https://x/', 'https://y', 'https://z/path/']) {
+      process.env.SHOGO_CLOUD_URL = v
+      expect(getShogoCloudUrl().endsWith('/')).toBe(false)
+    }
+  })
+})
+
+describe('getFrontendUrl — defensive edges', () => {
+  test('trims whitespace around the first ALLOWED_ORIGINS entry', () => {
+    delete process.env.APP_URL
+    process.env.ALLOWED_ORIGINS = '   https://web.example.com   , https://other.example.com'
+    expect(getFrontendUrl()).toBe('https://web.example.com')
+  })
+
+  test('skips an empty first ALLOWED_ORIGINS slot and never falls through to the next entry', () => {
+    // Implementation note: the function takes `split(',')[0]?.trim()` and only
+    // checks truthiness. A leading comma means the first slot is "" which is
+    // falsy — so we should drop through to the localhost fallback rather than
+    // accidentally returning the second origin.
+    delete process.env.APP_URL
+    process.env.ALLOWED_ORIGINS = ',https://second.example.com'
+    delete process.env.VITE_PORT
+    expect(getFrontendUrl()).toBe('http://localhost:3000')
+  })
+
+  test('returns APP_URL even if it has a trailing slash (NOT stripped)', () => {
+    process.env.APP_URL = 'https://app.example.com/'
+    expect(getFrontendUrl()).toBe('https://app.example.com/')
+  })
+
+  test('returns APP_URL even when ALLOWED_ORIGINS is also set', () => {
+    process.env.APP_URL = 'https://app.example.com'
+    process.env.ALLOWED_ORIGINS = 'https://origin.example.com'
+    expect(getFrontendUrl()).toBe('https://app.example.com')
+  })
+
+  test('empty APP_URL is treated as unset (falsy) — defers to ALLOWED_ORIGINS', () => {
+    process.env.APP_URL = ''
+    process.env.ALLOWED_ORIGINS = 'https://fallback.example.com'
+    expect(getFrontendUrl()).toBe('https://fallback.example.com')
+  })
+
+  test('empty ALLOWED_ORIGINS string is treated as unset — falls back to localhost', () => {
+    delete process.env.APP_URL
+    process.env.ALLOWED_ORIGINS = ''
+    delete process.env.VITE_PORT
+    expect(getFrontendUrl()).toBe('http://localhost:3000')
+  })
+})
