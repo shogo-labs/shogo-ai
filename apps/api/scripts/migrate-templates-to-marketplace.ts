@@ -775,34 +775,49 @@ async function backfillInstallSettings(
     skippedNoSource: 0,
   }
 
+  // The Prisma schema doesn't declare a `project` relation on
+  // `MarketplaceInstall` or `MarketplaceListing` (only the scalar
+  // `projectId` field). Earlier revisions of this function tried to
+  // `select: { project: {…}, listing: { project: {…} } }` which threw
+  // `Unknown field 'project' for select statement on model
+  // 'MarketplaceInstall'` at runtime — silently swallowed by the boot
+  // try/catch and so missed by every staging deploy until prod
+  // bubbled it up. The two-step fetch below uses only scalar fields
+  // and follows up with separate `project.findMany` lookups by id,
+  // which is robust against the relation gap and still keeps the
+  // per-page memory bounded.
+  //
+  // Cache: source-project settings are looked up once per listing
+  // and reused across every install of that listing in the same
+  // backfill run. Templates have many installs per listing so this
+  // cuts the per-install Prisma roundtrip cost in half.
   const PAGE = 200
+  const sourceSettingsByListing = new Map<string, Record<string, unknown> | null>()
   let cursor: string | null = null
+
   while (true) {
-    const installs: Array<{
-      id: string
-      projectId: string
-      project: { id: string; settings: unknown } | null
-      listing: { project: { settings: unknown } | null } | null
-    }> = await prisma.marketplaceInstall.findMany({
-      take: PAGE,
-      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
-      orderBy: { id: 'asc' },
-      select: {
-        id: true,
-        projectId: true,
-        project: { select: { id: true, settings: true } },
-        listing: { select: { project: { select: { settings: true } } } },
-      },
-    })
+    const installs: Array<{ id: string; projectId: string; listingId: string }> =
+      await prisma.marketplaceInstall.findMany({
+        take: PAGE,
+        ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+        orderBy: { id: 'asc' },
+        select: { id: true, projectId: true, listingId: true },
+      })
     if (installs.length === 0) break
+
+    // Bulk-fetch every install's target project settings in one query.
+    const projects = await prisma.project.findMany({
+      where: { id: { in: installs.map((i) => i.projectId) } },
+      select: { id: true, settings: true },
+    })
+    const projectById = new Map(projects.map((p) => [p.id, p]))
 
     for (const inst of installs) {
       stats.inspected++
-      if (!inst.project) continue
+      const project = projectById.get(inst.projectId)
+      if (!project) continue
       const projSettings =
-        (inst.project.settings as Record<string, unknown> | null) ?? {}
-      const srcSettings =
-        (inst.listing?.project?.settings as Record<string, unknown> | null) ?? null
+        (project.settings as Record<string, unknown> | null) ?? {}
 
       const needsCanvas = projSettings.canvasMode == null
       const needsActive = projSettings.activeMode == null
@@ -810,6 +825,27 @@ async function backfillInstallSettings(
         stats.skippedComplete++
         continue
       }
+
+      // Lazy-resolve the source-project settings for this install's
+      // listing, memoized so we hit the DB at most once per listing.
+      let srcSettings = sourceSettingsByListing.get(inst.listingId)
+      if (srcSettings === undefined) {
+        const listing = await prisma.marketplaceListing.findUnique({
+          where: { id: inst.listingId },
+          select: { projectId: true },
+        })
+        if (!listing?.projectId) {
+          srcSettings = null
+        } else {
+          const sourceProject = await prisma.project.findUnique({
+            where: { id: listing.projectId },
+            select: { settings: true },
+          })
+          srcSettings = (sourceProject?.settings as Record<string, unknown> | null) ?? null
+        }
+        sourceSettingsByListing.set(inst.listingId, srcSettings)
+      }
+
       if (!srcSettings) {
         stats.skippedNoSource++
         continue
@@ -830,7 +866,7 @@ async function backfillInstallSettings(
       const merged = { ...projSettings, ...patch }
       if (!dryRun) {
         await prisma.project.update({
-          where: { id: inst.project.id },
+          where: { id: project.id },
           data: { settings: merged as object },
         })
       }
