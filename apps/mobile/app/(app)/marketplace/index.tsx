@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   FlatList,
   ActivityIndicator,
   Image,
+  Platform,
 } from 'react-native'
 import * as Lucide from 'lucide-react-native'
 import { observer } from 'mobx-react-lite'
@@ -36,6 +37,14 @@ import {
   type CreatorTier,
 } from '../../../components/marketplace'
 import { MARKETPLACE_CATEGORIES, type MarketplaceCategory } from '@shogo/shared-app'
+import { cn } from '@shogo/shared-ui/primitives'
+import {
+  Popover,
+  PopoverBackdrop,
+  PopoverBody,
+  PopoverContent,
+} from '@/components/ui/popover'
+import { useDebouncedValue } from '../../../hooks/useDebouncedValue'
 import { useGridColumns } from '../../../hooks/useGridColumns'
 
 interface ListingFromAPI {
@@ -99,6 +108,32 @@ const SORT_LABELS: Record<SortMode, string> = {
   featured: 'Featured first',
 }
 
+const SORT_SECTION_TITLES: Record<SortMode, string> = {
+  popular: 'Popular this month',
+  rating: 'Top rated',
+  newest: 'Newest',
+  featured: 'Featured first',
+}
+
+/** Rail "See all" targets — sort API param may differ from the section label. */
+type BrowseFocus = 'trending' | 'newest'
+
+const BROWSE_FOCUS_META: Record<
+  BrowseFocus,
+  { title: string; subtitle: string; sort: SortMode }
+> = {
+  trending: {
+    title: 'Trending this week',
+    subtitle: 'Most-installed agents over the last 7 days',
+    sort: 'popular',
+  },
+  newest: {
+    title: 'New & noteworthy',
+    subtitle: 'Recently published agents from the community',
+    sort: 'newest',
+  },
+}
+
 function toTileListing(item: ListingFromAPI): AgentTileListing {
   return {
     slug: item.slug,
@@ -142,12 +177,15 @@ export default observer(function MarketplaceHomeScreen() {
   const numColumns = useGridColumns()
 
   const [searchQuery, setSearchQuery] = useState('')
+  const debouncedSearchQuery = useDebouncedValue(searchQuery)
   const [activeCategory, setActiveCategory] = useState<string>('all')
   const [sortMode, setSortMode] = useState<SortMode>('popular')
   const [filterFeatured, setFilterFeatured] = useState(false)
   const [filterFree, setFilterFree] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('grid')
   const [sortMenuOpen, setSortMenuOpen] = useState(false)
+  /** Which rail's "See all" expanded the full browse grid (null = editorial home). */
+  const [browseFocus, setBrowseFocus] = useState<BrowseFocus | null>(null)
 
   const [featured, setFeatured] = useState<ListingFromAPI[]>([])
   const [trending, setTrending] = useState<ListingFromAPI[]>([])
@@ -163,14 +201,50 @@ export default observer(function MarketplaceHomeScreen() {
   const [totalPages, setTotalPages] = useState(1)
   const [loadingMore, setLoadingMore] = useState(false)
 
-  const isSearching = searchQuery.trim().length > 0
-  const showRails = !isSearching && activeCategory === 'all' && !filterFeatured && !filterFree
+  const debouncedSearchTrimmed = debouncedSearchQuery.trim()
+  const isSearching = debouncedSearchTrimmed.length > 0
+  const isSearchPending =
+    searchQuery.trim() !== debouncedSearchTrimmed
+  const showRails =
+    sortMode === 'popular' &&
+    browseFocus === null &&
+    !isSearching &&
+    activeCategory === 'all' &&
+    !filterFeatured &&
+    !filterFree
+
+  const browseSectionMeta = useMemo(() => {
+    if (filterFeatured) {
+      return { title: 'Built for Shogo', subtitle: undefined as string | undefined }
+    }
+    if (filterFree) {
+      return { title: 'Free agents', subtitle: undefined }
+    }
+    if (activeCategory !== 'all') {
+      return {
+        title:
+          MARKETPLACE_CATEGORIES.find((c) => c.slug === activeCategory)?.label ?? 'Browse',
+        subtitle: undefined,
+      }
+    }
+    if (browseFocus) {
+      return {
+        title: BROWSE_FOCUS_META[browseFocus].title,
+        subtitle: BROWSE_FOCUS_META[browseFocus].subtitle,
+      }
+    }
+    return { title: SORT_SECTION_TITLES[sortMode], subtitle: undefined }
+  }, [activeCategory, browseFocus, filterFeatured, filterFree, sortMode])
 
   const loadGrid = useCallback(
     async (pageNum: number, append = false) => {
       try {
-        if (pageNum === 1) setLoading(true)
-        else setLoadingMore(true)
+        if (pageNum === 1) {
+          setLoading(true)
+          if (!append) setListings([])
+        } else {
+          setLoadingMore(true)
+        }
 
         const params = new URLSearchParams()
         params.set('page', String(pageNum))
@@ -181,7 +255,7 @@ export default observer(function MarketplaceHomeScreen() {
 
         let url: string
         if (isSearching) {
-          params.set('q', searchQuery.trim())
+          params.set('q', debouncedSearchTrimmed)
           url = `/api/marketplace/search?${params.toString()}`
         } else {
           url = `/api/marketplace?${params.toString()}`
@@ -204,7 +278,7 @@ export default observer(function MarketplaceHomeScreen() {
         setLoadingMore(false)
       }
     },
-    [http, sortMode, activeCategory, filterFeatured, filterFree, isSearching, searchQuery],
+    [http, sortMode, activeCategory, filterFeatured, filterFree, isSearching, debouncedSearchTrimmed],
   )
 
   const loadEditorial = useCallback(async () => {
@@ -230,11 +304,64 @@ export default observer(function MarketplaceHomeScreen() {
 
   useEffect(() => {
     loadGrid(1)
-  }, [activeCategory, sortMode, filterFeatured, filterFree, searchQuery])
+  }, [activeCategory, sortMode, filterFeatured, filterFree, debouncedSearchQuery])
+
+  useEffect(() => {
+    setBrowseFocus(null)
+  }, [activeCategory, filterFeatured, filterFree, debouncedSearchQuery])
 
   useEffect(() => {
     loadEditorial()
   }, [loadEditorial])
+
+  const browseListRef = useRef<FlatList>(null)
+
+  const scrollBrowseToTop = useCallback(() => {
+    const scroll = () => {
+      browseListRef.current?.scrollToOffset({ offset: 0, animated: false })
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+      }
+    }
+    requestAnimationFrame(() => {
+      scroll()
+      requestAnimationFrame(scroll)
+    })
+  }, [])
+
+  const focusBrowse = useCallback(
+    (focus: BrowseFocus) => {
+      const meta = BROWSE_FOCUS_META[focus]
+      setBrowseFocus(focus)
+      setSortMode(meta.sort)
+      scrollBrowseToTop()
+    },
+    [scrollBrowseToTop],
+  )
+
+  useEffect(() => {
+    if (!browseFocus && !filterFeatured && !filterFree && activeCategory === 'all') return
+    scrollBrowseToTop()
+  }, [browseFocus, filterFeatured, filterFree, activeCategory, viewMode, scrollBrowseToTop])
+
+  const returnToEditorialHome = useCallback(() => {
+    setBrowseFocus(null)
+    setSortMode('popular')
+    setFilterFeatured(false)
+    setFilterFree(false)
+    setActiveCategory('all')
+    setSearchQuery('')
+    setSortMenuOpen(false)
+    scrollBrowseToTop()
+  }, [scrollBrowseToTop])
+
+  const handleTopBarBack = useCallback(() => {
+    if (showRails) {
+      router.back()
+    } else {
+      returnToEditorialHome()
+    }
+  }, [showRails, router, returnToEditorialHome])
 
   const spotlight = featured[0]
   const builtForShogo = featured.slice(1, 6)
@@ -254,26 +381,15 @@ export default observer(function MarketplaceHomeScreen() {
   const tileListings = useMemo(() => listings.map(toTileListing), [listings])
 
   const paddedData = useMemo(() => {
-    if (viewMode === 'list' || numColumns <= 1) return tileListings
+    if (numColumns <= 1) return tileListings
     const remainder = tileListings.length % numColumns
     if (remainder === 0) return tileListings
     return [...tileListings, ...Array(numColumns - remainder).fill(null)]
-  }, [tileListings, numColumns, viewMode])
+  }, [tileListings, numColumns])
 
   const renderGridItem = useCallback(
     ({ item }: { item: AgentTileListing | null }) => {
       if (!item) return <View className="flex-1 m-1.5" />
-      if (viewMode === 'list') {
-        return (
-          <View className="px-5 pb-3">
-            <AgentTile
-              size="compact"
-              listing={item}
-              onPress={() => handleCardPress(item.slug)}
-            />
-          </View>
-        )
-      }
       return (
         <AgentTile
           size="medium"
@@ -282,7 +398,20 @@ export default observer(function MarketplaceHomeScreen() {
         />
       )
     },
-    [handleCardPress, viewMode],
+    [handleCardPress],
+  )
+
+  const renderListItem = useCallback(
+    ({ item }: { item: AgentTileListing }) => (
+      <View className="px-5 pb-3">
+        <AgentTile
+          size="compact"
+          listing={item}
+          onPress={() => handleCardPress(item.slug)}
+        />
+      </View>
+    ),
+    [handleCardPress],
   )
 
   const ListHeader = useMemo(() => {
@@ -290,9 +419,9 @@ export default observer(function MarketplaceHomeScreen() {
       return (
         <View className="px-5 mb-3">
           <Text className="text-sm text-muted-foreground">
-            {loading
+            {loading || isSearchPending
               ? 'Searching…'
-              : `${listings.length} result${listings.length === 1 ? '' : 's'} for “${searchQuery.trim()}”`}
+              : `${listings.length} result${listings.length === 1 ? '' : 's'} for “${debouncedSearchTrimmed}”`}
           </Text>
         </View>
       )
@@ -300,129 +429,104 @@ export default observer(function MarketplaceHomeScreen() {
 
     return (
       <View>
+        {!showRails && !isSearching && (
+          <View className="px-5 pt-2 pb-3">
+            <Pressable
+              onPress={returnToEditorialHome}
+              className="flex-row items-center gap-1.5 self-start active:opacity-70"
+              accessibilityRole="button"
+              accessibilityLabel="Back to marketplace"
+            >
+              <ArrowLeft size={16} color="#e27927" />
+              <Text className="text-sm font-medium text-primary">Back to marketplace</Text>
+            </Pressable>
+          </View>
+        )}
+
         {/* Spotlight */}
         {spotlight && showRails && (
           <View className="px-5 mt-2 mb-8">
-            <AgentTile
-              size="spotlight"
-              listing={toTileListing(spotlight)}
-              onPress={() => handleCardPress(spotlight.slug)}
-            />
+            {viewMode === 'grid' ? (
+              <AgentTile
+                size="spotlight"
+                listing={toTileListing(spotlight)}
+                onPress={() => handleCardPress(spotlight.slug)}
+              />
+            ) : (
+              <AgentTile
+                size="compact"
+                listing={toTileListing(spotlight)}
+                onPress={() => handleCardPress(spotlight.slug)}
+              />
+            )}
           </View>
         )}
 
         {/* Built for Shogo */}
         {builtForShogo.length > 0 && showRails && (
-          <View className="mb-8">
-            <SectionHeader
-              title="Built for Shogo"
-              subtitle="Editor-curated agents that meet our quality bar"
-              onSeeAll={() => setFilterFeatured(true)}
-            />
-            <HorizontalRail
-              items={builtForShogo}
-              keyExtractor={(item) => item.slug}
-              itemWidth={260}
-              renderItem={(item) => (
-                <AgentTile
-                  size="featured"
-                  listing={toTileListing(item)}
-                  onPress={() => handleCardPress(item.slug)}
-                />
-              )}
-            />
-          </View>
+          <AgentCollectionSection
+            viewMode={viewMode}
+            title="Built for Shogo"
+            subtitle="Editor-curated agents that meet our quality bar"
+            onSeeAll={() => {
+              setBrowseFocus(null)
+              setFilterFeatured(true)
+            }}
+            items={builtForShogo}
+            railTileSize="featured"
+            railItemWidth={260}
+            onPress={handleCardPress}
+          />
         )}
 
         {/* Recommended for you */}
         {recommended.length > 0 && showRails && (
-          <View className="mb-8">
-            <SectionHeader
-              title="Recommended for you"
-              subtitle="Popular agents that match how you work"
-            />
-            <HorizontalRail
-              items={recommended}
-              keyExtractor={(item) => item.slug}
-              itemWidth={220}
-              renderItem={(item) => (
-                <AgentTile
-                  size="medium"
-                  listing={toTileListing(item)}
-                  onPress={() => handleCardPress(item.slug)}
-                />
-              )}
-            />
-          </View>
+          <AgentCollectionSection
+            viewMode={viewMode}
+            title="Recommended for you"
+            subtitle="Popular agents that match how you work"
+            items={recommended}
+            onPress={handleCardPress}
+          />
         )}
 
         {/* Trending */}
         {trending.length > 0 && showRails && (
-          <View className="mb-8">
-            <SectionHeader
-              title="Trending this week"
-              subtitle="Most-installed agents over the last 7 days"
-              onSeeAll={() => setSortMode('popular')}
-            />
-            <HorizontalRail
-              items={trending}
-              keyExtractor={(item) => item.slug}
-              itemWidth={220}
-              renderItem={(item) => (
-                <AgentTile
-                  size="medium"
-                  listing={toTileListing(item)}
-                  onPress={() => handleCardPress(item.slug)}
-                />
-              )}
-            />
-          </View>
+          <AgentCollectionSection
+            viewMode={viewMode}
+            title="Trending this week"
+            subtitle="Most-installed agents over the last 7 days"
+            onSeeAll={() => focusBrowse('trending')}
+            items={trending}
+            onPress={handleCardPress}
+          />
         )}
 
         {/* New & noteworthy */}
         {newAgents.length > 0 && showRails && (
-          <View className="mb-8">
-            <SectionHeader
-              title="New & noteworthy"
-              subtitle="Recently published agents from the community"
-              onSeeAll={() => setSortMode('newest')}
-            />
-            <HorizontalRail
-              items={newAgents}
-              keyExtractor={(item) => item.slug}
-              itemWidth={220}
-              renderItem={(item) => (
-                <AgentTile
-                  size="medium"
-                  listing={toTileListing(item)}
-                  onPress={() => handleCardPress(item.slug)}
-                />
-              )}
-            />
-          </View>
+          <AgentCollectionSection
+            viewMode={viewMode}
+            title="New & noteworthy"
+            subtitle="Recently published agents from the community"
+            onSeeAll={() => focusBrowse('newest')}
+            items={newAgents}
+            onPress={handleCardPress}
+          />
         )}
 
         {/* Free agents */}
         {freeAgents.length > 0 && showRails && (
-          <View className="mb-8">
-            <SectionHeader
-              title="Free agents"
-              subtitle="Try without paying anything"
-              onSeeAll={() => setFilterFree(true)}
-            />
-            <HorizontalRail
-              items={freeAgents}
-              keyExtractor={(item) => item.slug}
-              itemWidth={220}
-              renderItem={(item) => (
-                <AgentTile
-                  size="medium"
-                  listing={toTileListing(item)}
-                  onPress={() => handleCardPress(item.slug)}
-                />
-              )}
-            />
-          </View>
+          <AgentCollectionSection
+            viewMode={viewMode}
+            title="Free agents"
+            subtitle="Try without paying anything"
+            onSeeAll={() => {
+              setBrowseFocus(null)
+              setFilterFree(true)
+            }}
+            items={freeAgents}
+            onPress={handleCardPress}
+          />
         )}
 
         {/* Top creators */}
@@ -433,19 +537,33 @@ export default observer(function MarketplaceHomeScreen() {
               subtitle="Builders earning the most reputation this season"
               onSeeAll={() => router.push('/(app)/marketplace/creators' as any)}
             />
-            <HorizontalRail
-              items={topCreators}
-              keyExtractor={(c) => c.id}
-              itemWidth={210}
-              renderItem={(c) => (
-                <CreatorRailCard
-                  creator={c}
-                  onPress={() =>
-                    router.push(`/(app)/marketplace/creators/${c.id}` as any)
-                  }
-                />
-              )}
-            />
+            {viewMode === 'grid' ? (
+              <HorizontalRail
+                items={topCreators}
+                keyExtractor={(c) => c.id}
+                itemWidth={210}
+                renderItem={(c) => (
+                  <CreatorRailCard
+                    creator={c}
+                    onPress={() =>
+                      router.push(`/(app)/marketplace/creators/${c.id}` as any)
+                    }
+                  />
+                )}
+              />
+            ) : (
+              <View className="px-5 gap-3">
+                {topCreators.map((c) => (
+                  <CreatorRailCard
+                    key={c.id}
+                    creator={c}
+                    onPress={() =>
+                      router.push(`/(app)/marketplace/creators/${c.id}` as any)
+                    }
+                  />
+                ))}
+              </View>
+            )}
           </View>
         )}
 
@@ -475,19 +593,12 @@ export default observer(function MarketplaceHomeScreen() {
         {/* Bottom grid header */}
         <View className="px-5 mt-2 mb-3">
           <SectionHeader
-            title={
-              filterFeatured
-                ? 'Built for Shogo'
-                : filterFree
-                  ? 'Free agents'
-                  : activeCategory === 'all'
-                    ? 'Popular this month'
-                    : MARKETPLACE_CATEGORIES.find((c) => c.slug === activeCategory)?.label ?? 'Browse'
-            }
+            title={browseSectionMeta.title}
             subtitle={
               loading
                 ? 'Loading…'
-                : `${listings.length} agent${listings.length === 1 ? '' : 's'}`
+                : browseSectionMeta.subtitle ??
+                  `${listings.length} agent${listings.length === 1 ? '' : 's'}`
             }
             padded={false}
           />
@@ -498,7 +609,10 @@ export default observer(function MarketplaceHomeScreen() {
     isSearching,
     loading,
     listings.length,
-    searchQuery,
+    debouncedSearchTrimmed,
+    isSearchPending,
+    browseFocus,
+    browseSectionMeta,
     showRails,
     spotlight,
     builtForShogo,
@@ -510,16 +624,19 @@ export default observer(function MarketplaceHomeScreen() {
     activeCategory,
     filterFeatured,
     filterFree,
+    sortMode,
+    returnToEditorialHome,
     handleCardPress,
     router,
     numColumns,
+    viewMode,
   ])
 
   return (
     <View className="flex-1 bg-background">
       {/* Top bar */}
       <View className="flex-row items-center gap-3 px-5 pt-3 pb-2">
-        <Pressable onPress={() => router.back()} hitSlop={6} className="p-1">
+        <Pressable onPress={handleTopBarBack} hitSlop={6} className="p-1">
           <ArrowLeft size={20} color="#71717a" />
         </Pressable>
         <Text className="text-base font-semibold text-foreground flex-1">
@@ -555,7 +672,7 @@ export default observer(function MarketplaceHomeScreen() {
           <View className="flex-row items-center bg-card border border-input rounded-xl px-3 h-11 flex-1">
             <Search size={16} color="#71717a" />
             <TextInput
-              className="flex-1 ml-2 text-sm text-foreground web:outline-none"
+              className="flex-1 ml-2 text-sm text-foreground web:outline-none no-focus-ring"
               placeholder="Search agents…"
               placeholderTextColor="#71717a"
               value={searchQuery}
@@ -576,6 +693,7 @@ export default observer(function MarketplaceHomeScreen() {
             onOpenChange={setSortMenuOpen}
             onChange={(v) => {
               setSortMode(v)
+              setBrowseFocus(null)
               setSortMenuOpen(false)
             }}
           />
@@ -636,62 +754,166 @@ export default observer(function MarketplaceHomeScreen() {
           </Pressable>
         </View>
       ) : (
-        <FlatList
-          key={`grid-${viewMode}-${numColumns}`}
-          data={paddedData}
-          keyExtractor={(item, index) => item?.slug ?? `spacer-${index}`}
-          renderItem={renderGridItem}
-          numColumns={viewMode === 'list' ? 1 : numColumns}
-          contentContainerStyle={{
-            paddingBottom: 32,
-            paddingHorizontal: viewMode === 'list' ? 0 : 12,
-          }}
-          ListHeaderComponent={ListHeader}
-          onEndReached={handleLoadMore}
-          onEndReachedThreshold={0.5}
-          ListFooterComponent={
-            loadingMore ? (
-              <View className="py-4 items-center">
-                <ActivityIndicator size="small" />
-              </View>
-            ) : null
-          }
-          ListEmptyComponent={
-            !loading ? (
-              <View className="items-center justify-center py-20 px-6">
-                <Search size={32} color="#a1a1aa" />
-                <Text className="text-foreground font-medium mt-3 mb-1">
-                  No agents found
-                </Text>
-                <Text className="text-muted-foreground text-sm text-center mb-4">
-                  {isSearching
-                    ? `No results for “${searchQuery}”`
-                    : 'Nothing matches the current filters yet.'}
-                </Text>
-                {(filterFeatured || filterFree || activeCategory !== 'all') && (
-                  <Pressable
-                    onPress={() => {
-                      setFilterFeatured(false)
-                      setFilterFree(false)
-                      setActiveCategory('all')
-                    }}
-                    className="border border-border rounded-lg px-3 py-1.5"
-                  >
-                    <Text className="text-xs font-medium text-foreground">
-                      Clear filters
-                    </Text>
-                  </Pressable>
-                )}
-              </View>
-            ) : null
-          }
-        />
+        viewMode === 'grid' ? (
+          <FlatList
+            ref={browseListRef}
+            key={`grid-${numColumns}-${sortMode}-${browseFocus ?? 'home'}`}
+            data={paddedData}
+            keyExtractor={(item, index) => item?.slug ?? `spacer-${index}`}
+            renderItem={renderGridItem}
+            extraData={`${sortMode}-${browseFocus ?? 'home'}`}
+            numColumns={numColumns}
+            columnWrapperStyle={numColumns > 1 ? { gap: 0 } : undefined}
+            contentContainerStyle={{ paddingBottom: 32, paddingHorizontal: 12 }}
+            ListHeaderComponent={ListHeader}
+            onEndReached={handleLoadMore}
+            onEndReachedThreshold={0.5}
+            ListFooterComponent={
+              loadingMore ? (
+                <View className="py-4 items-center">
+                  <ActivityIndicator size="small" />
+                </View>
+              ) : null
+            }
+            ListEmptyComponent={
+              !loading ? (
+                <View className="items-center justify-center py-20 px-6">
+                  <Search size={32} color="#a1a1aa" />
+                  <Text className="text-foreground font-medium mt-3 mb-1">
+                    No agents found
+                  </Text>
+                  <Text className="text-muted-foreground text-sm text-center mb-4">
+                    {isSearching
+                      ? `No results for “${debouncedSearchTrimmed}”`
+                      : 'Nothing matches the current filters yet.'}
+                  </Text>
+                  {(filterFeatured || filterFree || activeCategory !== 'all') && (
+                    <Pressable
+                      onPress={() => {
+                        setFilterFeatured(false)
+                        setFilterFree(false)
+                        setActiveCategory('all')
+                      }}
+                      className="border border-border rounded-lg px-3 py-1.5"
+                    >
+                      <Text className="text-xs font-medium text-foreground">
+                        Clear filters
+                      </Text>
+                    </Pressable>
+                  )}
+                </View>
+              ) : null
+            }
+          />
+        ) : (
+          <FlatList
+            ref={browseListRef}
+            key={`list-${sortMode}-${browseFocus ?? 'home'}`}
+            data={tileListings}
+            keyExtractor={(item) => item.slug}
+            renderItem={renderListItem}
+            extraData={`${sortMode}-${browseFocus ?? 'home'}`}
+            contentContainerStyle={{ paddingBottom: 32 }}
+            ListHeaderComponent={ListHeader}
+            onEndReached={handleLoadMore}
+            onEndReachedThreshold={0.5}
+            ListFooterComponent={
+              loadingMore ? (
+                <View className="py-4 items-center">
+                  <ActivityIndicator size="small" />
+                </View>
+              ) : null
+            }
+            ListEmptyComponent={
+              !loading ? (
+                <View className="items-center justify-center py-20 px-6">
+                  <Search size={32} color="#a1a1aa" />
+                  <Text className="text-foreground font-medium mt-3 mb-1">
+                    No agents found
+                  </Text>
+                  <Text className="text-muted-foreground text-sm text-center mb-4">
+                    {isSearching
+                      ? `No results for “${debouncedSearchTrimmed}”`
+                      : 'Nothing matches the current filters yet.'}
+                  </Text>
+                  {(filterFeatured || filterFree || activeCategory !== 'all') && (
+                    <Pressable
+                      onPress={() => {
+                        setFilterFeatured(false)
+                        setFilterFree(false)
+                        setActiveCategory('all')
+                      }}
+                      className="border border-border rounded-lg px-3 py-1.5"
+                    >
+                      <Text className="text-xs font-medium text-foreground">
+                        Clear filters
+                      </Text>
+                    </Pressable>
+                  )}
+                </View>
+              ) : null
+            }
+          />
+        )
       )}
     </View>
   )
 })
 
 // ── Sub-components ─────────────────────────────────────────────────
+
+function AgentCollectionSection({
+  viewMode,
+  title,
+  subtitle,
+  items,
+  onSeeAll,
+  onPress,
+  railTileSize = 'medium',
+  railItemWidth = 220,
+}: {
+  viewMode: ViewMode
+  title: string
+  subtitle: string
+  items: ListingFromAPI[]
+  onSeeAll?: () => void
+  onPress: (slug: string) => void
+  railTileSize?: 'featured' | 'medium'
+  railItemWidth?: number
+}) {
+  return (
+    <View className="mb-8">
+      <View className="relative z-20 bg-background">
+        <SectionHeader title={title} subtitle={subtitle} onSeeAll={onSeeAll} />
+      </View>
+      {viewMode === 'grid' ? (
+        <HorizontalRail
+          items={items}
+          keyExtractor={(item) => item.slug}
+          itemWidth={railItemWidth}
+          renderItem={(item) => (
+            <AgentTile
+              size={railTileSize}
+              listing={toTileListing(item)}
+              onPress={() => onPress(item.slug)}
+            />
+          )}
+        />
+      ) : (
+        <View className="px-5 gap-3">
+          {items.map((item) => (
+            <AgentTile
+              key={item.slug}
+              size="compact"
+              listing={toTileListing(item)}
+              onPress={() => onPress(item.slug)}
+            />
+          ))}
+        </View>
+      )}
+    </View>
+  )
+}
 
 function CategoryPill({
   active,
@@ -762,39 +984,45 @@ function SortMenu({
   onChange: (v: SortMode) => void
 }) {
   return (
-    <View className="relative">
-      <Pressable
-        onPress={() => onOpenChange(!open)}
-        className="flex-row items-center gap-1.5 px-3 h-11 rounded-xl border border-border bg-card"
-      >
-        <Text className="text-xs font-medium text-foreground">
-          {SORT_LABELS[value]}
-        </Text>
-        <ChevronDown size={12} color="#71717a" />
-      </Pressable>
-      {open && (
-        <View
-          className="absolute right-0 top-12 rounded-xl border border-border bg-card overflow-hidden shadow-lg"
-          style={{ width: 160, zIndex: 50 }}
+    <Popover
+      placement="bottom right"
+      isOpen={open}
+      onOpen={() => onOpenChange(true)}
+      onClose={() => onOpenChange(false)}
+      trigger={(triggerProps) => (
+        <Pressable
+          {...triggerProps}
+          className="flex-row items-center gap-1.5 px-3 h-11 rounded-xl border border-input bg-card"
         >
+          <Text className="text-xs font-medium text-foreground">
+            {SORT_LABELS[value]}
+          </Text>
+          <ChevronDown size={12} color="#71717a" />
+        </Pressable>
+      )}
+    >
+      <PopoverBackdrop />
+      <PopoverContent className="p-0 min-w-[160px]">
+        <PopoverBody>
           {(Object.keys(SORT_LABELS) as SortMode[]).map((k) => (
             <Pressable
               key={k}
               onPress={() => onChange(k)}
-              className={`px-3 py-2.5 active:bg-muted ${k === value ? 'bg-muted/50' : ''}`}
+              className={cn('px-3 py-2 active:bg-muted', k === value && 'bg-accent')}
             >
               <Text
-                className={`text-xs ${
-                  k === value ? 'text-foreground font-semibold' : 'text-foreground'
-                }`}
+                className={cn(
+                  'text-xs',
+                  k === value ? 'text-foreground font-medium' : 'text-foreground',
+                )}
               >
                 {SORT_LABELS[k]}
               </Text>
             </Pressable>
           ))}
-        </View>
-      )}
-    </View>
+        </PopoverBody>
+      </PopoverContent>
+    </Popover>
   )
 }
 
