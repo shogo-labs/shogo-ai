@@ -99,18 +99,21 @@ export function _resetClientForTests(): void {
 
 // ─── Exclusion list ────────────────────────────────────────────────
 //
-// Mirrors the lists in marketplace-install.service.ts and
-// marketplace-manifest.service.ts so the same set of files lands in the
-// tarball, the install copy, and the manifest. Changing one without the
-// others would silently introduce drift on the next install.
+// This is the *snapshot* exclusion set (what gets tarballed for S3) —
+// it INTENTIONALLY does NOT exclude `dist/` even though
+// marketplace-manifest.service's drift-detection set does. The
+// bundled first-party templates ship a pre-built `dist/index.html`
+// for the canvas's first-paint preview; stripping it leaves the
+// install on "Connected" with a blank iframe until Vite cold-starts.
+// The post-install drift baseline (computed by
+// `computeWorkspaceManifest`) excludes `dist/` separately, so Vite
+// rebuilds in the runtime won't trip the drift gate.
 
 const EXCLUDED_DIRS = new Set([
   'node_modules',
   '.git',
-  'dist',
   '.cache',
   '.next',
-  'build',
   '.turbo',
   '.expo',
   '.metro-cache',
