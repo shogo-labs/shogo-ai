@@ -102,4 +102,19 @@ export interface IRuntimeManager {
    * Get list of all active project IDs.
    */
   getActiveProjects(): string[]
+
+  /**
+   * Mark a project as recently active. Resets the idle-eviction
+   * window in the underlying agent-runtime manager so a long chat
+   * stream / background tool call doesn't get reaped at 15 minutes.
+   *
+   * Called from:
+   *   - the `/api/projects/:id/agent-proxy/*` request path on every
+   *     incoming request and on every forwarded SSE chunk, and
+   *   - the AI proxy after a project-scoped token decodes, so the
+   *     agent's outbound model calls also keep its runtime alive.
+   *
+   * Safe no-op if no runtime exists for `projectId`.
+   */
+  touch(projectId: string): void
 }
