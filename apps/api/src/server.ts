@@ -2066,6 +2066,14 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   // each LLM round-trip would emit its own `ai_proxy_completion` row.
   const isChatStream = c.req.method === 'POST' && path === '/agent/chat' && !!authedWorkspaceId && !!authedUserId
 
+  // Refresh the idle-eviction window before fan-out. Every proxied
+  // request — chat turn, sidebar refresh, file fetch, runtime
+  // health check — counts as the user "interacting with the
+  // project", so the embedded WorkerRuntimeManager should not see
+  // the slot as idle. Stream chunks separately reset the timer
+  // below so a single 16-minute Opus turn also stays alive.
+  try { getRuntimeManager().touch(projectId) } catch { /* runtime not local */ }
+
   const { resolveAgentProxyPodUrl } = await import('./lib/agent-proxy-resolver')
   const resolution = await resolveAgentProxyPodUrl(projectId)
   if (!resolution.ok) {
@@ -2233,7 +2241,16 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
         (response.body && responseContentType.includes('text/plain'))
       if (isStreaming && response.body) {
         activeProxyConnections++
+        // Each forwarded chunk is direct evidence the agent is still
+        // producing output — refresh the idle window so the runtime
+        // isn't reaped at 15 min during a long Opus turn. The
+        // `try/catch` keeps a future RuntimeManager change that
+        // throws on `touch()` from breaking active streams.
         let outBody: ReadableStream<Uint8Array> = response.body.pipeThrough(new TransformStream({
+          transform(chunk, controller) {
+            try { getRuntimeManager().touch(projectId) } catch { /* ignore */ }
+            controller.enqueue(chunk)
+          },
           flush() { activeProxyConnections-- },
         }))
         // For chat-stream calls, tee the body through the billing tracker
