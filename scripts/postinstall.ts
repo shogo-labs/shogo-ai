@@ -46,11 +46,31 @@ execSync("bun scripts/db-generate-all.ts", { stdio: "inherit" });
 //
 // Skipped when the SDK package isn't present (e.g. published-package consumers
 // of `shogo-ai` that don't ship the generator).
+//
+// `packages/sdk/bin/shogo.ts` imports `@shogo-ai/cli/pkg`, which only resolves
+// once `bun run build:cli` (part of `bun run build:packages`) has produced
+// `packages/cli/dist/`. On a fresh clone or under `bun install --linker=isolated`
+// in CI, that build hasn't happened yet, so the generator throws
+// `Cannot find module '@shogo-ai/cli/pkg'` and skips. That's expected, but a
+// silent skip leaves `apps/api/src/generated/admin-routes.ts` missing, which
+// blows up later bundle/typecheck steps with confusing errors. Print a loud
+// warning so the failure is visible — CI release workflows now re-invoke
+// `bun run generate:routes` explicitly after `build:packages`, and local devs
+// can do the same.
 if (existsSync("packages/sdk/bin/shogo.ts") && existsSync("shogo.config.json")) {
   try {
     execSync("bun run generate:routes", { stdio: "inherit" });
-  } catch {
-    // Non-fatal — `bun run generate:routes` can be run manually if this fails
-    // (e.g. transient TS errors during schema migration).
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn("");
+    console.warn("⚠️  postinstall: `bun run generate:routes` failed.");
+    console.warn(`    ${msg.split("\n")[0]}`);
+    console.warn("");
+    console.warn("    Generated files under apps/api/src/generated/ may be");
+    console.warn("    missing or stale. If you're building from a fresh clone,");
+    console.warn("    run the following once the workspace packages are built:");
+    console.warn("");
+    console.warn("      bun run build:packages && bun run generate:routes");
+    console.warn("");
   }
 }
