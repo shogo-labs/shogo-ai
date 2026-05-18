@@ -39,13 +39,64 @@ jobs:
           restore-keys: bun-ci-
 
       - name: Install dependencies
+        # `bun install --frozen-lockfile` triggers `scripts/postinstall.ts`
+        # which runs `db-generate-all.ts` to produce both the PG-backed
+        # Prisma client (`apps/api/src/generated/prisma-pg`) and the
+        # SQLite one (`apps/api/src/generated/prisma-sqlite`) and links
+        # the default `prisma/` symlink to `prisma-pg`. Without this,
+        # `@prisma/client` imports in apps/api fail to resolve under
+        # typecheck and test.
         run: bun install --frozen-lockfile
+
+      - name: Build workspace packages
+        # Required before typecheck so cross-package imports of
+        # `@shogo-ai/sdk`, `@shogo-ai/agent`, etc. resolve to compiled
+        # `dist/` artifacts. Without this step, `packages/sdk` (which
+        # re-exports from `@shogo-ai/agent`, `@shogo-ai/core`, etc.)
+        # and downstream packages (`packages/shogo-worker`,
+        # `packages/cli`) fail typecheck with TS2307 module-not-found.
+        # The `paths` aliases in `tsconfig.base.json` only redirect a
+        # subset of workspace packages to source; published-shape
+        # imports still need `dist/`.
+        run: bun run build:packages
+
+      - name: Build runtime-template (Vite dist for workspace-seeding tests)
+        # `templates/runtime-template/dist/` is gitignored — it's a Vite
+        # build artifact. Several agent-runtime tests (notably
+        # workspace-seeding.test.ts) assert that `seedRuntimeTemplate`
+        # copies `dist/index.html` into a fresh workspace. Without the
+        # build the tests see an empty source tree and fail. The
+        # template has its own `bun install` because it's outside the
+        # root workspaces glob.
+        run: |
+          cd templates/runtime-template
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Build one agent template (sales-bdr-pipeline) for overlay tests
+        # `packages/agent-runtime/templates/<id>/dist/` is also gitignored.
+        # workspace-seeding.test.ts > "overlays the template-shipped
+        # pre-built dist over the runtime-template stub" depends on
+        # `sales-bdr-pipeline`'s dist existing (it cps it onto the runtime
+        # template stub and asserts the bundle text changes). The script
+        # below stages the runtime-template + agent template src in a
+        # tmpdir and runs vite build into the right output. We pass a
+        # specific id so CI doesn't pay for all ~30 templates — that's
+        # the build-templates.sh job in deploy.yml, which is too heavy
+        # for PR CI.
+        run: bun run packages/agent-runtime/scripts/build-template-dists.ts sales-bdr-pipeline
 
       - name: Typecheck
         run: bun run typecheck
 
       - name: Lint
         run: bun run lint
+
+      - name: Verify SDK license isolation (no AGPL leak)
+        # Fails if @shogo-ai/sdk (MIT) declares or imports any @shogo/*
+        # AGPL workspace package from a published code path. See
+        # packages/sdk/scripts/verify-license-isolation.mjs for details.
+        run: bun run --filter @shogo-ai/sdk verify:license-isolation
 
       - name: Check replication publication is self-maintaining
         run: bun run check:publication

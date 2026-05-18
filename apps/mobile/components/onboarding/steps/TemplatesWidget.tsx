@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useEffect } from 'react'
 import type { ComponentType } from 'react'
@@ -9,11 +9,19 @@ import { API_URL } from '../../../lib/api'
 import { safeGetItem } from '../../../lib/safe-storage'
 import { Platform } from 'react-native'
 
-interface AgentTemplate {
-  id: string
-  name: string
-  description: string
-  icon: string
+/**
+ * Slimmed-down marketplace listing used by the onboarding template
+ * picker. The widget hits `/api/marketplace/featured` (post-templates →
+ * marketplace consolidation) so the home rail and onboarding rail show
+ * the same set of first-party agents. We keep the legacy
+ * `pending_template_id` storage key — the slug matches the old
+ * template id 1:1 after the migration.
+ */
+interface OnboardingListing {
+  slug: string
+  title: string
+  shortDescription: string
+  iconUrl?: string | null
 }
 
 const TEMPLATE_COLORS: Record<string, string> = {
@@ -44,18 +52,18 @@ function TemplateIcon({ name, color }: { name: string; color: string }) {
 }
 
 export function TemplatesWidget({ onComplete, onSelectTemplate, selectedTemplate }: TemplatesWidgetProps) {
-  const [templates, setTemplates] = useState<AgentTemplate[]>([])
+  const [templates, setTemplates] = useState<OnboardingListing[]>([])
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
-    fetch(`${API_URL}/api/agent-templates`, { credentials: 'include' })
+    fetch(`${API_URL}/api/marketplace/featured?limit=6`, { credentials: 'include' })
       .then(r => r.json())
       .then((data: any) => {
-        const list: AgentTemplate[] = data.templates ?? []
+        const list: OnboardingListing[] = Array.isArray(data?.items) ? data.items : []
         setTemplates(list)
         if (Platform.OS === 'web') {
           const pending = safeGetItem('pending_template_id')
-          if (pending && list.some(t => t.id === pending)) {
+          if (pending && list.some(t => t.slug === pending)) {
             onSelectTemplate(pending)
           }
         }
@@ -74,13 +82,13 @@ export function TemplatesWidget({ onComplete, onSelectTemplate, selectedTemplate
 
   return (
     <View className="gap-3">
-      {templates.slice(0, 6).map(t => {
-        const color = TEMPLATE_COLORS[t.id] || '#6366f1'
-        const isSelected = selectedTemplate === t.id
+      {templates.slice(0, 6).map(listing => {
+        const color = TEMPLATE_COLORS[listing.slug] || '#6366f1'
+        const isSelected = selectedTemplate === listing.slug
         return (
           <Pressable
-            key={t.id}
-            onPress={() => onSelectTemplate(isSelected ? null : t.id)}
+            key={listing.slug}
+            onPress={() => onSelectTemplate(isSelected ? null : listing.slug)}
             className={cn(
               'flex-row items-center gap-3 p-3 rounded-xl border',
               isSelected ? 'border-primary bg-primary/5' : 'border-border bg-card'
@@ -90,11 +98,11 @@ export function TemplatesWidget({ onComplete, onSelectTemplate, selectedTemplate
               className="w-9 h-9 rounded-lg items-center justify-center"
               style={{ backgroundColor: `${color}15` }}
             >
-              <TemplateIcon name={t.icon} color={color} />
+              <TemplateIcon name="Sparkles" color={color} />
             </View>
             <View className="flex-1">
-              <Text className="text-sm font-semibold text-foreground">{t.name}</Text>
-              <Text className="text-xs text-muted-foreground" numberOfLines={1}>{t.description}</Text>
+              <Text className="text-sm font-semibold text-foreground">{listing.title}</Text>
+              <Text className="text-xs text-muted-foreground" numberOfLines={1}>{listing.shortDescription}</Text>
             </View>
             {isSelected && <Check size={16} className="text-primary" />}
           </Pressable>

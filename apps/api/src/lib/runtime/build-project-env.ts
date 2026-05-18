@@ -9,7 +9,6 @@
 
 import { generateProxyToken } from '../ai-proxy-token'
 import { getAgentModeOverrides } from '@shogo/model-catalog'
-import { getAgentTemplateById } from '@shogo/agent-runtime/src/agent-templates'
 
 /**
  * Build the environment variables needed for assigning a project to a runtime pod or VM.
@@ -32,22 +31,33 @@ export async function buildProjectEnv(
       where: { id: projectId },
       select: {
         workspaceId: true,
-        templateId: true,
         name: true,
         settings: true,
+        cloudSyncMode: true,
         workspace: { select: { composioScope: true } },
       } as any,
     }) as (Record<string, any> & {
       workspaceId?: string | null
-      templateId?: string | null
       name?: string | null
       settings?: unknown
+      cloudSyncMode?: string | null
       workspace?: { composioScope?: string | null } | null
     }) | null
     if (project) {
       if (project.workspaceId) env.WORKSPACE_ID = project.workspaceId
-      if (project.templateId) env.TEMPLATE_ID = project.templateId
+      // TEMPLATE_ID intentionally not exported. The marketplace install
+      // flow pre-seeds the workspace, so the runtime no longer needs a
+      // template id at boot. The `.template` marker file (legacy) is
+      // also no longer read — see agent-runtime/src/server.ts.
       if (project.name) env.AGENT_NAME = project.name
+
+      // Per-project cloud sync strategy. Default `s3` is omitted so
+      // existing pods boot with identical env to today (no behavioral
+      // change unless a project explicitly opts into the new modes).
+      // Routed by `agent-runtime/src/server.ts` `resolveCloudSyncMode`.
+      if (project.cloudSyncMode && project.cloudSyncMode !== 's3') {
+        env.SHOGO_CLOUD_SYNC_MODE = project.cloudSyncMode
+      }
 
       // Tell the runtime which scope to use for Composio user IDs.
       // Falls back to 'workspace' (the new default) when the workspace
@@ -62,19 +72,22 @@ export async function buildProjectEnv(
         env.MOUNT_WORKSPACE = 'false'
       }
 
+      // Tech stack is sourced exclusively from project.settings.techStackId
+      // now that templateId is gone. Marketplace installs (the only flow
+      // that creates new projects) populate this field directly from the
+      // listing's source project at install time. Workspaces that pre-date
+      // the consolidation already had it copied across by the
+      // migrate-templates-to-marketplace script.
       const techStackFromSettings = settings?.techStackId as string | undefined
       if (techStackFromSettings) {
         env.TECH_STACK_ID = techStackFromSettings
-      } else if (project.templateId) {
-        const template = getAgentTemplateById(project.templateId)
-        if (template?.techStack) env.TECH_STACK_ID = template.techStack
       }
 
       const { getProjectOwnerUserId } = await import('../project-user-context')
       const ownerUserId = await getProjectOwnerUserId(projectId)
       env.AI_PROXY_TOKEN = await generateProxyToken(
         projectId,
-        project.workspaceId,
+        project.workspaceId ?? 'local-dev',
         ownerUserId,
         7 * 24 * 60 * 60 * 1000,
       )

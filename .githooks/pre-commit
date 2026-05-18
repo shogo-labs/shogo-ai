@@ -25,7 +25,9 @@ CLOUD_MIGRATIONS="prisma/migrations"
 LOCAL_SCHEMA="prisma/schema.local.prisma"
 LOCAL_MIGRATIONS="apps/desktop/prisma/migrations"
 
-staged_files=$(git diff --cached --name-only --diff-filter=ACMR)
+staged_list() {
+  git diff --cached --name-only --diff-filter=ACMR
+}
 
 check_schema() {
   local schema_path="$1"
@@ -33,14 +35,18 @@ check_schema() {
   local label="$3"
 
   # Schema not staged? Nothing to check.
-  if ! printf '%s\n' "$staged_files" | grep -qx "$schema_path"; then
+  # Use `head -1 | grep -q .` instead of `grep -q` alone: with `set -o
+  # pipefail`, `git diff | grep -q` returns SIGPIPE (141) when grep exits
+  # after the first match while git is still writing — which makes large
+  # merge commits look like they have no staged migration.
+  if ! staged_list | grep -Fx "$schema_path" | head -1 | grep -q .; then
     return 0
   fi
 
   echo "[pre-commit] ${label} schema change detected — verifying migration is staged..."
 
   # Look for a staged migration.sql under the matching migrations directory.
-  if printf '%s\n' "$staged_files" | grep -qE "^${migrations_path}/[^/]+/migration\.sql$"; then
+  if staged_list | grep -E "^${migrations_path}/[^/]+/migration\.sql$" | head -1 | grep -q .; then
     echo "[pre-commit] ${label}: migration file staged alongside schema change — OK."
     return 0
   fi
@@ -83,7 +89,7 @@ check_schema "$LOCAL_SCHEMA" "$LOCAL_MIGRATIONS" "Local" || rc=1
 # prisma/schema.prisma but the SQLite mirror is forgotten — which then
 # crashes the API at runtime in local mode (see scripts/check-schema-parity.ts
 # for details and the allow-list of intentional differences).
-if printf '%s\n' "$staged_files" | grep -qxE "${CLOUD_SCHEMA}|${LOCAL_SCHEMA}"; then
+if staged_list | grep -E "^(${CLOUD_SCHEMA}|${LOCAL_SCHEMA})$" | head -1 | grep -q .; then
   echo "[pre-commit] Schema change detected — checking PG ↔ SQLite parity..."
   if command -v bun >/dev/null 2>&1; then
     if ! bun scripts/check-schema-parity.ts --quiet; then

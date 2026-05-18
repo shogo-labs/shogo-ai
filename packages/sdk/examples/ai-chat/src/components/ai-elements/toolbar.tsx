@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { NodeToolbar, Position } from "@xyflow/react";
 import type { ComponentProps } from "react";

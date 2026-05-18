@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Shogo Client
@@ -10,6 +10,8 @@
 import { HttpClient } from './http/client.js'
 import { ShogoAuth } from './auth/index.js'
 import { PlatformApi } from './platform/index.js'
+import { MachinesApi } from './machines/index.js'
+import { ProjectsApi } from './projects/index.js'
 import {
   getDefaultStorageAdapter,
   type StorageAdapter,
@@ -22,9 +24,10 @@ import {
   DirectTelephonyClient,
   HostedRuntimeTokenClient,
   HostedTelephonyClient,
+  MockTelephonyClient,
+  isVoiceMockEnv,
   type TelephonyClient,
-} from './voice/telephony.js'
-import { MockTelephonyClient, isVoiceMockEnv } from './voice/mock-telephony.js'
+} from '@shogo-ai/voice'
 import type { ShogoClientConfig } from './types.js'
 
 export interface ShogoVoiceModule {
@@ -53,13 +56,42 @@ export interface ShogoClient<DB = unknown> {
   /** Platform API: API keys, local config, feature flags */
   platform: PlatformApi
 
+  /**
+   * Machines API: list paired desktops + `shogo worker` VPS sign-ins,
+   * and manage per-project "Run on" routing for external triggers.
+   *
+   * ```ts
+   * const machines = await client.machines.list({ workspaceId })
+   * await client.machines.pinProject(projectId, { instanceId: vps.id })
+   * ```
+   */
+  machines: MachinesApi
+
+  /**
+   * Projects API: clone/sync a project's workspace between cloud and
+   * local. Used by `shogo project pull/push` and the worker's auto-pull.
+   *
+   * ```ts
+   * await client.projects.pull(projectId, { into: './myproj' })
+   * await client.projects.push(projectId, { from: './myproj' })
+   * ```
+   */
+  projects: ProjectsApi
+
   /** Database - direct pass-through to your Prisma client */
   db: DB
 
   /**
    * Vercel AI SDK provider routed through the Shogo Cloud LLM gateway.
-   * `null` until a Shogo API key is configured via `shogoApiKey` in
-   * `createClient()` or {@link ShogoClient.setShogoApiKey}.
+   *
+   * Resolves to a working provider when **either**:
+   *   - `process.env.RUNTIME_AUTH_SECRET` is present (pod-native; default
+   *     inside generated apps — no API key required), or
+   *   - `shogoApiKey` was supplied to `createClient()` /
+   *     {@link ShogoClient.setShogoApiKey} (local dev / external sites).
+   *
+   * Runtime token wins when both are present; a warning is logged.
+   * `null` only when neither credential is available.
    *
    * ```ts
    * import { streamText } from 'ai'
@@ -106,12 +138,15 @@ export interface ShogoClient<DB = unknown> {
 class ShogoClientImpl<DB> implements ShogoClient<DB> {
   auth: ShogoAuth
   platform: PlatformApi
+  machines: MachinesApi
+  projects: ProjectsApi
   db: DB
   llm: ShogoLlmProvider | null
   voice: ShogoVoiceModule
   _http: HttpClient
 
   private shogoCloudUrl: string | undefined
+  private shogoApiKey: string | null
   private config: ShogoClientConfig<DB>
 
   constructor(config: ShogoClientConfig<DB>) {
@@ -132,22 +167,66 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
     // Create platform API
     this.platform = new PlatformApi(this._http)
 
+    // Create machines API (powers the "Run on" / external-trigger story).
+    this.machines = new MachinesApi(this._http)
+
+    // Projects API: workspace clone/sync (`shogo project pull/push`).
+    // Both apiKey and apiUrl are resolved lazily so `setShogoApiKey` keeps
+    // working without re-instantiating.
+    this.shogoApiKey = config.shogoApiKey ?? null
+    this.projects = new ProjectsApi(
+      this._http,
+      () => this.shogoApiKey,
+      () => config.apiUrl,
+    )
+
     // Wire up token getter from auth to HTTP client
     this._http.setTokenGetter(() => this.auth.getToken())
 
     // Database is a direct pass-through to Prisma
     this.db = config.db
 
-    // LLM gateway: only provisioned when a Shogo API key is present.
+    // LLM gateway: prefer pod-native `RUNTIME_AUTH_SECRET` when present;
+    // fall back to `shogoApiKey`; otherwise leave `null`. See
+    // `buildLlm` for precedence + warning rules (mirrors voice).
     this.shogoCloudUrl = config.shogoCloudUrl
-    this.llm = config.shogoApiKey
-      ? createShogoLlmProvider({
-          apiKey: config.shogoApiKey,
-          baseUrl: this.shogoCloudUrl,
-        })
-      : null
+    this.llm = this.buildLlm(config.shogoApiKey ?? null)
 
     this.voice = { telephony: this.buildTelephony(config.shogoApiKey) }
+  }
+
+  private buildLlm(
+    shogoApiKey: string | undefined | null,
+  ): ShogoLlmProvider | null {
+    // Server-only: guard `typeof process` so this code never runs in a
+    // browser bundle (where `process.env.RUNTIME_AUTH_SECRET` would be
+    // undefined or, worse, inlined by a bundler).
+    const runtimeToken =
+      typeof process !== 'undefined'
+        ? process.env?.RUNTIME_AUTH_SECRET
+        : undefined
+    const hasRuntime = Boolean(runtimeToken)
+    const hasApiKey = Boolean(shogoApiKey)
+
+    if (hasRuntime && hasApiKey) {
+      console.warn(
+        '[shogo] createClient received both RUNTIME_AUTH_SECRET env + shogoApiKey for client.llm; using runtime-token (pod-native). Drop shogoApiKey to silence this warning.',
+      )
+    }
+
+    if (hasRuntime) {
+      return createShogoLlmProvider({
+        runtimeToken: runtimeToken as string,
+        baseUrl: this.shogoCloudUrl,
+      })
+    }
+    if (hasApiKey) {
+      return createShogoLlmProvider({
+        apiKey: shogoApiKey as string,
+        baseUrl: this.shogoCloudUrl,
+      })
+    }
+    return null
   }
 
   private buildTelephony(
@@ -214,9 +293,8 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
   }
 
   setShogoApiKey(key: string | null): void {
-    this.llm = key
-      ? createShogoLlmProvider({ apiKey: key, baseUrl: this.shogoCloudUrl })
-      : null
+    this.shogoApiKey = key
+    this.llm = this.buildLlm(key)
     this.voice = { telephony: this.buildTelephony(key) }
   }
 }

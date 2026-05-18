@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * ProjectLayout - Main project view layout (mobile)
@@ -990,6 +990,15 @@ export default observer(function ProjectLayout() {
       ) {
         setActiveTab('chat')
       }
+      // Canvas is off (e.g. external folder project): the default
+      // `dynamic-app` tab would render an empty right panel and, on
+      // wide screens, leave the chat squeezed alongside it. Flip the
+      // preview tab to chat-fullscreen so the user lands in a clean
+      // chat-only IDE view. The user can still pick any non-canvas
+      // sub-tab (Files, IDE, Capabilities, …) from the top bar.
+      if (previewTab === 'dynamic-app') {
+        setPreviewTab('chat-fullscreen')
+      }
     } else if (canvasEnabled) {
       if (previewTab === 'app-preview') setPreviewTab('dynamic-app')
     }
@@ -1455,30 +1464,41 @@ export default observer(function ProjectLayout() {
   const [integrationsCardDismissed, setIntegrationsCardDismissed] = useState(false)
 
   useEffect(() => {
-    console.log('[ProjectLayout] integrations check:', { capturedShowIntegrations, templateId: project?.templateId, projectKeys: project ? Object.keys(project) : null })
-    if (!capturedShowIntegrations || !project?.templateId) return
+    if (!capturedShowIntegrations || !project?.id) return
     let cancelled = false
 
+    // After install, the marketplace install row carries the listing
+    // slug. We fetch the listing's longDescription/integrations from
+    // /api/marketplace/<slug> and render the suggestion card. The
+    // legacy templateId-based lookup was retired with the templates →
+    // marketplace consolidation.
     async function lookupIntegrations() {
       try {
-        const templates = await api.getAgentTemplates(http)
+        const installRes = await http.get<{
+          install?: { listing?: { slug?: string } }
+        }>(`/api/marketplace/installs/by-project/${encodeURIComponent(project.id)}`)
         if (cancelled) return
-        console.log('[ProjectLayout] templates fetched:', templates.length, 'looking for:', project.templateId)
-        const match = templates.find((t: any) => t.id === project.templateId)
-        if (match?.integrations?.length) {
+        const slug = installRes.data?.install?.listing?.slug
+        if (!slug) return
+        const listingRes = await http.get<{
+          listing?: { title?: string; integrations?: TemplateIntegrationRef[] }
+        }>(`/api/marketplace/${encodeURIComponent(slug)}`)
+        if (cancelled) return
+        const integrations = listingRes.data?.listing?.integrations
+        if (integrations?.length) {
           setIntegrationsCardData({
-            integrations: match.integrations,
-            templateName: match.name,
+            integrations,
+            templateName: listingRes.data?.listing?.title ?? '',
           })
         }
       } catch (err) {
-        console.warn('[ProjectLayout] Failed to look up template integrations:', err)
+        console.warn('[ProjectLayout] Failed to look up listing integrations:', err)
       }
     }
 
     lookupIntegrations()
     return () => { cancelled = true }
-  }, [capturedShowIntegrations, project?.templateId])
+  }, [capturedShowIntegrations, project?.id, http])
 
   const pendingToolInstalls = useMemo(() => {
     const pending: { toolkit: string; displayName: string }[] = []
@@ -1984,7 +2004,7 @@ export default observer(function ProjectLayout() {
                 <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} techStackId={techStackId} onTechStackChange={handleTechStackChange} selectedModel={selectedModel} onModelChange={handleModelChange} />
               </PanelErrorBoundary>
               <PanelErrorBoundary panelName="Channels">
-                <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
+                <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} workspaceId={project?.workspaceId} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
               </PanelErrorBoundary>
               <PanelErrorBoundary panelName="Agents">
                 <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} agentUrl={agentUrl} />

@@ -37,12 +37,15 @@ import {
   initializePostgresBackup,
   configureAIProxy,
   StreamBufferStore,
+  isMacOSJunkName,
+  GitWorkspaceSync,
+  createGitSyncFromEnv,
+  resolveCloudSyncMode,
+  type CloudSyncMode,
 } from '@shogo/shared-runtime'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import {
-  overlayAgentTemplateCodeDirs,
   seedWorkspaceDefaults,
-  seedWorkspaceFromTemplate,
   seedLSPConfig,
   seedRuntimeTemplate,
   ensureWorkspaceDeps,
@@ -50,6 +53,7 @@ import {
   runTechStackSetup,
   wipeProjectFiles,
   getTechStackPath,
+  workspaceUsesVite,
 } from './workspace-defaults'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
@@ -85,6 +89,62 @@ const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
 const PORT = parseInt(process.env.PORT || '8080', 10)
 
 /**
+ * External (VS Code-style) project mode. When set to `'external'`, the
+ * agent-runtime treats `WORKSPACE_DIR` as the user's primary linked
+ * folder, skips template seeding / auto-install, and obeys the trust
+ * level encoded in `TRUST_LEVEL`.
+ *
+ * `LINKED_FOLDERS` is a JSON-encoded `string[]` of every host folder
+ * the user has explicitly opened on this project — the union of these
+ * paths plus `WORKSPACE_DIR` forms the agent's "allowed roots" set
+ * (see `assertAllowedPath()` in gateway-tools.ts).
+ */
+const WORKING_MODE: 'managed' | 'external' =
+  process.env.WORKING_MODE === 'external' ? 'external' : 'managed'
+
+/**
+ * VS Code-style Workspace Trust gate. `restricted` blocks all write
+ * and exec tools until the user explicitly trusts the folder via
+ * POST /api/local/projects/:id/trust. Defaults to `restricted` for
+ * external projects (defense in depth — the API mutation also sets it)
+ * and `trusted` for managed projects (they live in our sandbox).
+ */
+const TRUST_LEVEL: 'trusted' | 'restricted' =
+  process.env.TRUST_LEVEL === 'restricted'
+    ? 'restricted'
+    : process.env.TRUST_LEVEL === 'trusted'
+      ? 'trusted'
+      : WORKING_MODE === 'external'
+        ? 'restricted'
+        : 'trusted'
+
+/**
+ * The list of host folders the agent is allowed to read/write inside,
+ * in addition to `WORKSPACE_DIR`. Parsed once at boot; gateway-tools
+ * imports this via `getAllowedRoots()` from agent-runtime-config.ts.
+ */
+const LINKED_FOLDERS: string[] = (() => {
+  const raw = process.env.LINKED_FOLDERS
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((p): p is string => typeof p === 'string' && p.length > 0)
+  } catch (err) {
+    console.warn(`[agent-runtime] Could not parse LINKED_FOLDERS env: ${err}`)
+    return []
+  }
+})()
+
+// Export for sibling modules (gateway-tools, watchers, indexer).
+;(globalThis as any).__SHOGO_AGENT_RUNTIME_CONFIG__ = {
+  workingMode: WORKING_MODE,
+  trustLevel: TRUST_LEVEL,
+  linkedFolders: LINKED_FOLDERS,
+  workspaceDir: WORKSPACE_DIR,
+}
+
+/**
  * Defensive sanity check on WORKSPACE_DIR.
  *
  * Backstory: the host-side RuntimeManager once defaulted its
@@ -99,6 +159,20 @@ const PORT = parseInt(process.env.PORT || '8080', 10)
  * missing chips three days later.
  */
 function checkWorkspaceDirSanity(): void {
+  // External (VS Code-style) projects: WORKSPACE_DIR is the user's
+  // primary linked folder by design (e.g. `/Users/jane/my-app`), not a
+  // path ending in `<projectId>`. The historical sanity check would
+  // emit a warning on every boot which would be noise the user can't
+  // act on. Log an info line so we still have a breadcrumb in support
+  // tickets without the alarming WARNING prefix.
+  if (WORKING_MODE === 'external') {
+    console.log(
+      `[agent-runtime] External (folder-linked) project: WORKSPACE_DIR='${WORKSPACE_DIR}' ` +
+        `(trustLevel=${TRUST_LEVEL}, linkedFolders=${LINKED_FOLDERS.length})`,
+    )
+    return
+  }
+
   const expectedProjectId = process.env.PROJECT_ID
   const workspaceBase = basename(WORKSPACE_DIR.replace(/\/+$/, ''))
   const isContainerDefault = WORKSPACE_DIR === '/app/workspace'
@@ -144,6 +218,7 @@ async function reportHeartbeatComplete(projectId: string): Promise<void> {
 
 let agentGateway: any = null
 let s3SyncInstance: import('@shogo/shared-runtime').S3Sync | null = null
+let gitSyncInstance: GitWorkspaceSync | null = null
 
 const workspaceStatus: {
   templateSeeded: boolean
@@ -439,26 +514,52 @@ function safeMoveSync(src: string, dest: string): void {
 }
 
 function ensureWorkspaceFiles(): void {
-  const templateMarker = join(WORKSPACE_DIR, '.template')
-  const templateIdFromEnv = process.env.TEMPLATE_ID
-  const templateIdFromFile = existsSync(templateMarker) ? readFileSync(templateMarker, 'utf-8').trim() : undefined
-  const templateId = templateIdFromEnv || templateIdFromFile
-
-  if (templateId) {
-    const seeded = seedWorkspaceFromTemplate(WORKSPACE_DIR, templateId, process.env.AGENT_NAME)
-    if (seeded) {
-      logTiming(`Workspace seeded from template: ${templateId}`)
-    } else {
-      logTiming(`Template "${templateId}" not found, falling back to defaults`)
-      seedWorkspaceDefaults(WORKSPACE_DIR)
-      seedLSPConfig(WORKSPACE_DIR)
-      logTiming('Workspace defaults seeded')
-    }
-  } else {
+  // External (VS Code-style) projects: WORKSPACE_DIR is the user's
+  // real repo on their machine. We MUST NOT run any of the seeding
+  // / migration / template-overlay below — every branch is destructive
+  // against a non-Shogo-shaped tree:
+  //
+  //   - `seedWorkspaceFromTemplate` / `seedRuntimeTemplate` would dump
+  //     a Vite + React scaffold (`index.html`, `src/`, `tsconfig.json`,
+  //     `vite.config.ts`, …) into the user's repo root, overwriting
+  //     existing files.
+  //   - The "legacy APP layout migration" further down would detect
+  //     the user's own `package.json` + missing `AGENTS.md` and
+  //     **move** the user's `package.json`, `bun.lock`, `.gitignore`,
+  //     `src/`, `prisma/`, `dist/`, `public/`, `node_modules/` into a
+  //     new `project/` subdirectory — surfaced on 2026-05-14 against
+  //     `shogo-ai` itself, which lost ~50 prisma migrations to this path.
+  //   - `seedTechStack` / `overlayAgentTemplateCodeDirs` similarly
+  //     overlay starter files onto the user's tree.
+  //   - `seedLSPConfig` writes a `pyrightconfig.json` the user never
+  //     asked for.
+  //
+  // For external projects the `.shogo/{skills,plans,local}` skeleton
+  // is already laid down by:
+  //   - apps/api/src/routes/local-projects.ts (POST /from-folders)
+  //   - RuntimeManager.ensureProjectDirectory (defense in depth)
+  //
+  // Re-running just the .shogo subdir creation here keeps the boot
+  // idempotent for older bound folders that pre-date that scaffolding.
+  if (WORKING_MODE === 'external') {
     seedWorkspaceDefaults(WORKSPACE_DIR)
-    seedLSPConfig(WORKSPACE_DIR)
-    logTiming('Workspace defaults seeded')
+    workspaceStatus.templateSeeded = true
+    logTiming('External project: skipped template seeding / legacy migration / LSP config')
+    return
   }
+
+  // Templates → marketplace consolidation (2026-05): the runtime no
+  // longer reads TEMPLATE_ID or the `.template` marker file. Workspaces
+  // are seeded by `copyWorkspaceFiles` at marketplace install time, so
+  // by the time the runtime boots there is nothing template-specific
+  // left for it to do — every workspace is just "the bundled defaults
+  // plus whatever the install put on top". A leftover `.template`
+  // marker from a pre-consolidation install is ignored (the file is
+  // harmless and gets included in any future workspace snapshot
+  // unchanged).
+  seedWorkspaceDefaults(WORKSPACE_DIR)
+  seedLSPConfig(WORKSPACE_DIR)
+  logTiming('Workspace defaults seeded')
 
   // Migrate legacy APP layout: if package.json exists at workspace root (no AGENTS.md),
   // this is a legacy APP project — move app files into project/ subdirectory
@@ -521,14 +622,14 @@ function ensureWorkspaceFiles(): void {
     workspaceStatus.templateSeeded = true
   }
 
-  // Agent templates curated `src/` is applied in `seedWorkspaceFromTemplate`
-  // **before** the block above — but fresh workspaces had no package.json yet,
-  // so `seedRuntimeTemplate` just laid down generic `Project Ready` App.tsx on
-  // top. Re-merge template `src/` (and optional `prisma/`) here so the canvas
-  // matches the bundled template surfaces.
-  if (templateId && overlayAgentTemplateCodeDirs(WORKSPACE_DIR, templateId)) {
-    logTiming(`Agent template code overlay reapplied (${templateId})`)
-  }
+  // Agent template overlay used to live here (it pasted the bundled
+  // `templates/<id>/src` over the runtime-template's `Project Ready`
+  // App.tsx so the canvas matched the template surface). After the
+  // templates → marketplace consolidation the workspace already arrives
+  // with the right `src/` baked in via `copyWorkspaceFiles`, so the
+  // overlay is a no-op for new projects. Existing template workspaces
+  // stay correct because the listing version snapshot was produced
+  // from the same overlay output.
 
   // One-shot migration: any workspace that still has `.shogo/server/` from
   // the legacy skill-server era is folded into root `prisma/schema.prisma`
@@ -1171,6 +1272,29 @@ app.post('/agent/chat', async (c) => {
         } as any)
         writer.write({ type: 'finish', finishReason: 'stop' })
         turnSucceeded = true
+
+        // Per-turn git push: in `dual_shadow` / `git_only` modes,
+        // flush the workspace once the agent finishes its turn. This
+        // is the natural ProjectCheckpoint granularity — one row per
+        // assistant turn, materialized via the smart-HTTP backend's
+        // post-receive hook (see apps/api/src/routes/git-http.ts).
+        //
+        // We deliberately do NOT hook the S3Sync filesystem watcher
+        // for git: that fires per file event and would push 5–50
+        // commits per turn (every tool call, every edit). The
+        // turn-complete site is the same boundary the checkpoints
+        // system has always used.
+        //
+        // `triggerSync(false)` is debounced internally (~1.5s) and
+        // returns immediately, so this is a fire-and-forget that
+        // doesn't add latency to the turn-complete response.
+        if (gitSyncInstance) {
+          try {
+            gitSyncInstance.triggerSync(false)
+          } catch (err: any) {
+            console.warn('[agent-runtime] gitSync triggerSync at turn-complete threw:', err?.message ?? err)
+          }
+        }
       } catch (error: any) {
         writer.write({
           type: 'data-turn-complete',
@@ -2225,6 +2349,9 @@ function collectBundleFiles(dir: string, baseDir: string): Record<string, string
   for (const entry of entries) {
     if (BUNDLE_EXCLUDED_DIRS.has(entry.name)) continue
     if (entry.name.startsWith('.install-ok')) continue
+    // macOS detritus: `._*` AppleDouble sidecars crash Metro's Babel parser
+    // when an imported workspace contains them, so they must never round-trip.
+    if (isMacOSJunkName(entry.name)) continue
 
     const fullPath = join(dir, entry.name)
     const relPath = require('path').relative(baseDir, fullPath).replace(/\\/g, '/')
@@ -2446,9 +2573,6 @@ app.post('/agent/workspace/reindex', async (c) => {
 import { MCP_CATALOG, MCP_CATEGORIES, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
 import { isComposioEnabled, findComposioToolkit, initComposioSession, registerToolkitProxyTools } from './composio'
 
-// Agent Templates API — powers the templates gallery
-import { getTemplateSummaries, getAgentTemplateById, TEMPLATE_CATEGORIES } from './agent-templates'
-
 app.get('/agent/mcp-catalog', (c) => {
   return c.json({ catalog: MCP_CATALOG, categories: MCP_CATEGORIES })
 })
@@ -2664,19 +2788,9 @@ app.delete('/agent/quick-actions/:label', (c) => {
   }
 })
 
-// ---------------------------------------------------------------------------
-// Templates
-// ---------------------------------------------------------------------------
-
-app.get('/agent/templates', (c) => {
-  return c.json({ templates: getTemplateSummaries(), categories: TEMPLATE_CATEGORIES })
-})
-
-app.get('/agent/templates/:id', (c) => {
-  const template = getAgentTemplateById(c.req.param('id'))
-  if (!template) return c.json({ error: 'Template not found' }, 404)
-  return c.json({ template })
-})
+// The legacy `/agent/templates` and `/agent/templates/:id` routes were
+// removed in the templates → marketplace consolidation. The mobile app
+// reads first-party agents from the API's `/api/marketplace` instead.
 
 app.post('/agent/mcp-servers/toggle', async (c) => {
   const { serverId, enabled, env } = await c.req.json() as {
@@ -3591,22 +3705,80 @@ async function initializeEssentials(): Promise<void> {
   // Seed tech stack if specified (covers warm pool assignment path where
   // TECH_STACK_ID is injected after module-level code has already run).
   // seedTechStack is idempotent — only writes files that don't already exist.
+  //
+  // External (VS Code-style) projects: do NOT run any tech-stack seed.
+  // `seedTechStack` copies `starter/` (whole directory tree: package.json,
+  // tsconfig.json, src/, etc.) into the user's repo root. Even though it
+  // skips existing files, it still pollutes the repo with files the user
+  // never asked for — exactly the failure mode we're avoiding.
   const tsId = process.env.TECH_STACK_ID
-  if (tsId) {
+  if (tsId && WORKING_MODE !== 'external') {
     seedTechStack(WORKSPACE_DIR, tsId)
     logTiming(`Tech stack seeded: ${tsId}`)
   }
 
   // Initialize S3 sync BEFORE loading canvas state so that downloaded files
   // (including .canvas-state.json and api-runtimes/*.db) are available on disk.
-  if (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET) {
+  //
+  // SHOGO_CLOUD_SYNC=1 tells us a parent worker process (shogo-worker) is
+  // already syncing this WORKSPACE_DIR back to Shogo Cloud. This single env
+  // var disables TWO independent code paths:
+  //   1. The runtime-internal S3Sync below (would feedback-loop with the
+  //      worker's CloudFileTransport / git watcher).
+  //   2. Any runtime-side ProjectCheckpoint insertion. In git-sync mode
+  //      the cloud's smart-HTTP post-receive hook (apps/api/src/routes/
+  //      git-http.ts → runPostReceiveHook) is now the SINGLE source of
+  //      truth for ProjectCheckpoint rows — every push from the worker's
+  //      watcher materializes exactly one row, and the desktop UI's
+  //      checkpoint timeline picks it up from the same Postgres table.
+  // See packages/shogo-worker/src/lib/runtime-manager.ts for the env-var
+  // origin (set when AutoPullOptions.enabled is true).
+  const skipInternalSync = process.env.SHOGO_CLOUD_SYNC === '1' || process.env.SHOGO_CLOUD_SYNC === 'true'
+  if (skipInternalSync) {
+    console.log('[agent-runtime] SHOGO_CLOUD_SYNC set; skipping runtime-internal S3Sync + checkpoint inserts (worker owns sync)')
+    logTiming('S3 sync skipped: owned by worker')
+  }
+
+  // Per-project cloud sync mode:
+  //   - 's3'          → today's behavior. Both S3 layers active. No git.
+  //   - 'dual_shadow' → S3 authoritative + git push for verification.
+  //   - 'git_only'    → git authoritative for Layer 2. S3 Layer 2 stays
+  //                     SUPPRESSED but armed: it will be re-enabled at
+  //                     runtime if git push fails repeatedly (see the
+  //                     onDegrade wiring below), AND it always writes
+  //                     a cold-start snapshot at evict via
+  //                     `flushAndShutdown({ forceProjectArchive: true })`.
+  //                     Layer 1 (deps cache) is unaffected.
+  const cloudSyncMode = resolveCloudSyncMode()
+  const wantS3Layer2 = cloudSyncMode === 's3' || cloudSyncMode === 'dual_shadow'
+  const wantGitSync = cloudSyncMode === 'dual_shadow' || cloudSyncMode === 'git_only'
+  if (cloudSyncMode !== 's3') {
+    console.log(`[agent-runtime] cloudSyncMode=${cloudSyncMode} (wantS3Layer2=${wantS3Layer2}, wantGit=${wantGitSync})`)
+  }
+
+  if (!skipInternalSync && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
     try {
-      const result = await initializeS3Sync(WORKSPACE_DIR)
+      const result = await initializeS3Sync(WORKSPACE_DIR, {
+        suppressProjectArchive: !wantS3Layer2,
+      })
       if (result) {
         s3SyncInstance = result.sync
-        // If node_modules were seeded from the template (not from S3), mark deps
-        // as pre-seeded so S3 sync won't try to tar.gz 37K+ files and OOM.
-        if (existsSync(join(WORKSPACE_DIR, 'node_modules', '.bin', 'vite'))) {
+        // If node_modules were seeded from the template AND the user's
+        // package.json actually depends on Vite, the template's
+        // node_modules is the user's deps — mark pre-seeded so the first
+        // periodic sync doesn't try to tar.gz 37K+ files and OOM the pod.
+        //
+        // The previous heuristic only checked `existsSync(.bin/vite)`,
+        // but the warm-pool template ALWAYS has that bin regardless of
+        // whether the user uses Vite. For non-Vite workspaces (Expo, RN,
+        // etc.) ensureWorkspaceDeps() below will actually reinstall the
+        // correct deps, and we need the post-install hook to upload them
+        // with a per-project pointer. See the 2026-05-14 staging
+        // disk-pressure incident write-up.
+        if (
+          existsSync(join(WORKSPACE_DIR, 'node_modules', '.bin', 'vite'))
+          && workspaceUsesVite(WORKSPACE_DIR)
+        ) {
           await s3SyncInstance.markDepsPreSeeded()
         }
         logTiming('S3 sync initialized')
@@ -3616,29 +3788,88 @@ async function initializeEssentials(): Promise<void> {
     }
   }
 
+  // Instantiate GitWorkspaceSync in dual_shadow / git_only mode. The
+  // onDegrade callback ensures S3 stays armed as a fallback: if 3
+  // consecutive git pushes fail we re-enable S3 Layer 2 for the rest
+  // of the session. On recovery we re-suppress (only in git_only mode;
+  // dual_shadow always keeps S3 Layer 2 active).
+  if (!skipInternalSync && wantGitSync) {
+    try {
+      gitSyncInstance = createGitSyncFromEnv(WORKSPACE_DIR, {
+        onDegrade: (reason) => {
+          console.warn(
+            `[agent-runtime] cloud-sync degraded (mode=${cloudSyncMode}): ${reason}`,
+          )
+          // In dual_shadow S3 Layer 2 is already on, so this is a no-op.
+          // In git_only it flips Layer 2 back on as the durability fallback.
+          s3SyncInstance?.setSuppressProjectArchive(false)
+        },
+        onRecovered: () => {
+          console.log(`[agent-runtime] cloud-sync recovered (mode=${cloudSyncMode})`)
+          // Only re-suppress in git_only mode; dual_shadow always wants both writers.
+          if (cloudSyncMode === 'git_only') {
+            s3SyncInstance?.setSuppressProjectArchive(true)
+          }
+        },
+      })
+      if (gitSyncInstance) {
+        logTiming('Git sync initialized')
+      } else {
+        console.warn('[agent-runtime] Git sync requested but env incomplete (SHOGO_API_URL/RUNTIME_AUTH_SECRET/PROJECT_ID); falling back to S3 only')
+      }
+    } catch (error: any) {
+      console.error('[agent-runtime] Git sync init failed:', error.message)
+    }
+  }
+
   // Ensure workspace has node_modules. If S3 sync is restoring deps in the
   // background, skip the blocking install here — deps will be available
   // before the gateway starts (startGateway awaits waitForDeps).
-  if (s3SyncInstance && !s3SyncInstance.areDepsReady()) {
+  //
+  // External (VS Code-style) projects: never run `bun install` on the
+  // user's repo. `ensureWorkspaceDeps` also calls `migrateLegacyShogoSdkPin`
+  // which *rewrites* the user's `package.json` if it sees an old
+  // `@shogo-ai/sdk` pin or `bunx shogo …` script — categorically not
+  // something Shogo should be doing inside someone else's repo. The user
+  // owns their package manager workflow in external mode.
+  if (WORKING_MODE === 'external') {
+    logTiming('External project: skipped workspace deps install')
+  } else if (s3SyncInstance && !s3SyncInstance.areDepsReady()) {
     logTiming('Deps restoring in background — skipping blocking install')
   } else {
     try {
-      await ensureWorkspaceDeps(WORKSPACE_DIR)
+      const { didInstall } = await ensureWorkspaceDeps(WORKSPACE_DIR)
       workspaceStatus.depsInstalled = true
+      // If ensureWorkspaceDeps actually ran an install (template deps
+      // didn't match the user's package.json — common after a warm-pool
+      // assignment where the template was Vite but the project is Expo
+      // or vice-versa), invalidate the pre-seeded marker so the next
+      // periodic S3 sync uploads the freshly-installed deps and writes
+      // the per-project deps-hash.txt pointer.
+      if (didInstall && s3SyncInstance) {
+        s3SyncInstance.markDepsChanged()
+      }
       logTiming('Workspace deps ready')
     } catch (err: any) {
       console.error('[agent-runtime] Workspace deps install failed:', err.message)
     }
   }
 
-  const techStackMarkerPath = join(WORKSPACE_DIR, '.tech-stack')
-  if (existsSync(techStackMarkerPath)) {
-    const stackId = readFileSync(techStackMarkerPath, 'utf-8').trim()
-    try {
-      await runTechStackSetup(WORKSPACE_DIR, stackId)
-      logTiming(`Tech stack setup complete: ${stackId}`)
-    } catch (err: any) {
-      console.error(`[agent-runtime] Tech stack setup failed for ${stackId}:`, err.message)
+  // Run any pending tech-stack setup script. External projects can't
+  // arrive here with a `.tech-stack` marker (we never seeded one), but
+  // even if a user manually dropped one in, `setup.sh` is destructive
+  // by definition (the contract is "set this stack up"), so we don't
+  // execute it against an external repo.
+  if (WORKING_MODE !== 'external') {
+    const techStackMarkerPath = join(WORKSPACE_DIR, '.tech-stack')
+    if (existsSync(techStackMarkerPath)) {
+      const stackId = readFileSync(techStackMarkerPath, 'utf-8').trim()
+      try {
+        await runTechStackSetup(WORKSPACE_DIR, stackId)
+        logTiming(`Tech stack setup complete: ${stackId}`)
+      } catch (err: any) {
+        console.error(`[agent-runtime] Tech stack setup failed for ${stackId}:`, err.message)
+      }
     }
   }
 
@@ -3649,10 +3880,19 @@ async function initializeEssentials(): Promise<void> {
   // `<workspace>/project/package.json` (legacy Vite layout) or a workspace-
   // root `package.json` (Expo / React Native stacks place it there). The
   // PreviewManager itself owns the cwd disambiguation via `resolveBundlerCwd`.
+  //
+  // External projects: PreviewManager is gated by `RUNTIME_ENABLED` (set
+  // by the host RuntimeManager from `Project.runtimeEnabled`). We only
+  // honour the auto-start when the user has opted in via that flag.
+  // Without this guard, opening any external project with a top-level
+  // `package.json` would spawn Vite/Metro in the user's repo without
+  // their consent.
   const legacyProjectDir = join(WORKSPACE_DIR, 'project')
   const hasLegacyPkg = existsSync(join(legacyProjectDir, 'package.json'))
   const hasRootPkg = existsSync(join(WORKSPACE_DIR, 'package.json'))
-  if (hasLegacyPkg || hasRootPkg) {
+  const externalAutoPreviewBlocked =
+    WORKING_MODE === 'external' && process.env.RUNTIME_ENABLED !== 'true'
+  if ((hasLegacyPkg || hasRootPkg) && !externalAutoPreviewBlocked) {
     const pm = getPreviewManager()
     const status = pm.getStatus()
     if (!status.running) {
@@ -3662,6 +3902,8 @@ async function initializeEssentials(): Promise<void> {
         console.error('[agent-runtime] Auto-start preview failed:', err.message)
       })
     }
+  } else if (externalAutoPreviewBlocked && (hasLegacyPkg || hasRootPkg)) {
+    logTiming('External project with runtimeEnabled=false — skipping auto-preview-start')
   }
 }
 
@@ -3675,6 +3917,22 @@ async function startGateway(): Promise<void> {
     console.warn('[agent-runtime] startGateway() called while already starting — skipping')
     return
   }
+
+  // Pool-mode invariant: the gateway starts the TypeScript + Pyright LSPs
+  // (~450 MB combined RSS), prisma generate, and the canvas vite build
+  // watcher. None of these should fire before /pool/assign, otherwise
+  // every warm pool VM would sit at ~3 GB RSS even when idle. The plan
+  // (vm-pool-oom-fix) tracks this property as part of the host-memory
+  // budget for desktop VMs.
+  if (state.isPoolMode && !state.poolAssigned) {
+    console.warn(
+      '[agent-runtime] startGateway() called in pool mode before /pool/assign — refusing. ' +
+      'This would prematurely start the TS/Py LSPs and prisma engine, blowing the ' +
+      'idle pool VM memory budget. The caller likely forgot to await onAssign().',
+    )
+    return
+  }
+
   gatewayStarting = true
   logTiming('Starting agent gateway...')
 
@@ -3688,8 +3946,11 @@ async function startGateway(): Promise<void> {
     logTiming('Background deps ready')
     // Now run ensureWorkspaceDeps in case the S3 deps didn't fully satisfy
     try {
-      await ensureWorkspaceDeps(WORKSPACE_DIR)
+      const { didInstall } = await ensureWorkspaceDeps(WORKSPACE_DIR)
       workspaceStatus.depsInstalled = true
+      if (didInstall && s3SyncInstance) {
+        s3SyncInstance.markDepsChanged()
+      }
     } catch (err: any) {
       console.error('[agent-runtime] Post-deps-restore install failed:', err.message)
     }
@@ -3707,9 +3968,13 @@ async function startGateway(): Promise<void> {
     }
   })
 
-  if (s3SyncInstance) {
+  if (s3SyncInstance || gitSyncInstance) {
     agentGateway.getMCPClientManager().setOnConfigPersisted(() => {
+      // Fire both writers when either is present. In git_only mode
+      // s3SyncInstance.triggerSync no-ops on Layer 2 (suppressed) but
+      // still gates Layer 1 deps. In dual_shadow both write.
       s3SyncInstance?.triggerSync(true)
+      gitSyncInstance?.triggerSync(true)
     })
   }
 
@@ -3770,12 +4035,47 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
   streamBufferStore.dispose()
 
+  // Cloud sync shutdown order matters in `git_only` mode:
+  //   1. GitWorkspaceSync.flushAndShutdown — last attempt at a clean push.
+  //      If it succeeds we exit degraded state and can snapshot from HEAD.
+  //      If it fails we stay degraded and must tar the live workspace.
+  //   2. If we ended healthy AND in git_only mode, write the cold-start
+  //      snapshot from `git archive HEAD` (no node_modules, no junk).
+  //   3. Otherwise (s3, dual_shadow, or degraded git_only) run S3 flush
+  //      with `forceProjectArchive: true` so a tarball always lands.
   try {
+    const mode = resolveCloudSyncMode()
+    if (gitSyncInstance) {
+      try {
+        await gitSyncInstance.flushAndShutdown(5_000)
+      } catch (err: any) {
+        console.error(`[agent-runtime] Git flush error during shutdown:`, err?.message ?? err)
+      }
+    }
+
     if (s3SyncInstance) {
-      await s3SyncInstance.flushAndShutdown(10_000)
+      const gitHealthy = gitSyncInstance != null && !gitSyncInstance.isDegraded
+      if (mode === 'git_only' && gitHealthy) {
+        // Healthy git_only path: HEAD is authoritative, so snapshot from
+        // it. We still run flushAndShutdown() for the dep-cache (Layer 1)
+        // pointer, since Layer 2 stays suppressed.
+        try {
+          await s3SyncInstance.snapshotProjectArchiveFromGit()
+        } catch (snapErr: any) {
+          console.warn(
+            `[agent-runtime] snapshotFromGit failed; falling back to live-workspace tarball: ${snapErr?.message ?? snapErr}`,
+          )
+          await s3SyncInstance.flushAndShutdown({ timeoutMs: 10_000, forceProjectArchive: true })
+        }
+      } else {
+        // s3 / dual_shadow / degraded git_only: always force the project
+        // archive so the cold-start tarball reflects current disk state.
+        const forceProjectArchive = mode === 'git_only'
+        await s3SyncInstance.flushAndShutdown({ timeoutMs: 10_000, forceProjectArchive })
+      }
     }
   } catch (err: any) {
-    console.error(`[agent-runtime] S3 flush error during shutdown:`, err.message)
+    console.error(`[agent-runtime] Cloud sync flush error during shutdown:`, err.message)
   }
 
   try {

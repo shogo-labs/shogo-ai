@@ -139,10 +139,10 @@ resource "cloudflare_load_balancer" "docs" {
   description = "Multi-region LB for docs.shogo.ai"
   proxied     = true
 
-  steering_policy      = "dynamic_latency"
-  default_pool_ids     = local.pool_ids
-  fallback_pool_id     = cloudflare_load_balancer_pool.us.id
-  session_affinity     = "none"
+  steering_policy  = "dynamic_latency"
+  default_pool_ids = local.pool_ids
+  fallback_pool_id = cloudflare_load_balancer_pool.us.id
+  session_affinity = "none"
 }
 
 # =============================================================================
@@ -204,11 +204,11 @@ resource "cloudflare_record" "india_tunnel" {
 # =============================================================================
 
 output "studio_lb_id" { value = cloudflare_load_balancer.studio.id }
-output "docs_lb_id"   { value = cloudflare_load_balancer.docs.id }
+output "docs_lb_id" { value = cloudflare_load_balancer.docs.id }
 output "eu_studio_record" { value = cloudflare_record.eu_studio.hostname }
 output "india_studio_record" { value = cloudflare_record.india_studio.hostname }
-output "us_tunnel_record"    { value = cloudflare_record.us_tunnel.hostname }
-output "eu_tunnel_record"    { value = cloudflare_record.eu_tunnel.hostname }
+output "us_tunnel_record" { value = cloudflare_record.us_tunnel.hostname }
+output "eu_tunnel_record" { value = cloudflare_record.eu_tunnel.hostname }
 output "india_tunnel_record" { value = cloudflare_record.india_tunnel.hostname }
 output "pool_ids" {
   value = {
@@ -217,3 +217,4 @@ output "pool_ids" {
     in = cloudflare_load_balancer_pool.india.id
   }
 }
+

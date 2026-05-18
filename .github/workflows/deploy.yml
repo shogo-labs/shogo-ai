@@ -276,11 +276,11 @@ jobs:
   # ===========================================================================
   build-base-image:
     name: Build Runtime Base Image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     needs: [resolve-config, detect-changes]
     if: needs.detect-changes.outputs.runtime_base_changed == 'true'
     environment: ${{ needs.resolve-config.outputs.environment == 'production' && 'production-us' || needs.resolve-config.outputs.environment }}
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     env:
       OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
@@ -314,9 +314,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
-      - name: Set up QEMU for multi-arch builds
-        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
-
       - name: Build and push base image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
@@ -332,21 +329,82 @@ jobs:
           cache-to: type=gha,mode=max,scope=runtime-base-oci
 
   # ===========================================================================
+  # Stage 1.7: Build Workspace Deps Image
+  # ===========================================================================
+  # Bakes the JS workspace once per CI run: full `bun install` (uid 1001),
+  # `bun run build:packages`, `generate:routes`, runtime-template install,
+  # `build-template-dists`, and external Claude skills. Downstream matrix
+  # images (api, web, runtime) `FROM` this image instead of doing all of
+  # the above three times in parallel.
+  #
+  # Gated on has_changes so we only rebuild when at least one matrix image
+  # also rebuilds — saves cycles on docs-only PRs. GHA layer cache makes
+  # no-op rebuilds fast even when triggered.
+  # ===========================================================================
+  build-workspace-deps:
+    name: Build Workspace Deps Image
+    runs-on: ubuntu-24.04-arm
+    needs: [resolve-config, detect-changes]
+    # Runs whenever any matrix image is set to build. Docs doesn't consume
+    # workspace-deps, but on a cache hit this rebuild is ~30s and we'd need
+    # the matrix `if:` to special-case docs (matrix context isn't available
+    # at job level), which gets ugly. Pay the small cost.
+    if: needs.detect-changes.outputs.has_changes == 'true'
+    environment: ${{ needs.resolve-config.outputs.environment == 'production' && 'production-us' || needs.resolve-config.outputs.environment }}
+    timeout-minutes: 30
+
+    env:
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Login to OCIR
+        run: |
+          echo "${{ secrets.OCI_AUTH_TOKEN }}" | docker login \
+            ${{ vars.OCI_REGION }}.ocir.io \
+            -u "${{ vars.OCI_TENANCY_NAMESPACE }}/${{ secrets.OCI_USERNAME }}" \
+            --password-stdin
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Build and push workspace-deps image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: docker/workspace-deps/Dockerfile
+          platforms: linux/arm64
+          push: true
+          provenance: false
+          tags: |
+            ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-workspace-deps:latest
+            ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-workspace-deps:${{ github.sha }}
+          cache-from: type=gha,scope=workspace-deps-oci
+          cache-to: type=gha,mode=max,scope=workspace-deps-oci
+
+  # ===========================================================================
   # Stage 2: Build and Push Docker Images to OCIR (in parallel)
   # Images are pushed to the primary (US) OCIR registry.
   # ===========================================================================
   build-and-push:
     name: Build ${{ matrix.image }}
-    runs-on: ubuntu-latest
-    needs: [resolve-config, detect-changes, build-base-image]
+    runs-on: ubuntu-24.04-arm
+    needs: [resolve-config, detect-changes, build-base-image, build-workspace-deps]
     if: |
       always() &&
       needs.resolve-config.result == 'success' &&
       needs.detect-changes.result == 'success' &&
       needs.detect-changes.outputs.has_changes == 'true' &&
-      (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped')
+      (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped') &&
+      needs.build-workspace-deps.result == 'success'
     environment: ${{ needs.resolve-config.outputs.environment == 'production' && 'production-us' || needs.resolve-config.outputs.environment }}
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     strategy:
       fail-fast: false
@@ -394,9 +452,6 @@ jobs:
             echo "prefix=${{ needs.resolve-config.outputs.environment }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Set up QEMU for multi-arch builds
-        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
-
       - name: Build and push ${{ matrix.image }} image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
@@ -409,6 +464,7 @@ jobs:
             ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/${{ matrix.image_name }}:${{ steps.tag-prefix.outputs.prefix }}-latest
             ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/${{ matrix.image_name }}:${{ steps.tag-prefix.outputs.prefix }}-${{ github.sha }}
           build-args: |
+            ${{ matrix.build_args != '' && format('WORKSPACE_DEPS={0}/shogo/shogo-workspace-deps:{1}', needs.resolve-config.outputs.ocir_registry, github.sha) || '' }}
             ${{ matrix.build_args == 'api' && format('ALLOWED_ORIGINS={0}', vars.ALLOWED_ORIGINS) || '' }}
             ${{ matrix.build_args == 'api' && format('BUILD_HASH={0}', github.sha) || '' }}
             ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_API_URL={0}', vars.EXPO_PUBLIC_API_URL) || '' }}
@@ -637,7 +693,7 @@ jobs:
 
       - name: Apply Kubernetes manifests
         run: |
-          kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/ || true
+          kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
 
       - name: Ensure docs DomainMapping
         run: |
@@ -835,9 +891,45 @@ jobs:
 
       - name: Wait for rollout
         run: |
-          kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
-          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
-          kubectl wait --for=condition=ready ksvc/docs -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          # `kubectl wait --for=condition=ready ksvc/...` is NOT sufficient
+          # on its own: a Knative Service's Ready condition stays True even
+          # while its latest revision crashloops, because Knative keeps
+          # traffic on the previously-Ready revision. The staging API was
+          # stuck in exactly this state for ~6 weeks (api-00271 served
+          # traffic while api-00272..00282 silently crashlooped) before
+          # this gate was tightened. We must additionally check that the
+          # controller has observed our patch (observedGeneration ==
+          # metadata.generation) and that the latest created revision IS
+          # the latest Ready one.
+          wait_ksvc_ready() {
+            local name=$1 ns=$2 timeout_sec=${3:-600}
+            local target_gen lcre lread obs ready elapsed=0
+            target_gen=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.metadata.generation}')
+            echo "Waiting for ksvc/$name (gen=$target_gen) to roll out..."
+            while [ "$elapsed" -lt "$timeout_sec" ]; do
+              obs=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.observedGeneration}' 2>/dev/null || echo 0)
+              ready=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+              lcre=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestCreatedRevisionName}' 2>/dev/null || true)
+              lread=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestReadyRevisionName}' 2>/dev/null || true)
+              if [ "$obs" = "$target_gen" ] && [ "$ready" = "True" ] && [ -n "$lcre" ] && [ "$lcre" = "$lread" ]; then
+                echo "ksvc/$name rolled out to $lcre"
+                return 0
+              fi
+              sleep 10
+              elapsed=$((elapsed + 10))
+            done
+            echo "::error::ksvc/$name did not reach Ready within ${timeout_sec}s (gen=$target_gen obs=$obs ready=$ready latestCreated=$lcre latestReady=$lread)"
+            echo "::group::revision describe"
+            kubectl describe revision "$lcre" -n "$ns" || true
+            echo "::endgroup::"
+            echo "::group::revision logs"
+            kubectl logs --tail=200 -l "serving.knative.dev/revision=$lcre" -n "$ns" --all-containers || true
+            echo "::endgroup::"
+            return 1
+          }
+          for s in studio api docs; do
+            wait_ksvc_ready "$s" "${{ env.NS_SYSTEM }}" 600
+          done
 
       - name: Restart image prepuller
         if: needs.detect-changes.outputs.runtime_changed == 'true'
@@ -850,11 +942,6 @@ jobs:
           fi
           kubectl rollout restart daemonset/image-prepuller -n ${{ env.NS_SYSTEM }}
           kubectl rollout status daemonset/image-prepuller -n ${{ env.NS_SYSTEM }} --timeout=300s || echo "Prepuller rollout timeout"
-
-      - name: Verify deployment
-        run: |
-          kubectl get ksvc -n ${{ env.NS_SYSTEM }} -o name
-          echo "Staging deploy verified"
 
       - name: Post-deploy health check
         run: |
@@ -872,7 +959,8 @@ jobs:
             sleep 10
           done
           if [ "$HEALTHY" != "true" ]; then
-            echo "::warning::API health check did not return 200 after 20 attempts"
+            echo "::error::API health check did not return 200 after 20 attempts"
+            exit 1
           fi
 
   # --- Production: Deploy US (primary, runs migrations) ---
@@ -1002,7 +1090,7 @@ jobs:
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
 
       - name: Apply Kubernetes manifests
-        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/ || true
+        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
 
       - name: Ensure Kourier TLS configuration
         run: |
@@ -1146,8 +1234,36 @@ jobs:
 
       - name: Wait for rollout and health check
         run: |
-          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
-          kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          # See the staging block for the rationale behind this gate.
+          wait_ksvc_ready() {
+            local name=$1 ns=$2 timeout_sec=${3:-600}
+            local target_gen lcre lread obs ready elapsed=0
+            target_gen=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.metadata.generation}')
+            echo "Waiting for ksvc/$name (gen=$target_gen) to roll out..."
+            while [ "$elapsed" -lt "$timeout_sec" ]; do
+              obs=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.observedGeneration}' 2>/dev/null || echo 0)
+              ready=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+              lcre=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestCreatedRevisionName}' 2>/dev/null || true)
+              lread=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestReadyRevisionName}' 2>/dev/null || true)
+              if [ "$obs" = "$target_gen" ] && [ "$ready" = "True" ] && [ -n "$lcre" ] && [ "$lcre" = "$lread" ]; then
+                echo "ksvc/$name rolled out to $lcre"
+                return 0
+              fi
+              sleep 10
+              elapsed=$((elapsed + 10))
+            done
+            echo "::error::ksvc/$name did not reach Ready within ${timeout_sec}s (gen=$target_gen obs=$obs ready=$ready latestCreated=$lcre latestReady=$lread)"
+            echo "::group::revision describe"
+            kubectl describe revision "$lcre" -n "$ns" || true
+            echo "::endgroup::"
+            echo "::group::revision logs"
+            kubectl logs --tail=200 -l "serving.knative.dev/revision=$lcre" -n "$ns" --all-containers || true
+            echo "::endgroup::"
+            return 1
+          }
+          for s in api studio; do
+            wait_ksvc_ready "$s" "${{ env.NS_SYSTEM }}" 600
+          done
 
           sleep 30
           HEALTHY=false
@@ -1167,13 +1283,9 @@ jobs:
             sleep 10
           done
           if [ "$HEALTHY" != "true" ]; then
-            echo "::warning::US API health check failed after 20 attempts"
+            echo "::error::US API health check did not return 200 after 20 attempts"
+            exit 1
           fi
-
-      - name: Verify deployment
-        run: |
-          kubectl get ksvc -n ${{ env.NS_SYSTEM }} -o name
-          echo "US deploy verified"
 
       # ----------------------------------------------------------------------
       # Logical replication: keep the cross-region publication in sync.
@@ -1335,7 +1447,7 @@ jobs:
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
 
       - name: Apply Kubernetes manifests
-        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/ || true
+        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
 
       - name: Ensure Kourier TLS configuration
         run: |
@@ -1512,13 +1624,48 @@ jobs:
 
       - name: Wait for rollout and health check
         run: |
-          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
-          kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          # See the staging block for the rationale behind this gate.
+          wait_ksvc_ready() {
+            local name=$1 ns=$2 timeout_sec=${3:-600}
+            local target_gen lcre lread obs ready elapsed=0
+            target_gen=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.metadata.generation}')
+            echo "Waiting for ksvc/$name (gen=$target_gen) to roll out..."
+            while [ "$elapsed" -lt "$timeout_sec" ]; do
+              obs=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.observedGeneration}' 2>/dev/null || echo 0)
+              ready=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+              lcre=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestCreatedRevisionName}' 2>/dev/null || true)
+              lread=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestReadyRevisionName}' 2>/dev/null || true)
+              if [ "$obs" = "$target_gen" ] && [ "$ready" = "True" ] && [ -n "$lcre" ] && [ "$lcre" = "$lread" ]; then
+                echo "ksvc/$name rolled out to $lcre"
+                return 0
+              fi
+              sleep 10
+              elapsed=$((elapsed + 10))
+            done
+            echo "::error::ksvc/$name did not reach Ready within ${timeout_sec}s (gen=$target_gen obs=$obs ready=$ready latestCreated=$lcre latestReady=$lread)"
+            echo "::group::revision describe"
+            kubectl describe revision "$lcre" -n "$ns" || true
+            echo "::endgroup::"
+            echo "::group::revision logs"
+            kubectl logs --tail=200 -l "serving.knative.dev/revision=$lcre" -n "$ns" --all-containers || true
+            echo "::endgroup::"
+            return 1
+          }
+          for s in api studio; do
+            wait_ksvc_ready "$s" "${{ env.NS_SYSTEM }}" 600
+          done
+
           sleep 15
           KOURIER_IP=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-          if [ -n "$KOURIER_IP" ]; then
-            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/health" 2>/dev/null) || STATUS="000"
-            echo "EU health: HTTP $STATUS"
+          if [ -z "$KOURIER_IP" ]; then
+            echo "::error::Kourier LoadBalancer IP not assigned; cannot reach EU ingress"
+            exit 1
+          fi
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/health" 2>/dev/null) || STATUS="000"
+          echo "EU health: HTTP $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::EU /api/health returned HTTP $STATUS (expected 200) via Kourier ${KOURIER_IP}"
+            exit 1
           fi
 
       - name: Summary
@@ -1651,7 +1798,7 @@ jobs:
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
 
       - name: Apply Kubernetes manifests
-        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/ || true
+        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
 
       - name: Ensure Kourier TLS configuration
         run: |
@@ -1825,13 +1972,54 @@ jobs:
 
       - name: Wait for rollout and health check
         run: |
-          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
-          kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          # See the staging block for the rationale behind this gate.
+          # `kubectl wait --for=condition=ready ksvc/...` is NOT sufficient
+          # on its own: a Knative Service stays Ready=True while its latest
+          # revision crashloops because Knative keeps traffic on the prior
+          # Ready revision. We must additionally assert that the controller
+          # has seen our patch (observedGeneration == metadata.generation)
+          # and that the latest created revision IS the latest Ready one.
+          wait_ksvc_ready() {
+            local name=$1 ns=$2 timeout_sec=${3:-600}
+            local target_gen lcre lread obs ready elapsed=0
+            target_gen=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.metadata.generation}')
+            echo "Waiting for ksvc/$name (gen=$target_gen) to roll out..."
+            while [ "$elapsed" -lt "$timeout_sec" ]; do
+              obs=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.observedGeneration}' 2>/dev/null || echo 0)
+              ready=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+              lcre=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestCreatedRevisionName}' 2>/dev/null || true)
+              lread=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestReadyRevisionName}' 2>/dev/null || true)
+              if [ "$obs" = "$target_gen" ] && [ "$ready" = "True" ] && [ -n "$lcre" ] && [ "$lcre" = "$lread" ]; then
+                echo "ksvc/$name rolled out to $lcre"
+                return 0
+              fi
+              sleep 10
+              elapsed=$((elapsed + 10))
+            done
+            echo "::error::ksvc/$name did not reach Ready within ${timeout_sec}s (gen=$target_gen obs=$obs ready=$ready latestCreated=$lcre latestReady=$lread)"
+            echo "::group::revision describe"
+            kubectl describe revision "$lcre" -n "$ns" || true
+            echo "::endgroup::"
+            echo "::group::revision logs"
+            kubectl logs --tail=200 -l "serving.knative.dev/revision=$lcre" -n "$ns" --all-containers || true
+            echo "::endgroup::"
+            return 1
+          }
+          for s in api studio; do
+            wait_ksvc_ready "$s" "${{ env.NS_SYSTEM }}" 600
+          done
+
           sleep 15
           KOURIER_IP=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-          if [ -n "$KOURIER_IP" ]; then
-            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/health" 2>/dev/null) || STATUS="000"
-            echo "India health: HTTP $STATUS"
+          if [ -z "$KOURIER_IP" ]; then
+            echo "::error::Kourier LoadBalancer IP not assigned; cannot reach India ingress"
+            exit 1
+          fi
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/health" 2>/dev/null) || STATUS="000"
+          echo "India health: HTTP $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::India /api/health returned HTTP $STATUS (expected 200) via Kourier ${KOURIER_IP}"
+            exit 1
           fi
 
       - name: Summary

@@ -242,8 +242,15 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
   // Auth Middleware
   // ---------------------------------------------------------------------------
   const previewTokenCache = new Map<string, { valid: boolean; projectId?: string; expiresAt: number }>()
+  const runtimeTokenCache = new Map<string, { valid: boolean; projectId?: string; expiresAt: number }>()
   const PREVIEW_CACHE_VALID_MS = 5 * 60 * 1000
   const PREVIEW_CACHE_INVALID_MS = 30 * 1000
+  // Runtime tokens are deterministic per (signingSecret, projectId), so a
+  // positive cache hit is safe for as long as the signing secret hasn't
+  // rotated. 5 minutes matches preview-token caching. Negative results
+  // are short-lived so a freshly-rotated token isn't refused for long.
+  const RUNTIME_CACHE_VALID_MS = 5 * 60 * 1000
+  const RUNTIME_CACHE_INVALID_MS = 30 * 1000
   const K8S_SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token'
 
   function deriveApiUrl(): string | null {
@@ -306,6 +313,39 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     }
   }
 
+  async function validateRuntimeTokenViaApi(token: string): Promise<{ valid: boolean; projectId?: string }> {
+    const now = Date.now()
+    const cached = runtimeTokenCache.get(token)
+    if (cached && cached.expiresAt > now) {
+      return { valid: cached.valid, projectId: cached.projectId }
+    }
+
+    const apiUrl = deriveApiUrl()
+    if (!apiUrl) return { valid: false }
+
+    try {
+      const res = await fetch(`${apiUrl}/api/internal/validate-runtime-token`, {
+        method: 'POST',
+        headers: getInternalAuthHeaders(),
+        body: JSON.stringify({ token, expectedProjectId: state.currentProjectId }),
+        signal: AbortSignal.timeout(5_000),
+      })
+
+      if (!res.ok) {
+        runtimeTokenCache.set(token, { valid: false, expiresAt: now + RUNTIME_CACHE_INVALID_MS })
+        return { valid: false }
+      }
+
+      const data = await res.json() as { valid: boolean; projectId?: string }
+      const ttl = data.valid ? RUNTIME_CACHE_VALID_MS : RUNTIME_CACHE_INVALID_MS
+      runtimeTokenCache.set(token, { valid: data.valid, projectId: data.projectId, expiresAt: now + ttl })
+      return { valid: data.valid, projectId: data.projectId }
+    } catch (err) {
+      console.error(`[${config.name}] Runtime token validation failed:`, err)
+      return { valid: false }
+    }
+  }
+
   async function checkRuntimeAuth(c: any): Promise<Response | null> {
     const runtimeSecret = process.env.RUNTIME_AUTH_SECRET
     if (!runtimeSecret) {
@@ -315,9 +355,42 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     }
     const auth = c.req.header('authorization') || ''
     const runtimeToken = c.req.header('x-runtime-token') || ''
+
+    // Fast path: incoming token matches our env-injected token byte-for-byte.
+    // This is the common case after a successful /pool/assign and signing-
+    // secret stability — no API round-trip needed.
     if (auth === `Bearer ${runtimeSecret}` || runtimeToken === runtimeSecret) return null
 
-    // Fallback: validate preview JWT via API callback
+    // Slow path: byte-compare missed. That happens during warm-pool reassign
+    // races, signing-secret rotation, or stale-image pods inherited across
+    // a deploy. Rather than blanket-refusing — which is what produced the
+    // "Could not reach agent pod for workspace files: Agent API 401" warning
+    // operators kept seeing (SHOG-592) — delegate validation to the API,
+    // which holds the signing secret and can HMAC-verify the token. The
+    // recovered projectId must match the pod's currently-assigned project
+    // so a token valid for project A can't authenticate calls to a pod
+    // bound to project B.
+    const candidate = runtimeToken || (auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '')
+    if (
+      candidate &&
+      state.currentProjectId &&
+      state.currentProjectId !== '__POOL__' &&
+      // Local pre-filter: only proxy plausibly-structured v1 tokens to the
+      // API. Without this, an attacker spamming the pod with random bearer
+      // garbage would amplify into one API HMAC-verify roundtrip per unique
+      // string (negative cache is keyed by token, so each new garbage byte
+      // sequence is a fresh miss). Real v1 tokens always start `rt_v1_`
+      // and embed our project id — refuse anything else locally.
+      candidate.startsWith(`rt_v1_${state.currentProjectId}_`)
+    ) {
+      const result = await validateRuntimeTokenViaApi(candidate)
+      if (result.valid && result.projectId === state.currentProjectId) {
+        return null
+      }
+    }
+
+    // Fallback: validate preview JWT via API callback (browser → pod path,
+    // unchanged from prior behaviour).
     const previewToken = new URL(c.req.url).searchParams.get('__preview_token')
     if (previewToken) {
       const result = await validatePreviewTokenViaApi(previewToken)

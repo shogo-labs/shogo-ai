@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * @shogo-ai/sdk
@@ -92,6 +92,32 @@ export {
   type FeatureFlagOverrides,
   type FeatureFlagPatch,
 } from './platform/index.js'
+
+// Machines API (paired desktops / VPS workers + per-project "Run on" routing)
+export {
+  MachinesApi,
+  type Machine,
+  type MachineKind,
+  type MachineStatus,
+  type OnlineMachine,
+  type PinProjectOptions,
+  type PinProjectResult,
+  type PreferredInstancePolicy,
+  type ProjectPin,
+} from './machines/index.js'
+
+// Projects API (workspace clone/sync via `shogo project pull/push`)
+export {
+  ProjectsApi,
+  type PullOptions,
+  type PushOptions,
+  type ProjectFilesEntry,
+  type ManifestEntry,
+  type SyncStats,
+  type FsAdapter,
+  type ProgressEvent,
+} from './projects/index.js'
+export { CloudFileTransport, type CloudFileTransportOptions } from './projects/cloud-file-transport.js'
 
 // Errors
 export {

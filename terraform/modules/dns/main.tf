@@ -47,6 +47,12 @@ variable "additional_records" {
   default = []
 }
 
+variable "manage_platform_records" {
+  description = "When true, declare the platform `studio[.subdomain]` and `docs[.subdomain]` A records pointing at `lb_ip_or_hostname`. Set to false for environments where these records are owned out-of-band (e.g. external-dns, manually managed, or pointing at a non-OKE LB like a multi-region AWS ELB) so terraform doesn't try to create or clobber them."
+  type        = bool
+  default     = true
+}
+
 locals {
   studio_name = var.subdomain != "" ? "studio.${var.subdomain}" : "studio"
   docs_name   = var.subdomain != "" ? "docs.${var.subdomain}" : "docs"
@@ -58,6 +64,8 @@ locals {
 
 # studio[.subdomain].shogo.ai → OKE Load Balancer (Kourier)
 resource "cloudflare_record" "studio" {
+  count = var.manage_platform_records ? 1 : 0
+
   zone_id = var.cloudflare_zone_id
   name    = local.studio_name
   content = var.lb_ip_or_hostname
@@ -67,6 +75,8 @@ resource "cloudflare_record" "studio" {
 
 # docs[.subdomain].shogo.ai → OKE Load Balancer (Kourier)
 resource "cloudflare_record" "docs" {
+  count = var.manage_platform_records ? 1 : 0
+
   zone_id = var.cloudflare_zone_id
   name    = local.docs_name
   content = var.lb_ip_or_hostname
@@ -89,12 +99,12 @@ resource "cloudflare_record" "additional" {
 # Outputs
 # -----------------------------------------------------------------------------
 output "studio_record" {
-  description = "Studio DNS record hostname"
-  value       = cloudflare_record.studio.hostname
+  description = "Studio DNS record hostname (null when `manage_platform_records = false`)"
+  value       = var.manage_platform_records ? cloudflare_record.studio[0].hostname : null
 }
 
 output "docs_record" {
-  description = "Docs DNS record hostname"
-  value       = cloudflare_record.docs.hostname
+  description = "Docs DNS record hostname (null when `manage_platform_records = false`)"
+  value       = var.manage_platform_records ? cloudflare_record.docs[0].hostname : null
 }
 

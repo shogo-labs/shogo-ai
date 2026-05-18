@@ -61,7 +61,17 @@ const sidebars: SidebarsConfig = {
           items: [
             "features/my-machines/quickstart",
             "features/my-machines/networking",
+            "features/my-machines/project-pull",
+            "features/my-machines/checkpoints-on-the-vps",
             "features/my-machines/troubleshooting",
+          ],
+        },
+        {
+          type: "category",
+          label: "External Triggers",
+          items: [
+            "features/external-triggers/quickstart",
+            "features/external-triggers/webhook-channel",
           ],
         },
       ],

@@ -10,8 +10,15 @@
   ],
   "scripts": {
     "prepare": "git config core.hooksPath .githooks || exit 0",
-    "build": "bun run --cwd packages/sdk build && bun run --cwd packages/agent-runtime build",
+    "build": "bun run build:packages && bun run --cwd packages/agent-runtime build",
+    "build:packages": "bun run build:core && bun run build:agent && bun run build:db && bun run build:email && bun run build:voice && bun run build:cli && bun run build:sdk",
     "build:sdk": "bun run --cwd packages/sdk build",
+    "build:core": "bun run --cwd packages/core build",
+    "build:agent": "bun run --cwd packages/agent build",
+    "build:db": "bun run --cwd packages/db build",
+    "build:email": "bun run --cwd packages/email build",
+    "build:voice": "bun run --cwd packages/voice build",
+    "build:cli": "bun run --cwd packages/cli build",
     "web:dev": "cd apps/mobile && npx expo start --web",
     "mobile:dev": "bun run --cwd apps/mobile expo start --go",
     "web:build": "cd apps/mobile && npx expo export --platform web",
@@ -50,6 +57,8 @@
     "desktop:dev:clean": "rm -rf \"$HOME/Library/Application Support/Shogo/data\" && bun run desktop:dev",
     "docs:dev": "bun run --cwd apps/docs dev",
     "docs:build": "bun run --cwd apps/docs build",
+    "typecheck": "bun --no-env-file scripts/run-typecheck.ts",
+    "lint": "echo 'No repo-wide lint configured; per-package lint runs in package-specific CI steps.'",
     "test:e2e:hosted": "npx playwright test --config e2e/playwright.config.ts",
     "test:e2e:hosted:ui": "npx playwright test --config e2e/playwright.config.ts --ui",
     "test:e2e:local": "npx playwright test --config e2e/local/playwright.config.ts",
@@ -103,6 +112,7 @@
   },
   "patchedDependencies": {
     "react-native-css-interop@0.2.2": "patches/react-native-css-interop@0.2.2.patch",
-    "@react-navigation/routers@7.5.3": "patches/@react-navigation%2Frouters@7.5.3.patch"
+    "@react-navigation/routers@7.5.3": "patches/@react-navigation%2Frouters@7.5.3.patch",
+    "react-native-iap@12.16.4": "patches/react-native-iap@12.16.4.patch"
   }
 }

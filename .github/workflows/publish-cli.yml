@@ -94,6 +94,10 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -102,10 +106,45 @@ jobs:
       - name: List artifacts
         run: ls -lh dist/
 
+      - name: Build release notes
+        id: notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Previous CLI tag reachable from this commit (excluding the
+          # current one). Falls back to the root commit on the first
+          # ever CLI tag so the commit list still renders.
+          if PREV=$(git describe --tags --abbrev=0 --match 'shogo-cli-v*' --exclude "$GITHUB_REF_NAME" "$GITHUB_SHA^" 2>/dev/null); then
+            echo "Previous CLI tag: $PREV"
+          else
+            PREV=$(git rev-list --max-parents=0 HEAD | head -n1)
+            echo "No previous CLI tag found; using root commit $PREV"
+          fi
+
+          PR_NOTES=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$GITHUB_REF_NAME" \
+            -f previous_tag_name="$PREV" \
+            --jq .body)
+
+          COMMITS=$(git log --first-parent --no-merges \
+            --pretty=format:'- %s (%h)' \
+            "$PREV..$GITHUB_SHA")
+
+          {
+            echo "body<<NOTES_EOF"
+            printf '%s\n' "$PR_NOTES"
+            echo
+            echo "## Commits"
+            printf '%s\n' "$COMMITS"
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           draft: false
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
-          generate_release_notes: true
+          body: ${{ steps.notes.outputs.body }}

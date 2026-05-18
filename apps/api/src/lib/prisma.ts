@@ -32,6 +32,7 @@ const JSON_OBJECT_FIELDS = new Set([
   'tokens', 'phaseScores', 'criteria', 'antiPatterns',
   'workspaceSnapshot', 'metadata', 'settings', 'channels',
   'actionMetadata', 'transcript', 'examples', 'mentions',
+  'baselineManifest', 'auditFindings',
 ])
 
 // In SQLite mode, String[] fields are stored as JSON strings, and

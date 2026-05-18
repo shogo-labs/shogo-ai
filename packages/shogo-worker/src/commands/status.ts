@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import pc from 'picocolors';
 import { readPid, isRunning } from '../lib/process-manager.ts';

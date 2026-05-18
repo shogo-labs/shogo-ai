@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useCallback, useMemo } from 'react'
 import {
@@ -56,6 +56,7 @@ export function CheckpointsPanel({ projectId, visible }: CheckpointsPanelProps) 
     isLoading,
     isMutating,
     error,
+    disabledForExternalMode,
     createCheckpoint,
     rollback,
     getDiff,
@@ -109,23 +110,43 @@ export function CheckpointsPanel({ projectId, visible }: CheckpointsPanelProps) 
             </View>
           )}
         </View>
-        <Pressable
-          onPress={() => setShowCreateModal(true)}
-          disabled={isMutating}
-          className={cn(
-            'flex-row items-center gap-1.5 rounded-lg px-3 py-1.5',
-            isMutating ? 'bg-muted' : 'bg-primary active:opacity-80',
-          )}
-        >
-          <BookmarkPlus size={14} className={isMutating ? 'text-muted-foreground' : 'text-primary-foreground'} />
-          <Text className={cn('text-xs font-medium', isMutating ? 'text-muted-foreground' : 'text-primary-foreground')}>
-            Create
-          </Text>
-        </Pressable>
+        {/* Hide the "Create" affordance in external mode — it would 409
+            on every press. The VS Code-style banner below explains why. */}
+        {!disabledForExternalMode && (
+          <Pressable
+            onPress={() => setShowCreateModal(true)}
+            disabled={isMutating}
+            className={cn(
+              'flex-row items-center gap-1.5 rounded-lg px-3 py-1.5',
+              isMutating ? 'bg-muted' : 'bg-primary active:opacity-80',
+            )}
+          >
+            <BookmarkPlus size={14} className={isMutating ? 'text-muted-foreground' : 'text-primary-foreground'} />
+            <Text className={cn('text-xs font-medium', isMutating ? 'text-muted-foreground' : 'text-primary-foreground')}>
+              Create
+            </Text>
+          </Pressable>
+        )}
       </View>
 
       {/* Content */}
-      {isLoading ? (
+      {disabledForExternalMode ? (
+        // Folder-linked (workingMode='external') project. Shogo doesn't
+        // own the user's git history here; the user uses their own
+        // commit/branch/stash workflow. Mirrors the way VS Code surfaces
+        // "Workspace Trust" — explanatory, not alarming.
+        <View className="flex-1 px-6 pt-10 items-center">
+          <GitCommit size={28} className="text-muted-foreground mb-3" />
+          <Text className="text-base font-semibold text-foreground mb-2 text-center">
+            Checkpoints are off in folder mode
+          </Text>
+          <Text className="text-sm text-muted-foreground text-center mb-5">
+            This project is linked to a folder on your machine. Shogo doesn't
+            auto-commit into your repo — use your own git workflow (commit,
+            branch, stash) to snapshot and roll back.
+          </Text>
+        </View>
+      ) : isLoading ? (
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" />
           <Text className="text-muted-foreground text-sm mt-3">Loading checkpoints...</Text>

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { Hono } from 'hono'
+import { HTTPException } from 'hono/http-exception'
 import { cors } from 'hono/cors'
 import { csrf } from 'hono/csrf'
 import { secureHeaders } from 'hono/secure-headers'
@@ -42,6 +43,7 @@ import { testsRoutes } from './routes/tests'
 import { securityRoutes } from './routes/security'
 import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
+import { gitHttpRoutes } from './routes/git-http'
 import { thumbnailRoutes } from './routes/thumbnail'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
@@ -57,11 +59,13 @@ import { marketplaceRoutes } from './routes/marketplace'
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { costAnalyticsRoutes } from './routes/cost-analytics'
 import { integrationRoutes } from './routes/integrations'
-import { agentTemplateRoutes } from './routes/agent-templates'
+import { techStackRoutes } from './routes/tech-stacks'
 import { evalOutputRoutes } from './routes/eval-outputs'
 import { projectExportImportRoutes } from './routes/project-export-import'
 import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
 import { apiKeyRoutes } from './routes/api-keys'
+import { cliAuthRoutes } from './routes/cli-auth'
+import { getFrontendUrl, getShogoCloudUrl } from './lib/cloud-urls'
 import { localAuthRoutes } from './routes/local-auth'
 import { meetingRoutes } from './routes/meetings'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
@@ -71,11 +75,12 @@ import { syncRoutes } from './routes/sync'
 import internalRoutes from './routes/internal'
 import internalE2eRoutes from './routes/internal-e2e'
 import { vmRoutes, triggerVMImageDownload } from './routes/vm'
+import { localProjectsRoutes } from './routes/local-projects'
 import { requireSuperAdmin } from './middleware/super-admin'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
 import { createAdminRoutes } from './generated/admin-routes'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
-import { createRuntimeManager, type IRuntimeManager } from './lib/runtime'
+import { createRuntimeManager, setRuntimeManager, type IRuntimeManager } from './lib/runtime'
 // Generated routes (v2 API)
 import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
@@ -196,6 +201,15 @@ function getRuntimeManager(): IRuntimeManager {
       workspacesDir,
       templateDir: '_template',
     })
+    // Install as the module-level singleton in lib/runtime so the
+    // fallback path in resolve-pod-url.ts (and any other consumer that
+    // imports `getRuntimeManager` from `./lib/runtime/index`) resolves
+    // to this same instance. Without this, the fallback creates a
+    // second RuntimeManager whose constructor's cleanupStaleProcesses()
+    // SIGKILLs the still-starting Vite child this manager just spawned.
+    // See lib/runtime/manager.ts:setRuntimeManager for the full
+    // rationale.
+    setRuntimeManager(runtimeManager as ReturnType<typeof createRuntimeManager>)
     console.log('[Runtime] RuntimeManager initialized:', {
       portRange: '37100-37900 (random)',
       maxRuntimes: process.env.RUNTIME_MAX_COUNT || '10',
@@ -291,21 +305,9 @@ function convertUIMessagesToModelMessages(messages: any[]): ModelMessage[] {
 const API_PORT = parseInt(process.env.API_PORT || '8002', 10)
 const VITE_PORT = parseInt(process.env.VITE_PORT || '3000', 10)
 
-// Get the frontend URL for redirects (Stripe checkout, etc.)
-// Priority: APP_URL > first ALLOWED_ORIGINS > localhost fallback
-const getFrontendUrl = (): string => {
-  if (process.env.APP_URL) {
-    return process.env.APP_URL
-  }
-  const allowedOrigins = process.env.ALLOWED_ORIGINS
-  if (allowedOrigins) {
-    const firstOrigin = allowedOrigins.split(',')[0]?.trim()
-    if (firstOrigin) {
-      return firstOrigin
-    }
-  }
-  return `http://localhost:${VITE_PORT}`
-}
+// Frontend URL resolution (used for Stripe redirects, etc.) lives in
+// `./lib/cloud-urls` so cli-auth, marketplace, and the rest of the
+// codebase share one definition.
 
 // Compute project root from this file's location
 // This file is at: apps/api/src/server.ts
@@ -350,7 +352,20 @@ app.use('*', bodyLimit({ maxSize: 200 * 1024 * 1024 }))
 // =============================================================================
 // Hono-level error handler: catches unhandled errors in route handlers and
 // returns a structured JSON response instead of crashing the Bun process.
+//
+// IMPORTANT: HTTPException must be passed through (not swallowed as 500).
+// Framework middlewares — hono/csrf, hono/jwt, validators, the body-limit
+// middleware, etc. — signal client errors by throwing HTTPException with a
+// specific status (typically 401/403/413/422). Hono would normally call
+// `.getResponse()` on those automatically, but when we register `app.onError`
+// it takes precedence and would otherwise convert a clean 403 into a
+// confusing 500 with an empty body. That bug masked the csrf-blocks-DELETE
+// issue for a long time; route every HTTPException through `getResponse()`
+// so the original status + body reach the client unmodified.
 app.onError((err, c) => {
+  if (err instanceof HTTPException) {
+    return err.getResponse()
+  }
   console.error(`[API] Unhandled route error on ${c.req.method} ${c.req.path}:`, err.message)
   // Don't expose internal error details in production
   const isProduction = process.env.NODE_ENV === 'production'
@@ -425,19 +440,22 @@ app.use('/*', cors({
 // CSRF protection — validates Origin header on state-changing requests (POST/PUT/PATCH/DELETE).
 // Skips webhook and internal endpoints that use their own auth (signatures, tokens).
 //
-// NOTE: hono's csrf() always rejects form-body POSTs with no Origin header
-// BEFORE our custom origin handler runs (see node_modules/hono/.../csrf/index.js
-// isAllowedOrigin: `if (origin === undefined) return false`). Provider webhooks
-// (Twilio status callbacks in particular) post form-urlencoded bodies with no
-// Origin header and are authenticated by request signature, not CSRF. We skip
-// the csrf middleware entirely for those paths.
+// Hono's csrf middleware has a sharp edge: when `Origin` is undefined it
+// short-circuits to "deny" before ever calling our `origin` handler (see
+// node_modules/hono/.../csrf/index.js isAllowedOrigin:
+// `if (origin === undefined) return false`). That means the
+// `if (!origin) return true` below was dead code from inside the csrf options
+// alone. The wrapper middleware further down implements that fall-through
+// explicitly so server-to-server callers, the mobile app (React Native fetch
+// doesn't set Origin), curl, and provider webhooks reach the route handler.
 const csrfMiddleware = csrf({
   origin: (origin, c) => {
     const csrfPath = new URL(c.req.url).pathname
     if (/\/api\/projects\/[^/]+\/agent-proxy\/agent\/channels\/webchat\//.test(csrfPath)) {
       return true
     }
-    // Allow requests with no origin (server-to-server, mobile apps, curl)
+    // Hono never passes `undefined` here — the wrapper below handles that
+    // case before we get called. Kept defensively in case of upstream changes.
     if (!origin) return true
     const isDevOrLocal = process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOCAL_MODE === 'true'
     if (isDevOrLocal && (origin === 'null' || origin.startsWith('http://localhost:') || origin.startsWith('shogo://'))) {
@@ -458,6 +476,16 @@ app.use('/api/*', async (c, next) => {
     path === '/api/voice/elevenlabs/webhook' ||
     path.startsWith('/api/voice/twilio/status/')
   ) {
+    return next()
+  }
+  // Requests with no Origin AND no Referer cannot have been triggered by a
+  // browser cross-origin attack — they're from non-browser clients (mobile
+  // app, server-to-server callers, curl/CLI tools, the desktop app's main
+  // process). Authentication for these is handled downstream by the auth
+  // middleware (session cookie, runtime token, or API key). Skipping csrf
+  // for them mirrors the intent of `if (!origin) return true` in the csrf
+  // options above, which hono's middleware silently ignores.
+  if (!c.req.header('origin') && !c.req.header('referer')) {
     return next()
   }
   return csrfMiddleware(c, next)
@@ -512,7 +540,6 @@ app.use(
       '/api/tools/',
       '/api/api-keys/validate',
       '/api/marketplace',
-      '/api/agent-templates',
       '/api/tech-stacks',
       '/api/instances/heartbeat',
       '/api/instances/ws',
@@ -714,6 +741,12 @@ app.get('/api/config', async (c) => {
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
   app.route('/api/vm', vmRoutes())
 
+  // External / IDE-style folder projects (see apps/api/src/routes/local-projects.ts).
+  // Mounted here, next to /api/vm, because they share the same "only
+  // makes sense in local mode" trait — the cloud build doesn't expose
+  // a folder picker.
+  app.route('/api/local/projects', localProjectsRoutes())
+
   // Auto-download VM images in the background if not present
   setTimeout(() => {
     triggerVMImageDownload().catch((err) =>
@@ -911,14 +944,11 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
   })
 
   // ── Local mode: Shogo Cloud API key ──────────────────────────────────────
-  // Cloud endpoint selection is centralized: it is sourced ONLY from
-  // `process.env.SHOGO_CLOUD_URL` (default: production studio). Request
-  // bodies, persisted localConfig rows, and UI inputs are NOT honored — to
-  // target staging or self-hosted, set the env var on the API process.
-  const SHOGO_CLOUD_URL_DEFAULT = 'https://studio.shogo.ai'
-  const getShogoCloudUrl = (): string =>
-    (process.env.SHOGO_CLOUD_URL || SHOGO_CLOUD_URL_DEFAULT).replace(/\/$/, '')
-
+  // Cloud endpoint selection is centralized in `./lib/cloud-urls`: it is
+  // sourced ONLY from `process.env.SHOGO_CLOUD_URL` (default: production
+  // studio). Request bodies, persisted localConfig rows, and UI inputs
+  // are NOT honored — to target staging or self-hosted, set the env var
+  // on the API process.
   app.get('/api/local/shogo-key', async (c) => {
     try {
       const row = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_API_KEY' } })
@@ -1076,8 +1106,11 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
 // Marketplace
 app.route('/api/marketplace', marketplaceRoutes())
 
-// Agent template catalog — public, no auth required
-app.route('/api', agentTemplateRoutes())
+// Tech stack catalog — public, no auth required. (The legacy
+// /api/agent-templates surface was removed in the templates →
+// marketplace consolidation; the mobile app now reads first-party
+// agents from /api/marketplace?creatorId=<shogo-official>.)
+app.route('/api', techStackRoutes())
 
 // Eval output listing + import — for local dev/testing
 app.route('/api', evalOutputRoutes())
@@ -1094,6 +1127,11 @@ app.route('/api/internal', evalInternalRoutes())
 
 // API key management (for Shogo Local → Cloud authentication)
 app.route('/api', apiKeyRoutes())
+
+// CLI device-code login flow (POST start / GET poll / POST approve|deny)
+// Public start+poll, cookie-authed approve+deny. Mounted on the cloud
+// tier — see packages/shogo-worker/src/lib/cloud-login.ts for the client.
+app.route('/api', cliAuthRoutes())
 
 // Remote Control — Instance registry, tunnel proxy, audit trail, push subscriptions
 app.route('/api', instanceRoutes())
@@ -2033,14 +2071,77 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   if (!resolution.ok) {
     return c.json(resolution.body, resolution.status)
   }
+
+  // Shared between cloud-pod and tunnel branches: header capture, runtime
+  // token derivation, and the billing-session lifecycle. Hoisting them
+  // here keeps the two branches semantically identical from the runtime's
+  // perspective (same auth, same billing) — the only difference is the
+  // transport.
+  const contentType = c.req.header('content-type')
+  const accept = c.req.header('accept')
+  const { deriveRuntimeToken } = await import('./lib/runtime-token')
+  const runtimeToken = deriveRuntimeToken(projectId)
+
+  // Open the billing session for chat turns before fanning out to either
+  // branch. The handler-level `finally` guard closes it if neither branch
+  // hands it off to a tracker (e.g. retry exhaustion, client disconnect).
+  let billingSessionHandedOff = false
+  if (isChatStream && authedWorkspaceId && authedUserId) {
+    openSession(projectId, authedWorkspaceId, authedUserId)
+  }
+
+  // ─── Tunnel branch ─────────────────────────────────────────────────
+  // The project is pinned to a paired Instance (VPS / laptop) and the
+  // tunnel is live. Forward through the worker's outbound WebSocket
+  // instead of fetching a cloud pod — this is what makes a single
+  // canonical project URL work for external webhooks regardless of
+  // where the agent actually runs.
+  if (resolution.kind === 'tunnel') {
+    try {
+      const { relayAgentProxyViaTunnel } = await import('./lib/tunnel-relay')
+      const tunnelHeaders: Record<string, string> = {}
+      if (contentType) tunnelHeaders['content-type'] = contentType
+      if (accept) tunnelHeaders['accept'] = accept
+      tunnelHeaders['x-runtime-token'] = runtimeToken
+      if (isChatStream && authedUserId) tunnelHeaders['x-billing-user-id'] = authedUserId
+      if (isWebchatPath) {
+        for (const h of ['origin', 'x-webchat-widget-key', 'x-webchat-session-token', 'x-webchat-session'] as const) {
+          const v = c.req.header(h)
+          if (v) tunnelHeaders[h] = v
+        }
+      }
+      const tunnelBody = c.req.method === 'GET' || c.req.method === 'HEAD'
+        ? undefined
+        : await c.req.text()
+      return await relayAgentProxyViaTunnel({
+        c,
+        instanceId: resolution.instanceId,
+        workspaceId: resolution.workspaceId,
+        projectId,
+        agentPath: `${path}${qs}`,
+        cleanPath: path,
+        method: c.req.method,
+        body: tunnelBody,
+        headers: tunnelHeaders,
+        userId: authedUserId,
+        isChatTurn: isChatStream,
+        onBillingHandoff: () => { billingSessionHandedOff = true },
+      })
+    } finally {
+      if (isChatStream && !billingSessionHandedOff && hasSession(projectId)) {
+        closeSession(projectId, { discardPartial: true }).catch((err) =>
+          console.error(`[AgentProxy] Failed to close orphaned tunnel billing session for ${projectId}:`, err),
+        )
+      }
+    }
+  }
+
   const podUrl = resolution.url
 
   const targetUrl = `${podUrl}${path}${qs}`
 
   const headers = new Headers()
-  const contentType = c.req.header('content-type')
   if (contentType) headers.set('content-type', contentType)
-  const accept = c.req.header('accept')
   if (accept) headers.set('accept', accept)
   if (isWebchatPath) {
     const fwdHeaders = ['origin', 'x-webchat-widget-key', 'x-webchat-session-token', 'x-webchat-session'] as const
@@ -2049,8 +2150,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
       if (v) headers.set(h, v)
     }
   }
-  const { deriveRuntimeToken } = await import('./lib/runtime-token')
-  headers.set('x-runtime-token', deriveRuntimeToken(projectId))
+  headers.set('x-runtime-token', runtimeToken)
 
   // Forward the real billing user so the runtime can include it in AI proxy
   // calls — same convention as `project-chat.ts`.
@@ -2061,15 +2161,6 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   let requestBody: ArrayBuffer | undefined
   if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
     requestBody = await c.req.arrayBuffer()
-  }
-
-  // Open a billing session for this chat turn so the AI proxy accumulates
-  // tokens (and image-generation USD) across all calls in the agentic loop
-  // and emits a single `chat_message` `usage_events` row when the session
-  // closes after the stream ends.
-  let billingSessionHandedOff = false
-  if (isChatStream && authedWorkspaceId && authedUserId) {
-    openSession(projectId, authedWorkspaceId, authedUserId)
   }
 
   try {
@@ -2210,6 +2301,128 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
       )
     }
   }
+})
+
+// =============================================================================
+// Preferred-instance routes — "Run on" selector for external-trigger routing
+//
+// PUT  /api/projects/:projectId/preferred-instance { instanceId, policy? }
+//   Pins a project to a paired Instance. Future /agent-proxy/* requests
+//   relay through that Instance's tunnel until cleared. Used by Studio's
+//   "Run on" selector and by SDK callers (`client.machines.pinProject`).
+//
+// DELETE /api/projects/:projectId/preferred-instance
+//   Unpins, restoring cloud-pod routing.
+//
+// Auth: standard `/api/*` middleware applies; we re-verify project
+// access (workspace membership) the same way `agent-proxy` does.
+// =============================================================================
+
+app.get('/api/projects/:projectId/preferred-instance', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const workspaceId = await verifyProjectAccess(userId, projectId)
+  if (!workspaceId) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      preferredInstanceId: true,
+      preferredInstancePolicy: true,
+      preferredInstance: { select: { id: true, name: true, kind: true, hostname: true } },
+    },
+  })
+  if (!project) {
+    return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+  }
+
+  return c.json({
+    preferredInstanceId: project.preferredInstanceId,
+    preferredInstancePolicy: project.preferredInstancePolicy,
+    instance: project.preferredInstance,
+  })
+})
+
+app.put('/api/projects/:projectId/preferred-instance', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const projectWorkspaceId = await verifyProjectAccess(userId, projectId)
+  if (!projectWorkspaceId) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+
+  const body = await c.req
+    .json<{ instanceId?: string; policy?: string }>()
+    .catch(() => ({}) as { instanceId?: string; policy?: string })
+  if (!body.instanceId || typeof body.instanceId !== 'string') {
+    return c.json({ error: { code: 'invalid_request', message: 'instanceId required' } }, 400)
+  }
+
+  // Whitelist policy strings here (not on the column) so the API stays
+  // backward-compatible as we grow the set. See agent-proxy-resolver.ts
+  // for how each value behaves at request time.
+  const policy = body.policy ?? 'pinned'
+  if (policy !== 'pinned' && policy !== 'prefer') {
+    return c.json(
+      { error: { code: 'invalid_request', message: "policy must be 'pinned' or 'prefer'" } },
+      400,
+    )
+  }
+
+  // Tie the pin to an Instance the caller actually owns. Anything else
+  // would let workspace A route requests through workspace B's worker.
+  const instance = await prisma.instance.findUnique({
+    where: { id: body.instanceId },
+    select: { id: true, workspaceId: true, name: true },
+  })
+  if (!instance || instance.workspaceId !== projectWorkspaceId) {
+    return c.json({ error: { code: 'not_found', message: 'Instance not found in workspace' } }, 404)
+  }
+
+  await prisma.project.update({
+    where: { id: projectId },
+    data: {
+      preferredInstanceId: instance.id,
+      preferredInstancePolicy: policy,
+    },
+  })
+
+  return c.json({
+    ok: true,
+    preferredInstanceId: instance.id,
+    preferredInstancePolicy: policy,
+    instance: { id: instance.id, name: instance.name },
+  })
+})
+
+app.delete('/api/projects/:projectId/preferred-instance', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const projectWorkspaceId = await verifyProjectAccess(userId, projectId)
+  if (!projectWorkspaceId) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+
+  await prisma.project.update({
+    where: { id: projectId },
+    data: {
+      preferredInstanceId: null,
+      preferredInstancePolicy: 'pinned',
+    },
+  })
+
+  return c.json({ ok: true })
 })
 
 // =============================================================================
@@ -2450,13 +2663,23 @@ app.get('/api/projects/:projectId/download', async (c) => {
   try {
     const excludes = [
       'node_modules', '.git', '.next', 'dist', 'build', '.cache',
-      '.output', '.nuxt', '.bun', '.vite'
+      '.output', '.nuxt', '.bun', '.vite',
+      // macOS detritus — AppleDouble sidecars (`._*`) are binary resource-fork
+      // blobs that crash Metro's Babel parser if they survive into the imported
+      // workspace. The rest are Finder/Spotlight noise.
+      '._*', '.DS_Store', '__MACOSX', '.AppleDouble',
     ]
     const excludeArgs = excludes.flatMap((dir: string) => ['--exclude', dir])
-    
+
     const result = Bun.spawnSync(
       ['tar', '-czf', '-', ...excludeArgs, '-C', projectDir, '.'],
-      { stdout: 'pipe', stderr: 'pipe' }
+      {
+        stdout: 'pipe',
+        stderr: 'pipe',
+        // Prevent BSD `tar` on macOS from re-injecting AppleDouble entries
+        // synthesized from extended attributes at archive time.
+        env: { ...process.env, COPYFILE_DISABLE: '1' },
+      }
     )
     
     if (result.exitCode !== 0) {
@@ -2507,6 +2730,28 @@ app.post('/api/projects/:projectId/s3/presign', async (c) => {
     headers: c.req.raw.headers,
     body: c.req.raw.body,
   })
+  return router.fetch(newReq)
+})
+
+// Full workspace manifest (used by `shogo project pull` + worker auto-pull)
+app.get('/api/projects/:projectId/workspace/manifest', async (c) => {
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = filesRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/workspace/manifest`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// Delete file (used by `shogo project push --delete-remote`)
+app.delete('/api/projects/:projectId/files/*', async (c) => {
+  const projectId = c.req.param('projectId')
+  const filePath = c.req.path.replace(`/api/projects/${projectId}/files/`, '')
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = filesRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/files/${filePath}`
+  const newReq = new Request(url.toString(), { method: 'DELETE' })
   return router.fetch(newReq)
 })
 
@@ -3721,6 +3966,11 @@ const workspacesDirResolved = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT
 // Mount checkpoint routes
 const checkpointRouter = checkpointRoutes({ workspacesDir: workspacesDirResolved })
 app.route('/api', checkpointRouter)
+
+// Mount git smart-HTTP backend (clone/fetch/push from paired workers).
+// See routes/git-http.ts for the wire-protocol bridge to `git http-backend`.
+const gitHttpRouter = gitHttpRoutes({ workspacesDir: workspacesDirResolved })
+app.route('/api', gitHttpRouter)
 
 // Mount GitHub routes
 const githubRouter = githubRoutes({ workspacesDir: workspacesDirResolved })
@@ -6509,10 +6759,17 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
         const crypto = require('crypto') as typeof import('crypto')
         const password = crypto.randomBytes(24).toString('base64')
 
+        // Allow overriding the seeded local user via env so a developer can
+        // sign in as their real cloud email locally (so cloud-side artifacts
+        // like ProjectAgent rows match by email when they later sync). Falls
+        // back to local@shogo.local for fresh installs that don't set it.
+        const seedEmail = process.env.SHOGO_LOCAL_USER_EMAIL || 'local@shogo.local'
+        const seedName = process.env.SHOGO_LOCAL_USER_NAME || 'Local User'
+
         const signUpRes = await auth.api.signUpEmail({
           body: {
-            name: 'Local User',
-            email: 'local@shogo.local',
+            name: seedName,
+            email: seedEmail,
             password,
           },
         })
@@ -6523,7 +6780,7 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
             update: { value: password },
             create: { key: 'local_user_password', value: password },
           })
-          console.log('[LocalMode] Auto-seeded default user local@shogo.local')
+          console.log(`[LocalMode] Auto-seeded default user ${seedEmail}`)
         }
       }
     } catch (err: any) {
@@ -6566,6 +6823,29 @@ await (async () => {
     console.log('[AgentModels] No model overrides loaded (non-fatal):', err.message)
   }
 })()
+
+// Boot-time data migration chain (templates → marketplace, then S3
+// snapshot backfill). The implementation lives in
+// `lib/boot-marketplace-migrations.ts` so the ordering invariant
+// (step 2 must observe step 1's writes) is unit-testable. Skipped in
+// test environments to keep test boot times tight; either step can
+// be individually disabled via the `SHOGO_SKIP_*` env vars (used as a
+// kill-switch during incidents).
+if (process.env.NODE_ENV !== 'test') {
+  void (async () => {
+    const { runBootMarketplaceMigrations } = await import('./lib/boot-marketplace-migrations')
+    await runBootMarketplaceMigrations({
+      loadRunMigration: async () =>
+        (await import('../scripts/migrate-templates-to-marketplace')).runMigration,
+      loadRunSnapshotBackfill: async () =>
+        (await import('../scripts/backfill-marketplace-snapshots-to-s3')).runSnapshotBackfill,
+      env: {
+        SHOGO_SKIP_TEMPLATE_MIGRATION: process.env.SHOGO_SKIP_TEMPLATE_MIGRATION,
+        SHOGO_SKIP_SNAPSHOT_BACKFILL: process.env.SHOGO_SKIP_SNAPSHOT_BACKFILL,
+      },
+    })
+  })()
+}
 
 // Match a path like `/api/projects/<projectId>/terminal/sessions/<id>/ws`.
 const PTY_WS_PATH_RE = /^\/api\/projects\/([^/]+)\/terminal\/sessions\/([^/]+)\/ws$/
@@ -6725,6 +7005,7 @@ if (isVMIsolation() && !isKubernetes()) {
       // LSPs / prisma headroom inside the Linux guest. The OOM killer was
       // reaping `node` mid-build at 1.5 GB. See apps/desktop/src/vm/types.ts.
       let configMemoryMB = 4096
+      let configPoolMemoryMB = 1536
       let configCpus = 0
       let configMountWorkspace = false
       try {
@@ -6737,11 +7018,19 @@ if (isVMIsolation() && !isKubernetes()) {
         const raw = fs.readFileSync(path.join(configDir, 'config.json'), 'utf-8')
         const parsed = JSON.parse(raw)
         if (parsed?.vmIsolation?.memoryMB > 0) configMemoryMB = parsed.vmIsolation.memoryMB
+        if (parsed?.vmIsolation?.poolMemoryMB > 0) configPoolMemoryMB = parsed.vmIsolation.poolMemoryMB
         if (parsed?.vmIsolation?.cpus > 0) configCpus = parsed.vmIsolation.cpus
         if (parsed?.vmIsolation?.mountWorkspace === true) configMountWorkspace = true
       } catch {}
 
       const memoryMB = parseInt(process.env.VM_MEMORY_MB || String(configMemoryMB), 10)
+      // Pool VMs idle at this size and balloon-deflate to `memoryMB` on
+      // assign. Clamp to ≤ memoryMB so misconfiguration can't inflate
+      // pool VMs above the assigned ceiling.
+      const poolMemoryMB = Math.min(
+        memoryMB,
+        parseInt(process.env.VM_POOL_MEMORY_MB || String(configPoolMemoryMB), 10),
+      )
       const autoCpus = Math.max(2, Math.floor(os.cpus().length / 2))
       const cpus = parseInt(process.env.VM_CPUS || String(configCpus > 0 ? configCpus : autoCpus), 10)
 
@@ -6755,6 +7044,7 @@ if (isVMIsolation() && !isKubernetes()) {
           path.join(home, '.config', 'gh'),
         ],
         memoryMB,
+        poolMemoryMB,
         cpus,
         networkEnabled: true,
         overlayPath: path.join(overlayDir, `pool-${crypto.randomUUID()}.qcow2`),

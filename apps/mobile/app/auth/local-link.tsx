@@ -1,8 +1,37 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Desktop Cloud-Login Bridge Page
+ * Desktop Cloud-Login Bridge Page — LEGACY COMPATIBILITY SHIM
  *
+ * Background
+ * ----------
+ * The cloud-side sign-in handoff used to live at `/auth/local-link` (this
+ * file). The May 2026 `feat(cloud-agent)` refactor (commit df168409)
+ * replaced it with the device-code flow at `/auth/cli-link` and **deleted
+ * this route outright** — but every desktop build that shipped before
+ * that refactor (≤ v1.6.5 at the time of writing) hardcodes
+ * `${cloudUrl}/auth/local-link?...` as the URL it opens in the system
+ * browser. Those installs in the wild now land on the Expo Router
+ * "Unmatched Route" page and can never finish signing in. This file
+ * restores the route so they keep working.
+ *
+ * Why we keep this around (do NOT delete without a migration plan)
+ * ----------------------------------------------------------------
+ * - Backend contract is unchanged: `POST /api/api-keys/device` and the
+ *   `shogo://auth-callback` deep link are still implemented in
+ *   `apps/api/src/routes/api-keys.ts` and `apps/desktop/src/main.ts`,
+ *   and the e2e test in `apps/api/src/__tests__/cloud-login-e2e.test.ts`
+ *   still covers the contract this page depends on.
+ * - New desktop releases open `/auth/cli-link` instead, so this page is
+ *   only hit by legacy clients. It will stop receiving traffic naturally
+ *   as users update.
+ * - Before removing this file again, gate it on `appVersion` and either
+ *   serve a friendly "Please update Shogo Desktop" screen for old builds
+ *   or wait until usage analytics drop to zero. The previous removal
+ *   skipped that step, which is the regression we are fixing here.
+ *
+ * Flow
+ * ----
  * The Shogo desktop app opens this page in the system browser after the user
  * clicks "Sign in to Shogo Cloud". Once the user is authenticated (via
  * Better Auth — we redirect to /sign-in?next=/auth/local-link if not), we:

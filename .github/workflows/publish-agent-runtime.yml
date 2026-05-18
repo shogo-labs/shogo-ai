@@ -1,0 +1,251 @@
+# =============================================================================
+# Publish shogo-agent-runtime prebuilt binaries
+# =============================================================================
+# Triggered alongside the rest of the app on `v[0-9]*` tag pushes — the
+# runtime is versioned in lockstep with the desktop app, the worker, and
+# the SDK. Builds the AGPL @shogo/agent-runtime as a single self-contained
+# `bun build --compile` binary for each of the four supported targets,
+# then *appends* the four tarballs (+ SHA-256 sidecars) to the same
+# GitHub Release the desktop-release-{macos,windows} workflows attach to:
+#
+#   v0.5.2  →  appends to release `v0.5.2`
+#                shogo-agent-runtime-darwin-arm64.tar.gz   (+ .sha256)
+#                shogo-agent-runtime-darwin-x64.tar.gz     (+ .sha256)
+#                shogo-agent-runtime-linux-arm64.tar.gz    (+ .sha256)
+#                shogo-agent-runtime-linux-x64.tar.gz      (+ .sha256)
+#
+# The release-create step uses softprops/action-gh-release with no `name:`
+# so multiple workflows can land assets at the same tag without racing on
+# the title — whichever workflow creates the release first wins the title,
+# everyone else just adds files. softprops never deletes assets it didn't
+# upload, so the desktop .dmg / .exe / .nupkg artifacts stay intact.
+#
+# These tarballs are what `shogo runtime install` (in @shogo-ai/worker)
+# downloads and unpacks into ~/.shogo/runtime/. The install command
+# defaults its base URL to this GitHub Release, but is overridable via
+# `--base-url` / `SHOGO_RUNTIME_RELEASES_URL` for self-hosting at e.g.
+# `releases.shogo.ai`.
+#
+# License: the binaries are AGPL-3.0-or-later (matches the source at
+# packages/agent-runtime/). The MIT-licensed worker spawns these as
+# separate OS processes — see packages/shogo-worker/README.md
+# "Process boundary" for why this composition is permissible.
+#
+# Bun cross-compiles all four targets from a single ubuntu-latest host
+# via `--target=bun-{darwin,linux}-{arm64,x64}`, so this workflow does
+# not need a build matrix. Speed matters less than reproducibility:
+# every binary in a release was built from the same checkout.
+# =============================================================================
+
+name: Publish agent-runtime binaries
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing app tag to publish runtime for (e.g. v0.5.2). Must already exist.'
+        required: true
+        type: string
+      channel:
+        description: 'Release channel (stable | beta | nightly). Affects only release notes — channel detection is normally driven by the tag suffix (`-beta.*` / `-nightly.*`).'
+        required: false
+        default: 'stable'
+        type: choice
+        options:
+          - stable
+          - beta
+          - nightly
+      dry_run:
+        description: 'Build but do not upload to a release'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write # required to create the GitHub Release & upload assets
+
+# Keyed on the tag (not branch) so a re-run of the same tag waits for
+# the previous run, but a tag push doesn't block desktop-release jobs
+# running on the same tag in parallel.
+concurrency:
+  group: publish-agent-runtime-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  BUN_VERSION: '1.3.11'
+  TARGETS: 'darwin-arm64 darwin-x64 linux-arm64 linux-x64'
+
+jobs:
+  build:
+    name: Build + publish runtime binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun dependencies
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-runtime-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-runtime-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Resolve version from tag
+        id: version
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$TAG' is not a valid app version tag (expected vX.Y.Z[-prerelease])"
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          # Channel detection from the version suffix:
+          #   X.Y.Z              -> stable
+          #   X.Y.Z-beta.N        -> beta
+          #   X.Y.Z-nightly.N     -> nightly
+          #   X.Y.Z-anything-else -> beta (default for unrecognised prerelease tags)
+          # workflow_dispatch can override.
+          INPUT_CHANNEL="${{ github.event.inputs.channel }}"
+          if [ -n "$INPUT_CHANNEL" ]; then
+            CHANNEL="$INPUT_CHANNEL"
+          elif [[ "$VERSION" == *-nightly* ]]; then
+            CHANNEL="nightly"
+          elif [[ "$VERSION" == *-* ]]; then
+            CHANNEL="beta"
+          else
+            CHANNEL="stable"
+          fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "Building shogo-agent-runtime $VERSION (channel=$CHANNEL, tag=$TAG)"
+
+      - name: Build all four targets
+        working-directory: packages/agent-runtime
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # `--external electron` skips bundling Electron, which playwright-core
+          # only `require()`s from its electron loader behind the never-reached
+          # Playwright-Electron launch API. Without this, bun --compile fails
+          # at: playwright-core/lib/server/electron/loader.js:2.
+          # NB: playwright-core itself MUST be bundled (used at runtime via
+          # `await import('playwright-core')` in src/gateway-tools.ts).
+          for TARGET in $TARGETS; do
+            echo "::group::compile shogo-agent-runtime-$TARGET"
+            OUT="dist/shogo-agent-runtime-$TARGET"
+            bun build src/server.ts \
+              --compile \
+              --target="bun-$TARGET" \
+              --external electron \
+              --outfile "$OUT"
+            ls -lh "$OUT"
+            echo "::endgroup::"
+          done
+
+      - name: Tarball + sha256 sidecars
+        working-directory: packages/agent-runtime
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release
+          for TARGET in $TARGETS; do
+            BIN="shogo-agent-runtime-$TARGET"
+            STAGE="dist/stage-$TARGET"
+            mkdir -p "$STAGE"
+            # Inside the tarball the binary is just `agent-runtime` so
+            # the worker's runtime-resolver can find ~/.shogo/runtime/agent-runtime
+            # without target-name knowledge.
+            cp "dist/$BIN" "$STAGE/agent-runtime"
+            chmod +x "$STAGE/agent-runtime"
+            # Drop a small VERSION file next to it so `shogo runtime version`
+            # can report something even without re-asking the cloud.
+            cat > "$STAGE/VERSION" <<EOF
+          version=$VERSION
+          target=$TARGET
+          built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          source=https://github.com/${{ github.repository }}/tree/${{ steps.version.outputs.tag }}/packages/agent-runtime
+          license=AGPL-3.0-or-later
+          EOF
+            TARBALL="dist/release/$BIN.tar.gz"
+            tar -C "$STAGE" -czf "$TARBALL" agent-runtime VERSION
+            (cd dist/release && sha256sum "$BIN.tar.gz" > "$BIN.tar.gz.sha256")
+            ls -lh "$TARBALL" "$TARBALL.sha256"
+          done
+
+      - name: Upload build artifacts (workflow scope)
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: shogo-agent-runtime-${{ steps.version.outputs.version }}
+          path: packages/agent-runtime/dist/release/*
+          retention-days: 30
+
+      - name: Append runtime tarballs to the v* GitHub Release
+        if: github.event.inputs.dry_run != 'true'
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        with:
+          # NB: deliberately no `name:` — desktop-release-{macos,windows}
+          # also publish to this same tag and set the release title.
+          # softprops leaves the name alone when the release already
+          # exists, so whoever wins the create-race owns the title and
+          # the rest of us just append files.
+          tag_name: ${{ steps.version.outputs.tag }}
+          prerelease: ${{ steps.version.outputs.channel != 'stable' }}
+          # `body` is appended only on first creation; on subsequent
+          # workflow runs against the same tag softprops leaves the
+          # release notes untouched. The desktop workflow currently
+          # creates the release without a body, so this lands first
+          # only when the runtime workflow happens to win the race.
+          body: |
+            Includes prebuilt agent-runtime binaries (channel: ${{ steps.version.outputs.channel }}, AGPL-3.0-or-later).
+
+            Install with the worker:
+
+            ```
+            shogo runtime install --channel ${{ steps.version.outputs.channel }}
+            ```
+          files: packages/agent-runtime/dist/release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        if: always()
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          CHANNEL: ${{ steps.version.outputs.channel }}
+          DRY: ${{ github.event.inputs.dry_run }}
+          REPO: ${{ github.repository }}
+        run: |
+          {
+            echo "## agent-runtime publish"
+            echo "- Tag: \`$TAG\`"
+            echo "- Version: \`$VERSION\`"
+            echo "- Channel: \`$CHANNEL\`"
+            echo "- Dry run: \`${DRY:-false}\`"
+            echo
+            echo "### Built artifacts (appended to release \`$TAG\`)"
+            for TARGET in $TARGETS; do
+              echo "- \`shogo-agent-runtime-$TARGET.tar.gz\` (+ \`.sha256\`)"
+            done
+            if [ "${DRY:-false}" != "true" ]; then
+              echo
+              echo "Release: https://github.com/$REPO/releases/tag/$TAG"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

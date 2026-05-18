@@ -2,7 +2,7 @@
   "name": "@shogo/mobile",
   "version": "1.0.0",
   "private": true,
-  "license": "AGPL-3.0-or-later",
+  "license": "MIT",
   "main": "./index.js",
   "scripts": {
     "dev": "expo start",
@@ -118,6 +118,7 @@
   "devDependencies": {
     "@expo/metro-runtime": "^6.1.2",
     "@happy-dom/global-registrator": "^20.9.0",
+    "@sentry/cli": "^3.4.2",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",

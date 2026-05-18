@@ -60,6 +60,26 @@ import { initComposioSession, isComposioEnabled, isComposioInitialized, searchCo
 import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
 import { addQuickAction, validateQuickActions } from './quick-actions'
 import { withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
+import { assertAllowedPath as assertAllowedPathRaw, getRuntimeTrust } from './runtime-trust'
+
+/**
+ * Tool-layer wrapper for `assertAllowedPath` that returns a uniform
+ * `{ ok, message }` shape suitable for short-circuiting an
+ * `execute()`. Lives here (not in runtime-trust.ts) because the trust
+ * layer doesn't know what an `AgentToolResult` looks like — we keep
+ * the dependency direction "tools → trust", not the reverse.
+ */
+function assertAllowedPath(targetPath: string, mode: 'read' | 'write' | 'exec', workspaceDir?: string) {
+  const result = assertAllowedPathRaw(targetPath, mode)
+  if (result.ok || !workspaceDir || result.reason !== 'outside_allowed_roots') return result
+
+  try {
+    const resolved = assertWithinWorkspace(workspaceDir, targetPath)
+    return { ok: true, resolved }
+  } catch {
+    return result
+  }
+}
 import { deriveApiUrl, derivePublicApiUrl } from './internal-api'
 import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
@@ -378,6 +398,13 @@ function createExecTool(ctx: ToolContext): AgentTool {
     }),
     execute: async (_toolCallId, params) => {
       const { command, timeout = DEFAULT_EXEC_SOFT_TIMEOUT_MS } = params as { command: string; timeout?: number }
+
+      // Workspace Trust gate. Restricted-mode projects (newly opened
+      // external folders the user hasn't trusted) refuse all shell
+      // commands. Matches VS Code's Restricted Mode behaviour: terminal
+      // and task execution are disabled until trust is granted.
+      const execTrust = assertAllowedPath(ctx.workspaceDir, 'exec', ctx.workspaceDir)
+      if (!execTrust.ok) return textResult({ error: execTrust.message })
 
       if (isBlockedCommand(command)) {
         return textResult({ error: `Blocked command: ${command}` })
@@ -847,6 +874,11 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
         append?: boolean
       }
       const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
+      // Workspace Trust gate for external (VS Code-style) projects.
+      // For managed projects (the historical case) `assertAllowedPath`
+      // returns ok=true because trustLevel is 'trusted' by default.
+      const trustCheck = assertAllowedPath(resolved, 'write', ctx.workspaceDir)
+      if (!trustCheck.ok) return textResult({ error: trustCheck.message })
       const protectedRejection = rejectIfProtected(ctx, resolved)
       if (protectedRejection) return protectedRejection
       const dir = dirname(resolved)
@@ -1268,6 +1300,8 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
         return textResult({ error: 'old_string and new_string must differ' })
       }
       const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
+      const trustCheck = assertAllowedPath(resolved, 'write', ctx.workspaceDir)
+      if (!trustCheck.ok) return textResult({ error: trustCheck.message })
       const protectedRejection = rejectIfProtected(ctx, resolved)
       if (protectedRejection) return protectedRejection
 

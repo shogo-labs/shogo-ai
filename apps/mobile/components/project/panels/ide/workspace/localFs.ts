@@ -16,23 +16,74 @@ const DENY_DIRS = new Set([
   ".cache",
 ]);
 
+/** Known-text extensions. We treat anything in this set as text without
+ *  sniffing the bytes. The list is intentionally broad — log/csv/conf files
+ *  are real source-tree citizens and Monaco renders them fine even without
+ *  syntax highlighting. */
 const TEXT_EXT = new Set([
+  // JS / TS family
   "ts", "tsx", "js", "jsx", "mjs", "cjs",
-  "json", "md", "mdx", "txt", "yml", "yaml", "toml",
-  "css", "scss", "html", "svg", "prisma",
-  "py", "rs", "go", "java", "rb", "sh",
+  // Data / config
+  "json", "json5", "jsonc", "yml", "yaml", "toml", "ini", "conf", "cfg",
+  "properties", "env", "lock", "xml", "plist", "csv", "tsv", "tab", "ndjson",
+  // Docs / prose
+  "md", "mdx", "markdown", "txt", "rst", "adoc", "asciidoc", "log",
+  // Web
+  "css", "scss", "sass", "less", "html", "htm", "xhtml", "vue", "svelte",
+  "astro",
+  // Backend / systems
+  "py", "pyi", "rs", "go", "java", "kt", "kts", "scala", "rb", "php",
+  "swift", "c", "cc", "cpp", "cxx", "h", "hh", "hpp", "hxx", "m", "mm",
+  "cs", "fs", "fsx", "fsi", "ml", "mli", "ex", "exs", "erl", "hrl", "clj",
+  "cljs", "edn", "lua", "pl", "pm", "r", "jl", "dart", "nim", "zig", "v",
+  "vb", "vbs", "ps1", "psm1", "ahk",
+  // Shell / scripts
+  "sh", "bash", "zsh", "fish", "ksh", "csh", "bat", "cmd",
+  // Build / infra
+  "gradle", "groovy", "make", "mk", "cmake", "bazel", "bzl", "buck", "ninja",
+  "tf", "tfvars", "hcl", "nomad",
+  // SQL / schemas
+  "sql", "graphql", "gql", "prisma", "proto", "thrift", "avsc", "schema",
+  // Vector / markup
+  "svg",
+  // Misc
+  "diff", "patch", "gitignore", "gitattributes", "gitmodules",
+  "dockerignore", "npmignore", "editorconfig", "prettierrc", "eslintrc",
+  "babelrc", "nvmrc", "tool-versions",
 ]);
 
 const LANG: Record<string, string> = {
   ts: "typescript", tsx: "typescript",
   js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
-  json: "json",
-  md: "markdown", mdx: "markdown",
-  css: "css", scss: "scss", html: "html",
-  yml: "yaml", yaml: "yaml", toml: "toml",
-  py: "python", rs: "rust", go: "go",
-  java: "java", rb: "ruby", sh: "shell",
-  prisma: "prisma", svg: "xml",
+  json: "json", json5: "json", jsonc: "json", ndjson: "json",
+  md: "markdown", mdx: "markdown", markdown: "markdown",
+  css: "css", scss: "scss", sass: "scss", less: "less",
+  html: "html", htm: "html", xhtml: "html", vue: "html",
+  svelte: "html", astro: "html",
+  yml: "yaml", yaml: "yaml", toml: "toml", ini: "ini", conf: "ini",
+  cfg: "ini", properties: "ini", env: "shell",
+  py: "python", pyi: "python",
+  rs: "rust", go: "go",
+  java: "java", kt: "kotlin", kts: "kotlin", scala: "scala",
+  rb: "ruby", php: "php", swift: "swift",
+  c: "c", cc: "cpp", cpp: "cpp", cxx: "cpp",
+  h: "cpp", hh: "cpp", hpp: "cpp", hxx: "cpp",
+  m: "objective-c", mm: "objective-c",
+  cs: "csharp", fs: "fsharp", fsx: "fsharp", fsi: "fsharp",
+  lua: "lua", pl: "perl", pm: "perl", r: "r", jl: "julia",
+  dart: "dart", clj: "clojure", cljs: "clojure",
+  sh: "shell", bash: "shell", zsh: "shell", fish: "shell",
+  ksh: "shell", csh: "shell", bat: "bat", cmd: "bat",
+  ps1: "powershell", psm1: "powershell",
+  sql: "sql", graphql: "graphql", gql: "graphql",
+  prisma: "prisma", proto: "proto",
+  xml: "xml", plist: "xml", svg: "xml",
+  diff: "diff", patch: "diff",
+  csv: "plaintext", tsv: "plaintext", tab: "plaintext", log: "plaintext",
+  txt: "plaintext",
+  tf: "hcl", tfvars: "hcl", hcl: "hcl",
+  gradle: "groovy", groovy: "groovy",
+  dockerfile: "dockerfile",
 };
 
 function extOf(name: string) {
@@ -44,15 +95,71 @@ function langOf(name: string) {
   return LANG[extOf(name)] ?? "plaintext";
 }
 
-function isTextFile(name: string) {
+/** Extensions known to be binary — used as a fast reject before falling
+ *  back to a content sniff. Keep this in sync with Workbench.BINARY_EXTENSIONS
+ *  for the user-facing block list. */
+const BINARY_EXT = new Set([
+  // Images (handled by ImagePreview, not by readFile)
+  "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif", "apng",
+  "heic", "heif", "tiff", "tif", "jxl", "cur",
+  // Archives
+  "zip", "gz", "tar", "tgz", "bz2", "xz", "7z", "rar", "zst", "lz4",
+  // Audio / video / docs (handled by media previews)
+  "mp3", "mp4", "m4a", "m4v", "mov", "avi", "mkv", "webm", "wav", "flac",
+  "ogg", "oga", "ogv", "aac", "opus", "pdf",
+  // Fonts
+  "woff", "woff2", "ttf", "otf", "eot",
+  // Native / packed
+  "exe", "dll", "so", "dylib", "bin", "class", "jar", "wasm",
+  // Databases (handled by SqlitePreview)
+  "db", "sqlite", "sqlite3",
+  // Misc binary
+  "pack", "idx", "psd", "ai", "sketch", "fig", "blend", "obj", "fbx",
+  "pyc", "pyo", "pyd",
+]);
+
+/** Classify a filename as text / binary by name alone.
+ *  - `true`  : known text (extension allow-list, dotfiles, conventional
+ *              no-extension files like README / Dockerfile / MEMORY).
+ *  - `false` : known binary (extension deny-list).
+ *  - `null`  : unknown — caller should fall back to a byte sniff.
+ *  Callers MUST treat the three return values explicitly (use
+ *  `=== true` / `=== false`), not truthy/falsy, so the unknown case is
+ *  routed through the sniff rather than silently dropped. */
+function isTextFile(name: string): boolean | null {
   // Treat common dotfiles as text (.env, .env.local, .gitignore, .prettierrc,
   // .editorconfig, .nvmrc, etc). The extension detector otherwise misclassifies
   // them because the leading dot makes "env"/"gitignore"/… look like an
   // unknown extension.
   if (name.startsWith(".")) return true;
   const e = extOf(name);
-  if (!e) return /^(Dockerfile|Makefile|README|LICENSE|CHANGELOG)/i.test(name);
-  return TEXT_EXT.has(e);
+  if (!e) return /^(Dockerfile|Makefile|README|LICENSE|CHANGELOG|AUTHORS|CONTRIBUTING|NOTICE|COPYING|TODO|HEARTBEAT|AGENTS|TOOLS|MEMORY)/i.test(name);
+  if (TEXT_EXT.has(e)) return true;
+  if (BINARY_EXT.has(e)) return false;
+  return null;
+}
+
+/** Heuristic content sniff: returns true if the first 8KB of `file` looks
+ *  like text (no NUL bytes, mostly printable / common-whitespace). Used for
+ *  unknown extensions so we don't refuse to open a perfectly valid text
+ *  file just because we never heard of its suffix. */
+async function looksLikeText(file: File): Promise<boolean> {
+  const slice = file.slice(0, 8192);
+  const buf = new Uint8Array(await slice.arrayBuffer());
+  if (buf.byteLength === 0) return true;
+  let suspicious = 0;
+  for (let i = 0; i < buf.length; i++) {
+    const b = buf[i];
+    if (b === 0) return false; // NUL → binary
+    // Allow common whitespace + printable ASCII + high-bit (UTF-8 continuation).
+    if (
+      b === 0x09 || b === 0x0a || b === 0x0d ||
+      (b >= 0x20 && b <= 0x7e) ||
+      b >= 0x80
+    ) continue;
+    suspicious++;
+  }
+  return suspicious / buf.length < 0.1;
 }
 
 export function isFsaSupported(): boolean {
@@ -155,8 +262,33 @@ export class LocalFs implements WorkspaceService {
     if (!name) throw new Error("Invalid path");
     const handle = await parent.getFileHandle(name);
     const file = await handle.getFile();
-    if (file.size > 2 * 1024 * 1024) throw new Error("File too large (>2MB)");
-    if (!isTextFile(name)) throw new Error("Binary file not supported in this preview");
+    // 10MB cap — generated route bundles and big logs routinely exceed 2MB
+    // but Monaco copes well up to ~10MB. Beyond that the editor becomes
+    // unresponsive, so we refuse with a friendly message.
+    const MAX_BYTES = 10 * 1024 * 1024;
+    if (file.size > MAX_BYTES) {
+      const mb = (file.size / 1024 / 1024).toFixed(1);
+      throw new Error(
+        `File too large to open in editor (${mb} MB, max 10 MB).`,
+      );
+    }
+    // Three-step classification: extension allow-list, extension deny-list,
+    // and finally a byte sniff for unknown extensions so .log, .csv, .dat,
+    // and other "we don't know but it might be text" files still open.
+    const known = isTextFile(name);
+    if (known === false) {
+      throw new Error(
+        `\"${name}\" looks like a binary file and can't be opened in the text editor.`,
+      );
+    }
+    if (known === null) {
+      const sniff = await looksLikeText(file);
+      if (!sniff) {
+        throw new Error(
+          `\"${name}\" looks like a binary file and can't be opened in the text editor.`,
+        );
+      }
+    }
     const content = await file.text();
     return {
       path,
@@ -254,7 +386,11 @@ export class LocalFs implements WorkspaceService {
         if (kind === "directory") {
           if (DENY_DIRS.has(name)) continue;
           await walk(entry as FileSystemDirectoryHandle, childRel);
-        } else if (isTextFile(name)) {
+        } else if (isTextFile(name) === true) {
+          // Only index files we *know* are text. `null` (unknown extension)
+          // is intentionally skipped here — the search walker can't pay the
+          // per-file byte-sniff cost across an entire workspace, and a
+          // false positive would silently grep through binary data.
           allFiles.push(childRel);
         }
       }

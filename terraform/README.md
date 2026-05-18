@@ -29,12 +29,13 @@ This directory contains Terraform modules for deploying Shogo AI platform on OCI
 
 ## Regions
 
-| Region | Cluster | Purpose |
-|--------|---------|---------|
-| us-ashburn-1 | shogo-staging | Staging environment |
-| us-ashburn-1 | shogo-production | Primary production |
-| eu-frankfurt-1 | shogo-production-eu | EU production |
-| ap-mumbai-1 | shogo-production-india | India production |
+| Region | Cluster | Environment Dir | Status |
+|--------|---------|-----------------|--------|
+| us-ashburn-1 | shogo-staging | `staging/` | Reconciled (no-op plan) |
+| us-ashburn-1 | shogo-production | `production-us/` | Reconciled (no-op plan) |
+| eu-frankfurt-1 | shogo-production-eu | `production-eu/` | Pending reconciliation |
+| ap-mumbai-1 | shogo-production-india | `production-india/` | Pending reconciliation |
+| (global) | — | `production-global/` | Pending reconciliation |
 
 ## Prerequisites
 
@@ -62,19 +63,100 @@ terraform/
 │   └── drg-peering/      # Cross-region DRG peering
 │
 ├── environments/
-│   ├── staging/          # Staging environment
-│   ├── production-us/    # US production
-│   ├── production-eu/    # EU production
-│   └── production-india/ # India production
+│   ├── staging/          # Staging (us-ashburn-1)
+│   ├── production-us/    # US production (us-ashburn-1, primary)
+│   ├── production-eu/    # EU production (eu-frankfurt-1)
+│   ├── production-india/ # India production (ap-mumbai-1, Tier 2)
+│   └── production-global/# Cross-region Cloudflare LB + global DNS
 │
 └── README.md
 ```
 
+> Note: the legacy `environments/production/` directory was the single-region
+> production layout that predated the us/eu/india split. It used a local
+> backend and was never wired into the `terraform.yml` workflow; it was
+> removed in May 2026 once `production-us/` reached a no-op plan.
+
 ## State Management
 
-Terraform state is stored locally (`backend "local"`). State files are
-gitignored. If you need to manage existing infrastructure, use `terraform import`
-to bootstrap state from the live resources.
+Terraform state is stored remotely on **OCI Object Storage** (S3-compat) in the
+`shogo-tfstate` bucket (`us-ashburn-1`, versioning enabled). One key per
+environment: `<env>/terraform.tfstate`.
+
+The backend is configured via the `s3` backend in each environment's `main.tf`,
+with the OCI namespace endpoint passed in at `terraform init` time:
+
+```bash
+export AWS_ACCESS_KEY_ID=$OCI_S3_ACCESS_KEY      # GH secret
+export AWS_SECRET_ACCESS_KEY=$OCI_S3_SECRET_KEY  # GH secret
+export OCI_S3_ENDPOINT=https://idin4oltblww.compat.objectstorage.us-ashburn-1.oraclecloud.com
+
+cd terraform/environments/staging
+terraform init -backend-config="endpoint=$OCI_S3_ENDPOINT"
+terraform plan
+```
+
+The credentials are S3-compatible OCI Customer Secret Keys associated with the
+existing `shogo-production-s3` IAM key (also used by the application for
+Object Storage access). They are stored in GitHub as repo-level secrets
+(`OCI_S3_ACCESS_KEY`, `OCI_S3_SECRET_KEY`) and exposed to CI as the standard
+`AWS_*` env vars the `s3` backend expects.
+
+If you need to manage existing infrastructure that isn't yet tracked, use
+`terraform import` to bootstrap state from the live resources.
+
+## Plan / Apply Workflow
+
+Production environments are driven by the `terraform.yml` GitHub Actions
+workflow (`.github/workflows/terraform.yml`):
+
+```bash
+# Dispatch a plan
+gh workflow run terraform.yml --ref main \
+  -f environment=production-us -f action=plan
+
+# After reviewing the plan, dispatch an apply
+gh workflow run terraform.yml --ref main \
+  -f environment=production-us -f action=apply
+```
+
+The workflow:
+1. Configures OCI CLI from `OCI_*` GitHub secrets
+2. Configures kubectl context against the env's OKE cluster (used by the
+   `kubernetes` + `helm` providers for in-cluster resources like SigNoz
+   namespaces, CNPG namespaces, Knative installs)
+3. Runs `terraform init` against the OCI S3-compat backend
+4. Runs the requested action with `TF_VAR_*` env vars sourced from
+   per-environment GitHub variables (`COMPARTMENT_ID`, `NFS_ALLOWED_CIDR`)
+   and repo-scoped secrets (`CLOUDFLARE_API_TOKEN`)
+
+## State Reconciliation (adoption pattern)
+
+The `production-us/` env was bootstrapped manually (cluster, VCN, buckets
+all created out-of-band) and then partially imported into tf state. To
+get to a no-op plan, several module-level changes were made so adopted
+infrastructure isn't force-replaced:
+
+- VCN module: `lifecycle.ignore_changes` for `display_name`, `dns_label`,
+  `cidr_block` on all subnets (immutable in OCI), and for
+  `ingress_security_rules` / `egress_security_rules` on security lists
+  (so live rules added out-of-band — e.g. the API endpoint's port 6443
+  ingress — aren't pruned).
+- OKE module: `ignore_changes` for `endpoint_config`,
+  `service_lb_subnet_ids`, `node_metadata`, `node_config_details[0].size`,
+  and `node_config_details[0].placement_configs`. Autoscaler owns runtime
+  pool size; OCI sometimes rebalances placement; endpoint config is
+  immutable.
+- New `enable_dedicated_api_subnet` flag on the VCN module so envs with
+  a separate /28 API endpoint subnet (production-us) can declare it.
+- New `oci_region` composite pass-through variables: `vcn_enable_*`,
+  `oke_main_node_pool_*`, `knative_manage_install`, `cnpg_manage_install`,
+  `object_storage_*_compartment_id`, `publish_zone`, `ocir_repositories`,
+  etc. Defaults match greenfield behavior; adopted envs set them.
+
+The same pattern can be reused when adopting `production-eu`,
+`production-india`, and `production-global` — follow the iteration loop
+of plan → diff → set per-env override → repeat until plan is clean.
 
 ## Configuration
 

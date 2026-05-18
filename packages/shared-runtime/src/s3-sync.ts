@@ -38,6 +38,7 @@ import { existsSync, statSync, mkdirSync } from 'fs'
 import { createHash } from 'crypto'
 import { spawn } from 'child_process'
 import * as tar from 'tar'
+import { isMacOSJunkName } from './macos-junk'
 
 /**
  * Extract a `.tar.gz` archive without blocking the Node/Bun event loop.
@@ -56,14 +57,75 @@ import * as tar from 'tar'
  *   process exit. We fall back to `node-tar` when the system binary is
  *   missing (e.g. minimal containers).
  */
+/**
+ * tar stderr lines we consider benign — they don't indicate the archive
+ * extracted incorrectly, only that `tar` couldn't perfectly mirror macOS
+ * filesystem metadata into the Linux container.
+ *
+ * Seen in staging on 2026-05-13 for project 9e7ecdc7: the workspace archive
+ * (created on a macOS host with `xattrs` and SIP provenance metadata)
+ * extracted ALL file payloads correctly but `tar` exited code 2 because:
+ *   1. `LIBARCHIVE.xattr.com.apple.provenance` PAX header was unrecognized,
+ *   2. `Cannot utime / Cannot change mode: Operation not permitted` on the
+ *      workspace root, because that dir is mounted with restricted perms.
+ * The previous code rejected on any non-zero exit, then `initializeS3Sync`
+ * swallowed the rejection into `stats.errors[]` and the pod kept booting
+ * with a half-extracted workspace. The benign-pattern allowlist below
+ * lets a "no real files failed" extract complete; anything outside the
+ * allowlist still surfaces as a hard error.
+ */
+const BENIGN_TAR_STDERR_PATTERNS: RegExp[] = [
+  /Ignoring unknown extended header keyword/i,
+  /Cannot u?time/i,
+  /Cannot change (mode|ownership)/i,
+  /Cannot change owner/i,
+  /Operation not permitted/i,
+  /Exiting with failure status due to previous errors/i,
+]
+
+/**
+ * Returns true if every non-empty line in `stderr` matches one of the
+ * benign patterns above (i.e. tar exited non-zero but only complained
+ * about cosmetic metadata it couldn't apply). Exported for tests.
+ */
+export function tarStderrIsBenign(stderr: string): boolean {
+  const lines = stderr.split('\n').map((l) => l.trim()).filter((l) => l.length > 0)
+  if (lines.length === 0) return false
+  return lines.every((line) => BENIGN_TAR_STDERR_PATTERNS.some((re) => re.test(line)))
+}
+
 export async function extractTarFastNonBlocking(
   archivePath: string,
   cwd: string,
 ): Promise<{ usedBinary: boolean }> {
-  return new Promise<{ usedBinary: boolean }>((resolve, reject) => {
-    const child = spawn('tar', ['-xzf', archivePath, '-C', cwd], {
-      stdio: ['ignore', 'ignore', 'pipe'],
-    })
+  const result = await new Promise<{ usedBinary: boolean }>((resolve, reject) => {
+    const child = spawn(
+      'tar',
+      [
+        '-xzf',
+        archivePath,
+        '-C',
+        cwd,
+        // Don't try to restore the source machine's uid/gid/perms onto the
+        // container's workspace. Otherwise tar attempts `chmod`/`chown` on
+        // the destination root dir (which we don't own) and exits non-zero.
+        // Both flags are supported by GNU tar (Linux) and BSD tar (macOS).
+        '--no-same-owner',
+        '--no-same-permissions',
+        // NOTE: we used to also pass `--warning=no-unknown-keyword` here to
+        // suppress macOS xattr PAX-header noise, but that's GNU-only and
+        // BSD tar (macOS dev hosts) treats it as a fatal "unknown option".
+        // The benign-stderr predicate downstream already accepts those
+        // warnings, so we leave them to surface as logged stderr.
+      ],
+      {
+        stdio: ['ignore', 'ignore', 'pipe'],
+        // Prevent BSD `tar` on macOS from writing AppleDouble sidecars (`._*`)
+        // when re-materializing extended attributes during extract. Belt-and-
+        // braces alongside the post-extract scrub below.
+        env: { ...process.env, COPYFILE_DISABLE: '1' },
+      },
+    )
 
     let stderr = ''
     child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
@@ -85,11 +147,72 @@ export async function extractTarFastNonBlocking(
     child.once('exit', (code) => {
       if (code === 0) {
         resolve({ usedBinary: true })
+        return
+      }
+      // Non-zero exit, but only if stderr is exclusively the known-benign
+      // macOS metadata noise do we let the extract complete. Anything else
+      // (truncated archive, gzip corruption, missing disk space, etc.)
+      // must surface — a half-extracted workspace is worse than a hard
+      // failure because subsequent boot steps silently run against a
+      // partial source tree.
+      if (tarStderrIsBenign(stderr)) {
+        console.warn(
+          `[S3Sync] tar -xzf exited with code ${code} but only emitted benign ` +
+            `macOS metadata warnings; treating extract as successful. ` +
+            `First line: ${stderr.split('\n')[0]?.trim() ?? '(empty)'}`,
+        )
+        resolve({ usedBinary: true })
       } else {
         reject(new Error(`tar -xzf exited with code ${code}: ${stderr.trim()}`))
       }
     })
   })
+
+  // Scrub macOS detritus that may have been baked into legacy archives still
+  // sitting in S3 (created before the export filters landed). AppleDouble
+  // sidecars like `._\_layout.tsx` crash Metro's Babel parser if they survive
+  // into the imported workspace, so this runs unconditionally — cheap because
+  // it only walks the freshly-extracted project (no node_modules yet).
+  try {
+    await removeMacOSJunk(cwd)
+  } catch (err) {
+    // Non-fatal: failing to scrub is much better than failing the import.
+    console.warn('[S3Sync] removeMacOSJunk failed:', err)
+  }
+
+  return result
+}
+
+/**
+ * Recursively remove macOS-specific junk files/dirs from `dir`. Idempotent;
+ * safe to call repeatedly. Junk directories are removed wholesale via `rm`
+ * with recursive: true.
+ */
+async function removeMacOSJunk(dir: string): Promise<void> {
+  let entries
+  try {
+    entries = await readdir(dir, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const entry of entries) {
+    const full = join(dir, entry.name)
+    if (isMacOSJunkName(entry.name)) {
+      try {
+        if (entry.isDirectory()) {
+          await rm(full, { recursive: true, force: true })
+        } else {
+          await unlink(full)
+        }
+      } catch {
+        // ignore — best-effort cleanup
+      }
+      continue
+    }
+    if (entry.isDirectory()) {
+      await removeMacOSJunk(full)
+    }
+  }
 }
 
 // =============================================================================
@@ -115,6 +238,18 @@ export interface S3SyncConfig {
   syncInterval?: number
   /** Enable file watcher for real-time sync */
   watchEnabled?: boolean
+  /**
+   * When true, the Layer 2 (`project-src.tar.gz`) uploader no-ops on every
+   * code path: the file watcher's debounce trigger, the periodic interval,
+   * and explicit `triggerSync()` calls. Layer 1 (deps cache) is unaffected.
+   *
+   * Used by `agent-runtime` in `git_only` mode: the per-turn diff is
+   * pushed to the smart-HTTP backend via `GitWorkspaceSync`, and S3
+   * stays armed only to write the final cold-start snapshot at evict
+   * time (`flushAndShutdown({ forceProjectArchive: true })`) AND as an
+   * automatic fallback when git fails (see `setSuppressProjectArchive`).
+   */
+  suppressProjectArchive?: boolean
 }
 
 export interface SyncStats {
@@ -168,7 +303,17 @@ export class S3Sync {
   private _depsReadyResolve: (() => void) | null = null
   private _depsReady: boolean = true
 
+  /**
+   * Runtime-mutable suppression of Layer 2 (project archive) uploads.
+   * Initialized from `S3SyncConfig.suppressProjectArchive`. Can be
+   * toggled at any time via `setSuppressProjectArchive` — used by
+   * `GitWorkspaceSync.onDegrade` to re-enable Layer 2 as a fallback
+   * when git is unhealthy.
+   */
+  private suppressProjectArchive: boolean = false
+
   constructor(config: S3SyncConfig) {
+    this.suppressProjectArchive = config.suppressProjectArchive ?? false
     this.config = {
       bucket: config.bucket,
       prefix: config.prefix,
@@ -205,6 +350,7 @@ export class S3Sync {
       ],
       syncInterval: config.syncInterval ?? 30000, // 30 seconds default
       watchEnabled: config.watchEnabled ?? true,
+      suppressProjectArchive: config.suppressProjectArchive ?? false,
     }
 
     this.client = new S3Client({
@@ -238,6 +384,26 @@ export class S3Sync {
       this.depsNeedUpload = false
       console.log(`[S3Sync] Marked deps as pre-seeded (lockfile hash: ${hash})`)
     }
+  }
+
+  /**
+   * Signal that the workspace's node_modules has just been re-installed
+   * (typically by `ensureWorkspaceDeps` because the warm-pool template's
+   * pre-seeded deps didn't match the user's `package.json`). Clears the
+   * pre-seeded marker so the next `uploadDepsIfNeeded` actually tars and
+   * uploads the new deps + writes the per-project pointer.
+   *
+   * Without this, a warm pool pod that came up with a Vite template and
+   * then got re-installed for an Expo project would forever skip the
+   * deps upload, leaving `_deps-cache/<hash>.tar.gz` + `deps-hash.txt`
+   * unwritten in S3. Subsequent pool assignments for the same project
+   * would then have to run a full `bun install` cold every time — which
+   * is what fell over on the 2026-05-14 staging disk-pressure incident.
+   */
+  markDepsChanged(): void {
+    this.currentLockfileHash = ''
+    this.depsNeedUpload = true
+    console.log('[S3Sync] Deps marked as changed; next periodic sync will re-upload deps + pointer')
   }
 
   /** Wait for background deps restoration to complete. Resolves immediately if deps are already ready. */
@@ -635,7 +801,7 @@ export class S3Sync {
    *
    * Uses an upload lock to prevent concurrent uploads.
    */
-  async uploadAll(deleteOrphans: boolean = false): Promise<SyncStats> {
+  async uploadAll(deleteOrphans: boolean = false, opts: { forceProjectArchive?: boolean } = {}): Promise<SyncStats> {
     // Prevent concurrent uploads
     if (this.isUploading) {
       console.log(`[S3Sync] Upload already in progress, will re-run after completion`)
@@ -654,8 +820,11 @@ export class S3Sync {
         return this.getStats()
       }
 
-      // Upload project archive (source + dist, NO node_modules)
-      await this.uploadProjectArchive()
+      // Upload project archive (source + dist, NO node_modules).
+      // The optional force flag lets `flushAndShutdown` write a final
+      // cold-start tarball even when Layer 2 is suppressed for the
+      // session (git_only mode's normal steady state).
+      await this.uploadProjectArchive(opts.forceProjectArchive ?? false)
 
       // Upload deps archive if lockfile changed
       await this.uploadDepsIfNeeded()
@@ -683,8 +852,19 @@ export class S3Sync {
    * Upload project-src.tar.gz (everything EXCEPT node_modules).
    * This is small (~2-10MB) and fast to create.
    * Skips the S3 upload if the archive hash hasn't changed since the last upload.
+   *
+   * `forceWriteWhenSuppressed=true` (used by `flushAndShutdown` in
+   * `git_only` mode) overrides the suppression flag so the cold-start
+   * snapshot always lands at evict, even when Layer 2 was disabled for
+   * the duration of the session.
    */
-  private async uploadProjectArchive(): Promise<void> {
+  private async uploadProjectArchive(forceWriteWhenSuppressed: boolean = false): Promise<void> {
+    if (this.suppressProjectArchive && !forceWriteWhenSuppressed) {
+      // Honor the suppress flag: agent-runtime is in git_only mode and
+      // owns Layer 2 via GitWorkspaceSync. No-op on every path that
+      // would otherwise re-tar + PUT.
+      return
+    }
     const startTime = Date.now()
     const tempArchive = join('/tmp', `project-${this.config.prefix}-src-upload.tar.gz`)
 
@@ -1034,8 +1214,21 @@ export class S3Sync {
    * Flush any pending changes to S3, then shutdown.
    * Use this on SIGTERM to avoid losing recently-written files
    * (e.g., MCP server config) that are still in the debounce window.
+   *
+   * `forceProjectArchive` overrides `suppressProjectArchive` for this
+   * one call only — used by `agent-runtime` in `git_only` mode to land
+   * the cold-start snapshot tarball at evict regardless of whether
+   * git was healthy during the session.
+   *
+   * Accepts either a number (legacy: timeout only) or an options object.
    */
-  async flushAndShutdown(timeoutMs: number = 10_000): Promise<void> {
+  async flushAndShutdown(
+    timeoutMsOrOpts: number | { timeoutMs?: number; forceProjectArchive?: boolean } = 10_000,
+  ): Promise<void> {
+    const opts = typeof timeoutMsOrOpts === 'number'
+      ? { timeoutMs: timeoutMsOrOpts, forceProjectArchive: false }
+      : { timeoutMs: timeoutMsOrOpts.timeoutMs ?? 10_000, forceProjectArchive: !!timeoutMsOrOpts.forceProjectArchive }
+
     this.stopPeriodicSync()
     this.stopWatcher()
 
@@ -1044,22 +1237,109 @@ export class S3Sync {
       this.uploadDebounceTimer = null
     }
 
-    if (!this.hasPendingChanges() && this.pendingUploads.size === 0) {
+    // In `git_only` mode the suppress flag means triggerSync paths
+    // never marked anything as pending — but we still want to land the
+    // cold-start snapshot. The `forceProjectArchive` opt bypasses both
+    // the "no pending changes" early-return and the suppress check.
+    if (!opts.forceProjectArchive && !this.hasPendingChanges() && this.pendingUploads.size === 0) {
       console.log(`[S3Sync] flushAndShutdown: no pending changes`)
       return
     }
 
-    console.log(`[S3Sync] flushAndShutdown: flushing pending changes to S3 (timeout ${timeoutMs}ms)...`)
+    console.log(
+      `[S3Sync] flushAndShutdown: flushing pending changes to S3 (timeout ${opts.timeoutMs}ms, forceProjectArchive=${opts.forceProjectArchive})...`,
+    )
     try {
-      const uploadPromise = this.uploadAll(false)
+      const uploadPromise = this.uploadAll(false, { forceProjectArchive: opts.forceProjectArchive })
       const timeoutPromise = new Promise<void>((_, reject) =>
-        setTimeout(() => reject(new Error('flush timeout')), timeoutMs)
+        setTimeout(() => reject(new Error('flush timeout')), opts.timeoutMs)
       )
       await Promise.race([uploadPromise, timeoutPromise])
       console.log(`[S3Sync] flushAndShutdown: flush complete`)
     } catch (err: any) {
       console.error(`[S3Sync] flushAndShutdown: ${err.message}`)
     }
+  }
+
+  // ===========================================================================
+  // git_only mode helpers
+  // ===========================================================================
+
+  /**
+   * Toggle Layer 2 (`project-src.tar.gz`) uploads at runtime.
+   *
+   * Wired to `GitWorkspaceSync.onDegrade` so a stretch of failing git
+   * pushes can re-enable the S3 fallback writer mid-session. On
+   * recovery (`onRecovered`), the agent-runtime flips this back to
+   * `true` so we return to the normal `git_only` steady state.
+   */
+  setSuppressProjectArchive(suppress: boolean): void {
+    if (this.suppressProjectArchive === suppress) return
+    this.suppressProjectArchive = suppress
+    console.log(`[S3Sync] suppressProjectArchive=${suppress}`)
+  }
+
+  /** Read the current suppression state (useful for tests + diagnostics). */
+  isProjectArchiveSuppressed(): boolean {
+    return this.suppressProjectArchive
+  }
+
+  /**
+   * Produce the cold-start tarball from `git archive HEAD` instead of
+   * from the live workspace. Used at evict time when `GitWorkspaceSync`
+   * is healthy and HEAD is therefore the authoritative tree.
+   *
+   * Falls back to throwing if `git` isn't available or the workspace
+   * isn't a git repo — caller should catch and use the live-workspace
+   * path (`flushAndShutdown({ forceProjectArchive: true })`) instead.
+   */
+  async snapshotProjectArchiveFromGit(): Promise<void> {
+    const tempArchive = join('/tmp', `project-${this.config.prefix}-git-snapshot.tar.gz`)
+    const startTime = Date.now()
+
+    // `git archive HEAD --format=tar.gz` is equivalent to `git archive | gzip`
+    // and respects the `.gitignore` (untracked files are excluded by
+    // definition). We accept this trade-off: in git_only mode, the
+    // gitignored files (`.shogo/` SQLite, `.canvas-state.json`) are
+    // restored separately by the file-API path on cold-start.
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(
+        'git',
+        ['archive', '--format=tar.gz', '-o', tempArchive, 'HEAD'],
+        { cwd: this.config.localDir, stdio: ['ignore', 'pipe', 'pipe'] },
+      )
+      let stderr = ''
+      child.stderr.setEncoding('utf-8')
+      child.stderr.on('data', (c) => { stderr += c })
+      child.on('error', reject)
+      child.on('close', (code) => {
+        if (code === 0) resolve()
+        else reject(new Error(`git archive exited ${code}: ${stderr.slice(0, 500)}`))
+      })
+    })
+
+    const archiveContent = await readFile(tempArchive)
+    const archiveSize = archiveContent.length
+    console.log(
+      `[S3Sync] snapshotFromGit: created ${this.formatBytes(archiveSize)} archive in ${Date.now() - startTime}ms`,
+    )
+
+    const archiveKey = this.getProjectArchiveKey()
+    const uploadStart = Date.now()
+    await this.client.send(new PutObjectCommand({
+      Bucket: this.config.bucket,
+      Key: archiveKey,
+      Body: archiveContent,
+      ContentType: 'application/gzip',
+    }))
+    console.log(`[S3Sync] snapshotFromGit: uploaded to s3://${this.config.bucket}/${archiveKey} in ${Date.now() - uploadStart}ms`)
+
+    await unlink(tempArchive).catch(() => { })
+
+    // Update our hash tracker so a subsequent `uploadAll` doesn't
+    // re-PUT an identical archive on top.
+    this.lastUploadHash = createHash('sha256').update(archiveContent).digest('hex')
+    this.stats.archiveSize = archiveSize
   }
 
   // ===========================================================================
@@ -1081,6 +1361,13 @@ export class S3Sync {
         const relativePath = relative(this.config.localDir, fullPath)
 
         if (this.shouldExclude(relativePath)) continue
+
+        // Drop macOS-specific detritus (AppleDouble sidecars like `._foo.ts`,
+        // `.DS_Store`, `__MACOSX/`, etc.). The existing glob list in
+        // `shouldExclude` can't express the `._*` prefix, so handle it here.
+        // Matching on basename also kills the entire subtree when the entry
+        // is a junk directory (`.AppleDouble/`, `__MACOSX/`).
+        if (isMacOSJunkName(entry.name)) continue
 
         // Skip excluded directories by name at any depth (e.g. 'node_modules' matches
         // both top-level and nested like 'project/node_modules' or '.npm/_npx/.../node_modules')
@@ -1165,7 +1452,10 @@ export class S3Sync {
 /**
  * Create an S3Sync instance from environment variables.
  */
-export function createS3SyncFromEnv(localDir: string): S3Sync | null {
+export function createS3SyncFromEnv(
+  localDir: string,
+  opts: { suppressProjectArchive?: boolean } = {},
+): S3Sync | null {
   const bucket = process.env.S3_WORKSPACES_BUCKET
   const prefix = process.env.PROJECT_ID
 
@@ -1178,7 +1468,7 @@ export function createS3SyncFromEnv(localDir: string): S3Sync | null {
   const region = process.env.S3_REGION
   const endpoint = process.env.S3_ENDPOINT
 
-  console.log(`[S3Sync] [createFromEnv] Creating S3Sync instance (bucket=${bucket}, prefix=${prefix}, region=${region}, endpoint=${endpoint ?? 'default'}, localDir=${localDir})`)
+  console.log(`[S3Sync] [createFromEnv] Creating S3Sync instance (bucket=${bucket}, prefix=${prefix}, region=${region}, endpoint=${endpoint ?? 'default'}, localDir=${localDir}, suppressProjectArchive=${opts.suppressProjectArchive ?? false})`)
 
   return new S3Sync({
     bucket,
@@ -1189,6 +1479,7 @@ export function createS3SyncFromEnv(localDir: string): S3Sync | null {
     forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
     syncInterval: parseInt(process.env.S3_SYNC_INTERVAL || '30000', 10),
     watchEnabled,
+    suppressProjectArchive: opts.suppressProjectArchive ?? false,
   })
 }
 
@@ -1236,10 +1527,13 @@ export function createS3SyncForProject(localDir: string, projectId: string): S3S
  * we must NOT start the uploader/watcher. Otherwise, the default template
  * files get uploaded to S3, overwriting the user's actual project data.
  */
-export async function initializeS3Sync(localDir: string): Promise<{ sync: S3Sync, downloadSucceeded: boolean } | null> {
+export async function initializeS3Sync(
+  localDir: string,
+  opts: { suppressProjectArchive?: boolean } = {},
+): Promise<{ sync: S3Sync, downloadSucceeded: boolean } | null> {
   const initStart = Date.now()
   console.log(`[S3Sync] [initializeS3Sync] Starting (localDir=${localDir})`)
-  const sync = createS3SyncFromEnv(localDir)
+  const sync = createS3SyncFromEnv(localDir, opts)
 
   if (!sync) {
     console.log(`[S3Sync] [initializeS3Sync] No sync instance created — returning null`)

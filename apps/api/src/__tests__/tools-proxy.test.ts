@@ -16,49 +16,105 @@
  * Run: bun test apps/api/src/__tests__/tools-proxy.test.ts
  */
 
-import { describe, test, expect } from 'bun:test'
+import { afterEach, beforeEach, describe, test, expect, mock } from 'bun:test'
 import { Hono } from 'hono'
+
+const resolveApiKeyMock = mock(async (_key: string) => null as any)
+
+mock.module('../routes/api-keys', () => ({
+  resolveApiKey: resolveApiKeyMock,
+}))
+
+const ENV_KEYS = [
+  'AI_PROXY_SECRET',
+  'COMPOSIO_API_KEY',
+  'SERPER_API_KEY',
+  'OPENAI_API_KEY',
+  'SHOGO_API_KEY',
+  'SHOGO_CLOUD_URL',
+  'LOCAL_LLM_BASE_URL',
+  'LOCAL_EMBEDDING_MODEL',
+  'LOCAL_EMBEDDING_DIMENSIONS',
+] as const
+let savedEnv: Record<string, string | undefined> = {}
+
+beforeEach(() => {
+  savedEnv = {}
+  for (const key of ENV_KEYS) {
+    savedEnv[key] = process.env[key]
+    delete process.env[key]
+  }
+  process.env.AI_PROXY_SECRET = 'tools-proxy-test-secret'
+  resolveApiKeyMock.mockClear()
+  resolveApiKeyMock.mockImplementation(async () => null)
+})
+
+afterEach(() => {
+  for (const key of ENV_KEYS) {
+    if (savedEnv[key] === undefined) delete process.env[key]
+    else process.env[key] = savedEnv[key]
+  }
+  delete (globalThis as any).fetch
+})
+
+async function makeToken() {
+  const { generateProxyToken } = await import('../lib/ai-proxy-token')
+  return generateProxyToken('project-1', 'workspace-1', 'user-1')
+}
+
+async function makeApp() {
+  const { toolsProxyRoutes } = await import('../routes/tools-proxy')
+  const app = new Hono()
+  app.route('/', toolsProxyRoutes())
+  return app
+}
 
 describe('Tools Proxy', () => {
   describe('Response header sanitization (ZlibError regression)', () => {
-    test('RESPONSE_SKIP_HEADERS contains content-encoding and content-length', async () => {
-      const source = await Bun.file(
-        require.resolve('../routes/tools-proxy.ts'),
-      ).text()
+    // The actual skip-list constants live in `apps/api/src/lib/proxy-headers.ts`
+    // (shared with marketplace.ts and integrations.ts). These tests assert
+    // that tools-proxy uses the response-flavoured skip list (which strips
+    // content-encoding/content-length) when building the response, and the
+    // request-flavoured skip list (which doesn't) when forwarding.
 
-      expect(source).toContain("'content-encoding'")
-      expect(source).toContain("'content-length'")
-      expect(source).toContain('RESPONSE_SKIP_HEADERS')
-
-      // Verify RESPONSE_SKIP_HEADERS is used for response header filtering
-      expect(source).toContain('RESPONSE_SKIP_HEADERS.has(lower)')
+    test('RESPONSE_FORWARD_SKIP_HEADERS contains content-encoding and content-length', async () => {
+      const { RESPONSE_FORWARD_SKIP_HEADERS } = await import('../lib/proxy-headers')
+      expect(RESPONSE_FORWARD_SKIP_HEADERS.has('content-encoding')).toBe(true)
+      expect(RESPONSE_FORWARD_SKIP_HEADERS.has('content-length')).toBe(true)
+      expect(RESPONSE_FORWARD_SKIP_HEADERS.has('transfer-encoding')).toBe(true)
     })
 
-    test('response headers are filtered using RESPONSE_SKIP_HEADERS not FORWARDED_SKIP_HEADERS', async () => {
+    test('REQUEST_FORWARD_SKIP_HEADERS does not strip content-encoding (request bodies are passed through verbatim)', async () => {
+      const { REQUEST_FORWARD_SKIP_HEADERS } = await import('../lib/proxy-headers')
+      expect(REQUEST_FORWARD_SKIP_HEADERS.has('content-encoding')).toBe(false)
+      expect(REQUEST_FORWARD_SKIP_HEADERS.has('content-length')).toBe(false)
+      // Hop-by-hop headers ARE stripped from requests too.
+      expect(REQUEST_FORWARD_SKIP_HEADERS.has('host')).toBe(true)
+      expect(REQUEST_FORWARD_SKIP_HEADERS.has('transfer-encoding')).toBe(true)
+    })
+
+    test('tools-proxy uses shouldSkipResponseHeader for response filtering and shouldSkipForwardedHeader for request forwarding', async () => {
       const source = await Bun.file(
         require.resolve('../routes/tools-proxy.ts'),
       ).text()
 
-      // The response filtering block should use RESPONSE_SKIP_HEADERS
       const responseBlock = source.match(
         /const responseHeaders[\s\S]*?return new Response/,
       )
       expect(responseBlock).toBeTruthy()
-      expect(responseBlock![0]).toContain('RESPONSE_SKIP_HEADERS')
-      expect(responseBlock![0]).not.toContain('FORWARDED_SKIP_HEADERS')
+      expect(responseBlock![0]).toContain('shouldSkipResponseHeader')
+      expect(responseBlock![0]).not.toContain('shouldSkipForwardedHeader')
+
+      const requestBlock = source.match(
+        /const headers = new Headers\(\)[\s\S]*?const upstream/,
+      )
+      expect(requestBlock).toBeTruthy()
+      expect(requestBlock![0]).toContain('shouldSkipForwardedHeader')
+      expect(requestBlock![0]).not.toContain('shouldSkipResponseHeader')
     })
 
-    test('simulated header filtering strips encoding headers', () => {
-      // Replicate the exact header filtering logic from tools-proxy.ts
-      const FORWARDED_SKIP_HEADERS = new Set([
-        'host', 'connection', 'keep-alive', 'transfer-encoding',
-        'te', 'trailer', 'upgrade',
-      ])
-      const RESPONSE_SKIP_HEADERS = new Set([
-        ...FORWARDED_SKIP_HEADERS,
-        'content-encoding',
-        'content-length',
-      ])
+    test('simulated header filtering strips encoding headers from responses', async () => {
+      const { shouldSkipResponseHeader } = await import('../lib/proxy-headers')
 
       // Simulate upstream response headers (what Composio actually returns)
       const upstreamHeaders = new Map([
@@ -69,10 +125,9 @@ describe('Tools Proxy', () => {
         ['transfer-encoding', 'chunked'],
       ])
 
-      // Apply RESPONSE_SKIP_HEADERS filtering (our fix)
       const filtered = new Map<string, string>()
       for (const [key, value] of upstreamHeaders) {
-        if (!RESPONSE_SKIP_HEADERS.has(key.toLowerCase())) {
+        if (!shouldSkipResponseHeader(key)) {
           filtered.set(key, value)
         }
       }
@@ -83,20 +138,6 @@ describe('Tools Proxy', () => {
       expect(filtered.has('content-type')).toBe(true)
       expect(filtered.get('content-type')).toBe('application/json')
       expect(filtered.has('x-request-id')).toBe(true)
-    })
-
-    test('request headers still use FORWARDED_SKIP_HEADERS (no content-encoding stripping)', async () => {
-      const source = await Bun.file(
-        require.resolve('../routes/tools-proxy.ts'),
-      ).text()
-
-      // The request forwarding block should use FORWARDED_SKIP_HEADERS
-      const requestBlock = source.match(
-        /const headers = new Headers\(\)[\s\S]*?const upstream/,
-      )
-      expect(requestBlock).toBeTruthy()
-      expect(requestBlock![0]).toContain('FORWARDED_SKIP_HEADERS')
-      expect(requestBlock![0]).not.toContain('RESPONSE_SKIP_HEADERS')
     })
   })
 
@@ -127,9 +168,7 @@ describe('Tools Proxy', () => {
 
   describe('Auth enforcement', () => {
     test('rejects requests without a token', async () => {
-      const { toolsProxyRoutes } = await import('../routes/tools-proxy')
-      const app = new Hono()
-      app.route('/', toolsProxyRoutes())
+      const app = await makeApp()
 
       const res = await app.request('/tools/composio/api/v3/toolkits')
       expect(res.status).toBe(401)
@@ -138,9 +177,7 @@ describe('Tools Proxy', () => {
     })
 
     test('rejects requests with an invalid token', async () => {
-      const { toolsProxyRoutes } = await import('../routes/tools-proxy')
-      const app = new Hono()
-      app.route('/', toolsProxyRoutes())
+      const app = await makeApp()
 
       const res = await app.request('/tools/composio/api/v3/toolkits', {
         headers: { 'x-api-key': 'invalid-token' },
@@ -148,6 +185,151 @@ describe('Tools Proxy', () => {
       expect(res.status).toBe(401)
       const body = await res.json() as any
       expect(body.error).toContain('Invalid or expired')
+    })
+  })
+
+  describe('Forwarding routes', () => {
+    test('returns 503 when the upstream API key is not configured locally', async () => {
+      const app = await makeApp()
+      const token = await makeToken()
+
+      const res = await app.request('/tools/composio/api/v3/toolkits', {
+        headers: { 'x-api-key': token },
+      })
+
+      expect(res.status).toBe(503)
+      expect(await res.json()).toEqual({
+        error: 'COMPOSIO_API_KEY not configured on API server',
+      })
+    })
+
+    test('forwards local Composio requests with sanitized request and response headers', async () => {
+      const app = await makeApp()
+      const token = await makeToken()
+      const calls: any[] = []
+      process.env.COMPOSIO_API_KEY = 'real-composio-key'
+      globalThis.fetch = (async (url: string, init: any) => {
+        calls.push({ url, init })
+        return new Response('ok', {
+          status: 201,
+          statusText: 'Created',
+          headers: {
+            'content-type': 'application/json',
+            'content-encoding': 'gzip',
+            'content-length': '123',
+            'x-upstream-id': 'req-1',
+          },
+        })
+      }) as any
+
+      const res = await app.request('/tools/composio/api/v3/toolkits?limit=1', {
+        headers: {
+          'x-api-key': token,
+          host: 'api.local',
+          'x-custom': 'keep-me',
+        },
+      })
+
+      expect(calls[0].url).toBe('https://backend.composio.dev/api/v3/toolkits?limit=1')
+      expect(calls[0].init.headers.get('x-api-key')).toBe('real-composio-key')
+      expect(calls[0].init.headers.get('x-custom')).toBe('keep-me')
+      expect(calls[0].init.headers.get('host')).toBeNull()
+      expect(res.status).toBe(201)
+      expect(res.headers.get('content-encoding')).toBeNull()
+      expect(res.headers.get('content-length')).toBeNull()
+      expect(res.headers.get('x-upstream-id')).toBe('req-1')
+    })
+
+    test('forwards to Shogo Cloud when SHOGO_API_KEY is configured', async () => {
+      const app = await makeApp()
+      const token = await makeToken()
+      const calls: any[] = []
+      process.env.SHOGO_API_KEY = 'shogo-cloud-key'
+      process.env.SHOGO_CLOUD_URL = 'https://cloud.example/'
+      globalThis.fetch = (async (url: string, init: any) => {
+        calls.push({ url, init })
+        return new Response('cloud-ok', { headers: { 'x-cloud': 'yes' } })
+      }) as any
+
+      const res = await app.request('/tools/serper/search?q=agents', {
+        headers: {
+          authorization: `Bearer ${token}`,
+          'x-original': 'present',
+        },
+      })
+
+      expect(calls[0].url).toBe('https://cloud.example/api/tools/serper/search?q=agents')
+      expect(calls[0].init.headers.get('Authorization')).toBe('Bearer shogo-cloud-key')
+      expect(calls[0].init.headers.get('x-original')).toBe('present')
+      expect(await res.text()).toBe('cloud-ok')
+    })
+
+    test('rewrites local OpenAI embedding requests to the configured local model', async () => {
+      const app = await makeApp()
+      const token = await makeToken()
+      const calls: any[] = []
+      process.env.LOCAL_LLM_BASE_URL = 'http://localhost:11434/'
+      process.env.LOCAL_EMBEDDING_MODEL = 'nomic-embed-text'
+      process.env.LOCAL_EMBEDDING_DIMENSIONS = '768'
+      globalThis.fetch = (async (url: string, init: any) => {
+        calls.push({ url, init })
+        return Response.json({ data: [] })
+      }) as any
+
+      const res = await app.request('/tools/openai/v1/embeddings', {
+        method: 'POST',
+        headers: {
+          'x-api-key': token,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ input: 'hello', model: 'ignored' }),
+      })
+
+      expect(calls[0].url).toBe('http://localhost:11434/v1/embeddings')
+      expect(JSON.parse(calls[0].init.body)).toEqual({
+        input: 'hello',
+        model: 'nomic-embed-text',
+        dimensions: 768,
+      })
+      expect(res.status).toBe(200)
+    })
+
+    test('falls back to streaming request body when local embedding JSON parse fails', async () => {
+      const app = await makeApp()
+      const token = await makeToken()
+      const calls: any[] = []
+      process.env.LOCAL_LLM_BASE_URL = 'http://localhost:11434'
+      process.env.LOCAL_EMBEDDING_MODEL = 'nomic-embed-text'
+      globalThis.fetch = (async (url: string, init: any) => {
+        calls.push({ url, init })
+        return Response.json({ data: [] })
+      }) as any
+
+      const res = await app.request('/tools/openai/v1/embeddings', {
+        method: 'POST',
+        headers: { 'x-api-key': token },
+        body: 'not-json',
+      })
+
+      expect(calls[0].url).toBe('http://localhost:11434/v1/embeddings')
+      expect(calls[0].init.body).toBeDefined()
+      expect(res.status).toBe(200)
+    })
+
+    test('accepts shogo_sk API keys as legacy proxy auth', async () => {
+      resolveApiKeyMock.mockImplementationOnce(async () => ({
+        userId: 'user-1',
+        workspaceId: 'workspace-1',
+      }))
+      const app = await makeApp()
+      process.env.SERPER_API_KEY = 'serper-key'
+      globalThis.fetch = (async () => Response.json({ ok: true })) as any
+
+      const res = await app.request('/tools/serper/search', {
+        headers: { 'x-api-key': 'shogo_sk_test' },
+      })
+
+      expect(res.status).toBe(200)
     })
   })
 })

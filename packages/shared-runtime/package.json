@@ -6,7 +6,9 @@
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun --no-env-file ../../scripts/run-tests-isolated.ts .",
+    "test:coverage": "bun --no-env-file ../../scripts/run-tests-isolated.ts . --coverage"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.700.0",
@@ -16,6 +18,7 @@
     "@opentelemetry/sdk-node": "^0.213.0",
     "@opentelemetry/sdk-trace-base": "^2.5.1",
     "@opentelemetry/semantic-conventions": "^1.39.0",
+    "@shogo-ai/sdk": "workspace:*",
     "@shogo/model-catalog": "workspace:*",
     "ai": "^6.0.73",
     "hono": "^4.7.10",

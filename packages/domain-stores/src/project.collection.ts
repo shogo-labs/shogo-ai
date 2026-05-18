@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Auto-generated Project Collection
@@ -392,7 +392,7 @@ export const ProjectCollection = types
 // ============================================================================
 
 // Relation fields that expect IDs (safeReference)
-const relationFields = ["workspace","folder","members","inviteLinks","featureSessions","chatSessions","usageEvents","checkpoints","githubConnection","starredBy","agentConfig","meetings","marketplaceListing","agentCostMetrics","modelExperiments","subagentModelOverrides","agentEvalSets","voiceConfig","agents"]
+const relationFields = ["workspace","folder","members","inviteLinks","featureSessions","chatSessions","usageEvents","checkpoints","githubConnection","starredBy","agentConfig","meetings","marketplaceListing","agentCostMetrics","modelExperiments","subagentModelOverrides","agentEvalSets","voiceConfig","agents","projectFolders","preferredInstance"]
 
 /**
  * Transform API response for MST compatibility:

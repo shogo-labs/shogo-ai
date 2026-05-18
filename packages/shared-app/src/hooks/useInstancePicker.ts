@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * useInstancePicker — Platform-agnostic business logic for the instance picker.
@@ -21,6 +21,14 @@ export interface Instance {
   workspaceId: string
   os?: string | null
   lastSeenAt?: string | null
+  /**
+   * Kind of remote machine the instance represents. Mirrors the wire
+   * format from `apps/api`'s `formatInstanceKind`. Studio uses this
+   * to decide whether stateful API calls (`/api/projects` etc.)
+   * should be tunneled to the instance (desktop) or kept on the
+   * cloud backend (cli-worker).
+   */
+  kind?: 'desktop' | 'cli-worker'
 }
 
 export interface UseInstancePickerOptions {
@@ -138,6 +146,7 @@ export function useInstancePicker({
                 name: found.name,
                 hostname: found.hostname,
                 workspaceId: found.workspaceId,
+                kind: found.kind,
               })
               setInstances(updated)
               setConnecting(null)
@@ -163,6 +172,7 @@ export function useInstancePicker({
         name: inst.name,
         hostname: inst.hostname,
         workspaceId: inst.workspaceId,
+        kind: inst.kind,
       })
       setIsOpen(false)
     },

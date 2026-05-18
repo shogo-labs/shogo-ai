@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Reads/writes ~/.shogo/config.json. The worker reads this at start,
@@ -6,7 +6,7 @@
  */
 import { readFileSync, writeFileSync, existsSync, chmodSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { CONFIG_FILE, ensureHome } from './paths.ts';
+import { CONFIG_FILE, PROJECTS_DIR, ensureHome } from './paths.ts';
 
 export interface WorkerConfig {
   apiKey?: string;
@@ -14,11 +14,14 @@ export interface WorkerConfig {
   name?: string;
   workerDir?: string;
   port?: number;
+  /** Root directory under which pulled project workspaces are stored. */
+  projectsDir?: string;
 }
 
-const DEFAULTS: Required<Pick<WorkerConfig, 'cloudUrl' | 'port'>> = {
+const DEFAULTS: { cloudUrl: string; port: number; projectsDir: string } = {
   cloudUrl: 'https://studio.shogo.ai',
   port: 8002,
+  projectsDir: PROJECTS_DIR,
 };
 
 export function loadConfig(): WorkerConfig {
@@ -48,6 +51,7 @@ export function resolveConfig(override: WorkerConfig = {}): Required<WorkerConfi
     name: process.env.SHOGO_INSTANCE_NAME,
     workerDir: process.env.SHOGO_WORKER_DIR,
     port: process.env.PORT ? parseInt(process.env.PORT, 10) : undefined,
+    projectsDir: process.env.SHOGO_PROJECTS_DIR,
   };
   const merged = mergeConfig(mergeConfig(fileCfg, env), override);
   if (!merged.apiKey) {
@@ -59,5 +63,6 @@ export function resolveConfig(override: WorkerConfig = {}): Required<WorkerConfi
     name: merged.name ?? hostname(),
     workerDir: merged.workerDir ?? process.cwd(),
     port: merged.port ?? DEFAULTS.port,
+    projectsDir: merged.projectsDir ?? DEFAULTS.projectsDir,
   };
 }

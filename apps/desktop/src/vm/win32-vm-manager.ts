@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { spawn, execSync, type ChildProcess } from 'child_process'
@@ -200,6 +200,11 @@ export class Win32VMManager implements VMManager {
     this.portForwards.delete(hostPort)
   }
 
+  async setBalloonTargetMB(_handle: VMHandle, targetMB: number): Promise<void> {
+    if (!this.qmpClient) return
+    await this.qmpClient.setBalloonSize(targetMB * 1024 * 1024)
+  }
+
   // -------------------------------------------------------------------------
 
   private buildQemuArgs(opts: {
@@ -212,11 +217,16 @@ export class Win32VMManager implements VMManager {
     const { config, overlayPath, seedISOPath, qmpPort, hostFwds } = opts
     const firmwareDir = this.findFirmwareDir()
 
+    // Memory layout: see comment in darwin-vm-manager.ts. Same balloon +
+    // memory-backend-ram approach so the WHPX-backed guest gives memory
+    // back to Windows when idle instead of growing monotonically toward
+    // the configured ceiling.
     const args = [
       ...(firmwareDir ? ['-L', firmwareDir] : []),
       '-accel', 'whpx', '-accel', 'tcg',
-      '-machine', 'q35', '-cpu', 'Broadwell-v4',
-      '-m', String(config.memoryMB),
+      '-machine', 'q35,memory-backend=mem0', '-cpu', 'Broadwell-v4',
+      '-object', `memory-backend-ram,id=mem0,size=${config.memoryMB}M,prealloc=off,discard-data=on`,
+      '-m', `${config.memoryMB}M`,
       '-smp', String(config.cpus),
       '-kernel', path.join(this.vmImageDir, 'vmlinuz'),
       '-initrd', path.join(this.vmImageDir, 'initrd.img'),
@@ -225,6 +235,7 @@ export class Win32VMManager implements VMManager {
       ...(fs.existsSync(seedISOPath) ? ['-cdrom', seedISOPath] : []),
       '-netdev', `user,id=net0,${hostFwds.join(',')}`,
       '-device', 'virtio-net-pci,netdev=net0',
+      '-device', 'virtio-balloon-pci,free-page-reporting=on,deflate-on-oom=on',
       '-qmp', `tcp:127.0.0.1:${qmpPort},server=on,wait=off`,
       '-nographic',
     ]

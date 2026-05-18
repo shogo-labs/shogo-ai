@@ -42,7 +42,7 @@ jobs:
         run: bun install
 
       - name: Build workspace packages
-        run: cd packages/sdk && bun run build
+        run: bun run build:packages
 
       - name: Build web
         run: bun run web:build
@@ -123,7 +123,20 @@ jobs:
 
       - name: Build workspace packages
         shell: bash
-        run: cd packages/sdk && bun run build
+        run: bun run build:packages
+
+      # `apps/api/src/generated/admin-routes.ts` is git-ignored and produced
+      # by `bun run generate:routes`. The root postinstall tries to run this
+      # during `bun install`, but `@shogo-ai/cli` (which `packages/sdk/bin/shogo.ts`
+      # imports as `@shogo-ai/cli/pkg`) isn't built yet at that point —
+      # especially under `bun install --linker=isolated` on Windows — so it
+      # silently no-ops. Re-running it here — after `build:packages` has built
+      # the CLI — guarantees the generated files exist before `bundle-api.mjs`
+      # imports them at apps/api/src/server.ts:81. Without this, the bundler
+      # fails with `Could not resolve "./generated/admin-routes"`.
+      - name: Generate Hono routes
+        shell: bash
+        run: bun run generate:routes
 
       - name: Generate Prisma clients (PG + SQLite)
         shell: bash
@@ -151,7 +164,13 @@ jobs:
 
       - name: Build TypeScript
         working-directory: apps/desktop
-        run: npx tsc
+        # `npx tsc` emits dist/{main,preload,...}.js. The follow-up
+        # `bundle:main` step re-bundles dist/main.js with `bun build` so
+        # workspace TS imports (notably @shogo-ai/worker/cloud-login)
+        # get inlined; tsc on its own can't resolve them because
+        # apps/desktop is npm-installed, not a bun workspace member.
+        # See apps/desktop/scripts/bundle-main.mjs for details.
+        run: npx tsc && npm run bundle:main
 
       - name: Prepare Windows Code Signing
         shell: bash

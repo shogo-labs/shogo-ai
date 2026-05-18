@@ -1,0 +1,72 @@
+{
+  "name": "@shogo-ai/email",
+  "version": "1.6.0",
+  "description": "Shogo Email — multi-provider transactional email (SES, SMTP, OCI) with built-in transactional templates.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "development": "./src/server.ts",
+      "import": "./dist/server.js",
+      "require": "./dist/server.cjs"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.cjs",
+    "dist/**/*.d.ts",
+    "dist/**/*.d.cts"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "bun --no-env-file test src/"
+  },
+  "peerDependencies": {
+    "nodemailer": ">=6.0.0",
+    "@aws-sdk/client-ses": ">=3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "nodemailer": { "optional": true },
+    "@aws-sdk/client-ses": { "optional": true }
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "@types/nodemailer": "^7.0.11",
+    "tsup": "^8.0.0",
+    "typescript": "^6.0.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "shogo",
+    "email",
+    "smtp",
+    "ses",
+    "transactional",
+    "nodemailer"
+  ],
+  "author": "Shogo Labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shogo-labs/shogo-ai.git",
+    "directory": "packages/email"
+  },
+  "homepage": "https://github.com/shogo-labs/shogo-ai/tree/main/packages/email#readme",
+  "bugs": {
+    "url": "https://github.com/shogo-labs/shogo-ai/issues"
+  }
+}

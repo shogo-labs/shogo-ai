@@ -9,7 +9,7 @@ terraform {
   required_providers {
     oci = {
       source  = "oracle/oci"
-      version = "~> 6.0"
+      version = "~> 8.0"
     }
   }
 }
@@ -36,8 +36,14 @@ variable "vcn_id" {
 }
 
 variable "public_subnet_id" {
-  description = "Public subnet OCID (for K8s API endpoint and LBs)"
+  description = "Public subnet OCID (for LBs and for the K8s API endpoint when no dedicated api_endpoint subnet is provided)"
   type        = string
+}
+
+variable "api_endpoint_subnet_id" {
+  description = "Optional dedicated subnet OCID for the Kubernetes API endpoint. When null (default), the API endpoint is placed in `public_subnet_id`. Set when adopting clusters that were bootstrapped with a separate api-endpoint subnet."
+  type        = string
+  default     = null
 }
 
 variable "private_workers_subnet_id" {
@@ -51,13 +57,15 @@ variable "private_pods_subnet_id" {
 }
 
 variable "api_nsg_id" {
-  description = "NSG OCID for the K8s API endpoint"
+  description = "NSG OCID for the K8s API endpoint. Pass `null` to attach no NSG (relies on subnet security lists instead)."
   type        = string
+  default     = null
 }
 
 variable "workers_nsg_id" {
-  description = "NSG OCID for worker nodes"
+  description = "NSG OCID for worker nodes. Pass `null` to attach no NSG to the node pool / pod subnets (relies on subnet security lists instead)."
   type        = string
+  default     = null
 }
 
 variable "node_shape" {
@@ -97,15 +105,42 @@ variable "node_pool_max" {
 }
 
 variable "boot_volume_gb" {
+  # Sized for the warm-pool workload: each node hosts ~15 user workspaces, and a
+  # single workspace can pull a multi-GB project image, run `bun install` into
+  # node_modules, build, then layer overlayfs deltas. 100 GB was hitting
+  # DiskPressure repeatedly on staging (see incident 2026-05-14 — kubelet started
+  # evicting pods at 80%+ disk and image GC removed layers other ksvc revisions
+  # still referenced, breaking routes). 200 GB gives ~6 GB of working space per
+  # co-tenant before pressure kicks in.
   description = "Boot volume size in GB"
   type        = number
-  default     = 100
+  default     = 200
 }
 
 variable "enable_workload_pool" {
   description = "Enable a separate node pool for user workloads (project runtimes)"
   type        = bool
   default     = false
+}
+
+# --- main node pool overrides for environments that pre-date the
+# system-vs-workloads pool split ---------------------------------------------
+#
+# These vars exist so an environment that was originally provisioned as a
+# single-pool cluster can keep its pool's name + density settings under
+# terraform management without forcing an in-place "rename" or a node
+# replacement just for state hygiene. Production envs use the defaults.
+
+variable "main_node_pool_name_override" {
+  description = "Override the main node pool's name. Defaults to \"<cluster_name>-system\". Set to e.g. \"<cluster_name>-arm\" when adopting tf-management of a pre-existing pool that has a different name in OCI."
+  type        = string
+  default     = null
+}
+
+variable "main_node_pool_max_pods" {
+  description = "Maximum pods per node on the main pool. OCI ships 110 for fresh pools; older pools may have been created with a lower bound (e.g. 93 on staging). Setting this to match the live value avoids an in-place change that would only take effect on node replacement."
+  type        = number
+  default     = 110
 }
 
 variable "workload_node_shape" {
@@ -203,8 +238,8 @@ resource "oci_containerengine_cluster" "main" {
 
   endpoint_config {
     is_public_ip_enabled = true
-    subnet_id            = var.public_subnet_id
-    nsg_ids              = [var.api_nsg_id]
+    subnet_id            = coalesce(var.api_endpoint_subnet_id, var.public_subnet_id)
+    nsg_ids              = compact([var.api_nsg_id])
   }
 
   options {
@@ -224,6 +259,21 @@ resource "oci_containerengine_cluster" "main" {
   }
 
   freeform_tags = var.tags
+
+  # `endpoint_config` and `options.service_lb_subnet_ids` are immutable
+  # in OCI — any difference between config and live forces full cluster
+  # replacement (and cascades to node pools). Production-us was
+  # bootstrapped with a dedicated /28 api_endpoint subnet that is now
+  # plumbed via `api_endpoint_subnet_id`, but other envs may have
+  # bootstrap-time differences too (NSG attachments, public-vs-private
+  # endpoint, etc.). Lock the whole block out of drift detection so the
+  # tf state stays adoptable.
+  lifecycle {
+    ignore_changes = [
+      endpoint_config,
+      options[0].service_lb_subnet_ids,
+    ]
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -233,7 +283,7 @@ resource "oci_containerengine_node_pool" "main" {
   compartment_id     = var.compartment_id
   cluster_id         = oci_containerengine_cluster.main.id
   kubernetes_version = var.kubernetes_version
-  name               = "${var.cluster_name}-system"
+  name               = coalesce(var.main_node_pool_name_override, "${var.cluster_name}-system")
 
   node_shape = var.node_shape
   node_shape_config {
@@ -252,13 +302,13 @@ resource "oci_containerengine_node_pool" "main" {
       }
     }
 
-    nsg_ids = [var.workers_nsg_id]
+    nsg_ids = compact([var.workers_nsg_id])
 
     node_pool_pod_network_option_details {
       cni_type          = "OCI_VCN_IP_NATIVE"
-      max_pods_per_node = 110
+      max_pods_per_node = var.main_node_pool_max_pods
       pod_subnet_ids    = [var.private_pods_subnet_id]
-      pod_nsg_ids       = [var.workers_nsg_id]
+      pod_nsg_ids       = compact([var.workers_nsg_id])
     }
 
     freeform_tags = merge(var.tags, {
@@ -305,6 +355,44 @@ resource "oci_containerengine_node_pool" "main" {
   # NODE_POOL_OCID GH Actions var BEFORE the next deploy.
   lifecycle {
     prevent_destroy = true
+
+    # `node_metadata` (the cloud-init user_data) only takes effect on new
+    # nodes, so a drift between tf and the live setting is invisible until
+    # the pool scales out. Pre-existing pools that were provisioned with a
+    # custom user_data script will look "drifted" against this module's
+    # auto-init script even though existing nodes are healthy; setting
+    # `main_node_pool_ignore_node_metadata = true` opts out of that diff
+    # so day-to-day applies don't fight the live setting.
+    #
+    # Terraform doesn't allow dynamic ignore_changes per-instance, so this
+    # is implemented as an unconditional ignore (matches every env). Pools
+    # that genuinely want the module's user_data emitted still get it on
+    # initial create — only subsequent drift is suppressed.
+    #
+    # `node_config_details.size` is owned by the cluster autoscaler at
+    # runtime, so locking it out of drift detection prevents tf from
+    # scaling the cluster down (or up) on every apply. Likewise
+    # `placement_configs` is sometimes adjusted by the autoscaler when
+    # AD capacity shifts; preserving the live placement avoids node
+    # churn during reconciliation.
+    ignore_changes = [
+      node_metadata,
+      node_config_details[0].size,
+      node_config_details[0].placement_configs,
+      # OCI 8.x worker node images dictate the kubernetes version: the
+      # node-pool update API refuses an explicit version change with
+      # "Cannot update Kubernetes version which has already been set by
+      # OKE worker node image." (409 Conflict). Cluster version is
+      # still managed at the cluster resource — pools follow their
+      # node image.
+      kubernetes_version,
+      # Boot volume size changes force a rolling node replacement, which
+      # is disruptive for already-bootstrapped pools where the live
+      # value differs from the module default (e.g. live=100 GB, default
+      # =200). Initial creation still honors the module default; only
+      # post-create drift is suppressed.
+      node_source_details[0].boot_volume_size_in_gbs,
+    ]
   }
 }
 
@@ -337,13 +425,13 @@ resource "oci_containerengine_node_pool" "workloads" {
       }
     }
 
-    nsg_ids = [var.workers_nsg_id]
+    nsg_ids = compact([var.workers_nsg_id])
 
     node_pool_pod_network_option_details {
       cni_type          = "OCI_VCN_IP_NATIVE"
       max_pods_per_node = 110
       pod_subnet_ids    = [var.private_pods_subnet_id]
-      pod_nsg_ids       = [var.workers_nsg_id]
+      pod_nsg_ids       = compact([var.workers_nsg_id])
     }
 
     freeform_tags = merge(var.tags, {

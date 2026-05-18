@@ -8,10 +8,10 @@
  *
  * Concretely today:
  *   - Vite stacks (`react-app`, `threejs-game`, `phaser-game`) — invokes
- *     `vite build --outDir dist.staging --emptyOutDir` and atomically
+ *     `vite build --outDir dist.canvas.staging --emptyOutDir` and atomically
  *     swaps the result into `dist/`.
  *   - Metro stacks (`expo-app`, `expo-three`) — invokes
- *     `expo export --platform web --output-dir dist.staging` and atomically
+ *     `expo export --platform web --output-dir dist.canvas.staging` and atomically
  *     swaps the result into `dist/`.
  *
  * The historical implementation ran `bun run build` and let package.json
@@ -22,18 +22,42 @@
  * ourselves so we control the output dir and can promote it atomically;
  * see `build-output-commit.ts`.
  *
+ * Why `dist.canvas.staging/` and not the shared `dist.staging/`:
+ * `PreviewManager.runExpoExportWeb` (Metro stacks) and
+ * `PreviewManager.runViteOneShotBuild` (Vite stacks) also build into a
+ * staging dir at boot to seed `dist/` for the runtime's preview iframe.
+ * Both calls run in parallel with `CanvasBuildManager.start()`'s first
+ * build, and both call `cleanupStagingOutput` (a recursive `rmSync`)
+ * before spawning their bundler. With a shared staging name, one
+ * builder's cleanup can wipe the other's in-progress output mid-copy —
+ * surfaces as `ENOENT … copyfile 'public/<asset>' -> 'dist.staging/<asset>'`
+ * from CopyFileW when the destination directory disappears under a
+ * large-file copy (e.g. a multi-megabyte GLB in `public/`). Giving the
+ * canvas builder its own staging dir keeps both managers' cleanups
+ * disjoint without changing the rest of the architecture.
+ *
  * Builds are debounced so rapid file writes don't cause build storms.
  */
 
 import { spawn, type ChildProcess } from 'child_process'
 import { join } from 'path'
-import { existsSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { resolveBinInvocation } from '@shogo/shared-runtime'
 import {
-  commitBuildOutput,
+  commitBuildOutputAsync,
   cleanupStagingOutput,
-  DEFAULT_STAGING_DIR,
 } from './build-output-commit'
+
+/**
+ * Staging directory name owned exclusively by `CanvasBuildManager`.
+ *
+ * Distinct from `DEFAULT_STAGING_DIR` (`dist.staging/`) which is owned
+ * by `PreviewManager`. See the file-level docstring for the race this
+ * separation prevents. Must stay in sync with the gitignore /
+ * UNTRACK_IF_TRACKED entries in `apps/api/src/services/git.service.ts`
+ * — otherwise it'd get checkpointed on every chat turn.
+ */
+const CANVAS_STAGING_DIR = 'dist.canvas.staging'
 
 const BUILD_DEBOUNCE_MS = 500
 const LOG_PREFIX = '[CanvasBuildManager]'
@@ -41,13 +65,37 @@ const LOG_PREFIX = '[CanvasBuildManager]'
 type BundlerKind = 'vite' | 'expo'
 
 /**
- * Bundler binaries we know how to drive directly. The first one we
- * find under `node_modules/.bin/` decides the build command. Vite is
- * preferred over Expo when both happen to be present (a Vite app with
- * an Expo tooling sidecar, etc.) because the resulting `dist/` is what
- * the runtime serves.
+ * Bundler binaries we know how to drive directly. When `.tech-stack`
+ * doesn't pin a preference (legacy workspaces, unknown ids), the first
+ * one we find under `node_modules/.bin/` decides the build command.
+ * Vite is listed first as the historical default for Vite-and-Expo
+ * hybrids that don't carry a marker.
+ *
+ * Note: `.tech-stack` (when present and known) overrides this scan
+ * order — see `resolveBundler()` and `STACK_TO_BUNDLER`. This is what
+ * fixes the cloud Expo rebuild bug: warm pods always have
+ * `node_modules/.bin/vite` from the pre-seed, so plain scan order
+ * picks Vite forever even after the workspace becomes Expo.
  */
 const KNOWN_BUNDLERS: readonly BundlerKind[] = ['vite', 'expo'] as const
+
+/**
+ * Tech-stack id (as written to `<workspace>/.tech-stack` by
+ * `seedTechStack`) → preferred bundler. Anything not in this map
+ * falls back to `KNOWN_BUNDLERS` scan order, preserving today's
+ * behavior for marker-less or third-party stacks.
+ *
+ * Source of truth for the id list lives in
+ * `packages/agent-runtime/tech-stacks/<id>/stack.json` (`runtime.devServer`).
+ * Keep this map in sync when adding a new first-party stack.
+ */
+const STACK_TO_BUNDLER: Readonly<Record<string, BundlerKind>> = {
+  'react-app': 'vite',
+  'threejs-game': 'vite',
+  'phaser-game': 'vite',
+  'expo-app': 'expo',
+  'expo-three': 'expo',
+}
 
 export interface CanvasBuildCallbacks {
   onBuildComplete: () => void
@@ -144,34 +192,82 @@ export class CanvasBuildManager {
 
   /**
    * Resolve the bundler binary to invoke. Picks the platform-correct
-   * shim (`.CMD` on Windows, no-extension on POSIX) and returns the
-   * first hit from `KNOWN_BUNDLERS`. Returns `null` when no known
-   * bundler is installed.
+   * shim (`.CMD` on Windows, no-extension on POSIX).
+   *
+   * Selection order:
+   *   1. `.tech-stack` marker, when it names a stack we recognize in
+   *      `STACK_TO_BUNDLER`. The corresponding bin must actually exist
+   *      under `node_modules/.bin/`; otherwise we fall through.
+   *   2. Scan `KNOWN_BUNDLERS` in declaration order and return the
+   *      first hit. This is the historical (pre-marker) behavior and
+   *      covers legacy workspaces with no marker, third-party stacks,
+   *      and the agent-runtime's evals.
+   *
+   * Returns `null` when no known bundler is installed.
+   *
+   * Why marker-first: in cloud, warm pods always have
+   * `node_modules/.bin/vite` from the pool pre-seed, so plain scan
+   * order would pick Vite for every Expo workspace forever — see
+   * `__tests__/expo-cloud-rebuild.test.ts` for the regression bar.
    */
   private resolveBundler(): { kind: BundlerKind; bin: string } | null {
     const binDir = join(this.workspaceDir, 'node_modules', '.bin')
     const isWindows = process.platform === 'win32'
-    for (const kind of KNOWN_BUNDLERS) {
+
+    const findBin = (kind: BundlerKind): string | undefined => {
       const candidates = isWindows
         ? [join(binDir, `${kind}.CMD`), join(binDir, `${kind}.cmd`), join(binDir, `${kind}.exe`)]
         : [join(binDir, kind)]
-      const bin = candidates.find((p) => existsSync(p))
+      return candidates.find((p) => existsSync(p))
+    }
+
+    const preferred = this.preferredBundlerFromMarker()
+    if (preferred) {
+      const bin = findBin(preferred)
+      if (bin) return { kind: preferred, bin }
+      // Marker says expo but no expo bin yet (deps still installing).
+      // Falling through to scan order would pick the leftover vite
+      // bin and rebuild dist/ with the wrong bundler — which is the
+      // exact cloud bug. Bail instead so the next debounced rebuild
+      // (after deps land) gets a clean shot.
+      return null
+    }
+
+    for (const kind of KNOWN_BUNDLERS) {
+      const bin = findBin(kind)
       if (bin) return { kind, bin }
     }
     return null
   }
 
   /**
-   * Build args that route output into `dist.staging/` instead of
+   * Read `<workspace>/.tech-stack` (written by `seedTechStack`) and
+   * map it through `STACK_TO_BUNDLER`. Returns `null` for missing,
+   * unreadable, or unrecognized markers — caller falls back to
+   * `KNOWN_BUNDLERS` scan order in that case.
+   */
+  private preferredBundlerFromMarker(): BundlerKind | null {
+    try {
+      const markerPath = join(this.workspaceDir, '.tech-stack')
+      if (!existsSync(markerPath)) return null
+      const stackId = readFileSync(markerPath, 'utf-8').trim()
+      return STACK_TO_BUNDLER[stackId] ?? null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Build args that route output into `CANVAS_STAGING_DIR` instead of
    * `dist/` so we can atomically swap on success. `--emptyOutDir` is
    * passed to Vite explicitly to suppress its "outDir outside project
    * root" warning when users seed exotic vite.config.ts setups.
    */
   private buildArgsFor(kind: BundlerKind): string[] {
     if (kind === 'vite') {
-      return ['build', '--outDir', DEFAULT_STAGING_DIR, '--emptyOutDir']
+      return ['build', '--outDir', CANVAS_STAGING_DIR, '--emptyOutDir']
     }
-    return ['export', '--platform', 'web', '--output-dir', DEFAULT_STAGING_DIR]
+    return ['export', '--platform', 'web', '--output-dir', CANVAS_STAGING_DIR]
   }
 
   private async runBuild(): Promise<void> {
@@ -213,8 +309,10 @@ export class CanvasBuildManager {
     }
 
     // Wipe any leftover staging dir from a prior crashed build so the
-    // bundler starts from a clean slate.
-    cleanupStagingOutput(this.workspaceDir, DEFAULT_STAGING_DIR)
+    // bundler starts from a clean slate. Only touches our own
+    // `CANVAS_STAGING_DIR`; PreviewManager's `dist.staging/` is its
+    // problem to clean up.
+    cleanupStagingOutput(this.workspaceDir, CANVAS_STAGING_DIR)
 
     const isWindows = process.platform === 'win32'
     // Route through bundled `bun` when the system has no `node` on PATH
@@ -229,8 +327,9 @@ export class CanvasBuildManager {
     }
     try {
       await new Promise<void>((resolve, reject) => {
+        const cmd = isWindows ? `"${invocation.cmd}"` : invocation.cmd
         const proc: ChildProcess = spawn(
-          invocation.cmd,
+          cmd,
           [...invocation.argsPrefix, ...this.buildArgsFor(bundler.kind)],
           {
             cwd: this.workspaceDir,
@@ -279,9 +378,13 @@ export class CanvasBuildManager {
       })
 
       // Bundler succeeded — promote the staging dir into `dist/` atomically.
-      // A swap failure (e.g. a locked file on Windows) is non-fatal: the
-      // previous `dist/` keeps serving and the next rebuild will retry.
-      const committed = commitBuildOutput(this.workspaceDir, DEFAULT_STAGING_DIR)
+      // Routes through the workspace-scoped commit mutex so PreviewManager's
+      // boot-time expo/vite seed and our own canvas builds can't race on
+      // `dist.prev/` rotation. A swap failure (e.g. a locked file on
+      // Windows that outlasted the retry budget AND the force-replace
+      // fallback) is non-fatal: the previous `dist/` keeps serving and the
+      // next rebuild will retry.
+      const committed = await commitBuildOutputAsync(this.workspaceDir, CANVAS_STAGING_DIR)
       if (!committed) {
         console.warn(
           `${LOG_PREFIX} Build succeeded but commit into dist/ failed — previous build remains live`,
@@ -294,7 +397,7 @@ export class CanvasBuildManager {
     } catch (err: any) {
       // Failed build: drop the partial staging output so it doesn't
       // poison the next swap, and leave `dist/` untouched.
-      cleanupStagingOutput(this.workspaceDir, DEFAULT_STAGING_DIR)
+      cleanupStagingOutput(this.workspaceDir, CANVAS_STAGING_DIR)
       const message = String(err?.message ?? err ?? '(no error message)')
       // Slice generously — see ERROR_SLICE_LIMIT comment. The 200-char
       // cap dropped vite/rollup's actual error frame, which is what

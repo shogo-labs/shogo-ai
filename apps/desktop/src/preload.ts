@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { contextBridge, ipcRenderer } from 'electron'
 import { AudioCaptureManager, type PcmChunkMessage } from './audio/audio-capture-manager'
@@ -123,6 +123,13 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   getAppMode: () => ipcRenderer.invoke('get-app-mode'),
   getAppConfig: () => ipcRenderer.invoke('get-app-config'),
   setAppMode: (mode: 'local' | 'cloud') => ipcRenderer.invoke('set-app-mode', mode),
+
+  // Open the native folder picker for external/IDE-style projects.
+  // Returns `{ ok: true, paths: string[] }` on selection or
+  // `{ ok: false, error?: string }` on cancel/error.
+  pickFolders: (opts?: { multi?: boolean; defaultPath?: string }): Promise<
+    { ok: true; paths: string[] } | { ok: false; error?: string }
+  > => ipcRenderer.invoke('pick-folders', opts ?? {}),
   getVMImageStatus: () => ipcRenderer.invoke('get-vm-image-status'),
   downloadVMImages: () => ipcRenderer.invoke('download-vm-images'),
   skipVMDownload: () => ipcRenderer.invoke('skip-vm-download'),
@@ -223,6 +230,8 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     ipcRenderer.invoke('get-device-info'),
   startCloudLogin: (opts?: { workspaceId?: string }): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('start-cloud-login', opts),
+  cancelCloudLogin: (): Promise<{ ok: boolean; cancelled?: boolean }> =>
+    ipcRenderer.invoke('cancel-cloud-login'),
   signOutCloud: (): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('sign-out-cloud'),
   onCloudLoginResult: (

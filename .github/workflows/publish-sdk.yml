@@ -1,20 +1,39 @@
 # =============================================================================
-# Publish @shogo-ai/sdk to npm
+# Publish @shogo-ai/* packages to npm
 # =============================================================================
-# Triggered when an sdk-v* tag is pushed (e.g. sdk-v0.5.1, sdk-v0.5.1-beta.0).
-# This is decoupled from the main v* production deploy so SDK releases can
-# be cut independently.
+# Triggered when an `sdk-v*` tag is pushed. The single tag version is
+# applied to all seven MIT packages, which are published together in
+# one workflow run:
 #
-# The tag name is used as the npm version (e.g. sdk-v0.5.1 -> 0.5.1). The
-# package.json version is rewritten in-place before publishing, and any
-# `workspace:*` dependencies are stripped (the published dist/ and
-# bin/cli.mjs do not reference them).
+#   sdk-v1.6.0  →  publishes
+#                    @shogo-ai/core@1.6.0
+#                    @shogo-ai/agent@1.6.0
+#                    @shogo-ai/db@1.6.0
+#                    @shogo-ai/email@1.6.0
+#                    @shogo-ai/voice@1.6.0
+#                    @shogo-ai/cli@1.6.0
+#                    @shogo-ai/sdk@1.6.0
+#
+# Why lockstep on the SDK tag?
+#   The packages were just split out and the surfaces are still
+#   moving in tandem. Independent versioning becomes worthwhile only
+#   once each package has its own consumers and release cadence; for
+#   now, one tag → one coordinated release is the simpler operational
+#   contract. To switch later, generalize the regex and convert this
+#   into a matrix.
+#
+# Each package's `package.json` is rewritten in-place before publish:
+#   - `version` set to the tag version
+#   - `workspace:*` references to other `@shogo-ai/*` packages are
+#     rewritten to the same tag version (so installs from npm work)
+#   - `workspace:*` references to anything else are stripped (only
+#     `@shogo-ai/*` is being published)
+#   - `"development"` keys removed from `exports` (dev-only conditions)
 #
 # Required repo secret:
 #   NPM_TOKEN - an npm automation token with publish access to @shogo-ai.
 #
-# Publish provenance is enabled via OIDC (id-token: write) so the package
-# page on npmjs.com shows the verified build source.
+# Publish provenance is enabled via OIDC (id-token: write).
 # =============================================================================
 
 name: Publish SDK
@@ -26,7 +45,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to publish (e.g. sdk-v0.5.1). Must already exist.'
+        description: 'Existing tag to publish (e.g. sdk-v1.6.0). Must already exist.'
         required: true
         type: string
       dry_run:
@@ -43,11 +62,20 @@ concurrency:
   group: publish-sdk-${{ github.ref_name }}
   cancel-in-progress: false
 
+env:
+  # Publish order matters: leaf packages first (no @shogo-ai/* deps),
+  # then @shogo-ai/sdk last (depends on all six leaves). Within the
+  # leaves the order is arbitrary. npm publish doesn't enforce dep
+  # availability at publish time, but installers see the published
+  # versions immediately, so this order keeps the registry coherent
+  # for any consumer that polls during the publish.
+  PACKAGES: 'core agent db email voice cli sdk'
+
 jobs:
   publish:
-    name: Publish @shogo-ai/sdk
+    name: Publish all @shogo-ai/* packages
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
@@ -85,9 +113,9 @@ jobs:
           VERSION="${TAG#sdk-v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Publishing version: $VERSION (from tag $TAG)"
+          echo "Publishing @shogo-ai/{${PACKAGES// /,}} @ $VERSION (from tag $TAG)"
 
-          # Mark prereleases (0.5.1-beta.0 -> beta) so they don't become `latest`.
+          # Mark prereleases (1.6.0-beta.0 -> beta) so they don't become `latest`.
           if [[ "$VERSION" == *-* ]]; then
             PRE_TAG="${VERSION#*-}"
             PRE_TAG="${PRE_TAG%%.*}"
@@ -96,62 +124,135 @@ jobs:
             echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Check if version already published
+      - name: Verify license isolation across all MIT packages
+        run: bun run --filter @shogo-ai/sdk verify:license-isolation
+
+      - name: Build all MIT packages
+        run: bun run build:packages
+
+      - name: Rewrite package.json for publish (all packages)
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Apply three mutations to every package's package.json:
+          #   1. Set version to the tag version (lockstep release).
+          #   2. Workspace deps within `@shogo-ai/*` -> tag version.
+          #      Other `workspace:*` deps -> stripped (not published).
+          #   3. Remove `"development"` keys from `exports` (dev-only
+          #      conditions that would ENOENT in a published consumer
+          #      since the tarball ships only `dist/`).
+          for pkg in $PACKAGES; do
+            dir="packages/$pkg"
+            echo "::group::Rewriting $dir/package.json"
+            (cd "$dir" && node -e '
+              const fs = require("fs");
+              const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+              pkg.version = process.env.VERSION;
+
+              for (const key of ["dependencies", "devDependencies", "peerDependencies"]) {
+                if (!pkg[key]) continue;
+                for (const [name, spec] of Object.entries(pkg[key])) {
+                  if (typeof spec !== "string" || !spec.startsWith("workspace:")) continue;
+                  if (name.startsWith("@shogo-ai/")) {
+                    pkg[key][name] = process.env.VERSION;
+                    console.log(`Rewrote ${key}.${name}: ${spec} -> ${process.env.VERSION}`);
+                  } else {
+                    delete pkg[key][name];
+                    console.log(`Stripped ${key}.${name} (${spec})`);
+                  }
+                }
+              }
+
+              let strippedDev = 0;
+              const stripDev = (obj) => {
+                if (obj === null || typeof obj !== "object") return;
+                if (Array.isArray(obj)) { for (const el of obj) stripDev(el); return; }
+                if ("development" in obj) { delete obj.development; strippedDev++; }
+                for (const v of Object.values(obj)) stripDev(v);
+              };
+              if (pkg.exports) stripDev(pkg.exports);
+              if (strippedDev > 0) console.log(`Stripped ${strippedDev} development export condition(s)`);
+
+              fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+            ')
+            echo "--- Final $dir/package.json ---"
+            cat "$dir/package.json"
+            echo "::endgroup::"
+          done
+
+      - name: Verify tarball license isolation (every package)
+        run: |
+          # Pack each package and grep the unpacked tarball for any
+          # AGPL `@shogo/*` import/require. JSDoc breadcrumbs in
+          # `.d.ts` are tolerated; only real code references fail.
+          set -euo pipefail
+          mkdir -p /tmp/pkg-publish-leakcheck
+          for pkg in $PACKAGES; do
+            dir="packages/$pkg"
+            echo "::group::Tarball leak check for @shogo-ai/$pkg"
+            rm -rf /tmp/pkg-publish-leakcheck/package /tmp/pkg-publish-leakcheck/*.tgz || true
+            (cd "$dir" && npm pack --pack-destination /tmp/pkg-publish-leakcheck >/dev/null)
+            tarball=$(ls -1 /tmp/pkg-publish-leakcheck/*.tgz | head -1)
+            tar -xzf "$tarball" -C /tmp/pkg-publish-leakcheck
+            forbidden=$(
+              grep -rEn \
+                -e 'from[[:space:]]+["'\'']@shogo/[^"'\'']+["'\'']' \
+                -e 'require\([[:space:]]*["'\'']@shogo/[^"'\'']+["'\'']' \
+                -e 'import\([[:space:]]*["'\'']@shogo/[^"'\'']+["'\'']' \
+                --include='*.js' --include='*.cjs' --include='*.mjs' \
+                --include='*.ts' --include='*.cts' --include='*.mts' \
+                /tmp/pkg-publish-leakcheck/package || true
+            )
+            if [ -n "$forbidden" ]; then
+              echo "::error::AGPL leak detected in @shogo-ai/$pkg tarball — refusing to publish."
+              echo "$forbidden"
+              exit 1
+            fi
+            echo "@shogo-ai/$pkg tarball: clean"
+            echo "::endgroup::"
+          done
+
+      - name: Check existing published versions
         id: check
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          if npm view "@shogo-ai/sdk@$VERSION" version >/dev/null 2>&1; then
-            echo "already_published=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::@shogo-ai/sdk@$VERSION is already on npm -- skipping publish"
-          else
-            echo "already_published=false" >> "$GITHUB_OUTPUT"
-          fi
+          to_publish=()
+          to_skip=()
+          for pkg in $PACKAGES; do
+            if npm view "@shogo-ai/$pkg@$VERSION" version >/dev/null 2>&1; then
+              to_skip+=("$pkg")
+              echo "::warning::@shogo-ai/$pkg@$VERSION is already on npm — will skip"
+            else
+              to_publish+=("$pkg")
+            fi
+          done
+          echo "to_publish=${to_publish[*]}" >> "$GITHUB_OUTPUT"
+          echo "to_skip=${to_skip[*]}" >> "$GITHUB_OUTPUT"
 
-      - name: Build SDK
-        if: steps.check.outputs.already_published == 'false'
-        run: bun run build:sdk
-
-      - name: Prepare package.json for publish
-        if: steps.check.outputs.already_published == 'false'
-        working-directory: packages/sdk
+      - name: Publish dry-run for every package
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          TO_PUBLISH: ${{ steps.check.outputs.to_publish }}
         run: |
-          # Set version from tag and strip any workspace: deps (not needed at
-          # runtime; tsup bundles everything non-external into dist/).
-          node -e '
-            const fs = require("fs");
-            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-            pkg.version = process.env.VERSION;
-            for (const key of ["dependencies", "devDependencies", "peerDependencies"]) {
-              if (!pkg[key]) continue;
-              for (const [name, spec] of Object.entries(pkg[key])) {
-                if (typeof spec === "string" && spec.startsWith("workspace:")) {
-                  delete pkg[key][name];
-                  console.log(`Stripped ${key}.${name} (${spec})`);
-                }
-              }
-            }
-            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
-          '
-          echo "--- Final package.json ---"
-          cat package.json
-
-      - name: Verify publish contents
-        if: steps.check.outputs.already_published == 'false'
-        working-directory: packages/sdk
-        run: npm publish --dry-run --access public
+          for pkg in $TO_PUBLISH; do
+            echo "::group::npm publish --dry-run @shogo-ai/$pkg"
+            (cd "packages/$pkg" && npm publish --dry-run --access public)
+            echo "::endgroup::"
+          done
 
       - name: Publish to npm
-        if: |
-          steps.check.outputs.already_published == 'false' &&
-          github.event.inputs.dry_run != 'true'
-        working-directory: packages/sdk
+        if: github.event.inputs.dry_run != 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: 'true'
-        run: npm publish --access public --tag ${{ steps.version.outputs.npm_tag }}
+          NPM_TAG: ${{ steps.version.outputs.npm_tag }}
+          TO_PUBLISH: ${{ steps.check.outputs.to_publish }}
+        run: |
+          for pkg in $TO_PUBLISH; do
+            echo "::group::npm publish @shogo-ai/$pkg"
+            (cd "packages/$pkg" && npm publish --access public --tag "$NPM_TAG")
+            echo "::endgroup::"
+          done
 
       - name: Summary
         if: always()
@@ -159,20 +260,29 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           TAG: ${{ steps.version.outputs.tag }}
           NPM_TAG: ${{ steps.version.outputs.npm_tag }}
-          ALREADY: ${{ steps.check.outputs.already_published }}
+          TO_PUBLISH: ${{ steps.check.outputs.to_publish }}
+          TO_SKIP: ${{ steps.check.outputs.to_skip }}
           DRY: ${{ github.event.inputs.dry_run }}
         run: |
           {
-            echo "## SDK Publish"
+            echo "## SDK Publish (lockstep)"
             echo "- Tag: \`$TAG\`"
             echo "- Version: \`$VERSION\`"
             echo "- npm dist-tag: \`$NPM_TAG\`"
-            if [ "$ALREADY" = "true" ]; then
-              echo "- Status: skipped (already on npm)"
-            elif [ "$DRY" = "true" ]; then
-              echo "- Status: dry-run (not published)"
-            else
-              echo "- Status: published"
-              echo "- URL: https://www.npmjs.com/package/@shogo-ai/sdk/v/$VERSION"
+            if [ -n "$TO_PUBLISH" ]; then
+              echo "- Publish:"
+              for pkg in $TO_PUBLISH; do
+                if [ "$DRY" = "true" ]; then
+                  echo "  - @shogo-ai/$pkg@$VERSION (dry-run)"
+                else
+                  echo "  - [@shogo-ai/$pkg@$VERSION](https://www.npmjs.com/package/@shogo-ai/$pkg/v/$VERSION)"
+                fi
+              done
+            fi
+            if [ -n "$TO_SKIP" ]; then
+              echo "- Skipped (already on npm):"
+              for pkg in $TO_SKIP; do
+                echo "  - @shogo-ai/$pkg@$VERSION"
+              done
             fi
           } >> "$GITHUB_STEP_SUMMARY"

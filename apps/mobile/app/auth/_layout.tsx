@@ -1,10 +1,11 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * /auth/* layout
  *
- * Routes under `/auth/*` (e.g. `/auth/local-link`) are cloud-side bridge
- * pages that the desktop/other apps open in the system browser. They need
+ * Routes under `/auth/*` (currently `/auth/cli-link`) are cloud-side
+ * bridge pages that the desktop / CLI worker open in the system browser
+ * to complete a poll-based device sign-in. They need
  * the SDK domain (HttpClient + MST store) to hit the cloud API — but they
  * must NOT inherit the `(app)` shell (sidebar, header, VM banner, etc.).
  *

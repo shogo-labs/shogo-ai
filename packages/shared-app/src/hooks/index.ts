@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 export { useBillingData, type BillingDataState } from './useBillingData'
 export {
@@ -17,11 +17,13 @@ export {
 } from './useFeaturePolling'
 export {
   ActiveInstanceProvider,
+  computeRemoteProxyBaseUrl,
   useActiveInstance,
   localStorageAdapter,
   type ActiveInstance,
   type ActiveInstanceContextValue,
   type ActiveInstanceProviderProps,
+  type InstanceKind,
   type InstanceStorageAdapter,
 } from './useActiveInstance'
 export {

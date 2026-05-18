@@ -1,0 +1,68 @@
+{
+  "name": "@shogo-ai/cli",
+  "version": "1.6.0",
+  "description": "Shogo CLI helpers — deploy/manifest validation and packager for Shogo agents.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./deploy": {
+      "types": "./dist/deploy.d.ts",
+      "development": "./src/deploy.ts",
+      "import": "./dist/deploy.js",
+      "require": "./dist/deploy.cjs"
+    },
+    "./pkg": {
+      "types": "./dist/pkg.d.ts",
+      "development": "./src/pkg.ts",
+      "import": "./dist/pkg.js",
+      "require": "./dist/pkg.cjs"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.cjs",
+    "dist/**/*.d.ts",
+    "dist/**/*.d.cts"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "bun --no-env-file test src/"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "tsup": "^8.0.0",
+    "typescript": "^6.0.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "shogo",
+    "cli",
+    "deploy",
+    "agent",
+    "manifest"
+  ],
+  "author": "Shogo Labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shogo-labs/shogo-ai.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/shogo-labs/shogo-ai/tree/main/packages/cli#readme",
+  "bugs": {
+    "url": "https://github.com/shogo-labs/shogo-ai/issues"
+  }
+}

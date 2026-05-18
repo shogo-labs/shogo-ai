@@ -49,6 +49,38 @@ continues, just without access to the remote machine.
 Harmless noise from the local AgentConfig cron — unrelated to pairing. Fixed
 in a later release.
 
+## Installer: `Checksum mismatch`
+
+The installer downloads `https://releases.shogo.ai/cli/<channel>/shogo-<target>.tar.gz`
+and `...tar.gz.sha256` and verifies them with `sha256sum -c`. A mismatch
+means either:
+
+- The tarball was corrupted in transit. Just re-run the installer — the
+  302 chain hits a fresh GitHub asset URL each time.
+- You're behind a TLS-inspecting proxy that's rewriting the gzip body.
+  Use `--no-binary` to fall through to the npm install path, which is
+  served over a single TLS hop to `registry.npmjs.org`:
+
+  ```bash
+  curl -fsSL https://install.shogo.ai | bash -s -- --no-binary
+  ```
+
+## Installer: hangs or `HTTP/2 503` from `releases.shogo.ai`
+
+The release resolver hits the GitHub API to find the latest `v*` tag for
+your channel. If you see a brief 503 followed by success on retry, you
+hit a transient anonymous rate-limit. The resolver caches successful
+lookups for an hour (stable) / 10 min (beta) / 1 min (nightly) so the
+warm path is fast.
+
+Persistent 503 means no `v*` release exists for your channel yet — e.g.
+`--channel nightly` on a repo that doesn't cut nightly tags. Pick a
+different channel or install via npm:
+
+```bash
+npm i -g @shogo-ai/worker
+```
+
 ## Installer: `shogo` not found after install
 
 The installer adds `~/.shogo/bin` (Unix) or `%USERPROFILE%\.shogo\bin`

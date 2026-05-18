@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * ChatPanel - Smart component that integrates useChat hook with studio-chat domain
@@ -81,12 +81,13 @@ import {
   loadInteractionModePreference,
   saveInteractionModePreference,
 } from "../../lib/interaction-mode-preference"
+import { useDualPlan } from "../../lib/dual-plan-preference"
+import { todoStateStore } from "../../lib/todo-state-store"
 import {
   loadModelPreference,
   saveModelPreference,
 } from "../../lib/agent-mode-preference"
 import { CompactChatInput } from "./CompactChatInput"
-import { invalidateProjectFiles } from "../../hooks/useProjectFiles"
 import { ExecutionBadge } from "./ExecutionBadge"
 import { ExpandTab } from "./ExpandTab"
 import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
@@ -118,6 +119,8 @@ import * as ExpoLinking from "expo-linking"
 import { AlertCircle, RefreshCw, X, ChevronDown } from "lucide-react-native"
 import { type PlanData } from "./PlanCard"
 import { usePlanStreamSafe } from "./PlanStreamContext"
+import { AgentClient } from "@shogo-ai/sdk/agent"
+import { agentFetch } from "../../lib/agent-fetch"
 import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 import { buildStopRequest } from "../../lib/chat-stop"
@@ -636,6 +639,8 @@ function normalizePlanData(plan: PlanData): PlanData {
     ...plan,
     todos: plan.todos ?? [],
     filepath: normalizePlanFilepath(plan.filepath),
+    business: plan.business,
+    businessStatus: plan.businessStatus,
   }
 }
 
@@ -994,6 +999,22 @@ export const ChatPanel = observer(function ChatPanel({
     void saveInteractionModePreference(mode)
   }, [])
 
+  // Dual Plan preference — singleton-backed hook so the chat input, Plans
+  // panel header, and user settings page all stay in sync. Persistent
+  // per-device; the toggle stays sticky across sessions. Default is ON.
+  const [dualPlan, setDualPlanAsync] = useDualPlan()
+  const dualPlanRef = useRef<boolean>(dualPlan)
+  useEffect(() => {
+    dualPlanRef.current = dualPlan
+  }, [dualPlan])
+  const handleDualPlanChange = useCallback(
+    (next: boolean) => {
+      dualPlanRef.current = next
+      void setDualPlanAsync(next)
+    },
+    [setDualPlanAsync]
+  )
+
   const [restoreDraftRequest, setRestoreDraftRequest] = useState<RestoreDraftRequest | null>(null)
 
   // Bridge for Shogo Mode overlay (voice + text translator). The overlay
@@ -1031,6 +1052,7 @@ export const ChatPanel = observer(function ChatPanel({
     setPendingPlan(null)
     setConfirmedPlan(null)
     confirmedPlanRef.current = null
+    todoStateStore.clear()
   }, [currentSessionId])
 
   // Load session metadata from API if not already cached. Gated on
@@ -1651,6 +1673,10 @@ export const ChatPanel = observer(function ChatPanel({
       if ((dataPart as any).type === "data-plan") {
         const planData = (dataPart as any).data
         if (planData) {
+          // A fresh plan event always discards any stale business translation
+          // belonging to a previous plan; the runtime will re-emit
+          // data-plan-translation-* if Dual Plan is enabled for this turn.
+          planStream?.resetBusinessPlan()
           const normalizedPlan = normalizePlanData(planData)
           pendingPlanRef.current = normalizedPlan
           setPendingPlan(normalizedPlan)
@@ -1673,6 +1699,8 @@ export const ChatPanel = observer(function ChatPanel({
             todos: planData.todos ?? previousPlan?.todos ?? [],
             filepath: planData.filepath ?? previousPlan?.filepath,
             toolCallId: planData.toolCallId ?? previousPlan?.toolCallId,
+            business: previousPlan?.business,
+            businessStatus: previousPlan?.businessStatus,
           })
           pendingPlanRef.current = normalizedPlan
           setPendingPlan(normalizedPlan)
@@ -1682,6 +1710,69 @@ export const ChatPanel = observer(function ChatPanel({
           }
         }
         planStream?.notifyPlanCreated()
+      }
+
+      // Dual Plan: business-language translation lifecycle. The runtime emits
+      // these three events asynchronously after create_plan / update_plan so
+      // the UI can show a "Business" tab spinner immediately and then swap in
+      // the translated markdown when it's ready.
+      if ((dataPart as any).type === "data-plan-translation-start") {
+        planStream?.setBusinessStatus("pending")
+        planStream?.setStreamingBusinessPlan(null)
+        planStream?.setBusinessError(null)
+        const previousPlan = pendingPlanRef.current
+        if (previousPlan) {
+          const next = normalizePlanData({
+            ...previousPlan,
+            business: undefined,
+            businessStatus: "pending",
+          })
+          pendingPlanRef.current = next
+          setPendingPlan(next)
+          planStream?.setStreamingPlan(next)
+        }
+      }
+
+      if ((dataPart as any).type === "data-plan-translation") {
+        const data = (dataPart as any).data
+        const business = typeof data?.business === "string" ? data.business : null
+        if (business) {
+          planStream?.setBusinessStatus("ready")
+          planStream?.setStreamingBusinessPlan(business)
+          planStream?.setBusinessError(null)
+          const previousPlan = pendingPlanRef.current
+          if (previousPlan) {
+            const next = normalizePlanData({
+              ...previousPlan,
+              business,
+              businessStatus: "ready",
+            })
+            pendingPlanRef.current = next
+            setPendingPlan(next)
+            planStream?.setStreamingPlan(next)
+          }
+          planStream?.notifyPlanCreated()
+        }
+      }
+
+      if ((dataPart as any).type === "data-plan-translation-error") {
+        const data = (dataPart as any).data
+        const message =
+          typeof data?.message === "string" && data.message
+            ? data.message
+            : "Failed to generate business summary"
+        planStream?.setBusinessStatus("error")
+        planStream?.setBusinessError(message)
+        const previousPlan = pendingPlanRef.current
+        if (previousPlan) {
+          const next = normalizePlanData({
+            ...previousPlan,
+            businessStatus: "error",
+          })
+          pendingPlanRef.current = next
+          setPendingPlan(next)
+          planStream?.setStreamingPlan(next)
+        }
       }
 
       // Handle permission approval requests from the agent runtime
@@ -1831,13 +1922,12 @@ export const ChatPanel = observer(function ChatPanel({
             })
           }
 
-          {
+          if (onFilesChanged) {
             const modifiedPaths = getModifiedFilePaths(toolCalls)
             if (modifiedPaths.length > 0) {
               console.log("[ChatPanel] Files modified by agent:", modifiedPaths)
               filesChangedFiredRef.current = true
-              if (projectId) invalidateProjectFiles(projectId)
-              onFilesChanged?.(modifiedPaths)
+              onFilesChanged(modifiedPaths)
             }
           }
         }
@@ -2332,15 +2422,14 @@ export const ChatPanel = observer(function ChatPanel({
     const wasStreaming = prevStreamingForScanRef.current
     prevStreamingForScanRef.current = isStreaming
 
-    if (wasStreaming && !isStreaming && !filesChangedFiredRef.current) {
+    if (wasStreaming && !isStreaming && !filesChangedFiredRef.current && onFilesChanged) {
       const latestAssistant = [...messages].reverse().find((m) => m.role === "assistant")
       if (latestAssistant) {
         const toolCalls = extractToolCalls(latestAssistant)
         const modifiedPaths = getModifiedFilePaths(toolCalls)
         if (modifiedPaths.length > 0) {
           console.log("[ChatPanel] Fallback: Files modified by agent (onFinish missed):", modifiedPaths)
-          if (projectId) invalidateProjectFiles(projectId)
-          onFilesChanged?.(modifiedPaths)
+          onFilesChanged(modifiedPaths)
         }
       }
     }
@@ -2349,7 +2438,7 @@ export const ChatPanel = observer(function ChatPanel({
       filesChangedFiredRef.current = false
       setToolErrorBanner(null)
     }
-  }, [isStreaming, messages, onFilesChanged, projectId])
+  }, [isStreaming, messages, onFilesChanged])
 
   // Process progress events from message parts
   useEffect(() => {
@@ -3208,10 +3297,6 @@ export const ChatPanel = observer(function ChatPanel({
         console.warn("[ChatPanel] bridge.emitTurnStart threw", err)
       }
 
-      const mentionRecords = fileArray
-        .filter((f) => f.source === "mention" && f.path)
-        .map((f) => ({ path: f.path!, displayName: f.name }))
-
       actions
         .addMessage({
           sessionId: currentSessionId,
@@ -3219,7 +3304,6 @@ export const ChatPanel = observer(function ChatPanel({
           content: trimmedContent,
           imageData: fileArray.length > 0 ? fileArray[0].dataUrl : undefined,
           parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
-          ...(mentionRecords.length > 0 ? { mentions: mentionRecords } : {}),
         })
         .catch((err) => console.warn("[ChatPanel] Failed to persist user message:", err))
 
@@ -3249,6 +3333,7 @@ export const ChatPanel = observer(function ChatPanel({
           projectId,
           agentMode: perMsgModel || selectedModel,
           interactionMode: interactionModeRef.current,
+          dualPlan: dualPlanRef.current,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }
         const planToSend = confirmedPlanRef.current
@@ -3617,6 +3702,69 @@ export const ChatPanel = observer(function ChatPanel({
 
   const resolvedAgentUrl = localAgentUrl || (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
 
+  // Generate a business-language translation for a plan that doesn't have
+  // one yet. Mutates the local pending/streaming plan as soon as the
+  // translation comes back so the in-chat PlanCard switches to its
+  // Business tab without waiting for a panel refetch.
+  const handleGenerateBusinessSummary = useCallback(
+    async (filepath: string): Promise<string> => {
+      if (!resolvedAgentUrl) {
+        throw new Error("Agent URL is not available")
+      }
+      const filename = filepath.split("/").pop()
+      if (!filename || !filename.endsWith(".plan.md")) {
+        throw new Error("Invalid plan filepath")
+      }
+      const previousPlan = pendingPlanRef.current
+      if (previousPlan?.filepath === `.shogo/plans/${filename}`) {
+        const pendingNext = normalizePlanData({
+          ...previousPlan,
+          businessStatus: "pending",
+          business: undefined,
+        })
+        pendingPlanRef.current = pendingNext
+        setPendingPlan(pendingNext)
+        planStream?.setBusinessStatus("pending")
+      }
+      try {
+        const client = new AgentClient({
+          baseUrl: resolvedAgentUrl.replace(/\/$/, ""),
+          fetch: agentFetch,
+        })
+        const result = await client.translatePlan(filename)
+        const business = result.business
+        const refreshed = pendingPlanRef.current
+        if (refreshed?.filepath === `.shogo/plans/${filename}`) {
+          const readyNext = normalizePlanData({
+            ...refreshed,
+            business,
+            businessStatus: "ready",
+          })
+          pendingPlanRef.current = readyNext
+          setPendingPlan(readyNext)
+          planStream?.setStreamingPlan(readyNext)
+        }
+        planStream?.setStreamingBusinessPlan(business)
+        planStream?.setBusinessStatus("ready")
+        planStream?.notifyPlanCreated()
+        return business
+      } catch (err) {
+        const refreshed = pendingPlanRef.current
+        if (refreshed?.filepath === `.shogo/plans/${filename}`) {
+          const errNext = normalizePlanData({
+            ...refreshed,
+            businessStatus: "error",
+          })
+          pendingPlanRef.current = errNext
+          setPendingPlan(errNext)
+        }
+        planStream?.setBusinessStatus("error")
+        throw err
+      }
+    },
+    [resolvedAgentUrl, planStream]
+  )
+
   const handleSaveToolOutput = useCallback(
     (params: { messageId: string; toolCallId: string; output: string }) => {
       const { messageId, toolCallId, output } = params
@@ -3717,6 +3865,7 @@ export const ChatPanel = observer(function ChatPanel({
       pendingPlan,
       confirmedPlan,
       openPlan: onOpenPlan,
+      generateBusinessSummary: handleGenerateBusinessSummary,
     }),
     [
       sessionSummary,
@@ -3731,6 +3880,7 @@ export const ChatPanel = observer(function ChatPanel({
       handleConfirmPlan,
       confirmedPlan,
       onOpenPlan,
+      handleGenerateBusinessSummary,
     ],
   )
 
@@ -3756,7 +3906,6 @@ export const ChatPanel = observer(function ChatPanel({
         value={compactValue}
         onChange={onCompactValueChange}
         className={className}
-        projectId={projectId}
       />
     )
   }
@@ -4164,11 +4313,12 @@ export const ChatPanel = observer(function ChatPanel({
               onEditQueuedMessage={handleEditQueuedMessage}
               interactionMode={interactionMode}
               onInteractionModeChange={handleInteractionModeChange}
+              dualPlan={dualPlan}
+              onDualPlanChange={handleDualPlanChange}
               contextUsage={contextUsage}
               quickActions={quickActions}
               onQuickActionClick={handleQuickActionClick}
               restoreDraftRequest={restoreDraftRequest}
-              projectId={projectId}
             />
           </View>
         </KeyboardAvoidingView>

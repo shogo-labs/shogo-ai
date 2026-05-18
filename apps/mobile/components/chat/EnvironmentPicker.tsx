@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * EnvironmentPicker
@@ -180,26 +180,22 @@ export function EnvironmentPicker({ disabled }: EnvironmentPickerProps) {
           {instances.map((inst) => {
             const isActive = activeInstance?.instanceId === inst.id
             const isConnecting = connecting === inst.id
-            const selectable = inst.status === "online" || isConnecting
             return (
               <Pressable
                 key={inst.id}
-                disabled={!selectable}
+                disabled={isConnecting}
                 onPress={async () => {
                   await select(inst)
                   setOpen(false)
                 }}
                 className={cn(
                   "flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted/60",
-                  !selectable && "opacity-60",
+                  isConnecting && "opacity-60",
                 )}
               >
                 <StatusDot status={inst.status} />
                 <View className="flex-1">
-                  <Text className={cn(
-                    "text-sm font-medium",
-                    selectable ? "text-foreground" : "text-muted-foreground",
-                  )}>
+                  <Text className="text-sm font-medium text-foreground">
                     {inst.name}
                   </Text>
                   <Text className="text-[10px] text-muted-foreground">

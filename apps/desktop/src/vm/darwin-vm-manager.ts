@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { spawn, execSync, type ChildProcess } from 'child_process'
@@ -204,6 +204,14 @@ export class DarwinVMManager implements VMManager {
     this.portForwards.delete(hostPort)
   }
 
+  async setBalloonTargetMB(_handle: VMHandle, targetMB: number): Promise<void> {
+    if (!this.qmpClient) return
+    // QMP `balloon` takes bytes. The balloon device caps the GUEST's
+    // available memory at `target`, allowing QEMU to MADV_DONTNEED the
+    // host pages backing the rest.
+    await this.qmpClient.setBalloonSize(targetMB * 1024 * 1024)
+  }
+
   // -------------------------------------------------------------------------
 
   private buildQemuArgs(opts: {
@@ -215,11 +223,25 @@ export class DarwinVMManager implements VMManager {
   }): string[] {
     const { config, overlayPath, seedISOPath, qmpPort, hostFwds } = opts
 
+    // Memory layout:
+    // - `memory-backend-ram,discard-data=on,prealloc=off`: lazy host
+    //   allocation (HVF demand-pages anyway, but the discard-data flag
+    //   tells QEMU to `MADV_FREE` the backing pages when the guest
+    //   signals it no longer needs them).
+    // - `virtio-balloon-pci,free-page-reporting=on`: the Linux guest's
+    //   page reporting subsystem asynchronously tells QEMU about runs of
+    //   free pages, which QEMU `madvise(MADV_DONTNEED)`s back to macOS.
+    //   Without this, HVF never unmaps guest pages once touched, so the
+    //   VM grows monotonically toward `memoryMB` and never shrinks even
+    //   when the guest workload (vite build, LSPs, prisma) has finished
+    //   and freed everything internally. `deflate-on-oom=on` lets the
+    //   guest reclaim ballooned pages if it hits its own OOM.
     const args = [
       '-accel', 'hvf',
-      '-machine', 'virt',
+      '-machine', 'virt,memory-backend=mem0',
       '-cpu', 'host',
-      '-m', String(config.memoryMB),
+      '-object', `memory-backend-ram,id=mem0,size=${config.memoryMB}M,prealloc=off,discard-data=on`,
+      '-m', `${config.memoryMB}M`,
       '-smp', String(config.cpus),
       '-kernel', path.join(this.vmImageDir, 'vmlinuz'),
       '-initrd', path.join(this.vmImageDir, 'initrd.img'),
@@ -228,6 +250,7 @@ export class DarwinVMManager implements VMManager {
       ...(fs.existsSync(seedISOPath) ? ['-drive', `file=${seedISOPath},if=virtio,format=raw,readonly=on`] : []),
       '-netdev', `user,id=net0,${hostFwds.join(',')}`,
       '-device', 'virtio-net-pci,netdev=net0',
+      '-device', 'virtio-balloon-pci,free-page-reporting=on,deflate-on-oom=on',
       '-qmp', `tcp:127.0.0.1:${qmpPort},server=on,wait=off`,
       '-nographic',
       '-no-reboot',

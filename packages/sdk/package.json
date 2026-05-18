@@ -1,6 +1,6 @@
 {
   "name": "@shogo-ai/sdk",
-  "version": "1.3.0",
+  "version": "1.6.0",
   "description": "Shogo Platform SDK - Zero-boilerplate auth and database for Shogo apps",
   "type": "module",
   "main": "dist/index.cjs",
@@ -9,108 +9,237 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     },
     "./db": {
       "types": "./dist/db/index.d.ts",
+      "development": "./src/db/index.ts",
       "import": "./dist/db/index.js",
       "require": "./dist/db/index.cjs"
     },
     "./email": {
       "types": "./dist/email/index.d.ts",
+      "development": "./src/email/index.ts",
       "import": "./dist/email/index.js",
       "require": "./dist/email/index.cjs"
     },
     "./email/server": {
       "types": "./dist/email/server.d.ts",
+      "development": "./src/email/server.ts",
       "import": "./dist/email/server.js",
       "require": "./dist/email/server.cjs"
     },
     "./react": {
       "types": "./dist/react/index.d.ts",
+      "development": "./src/react/index.ts",
       "import": "./dist/react/index.js",
       "require": "./dist/react/index.cjs"
     },
     "./agent": {
       "types": "./dist/agent/index.d.ts",
+      "development": "./src/agent/index.ts",
       "import": "./dist/agent/index.js",
       "require": "./dist/agent/index.cjs"
     },
     "./generators": {
       "types": "./dist/generators/index.d.ts",
+      "development": "./src/generators/index.ts",
       "import": "./dist/generators/index.js",
       "require": "./dist/generators/index.cjs"
     },
     "./tools": {
       "types": "./dist/tools/index.d.ts",
+      "development": "./src/tools/index.ts",
       "import": "./dist/tools/index.js",
       "require": "./dist/tools/index.cjs"
     },
     "./tools/server": {
       "types": "./dist/tools/server.d.ts",
+      "development": "./src/tools/server.ts",
       "import": "./dist/tools/server.js",
       "require": "./dist/tools/server.cjs"
     },
     "./memory": {
       "types": "./dist/memory/index.d.ts",
+      "development": "./src/memory/index.ts",
       "import": "./dist/memory/index.js",
       "require": "./dist/memory/index.cjs"
     },
     "./memory/server": {
       "types": "./dist/memory/server.d.ts",
+      "development": "./src/memory/server.ts",
       "import": "./dist/memory/server.js",
       "require": "./dist/memory/server.cjs"
     },
     "./voice": {
       "types": "./dist/voice/index.d.ts",
+      "development": "./src/voice/index.ts",
       "import": "./dist/voice/index.js",
       "require": "./dist/voice/index.cjs"
     },
     "./voice/server": {
       "types": "./dist/voice/server.d.ts",
+      "development": "./src/voice/server.ts",
       "import": "./dist/voice/server.js",
       "require": "./dist/voice/server.cjs"
     },
     "./voice/react": {
       "types": "./dist/voice/react/index.d.ts",
+      "development": "./src/voice/react/index.ts",
       "import": "./dist/voice/react/index.js",
       "require": "./dist/voice/react/index.cjs"
     },
     "./voice/native": {
       "types": "./dist/voice/native/index.d.ts",
+      "development": "./src/voice/native/index.ts",
       "import": "./dist/voice/native/index.js",
       "require": "./dist/voice/native/index.cjs"
     },
     "./voice/route": {
       "types": "./dist/voice/route/index.d.ts",
+      "development": "./src/voice/route/index.ts",
       "import": "./dist/voice/route/index.js",
       "require": "./dist/voice/route/index.cjs"
     },
     "./voice/route/signed-url": {
       "types": "./dist/voice/route/signed-url.d.ts",
+      "development": "./src/voice/route/signed-url.ts",
       "import": "./dist/voice/route/signed-url.js",
       "require": "./dist/voice/route/signed-url.cjs"
     },
     "./voice/route/tts-preview": {
       "types": "./dist/voice/route/tts-preview.d.ts",
+      "development": "./src/voice/route/tts-preview.ts",
       "import": "./dist/voice/route/tts-preview.js",
       "require": "./dist/voice/route/tts-preview.cjs"
     },
     "./voice/route/agent": {
       "types": "./dist/voice/route/agent.d.ts",
+      "development": "./src/voice/route/agent.ts",
       "import": "./dist/voice/route/agent.js",
       "require": "./dist/voice/route/agent.cjs"
     },
     "./voice/route/audio-tags": {
       "types": "./dist/voice/route/audio-tags.d.ts",
+      "development": "./src/voice/route/audio-tags.ts",
       "import": "./dist/voice/route/audio-tags.js",
       "require": "./dist/voice/route/audio-tags.cjs"
     },
     "./cli/deploy": {
       "types": "./dist/cli/deploy.d.ts",
+      "development": "./src/cli/deploy.ts",
       "import": "./dist/cli/deploy.js",
       "require": "./dist/cli/deploy.cjs"
+    },
+    "./cli/pkg": {
+      "types": "./dist/cli/pkg.d.ts",
+      "development": "./src/cli/pkg.ts",
+      "import": "./dist/cli/pkg.js",
+      "require": "./dist/cli/pkg.cjs"
+    },
+    "./logger": {
+      "types": "./dist/logger.d.ts",
+      "development": "./src/logger.ts",
+      "import": "./dist/logger.js",
+      "require": "./dist/logger.cjs"
+    },
+    "./instrumentation": {
+      "types": "./dist/instrumentation.d.ts",
+      "development": "./src/instrumentation.ts",
+      "import": "./dist/instrumentation.js",
+      "require": "./dist/instrumentation.cjs"
+    },
+    "./stream-buffer": {
+      "types": "./dist/stream-buffer.d.ts",
+      "development": "./src/stream-buffer.ts",
+      "import": "./dist/stream-buffer.js",
+      "require": "./dist/stream-buffer.cjs"
+    },
+    "./chat-message": {
+      "types": "./dist/chat-message.d.ts",
+      "development": "./src/chat-message.ts",
+      "import": "./dist/chat-message.js",
+      "require": "./dist/chat-message.cjs"
+    },
+    "./macos-junk": {
+      "types": "./dist/macos-junk.d.ts",
+      "development": "./src/macos-junk.ts",
+      "import": "./dist/macos-junk.js",
+      "require": "./dist/macos-junk.cjs"
+    },
+    "./tech-stack-registry": {
+      "types": "./dist/tech-stack-registry.d.ts",
+      "development": "./src/tech-stack-registry.ts",
+      "import": "./dist/tech-stack-registry.js",
+      "require": "./dist/tech-stack-registry.cjs"
+    },
+    "./model-catalog": {
+      "types": "./dist/model-catalog/index.d.ts",
+      "development": "./src/model-catalog/index.ts",
+      "import": "./dist/model-catalog/index.js",
+      "require": "./dist/model-catalog/index.cjs"
+    },
+    "./loop-detector": {
+      "types": "./dist/loop-detector.d.ts",
+      "development": "./src/loop-detector.ts",
+      "import": "./dist/loop-detector.js",
+      "require": "./dist/loop-detector.cjs"
+    },
+    "./microcompact": {
+      "types": "./dist/microcompact.d.ts",
+      "development": "./src/microcompact.ts",
+      "import": "./dist/microcompact.js",
+      "require": "./dist/microcompact.cjs"
+    },
+    "./prefix-fingerprint": {
+      "types": "./dist/prefix-fingerprint.d.ts",
+      "development": "./src/prefix-fingerprint.ts",
+      "import": "./dist/prefix-fingerprint.js",
+      "require": "./dist/prefix-fingerprint.cjs"
+    },
+    "./tool-orchestration": {
+      "types": "./dist/tool-orchestration.d.ts",
+      "development": "./src/tool-orchestration.ts",
+      "import": "./dist/tool-orchestration.js",
+      "require": "./dist/tool-orchestration.cjs"
+    },
+    "./hooks": {
+      "types": "./dist/hooks/index.d.ts",
+      "development": "./src/hooks/index.ts",
+      "import": "./dist/hooks/index.js",
+      "require": "./dist/hooks/index.cjs"
+    },
+    "./model-router": {
+      "types": "./dist/model-router/index.d.ts",
+      "development": "./src/model-router/index.ts",
+      "import": "./dist/model-router/index.js",
+      "require": "./dist/model-router/index.cjs"
+    },
+    "./pi-adapter": {
+      "types": "./dist/pi-adapter.d.ts",
+      "development": "./src/pi-adapter.ts",
+      "import": "./dist/pi-adapter.js",
+      "require": "./dist/pi-adapter.cjs"
+    },
+    "./agent-loop": {
+      "types": "./dist/agent-loop.d.ts",
+      "development": "./src/agent-loop.ts",
+      "import": "./dist/agent-loop.js",
+      "require": "./dist/agent-loop.cjs"
+    },
+    "./ai-client": {
+      "types": "./dist/ai-client.d.ts",
+      "development": "./src/ai-client.ts",
+      "import": "./dist/ai-client.js",
+      "require": "./dist/ai-client.cjs"
+    },
+    "./ai-proxy": {
+      "types": "./dist/ai-proxy.d.ts",
+      "development": "./src/ai-proxy.ts",
+      "import": "./dist/ai-proxy.js",
+      "require": "./dist/ai-proxy.cjs"
     }
   },
   "bin": {
@@ -129,11 +258,17 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test src/",
     "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e:ui": "playwright test --ui",
+    "verify:license-isolation": "node scripts/verify-license-isolation.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^2.0.41",
-    "@shogo/shared-runtime": "workspace:*"
+    "@shogo-ai/core": "workspace:*",
+    "@shogo-ai/agent": "workspace:*",
+    "@shogo-ai/db": "workspace:*",
+    "@shogo-ai/email": "workspace:*",
+    "@shogo-ai/voice": "workspace:*",
+    "@shogo-ai/cli": "workspace:*"
   },
   "devDependencies": {
     "@aws-sdk/client-ses": "^3.700.0",
@@ -243,8 +378,8 @@
     "convai",
     "rag"
   ],
-  "author": "Shogo Team",
-  "license": "Apache-2.0",
+  "author": "Shogo Labs",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/shogo-labs/shogo-ai.git",

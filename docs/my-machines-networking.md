@@ -76,10 +76,27 @@ Shogo Worker — Preflight
 All checks passed.
 ```
 
+## Inbound work via the existing outbound connection
+
+The worker can receive **work** from external systems (Jira webhooks, cron jobs, Zapier, your own backend) without opening any inbound port. The flow:
+
+1. External caller → `https://api.shogo.ai/api/projects/<projectId>/agent-proxy/...` (standard HTTPS, no involvement of the worker's network).
+2. Shogo Cloud looks up `Project.preferredInstanceId` and, if a machine is pinned, relays the request back over the worker's **existing outbound tunnel** to host #1 (`api.shogo.ai`).
+3. The worker forwards it to its local `agent-runtime` (loopback only).
+4. The reply travels the same path in reverse.
+
+From the network's point of view, this is still one outbound TLS connection to `api.shogo.ai` — no new hosts, no inbound ports, no NAT punching. End-users see one stable public URL per project regardless of where the agent actually runs.
+
+To enable: pair the machine (`shogo worker start`), then in Studio open the project → **Channels → Run on**, or call `client.machines.pinProject(projectId, { instanceId })` from `@shogo-ai/sdk`. See [External Triggers](https://docs.shogo.ai/docs/features/external-triggers/quickstart) for the end-to-end walk-through.
+
+### What about the project's workspace files?
+
+When the worker handles a request for a project for the first time, it clones the project's workspace from cloud over the same outbound HTTPS connection (no inbound port, no AWS credentials) and stores it in `~/.shogo/projects/<projectId>/`. A live file watcher pushes local edits back to cloud as the `agent-runtime` writes files. See [Cloning projects to a paired machine](https://docs.shogo.ai/docs/features/my-machines/project-pull) for details, or pass `--no-auto-pull` to manage workspaces yourself.
+
 ## FAQ
 
 **Why is there no inbound port?**
-The worker dials Shogo Cloud over HTTPS. When the cloud needs to push work, the worker's open connection carries it back. No inbound ports, no public IP, no VPN required.
+The worker dials Shogo Cloud over HTTPS. When the cloud needs to push work, the worker's open connection carries it back. No inbound ports, no public IP, no VPN required. See "Inbound work via the existing outbound connection" above for the external-trigger flow.
 
 **Can I pin traffic to my region?**
 Yes — set `SHOGO_CLOUD_URL` to your region's endpoint (e.g. `https://eu.shogo.ai`). The three-host rule still applies to that region's names.

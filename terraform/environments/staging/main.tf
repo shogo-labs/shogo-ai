@@ -11,7 +11,7 @@ terraform {
   required_providers {
     oci = {
       source  = "oracle/oci"
-      version = "~> 6.0"
+      version = "~> 8.0"
     }
     cloudflare = {
       source  = "cloudflare/cloudflare"
@@ -27,8 +27,21 @@ terraform {
     }
   }
 
-  backend "local" {
-    path = "terraform.tfstate"
+  # Remote state on OCI Object Storage (S3-compat).
+  # Endpoint is supplied via -backend-config at `terraform init` time:
+  #   terraform init -backend-config="endpoint=$OCI_S3_ENDPOINT"
+  # Credentials come from $AWS_ACCESS_KEY_ID / $AWS_SECRET_ACCESS_KEY env vars
+  # (see GH secrets OCI_S3_ACCESS_KEY / OCI_S3_SECRET_KEY).
+  backend "s3" {
+    bucket = "shogo-tfstate"
+    key    = "staging/terraform.tfstate"
+    region = "us-ashburn-1"
+
+    skip_credentials_validation = true
+    skip_metadata_api_check     = true
+    skip_region_validation      = true
+    skip_requesting_account_id  = true
+    force_path_style            = true
   }
 }
 
@@ -107,6 +120,16 @@ module "vcn" {
   single_nat_gateway    = true
   oke_api_allowed_cidrs = var.oke_api_allowed_cidrs
   tags                  = local.tags
+
+  # Staging was bootstrapped without module-owned security lists or NSGs.
+  # The live VCN uses OCI's default security list for all three subnets and
+  # the OKE cluster + node pool have no NSGs attached. Flipping these to
+  # `true` for staging would re-attach security lists (replacing the
+  # defaults, which changes the effective network policy) and create NSGs
+  # the cluster doesn't reference. Keep them off here; production envs
+  # leave the defaults (`true`) and get the full network surface.
+  enable_security_lists = false
+  enable_oke_nsgs       = false
 }
 
 # =============================================================================
@@ -135,12 +158,16 @@ module "oke" {
   node_pool_min  = 1
   node_pool_max  = 6
 
-  enable_workload_pool      = true
-  workload_node_ocpus       = 4
-  workload_node_memory_gb   = 24
-  workload_pool_size        = 1
-  workload_pool_min         = 1
-  workload_pool_max         = 10
+  # Staging was provisioned before the system-vs-workloads pool split landed.
+  # The live pool is named `shogo-staging-arm` (not `-system`) and runs at
+  # max_pods_per_node = 93 (not the OCI default 110). These overrides keep
+  # tf-managed state in sync with the live pool so day-to-day plans don't
+  # show cosmetic drift; the workloads pool is left disabled because every
+  # workload currently runs on the main pool. Reconciling staging to the
+  # production split is a separate migration.
+  main_node_pool_name_override = "${local.cluster_name}-arm"
+  main_node_pool_max_pods      = 93
+  enable_workload_pool         = false
 
   tags = local.tags
 }
@@ -148,14 +175,19 @@ module "oke" {
 # =============================================================================
 # Container Registry — OCIR
 # =============================================================================
-
-module "ocir" {
-  source = "../../modules/ocir"
-
-  compartment_id = var.compartment_id
-  repositories   = ["shogo-api", "shogo-web", "agent-runtime", "shogo-docs"]
-  tags           = local.tags
-}
+#
+# OCIR repositories (shogo/shogo-api, shogo/shogo-web, shogo/agent-runtime,
+# shogo/shogo-docs) are tenancy-shared and live in the tenancy root
+# compartment, NOT the staging compartment. They serve images for every
+# environment (staging + the three production regions) so they're owned by
+# whatever bootstrap created the tenancy and intentionally not managed from
+# any env-specific terraform.
+#
+# The active production environments (production-us, -eu, -india) already
+# don't declare an ocir module for the same reason. Staging previously did,
+# which produced a 4-resource "to be created" entry in every plan that would
+# have failed at apply time (the registries already exist by display name).
+# Removed in 2026-05 along with the rest of the state reconciliation work.
 
 # =============================================================================
 # Object Storage
@@ -168,6 +200,26 @@ module "object_storage" {
   environment    = local.environment
   region         = var.region
   tags           = local.tags
+
+  # Per-bucket compartment overrides — see module doc for why these exist.
+  # Two of the four staging buckets were bootstrapped outside the staging
+  # compartment, and these overrides let the tf config match the live
+  # placement so the buckets can be imported without an enforced compartment
+  # move on the next plan.
+  #   shogo-workspaces-staging  -> production compartment
+  #   shogo-pg-backups-staging  -> tenancy root
+  # shogo-schemas-staging and shogo-published-apps-staging do not exist
+  # live yet; they fall through to var.compartment_id and will be created
+  # in the staging compartment on the next apply.
+  workspaces_compartment_id = "ocid1.compartment.oc1..aaaaaaaaalshoan7geg7q32jpr5dbwbvrnu3vqjfqvtqkgyc6ydznxqigbza"
+  pg_backups_compartment_id = var.tenancy_id
+
+  # Create the tenancy-scoped IAM policy that grants
+  # objectstorage-<region> permission to enact lifecycle rules. Only
+  # needs to live in one env (this one); production envs leave the
+  # default (null) and re-use this same policy.
+  lifecycle_service_policy_compartment_id = var.tenancy_id
+  lifecycle_service_policy_scope          = "tenancy"
 }
 
 # =============================================================================
@@ -181,7 +233,7 @@ module "file_storage" {
   compartment_id      = var.compartment_id
   availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
   subnet_id           = module.vcn.private_workers_subnet_id
-  nsg_ids             = [module.vcn.oke_workers_nsg_id]
+  nsg_ids             = compact([module.vcn.oke_workers_nsg_id])
   nfs_allowed_cidr    = var.nfs_allowed_cidr
   tags                = local.tags
 }
@@ -193,6 +245,12 @@ module "file_storage" {
 module "cnpg" {
   source = "../../modules/cnpg"
 
+  # CNPG operator was installed manually before tf adopted it. Skip the
+  # kubectl-apply provisioner so plans don't show a perpetual "to be
+  # created" null_resource. The namespace (cnpg-system) is still imported
+  # and managed for label drift.
+  manage_install = false
+
   tags = local.tags
 }
 
@@ -203,8 +261,16 @@ module "cnpg" {
 module "knative" {
   source = "../../modules/knative-oci"
 
-  domain          = local.domain
-  publish_domain  = "shogo.one"
+  # Staging's Knative + Kourier install was bootstrapped manually and the
+  # kourier-toleration fix was hand-applied during the disk-pressure outage.
+  # Live state already matches what these null_resources would install, so we
+  # set `manage_install = false` to keep them out of state and keep plans
+  # quiet. If we ever need to bump the Knative version or re-apply the
+  # toleration strip, flip this back to true.
+  manage_install = false
+
+  domain             = local.domain
+  publish_domain     = "shogo.one"
   enable_pvc_support = true
 }
 
@@ -225,15 +291,14 @@ module "signoz" {
 # =============================================================================
 # GitHub OIDC (CI/CD Authentication)
 # =============================================================================
-
-module "github_oidc" {
-  source = "../../modules/oci-github-oidc"
-
-  compartment_id = var.compartment_id
-  tenancy_id     = var.tenancy_id
-  oke_cluster_id = module.oke.cluster_id
-  tags           = local.tags
-}
+#
+# Staging's CI auth uses OCI user creds (OCI_USER_OCID + OCI_PRIVATE_KEY),
+# not workload-identity-style OIDC federation. The
+# `modules/oci-github-oidc` group + policy don't exist in staging's OCI
+# tenancy and creating them wouldn't migrate any workflow automatically.
+# Removed in 2026-05 as part of the live-state reconciliation. Re-add this
+# block (and run terraform apply) if/when we wire up OIDC federation for
+# CI workflows targeting staging.
 
 # =============================================================================
 # Autoscaler IAM (dynamic group + policy for OKE instance principal)
@@ -258,8 +323,15 @@ module "dns" {
   cloudflare_zone_id = var.cloudflare_zone_id
   domain             = local.domain
   subdomain          = "staging"
-  lb_ip_or_hostname  = "0.0.0.0" # Populated after initial apply via kubectl get svc
+  lb_ip_or_hostname  = "0.0.0.0" # Unused: staging.shogo.ai records are owned out-of-band.
   additional_records = []
+
+  # staging.shogo.ai's `studio.*` and `docs.*` records resolve to proxied
+  # Cloudflare IPs that chain back to studio-staging.shogo.ai (which itself
+  # points at a multi-region AWS ELB). They're owned by external-dns / the
+  # legacy AWS deploy, not by this terraform. Don't let the module recreate
+  # them with a placeholder 0.0.0.0 content.
+  manage_platform_records = false
 }
 
 # =============================================================================
@@ -271,11 +343,19 @@ module "publish_hosting" {
 
   compartment_id        = var.compartment_id
   environment           = local.environment
-  publish_domain        = "shogo.one"
+  publish_domain        = "staging.shogo.one"
+  publish_zone          = "shogo.one"
   cloudflare_zone_id    = var.cloudflare_zone_id
   cloudflare_account_id = var.cloudflare_account_id
   oci_region            = var.region
   tags                  = local.tags
+
+  # The PAR (pre-authenticated request) created inside this module is
+  # scoped to `shogo-published-apps-${env}`, which the object_storage
+  # module creates. Without this depends_on, terraform parallelizes the
+  # bucket creation and the PAR creation, and OCI's PAR API returns 404
+  # before object storage replication has propagated the new bucket.
+  depends_on = [module.object_storage]
 }
 
 # =============================================================================
@@ -293,8 +373,8 @@ output "cluster_id" {
 }
 
 output "registry_namespace" {
-  description = "OCIR namespace"
-  value       = module.ocir.registry_namespace
+  description = "OCIR namespace (derived from the object-storage namespace, which is identical tenancy-wide)"
+  value       = module.object_storage.namespace
 }
 
 output "schemas_bucket" {
@@ -322,7 +402,4 @@ output "file_system_export_path" {
   value       = module.file_storage.export_path
 }
 
-output "github_actions_group" {
-  description = "IAM group for GitHub Actions CI/CD"
-  value       = module.github_oidc.group_name
-}
+# github_actions_group output removed alongside module.github_oidc.

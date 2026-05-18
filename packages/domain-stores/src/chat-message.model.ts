@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Auto-generated ChatMessage MST Model
@@ -25,7 +25,7 @@ export const ChatMessageModel = types
     parts: types.optional(types.string, ""),
     mentions: types.optional(types.frozen(), []),
     createdAt: types.optional(types.number, 0),
-    agent: types.optional(types.string, ""),
+    agent: types.optional(types.string, "technical"),
     session: types.safeReference(types.late(() => ChatSessionModel)),
   })
   .views(self => ({

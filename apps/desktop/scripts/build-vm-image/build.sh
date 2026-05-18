@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 # Copyright (C) 2026 Shogo Technologies, Inc.
 #
 # Build a Ubuntu 24.04 VM image for Shogo desktop VM isolation.

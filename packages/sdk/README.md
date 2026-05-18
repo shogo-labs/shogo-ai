@@ -1,6 +1,9 @@
 # @shogo-ai/sdk
 
-Shogo Platform SDK - Zero-boilerplate auth, database, and email for Shogo apps.
+The Shogo client SDK — auth, typed database access, and the LLM gateway.
+Voice, email, agent-runtime, db adapters, and CLI helpers ship as
+separate `@shogo-ai/*` packages but remain importable via deprecated
+subpath shims here through v1.x. See [MIGRATION.md](./MIGRATION.md).
 
 ## Installation
 
@@ -9,6 +12,26 @@ npm install @shogo-ai/sdk
 # or
 bun add @shogo-ai/sdk
 ```
+
+## Package family
+
+The SDK was split in v1.6 into focused packages. All seven release in
+lockstep on the `sdk-v*` tag:
+
+| Package | Use when |
+| --- | --- |
+| `@shogo-ai/sdk` | Building a client (web / RN / Node consumer) |
+| `@shogo-ai/core` | Server primitives — logger, OTEL, streaming, chat-message |
+| `@shogo-ai/agent` | Building an agent backend on `pi-ai` / `pi-agent-core` |
+| `@shogo-ai/db` | Prisma adapter wiring (PG / SQLite / libSQL) |
+| `@shogo-ai/email` | Transactional email (SES / SMTP / OCI) |
+| `@shogo-ai/voice` | ElevenLabs + Twilio voice infra + React/RN UI |
+| `@shogo-ai/cli` | Deploy / manifest / packager helpers |
+
+Old `@shogo-ai/sdk/<subpath>` imports keep working through back-compat
+re-export shims. New code should import from the corresponding package
+directly. See [MIGRATION.md](./MIGRATION.md) for the full subpath →
+package map.
 
 ## Quick Start
 
@@ -33,14 +56,23 @@ await client.db.todos.delete(todo.id)
 
 ## Features
 
-- **Authentication** - Email/password auth with Better Auth integration
-- **Database** - Zero-config CRUD operations with MongoDB-style filtering
-- **Email** - SMTP and AWS SES support with templates
-- **Memory** - Hybrid SQLite FTS5 + TF-IDF search over per-user markdown
-- **LLM Gateway** - Drop-in Vercel AI SDK provider; one Shogo API key routes to Anthropic, OpenAI, Google, or a local LLM (see below)
-- **Voice** - Turnkey ElevenLabs convai proxy + React hook (see below)
-- **TypeScript** - Full type safety with generics
-- **Cross-Platform** - Works in browsers, Node.js, and React Native
+| Feature | Lives in |
+| --- | --- |
+| **Authentication** — email/password with Better Auth | `@shogo-ai/sdk` (`client.auth`) |
+| **Database client** — MongoDB-style CRUD with `client.db.<resource>` | `@shogo-ai/sdk` (`client.db`) |
+| **LLM Gateway** — drop-in Vercel AI SDK provider | `@shogo-ai/sdk` (`client.llm`) |
+| **Machines & external triggers** — pair desktops + VPS workers, pin projects for webhooks | `@shogo-ai/sdk` (`client.machines`) |
+| **Project clone / sync** — pull a project's workspace cloud→local, push edits back | `@shogo-ai/sdk` (`client.projects`) |
+| **Memory** — SQLite FTS5 + TF-IDF over per-user markdown | `@shogo-ai/sdk/memory` |
+| **Voice** — ElevenLabs convai proxy + React hooks | [`@shogo-ai/voice`](../voice) (also as `@shogo-ai/sdk/voice/*`) |
+| **Email** — SMTP / SES / OCI providers + templates | [`@shogo-ai/email`](../email) (also as `@shogo-ai/sdk/email/server`) |
+| **Prisma adapters** — PG / SQLite / libSQL auto-detection | [`@shogo-ai/db`](../db) (also as `@shogo-ai/sdk/db`) |
+| **Agent runtime** — `runAgentLoop`, model router, hooks | [`@shogo-ai/agent`](../agent) (also as `@shogo-ai/sdk/agent-loop` etc.) |
+| **TypeScript** | Full type safety with generics |
+| **Cross-Platform** | Browsers, Node, Bun, React Native |
+
+The right column tells you where the implementation lives in v1.6+;
+either path works at the import site.
 
 ## API Reference
 
@@ -240,6 +272,12 @@ const user: User | null = await client.db.users.get('123')
 ```
 
 ## Email (Server-Side)
+
+> **Moved.** This module now lives in
+> [`@shogo-ai/email`](../email/README.md). The
+> `@shogo-ai/sdk/email/server` import path shown below continues to
+> work via a deprecated re-export shim. New code should import from
+> `@shogo-ai/email/server` directly.
 
 The SDK includes a server-side email module for sending transactional emails via SMTP or AWS SES.
 
@@ -663,7 +701,159 @@ Pass `null` to clear the provider (e.g. on sign-out).
   on the cloud directly with your Shogo key as `x-api-key`; the
   OpenAI-compatible path loses fidelity on conversion.
 
+## Machines & external triggers
+
+`client.machines` exposes the workspace's paired desktops + `shogo worker`
+CLI sign-ins ("machines"), and lets you pin a project to a specific
+machine. Once pinned, every external request that hits the canonical
+project URL —
+
+```
+https://api.shogo.ai/api/projects/<projectId>/agent-proxy/...
+```
+
+— is relayed through that machine's outbound tunnel into the
+`agent-runtime` running on it. This is what makes Jira webhooks, Zapier
+zaps, cron jobs, etc. trigger an agent running on **your** VPS without
+ever exposing an inbound port on that VPS.
+
+See [External Triggers](https://docs.shogo.ai/docs/features/external-triggers/quickstart)
+in the user docs for the end-to-end story (Studio "Run on" UI + curl
+recipes). The SDK surface below is the programmatic equivalent.
+
+### List paired machines
+
+```ts
+const machines = await client.machines.list({ workspaceId })
+// → Array<{ id, name, hostname, kind: 'desktop' | 'cli_worker',
+//           status: 'online' | 'heartbeat' | 'offline', ... }>
+
+// Trimmed shape for pickers (only online ones):
+const online = await client.machines.listOnline({ workspaceId })
+```
+
+### Pin a project to a machine
+
+```ts
+const vps = machines.find((m) => m.kind === 'cli_worker' && m.name === 'prod-vps-1')!
+
+await client.machines.pinProject(projectId, {
+  instanceId: vps.id,
+  policy: 'pinned',   // 503 instance_offline if the worker goes down
+                      // (use 'prefer' to fall back to a cloud pod)
+})
+```
+
+The pin persists on `Project.preferredInstanceId` server-side, so it
+survives client reloads and is honored by every cloud pod / region.
+
+### Inspect / clear the pin
+
+```ts
+const pin = await client.machines.getProjectPin(projectId)
+// → { preferredInstanceId: 'inst-xyz' | null,
+//     preferredInstancePolicy: 'pinned' | 'prefer',
+//     instance: { id, name, hostname, kind } | null }
+
+await client.machines.unpinProject(projectId)  // back to cloud routing
+```
+
+### Trigger the agent from anywhere
+
+Once the project is pinned, **any HTTP client** can drive the agent over
+plain HTTPS — no SDK install required on the caller side:
+
+```bash
+curl -X POST \
+  "https://api.shogo.ai/api/projects/$PROJECT_ID/agent-proxy/agent/channels/webhook/incoming" \
+  -H "Authorization: Bearer $SHOGO_API_KEY" \
+  -H "X-Webhook-Secret: $CHANNEL_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Triage Jira ticket ABC-123"}'
+```
+
+See [Webhook channel reference](https://docs.shogo.ai/docs/features/external-triggers/webhook-channel)
+for the full request/response shape, sync vs. async reply modes, and
+status-code matrix.
+
+## Project clone / sync (`client.projects`)
+
+`client.projects` is the SDK companion to `shogo project pull/push`. It uses
+the cloud Files API to move a project's workspace between cloud and a local
+directory — **no AWS credentials required**.
+
+### Pull a project locally
+
+```ts
+const stats = await client.projects.pull(projectId, {
+  into: './staging-snapshot',
+  include: ['src/**', 'AGENTS.md', 'config.json'],
+  onProgress: ({ kind, path, index, total }) => {
+    console.log(`[${kind}] ${index + 1}/${total} ${path}`)
+  },
+})
+
+console.log(`Pulled ${stats.downloaded} files (${stats.errors.length} errors)`)
+```
+
+The pull is atomic — files land in `<into>.shogo-pull-tmp/` first and rename
+over the target on success, so a Ctrl-C mid-pull never leaves a half-populated
+workspace.
+
+### Push edits back
+
+```ts
+await client.projects.push(projectId, {
+  from: './staging-snapshot',
+  deleteRemote: false,   // set to true to mirror local deletions (DESTRUCTIVE)
+})
+```
+
+### Low-level helpers
+
+For ad-hoc reads/writes without a full sync, use the per-file helpers:
+
+```ts
+await client.projects.listFiles(projectId)      // Studio-style listing
+await client.projects.manifest(projectId)       // full workspace manifest
+await client.projects.readFile(projectId, 'src/App.tsx')
+await client.projects.writeFile(projectId, 'src/App.tsx', '// new content')
+await client.projects.deleteFile(projectId, 'src/old.tsx')
+```
+
+### Custom transports (edge, browser, tests)
+
+Both `pull` and `push` accept injected `fetch` and `fs` adapters so the same
+code path runs inside an edge function, a unit test, or a custom environment
+that doesn't have `node:fs/promises`:
+
+```ts
+import { CloudFileTransport } from '@shogo-ai/sdk'
+
+const transport = new CloudFileTransport({
+  apiUrl: 'https://api.shogo.ai',
+  apiKey: process.env.SHOGO_API_KEY!,
+  projectId,
+  localDir: '/virtual/fs/proj',
+  fetchImpl: myCustomFetch,
+  fs: myInMemoryFsAdapter,
+})
+
+await transport.downloadAll()
+```
+
+The `agent-runtime` running on a paired machine reuses this same transport
+under the hood when auto-pull is enabled — see
+[Cloning projects to a paired machine](https://docs.shogo.ai/docs/features/my-machines/project-pull).
+
 ## Voice (ElevenLabs convai)
+
+> **Moved.** This module now lives in
+> [`@shogo-ai/voice`](../voice/README.md). All `@shogo-ai/sdk/voice/*`
+> import paths shown below (incl. `/voice`, `/voice/server`,
+> `/voice/react`, `/voice/native`, `/voice/route/*`) continue to work
+> via deprecated re-export shims. New code should import from
+> `@shogo-ai/voice/<sub>` directly.
 
 Turn your Shogo app into a live voice agent with two files: one server mount
 and one React component. The SDK proxies to [ElevenLabs Conversational AI](https://elevenlabs.io/docs/conversational-ai/overview)
@@ -1395,4 +1585,4 @@ See the [examples](./examples) directory for complete working examples:
 
 ## License
 
-Apache-2.0
+MIT

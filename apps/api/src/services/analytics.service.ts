@@ -1516,13 +1516,20 @@ export async function getTemplateEngagement(
     engagedUsers: number
     totalUsers: number
   }[]>(
+    // Template provenance moved from `Project.templateId` to
+    // `MarketplaceInstall.listingId → MarketplaceListing.slug` during
+    // the templates → marketplace consolidation. The output `templateId`
+    // field is preserved (analytics dashboards still read it under that
+    // key) but is now sourced from the listing slug.
     isSqlite
       ? `
     WITH template_projects AS (
-      SELECT p."templateId", p."id" AS "projectId", p."createdBy"
+      SELECT ml."slug" AS "templateId", p."id" AS "projectId", p."createdBy"
       FROM "projects" p
       JOIN "users" u ON u."id" = p."createdBy"
-      WHERE p."templateId" IS NOT NULL ${filter}
+      JOIN "marketplace_installs" mi ON mi."projectId" = p."id"
+      JOIN "marketplace_listings" ml ON ml."id" = mi."listingId"
+      WHERE 1=1 ${filter}
     ),
     project_msgs AS (
       SELECT tp."templateId", tp."projectId", tp."createdBy",
@@ -1553,10 +1560,12 @@ export async function getTemplateEngagement(
   `
       : `
     WITH template_projects AS (
-      SELECT p."templateId", p."id" AS "projectId", p."createdBy"
+      SELECT ml."slug" AS "templateId", p."id" AS "projectId", p."createdBy"
       FROM "projects" p
       JOIN "users" u ON u."id" = p."createdBy"
-      WHERE p."templateId" IS NOT NULL ${filter}
+      JOIN "marketplace_installs" mi ON mi."projectId" = p."id"
+      JOIN "marketplace_listings" ml ON ml."id" = mi."listingId"
+      WHERE 1=1 ${filter}
     ),
     project_msgs AS (
       SELECT tp."templateId", tp."projectId", tp."createdBy",
@@ -1632,13 +1641,17 @@ export async function getChatConversations(
     content: string
     sentAt: Date
   }[]>(
+    // Template id (legacy field name, retained for digest formatting) is
+    // pulled from the marketplace listing slug via a LEFT JOIN — projects
+    // that pre-date the marketplace install (or that were never sourced
+    // from a listing) simply have a NULL templateId.
     isSqlite
       ? `
     SELECT
       cs."id" AS "sessionId",
       u."name" AS "userName",
       p."name" AS "projectName",
-      p."templateId",
+      ml."slug" AS "templateId",
       cm."role",
       CASE
         WHEN cm."role" = 'assistant' AND LENGTH(cm."content") > ${ASSISTANT_TRUNCATE_LENGTH}
@@ -1650,6 +1663,8 @@ export async function getChatConversations(
     JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
     JOIN "projects" p ON p."id" = cs."contextId"
     JOIN "users" u ON u."id" = p."createdBy"
+    LEFT JOIN "marketplace_installs" mi ON mi."projectId" = p."id"
+    LEFT JOIN "marketplace_listings" ml ON ml."id" = mi."listingId"
     WHERE cm."createdAt" >= ? AND cm."agent" = 'technical' ${filter}
     ORDER BY cs."id", cm."createdAt" ASC
   `
@@ -1658,7 +1673,7 @@ export async function getChatConversations(
       cs."id" AS "sessionId",
       u."name" AS "userName",
       p."name" AS "projectName",
-      p."templateId",
+      ml."slug" AS "templateId",
       cm."role",
       CASE
         WHEN cm."role" = 'assistant' AND LENGTH(cm."content") > ${ASSISTANT_TRUNCATE_LENGTH}
@@ -1670,6 +1685,8 @@ export async function getChatConversations(
     JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
     JOIN "projects" p ON p."id" = cs."contextId"
     JOIN "users" u ON u."id" = p."createdBy"
+    LEFT JOIN "marketplace_installs" mi ON mi."projectId" = p."id"
+    LEFT JOIN "marketplace_listings" ml ON ml."id" = mi."listingId"
     WHERE cm."createdAt" >= $1 AND cm."agent" = 'technical' ${filter}
     ORDER BY cs."id", cm."createdAt" ASC
   `,

@@ -16,7 +16,7 @@
  * - subagent config resolution
  */
 
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, realpathSync } from 'fs'
 import { join } from 'path'
 import {
@@ -37,6 +37,7 @@ import {
   getBuiltinSubagentConfig,
   loadCustomAgents,
 } from '../subagent'
+import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 
 // Use realpathSync to resolve macOS /tmp → /private/tmp symlink,
 // which otherwise breaks assertWithinWorkspace's realpathSync check.
@@ -73,6 +74,17 @@ async function exec(ctx: ToolContext, name: string, params: Record<string, any>)
 }
 
 describe('Unified Skill System', () => {
+  beforeAll(() => {
+    // gateway-tools' assertAllowedPath() consults the global runtime-trust
+    // config; without this, edit_file/glob/grep/ls/etc all return "Path is
+    // outside the project's allowed folders" before the skill logic runs.
+    trustWorkspaceForTests(TEST_DIR)
+  })
+
+  afterAll(() => {
+    clearTrustForTests()
+  })
+
   beforeEach(() => {
     rmSync(TEST_DIR, { recursive: true, force: true })
     mkdirSync(TEST_DIR, { recursive: true })

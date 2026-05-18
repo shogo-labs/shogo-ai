@@ -21,7 +21,7 @@ import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync, wat
 import { recordBuildEntry } from './runtime-log-dispatcher'
 import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
 import {
-  commitBuildOutput,
+  commitBuildOutputAsync,
   cleanupStagingOutput,
   DEFAULT_STAGING_DIR,
 } from './build-output-commit'
@@ -62,6 +62,7 @@ import {
   INSTALL_PLATFORM_TAG,
   findMissingTopLevelDeps,
   migrateLegacyShogoSdkPin,
+  runWorkspaceInstall,
 } from './workspace-defaults'
 
 const LOG_PREFIX = 'preview-manager'
@@ -333,6 +334,13 @@ export class PreviewManager {
   private regenerating = false
   private pendingSchemaChange = false
   private lastGenerateError: string | null = null
+  // Surfaced via getStatus() so external observers (the API's import
+  // bootstrap bridge, debug UIs, etc.) can tell "install/prisma succeeded"
+  // apart from "install/prisma threw but phase marched forward anyway".
+  // The previous behaviour swallowed errors silently — the bridge would
+  // report every step as `ok` once the pod reached `ready` even when the
+  // project was fundamentally broken. See SHOG-592 review notes.
+  private lastInstallError: string | null = null
   /**
    * Crash-recovery state.
    *
@@ -360,6 +368,20 @@ export class PreviewManager {
   private onLogLine?: (line: string, stream: 'stdout' | 'stderr') => void
   private started = false
   private _phase: PreviewPhase = 'idle'
+  /**
+   * Reentrancy guard for `runExpoExportWeb`. Without it, the staging-pod
+   * boot path can spawn `expo export --platform web` twice in parallel:
+   *   - Once via `start() -> backgroundSetupMetro()` (fire-and-forget).
+   *   - Once via a second `start()`/`restart()` call slipping through
+   *     before `this.started` is observed by the caller.
+   *
+   * Each invocation forks ~6 jest-worker children and competes for the
+   * same `dist.staging/` output dir, doubling Metro's already-heavy
+   * memory footprint and producing the OOM kills we saw in staging on
+   * 2026-05-13 (project 9e7ecdc7-...). The guard keeps the export
+   * strictly serial — concurrent callers receive the in-flight promise.
+   */
+  private expoExportInFlight: Promise<void> | null = null
   /**
    * Port the spawned project API server (`server.tsx`) binds to. Resolved
    * once in the constructor — subsequent `process.env` mutations don't
@@ -1343,16 +1365,23 @@ export class PreviewManager {
     }
 
     this._phase = 'installing'
+    this.lastInstallError = null
     const t0 = Date.now()
     try {
       console.log(`[${LOG_PREFIX}] Installing dependencies in ${installCwd}...`)
-      // installAsync (vs. installSync) lets the platform layer apply its
-      // Windows fallback policy — npm if available, else
-      // `bun install --backend=copyfile` to dodge the bun-1.x hardlink
-      // bug that produces empty package dirs (see platform-pkg.ts).
+      // `runWorkspaceInstall` (vs. raw `pkg.installAsync`) is the per-cwd
+      // mutex that prevents this call from racing `ensureWorkspaceDeps` —
+      // both ran concurrently on staging 2026-05-13 and bun crashed with
+      // "FileNotFound: copying file dist/WasmPanicRegistry.js" because the
+      // two installs stomped on each other's hardlink temp files. See
+      // workspace-defaults.ts mutex doc for the full failure trace.
+      //
       // No `frozen: true` here: we may be recovering from a stale
-      // template node_modules with no user-owned lockfile.
-      await pkg.installAsync(installCwd, { frozen: false })
+      // template node_modules with no user-owned lockfile. If a frozen
+      // install is in flight from `ensureWorkspaceDeps` we'll just join
+      // its promise — the resulting `node_modules/` is identical because
+      // both callers see the same `package.json`.
+      await runWorkspaceInstall(installCwd, { frozen: false })
       timings.install = Date.now() - t0
       console.log(`[${LOG_PREFIX}] Dependencies installed (${timings.install}ms)`)
 
@@ -1365,6 +1394,10 @@ export class PreviewManager {
       writeInstallPlatformMarker(installCwd)
     } catch (err: any) {
       timings.install = Date.now() - t0
+      // Capture for getStatus() so observers can tell that install actually
+      // failed even though `_phase` is about to march forward into the next
+      // stage. Truncated like lastGenerateError to keep wire payload bounded.
+      this.lastInstallError = (err?.message || String(err)).slice(0, 500)
       console.error(`[${LOG_PREFIX}] Dependency install failed:`, err.message)
     } finally {
       // Signal install-has-settled exactly once. Subsequent
@@ -1508,6 +1541,16 @@ export class PreviewManager {
     phase: PreviewPhase
     devServer: DevServerKind
     metroUrl: string | null
+    // Per-stage errors. `null` means that stage either has not run or
+    // completed successfully. PreviewManager catches and logs install /
+    // prisma failures rather than crashing — without surfacing them here,
+    // `phase === 'ready'` looks identical regardless of whether the
+    // project actually built. The import bootstrap bridge keys off these
+    // to emit `failed` for the right step instead of a misleading `ok`.
+    errors: {
+      install: string | null
+      generate: string | null
+    }
   } {
     const running = this.started && this._phase === 'ready'
     return {
@@ -1521,6 +1564,10 @@ export class PreviewManager {
       phase: this._phase,
       devServer: this.resolveDevServer(),
       metroUrl: running ? this.metroUrl : null,
+      errors: {
+        install: this.lastInstallError,
+        generate: this.lastGenerateError,
+      },
     }
   }
 
@@ -1559,7 +1606,7 @@ export class PreviewManager {
       let proc: ChildProcess
       try {
         proc = spawn(
-          invocation.cmd,
+          isWindows ? `"${invocation.cmd}"` : invocation.cmd,
           [...invocation.argsPrefix, 'build', '--outDir', DEFAULT_STAGING_DIR, '--emptyOutDir'],
           {
             cwd,
@@ -1594,7 +1641,7 @@ export class PreviewManager {
     })
 
     if (exitCode === 0) {
-      const committed = commitBuildOutput(cwd, DEFAULT_STAGING_DIR)
+      const committed = await commitBuildOutputAsync(cwd, DEFAULT_STAGING_DIR)
       if (!committed) {
         console.warn(
           `[${LOG_PREFIX}] One-shot vite build succeeded but commit into dist/ failed`,
@@ -1643,7 +1690,7 @@ export class PreviewManager {
     let viteProcess: ChildProcess
     try {
       viteProcess = spawn(
-        invocation.cmd,
+        isWindows ? `"${invocation.cmd}"` : invocation.cmd,
         [...invocation.argsPrefix, 'build', '--watch', '--emptyOutDir', 'false'],
         {
           cwd,
@@ -1997,15 +2044,34 @@ export class PreviewManager {
    * Force-kill any process listening on the API port. Used before
    * spawning a fresh server so a leaked previous process (or an
    * unrelated user-spawned binary) can't squat the port and EADDRINUSE
-   * the new spawn. Falls back to `lsof` and `fuser`; both are
-   * universally available on Linux pods and macOS dev machines.
+   * the new spawn.
    *
-   * Best-effort: any failure (missing binary, permission denied) is
-   * swallowed. The caller already polls the port via
-   * {@link waitForPortRelease} and a leaked process will then surface
-   * as a crash loop the operator can investigate.
+   * Cross-platform:
+   *   - POSIX: tries `lsof -ti` first, then falls back to `fuser`;
+   *     both are universally available on Linux pods and macOS dev
+   *     machines. Failure (missing binary, permission denied) is
+   *     swallowed via `|| true` and the empty stdout returns early.
+   *   - Windows: uses `netstat -ano | findstr :<port> | findstr LISTENING`
+   *     to enumerate PIDs and `taskkill /F /PID` to kill them.
+   *     Going through cmd.exe with the POSIX one-liner above used
+   *     to spray three lines of "system cannot find the path
+   *     specified" / "'true' is not recognized" into the runtime
+   *     log on every `restartApiServerOnly()` (custom-routes save,
+   *     schema change, crash recovery) — harmless but alarming.
+   *
+   * Best-effort regardless of platform: the caller already polls the
+   * port via {@link waitForPortRelease} and a leaked process will
+   * then surface as a crash loop the operator can investigate.
    */
   private async forceKillPort(): Promise<void> {
+    if (process.platform === 'win32') {
+      this.forceKillPortWindows()
+      return
+    }
+    this.forceKillPortPosix()
+  }
+
+  private forceKillPortPosix(): void {
     try {
       const result = execSync(
         `lsof -ti :${this.apiPort} 2>/dev/null || fuser ${this.apiPort}/tcp 2>/dev/null || true`,
@@ -2025,6 +2091,55 @@ export class PreviewManager {
     } catch {
       // lsof / fuser missing on this platform; waitForPortRelease will
       // still give the kernel time to clean up the socket.
+    }
+  }
+
+  /**
+   * Windows analog of `forceKillPortPosix`. `findstr` on stdin from
+   * `netstat -ano` returns lines shaped like
+   *   `  TCP    127.0.0.1:3001         0.0.0.0:0              LISTENING       12345`
+   * — the trailing whitespace-separated token is the PID. We pass
+   *   `2>nul` to suppress findstr's "no match" stderr and rely on
+   * `taskkill /F /PID`'s own exit code (already swallowed by the
+   * outer try/catch) for cleanup. The execSync call is wrapped in
+   * try/catch because findstr exits 1 when no lines match — i.e.
+   * the port is already free, which is the *expected* fast path.
+   */
+  private forceKillPortWindows(): void {
+    let stdout = ''
+    try {
+      stdout = execSync(
+        `netstat -ano | findstr :${this.apiPort} | findstr LISTENING`,
+        { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] },
+      )
+    } catch {
+      // findstr exit 1 = no listening process. Nothing to kill.
+      return
+    }
+
+    // Defensively keep only numeric PIDs. Skip 0 (idle process) and
+    // self/parent — we never want to taskkill the runtime itself.
+    const selfPid = String(process.pid)
+    const parentPid = String(process.ppid)
+    const pids = [...new Set(
+      stdout
+        .split('\n')
+        .map((line) => line.trim().split(/\s+/).pop() ?? '')
+        .filter((pid) => /^\d+$/.test(pid) && pid !== '0' && pid !== selfPid && pid !== parentPid),
+    )]
+
+    for (const pid of pids) {
+      try {
+        execSync(`taskkill /F /PID ${pid}`, {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: 5000,
+        })
+        console.log(`[${LOG_PREFIX}] Force-killed leaked process ${pid} on port ${this.apiPort}`)
+      } catch {
+        // Process already exited / access denied — fine; the next
+        // waitForPortRelease tick will tell us if the port is still
+        // occupied.
+      }
     }
   }
 
@@ -2087,6 +2202,18 @@ export class PreviewManager {
    * Re-run on demand via `restart()`.
    */
   private async runExpoExportWeb(timings: Record<string, number>, cwd: string): Promise<void> {
+    // Reentrancy guard — see `expoExportInFlight` field doc.
+    if (this.expoExportInFlight) {
+      console.log(`[${LOG_PREFIX}] expo export already running — awaiting in-flight build`)
+      return this.expoExportInFlight
+    }
+    this.expoExportInFlight = this._runExpoExportWebImpl(timings, cwd).finally(() => {
+      this.expoExportInFlight = null
+    })
+    return this.expoExportInFlight
+  }
+
+  private async _runExpoExportWebImpl(timings: Record<string, number>, cwd: string): Promise<void> {
     const expoBin = this.resolveExpoBin(cwd)
     if (!expoBin) {
       console.log(`[${LOG_PREFIX}] expo CLI not found in node_modules — skipping web export`)
@@ -2109,7 +2236,7 @@ export class PreviewManager {
     const exitCode = await new Promise<number | null>((resolveExport) => {
       let proc: ChildProcess
       try {
-        proc = spawn(expoBin, ['export', '--platform', 'web', '--output-dir', DEFAULT_STAGING_DIR], {
+        proc = spawn(isWindows ? `"${expoBin}"` : expoBin, ['export', '--platform', 'web', '--output-dir', DEFAULT_STAGING_DIR], {
           cwd,
           stdio: ['ignore', 'pipe', 'pipe'],
           // `.CMD` shims must go through cmd.exe on Windows.
@@ -2160,12 +2287,31 @@ export class PreviewManager {
     })
 
     if (exitCode === 0) {
-      const committed = commitBuildOutput(cwd, DEFAULT_STAGING_DIR)
-      if (!committed) {
-        console.warn(
-          `[${LOG_PREFIX}] expo export succeeded but commit into dist/ failed — ` +
-            `previous build (if any) remains live`,
+      // `expo export` can exit 0 even when Metro's bundle silently failed —
+      // for example, on 2026-05-13 (project 9e7ecdc7) a stray AppleDouble
+      // file (`app/.__layout.tsx`) blew up Babel inside a jest-worker, the
+      // worker crash didn't propagate to the parent, and `expo export`
+      // happily returned with an empty `dist.staging/`. Without this
+      // check we then atomically swap an empty dir into `dist/` and the
+      // preview goes from "stale but working" to "404 on /".
+      //
+      // Refuse to swap unless staging actually contains `index.html`.
+      const stagingIndex = join(cwd, DEFAULT_STAGING_DIR, 'index.html')
+      if (!existsSync(stagingIndex)) {
+        console.error(
+          `[${LOG_PREFIX}] expo export exited 0 but ${DEFAULT_STAGING_DIR}/index.html ` +
+            `is missing — refusing to swap. Previous build (if any) stays live. ` +
+            `Inspect ${BUILD_LOG_FILE} for the real error.`,
         )
+        cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
+      } else {
+        const committed = await commitBuildOutputAsync(cwd, DEFAULT_STAGING_DIR)
+        if (!committed) {
+          console.warn(
+            `[${LOG_PREFIX}] expo export succeeded but commit into dist/ failed — ` +
+              `previous build (if any) remains live`,
+          )
+        }
       }
     } else {
       // Failed build: drop the partial staging output so it can't poison
@@ -2247,7 +2393,7 @@ export class PreviewManager {
     let proc: ChildProcess
     try {
       proc = spawn(
-        expoBin,
+        isWindows ? `"${expoBin}"` : expoBin,
         ['start', '--tunnel', ...portArgs],
         {
           cwd,

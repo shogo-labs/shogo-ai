@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Prisma Schema Generator
@@ -95,6 +95,19 @@ export interface GeneratedFile {
 // Prisma DMMF Types
 // ============================================================================
 
+/**
+ * Shape of `field.default` as surfaced by Prisma DMMF:
+ * - Scalar literal: a plain string / number / boolean (e.g. `"s3"`, `0`, `true`).
+ * - Function default (e.g. `@default(uuid())`, `@default(now())`):
+ *   an object `{ name: "uuid", args: [...] }`.
+ * - Enum default: a plain string holding the enum value name (e.g. `"s3"`).
+ */
+export type PrismaFieldDefault =
+  | string
+  | number
+  | boolean
+  | { name: string; args?: unknown[] }
+
 export interface PrismaField {
   name: string
   kind: 'scalar' | 'object' | 'enum' | 'unsupported'
@@ -104,6 +117,8 @@ export interface PrismaField {
   isId: boolean
   isUnique: boolean
   hasDefaultValue: boolean
+  /** DMMF-supplied default value (when `hasDefaultValue` is true). */
+  default?: PrismaFieldDefault
   relationName?: string
   relationFromFields?: string[]
 }

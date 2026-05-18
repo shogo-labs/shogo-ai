@@ -4,7 +4,7 @@
 // CanvasBuildManager is now stack-aware: it accepts either Vite or Expo as
 // the bundler binary. These tests pin the contract so a future stack
 // addition (e.g. parcel, rspack) doesn't silently regress the gate, and
-// verify the atomic dist.staging -> dist swap that fixes the
+// verify the atomic dist.canvas.staging -> dist swap that fixes the
 // "rebuild deletes dist, refresh 404s" regression.
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
@@ -15,6 +15,13 @@ import { CanvasBuildManager } from '../canvas-build-manager'
 
 const TMP = join(tmpdir(), 'test-canvas-build-manager')
 const IS_WINDOWS = process.platform === 'win32'
+
+// Must match `CANVAS_STAGING_DIR` in canvas-build-manager.ts. Tracked
+// here as a local constant rather than importing — the manager keeps it
+// private on purpose (callers should never read it), and these tests
+// double as a regression bar that the constant doesn't accidentally
+// drift back to `dist.staging` and re-collide with PreviewManager.
+const CANVAS_STAGING_DIR = 'dist.canvas.staging'
 
 /**
  * Write a fake bundler shim that exits 0 (and optionally writes a
@@ -31,7 +38,10 @@ function writeShim(
   opts: { exitCode?: number; stagingPayload?: string; stagingDir?: string },
 ): void {
   const exitCode = opts.exitCode ?? 0
-  const stagingDir = opts.stagingDir ?? 'dist.staging'
+  // Default mirrors what CanvasBuildManager passes via --outDir /
+  // --output-dir; tests can override to verify behavior when the
+  // bundler writes elsewhere.
+  const stagingDir = opts.stagingDir ?? CANVAS_STAGING_DIR
   const stagingPath = join(TMP, stagingDir)
   const indexPath = join(stagingPath, 'index.html')
 
@@ -157,8 +167,8 @@ describe('CanvasBuildManager atomic dist swap', () => {
   beforeEach(() => freshWorkspace())
   afterEach(() => rmSync(TMP, { recursive: true, force: true }))
 
-  test('promotes dist.staging into dist on successful build', async () => {
-    // Vite shim writes a payload into dist.staging/index.html and exits 0.
+  test('promotes dist.canvas.staging into dist on successful build', async () => {
+    // Vite shim writes a payload into dist.canvas.staging/index.html and exits 0.
     freshWorkspace({ withVite: true, stagingPayload: '<html>fresh</html>' })
     const mgr = new CanvasBuildManager(TMP, {
       onBuildComplete: () => {},
@@ -170,7 +180,10 @@ describe('CanvasBuildManager atomic dist swap', () => {
     expect(readFileSync(join(TMP, 'dist', 'index.html'), 'utf-8'))
       .toContain('fresh')
     // Staging dir must be gone — left in place it would confuse the
-    // next build.
+    // next build. Uses CanvasBuildManager's own staging dir, not
+    // PreviewManager's `dist.staging/`, to avoid the cleanup-vs-copy
+    // race that surfaces as ENOENT during large public/-folder copies.
+    expect(existsSync(join(TMP, CANVAS_STAGING_DIR))).toBe(false)
     expect(existsSync(join(TMP, 'dist.staging'))).toBe(false)
   })
 
@@ -201,7 +214,7 @@ describe('CanvasBuildManager atomic dist swap', () => {
     expect(readFileSync(join(TMP, 'dist', 'index.html'), 'utf-8'))
       .toContain('previous')
     // Failed build: any partial staging output must be cleaned up.
-    expect(existsSync(join(TMP, 'dist.staging'))).toBe(false)
+    expect(existsSync(join(TMP, CANVAS_STAGING_DIR))).toBe(false)
   })
 
   test('isBuilding flips during runBuild and clears afterwards', async () => {
@@ -300,6 +313,67 @@ describe('CanvasBuildManager waitForDeps gate', () => {
     // care that the call returns within the test timeout.
     await mgr.start()
     expect(completed).toBe(true)
+  })
+})
+
+/**
+ * Regression coverage for the canvas-build vs. preview-manager staging-dir
+ * race that surfaced as `ENOENT … copyfile 'public/<asset>' -> 'dist.staging/<asset>'`
+ * during `bun dev:all` on Expo workspaces with large `public/` assets:
+ *
+ *   - PreviewManager.runExpoExportWeb spawns `expo export … --output-dir dist.staging`
+ *     at boot to seed `dist/` for the preview iframe.
+ *   - CanvasBuildManager.start() races the same boot, runs its own
+ *     `expo export`, and (in the original code) calls
+ *     `cleanupStagingOutput(workspaceDir, 'dist.staging')` first.
+ *   - That cleanup `rmSync`s the in-progress copy of any large file
+ *     under `public/` (e.g. a multi-MB `.glb`) out from under
+ *     PreviewManager's CopyFileW, surfacing as ENOENT on the destination.
+ *
+ * Fix: CanvasBuildManager owns `dist.canvas.staging/`, leaving
+ * PreviewManager's `dist.staging/` untouched. Pin from two angles so
+ * the constant can't drift back:
+ *
+ *   - The shim that produces output names its target via the manager's
+ *     `--outDir` / `--output-dir` arg, so writing to anything other
+ *     than CANVAS_STAGING_DIR breaks the shim/path chain visibly.
+ *   - A pre-existing PreviewManager `dist.staging/` (with a sentinel
+ *     payload inside) must survive a CanvasBuildManager build cycle
+ *     untouched.
+ */
+describe('CanvasBuildManager preview-manager staging isolation', () => {
+  beforeEach(() => freshWorkspace())
+  afterEach(() => rmSync(TMP, { recursive: true, force: true }))
+
+  test('does not touch a preexisting dist.staging/ during build', async () => {
+    freshWorkspace({ withVite: true, stagingPayload: '<html>canvas</html>' })
+    // Simulate PreviewManager's in-flight expo export: a populated
+    // `dist.staging/` that would be wiped if CanvasBuildManager's
+    // cleanup ever pointed at the shared name again.
+    const previewStaging = join(TMP, 'dist.staging')
+    mkdirSync(previewStaging, { recursive: true })
+    writeFileSync(join(previewStaging, 'index.html'), '<html>preview-build-in-flight</html>')
+    writeFileSync(join(previewStaging, 'big-asset.bin'), 'pretend-this-is-172MB')
+
+    const mgr = new CanvasBuildManager(TMP, {
+      onBuildComplete: () => {},
+      onBuildError: () => {},
+    })
+    await mgr.start()
+
+    // CanvasBuildManager must have produced its own output and committed it.
+    expect(readFileSync(join(TMP, 'dist', 'index.html'), 'utf-8'))
+      .toContain('canvas')
+    expect(existsSync(join(TMP, CANVAS_STAGING_DIR))).toBe(false)
+    // PreviewManager's staging dir must remain byte-for-byte intact:
+    // any rmSync against the shared name would have wiped both files
+    // before the canvas build's own copy completed, which is the
+    // exact failure mode we're fixing.
+    expect(existsSync(previewStaging)).toBe(true)
+    expect(readFileSync(join(previewStaging, 'index.html'), 'utf-8'))
+      .toContain('preview-build-in-flight')
+    expect(readFileSync(join(previewStaging, 'big-asset.bin'), 'utf-8'))
+      .toBe('pretend-this-is-172MB')
   })
 })
 

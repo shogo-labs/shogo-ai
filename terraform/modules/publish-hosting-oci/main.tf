@@ -13,7 +13,7 @@ terraform {
   required_providers {
     oci = {
       source  = "oracle/oci"
-      version = "~> 6.0"
+      version = "~> 8.0"
     }
     cloudflare = {
       source  = "cloudflare/cloudflare"
@@ -39,8 +39,15 @@ variable "publish_domain" {
 }
 
 variable "cloudflare_zone_id" {
-  description = "Cloudflare zone ID for the publish domain"
+  description = "DEPRECATED: this module now looks up the publish zone by name via `data.cloudflare_zone.publish`, so this variable is unused. Kept for backwards-compat with the production envs' module call signature; remove next time those envs get touched."
   type        = string
+  default     = null
+}
+
+variable "publish_zone" {
+  description = "Cloudflare zone name that hosts `publish_domain`. Defaults to `publish_domain`. Set explicitly when `publish_domain` is a subdomain of the actual CF zone (e.g. `publish_domain = staging.shogo.one`, `publish_zone = shogo.one`). The zone is then looked up by name via `data.cloudflare_zone.publish` and used as the zone_id on both the worker_route and the wildcard A record."
+  type        = string
+  default     = null
 }
 
 variable "cloudflare_account_id" {
@@ -66,22 +73,50 @@ data "oci_objectstorage_namespace" "current" {
   compartment_id = var.compartment_id
 }
 
+# Look up the publish zone by name. The token used for tf needs `Zone:Read`
+# on this zone in addition to `Workers Routes:Edit` and `Zone DNS:Edit`.
+# Sourcing by name keeps callers from having to thread a second zone-id
+# variable through every env.
+#
+# When `publish_domain` is itself a CF zone (e.g. `shogo.one`), the default
+# null `publish_zone` falls through to `publish_domain`. When `publish_domain`
+# is a subdomain (e.g. `staging.shogo.one`), set `publish_zone = "shogo.one"`
+# so the lookup resolves and the wildcard A record + worker_route still land
+# in the correct zone.
+data "cloudflare_zone" "publish" {
+  name = coalesce(var.publish_zone, var.publish_domain)
+}
+
 # -----------------------------------------------------------------------------
 # OCI Object Storage Bucket (already created by object-storage module,
 # but we reference it here for the PAR)
 # -----------------------------------------------------------------------------
 
-# Pre-authenticated request for Cloudflare to access the bucket
-# This creates a read-only URL that doesn't require OCI credentials
+# Pre-authenticated request for Cloudflare to access the bucket.
+# This creates a read-only URL that doesn't require OCI credentials.
+#
+# `access_type = "AnyObjectRead"` lets the Worker GET any key it knows;
+# `bucket_listing_action = "Deny"` prevents enumeration of the bucket
+# contents via that same PAR. Together they're equivalent to the old
+# `AnyObjectReadWithoutList` (which was not a real OCI API value and
+# fails provider validation — see commit history).
 resource "oci_objectstorage_preauthrequest" "published_apps" {
-  namespace    = data.oci_objectstorage_namespace.current.namespace
-  bucket       = "shogo-published-apps-${var.environment}"
-  name         = "cloudflare-cdn-access"
-  access_type  = "AnyObjectReadWithoutList"
-  time_expires = timeadd(timestamp(), "8760h") # 1 year
+  namespace             = data.oci_objectstorage_namespace.current.namespace
+  bucket                = "shogo-published-apps-${var.environment}"
+  name                  = "cloudflare-cdn-access"
+  access_type           = "AnyObjectRead"
+  bucket_listing_action = "Deny"
+  time_expires          = timeadd(timestamp(), "8760h") # 1 year
 
   lifecycle {
-    ignore_changes = [time_expires]
+    # `bucket_listing_action` is set correctly on create (verified via the
+    # OCI CLI) but the provider's Read implementation never populates it
+    # back into state, so every subsequent plan sees `null -> "Deny"` and
+    # flags it as a force-new replacement. Ignoring it pins state to
+    # whatever was set on the original create.
+    # `time_expires` is set to `timestamp() + 1y` which would also drift
+    # every plan.
+    ignore_changes = [time_expires, bucket_listing_action]
   }
 }
 
@@ -98,7 +133,13 @@ locals {
 resource "cloudflare_worker_script" "subdomain_router" {
   account_id = var.cloudflare_account_id
   name       = "shogo-subdomain-router-${var.environment}"
-  content    = <<-JS
+  # `module = true` switches the Worker runtime to ES Modules syntax
+  # (the `export default { fetch(...) }` form below). Without it, the
+  # Worker runtime treats the content as a legacy service-worker script
+  # and rejects the file with "Uncaught SyntaxError: Unexpected token
+  # 'export'" at deploy time.
+  module  = true
+  content = <<-JS
     export default {
       async fetch(request) {
         const url = new URL(request.url);
@@ -140,18 +181,51 @@ resource "cloudflare_worker_script" "subdomain_router" {
 
 # Route *.shogo.one traffic through the Worker
 resource "cloudflare_worker_route" "published_apps" {
-  zone_id     = var.cloudflare_zone_id
+  zone_id     = data.cloudflare_zone.publish.id
   pattern     = "*.${var.publish_domain}/*"
   script_name = cloudflare_worker_script.subdomain_router.name
 }
 
-# Wildcard DNS record pointing to Cloudflare (proxied for CDN + SSL)
+# Wildcard DNS record pointing to Cloudflare (proxied for CDN + SSL).
+#
+# Cloudflare rejects proxied records that target reserved CIDRs
+# (RFC 1918, CGNAT 100.64.0.0/10, etc) with API error 9003. The actual
+# routing is handled by the Worker (`cloudflare_worker_route` above)
+# which intercepts every request that matches `*.${publish_domain}/*`
+# *before* the proxy ever attempts a fetch against this origin, so the
+# IP itself never resolves — it just needs to be a syntactically valid
+# A record that CF will accept. `192.0.2.1` (RFC 5737 TEST-NET-1
+# documentation range) is the standard "this IP intentionally
+# unreachable" choice that CF accepts for proxied records.
+locals {
+  # Compute the relative record name so that the FQDN ends up as
+  # `*.${publish_domain}` regardless of zone depth.
+  #   publish_domain == zone        -> "*"           (FQDN = *.shogo.one)
+  #   publish_domain  = sub.zone    -> "*.sub"       (FQDN = *.sub.shogo.one)
+  #   publish_domain  = a.b.zone    -> "*.a.b"       (FQDN = *.a.b.shogo.one)
+  # Cloudflare appends the zone for non-FQDN-looking names, so this
+  # is the canonical form.
+  wildcard_record_name = (
+    var.publish_domain == data.cloudflare_zone.publish.name
+    ? "*"
+    : "*.${trimsuffix(var.publish_domain, ".${data.cloudflare_zone.publish.name}")}"
+  )
+}
+
 resource "cloudflare_record" "wildcard" {
-  zone_id = var.cloudflare_zone_id
-  name    = "*"
-  content = "100.64.0.1" # Dummy IP — Worker intercepts all traffic
+  zone_id = data.cloudflare_zone.publish.id
+  name    = local.wildcard_record_name
+  content = "192.0.2.1"
   type    = "A"
   proxied = true
+
+  # The `*.shogo.one` record was created manually before this module
+  # adopted it. Without `allow_overwrite`, the cloudflare provider's
+  # Create errors with "expected DNS record to not already be present
+  # but already exists" instead of taking ownership of the existing
+  # record. Flipping this on lets tf adopt the live record on first
+  # apply, after which subsequent plans reconcile normally.
+  allow_overwrite = true
 }
 
 # -----------------------------------------------------------------------------

@@ -11,7 +11,7 @@ terraform {
   required_providers {
     oci = {
       source  = "oracle/oci"
-      version = "~> 6.0"
+      version = "~> 8.0"
     }
     cloudflare = {
       source  = "cloudflare/cloudflare"
@@ -27,8 +27,21 @@ terraform {
     }
   }
 
-  backend "local" {
-    path = "terraform.tfstate"
+  # Remote state on OCI Object Storage (S3-compat).
+  # Endpoint is supplied via -backend-config at `terraform init` time:
+  #   terraform init -backend-config="endpoint=$OCI_S3_ENDPOINT"
+  # Credentials come from $AWS_ACCESS_KEY_ID / $AWS_SECRET_ACCESS_KEY env vars
+  # (see GH secrets OCI_S3_ACCESS_KEY / OCI_S3_SECRET_KEY).
+  backend "s3" {
+    bucket = "shogo-tfstate"
+    key    = "production-eu/terraform.tfstate"
+    region = "us-ashburn-1"
+
+    skip_credentials_validation = true
+    skip_metadata_api_check     = true
+    skip_region_validation      = true
+    skip_requesting_account_id  = true
+    force_path_style            = true
   }
 }
 
@@ -90,6 +103,9 @@ module "eu" {
   compartment_id = var.compartment_id
   tenancy_id     = var.tenancy_id
 
+  oke_api_allowed_cidrs = var.oke_api_allowed_cidrs
+  nfs_allowed_cidr      = var.nfs_allowed_cidr
+
   # ARM64 custom OKE image (A2 Flex) — EU region
   image_id           = "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaaiufb7tfc5olbaeerhukwj72ppir3yzigxp26cp2hqqzjtugf2sbq"
   placement_ad_names = ["XYpk:EU-FRANKFURT-1-AD-1"]
@@ -108,16 +124,93 @@ module "eu" {
   signoz_endpoint      = var.signoz_endpoint
   signoz_ingestion_key = var.signoz_ingestion_key
 
-  # Cloudflare (for publish-hosting)
+  # Cloudflare (for publish-hosting — kept for signature parity even though
+  # EU does not own a publish wildcard; production-us owns `*.shogo.one`).
   cloudflare_zone_id    = var.cloudflare_zone_id
   cloudflare_account_id = var.cloudflare_account_id
+
+  # =============================================================
+  # Live-state overrides (production-eu reconciliation, 2026-05)
+  # =============================================================
+
+  # Live node pool was bootstrapped as `shogo-prod-eu-arm-4ocpu` at
+  # max_pods_per_node = 93 (not the module's default 110). Same pattern
+  # as production-us. Without these, tf would force-update the pool name
+  # and try to bump max pods, which OCI may refuse on existing pools.
+  oke_main_node_pool_name_override = "shogo-prod-eu-arm-4ocpu"
+  oke_main_node_pool_max_pods      = 93
+
+  # Live cluster endpoint shows `nsg-ids: []`. State has NSG resources
+  # but they're not attached. Disabling matches live and avoids churn.
+  vcn_enable_oke_nsgs = false
+
+  # VCN security lists already in state — keep enabled.
+  vcn_enable_security_lists = true
+
+  # EU was bootstrapped with a dedicated /28 subnet for the OKE API
+  # endpoint (live cidr 10.1.0.0/28). Already in state as
+  # `oci_core_subnet.api_endpoint[0]` — disabling would destroy it and
+  # force a cluster replacement.
+  vcn_enable_dedicated_api_subnet = true
+  vcn_api_endpoint_cidr           = "10.1.0.0/28"
+
+  # OCIR has 5 repos live (module's 4-repo default would destroy
+  # `shogo-runtime-base`).
+  ocir_repositories = [
+    "shogo-api",
+    "shogo-docs",
+    "shogo-runtime",
+    "shogo-runtime-base",
+    "shogo-web",
+  ]
+
+  # Knative + Kourier + CNPG are all installed live in eu-frankfurt-1
+  # (kubectl shows knative-serving, kourier-system, cnpg-system
+  # namespaces, all 55+ days old). Skip the installer null_resources.
+  knative_manage_install = false
+  cnpg_manage_install    = false
+
+  # The Object Storage lifecycle service-principal IAM policy is
+  # region-scoped (the statement names `objectstorage-eu-frankfurt-1`).
+  # Staging's policy only covers us-ashburn-1. EU's policy must be
+  # created out-of-band against the tenancy home region (us-ashburn-1
+  # / IAD) — the OCI Identity service only accepts policy CREATE
+  # against the home region, and EU's provider is pinned to
+  # eu-frankfurt-1. The policy already exists as
+  # `objectstorage-lifecycle-service-principal-production-eu-frankfurt-1`
+  # (created via `oci iam policy create --region us-ashburn-1`). Skip
+  # tf management here; refactor the object-storage module to accept a
+  # home-region provider alias in a follow-up.
+  object_storage_lifecycle_service_policy_compartment_id = null
+
+  # The tenancy-scoped `github-actions-deploy` IAM group + policy is
+  # owned by production-us (created during its reconciliation). Disable
+  # here to avoid a tenancy-level name collision.
+  enable_github_oidc = false
+
+  # EU does NOT own a publish-hosting wildcard. Production-us owns
+  # `*.shogo.one`; staging owns `*.staging.shogo.one`. EU could later
+  # gain `*.eu.shogo.one` as a regional publish target but that's a
+  # follow-up.
+  enable_publish_hosting = false
 }
 
 # =============================================================================
 # Cross-Region Peering (accept US peering)
+#
+# DEFERRED until production-us flips `enable_drg_peering_to_eu = true` and
+# emits a non-null `rpc_eu_id` output. Until then the DRG/RPC pair would
+# create a regional DRG with no peer to accept, which is wasted state.
 # =============================================================================
 
+variable "enable_drg_peering_from_us" {
+  description = "Create the DRG + VCN attachment that accepts the US-side RPC. Defaults to false until production-us has been flipped to publish its RPC."
+  type        = bool
+  default     = false
+}
+
 module "drg_from_us" {
+  count  = var.enable_drg_peering_from_us ? 1 : 0
   source = "../../modules/drg-peering"
 
   name           = "shogo-production-eu"

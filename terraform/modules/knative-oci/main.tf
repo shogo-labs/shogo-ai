@@ -14,6 +14,12 @@ terraform {
   }
 }
 
+variable "manage_install" {
+  description = "When true, run the Knative + Kourier install/patch null_resources. Set to false for environments where Knative was bootstrapped out-of-band and we don't want tf to re-run kubectl on every apply. The install is idempotent (kubectl apply), so flipping this back to true later is safe but will re-execute the full install sequence."
+  type        = bool
+  default     = true
+}
+
 variable "knative_version" {
   description = "Knative Serving version (latest: 1.20.0 as of Jan 2026)"
   type        = string
@@ -42,6 +48,8 @@ variable "scale_to_zero_grace_period" {
 # Knative Serving Installation via kubectl
 # -----------------------------------------------------------------------------
 resource "null_resource" "knative_serving" {
+  count = var.manage_install ? 1 : 0
+
   triggers = {
     knative_version = var.knative_version
   }
@@ -68,6 +76,7 @@ resource "null_resource" "knative_serving" {
 # Kourier Ingress Installation
 # -----------------------------------------------------------------------------
 resource "null_resource" "kourier" {
+  count      = var.manage_install ? 1 : 0
   depends_on = [null_resource.knative_serving]
 
   triggers = {
@@ -78,9 +87,50 @@ resource "null_resource" "kourier" {
     command = <<-EOT
       # Install Kourier
       kubectl apply -f https://github.com/knative/net-kourier/releases/download/knative-v${var.knative_version}/kourier.yaml
-      
+
       # Wait for Kourier
       kubectl wait --for=condition=Available deployment/3scale-kourier-gateway -n kourier-system --timeout=300s || true
+    EOT
+  }
+}
+
+# Strips the upstream `node.kubernetes.io/disk-pressure:NoSchedule:Exists`
+# toleration from the Kourier gateway. Upstream ships this toleration on the
+# theory that it keeps the ingress available during disk pressure, but the
+# kubelet auto-applies the disk-pressure taint specifically to keep pods OFF
+# those nodes, so the tolerated gateway pod just lands on a doomed node and
+# gets evicted within seconds. Staging accumulated ~9,959 Evicted gateway
+# pods over ~13 days (zero Running replicas, complete ingress outage —
+# Cloudflare 525 to all users) before this was caught.
+#
+# Why this is a separate `null_resource` from `null_resource.kourier`:
+#
+#   `null_resource.kourier`'s only `triggers` value is `knative_version`, so
+#   its provisioner only re-runs when the Knative version is bumped. If we
+#   inlined the patch there, any out-of-band reapply of the upstream
+#   `kourier.yaml` (manual ops, drift, accidental `kubectl apply`) would
+#   reintroduce the toleration and Terraform would not detect it until the
+#   next Knative upgrade.
+#
+#   `triggers.always_run = timestamp()` forces this resource to re-run on
+#   every `terraform apply`. The `kubectl patch` is idempotent (replacing
+#   `tolerations` with `[]` is a no-op when it's already `[]`), so the cost
+#   of running every time is negligible and the benefit is that drift is
+#   continuously corrected. The trade-off is that `terraform plan` will
+#   always show 1 pending change for this resource — that is intentional.
+resource "null_resource" "kourier_toleration_strip" {
+  count      = var.manage_install ? 1 : 0
+  depends_on = [null_resource.kourier]
+
+  triggers = {
+    always_run = timestamp()
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      kubectl patch deployment 3scale-kourier-gateway -n kourier-system \
+        --type=json \
+        -p='[{"op":"replace","path":"/spec/template/spec/tolerations","value":[]}]'
     EOT
   }
 }
@@ -90,6 +140,7 @@ resource "null_resource" "kourier" {
 # OCI LB Controller provisions a public flexible LB from service annotations
 # -----------------------------------------------------------------------------
 resource "null_resource" "kourier_oci_lb" {
+  count      = var.manage_install ? 1 : 0
   depends_on = [null_resource.kourier]
 
   provisioner "local-exec" {
@@ -128,6 +179,7 @@ variable "enable_pvc_support" {
 }
 
 resource "null_resource" "knative_config" {
+  count      = var.manage_install ? 1 : 0
   depends_on = [null_resource.kourier]
 
   triggers = {
@@ -192,7 +244,7 @@ resource "null_resource" "knative_config" {
 # Configures both platform domain (shogo.ai) and publish domain (shogo.one)
 # -----------------------------------------------------------------------------
 resource "null_resource" "knative_domain" {
-  count = var.domain != "" || var.publish_domain != "" ? 1 : 0
+  count = var.manage_install && (var.domain != "" || var.publish_domain != "") ? 1 : 0
 
   depends_on = [null_resource.knative_config]
 
@@ -235,7 +287,7 @@ variable "relax_pdbs" {
 }
 
 resource "null_resource" "knative_pdb_patches" {
-  count      = var.relax_pdbs ? 1 : 0
+  count      = var.manage_install && var.relax_pdbs ? 1 : 0
   depends_on = [null_resource.kourier]
 
   triggers = {

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Auto-generated Project MST Model
@@ -16,6 +16,7 @@ import { FeatureSessionModel } from "./feature-session.model"
 import { ChatSessionModel } from "./chat-session.model"
 import { UsageEventModel } from "./usage-event.model"
 import { StarredProjectModel } from "./starred-project.model"
+import { ProjectFolderModel } from "./project-folder.model"
 
 // ============================================================================
 // Project Model
@@ -27,8 +28,8 @@ export const ProjectModel = types
     name: types.string,
     description: types.optional(types.string, ""),
     workspaceId: types.string,
-    tier: types.enumeration("ProjectTier", ["starter", "pro", "enterprise", "internal"]),
-    status: types.enumeration("ProjectStatus", ["draft", "active", "archived"]),
+    tier: types.optional(types.enumeration("ProjectTier", ["starter", "pro", "enterprise", "internal"]), "starter"),
+    status: types.optional(types.enumeration("ProjectStatus", ["draft", "active", "archived"]), "draft"),
     schemas: types.optional(types.array(types.string), []),
     createdBy: types.optional(types.string, ""),
     createdAt: types.optional(types.number, 0),
@@ -36,7 +37,7 @@ export const ProjectModel = types
     folderId: types.optional(types.string, ""),
     publishedSubdomain: types.optional(types.string, ""),
     publishedAt: types.optional(types.number, 0),
-    accessLevel: types.enumeration("AccessLevel", ["anyone", "authenticated", "private"]),
+    accessLevel: types.optional(types.enumeration("AccessLevel", ["anyone", "authenticated", "private"]), "anyone"),
     category: types.maybeNull(types.enumeration("ProjectCategory", ["app", "website", "tool", "game"])),
     siteTitle: types.optional(types.string, ""),
     siteDescription: types.optional(types.string, ""),
@@ -45,6 +46,12 @@ export const ProjectModel = types
     knativeServiceName: types.optional(types.string, ""),
     settings: types.optional(types.frozen(), {}),
     lastMessageAt: types.optional(types.number, 0),
+    workingMode: types.optional(types.string, "managed"),
+    runtimeEnabled: types.optional(types.boolean, true),
+    trustLevel: types.optional(types.string, "trusted"),
+    preferredInstanceId: types.optional(types.string, ""),
+    preferredInstancePolicy: types.optional(types.string, "pinned"),
+    cloudSyncMode: types.optional(types.enumeration("CloudSyncMode", ["s3", "dual_shadow", "git_only"]), "s3"),
     workspace: types.safeReference(types.late(() => WorkspaceModel)),
     folder: types.safeReference(types.late(() => FolderModel)),
     members: types.optional(types.array(types.safeReference(types.late(() => MemberModel))), []),
@@ -52,6 +59,7 @@ export const ProjectModel = types
     chatSessions: types.optional(types.array(types.safeReference(types.late(() => ChatSessionModel))), []),
     usageEvents: types.optional(types.array(types.safeReference(types.late(() => UsageEventModel))), []),
     starredBy: types.optional(types.array(types.safeReference(types.late(() => StarredProjectModel))), []),
+    projectFolders: types.optional(types.array(types.safeReference(types.late(() => ProjectFolderModel))), []),
   })
   .views(self => ({
     /** Check if this is a new/unsaved entity */

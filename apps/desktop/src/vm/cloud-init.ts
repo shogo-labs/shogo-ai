@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { execSync } from 'child_process'
@@ -246,6 +246,45 @@ function buildUserData(config: CloudInitConfig): string {
     lines.push('')
   }
 
+  // Memory hygiene config — pairs with the host-side
+  // virtio-balloon-pci,free-page-reporting=on so the guest aggressively
+  // returns idle memory to QEMU instead of hoarding page cache. Without
+  // these, even with the balloon device, the guest's page cache fills
+  // toward `memoryMB` and the host RSS climbs accordingly.
+  //
+  // - vm.dirty_ratio=5 / dirty_background_ratio=2: write-back pages
+  //   sooner so they're not retained as dirty for long stretches.
+  // - vm.vfs_cache_pressure=500 (already set in bootcmd): aggressively
+  //   reclaim inode/dentry caches.
+  // - vm.swappiness=100: prefer swapping anonymous pages to zram over
+  //   evicting page cache (zram compression is cheaper than re-reading
+  //   from disk for ephemeral allocations).
+  // - zram: ~1 GB lz4-compressed in-RAM swap. Soaks brief allocation
+  //   spikes (vite build, prisma generate) so they don't translate to
+  //   host page faults.
+  lines.push('write_files:')
+  lines.push('  - path: /etc/sysctl.d/99-shogo-mem.conf')
+  lines.push('    content: |')
+  lines.push('      vm.dirty_ratio = 5')
+  lines.push('      vm.dirty_background_ratio = 2')
+  lines.push('      vm.vfs_cache_pressure = 500')
+  lines.push('      vm.swappiness = 100')
+  lines.push('      vm.min_free_kbytes = 65536')
+  lines.push('  - path: /etc/systemd/system/shogo-zram.service')
+  lines.push('    content: |')
+  lines.push('      [Unit]')
+  lines.push('      Description=shogo zram compressed swap')
+  lines.push('      DefaultDependencies=no')
+  lines.push('      Before=swap.target')
+  lines.push('      [Service]')
+  lines.push('      Type=oneshot')
+  lines.push('      RemainAfterExit=yes')
+  lines.push('      ExecStart=/bin/sh -c "modprobe zram num_devices=1 && echo lz4 > /sys/block/zram0/comp_algorithm && echo 1G > /sys/block/zram0/disksize && mkswap /dev/zram0 && swapon -p 100 /dev/zram0"')
+  lines.push('      ExecStop=/bin/sh -c "swapoff /dev/zram0 && echo 1 > /sys/block/zram0/reset"')
+  lines.push('      [Install]')
+  lines.push('      WantedBy=multi-user.target')
+  lines.push('')
+
   lines.push('bootcmd:')
   lines.push('  - systemctl mask multipathd multipathd.socket 2>/dev/null || true')
   lines.push('  - systemctl stop multipathd 2>/dev/null || true')
@@ -254,9 +293,15 @@ function buildUserData(config: CloudInitConfig): string {
   lines.push('  - sysctl -w vm.min_free_kbytes=65536')
   lines.push('  - depmod -a 2>/dev/null || true')
   lines.push('  - modprobe virtiofs 2>/dev/null || true')
+  lines.push('  - modprobe zram 2>/dev/null || true')
   lines.push('')
 
   lines.push('runcmd:')
+  // Apply the dropped-in sysctl config and start zram. Both are best-effort
+  // — older guest kernels may not have zram support, in which case the unit
+  // will fail but the VM will continue without compressed swap.
+  lines.push('  - sysctl --system 2>/dev/null || true')
+  lines.push('  - systemctl enable --now shogo-zram.service 2>/dev/null || true')
 
   {
     // Pre-provisioned image path: bun/templates/deps are already in the image.

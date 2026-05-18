@@ -1,4 +1,4 @@
-
+# syntax=docker/dockerfile:1.7-labs
 # =============================================================================
 # SWE-bench Overlay Image (x86_64)
 # =============================================================================
@@ -9,6 +9,9 @@
 # Build (one-time, ~3-5 min on ARM via QEMU):
 #   DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
 #     -t shogo-swe-overlay -f packages/agent-runtime/Dockerfile.swe-overlay .
+#
+# Workspace package.jsons are glob-copied via BuildKit `COPY --parents`
+# (requires the `# syntax=docker/dockerfile:1.7-labs` directive above).
 # =============================================================================
 
 # =============================================================================
@@ -21,17 +24,8 @@ WORKDIR /app
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
-COPY packages/agent-runtime/package.json ./packages/agent-runtime/
-COPY packages/shared-runtime/package.json ./packages/shared-runtime/
-COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
-COPY packages/sdk/package.json ./packages/sdk/
-COPY packages/domain-stores/package.json ./packages/domain-stores/
-COPY packages/shared-app/package.json ./packages/shared-app/
-COPY packages/shared-ui/package.json ./packages/shared-ui/
-COPY packages/ui-kit/package.json ./packages/ui-kit/
-COPY packages/model-catalog/package.json ./packages/model-catalog/
-COPY apps/api/package.json ./apps/api/
-COPY apps/mobile/package.json ./apps/mobile/
+COPY --parents packages/*/package.json ./
+COPY --parents apps/*/package.json ./
 
 COPY scripts ./scripts
 
@@ -70,17 +64,8 @@ WORKDIR /app
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
-COPY packages/agent-runtime/package.json ./packages/agent-runtime/
-COPY packages/shared-runtime/package.json ./packages/shared-runtime/
-COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
-COPY packages/sdk/package.json ./packages/sdk/
-COPY packages/domain-stores/package.json ./packages/domain-stores/
-COPY packages/shared-app/package.json ./packages/shared-app/
-COPY packages/shared-ui/package.json ./packages/shared-ui/
-COPY packages/ui-kit/package.json ./packages/ui-kit/
-COPY packages/model-catalog/package.json ./packages/model-catalog/
-COPY apps/api/package.json ./apps/api/
-COPY apps/mobile/package.json ./apps/mobile/
+COPY --parents packages/*/package.json ./
+COPY --parents apps/*/package.json ./
 
 COPY scripts ./scripts
 
@@ -119,16 +104,12 @@ COPY --from=builder /app/package.json ./
 COPY --from=builder /app/bun.lock ./
 COPY --from=builder /app/tsconfig.base.json ./
 
-# Workspace member package.jsons for bun resolution
-COPY --from=builder /app/packages/canvas-runtime/package.json ./packages/canvas-runtime/
-COPY --from=builder /app/packages/sdk/package.json ./packages/sdk/
-COPY --from=builder /app/packages/domain-stores/package.json ./packages/domain-stores/
-COPY --from=builder /app/packages/shared-app/package.json ./packages/shared-app/
-COPY --from=builder /app/packages/shared-ui/package.json ./packages/shared-ui/
-COPY --from=builder /app/packages/ui-kit/package.json ./packages/ui-kit/
-COPY --from=builder /app/packages/model-catalog/package.json ./packages/model-catalog/
-COPY --from=builder /app/apps/api/package.json ./apps/api/
-COPY --from=builder /app/apps/mobile/package.json ./apps/mobile/
+# Workspace member package.jsons for bun resolution. The `/app/./` pivot
+# tells BuildKit to preserve `packages/X/...` (everything after `/app/`).
+# Already-shipped packages get their package.json overwritten by this same
+# line, which is fine because the file content is identical.
+COPY --from=builder --parents /app/./packages/*/package.json ./
+COPY --from=builder --parents /app/./apps/*/package.json ./
 
 # Empty canvas dist dir (workspace resolution expects it but SWE evals don't use canvas)
 RUN mkdir -p /app/packages/canvas-runtime/dist

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * iOS In-App Purchase client wrapper for shogo Pro / Business subscriptions.
@@ -24,9 +24,9 @@ export type IapPlan = 'basic' | 'pro' | 'business'
 export type IapInterval = 'monthly' | 'annual'
 
 export const IAP_PRODUCT_IDS: Record<IapPlan, Record<IapInterval, string>> = {
-  basic:    { monthly: 'ai.shogo.basic.monthly',    annual: 'ai.shogo.basic.annual' },
-  pro:      { monthly: 'ai.shogo.pro.monthly',      annual: 'ai.shogo.pro.annual' },
-  business: { monthly: 'ai.shogo.business.monthly', annual: 'ai.shogo.business.annual' },
+  basic:    { monthly: 'ai.shogo.app.basic.monthly',    annual: 'ai.shogo.app.basic.annual' },
+  pro:      { monthly: 'ai.shogo.app.pro.monthly',      annual: 'ai.shogo.app.pro.annual' },
+  business: { monthly: 'ai.shogo.app.business.monthly', annual: 'ai.shogo.app.business.annual' },
 }
 
 export const ALL_PRODUCT_IDS: string[] = Object.values(IAP_PRODUCT_IDS).flatMap((p) => Object.values(p))

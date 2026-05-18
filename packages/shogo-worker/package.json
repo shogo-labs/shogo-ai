@@ -1,15 +1,29 @@
 {
   "name": "@shogo-ai/worker",
-  "version": "0.1.0",
+  "version": "0.0.0-replaced-by-ci",
   "description": "Shogo Cloud Agent Worker \u2014 run Shogo agents on your own machine (laptop, devbox, CI).",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "author": "Shogo Technologies, Inc.",
   "homepage": "https://shogo.ai/docs/cloud-agent/my-machines",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shogo-labs/shogo-ai.git",
+    "directory": "packages/shogo-worker"
+  },
   "bin": {
     "shogo": "./bin/shogo.mjs"
   },
   "main": "./src/cli.ts",
   "type": "module",
+  "exports": {
+    ".": "./src/cli.ts",
+    "./tunnel": "./src/lib/tunnel.ts",
+    "./runtime-manager": "./src/lib/runtime-manager.ts",
+    "./runtime-resolver": "./src/lib/runtime-resolver.ts",
+    "./runtime-install": "./src/lib/runtime-install.ts",
+    "./cloud-login": "./src/lib/cloud-login.ts",
+    "./paths": "./src/lib/paths.ts"
+  },
   "files": [
     "bin",
     "src",
@@ -18,14 +32,17 @@
   "scripts": {
     "start": "bun src/cli.ts",
     "typecheck": "tsc --noEmit",
-    "build": "bun build --compile --minify --target=bun src/cli.ts --outfile dist/shogo",
-    "build:darwin-arm64": "bun build --compile --minify --target=bun-darwin-arm64 src/cli.ts --outfile dist/shogo-darwin-arm64",
-    "build:darwin-x64": "bun build --compile --minify --target=bun-darwin-x64   src/cli.ts --outfile dist/shogo-darwin-x64",
-    "build:linux-x64": "bun build --compile --minify --target=bun-linux-x64    src/cli.ts --outfile dist/shogo-linux-x64",
-    "build:linux-arm64": "bun build --compile --minify --target=bun-linux-arm64  src/cli.ts --outfile dist/shogo-linux-arm64",
-    "build:all": "bun run build:darwin-arm64 && bun run build:darwin-x64 && bun run build:linux-x64 && bun run build:linux-arm64"
+    "build": "bun run build:js",
+    "build:js": "bun build --target=node --format=esm --minify --external bun --external @shogo-ai/sdk --external commander --external picocolors --outdir dist src/cli.ts && mv dist/cli.js dist/cli.mjs",
+    "build:bin:darwin-arm64": "bun build --compile --minify --target=bun-darwin-arm64 src/cli.ts --outfile dist/shogo-darwin-arm64",
+    "build:bin:darwin-x64":   "bun build --compile --minify --target=bun-darwin-x64   src/cli.ts --outfile dist/shogo-darwin-x64",
+    "build:bin:linux-x64":    "bun build --compile --minify --target=bun-linux-x64    src/cli.ts --outfile dist/shogo-linux-x64",
+    "build:bin:linux-arm64":  "bun build --compile --minify --target=bun-linux-arm64  src/cli.ts --outfile dist/shogo-linux-arm64",
+    "build:bin:all": "bun run build:bin:darwin-arm64 && bun run build:bin:darwin-x64 && bun run build:bin:linux-x64 && bun run build:bin:linux-arm64",
+    "prepublishOnly": "bun run typecheck"
   },
   "dependencies": {
+    "@shogo-ai/sdk": "workspace:*",
     "commander": "^12.1.0",
     "picocolors": "^1.1.1"
   },

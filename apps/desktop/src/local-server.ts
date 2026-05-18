@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { spawn, execSync, execFileSync, type ChildProcess } from 'child_process'
 import { createServer } from 'net'
@@ -225,7 +225,12 @@ function ensureRuntimeTemplate(): void {
 
 function getVMImageDir(): string {
   const { app } = require('electron')
-  if (!app.isPackaged) return path.join(path.resolve(__dirname, '..'), 'resources', 'vm')
+  // Use `app.getAppPath()` (= `apps/desktop/` in dev) instead of
+  // `path.resolve(__dirname, '..')`. `bun build` inlines `__dirname` as a
+  // build-time absolute path into the desktop bundle, so any runtime use of
+  // `__dirname` from a bundled module points at the build machine's
+  // filesystem layout, not the user's. See `scripts/bundle-main.mjs`.
+  if (!app.isPackaged) return path.join(app.getAppPath(), 'resources', 'vm')
   const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64'
   return path.join(app.getPath('userData'), 'vm-images', arch)
 }

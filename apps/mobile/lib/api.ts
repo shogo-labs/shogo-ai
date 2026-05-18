@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import Constants from 'expo-constants'
 import { Platform } from 'react-native'
@@ -739,13 +739,115 @@ export const api = {
     }
   },
 
-  // ─── Templates ─────────────────────────────────────────────
-
-  async getAgentTemplates(http: HttpClient) {
-    const res = await http.get<{ templates: AgentTemplateSummary[] }>('/api/agent-templates')
-    const templates = res.data?.templates
-    return Array.isArray(templates) ? templates : []
+  // ─── Local "external folder" projects (Shogo Desktop only) ─────────────
+  /**
+   * Create an external (VS Code-style) project from a set of host
+   * folders. Returns either the new project, an existing project that
+   * was rebound (if the primary already had `.shogo/project.json`), or
+   * a `needsGitRootChoice` response when the picked folder is inside a
+   * git repo whose root the user hasn't confirmed yet.
+   *
+   * Callers should pass `acceptedGitRoot: true` to re-call with the
+   * repo root once the user picks "Use repo root", or
+   * `acceptedGitRoot: false` to keep the original subfolder.
+   */
+  async createLocalFolderProject(
+    http: HttpClient,
+    body: {
+      paths: string[]
+      name?: string
+      workspaceId?: string
+      acceptedGitRoot?: boolean
+    },
+  ): Promise<
+    | { project: unknown; rebound?: boolean; warning?: string; message?: string }
+    | { needsGitRootChoice: true; gitRoot: string; picked: string }
+    | { error: string; code?: string; message?: string }
+  > {
+    const res = await http.post<any>('/api/local/projects/from-folders', body)
+    // HttpClient surfaces JSON for 2xx and the body for 4xx via res.error?
+    // To keep the contract simple we return the raw body — callers
+    // distinguish on shape (needsGitRootChoice / project / error).
+    return (res.data ?? res.error ?? {}) as any
   },
+
+  /**
+   * List recent external projects (folder-linked) for the "Open
+   * Recent…" picker on the home screen.
+   */
+  async listRecentLocalFolderProjects(http: HttpClient): Promise<
+    { id: string; name: string; projectFolders: { path: string; isPrimary: boolean }[] }[]
+  > {
+    try {
+      const res = await http.get<{ projects: any[] }>('/api/local/projects/recent')
+      return Array.isArray(res.data?.projects) ? res.data!.projects : []
+    } catch {
+      return []
+    }
+  },
+
+  /**
+   * Server-side directory listing for the in-app folder picker. Only
+   * mounted in `SHOGO_LOCAL_MODE=true`; same validation gauntlet as
+   * `createLocalFolderProject` (must be under `$HOME`, not a system
+   * root, must exist, etc.) so anything the picker shows can also be
+   * passed straight into `paths` on create.
+   *
+   * Returns the raw API body on success and `{ error }` on failure so
+   * the modal can render a tasteful empty state without try/catch
+   * noise at the call site.
+   */
+  async browseLocalFolder(
+    http: HttpClient,
+    opts: { path?: string; includeFiles?: boolean } = {},
+  ): Promise<
+    | {
+        path: string
+        parent: string | null
+        home: string
+        entries: Array<{ name: string; isDirectory: boolean; isSymlink: boolean; hidden: boolean }>
+        truncated?: boolean
+      }
+    | { error: string; code?: string }
+  > {
+    const params = new URLSearchParams()
+    if (opts.path) params.set('path', opts.path)
+    if (opts.includeFiles) params.set('includeFiles', 'true')
+    const qs = params.toString()
+    try {
+      const res = await http.get<any>(`/api/local/projects/fs/browse${qs ? `?${qs}` : ''}`)
+      if (res.data && typeof res.data.path === 'string') return res.data
+      const errBody = (res.error ?? res.data ?? {}) as { error?: string; code?: string }
+      return {
+        error: typeof errBody.error === 'string' ? errBody.error : 'Browse failed',
+        code: typeof errBody.code === 'string' ? errBody.code : undefined,
+      }
+    } catch (err: any) {
+      return { error: err?.message ?? 'Browse failed' }
+    }
+  },
+
+  /**
+   * Toggle a project's `trustLevel`. Wired to the TrustPrompt modal.
+   * Returns the updated project on success.
+   */
+  async setLocalFolderProjectTrust(
+    http: HttpClient,
+    projectId: string,
+    trusted: boolean,
+  ): Promise<{ project?: any; error?: string }> {
+    try {
+      const res = await http.post<{ project: any }>(
+        `/api/local/projects/${encodeURIComponent(projectId)}/trust`,
+        { trusted },
+      )
+      return { project: res.data?.project }
+    } catch (err: any) {
+      return { error: err?.message ?? 'Failed to update trust' }
+    }
+  },
+
+  // ─── Tech stacks / app templates ──────────────────────────
 
   async getTechStacks(http: HttpClient) {
     const res = await http.get<{ stacks: TechStackSummary[] }>('/api/tech-stacks')
@@ -939,9 +1041,6 @@ export interface RequiredCredential {
   label: string
 }
 
-export type BootstrapStep = 'install' | 'generate' | 'preview' | 'health'
-export type BootstrapStatus = 'pending' | 'running' | 'ok' | 'failed' | 'skipped'
-
 export interface ImportDoneResult {
   id: string
   name: string
@@ -964,9 +1063,10 @@ export type ProjectImportProgress =
   | { phase: 'writeFiles'; done: number; total: number }
   | { phase: 'importChats'; done: number; total: number }
   | {
-      phase: 'bootstrap'
-      step: BootstrapStep
-      status: BootstrapStatus
+      phase: 'syncToS3'
+      status: 'running' | 'ok' | 'failed' | 'skipped'
+      bytes?: number
+      durationMs?: number
       message?: string
     }
   | {
@@ -1186,53 +1286,30 @@ export interface SecurityPrefs {
   approvalTimeoutSeconds?: number
 }
 
-const TEMPLATE_ONBOARDING_MESSAGES: Record<string, string> = {
+/**
+ * Per-listing onboarding messages keyed by listing slug. Slugs match the
+ * legacy template ids 1:1 after the templates → marketplace migration,
+ * so existing entries continue to fire for users installing the same
+ * agents from the marketplace.
+ */
+const LISTING_ONBOARDING_MESSAGES: Record<string, string> = {
   'equity-research-terminal':
-    'The "Equity Research Terminal" template has been installed. Start by asking me for the stock, sector, or watchlist I want analyzed, plus my time horizon and risk tolerance. Explain that you can run stock screening, DCF valuation, competitive landscape, and earnings-note workflows, and that you will only use sourced or user-provided market data.',
+    'The "Equity Research Terminal" agent has been installed. Start by asking me for the stock, sector, or watchlist I want analyzed, plus my time horizon and risk tolerance. Explain that you can run stock screening, DCF valuation, competitive landscape, and earnings-note workflows, and that you will only use sourced or user-provided market data.',
   'portfolio-risk-desk':
-    'The "Portfolio Risk Desk" template has been installed. Start portfolio discovery: ask me for my holdings with approximate weights, total portfolio value, time horizon, risk tolerance, account type, and my biggest concern. Explain that you can assess concentration, stress tests, correlations, liquidity, and rebalance ideas, but will not give trade instructions without confirmation.',
+    'The "Portfolio Risk Desk" agent has been installed. Start portfolio discovery: ask me for my holdings with approximate weights, total portfolio value, time horizon, risk tolerance, account type, and my biggest concern. Explain that you can assess concentration, stress tests, correlations, liquidity, and rebalance ideas, but will not give trade instructions without confirmation.',
   'technical-quant-lab':
-    'The "Technical Quant Lab" template has been installed. Ask me for the ticker, current position if any, timeframe, and whether I want a technical setup, quant pattern scan, options-signal review, or trade-plan draft. Make clear that signals are hypotheses and must be backed by current/user-provided data.',
+    'The "Technical Quant Lab" agent has been installed. Ask me for the ticker, current position if any, timeframe, and whether I want a technical setup, quant pattern scan, options-signal review, or trade-plan draft. Make clear that signals are hypotheses and must be backed by current/user-provided data.',
   'dividend-income-builder':
-    'The "Dividend Income Builder" template has been installed. Ask me for my investment amount, monthly income goal, account type, tax bracket if relevant, risk tolerance, and preferred sectors. Explain that you can build dividend candidate lists, safety checks, income projections, and DRIP scenarios from sourced or user-provided data.',
+    'The "Dividend Income Builder" agent has been installed. Ask me for my investment amount, monthly income goal, account type, tax bracket if relevant, risk tolerance, and preferred sectors. Explain that you can build dividend candidate lists, safety checks, income projections, and DRIP scenarios from sourced or user-provided data.',
   'macro-market-briefing':
-    'The "Macro Market Briefing" template has been installed. Ask me for my current holdings or sectors, geographic focus, time horizon, and biggest macro concern. Explain that you can brief rates, inflation, Fed policy, GDP, USD, employment, global risks, sector rotation, and portfolio impact using cited sources.',
+    'The "Macro Market Briefing" agent has been installed. Ask me for my current holdings or sectors, geographic focus, time horizon, and biggest macro concern. Explain that you can brief rates, inflation, Fed policy, GDP, USD, employment, global risks, sector rotation, and portfolio impact using cited sources.',
 }
 
-export function getOnboardingMessage(templateName: string, templateId?: string): string {
-  if (templateId && TEMPLATE_ONBOARDING_MESSAGES[templateId]) {
-    return TEMPLATE_ONBOARDING_MESSAGES[templateId]
+export function getOnboardingMessage(listingTitle: string, listingSlug?: string): string {
+  if (listingSlug && LISTING_ONBOARDING_MESSAGES[listingSlug]) {
+    return LISTING_ONBOARDING_MESSAGES[listingSlug]
   }
-  return `The "${templateName}" template has been installed. Give me a short summary of what's ready and how to customize it or connect tools. Be concise — a few bullet points max, no walls of text.`
-}
-
-export interface AgentTemplateSummary {
-  id: string
-  name: string
-  description: string
-  category: string
-  icon: string
-  tags: string[]
-  settings: Record<string, unknown> & {
-    heartbeatInterval?: number
-    heartbeatEnabled?: boolean
-    modelProvider?: string
-    modelName?: string
-    webEnabled?: boolean
-    browserEnabled?: boolean
-    shellEnabled?: boolean
-    imageGenEnabled?: boolean
-    memoryEnabled?: boolean
-    quickActionsEnabled?: boolean
-    sdkGuideEnabled?: boolean
-  }
-  skills: string[]
-  integrations?: Array<{
-    categoryId: string
-    description: string
-    required?: boolean
-  }>
-  techStack?: string
+  return `The "${listingTitle}" agent has been installed. Give me a short summary of what's ready and how to customize it or connect tools. Be concise — a few bullet points max, no walls of text.`
 }
 
 export interface TechStackSummary {

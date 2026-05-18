@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Auto-generated UsageWallet MST Model
@@ -23,7 +23,7 @@ export const UsageWalletModel = types
     dailyIncludedUsd: types.optional(types.number, 0),
     monthlyIncludedAllocationUsd: types.optional(types.number, 0),
     dailyUsedThisMonthUsd: types.optional(types.number, 0),
-    overageEnabled: types.optional(types.boolean, false),
+    overageEnabled: types.optional(types.boolean, true),
     overageHardLimitUsd: types.optional(types.number, 0),
     overageAccumulatedUsd: types.optional(types.number, 0),
     overageBilledUsd: types.optional(types.number, 0),

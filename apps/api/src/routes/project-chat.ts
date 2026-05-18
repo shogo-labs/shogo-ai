@@ -603,7 +603,27 @@ export async function trackUsageFromStream(
   // In Kubernetes the workspace lives on the agent pod, not on the API pod,
   // so the local path doesn't exist. Skip silently instead of logging a
   // warning on every streamed response.
-  if (hasFileModifyingTools(toolCallMap) && observedTurnComplete && !originalStreamErrored && isGitAvailable()) {
+  //
+  // External (VS Code-style) projects: NEVER auto-commit. The "workspace"
+  // is the user's own repo, and writing `AI: edit_file (3 tool calls)`
+  // commits into their branch is the cardinal sin every IDE-style tool
+  // explicitly avoids. External users keep their own git workflow; the
+  // CheckpointsPanel renders a "use your own git" banner instead.
+  // SHOGO_CLOUD_SYNC=1 indicates a paired worker (cli_worker) is the source
+  // of truth for this project's git history — its watcher pushes commits
+  // through /api/projects/:id/git/git-receive-pack, and the post-receive
+  // hook in routes/git-http.ts inserts ProjectCheckpoint rows. Skip the
+  // chat-turn auto-checkpoint to avoid a second row with the same SHA.
+  const workerOwnsSync =
+    process.env.SHOGO_CLOUD_SYNC === '1' || process.env.SHOGO_CLOUD_SYNC === 'true'
+  if (
+    !workerOwnsSync &&
+    hasFileModifyingTools(toolCallMap) &&
+    observedTurnComplete &&
+    !originalStreamErrored &&
+    isGitAvailable() &&
+    (project as { workingMode?: string }).workingMode !== 'external'
+  ) {
     const workspacePath = resolve(WORKSPACES_DIR, project.id)
     if (existsSync(workspacePath)) {
       const toolNames = [...new Set([...toolCallMap.values()].map(tc => tc.toolName))].join(', ')

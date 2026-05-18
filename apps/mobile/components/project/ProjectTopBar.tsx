@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * ProjectTopBar - Unified navigation bar for the project detail view.
@@ -1441,7 +1441,7 @@ function AppearanceMenu() {
           'p-0',
           Platform.OS === 'web'
             ? 'min-w-[160px]'
-            : 'min-w-0 w-[122px] max-w-[122px] shrink-0',
+            : 'min-w-0 w-[180px] max-w-[220px] shrink-0',
         )}
       >
         <PopoverBody>

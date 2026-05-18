@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { Platform, Linking as RNLinking } from 'react-native'
 import * as WebBrowser from 'expo-web-browser'

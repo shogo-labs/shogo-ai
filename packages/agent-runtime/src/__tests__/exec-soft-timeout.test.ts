@@ -18,6 +18,7 @@ import { tmpdir } from 'os'
 import { createTools, type ToolContext } from '../gateway-tools'
 import { CommandRegistry } from '../command-registry'
 import { sandboxExecAsync } from '../sandbox-exec'
+import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 
 const PLATFORM = process.platform
 
@@ -41,6 +42,10 @@ describe('exec soft-timeout', () => {
   beforeEach(() => {
     workDir = join(tmpdir(), `shogo-exec-soft-${Date.now()}-${Math.random().toString(36).slice(2)}`)
     mkdirSync(workDir, { recursive: true })
+    // gateway-tools' assertAllowedPath() consults the global runtime-trust
+    // config; mirror the freshly-minted workDir into it so the exec gate
+    // doesn't reject every command before it runs.
+    trustWorkspaceForTests(workDir)
     registry = new CommandRegistry()
     const cwdMap = new Map<string, string>()
     const sessionId = 'test-session'
@@ -73,21 +78,28 @@ describe('exec soft-timeout', () => {
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
         rmSync(workDir, { recursive: true, force: true })
+        clearTrustForTests()
         return
       } catch {
         await new Promise(r => setTimeout(r, 200))
       }
     }
+    clearTrustForTests()
     // Best-effort; OS tmpdir cleanup will handle anything left over.
   })
 
+  // The exec tool's soft `timeout` is set to 5000ms here, which collides
+  // with bun:test's default 5000ms per-test budget — under parallel CPU
+  // contention the test process itself can be late to wake up after the
+  // exec finishes and we hit the framework timeout. Give the test ~3x
+  // the soft timeout so the framework never times out before exec does.
   test('completes within the soft timeout and returns full result', async () => {
     const result = await callTool(ctx, 'exec', { command: 'echo hello', timeout: 5000 })
     expect(result.status).toBeUndefined()
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain('hello')
     expect(result.run_id).toBeDefined()
-  })
+  }, 15000)
 
   test('returns running + run_id + pid when soft timeout fires', async () => {
     // Sleep longer than the soft timeout. The command keeps running.

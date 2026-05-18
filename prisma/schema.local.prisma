@@ -165,6 +165,21 @@ model Project {
   knativeServiceName String?
   settings           String?
   lastMessageAt      DateTime?
+  // External / IDE-style project mode. See prisma/schema.prisma for the
+  // canonical comment.
+  workingMode    String  @default("managed")
+  runtimeEnabled Boolean @default(true)
+  trustLevel     String  @default("trusted")
+
+  // External-trigger routing. See prisma/schema.prisma for the canonical comment.
+  preferredInstanceId     String?
+  preferredInstancePolicy String  @default("pinned")
+
+  // Cloud workspace sync mode. SQLite has no native enum type, so we
+  // store it as TEXT with the same allowed values used by the PG enum:
+  //   's3' | 'dual_shadow' | 'git_only'. The check constraint lives in
+  //   the migration. See prisma/schema.prisma for the canonical comment.
+  cloudSyncMode String @default("s3")
 
   workspace              Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   folder                 Folder?                 @relation(fields: [folderId], references: [id], onDelete: SetNull)
@@ -185,10 +200,29 @@ model Project {
   modelExperiments       ModelExperiment[]
   subagentModelOverrides SubagentModelOverride[]
   agentEvalSets          AgentEvalSet[]
+  projectFolders         ProjectFolder[]
+  preferredInstance      Instance?               @relation("ProjectPreferredInstance", fields: [preferredInstanceId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId])
   @@index([folderId])
+  @@index([preferredInstanceId])
   @@map("projects")
+}
+
+/// External host folder linked to a project (workingMode='external').
+/// See prisma/schema.prisma for the canonical comment.
+model ProjectFolder {
+  id           String    @id @default(uuid())
+  projectId    String
+  path         String
+  isPrimary    Boolean   @default(false)
+  addedAt      DateTime  @default(now())
+  lastOpenedAt DateTime?
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("project_folders")
 }
 
 model AgentConfig {
@@ -1069,6 +1103,7 @@ model Instance {
   hostname      String
   os            String?
   arch          String?
+  kind          String    @default("desktop")
   status        String    @default("offline")
   lastSeenAt    DateTime?
   wsRequestedAt DateTime?
@@ -1079,9 +1114,11 @@ model Instance {
   workspace         Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   remoteActions     RemoteAction[]
   pushSubscriptions PushSubscription[]
+  preferredByProjects Project[]        @relation("ProjectPreferredInstance")
 
   @@unique([workspaceId, hostname])
   @@index([workspaceId])
+  @@index([workspaceId, kind])
   @@map("instances")
 }
 
@@ -1336,6 +1373,10 @@ model MarketplaceListing {
   reviewCount          Int       @default(0)
   publishedAt          DateTime?
   featuredAt           DateTime?
+  // Phase 7 admin review queue.
+  rejectionReason String?
+  reviewedAt      DateTime?
+  reviewedBy      String?
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
@@ -1361,7 +1402,23 @@ model MarketplaceListingVersion {
   listingId         String
   version           String
   changelog         String?
-  workspaceSnapshot String?
+  // Phase 7 audit pipeline. SQLite has no enum/Json — auditStatus is one of
+  // 'none' | 'pending' | 'passed' | 'flagged' | 'errored'; auditFindings is
+  // a JSON-encoded string. See prisma/schema.prisma for the shape.
+  auditStatus   String  @default("none")
+  auditedAt     DateTime?
+  auditedBy     String?
+  auditFindings String?
+  auditModel    String?
+
+  // S3-backed workspace snapshot — see prisma/schema.prisma for the
+  // narrative. Local SQLite stores the JSON snapshot as a String column
+  // for backward compatibility; the new S3 fields are mirrored as
+  // String? / Int? for installs that talk to a remote API.
+  workspaceSnapshot         String?
+  workspaceSnapshotKey      String?
+  workspaceSnapshotBytes    Int?
+  workspaceSnapshotChecksum String?
 
   createdAt DateTime @default(now())
 
@@ -1380,6 +1437,8 @@ model MarketplaceInstall {
   userId               String
   installModel         String
   installedVersion     String
+  // Phase 6 drift detection. JSON-encoded manifest of relPath -> sha256.
+  baselineManifest     String?
   stripeSubscriptionId String?
   status               String   @default("active")
   createdAt            DateTime @default(now())

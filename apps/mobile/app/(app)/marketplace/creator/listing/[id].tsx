@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
@@ -29,6 +29,8 @@ import {
   Info,
   Plus,
   X,
+  ShieldCheck,
+  AlertTriangle,
 } from 'lucide-react-native'
 import { useDomainHttp } from '../../../../../contexts/domain'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -99,6 +101,7 @@ interface ListingData {
   installModel: 'fork' | 'linked'
   status: string
   projectId: string
+  rejectionReason?: string | null
 }
 
 interface ProjectItem {
@@ -160,6 +163,20 @@ export default observer(function EditListingScreen() {
   const [unlisting, setUnlisting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+
+  // Phase 7 — pre-submit audit + admin review state.
+  // `auditFindings` mirrors the marketplace-audit.service AuditFinding
+  // shape; we surface it inline as advisory suggestions before the
+  // creator submits for human review.
+  const [auditFindings, setAuditFindings] = useState<
+    Array<{ category: string; severity: string; path?: string; message: string; excerpt?: string }>
+  >([])
+  const [auditStatus, setAuditStatus] = useState<'idle' | 'running' | 'passed' | 'flagged' | 'errored'>(
+    'idle',
+  )
+  const [auditing, setAuditing] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [rejectionReason, setRejectionReason] = useState<string | null>(null)
 
   const [projects, setProjects] = useState<ProjectItem[]>([])
   const [projectsLoading, setProjectsLoading] = useState(false)
@@ -223,6 +240,7 @@ export default observer(function EditListingScreen() {
         return
       }
       setExistingStatus(listing.status)
+      setRejectionReason(listing.rejectionReason ?? null)
       setSelectedProjectId(listing.projectId)
       setForm({
         title: listing.title,
@@ -373,6 +391,90 @@ export default observer(function EditListingScreen() {
       setPublishing(false)
     }
   }, [isNew, existingStatus, http, id, validate])
+
+  // Phase 7 — run an advisory audit pass. We look up the listing's
+  // most recent version, then ask the API to audit it via Haiku. The
+  // findings are stored on the version row server-side and also
+  // returned for inline display.
+  const handleRunAudit = useCallback(async () => {
+    if (isNew) {
+      setError('Save the listing first before running an audit')
+      return
+    }
+    setAuditing(true)
+    setAuditStatus('running')
+    setError(null)
+    setSuccess(null)
+    try {
+      const versionsRes = await http.get<{ versions: Array<{ id: string; createdAt: string }> }>(
+        `/api/marketplace/creator/listings/${id}/versions`,
+      )
+      const versions = versionsRes.data?.versions ?? []
+      const latest = versions[0]
+      if (!latest) {
+        setError('No published version found — push at least one version before auditing')
+        setAuditStatus('idle')
+        return
+      }
+      const auditRes = await http.post<{
+        audit: {
+          status: 'passed' | 'flagged' | 'errored'
+          findings: Array<{
+            category: string
+            severity: string
+            path?: string
+            message: string
+            excerpt?: string
+          }>
+        }
+      }>(`/api/marketplace/creator/listings/${id}/versions/${latest.id}/audit`, {})
+      const { status, findings } = auditRes.data.audit
+      setAuditStatus(status)
+      setAuditFindings(findings ?? [])
+      if (status === 'passed') {
+        setSuccess('Audit passed — no issues detected.')
+      }
+    } catch {
+      setError('Failed to run audit')
+      setAuditStatus('errored')
+    } finally {
+      setAuditing(false)
+    }
+  }, [http, id, isNew])
+
+  // Phase 7 — submit the listing for admin review. The API auto-runs
+  // an audit on submit, and queues the listing regardless of audit
+  // outcome (the auditor is advisory).
+  const handleSubmitForReview = useCallback(async () => {
+    if (isNew || (existingStatus !== 'draft' && existingStatus !== 'rejected')) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const res = await http.post<{
+        listing: { status: string }
+        audit: {
+          status: 'passed' | 'flagged' | 'errored'
+          findings: Array<{
+            category: string
+            severity: string
+            path?: string
+            message: string
+            excerpt?: string
+          }>
+        } | null
+      }>(`/api/marketplace/creator/listings/${id}/submit-for-review`, {})
+      setExistingStatus(res.data.listing.status)
+      if (res.data.audit) {
+        setAuditStatus(res.data.audit.status)
+        setAuditFindings(res.data.audit.findings ?? [])
+      }
+      setSuccess('Submitted for review. An admin will approve or reject your listing shortly.')
+    } catch {
+      setError('Failed to submit for review')
+    } finally {
+      setSubmitting(false)
+    }
+  }, [isNew, existingStatus, http, id])
 
   const handleUnlist = useCallback(async () => {
     if (isNew || existingStatus !== 'published') return
@@ -925,22 +1027,112 @@ export default observer(function EditListingScreen() {
                   'w-2 h-2 rounded-full',
                   existingStatus === 'published'
                     ? 'bg-green-500'
-                    : existingStatus === 'archived'
+                    : existingStatus === 'archived' || existingStatus === 'rejected'
                       ? 'bg-red-500'
-                      : 'bg-yellow-500',
+                      : existingStatus === 'pending_review'
+                        ? 'bg-blue-500'
+                        : 'bg-yellow-500',
                 )}
               />
               <Text className="text-sm font-medium text-foreground capitalize">
-                {existingStatus === 'archived' ? 'Unlisted' : existingStatus}
+                {existingStatus === 'archived'
+                  ? 'Unlisted'
+                  : existingStatus === 'pending_review'
+                    ? 'Pending admin review'
+                    : existingStatus}
               </Text>
             </View>
+            {existingStatus === 'rejected' && rejectionReason && (
+              <Text className="text-xs text-destructive mt-2">
+                Rejection reason: {rejectionReason}
+              </Text>
+            )}
           </View>
         )}
+
+        {/* Phase 7 — pre-submit audit panel. Advisory only; submit
+            still queues the listing for human review regardless. */}
+        {!isNew && (existingStatus === 'draft' || existingStatus === 'rejected') && (
+          <View className="rounded-xl border border-border bg-card px-4 py-3 mb-3 gap-3">
+            <View className="flex-row items-center gap-2">
+              <ShieldCheck size={14} color="#e27927" />
+              <Text className="text-xs font-semibold text-foreground uppercase" style={{ letterSpacing: 0.4 }}>
+                Pre-submit audit
+              </Text>
+              <View className="flex-1" />
+              {auditStatus !== 'idle' && (
+                <Text
+                  className={cn(
+                    'text-[11px] font-semibold',
+                    auditStatus === 'passed'
+                      ? 'text-emerald-600'
+                      : auditStatus === 'flagged'
+                        ? 'text-amber-600'
+                        : auditStatus === 'errored'
+                          ? 'text-destructive'
+                          : 'text-muted-foreground',
+                  )}
+                >
+                  {auditStatus === 'running' ? 'Running…' : auditStatus.toUpperCase()}
+                </Text>
+              )}
+            </View>
+            <Text className="text-[11px] text-muted-foreground leading-4">
+              Runs an AI auditor (Haiku) over your latest version snapshot to flag potential
+              secrets and non-generic, tenant-specific content. Findings are advisory; you can
+              still submit for review.
+            </Text>
+            <Pressable
+              onPress={handleRunAudit}
+              disabled={auditing}
+              className={cn(
+                'flex-row items-center justify-center gap-2 py-2.5 rounded-xl border',
+                auditing ? 'border-border bg-muted/40' : 'border-primary/30 bg-primary/5 active:opacity-70',
+              )}
+            >
+              {auditing ? (
+                <ActivityIndicator size="small" />
+              ) : (
+                <ShieldCheck size={14} color="#e27927" />
+              )}
+              <Text className="text-xs font-semibold text-primary">
+                {auditing ? 'Auditing…' : 'Run audit'}
+              </Text>
+            </Pressable>
+            {auditFindings.length > 0 && (
+              <View className="gap-2">
+                {auditFindings.map((f, idx) => (
+                  <View
+                    key={`${f.path ?? 'root'}-${idx}`}
+                    className="flex-row items-start gap-2 rounded-lg border border-amber-300/40 bg-amber-50/40 dark:bg-amber-900/10 px-3 py-2"
+                  >
+                    <AlertTriangle size={12} color="#d97706" style={{ marginTop: 2 }} />
+                    <View className="flex-1 min-w-0">
+                      <Text className="text-[11px] font-semibold text-foreground">
+                        {f.category} · {f.severity}
+                        {f.path ? ` · ${f.path}` : ''}
+                      </Text>
+                      <Text className="text-[11px] text-foreground/80 mt-0.5">
+                        {f.message}
+                      </Text>
+                      {f.excerpt && (
+                        <Text className="text-[10px] text-muted-foreground mt-1 font-mono">
+                          {f.excerpt}
+                        </Text>
+                      )}
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
+        )}
+
         <View className="flex-row items-start gap-2 px-3 py-2.5 rounded-xl bg-primary/5">
           <Info size={14} color="#e27927" style={{ marginTop: 1 }} />
           <Text className="text-xs text-foreground/80 flex-1 leading-4">
-            Once published, your listing is visible on the marketplace. You can
-            unlist it any time from this screen.
+            All listings require human approval before going live. Submit for review when
+            you're ready and an admin will review your submission.
           </Text>
         </View>
       </Section>
@@ -1112,26 +1304,36 @@ export default observer(function EditListingScreen() {
             </>
           )}
         </Pressable>
-        {!isNew && existingStatus === 'draft' && (
+        {!isNew && (existingStatus === 'draft' || existingStatus === 'rejected') && (
+          // Phase 7 — direct publish is replaced by submit-for-review,
+          // which always queues for human admin approval.
           <Pressable
-            onPress={handlePublish}
-            disabled={publishing || !sectionDone.basics}
+            onPress={handleSubmitForReview}
+            disabled={submitting || !sectionDone.basics}
             className={cn(
               'flex-1 flex-row items-center justify-center gap-2 py-3 rounded-xl',
-              publishing || !sectionDone.basics ? 'bg-primary/60' : 'bg-primary',
+              submitting || !sectionDone.basics ? 'bg-primary/60' : 'bg-primary',
             )}
           >
-            {publishing ? (
+            {submitting ? (
               <ActivityIndicator size="small" color="#fff" />
             ) : (
               <>
                 <Send size={14} color="#fff" />
                 <Text className="text-sm font-semibold text-primary-foreground">
-                  Publish
+                  Submit for review
                 </Text>
               </>
             )}
           </Pressable>
+        )}
+        {!isNew && existingStatus === 'pending_review' && (
+          <View className="flex-1 flex-row items-center justify-center gap-2 py-3 rounded-xl bg-blue-500/10">
+            <ActivityIndicator size="small" color="#2563eb" />
+            <Text className="text-sm font-semibold text-blue-600">
+              Awaiting admin review
+            </Text>
+          </View>
         )}
         {!isNew && existingStatus === 'published' && (
           <Pressable

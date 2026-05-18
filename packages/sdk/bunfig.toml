@@ -1,0 +1,33 @@
+# Test + coverage configuration for @shogo-ai/sdk.
+#
+# `bun test` runs without coverage. `bun test --coverage` enables it
+# using these settings. The package's `test` script restricts to
+# `src/` because Playwright e2e specs under `tests/e2e/` and
+# `examples/*/tests/` will throw under `bun test` (they need
+# `playwright test`).
+#
+# We deliberately omit `coverage = false` so the CLI flag isn't
+# suppressed.
+
+# Threshold is intentionally NOT set per-package — see the note in
+# apps/api/bunfig.toml.
+[test]
+coverageReporter = ["text", "lcov"]
+coverageDir = "coverage"
+coverageSkipTestFiles = true
+coveragePathIgnorePatterns = [
+  "**/__tests__/**",
+  "**/__mocks__/**",
+  "**/*.test.ts",
+  "**/*.test.tsx",
+  "**/*.spec.ts",
+  "**/*.spec.tsx",
+  "**/dist/**",
+  "**/build/**",
+  "**/generated/**",
+  "**/*.generated.ts",
+  "**/node_modules/**",
+  "**/tests/e2e/**",
+  "**/examples/**",
+  "**/bin/**",
+]

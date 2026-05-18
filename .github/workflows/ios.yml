@@ -305,10 +305,18 @@ jobs:
           fi
 
           sudo xcode-select -s "$XCODE/Contents/Developer"
-          xcodebuild -version
 
-          XC_MAJOR=$(xcodebuild -version | head -1 | awk '{print $2}' | cut -d. -f1)
-          if [ "$XC_MAJOR" -lt 26 ]; then
+          # Capture once to a file. Piping `xcodebuild -version` directly
+          # (e.g. `xcodebuild -version | head -1`) aborts with NSException
+          # 'Broken pipe' / exit 134 on Xcode 26.x runners — `head` closes
+          # stdin before xcodebuild finishes writing, and xcodebuild's
+          # NSFileHandle wrapper does not trap SIGPIPE.
+          XC_VERSION_FILE="$RUNNER_TEMP/xcode-version.txt"
+          xcodebuild -version > "$XC_VERSION_FILE"
+          cat "$XC_VERSION_FILE"
+
+          XC_MAJOR=$(awk 'NR==1 {print $2}' "$XC_VERSION_FILE" | cut -d. -f1)
+          if [ -z "$XC_MAJOR" ] || [ "$XC_MAJOR" -lt 26 ]; then
             echo "::error title=Xcode SDK too old::Selected Xcode major version $XC_MAJOR is < 26. Apple now requires Xcode 26+/iOS 26 SDK for App Store Connect submissions."
             echo "Available Xcodes on this runner:"
             ls /Applications/ | grep -E '^Xcode' || true
@@ -327,6 +335,11 @@ jobs:
 
       - name: Build workspace packages
         run: bun run build
+
+      - name: App Store compliance pre-flight
+        # Blocks the build if Sign in with Apple wiring, bundle id, or IAP
+        # product IDs regress. Prevents repeating Apple rejection d7d85854.
+        run: bash scripts/check-ios-store-compliance.sh
 
       - name: Sync app version and bump buildNumber
         working-directory: apps/mobile
@@ -443,7 +456,7 @@ jobs:
       - name: Build archive
         working-directory: apps/mobile/ios
         env:
-          BUNDLE_ID: com.odin.ai
+          BUNDLE_ID: ai.shogo.app
           # JS bundling runs inside xcodebuild's "Bundle React Native code
           # and images" build phase, which calls Metro. Metro reads
           # EXPO_PUBLIC_* from process.env at bundle time and bakes them
@@ -557,7 +570,7 @@ jobs:
             <string>Apple Distribution</string>
             <key>provisioningProfiles</key>
             <dict>
-              <key>com.odin.ai</key>
+              <key>ai.shogo.app</key>
               <string>$PROFILE_NAME</string>
             </dict>
             <key>uploadSymbols</key>

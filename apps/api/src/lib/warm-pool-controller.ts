@@ -2152,14 +2152,48 @@ export class WarmPoolController {
         template: {
           metadata: {
             annotations: {
-              'autoscaling.knative.dev/min-scale': '1',
+              // Scale-to-zero policy:
+              //
+              // Previously this was pinned `min-scale: 1` to dodge two
+              // problems:
+              //   1. Knative activator's hardcoded 5-min request timeout
+              //      cutting long agent chat streams mid-turn.
+              //   2. ~116s cold-start tar-extract of `node_modules` from
+              //      S3 blocking `/ready`, failing health probes.
+              // Both have been solved separately:
+              //   1. `project-chat.ts` runs a streamBufferStore + server-
+              //      side auto-resume against `/agent/chat/:id/stream`
+              //      so any HTTP cut (activator timeout included) is
+              //      transparently re-attached to the still-running
+              //      turn in the runtime's in-memory buffer.
+              //   2. Content-addressed `_deps-cache/<hash>.tar.gz` +
+              //      per-project `deps-hash.txt` (S3Sync.markDepsChanged)
+              //      makes second+ assignments hit a fast restore path,
+              //      not a cold `bun install`.
+              //
+              // Keeping `min-scale: 1` forever after that meant every
+              // project ever assigned kept a pod running 24/7 — staging
+              // was carrying ~200 always-on pods to serve ~30
+              // concurrent users (2026-05-14 incident root cause: 215
+              // pinned pods over-committing the cluster, triggering a
+              // node DiskPressure cascade). Allowing scale-to-zero lets
+              // the existing soft-evict GC (see `evictProject`'s
+              // `deleteService:false` path) actually free resources for
+              // long-idle projects.
+              'autoscaling.knative.dev/min-scale': '0',
               'autoscaling.knative.dev/max-scale': '1',
-              // Take the activator out of the request path. Knative's
-              // activator imposes a hardcoded 5-minute `defaultRequestTimeout`
-              // on in-flight requests (see `handler/timeout.go`), which was
-              // cutting long agent chat streams mid-turn. With burst-capacity=0
-              // the data-plane path is queue-proxy → user-container, with no
-              // activator-imposed deadline.
+              // Hold the pod for 30 min after last request before
+              // tearing down. Matches `PROMOTED_POD_IDLE_TIMEOUT_MS`
+              // and the `scale-to-zero-pod-retention-period` already
+              // used by `knative-project-manager.ts`, so a user who
+              // steps away and returns within their typical break
+              // never sees a cold start.
+              'autoscaling.knative.dev/scale-to-zero-pod-retention-period': '1800s',
+              // Keep the activator out of the steady-state data path
+              // (`queue-proxy → user-container` direct). It still goes
+              // through the activator for the cold-start request after
+              // a scale-up-from-zero, but only for the buffered request
+              // — once the pod is ready, the activator hands off.
               'autoscaling.knative.dev/target-burst-capacity': '0',
             },
           },
@@ -2170,6 +2204,22 @@ export class WarmPoolController {
             timeoutSeconds: 3600,
             responseStartTimeoutSeconds: 600,
             securityContext: { fsGroup: 999 },
+            // NOTE: `topologySpreadConstraints` was previously declared here
+            // to spread warm-pool pods across nodes (anti-co-tenancy belt-
+            // and-suspenders after the 2026-05-14 DiskPressure cascade), but
+            // Knative's admission webhook rejects that field unless the
+            // cluster opts in via `kubernetes.podspec-topologyspreadconstraints:
+            // enabled` in `config-features`. Without the flag, every warm-pool
+            // create returned HTTP 400, the controller's circuit breaker
+            // tripped at 5 failures, and the pool stayed at 0 (staging
+            // incident 2026-05-15). The cascade's root causes were addressed
+            // by other fixes — ephemeral-storage requests below, 200 GB boot
+            // volumes (terraform/modules/oke), the s3-sync deps-hash fix, and
+            // the oci-growfs patch — so the spread constraint isn't load-
+            // bearing for the original incident. If/when we want it back, use
+            // `affinity.podAntiAffinity` instead (the `kubernetes.podspec-
+            // affinity` flag is already enabled in
+            // `terraform/modules/knative-oci/main.tf`).
             containers: [
               {
                 name: RUNTIME_CONFIG.containerName,
@@ -2178,8 +2228,51 @@ export class WarmPoolController {
                 ports: [{ containerPort: 8080, name: 'http1' }],
                 env: dedupedEnv,
                 resources: {
-                  requests: { memory: '768Mi', cpu: '200m' },
-                  limits: { memory: '2Gi', cpu: '1000m' },
+                  // Memory limit must cover the heaviest legitimate workload
+                  // a pool pod can be assigned, since the pod's resources are
+                  // baked in at ksvc creation and we can't safely patch them
+                  // post-assignment (a patch creates a new revision, which
+                  // loses the in-memory agent/preview state).
+                  //
+                  // Empirical peak (staging, 2026-05-13):
+                  //   - Vite + React:                       ~800 MiB
+                  //   - Expo + react-native-web (web only): ~3.5 GiB
+                  //   - Expo + @react-three/fiber + VRM:    ~4.5–5 GiB
+                  //     (Metro keeps the entire module graph in-memory while
+                  //     bundling; the @pixiv/three-vrm + three.js + R3F combo
+                  //     is the worst offender we ship templates for.)
+                  //
+                  // 2 GiB OOM-killed every Expo build with code 137 (the
+                  // 9e7ecdc7 staging incident). 5 GiB was the smallest
+                  // envelope that didn't crash any current tech stack at
+                  // the time, but it sits *right* at the Expo+R3F+VRM
+                  // peak — Lindsey's Rae project repeatedly OOM-killed
+                  // mid-`expo export` (2026-05-14 staging incident) with
+                  // a 5 GiB limit. Bumped to 8 GiB to give ~3 GiB of
+                  // headroom over the worst-case stack so the next heavy
+                  // bundle (or future R3F/VRM template growth) doesn't
+                  // tip back over. Request stays low (768 MiB) so we
+                  // still bin-pack efficiently — the limit is only an
+                  // upper bound. Nodes are ~20 GiB allocatable so even
+                  // with three peak-bundling pods co-tenant the limits
+                  // don't approach the floor.
+                  //
+                  // ephemeral-storage: the scheduler ignores `emptyDir.sizeLimit`
+                  // when bin-packing. Without an explicit request, kubelet
+                  // happily co-tenants ~34 of these pods onto an 88.8 GiB node
+                  // (each carrying the 7 GiB runtime image + a 5 GiB emptyDir
+                  // ceiling + bun's install cache); the node hits 85% used,
+                  // ImageGC fails, DiskPressure flips True, and every
+                  // `bun install` after that point fails with
+                  // `FileNotFound: copying file dist/chunk-*.js` because the
+                  // overlay truncates files mid-copy. inotify add_watch then
+                  // returns ENOSPC and the preview-manager can't see Lindsey's
+                  // edits to trigger a rebuild. (Staging incident 2026-05-14.)
+                  // 2 GiB request is the typical actual usage (template deps
+                  // + project + dist), well under the 5 GiB ceiling, but it
+                  // tells the scheduler the truth so it stops overpacking.
+                  requests: { memory: '768Mi', cpu: '200m', 'ephemeral-storage': '2Gi' },
+                  limits: { memory: '8Gi', cpu: '1000m', 'ephemeral-storage': '5Gi' },
                 },
                 volumeMounts: [{ name: 'project-data', mountPath: workDir }],
                 startupProbe: {
@@ -2210,7 +2303,14 @@ export class WarmPoolController {
             volumes: [
               {
                 name: 'project-data',
-                emptyDir: { sizeLimit: '2Gi' },
+                // Expo workspaces with full template deps consume ~1.1 GiB
+                // just for `node_modules/`; add dist/dist.staging + metro
+                // cache + the user's assets and 2 GiB blows past the
+                // sizeLimit mid-build, which K8s surfaces as a confusing
+                // "no space left on device" failure inside the pod. 5 GiB
+                // matches the memory ceiling and gives the heaviest stack
+                // (expo-three-vrm) room to breathe.
+                emptyDir: { sizeLimit: '5Gi' },
               },
             ],
           },

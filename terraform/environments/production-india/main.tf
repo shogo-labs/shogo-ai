@@ -12,7 +12,14 @@ terraform {
   required_providers {
     oci = {
       source  = "oracle/oci"
-      version = "~> 6.0"
+      version = "~> 8.0"
+    }
+    # India doesn't manage any Cloudflare resources directly (tier=light,
+    # no publish-hosting), but the `oci-region` composite transitively
+    # requires the provider so a config block is required.
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 4.0"
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
@@ -24,8 +31,21 @@ terraform {
     }
   }
 
-  backend "local" {
-    path = "terraform.tfstate"
+  # Remote state on OCI Object Storage (S3-compat).
+  # Endpoint is supplied via -backend-config at `terraform init` time:
+  #   terraform init -backend-config="endpoint=$OCI_S3_ENDPOINT"
+  # Credentials come from $AWS_ACCESS_KEY_ID / $AWS_SECRET_ACCESS_KEY env vars
+  # (see GH secrets OCI_S3_ACCESS_KEY / OCI_S3_SECRET_KEY).
+  backend "s3" {
+    bucket = "shogo-tfstate"
+    key    = "production-india/terraform.tfstate"
+    region = "us-ashburn-1"
+
+    skip_credentials_validation = true
+    skip_metadata_api_check     = true
+    skip_region_validation      = true
+    skip_requesting_account_id  = true
+    force_path_style            = true
   }
 }
 
@@ -39,6 +59,10 @@ provider "oci" {
   fingerprint      = var.oci_fingerprint
   private_key_path = var.oci_private_key_path
   region           = "ap-mumbai-1"
+}
+
+provider "cloudflare" {
+  api_token = var.cloudflare_api_token
 }
 
 data "oci_containerengine_cluster_kube_config" "main" {
@@ -86,10 +110,19 @@ module "india" {
   compartment_id = var.compartment_id
   tenancy_id     = var.tenancy_id
 
+  oke_api_allowed_cidrs = var.oke_api_allowed_cidrs
+  nfs_allowed_cidr      = var.nfs_allowed_cidr
+
   # ARM64 custom OKE image (A4 Flex)
   image_id           = "ocid1.image.oc1.ap-mumbai-1.aaaaaaaaifagpks5y3kwx4ks6vjmhb5tfexqvrznf4uq44pnaduyqlysogkq"
   placement_ad_names = ["XYpk:AP-MUMBAI-1-AD-1"]
 
+  # Live pool runs on the older Ampere A1 shape (cluster was bootstrapped
+  # before A4 was generally available in ap-mumbai-1). The OCI 8.x
+  # provider refuses a shape change from A1 -> A4 against the existing
+  # node image with "Invalid nodeShape: Node shape and image are not
+  # compatible." Keep India on A1 until a deliberate image swap.
+  system_node_shape     = "VM.Standard.A1.Flex"
   system_node_ocpus     = 4
   system_node_memory_gb = 24
   system_pool_size      = 4
@@ -108,13 +141,65 @@ module "india" {
 
   # No Cloudflare publish-hosting in Tier 2
   # cloudflare_zone_id and cloudflare_account_id left empty
+
+  # =============================================================
+  # Live-state overrides (production-india reconciliation, 2026-05)
+  # =============================================================
+
+  # Live node pool was bootstrapped as `shogo-prod-india-arm-4ocpu` at
+  # max_pods_per_node = 93.
+  oke_main_node_pool_name_override = "shogo-prod-india-arm-4ocpu"
+  oke_main_node_pool_max_pods      = 93
+
+  # Live cluster has no NSGs attached (endpoint nsg-ids: []).
+  vcn_enable_oke_nsgs = false
+
+  # VCN security lists already in state — keep enabled.
+  vcn_enable_security_lists = true
+
+  # India was bootstrapped with a dedicated /28 subnet for the OKE API
+  # endpoint (live cidr 10.2.0.0/28).
+  vcn_enable_dedicated_api_subnet = true
+  vcn_api_endpoint_cidr           = "10.2.0.0/28"
+
+  # OCIR has 5 repos live (module default would destroy
+  # `shogo-runtime-base`).
+  ocir_repositories = [
+    "shogo-api",
+    "shogo-docs",
+    "shogo-runtime",
+    "shogo-runtime-base",
+    "shogo-web",
+  ]
+
+  # Knative + Kourier installed live (kubectl shows knative-serving,
+  # kourier-system namespaces 55+ days old). Skip the installer.
+  knative_manage_install = false
+
+  # The tenancy-scoped `github-actions-deploy` IAM group + policy is
+  # owned by production-us. Disable here to avoid a name collision.
+  enable_github_oidc = false
+
+  # India is tier="light" — module.cnpg, module.object_storage,
+  # module.file_storage, module.publish_hosting are not instantiated by
+  # the composite, so no flags needed for those.
 }
 
 # =============================================================================
 # Cross-Region Peering (accept US peering — optional, for private DB access)
+#
+# DEFERRED until production-us flips `enable_drg_peering_to_india = true`
+# and emits a non-null `rpc_india_id` output.
 # =============================================================================
 
+variable "enable_drg_peering_from_us" {
+  description = "Create the DRG + VCN attachment that accepts the US-side RPC. Defaults to false until production-us has been flipped to publish its RPC."
+  type        = bool
+  default     = false
+}
+
 module "drg_from_us" {
+  count  = var.enable_drg_peering_from_us ? 1 : 0
   source = "../../modules/drg-peering"
 
   name           = "shogo-production-in"

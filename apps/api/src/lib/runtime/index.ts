@@ -6,7 +6,13 @@
  * Exports RuntimeManager for managing Vite dev server processes per project.
  */
 
-export { RuntimeManager, createRuntimeManager, getRuntimeManager } from './manager'
+export {
+  RuntimeManager,
+  createRuntimeManager,
+  getRuntimeManager,
+  setRuntimeManager,
+  __resetRuntimeManagerInternalsForTests,
+} from './manager'
 export type {
   IRuntimeManager,
   IProjectRuntime,

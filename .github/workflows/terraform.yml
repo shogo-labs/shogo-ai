@@ -1,0 +1,270 @@
+# =============================================================================
+# Shogo AI — Terraform (OCI)
+# =============================================================================
+# Plan and apply Terraform for the four OCI environments:
+#   staging | production-us | production-eu | production-india
+#
+# Triggers:
+#   - pull_request (paths under terraform/) → terraform fmt + validate +
+#     plan for the staging environment, with the plan posted as a PR comment.
+#   - workflow_dispatch                     → plan or apply against any env,
+#     gated by GitHub Environment protection rules (production envs require
+#     manual approval).
+#
+# State backend: OCI Object Storage (S3-compat) bucket `shogo-tfstate` in
+# us-ashburn-1, one key per env. Repo-level secrets `OCI_S3_ACCESS_KEY` /
+# `OCI_S3_SECRET_KEY` provide credentials and `vars.OCI_S3_ENDPOINT`
+# supplies the namespace endpoint (passed via -backend-config).
+#
+# Most other inputs (compartment, OKE cluster OCID, NFS CIDR, OCI region)
+# come from per-environment GH variables already populated for the deploy
+# workflow.
+# =============================================================================
+
+name: Terraform
+
+on:
+  pull_request:
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to operate on'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production-us
+          - production-eu
+          - production-india
+          - edge-global
+      action:
+        description: 'Terraform action to run'
+        required: true
+        default: 'plan'
+        type: choice
+        options:
+          - plan
+          - apply
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  # Serialize per-environment so two applies can't race on the same state.
+  group: terraform-${{ inputs.environment || 'staging' }}
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: '1.5.7'
+  TF_IN_AUTOMATION: 'true'
+  TF_INPUT: 'false'
+  AWS_ACCESS_KEY_ID: ${{ secrets.OCI_S3_ACCESS_KEY }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.OCI_S3_SECRET_KEY }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # PR plan — always runs against staging so reviewers see the impact of
+  # module changes without ever touching prod state.
+  # ---------------------------------------------------------------------------
+  pr-plan:
+    if: github.event_name == 'pull_request'
+    name: Plan (staging)
+    runs-on: ubuntu-latest
+    environment: staging
+    defaults:
+      run:
+        working-directory: terraform/environments/staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Write OCI API key
+        run: |
+          mkdir -p "$HOME/.oci"
+          printf '%s' "${{ secrets.OCI_PRIVATE_KEY }}" > "$HOME/.oci/oci_api_key.pem"
+          chmod 600 "$HOME/.oci/oci_api_key.pem"
+
+      - name: terraform fmt
+        run: terraform -chdir=../.. fmt -check -recursive
+
+      - name: terraform init
+        run: |
+          terraform init \
+            -backend-config="endpoint=${{ vars.OCI_S3_ENDPOINT }}" \
+            -lockfile=readonly
+
+      - name: terraform validate
+        run: terraform validate -no-color
+
+      - name: terraform plan
+        id: plan
+        env:
+          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_oci_private_key_path: /home/runner/.oci/oci_api_key.pem
+          TF_VAR_compartment_id: ${{ vars.COMPARTMENT_ID }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
+          TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
+        run: |
+          set +e
+          terraform plan -no-color -detailed-exitcode -out=tfplan 2>&1 | tee plan.txt
+          ec=${PIPESTATUS[0]}
+          echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
+          # 0 = no changes, 2 = changes, 1 = error
+          if [ "$ec" = "1" ]; then exit 1; fi
+
+      - name: Comment plan on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync(
+              'terraform/environments/staging/plan.txt',
+              'utf8',
+            );
+            const truncated = plan.length > 60000
+              ? plan.slice(0, 60000) +
+                '\n\n…(truncated, see workflow logs for full plan)'
+              : plan;
+            const body = [
+              '### Terraform Plan — staging',
+              '',
+              '<details><summary>Show plan</summary>',
+              '',
+              '```hcl',
+              truncated,
+              '```',
+              '',
+              '</details>',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+  # ---------------------------------------------------------------------------
+  # Manual plan/apply — uses the environment chosen via workflow_dispatch
+  # input, with the GH Environment of the same name applying its protection
+  # rules (required reviewers, wait timers, branch restrictions).
+  # ---------------------------------------------------------------------------
+  manual:
+    if: github.event_name == 'workflow_dispatch'
+    name: ${{ inputs.action }} (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        working-directory: terraform/environments/${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      # edge-global is a Cloudflare-only env (no OCI/OKE resources), so
+      # skip the OCI key + OKE kubeconfig setup steps for it. Every other
+      # env needs them because its main.tf instantiates OKE/OCI modules
+      # that hit the oracle/oci + kubernetes providers.
+      - name: Write OCI API key
+        if: inputs.environment != 'edge-global'
+        run: |
+          mkdir -p "$HOME/.oci"
+          printf '%s' "${{ secrets.OCI_PRIVATE_KEY }}" > "$HOME/.oci/oci_api_key.pem"
+          chmod 600 "$HOME/.oci/oci_api_key.pem"
+
+      - name: Install OCI CLI
+        if: inputs.environment != 'edge-global'
+        run: pip install oci-cli --quiet
+
+      # Provision a kubeconfig for the env's OKE cluster so provisioners
+      # like null_resource.kourier_toleration_strip (which shells out to
+      # kubectl) can talk to the cluster.
+      - name: Configure kubectl for OKE
+        if: inputs.environment != 'edge-global'
+        env:
+          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+        run: |
+          mkdir -p "$HOME/.kube"
+          oci ce cluster create-kubeconfig \
+            --cluster-id "${{ vars.OKE_CLUSTER_OCID }}" \
+            --file "$HOME/.kube/config" \
+            --region "${{ vars.OCI_REGION }}" \
+            --token-version 2.0.0 \
+            --kube-endpoint PUBLIC_ENDPOINT
+          chmod 600 "$HOME/.kube/config"
+
+      - name: terraform init
+        run: |
+          terraform init \
+            -backend-config="endpoint=${{ vars.OCI_S3_ENDPOINT }}"
+
+      - name: terraform plan
+        if: inputs.action == 'plan'
+        env:
+          # OCI auth (used both by oracle/oci provider via TF_VAR_* and by
+          # the OCI CLI sub-process the kubernetes provider `exec`s to
+          # generate a cluster auth token). Harmless for edge-global
+          # which doesn't read any of these.
+          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_oci_private_key_path: /home/runner/.oci/oci_api_key.pem
+          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+          # OCI scope (env-scoped GH vars)
+          TF_VAR_compartment_id: ${{ vars.COMPARTMENT_ID }}
+          # Cloudflare (repo-scoped)
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          # edge-global only — releases.shogo.ai resolver GitHub token
+          # (optional; falls through to anonymous 60/hr quota if unset).
+          TF_VAR_github_token: ${{ secrets.RELEASES_RESOLVER_GH_TOKEN }}
+          # Networking
+          TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
+          TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
+          KUBE_CONFIG_PATH: /home/runner/.kube/config
+        run: terraform plan -no-color
+
+      - name: terraform apply
+        if: inputs.action == 'apply'
+        env:
+          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_oci_private_key_path: /home/runner/.oci/oci_api_key.pem
+          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+          TF_VAR_compartment_id: ${{ vars.COMPARTMENT_ID }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          TF_VAR_github_token: ${{ secrets.RELEASES_RESOLVER_GH_TOKEN }}
+          TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
+          TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
+          KUBE_CONFIG_PATH: /home/runner/.kube/config
+        run: terraform apply -no-color -auto-approve

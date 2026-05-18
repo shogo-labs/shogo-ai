@@ -10,15 +10,31 @@
  * Uses Pi Agent Core's mock streamFn instead of fetch interception.
  */
 
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { AgentGateway } from '../gateway'
 import { createMockStreamFn, buildTextResponse, buildToolUseResponse } from './helpers/mock-anthropic'
 import { MockChannel } from './helpers/mock-channel'
+import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 import type { Message } from '@mariozechner/pi-ai'
 
 const TEST_DIR = '/tmp/test-e2e-scenarios'
+
+// AgentGateway tools (write_file, read_file, etc.) gate every call through
+// `assertAllowedPath()` which consults the global runtime-trust config.
+// Server-mode bootstrap normally sets this from env vars, but these tests
+// instantiate the gateway in-process so we have to mirror TEST_DIR into the
+// global trust state ourselves — otherwise every write_file silently fails
+// with "Path is outside the project's allowed folders" and the assertions
+// against the file-system end state fail.
+beforeAll(() => {
+  trustWorkspaceForTests(TEST_DIR)
+})
+
+afterAll(() => {
+  clearTrustForTests()
+})
 
 function setupWorkspace(extras?: Record<string, string>) {
   rmSync(TEST_DIR, { recursive: true, force: true })

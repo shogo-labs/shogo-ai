@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Auto-generated Types Index
@@ -10,6 +10,7 @@
 export * from "./user.types"
 export * from "./workspace.types"
 export * from "./project.types"
+export * from "./project-folder.types"
 export * from "./starred-project.types"
 export * from "./member.types"
 export * from "./billing-account.types"
@@ -25,7 +26,7 @@ export * from "./chat-message.types"
 export * from "./tool-call-log.types"
 export * from "./feature-session.types"
 
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * MST Domain Exports

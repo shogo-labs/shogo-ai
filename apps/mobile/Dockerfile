@@ -1,16 +1,22 @@
+# syntax=docker/dockerfile:1.7-labs
 # =============================================================================
 # Shogo Web Frontend Dockerfile (Expo Web Export)
 # =============================================================================
-# Multi-stage build:
-# 1. Install workspace deps with Bun, build with Expo/Metro (requires Node)
-# 2. Serve static files with Nginx (reverse proxy for /api)
+# Phase B refactor: builder is now FROM the pre-baked shogo-workspace-deps
+# image (debian, bun, full install + build:packages applied). We just COPY
+# in apps/mobile and run expo export.
+#
+# Production stage is unchanged: nginx-alpine serving the exported static
+# files. The builder stage's libc doesn't matter for production because the
+# only thing that crosses the boundary is the JS/CSS/HTML bundle.
 # =============================================================================
 
-FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
+ARG WORKSPACE_DEPS
+
+FROM ${WORKSPACE_DEPS} AS builder
 
 WORKDIR /app
 
-# Build arguments — empty defaults produce relative URLs (proxied by nginx)
 ARG EXPO_PUBLIC_API_URL=
 ARG EXPO_PUBLIC_BUILD_HASH=dev
 ARG EXPO_PUBLIC_APP_ENV=development
@@ -30,70 +36,31 @@ ENV SENTRY_AUTH_TOKEN=$SENTRY_AUTH_TOKEN
 ENV SENTRY_ORG=$SENTRY_ORG
 ENV SENTRY_PROJECT=$SENTRY_PROJECT
 
-# Install Bun (used for fast dependency installation)
-RUN apk add --no-cache bash curl && \
-    curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.3.9" && \
-    rm -rf /root/.bun
+# Sentry CLI standalone binary. The get-cli/ install script doesn't reliably
+# land sentry-cli in PATH on this debian base, so download the prebuilt
+# arm64 binary directly. Installed as root so it lands in /usr/local/bin
+# (workspace's USER is appuser).
+USER root
+RUN curl -fsSL "https://github.com/getsentry/sentry-cli/releases/download/3.3.4/sentry-cli-Linux-aarch64" \
+        -o /usr/local/bin/sentry-cli && \
+    chmod +x /usr/local/bin/sentry-cli
+USER appuser
 
-# Install Sentry CLI standalone binary (statically linked, works on Alpine/musl)
-RUN curl -sL https://sentry.io/get-cli/ | SENTRY_CLI_VERSION="3.3.4" sh
+# apps/mobile source — workspace-deps does not bake this in (workspace-deps
+# only bakes apps/api source because that's the only one needing
+# generate:routes). Mobile source is shallow enough to copy directly.
+COPY --chown=appuser:appgroup apps/mobile ./apps/mobile
 
-# Copy workspace root files
-COPY package.json bun.lock ./
-COPY tsconfig.base.json ./
-
-# Copy all workspace member package.json files for dependency resolution
-COPY packages/agent-runtime/package.json ./packages/agent-runtime/
-COPY packages/shared-runtime/package.json ./packages/shared-runtime/
-COPY packages/sdk/package.json ./packages/sdk/
-COPY packages/domain-stores/package.json ./packages/domain-stores/
-COPY packages/shared-app/package.json ./packages/shared-app/
-COPY packages/shared-ui/package.json ./packages/shared-ui/
-COPY packages/ui-kit/package.json ./packages/ui-kit/
-COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
-COPY packages/model-catalog/package.json ./packages/model-catalog/
-COPY apps/api/package.json ./apps/api/
-COPY apps/mobile/package.json ./apps/mobile/
-
-# Copy scripts needed for postinstall
-COPY scripts ./scripts
-
-# Copy patches required by `patchedDependencies` in package.json — bun install
-# fails fast if a referenced .patch file isn't present in the build context.
-COPY patches ./patches
-
-# Copy prisma schema and config before install (postinstall runs db:generate:all)
-COPY prisma ./prisma
-COPY prisma.config.ts ./prisma.config.ts
-COPY prisma.config.local.ts ./prisma.config.local.ts
-
-# Install all dependencies (postinstall generates Prisma client)
-RUN bun install
-
-# Copy workspace packages consumed by the mobile app
-COPY packages/domain-stores ./packages/domain-stores
-COPY packages/shared-app ./packages/shared-app
-COPY packages/shared-ui ./packages/shared-ui
-COPY packages/ui-kit ./packages/ui-kit
-COPY packages/model-catalog ./packages/model-catalog
-COPY packages/sdk ./packages/sdk
-
-# Copy the mobile app source
-COPY apps/mobile ./apps/mobile
-
-# Build SDK (Metro resolves @shogo-ai/sdk → dist/index.js)
-WORKDIR /app/packages/sdk
-RUN bun run build
-
-# Build Expo web export (Metro bundler outputs to apps/mobile/dist/)
+# Build Expo web export (Metro bundler outputs to apps/mobile/dist/).
+# packages/*/dist are already pre-built in workspace-deps.
 WORKDIR /app/apps/mobile
 RUN npx expo export --platform web
 
 # Inject analytics scripts into the exported HTML (Expo "single" mode strips
-# <script> tags from +html.tsx, so we inject them post-export)
+# <script> tags from +html.tsx, so we inject them post-export).
 RUN node scripts/inject-analytics.js
 
-# Upload source maps to Sentry (inject debug IDs, upload, then strip maps)
+# Upload source maps to Sentry (inject debug IDs, upload, then strip maps).
 # Upload is non-fatal: a Sentry misconfiguration should not block a deploy.
 RUN if [ -n "$SENTRY_AUTH_TOKEN" ]; then \
       sentry-cli sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
@@ -111,10 +78,8 @@ ENV API_UPSTREAM=http://shogo-api.shogo-system.svc.cluster.local:8002
 ENV API_HOST=shogo-api.shogo-system.svc.cluster.local
 ENV DNS_RESOLVER=kube-dns.kube-system.svc.cluster.local
 
-# Copy built static files
 COPY --from=builder /app/apps/mobile/dist /usr/share/nginx/html
 
-# Copy nginx configuration template
 COPY apps/mobile/nginx.conf /etc/nginx/nginx.conf.template
 
 EXPOSE 80

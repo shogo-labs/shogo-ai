@@ -2,9 +2,87 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { existsSync, mkdirSync, writeFileSync, cpSync, readFileSync, copyFileSync, readdirSync, statSync, lstatSync, realpathSync, unlinkSync, rmSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { join, dirname } from 'node:path'
+import { join, dirname, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { pkg } from '@shogo/shared-runtime'
+
+// =============================================================================
+// Per-workspace install mutex
+// =============================================================================
+//
+// `bun install` is NOT safe to run concurrently against the same workspace.
+// On 2026-05-13 (project 865f99fa) we observed two parallel callers race
+// each other:
+//
+//   Path A: server.ts:initializeEssentials → fire-and-forget
+//           pm.start() → PreviewManager.installDepsIfNeeded
+//           → bun install (frozen=false)
+//   Path B: server.ts:startGateway        → await waitForDeps
+//           → ensureWorkspaceDeps         → bun install (frozen=true)
+//
+// Both detected the 25 missing top-level deps simultaneously. Bun 1.3.x
+// uses atomic rename + hardlink/copy from its global cache, and two
+// concurrent installs against the same `node_modules/` step on each
+// other's temp files. The first install crashed with:
+//   "FileNotFound: copying file dist/WasmPanicRegistry.js"
+// Without `expo` actually installed, `expo export` was skipped, no
+// `dist/` was produced, and the user saw nothing on preview.
+//
+// `runWorkspaceInstall` keeps a process-wide `Map<absoluteCwd, Promise>`
+// of in-flight installs. The first caller starts `pkg.installAsync`; any
+// concurrent caller for the same workspace joins that promise instead of
+// kicking off a second `bun install`. If the install fails, we throw to
+// every joined caller so they can each apply their own recovery (e.g.
+// `ensureWorkspaceDeps` wipes `node_modules/` on failure).
+// =============================================================================
+
+const inFlightInstalls = new Map<string, Promise<void>>()
+
+export interface RunWorkspaceInstallOptions {
+  /**
+   * Mirrors `pkg.installAsync`'s `frozen` flag. When two callers race,
+   * the first caller's value wins (the second joins the in-flight
+   * promise). In practice both callers operate on the same workspace
+   * with the same `package.json`, so they'd produce identical
+   * `node_modules/` either way; the stricter caller is just preferring
+   * lockfile-respecting failure when the lockfile drifts.
+   */
+  frozen: boolean
+}
+
+/**
+ * Run `pkg.installAsync(dir, opts)` exactly once per workspace at a time.
+ * Concurrent callers for the same `dir` share the in-flight promise.
+ * See file-level mutex doc for the failure mode this protects against.
+ */
+export async function runWorkspaceInstall(
+  dir: string,
+  opts: RunWorkspaceInstallOptions,
+): Promise<void> {
+  const key = resolvePath(dir)
+  const existing = inFlightInstalls.get(key)
+  if (existing) {
+    console.log(
+      `[workspace-defaults] install already in flight for ${key} — joining ` +
+        `existing promise (frozen=${opts.frozen} caller is the second)`,
+    )
+    return existing
+  }
+  const promise = pkg.installAsync(dir, opts).finally(() => {
+    inFlightInstalls.delete(key)
+  })
+  inFlightInstalls.set(key, promise)
+  return promise
+}
+
+/**
+ * Test-only: clear the in-flight map between cases. Calling this in
+ * production code is a bug — it can drop a real in-flight install on
+ * the floor.
+ */
+export function _resetWorkspaceInstallMutex(): void {
+  inFlightInstalls.clear()
+}
 import { getAgentTemplateById } from './agent-templates'
 import { getTemplateShogoDir, getTemplateCanvasStatePath, getTemplateCanvasCodeDir, getTemplateSrcDir, getTemplatePrismaDir, getTemplateDistDir } from './template-loader'
 
@@ -141,6 +219,58 @@ function removeStaleShogoSymlink(dir: string): void {
 }
 
 export function seedWorkspaceDefaults(dir: string): void {
+  // External (VS Code-style) projects: NEVER seed default workspace
+  // files into the user's repo root. The user's tree gets:
+  //   - `.shogo/` (skills/, plans/, local/, project.json, AGENTS.md)
+  // and nothing else. Anything we'd add at the top level (App.tsx,
+  // package.json, README.md, etc.) would conflict with the user's
+  // existing scaffold or pollute a clean repo.
+  //
+  // The .shogo skeleton itself is already created in
+  // RuntimeManager.ensureProjectDirectory for external projects, so
+  // this branch is a no-op when the layout already matches. We re-run
+  // the `mkdir -p` for each subdir so:
+  //   - Old folders bound before a subdir was added still end up
+  //     with the modern shape.
+  //   - The user's existing `.shogo/project.json`, custom skills, or
+  //     plans are left strictly untouched (no file writes in this
+  //     branch — see test `pre-existing complete .shogo` for the
+  //     enforced invariant).
+  //
+  // Pre-conditions on `.shogo` worth defending against:
+  //
+  //   1. **Broken symlink** — e.g. a stale `.shogo -> /tmp/shogo-local/<id>/.shogo`
+  //      left over from a previous VM 9p mount. `removeStaleShogoSymlink`
+  //      only deletes the link when its target is gone, so a *valid*
+  //      symlink (e.g. user-curated `.shogo -> ../shared-shogo`) is
+  //      preserved. Without this, `mkdirSync(recursive:true)` fails
+  //      with ENOENT trying to traverse the dead link.
+  //
+  //   2. **`.shogo` is a regular file** — a Mac stray `.DS_Store`-shaped
+  //      mistake, or a user who created a file by that name on purpose.
+  //      `mkdirSync` would surface this as a cryptic ENOTDIR; we throw
+  //      a clear, actionable error instead. We deliberately do NOT
+  //      delete the file — the user might have something important
+  //      there that they need to inspect before we touch anything.
+  if (process.env.WORKING_MODE === 'external') {
+    removeStaleShogoSymlink(dir)
+    const shogoPath = join(dir, '.shogo')
+    if (existsSync(shogoPath)) {
+      const st = lstatSync(shogoPath)
+      if (!st.isDirectory() && !st.isSymbolicLink()) {
+        throw new Error(
+          `Cannot bind external project: '${shogoPath}' exists and is not a directory. ` +
+            `Shogo needs to create a '.shogo' folder there to store agent state. ` +
+            `Move or rename the existing file (e.g. \`mv .shogo .shogo.bak\`), then re-open the folder.`,
+        )
+      }
+    }
+    mkdirSync(join(dir, '.shogo', 'skills'), { recursive: true })
+    mkdirSync(join(dir, '.shogo', 'plans'), { recursive: true })
+    mkdirSync(join(dir, '.shogo', 'local'), { recursive: true })
+    return
+  }
+
   mkdirSync(dir, { recursive: true })
   mkdirSync(join(dir, 'memory'), { recursive: true })
   removeStaleShogoSymlink(dir)
@@ -171,10 +301,12 @@ export function resetWorkspaceDefaults(dir: string): void {
 }
 
 /**
- * Seed workspace from a template. Copies the template's .shogo/ directory
- * and .canvas-state.json into the workspace.
- * Only writes files that don't already exist (preserves customizations).
- * Also writes a .template marker file so the runtime knows which template was used.
+ * Seed workspace from a template. DEPRECATED — kept only as a no-op
+ * shim while the consolidation rolls out. The marketplace install
+ * flow's `copyWorkspaceFiles` already lays down everything this used
+ * to copy (the source project's workspace was materialized with
+ * exactly the same overlays at migration time). New callers should
+ * not reach this function.
  */
 export function seedWorkspaceFromTemplate(dir: string, templateId: string, agentName?: string): boolean {
   const template = getAgentTemplateById(templateId)
@@ -254,20 +386,12 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
 }
 
 /**
- * Re-merge a template's `src/`, `prisma/` and pre-built `dist/` onto an
- * existing workspace.
- *
- * Must run **after** `seedRuntimeTemplate` on first boot: the runtime skeleton
- * copies generic `src/App.tsx` (`Project Ready`). Agent templates ship curated
- * surfaces under `templates/<id>/src/` — those must win over that starter file.
- *
- * The pre-built `dist/` overlay is the second half of that fix: the canvas
- * iframe paints whatever `dist/` is on disk during Vite's cold rebuild, so
- * without overlaying the template's dist the user sees `Project Ready`
- * flash for ~1-3s even after `src/` is correct. See `getTemplateDistDir`.
- *
- * Same copy rules as inside `seedWorkspaceFromTemplate`; safe to repeat when
- * the workspace already matched the overlay (cpSync force is idempotent).
+ * DEPRECATED. Kept only as a no-op shim during the templates →
+ * marketplace consolidation rollout — both call-sites
+ * (RuntimeManager, agent-runtime/server) were already removed. The
+ * marketplace install flow stamps the same overlay bytes via
+ * `copyWorkspaceFiles` from the source project's pre-merged
+ * workspace, so reapplying it on every boot is now redundant.
  */
 export function overlayAgentTemplateCodeDirs(dir: string, templateId: string): boolean {
   const template = getAgentTemplateById(templateId)
@@ -324,16 +448,34 @@ const RUNTIME_TEMPLATE_SKIP = new Set([
  * Resolve the path to the runtime-template directory.
  *
  * Candidate paths (checked in order, first with package.json wins):
- * - RUNTIME_TEMPLATE_DIR env override (any environment)
- * - Relative to source tree (local dev: __dirname is packages/agent-runtime/src/)
- * - Adjacent to bundled server.js (VM guest: __dirname is /opt/shogo/)
- * - /app/templates/runtime-template (Docker / K8s)
- * - /opt/shogo/templates/runtime-template (VM pre-provisioned rootfs)
+ *   1. RUNTIME_TEMPLATE_DIR env override (any environment, escape hatch).
+ *   2. `<dirname(process.execPath)>/runtime-template` — the
+ *      "shipped-with-the-binary" location used by self-hosted cli-workers.
+ *      The agent-runtime build pipeline post-compile-copies the template
+ *      tree next to each binary so a single tarball ships both. Without
+ *      this, a compiled standalone binary on a VPS has no way to find
+ *      the template (its source-tree path resolves into the bundled
+ *      virtual filesystem; `/app/templates/...` is a Docker convention
+ *      that doesn't exist on a bare host).
+ *   3. Relative to source tree (local dev: `__dirname` is
+ *      `packages/agent-runtime/src/`).
+ *   4. Adjacent to bundled server.js (VM guest: `__dirname` is
+ *      `/opt/shogo/`).
+ *   5. `/app/templates/runtime-template` — Docker / K8s convention.
+ *   6. `/opt/shogo/templates/runtime-template` — VM pre-provisioned
+ *      rootfs. Symlink target of the K8s path on the VM image.
  */
 export function getRuntimeTemplatePath(): string | null {
   const envOverride = process.env.RUNTIME_TEMPLATE_DIR
+  let execAdjacent: string | null = null
+  try {
+    if (process.execPath) {
+      execAdjacent = join(dirname(process.execPath), 'runtime-template')
+    }
+  } catch { /* execPath unavailable (e.g. test stub) */ }
   const candidates = [
     ...(envOverride ? [envOverride] : []),
+    ...(execAdjacent ? [execAdjacent] : []),
     join(__dirname, '..', '..', '..', 'templates', 'runtime-template'),
     join(__dirname, 'templates', 'runtime-template'),
     '/app/templates/runtime-template',
@@ -704,6 +846,29 @@ export function writeInstallPlatformMarker(dir: string): void {
   writePlatformMarker(dir)
 }
 
+/**
+ * Whether the workspace's `package.json` declares Vite (or a vite-
+ * dependent plugin) as a dep. Used to gate the `existsSync(viteBin)`
+ * fast paths in `ensureWorkspaceDeps`: a workspace pre-seeded by the
+ * Vite warm-pool template and then overlaid with a non-Vite import
+ * (e.g. an Expo project) has the bin without the dep, and trusting
+ * the bin alone leads to the cloud Expo "kind of works but never
+ * rebuilds" bug. Best-effort: any read/parse failure returns false
+ * (the conservative choice — we'd rather attempt an install than
+ * incorrectly skip one).
+ */
+export function workspaceUsesVite(dir: string): boolean {
+  try {
+    const pkgPath = join(dir, 'package.json')
+    if (!existsSync(pkgPath)) return false
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+    const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) }
+    return !!(deps.vite || deps['@vitejs/plugin-react'])
+  } catch {
+    return false
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Install-marker — sha256(package.json) under `.shogo/install-marker`
 // ---------------------------------------------------------------------------
@@ -1026,8 +1191,8 @@ export function migrateLegacyShogoSdkPin(dir: string): { upgraded: boolean; befo
  *
  * Fallback: runs `bun install` when no pre-built modules are available.
  */
-export async function ensureWorkspaceDeps(dir: string): Promise<void> {
-  if (!existsSync(join(dir, 'package.json'))) return
+export async function ensureWorkspaceDeps(dir: string): Promise<{ didInstall: boolean }> {
+  if (!existsSync(join(dir, 'package.json'))) return { didInstall: false }
 
   // Run BEFORE the install-marker check so an upgrade trips a reinstall
   // (the marker is a sha256 of package.json — rewriting the SDK pin or
@@ -1037,13 +1202,21 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
   const viteBin = join(dir, 'node_modules', '.bin', 'vite')
   const nodeModules = join(dir, 'node_modules')
 
+  // Does the workspace's package.json actually depend on Vite? We need
+  // this to gate the `existsSync(viteBin)` fast-paths below: a
+  // workspace pre-seeded with the Vite/react-app warm-pool template
+  // and then overlaid with a non-Vite import (e.g. Expo) will have a
+  // leftover `.bin/vite` shim with no corresponding dep in the
+  // current package.json.
+  const workspaceDependsOnVite = workspaceUsesVite(dir)
+
   // Check for wrong-platform modules (e.g. macOS host-mounted into Linux VM)
   const installedPlatform = readPlatformMarker(dir)
   if (installedPlatform && installedPlatform !== PLATFORM_TAG) {
     console.log(`[workspace-defaults] node_modules built for ${installedPlatform}, need ${PLATFORM_TAG} — reinstalling`)
     try { rmSync(nodeModules, { recursive: true, force: true }) } catch {}
-  } else if (existsSync(viteBin)) {
-    if (installedPlatform === PLATFORM_TAG) return
+  } else if (existsSync(viteBin) && workspaceDependsOnVite) {
+    if (installedPlatform === PLATFORM_TAG) return { didInstall: false }
     // No marker — check for wrong-platform native binaries (rollup)
     if (!installedPlatform && existsSync(nodeModules)) {
       const wrongPlatform = detectWrongPlatformNativeDeps(dir)
@@ -1052,9 +1225,13 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
         try { rmSync(nodeModules, { recursive: true, force: true }) } catch {}
       } else {
         writePlatformMarker(dir)
-        return
+        return { didInstall: false }
       }
     }
+  } else if (existsSync(viteBin) && !workspaceDependsOnVite) {
+    console.log(
+      `[workspace-defaults] Found leftover .bin/vite but package.json doesn't depend on vite — falling through to install`,
+    )
   }
 
   // Non-Vite stacks (Expo, React Native, etc.) don't have a `vite` bin to
@@ -1088,7 +1265,7 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
       if (missing.length === 0) {
         if (!installedPlatform) writePlatformMarker(dir)
         console.log('[workspace-defaults] install-marker matches package.json — skipping reinstall')
-        return
+        return { didInstall: false }
       }
       console.log(
         `[workspace-defaults] install-marker matches but ${missing.length} declared dep(s) missing from node_modules (${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ', …' : ''}) — marker is stale, running install`,
@@ -1131,7 +1308,7 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
       writePlatformMarker(dir)
       if (existsSync(viteBin)) {
         console.log('[workspace-defaults] Pre-installed deps ready (copied from template)')
-        return
+        return { didInstall: false }
       }
     } catch (err: any) {
       console.warn(`[workspace-defaults] Failed to copy template node_modules: ${err.message}`)
@@ -1152,7 +1329,7 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
   // also means we no longer need this file's hand-rolled --frozen-lockfile
   // dance — installAsync owns the retry policy.
   try {
-    await pkg.installAsync(dir, { frozen: true })
+    await runWorkspaceInstall(dir, { frozen: true })
   } catch (err) {
     // If install fails (timeout, crash) it can leave a partially-populated
     // node_modules behind. PreviewManager / subsequent reads will then hit
@@ -1172,6 +1349,7 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
   // hash changed" path even though we just installed the right deps.
   writeInstallMarker(dir)
   console.log('[workspace-defaults] Workspace dependencies installed')
+  return { didInstall: true }
 }
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Auto-generated Member MST Model
@@ -21,7 +21,7 @@ export const MemberModel = types
   .model("Member", {
     id: types.identifier,
     userId: types.string,
-    role: types.enumeration("MemberRole", ["owner", "admin", "member", "viewer"]),
+    role: types.optional(types.enumeration("MemberRole", ["owner", "admin", "member", "viewer"]), "member"),
     workspaceId: types.optional(types.string, ""),
     projectId: types.optional(types.string, ""),
     isBillingAdmin: types.optional(types.boolean, false),

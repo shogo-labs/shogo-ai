@@ -28,7 +28,7 @@ App Store Connect → My Apps → **shogo** → App Information → **App-Specif
 Copy the secret and set in your API env:
 ```
 APPLE_IAP_SHARED_SECRET=<the secret>
-APPLE_IAP_BUNDLE_ID=com.odin.ai
+APPLE_IAP_BUNDLE_ID=ai.shogo.app
 ```
 
 This is what the `/verifyReceipt` endpoint uses to authenticate our server.
@@ -45,7 +45,7 @@ Apple will POST renewal / cancellation / refund events to this endpoint.
 
 ## 4. Apple Developer Portal — enable IAP capability
 
-developer.apple.com → Certificates, IDs & Profiles → Identifiers → `com.odin.ai`:
+developer.apple.com → Certificates, IDs & Profiles → Identifiers → `ai.shogo.app`:
 
 - Ensure **In-App Purchase** capability is checked.
 - Re-generate the App Store distribution provisioning profile so EAS picks up the new capability on the next build.

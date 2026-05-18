@@ -93,6 +93,23 @@ const DB_SNAPSHOT_FILE = 'database.sql.gz';
 /**
  * Create a new checkpoint (snapshot) of the project state.
  */
+/**
+ * Typed error thrown when a checkpoint operation is attempted on a
+ * `workingMode='external'` project. Routes that catch this should
+ * surface it to the UI as a 409 with `code: 'checkpoints_disabled_in_external_mode'`
+ * so the CheckpointsPanel renders the "use your own git" banner.
+ */
+export class CheckpointsDisabledError extends Error {
+  readonly code = 'checkpoints_disabled_in_external_mode' as const
+  constructor() {
+    super(
+      'Auto-checkpointing is disabled for external (folder-linked) projects. ' +
+        "Use your own git workflow inside the linked folder — Shogo doesn't manage the repo.",
+    )
+    this.name = 'CheckpointsDisabledError'
+  }
+}
+
 export async function createCheckpoint(
   options: CreateCheckpointOptions
 ): Promise<CheckpointResult> {
@@ -106,6 +123,18 @@ export async function createCheckpoint(
     isAutomatic = false,
     createdBy,
   } = options;
+
+  // Defense-in-depth gate. The chat-turn caller in project-chat.ts also
+  // checks `project.workingMode !== 'external'` before calling, but we
+  // re-validate here so any future caller (e.g. publish, /checkpoints
+  // POST) doesn't accidentally write commits into the user's repo.
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { workingMode: true },
+  });
+  if ((project as { workingMode?: string } | null)?.workingMode === 'external') {
+    throw new CheckpointsDisabledError();
+  }
 
   // Ensure workspace exists
   if (!existsSync(workspacePath)) {

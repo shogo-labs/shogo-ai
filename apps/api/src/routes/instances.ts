@@ -21,7 +21,7 @@
  */
 
 import { Hono } from 'hono'
-import { prisma } from '../lib/prisma'
+import { prisma, InstanceKind } from '../lib/prisma'
 import { resolveApiKey } from './api-keys'
 import { logRemoteAction, classifyAction } from './remote-audit'
 import {
@@ -45,6 +45,23 @@ import {
 import { sendPushToInstance } from '../lib/push-notifications'
 import { openSession, closeSession, hasSession } from '../lib/proxy-billing-session'
 import { trackChatStreamForBilling } from '../lib/chat-usage-tracker'
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+/** Map an x-shogo-kind header / body field to a Prisma enum value.
+ *  Accepts both 'cli-worker' (wire) and 'cli_worker' (enum) — defaults
+ *  to 'desktop' for unknown values so existing clients don't change shape. */
+function parseInstanceKind(raw: string | null | undefined): InstanceKind {
+  const v = (raw || '').toLowerCase().replace(/[-\s]/g, '_')
+  if (v === 'cli_worker' || v === 'cliworker') return InstanceKind.cli_worker
+  if (v === 'desktop') return InstanceKind.desktop
+  return InstanceKind.desktop
+}
+
+/** Inverse of parseInstanceKind — render an enum value back onto the wire. */
+export function formatInstanceKind(kind: InstanceKind): 'desktop' | 'cli-worker' {
+  return kind === InstanceKind.cli_worker ? 'cli-worker' : 'desktop'
+}
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -99,7 +116,7 @@ interface ActiveController {
 const activeControllers = new Map<string, Map<string, ActiveController>>()
 const CONTROLLER_TTL_MS = 60_000
 
-async function markControllerActive(instanceId: string, userId: string, sessionId?: string) {
+export async function markControllerActive(instanceId: string, userId: string, sessionId?: string) {
   if (!activeControllers.has(instanceId)) {
     activeControllers.set(instanceId, new Map())
   }
@@ -142,7 +159,7 @@ interface TunnelConnection {
   streamHandlers: Map<string, (chunk: TunnelStreamChunk) => void>
 }
 
-interface TunnelRequest {
+export interface TunnelRequest {
   type: 'request'
   requestId: string
   method: string
@@ -153,7 +170,7 @@ interface TunnelRequest {
   projectId?: string
 }
 
-interface TunnelResponse {
+export interface TunnelResponse {
   type: 'response'
   requestId: string
   status: number
@@ -161,7 +178,7 @@ interface TunnelResponse {
   body?: string
 }
 
-interface TunnelStreamChunk {
+export interface TunnelStreamChunk {
   type: 'stream-chunk' | 'stream-end' | 'stream-error'
   requestId: string
   data?: string
@@ -177,7 +194,7 @@ type TunnelMessage = TunnelResponse | TunnelStreamChunk | TunnelHeartbeat | { ty
 
 const tunnels = new Map<string, TunnelConnection>()
 
-function generateRequestId(): string {
+export function generateRequestId(): string {
   return `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
 }
 
@@ -424,16 +441,20 @@ export async function authenticateInstanceWs(
     const os = headerOs || url.searchParams.get('os') || null
     const headerArch = req.headers.get('x-shogo-arch')
     const arch = headerArch || url.searchParams.get('arch') || null
+    const kind = parseInstanceKind(
+      req.headers.get('x-shogo-kind') || url.searchParams.get('kind'),
+    )
 
     const instance = await prisma.instance.upsert({
       where: { workspaceId_hostname: { workspaceId: resolved.workspaceId, hostname } },
-      update: { name, os, arch, status: 'online', lastSeenAt: new Date(), wsRequestedAt: null },
+      update: { name, os, arch, kind, status: 'online', lastSeenAt: new Date(), wsRequestedAt: null },
       create: {
         workspaceId: resolved.workspaceId,
         name,
         hostname,
         os,
         arch,
+        kind,
         status: 'online',
         lastSeenAt: new Date(),
       },
@@ -463,7 +484,7 @@ function sendLocalTunnelRequest(instanceId: string, req: TunnelRequest): Promise
   })
 }
 
-async function sendTunnelRequest(instanceId: string, req: TunnelRequest): Promise<TunnelResponse> {
+export async function sendTunnelRequest(instanceId: string, req: TunnelRequest): Promise<TunnelResponse> {
   const conn = tunnels.get(instanceId)
   if (conn) return sendLocalTunnelRequest(instanceId, req)
 
@@ -548,7 +569,7 @@ function sendLocalTunnelStreamRequest(
   }
 }
 
-function sendTunnelStreamRequest(
+export function sendTunnelStreamRequest(
   instanceId: string,
   req: TunnelRequest,
   onChunk: (chunk: TunnelStreamChunk) => void,
@@ -621,12 +642,18 @@ export function instanceRoutes() {
       name?: string
       os?: string
       arch?: string
+      kind?: string
       metadata?: Record<string, unknown>
     }>()
 
     if (!body.hostname) {
       return c.json({ error: { code: 'invalid_request', message: 'hostname required' } }, 400)
     }
+
+    // Resolve the instance kind from header (preferred) → body → default.
+    // The worker sends both, the desktop sends neither, so the default
+    // 'desktop' here keeps existing clients on the existing row shape.
+    const kind = parseInstanceKind(c.req.header('x-shogo-kind') || body.kind)
 
     const instance = await prisma.instance.upsert({
       where: {
@@ -636,6 +663,7 @@ export function instanceRoutes() {
         name: body.name || body.hostname,
         os: body.os || null,
         arch: body.arch || null,
+        kind,
         lastSeenAt: new Date(),
         metadata: (body.metadata ?? undefined) as any,
       },
@@ -645,6 +673,7 @@ export function instanceRoutes() {
         hostname: body.hostname,
         os: body.os || null,
         arch: body.arch || null,
+        kind,
         lastSeenAt: new Date(),
         metadata: (body.metadata ?? undefined) as any,
       },
@@ -755,6 +784,7 @@ export function instanceRoutes() {
 
     const withLiveStatus = await Promise.all(instances.map(async (inst) => ({
       ...inst,
+      kind: formatInstanceKind(inst.kind),
       status: tunnels.has(inst.id) || await isTunnelConnectedAnywhere(inst.id)
         ? 'online'
         : (isRecentlySeenViaHeartbeat(inst.lastSeenAt) ? 'heartbeat' : 'offline'),
@@ -802,6 +832,7 @@ export function instanceRoutes() {
         hostname: inst.hostname,
         os: inst.os,
         arch: inst.arch,
+        kind: formatInstanceKind(inst.kind),
         lastSeenAt: inst.lastSeenAt,
       })),
     })
@@ -829,6 +860,7 @@ export function instanceRoutes() {
     const controllers = await getActiveControllers(instance.id)
     return c.json({
       ...instance,
+      kind: formatInstanceKind(instance.kind),
       status: tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id)
         ? 'online'
         : (isRecentlySeenViaHeartbeat(instance.lastSeenAt) ? 'heartbeat' : 'offline'),

@@ -34,8 +34,10 @@ import {
   verifyProxyToken,
   type ProxyTokenPayload,
 } from '../lib/ai-proxy-token'
+import { verifyRuntimeToken } from '../lib/runtime-token'
 import { resolveApiKey } from './api-keys'
 import { wipeCloudKey } from '../lib/cloud-key-wipe'
+import { getShogoCloudUrl } from '../lib/cloud-urls'
 import {
   MODEL_CATALOG,
   MODEL_ALIASES,
@@ -1723,8 +1725,61 @@ export function aiProxyRoutes() {
   const router = new Hono()
 
   /**
+   * Resolve a v1 runtime token (`rt_v1_<projectId>_<hmac>`) to a synthetic
+   * `ProxyTokenPayload`. Mirrors the runtime-token branch in
+   * `../middleware/auth.ts` (project-scoped owner Member, falling back to
+   * workspace-scoped owner). Returns `null` if the token is malformed,
+   * the HMAC is bad, the project does not exist, or no owner is
+   * resolvable. Kept inline (not shared with the middleware) because the
+   * middleware sets a Hono context whereas this synthesizes an
+   * `ai-proxy` payload — TODO: factor a shared resolver if a third
+   * caller appears.
+   */
+  async function resolveRuntimeToken(token: string): Promise<ProxyTokenPayload | null> {
+    const verified = verifyRuntimeToken(token)
+    if (!verified.ok) return null
+    const project = await prisma.project.findUnique({
+      where: { id: verified.projectId },
+      select: {
+        workspaceId: true,
+        members: {
+          where: { role: 'owner' },
+          orderBy: { createdAt: 'asc' },
+          select: { userId: true },
+          take: 1,
+        },
+        workspace: {
+          select: {
+            members: {
+              where: { role: 'owner' },
+              orderBy: { createdAt: 'asc' },
+              select: { userId: true },
+              take: 1,
+            },
+          },
+        },
+      },
+    })
+    const ownerUserId =
+      project?.members[0]?.userId ?? project?.workspace.members[0]?.userId
+    if (!project || !ownerUserId) return null
+    const now = Math.floor(Date.now() / 1000)
+    return {
+      projectId: verified.projectId,
+      workspaceId: project.workspaceId,
+      userId: ownerUserId,
+      type: 'ai-proxy',
+      iat: now,
+      exp: now + 3600,
+    }
+  }
+
+  /**
    * Middleware: Validate proxy token on all /ai/v1/* routes.
-   * Accepts both project-scoped JWTs and Shogo API keys (shogo_sk_*).
+   * Accepts:
+   *   - Shogo API keys (`shogo_sk_*`, workspace-scoped),
+   *   - per-project runtime tokens (`rt_v1_*`, pod-native), and
+   *   - signed project-scoped proxy JWTs (legacy / browser previews).
    */
   async function validateProxyAuth(c: any): Promise<ProxyTokenPayload | null> {
     const authHeader = c.req.header('Authorization')
@@ -1753,6 +1808,10 @@ export function aiProxyRoutes() {
       }
     }
 
+    if (token.startsWith('rt_v1_')) {
+      return resolveRuntimeToken(token)
+    }
+
     return verifyProxyToken(token)
   }
 
@@ -1765,10 +1824,6 @@ export function aiProxyRoutes() {
     const aiMode = process.env.AI_MODE
     if (aiMode === 'api-keys' || aiMode === 'local-llm') return false
     return true
-  }
-
-  function getShogoCloudUrl(): string {
-    return (process.env.SHOGO_CLOUD_URL || 'https://studio.shogo.ai').replace(/\/$/, '')
   }
 
   /**
@@ -2271,7 +2326,10 @@ export function aiProxyRoutes() {
 
   /**
    * Validate Anthropic-style auth (x-api-key header contains proxy token).
-   * Accepts both project-scoped JWTs and Shogo API keys (shogo_sk_*).
+   * Accepts:
+   *   - Shogo API keys (`shogo_sk_*`),
+   *   - per-project runtime tokens (`rt_v1_*`), and
+   *   - signed project-scoped proxy JWTs.
    */
   async function validateAnthropicAuth(c: any): Promise<ProxyTokenPayload | null> {
     const apiKey = c.req.header('x-api-key')
@@ -2294,6 +2352,10 @@ export function aiProxyRoutes() {
         iat: Math.floor(Date.now() / 1000),
         exp: Math.floor(Date.now() / 1000) + 3600,
       }
+    }
+
+    if (apiKey.startsWith('rt_v1_')) {
+      return resolveRuntimeToken(apiKey)
     }
 
     return verifyProxyToken(apiKey)

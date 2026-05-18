@@ -1,0 +1,113 @@
+{
+  "name": "@shogo-ai/core",
+  "version": "1.6.0",
+  "description": "Shogo Core — generic utilities (logger, instrumentation, stream-buffer, chat-message). Zero required peers.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./logger": {
+      "types": "./dist/logger.d.ts",
+      "development": "./src/logger.ts",
+      "import": "./dist/logger.js",
+      "require": "./dist/logger.cjs"
+    },
+    "./instrumentation": {
+      "types": "./dist/instrumentation.d.ts",
+      "development": "./src/instrumentation.ts",
+      "import": "./dist/instrumentation.js",
+      "require": "./dist/instrumentation.cjs"
+    },
+    "./stream-buffer": {
+      "types": "./dist/stream-buffer.d.ts",
+      "development": "./src/stream-buffer.ts",
+      "import": "./dist/stream-buffer.js",
+      "require": "./dist/stream-buffer.cjs"
+    },
+    "./chat-message": {
+      "types": "./dist/chat-message.d.ts",
+      "development": "./src/chat-message.ts",
+      "import": "./dist/chat-message.js",
+      "require": "./dist/chat-message.cjs"
+    },
+    "./macos-junk": {
+      "types": "./dist/macos-junk.d.ts",
+      "development": "./src/macos-junk.ts",
+      "import": "./dist/macos-junk.js",
+      "require": "./dist/macos-junk.cjs"
+    },
+    "./tech-stack-registry": {
+      "types": "./dist/tech-stack-registry.d.ts",
+      "development": "./src/tech-stack-registry.ts",
+      "import": "./dist/tech-stack-registry.js",
+      "require": "./dist/tech-stack-registry.cjs"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.cjs",
+    "dist/**/*.d.ts",
+    "dist/**/*.d.cts"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "bun --no-env-file test src/"
+  },
+  "peerDependencies": {
+    "@opentelemetry/api": ">=1.9.0",
+    "@opentelemetry/sdk-node": ">=0.213.0",
+    "@opentelemetry/exporter-trace-otlp-http": ">=0.213.0",
+    "@opentelemetry/sdk-trace-base": ">=2.5.0",
+    "@opentelemetry/resources": ">=2.5.0",
+    "@opentelemetry/semantic-conventions": ">=1.39.0"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": { "optional": true },
+    "@opentelemetry/sdk-node": { "optional": true },
+    "@opentelemetry/exporter-trace-otlp-http": { "optional": true },
+    "@opentelemetry/sdk-trace-base": { "optional": true },
+    "@opentelemetry/resources": { "optional": true },
+    "@opentelemetry/semantic-conventions": { "optional": true }
+  },
+  "devDependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.213.0",
+    "@opentelemetry/resources": "^2.5.1",
+    "@opentelemetry/sdk-node": "^0.213.0",
+    "@opentelemetry/sdk-trace-base": "^2.5.1",
+    "@opentelemetry/semantic-conventions": "^1.39.0",
+    "@types/node": "^25.5.0",
+    "tsup": "^8.0.0",
+    "typescript": "^6.0.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "shogo",
+    "logger",
+    "opentelemetry",
+    "stream-buffer"
+  ],
+  "author": "Shogo Labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shogo-labs/shogo-ai.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/shogo-labs/shogo-ai/tree/main/packages/core#readme",
+  "bugs": {
+    "url": "https://github.com/shogo-labs/shogo-ai/issues"
+  }
+}

@@ -166,13 +166,17 @@ describe('PTY end-to-end (real Bun.serve + real PTY)', () => {
     await new Promise((r) => setTimeout(r, 50))
     expect(ws.readyState).toBe(WebSocket.OPEN)
 
-    // 6. Send INT (no foreground process; just bumps cancel-line). Then exit.
+    // 6. Send INT (no foreground process; just bumps cancel-line). Then
+    // pause so the shell processes the signal + redisplays the prompt
+    // before we send `exit`. On dash (Ubuntu /bin/sh) the post-INT prompt
+    // can race with stdin reads — the back-to-back send below was causing
+    // CI to see `^Cexit 0` glued together and the shell to ignore `exit`.
     ws.send(encodeClientSignal('INT'))
+    await new Promise((r) => setTimeout(r, 250))
     ws.send(encodeClientData(new TextEncoder().encode('exit 0\n')))
 
-    // Wait for EXIT frame
     try {
-      await waitFor(() => exitInfo !== null, 3000)
+      await waitFor(() => exitInfo !== null, 5000)
     } catch {
       throw new Error(`no EXIT frame; combined=${JSON.stringify(combined.slice(-300))}`)
     }
@@ -184,6 +188,11 @@ describe('PTY end-to-end (real Bun.serve + real PTY)', () => {
     expect(ws.readyState).toBe(WebSocket.CLOSED)
   })
 
+  // The internal `waitFor` budgets below sum to >5s in the worst case
+  // (3000+3000+3000), so the bun:test default 5000ms timeout would trip
+  // before the test could even fail/pass on its own assertions. Bump
+  // the per-test budget to 30s so genuine failures show as assertion
+  // errors (with informative messages) rather than framework timeouts.
   test('reconnect with ?since=lastSeq replays missed bytes', async () => {
     const createRes = await fetch(`${baseHttpUrl}/terminal/sessions`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
@@ -204,9 +213,13 @@ describe('PTY end-to-end (real Bun.serve + real PTY)', () => {
       }
     })
 
-    await waitFor(() => seenChunks1.join('').length > 32, 2500)
+    // Internal waitFor budgets bumped from 2500/2000/1500 → 3000ms each.
+    // The original budgets were too tight for the test to be reliable
+    // under parallel CPU contention (the PTY's initial banner and shell
+    // prompt can take 1–2s on a busy mac).
+    await waitFor(() => seenChunks1.join('').length > 32, 3000)
     ws1.send(encodeClientData(new TextEncoder().encode('echo BEFORE_DROP\n')))
-    await waitFor(() => seenChunks1.join('').includes('BEFORE_DROP'), 2000)
+    await waitFor(() => seenChunks1.join('').includes('BEFORE_DROP'), 3000)
 
     // Drop ws1 without notifying the server (close path runs when the
     // socket actually closes). Sleep a tick so server processes close.
@@ -233,7 +246,7 @@ describe('PTY end-to-end (real Bun.serve + real PTY)', () => {
       }
     })
 
-    await waitFor(() => seenChunks2.join('').includes('AFTER_DROP'), 1500)
+    await waitFor(() => seenChunks2.join('').includes('AFTER_DROP'), 3000)
     const replayed = seenChunks2.join('')
     expect(replayed).toContain('AFTER_DROP')
     // The replay should NOT include bytes the client already saw before
@@ -244,7 +257,7 @@ describe('PTY end-to-end (real Bun.serve + real PTY)', () => {
 
     ws2.close()
     manager.kill(created.id)
-  })
+  }, 30000)
 })
 
 function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {

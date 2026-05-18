@@ -49,8 +49,19 @@ variable "signoz_ingestion_key" {
   sensitive = true
 }
 
+variable "oke_api_allowed_cidrs" {
+  description = "CIDRs allowed to reach the OKE API endpoint. Wired from GH variable OKE_API_ALLOWED_CIDRS via TF_VAR_oke_api_allowed_cidrs."
+  type        = list(string)
+}
+
+variable "nfs_allowed_cidr" {
+  description = "CIDR allowed to mount NFS (typically the private workers subnet). Wired from GH variable NFS_ALLOWED_CIDR via TF_VAR_nfs_allowed_cidr."
+  type        = string
+}
+
 # From production-us outputs
 variable "us_rpc_id" {
   description = "RPC OCID from production-us for DRG peering"
   type        = string
+  default     = ""
 }

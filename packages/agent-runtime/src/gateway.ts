@@ -29,7 +29,8 @@ import { loadAllSkills, migrateFromLegacySkills, matchSkill, buildSkillsPromptSe
 import { loadQuickActions, buildQuickActionsPromptSection, type QuickAction } from './quick-actions'
 import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
-import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
+import { runAgentLoop, type LoopDetectorConfig } from './agent-loop'
+import type { ToolContext } from './gateway-tools'
 import { createTools, textResult } from './gateway-tools'
 import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { HookEmitter, loadAllHooks } from './hooks'
@@ -2650,6 +2651,54 @@ export class AgentGateway {
     }
 
     // ---- STABLE ZONE: rarely changes within a session ----
+
+    // 0. External (VS Code-style) project context. When the user has
+    // opened folders from their machine (workingMode='external'), tell
+    // the agent which roots are in scope and whether the workspace is
+    // trusted. This sits in the stable zone because trust + folder set
+    // only flip via explicit user action (POST /trust, POST /primary),
+    // which already causes a session refresh. Keeps the agent from
+    // hallucinating absolute paths outside the allowed roots.
+    if (process.env.WORKING_MODE === 'external') {
+      const linkedFolders: string[] = (() => {
+        try {
+          const raw = process.env.LINKED_FOLDERS
+          if (!raw) return []
+          const parsed = JSON.parse(raw)
+          return Array.isArray(parsed) ? parsed.filter((p) => typeof p === 'string') : []
+        } catch {
+          return []
+        }
+      })()
+      const trustLevel = process.env.TRUST_LEVEL === 'restricted' ? 'restricted' : 'trusted'
+      const lines = [
+        '## Project Mode: External (VS Code-style)',
+        '',
+        `This project is linked to one or more folders on the user's machine.`,
+        `Trust level: \`${trustLevel}\`.`,
+        '',
+        '### Allowed roots',
+        ...linkedFolders.map((p, i) => `  ${i + 1}. \`${p}\``),
+        ...(linkedFolders.length === 0
+          ? [`  1. \`${this.workspaceDir}\``]
+          : []),
+        '',
+        '### Rules',
+        '- File / shell tools may operate on absolute paths anywhere inside the allowed roots above.',
+        '- Paths outside those roots will be rejected by the runtime — do not invent extra paths.',
+        ...(trustLevel === 'restricted'
+          ? [
+              '- The workspace is **restricted**. Read tools work; **write_file**, **edit_file**, and **exec / shell** are disabled until the user clicks "Trust folder" in the UI.',
+              '- If the user asks you to make changes, explain that trust is required and offer to summarise the plan.',
+            ]
+          : [
+              '- The workspace is **trusted** — edits and shell commands are allowed.',
+              '- Shogo does NOT manage git here. Do not run `git commit` or create checkpoints — the user owns their git workflow.',
+            ]),
+        '',
+      ]
+      pushStable('external-mode-context', lines.join('\n'))
+    }
 
     // 1. Mode-specific canvas/tool guides (changes only on mode switch)
     const activeMode = this.config.activeMode || 'canvas'

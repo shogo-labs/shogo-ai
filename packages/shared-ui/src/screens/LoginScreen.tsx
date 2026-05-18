@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Universal LoginScreen (React Native + NativeWind)
@@ -101,20 +101,19 @@ function GoogleContinueButton({
       role="button"
       accessibilityLabel="Continue with Google"
       onPress={onPress}
-      style={({ pressed }) => ({
+      style={{
         width: '100%',
-        minHeight: 48,
+        minHeight: 50,
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
-        paddingVertical: 12,
+        paddingVertical: 13,
         paddingHorizontal: 24,
         borderRadius: 16,
         borderWidth: 1,
         backgroundColor: fill,
         borderColor: stroke,
-        opacity: pressed ? 0.92 : 1,
-      })}
+      }}
     >
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
         <View style={{ marginRight: 10 }} accessible={false}>
@@ -122,9 +121,10 @@ function GoogleContinueButton({
         </View>
         <Text
           style={{
-            fontSize: 14,
+            fontSize: 15,
             lineHeight: 20,
-            fontWeight: '500',
+            fontWeight: '600',
+            letterSpacing: -0.1,
             color: labelColor,
           }}
         >
@@ -175,36 +175,33 @@ function AppleContinueButton({
       accessibilityState={{ disabled }}
       onPress={onPress}
       disabled={disabled}
-      style={({ pressed }) => ({
+      style={{
         width: '100%',
-        minHeight: 48,
+        minHeight: 50,
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
-        paddingVertical: 12,
+        paddingVertical: 13,
         paddingHorizontal: 24,
         borderRadius: 16,
         backgroundColor: fill,
-        borderWidth: isDark ? 1 : 0,
-        borderColor: isDark ? '#E5E5E5' : 'transparent',
-        opacity: disabled ? 0.5 : pressed ? 0.85 : 1,
-      })}
+        opacity: disabled ? 0.5 : 1,
+      }}
     >
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
-        <View style={{ marginRight: 10, marginTop: -2 }} accessible={false}>
-          <AppleLogoMark color={fg} />
-        </View>
-        <Text
-          style={{
-            fontSize: 14,
-            lineHeight: 20,
-            fontWeight: '500',
-            color: fg,
-          }}
-        >
-          Continue with Apple
-        </Text>
+      <View style={{ marginRight: 10, marginTop: -2 }} accessible={false}>
+        <AppleLogoMark size={19} color={fg} />
       </View>
+      <Text
+        style={{
+          fontSize: 15,
+          lineHeight: 20,
+          fontWeight: '600',
+          letterSpacing: -0.1,
+          color: fg,
+        }}
+      >
+        Continue with Apple
+      </Text>
     </Pressable>
   )
 }

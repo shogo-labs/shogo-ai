@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 /**
@@ -14,6 +14,13 @@
 export interface VMConfig {
   workspaceDir: string
   credentialDirs: string[]
+  /**
+   * VM RAM ceiling in MB. With `virtio-balloon-pci,free-page-reporting=on`
+   * the host will only resident-back the pages the guest actually
+   * touches, capped at `memoryMB`. For pool right-sizing pass
+   * `poolMemoryMB` (used as the initial balloon target) so warm-pool VMs
+   * idle at the smaller footprint and grow to `memoryMB` on assign.
+   */
   memoryMB: number
   cpus: number
   networkEnabled: boolean
@@ -39,6 +46,15 @@ export interface VMConfig {
   /** Guest path for the 9p workspace mount. Defaults to `/workspace`.
    *  Set to `/host-workspaces` for warm pool VMs where the parent workspacesDir is shared. */
   workspaceMountPath?: string
+  /**
+   * Initial balloon target in MB for newly-booted VMs. When set and the
+   * guest exposes a virtio-balloon device, the controller inflates the
+   * balloon to (memoryMB - poolMemoryMB) on boot so pool VMs idle at
+   * ~poolMemoryMB. The balloon is deflated back to `memoryMB` when the
+   * pool VM is assigned to a project (via `VMManager.setBalloonTargetMB`).
+   * Pass `undefined` to keep the historical fixed-size behaviour.
+   */
+  poolMemoryMB?: number
 }
 
 export interface VMHandle {
@@ -57,16 +73,28 @@ export interface VMManager {
   isRunning(handle: VMHandle): boolean
   forwardPort(handle: VMHandle, guestPort: number, hostPort: number): Promise<void>
   removeForward(handle: VMHandle, hostPort: number): Promise<void>
+  /**
+   * Adjust the guest's available memory via the virtio-balloon device.
+   * `targetMB` is the **guest-visible** RAM size (i.e. how much memory
+   * the guest is allowed to use). To shrink the guest from 4 GB to 1.5
+   * GB, call `setBalloonTargetMB(handle, 1536)`. A no-op when the VM
+   * was booted without a balloon device. Safe to call repeatedly.
+   */
+  setBalloonTargetMB?(handle: VMHandle, targetMB: number): Promise<void>
 }
 
 export const VM_DEFAULTS = {
-  // 1.5 GB was too tight: vite build --watch alone reaches ~500 MB, plus bun
-  // agent-runtime (~300 MB), prisma generate (~200 MB), TypeScript LSP and
-  // Pyright, and the kernel itself. The Linux OOM killer was reaping
-  // `node` mid-build (see desktop main.log "Out of memory: Killed process
-  // ... (node) ... anon-rss:514132kB"), causing preview-manager restart
-  // loops. 4 GB gives headroom for all of the above plus a swapfile.
+  // 1.5 GB was too tight for an *assigned* VM: vite build --watch alone
+  // reaches ~500 MB, plus bun agent-runtime (~300 MB), prisma generate
+  // (~200 MB), TypeScript LSP and Pyright, and the kernel itself. The
+  // Linux OOM killer was reaping `node` mid-build, causing preview-manager
+  // restart loops. 4 GB gives headroom for all of the above plus a swapfile.
   memoryMB: 4096,
+  // Idle warm-pool VMs don't run any of the above (LSP/vite/prisma start
+  // lazily on /pool/assign). 1.5 GB is plenty for the kernel, bun
+  // agent-runtime in pool mode, and a small workspace cache. On assign,
+  // the controller deflates the balloon back to `memoryMB`.
+  poolMemoryMB: 1536,
   cpus: 4,
   networkEnabled: true,
 

@@ -1,0 +1,135 @@
+{
+  "name": "@shogo-ai/agent",
+  "version": "1.6.0",
+  "description": "Shogo Agent — agent-runtime primitives (loop, router, hooks, orchestration) for backends built on pi-ai/pi-agent-core.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./agent-loop": {
+      "types": "./dist/agent-loop.d.ts",
+      "development": "./src/agent-loop.ts",
+      "import": "./dist/agent-loop.js",
+      "require": "./dist/agent-loop.cjs"
+    },
+    "./pi-adapter": {
+      "types": "./dist/pi-adapter.d.ts",
+      "development": "./src/pi-adapter.ts",
+      "import": "./dist/pi-adapter.js",
+      "require": "./dist/pi-adapter.cjs"
+    },
+    "./model-catalog": {
+      "types": "./dist/model-catalog/index.d.ts",
+      "development": "./src/model-catalog/index.ts",
+      "import": "./dist/model-catalog/index.js",
+      "require": "./dist/model-catalog/index.cjs"
+    },
+    "./model-router": {
+      "types": "./dist/model-router/index.d.ts",
+      "development": "./src/model-router/index.ts",
+      "import": "./dist/model-router/index.js",
+      "require": "./dist/model-router/index.cjs"
+    },
+    "./tool-orchestration": {
+      "types": "./dist/tool-orchestration.d.ts",
+      "development": "./src/tool-orchestration.ts",
+      "import": "./dist/tool-orchestration.js",
+      "require": "./dist/tool-orchestration.cjs"
+    },
+    "./loop-detector": {
+      "types": "./dist/loop-detector.d.ts",
+      "development": "./src/loop-detector.ts",
+      "import": "./dist/loop-detector.js",
+      "require": "./dist/loop-detector.cjs"
+    },
+    "./microcompact": {
+      "types": "./dist/microcompact.d.ts",
+      "development": "./src/microcompact.ts",
+      "import": "./dist/microcompact.js",
+      "require": "./dist/microcompact.cjs"
+    },
+    "./prefix-fingerprint": {
+      "types": "./dist/prefix-fingerprint.d.ts",
+      "development": "./src/prefix-fingerprint.ts",
+      "import": "./dist/prefix-fingerprint.js",
+      "require": "./dist/prefix-fingerprint.cjs"
+    },
+    "./hooks": {
+      "types": "./dist/hooks/index.d.ts",
+      "development": "./src/hooks/index.ts",
+      "import": "./dist/hooks/index.js",
+      "require": "./dist/hooks/index.cjs"
+    },
+    "./ai-client": {
+      "types": "./dist/ai-client.d.ts",
+      "development": "./src/ai-client.ts",
+      "import": "./dist/ai-client.js",
+      "require": "./dist/ai-client.cjs"
+    },
+    "./ai-proxy": {
+      "types": "./dist/ai-proxy.d.ts",
+      "development": "./src/ai-proxy.ts",
+      "import": "./dist/ai-proxy.js",
+      "require": "./dist/ai-proxy.cjs"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.cjs",
+    "dist/**/*.d.ts",
+    "dist/**/*.d.cts",
+    "dist/**/*.json",
+    "dist/hooks/bundled/**/HOOK.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "bun --no-env-file test src/"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": ">=0.67.0",
+    "@mariozechner/pi-agent-core": ">=0.67.0"
+  },
+  "peerDependenciesMeta": {
+    "@mariozechner/pi-ai": { "optional": true },
+    "@mariozechner/pi-agent-core": { "optional": true }
+  },
+  "devDependencies": {
+    "@mariozechner/pi-ai": "^0.67.6",
+    "@mariozechner/pi-agent-core": "^0.67.6",
+    "@types/node": "^25.5.0",
+    "tsup": "^8.0.0",
+    "typescript": "^6.0.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "shogo",
+    "agent",
+    "agent-loop",
+    "model-router",
+    "ai",
+    "pi-ai"
+  ],
+  "author": "Shogo Labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shogo-labs/shogo-ai.git",
+    "directory": "packages/agent"
+  },
+  "homepage": "https://github.com/shogo-labs/shogo-ai/tree/main/packages/agent#readme",
+  "bugs": {
+    "url": "https://github.com/shogo-labs/shogo-ai/issues"
+  }
+}

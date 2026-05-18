@@ -15,7 +15,7 @@ import {
 import { join, resolve, relative } from 'node:path'
 import { spawn } from 'node:child_process'
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
-import { createS3SyncForProject } from '@shogo/shared-runtime'
+import { createS3SyncForProject, isMacOSJunkName } from '@shogo/shared-runtime'
 import { prisma } from '../lib/prisma'
 import type { AuthContext } from '../middleware/auth'
 import {
@@ -142,6 +142,9 @@ function collectWorkspaceFiles(
   const entries = readdirSync(dir, { withFileTypes: true })
   for (const entry of entries) {
     if (EXCLUDED_DIRS.has(entry.name)) continue
+    // macOS detritus: `._*` AppleDouble sidecars crash Metro's Babel parser
+    // on import. Drop the whole subtree for junk dirs like `__MACOSX/`.
+    if (isMacOSJunkName(entry.name)) continue
 
     const fullPath = join(dir, entry.name)
     const relPath = relative(baseDir, fullPath).replace(/\\/g, '/')
@@ -179,15 +182,6 @@ type ImportEvent =
   | { phase: 'createProject' }
   | { phase: 'writeFiles'; done: number; total: number }
   | { phase: 'importChats'; done: number; total: number }
-  // Auto-bootstrap phase: install deps / generate routes / health-check the
-  // imported workspace so the user lands on a project that *runs*. Each
-  // sub-step emits its own event with status: pending | running | ok | failed.
-  | {
-      phase: 'bootstrap'
-      step: 'install' | 'generate' | 'preview' | 'health'
-      status: 'pending' | 'running' | 'ok' | 'failed' | 'skipped'
-      message?: string
-    }
   // Push the imported workspace from the API pod's local disk up to S3 so
   // the warm-pool runtime pod can `downloadAll()` it on first assignment.
   // K8s-only — local dev mounts the same workspace dir directly.
@@ -826,54 +820,14 @@ export async function runImport(
     secretsAutoFilled,
   })
 
-  // ─── Auto-bootstrap (post-done, still SSE-streamed) ────────────────
-  // Bootstrap runs *after* `done` so the importer can navigate any time,
-  // but it's still awaited inside the SSE handler. That means:
-  //
-  //   - The SSE connection stays open as long as bootstrap is running, so
-  //     the import modal's "Setting up project" checklist (install →
-  //     generate → preview → health) keeps painting in real time.
-  //   - Per-step `emit` calls are wrapped in try/catch so a client that
-  //     navigates away (closing the modal → ending the SSE socket) doesn't
-  //     crash bootstrap — emits become no-ops and the spawned children
-  //     keep running until completion.
-  //   - K8s mode still skips local bootstrap entirely; the agent pod owns
-  //     its own dep install lifecycle (see `PreviewManager.installDepsIfNeeded`).
-  //
-  // Race note: if the user opens the project before bootstrap finishes
-  // installing, `PreviewManager` will start its own install on first
-  // preview boot. The two `bun install`s racing on the same
-  // `node_modules/` is the existing failure mode; this design doesn't
-  // introduce a new race. Proper fix is for bootstrap to write
-  // `.shogo/install-marker` (sha256 of package.json) after a successful
-  // install so PreviewManager skips its redundant pass — follow-up.
-  if (options.runBootstrap !== false && !isKubernetes()) {
-    try {
-      await runImportBootstrap(projectDir, async (ev) => {
-        try {
-          await emit(ev)
-        } catch {
-          // SSE stream closed — caller navigated away. Bootstrap continues.
-        }
-      })
-    } catch (err: any) {
-      console.error(
-        `[project-import] bootstrap for ${projectSummary.id} threw:`,
-        err?.message || err,
-      )
-    }
-  } else if (options.runBootstrap !== false) {
-    try {
-      await emit({
-        phase: 'bootstrap',
-        step: 'install',
-        status: 'skipped',
-        message: 'k8s mode — pod handles bootstrap',
-      })
-    } catch {
-      // SSE already closed; nothing to surface.
-    }
-  }
+  // ─── No post-import bootstrap ──────────────────────────────────────
+  // The API used to run `bun install` / `bun run generate` / preview boot
+  // / health probe synchronously after import. That was both noise (it
+  // surfaced work the user doesn't need to watch) and asymmetric with
+  // k8s (where the agent pod has always owned its own lifecycle). It now
+  // matches k8s in every mode: the runtime (`PreviewManager` in pod, Vite
+  // dev server in local) installs deps lazily on first preview boot. The
+  // import response returns the moment files are written.
 
   return {
     ok: true,
@@ -883,147 +837,6 @@ export async function runImport(
     warnings: importWarnings,
     secretsAutoFilled,
   }
-}
-
-// ─── runImportBootstrap ─────────────────────────────────────────────
-//
-// Spawns the post-import setup steps so the user lands on a project that
-// actually runs. Each step:
-//   - emits a `running` event
-//   - runs with a hard timeout
-//   - emits `ok` / `failed` (with stderr message)
-//   - logs the outcome so server logs are the source of truth — `emit`
-//     events typically reach a closed SSE stream now that the import
-//     response races ahead of bootstrap
-//   - failures are non-fatal — we keep going so the user at least gets a
-//     project they can fix manually
-//
-// When `package.json` doesn't exist in the bundle, install/generate are
-// skipped silently. Same for schema.prisma → prisma push.
-async function runImportBootstrap(
-  projectDir: string,
-  emit: (ev: ImportEvent) => void | Promise<void>,
-): Promise<void> {
-  const logPrefix = `[project-import:bootstrap ${projectDir.split('/').pop()}]`
-  console.log(`${logPrefix} starting background bootstrap`)
-  const bootstrapStart = Date.now()
-  const exec = (
-    cmd: string,
-    args: string[],
-    timeoutMs: number,
-  ): Promise<{ ok: boolean; message?: string }> =>
-    new Promise((resolveExec) => {
-      try {
-        const proc = spawn(cmd, args, { cwd: projectDir, stdio: ['ignore', 'pipe', 'pipe'] })
-        let stderr = ''
-        proc.stderr?.on('data', (chunk) => {
-          stderr += chunk.toString()
-          if (stderr.length > 4000) stderr = stderr.slice(-4000)
-        })
-        const t = setTimeout(() => {
-          proc.kill('SIGKILL')
-          resolveExec({ ok: false, message: `${cmd} timed out after ${timeoutMs / 1000}s` })
-        }, timeoutMs)
-        proc.on('close', (code) => {
-          clearTimeout(t)
-          if (code === 0) resolveExec({ ok: true })
-          else resolveExec({ ok: false, message: stderr.trim().split('\n').slice(-3).join(' | ') || `exit ${code}` })
-        })
-        proc.on('error', (err) => {
-          clearTimeout(t)
-          resolveExec({ ok: false, message: err.message })
-        })
-      } catch (err: any) {
-        resolveExec({ ok: false, message: err?.message || 'spawn failed' })
-      }
-    })
-
-  const hasPackageJson = existsSync(join(projectDir, 'package.json'))
-  const hasPrisma = existsSync(join(projectDir, 'prisma', 'schema.prisma'))
-
-  // Step: install
-  if (hasPackageJson) {
-    await emit({ phase: 'bootstrap', step: 'install', status: 'running' })
-    const t0 = Date.now()
-    const r = await exec('bun', ['install', '--ignore-scripts'], 120_000)
-    const ms = Date.now() - t0
-    if (r.ok) {
-      console.log(`${logPrefix} install ok (${ms}ms)`)
-    } else {
-      console.error(`${logPrefix} install failed after ${ms}ms: ${r.message}`)
-    }
-    await emit({
-      phase: 'bootstrap',
-      step: 'install',
-      status: r.ok ? 'ok' : 'failed',
-      message: r.message,
-    })
-  } else {
-    console.log(`${logPrefix} install skipped (no package.json)`)
-    await emit({ phase: 'bootstrap', step: 'install', status: 'skipped', message: 'no package.json' })
-  }
-
-  // Step: generate (routes, prisma client, etc.)
-  if (hasPackageJson) {
-    await emit({ phase: 'bootstrap', step: 'generate', status: 'running' })
-    const t0 = Date.now()
-    const r = await exec('bun', ['run', 'generate'], 60_000)
-    const ms = Date.now() - t0
-    if (r.ok) {
-      console.log(`${logPrefix} generate ok (${ms}ms)`)
-    } else {
-      console.error(`${logPrefix} generate failed after ${ms}ms: ${r.message}`)
-    }
-    await emit({
-      phase: 'bootstrap',
-      step: 'generate',
-      status: r.ok ? 'ok' : 'failed',
-      message: r.ok ? undefined : r.message,
-    })
-  } else {
-    await emit({ phase: 'bootstrap', step: 'generate', status: 'skipped' })
-  }
-
-  // Step: preview (just touch the `.install-ok` marker so preview manager
-  // picks the project up immediately on next request — actual `bun run dev`
-  // is owned by the preview manager, not us).
-  await emit({ phase: 'bootstrap', step: 'preview', status: 'running' })
-  try {
-    writeFileSync(join(projectDir, '.install-ok'), new Date().toISOString())
-    await emit({ phase: 'bootstrap', step: 'preview', status: 'ok' })
-  } catch (err: any) {
-    console.error(`${logPrefix} preview marker write failed: ${err?.message}`)
-    await emit({ phase: 'bootstrap', step: 'preview', status: 'failed', message: err?.message })
-  }
-
-  // Step: health (cheap structural sanity check — does package.json parse,
-  // does schema.prisma parse, does memory/ exist?). No HTTP calls; just disk.
-  await emit({ phase: 'bootstrap', step: 'health', status: 'running' })
-  const issues: string[] = []
-  if (hasPackageJson) {
-    try {
-      JSON.parse(readFileSync(join(projectDir, 'package.json'), 'utf8'))
-    } catch {
-      issues.push('package.json failed to parse')
-    }
-  }
-  if (hasPrisma) {
-    const schemaText = readFileSync(join(projectDir, 'prisma', 'schema.prisma'), 'utf8')
-    if (!/^\s*generator\s+client\s*\{/m.test(schemaText)) {
-      issues.push('schema.prisma missing generator block')
-    }
-  }
-  if (issues.length > 0) {
-    console.warn(`${logPrefix} health issues: ${issues.join('; ')}`)
-  }
-  await emit({
-    phase: 'bootstrap',
-    step: 'health',
-    status: issues.length === 0 ? 'ok' : 'failed',
-    message: issues.length === 0 ? undefined : issues.join('; '),
-  })
-
-  console.log(`${logPrefix} bootstrap finished in ${Date.now() - bootstrapStart}ms`)
 }
 
 export function projectExportImportRoutes() {
