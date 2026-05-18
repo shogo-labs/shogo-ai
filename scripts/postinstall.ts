@@ -57,13 +57,31 @@ execSync("bun scripts/db-generate-all.ts", { stdio: "inherit" });
 // warning so the failure is visible — CI release workflows now re-invoke
 // `bun run generate:routes` explicitly after `build:packages`, and local devs
 // can do the same.
+//
+// We invoke the generator binary directly (instead of `bun run generate:routes`)
+// with `--no-env-file` and a stripped `DATABASE_URL`. The generator
+// opportunistically calls `prisma db push` whenever `process.env.DATABASE_URL`
+// is truthy, and Bun auto-loads `.env.local` for child `bun run` invocations.
+// Local-mode contributors who follow the documented recipe
+// (`SHOGO_LOCAL_MODE=true` + `DATABASE_URL=file:./shogo-local.db` in
+// `.env.local`) would otherwise have postinstall silently `db push` the schema
+// into that SQLite file with no `_prisma_migrations` history. The next
+// `bun run dev:all` then crashes with Prisma error P3005 ("database schema is
+// not empty") because `migrate deploy` refuses to baseline an unrecognized DB.
+//
+// Route generation only needs the schema file. The actual DB schema is owned
+// by `bun run db:migrate:deploy` / `dev:all`, not by route generation.
 if (existsSync("packages/sdk/bin/shogo.ts") && existsSync("shogo.config.json")) {
+  const { DATABASE_URL: _omittedToPreventAccidentalDbPush, ...envWithoutDbUrl } = process.env;
   try {
-    execSync("bun run generate:routes", { stdio: "inherit" });
+    execSync(
+      "bun --no-env-file run packages/sdk/bin/shogo.ts generate",
+      { stdio: "inherit", env: envWithoutDbUrl },
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn("");
-    console.warn("⚠️  postinstall: `bun run generate:routes` failed.");
+    console.warn("⚠️  postinstall: route generation failed.");
     console.warn(`    ${msg.split("\n")[0]}`);
     console.warn("");
     console.warn("    Generated files under apps/api/src/generated/ may be");
