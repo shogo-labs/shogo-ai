@@ -442,17 +442,29 @@ export async function applyUpdate(
     return { ok: true, alreadyOnLatest: true, installedVersion: targetVersion }
   }
 
-  // Drift gate — only meaningful when we have a baseline AND a local
-  // workspace to compare against. Installs that pre-date the manifest
-  // field skip the gate. We ALSO skip when the API pod's local copy
-  // is missing (e.g. someone flipped `MARKETPLACE_PURGE_LOCAL_AFTER_S3`
-  // on, or the pod cycled and the workspace landed on a different
-  // pod's ephemeral disk) rather than falsely flagging every baseline
-  // file as deleted. The runtime pod's view of "drift" lives behind a
-  // future S3-side comparison; for now, no-local == no-drift-signal.
+  // Drift gate — only meaningful when we have a NON-EMPTY baseline
+  // AND a local workspace to compare against. Three skip conditions:
+  //
+  //   1. `baseline == null` — installs that pre-date the manifest
+  //      field skip the gate.
+  //   2. `Object.keys(baseline).length === 0` — the install was
+  //      backfilled before we had a usable as-of-install reference,
+  //      or the listing version had no snapshot. Treating `{}` as a
+  //      real baseline would falsely flag every file in the new
+  //      version as `added` (legacy bug; the multi-pod backfill case
+  //      hit this by default before the snapshot-manifest fix).
+  //   3. `!localExists` — the API pod's local copy is missing (e.g.
+  //      someone flipped `MARKETPLACE_PURGE_LOCAL_AFTER_S3` on, or
+  //      the pod cycled and the workspace landed on a different pod's
+  //      ephemeral disk). Skipping avoids falsely flagging every
+  //      baseline file as deleted.
+  //
+  // The runtime pod's view of "drift" lives behind a future S3-side
+  // comparison; for now, no-local == no-drift-signal.
   const baseline = (install.baselineManifest ?? null) as Record<string, string> | null
+  const baselineHasEntries = baseline != null && Object.keys(baseline).length > 0
   const localExists = existsSync(join(getWorkspacesDir(), install.projectId))
-  if (baseline && localExists && !force) {
+  if (baselineHasEntries && localExists && !force) {
     const current = computeWorkspaceManifest(install.projectId)
     const diff = diffManifests(baseline, current)
     if (diff.modified.length + diff.added.length + diff.deleted.length > 0) {

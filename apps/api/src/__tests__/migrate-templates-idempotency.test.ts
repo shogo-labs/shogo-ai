@@ -120,6 +120,10 @@ mock.module('../lib/prisma', () => withPrismaExports({ prisma: prismaStub }))
 mock.module('../services/marketplace-manifest.service', () => ({
   computeWorkspaceManifest: () => ({ 'fake.txt': 'sha256-stub' }),
   snapshotProjectWorkspace: () => ({ 'fake.txt': 'snapshot' }),
+  computeSnapshotManifest: () => ({ 'fake.txt': 'snapshot-stub' }),
+}))
+mock.module('../services/marketplace-snapshot-storage.service', () => ({
+  loadSnapshotFiles: async () => ({}),
 }))
 
 const { runMigration } = await import(

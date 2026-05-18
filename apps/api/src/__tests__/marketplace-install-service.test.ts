@@ -49,6 +49,9 @@ const fsMock = {
     fsCalls.push({ kind: 'writeFileSync', args: [p, data] })
     if (writeFileThrow) throw writeFileThrow
   },
+  rmSync: (p: string, opts: any) => {
+    fsCalls.push({ kind: 'rmSync', args: [p, opts] })
+  },
 }
 mock.module('node:fs', () => fsMock)
 mock.module('fs', () => fsMock)
@@ -902,6 +905,39 @@ describe('applyUpdate', () => {
       })
       const out = await svc.applyUpdate('inst_n')
       expect(out.ok).toBe(true)
+    })
+
+    test('install with EMPTY OBJECT baseline (multi-pod backfill case) skips drift gate', async () => {
+      // Regression test: pre-fix, `backfillInstalls` set
+      // `baselineManifest = {}` for legacy projects on multi-pod k8s
+      // (their workspaces lived on warm-pool runtime pods, so the API
+      // pod's `computeWorkspaceManifest` returned `{}`). The drift
+      // gate then treated `{}` as truthy and `diffManifests({}, new)`
+      // flagged every file in the new version as `added`, blocking
+      // the user's update with `drift_detected`. The applyUpdate
+      // belt-and-braces fix treats empty-object baselines the same
+      // as null and skips the gate entirely.
+      manifestOverrides = {
+        computeWorkspaceManifest: () => ({ 'a.txt': 'NEW' }),
+        diffManifests: () => ({ added: ['a.txt'], modified: [], deleted: [] }),
+      }
+      listings.set('lst_e', { id: 'lst_e', currentVersion: '2.0.0' })
+      installs.push({
+        id: 'inst_e',
+        listingId: 'lst_e',
+        installModel: 'linked',
+        installedVersion: '1.0.0',
+        projectId: 'proj_e',
+        baselineManifest: {},
+      })
+      versions.push({
+        listingId: 'lst_e',
+        version: '2.0.0',
+        workspaceSnapshot: { files: { 'a.txt': 'data' } },
+      })
+      const out = await svc.applyUpdate('inst_e')
+      expect(out.ok).toBe(true)
+      if (out.ok) expect(out.installedVersion).toBe('2.0.0')
     })
   })
 })

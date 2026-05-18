@@ -5,6 +5,7 @@ import { Hono } from 'hono'
 
 import { prisma } from '../lib/prisma'
 import { authMiddleware, requireAuth, type AuthContext } from '../middleware/auth'
+import { requireMarketplaceFeature } from '../middleware/marketplace-feature'
 import { requireSuperAdmin } from '../middleware/super-admin'
 import * as stripeConnect from '../services/stripe-connect.service'
 
@@ -85,7 +86,7 @@ export function adminMarketplaceRoutes() {
     return c.json({ ok: true, data: rows })
   })
 
-  app.post('/payouts/release', async (c) => {
+  app.post('/payouts/release', requireMarketplaceFeature, async (c) => {
     let body: { creatorIds?: unknown; amountInCents?: unknown }
     try {
       body = await c.req.json()
@@ -219,7 +220,7 @@ export function adminMarketplaceRoutes() {
     return c.json({ ok: true, data: { results } })
   })
 
-  app.post('/payouts/hold', async (c) => {
+  app.post('/payouts/hold', requireMarketplaceFeature, async (c) => {
     let body: { creatorId?: unknown; reason?: unknown }
     try {
       body = await c.req.json()
@@ -328,7 +329,7 @@ export function adminMarketplaceRoutes() {
     })
   })
 
-  app.patch('/listings/:id/status', async (c) => {
+  app.patch('/listings/:id/status', requireMarketplaceFeature, async (c) => {
     const id = c.req.param('id')
     let body: { status?: unknown }
     try {
@@ -416,7 +417,7 @@ export function adminMarketplaceRoutes() {
     return c.json({ ok: true, data: { items, total, page, limit, totalPages } })
   })
 
-  app.post('/listings/:id/approve', async (c) => {
+  app.post('/listings/:id/approve', requireMarketplaceFeature, async (c) => {
     const id = c.req.param('id')
     const authCtx = c.get('auth') as AuthContext | undefined
     const adminId = authCtx?.userId ?? null
@@ -456,7 +457,7 @@ export function adminMarketplaceRoutes() {
     return c.json({ ok: true, data: updated })
   })
 
-  app.post('/listings/:id/reject', async (c) => {
+  app.post('/listings/:id/reject', requireMarketplaceFeature, async (c) => {
     const id = c.req.param('id')
     const authCtx = c.get('auth') as AuthContext | undefined
     const adminId = authCtx?.userId ?? null
@@ -508,7 +509,7 @@ export function adminMarketplaceRoutes() {
     return c.json({ ok: true, data: updated })
   })
 
-  app.post('/listings/:id/feature', async (c) => {
+  app.post('/listings/:id/feature', requireMarketplaceFeature, async (c) => {
     const id = c.req.param('id')
 
     const raw = await c.req.json().catch(() => ({}))
