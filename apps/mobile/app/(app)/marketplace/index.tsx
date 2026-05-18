@@ -43,6 +43,7 @@ import {
   PopoverBody,
   PopoverContent,
 } from '@/components/ui/popover'
+import { useDebouncedValue } from '../../../hooks/useDebouncedValue'
 import { useGridColumns } from '../../../hooks/useGridColumns'
 
 interface ListingFromAPI {
@@ -149,6 +150,7 @@ export default observer(function MarketplaceHomeScreen() {
   const numColumns = useGridColumns()
 
   const [searchQuery, setSearchQuery] = useState('')
+  const debouncedSearchQuery = useDebouncedValue(searchQuery)
   const [activeCategory, setActiveCategory] = useState<string>('all')
   const [sortMode, setSortMode] = useState<SortMode>('popular')
   const [filterFeatured, setFilterFeatured] = useState(false)
@@ -170,7 +172,10 @@ export default observer(function MarketplaceHomeScreen() {
   const [totalPages, setTotalPages] = useState(1)
   const [loadingMore, setLoadingMore] = useState(false)
 
-  const isSearching = searchQuery.trim().length > 0
+  const debouncedSearchTrimmed = debouncedSearchQuery.trim()
+  const isSearching = debouncedSearchTrimmed.length > 0
+  const isSearchPending =
+    searchQuery.trim() !== debouncedSearchTrimmed
   const showRails = !isSearching && activeCategory === 'all' && !filterFeatured && !filterFree
 
   const loadGrid = useCallback(
@@ -188,7 +193,7 @@ export default observer(function MarketplaceHomeScreen() {
 
         let url: string
         if (isSearching) {
-          params.set('q', searchQuery.trim())
+          params.set('q', debouncedSearchTrimmed)
           url = `/api/marketplace/search?${params.toString()}`
         } else {
           url = `/api/marketplace?${params.toString()}`
@@ -211,7 +216,7 @@ export default observer(function MarketplaceHomeScreen() {
         setLoadingMore(false)
       }
     },
-    [http, sortMode, activeCategory, filterFeatured, filterFree, isSearching, searchQuery],
+    [http, sortMode, activeCategory, filterFeatured, filterFree, isSearching, debouncedSearchTrimmed],
   )
 
   const loadEditorial = useCallback(async () => {
@@ -237,7 +242,7 @@ export default observer(function MarketplaceHomeScreen() {
 
   useEffect(() => {
     loadGrid(1)
-  }, [activeCategory, sortMode, filterFeatured, filterFree, searchQuery])
+  }, [activeCategory, sortMode, filterFeatured, filterFree, debouncedSearchQuery])
 
   useEffect(() => {
     loadEditorial()
@@ -299,9 +304,9 @@ export default observer(function MarketplaceHomeScreen() {
       return (
         <View className="px-5 mb-3">
           <Text className="text-sm text-muted-foreground">
-            {loading
+            {loading || isSearchPending
               ? 'Searching…'
-              : `${listings.length} result${listings.length === 1 ? '' : 's'} for “${searchQuery.trim()}”`}
+              : `${listings.length} result${listings.length === 1 ? '' : 's'} for “${debouncedSearchTrimmed}”`}
           </Text>
         </View>
       )
@@ -476,7 +481,8 @@ export default observer(function MarketplaceHomeScreen() {
     isSearching,
     loading,
     listings.length,
-    searchQuery,
+    debouncedSearchTrimmed,
+    isSearchPending,
     showRails,
     spotlight,
     builtForShogo,
@@ -643,7 +649,7 @@ export default observer(function MarketplaceHomeScreen() {
                   </Text>
                   <Text className="text-muted-foreground text-sm text-center mb-4">
                     {isSearching
-                      ? `No results for “${searchQuery}”`
+                      ? `No results for “${debouncedSearchTrimmed}”`
                       : 'Nothing matches the current filters yet.'}
                   </Text>
                   {(filterFeatured || filterFree || activeCategory !== 'all') && (
@@ -690,7 +696,7 @@ export default observer(function MarketplaceHomeScreen() {
                   </Text>
                   <Text className="text-muted-foreground text-sm text-center mb-4">
                     {isSearching
-                      ? `No results for “${searchQuery}”`
+                      ? `No results for “${debouncedSearchTrimmed}”`
                       : 'Nothing matches the current filters yet.'}
                   </Text>
                   {(filterFeatured || filterFree || activeCategory !== 'all') && (
