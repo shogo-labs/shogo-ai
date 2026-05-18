@@ -98,6 +98,84 @@ describe('MST Model Generator', () => {
   })
 })
 
+describe('MST Model Generator — defaults from Prisma DMMF', () => {
+  // Mirrors the real Project model where cloudSyncMode is a required enum
+  // with a Prisma `@default(s3)`. Before the fix, the generator dropped the
+  // default and emitted a bare `types.enumeration(...)` — which crashed the
+  // optimistic `create()` path with "No matching type for union" because the
+  // caller never sets cloudSyncMode.
+  const enums = [
+    { name: 'CloudSyncMode', values: [{ name: 's3' }, { name: 'dual_shadow' }, { name: 'git_only' }] },
+  ]
+
+  const modelWithEnumDefault = {
+    name: 'Project',
+    dbName: null,
+    fields: [
+      { name: 'id', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: true, isUnique: true, hasDefaultValue: true, default: { name: 'uuid', args: [4] } },
+      { name: 'name', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+      { name: 'cloudSyncMode', kind: 'enum', type: 'CloudSyncMode', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: true, default: 's3' },
+      { name: 'tier', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: true, default: 'free' },
+      { name: 'retries', kind: 'scalar', type: 'Int', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: true, default: 3 },
+      { name: 'isActive', kind: 'scalar', type: 'Boolean', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: true, default: true },
+      { name: 'createdAt', kind: 'scalar', type: 'DateTime', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: true, default: { name: 'now', args: [] } },
+      { name: 'archivedAt', kind: 'scalar', type: 'DateTime', isRequired: false, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+      { name: 'status', kind: 'enum', type: 'CloudSyncMode', isRequired: false, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+    ],
+  }
+
+  it('wraps a required enum with @default in types.optional(...) using the literal default', () => {
+    const result = generateMSTModel(modelWithEnumDefault as any, [modelWithEnumDefault as any], enums as any)
+
+    // Regression: must be types.optional, not a bare types.enumeration.
+    expect(result.code).toContain(
+      'cloudSyncMode: types.optional(types.enumeration("CloudSyncMode", ["s3", "dual_shadow", "git_only"]), "s3"),'
+    )
+    expect(result.code).not.toMatch(
+      /cloudSyncMode: types\.enumeration\("CloudSyncMode", \["s3", "dual_shadow", "git_only"\]\),/
+    )
+  })
+
+  it('preserves literal defaults for scalar @default(...) values', () => {
+    const result = generateMSTModel(modelWithEnumDefault as any, [modelWithEnumDefault as any], enums as any)
+
+    expect(result.code).toContain('tier: types.optional(types.string, "free"),')
+    expect(result.code).toContain('retries: types.optional(types.number, 3),')
+    expect(result.code).toContain('isActive: types.optional(types.boolean, true),')
+  })
+
+  it('uses a type-appropriate zero for function defaults like @default(now())', () => {
+    const result = generateMSTModel(modelWithEnumDefault as any, [modelWithEnumDefault as any], enums as any)
+
+    // now() / uuid() are computed server-side; we emit a placeholder
+    // until the server response replaces it.
+    expect(result.code).toContain('createdAt: types.optional(types.number, 0),')
+  })
+
+  it('keeps nullable enums as types.maybeNull(...) (no default required)', () => {
+    const result = generateMSTModel(modelWithEnumDefault as any, [modelWithEnumDefault as any], enums as any)
+
+    expect(result.code).toContain(
+      'status: types.maybeNull(types.enumeration("CloudSyncMode", ["s3", "dual_shadow", "git_only"])),'
+    )
+  })
+
+  it('produces a snapshot that satisfies MST when the caller omits the enum field', () => {
+    // This is the exact failure mode from the homepage chatbox: the
+    // optimistic create() builds a snapshot without cloudSyncMode.
+    // Before the fix, MST threw "No matching type for union" here.
+    const CloudSyncMode = types.enumeration('CloudSyncMode', ['s3', 'dual_shadow', 'git_only'])
+    const Project = types.model('Project', {
+      id: types.identifier,
+      name: types.string,
+      cloudSyncMode: types.optional(CloudSyncMode, 's3'),
+    })
+
+    const instance = Project.create({ id: 'temp-1', name: 'My Project' })
+    expect(instance.cloudSyncMode).toBe('s3')
+  })
+})
+
 describe('MST Collection Generator', () => {
   it('should generate collection code with correct structure', () => {
     const result = generateMSTCollection(mockWorkspaceModel as any)

@@ -197,14 +197,13 @@ export function generateMSTModel(
     if (field.isList) {
       lines.push(`    ${field.name}: types.optional(${mstType}, []),`)
     }
-    // Handle required non-enum scalars that have a database default
-    // (e.g. @default(now()), @default(0), @default("")). The server always
-    // supplies the real value, and optimistic `create()` callers shouldn't
-    // have to populate these fields. Enums are left alone because encoding
-    // their schema-defined default requires DMMF data we don't surface here,
-    // and broadening them to `maybeNull` would force null-checks throughout
-    // consumer code.
-    else if (field.hasDefaultValue && !field.isId && field.kind !== 'enum') {
+    // Handle required fields that have a database default
+    // (e.g. @default(now()), @default(0), @default(""), @default(s3) on an
+    // enum). The server always supplies the real value, and optimistic
+    // `create()` callers shouldn't have to populate these fields. For enums
+    // we surface the schema-defined default literal from DMMF; for other
+    // scalars we fall back to a type-appropriate zero value.
+    else if (field.hasDefaultValue && !field.isId) {
       lines.push(`    ${field.name}: types.optional(${mstType}, ${getDefaultValue(field)}),`)
     }
     // Handle non-array optional fields (no default, nullable in DB)
@@ -266,9 +265,31 @@ export function generateMSTModel(
 }
 
 /**
- * Get default value for optional field
+ * Get default value for an optional/defaulted field as an MST literal.
+ *
+ * Order of resolution:
+ *   1. If DMMF surfaces a literal default (`@default(s3)`, `@default(0)`,
+ *      `@default("hi")`, `@default(true)`), emit that exact value.
+ *   2. Function defaults (`@default(uuid())`, `@default(now())`, `@default(cuid())`)
+ *      are computed by the server, so emit a type-appropriate zero value
+ *      that's a valid MST snapshot until the server response arrives.
+ *   3. Fields with no `@default` (nullable scalars) also get a zero value.
+ *
+ * Enums require a literal default because `types.enumeration(...)` only
+ * accepts values from its declared set — there is no safe zero value.
  */
 function getDefaultValue(field: PrismaField): string {
+  const literal = getLiteralDefault(field)
+  if (literal !== undefined) return literal
+
+  if (field.kind === 'enum') {
+    // Enum field with a function default (rare) or no default at all but
+    // reached via the `hasDefaultValue` branch: there is no valid zero
+    // value. Emit `undefined` so the caller can decide; this should be
+    // statically prevented by `hasDefaultValue` gating in callers.
+    return 'undefined'
+  }
+
   switch (field.type) {
     case 'String':
       return '""'
@@ -285,6 +306,21 @@ function getDefaultValue(field: PrismaField): string {
     default:
       return 'undefined'
   }
+}
+
+/**
+ * Extract a literal MST-source default from `field.default` if DMMF surfaced one.
+ * Returns `undefined` for function defaults (uuid/now/cuid/autoincrement/etc.)
+ * because those values are produced by the server, not encoded in the schema.
+ */
+function getLiteralDefault(field: PrismaField): string | undefined {
+  if (!field.hasDefaultValue || field.default === undefined) return undefined
+  const d = field.default
+  if (typeof d === 'string') return JSON.stringify(d)
+  if (typeof d === 'number') return String(d)
+  if (typeof d === 'boolean') return String(d)
+  // Function default (e.g. { name: "uuid", args: [4] }) — not a literal.
+  return undefined
 }
 
 /**
