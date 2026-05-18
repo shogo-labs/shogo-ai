@@ -1278,6 +1278,37 @@ describe('evictProject()', () => {
     expect(controller.softEvictedAt.has('svc-soft-db')).toBe(true)
   })
 
+  // Regression: soft-evict must flip shogo.io/active=false so the namespace
+  // GC's scaled-to-zero sweeper can reap the ksvc once Knative drops the
+  // pod. Without this flip, every idle project leaks a permanent ksvc —
+  // staging accumulated 51 leaked ksvcs (240 cumulative idle evictions, 0
+  // namespace deletions) and the resulting webhook/route churn took a node
+  // NotReady and surfaced as Cloudflare 525s.
+  test('soft evict patches shogo.io/active=false on the ksvc (fire-and-forget)', async () => {
+    const controller = new WarmPoolController({ namespace: 'expand-ns' }) as any
+    controller.assigned.set('p-soft-active', pod({ serviceName: 'svc-soft-active' }))
+    const result = await controller.evictProject('p-soft-active', { deleteService: false })
+    expect(result.evicted).toBe(true)
+    expect(controller.softEvictedAt.has('svc-soft-active')).toBe(true)
+    // Wait for the fire-and-forget background task to flush
+    await new Promise((r) => setTimeout(r, 10))
+    const patchCall = mergePatchCalls.find(([, name]) => name === 'svc-soft-active')
+    expect(patchCall).toBeDefined()
+    expect(patchCall![0]).toBe('expand-ns')
+    expect(patchCall![2]).toEqual({ metadata: { labels: { 'shogo.io/active': 'false' } } })
+  })
+
+  test('soft evict swallows 404 from the active-label patch (service already deleted)', async () => {
+    const controller = new WarmPoolController({ namespace: 'expand-ns' }) as any
+    controller.assigned.set('p-soft-404', pod({ serviceName: 'svc-soft-404' }))
+    mergePatchErrorQueue.push(Object.assign(new Error('the service was not found'), { code: 404 }))
+    const result = await controller.evictProject('p-soft-404', { deleteService: false })
+    expect(result.evicted).toBe(true)
+    expect(controller.softEvictedAt.has('svc-soft-404')).toBe(true)
+    // The 404 should be silently swallowed — no unhandled rejection
+    await new Promise((r) => setTimeout(r, 10))
+  })
+
   test('soft evict with no in-memory pod and DB lookup failure returns evicted=false', async () => {
     const controller = new WarmPoolController({ namespace: 'expand-ns' }) as any
     const prisma = (await import('../lib/prisma')).prisma
