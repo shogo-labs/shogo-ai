@@ -201,6 +201,31 @@ describe('snapshotProjectWorkspace', () => {
     expect(Object.keys(snap)).toEqual(['keep.txt'])
   })
 
+  test('keeps dist/ — bundled templates ship a pre-built canvas first-paint', () => {
+    // This is the contract the staging "Connected with blank
+    // preview" incident pinned: the snapshot exclusion list MUST NOT
+    // strip `dist/`, even though the drift-detection manifest
+    // exclusion DOES strip it. Without this, every fresh marketplace
+    // install lands on the warm-pool default until Vite cold-starts.
+    makeProject('p6', {
+      'src/index.ts': 'src',
+      'dist/index.html': '<!DOCTYPE html>',
+      'dist/assets/app.js': 'console.log(1)',
+      'node_modules/leak.js': 'leak',
+    })
+    const snap = snapshotProjectWorkspace('p6')
+    expect(Object.keys(snap).sort()).toEqual([
+      'dist/assets/app.js',
+      'dist/index.html',
+      'src/index.ts',
+    ])
+    // And drift detection still excludes dist — `computeWorkspaceManifest`
+    // must NOT see those files, otherwise Vite rebuilds in the runtime
+    // would constantly trip the drift gate.
+    const onDisk = computeWorkspaceManifest('p6')
+    expect(Object.keys(onDisk).sort()).toEqual(['src/index.ts'])
+  })
+
   test('returns {} for missing project dir', () => {
     expect(snapshotProjectWorkspace('does-not-exist')).toEqual({})
   })

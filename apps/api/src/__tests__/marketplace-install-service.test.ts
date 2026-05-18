@@ -324,9 +324,14 @@ describe('copyWorkspaceFiles', () => {
     // Filter behavior
     expect(cpFilter!(srcDir)).toBe(true) // root passes
     expect(cpFilter!(`${srcDir}/node_modules`)).toBe(false)
-    expect(cpFilter!(`${srcDir}/dist`)).toBe(false)
     expect(cpFilter!(`${srcDir}/.git`)).toBe(false)
     expect(cpFilter!(`${srcDir}/.install-foo`)).toBe(false)
+    // `dist/` MUST round-trip on the install copy: bundled templates
+    // ship a pre-built `dist/index.html` for the canvas first-paint
+    // preview. Drift detection's separate exclusion list keeps Vite
+    // rebuilds from tripping the gate.
+    expect(cpFilter!(`${srcDir}/dist`)).toBe(true)
+    expect(cpFilter!(`${srcDir}/dist/index.html`)).toBe(true)
     expect(cpFilter!(`${srcDir}/src/components/Button.tsx`)).toBe(true)
     expect(cpFilter!(`${srcDir}/src/node_modules/leaked.js`)).toBe(false)
   })

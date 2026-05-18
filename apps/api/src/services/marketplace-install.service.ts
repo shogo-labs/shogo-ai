@@ -61,13 +61,19 @@ async function pushWorkspaceToS3(
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
 
+// Snapshot-style exclusion set: matches
+// `marketplace-snapshot-storage.service.EXCLUDED_DIRS`. We
+// INTENTIONALLY do NOT exclude `dist/` here, because the legacy
+// `copyWorkspaceFiles` path ships a source project's pre-built canvas
+// preview (the bundled first-party templates ship `dist/index.html`
+// for instant first-paint). Drift detection's exclusion set in
+// `marketplace-manifest.service` excludes `dist/` separately, so
+// runtime Vite rebuilds inside the install can't trip the drift gate.
 const EXCLUDED_DIRS = new Set([
   'node_modules',
   '.git',
-  'dist',
   '.cache',
   '.next',
-  'build',
   '.turbo',
   '.expo',
 ])

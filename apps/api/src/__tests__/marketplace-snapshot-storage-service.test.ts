@@ -181,12 +181,16 @@ describe('uploadProjectSnapshot', () => {
     expect(put?.Metadata).toEqual({ listing: 'lst_42', version: '1.0.0' })
   })
 
-  test('omits excluded segments from the tarball', async () => {
+  test('omits excluded segments from the tarball but keeps dist (canvas first-paint)', async () => {
     makeProject('p2', {
       'src/keep.ts': 'kept',
       'node_modules/leak.js': 'should not ship',
       '.git/HEAD': 'ref:',
-      'dist/build.js': 'compiled',
+      // `dist/` MUST round-trip — bundled templates ship a pre-built
+      // `dist/index.html` for the canvas first-paint preview. This
+      // assertion is the sentinel for that contract.
+      'dist/index.html': '<!DOCTYPE html>',
+      'dist/assets/main.js': 'console.log(1)',
       'bun.lock': '...',
       '.install-foo/x.txt': 'sentinel',
     })
@@ -203,7 +207,8 @@ describe('uploadProjectSnapshot', () => {
     expect(existsSync(join(extractRoot, 'src/keep.ts'))).toBe(true)
     expect(existsSync(join(extractRoot, 'node_modules/leak.js'))).toBe(false)
     expect(existsSync(join(extractRoot, '.git/HEAD'))).toBe(false)
-    expect(existsSync(join(extractRoot, 'dist/build.js'))).toBe(false)
+    expect(existsSync(join(extractRoot, 'dist/index.html'))).toBe(true)
+    expect(existsSync(join(extractRoot, 'dist/assets/main.js'))).toBe(true)
     expect(existsSync(join(extractRoot, 'bun.lock'))).toBe(false)
     expect(existsSync(join(extractRoot, '.install-foo/x.txt'))).toBe(false)
   })

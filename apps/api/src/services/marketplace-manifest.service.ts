@@ -34,20 +34,44 @@ import { join, relative } from 'node:path'
 import { getWorkspacesDir } from './marketplace-install.service'
 
 /**
- * Directory and filename segments excluded from the manifest. Mirrors
- * the `EXCLUDED_DIRS` list in `marketplace-install.service.ts` so a
- * fresh install + manifest produces the same set of paths the install's
- * own `cpSync` filter accepted. Adding `.install-*` here keeps the
- * partial-install sentinel directories out (these are recreated on every
- * fresh install and would otherwise show as drift).
+ * Two exclusion lists, intentionally diverged.
+ *
+ * `MANIFEST_EXCLUDED_SEGMENTS` is what drift detection considers — we
+ * MUST exclude `dist/` here because Vite rebuilds the bundle in-place
+ * during normal agent work; if drift counted those files, every
+ * applyUpdate would falsely refuse with `drift_detected`.
+ *
+ * `SNAPSHOT_EXCLUDED_SEGMENTS` is what version-publish + install
+ * captures — we must INCLUDE `dist/` here because the bundled
+ * first-party templates ship a pre-built `dist/index.html` for the
+ * canvas's first-paint preview. Stripping it leaves the install on
+ * "Connected" with a blank iframe until Vite cold-starts (which can
+ * take 10s+ on a fresh container, and never if the template doesn't
+ * declare Vite as a dep). See `materializeSourceWorkspace` in
+ * `apps/api/scripts/migrate-templates-to-marketplace.ts` for the
+ * other side of this contract: the migration script actively writes
+ * each template's `dist/` into the source workspace, so excluding it
+ * at snapshot time was throwing away effort the migration spent.
+ *
+ * `node_modules` stays excluded everywhere — too big to ship in a
+ * snapshot and the runtime reinstalls anyway.
  */
-const EXCLUDED_SEGMENTS = new Set([
+const MANIFEST_EXCLUDED_SEGMENTS = new Set([
   'node_modules',
   '.git',
   'dist',
   '.cache',
   '.next',
   'build',
+  '.turbo',
+  '.expo',
+])
+
+const SNAPSHOT_EXCLUDED_SEGMENTS = new Set([
+  'node_modules',
+  '.git',
+  '.cache',
+  '.next',
   '.turbo',
   '.expo',
 ])
@@ -60,21 +84,24 @@ const EXCLUDED_FILE_NAMES = new Set([
   'yarn.lock',
 ])
 
-function isExcludedSegment(segment: string): boolean {
-  if (EXCLUDED_SEGMENTS.has(segment)) return true
-  if (segment.startsWith('.install-')) return true
-  return false
-}
-
-function isExcludedRelPath(rel: string): boolean {
+function isExcluded(rel: string, segments: Set<string>): boolean {
   if (!rel) return true
   for (const segment of rel.split(/[/\\]/)) {
     if (segment === '' || segment === '.') continue
-    if (isExcludedSegment(segment)) return true
+    if (segments.has(segment)) return true
+    if (segment.startsWith('.install-')) return true
   }
   const last = rel.split(/[/\\]/).pop() ?? ''
   if (EXCLUDED_FILE_NAMES.has(last)) return true
   return false
+}
+
+function isExcludedRelPath(rel: string): boolean {
+  return isExcluded(rel, MANIFEST_EXCLUDED_SEGMENTS)
+}
+
+function isExcludedSnapshotPath(rel: string): boolean {
+  return isExcluded(rel, SNAPSHOT_EXCLUDED_SEGMENTS)
 }
 
 function sha256Hex(buf: Buffer | string): string {
@@ -228,12 +255,17 @@ export function diffManifests(
 }
 
 /**
- * Read every file under `workspaces/<projectId>/` (subject to the same
- * exclusions used by `computeWorkspaceManifest`) and emit a snapshot in
- * the shape consumed by `applyWorkspaceSnapshot` and stored in
+ * Read every file under `workspaces/<projectId>/` and emit a snapshot
+ * in the shape consumed by `applyWorkspaceSnapshot` and stored in
  * `MarketplaceListingVersion.workspaceSnapshot`. Used by the new
- * `POST /creator/listings/:id/versions` flow when the creator omits the
- * snapshot body — the server snapshots the source project for them.
+ * `POST /creator/listings/:id/versions` flow when the creator omits
+ * the snapshot body — the server snapshots the source project for
+ * them.
+ *
+ * Note this uses `SNAPSHOT_EXCLUDED_SEGMENTS` (NOT
+ * `MANIFEST_EXCLUDED_SEGMENTS`): we deliberately INCLUDE `dist/` so
+ * the canvas first-paint preview works on a fresh install. See the
+ * comment on the two exclusion sets up top.
  *
  * Binary files are encoded as base64 wrapper objects; text files are
  * stored as plain strings to keep snapshots reviewable in DB tooling.
@@ -262,7 +294,7 @@ function snapshotWalk(
   for (const entry of entries) {
     const abs = join(absDir, entry.name)
     const rel = relative(root, abs)
-    if (isExcludedRelPath(rel)) continue
+    if (isExcludedSnapshotPath(rel)) continue
     if (entry.isDirectory()) {
       snapshotWalk(abs, root, out)
       continue
