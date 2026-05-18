@@ -417,10 +417,11 @@ function main() {
       // backend roll-up (70.31% lines / 76.69% funcs as of 2026-05-15).
       backendArgs.push(
         '--threshold-line', '0.71',
-        '--threshold-function', '0.77',
+        '--threshold-function', '0.78',
         '--per-package-floor', 'apps/api:0.72',
         // Phase 1 (agent-runtime small-files sweep) bumped this from 0.64 → 0.67.
-        '--per-package-floor', 'packages/agent-runtime:0.67',
+        // Phase 2 (mcp-client + subagent) bumped to 0.68.
+        '--per-package-floor', 'packages/agent-runtime:0.68',
         // shared-runtime: git-sync.ts (264 lines, 4.92% covered) became visible
         // in the merged report after Phase 1's broader shard set. Phase 6 will
         // cover it; floor reflects honest current measurement.
