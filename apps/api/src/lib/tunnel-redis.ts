@@ -209,6 +209,25 @@ function getPublisher(): Redis | null {
   return pub
 }
 
+/**
+ * Public accessor for the shared ioredis client that this module
+ * already maintains for cross-pod tunnel routing. Exposed so other
+ * modules can reuse the same connection (and the same lifecycle /
+ * degraded-mode handling) instead of opening their own ioredis
+ * client per feature.
+ *
+ * First caller outside of tunneling: `lib/pending-login-store.ts`,
+ * which moved the cli-auth pending-states map from per-process memory
+ * to Redis so the device-code login flow works across the two-replica
+ * API tier. See `k8s/base/api.yaml` (`replicas: 2`).
+ *
+ * Returns null when in local mode or when Redis init failed —
+ * callers must fall back to a per-process store in that case.
+ */
+export function getSharedRedis(): Redis | null {
+  return pub
+}
+
 // ─── Health Check ────────────────────────────────────────────────────────────
 
 export async function checkRedisHealth(): Promise<{ healthy: boolean; latencyMs?: number; error?: string }> {
