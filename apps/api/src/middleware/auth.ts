@@ -297,6 +297,20 @@ const PUBLIC_PREFIXES = [
   '/api/ai/',
   '/api/tools/',
   '/api/api-keys/validate',
+  // Cloud-side device-code login entry. The CLI worker and the desktop
+  // app both POST `/api/cli/login/start` (anonymous — registering a new
+  // pending-state nonce) and GET `/api/cli/login/poll` / `/api/cli/login/state`
+  // (anonymous — the state nonce is the secret). The `approve` and `deny`
+  // endpoints under this prefix DO require an authenticated session and
+  // gate themselves inside the handler (see `./routes/cli-auth.ts`) —
+  // gating them again here would 401 the bridge page's cookie call
+  // before that handler check ever runs, since the desktop client never
+  // re-sends cloud session cookies from its embedded BrowserWindow.
+  // Bug: cli-auth.ts (df168409, May 14 2026) shipped without this prefix
+  // entry, so anonymous `start` requests were 401'd by this middleware
+  // before reaching the route — breaking Cloud sign-in in the v1.7.x
+  // desktop builds.
+  '/api/cli/login/',
 ]
 
 export async function requireAuth(c: Context, next: Next) {
