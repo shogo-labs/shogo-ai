@@ -84,12 +84,41 @@ function getClient(): { client: S3Client; bucket: string } {
     )
   }
   if (cachedClient) return { client: cachedClient, bucket }
-  cachedClient = new S3Client({
-    region: process.env.S3_REGION || 'us-east-1',
-    ...(process.env.S3_ENDPOINT && { endpoint: process.env.S3_ENDPOINT }),
-    forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
-  })
+  cachedClient = new S3Client(resolveS3ClientConfig(process.env))
   return { client: cachedClient, bucket }
+}
+
+/**
+ * Pure function that maps env vars to the S3Client constructor
+ * config. Extracted so tests can pin the path-style behavior without
+ * round-tripping through the real S3Client.
+ *
+ * Path-style URLs are REQUIRED for every non-AWS S3-compatible
+ * backend we run on today (OCI Object Storage S3-compat, MinIO, R2).
+ * OCI in particular parses virtual-hosted URLs incorrectly — it
+ * interprets the bucket-name subdomain as its tenancy namespace and
+ * the first path segment as the bucket, so a request for
+ * `bucket=shogo-workspaces-staging, key=marketplace/listings/...`
+ * surfaces as `NoSuchBucket: bucket 'marketplace' does not exist in
+ * the namespace 'shogo-workspaces-staging'` (this is the staging
+ * incident this helper exists to prevent). The endpoint being set is
+ * the strongest available "this isn't real AWS" signal, so we force
+ * path style whenever it's present. Mirrors the convention in
+ * `packages/shared-runtime/src/s3-sync.ts` and
+ * `packages/shared-runtime/src/postgres-backup.ts`.
+ */
+export function resolveS3ClientConfig(env: NodeJS.ProcessEnv): {
+  region: string
+  endpoint?: string
+  forcePathStyle: boolean
+} {
+  const endpoint = env.S3_ENDPOINT
+  const hasCustomEndpoint = !!endpoint
+  return {
+    region: env.S3_REGION || 'us-east-1',
+    ...(endpoint ? { endpoint } : {}),
+    forcePathStyle: env.S3_FORCE_PATH_STYLE === 'true' || hasCustomEndpoint,
+  }
 }
 
 /** Visible for tests — drops the cached client so env var changes take effect. */
