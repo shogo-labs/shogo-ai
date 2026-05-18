@@ -183,12 +183,12 @@ export const MODEL_CATALOG = {
   },
 
   // OpenAI — current generation
-  'gpt-5.4': {
-    id: 'gpt-5.4',
+  'gpt-5.5': {
+    id: 'gpt-5.5',
     provider: 'openai',
-    apiModel: 'gpt-5.4',
-    displayName: 'GPT-5.4',
-    shortDisplayName: 'GPT-5.4',
+    apiModel: 'gpt-5.5',
+    displayName: 'GPT-5.5',
+    shortDisplayName: 'GPT-5.5',
     tier: 'premium',
     family: 'gpt',
     generation: 'current',
