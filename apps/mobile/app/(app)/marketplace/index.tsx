@@ -261,26 +261,15 @@ export default observer(function MarketplaceHomeScreen() {
   const tileListings = useMemo(() => listings.map(toTileListing), [listings])
 
   const paddedData = useMemo(() => {
-    if (viewMode === 'list' || numColumns <= 1) return tileListings
+    if (numColumns <= 1) return tileListings
     const remainder = tileListings.length % numColumns
     if (remainder === 0) return tileListings
     return [...tileListings, ...Array(numColumns - remainder).fill(null)]
-  }, [tileListings, numColumns, viewMode])
+  }, [tileListings, numColumns])
 
   const renderGridItem = useCallback(
     ({ item }: { item: AgentTileListing | null }) => {
       if (!item) return <View className="flex-1 m-1.5" />
-      if (viewMode === 'list') {
-        return (
-          <View className="px-5 pb-3">
-            <AgentTile
-              size="compact"
-              listing={item}
-              onPress={() => handleCardPress(item.slug)}
-            />
-          </View>
-        )
-      }
       return (
         <AgentTile
           size="medium"
@@ -289,7 +278,20 @@ export default observer(function MarketplaceHomeScreen() {
         />
       )
     },
-    [handleCardPress, viewMode],
+    [handleCardPress],
+  )
+
+  const renderListItem = useCallback(
+    ({ item }: { item: AgentTileListing }) => (
+      <View className="px-5 pb-3">
+        <AgentTile
+          size="compact"
+          listing={item}
+          onPress={() => handleCardPress(item.slug)}
+        />
+      </View>
+    ),
+    [handleCardPress],
   )
 
   const ListHeader = useMemo(() => {
@@ -310,126 +312,81 @@ export default observer(function MarketplaceHomeScreen() {
         {/* Spotlight */}
         {spotlight && showRails && (
           <View className="px-5 mt-2 mb-8">
-            <AgentTile
-              size="spotlight"
-              listing={toTileListing(spotlight)}
-              onPress={() => handleCardPress(spotlight.slug)}
-            />
+            {viewMode === 'grid' ? (
+              <AgentTile
+                size="spotlight"
+                listing={toTileListing(spotlight)}
+                onPress={() => handleCardPress(spotlight.slug)}
+              />
+            ) : (
+              <AgentTile
+                size="compact"
+                listing={toTileListing(spotlight)}
+                onPress={() => handleCardPress(spotlight.slug)}
+              />
+            )}
           </View>
         )}
 
         {/* Built for Shogo */}
         {builtForShogo.length > 0 && showRails && (
-          <View className="mb-8">
-            <SectionHeader
-              title="Built for Shogo"
-              subtitle="Editor-curated agents that meet our quality bar"
-              onSeeAll={() => setFilterFeatured(true)}
-            />
-            <HorizontalRail
-              items={builtForShogo}
-              keyExtractor={(item) => item.slug}
-              itemWidth={260}
-              renderItem={(item) => (
-                <AgentTile
-                  size="featured"
-                  listing={toTileListing(item)}
-                  onPress={() => handleCardPress(item.slug)}
-                />
-              )}
-            />
-          </View>
+          <AgentCollectionSection
+            viewMode={viewMode}
+            title="Built for Shogo"
+            subtitle="Editor-curated agents that meet our quality bar"
+            onSeeAll={() => setFilterFeatured(true)}
+            items={builtForShogo}
+            railTileSize="featured"
+            railItemWidth={260}
+            onPress={handleCardPress}
+          />
         )}
 
         {/* Recommended for you */}
         {recommended.length > 0 && showRails && (
-          <View className="mb-8">
-            <SectionHeader
-              title="Recommended for you"
-              subtitle="Popular agents that match how you work"
-            />
-            <HorizontalRail
-              items={recommended}
-              keyExtractor={(item) => item.slug}
-              itemWidth={220}
-              renderItem={(item) => (
-                <AgentTile
-                  size="medium"
-                  listing={toTileListing(item)}
-                  onPress={() => handleCardPress(item.slug)}
-                />
-              )}
-            />
-          </View>
+          <AgentCollectionSection
+            viewMode={viewMode}
+            title="Recommended for you"
+            subtitle="Popular agents that match how you work"
+            items={recommended}
+            onPress={handleCardPress}
+          />
         )}
 
         {/* Trending */}
         {trending.length > 0 && showRails && (
-          <View className="mb-8">
-            <SectionHeader
-              title="Trending this week"
-              subtitle="Most-installed agents over the last 7 days"
-              onSeeAll={() => setSortMode('popular')}
-            />
-            <HorizontalRail
-              items={trending}
-              keyExtractor={(item) => item.slug}
-              itemWidth={220}
-              renderItem={(item) => (
-                <AgentTile
-                  size="medium"
-                  listing={toTileListing(item)}
-                  onPress={() => handleCardPress(item.slug)}
-                />
-              )}
-            />
-          </View>
+          <AgentCollectionSection
+            viewMode={viewMode}
+            title="Trending this week"
+            subtitle="Most-installed agents over the last 7 days"
+            onSeeAll={() => setSortMode('popular')}
+            items={trending}
+            onPress={handleCardPress}
+          />
         )}
 
         {/* New & noteworthy */}
         {newAgents.length > 0 && showRails && (
-          <View className="mb-8">
-            <SectionHeader
-              title="New & noteworthy"
-              subtitle="Recently published agents from the community"
-              onSeeAll={() => setSortMode('newest')}
-            />
-            <HorizontalRail
-              items={newAgents}
-              keyExtractor={(item) => item.slug}
-              itemWidth={220}
-              renderItem={(item) => (
-                <AgentTile
-                  size="medium"
-                  listing={toTileListing(item)}
-                  onPress={() => handleCardPress(item.slug)}
-                />
-              )}
-            />
-          </View>
+          <AgentCollectionSection
+            viewMode={viewMode}
+            title="New & noteworthy"
+            subtitle="Recently published agents from the community"
+            onSeeAll={() => setSortMode('newest')}
+            items={newAgents}
+            onPress={handleCardPress}
+          />
         )}
 
         {/* Free agents */}
         {freeAgents.length > 0 && showRails && (
-          <View className="mb-8">
-            <SectionHeader
-              title="Free agents"
-              subtitle="Try without paying anything"
-              onSeeAll={() => setFilterFree(true)}
-            />
-            <HorizontalRail
-              items={freeAgents}
-              keyExtractor={(item) => item.slug}
-              itemWidth={220}
-              renderItem={(item) => (
-                <AgentTile
-                  size="medium"
-                  listing={toTileListing(item)}
-                  onPress={() => handleCardPress(item.slug)}
-                />
-              )}
-            />
-          </View>
+          <AgentCollectionSection
+            viewMode={viewMode}
+            title="Free agents"
+            subtitle="Try without paying anything"
+            onSeeAll={() => setFilterFree(true)}
+            items={freeAgents}
+            onPress={handleCardPress}
+          />
         )}
 
         {/* Top creators */}
@@ -440,19 +397,33 @@ export default observer(function MarketplaceHomeScreen() {
               subtitle="Builders earning the most reputation this season"
               onSeeAll={() => router.push('/(app)/marketplace/creators' as any)}
             />
-            <HorizontalRail
-              items={topCreators}
-              keyExtractor={(c) => c.id}
-              itemWidth={210}
-              renderItem={(c) => (
-                <CreatorRailCard
-                  creator={c}
-                  onPress={() =>
-                    router.push(`/(app)/marketplace/creators/${c.id}` as any)
-                  }
-                />
-              )}
-            />
+            {viewMode === 'grid' ? (
+              <HorizontalRail
+                items={topCreators}
+                keyExtractor={(c) => c.id}
+                itemWidth={210}
+                renderItem={(c) => (
+                  <CreatorRailCard
+                    creator={c}
+                    onPress={() =>
+                      router.push(`/(app)/marketplace/creators/${c.id}` as any)
+                    }
+                  />
+                )}
+              />
+            ) : (
+              <View className="px-5 gap-3">
+                {topCreators.map((c) => (
+                  <CreatorRailCard
+                    key={c.id}
+                    creator={c}
+                    onPress={() =>
+                      router.push(`/(app)/marketplace/creators/${c.id}` as any)
+                    }
+                  />
+                ))}
+              </View>
+            )}
           </View>
         )}
 
@@ -520,6 +491,7 @@ export default observer(function MarketplaceHomeScreen() {
     handleCardPress,
     router,
     numColumns,
+    viewMode,
   ])
 
   return (
@@ -643,62 +615,160 @@ export default observer(function MarketplaceHomeScreen() {
           </Pressable>
         </View>
       ) : (
-        <FlatList
-          key={`grid-${viewMode}-${numColumns}`}
-          data={paddedData}
-          keyExtractor={(item, index) => item?.slug ?? `spacer-${index}`}
-          renderItem={renderGridItem}
-          numColumns={viewMode === 'list' ? 1 : numColumns}
-          contentContainerStyle={{
-            paddingBottom: 32,
-            paddingHorizontal: viewMode === 'list' ? 0 : 12,
-          }}
-          ListHeaderComponent={ListHeader}
-          onEndReached={handleLoadMore}
-          onEndReachedThreshold={0.5}
-          ListFooterComponent={
-            loadingMore ? (
-              <View className="py-4 items-center">
-                <ActivityIndicator size="small" />
-              </View>
-            ) : null
-          }
-          ListEmptyComponent={
-            !loading ? (
-              <View className="items-center justify-center py-20 px-6">
-                <Search size={32} color="#a1a1aa" />
-                <Text className="text-foreground font-medium mt-3 mb-1">
-                  No agents found
-                </Text>
-                <Text className="text-muted-foreground text-sm text-center mb-4">
-                  {isSearching
-                    ? `No results for “${searchQuery}”`
-                    : 'Nothing matches the current filters yet.'}
-                </Text>
-                {(filterFeatured || filterFree || activeCategory !== 'all') && (
-                  <Pressable
-                    onPress={() => {
-                      setFilterFeatured(false)
-                      setFilterFree(false)
-                      setActiveCategory('all')
-                    }}
-                    className="border border-border rounded-lg px-3 py-1.5"
-                  >
-                    <Text className="text-xs font-medium text-foreground">
-                      Clear filters
-                    </Text>
-                  </Pressable>
-                )}
-              </View>
-            ) : null
-          }
-        />
+        viewMode === 'grid' ? (
+          <FlatList
+            key={`grid-${numColumns}`}
+            data={paddedData}
+            keyExtractor={(item, index) => item?.slug ?? `spacer-${index}`}
+            renderItem={renderGridItem}
+            numColumns={numColumns}
+            columnWrapperStyle={numColumns > 1 ? { gap: 0 } : undefined}
+            contentContainerStyle={{ paddingBottom: 32, paddingHorizontal: 12 }}
+            ListHeaderComponent={ListHeader}
+            onEndReached={handleLoadMore}
+            onEndReachedThreshold={0.5}
+            ListFooterComponent={
+              loadingMore ? (
+                <View className="py-4 items-center">
+                  <ActivityIndicator size="small" />
+                </View>
+              ) : null
+            }
+            ListEmptyComponent={
+              !loading ? (
+                <View className="items-center justify-center py-20 px-6">
+                  <Search size={32} color="#a1a1aa" />
+                  <Text className="text-foreground font-medium mt-3 mb-1">
+                    No agents found
+                  </Text>
+                  <Text className="text-muted-foreground text-sm text-center mb-4">
+                    {isSearching
+                      ? `No results for “${searchQuery}”`
+                      : 'Nothing matches the current filters yet.'}
+                  </Text>
+                  {(filterFeatured || filterFree || activeCategory !== 'all') && (
+                    <Pressable
+                      onPress={() => {
+                        setFilterFeatured(false)
+                        setFilterFree(false)
+                        setActiveCategory('all')
+                      }}
+                      className="border border-border rounded-lg px-3 py-1.5"
+                    >
+                      <Text className="text-xs font-medium text-foreground">
+                        Clear filters
+                      </Text>
+                    </Pressable>
+                  )}
+                </View>
+              ) : null
+            }
+          />
+        ) : (
+          <FlatList
+            key="list"
+            data={tileListings}
+            keyExtractor={(item) => item.slug}
+            renderItem={renderListItem}
+            contentContainerStyle={{ paddingBottom: 32 }}
+            ListHeaderComponent={ListHeader}
+            onEndReached={handleLoadMore}
+            onEndReachedThreshold={0.5}
+            ListFooterComponent={
+              loadingMore ? (
+                <View className="py-4 items-center">
+                  <ActivityIndicator size="small" />
+                </View>
+              ) : null
+            }
+            ListEmptyComponent={
+              !loading ? (
+                <View className="items-center justify-center py-20 px-6">
+                  <Search size={32} color="#a1a1aa" />
+                  <Text className="text-foreground font-medium mt-3 mb-1">
+                    No agents found
+                  </Text>
+                  <Text className="text-muted-foreground text-sm text-center mb-4">
+                    {isSearching
+                      ? `No results for “${searchQuery}”`
+                      : 'Nothing matches the current filters yet.'}
+                  </Text>
+                  {(filterFeatured || filterFree || activeCategory !== 'all') && (
+                    <Pressable
+                      onPress={() => {
+                        setFilterFeatured(false)
+                        setFilterFree(false)
+                        setActiveCategory('all')
+                      }}
+                      className="border border-border rounded-lg px-3 py-1.5"
+                    >
+                      <Text className="text-xs font-medium text-foreground">
+                        Clear filters
+                      </Text>
+                    </Pressable>
+                  )}
+                </View>
+              ) : null
+            }
+          />
+        )
       )}
     </View>
   )
 })
 
 // ── Sub-components ─────────────────────────────────────────────────
+
+function AgentCollectionSection({
+  viewMode,
+  title,
+  subtitle,
+  items,
+  onSeeAll,
+  onPress,
+  railTileSize = 'medium',
+  railItemWidth = 220,
+}: {
+  viewMode: ViewMode
+  title: string
+  subtitle: string
+  items: ListingFromAPI[]
+  onSeeAll?: () => void
+  onPress: (slug: string) => void
+  railTileSize?: 'featured' | 'medium'
+  railItemWidth?: number
+}) {
+  return (
+    <View className="mb-8">
+      <SectionHeader title={title} subtitle={subtitle} onSeeAll={onSeeAll} />
+      {viewMode === 'grid' ? (
+        <HorizontalRail
+          items={items}
+          keyExtractor={(item) => item.slug}
+          itemWidth={railItemWidth}
+          renderItem={(item) => (
+            <AgentTile
+              size={railTileSize}
+              listing={toTileListing(item)}
+              onPress={() => onPress(item.slug)}
+            />
+          )}
+        />
+      ) : (
+        <View className="px-5 gap-3">
+          {items.map((item) => (
+            <AgentTile
+              key={item.slug}
+              size="compact"
+              listing={toTileListing(item)}
+              onPress={() => onPress(item.slug)}
+            />
+          ))}
+        </View>
+      )}
+    </View>
+  )
+}
 
 function CategoryPill({
   active,
