@@ -42,6 +42,7 @@ import { Readable } from 'node:stream'
 
 import {
   _resetClientForTests,
+  resolveS3ClientConfig,
   _setClientForTests,
   deleteSnapshot,
   extractSnapshotToProject,
@@ -285,5 +286,52 @@ describe('missing S3_WORKSPACES_BUCKET', () => {
     await expect(uploadProjectSnapshot('src', 'lst', '1.0.0')).rejects.toThrow(
       'S3_WORKSPACES_BUCKET',
     )
+  })
+})
+
+// ─── S3 client config ──────────────────────────────────────────
+//
+// These tests guard the OCI staging incident: when S3_ENDPOINT is
+// set, forcePathStyle MUST be true. OCI's virtual-hosted-style URL
+// parser interprets the bucket-name subdomain as a namespace and
+// the first key segment as the bucket, surfacing as
+// `NoSuchBucket: bucket '<key-prefix>' does not exist in the
+// namespace '<bucket>'`. Removing the endpoint-implies-path-style
+// behavior would silently break every snapshot upload on staging
+// and production (any non-AWS S3 backend).
+
+describe('resolveS3ClientConfig', () => {
+  test('AWS-style: no endpoint set, forcePathStyle stays false', () => {
+    const cfg = resolveS3ClientConfig({
+      S3_REGION: 'us-east-1',
+    } as NodeJS.ProcessEnv)
+    expect(cfg.endpoint).toBeUndefined()
+    expect(cfg.forcePathStyle).toBe(false)
+    expect(cfg.region).toBe('us-east-1')
+  })
+
+  test('OCI/MinIO/R2: endpoint set, forcePathStyle forced true', () => {
+    const cfg = resolveS3ClientConfig({
+      S3_REGION: 'us-ashburn-1',
+      S3_ENDPOINT:
+        'https://idin4oltblww.compat.objectstorage.us-ashburn-1.oraclecloud.com',
+    } as NodeJS.ProcessEnv)
+    expect(cfg.endpoint).toBe(
+      'https://idin4oltblww.compat.objectstorage.us-ashburn-1.oraclecloud.com',
+    )
+    expect(cfg.forcePathStyle).toBe(true)
+  })
+
+  test('explicit S3_FORCE_PATH_STYLE=true wins even without an endpoint', () => {
+    const cfg = resolveS3ClientConfig({
+      S3_REGION: 'us-east-1',
+      S3_FORCE_PATH_STYLE: 'true',
+    } as NodeJS.ProcessEnv)
+    expect(cfg.forcePathStyle).toBe(true)
+  })
+
+  test('missing region falls back to us-east-1', () => {
+    const cfg = resolveS3ClientConfig({} as NodeJS.ProcessEnv)
+    expect(cfg.region).toBe('us-east-1')
   })
 })
