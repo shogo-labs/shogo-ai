@@ -126,6 +126,50 @@ describe('generateApiOverview', () => {
   })
 })
 
+describe('exotic field types', () => {
+  // Cover mapFieldType BigInt / Bytes / default arms and the
+  // getExampleValue / getExampleValueTS default + Float/Decimal/Boolean/DateTime/Json arms.
+  const exoticModel = {
+    name: 'Sample',
+    fields: [
+      { name: 'id', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: true, isUnique: false, hasDefaultValue: true },
+      { name: 'amount', kind: 'scalar', type: 'Decimal', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+      { name: 'ratio', kind: 'scalar', type: 'Float', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+      { name: 'flag', kind: 'scalar', type: 'Boolean', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+      { name: 'when', kind: 'scalar', type: 'DateTime', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+      { name: 'meta', kind: 'scalar', type: 'Json', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+      { name: 'big', kind: 'scalar', type: 'BigInt', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+      { name: 'blob', kind: 'scalar', type: 'Bytes', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+      { name: 'mystery', kind: 'scalar', type: 'CustomType', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+    ],
+  } as any
+
+  test('renders BigInt, Bytes and unknown scalar types in the model doc', () => {
+    const file = generateModelDoc(exoticModel, [exoticModel], [], { projectName: 'TestApp', apiBasePath: '/api' })
+    expect(file.content).toContain('bigint')
+    expect(file.content).toContain('Buffer')
+    expect(file.content).toContain('unknown')
+  })
+
+  test('emits example JSON values for Float/Decimal/Boolean/DateTime/Json and default arms', () => {
+    const file = generateModelDoc(exoticModel, [exoticModel], [], { projectName: 'TestApp', apiBasePath: '/api' })
+    expect(file.content).toContain('1.0')
+    expect(file.content).toMatch(/"flag":\s*true/)
+    expect(file.content).toMatch(/"meta":\s*\{\}/)
+    expect(file.content).toContain('2025-01-01T00:00:00Z')
+    expect(file.content).toMatch(/"mystery":\s*null/)
+  })
+
+  test('emits example TS values for Float/Decimal/Boolean/DateTime/Json and default arms', () => {
+    const file = generateModelDoc(exoticModel, [exoticModel], [], { projectName: 'TestApp', apiBasePath: '/api' })
+    expect(file.content).toContain('ratio: 1.0')
+    expect(file.content).toContain('flag: true')
+    expect(file.content).toContain('when: new Date()')
+    expect(file.content).toContain('meta: {}')
+    expect(file.content).toContain('mystery: null')
+  })
+})
+
 describe('generateModelsCategoryMeta', () => {
   test('emits Docusaurus _category_.json', () => {
     const out = generateModelsCategoryMeta()
