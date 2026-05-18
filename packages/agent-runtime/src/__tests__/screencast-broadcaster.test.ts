@@ -124,4 +124,15 @@ describe('screencast-broadcaster', () => {
     expect(() => publish('', makeFrame())).not.toThrow()
     expect(getLastFrame('')).toBeUndefined()
   })
+
+  test('a throwing listener does not break delivery to others', () => {
+    const goodReceived: ScreencastFrame[] = []
+    subscribe('agent-1', () => {
+      throw new Error('bad listener')
+    })
+    subscribe('agent-1', (f) => goodReceived.push(f))
+
+    expect(() => publish('agent-1', makeFrame({ jpegBase64: 'x' }))).not.toThrow()
+    expect(goodReceived).toHaveLength(1)
+  })
 })
