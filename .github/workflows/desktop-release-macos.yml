@@ -179,6 +179,17 @@ jobs:
       - name: Build workspace packages
         run: bun run build:packages
 
+      # `apps/api/src/generated/admin-routes.ts` is git-ignored and produced
+      # by `bun run generate:routes`. The root postinstall tries to run this
+      # during `bun install`, but `@shogo-ai/cli` (which `packages/sdk/bin/shogo.ts`
+      # imports as `@shogo-ai/cli/pkg`) isn't built yet at that point, so it
+      # silently no-ops. Re-running it here — after `build:packages` has built
+      # the CLI — guarantees the generated files exist before `bundle-api.mjs`
+      # imports them at apps/api/src/server.ts:81. Without this, the bundler
+      # fails with `Could not resolve "./generated/admin-routes"`.
+      - name: Generate Hono routes
+        run: bun run generate:routes
+
       - name: Generate Prisma clients (PG + SQLite)
         run: bun run db:generate:all
 
