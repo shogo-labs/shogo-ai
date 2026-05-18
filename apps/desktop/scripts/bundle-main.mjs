@@ -27,9 +27,9 @@
  * left alone because they don't import workspace packages.
  */
 import { execSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DESKTOP_DIR = path.join(__dirname, '..');
@@ -101,7 +101,21 @@ const externalArgs = EXTERNALS.flatMap((p) => ['--external', p]).join(' ');
 
 ensureWorkerSymlink();
 
-const cmd = `bun build "${ENTRY}" --target node --format cjs --outfile "${OUT_FILE}" ${externalArgs}`;
+// Inject `packages/shogo-worker`'s version as a build-time constant so
+// `readWorkerVersion()` in `cloud-login.ts` doesn't have to read its own
+// `package.json` at runtime via `import.meta.url` (which Bun inlines, leaking
+// the build host's path — see the post-bundle safety check below). The
+// matching `declare const __SHOGO_WORKER_VERSION__` lives in cloud-login.ts.
+const workerPkg = JSON.parse(
+  readFileSync(path.join(REPO_ROOT, 'packages', 'shogo-worker', 'package.json'), 'utf8'),
+);
+if (typeof workerPkg.version !== 'string' || workerPkg.version.length === 0) {
+  console.error('[bundle-main] shogo-worker package.json has no version field');
+  process.exit(1);
+}
+const defineArgs = `--define '__SHOGO_WORKER_VERSION__="${workerPkg.version}"'`;
+
+const cmd = `bun build "${ENTRY}" --target node --format cjs --outfile "${OUT_FILE}" ${defineArgs} ${externalArgs}`;
 
 console.log('[bundle-main] running:');
 console.log(`  ${cmd}`);
@@ -114,3 +128,72 @@ try {
 
 const sizeKb = (statSync(OUT_FILE).size / 1024).toFixed(1);
 console.log(`[bundle-main] ✓ wrote dist/main.js (${sizeKb} KB)`);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Post-bundle safety check: refuse to ship a bundle that leaks the build host's
+// absolute path into the output.
+//
+// `bun build --target node --format cjs` rewrites `__dirname`, `__filename`,
+// and `import.meta.url` in each bundled module as string literals captured at
+// build time, NOT as the runtime CJS / ESM builtins Electron's loader sets when
+// it actually requires the file. On a CI runner that means the bundle ships
+// with paths like `/Users/runner/work/<org>/<repo>/apps/desktop/src` hard-coded
+// inside `app.asar` — every consumer's Electron then resolves them against a
+// non-existent directory.
+//
+// v1.7.8 shipped exactly that regression: `preload: path.join(__dirname, ...)`
+// in `main.ts` ended up pointing at the CI runner's source tree, so the
+// preload script never loaded, `window.shogoDesktop` was undefined, and the
+// renderer fell back to a hard-coded `localhost:8002` API URL that doesn't
+// match the packaged app's dynamic API port. The user-visible symptoms were
+// "can't get past onboarding" and "Shogo Cloud signin doesn't complete".
+//
+// Refuse the bundle if it contains the repo root anywhere. The only correct
+// fix at the source level is to derive paths from Electron's `app.getAppPath()`
+// or `process.resourcesPath`, both of which are set at runtime and cannot be
+// inlined by Bun.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const bundleSource = readFileSync(OUT_FILE, 'utf8');
+const forbidden = [
+  // Plain absolute paths to anywhere inside the build checkout. Catches `__dirname`
+  // inlines, `__filename` inlines, and any other path that snuck through.
+  { needle: REPO_ROOT, label: 'REPO_ROOT' },
+  // Same path, encoded as a `file://` URL. Catches `import.meta.url` inlines —
+  // e.g. `new URL('../package.json', import.meta.url)` patterns.
+  { needle: pathToFileURL(REPO_ROOT).href, label: 'REPO_ROOT file:// URL' },
+];
+
+const leaks = forbidden.filter(({ needle }) => bundleSource.includes(needle));
+if (leaks.length > 0) {
+  // Print up to a few examples of each leak so the next maintainer can grep
+  // their way to the offending source file fast.
+  for (const { needle, label } of leaks) {
+    console.error(`[bundle-main] ✗ bundle leaks ${label} (${needle})`);
+    let idx = bundleSource.indexOf(needle);
+    let count = 0;
+    while (idx !== -1 && count < 3) {
+      const start = Math.max(0, idx - 60);
+      const end = Math.min(bundleSource.length, idx + needle.length + 40);
+      const snippet = bundleSource.slice(start, end).replace(/\n/g, '\\n');
+      console.error(`    …${snippet}…`);
+      idx = bundleSource.indexOf(needle, idx + needle.length);
+      count++;
+    }
+  }
+  console.error('');
+  console.error('[bundle-main] Refusing to ship a bundle with build-host paths baked in.');
+  console.error('  Cause: `bun build` inlines `__dirname` / `__filename` / `import.meta.url`');
+  console.error('  as string literals at build time. The packaged app then resolves them on');
+  console.error('  the end-user\'s machine, where those paths do not exist.');
+  console.error('');
+  console.error('  Fix: in any module that gets bundled into dist/main.js, replace');
+  console.error('       `path.join(__dirname, …)` etc. with Electron-supplied runtime APIs:');
+  console.error('         • `app.getAppPath()` for paths inside the app/asar bundle');
+  console.error('         • `process.resourcesPath` for unpacked resources');
+  console.error('         • `app.getPath("userData")` for per-user state');
+  console.error('');
+  process.exit(1);
+}
+
+console.log('[bundle-main] ✓ no build-host paths leaked into bundle');

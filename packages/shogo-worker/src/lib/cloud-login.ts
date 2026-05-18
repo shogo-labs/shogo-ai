@@ -292,14 +292,32 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+// Build-time injected worker version.
+//
+// Bundlers replace this identifier via `--define '__SHOGO_WORKER_VERSION__="x.y.z"'`
+// (see `apps/desktop/scripts/bundle-main.mjs`). When this module is consumed
+// as an unbundled npm library the identifier is undeclared at runtime, and the
+// `typeof` guard returns `'undefined'` without throwing.
+//
+// Previously this used `new URL('../../package.json', import.meta.url)` to
+// read the worker's own `package.json` at runtime. That works in unbundled
+// ESM but fails catastrophically once the worker is bundled into the
+// desktop's `dist/main.js`: Bun / esbuild inline `import.meta.url` as the
+// source file's `file:///...` URL at build time, which leaks the build
+// host's filesystem layout into shipped artifacts and points at a path that
+// doesn't exist on end-user machines. The same problem affects
+// `require.resolve('@shogo-ai/worker/package.json')` (statically analyzed
+// and inlined to a build-time absolute path). Bundle consumers must pass
+// the version in via `--define`; standalone library consumers fall back
+// to an `unknown` tag, which is purely diagnostic (this function feeds a
+// telemetry User-Agent string, nothing load-bearing).
+declare const __SHOGO_WORKER_VERSION__: string | undefined;
+
 function readWorkerVersion(): string {
-  try {
-    const url = new URL('../../package.json', import.meta.url);
-    const pkg = JSON.parse(require('node:fs').readFileSync(url, 'utf-8'));
-    return pkg?.version ? `shogo-cli/${pkg.version}` : 'shogo-cli/unknown';
-  } catch {
-    return 'shogo-cli/unknown';
+  if (typeof __SHOGO_WORKER_VERSION__ === 'string' && __SHOGO_WORKER_VERSION__.length > 0) {
+    return `shogo-cli/${__SHOGO_WORKER_VERSION__}`;
   }
+  return 'shogo-cli/unknown';
 }
 
 function openInBrowser(url: string): Promise<void> {

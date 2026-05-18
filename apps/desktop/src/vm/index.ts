@@ -66,8 +66,19 @@ function isElectron(): boolean {
   } catch { return false }
 }
 
+// Resolve to `apps/desktop/` at runtime. Avoid `path.resolve(__dirname, ...)`
+// here: this module gets bundled into the desktop's `dist/main.js` by
+// `scripts/bundle-main.mjs`, and `bun build` inlines `__dirname` as a
+// build-time absolute path string (e.g. `/Users/runner/work/.../src/vm`).
+// `app.getAppPath()` is supplied by Electron at runtime and returns
+// `apps/desktop/` in dev — exactly what `path.resolve(__dirname, '..', '..')`
+// used to compute. Outside Electron (e.g. unit tests), allow callers to
+// pin the directory via `SHOGO_DESKTOP_ROOT` and fall back to `process.cwd()`.
 function getDesktopRoot(): string {
-  return path.resolve(__dirname, '..', '..')
+  if (isElectron()) {
+    return require('electron').app.getAppPath()
+  }
+  return process.env.SHOGO_DESKTOP_ROOT || process.cwd()
 }
 
 export function getVMImageDir(): string {
