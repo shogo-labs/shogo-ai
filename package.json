@@ -61,6 +61,7 @@
     "lint": "echo 'No repo-wide lint configured; per-package lint runs in package-specific CI steps.'",
     "test": "bun --no-env-file scripts/run-all-tests.ts",
     "test:coverage": "bun --no-env-file scripts/run-all-tests.ts --coverage",
+    "test:coverage:check": "SHOGO_COVERAGE_STRICT=1 bun --no-env-file scripts/run-all-tests.ts --coverage",
     "test:e2e:hosted": "npx playwright test --config e2e/playwright.config.ts",
     "test:e2e:hosted:ui": "npx playwright test --config e2e/playwright.config.ts --ui",
     "test:e2e:local": "npx playwright test --config e2e/local/playwright.config.ts",
