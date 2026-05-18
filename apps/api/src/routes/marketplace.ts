@@ -4,6 +4,7 @@
 import { Hono } from 'hono'
 import { prisma, PricingModel, type Prisma } from '../lib/prisma'
 import type { AuthContext } from '../middleware/auth'
+import { requireMarketplaceFeature } from '../middleware/marketplace-feature'
 import * as marketplaceService from '../services/marketplace.service'
 import * as installService from '../services/marketplace-install.service'
 import { snapshotProjectWorkspace } from '../services/marketplace-manifest.service'
@@ -263,7 +264,7 @@ export function marketplaceRoutes() {
     }
   })
 
-  app.post('/installs/:installId/update', async (c) => {
+  app.post('/installs/:installId/update', requireMarketplaceFeature, async (c) => {
     const authCtx = c.get('auth') as AuthContext | undefined
     if (!authCtx?.isAuthenticated || !authCtx.userId) {
       return c.json({ error: 'Unauthorized' }, 401)
@@ -467,7 +468,7 @@ export function marketplaceRoutes() {
     }
   })
 
-  app.post('/creator/listings', async (c) => {
+  app.post('/creator/listings', requireMarketplaceFeature, async (c) => {
     const authCtx = c.get('auth') as AuthContext | undefined
     if (!authCtx?.isAuthenticated || !authCtx.userId) {
       return c.json({ error: 'Unauthorized' }, 401)
@@ -522,7 +523,7 @@ export function marketplaceRoutes() {
     }
   })
 
-  app.post('/creator/listings/:id/publish', async (c) => {
+  app.post('/creator/listings/:id/publish', requireMarketplaceFeature, async (c) => {
     const authCtx = c.get('auth') as AuthContext | undefined
     if (!authCtx?.isAuthenticated || !authCtx.userId) {
       return c.json({ error: 'Unauthorized' }, 401)
@@ -581,7 +582,7 @@ export function marketplaceRoutes() {
     }
   })
 
-  app.post('/creator/listings/:id/versions', async (c) => {
+  app.post('/creator/listings/:id/versions', requireMarketplaceFeature, async (c) => {
     const authCtx = c.get('auth') as AuthContext | undefined
     if (!authCtx?.isAuthenticated || !authCtx.userId) {
       return c.json({ error: 'Unauthorized' }, 401)
@@ -715,7 +716,7 @@ export function marketplaceRoutes() {
   // in so the admin sees fresh findings. A failed audit (errored)
   // does not block submission — admins still need to see the
   // listing.
-  app.post('/creator/listings/:id/submit-for-review', async (c) => {
+  app.post('/creator/listings/:id/submit-for-review', requireMarketplaceFeature, async (c) => {
     const authCtx = c.get('auth') as AuthContext | undefined
     if (!authCtx?.isAuthenticated || !authCtx.userId) {
       return c.json({ error: 'Unauthorized' }, 401)
@@ -792,7 +793,7 @@ export function marketplaceRoutes() {
     }
   })
 
-  app.post('/:slug/install', async (c) => {
+  app.post('/:slug/install', requireMarketplaceFeature, async (c) => {
     const authCtx = c.get('auth') as AuthContext | undefined
     if (!authCtx?.isAuthenticated || !authCtx.userId) {
       return c.json({ error: 'Unauthorized' }, 401)

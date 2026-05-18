@@ -6779,43 +6779,26 @@ await (async () => {
   }
 })()
 
-// Run the templates → marketplace data migration on every boot. The
-// script is idempotent (every write is upsert-shaped), so a no-op on
-// the second+ run. We deliberately swallow errors here: a failed
-// migration must not gate the API from accepting requests, since the
-// fallback (no marketplace listings for built-in templates) only
-// affects the marketplace surface, not the wider product. The script
-// can be re-invoked manually via
-// `bun apps/api/scripts/migrate-templates-to-marketplace.ts`.
-//
-// Skipped in test environments to keep test boot times tight.
-if (process.env.NODE_ENV !== 'test' && process.env.SHOGO_SKIP_TEMPLATE_MIGRATION !== 'true') {
+// Boot-time data migration chain (templates → marketplace, then S3
+// snapshot backfill). The implementation lives in
+// `lib/boot-marketplace-migrations.ts` so the ordering invariant
+// (step 2 must observe step 1's writes) is unit-testable. Skipped in
+// test environments to keep test boot times tight; either step can
+// be individually disabled via the `SHOGO_SKIP_*` env vars (used as a
+// kill-switch during incidents).
+if (process.env.NODE_ENV !== 'test') {
   void (async () => {
-    try {
-      const { runMigration } = await import('../scripts/migrate-templates-to-marketplace')
-      await runMigration({ quiet: true })
-    } catch (err: any) {
-      console.error('[BootMigrate] templates → marketplace migration failed (non-fatal):', err.message)
-    }
-  })()
-}
-
-// JSON-snapshot → S3 backfill. Picks up versions that still have a
-// jsonb `workspaceSnapshot` but no `workspaceSnapshotKey` and uploads
-// them to S3. Must run AFTER the templates → marketplace migration
-// (above) because that's what creates v1.0.0 rows in the first
-// place. Both are idempotent and run sequentially under the same
-// non-test guard. Skipped automatically when S3 isn't configured.
-if (process.env.NODE_ENV !== 'test' && process.env.SHOGO_SKIP_SNAPSHOT_BACKFILL !== 'true') {
-  void (async () => {
-    try {
-      const { runSnapshotBackfill } = await import(
-        '../scripts/backfill-marketplace-snapshots-to-s3'
-      )
-      await runSnapshotBackfill({ quiet: true })
-    } catch (err: any) {
-      console.error('[BootMigrate] snapshot S3 backfill failed (non-fatal):', err.message)
-    }
+    const { runBootMarketplaceMigrations } = await import('./lib/boot-marketplace-migrations')
+    await runBootMarketplaceMigrations({
+      loadRunMigration: async () =>
+        (await import('../scripts/migrate-templates-to-marketplace')).runMigration,
+      loadRunSnapshotBackfill: async () =>
+        (await import('../scripts/backfill-marketplace-snapshots-to-s3')).runSnapshotBackfill,
+      env: {
+        SHOGO_SKIP_TEMPLATE_MIGRATION: process.env.SHOGO_SKIP_TEMPLATE_MIGRATION,
+        SHOGO_SKIP_SNAPSHOT_BACKFILL: process.env.SHOGO_SKIP_SNAPSHOT_BACKFILL,
+      },
+    })
   })()
 }
 

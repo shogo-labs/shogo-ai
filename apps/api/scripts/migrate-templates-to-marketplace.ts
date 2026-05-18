@@ -50,9 +50,10 @@ import { join, resolve } from 'node:path'
 
 import { prisma } from '../src/lib/prisma'
 import {
-  computeWorkspaceManifest,
+  computeSnapshotManifest,
   snapshotProjectWorkspace,
 } from '../src/services/marketplace-manifest.service'
+import { loadSnapshotFiles } from '../src/services/marketplace-snapshot-storage.service'
 
 // ─── Constants ────────────────────────────────────────────────────────────
 
@@ -489,9 +490,28 @@ interface BackfillStats {
 
 /**
  * For every `Project` whose `templateId` matches a real listing slug,
- * create a `MarketplaceInstall` row capturing the current on-disk
- * baseline. Existing installs are left alone so updates never silently
- * regress the baseline manifest.
+ * create a `MarketplaceInstall` row capturing the install-time
+ * baseline manifest. Existing installs are left alone so updates
+ * never silently regress the baseline manifest.
+ *
+ * Baseline source: the listing's v1.0.0 snapshot manifest, NOT the
+ * API pod's local disk. The local-disk approach the original
+ * implementation used breaks on multi-pod k8s — legacy projects'
+ * workspaces live on warm-pool runtime pods and sync through S3, so
+ * the API pod's `workspaces/<projectId>/` is empty at backfill time.
+ * `computeWorkspaceManifest` would then return `{}`, which is truthy,
+ * which means `applyUpdate` later flags every file in the new version
+ * as `added` and surfaces `drift_detected` to the user, blocking the
+ * update unless they click "force overwrite". Using the listing
+ * version's snapshot manifest gives the semantically correct
+ * "as-of-install" baseline — for an unmodified project this matches
+ * the new version's manifest exactly, so drift detection reports
+ * zero changes and updates flow through cleanly.
+ *
+ * The S3 tarball is the source of truth when present (the
+ * post-consolidation shape); we fall back to the legacy jsonb
+ * snapshot field if `workspaceSnapshotKey` isn't yet populated (the
+ * race window between this function and `runSnapshotBackfill`).
  */
 async function backfillInstalls(
   templateIdToListing: Map<string, string>,
@@ -504,6 +524,28 @@ async function backfillInstalls(
     skippedAlreadyInstalled: 0,
     skippedNoOwner: 0,
     skippedSeedMarker: 0,
+  }
+
+  // Pre-compute the SEED_VERSION snapshot manifest for every listing
+  // we might back-fill against. Keyed by listingId so the per-project
+  // loop is a Map lookup instead of N×M database hits. Snapshots can
+  // be MB-scale, so we hold the manifest (a flat string→hash map ≈
+  // 80 bytes/file) and let the snapshot bytes themselves go.
+  const baselineByListing = new Map<string, Record<string, string>>()
+  for (const listingId of new Set(templateIdToListing.values())) {
+    try {
+      const manifest = await loadVersionBaselineManifest(listingId, SEED_VERSION)
+      if (manifest) baselineByListing.set(listingId, manifest)
+    } catch (err) {
+      // Per-listing failures must not abort the whole backfill — fall
+      // back to an empty manifest for this listing's installs (they'll
+      // skip the drift gate via the empty-baseline guard in
+      // `applyUpdate`).
+      console.warn(
+        `[migrate-templates] failed to load baseline manifest for listing=${listingId}:`,
+        (err as Error).message,
+      )
+    }
   }
 
   // Pull projects with non-null templateId. SELECTed columns kept narrow
@@ -555,7 +597,7 @@ async function backfillInstalls(
       continue
     }
 
-    const baselineManifest = computeWorkspaceManifest(project.id)
+    const baselineManifest = baselineByListing.get(listingId) ?? {}
 
     if (!dryRun) {
       await prisma.marketplaceInstall.create({
@@ -575,6 +617,48 @@ async function backfillInstalls(
   }
 
   return stats
+}
+
+/**
+ * Load the sha256-keyed manifest for a listing version's snapshot —
+ * S3 first (the post-consolidation shape), legacy jsonb fallback for
+ * the race window between `runMigration` and `runSnapshotBackfill`.
+ * Returns null if neither source has the snapshot.
+ */
+async function loadVersionBaselineManifest(
+  listingId: string,
+  version: string,
+): Promise<Record<string, string> | null> {
+  const row = await prisma.marketplaceListingVersion.findFirst({
+    where: { listingId, version },
+    select: {
+      workspaceSnapshot: true,
+      workspaceSnapshotKey: true,
+      workspaceSnapshotChecksum: true,
+    },
+  })
+  if (!row) return null
+
+  if (row.workspaceSnapshotKey) {
+    try {
+      const files = await loadSnapshotFiles(
+        row.workspaceSnapshotKey,
+        row.workspaceSnapshotChecksum ?? undefined,
+      )
+      return computeSnapshotManifest({ files })
+    } catch (err) {
+      console.warn(
+        `[migrate-templates] S3 snapshot fetch failed for listing=${listingId} version=${version}:`,
+        (err as Error).message,
+      )
+      // fall through to legacy jsonb path
+    }
+  }
+
+  if (row.workspaceSnapshot != null) {
+    return computeSnapshotManifest(row.workspaceSnapshot)
+  }
+  return null
 }
 
 // ─── Entrypoints ─────────────────────────────────────────────────────────
