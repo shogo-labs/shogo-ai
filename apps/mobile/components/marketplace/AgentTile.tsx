@@ -117,7 +117,7 @@ function SpotlightTile({ listing, onPress }: { listing: AgentTileListing; onPres
               />
               <View className="flex-row items-center gap-1 rounded-full bg-foreground px-3 py-1.5">
                 <Text className="text-xs font-semibold text-background">View</Text>
-                <ArrowRight size={12} color="#fff" />
+                <ArrowRight size={12} className="text-background" />
               </View>
             </View>
           </View>
