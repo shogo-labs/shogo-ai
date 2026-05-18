@@ -409,14 +409,20 @@ function main() {
       for (const pkg of BACKEND_PACKAGES) {
         backendArgs.push('--include-package', pkg)
       }
+      // Floors ratcheted to current `coverage/summary.json` actuals
+      // (Phase 0 of the 100%-coverage roadmap — see docs/testing.md
+      // and COVERAGE_EXCLUSIONS.md). Numbers move UP only; each phase
+      // ratchets the floor for the package(s) it touched so coverage
+      // can never silently regress. Aggregate floor tracks the current
+      // backend roll-up (70.31% lines / 76.69% funcs as of 2026-05-15).
       backendArgs.push(
-        '--threshold-line', '0.7',
-        '--threshold-function', '0.7',
-        '--per-package-floor', 'apps/api:0.55',
-        '--per-package-floor', 'packages/agent-runtime:0.6',
-        '--per-package-floor', 'packages/shared-runtime:0.55',
-        '--per-package-floor', 'packages/sdk:0.7',
-        '--per-package-floor', 'packages/model-catalog:0.9',
+        '--threshold-line', '0.70',
+        '--threshold-function', '0.76',
+        '--per-package-floor', 'apps/api:0.72',
+        '--per-package-floor', 'packages/agent-runtime:0.64',
+        '--per-package-floor', 'packages/shared-runtime:0.68',
+        '--per-package-floor', 'packages/sdk:0.86',
+        '--per-package-floor', 'packages/model-catalog:1.0',
       )
       backendArgs.push(...allLcovs)
       const backendMerge = spawnSync('bun', backendArgs, { stdio: 'inherit' })
