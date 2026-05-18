@@ -36,6 +36,13 @@ import {
   type CreatorTier,
 } from '../../../components/marketplace'
 import { MARKETPLACE_CATEGORIES, type MarketplaceCategory } from '@shogo/shared-app'
+import { cn } from '@shogo/shared-ui/primitives'
+import {
+  Popover,
+  PopoverBackdrop,
+  PopoverBody,
+  PopoverContent,
+} from '@/components/ui/popover'
 import { useGridColumns } from '../../../hooks/useGridColumns'
 
 interface ListingFromAPI {
@@ -762,39 +769,45 @@ function SortMenu({
   onChange: (v: SortMode) => void
 }) {
   return (
-    <View className="relative">
-      <Pressable
-        onPress={() => onOpenChange(!open)}
-        className="flex-row items-center gap-1.5 px-3 h-11 rounded-xl border border-border bg-card"
-      >
-        <Text className="text-xs font-medium text-foreground">
-          {SORT_LABELS[value]}
-        </Text>
-        <ChevronDown size={12} color="#71717a" />
-      </Pressable>
-      {open && (
-        <View
-          className="absolute right-0 top-12 rounded-xl border border-border bg-card overflow-hidden shadow-lg"
-          style={{ width: 160, zIndex: 50 }}
+    <Popover
+      placement="bottom right"
+      isOpen={open}
+      onOpen={() => onOpenChange(true)}
+      onClose={() => onOpenChange(false)}
+      trigger={(triggerProps) => (
+        <Pressable
+          {...triggerProps}
+          className="flex-row items-center gap-1.5 px-3 h-11 rounded-xl border border-input bg-card"
         >
+          <Text className="text-xs font-medium text-foreground">
+            {SORT_LABELS[value]}
+          </Text>
+          <ChevronDown size={12} color="#71717a" />
+        </Pressable>
+      )}
+    >
+      <PopoverBackdrop />
+      <PopoverContent className="p-0 min-w-[160px]">
+        <PopoverBody>
           {(Object.keys(SORT_LABELS) as SortMode[]).map((k) => (
             <Pressable
               key={k}
               onPress={() => onChange(k)}
-              className={`px-3 py-2.5 active:bg-muted ${k === value ? 'bg-muted/50' : ''}`}
+              className={cn('px-3 py-2 active:bg-muted', k === value && 'bg-accent')}
             >
               <Text
-                className={`text-xs ${
-                  k === value ? 'text-foreground font-semibold' : 'text-foreground'
-                }`}
+                className={cn(
+                  'text-xs',
+                  k === value ? 'text-foreground font-medium' : 'text-foreground',
+                )}
               >
                 {SORT_LABELS[k]}
               </Text>
             </Pressable>
           ))}
-        </View>
-      )}
-    </View>
+        </PopoverBody>
+      </PopoverContent>
+    </Popover>
   )
 }
 
