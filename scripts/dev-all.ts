@@ -9,7 +9,11 @@
  *  3. Regenerate the Prisma client(s) so any new models added to the
  *     schema since the last `bun install` are visible at runtime.
  *  4. Generate SDK routes/types/stores from the Prisma schema.
- *  5. Start the API and web dev servers via concurrently.
+ *  5. Build `packages/sdk` so its `dist/` is in sync with `src/` before
+ *     the API boots. The API imports `@shogo-ai/sdk` from `dist/index.js`
+ *     and a stale dist surfaces as an opaque "Export named 'X' not found"
+ *     SyntaxError that crash-loops watch-api. Skip with SHOGO_SKIP_SDK_BUILD=1.
+ *  6. Start the API and web dev servers via concurrently.
  */
 
 import { spawn, spawnSync, type Subprocess } from "bun";
@@ -230,7 +234,41 @@ async function generateRoutes() {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Start API + web dev servers
+// 5. Build packages/sdk so dist/ matches src/
+//
+// `apps/api` (and downstream consumers like `packages/agent-runtime`) imports
+// `@shogo-ai/sdk` and resolves to `packages/sdk/dist/index.js` per the
+// package's `exports` map. If `dist/` is stale relative to `src/` — which
+// happens after pulling main, deleting node_modules, or aborting an install
+// mid-postinstall — the API crash-loops with a `SyntaxError: Export named
+// 'X' not found in module .../sdk/dist/index.js`. Always rebuilding here
+// keeps `dev:all` self-healing without forcing devs to remember a manual
+// `bun run build:sdk`. tsup's incremental cache makes warm rebuilds cheap.
+// ---------------------------------------------------------------------------
+
+async function buildSdk() {
+  if (process.env.SHOGO_SKIP_SDK_BUILD === "1") {
+    console.log("[dev:all] SHOGO_SKIP_SDK_BUILD=1 — skipping SDK build.");
+    return;
+  }
+  console.log("[dev:all] Building packages/sdk…");
+  const proc = spawn({
+    cmd: ["bun", "run", "--cwd", "packages/sdk", "build"],
+    cwd: ROOT,
+    stdout: "inherit",
+    stderr: "inherit",
+    env: { ...process.env },
+  });
+  const code = await proc.exited;
+  if (code !== 0) {
+    console.error("[dev:all] SDK build failed — aborting.");
+    process.exit(code);
+  }
+  console.log("[dev:all] SDK built.");
+}
+
+// ---------------------------------------------------------------------------
+// 6. Start API + web dev servers
 // ---------------------------------------------------------------------------
 
 async function startDevServers() {
@@ -287,4 +325,5 @@ await Promise.all([killProcessOnPort(API_PORT), killProcessOnPort(WEB_PORT)]);
 await migrate();
 await generatePrismaClients();
 await generateRoutes();
+await buildSdk();
 await startDevServers();
