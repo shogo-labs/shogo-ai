@@ -26,7 +26,7 @@
  * Other tsc outputs in `dist/` (preload.js, local-server.js, …) are
  * left alone because they don't import workspace packages.
  */
-import { execSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -97,8 +97,6 @@ const EXTERNALS = [
   'ps-list',
 ];
 
-const externalArgs = EXTERNALS.flatMap((p) => ['--external', p]).join(' ');
-
 ensureWorkerSymlink();
 
 // Inject `packages/shogo-worker`'s version as a build-time constant so
@@ -113,17 +111,44 @@ if (typeof workerPkg.version !== 'string' || workerPkg.version.length === 0) {
   console.error('[bundle-main] shogo-worker package.json has no version field');
   process.exit(1);
 }
-const defineArgs = `--define '__SHOGO_WORKER_VERSION__="${workerPkg.version}"'`;
 
-const cmd = `bun build "${ENTRY}" --target node --format cjs --outfile "${OUT_FILE}" ${defineArgs} ${externalArgs}`;
+// Build the bun invocation as an argv array and run via `spawnSync` with
+// `shell: false`. We deliberately do NOT shell-interpolate the command.
+//
+// Why: `--define KEY="value"` requires the literal double quotes around the
+// value to survive into bun's argv so bun parses the value as a JSON string.
+// In a Unix shell those quotes are normally protected by wrapping the whole
+// arg in single quotes: `'KEY="value"'`. On Windows `cmd.exe` (which Node's
+// `execSync` invokes for the inner shell regardless of how Node was started)
+// single quotes are NOT metacharacters — they're passed through literally to
+// the child. Bun then sees the key as `'KEY` (with leading apostrophe) and
+// fails with `define key "'KEY" must be a valid identifier`. v1.7.9's
+// Windows build (run #26030373327) died exactly there.
+//
+// Passing an argv array sidesteps every shell entirely: Node hands the args
+// directly to CreateProcess on Windows / execvp on Unix. Bun receives one
+// argv entry `__SHOGO_WORKER_VERSION__="0.0.0"` with the inner quotes intact,
+// regardless of platform.
+const args = [
+  'build',
+  ENTRY,
+  '--target', 'node',
+  '--format', 'cjs',
+  '--outfile', OUT_FILE,
+  '--define', `__SHOGO_WORKER_VERSION__="${workerPkg.version}"`,
+  ...EXTERNALS.flatMap((p) => ['--external', p]),
+];
 
 console.log('[bundle-main] running:');
-console.log(`  ${cmd}`);
-try {
-  execSync(cmd, { cwd: DESKTOP_DIR, stdio: 'inherit' });
-} catch (err) {
-  console.error('[bundle-main] bun build failed');
+console.log(`  bun ${args.map((a) => (/\s|"/.test(a) ? JSON.stringify(a) : a)).join(' ')}`);
+const result = spawnSync('bun', args, { cwd: DESKTOP_DIR, stdio: 'inherit', shell: false });
+if (result.error) {
+  console.error('[bundle-main] failed to invoke bun:', result.error.message);
   process.exit(1);
+}
+if (result.status !== 0) {
+  console.error(`[bundle-main] bun build failed (exit ${result.status ?? 'signal:' + result.signal})`);
+  process.exit(result.status ?? 1);
 }
 
 const sizeKb = (statSync(OUT_FILE).size / 1024).toFixed(1);
@@ -163,6 +188,19 @@ const forbidden = [
   // e.g. `new URL('../package.json', import.meta.url)` patterns.
   { needle: pathToFileURL(REPO_ROOT).href, label: 'REPO_ROOT file:// URL' },
 ];
+
+// On Windows, REPO_ROOT contains `\` separators (e.g.
+// `D:\a\shogo-ai\shogo-ai`). When Bun emits an inlined path as a JS string
+// literal, those backslashes get JS-escaped to `\\`, so a plain
+// `bundleSource.includes(REPO_ROOT)` against the source would miss the leak.
+// Add the doubly-backslashed form so the safety net actually fires on Windows
+// CI, not just macOS/Linux.
+if (path.sep === '\\') {
+  forbidden.push({
+    needle: REPO_ROOT.replace(/\\/g, '\\\\'),
+    label: 'REPO_ROOT (JS-escaped backslashes)',
+  });
+}
 
 const leaks = forbidden.filter(({ needle }) => bundleSource.includes(needle));
 if (leaks.length > 0) {
