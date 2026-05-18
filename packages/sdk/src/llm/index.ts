@@ -32,8 +32,22 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 export const DEFAULT_SHOGO_CLOUD_URL = 'https://studio.shogo.ai'
 
 export interface CreateShogoLlmProviderOptions {
-  /** Shogo API key (starts with `shogo_sk_`). Sent as `Authorization: Bearer <key>`. */
-  apiKey: string
+  /**
+   * Shogo API key (starts with `shogo_sk_`). Sent as `Authorization: Bearer <key>`.
+   * Mutually exclusive with {@link runtimeToken}; exactly one must be set.
+   */
+  apiKey?: string
+  /**
+   * Per-project runtime token (`rt_v1_<projectId>_<hmac>`) injected into
+   * Shogo-managed pods as `RUNTIME_AUTH_SECRET`. Sent as
+   * `Authorization: Bearer <token>` and verified server-side by the
+   * AI proxy's runtime-token branch. Mutually exclusive with
+   * {@link apiKey}; exactly one must be set.
+   *
+   * Use this when the SDK runs inside a pod and you want zero-config
+   * LLM access — no `shogo_sk_*` minting required.
+   */
+  runtimeToken?: string
   /**
    * Override the Shogo Cloud base URL (without the `/api/ai/v1` suffix).
    * Defaults to {@link DEFAULT_SHOGO_CLOUD_URL}. Useful for staging / self-hosted
@@ -42,7 +56,7 @@ export interface CreateShogoLlmProviderOptions {
   baseUrl?: string
   /**
    * Extra headers appended to every request. Added _after_ the `Authorization`
-   * header set from `apiKey`, so they can override it if needed.
+   * header set from `apiKey` / `runtimeToken`, so they can override it if needed.
    */
   headers?: Record<string, string>
   /** Custom fetch implementation (e.g. for tests or edge runtimes). */
@@ -77,11 +91,23 @@ export type ShogoLlmProvider = ReturnType<typeof createOpenAICompatible>
 export function createShogoLlmProvider(
   opts: CreateShogoLlmProviderOptions,
 ): ShogoLlmProvider {
+  const hasApiKey = Boolean(opts.apiKey)
+  const hasRuntimeToken = Boolean(opts.runtimeToken)
+  if (hasApiKey === hasRuntimeToken) {
+    throw new Error(
+      hasApiKey
+        ? 'createShogoLlmProvider: pass exactly one of `apiKey` or `runtimeToken`, not both.'
+        : 'createShogoLlmProvider: one of `apiKey` or `runtimeToken` is required.',
+    )
+  }
   const root = (opts.baseUrl ?? DEFAULT_SHOGO_CLOUD_URL).replace(/\/$/, '')
   return createOpenAICompatible({
     name: 'shogo',
     baseURL: `${root}/api/ai/v1`,
-    apiKey: opts.apiKey,
+    // Both credentials ride as `Authorization: Bearer <token>`. The Shogo
+    // AI proxy distinguishes by prefix server-side: `shogo_sk_*` →
+    // workspace API key, `rt_v1_*` → per-project runtime token.
+    apiKey: (opts.apiKey ?? opts.runtimeToken)!,
     headers: opts.headers,
     fetch: opts.fetch,
     includeUsage: opts.includeUsage ?? true,
