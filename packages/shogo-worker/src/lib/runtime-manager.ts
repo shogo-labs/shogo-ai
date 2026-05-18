@@ -116,7 +116,16 @@ export type RuntimeBinResolver = () => ResolvedRuntime | null;
 export interface WorkerRuntimeManagerOptions {
   /** `--runtime-bin <path>` flag value if any (forwarded to resolveRuntime). */
   runtimeBin?: string;
-  /** Idle window in ms before evicting an unused runtime (default 15min). */
+  /**
+   * Idle window in ms before evicting an unused runtime (default 15min).
+   *
+   * Pass `0`, a negative number, or `Infinity` to disable idle eviction
+   * entirely. The desktop / `SHOGO_LOCAL_MODE=true` path uses this to
+   * keep long-running chat streams alive past 15min of agent-proxy
+   * silence — eviction in that environment cuts the user's stream
+   * mid-flight (only one user, no resource pressure to recycle for).
+   * Cloud workers leave this unset so the default still fires.
+   */
   idleMs?: number;
   /** Optional logger. Defaults to console. */
   logger?: Pick<Console, 'log' | 'warn' | 'error'>;
@@ -994,8 +1003,15 @@ export class WorkerRuntimeManager implements RuntimeResolver {
   }
 
   private armIdleTimer(slot: InternalRuntime): void {
-    if (slot.idleTimer) clearTimeout(slot.idleTimer);
+    if (slot.idleTimer) {
+      clearTimeout(slot.idleTimer);
+      slot.idleTimer = null;
+    }
     const idleMs = this.opts.idleMs ?? RUNTIME_IDLE_MS;
+    // `idleMs <= 0` or non-finite disables eviction. Used by desktop /
+    // `SHOGO_LOCAL_MODE=true` where reaping a "stale" runtime really
+    // means killing the in-flight chat stream of the only user.
+    if (!Number.isFinite(idleMs) || idleMs <= 0) return;
     slot.idleTimer = setTimeout(() => {
       const since = Date.now() - slot.lastUsedAt;
       if (since < idleMs) {
