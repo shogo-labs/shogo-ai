@@ -101,7 +101,21 @@ const externalArgs = EXTERNALS.flatMap((p) => ['--external', p]).join(' ');
 
 ensureWorkerSymlink();
 
-const cmd = `bun build "${ENTRY}" --target node --format cjs --outfile "${OUT_FILE}" ${externalArgs}`;
+// Inject `packages/shogo-worker`'s version as a build-time constant so
+// `readWorkerVersion()` in `cloud-login.ts` doesn't have to read its own
+// `package.json` at runtime via `import.meta.url` (which Bun inlines, leaking
+// the build host's path — see the post-bundle safety check below). The
+// matching `declare const __SHOGO_WORKER_VERSION__` lives in cloud-login.ts.
+const workerPkg = JSON.parse(
+  readFileSync(path.join(REPO_ROOT, 'packages', 'shogo-worker', 'package.json'), 'utf8'),
+);
+if (typeof workerPkg.version !== 'string' || workerPkg.version.length === 0) {
+  console.error('[bundle-main] shogo-worker package.json has no version field');
+  process.exit(1);
+}
+const defineArgs = `--define '__SHOGO_WORKER_VERSION__="${workerPkg.version}"'`;
+
+const cmd = `bun build "${ENTRY}" --target node --format cjs --outfile "${OUT_FILE}" ${defineArgs} ${externalArgs}`;
 
 console.log('[bundle-main] running:');
 console.log(`  ${cmd}`);
