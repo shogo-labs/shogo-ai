@@ -1,0 +1,18 @@
+diff --git a/android/src/play/java/com/dooboolab/rniap/RNIapModule.kt b/android/src/play/java/com/dooboolab/rniap/RNIapModule.kt
+index 0000000000000000000000000000000000000000..1111111111111111111111111111111111111111 100644
+--- a/android/src/play/java/com/dooboolab/rniap/RNIapModule.kt
++++ b/android/src/play/java/com/dooboolab/rniap/RNIapModule.kt
+@@ -461,7 +461,12 @@ class RNIapModule(
+         isOfferPersonalized: Boolean, // New parameter in V5
+         promise: Promise,
+     ) {
+-        val activity = currentActivity
++        // React Native 0.80 converted ReactContextBaseJavaModule from Java to
++        // Kotlin. `getCurrentActivity()` is now a Kotlin function (not a Java
++        // getter), so the implicit `currentActivity` property accessor no
++        // longer exists on this class. Go through reactApplicationContext,
++        // whose `currentActivity` Kotlin property still resolves to Activity?.
++        val activity = reactApplicationContext.currentActivity
+         if (activity == null) {
+             promise.safeReject(PromiseUtils.E_UNKNOWN, "getCurrentActivity returned null")
+             return

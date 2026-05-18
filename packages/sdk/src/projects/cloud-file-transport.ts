@@ -122,6 +122,24 @@ export interface FsAdapter {
  * Lazy default `FsAdapter` backed by `node:fs/promises`. Only loaded
  * inside Node-like environments (when `globalThis.process` exists).
  * Throws a friendly error if called in a browser bundle.
+ *
+ * IMPORTANT — why `new Function(...)` instead of a plain `await import(...)`:
+ *
+ * Metro (React Native), webpack, esbuild and rollup all perform STATIC
+ * module-graph analysis on `import()` calls whose argument is a string
+ * literal. A literal `await import('node:fs/promises')` here is treated
+ * as a hard dependency of the bundle even though it's only reachable in
+ * Node at runtime. RN's bundler then fails the iOS / Android bundle with
+ *   `Unable to resolve module fs/promises from packages/sdk/dist/index.js`
+ * because Metro doesn't understand the `node:` scheme and tsup strips
+ * the prefix in `dist/index.js`. (See android-build run #26016279560.)
+ *
+ * Wrapping the dynamic import in `new Function(...)` makes the argument
+ * an opaque string literal inside a function body — bundlers do not look
+ * inside `Function` constructors, so the spec is invisible to static
+ * analysis. At runtime, the host's native `import()` still resolves it
+ * exactly as before in Node/Bun, and the surrounding `isNode` guard
+ * guarantees we never reach this line in a browser/RN runtime.
  */
 async function getDefaultFs(): Promise<FsAdapter> {
   const isNode = typeof globalThis !== 'undefined' && typeof (globalThis as any).process?.versions?.node === 'string'
@@ -131,7 +149,10 @@ async function getDefaultFs(): Promise<FsAdapter> {
         'Provide `fs` in CloudFileTransportOptions when running outside Node/Bun.',
     )
   }
-  const mod = await import('node:fs/promises')
+  const bundlerOpaqueImport = new Function('s', 'return import(s)') as (
+    spec: string,
+  ) => Promise<typeof import('node:fs/promises')>
+  const mod = await bundlerOpaqueImport('node:fs/promises')
   return {
     readFile: (p) => mod.readFile(p),
     writeFile: (p, d) => mod.writeFile(p, d),
