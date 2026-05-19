@@ -54,12 +54,53 @@ const RUNTIME_IDLE_MS = 15 * 60 * 1000;
 const RESTART_BACKOFF_BASE_MS = 1_000;
 const RESTART_BACKOFF_MAX_MS = 60_000;
 
+/**
+ * Circuit breaker. After this many *consecutive* non-clean exits within
+ * {@link RESTART_FAILURE_WINDOW_MS}, the manager stops respawning and
+ * parks the slot in `'failed'`. Without this cap a project that the OS
+ * keeps OOM-killing (macOS jetsam SIGKILL is the canonical case) burns
+ * forever at ~1/minute, with every cycle re-spawning bun + vite +
+ * tsserver + pyright and (on posix) leaking the children of any
+ * incarnation the manager couldn't kill in its own process group.
+ *
+ * 8 across a 5-minute window means "we tried for at least
+ * (8 * BASE_BACKOFF capped at MAX) = ~7m of escalating backoff before
+ * we gave up", which is long enough to ride out a transient port-bind
+ * race or a one-shot dependency upgrade and short enough that an
+ * operator chasing runaway RSS on their laptop notices the loop
+ * stopping before the next memory-pressure cycle.
+ */
+const MAX_CONSECUTIVE_RESTARTS = 8;
+const RESTART_FAILURE_WINDOW_MS = 5 * 60 * 1000;
+/**
+ * If a runtime stays up at least this long after the /health-gated
+ * `'running'` transition, we treat it as "recovered" and reset the
+ * consecutive-failure counter. This is the contract that lets a
+ * project that crashed twice on cold start (e.g. waiting for the API
+ * port to release) but then ran healthily for ten minutes start over
+ * with a fresh budget the next time it hiccups.
+ */
+const STARTUP_GRACE_MS = 60_000;
+
 /** Health check poll interval while waiting for /health. */
 const HEALTH_POLL_MS = 500;
 /** Total timeout waiting for first /health success after spawn. */
 const HEALTH_BOOT_TIMEOUT_MS = 30_000;
 
-export type RuntimeStatus = 'starting' | 'running' | 'restarting' | 'stopping' | 'stopped' | 'error';
+export type RuntimeStatus =
+  | 'starting'
+  | 'running'
+  | 'restarting'
+  | 'stopping'
+  | 'stopped'
+  | 'error'
+  /**
+   * Terminal state: the circuit breaker tripped. The slot stays in the
+   * `runtimes` map (so `status(projectId)` keeps reporting it) but no
+   * more spawns will happen until {@link WorkerRuntimeManager.resetFailure}
+   * is called or the slot is explicitly `stop()`'d.
+   */
+  | 'failed';
 
 export interface RuntimeStatusInfo {
   projectId: string;
@@ -215,9 +256,27 @@ interface InternalRuntime {
   apiServerPort: number;
   status: RuntimeStatus;
   proc: ChildProcess | null;
+  /**
+   * PID of the most recent spawn, retained after `proc` is nulled in
+   * {@link WorkerRuntimeManager.handleExit}. On posix, the runtime is
+   * spawned as a process group leader (`detached: true`), so this is
+   * also the PGID — `process.kill(-pid, ...)` cascades to vite, the
+   * preview-manager's inner API server, tsserver and pyright that the
+   * runtime spawned, which otherwise survive a SIGKILL of the parent
+   * (jetsam OOM) and accumulate as orphans until app restart.
+   */
+  pid: number | null;
   startedAt: number;
   lastUsedAt: number;
   restarts: number;
+  /** Consecutive non-clean exits since the last healthy run. */
+  consecutiveFailures: number;
+  /** Timestamp (Date.now) of the most recent non-clean exit. Used to
+   *  detect "loop within the failure window" for the circuit breaker. */
+  lastFailureAt: number;
+  /** Timer that resets `consecutiveFailures` to 0 once a fresh run has
+   *  survived for {@link STARTUP_GRACE_MS}. */
+  graceTimer: ReturnType<typeof setTimeout> | null;
   restartTimer: ReturnType<typeof setTimeout> | null;
   idleTimer: ReturnType<typeof setTimeout> | null;
   lastError?: string;
@@ -468,6 +527,20 @@ export class WorkerRuntimeManager implements RuntimeResolver {
    */
   async ensureRunning(projectId: string, config: ProjectSpawnConfig): Promise<RuntimeStatusInfo> {
     if (this.stopped) throw new Error('WorkerRuntimeManager is stopped');
+
+    // Refuse circuit-broken slots BEFORE auto-pull so we don't churn
+    // the network/disk on a project we already know we won't spawn.
+    // Surfacing the parked-state message lets the caller (tunnel
+    // proxy, desktop UI) render an actionable error instead of the
+    // generic auto-pull / spawn failure.
+    const failedExisting = this.runtimes.get(projectId);
+    if (failedExisting?.status === 'failed') {
+      throw new Error(
+        `[WorkerRuntimeManager] cannot ensureRunning(${projectId}): ` +
+        `${failedExisting.lastError ?? 'runtime is in failed state'}. ` +
+        `Call resetFailure(${projectId}) or stop(${projectId}) before retrying.`,
+      );
+    }
 
     // Apply auto-pull before any runtime spawn so the runtime's PROJECT_DIR
     // points at a fully-cloned workspace. Idempotent: subsequent calls hit
@@ -761,12 +834,44 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     r.status = 'stopping';
     if (r.restartTimer) { clearTimeout(r.restartTimer); r.restartTimer = null; }
     if (r.idleTimer) { clearTimeout(r.idleTimer); r.idleTimer = null; }
+    if (r.graceTimer) { clearTimeout(r.graceTimer); r.graceTimer = null; }
     if (r.proc) {
+      // Send the requested signal to the whole process group first so
+      // children (vite, preview-manager's API server, LSPs) start their
+      // own graceful shutdown in parallel with the parent.
+      this.killProcessGroup(r, signal);
       try { r.proc.kill(signal); } catch { /* already gone */ }
       await this.waitForExit(r.proc, 5000);
+      // Belt-and-suspenders: if the grace window elapsed without a
+      // clean exit, `waitForExit` already SIGKILL'd the parent — chase
+      // the rest of the group too in case any child ignored SIGTERM.
+      this.killProcessGroup(r, 'SIGKILL');
     }
+    r.pid = null;
     this.releasePort(r.agentPort);
     this.runtimes.delete(projectId);
+  }
+
+  /**
+   * Re-arm a runtime that the circuit breaker parked in `'failed'`.
+   * Drops the slot from the map so the next `ensureRunning(projectId, …)`
+   * call performs a fresh `doStart()` with a zeroed failure budget.
+   *
+   * Intended for the desktop's "reopen project" flow and for operators
+   * who fixed whatever was crashing the runtime (e.g. freed memory,
+   * deleted a corrupted workspace file) and want to retry without
+   * tearing down the whole worker. No-op if the project isn't in
+   * `'failed'`.
+   */
+  resetFailure(projectId: string): boolean {
+    const r = this.runtimes.get(projectId);
+    if (!r || r.status !== 'failed') return false;
+    if (r.restartTimer) { clearTimeout(r.restartTimer); r.restartTimer = null; }
+    if (r.idleTimer) { clearTimeout(r.idleTimer); r.idleTimer = null; }
+    if (r.graceTimer) { clearTimeout(r.graceTimer); r.graceTimer = null; }
+    this.runtimes.delete(projectId);
+    this.log.log(`[WorkerRuntimeManager] resetFailure: ${projectId} cleared, next ensureRunning will respawn`);
+    return true;
   }
 
   async stopAll(signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
@@ -801,9 +906,13 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       apiServerPort: 0,
       status: 'starting',
       proc: null,
+      pid: null,
       startedAt: 0,
       lastUsedAt: Date.now(),
       restarts: 0,
+      consecutiveFailures: 0,
+      lastFailureAt: 0,
+      graceTimer: null,
       restartTimer: null,
       idleTimer: null,
       spawnConfig: config,
@@ -833,14 +942,35 @@ export class WorkerRuntimeManager implements RuntimeResolver {
         `via ${command} ${args.join(' ')} (port=${slot.agentPort}, source=${resolved.source})`,
     );
 
+    // Spawn the runtime as its own process group leader (posix only —
+    // Windows has no equivalent and Node's child_process docs warn that
+    // `detached: true` there gives you a separate console window, not a
+    // PGID). Mirrors what apps/desktop/src/local-server.ts already does
+    // for the outer API server so a single kill at teardown reaches the
+    // bun child + every subprocess it spawned (vite, the inner
+    // preview-manager API server, tsserver, pyright). Without this,
+    // jetsam SIGKILL of the bun parent leaves all of those orphans
+    // alive — they keep their listening sockets, the next respawn
+    // races into EADDRINUSE, and RSS climbs forever (see the storm
+    // pattern in main.log lines 5258–7093 where preview-manager has to
+    // walk the API port and `Force-killed leaked process` 10 times in
+    // a row).
+    const useProcessGroup = process.platform !== 'win32';
     const proc = spawn(command, args, {
       cwd,
       env,
-      detached: false,
+      detached: useProcessGroup,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    if (useProcessGroup) {
+      // The detached child would otherwise keep the parent's event
+      // loop alive even after we've removed it from `runtimes` —
+      // matches the apps/desktop precedent at local-server.ts:412.
+      try { proc.unref(); } catch { /* unref is best-effort */ }
+    }
 
     slot.proc = proc;
+    slot.pid = proc.pid ?? null;
     slot.status = 'starting';
     slot.startedAt = Date.now();
 
@@ -870,16 +1000,67 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       slot.status = 'running';
       slot.lastUsedAt = Date.now();
       this.armIdleTimer(slot);
+      this.armGraceTimer(slot);
       return slot;
     } catch (err: any) {
       slot.status = 'error';
       slot.lastError = err?.message ?? String(err);
-      try { proc.kill('SIGTERM'); } catch { /* nothing */ }
+      // The /health wait timed out (or the spawn itself failed). Tear
+      // down the whole process group rather than just the parent so we
+      // don't leave a half-booted preview-manager + vite running on
+      // the allocated ports.
+      this.killProcessGroup(slot, 'SIGTERM');
+      try { proc.kill('SIGTERM'); } catch { /* already gone */ }
       this.releasePort(slot.agentPort);
       slot.agentPort = 0;
       slot.apiServerPort = 0;
       throw err;
     }
+  }
+
+  /**
+   * Kill every process in `slot.pid`'s process group. Best-effort:
+   * if the group is already gone (everyone exited cleanly), or the
+   * platform doesn't support PGID kills (Windows), this is a no-op.
+   *
+   * Why we use the recorded PID and not `slot.proc.pid`: by the time
+   * {@link handleExit} runs, `proc` has already fired its `'exit'`
+   * event and we've nulled it. The kernel keeps the process group
+   * intact until the *last* member of the group exits, so the PGID
+   * we captured at spawn is still valid for reaping the orphans even
+   * after the group leader is gone.
+   */
+  private killProcessGroup(slot: InternalRuntime, signal: NodeJS.Signals): void {
+    if (process.platform === 'win32') return;
+    if (!slot.pid) return;
+    try {
+      process.kill(-slot.pid, signal);
+    } catch {
+      // ESRCH (no such process group) is the happy path here — it
+      // means every child exited with their parent and the kernel
+      // already reaped the group. EPERM is the only other plausible
+      // case; swallow it because the caller has no recourse anyway.
+    }
+  }
+
+  /**
+   * Arm a timer that resets `consecutiveFailures` once a fresh run has
+   * survived for {@link STARTUP_GRACE_MS}. Re-armed on every successful
+   * /health transition; cleared on any non-clean exit so a crash
+   * inside the grace window counts toward the circuit breaker.
+   */
+  private armGraceTimer(slot: InternalRuntime): void {
+    if (slot.graceTimer) {
+      clearTimeout(slot.graceTimer);
+      slot.graceTimer = null;
+    }
+    slot.graceTimer = setTimeout(() => {
+      slot.graceTimer = null;
+      if (slot.consecutiveFailures > 0) {
+        slot.consecutiveFailures = 0;
+      }
+    }, STARTUP_GRACE_MS);
+    try { slot.graceTimer.unref?.(); } catch { /* unref is best-effort */ }
   }
 
   private buildEnv(slot: InternalRuntime, runtimeBinPath: string): NodeJS.ProcessEnv {
@@ -956,9 +1137,16 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       `[WorkerRuntimeManager] runtime ${slot.projectId} exited (code=${code}, signal=${signal})`,
     );
     slot.proc = null;
+    if (slot.graceTimer) {
+      clearTimeout(slot.graceTimer);
+      slot.graceTimer = null;
+    }
 
     if (slot.status === 'stopping' || this.stopped) {
+      // We initiated the stop; the orphan reap was already done by
+      // stop()/stopAll(). Just clear bookkeeping.
       slot.status = 'stopped';
+      slot.pid = null;
       this.releasePort(slot.agentPort);
       slot.agentPort = 0;
       slot.apiServerPort = 0;
@@ -967,6 +1155,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
 
     if (exitedClean) {
       slot.status = 'stopped';
+      slot.pid = null;
       this.releasePort(slot.agentPort);
       slot.agentPort = 0;
       slot.apiServerPort = 0;
@@ -974,17 +1163,52 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       return;
     }
 
+    // Non-clean exit. Two failure shapes we care about:
+    //   1. Parent died but children (vite, preview-manager API server,
+    //      LSPs) are still alive in the same process group. Without
+    //      reaping, the next doStart() races into EADDRINUSE on the
+    //      same agent port and starts the storm.
+    //   2. Repeated jetsam SIGKILL under memory pressure. Each cycle
+    //      respawns the full child tree and leaks more RSS. The
+    //      circuit breaker below stops that loop.
+    this.killProcessGroup(slot, 'SIGKILL');
+    slot.pid = null;
+
+    const now = Date.now();
+    const withinWindow = now - slot.lastFailureAt <= RESTART_FAILURE_WINDOW_MS;
+    slot.consecutiveFailures = withinWindow ? slot.consecutiveFailures + 1 : 1;
+    slot.lastFailureAt = now;
     slot.restarts += 1;
     slot.lastError = `exited code=${code} signal=${signal}`;
+
+    if (slot.consecutiveFailures >= MAX_CONSECUTIVE_RESTARTS) {
+      slot.status = 'failed';
+      slot.lastError =
+        `Circuit breaker tripped: ${slot.consecutiveFailures} consecutive non-clean exits ` +
+        `within ${Math.round(RESTART_FAILURE_WINDOW_MS / 1000)}s (last: code=${code} signal=${signal}). ` +
+        `Most recent on macOS is jetsam OOM (signal=SIGKILL with code=null); ` +
+        `the previous incarnation's vite/tsserver/preview-manager children were reaped to ` +
+        `prevent further RSS growth. Stop, fix the workspace, and call resetFailure(projectId) ` +
+        `(or stop(projectId)) to allow another spawn attempt.`;
+      this.releasePort(slot.agentPort);
+      slot.agentPort = 0;
+      slot.apiServerPort = 0;
+      if (slot.restartTimer) { clearTimeout(slot.restartTimer); slot.restartTimer = null; }
+      if (slot.idleTimer) { clearTimeout(slot.idleTimer); slot.idleTimer = null; }
+      this.log.error(`[WorkerRuntimeManager] ${slot.lastError}`);
+      return;
+    }
+
     const delay = this.restartBackoffMs(slot.restarts);
     slot.status = 'restarting';
     this.log.warn(
       `[WorkerRuntimeManager] restarting ${slot.projectId} in ${Math.round(delay / 1000)}s ` +
-        `(restart #${slot.restarts})`,
+        `(restart #${slot.restarts}, consecutive failures ${slot.consecutiveFailures}/${MAX_CONSECUTIVE_RESTARTS})`,
     );
     if (slot.restartTimer) clearTimeout(slot.restartTimer);
     slot.restartTimer = setTimeout(() => {
       slot.restartTimer = null;
+      if (slot.status === 'failed' || this.stopped) return;
       slot.startPromise = this.doStart(slot).then((r) => {
         slot.startPromise = null;
         return r;
@@ -994,6 +1218,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
         return slot;
       });
     }, delay);
+    try { slot.restartTimer.unref?.(); } catch { /* unref is best-effort */ }
   }
 
   private restartBackoffMs(restarts: number): number {
