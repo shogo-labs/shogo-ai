@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-05-19T22:37:27.718Z",
+  "generatedAt": "2026-05-19T22:37:52.960Z",
   "total": 56,
   "tasks": [
     {
@@ -7,8 +7,11 @@
       "uncoveredLines": 1,
       "linePct": 97.91666666666666,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "finishedAt": "2026-05-19T22:37:56.622Z",
+      "beforeLinePct": 97.92,
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/routes/admin-marketplace.ts",
@@ -16,7 +19,7 @@
       "linePct": 99.77876106194691,
       "phase": 1,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/services/node-metrics.service.ts",
@@ -24,7 +27,7 @@
       "linePct": 99.05660377358491,
       "phase": 1,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/config/stripe-prices.ts",
@@ -32,7 +35,7 @@
       "linePct": 98.78048780487805,
       "phase": 1,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/lib/preview-token.ts",
@@ -40,7 +43,7 @@
       "linePct": 98.05825242718447,
       "phase": 1,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/lib/tunnel-relay.ts",
@@ -48,7 +51,7 @@
       "linePct": 98.63013698630137,
       "phase": 1,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/lib/runtime-token.ts",
@@ -56,7 +59,7 @@
       "linePct": 95.16129032258065,
       "phase": 1,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/cli-auth.ts",
@@ -64,7 +67,7 @@
       "linePct": 98.1981981981982,
       "phase": 1,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/tools-proxy.ts",
@@ -72,7 +75,7 @@
       "linePct": 98.06763285024155,
       "phase": 1,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/lib/federated-upstream.ts",
@@ -80,7 +83,7 @@
       "linePct": 97.44897959183673,
       "phase": 1,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/services/diarization.service.ts",
@@ -88,7 +91,7 @@
       "linePct": 97.23756906077348,
       "phase": 1,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/lib/chat-usage-tracker.ts",
@@ -96,7 +99,7 @@
       "linePct": 96.25,
       "phase": 1,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/lib/eval-job-manager.ts",
@@ -104,7 +107,7 @@
       "linePct": 95.41984732824427,
       "phase": 1,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/thumbnail.ts",
@@ -112,7 +115,7 @@
       "linePct": 95.65217391304348,
       "phase": 1,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/services/marketplace.service.ts",
@@ -120,7 +123,7 @@
       "linePct": 98.4375,
       "phase": 1,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/__tests__/helpers/prisma-mock-exports.ts",
@@ -128,7 +131,7 @@
       "linePct": 89.70588235294117,
       "phase": 1,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/admin.ts",
@@ -136,7 +139,7 @@
       "linePct": 98.53479853479854,
       "phase": 1,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/chat-message-edits.ts",
@@ -144,7 +147,7 @@
       "linePct": 95.48022598870057,
       "phase": 1,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/services/instance.service.ts",
@@ -152,7 +155,7 @@
       "linePct": 93.44262295081968,
       "phase": 1,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/tests.ts",
@@ -160,7 +163,7 @@
       "linePct": 96.28099173553719,
       "phase": 1,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/lib/voice-cost.ts",
@@ -168,7 +171,7 @@
       "linePct": 82.75862068965517,
       "phase": 2,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/middleware/rate-limit.ts",
@@ -176,7 +179,7 @@
       "linePct": 86.66666666666667,
       "phase": 2,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/config/usage-plans.ts",
@@ -184,7 +187,7 @@
       "linePct": 75.43859649122807,
       "phase": 2,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/database.ts",
@@ -192,7 +195,7 @@
       "linePct": 93.60730593607306,
       "phase": 2,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/lib/cloud-urls.ts",
@@ -200,7 +203,7 @@
       "linePct": 4.761904761904762,
       "phase": 2,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/remote-audit.ts",
@@ -208,7 +211,7 @@
       "linePct": 79.20792079207921,
       "phase": 2,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/cost-analytics.ts",
@@ -216,7 +219,7 @@
       "linePct": 93.93203883495146,
       "phase": 2,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/lib/proxy-billing-session.ts",
@@ -224,7 +227,7 @@
       "linePct": 85.64102564102564,
       "phase": 2,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/lib/push-notifications.ts",
@@ -232,7 +235,7 @@
       "linePct": 6.666666666666667,
       "phase": 2,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/services/apple-iap.service.ts",
@@ -240,7 +243,7 @@
       "linePct": 90.93851132686083,
       "phase": 2,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/checkpoints.ts",
@@ -248,7 +251,7 @@
       "linePct": 86.81818181818181,
       "phase": 2,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/github.ts",
@@ -256,7 +259,7 @@
       "linePct": 91.61849710982659,
       "phase": 2,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/services/transcription.service.ts",
@@ -264,7 +267,7 @@
       "linePct": 85.05154639175258,
       "phase": 2,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/lib/pending-login-store.ts",
@@ -272,7 +275,7 @@
       "linePct": 50.79365079365079,
       "phase": 2,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/lib/k8s-auth.ts",
@@ -280,7 +283,7 @@
       "linePct": 60.60606060606061,
       "phase": 2,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/lib/cloud-key-wipe.ts",
@@ -288,7 +291,7 @@
       "linePct": 19.230769230769234,
       "phase": 2,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/project-admin.ts",
@@ -296,7 +299,7 @@
       "linePct": 79.72350230414746,
       "phase": 2,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/api-keys.ts",
@@ -304,7 +307,7 @@
       "linePct": 82.97101449275362,
       "phase": 2,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/lib/project-user-context.ts",
@@ -312,7 +315,7 @@
       "linePct": 2.0408163265306123,
       "phase": 2,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/eval-admin.ts",
@@ -320,7 +323,7 @@
       "linePct": 94.12442396313364,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/lib/vm-warm-pool-controller.ts",
@@ -328,7 +331,7 @@
       "linePct": 86.25498007968127,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/__tests__/helpers/k8s-mock.ts",
@@ -336,7 +339,7 @@
       "linePct": 46.57534246575342,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/project-chat.ts",
@@ -344,7 +347,7 @@
       "linePct": 91.74757281553399,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/services/email.service.ts",
@@ -352,7 +355,7 @@
       "linePct": 26.737967914438503,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/services/marketplace-snapshot-storage.service.ts",
@@ -360,7 +363,7 @@
       "linePct": 38.23529411764706,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/instances.ts",
@@ -368,7 +371,7 @@
       "linePct": 82.07461328480437,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/ai-proxy.ts",
@@ -376,7 +379,7 @@
       "linePct": 88.38028169014085,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/scoped-analytics.ts",
@@ -384,7 +387,7 @@
       "linePct": 14.920634920634921,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/lib/tunnel-redis.ts",
@@ -392,7 +395,7 @@
       "linePct": 32.92079207920792,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/project-export-import.ts",
@@ -400,7 +403,7 @@
       "linePct": 68.40958605664488,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/meetings.ts",
@@ -408,7 +411,7 @@
       "linePct": 53.834115805946794,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/local-projects.ts",
@@ -416,7 +419,7 @@
       "linePct": 36.80430879712747,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/services/billing.service.ts",
@@ -424,7 +427,7 @@
       "linePct": 39.09985935302391,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/routes/security.ts",
@@ -432,7 +435,7 @@
       "linePct": 40.930787589498806,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/lib/runtime/manager.ts",
@@ -440,7 +443,7 @@
       "linePct": 55.215231788079464,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
       "file": "apps/api/src/services/cost-analytics.service.ts",
@@ -448,7 +451,7 @@
       "linePct": 25.814332247557005,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:27.718Z"
+      "createdAt": "2026-05-19T22:37:52.960Z"
     }
   ]
 }

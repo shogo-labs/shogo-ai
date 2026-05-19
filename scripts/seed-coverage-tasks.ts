@@ -7,8 +7,9 @@ const root = resolve(import.meta.dir, '..')
 const gapsPath = resolve(root, 'coverage/baselines/apps-api.gaps.json')
 const outPath = resolve(root, 'coverage/coverage-tasks.json')
 
-if (existsSync(outPath)) {
-  console.log(`[seed] ${outPath} already exists — skipping`)
+const force = process.argv.includes('--force')
+if (existsSync(outPath) && !force) {
+  console.log(`[seed] ${outPath} already exists — pass --force to rewrite`)
   process.exit(0)
 }
 
