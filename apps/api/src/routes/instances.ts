@@ -45,6 +45,7 @@ import {
 import { sendPushToInstance } from '../lib/push-notifications'
 import { openSession, closeSession, hasSession } from '../lib/proxy-billing-session'
 import { trackChatStreamForBilling } from '../lib/chat-usage-tracker'
+import { trackUsageFromStream } from './project-chat'
 import {
   isFederatedEnabled,
   listCloudInstancesForWorkspace,
@@ -1368,22 +1369,62 @@ export function instanceRoutes() {
         summary: 'streaming',
       })
 
-      // Bracket chat turns with a billing session so the AI proxy
-      // accumulates per-turn usage into a single `chat_message` row.
-      // The remote runtime makes its own calls back to the cloud AI proxy
-      // for billing, keyed by tunnelProjectId.
+      // Bracket chat turns with a billing session AND persist the
+      // assistant `ChatMessage` row.
+      //
+      // We tee the upstream SSE into `trackUsageFromStream` (the same
+      // function the cloud-direct path in `project-chat.ts` uses).
+      // That function closes the billing session, persists the
+      // accumulated text + parts + tool calls, and is robust to
+      // partial turns. Without this tee the tunneled path would only
+      // bracket billing and never write `chat_messages.assistant`,
+      // so the user would see the reply on screen but lose it on
+      // page reload. See `instance-tunnel-chat-persistence.test.ts`.
+      //
+      // Persistence requires both a `chatSessionId` (header) and the
+      // referenced project existing in our DB. When either is missing
+      // (legacy probe traffic, mismatched project) we fall through to
+      // the billing-only tracker so we never silently mis-attribute
+      // tokens to a project we can't validate.
       const isChatTurn = method === 'POST' && cleanPath === '/agent/chat' && !!tunnelProjectId
       let billingSessionHandedOff = false
       let trackerController: ReadableStreamDefaultController<Uint8Array> | null = null
       let trackerStream: ReadableStream<Uint8Array> | null = null
       if (isChatTurn && tunnelProjectId) {
+        const tunnelProject = transparentChatSessionId
+          ? await prisma.project.findUnique({
+              where: { id: tunnelProjectId },
+              select: { id: true, workspaceId: true, workingMode: true },
+            }).catch(() => null)
+          : null
+
         openSession(tunnelProjectId, instance.workspaceId, auth.userId, transparentChatSessionId)
         trackerStream = new ReadableStream<Uint8Array>({
           start(c) { trackerController = c },
         })
-        trackChatStreamForBilling(trackerStream, tunnelProjectId, transparentChatSessionId).catch((err) =>
-          console.error(`[InstanceTunnel] Tracking error for project ${tunnelProjectId}:`, err),
-        )
+
+        if (tunnelProject) {
+          // Re-create the body shape `trackUsageFromStream` reads.
+          // The header is authoritative for chatSessionId (matches
+          // the cloud-direct fix in `project-chat.ts`); we still
+          // forward whatever the body claimed for `agentMode` so the
+          // log lines match.
+          let parsedBodyForTracker: any = {}
+          if (body) {
+            try { parsedBodyForTracker = JSON.parse(body) } catch { /* not JSON, leave empty */ }
+          }
+          trackUsageFromStream(trackerStream, parsedBodyForTracker, tunnelProject, {
+            chatSessionId: transparentChatSessionId,
+          }).catch((err) =>
+            console.error(`[InstanceTunnel] Usage tracking error for project ${tunnelProjectId}:`, err),
+          )
+        } else {
+          // No chat-session header or project not found in DB —
+          // bracket billing only, never persist.
+          trackChatStreamForBilling(trackerStream, tunnelProjectId, transparentChatSessionId).catch((err) =>
+            console.error(`[InstanceTunnel] Tracking error for project ${tunnelProjectId}:`, err),
+          )
+        }
         billingSessionHandedOff = true
       }
 
