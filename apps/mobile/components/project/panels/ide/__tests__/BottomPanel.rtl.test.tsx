@@ -10,10 +10,11 @@
  * store between tests so leftover state from one case doesn't bleed into
  * the next, and also so persisted `localStorage` values don't surprise us.
  */
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
+import { resetTerminalPtyMocks } from '../../../../../test/helpers/mockTerminalPty'
 import {
   installAgentFetchMock,
   recordedAgentFetch,
@@ -24,8 +25,7 @@ import {
 } from '../../../../../lib/ide-bottom-panel-store'
 import { __resetRuntimeLogStoreForTest } from '../../../../../lib/runtime-logs/runtime-log-store'
 import { __resetRuntimeLogStreamForTest } from '../../../../../lib/runtime-logs/useRuntimeLogStream'
-
-import { BottomPanel } from '../BottomPanel'
+import { __resetSessionIdSeqForTest } from '../terminal/session-reducer'
 
 function jsonOk<T>(body: T): Response {
   return new Response(JSON.stringify(body), {
@@ -35,16 +35,36 @@ function jsonOk<T>(body: T): Response {
 }
 
 let fetcher: ReturnType<typeof recordedAgentFetch>
+let createSessionCounter = 0
+type BottomPanelComponent = typeof import('../BottomPanel').BottomPanel
+let BottomPanel: BottomPanelComponent
+
+beforeAll(async () => {
+  ;({ BottomPanel } = await import('../BottomPanel'))
+})
 
 beforeEach(() => {
   localStorage.clear()
   ideBottomPanelStore.__resetForTest()
   __resetRuntimeLogStoreForTest()
   __resetRuntimeLogStreamForTest()
+  __resetSessionIdSeqForTest()
+  resetTerminalPtyMocks()
+  createSessionCounter = 0
   fetcher = recordedAgentFetch()
-  // Both Terminal (commands) and Problems poll on mount. Stub them both
-  // so the panel can render without log-noise about unrouted calls.
+  // Terminal + Problems HTTP on mount — stub so no real agent / WebSocket.
   fetcher.setRoute('/terminal/commands', () => jsonOk({ commands: {} }))
+  fetcher.setRoute('/terminal/sessions', () => {
+    createSessionCounter += 1
+    return jsonOk({
+      id: `srv-${createSessionCounter}`,
+      cwd: '/work',
+      cols: 80,
+      rows: 24,
+      createdAt: Date.now(),
+    })
+  })
+  fetcher.setRoute(/\/terminal\/sessions\/[^/?]+$/, () => jsonOk({ ok: true }))
   fetcher.setRoute('/problems', () =>
     jsonOk({ diagnostics: [], status: 'ok', cursor: null }),
   )
