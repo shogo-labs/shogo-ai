@@ -14,7 +14,12 @@
  * session before proxying. The AI proxy accumulates tokens against the session.
  * When the caller closes the session, we charge once based on the total.
  *
- * Keyed by projectId since projects process one message at a time.
+ * Keyed by `(projectId, chatSessionId)` so concurrent chat sessions on the
+ * same project (multiple chat panels, multiple workspace members) bill
+ * independently. When no chatSessionId is supplied (legacy callers, first
+ * turn of a brand-new chat session before the id is known), the key falls
+ * back to `projectId` alone for backwards compatibility.
+ *
  * Runs in-process (same API server as ai-proxy and project-chat routes).
  */
 
@@ -34,6 +39,7 @@ export interface BillingSessionQualitySignals {
 
 interface BillingSession {
   projectId: string
+  chatSessionId: string | null
   workspaceId: string
   userId: string
   model: string
@@ -53,13 +59,22 @@ interface BillingSession {
 
 const sessions = new Map<string, BillingSession>()
 
+/**
+ * Compose the in-memory map key from project + chat session. Falls back to
+ * projectId alone when no chatSessionId is available so legacy callers
+ * (and the first turn of a brand-new chat) continue to bill correctly.
+ */
+function sessionKey(projectId: string, chatSessionId?: string | null): string {
+  return chatSessionId ? `${projectId}:${chatSessionId}` : projectId
+}
+
 // Periodic cleanup of orphaned sessions (crash recovery)
 setInterval(() => {
   const now = Date.now()
   for (const [key, session] of sessions) {
     if (now - session.lastActivityAt > SESSION_TIMEOUT_MS) {
-      console.warn(`[BillingSession] Flushing orphaned session for project ${key} (${session.requestCount} requests, ${session.inputTokens + session.outputTokens} tokens, ${session.imageGenerationCount} images $${session.imageBilledUsd.toFixed(4)})`)
-      closeSession(key).catch(err =>
+      console.warn(`[BillingSession] Flushing orphaned session for ${key} (${session.requestCount} requests, ${session.inputTokens + session.outputTokens} tokens, ${session.imageGenerationCount} images $${session.imageBilledUsd.toFixed(4)})`)
+      closeSession(session.projectId, { chatSessionId: session.chatSessionId ?? undefined }).catch(err =>
         console.error(`[BillingSession] Failed to flush orphaned session ${key}:`, err)
       )
     }
@@ -67,23 +82,36 @@ setInterval(() => {
 }, 60_000)
 
 /**
- * Open a billing session for a project. Subsequent AI proxy calls for this
- * project will accumulate tokens here instead of charging per-call.
+ * Open a billing session for a (project, chatSession) tuple. Subsequent AI
+ * proxy calls for the same tuple will accumulate tokens here instead of
+ * charging per-call.
+ *
+ * `chatSessionId` is optional for backwards compatibility — when omitted
+ * the session is keyed by `projectId` alone and concurrent turns on the
+ * same project will collide as before. Always pass it from new code paths.
  */
 export function openSession(
   projectId: string,
   workspaceId: string,
   userId: string,
+  chatSessionId?: string | null,
 ): void {
-  // If there's an existing session (shouldn't happen, but safety), flush it first
-  const existing = sessions.get(projectId)
+  const key = sessionKey(projectId, chatSessionId)
+
+  // If there's an existing session for the same key, flush it first. With
+  // a composite key this should be vanishingly rare (real concurrent
+  // re-entry of the SAME chat session); elevate to error so we notice in
+  // prod if it ever happens.
+  const existing = sessions.get(key)
   if (existing) {
-    console.warn(`[BillingSession] Overwriting existing session for ${projectId} (${existing.requestCount} requests buffered)`)
-    closeSession(projectId).catch(() => {})
+    const log = chatSessionId ? console.error : console.warn
+    log(`[BillingSession] Overwriting existing session for ${key} (${existing.requestCount} requests buffered)`)
+    closeSession(projectId, { chatSessionId: chatSessionId ?? undefined }).catch(() => {})
   }
 
-  sessions.set(projectId, {
+  sessions.set(key, {
     projectId,
+    chatSessionId: chatSessionId ?? null,
     workspaceId,
     userId,
     model: 'sonnet',
@@ -103,16 +131,22 @@ export function openSession(
 }
 
 /**
- * Check if there's an active billing session for a project.
+ * Check if there's an active billing session for a (project, chatSession)
+ * tuple.
  */
-export function hasSession(projectId: string): boolean {
-  return sessions.has(projectId)
+export function hasSession(projectId: string, chatSessionId?: string | null): boolean {
+  return sessions.has(sessionKey(projectId, chatSessionId))
 }
 
 /**
  * Accumulate token usage from an AI proxy call. Returns true if tokens were
  * accumulated against an active session, false if no session exists (caller
  * should charge per-call).
+ *
+ * Looks up the session via the composite `(projectId, chatSessionId)` key
+ * when chatSessionId is supplied, falling back to the legacy projectId-only
+ * key if the composite lookup misses (covers calls from older runtimes that
+ * don't yet forward the chat-session header).
  */
 export function accumulateUsage(
   projectId: string,
@@ -121,8 +155,9 @@ export function accumulateUsage(
   outputTokens: number,
   cachedInputTokens: number = 0,
   cacheWriteTokens: number = 0,
+  chatSessionId?: string | null,
 ): boolean {
-  const session = sessions.get(projectId)
+  const session = lookupSession(projectId, chatSessionId)
   if (!session) return false
 
   session.inputTokens += inputTokens
@@ -146,8 +181,9 @@ export function accumulateImageUsage(
   model: string,
   rawUsd: number,
   billedUsd: number,
+  chatSessionId?: string | null,
 ): boolean {
-  const session = sessions.get(projectId)
+  const session = lookupSession(projectId, chatSessionId)
   if (!session) return false
 
   session.imageRawUsd += rawUsd
@@ -161,12 +197,31 @@ export function accumulateImageUsage(
   return true
 }
 
-export function setQualitySignals(projectId: string, quality: BillingSessionQualitySignals): boolean {
-  const session = sessions.get(projectId)
+export function setQualitySignals(
+  projectId: string,
+  quality: BillingSessionQualitySignals,
+  chatSessionId?: string | null,
+): boolean {
+  const session = lookupSession(projectId, chatSessionId)
   if (!session) return false
   session.quality = { ...session.quality, ...quality }
   session.lastActivityAt = Date.now()
   return true
+}
+
+/**
+ * Resolve a session, preferring the composite key when chatSessionId is
+ * known. Falls back to the legacy projectId-only key when the composite
+ * lookup misses so a runtime that hasn't yet been redeployed (and therefore
+ * isn't forwarding the chat-session header) can still accumulate against
+ * the legacy-keyed session opened by older callers.
+ */
+function lookupSession(projectId: string, chatSessionId?: string | null): BillingSession | undefined {
+  if (chatSessionId) {
+    const composite = sessions.get(sessionKey(projectId, chatSessionId))
+    if (composite) return composite
+  }
+  return sessions.get(projectId)
 }
 
 /**
@@ -181,10 +236,18 @@ export function setQualitySignals(projectId: string, quality: BillingSessionQual
  */
 export async function closeSession(
   projectId: string,
-  options: { discardPartial?: boolean } = {},
+  options: { discardPartial?: boolean; chatSessionId?: string | null } = {},
 ): Promise<{ billedUsd: number; rawUsd: number; totalTokens: number }> {
-  const session = sessions.get(projectId)
-  sessions.delete(projectId)
+  // Prefer the composite key. Fall back to the legacy projectId-only key
+  // so callers that opened a session without a chatSessionId (or that
+  // can't recover it on close) still drain the right entry.
+  let key = sessionKey(projectId, options.chatSessionId)
+  let session = sessions.get(key)
+  if (!session && options.chatSessionId) {
+    key = projectId
+    session = sessions.get(key)
+  }
+  sessions.delete(key)
 
   if (!session) {
     return { billedUsd: 0, rawUsd: 0, totalTokens: 0 }
@@ -197,7 +260,7 @@ export async function closeSession(
 
   if (options.discardPartial) {
     console.log(
-      `[BillingSession] Discarded partial session for project ${projectId} ` +
+      `[BillingSession] Discarded partial session for ${key} ` +
       `(stream EOF'd before turn-complete) — ${session.inputTokens} in, ${session.outputTokens} out, ` +
       `${session.requestCount} request(s), ${session.imageGenerationCount} image(s) NOT charged.`
     )
@@ -237,6 +300,7 @@ export async function closeSession(
     loopDetected: finalQuality.loopDetected ?? false,
     escalated: finalQuality.escalated ?? false,
     responseEmpty: finalQuality.responseEmpty ?? false,
+    metadata: session.chatSessionId ? { chatSessionId: session.chatSessionId } : undefined,
   }).catch((err) => {
     console.warn('[BillingSession] Failed to record main-chat cost metric:', err?.message ?? err)
   })
@@ -266,6 +330,7 @@ export async function closeSession(
         imageBilledUsd: session.imageBilledUsd,
         imageModels: session.imageModels,
         durationMs,
+        ...(session.chatSessionId ? { chatSessionId: session.chatSessionId } : {}),
       },
     })
 
@@ -277,7 +342,7 @@ export async function closeSession(
       console.warn(`[BillingSession] Could not charge usage: ${result.error}`)
     }
   } catch (err) {
-    console.error(`[BillingSession] Failed to charge usage for project ${projectId}:`, err)
+    console.error(`[BillingSession] Failed to charge usage for ${key}:`, err)
   }
 
   return { billedUsd, rawUsd, totalTokens }

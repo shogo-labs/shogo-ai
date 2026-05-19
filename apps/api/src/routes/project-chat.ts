@@ -525,8 +525,11 @@ export async function trackUsageFromStream(
   // Set quality signals BEFORE closing the session so they reach
   // recordAgentCostMetric inside closeSession (closeSession deletes the
   // session before reading quality, so a post-close set would be a no-op).
-  setQualitySignals(project.id, qualitySignals)
-  const { billedUsd } = await closeSession(project.id, { discardPartial: false })
+  setQualitySignals(project.id, qualitySignals, chatSessionId)
+  const { billedUsd } = await closeSession(project.id, {
+    discardPartial: false,
+    chatSessionId,
+  })
   if (billedUsd > 0) {
     console.log(`[ProjectChat] 💰 Billing session closed — charged $${billedUsd.toFixed(4)} for project ${project.id}`)
   }
@@ -875,13 +878,23 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         }
       }
 
+      // Extract the chat-session id up-front so the billing session can be
+      // keyed by `(projectId, chatSessionId)`. The id is on the request
+      // body (`parsedBody.chatSessionId`) for follow-up turns and on the
+      // `X-Chat-Session-Id` header when the client opts to send it there
+      // (e.g. wrapping fetchers that don't see the body). Either source
+      // works; prefer the header so the body field stays as documentation
+      // only.
+      const incomingChatSessionId: string | null =
+        c.req.header('X-Chat-Session-Id') || parsedBody?.chatSessionId || null
+
       // Open a billing session so the AI proxy accumulates tokens across
       // all API calls in the agentic loop instead of charging per-call.
       // The session is closed in trackUsageFromStream after the stream ends.
       // Guard: if the handler exits without starting a stream (retry
       // exhaustion, client disconnect, thrown error), the finally block
       // ensures closeSession runs so we don't leak an open session.
-      openSession(projectId, project.workspaceId, billingUserId || 'system')
+      openSession(projectId, project.workspaceId, billingUserId || 'system', incomingChatSessionId)
       let billingSessionHandedOff = false
       try {
 
@@ -910,6 +923,14 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // Only set after validating workspace membership above.
       if (verifiedUserId) {
         headers["X-User-Id"] = verifiedUserId
+      }
+
+      // Forward the chat-session id so the runtime can stamp it on its
+      // outbound ai-proxy calls. Without this, accumulateUsage on the AI
+      // proxy side falls back to the legacy projectId-only key and
+      // collides with concurrent turns from other chat sessions.
+      if (incomingChatSessionId) {
+        headers["X-Chat-Session-Id"] = incomingChatSessionId
       }
 
       // Retry configuration for transient errors during cold starts.
@@ -1238,7 +1259,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         // took ownership (retry exhaustion, client disconnect, thrown error).
         // closeSession is idempotent — safe to call even if already closed.
         if (!billingSessionHandedOff) {
-          closeSession(projectId).catch((err) =>
+          closeSession(projectId, { chatSessionId: incomingChatSessionId }).catch((err) =>
             console.error(`[ProjectChat] Failed to close orphaned billing session for ${projectId}:`, err)
           )
         }

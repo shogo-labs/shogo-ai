@@ -193,3 +193,80 @@ describe('totalTokens === 0 short-circuit also gates by imageBilledUsd', () => {
     expect(consumeUsageCalls).toHaveLength(1)
   })
 })
+
+describe('composite (projectId, chatSessionId) keying', () => {
+  test('two concurrent sessions on the same project do not collide', async () => {
+    openSession('proj-multi', 'ws-1', 'user-A', 'chat-A')
+    openSession('proj-multi', 'ws-1', 'user-B', 'chat-B')
+
+    expect(hasSession('proj-multi', 'chat-A')).toBe(true)
+    expect(hasSession('proj-multi', 'chat-B')).toBe(true)
+
+    accumulateUsage('proj-multi', 'claude-sonnet-4-5', 100, 50, 0, 0, 'chat-A')
+    accumulateUsage('proj-multi', 'claude-sonnet-4-5', 999, 999, 0, 0, 'chat-B')
+    accumulateUsage('proj-multi', 'claude-sonnet-4-5', 200, 100, 0, 0, 'chat-A')
+
+    await closeSession('proj-multi', { chatSessionId: 'chat-A' })
+
+    expect(consumeUsageCalls).toHaveLength(1)
+    expect(consumeUsageCalls[0].memberId).toBe('user-A')
+    expect(consumeUsageCalls[0].actionMetadata.inputTokens).toBe(300)
+    expect(consumeUsageCalls[0].actionMetadata.outputTokens).toBe(150)
+    expect(consumeUsageCalls[0].actionMetadata.chatSessionId).toBe('chat-A')
+
+    // chat-B's tokens are still buffered, intact.
+    expect(hasSession('proj-multi', 'chat-A')).toBe(false)
+    expect(hasSession('proj-multi', 'chat-B')).toBe(true)
+
+    await closeSession('proj-multi', { chatSessionId: 'chat-B' })
+    expect(consumeUsageCalls).toHaveLength(2)
+    expect(consumeUsageCalls[1].memberId).toBe('user-B')
+    expect(consumeUsageCalls[1].actionMetadata.inputTokens).toBe(999)
+    expect(consumeUsageCalls[1].actionMetadata.outputTokens).toBe(999)
+    expect(consumeUsageCalls[1].actionMetadata.chatSessionId).toBe('chat-B')
+  })
+
+  test('setQualitySignals targets the composite key, not a sibling session', async () => {
+    openSession('proj-quality-x', 'ws-q', 'user-q', 'chat-1')
+    openSession('proj-quality-x', 'ws-q', 'user-q', 'chat-2')
+
+    accumulateUsage('proj-quality-x', 'claude-sonnet-4-5', 50, 25, 0, 0, 'chat-1')
+    accumulateUsage('proj-quality-x', 'claude-sonnet-4-5', 50, 25, 0, 0, 'chat-2')
+
+    setQualitySignals('proj-quality-x', { hitMaxTurns: true }, 'chat-1')
+
+    await closeSession('proj-quality-x', { chatSessionId: 'chat-1' })
+    await closeSession('proj-quality-x', { chatSessionId: 'chat-2' })
+
+    expect(recordAgentCostMetricCalls).toHaveLength(2)
+    const byChatId: Record<string, any> = {}
+    for (const c of recordAgentCostMetricCalls) {
+      byChatId[c.metadata?.chatSessionId ?? ''] = c
+    }
+    expect(byChatId['chat-1'].hitMaxTurns).toBe(true)
+    expect(byChatId['chat-2'].hitMaxTurns).toBe(false)
+  })
+
+  test('legacy projectId-only callers still work (no chatSessionId)', async () => {
+    openSession('proj-legacy', 'ws-l', 'user-l')
+    accumulateUsage('proj-legacy', 'claude-sonnet-4-5', 100, 50)
+
+    expect(hasSession('proj-legacy')).toBe(true)
+    await closeSession('proj-legacy')
+    expect(consumeUsageCalls).toHaveLength(1)
+    expect(consumeUsageCalls[0].actionMetadata.chatSessionId).toBeUndefined()
+  })
+
+  test('accumulateUsage with composite key falls back to legacy projectId-only session', async () => {
+    // Older runtime hasn't been redeployed yet — caller opens a legacy
+    // session, ai-proxy reports usage with a chatSessionId. Without
+    // fallback, usage would be silently dropped.
+    openSession('proj-mixed', 'ws-m', 'user-m')
+    const ok = accumulateUsage('proj-mixed', 'claude-sonnet-4-5', 100, 50, 0, 0, 'chat-X')
+    expect(ok).toBe(true)
+
+    await closeSession('proj-mixed', { chatSessionId: 'chat-X' })
+    expect(consumeUsageCalls).toHaveLength(1)
+    expect(consumeUsageCalls[0].actionMetadata.inputTokens).toBe(100)
+  })
+})

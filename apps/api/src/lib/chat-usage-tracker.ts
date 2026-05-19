@@ -34,10 +34,16 @@ const PER_CHUNK_IDLE_TIMEOUT_MS = parseInt(
  * Drain a copy of the chat SSE stream and close the billing session for the
  * project on completion. Resolves when the stream ends and the close is
  * issued.
+ *
+ * `chatSessionId` is forwarded into `setQualitySignals` and `closeSession`
+ * so the close targets the same `(projectId, chatSessionId)` slot the
+ * caller used at `openSession` time. Pass `undefined` for callers that
+ * opened a legacy projectId-only session.
  */
 export async function trackChatStreamForBilling(
   stream: ReadableStream<Uint8Array>,
   projectId: string,
+  chatSessionId?: string | null,
 ): Promise<void> {
   const decoder = new TextDecoder()
   const reader = stream.getReader()
@@ -130,10 +136,11 @@ export async function trackChatStreamForBilling(
   }
 
   const eofWithoutTurnComplete = !streamInterrupted && !observedTurnComplete
-  setQualitySignals(projectId, qualitySignals)
+  setQualitySignals(projectId, qualitySignals, chatSessionId)
   try {
     const { billedUsd } = await closeSession(projectId, {
       discardPartial: eofWithoutTurnComplete,
+      chatSessionId,
     })
     if (billedUsd > 0) {
       console.log(`[ChatUsageTracker] 💰 Billing session closed — charged $${billedUsd.toFixed(4)} for project ${projectId}`)
@@ -154,6 +161,7 @@ export async function trackChatStreamForBilling(
 export function teeChatStreamForBilling(
   upstreamBody: ReadableStream<Uint8Array>,
   projectId: string,
+  chatSessionId?: string | null,
 ): ReadableStream<Uint8Array> {
   const bgReader = upstreamBody.getReader()
   const trackingChunks: Uint8Array[] = []
@@ -217,7 +225,7 @@ export function teeChatStreamForBilling(
     },
   })
 
-  trackChatStreamForBilling(trackingStream, projectId).catch((err) =>
+  trackChatStreamForBilling(trackingStream, projectId, chatSessionId).catch((err) =>
     console.error(`[ChatUsageTracker] Tracking error for project ${projectId}:`, err),
   )
 

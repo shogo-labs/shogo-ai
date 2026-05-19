@@ -1083,13 +1083,21 @@ export function instanceRoutes() {
     )?.[1]
     const cleanPath = body.path ? normalizeTransparentProxyPath(body.path) : ''
     const isChatTurn = (body.method || 'POST') === 'POST' && cleanPath === '/agent/chat' && !!tunnelProjectId
+    // Pull the chat-session id out of the forwarded request headers (the
+    // envelope copies headers verbatim). With it, the billing session is
+    // keyed by `(projectId, chatSessionId)` and concurrent chat panels
+    // against the same project bill independently.
+    const envelopeChatSessionId = (() => {
+      const h = body.headers || {}
+      return h['x-chat-session-id'] || h['X-Chat-Session-Id'] || null
+    })()
     let trackerController: ReadableStreamDefaultController<Uint8Array> | null = null
     if (isChatTurn && tunnelProjectId) {
-      openSession(tunnelProjectId, instance.workspaceId, auth.userId)
+      openSession(tunnelProjectId, instance.workspaceId, auth.userId, envelopeChatSessionId)
       const trackerStream = new ReadableStream<Uint8Array>({
         start(c) { trackerController = c },
       })
-      trackChatStreamForBilling(trackerStream, tunnelProjectId).catch((err) =>
+      trackChatStreamForBilling(trackerStream, tunnelProjectId, envelopeChatSessionId).catch((err) =>
         console.error(`[InstanceTunnel] Tracking error for project ${tunnelProjectId}:`, err),
       )
     }
@@ -1264,6 +1272,15 @@ export function instanceRoutes() {
     if (auth.email) forwardHeaders['x-tunnel-auth-email'] = auth.email
     if (auth.name) forwardHeaders['x-tunnel-auth-name'] = auth.name
 
+    // Forward the chat-session id verbatim so the remote runtime can stamp
+    // it on its outbound ai-proxy calls; required for accumulateUsage to
+    // route to the same `(projectId, chatSessionId)` bucket our openSession
+    // call below uses.
+    const transparentChatSessionId = c.req.header('x-chat-session-id') || null
+    if (transparentChatSessionId) {
+      forwardHeaders['x-chat-session-id'] = transparentChatSessionId
+    }
+
     // Use the pre-normalized path (no query string) for streaming detection
     // to avoid double-normalization bugs.
     const isStreaming = isStreamingRequest(method, cleanPath)
@@ -1287,11 +1304,11 @@ export function instanceRoutes() {
       let trackerController: ReadableStreamDefaultController<Uint8Array> | null = null
       let trackerStream: ReadableStream<Uint8Array> | null = null
       if (isChatTurn && tunnelProjectId) {
-        openSession(tunnelProjectId, instance.workspaceId, auth.userId)
+        openSession(tunnelProjectId, instance.workspaceId, auth.userId, transparentChatSessionId)
         trackerStream = new ReadableStream<Uint8Array>({
           start(c) { trackerController = c },
         })
-        trackChatStreamForBilling(trackerStream, tunnelProjectId).catch((err) =>
+        trackChatStreamForBilling(trackerStream, tunnelProjectId, transparentChatSessionId).catch((err) =>
           console.error(`[InstanceTunnel] Tracking error for project ${tunnelProjectId}:`, err),
         )
         billingSessionHandedOff = true
@@ -1353,8 +1370,8 @@ export function instanceRoutes() {
           },
         })
       } catch (err) {
-        if (isChatTurn && tunnelProjectId && billingSessionHandedOff && hasSession(tunnelProjectId)) {
-          closeSession(tunnelProjectId, { discardPartial: true }).catch(() => {})
+        if (isChatTurn && tunnelProjectId && billingSessionHandedOff && hasSession(tunnelProjectId, transparentChatSessionId)) {
+          closeSession(tunnelProjectId, { discardPartial: true, chatSessionId: transparentChatSessionId }).catch(() => {})
         }
         throw err
       }

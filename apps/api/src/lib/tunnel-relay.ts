@@ -82,12 +82,18 @@ export interface TunnelRelayOptions {
   authName?: string | null
   /**
    * True for `/agent/chat` POST turns. The caller is expected to have
-   * already called `openSession(projectId, …)` so AI proxy calls
-   * accumulate; we plug `trackChatStreamForBilling` in here so the
-   * session closes exactly once after the runtime emits
-   * `data-turn-complete`.
+   * already called `openSession(projectId, …, chatSessionId)` so AI proxy
+   * calls accumulate against the right `(projectId, chatSessionId)` slot;
+   * we plug `trackChatStreamForBilling` in here so the session closes
+   * exactly once after the runtime emits `data-turn-complete`.
    */
   isChatTurn?: boolean
+  /**
+   * Chat-session id from the client (`X-Chat-Session-Id` header). Forwarded
+   * to the tracker so the close targets the same composite key the caller
+   * used at `openSession` time.
+   */
+  chatSessionId?: string | null
   /**
    * Caller-owned flag; we flip it to `true` once we hand the SSE stream
    * to the billing tracker. The caller's `finally` guard uses this to
@@ -96,7 +102,11 @@ export interface TunnelRelayOptions {
    */
   onBillingHandoff?: () => void
   /** Tracker plug — defaults to `trackChatStreamForBilling`. Overridable for tests. */
-  trackChatStream?: (stream: ReadableStream<Uint8Array>, projectId: string) => Promise<void> | void
+  trackChatStream?: (
+    stream: ReadableStream<Uint8Array>,
+    projectId: string,
+    chatSessionId?: string | null,
+  ) => Promise<void> | void
 }
 
 /**
@@ -119,6 +129,7 @@ export async function relayAgentProxyViaTunnel(opts: TunnelRelayOptions): Promis
     authEmail,
     authName,
     isChatTurn,
+    chatSessionId,
     onBillingHandoff,
     trackChatStream,
   } = opts
@@ -153,7 +164,7 @@ export async function relayAgentProxyViaTunnel(opts: TunnelRelayOptions): Promis
           trackerController = ctrl
         },
       })
-      Promise.resolve(tracker(trackerStream, projectId)).catch((err) =>
+      Promise.resolve(tracker(trackerStream, projectId, chatSessionId)).catch((err) =>
         console.error(`[TunnelRelay] chat tracker error for project ${projectId}:`, err),
       )
       onBillingHandoff?.()

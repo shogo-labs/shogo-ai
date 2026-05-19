@@ -24,6 +24,15 @@ export interface ChatTransportOptions {
   /** Extra headers to include with every request (e.g. Cookie for native auth) */
   headers?: Record<string, string> | (() => Record<string, string>)
   /**
+   * Chat-session id sent as `X-Chat-Session-Id` on every chat POST. The
+   * server uses it to key the proxy billing session by
+   * `(projectId, chatSessionId)` so concurrent chat panels on the same
+   * project bill independently. Optional — omit on the very first turn of
+   * a brand-new session (the server falls back to a legacy projectId-only
+   * billing-session key for that one turn).
+   */
+  chatSessionId?: string | null
+  /**
    * When true (default) the chat fetch is wrapped with auto-resume so a
    * mid-turn disconnect transparently reconnects via `?fromSeq=N` instead
    * of leaving the UI stuck on a half-rendered message. Set to false to
@@ -86,6 +95,7 @@ export function useChatTransportConfig({
   credentials,
   fetch: customFetch,
   headers,
+  chatSessionId,
   durableResume = true,
 }: ChatTransportOptions): ChatTransportConfig | undefined {
   return useMemo(() => {
@@ -96,11 +106,22 @@ export function useChatTransportConfig({
       ? createAutoResumingFetch(baseFetch.bind(globalThis))
       : customFetch
 
+    // Compose `headers` so the caller-provided headers (cookies, auth) and
+    // the chat-session header are both forwarded. The AI SDK accepts either
+    // a static record or a thunk; collapse both forms here.
+    const composedHeaders: ChatTransportConfig['headers'] | undefined =
+      chatSessionId
+        ? () => {
+            const base = typeof headers === 'function' ? headers() : headers ?? {}
+            return { ...base, 'X-Chat-Session-Id': chatSessionId }
+          }
+        : headers
+
     return {
       api: buildChatApiUrl(apiBaseUrl, projectId, localAgentUrl),
       credentials,
       fetch,
-      headers,
+      headers: composedHeaders,
     }
-  }, [apiBaseUrl, projectId, localAgentUrl, credentials, customFetch, headers, durableResume])
+  }, [apiBaseUrl, projectId, localAgentUrl, credentials, customFetch, headers, chatSessionId, durableResume])
 }

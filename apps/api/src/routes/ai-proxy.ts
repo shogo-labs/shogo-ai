@@ -1445,6 +1445,12 @@ import { accumulateUsage, accumulateImageUsage } from '../lib/proxy-billing-sess
  * If there's an active billing session for this project (opened by
  * project-chat or /api/chat), tokens are accumulated and charged once
  * when the session closes. Otherwise, charge immediately per-call.
+ *
+ * `chatSessionId` should be the value of the `X-Chat-Session-Id` header
+ * the runtime forwards on each outbound call. It scopes the session
+ * lookup to `(projectId, chatSessionId)` so concurrent turns on the
+ * same project bill independently. When omitted the legacy
+ * projectId-only key is used (back-compat with older runtimes).
  */
 async function recordUsage(
   tokenPayload: ProxyTokenPayload,
@@ -1453,20 +1459,21 @@ async function recordUsage(
   outputTokens: number,
   cachedInputTokens: number = 0,
   cacheWriteTokens: number = 0,
+  chatSessionId?: string | null,
 ) {
   // For API-key auth the projectId is a sentinel ('api-key'), not a real
   // Project row. Pass null so the UsageEvent FK constraint is satisfied.
   const billingProjectId = tokenPayload.projectId === 'api-key' ? null : (tokenPayload.projectId || null)
 
   // If a billing session is open, accumulate — the session closer will charge
-  if (billingProjectId && accumulateUsage(billingProjectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens)) {
+  if (billingProjectId && accumulateUsage(billingProjectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, chatSessionId)) {
     const totalTokens = inputTokens + cachedInputTokens + cacheWriteTokens + outputTokens
     // Per-request cache breakdown — same gate as the agent-runtime cache-debug
     // logs so a single env flag turns the whole picture on. This is the
     // authoritative signal for cache health; the agent-runtime fingerprint
     // tells us WHAT the prefix looked like, this tells us whether Anthropic
     // actually read the cache for that prefix.
-    console.log(`[AI Proxy] 📊 Accumulated ${totalTokens} tokens for session (project: ${billingProjectId})`)
+    console.log(`[AI Proxy] 📊 Accumulated ${totalTokens} tokens for session (project: ${billingProjectId}${chatSessionId ? `, chat: ${chatSessionId}` : ''})`)
     return
   }
 
@@ -1678,6 +1685,7 @@ async function recordImageUsage(
   quality: string,
   size: string,
   n: number,
+  chatSessionId?: string | null,
 ) {
   try {
     const single = calculateImageUsageCost(model, quality, size)
@@ -1691,8 +1699,8 @@ async function recordImageUsage(
     // If a billing session is open for this project, fold this image's USD
     // into the session so the chat turn produces a single `chat_message`
     // wallet debit instead of an extra `ai_image_generation` row.
-    if (billingProjectId && accumulateImageUsage(billingProjectId, model, rawUsd, billedUsd)) {
-      console.log(`[AI Proxy] 🎨 Accumulated image gen for session ($${billedUsd.toFixed(4)}, model: ${model}, project: ${billingProjectId})`)
+    if (billingProjectId && accumulateImageUsage(billingProjectId, model, rawUsd, billedUsd, chatSessionId)) {
+      console.log(`[AI Proxy] 🎨 Accumulated image gen for session ($${billedUsd.toFixed(4)}, model: ${model}, project: ${billingProjectId}${chatSessionId ? `, chat: ${chatSessionId}` : ''})`)
       return
     }
 
@@ -2002,6 +2010,10 @@ export function aiProxyRoutes() {
 
     try {
       const request: ChatCompletionRequest = await c.req.json()
+      // Forwarded by the chat-stream entry points (project-chat / agent-proxy
+      // / instance-tunnel) so accumulateUsage can route to the right
+      // `(projectId, chatSessionId)` billing-session slot.
+      const chatSessionId = c.req.header('x-chat-session-id') || null
 
       // Resolve agent-mode aliases (basic/advanced) to real model names
       if (request.model) {
@@ -2082,11 +2094,11 @@ export function aiProxyRoutes() {
       if (request.stream) {
         if (modelConfig.provider === 'anthropic') {
           return await proxyAnthropicStream(request, apiKey, modelConfig, (inTok, outTok, cachedTok, cacheWriteTok) => {
-            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok)
+            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId)
           }, c.req.raw.signal)
         } else {
           return await proxyOpenAIStream(request, apiKey, modelConfig, (inTok, outTok, cachedTok) => {
-            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok)
+            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, 0, chatSessionId)
           }, c.req.raw.signal)
         }
       } else {
@@ -2105,6 +2117,8 @@ export function aiProxyRoutes() {
           totalPrompt - cachedPrompt,
           result.usage?.completion_tokens || 0,
           cachedPrompt,
+          0,
+          chatSessionId,
         )
 
         return c.json(result)
@@ -2157,6 +2171,7 @@ export function aiProxyRoutes() {
       if (!requestedModel) {
         return c.json({ error: { message: 'model is required', type: 'invalid_request_error' } }, 400)
       }
+      const chatSessionId = c.req.header('x-chat-session-id') || null
 
       const { resolvedModel } = resolveAgentModel(requestedModel)
       const modelConfig = resolveModel(resolvedModel)
@@ -2221,7 +2236,7 @@ export function aiProxyRoutes() {
           },
           flush() {
             if (inputTokens || outputTokens || cachedInputTokens) {
-              recordUsage(tokenPayload, requestedModel, inputTokens, outputTokens, cachedInputTokens)
+              recordUsage(tokenPayload, requestedModel, inputTokens, outputTokens, cachedInputTokens, 0, chatSessionId)
             }
           },
         })
@@ -2247,7 +2262,7 @@ export function aiProxyRoutes() {
         if (result.usage) {
           const totalInput = result.usage.input_tokens || 0
           const cachedInput = result.usage.input_tokens_details?.cached_tokens || 0
-          recordUsage(tokenPayload, requestedModel, totalInput - cachedInput, result.usage.output_tokens || 0, cachedInput)
+          recordUsage(tokenPayload, requestedModel, totalInput - cachedInput, result.usage.output_tokens || 0, cachedInput, 0, chatSessionId)
         }
         return c.json(result)
       }
@@ -2446,6 +2461,7 @@ export function aiProxyRoutes() {
       try { parsed = JSON.parse(body) } catch { /* ok */ }
       const requestModel = parsed.model || 'advanced'
       const isStream = !!parsed.stream
+      const chatSessionId = c.req.header('x-chat-session-id') || null
 
       const { resolvedModel, isLocal } = resolveAgentModel(requestModel)
       console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
@@ -2570,7 +2586,7 @@ export function aiProxyRoutes() {
           const openaiResult = await response.json() as any
           const oaiTotalPrompt = openaiResult.usage?.prompt_tokens || 0
           const oaiCachedPrompt = openaiResult.usage?.prompt_tokens_details?.cached_tokens || 0
-          recordUsage(tokenPayload, resolvedModel, oaiTotalPrompt - oaiCachedPrompt, openaiResult.usage?.completion_tokens || 0, oaiCachedPrompt)
+          recordUsage(tokenPayload, resolvedModel, oaiTotalPrompt - oaiCachedPrompt, openaiResult.usage?.completion_tokens || 0, oaiCachedPrompt, 0, chatSessionId)
           const anthropicResult = convertOpenAIResponseToAnthropic(openaiResult, resolvedModel)
           return c.json(anthropicResult)
         }
@@ -2633,7 +2649,7 @@ export function aiProxyRoutes() {
         const cacheWriteTok = responseBody.usage?.cache_creation_input_tokens || 0
         const cachedTok = responseBody.usage?.cache_read_input_tokens || 0
         const outTok = responseBody.usage?.output_tokens || 0
-        recordUsage(tokenPayload, resolvedModel, inTok, outTok, cachedTok, cacheWriteTok)
+        recordUsage(tokenPayload, resolvedModel, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId)
         return c.json(responseBody)
       }
 
@@ -2678,7 +2694,7 @@ export function aiProxyRoutes() {
           }
         },
         flush() {
-          recordUsage(tokenPayload, resolvedModel, streamInputTokens, streamOutputTokens, streamCachedInputTokens, streamCacheWriteTokens)
+          recordUsage(tokenPayload, resolvedModel, streamInputTokens, streamOutputTokens, streamCachedInputTokens, streamCacheWriteTokens, chatSessionId)
         },
       })
 
@@ -2891,7 +2907,14 @@ export function aiProxyRoutes() {
         )
       }
 
-      recordImageUsage(tokenPayload, model, body.quality || 'standard', body.size || '1024x1024', body.n || 1)
+      recordImageUsage(
+        tokenPayload,
+        model,
+        body.quality || 'standard',
+        body.size || '1024x1024',
+        body.n || 1,
+        c.req.header('x-chat-session-id') || null,
+      )
 
       return c.json(result)
     } catch (error: any) {
@@ -2982,7 +3005,7 @@ export function aiProxyRoutes() {
 
       const result = await response.json() as ImageGenerationResponse
 
-      recordImageUsage(tokenPayload, model, quality, size, n)
+      recordImageUsage(tokenPayload, model, quality, size, n, c.req.header('x-chat-session-id') || null)
 
       return c.json(result)
     } catch (error: any) {

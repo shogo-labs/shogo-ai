@@ -2091,12 +2091,20 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   const { deriveRuntimeToken } = await import('./lib/runtime-token')
   const runtimeToken = deriveRuntimeToken(projectId)
 
+  // Read the chat-session id from the client. The billing-session map is
+  // keyed by `(projectId, chatSessionId)` so concurrent chat sessions on
+  // the same project bill independently; without this id we fall back to
+  // the legacy projectId-only key, which collides across concurrent turns.
+  // We also forward the header to the runtime so its outbound ai-proxy
+  // calls stamp the same id.
+  const chatSessionIdHeader = isChatStream ? (c.req.header('x-chat-session-id') || undefined) : undefined
+
   // Open the billing session for chat turns before fanning out to either
   // branch. The handler-level `finally` guard closes it if neither branch
   // hands it off to a tracker (e.g. retry exhaustion, client disconnect).
   let billingSessionHandedOff = false
   if (isChatStream && authedWorkspaceId && authedUserId) {
-    openSession(projectId, authedWorkspaceId, authedUserId)
+    openSession(projectId, authedWorkspaceId, authedUserId, chatSessionIdHeader)
   }
 
   // ─── Tunnel branch ─────────────────────────────────────────────────
@@ -2113,6 +2121,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
       if (accept) tunnelHeaders['accept'] = accept
       tunnelHeaders['x-runtime-token'] = runtimeToken
       if (isChatStream && authedUserId) tunnelHeaders['x-billing-user-id'] = authedUserId
+      if (chatSessionIdHeader) tunnelHeaders['x-chat-session-id'] = chatSessionIdHeader
       if (isWebchatPath) {
         for (const h of ['origin', 'x-webchat-widget-key', 'x-webchat-session-token', 'x-webchat-session'] as const) {
           const v = c.req.header(h)
@@ -2134,11 +2143,12 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
         headers: tunnelHeaders,
         userId: authedUserId,
         isChatTurn: isChatStream,
+        chatSessionId: chatSessionIdHeader,
         onBillingHandoff: () => { billingSessionHandedOff = true },
       })
     } finally {
-      if (isChatStream && !billingSessionHandedOff && hasSession(projectId)) {
-        closeSession(projectId, { discardPartial: true }).catch((err) =>
+      if (isChatStream && !billingSessionHandedOff && hasSession(projectId, chatSessionIdHeader)) {
+        closeSession(projectId, { discardPartial: true, chatSessionId: chatSessionIdHeader }).catch((err) =>
           console.error(`[AgentProxy] Failed to close orphaned tunnel billing session for ${projectId}:`, err),
         )
       }
@@ -2165,6 +2175,12 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   // calls — same convention as `project-chat.ts`.
   if (isChatStream && authedUserId) {
     headers.set('x-billing-user-id', authedUserId)
+  }
+  // Forward the chat-session id so the runtime can stamp it on its outbound
+  // ai-proxy calls. `accumulateUsage` keys on `(projectId, chatSessionId)`
+  // and needs both ends to agree on the id.
+  if (chatSessionIdHeader) {
+    headers.set('x-chat-session-id', chatSessionIdHeader)
   }
 
   let requestBody: ArrayBuffer | undefined
@@ -2260,7 +2276,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
         // takes ownership of `closeSession`; mark the handoff so the
         // finally guard below does not double-close.
         if (isChatStream && response.ok) {
-          outBody = teeChatStreamForBilling(outBody, projectId)
+          outBody = teeChatStreamForBilling(outBody, projectId, chatSessionIdHeader)
           billingSessionHandedOff = true
         }
         proxyClientSignal?.addEventListener('abort', () => { activeProxyConnections = Math.max(0, activeProxyConnections - 1) })
@@ -2313,8 +2329,8 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     // handing it off to the tracker (retry exhaustion, client disconnect,
     // non-2xx response, thrown error). We pass `discardPartial: true` so
     // we don't bill for a turn the client never saw.
-    if (isChatStream && !billingSessionHandedOff && hasSession(projectId)) {
-      closeSession(projectId, { discardPartial: true }).catch((err) =>
+    if (isChatStream && !billingSessionHandedOff && hasSession(projectId, chatSessionIdHeader)) {
+      closeSession(projectId, { discardPartial: true, chatSessionId: chatSessionIdHeader }).catch((err) =>
         console.error(`[AgentProxy] Failed to close orphaned billing session for ${projectId}:`, err),
       )
     }

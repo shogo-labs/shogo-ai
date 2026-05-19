@@ -178,6 +178,40 @@ describe('trackChatStreamForBilling', () => {
     expect(consumeUsageCalls).toHaveLength(1)
   })
 
+  test('chatSessionId is threaded through tee → tracker → closeSession', async () => {
+    const projectId = 'proj-thread-chat'
+    openSession(projectId, 'ws-thread', 'user-thread', 'chat-thread-1')
+    openSession(projectId, 'ws-thread', 'user-thread-other', 'chat-thread-2')
+
+    accumulateUsage(projectId, 'claude-sonnet-4-5', 200, 100, 0, 0, 'chat-thread-1')
+    accumulateUsage(projectId, 'claude-sonnet-4-5', 9999, 9999, 0, 0, 'chat-thread-2')
+
+    const upstream = makeSseStream([
+      `data: ${JSON.stringify({ type: 'data-turn-complete' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'finish', success: true })}\n\n`,
+    ])
+
+    const clientStream = teeChatStreamForBilling(upstream, projectId, 'chat-thread-1')
+    const reader = clientStream.getReader()
+    while (true) {
+      const { done } = await reader.read()
+      if (done) break
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(consumeUsageCalls).toHaveLength(1)
+    expect(consumeUsageCalls[0].actionMetadata.inputTokens).toBe(200)
+    expect(consumeUsageCalls[0].actionMetadata.outputTokens).toBe(100)
+    expect(consumeUsageCalls[0].actionMetadata.chatSessionId).toBe('chat-thread-1')
+
+    expect(hasSession(projectId, 'chat-thread-1')).toBe(false)
+    expect(hasSession(projectId, 'chat-thread-2')).toBe(true)
+
+    // Clean up sibling session so it doesn't leak into other tests.
+    const { closeSession } = await import('../lib/proxy-billing-session')
+    await closeSession(projectId, { chatSessionId: 'chat-thread-2' })
+  })
+
   test('teeChatStreamForBilling forwards client chunks while tracking billing in the background', async () => {
     const projectId = 'proj-tee'
     openSession(projectId, 'ws-tee', 'user-tee')

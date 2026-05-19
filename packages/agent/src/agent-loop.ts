@@ -114,6 +114,17 @@ export interface AgentLoopOptions {
    * Contract (per pi-agent-core): must not throw.
    */
   transformContext?: (messages: Message[], signal?: AbortSignal) => Promise<Message[]> | Message[]
+  /**
+   * Extra HTTP headers to attach to every outbound LLM request inside this
+   * loop. Merged into the resolved Model's `headers` so pi-ai forwards them
+   * on every `stream()` / `complete()` call.
+   *
+   * Used by Shogo's runtime to stamp `X-Chat-Session-Id` on every ai-proxy
+   * request so the API-side billing session can be keyed by
+   * `(projectId, chatSessionId)` and concurrent chat panels bill
+   * independently.
+   */
+  extraHeaders?: Record<string, string>
 }
 
 export interface ToolCallRecord {
@@ -174,7 +185,10 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   } = options
 
   const resolvedModel = resolveModel(provider, modelId)
-  const model = maxTokens ? { ...resolvedModel, maxTokens } : resolvedModel
+  let model = maxTokens ? { ...resolvedModel, maxTokens } : resolvedModel
+  if (options.extraHeaders && Object.keys(options.extraHeaders).length > 0) {
+    model = { ...model, headers: { ...(model.headers || {}), ...options.extraHeaders } }
+  }
 
   const loopDetector = options.loopDetection !== false
     ? new LoopDetector(typeof options.loopDetection === 'object' ? options.loopDetection : {})
