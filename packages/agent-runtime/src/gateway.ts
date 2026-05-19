@@ -2145,6 +2145,21 @@ export class AgentGateway {
       // Reset per-turn edit tracking so read_lints auto-scope starts clean.
       this.fileStateCache.resetTurn()
 
+      // Stamp every outbound ai-proxy call with the chat session id so the
+      // API-side billing session is keyed by (projectId, chatSessionId) and
+      // concurrent chat panels on the same project bill independently. The
+      // 'chat' / 'default' / 'webhook' sentinel ids that internal flows use
+      // aren't real ChatSession rows; skip the header so the API falls back
+      // to the legacy projectId-only key for those callers.
+      const isRealChatSession = !!sessionId &&
+        sessionId !== 'chat' &&
+        sessionId !== 'default' &&
+        sessionId !== 'webhook' &&
+        sessionId !== 'canvas-action'
+      const extraHeaders: Record<string, string> | undefined = isRealChatSession
+        ? { 'x-chat-session-id': sessionId }
+        : undefined
+
       const result = await runAgentLoop({
         provider,
         model: modelId,
@@ -2158,6 +2173,7 @@ export class AgentGateway {
         streamFn: this._streamFn,
         thinkingLevel: resolveThinkingLevel(autoRouting ? undefined : session.modelOverride),
         signal: turnAbort.signal,
+        extraHeaders,
         onContextOverflow: async () => {
           console.warn(`${this.logPrefix} Layer 5: Reactive compaction for session ${sessionId}`)
           const fileStateSummary = this.fileStateCache.size > 0

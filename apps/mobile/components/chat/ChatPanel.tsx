@@ -1198,6 +1198,7 @@ export const ChatPanel = observer(function ChatPanel({
     credentials: Platform.OS === 'web' ? 'include' : 'omit',
     headers: nativeHeaders,
     fetch: expoFetch,
+    chatSessionId: currentSessionId,
   })
   const chatTransport = useMemo(
     () => (transportConfig ? new DefaultChatTransport(transportConfig) : undefined),
