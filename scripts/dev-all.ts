@@ -243,17 +243,40 @@ async function generateRoutes() {
 // ---------------------------------------------------------------------------
 // 5. Build packages/sdk so dist/ matches src/
 //
-// `apps/api` (and downstream consumers like `packages/agent-runtime`) imports
-// `@shogo-ai/sdk` and resolves to `packages/sdk/dist/index.js` per the
-// package's `exports` map. If `dist/` is stale relative to `src/` — which
-// happens after pulling main, deleting node_modules, or aborting an install
-// mid-postinstall — the API crash-loops with a `SyntaxError: Export named
-// 'X' not found in module .../sdk/dist/index.js`. Always rebuilding here
-// keeps `dev:all` self-healing without forcing devs to remember a manual
-// `bun run build:sdk`. tsup's incremental cache makes warm rebuilds cheap.
+// HISTORICAL: `apps/api` and `packages/agent-runtime` used to resolve
+// `@shogo-ai/sdk` (and the other extracted workspace packages) to their
+// published `dist/index.js` per the package's `exports` map. Stale dists
+// crash-looped the API with `SyntaxError: Export named 'X' not found`, so
+// `dev:all` always rebuilt the SDK up front.
+//
+// CURRENT: Both `scripts/watch-api.ts` and the runtime spawn in
+// `apps/api/src/lib/runtime/manager.ts` now pass `--conditions=development`
+// to Bun, which activates the `"development"` export condition each
+// `@shogo-ai/*` package declares and resolves to its in-tree `src/*.ts`.
+// The `dist/` bundles aren't consulted at runtime, so we don't need to
+// build them just to start `dev:all`.
+//
+// The build step is also fragile in a fresh checkout: tsup's DTS pass
+// walks the workspace's "external" `@shogo-ai/{core,agent,db,…}/*` imports
+// and demands each package's `dist/*.d.ts` exist — which they don't until
+// every upstream package has been built first (see `build:packages` in
+// the root `package.json` for the correct topological order). That made
+// `dev:all` fail to start whenever any extracted package's `dist/` was
+// missing, which is exactly the regression this skip eliminates.
+//
+// Devs who need the published bundles (publishing, ad-hoc consumer apps,
+// CI artifacts) can still run `bun run build:packages` directly. Setting
+// `SHOGO_FORCE_SDK_BUILD=1` is provided as an escape hatch to opt back
+// into the legacy behaviour.
 // ---------------------------------------------------------------------------
 
 async function buildSdk() {
+  if (process.env.SHOGO_FORCE_SDK_BUILD !== "1") {
+    console.log(
+      "[dev:all] Skipping SDK build — runtime uses --conditions=development to resolve src/*.ts directly. Set SHOGO_FORCE_SDK_BUILD=1 to opt in.",
+    );
+    return;
+  }
   if (process.env.SHOGO_SKIP_SDK_BUILD === "1") {
     console.log("[dev:all] SHOGO_SKIP_SDK_BUILD=1 — skipping SDK build.");
     return;

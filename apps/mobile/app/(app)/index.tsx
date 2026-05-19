@@ -425,7 +425,13 @@ const HomeScreen = observer(function HomeScreen() {
 
     async function loadData(attempt = 0) {
       setWorkspaceError(false)
-      const projectFilter = workspaceProjectFilter()
+      // Use the active workspace (which falls back to the first workspace
+      // once `workspaces.loadAll()` has resolved). Relying on
+      // `getActiveWorkspaceId()` alone breaks the first ever load because
+      // nothing has been persisted to storage yet — the effect re-runs
+      // when `currentWorkspace?.id` changes, so this also covers the
+      // post-load case.
+      const projectFilter = workspaceProjectFilter(currentWorkspace?.id)
       const results = await Promise.allSettled([
         projectFilter ? projects.loadAll(projectFilter) : Promise.resolve(),
         workspaces.loadAll(),

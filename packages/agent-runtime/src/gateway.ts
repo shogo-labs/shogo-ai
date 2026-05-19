@@ -317,6 +317,13 @@ export class AgentGateway {
     loopDetected: boolean
     escalated: boolean
     responseEmpty: boolean
+    /**
+     * True when the turn ended via a user-initiated stop (Stop button).
+     * server.ts uses this to tag the trailing `data-turn-complete` frame
+     * with `status: 'aborted'` so project-chat bills the partial usage
+     * instead of treating the EOF as an upstream cut.
+     */
+    wasAborted: boolean
   } | null = null
   /** Optional label for eval tracing — included in log prefix when set */
   private evalLabel: string | null = null
@@ -2427,6 +2434,7 @@ export class AgentGateway {
         loopDetected: !!result.loopBreak,
         escalated: false,
         responseEmpty,
+        wasAborted: result.abortReason === 'external',
       }
 
       // UI notifications below may throw if the client disconnected (stop).

@@ -79,18 +79,23 @@ export function hasFileModifyingTools(toolCallMap: Map<string, { toolName: strin
  *
  * EOF-without-turn-complete handling:
  *   The runtime emits `data-turn-complete` exactly once at the tail of every
- *   turn it brings to a terminal state. If our reader EOFs before seeing that
- *   marker, the API↔runtime body was cut while the agent was still working.
- *   Two real triggers:
- *     1. Knative activator's 5-min request timeout — the buffer on the
- *        runtime's `streamBufferStore` is still alive and growing.
- *     2. User clicked Stop — `/agent/stop` aborts the buffer; the resume
- *        endpoint returns 204.
+ *   turn it brings to a terminal state — including `status: 'aborted'` when
+ *   the user clicked Stop. If our reader EOFs before seeing that marker, the
+ *   API↔runtime body was cut while the agent was still working.
+ *   Two real triggers now:
+ *     1. Knative activator's 5-min request timeout, or pod restart mid-turn
+ *        — the runtime's `streamBufferStore` is still alive and growing.
+ *     2. The pod itself died (crash, OOM) — buffer is gone with the process.
  *   We try server-side auto-resume against `/agent/chat/:id/stream?fromSeq=0`
- *   to drain the full turn from the runtime's buffer when it's still alive
- *   (case 1). If the resume returns 204 / errors (case 2 + crashes), we fall
+ *   to drain the rest of the turn from the runtime's buffer when it's still
+ *   alive (case 1). If the resume returns 204 / errors (case 2), we fall
  *   back to persisting whatever was accumulated when the original cut hit,
  *   so the user's truncated turn still lands in DB.
+ *
+ *   User-initiated Stop is no longer a 204 case — `/agent/stop` only flips
+ *   the abort signal; the buffer is closed naturally once the agent loop's
+ *   wind-down emits `data-usage` and `data-turn-complete{status:'aborted'}`,
+ *   so we observe a real terminal frame and bill the partial usage.
  */
 export async function trackUsageFromStream(
   stream: ReadableStream<Uint8Array>,

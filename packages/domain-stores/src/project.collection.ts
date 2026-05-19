@@ -79,8 +79,6 @@ export const ProjectCollection = types
     const pendingCreates = new Map<string, any>()
     const pendingUpdates = new Map<string, any>()
     const pendingDeletes = new Set<string>()
-    // Ignore stale loadAll responses when a newer request was started (e.g. workspace switch).
-    let loadAllGeneration = 0
 
     return {
       /** Set loading state */
@@ -122,7 +120,6 @@ export const ProjectCollection = types
        * Uses merge strategy to preserve existing MST node references
        */
       loadAll: flow(function* (filter?: Record<string, any>) {
-        const generation = ++loadAllGeneration
         self.isLoading = true
         self.error = null
 
@@ -132,11 +129,6 @@ export const ProjectCollection = types
           const url = params ? `${ENDPOINT}?${params}` : ENDPOINT
 
           const response = yield env.http.get<{ ok: boolean; items?: any[] }>(url)
-
-          if (generation !== loadAllGeneration) {
-            self.isLoading = false
-            return self.all
-          }
 
           if (response.data?.ok && response.data.items) {
             // Use merge strategy to preserve existing node references

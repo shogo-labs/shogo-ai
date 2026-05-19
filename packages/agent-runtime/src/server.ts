@@ -1262,17 +1262,24 @@ app.post('/agent/chat', async (c) => {
         // Explicit terminal marker the client uses to differentiate "really
         // done" from "stream EOF mid-turn". Anything past this point on the
         // wire is purely framing noise and should be ignored by clients.
+        //
+        // When the user clicked Stop, the agent loop unwinds with
+        // `result.abortReason === 'external'` and the gateway sets
+        // `usage.wasAborted`. We tag the terminal frame `status: 'aborted'`
+        // so project-chat (and other consumers) can distinguish a
+        // user-initiated stop from a clean turn end and bill the partial
+        // usage that was just emitted.
         writer.write({
           type: 'data-turn-complete',
           data: {
             turnId,
             chatSessionId: chatSessionKey,
-            status: 'completed',
+            status: usage?.wasAborted ? 'aborted' : 'completed',
             lastSeq: bufWriter.lastSeq,
             completedAt: Date.now(),
           },
         } as any)
-        writer.write({ type: 'finish', finishReason: 'stop' })
+        writer.write({ type: 'finish', finishReason: usage?.wasAborted ? 'abort' : 'stop' })
         turnSucceeded = true
 
         // Per-turn git push: in `dual_shadow` / `git_only` modes,
@@ -1734,9 +1741,18 @@ app.post('/agent/stop', async (c) => {
   // signal does not reach these instances because each has its own AbortController.
   const cancelledSubagents = agentGateway.agentManager.cancelAll()
 
-  // Remove the buffer entirely so resume after stop returns 204 (not a replay)
-  streamBufferStore.abort(stopSessionKey)
-
+  // We deliberately do NOT call `streamBufferStore.abort(stopSessionKey)` here.
+  // The agent loop, the `createUIMessageStream` execute callback, and the
+  // background reader that drains it into `bufWriter` all keep running after
+  // `abortCurrentTurn` flips the signal. Within ~ms they emit the trailing
+  // `data-usage` (with whatever partial token counts were accumulated) and
+  // `data-turn-complete{status:'aborted'}` frames, then the bgReader's
+  // `finally` block calls `bufWriter.complete()` which closes the buffer
+  // cleanly. Tearing the buffer down synchronously here would race those
+  // wind-down writes against the abort, dropping the partial-usage frame on
+  // the floor and causing project-chat's auto-resume to return 204 (which it
+  // bills as a $0 stop-or-crash partial — see the comment in
+  // `apps/api/src/routes/project-chat.ts`).
   return c.json({ stopped: aborted, cancelledSubagents })
 })
 

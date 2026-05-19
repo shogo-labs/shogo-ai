@@ -127,7 +127,21 @@ export class RuntimeManager implements IRuntimeManager {
       // Spawn `bun run <RUNTIME_SERVER>` so the desktop dev path can
       // use the source bundle / TS entry directly without depending on
       // a prebuilt agent-runtime binary on disk.
-      spawnCommand: (entry: string) => ({ command: pkg.bunBinary, args: ['run', entry] }),
+      //
+      // `--conditions=development` activates the `"development"` export
+      // condition declared by each `@shogo-ai/*` workspace package, so
+      // the agent-runtime resolves `@shogo-ai/sdk/model-catalog`,
+      // `@shogo-ai/cli/pkg`, etc. to their in-tree `src/*.ts` files
+      // instead of the `dist/` build (which isn't produced until
+      // `bun run build:packages`). Without this, a fresh clone crashes
+      // the child runtime on first spawn with `Cannot find module
+      // '@shogo-ai/sdk/model-catalog'`. Mirrors the same flag used by
+      // `scripts/watch-api.ts` and `scripts/dev-all.ts` for the
+      // top-level API + route-generation entry points.
+      spawnCommand: (entry: string) => ({
+        command: pkg.bunBinary,
+        args: ['--conditions=development', 'run', entry],
+      }),
       // Bypass the worker's binary-resolution chain (which expects a
       // compiled `agent-runtime` under ~/.shogo/runtime/) and point at
       // the in-tree source. AGENT_RUNTIME_ENTRY env override still
