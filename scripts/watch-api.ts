@@ -131,8 +131,15 @@ async function startServer() {
     const gen = ++generation;
 
     const envFile = resolve(ROOT, ".env.local");
+    // `--conditions=development` activates the `"development"` export
+    // condition declared by each `@shogo-ai/*` workspace package, so Bun
+    // resolves e.g. `@shogo-ai/sdk/model-catalog`, `@shogo-ai/cli/pkg`, etc.
+    // to their in-tree `src/*.ts` files instead of the `dist/` build (which
+    // isn't produced until `bun run build:packages`). Without this, the API
+    // entry crashes on startup with `Cannot find module '@shogo-ai/sdk/...'`.
+    // Mirrors the `generate:routes` script + `scripts/dev-all.ts` route gen.
     child = spawn({
-      cmd: ["bun", `--env-file=${envFile}`, "run", ENTRY],
+      cmd: ["bun", `--env-file=${envFile}`, "--conditions=development", "run", ENTRY],
       stdout: "inherit",
       stderr: "inherit",
       stdin: "inherit",
