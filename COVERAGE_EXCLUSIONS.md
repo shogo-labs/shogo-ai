@@ -91,9 +91,113 @@ so reviewers know why a future PR adding them back would be wrong.
 
 ---
 
+## Thresholds source of truth
+
+Per-package floors and the aggregate backend line/function thresholds
+live in **`coverage/thresholds.json`**. `scripts/run-all-tests.ts`
+reads that file at merge time and passes the values to
+`merge-lcov.ts` as `--per-package-floor` / `--threshold-line` /
+`--threshold-function`. To ratchet a floor up after a milestone,
+edit `coverage/thresholds.json` only — do not touch the runner.
+
+`coverage/thresholds.json` also carries `excludeDirs` (default
+`["dist", "build", "generated"]`). The runner translates each entry
+into a `--exclude-dir <segment>` flag so cross-package imports of
+built bundles (e.g. `packages/cli/dist/chunk-*.js` pulled in by
+another package's tests) are dropped from the backend roll-up
+without each importing package having to remember to ignore them
+locally.
+
+---
+
 ## `/* c8 ignore */` log
 
 Inline ignore comments live in source code, but each one must have a
 one-line justification appended here so reviewers can audit the set.
 
 _(none yet — Phase 8 will populate this)_
+
+---
+
+## `apps/api` — 100% target (Wave plan)
+
+Tracked separately from the backend roll-up. Goal: drive `apps/api` to
+**100% line + function** coverage on `chore/backend-test-coverage-100`,
+six waves, one PR per wave. Plan:
+[`.shogo/plans/appsapi-to-100-coverage_z36z1f1j.plan.md`](.shogo/plans/appsapi-to-100-coverage_z36z1f1j.plan.md).
+
+### Baseline (Wave 0 — captured 2026-05-19)
+
+Captured via `cd apps/api && bun run test:coverage`, merged across all
+255 test files by `scripts/run-tests-isolated.ts`. Raw artefacts under
+`coverage/baselines/`:
+
+- `apps-api.lcov` — merged lcov.info
+- `apps-api.gaps.json` — per-file gap report (consumed by every later wave)
+- `apps-api.summary.txt` — human-readable summary
+
+| Metric | Measured |
+|---|---:|
+| Files instrumented | 65 |
+| Lines | **89.96%** (10,309 / 11,459) |
+| Functions | **93.97%** (920 / 979) |
+| Branches | n/a (see below) |
+
+**Note on branches:** Bun's lcov reporter (`bun test --coverage --coverage-reporter=lcov`)
+does not emit `BRDA` / `BRF` / `BRH` records — branch coverage is reported
+as 0/0 for every file. The wave plan therefore enforces **line + function**
+only; branch hotspots in `scripts/coverage-gap-report.ts` are a no-op until
+Bun ships branch support or we move apps/api to c8/istanbul. Tracked
+separately; not a blocker for the 100% goal.
+
+**Note on file count:** the 65-file figure counts only files actually
+imported by passing tests. apps/api has 131 source files total (per
+`find src -name '*.ts' -not -name '*.test.ts'`); the remaining 66 files
+have no test importing them at all and don't appear in lcov. Wave 1–4 PRs
+add those imports and tests; the gap report will grow toward 131 as we go.
+
+### Top uncovered files at baseline
+
+From `coverage/baselines/apps-api.gaps.json` → `topUncovered` (line count):
+
+| Uncovered lines | Line% | File |
+|---:|---:|---|
+| 353 | 74.44% | `apps/api/src/services/analytics.service.ts` |
+| 148 | 80.93% | `apps/api/src/services/billing.service.ts` |
+|  81 | 80.53% | `apps/api/src/lib/tunnel-redis.ts` |
+|  81 | 87.36% | `apps/api/src/services/git.service.ts` |
+|  57 | 83.09% | `apps/api/src/services/apple-iap.service.ts` |
+|  56 | 70.37% | `apps/api/src/services/email.service.ts` |
+|  50 | 29.58% | `apps/api/src/lib/usage-cost.ts` |
+|  44 | 75.14% | `apps/api/src/lib/sync-engine.ts` |
+|  41 | 81.70% | `apps/api/src/services/transcription.service.ts` |
+|  34 | 82.74% | `apps/api/src/lib/base-heartbeat-scheduler.ts` |
+
+`analytics.service.ts` is the single biggest line gap and is also the
+most recently touched file (commit `720917be` from Worker-B). Wave 3A
+revisits it for the remaining 353 uncovered lines.
+
+### Planned exclusions (justified, finalized in Wave 5)
+
+These will be added to `apps/api/bunfig.toml` `coveragePathIgnorePatterns`
+once we get to Wave 5. Listed here so reviewers have advance notice.
+
+| File / range | Reason |
+|---|---|
+| `apps/api/src/entry.ts` | Process bootstrap — runs once at startup, side-effects only |
+| `apps/api/src/instrumentation.ts` | OTEL init — depends on global env, tested via integration |
+| `apps/api/src/server.ts` (`serve()` call only) | Hono `serve()` invocation, no testable surface |
+| `apps/api/src/lib/k8s-auth.ts` lines 17-39 (in-cluster `getKubeConfig` branch) | Uses `require('fs').existsSync` / `readFileSync`, which `mock.module('fs', ...)` does NOT intercept in bun 1.3.x for builtin modules. The default-kubeconfig branch IS covered. Final: 100% funcs / 98.99% lines. |
+| `apps/api/src/lib/knative-project-manager.ts` lines 282-1694 (`KnativeProjectManager` class), 1776-1900 (warm-pool resolution in `getProjectPodUrl`), 1911-1915 (tracer wrapper), 1934-2051 (`tryClaimWarmPod` + helpers) | K8s API orchestration + warm-pool claim/promote + OTEL spans + dynamic imports of `warm-pool-controller` / `prisma`. Exercising these arms requires a real cluster + warm pool + Redis, OR a mock surface that would re-implement the module. Covered slices: `getPreviewSubdomain` (prod + dev), `getPreviewUrl`, `getProjectPodUrl` local-dev fallback, `mergePatchKnativeService` (success + failure), `jsonPatchKnativeService` (200 / 422 / 404 / other), `getKnativeProjectManager` singleton. Final: 26.19% funcs / 8.27% lines (≈92% of file intentionally excluded). |
+| `apps/api/src/services/apple-iap.service.ts` lines 276-277, 334-345, 348-363, 365-367 (JWS chain verification, trust anchor, validity windows, ES256 signature verify) | These arms require constructing a real ES256-signed JWS whose x5c chain is anchored by sha256 fingerprint to Apple Root CA G3. There is no way to forge that anchor in a unit test — Apple holds the private key. Covered: every input-validation arm, the `APPLE_IAP_SKIP_JWS_VERIFY=1` skip path, malformed parts/alg/x5c, base64 parse failure. Final: 87.50% funcs / 90.29% lines. Production correctness here is validated by integration test against Apple sandbox + ASSN test events. |
+
+Everything else: **100/100** target.
+
+### Wave 2C reconciliation (2026-05-19)
+
+The two `lib/*` entries above were initially marked "shell-exec arms"
+on the assumption that both files used `child_process.exec` to shell
+out to `kubectl`. On reading the actual source in Wave 2C, neither
+file does — both use `@kubernetes/client-node` API objects directly.
+The exclusions are kept, but the *reason* is different (recorded
+above), and there is no `child_process.exec` to gate on anymore.

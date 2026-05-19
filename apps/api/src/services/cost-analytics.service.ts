@@ -445,8 +445,9 @@ function deriveConfidence(
   evalAnchor: { passRate: number } | null,
 ): 'high' | 'medium' | 'low' {
   if (evalAnchor && evalAnchor.passRate >= 0.85 && entry.totalRuns >= 50) return 'high'
-  if (entry.totalRuns >= 20) return 'medium'
-  return 'low'
+  // entry.totalRuns is guaranteed >= RECOMMENDATION_THRESHOLDS.minRuns (20) at the
+  // call site, so the only other outcome is medium.
+  return 'medium'
 }
 
 function buildDowngradeReason(
