@@ -42,7 +42,7 @@ import { WriteFileWidget } from "./WriteFileWidget"
 import { EditFileWidget } from "./EditFileWidget"
 import { PlanCard, type PlanData } from "../PlanCard"
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
-import { todoStateStore, parseTodos as parseTodosForStore } from "../../../lib/todo-state-store"
+import { useTodoStateStore, parseTodos as parseTodosForStore } from "../../../lib/todo-state-store"
 import { logScreencast } from "../../../lib/screencast-debug"
 import { FileViewerModal } from "../FileViewerModal"
 
@@ -573,6 +573,10 @@ export const AssistantContent = memo(
     return fn
   }, [toggleTool])
 
+  // Per-chat TodoWrite store, provided by the enclosing ChatPanel so
+  // sibling tabs don't share `latestTodos` / `orderedToolIds`.
+  const todoStateStore = useTodoStateStore()
+
   // Throttle the streaming message to ~30fps so markdown re-parsing and part
   // extraction don't run per-token. When streaming ends, the final value is
   // flushed immediately so the committed UI is always exact.
@@ -629,7 +633,7 @@ export const AssistantContent = memo(
         subagentStreamStore.setModel(tool.id, model)
       }
     }
-  }, [orderedParts])
+  }, [orderedParts, todoStateStore])
 
   const groupedParts = useMemo(
     () => groupConsecutiveParts(orderedParts),

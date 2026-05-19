@@ -21,7 +21,7 @@ import {
 } from "lucide-react-native"
 import type { ToolCallData } from "../tools/types"
 import {
-  todoStateStore,
+  useTodoStateStore,
   parseTodos,
   type TodoItem,
   type TodoStatus,
@@ -223,6 +223,7 @@ function TodoWidgetImpl({
   onToggle,
   className,
 }: TodoWidgetProps) {
+  const todoStateStore = useTodoStateStore()
   useSyncExternalStore(todoStateStore.subscribe, todoStateStore.getVersion, todoStateStore.getVersion)
 
   // Own snapshot drives the collapsed header — that's the milestone

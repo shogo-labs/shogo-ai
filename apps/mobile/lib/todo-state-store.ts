@@ -1,22 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Session-scoped store for the chat's TodoWrite state.
+ * Per-chat store for the chat's TodoWrite state.
  *
  * Each `TodoWrite` tool call sends a brand-new snapshot of the agent's
  * task list. The chat used to render every call as its own frozen
  * widget, which left earlier widgets stuck at their initial state
  * (e.g. "0/10") while later widgets showed the up-to-date counts.
  *
- * This store holds the *latest* snapshot for the current session plus
+ * Each store instance holds the *latest* snapshot for one chat plus
  * the ordered list of tool-call ids that have written into it. The
  * first id is treated as the "primary" widget that should default to
  * expanded and reflect the latest body; every later id is a milestone
  * marker whose collapsed header keeps its own snapshot count but
  * whose expanded body also reads from the latest snapshot.
  *
- * Cleared on session change by `ChatPanel`.
+ * Instances are created per `ChatPanel` via `createTodoStateStore()`
+ * and exposed to descendants through `TodoStateStoreContext` so that
+ * multiple open chat tabs do not share or overwrite each other's
+ * state. Consumers read the contextual store via `useTodoStateStore()`.
  */
+
+import { createContext, useContext } from "react"
 
 export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled"
 
@@ -24,17 +29,6 @@ export interface TodoItem {
   id: string
   content: string
   status: TodoStatus
-}
-
-let latestTodos: TodoItem[] = []
-const orderedToolIds: string[] = []
-const idIndex = new Set<string>()
-const listeners = new Set<() => void>()
-let version = 0
-
-function notify() {
-  version++
-  listeners.forEach((fn) => fn())
 }
 
 const validStatuses: TodoStatus[] = [
@@ -93,61 +87,96 @@ export function parseTodos(args?: Record<string, unknown>): TodoItem[] {
     })
 }
 
-export const todoStateStore = {
-  getVersion(): number {
-    return version
-  },
-
-  getLatest(): TodoItem[] {
-    return latestTodos
-  },
-
-  getFirstId(): string | undefined {
-    return orderedToolIds[0]
-  },
-
-  isFirst(toolId: string): boolean {
-    return orderedToolIds[0] === toolId
-  },
-
-  hasRegistered(toolId: string): boolean {
-    return idIndex.has(toolId)
-  },
-
+export interface TodoStateStore {
+  getVersion(): number
+  getLatest(): TodoItem[]
+  getFirstId(): string | undefined
+  isFirst(toolId: string): boolean
+  hasRegistered(toolId: string): boolean
   /**
    * Record a TodoWrite snapshot from a specific tool call.
    *
    * - First call for a given `toolId` appends it to the ordered list
-   *   so the first writer is stable for the session (this is what
+   *   so the first writer is stable for the chat (this is what
    *   selects the primary, default-expanded card).
-   * - Every call overwrites `latestTodos` so subscribers always see
-   *   the freshest agent state.
+   * - Every call overwrites the latest snapshot so subscribers always
+   *   see the freshest agent state.
    */
-  registerWrite(toolId: string, todos: TodoItem[]) {
-    let changed = false
-    if (!idIndex.has(toolId)) {
-      idIndex.add(toolId)
-      orderedToolIds.push(toolId)
-      changed = true
-    }
-    if (latestTodos !== todos) {
-      latestTodos = todos
-      changed = true
-    }
-    if (changed) notify()
-  },
+  registerWrite(toolId: string, todos: TodoItem[]): void
+  subscribe(fn: () => void): () => void
+  clear(): void
+}
 
-  subscribe(fn: () => void): () => void {
-    listeners.add(fn)
-    return () => {
-      listeners.delete(fn)
-    }
-  },
+export function createTodoStateStore(): TodoStateStore {
+  let latestTodos: TodoItem[] = []
+  const orderedToolIds: string[] = []
+  const idIndex = new Set<string>()
+  const listeners = new Set<() => void>()
+  let version = 0
 
-  clear() {
-    latestTodos = []
-    orderedToolIds.length = 0
-    idIndex.clear()
-    notify()
-  },
+  function notify() {
+    version++
+    listeners.forEach((fn) => fn())
+  }
+
+  return {
+    getVersion() {
+      return version
+    },
+    getLatest() {
+      return latestTodos
+    },
+    getFirstId() {
+      return orderedToolIds[0]
+    },
+    isFirst(toolId: string) {
+      return orderedToolIds[0] === toolId
+    },
+    hasRegistered(toolId: string) {
+      return idIndex.has(toolId)
+    },
+    registerWrite(toolId: string, todos: TodoItem[]) {
+      let changed = false
+      if (!idIndex.has(toolId)) {
+        idIndex.add(toolId)
+        orderedToolIds.push(toolId)
+        changed = true
+      }
+      if (latestTodos !== todos) {
+        latestTodos = todos
+        changed = true
+      }
+      if (changed) notify()
+    },
+    subscribe(fn: () => void): () => void {
+      listeners.add(fn)
+      return () => {
+        listeners.delete(fn)
+      }
+    },
+    clear() {
+      latestTodos = []
+      orderedToolIds.length = 0
+      idIndex.clear()
+      notify()
+    },
+  }
+}
+
+export const TodoStateStoreContext = createContext<TodoStateStore | null>(null)
+
+// Lazily-created fallback used when a `TodoWidget` is rendered outside
+// any `TodoStateStoreContext.Provider` (tests, storybook, isolated
+// previews). Production chat trees always supply a per-`ChatPanel`
+// instance, so this never gets reached in the app.
+let fallbackStore: TodoStateStore | null = null
+
+function getFallbackStore(): TodoStateStore {
+  if (!fallbackStore) fallbackStore = createTodoStateStore()
+  return fallbackStore
+}
+
+export function useTodoStateStore(): TodoStateStore {
+  const store = useContext(TodoStateStoreContext)
+  return store ?? getFallbackStore()
 }
