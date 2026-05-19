@@ -821,6 +821,14 @@ export const ChatPanel = observer(function ChatPanel({
   const pendingScrollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastScrollTimeRef = useRef(0)
   const SCROLL_THROTTLE_MS = 300
+  /**
+   * Minimum positive `onContentSizeChange` delta that triggers an
+   * auto-follow on native. Filters out spring-jitter (≤3px) and
+   * contractions (negative delta, e.g. a thinking widget closing) so
+   * the parent ScrollView only chases real new content. See the long
+   * comment at the call site (~line 4220).
+   */
+  const AUTOSCROLL_MIN_DELTA_PX = 4
   /** Duration of the programmatic-scroll guard window (ms). Must comfortably
    * exceed the time between a scrollTo* call and the resulting onScroll event. */
   const PROGRAMMATIC_SCROLL_GUARD_MS = 250
@@ -4217,7 +4225,21 @@ export const ChatPanel = observer(function ChatPanel({
                   isLoadingOlderRef.current = false
                 })
               } else if (isNative && stickToBottomRef.current && contentHeightBeforeLoadRef.current > 0) {
-                setTimeout(() => throttledScrollToEnd(), 200)
+                // Only follow real growth. The height springs inside
+                // ThinkingWidget / CollapsibleToolGroup fire
+                // onContentSizeChange continuously during their 500ms
+                // re-target (and on widget close, the chat *contracts*).
+                // Without this gate every spring frame queued a fresh
+                // throttledScrollToEnd, which was the "the whole screen
+                // scrolls" symptom that accompanied widgets animating
+                // open/closed. AUTOSCROLL_MIN_DELTA_PX is set just
+                // above sub-pixel jitter (≤3px) but well below a single
+                // line of new text (~16-20px) or a fresh tool widget
+                // appearing, so token streaming still follows.
+                const delta = h - contentHeightBeforeLoadRef.current
+                if (delta >= AUTOSCROLL_MIN_DELTA_PX) {
+                  setTimeout(() => throttledScrollToEnd(), 200)
+                }
               }
               contentHeightBeforeLoadRef.current = h
             }}
