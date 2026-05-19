@@ -75,28 +75,33 @@ function formatDate(iso: string): string {
   }
 }
 
-const BUSINESS_SECTION_START = "<!-- :::business-plan::: -->"
-const BUSINESS_SECTION_END = "<!-- :::end-business-plan::: -->"
+// Summary section markers — mirrors packages/agent-runtime/src/plan-translation.ts.
+// Reads accept either the current `:::summary:::` markers or the legacy
+// `:::business-plan:::` markers so older saved plans keep rendering.
+const SUMMARY_SECTION_START = "<!-- :::summary::: -->"
+const SUMMARY_SECTION_END = "<!-- :::end-summary::: -->"
+const LEGACY_SUMMARY_SECTION_START = "<!-- :::business-plan::: -->"
+const LEGACY_SUMMARY_SECTION_END = "<!-- :::end-business-plan::: -->"
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
-const BUSINESS_SECTION_RE = new RegExp(
-  `\\n*${escapeRegex(BUSINESS_SECTION_START)}\\n([\\s\\S]*?)\\n${escapeRegex(BUSINESS_SECTION_END)}\\n*$`
+const SUMMARY_SECTION_RE = new RegExp(
+  `\\n*(?:${escapeRegex(SUMMARY_SECTION_START)}|${escapeRegex(LEGACY_SUMMARY_SECTION_START)})\\n([\\s\\S]*?)\\n(?:${escapeRegex(SUMMARY_SECTION_END)}|${escapeRegex(LEGACY_SUMMARY_SECTION_END)})\\n*$`
 )
 
-function extractBusinessFromContent(content: string): string | null {
-  const match = content.match(BUSINESS_SECTION_RE)
+function extractSummaryFromContent(content: string): string | null {
+  const match = content.match(SUMMARY_SECTION_RE)
   return match ? match[1].trim() : null
 }
 
-function stripBusinessFromContent(content: string): string {
-  return content.replace(BUSINESS_SECTION_RE, "").trimEnd()
+function stripSummaryFromContent(content: string): string {
+  return content.replace(SUMMARY_SECTION_RE, "").trimEnd()
 }
 
 function extractPlanBody(content: string): string {
-  const stripped = stripBusinessFromContent(content)
+  const stripped = stripSummaryFromContent(content)
   const fmEnd = stripped.indexOf("---", 4)
   if (fmEnd === -1) return stripped
   return stripped.substring(fmEnd + 3).trim()
@@ -149,7 +154,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
   const [buildMode, setBuildMode] = useState<string>(selectedModel || DEFAULT_MODEL_PRO)
   const [showModelPicker, setShowModelPicker] = useState(false)
   const [buildStarted, setBuildStarted] = useState(false)
-  const [activeTab, setActiveTab] = useState<"technical" | "business">("technical")
+  const [activeTab, setActiveTab] = useState<"technical" | "summary">("technical")
   // Mirror of the global Dual Plan preference — singleton-backed so any
   // change here is reflected immediately in the chat input and user
   // settings page (and vice versa).
@@ -268,20 +273,20 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
     setTranslateError(null)
   }, [selectedPlan])
 
-  const handleTranslate = useCallback(async () => {
+  const handleGenerateSummary = useCallback(async () => {
     if (!selectedPlan || selectedPlan === "__streaming__") return
     if (translateLoading) return
     setTranslateLoading(selectedPlan)
     setTranslateError(null)
     try {
-      await agentClient.translatePlan(selectedPlan)
-      // Re-fetch the file so extractBusinessFromContent picks up the new
+      await agentClient.summarizePlan(selectedPlan)
+      // Re-fetch the file so extractSummaryFromContent picks up the new
       // section; switching the active tab gives the user immediate feedback.
       await fetchPlanDetail(selectedPlan)
-      setActiveTab("business")
+      setActiveTab("summary")
     } catch (err: any) {
-      const message = err?.message || "Failed to generate business summary"
-      console.error("[PlansPanel] Translate failed:", err)
+      const message = err?.message || "Failed to generate summary"
+      console.error("[PlansPanel] Summary generation failed:", err)
       setTranslateError(message)
     } finally {
       setTranslateLoading((cur) => (cur === selectedPlan ? null : cur))
@@ -343,34 +348,34 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
       : (plan?.name || selectedPlan)
     const isBuildDisabled = isStreamingDetail || !onBuildPlan || detailLoading || !planContent || buildStarted
 
-    // Resolve the business translation from either the live stream (while the
-    // plan is being generated) or the persisted file. We also surface the
-    // translation lifecycle so the Business tab can spin or show errors.
-    const businessFromStream = planStream?.streamingBusinessPlan ?? null
-    const businessFromFile = planContent
-      ? extractBusinessFromContent(planContent)
+    // Resolve the summary from either the live stream (while the plan is
+    // being generated) or the persisted file. We also surface the summary
+    // lifecycle so the Summary tab can spin or show errors.
+    const summaryFromStream = planStream?.streamingSummary ?? null
+    const summaryFromFile = planContent
+      ? extractSummaryFromContent(planContent)
       : null
-    const businessText = isStreamingDetail
-      ? businessFromStream
-      : (businessFromFile ?? businessFromStream)
-    const isTranslatingThisPlan = translateLoading === selectedPlan
-    const businessStatus = isStreamingDetail
-      ? (planStream?.businessStatus ?? "idle")
-      : isTranslatingThisPlan
+    const summaryText = isStreamingDetail
+      ? summaryFromStream
+      : (summaryFromFile ?? summaryFromStream)
+    const isSummarizingThisPlan = translateLoading === selectedPlan
+    const summaryStatus = isStreamingDetail
+      ? (planStream?.summaryStatus ?? "idle")
+      : isSummarizingThisPlan
         ? "pending"
-        : (businessText ? "ready" : (planStream?.businessStatus ?? "idle"))
-    const businessAvailable = businessStatus !== "idle" || !!businessText
-    const isBusinessTab = activeTab === "business" && businessAvailable
+        : (summaryText ? "ready" : (planStream?.summaryStatus ?? "idle"))
+    const summaryAvailable = summaryStatus !== "idle" || !!summaryText
+    const isSummaryTab = activeTab === "summary" && summaryAvailable
     // The on-demand Generate action shows up when this plan is missing a
-    // business translation and we're not already producing one. It works
-    // regardless of the global Dual Plan toggle so historic plans aren't
-    // stuck without the feature.
+    // summary and we're not already producing one. It works regardless of
+    // the global Dual Plan toggle so historic plans aren't stuck without
+    // the feature.
     const canGenerateOnDemand =
       !isStreamingDetail &&
       !!planContent &&
       !detailLoading &&
-      !businessText &&
-      !isTranslatingThisPlan
+      !summaryText &&
+      !isSummarizingThisPlan
 
     return (
       <View className="flex-1 bg-background">
@@ -466,23 +471,23 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
             )}
           </View>
 
-          {/* Generate business summary — sits beside Build so it's the
-              primary discovery surface for historic plans without a
-              translation. Hidden when the plan already has one or while
-              one is being produced. */}
+          {/* Generate summary — sits beside Build so it's the primary
+              discovery surface for historic plans without a summary.
+              Hidden when the plan already has one or while one is being
+              produced. */}
           {canGenerateOnDemand && (
             <Pressable
-              onPress={handleTranslate}
+              onPress={handleGenerateSummary}
               className="flex-row items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-1.5"
             >
               <Languages className="h-3.5 w-3.5 text-sky-400" size={14} />
-              <Text className="text-xs font-semibold text-sky-400">Business</Text>
+              <Text className="text-xs font-semibold text-sky-400">Summary</Text>
             </Pressable>
           )}
-          {isTranslatingThisPlan && (
+          {isSummarizingThisPlan && (
             <View className="flex-row items-center gap-1.5 rounded-lg border border-sky-500/30 bg-sky-500/5 px-3 py-1.5">
               <ActivityIndicator size="small" />
-              <Text className="text-xs font-semibold text-sky-400">Translating...</Text>
+              <Text className="text-xs font-semibold text-sky-400">Generating...</Text>
             </View>
           )}
 
@@ -509,8 +514,8 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
           )}
         </View>
 
-        {/* Tab strip — only when a business translation exists or is in flight */}
-        {businessAvailable && (
+        {/* Tab strip — only when a summary exists or is in flight */}
+        {summaryAvailable && (
           <View className="flex-row items-center border-b border-border/40">
             <Pressable
               onPress={() => setActiveTab("technical")}
@@ -531,23 +536,23 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
               </Text>
             </Pressable>
             <Pressable
-              onPress={() => setActiveTab("business")}
+              onPress={() => setActiveTab("summary")}
               className={cn(
                 "flex-1 flex-row items-center justify-center gap-1.5 py-2",
-                activeTab === "business" && "border-b-2 border-sky-400"
+                activeTab === "summary" && "border-b-2 border-sky-400"
               )}
             >
               <Text
                 className={cn(
                   "text-xs font-semibold",
-                  activeTab === "business"
+                  activeTab === "summary"
                     ? "text-sky-400"
                     : "text-muted-foreground"
                 )}
               >
-                Business
+                Summary
               </Text>
-              {businessStatus === "pending" && <ActivityIndicator size="small" />}
+              {summaryStatus === "pending" && <ActivityIndicator size="small" />}
             </Pressable>
           </View>
         )}
@@ -556,19 +561,19 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
         <ScrollView className="flex-1 px-4 py-3" onScrollBeginDrag={() => setShowModelPicker(false)}>
           {!isStreamingDetail && detailLoading ? (
             <ActivityIndicator className="mt-8" />
-          ) : isBusinessTab ? (
-            businessText ? (
-              <MarkdownText>{businessText}</MarkdownText>
-            ) : businessStatus === "pending" ? (
+          ) : isSummaryTab ? (
+            summaryText ? (
+              <MarkdownText>{summaryText}</MarkdownText>
+            ) : summaryStatus === "pending" ? (
               <View className="flex-row items-center gap-2 py-3">
                 <ActivityIndicator size="small" />
                 <Text className="text-xs text-muted-foreground">
-                  Generating business summary...
+                  Generating summary...
                 </Text>
               </View>
-            ) : businessStatus === "error" ? (
+            ) : summaryStatus === "error" ? (
               <Text className="text-xs text-destructive">
-                Failed to generate business summary. The technical plan is unaffected.
+                Failed to generate summary. The technical plan is unaffected.
               </Text>
             ) : null
           ) : (
@@ -630,7 +635,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
           <Pressable
             testID="plans-dual-plan-toggle"
             onPress={handleDualPlanToggle}
-            accessibilityLabel="Toggle business-language summaries for new plans"
+            accessibilityLabel="Toggle summary generation for new plans"
             className={cn(
               "h-7 flex-row items-center gap-1 rounded-md px-2",
               dualPlan
@@ -651,7 +656,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
                 dualPlan ? "text-sky-400" : "text-muted-foreground"
               )}
             >
-              Business
+              Summary
             </Text>
           </Pressable>
           <Pressable onPress={fetchPlans} className="h-8 w-8 items-center justify-center rounded-lg">

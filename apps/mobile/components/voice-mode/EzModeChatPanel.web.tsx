@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * ShogoChatPanel (web) — in-panel translator UI for "Shogo Mode".
+ * EzModeChatPanel (web) — in-panel translator UI for "EZ Mode".
  *
  * Renders as a full-flex panel that is mounted *on top of* the regular
  * `ChatPanel` inside the project layout's chat column. The underlying
@@ -93,22 +93,24 @@ import {
   useVoiceConversation,
 } from '@shogo-ai/sdk/voice/react'
 import { API_URL } from '../../lib/api'
+import { useEzModeInputModePreference } from '../../lib/ez-mode-preference'
+import { MarkdownText } from '../chat/MarkdownText'
 import { useChatBridge, useSubagentCards } from './ChatBridgeContext'
 import { SubagentCard } from '../chat/turns/SubagentCard'
 import { createBridgeClientTools } from './bridgeClientTools'
-import { SHOGO_PARTICLES_CONFIG } from './shogoVisualizationConfig'
+import { EZ_MODE_PARTICLES_CONFIG } from './ezModeVisualizationConfig'
 import { useTranslatorChat } from './useTranslatorChat'
 import {
-  loadShogoMessages,
-  type ShogoMessageRow,
-} from './shogoMessages'
+  loadEzModeMessages,
+  type EzModeMessageRow,
+} from './ezModeMessages'
 import {
-  ShogoTranscriptQueue,
+  EzModeTranscriptQueue,
   type TranscriptKind,
   type TranscriptTask,
-} from './shogoTranscriptQueue'
+} from './ezModeTranscriptQueue'
 
-export interface ShogoChatPanelProps {
+export interface EzModeChatPanelProps {
   /** Optional extra classes for the outer container. */
   className?: string
 }
@@ -131,6 +133,14 @@ const RECENT_ACTIVITY_MAX = 40
  * call (ElevenLabs meters voice agents by connection duration).
  */
 const HEARTBEAT_INTERVAL_MS = 30_000
+/**
+ * Matches the synthetic user-role nudges this panel injects into the
+ * translator chat to drive heartbeat / turn-complete summaries. We hide
+ * them from the rendered message list — only the resulting assistant
+ * reply (the actual "lightweight status" the user wants to see) should
+ * appear on-screen.
+ */
+const UI_NUDGE_RE = /^\[UI (?:heartbeat|turn-complete)\]/
 /**
  * After Shogo finishes a summary turn (`isSpeaking` goes false) we wait
  * this long before closing the session. The grace window lets the SDK
@@ -194,13 +204,15 @@ function extractMessageText(message: {
  * rows that shouldn't surface in the voice transcript (e.g. shogo-text
  * turns, which are owned by the AI-SDK thread).
  */
-function rowToTranscriptEntry(row: ShogoMessageRow): TranscriptEntry | null {
+function rowToTranscriptEntry(row: EzModeMessageRow): TranscriptEntry | null {
   const kind = row.envelope?.kind
   let source: TranscriptEntry['source'] | null = null
   if (kind === 'voice') {
     source = row.role === 'user' ? 'user-voice' : 'shogo-voice'
   } else if (kind === 'agent-activity') {
     source = 'agent-activity'
+  } else if (kind === 'agent-reply') {
+    source = 'agent-reply'
   }
   if (!source) return null
   return { id: row.id, source, text: row.content }
@@ -214,34 +226,48 @@ function rowToTranscriptEntry(row: ShogoMessageRow): TranscriptEntry | null {
  * from `@elevenlabs/react`. We mount it here so the rest of the panel
  * (which uses `useVoiceConversation` under the hood) can work.
  */
-export function ShogoChatPanel(props: ShogoChatPanelProps) {
+export function EzModeChatPanel(props: EzModeChatPanelProps) {
   return (
     <ShogoVoiceProvider>
-      <ShogoChatPanelInner {...props} />
+      <EzModeChatPanelInner {...props} />
     </ShogoVoiceProvider>
   )
 }
 
-function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
+function EzModeChatPanelInner({ className }: EzModeChatPanelProps) {
   const bridge = useChatBridge()
   const chatSessionId = bridge.chatSessionId
   // Snapshot of the technical chat's task / agent_spawn tool calls.
-  // Rendered as <SubagentCard /> rows so Shogo Mode shares the exact
+  // Rendered as <SubagentCard /> rows so EZ Mode shares the exact
   // same agent card UI (and live browser preview) as the regular chat.
-  const subagentCards = useSubagentCards()
+  const allSubagentCards = useSubagentCards()
+  // Only surface subagent cards while their underlying tool is still
+  // running. Once a subagent finishes (state === 'success' | 'error')
+  // its card disappears so the chat doesn't keep a pile of completed
+  // cards permanently anchored at the bottom of the scroll area. The
+  // history of completed work still lives in the conversation
+  // messages above.
+  const subagentCards = useMemo(
+    () => allSubagentCards.filter((c) => c.state === 'streaming'),
+    [allSubagentCards],
+  )
 
   const [draft, setDraft] = useState('')
   const [voiceError, setVoiceError] = useState<string | null>(null)
   const [voiceTranscript, setVoiceTranscript] = useState<TranscriptEntry[]>([])
   // Single-line "what is the agent doing right now" caption shown in the
-  // Shogo Mode info row. Sourced from the latest `tool-activity` event.
+  // EZ Mode info row. Sourced from the latest `tool-activity` event.
   const [latestActivityLine, setLatestActivityLine] = useState<string | null>(null)
   // Input mode — the user picks either voice or text; we only ever show
-  // one composer at a time. Default to voice: entering Shogo Mode is an
+  // one composer at a time. Default to voice: entering EZ Mode is an
   // explicit gesture, so we surface the mic by default and let the user
   // opt down into text if they prefer. The mic does NOT auto-connect —
   // the user has to tap it to open an ElevenLabs session.
-  const [inputMode, setInputMode] = useState<'voice' | 'text'>('voice')
+  // Voice vs text preference is persisted per-device — see
+  // `lib/ez-mode-preference.ts`. Hydrating asynchronously from
+  // storage means we start in the default ('voice') on first mount
+  // and snap to the stored value once hydration resolves.
+  const [inputMode, setInputModePersist] = useEzModeInputModePreference()
 
   // ---------------------------------------------------------------------
   // Recent-activity buffer — the authoritative view of what the technical
@@ -257,7 +283,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
   const turnActiveRef = useRef<boolean>(false)
 
   // ---------------------------------------------------------------------
-  // Voice session lifecycle. Shogo Mode now connects to ElevenLabs only
+  // Voice session lifecycle. EZ Mode now connects to ElevenLabs only
   // while the user is actively talking *or* Shogo is in the middle of a
   // one-shot spoken summary; the rest of the time the session is fully
   // closed so we are not paying for an idle web voice call.
@@ -388,7 +414,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
     autoInjectMemory: false,
     clientTools: clientTools as never,
     onError: (err) => {
-      console.warn('[ShogoChatPanel] voice error', err)
+      console.warn('[EzModeChatPanel] voice error', err)
       setVoiceError(
         (err as Error)?.message ||
           'Voice connection failed. Check your microphone and try again.',
@@ -396,7 +422,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
     },
     onMessage: ({ source, message }) => {
       if (typeof __DEV__ !== 'undefined' && __DEV__) {
-        console.log('[ShogoChatPanel] SDK onMessage', {
+        console.log('[EzModeChatPanel] SDK onMessage', {
           source,
           preview: message?.slice(0, 120),
         })
@@ -468,7 +494,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
       try {
         conversationRef.current?.end()
       } catch (err) {
-        console.warn('[ShogoChatPanel] failed to end summary session', err)
+        console.warn('[EzModeChatPanel] failed to end summary session', err)
       }
     }
     // Process anything that queued up while we were busy. Latest wins;
@@ -503,11 +529,9 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
         return
       }
 
-      summaryInFlightRef.current = true
-      summaryHeardSpeechRef.current = false
-      setSessionPurpose('summary')
-
-      // Build the activity diff + nudge text.
+      // Build the activity diff + nudge text. Both modalities share
+      // the same prompt so the persona stays consistent whether the
+      // user is reading or listening.
       const activity = recentActivityRef.current
       const sliceStart = lastHeartbeatIndexRef.current
       const newItems = activity.slice(sliceStart)
@@ -542,6 +566,65 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
             'to "the agent". Never recite tool names, file names, or a ' +
             'list of operations. Speak now — do not wait for the user to ' +
             'say anything.'
+
+      // Text modality: no ElevenLabs round-trip. Feed the activity
+      // block + nudge into the translator thread as a user message;
+      // the resulting assistant reply becomes a lightweight on-screen
+      // status update that scrolls with history. The user-role nudge
+      // itself is filtered out of the rendered list (see UI_NUDGE_RE)
+      // so only the assistant's summary is visible.
+      if (inputModeRef.current === 'text') {
+        // Never inject while another turn is in flight. Sending a
+        // user message mid-stream can interleave with the previous
+        // assistant turn's tool calls and leave orphan
+        // `toolCallId`s in the persisted history — the server then
+        // rejects every subsequent send with
+        // `AI_MissingToolResultsError`. For heartbeats we just skip
+        // this tick; the next heartbeat is only 30s away. For
+        // turn-end we still want the summary, so queue it and let
+        // the user/heartbeat drain trigger a retry.
+        const status = textStatusRef.current
+        const chatBusy = status === 'streaming' || status === 'submitted'
+        if (chatBusy) {
+          if (kind === 'turn-end') {
+            pendingSummaryRef.current = { kind, finalText }
+          }
+          return
+        }
+        summaryInFlightRef.current = true
+        try {
+          const finalBlock =
+            kind === 'turn-end' && finalText
+              ? `You just produced this output in the background: ${finalText}\n\n`
+              : ''
+          await sendMessageRef.current({
+            text: `${nudge}\n\n${finalBlock}${activityBlock}`,
+          })
+        } catch (err) {
+          console.warn(
+            '[EzModeChatPanel] text heartbeat sendMessage failed',
+            err,
+          )
+        } finally {
+          summaryInFlightRef.current = false
+          // Drain any summary that was queued while this one was in
+          // flight. Mirror the voice path's priority rules. Defer to
+          // the next tick so the streaming state from the previous
+          // turn fully settles before we kick off a new one.
+          const next = pendingSummaryRef.current
+          pendingSummaryRef.current = null
+          if (next) {
+            setTimeout(() => {
+              void runSummary(next.kind, next.finalText)
+            }, 0)
+          }
+        }
+        return
+      }
+
+      summaryInFlightRef.current = true
+      summaryHeardSpeechRef.current = false
+      setSessionPurpose('summary')
 
       try {
         const ref = conversationRef.current
@@ -600,12 +683,12 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
           }
           ref2.sendContextualUpdate(activityBlock)
         } catch (err) {
-          console.warn('[ShogoChatPanel] sendContextualUpdate failed', err)
+          console.warn('[EzModeChatPanel] sendContextualUpdate failed', err)
         }
         try {
           ref2.sendUserMessage(nudge)
         } catch (err) {
-          console.warn('[ShogoChatPanel] summary sendUserMessage failed', err)
+          console.warn('[EzModeChatPanel] summary sendUserMessage failed', err)
         }
         // Belt-and-braces: ping user-activity so EL flushes any
         // pending VAD/turn-detection state and processes the
@@ -622,13 +705,13 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
           summaryNoSpeechTimerRef.current = null
           if (!summaryHeardSpeechRef.current && summaryInFlightRef.current) {
             console.warn(
-              '[ShogoChatPanel] summary timed out without speech — disconnecting',
+              '[EzModeChatPanel] summary timed out without speech — disconnecting',
             )
             finishSummary()
           }
         }, SUMMARY_NO_SPEECH_TIMEOUT_MS)
       } catch (err) {
-        console.warn('[ShogoChatPanel] summary connect failed', err)
+        console.warn('[EzModeChatPanel] summary connect failed', err)
         cancelSummaryTimers()
         summaryInFlightRef.current = false
         setSessionPurpose(null)
@@ -675,6 +758,37 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
   sendMessageRef.current = sendMessage
   const inputModeRef = useRef(inputMode)
   inputModeRef.current = inputMode
+  // Track the translator chat's status so heartbeats can avoid racing
+  // with an in-flight user/assistant turn. Sending a new user message
+  // while the AI SDK is mid-stream (or has unresolved tool calls) can
+  // leave orphan tool-call ids in the persisted history, which the
+  // server then rejects on the next request with
+  // `AI_MissingToolResultsError`.
+  const textStatusRef = useRef(textStatus)
+  const prevTextStatusRef = useRef(textStatus)
+  textStatusRef.current = textStatus
+
+  // Drain any summary that was queued while the translator chat was
+  // busy. Triggered on a busy → idle transition. This covers the
+  // case where `runSummary('turn-end')` arrives mid-stream and the
+  // heartbeat scheduler has already been stopped (so no future tick
+  // would otherwise pick the queued item up).
+  useEffect(() => {
+    const wasBusy =
+      prevTextStatusRef.current === 'streaming' ||
+      prevTextStatusRef.current === 'submitted'
+    const nowIdle = textStatus !== 'streaming' && textStatus !== 'submitted'
+    prevTextStatusRef.current = textStatus
+    if (!wasBusy || !nowIdle) return
+    if (inputModeRef.current !== 'text') return
+    const pending = pendingSummaryRef.current
+    if (!pending) return
+    if (summaryInFlightRef.current) return
+    pendingSummaryRef.current = null
+    setTimeout(() => {
+      void runSummary(pending.kind, pending.finalText)
+    }, 0)
+  }, [textStatus, runSummary])
 
   useEffect(() => {
     const pushActivity = (line: string) => {
@@ -758,7 +872,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
             ? `Started: ${event.label}${okSuffix}`
             : `Finished: ${event.label}${okSuffix}`
         pushActivity(line)
-        // Drive the Shogo Mode info row caption. Only mark a tool as
+        // Drive the EZ Mode info row caption. Only mark a tool as
         // currently in flight on `start`; on `end` we display the
         // completed action briefly until the next event arrives.
         const niceLabel =
@@ -808,22 +922,12 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
         pendingSummaryRef.current = null
       }
 
-      if (inputModeRef.current === 'voice') {
-        // Voice modality: deliver the spoken summary via the dispatcher.
-        // It will reconnect (if needed), have Shogo speak once, then
-        // disconnect again.
-        void runSummary('turn-end', finalText)
-      } else if (finalText) {
-        // Text modality: feed the reply into the translator thread as
-        // a user turn so it paraphrases on its next response.
-        try {
-          void sendMessageRef.current({
-            text: `[UI turn-complete] You just produced this output in the background: ${finalText}\n\nGive the user a two- or three-sentence high-level summary in business-outcome language. Speak in the first person — never refer to "the agent".`,
-          })
-        } catch (err) {
-          console.warn('[ShogoChatPanel] sendMessage(turn-complete) failed', err)
-        }
-      }
+      // Both modalities go through `runSummary` now. In voice mode it
+      // briefly reconnects to ElevenLabs and has Shogo speak; in text
+      // mode it injects a `[UI turn-complete]` nudge into the
+      // translator thread (filtered out of the rendered list) and the
+      // assistant's reply lands as a lightweight summary message.
+      void runSummary('turn-end', finalText)
     })
     return unsubscribe
   }, [bridge, startHeartbeat, stopHeartbeat, runSummary, setSessionPurpose])
@@ -1009,7 +1113,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
   // `voiceTranscript` from `/api/chat-messages?sessionId=...&agent=voice`
   // filtered to the `voice` / `agent-activity` envelope kinds.
   //
-  // New entries are enqueued into a `ShogoTranscriptQueue` that posts
+  // New entries are enqueued into a `EzModeTranscriptQueue` that posts
   // serially against `/api/voice/transcript/:chatSessionId`, retries
   // transient failures with exponential back-off, and surfaces a
   // "Syncing / Retrying" banner so a network hiccup can never silently
@@ -1022,9 +1126,10 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
   // still-pending task so a mid-turn refresh still lands.
   //
   // The `agent-reply` mirror rows (a friendly echo of the technical
-  // agent's final reply) are deliberately NOT persisted — the technical
-  // thread already has that row, and Shogo's spoken paraphrase IS the
-  // authoritative record on reload.
+  // agent's final reply, rendered as "Shogo Agent · from chat") are
+  // also persisted so a refresh keeps the same chronological view the
+  // user had before — the technical thread is separate and Shogo's
+  // spoken summary may never have happened in text mode.
   // ---------------------------------------------------------------------
   const transcriptHydratedRef = useRef<string | null>(null)
   /** IDs of transcript entries that have been confirmed persisted (by the
@@ -1047,7 +1152,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
   // we don't need to recreate it when the session changes.
   const transcriptQueue = useMemo(
     () =>
-      new ShogoTranscriptQueue({
+      new EzModeTranscriptQueue({
         apiUrl: API_URL ?? '',
         credentials: Platform.OS === 'web' ? 'include' : 'omit',
         onTaskPersisted: (task) => {
@@ -1055,7 +1160,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
         },
         onTaskDropped: (task, reason) => {
           console.warn(
-            '[ShogoChatPanel] transcript task dropped — row will NOT be persisted:',
+            '[EzModeChatPanel] transcript task dropped — row will NOT be persisted:',
             { id: task.id, kind: task.kind, reason },
           )
         },
@@ -1081,10 +1186,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
       case 'agent-activity':
         return 'agent-activity'
       case 'agent-reply':
-        // Intentionally NOT persisted — the technical thread already
-        // stores this row and Shogo's spoken paraphrase is the
-        // authoritative record.
-        return null
+        return 'agent-reply'
     }
   }
 
@@ -1104,7 +1206,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
       if (!kind) return
       if (!chatSessionId) {
         debugLog(
-          '[ShogoChatPanel] appendTranscript skipped — no chatSessionId yet',
+          '[EzModeChatPanel] appendTranscript skipped — no chatSessionId yet',
           { entryId: entry.id, source },
         )
         return
@@ -1119,7 +1221,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
         ts: Date.now(),
       }
       rawTurnsRef.current.set(task.id, task)
-      debugLog('[ShogoChatPanel] appendTranscript enqueue', {
+      debugLog('[EzModeChatPanel] appendTranscript enqueue', {
         id: entry.id,
         kind,
         textPreview: text.slice(0, 120),
@@ -1149,7 +1251,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
     const controller = new AbortController()
     ;(async () => {
       try {
-        const rows = await loadShogoMessages(chatSessionId, {
+        const rows = await loadEzModeMessages(chatSessionId, {
           signal: controller.signal,
         })
         if (controller.signal.aborted) return
@@ -1159,7 +1261,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
         for (const e of hydrated) {
           persistedEntryIdsRef.current.add(e.id)
         }
-        debugLog('[ShogoChatPanel] hydrate ok', {
+        debugLog('[EzModeChatPanel] hydrate ok', {
           chatSessionId,
           totalRows: rows.length,
           hydratedEntries: hydrated.length,
@@ -1173,7 +1275,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
       } catch (err: any) {
         if (err?.name === 'AbortError') return
         console.warn(
-          '[ShogoChatPanel] hydrate voice transcript failed:',
+          '[EzModeChatPanel] hydrate voice transcript failed:',
           err?.message || err,
         )
         setVoiceTranscript([])
@@ -1210,7 +1312,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
       replayed += 1
     }
     if (replayed > 0) {
-      debugLog('[ShogoChatPanel] session-end replay', { replayed })
+      debugLog('[EzModeChatPanel] session-end replay', { replayed })
     }
   }, [conversation.status, transcriptQueue, debugLog])
 
@@ -1234,7 +1336,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
       }
       const flushed = transcriptQueue.flushBeacon()
       if (flushed > 0) {
-        debugLog('[ShogoChatPanel] pagehide beacon flush', { flushed })
+        debugLog('[EzModeChatPanel] pagehide beacon flush', { flushed })
       }
     }
     window.addEventListener('pagehide', onHide)
@@ -1244,12 +1346,12 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
   }, [transcriptQueue, debugLog])
 
   const handleClose = useCallback(
-    () => bridge.setShogoModeActive(false),
+    () => bridge.setEzModeActive(false),
     [bridge],
   )
 
   const handlePeek = useCallback(
-    () => bridge.setShogoPeekActive(true),
+    () => bridge.setEzPeekActive(true),
     [bridge],
   )
 
@@ -1297,7 +1399,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
         }
       } catch (err: unknown) {
         console.warn(
-          '[ShogoChatPanel] interrupt-and-listen restart failed',
+          '[EzModeChatPanel] interrupt-and-listen restart failed',
           err,
         )
         setSessionPurpose(null)
@@ -1344,7 +1446,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
     // configured greeting ("Hi, I'm Shogo. Tell me what you'd like to
     // work on…") which on connect plays unprompted and then gets
     // immediately cut off as soon as the user starts talking — feels
-    // like a bug. The Shogo Mode panel already shows a written intro
+    // like a bug. The EZ Mode panel already shows a written intro
     // in its empty state, so we never need a spoken intro on a fresh
     // user session.
     setSessionPurpose('user')
@@ -1357,7 +1459,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
       }
     } catch (err: unknown) {
       setSessionPurpose(null)
-      console.warn('[ShogoChatPanel] failed to start voice session', err)
+      console.warn('[EzModeChatPanel] failed to start voice session', err)
       setVoiceError(
         (err as Error)?.message ||
           'Could not start voice session. Check microphone permissions.',
@@ -1392,7 +1494,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
   // we never want the mic hot while the voice composer is hidden.
   const handleSetInputMode = useCallback(
     (next: 'voice' | 'text') => {
-      setInputMode(next)
+      void setInputModePersist(next)
       setVoiceError(null)
       if (next === 'text') {
         cancelSummaryTimers()
@@ -1427,6 +1529,35 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
     scrollRef.current?.scrollToEnd?.({ animated: true })
   }, [messages.length, voiceTranscript.length, subagentCards.length, latestActivityLine])
 
+  // Should the "Shogo is thinking…" pill be visible?
+  //
+  // Driving the pill purely off `textStatus` is fragile: if the AI SDK
+  // ever fails to flip to `'ready'` (e.g. the server stream stays open
+  // a beat after the final chunk, an aborted tool resolution leaves
+  // the chat stuck on `'streaming'`, etc.) the indicator can linger
+  // long after Shogo has finished replying. Instead, gate on the
+  // last *visible* message: if Shogo has produced any text, hide the
+  // pill regardless of `textStatus`. Synthetic `[UI ...]` user nudges
+  // (heartbeat / turn-complete) are excluded so they don't reset the
+  // "waiting for first reply" state.
+  const isThinking = useMemo(() => {
+    if (textStatus !== 'submitted' && textStatus !== 'streaming') return false
+    let lastVisible: (typeof messages)[number] | undefined
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.role === 'user') {
+        const t = extractMessageText(m as never)
+        if (UI_NUDGE_RE.test(t)) continue
+      }
+      lastVisible = m
+      break
+    }
+    if (!lastVisible) return true
+    if (lastVisible.role === 'user') return true
+    const assistantText = extractMessageText(lastVisible as never).trim()
+    return assistantText.length === 0
+  }, [textStatus, messages])
+
   const isVoiceMode = inputMode === 'voice'
 
   return (
@@ -1444,7 +1575,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
         <Pressable
           onPress={handleClose}
           className="p-2 rounded-full hover:bg-muted/60 active:bg-muted"
-          accessibilityLabel="Exit Shogo Mode"
+          accessibilityLabel="Exit EZ Mode"
         >
           <X size={16} className="text-muted-foreground" />
         </Pressable>
@@ -1464,48 +1595,30 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
         className="flex-1"
         contentContainerClassName="px-4 py-4 gap-3"
       >
-        {/* Subagent cards — shared with the regular chat so the live
-            browser preview and any other card-level features show up
-            here too. The info row underneath shows what the technical
-            agent is currently doing in plain English. The noisy
-            per-tool `agent-activity` transcript is intentionally
-            omitted from this surface; it lives in `recentActivityRef`
-            for Shogo's voice / text summaries. */}
-        {subagentCards.length > 0 && (
-          <View className="gap-2">
-            {subagentCards.map((card) => (
-              <SubagentCard key={card.id} tool={card} />
-            ))}
-            {(technicalTurnActive || latestActivityLine) && (
-              <View className="px-3 py-2 flex-row items-center gap-2 rounded-lg border border-border/40 bg-muted/20">
-                <Text
-                  className="flex-1 text-[11px] text-muted-foreground"
-                  numberOfLines={1}
-                >
-                  {latestActivityLine ??
-                    (technicalTurnActive
-                      ? 'Working in the background…'
-                      : '')}
-                </Text>
-              </View>
-            )}
-          </View>
-        )}
-
         {messages.length === 0 &&
         voiceTranscript.length === 0 &&
         subagentCards.length === 0 ? (
           <EmptyState mode={inputMode} />
         ) : (
           <>
-            {messages.map((m) => (
-              <MessageRow
-                key={m.id}
-                role={m.role === 'user' ? 'user' : 'shogo'}
-                text={extractMessageText(m as never)}
-              />
-            ))}
-            {/* Shogo Mode shows agent cards above; collapse the noisy
+            {messages
+              // Hide synthetic `[UI ...]` user-role nudges that the panel
+              // injects to drive heartbeat / turn-complete summaries. The
+              // resulting assistant reply is the lightweight status row
+              // we actually want the user to see.
+              .filter((m) => {
+                if (m.role !== 'user') return true
+                const t = extractMessageText(m as never)
+                return !UI_NUDGE_RE.test(t)
+              })
+              .map((m) => (
+                <MessageRow
+                  key={m.id}
+                  role={m.role === 'user' ? 'user' : 'shogo'}
+                  text={extractMessageText(m as never)}
+                />
+              ))}
+            {/* EZ Mode shows agent cards below; collapse the noisy
                 `agent-activity` rows from the voice transcript here so
                 the surface stays card-first. Voice + final-reply rows
                 still render as before. */}
@@ -1534,13 +1647,41 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
           </>
         )}
 
-        {textStatus === 'streaming' || textStatus === 'submitted' ? (
+        {isThinking ? (
           <View className="self-start rounded-full bg-muted px-3 py-1">
             <Text className="text-muted-foreground text-xs">
               Shogo is thinking…
             </Text>
           </View>
         ) : null}
+
+        {/* Subagent cards + "what is the technical agent doing right now"
+            info row. Rendered *after* the conversation so the live
+            activity indicator sits directly beneath the last message
+            (rather than at the top of the scroll area pushing history
+            down). The noisy per-tool `agent-activity` transcript stays
+            omitted from this surface; it lives in `recentActivityRef`
+            for Shogo's voice / text heartbeat summaries. */}
+        {subagentCards.length > 0 && (
+          <View className="gap-2">
+            {subagentCards.map((card) => (
+              <SubagentCard key={card.id} tool={card} />
+            ))}
+            {(technicalTurnActive || latestActivityLine) && (
+              <View className="px-3 py-2 flex-row items-center gap-2 rounded-lg border border-border/40 bg-muted/20">
+                <Text
+                  className="flex-1 text-[11px] text-muted-foreground"
+                  numberOfLines={1}
+                >
+                  {latestActivityLine ??
+                    (technicalTurnActive
+                      ? 'Working in the background…'
+                      : '')}
+                </Text>
+              </View>
+            )}
+          </View>
+        )}
       </ScrollView>
 
       {isVoiceMode ? (
@@ -1600,7 +1741,7 @@ function SphereHero({
         style={{ height: 350 }}
       >
         <OrganicParticles
-          config={SHOGO_PARTICLES_CONFIG}
+          config={EZ_MODE_PARTICLES_CONFIG}
           getFrequencyData={getFrequencyData}
           active={voiceActive}
           style={{ width: '100%', height: '100%' }}
@@ -1660,6 +1801,14 @@ function MessageRow({
     ? 'text-xs text-muted-foreground italic'
     : 'text-sm text-foreground'
 
+  // Render Shogo / Agent replies as markdown (code, links, lists, etc.)
+  // so the "Shogo Agent · from chat" mirror and Shogo's own replies
+  // look the same as messages in the main chat. User bubbles and the
+  // tiny one-line `agent-activity` mirrors stay as plain text — the
+  // former is a single line of typed input, the latter is intentionally
+  // minimal narration.
+  const renderAsMarkdown = !isUser && !isAgentActivity
+
   return (
     <View className={`rounded-xl px-3 py-2 max-w-[85%] ${bubbleClass}`}>
       <View className="flex-row items-center gap-2 mb-0.5">
@@ -1670,7 +1819,11 @@ function MessageRow({
           <Text className="text-[10px] text-muted-foreground/70">· {badge}</Text>
         ) : null}
       </View>
-      <Text className={textClass}>{text}</Text>
+      {renderAsMarkdown ? (
+        <MarkdownText className={textClass}>{text}</MarkdownText>
+      ) : (
+        <Text className={textClass}>{text}</Text>
+      )}
     </View>
   )
 }

@@ -293,7 +293,7 @@ export class AgentClient {
     return data.plans ?? []
   }
 
-  async getPlan(filename: string): Promise<{ filename: string; content: string; business?: string }> {
+  async getPlan(filename: string): Promise<{ filename: string; content: string; summary?: string }> {
     return this.fetchJson(`/agent/plans/${encodeURIComponent(filename)}`)
   }
 
@@ -301,10 +301,10 @@ export class AgentClient {
     await this.fetchJson(`/agent/plans/${encodeURIComponent(filename)}`, { method: 'DELETE' })
   }
 
-  /** Generate (or regenerate) a business-language translation for an
-   *  existing plan and persist it inside the plan's .plan.md file. */
-  async translatePlan(filename: string): Promise<{ business: string }> {
-    return this.fetchJson(`/agent/plans/${encodeURIComponent(filename)}/translate`, {
+  /** Generate (or regenerate) a stakeholder summary for an existing plan
+   *  and persist it inside the plan's .plan.md file. */
+  async summarizePlan(filename: string): Promise<{ summary: string }> {
+    return this.fetchJson(`/agent/plans/${encodeURIComponent(filename)}/summarize`, {
       method: 'POST',
     })
   }

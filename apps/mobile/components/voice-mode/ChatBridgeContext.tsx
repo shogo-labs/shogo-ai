@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * ChatBridge — the small in-memory bus that lets the Shogo Mode overlay
+ * ChatBridge — the small in-memory bus that lets the EZ Mode overlay
  * drive the real `ChatPanel` without the two components having to know
  * about each other.
  *
@@ -33,6 +33,9 @@ import React, {
   useSyncExternalStore,
 } from 'react'
 import type { ToolCallData } from '../chat/tools/types'
+import {
+  useEzModeActivePreference,
+} from '../../lib/ez-mode-preference'
 
 export type ChatInteractionMode = 'agent' | 'plan' | 'ask'
 
@@ -67,24 +70,24 @@ export interface ChatBridgeApi {
   /** Subscribe to the typed lifecycle event stream. Returns an unsubscribe. */
   subscribe: (listener: (event: AgentEvent) => void) => () => void
   /**
-   * Whether Shogo Mode (the in-panel voice + text translator) is currently
+   * Whether EZ Mode (the in-panel voice + text translator) is currently
    * replacing the chat panel UI. When `true`, the normal `ChatPanel` stays
    * mounted beneath but is visually hidden.
    */
-  shogoModeActive: boolean
-  setShogoModeActive: (active: boolean) => void
-  toggleShogoMode: () => void
+  ezModeActive: boolean
+  setEzModeActive: (active: boolean) => void
+  toggleEzMode: () => void
   /**
-   * "Peek" state — when Shogo Mode is active and the user has tapped the
-   * peek button, the Shogo overlay is hidden (opacity 0 / no pointer
+   * "Peek" state — when EZ Mode is active and the user has tapped the
+   * peek button, the EZ Mode overlay is hidden (opacity 0 / no pointer
    * events) so the underlying `ChatPanel` is visible and interactive.
    * The voice session + translator thread keep running in the background.
-   * Resets to `false` whenever `shogoModeActive` flips off.
+   * Resets to `false` whenever `ezModeActive` flips off.
    */
-  shogoPeekActive: boolean
-  setShogoPeekActive: (active: boolean) => void
+  ezPeekActive: boolean
+  setEzPeekActive: (active: boolean) => void
   /**
-   * The id of the chat session the bridge is currently bound to. Shogo
+   * The id of the chat session the bridge is currently bound to. EZ
    * Mode uses this id to scope its thread to the active session —
    * hydration reads `/api/chat-messages?sessionId=<id>&agent=voice` and
    * writes are POSTed to `/api/voice/*?chatSessionId=<id>`.
@@ -93,12 +96,12 @@ export interface ChatBridgeApi {
   /**
    * Resolved agent runtime base URL. Surfaced through the bridge so
    * subagent-aware UI (e.g. SubagentCard's live browser preview, the
-   * Shogo overlay) can subscribe to runtime endpoints without depending
+   * EZ Mode overlay) can subscribe to runtime endpoints without depending
    * on the ChatContext which is only available beneath ChatPanel.
    */
   agentUrl: string | null
   /**
-   * One-shot signal: when set, the Shogo Mode panel should auto-connect
+   * One-shot signal: when set, the EZ Mode panel should auto-connect
    * its voice session as soon as it mounts. Consumers must call
    * `consumeAutoStartVoice()` exactly once to read and clear the flag —
    * the bridge guarantees `true` is returned at most once per provider.
@@ -107,7 +110,7 @@ export interface ChatBridgeApi {
   /**
    * `useSyncExternalStore` plumbing for the subagent (`task` /
    * `agent_spawn`) tool-call snapshot published by `ChatPanel`. The
-   * Shogo overlay subscribes to this snapshot and renders one
+   * EZ Mode overlay subscribes to this snapshot and renders one
    * `<SubagentCard>` per entry, reusing the same card component the
    * technical chat shows. Most consumers should use the
    * `useSubagentCards()` hook instead of these directly.
@@ -118,7 +121,7 @@ export interface ChatBridgeApi {
 
 /**
  * Snapshot of `task` / `agent_spawn` tool calls from the technical
- * agent's message thread, exposed to non-chat surfaces (Shogo Mode)
+ * agent's message thread, exposed to non-chat surfaces (EZ Mode)
  * so they can render the same `<SubagentCard>` UI without owning any
  * AI SDK message state. Updated by `ChatPanel` whenever its message
  * list changes via `setSubagentCards`.
@@ -152,14 +155,14 @@ export interface ChatBridgeProviderProps {
    */
   agentUrl?: string | null
   /**
-   * Initial value for `shogoModeActive`. When `true`, Shogo Mode is on
+   * Initial value for `ezModeActive`. When `true`, EZ Mode is on
    * from first render so the overlay mounts before any user gesture.
    * Used by the homepage → project navigation when the user clicks the
    * mic to start voice project creation.
    */
-  initialShogoModeActive?: boolean
+  initialEzModeActive?: boolean
   /**
-   * One-shot: request that the Shogo Mode panel auto-connect its voice
+   * One-shot: request that the EZ Mode panel auto-connect its voice
    * session on mount. The flag is consumed (and cleared) on the first
    * read via `consumeAutoStartVoice()` from the bridge api.
    */
@@ -170,7 +173,7 @@ export interface ChatBridgeProviderProps {
 export function ChatBridgeProvider({
   chatSessionId = null,
   agentUrl = null,
-  initialShogoModeActive = false,
+  initialEzModeActive = false,
   initialAutoStartVoice = false,
   children,
 }: ChatBridgeProviderProps) {
@@ -181,27 +184,34 @@ export function ChatBridgeProvider({
     subagentCardsSnapshot: { cards: [], version: 0 },
     subagentCardsListeners: new Set(),
   })
-  const [shogoModeActive, setShogoModeActiveState] = useState(initialShogoModeActive)
-  const [shogoPeekActive, setShogoPeekActiveState] = useState(false)
+  // EZ Mode active state is persisted per-device so a page refresh
+  // keeps the overlay open if the user had it open. `initialEzModeActive`
+  // (URL-driven, e.g. from `?startEzMode=1` on the homepage) only acts
+  // as a one-shot seed when nothing is stored yet; thereafter the
+  // persisted value wins.
+  const [ezModeActive, setEzModeActivePersist] =
+    useEzModeActivePreference(initialEzModeActive)
+  const [ezPeekActive, setEzPeekActiveState] = useState(false)
   const autoStartVoiceRef = useRef<boolean>(initialAutoStartVoice)
 
-  const setShogoModeActive = useCallback((active: boolean) => {
-    setShogoModeActiveState(active)
-    if (!active) {
-      setShogoPeekActiveState(false)
-    }
-  }, [])
+  const setEzModeActive = useCallback(
+    (active: boolean) => {
+      void setEzModeActivePersist(active)
+      if (!active) {
+        setEzPeekActiveState(false)
+      }
+    },
+    [setEzModeActivePersist],
+  )
 
-  const toggleShogoMode = useCallback(() => {
-    setShogoModeActiveState((v) => {
-      const next = !v
-      if (!next) setShogoPeekActiveState(false)
-      return next
-    })
-  }, [])
+  const toggleEzMode = useCallback(() => {
+    const next = !ezModeActive
+    void setEzModeActivePersist(next)
+    if (!next) setEzPeekActiveState(false)
+  }, [ezModeActive, setEzModeActivePersist])
 
-  const setShogoPeekActive = useCallback((active: boolean) => {
-    setShogoPeekActiveState(active)
+  const setEzPeekActive = useCallback((active: boolean) => {
+    setEzPeekActiveState(active)
   }, [])
 
   const consumeAutoStartVoice = useCallback(() => {
@@ -245,11 +255,11 @@ export function ChatBridgeProvider({
           internalsRef.current.listeners.delete(listener)
         }
       },
-      shogoModeActive,
-      setShogoModeActive,
-      toggleShogoMode,
-      shogoPeekActive,
-      setShogoPeekActive,
+      ezModeActive,
+      setEzModeActive,
+      toggleEzMode,
+      ezPeekActive,
+      setEzPeekActive,
       chatSessionId,
       agentUrl,
       consumeAutoStartVoice,
@@ -257,11 +267,11 @@ export function ChatBridgeProvider({
       getSubagentCardsSnapshot,
     }),
     [
-      shogoModeActive,
-      setShogoModeActive,
-      toggleShogoMode,
-      shogoPeekActive,
-      setShogoPeekActive,
+      ezModeActive,
+      setEzModeActive,
+      toggleEzMode,
+      ezPeekActive,
+      setEzPeekActive,
       chatSessionId,
       agentUrl,
       consumeAutoStartVoice,
@@ -340,7 +350,7 @@ export interface RegistrarEmitters {
   emitTurnEnd: (finalText: string) => void
   /**
    * Publish the latest snapshot of subagent (`task` / `agent_spawn`)
-   * tool calls. The Shogo overlay subscribes to this snapshot and
+   * tool calls. The EZ Mode overlay subscribes to this snapshot and
    * renders one `<SubagentCard>` per entry. Reference equality of the
    * `cards` array is preserved when the input is identical, so the
    * overlay only re-renders when something actually changed.

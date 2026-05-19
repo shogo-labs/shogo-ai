@@ -651,8 +651,8 @@ function normalizePlanData(plan: PlanData): PlanData {
     ...plan,
     todos: plan.todos ?? [],
     filepath: normalizePlanFilepath(plan.filepath),
-    business: plan.business,
-    businessStatus: plan.businessStatus,
+    summary: plan.summary,
+    summaryStatus: plan.summaryStatus,
   }
 }
 
@@ -1037,7 +1037,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   const [restoreDraftRequest, setRestoreDraftRequest] = useState<RestoreDraftRequest | null>(null)
 
-  // Bridge for Shogo Mode overlay (voice + text translator). The overlay
+  // Bridge for EZ Mode overlay (voice + text translator). The overlay
   // calls `send` / `setMode` to drive this panel, and subscribes to the
   // typed lifecycle event stream (turn-start / tool-activity / turn-end)
   // emitted below. We capture the emitters in refs so hooks declared
@@ -1701,10 +1701,10 @@ export const ChatPanel = observer(function ChatPanel({
       if ((dataPart as any).type === "data-plan") {
         const planData = (dataPart as any).data
         if (planData) {
-          // A fresh plan event always discards any stale business translation
-          // belonging to a previous plan; the runtime will re-emit
-          // data-plan-translation-* if Dual Plan is enabled for this turn.
-          planStream?.resetBusinessPlan()
+          // A fresh plan event always discards any stale summary belonging
+          // to a previous plan; the runtime will re-emit
+          // data-plan-summary-* if Dual Plan is enabled for this turn.
+          planStream?.resetSummary()
           const normalizedPlan = normalizePlanData(planData)
           pendingPlanRef.current = normalizedPlan
           setPendingPlan(normalizedPlan)
@@ -1727,8 +1727,8 @@ export const ChatPanel = observer(function ChatPanel({
             todos: planData.todos ?? previousPlan?.todos ?? [],
             filepath: planData.filepath ?? previousPlan?.filepath,
             toolCallId: planData.toolCallId ?? previousPlan?.toolCallId,
-            business: previousPlan?.business,
-            businessStatus: previousPlan?.businessStatus,
+            summary: previousPlan?.summary,
+            summaryStatus: previousPlan?.summaryStatus,
           })
           pendingPlanRef.current = normalizedPlan
           setPendingPlan(normalizedPlan)
@@ -1740,20 +1740,20 @@ export const ChatPanel = observer(function ChatPanel({
         planStream?.notifyPlanCreated()
       }
 
-      // Dual Plan: business-language translation lifecycle. The runtime emits
-      // these three events asynchronously after create_plan / update_plan so
-      // the UI can show a "Business" tab spinner immediately and then swap in
-      // the translated markdown when it's ready.
-      if ((dataPart as any).type === "data-plan-translation-start") {
-        planStream?.setBusinessStatus("pending")
-        planStream?.setStreamingBusinessPlan(null)
-        planStream?.setBusinessError(null)
+      // Dual Plan: stakeholder summary lifecycle. The runtime emits these
+      // three events asynchronously after create_plan / update_plan so
+      // the UI can show a "Summary" tab spinner immediately and then swap in
+      // the summary markdown when it's ready.
+      if ((dataPart as any).type === "data-plan-summary-start") {
+        planStream?.setSummaryStatus("pending")
+        planStream?.setStreamingSummary(null)
+        planStream?.setSummaryError(null)
         const previousPlan = pendingPlanRef.current
         if (previousPlan) {
           const next = normalizePlanData({
             ...previousPlan,
-            business: undefined,
-            businessStatus: "pending",
+            summary: undefined,
+            summaryStatus: "pending",
           })
           pendingPlanRef.current = next
           setPendingPlan(next)
@@ -1761,19 +1761,19 @@ export const ChatPanel = observer(function ChatPanel({
         }
       }
 
-      if ((dataPart as any).type === "data-plan-translation") {
+      if ((dataPart as any).type === "data-plan-summary") {
         const data = (dataPart as any).data
-        const business = typeof data?.business === "string" ? data.business : null
-        if (business) {
-          planStream?.setBusinessStatus("ready")
-          planStream?.setStreamingBusinessPlan(business)
-          planStream?.setBusinessError(null)
+        const summary = typeof data?.summary === "string" ? data.summary : null
+        if (summary) {
+          planStream?.setSummaryStatus("ready")
+          planStream?.setStreamingSummary(summary)
+          planStream?.setSummaryError(null)
           const previousPlan = pendingPlanRef.current
           if (previousPlan) {
             const next = normalizePlanData({
               ...previousPlan,
-              business,
-              businessStatus: "ready",
+              summary,
+              summaryStatus: "ready",
             })
             pendingPlanRef.current = next
             setPendingPlan(next)
@@ -1783,19 +1783,19 @@ export const ChatPanel = observer(function ChatPanel({
         }
       }
 
-      if ((dataPart as any).type === "data-plan-translation-error") {
+      if ((dataPart as any).type === "data-plan-summary-error") {
         const data = (dataPart as any).data
         const message =
           typeof data?.message === "string" && data.message
             ? data.message
-            : "Failed to generate business summary"
-        planStream?.setBusinessStatus("error")
-        planStream?.setBusinessError(message)
+            : "Failed to generate summary"
+        planStream?.setSummaryStatus("error")
+        planStream?.setSummaryError(message)
         const previousPlan = pendingPlanRef.current
         if (previousPlan) {
           const next = normalizePlanData({
             ...previousPlan,
-            businessStatus: "error",
+            summaryStatus: "error",
           })
           pendingPlanRef.current = next
           setPendingPlan(next)
@@ -1857,7 +1857,7 @@ export const ChatPanel = observer(function ChatPanel({
     onFinish: async ({ message }) => {
       const contentLength = (message as any).content?.length ?? message.parts?.length ?? 0
 
-      // Push a `turn-end` event to the Shogo Mode bridge so the translator
+      // Push a `turn-end` event to the EZ Mode bridge so the translator
       // overlay (voice or text) can summarise the outcome for the user.
       // De-dupe by message id so retries / React strict-mode double-invokes
       // don't fire twice.
@@ -2026,7 +2026,7 @@ export const ChatPanel = observer(function ChatPanel({
   const filesChangedFiredRef = useRef(false)
 
   // Watch messages for tool-invocation state transitions during a live
-  // turn and emit `tool-activity` events so the Shogo Mode overlay can
+  // turn and emit `tool-activity` events so the EZ Mode overlay can
   // (a) keep a fresh activity buffer for mid-turn summaries, and
   // (b) surface the activity in its on-screen log.
   //
@@ -2117,7 +2117,7 @@ export const ChatPanel = observer(function ChatPanel({
   }, [messages])
 
   // Publish a snapshot of the technical agent's task / agent_spawn tool
-  // calls through the ChatBridge so the Shogo Mode overlay can render
+  // calls through the ChatBridge so the EZ Mode overlay can render
   // the same `<SubagentCard>` UI as the regular chat (including any
   // card-level features like the live browser preview). The bridge
   // dedupes by reference so this is cheap to call on every messages
@@ -3317,7 +3317,7 @@ export const ChatPanel = observer(function ChatPanel({
 
       isSendingMessageRef.current = true
 
-      // Let Shogo Mode know a new turn is starting. This is what
+      // Let EZ Mode know a new turn is starting. This is what
       // triggers the overlay to arm its heartbeat / activity buffer.
       try {
         emitTurnStartRef.current?.()
@@ -3394,7 +3394,7 @@ export const ChatPanel = observer(function ChatPanel({
     ]
   )
 
-  // Register bridge endpoints so the Shogo Mode overlay can send messages
+  // Register bridge endpoints so the EZ Mode overlay can send messages
   // and toggle interaction mode on our behalf. The registrar is a no-op
   // when no <ChatBridgeProvider> is mounted (e.g. tests), so it's safe to
   // call unconditionally.
@@ -3938,11 +3938,11 @@ export const ChatPanel = observer(function ChatPanel({
 
   const resolvedAgentUrl = localAgentUrl || (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
 
-  // Generate a business-language translation for a plan that doesn't have
-  // one yet. Mutates the local pending/streaming plan as soon as the
-  // translation comes back so the in-chat PlanCard switches to its
-  // Business tab without waiting for a panel refetch.
-  const handleGenerateBusinessSummary = useCallback(
+  // Generate a stakeholder summary for a plan that doesn't have one yet.
+  // Mutates the local pending/streaming plan as soon as the summary comes
+  // back so the in-chat PlanCard switches to its Summary tab without
+  // waiting for a panel refetch.
+  const handleGenerateSummary = useCallback(
     async (filepath: string): Promise<string> => {
       if (!resolvedAgentUrl) {
         throw new Error("Agent URL is not available")
@@ -3955,46 +3955,46 @@ export const ChatPanel = observer(function ChatPanel({
       if (previousPlan?.filepath === `.shogo/plans/${filename}`) {
         const pendingNext = normalizePlanData({
           ...previousPlan,
-          businessStatus: "pending",
-          business: undefined,
+          summaryStatus: "pending",
+          summary: undefined,
         })
         pendingPlanRef.current = pendingNext
         setPendingPlan(pendingNext)
-        planStream?.setBusinessStatus("pending")
+        planStream?.setSummaryStatus("pending")
       }
       try {
         const client = new AgentClient({
           baseUrl: resolvedAgentUrl.replace(/\/$/, ""),
           fetch: agentFetch,
         })
-        const result = await client.translatePlan(filename)
-        const business = result.business
+        const result = await client.summarizePlan(filename)
+        const summary = result.summary
         const refreshed = pendingPlanRef.current
         if (refreshed?.filepath === `.shogo/plans/${filename}`) {
           const readyNext = normalizePlanData({
             ...refreshed,
-            business,
-            businessStatus: "ready",
+            summary,
+            summaryStatus: "ready",
           })
           pendingPlanRef.current = readyNext
           setPendingPlan(readyNext)
           planStream?.setStreamingPlan(readyNext)
         }
-        planStream?.setStreamingBusinessPlan(business)
-        planStream?.setBusinessStatus("ready")
+        planStream?.setStreamingSummary(summary)
+        planStream?.setSummaryStatus("ready")
         planStream?.notifyPlanCreated()
-        return business
+        return summary
       } catch (err) {
         const refreshed = pendingPlanRef.current
         if (refreshed?.filepath === `.shogo/plans/${filename}`) {
           const errNext = normalizePlanData({
             ...refreshed,
-            businessStatus: "error",
+            summaryStatus: "error",
           })
           pendingPlanRef.current = errNext
           setPendingPlan(errNext)
         }
-        planStream?.setBusinessStatus("error")
+        planStream?.setSummaryStatus("error")
         throw err
       }
     },
@@ -4101,7 +4101,7 @@ export const ChatPanel = observer(function ChatPanel({
       pendingPlan,
       confirmedPlan,
       openPlan: onOpenPlan,
-      generateBusinessSummary: handleGenerateBusinessSummary,
+      generateSummary: handleGenerateSummary,
     }),
     [
       sessionSummary,
@@ -4116,7 +4116,7 @@ export const ChatPanel = observer(function ChatPanel({
       handleConfirmPlan,
       confirmedPlan,
       onOpenPlan,
-      handleGenerateBusinessSummary,
+      handleGenerateSummary,
     ],
   )
 

@@ -139,7 +139,7 @@ export interface CompactChatInputProps {
    * Optional opt-in handler that replaces the default `useVoiceInput`
    * dictation behavior on the empty-composer mic button. When provided,
    * tapping the mic invokes this handler instead of starting local
-   * speech-to-text — the homepage uses this to open Shogo Mode for
+   * speech-to-text — the homepage uses this to open EZ Mode for
    * project creation while preemptively warming a runtime pod.
    */
   onStartVoiceProjectCreation?: () => void | Promise<void>
@@ -749,14 +749,14 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
               {/* Dual Plan toggle — only visible in Plan mode. Persistent
                   per-device preference; every subsequent plan auto-generates
-                  a business-language version until disabled. */}
+                  a stakeholder summary until disabled. */}
               {interactionMode === "plan" && (
-                <WebTooltip label="Also generate a business-language version">
+                <WebTooltip label="Also generate a stakeholder summary">
                   <Pressable
                     testID="home-dual-plan-toggle"
                     disabled={disabled}
                     onPress={() => onDualPlanChange?.(!dualPlan)}
-                    accessibilityLabel="Also generate a business-language version"
+                    accessibilityLabel="Also generate a stakeholder summary"
                     className={cn(
                       "h-[22px] w-[22px] items-center justify-center rounded-md",
                       dualPlan

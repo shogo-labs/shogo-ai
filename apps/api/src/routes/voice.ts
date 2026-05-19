@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Voice / Shogo Mode Routes
+ * Voice / EZ Mode Routes
  *
- * Endpoints that back the "Shogo Mode" overlay (voice + text
+ * Endpoints that back the "EZ Mode" overlay (voice + text
  * translator). Mounted under `/api`:
  *
  *   - GET  /api/voice/signed-url
@@ -30,13 +30,13 @@
  *
  * Persistence rationale
  * ---------------------
- * Shogo Mode's thread is stored in the same `chat_messages` table as
+ * EZ Mode's thread is stored in the same `chat_messages` table as
  * the technical agent's thread, discriminated by a `agent` column
  * (`"technical"` | `"voice"`). The two threads share one `ChatSession`
  * per chat tab but never leak into each other's reads:
  *
  *   - Tech-thread callers filter `agent: 'technical'`.
- *   - Shogo Mode filters `agent: 'voice'`.
+ *   - EZ Mode filters `agent: 'voice'`.
  *
  * The `parts` column on voice rows carries a tiny JSON envelope that
  * discriminates sub-kinds and preserves AI-SDK UIMessage parts for text
@@ -45,6 +45,7 @@
  *   { kind: 'shogo-text',      uiParts: [...] }   // AI-SDK text turn
  *   { kind: 'voice' }                              // spoken turn (user/agent)
  *   { kind: 'agent-activity' }                     // narration mirror
+ *   { kind: 'agent-reply' }                        // technical agent final reply mirror
  *
  * The client is read-only on `chat_messages` — it hydrates via the
  * generated `/api/chat-messages` route (filtered to
@@ -54,6 +55,7 @@
 
 import { Hono } from 'hono'
 import { streamText, convertToModelMessages, type UIMessage } from 'ai'
+import { stripOrphanToolParts } from '../lib/strip-orphan-tool-parts'
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { ElevenLabsClient } from '@shogo-ai/sdk/voice'
 import {
@@ -317,6 +319,7 @@ type ShogoPartsEnvelope =
   | { kind: 'shogo-text'; uiParts: unknown[] }
   | { kind: 'voice' }
   | { kind: 'agent-activity' }
+  | { kind: 'agent-reply' }
 
 type AuthzResult =
   | { ok: true }
@@ -476,7 +479,7 @@ export function voiceRoutes() {
    *
    * Optional `?projectId=<uuid>` selects a per-project EL agent
    * (auto-provisioned on first use, see Phase 2). Without `projectId`,
-   * falls back to the shared Shogo-Mode translator agent identified by
+   * falls back to the shared EZ Mode translator agent identified by
    * `ELEVENLABS_VOICE_MODE_AGENT_ID` — used by the in-app overlay for
    * backwards compatibility.
    */
@@ -596,7 +599,7 @@ export function voiceRoutes() {
    *      `onFinish` hook).
    *
    * Both are written with `agent: 'voice'` and a `parts` envelope of
-   * `{ kind: 'shogo-text', uiParts: [...] }` so the Shogo overlay can
+   * `{ kind: 'shogo-text', uiParts: [...] }` so the EZ Mode overlay can
    * rehydrate its AI-SDK thread on reload.
    *
    * Request body: `{ messages: UIMessage[] }` (AI SDK v6 format).
@@ -693,7 +696,20 @@ export function voiceRoutes() {
         )
       }
 
-      const modelMessages = await convertToModelMessages(uiMessages)
+      // Defensive: a previous turn whose stream was interrupted (page
+      // refresh, network blip, heartbeat racing a user send) can leave
+      // tool-call parts in the persisted history without matching
+      // results. `convertToModelMessages` throws
+      // `AI_MissingToolResultsError` on those, wedging the whole
+      // session. Drop the orphan parts here so the thread stays usable.
+      const { messages: sanitizedUiMessages, droppedCount: droppedOrphans } =
+        stripOrphanToolParts(uiMessages)
+      if (droppedOrphans > 0) {
+        console.warn(
+          `[Voice] translator/chat: dropped ${droppedOrphans} orphan tool part(s) before convertToModelMessages (chatSessionId=${chatSessionId})`,
+        )
+      }
+      const modelMessages = await convertToModelMessages(sanitizedUiMessages)
       const result = streamText({
         model,
         system: systemPrompt,
@@ -738,7 +754,7 @@ export function voiceRoutes() {
    * POST /voice/transcript/:chatSessionId
    *
    * Record a single voice-modality transcript entry as a ChatMessage
-   * row. Used by the Shogo overlay to persist:
+   * row. Used by the EZ Mode overlay to persist:
    *
    *   - `"voice-user"`    — the human spoke (role=user).
    *   - `"voice-agent"`   — Shogo spoke back (role=assistant).
@@ -791,12 +807,13 @@ export function voiceRoutes() {
     if (
       kind !== 'voice-user' &&
       kind !== 'voice-agent' &&
-      kind !== 'agent-activity'
+      kind !== 'agent-activity' &&
+      kind !== 'agent-reply'
     ) {
       return c.json(
         {
           error:
-            "kind must be one of 'voice-user' | 'voice-agent' | 'agent-activity'",
+            "kind must be one of 'voice-user' | 'voice-agent' | 'agent-activity' | 'agent-reply'",
         },
         400,
       )
@@ -814,7 +831,11 @@ export function voiceRoutes() {
 
     const role = kind === 'voice-user' ? 'user' : 'assistant'
     const envelopeKind: ShogoPartsEnvelope['kind'] =
-      kind === 'agent-activity' ? 'agent-activity' : 'voice'
+      kind === 'agent-activity'
+        ? 'agent-activity'
+        : kind === 'agent-reply'
+          ? 'agent-reply'
+          : 'voice'
     const partsJson = JSON.stringify({ kind: envelopeKind })
     const id =
       typeof body.id === 'string' && body.id ? body.id : undefined

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * shogoTranscriptQueue — in-memory pending-write queue for Shogo Mode
+ * ezModeTranscriptQueue — in-memory pending-write queue for EZ Mode
  * voice transcript persistence.
  *
  * The original implementation called `POST /api/voice/transcript/:id`
@@ -35,7 +35,11 @@
  * session that just ended).
  */
 
-export type TranscriptKind = 'voice-user' | 'voice-agent' | 'agent-activity'
+export type TranscriptKind =
+  | 'voice-user'
+  | 'voice-agent'
+  | 'agent-activity'
+  | 'agent-reply'
 
 export interface TranscriptTask {
   chatSessionId: string
@@ -84,7 +88,7 @@ export interface TranscriptQueueOptions {
   debug?: (msg: string, data?: unknown) => void
 }
 
-export class ShogoTranscriptQueue {
+export class EzModeTranscriptQueue {
   private tasks: TranscriptTask[] = []
   /** Dedupe: enqueueing the same id twice is a no-op until it finishes/drops. */
   private known = new Set<string>()
@@ -105,14 +109,14 @@ export class ShogoTranscriptQueue {
   enqueue(task: TranscriptTask): void {
     if (this.disposed) return
     if (this.known.has(task.id)) {
-      this.opts.debug?.('[shogoQueue] enqueue skipped — duplicate id', {
+      this.opts.debug?.('[ezModeQueue] enqueue skipped — duplicate id', {
         id: task.id,
       })
       return
     }
     this.known.add(task.id)
     this.tasks.push(task)
-    this.opts.debug?.('[shogoQueue] enqueue', {
+    this.opts.debug?.('[ezModeQueue] enqueue', {
       id: task.id,
       kind: task.kind,
       chatSessionId: task.chatSessionId,
@@ -174,7 +178,7 @@ export class ShogoTranscriptQueue {
         // Beacons are best-effort by definition.
       }
     }
-    this.opts.debug?.('[shogoQueue] flushBeacon', { count })
+    this.opts.debug?.('[ezModeQueue] flushBeacon', { count })
     this.tasks = []
     this.known.clear()
     this.emitState()
@@ -205,7 +209,7 @@ export class ShogoTranscriptQueue {
     try {
       this.opts.onStateChange?.(this.getState())
     } catch (err) {
-      this.opts.debug?.('[shogoQueue] onStateChange threw', { err })
+      this.opts.debug?.('[ezModeQueue] onStateChange threw', { err })
     }
   }
 
@@ -232,7 +236,7 @@ export class ShogoTranscriptQueue {
           try {
             this.opts.onTaskPersisted?.(task)
           } catch (err) {
-            this.opts.debug?.('[shogoQueue] onTaskPersisted threw', { err })
+            this.opts.debug?.('[ezModeQueue] onTaskPersisted threw', { err })
           }
           continue
         }
@@ -245,7 +249,7 @@ export class ShogoTranscriptQueue {
           try {
             this.opts.onTaskDropped?.(task, result.reason)
           } catch (err) {
-            this.opts.debug?.('[shogoQueue] onTaskDropped threw', { err })
+            this.opts.debug?.('[ezModeQueue] onTaskDropped threw', { err })
           }
           continue
         }
@@ -282,7 +286,7 @@ export class ShogoTranscriptQueue {
   ): Promise<{ ok: true } | { ok: false; drop: boolean; reason: string }> {
     const url = `${this.opts.apiUrl}/api/voice/transcript/${encodeURIComponent(task.chatSessionId)}`
     try {
-      this.opts.debug?.('[shogoQueue] POST', { id: task.id, url })
+      this.opts.debug?.('[ezModeQueue] POST', { id: task.id, url })
       const res = await fetch(url, {
         method: 'POST',
         credentials: this.opts.credentials ?? 'include',
@@ -295,7 +299,7 @@ export class ShogoTranscriptQueue {
         }),
       })
       if (res.ok) {
-        this.opts.debug?.('[shogoQueue] POST ok', {
+        this.opts.debug?.('[ezModeQueue] POST ok', {
           id: task.id,
           status: res.status,
         })
@@ -314,7 +318,7 @@ export class ShogoTranscriptQueue {
       } catch {
         // no-op
       }
-      this.opts.debug?.('[shogoQueue] POST failed', {
+      this.opts.debug?.('[ezModeQueue] POST failed', {
         id: task.id,
         status: res.status,
         permanent,
@@ -328,7 +332,7 @@ export class ShogoTranscriptQueue {
     } catch (err: unknown) {
       const reason =
         err instanceof Error ? err.message : typeof err === 'string' ? err : 'network error'
-      this.opts.debug?.('[shogoQueue] POST threw', { id: task.id, reason })
+      this.opts.debug?.('[ezModeQueue] POST threw', { id: task.id, reason })
       return { ok: false, drop: false, reason }
     }
   }

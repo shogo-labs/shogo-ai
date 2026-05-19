@@ -395,7 +395,7 @@ const HomeScreen = observer(function HomeScreen() {
 
   /**
    * Draft project the homepage opens behind the scenes as soon as the
-   * user starts composing (typing or tapping the mic for Shogo Mode).
+   * user starts composing (typing or tapping the mic for EZ Mode).
    * Reused by both submit and the Shogo voice entry point so we never
    * create two projects for one creation gesture, and so a runtime pod
    * is being warmed while the user is still composing.
@@ -746,10 +746,10 @@ const HomeScreen = observer(function HomeScreen() {
 
   /**
    * Homepage mic entry point — clicking the microphone is intentionally
-   * NOT generic dictation. It opens Shogo Mode for a brand-new project:
+   * NOT generic dictation. It opens EZ Mode for a brand-new project:
    * we ensure a draft project exists (creating + prewarming if needed),
    * then navigate into the project with route params that tell the
-   * project layout to flip Shogo Mode on and auto-start the voice
+   * project layout to flip EZ Mode on and auto-start the voice
    * session.
    */
   const handleStartVoiceProjectCreation = useCallback(async () => {
@@ -776,7 +776,7 @@ const HomeScreen = observer(function HomeScreen() {
           id: consumed.projectId,
           chatSessionId: consumed.chatSessionId,
           initialInteractionMode: interactionMode,
-          startShogoMode: '1',
+          startEzMode: '1',
           autoStartVoice: '1',
         },
       } as any)

@@ -623,16 +623,16 @@ describe('AgentClient — plans', () => {
     expect(calls[0]!.url).toBe('http://x.test/agent/plans/a.plan.md')
   })
 
-  test('deletePlan and translatePlan hit the right URLs', async () => {
+  test('deletePlan and summarizePlan hit the right URLs', async () => {
     const calls: Call[] = []
-    const f = makeFetch(() => jsonResponse({ business: 'biz' }), calls)
+    const f = makeFetch(() => jsonResponse({ summary: 'sum' }), calls)
     const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
     await c.deletePlan('a.plan.md')
-    const res = await c.translatePlan('a.plan.md')
-    expect(res.business).toBe('biz')
+    const res = await c.summarizePlan('a.plan.md')
+    expect(res.summary).toBe('sum')
     expect(calls[0]!.init!.method).toBe('DELETE')
     expect(calls[1]!.init!.method).toBe('POST')
-    expect(calls[1]!.url).toBe('http://x.test/agent/plans/a.plan.md/translate')
+    expect(calls[1]!.url).toBe('http://x.test/agent/plans/a.plan.md/summarize')
   })
 })
 
