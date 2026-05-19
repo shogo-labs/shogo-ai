@@ -29,6 +29,14 @@ export interface Instance {
    * cloud backend (cli-worker).
    */
   kind?: 'desktop' | 'cli-worker'
+  /**
+   * Where this instance row came from. `'local'` means the local API's
+   * own registry; any other value is the hostname of the upstream cloud
+   * the local API federated the row from (e.g. `studio.staging.shogo.ai`).
+   * Set by `GET /api/instances` when `SHOGO_LOCAL_MODE=true` and a
+   * cloud upstream is configured.
+   */
+  origin?: string
 }
 
 export interface UseInstancePickerOptions {
@@ -80,9 +88,17 @@ export function useInstancePicker({
   const [connecting, setConnecting] = useState<string | null>(null)
   const [connectError, setConnectError] = useState<string | null>(null)
 
-  // Auto-clear when workspace changes
+  // Auto-clear when workspace changes. Federated instances (origin set
+  // to the cloud host instead of `'local'`) are cloud-scoped: their
+  // workspaceId is the cloud's, which never matches the local one.
+  // Clearing them on every local workspace switch would defeat the
+  // whole point of federation, so skip them here — the user can pick
+  // a different machine explicitly via the picker.
   useEffect(() => {
-    if (activeInstance && workspaceId && activeInstance.workspaceId !== workspaceId) {
+    if (!activeInstance || !workspaceId) return
+    const isFederated = !!activeInstance.origin && activeInstance.origin !== 'local'
+    if (isFederated) return
+    if (activeInstance.workspaceId !== workspaceId) {
       clearInstance()
     }
   }, [activeInstance, workspaceId, clearInstance])
@@ -132,8 +148,12 @@ export function useInstancePicker({
 
           for (let i = 0; i < connectPollCount; i++) {
             await new Promise((r) => setTimeout(r, connectPollIntervalMs))
+            // Poll the local API's list endpoint with the picker's
+            // (local) workspaceId — NOT inst.workspaceId, which for
+            // federated rows is the cloud workspace id the local
+            // membership check would reject as 403.
             const listRes = await fetchFn(
-              `${apiUrl}/api/instances?workspaceId=${encodeURIComponent(inst.workspaceId)}`,
+              `${apiUrl}/api/instances?workspaceId=${encodeURIComponent(workspaceId ?? inst.workspaceId)}`,
               { ...fetchOptions },
             )
             if (!listRes.ok) continue
@@ -147,6 +167,7 @@ export function useInstancePicker({
                 hostname: found.hostname,
                 workspaceId: found.workspaceId,
                 kind: found.kind,
+                origin: found.origin,
               })
               setInstances(updated)
               setConnecting(null)
@@ -173,10 +194,11 @@ export function useInstancePicker({
         hostname: inst.hostname,
         workspaceId: inst.workspaceId,
         kind: inst.kind,
+        origin: inst.origin,
       })
       setIsOpen(false)
     },
-    [apiUrl, fetchFn, fetchOptions, setInstance, connectPollCount, connectPollIntervalMs],
+    [apiUrl, fetchFn, fetchOptions, setInstance, connectPollCount, connectPollIntervalMs, workspaceId],
   )
 
   const disconnect = useCallback(() => {
