@@ -28,3 +28,16 @@ export {
   buildRemoteChatApiUrl,
   type RemoteChatTransportOptions,
 } from './useRemoteChatTransport'
+
+export {
+  truncateMessagesFrom,
+  getPrecedingCheckpoint,
+  rollbackProjectToCheckpoint,
+  SHOGO_FILES_REVERTED_EVENT,
+  type TruncateFromResult,
+  type PrecedingCheckpoint,
+  type PrecedingCheckpointReason,
+  type PrecedingCheckpointResult,
+  type RollbackResult,
+  type FilesRevertedDetail,
+} from './message-edit-api'

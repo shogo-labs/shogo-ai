@@ -56,7 +56,14 @@ import {
   getToolCategory,
   ERROR_CODE_MESSAGES,
 } from "@shogo/shared-app/chat"
-import { useChatTransportConfig, buildChatTurnUrl } from "@shogo/shared-app/chat"
+import {
+  useChatTransportConfig,
+  buildChatTurnUrl,
+  truncateMessagesFrom,
+  getPrecedingCheckpoint,
+  rollbackProjectToCheckpoint,
+  type PrecedingCheckpointResult,
+} from "@shogo/shared-app/chat"
 import { useSDKDomains, useDomainActions, useChatMessageCollectionForSession } from "@shogo/shared-app/domain"
 import { decideMessagesPropagation } from "./messages-propagation"
 import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
@@ -103,6 +110,11 @@ import {
 // satisfies the type without flipping per token.
 const EMPTY_CONTEXT_MESSAGES: ChatMessage[] = []
 import { TurnList } from "./turns"
+import {
+  MessageEditProvider,
+  type MessageEditOptions,
+} from "./turns/MessageEditContext"
+import { EditConfirmDialogHost } from "./turns/EditConfirmDialog"
 import { PhaseEmptyState } from "./empty"
 import {
   SubagentPanel,
@@ -3700,6 +3712,195 @@ export const ChatPanel = observer(function ChatPanel({
   const handleRetryRef = useRef<(() => void) | null>(null)
   handleRetryRef.current = handleRetry
 
+  // ─── Edit / Retry from arbitrary user message ────────────────────────────
+  //
+  // Built on top of `sendMessageInternal` and the new server endpoint
+  // `POST /api/chat-messages/:id/truncate-from`. The high-level shape
+  // for both flows is identical to `handleRetry` above, with one extra
+  // step at the front: delete the target message + everything after it
+  // on the server so the DB doesn't grow stale orphan rows.
+  //
+  //   1. truncate-from on the server  -> deletes target + all after
+  //      (also evicts those rows from the per-session MST cache so
+  //       hydrators don't render ghosts)
+  //   2. setMessages(messages.slice(0, idx)) -> in-memory truncation
+  //   3. sendMessageInternal(newContent, files) -> recreates the user
+  //      message via the normal pipeline (actions.addMessage + stream)
+  //
+  // Both Edit and Retry use the SAME primitive; the only difference is
+  // whether the re-sent content is the original or the edited string.
+  //
+  // Guards:
+  //   - Disabled while streaming (race with in-flight useChat request)
+  //   - Disabled for messages with optimistic / temp ids — those rows
+  //     are not yet on the server, so truncate-from has nothing to do.
+  //     If the user wants to "edit" a not-yet-sent message they should
+  //     use the queue's edit affordance in ChatInput.
+  //
+  // Note: reuses the existing `messagesRef` declared near the top of
+  // the component (right after the `useChat` setup) so we don't
+  // duplicate the ref-update side effect.
+  const truncateAndResend = useCallback(
+    async (
+      messageId: string,
+      newContent: string,
+      newFiles: FileAttachment[] | undefined,
+      options: MessageEditOptions | undefined,
+    ) => {
+      if (!sessionMessages) {
+        console.warn("[ChatPanel] truncateAndResend without sessionMessages")
+        return
+      }
+      const current = messagesRef.current
+      const idx = current.findIndex((m) => m.id === messageId)
+      if (idx === -1) {
+        console.warn("[ChatPanel] truncateAndResend: message not found locally", messageId)
+        return
+      }
+
+      // Step 1: chat truncation. This is the source of truth — if it
+      // fails we abort the whole rewind. The local MST cache is
+      // mirrored inside truncateMessagesFrom.
+      try {
+        await truncateMessagesFrom(sessionMessages, messageId)
+      } catch (err) {
+        console.error("[ChatPanel] truncate-from failed:", err)
+        throw err
+      }
+
+      // Step 2: optional file rollback. Runs BETWEEN the chat
+      // truncation and the resend so that:
+      //   - The user sees their chat collapse to the edit point
+      //     before the (potentially slow) git checkout runs.
+      //   - A rollback failure leaves us in a coherent state — chat
+      //     is at the new edit point, files are unchanged, no new
+      //     send is fired. The error bubbles up to EditableUserMessage
+      //     where it's logged + the bubble's busy state clears.
+      //   - The server's pre-rollback auto-save still protects any
+      //     uncommitted user changes in the workspace.
+      if (options?.revertFiles && options.checkpoint) {
+        try {
+          await rollbackProjectToCheckpoint(sessionMessages, {
+            projectId: options.checkpoint.projectId,
+            checkpointId: options.checkpoint.id,
+            checkpointCreatedAt: options.checkpoint.createdAt,
+            // We don't surface the includeDatabase toggle in the chat
+            // bubble dialog yet — power users still have the
+            // CheckpointsPanel for that finer-grained call. Default
+            // to false so we don't surprise users with DB rollbacks
+            // triggered from a chat edit.
+            includeDatabase: false,
+          })
+        } catch (err) {
+          console.error("[ChatPanel] checkpoint rollback failed:", err)
+          throw err
+        }
+      }
+
+      setMessages(current.slice(0, idx))
+      await sendMessageInternal(newContent, newFiles)
+    },
+    [sessionMessages, setMessages, sendMessageInternal],
+  )
+
+  const handleEditMessage = useCallback(
+    async (messageId: string, newContent: string, options?: MessageEditOptions) => {
+      const current = messagesRef.current
+      const msg = current.find((m) => m.id === messageId)
+      const parts = ((msg as any)?.parts ?? []) as any[]
+      const fileParts = parts.filter((p: any) => p?.type === "file" && p?.url)
+      const files: FileAttachment[] | undefined =
+        fileParts.length > 0
+          ? fileParts.map((p: any) => ({
+              dataUrl: p.url,
+              name: p.name ?? p.filename ?? "file",
+              type: p.mediaType ?? extractMediaType(p.url),
+            }))
+          : undefined
+      await truncateAndResend(messageId, newContent, files, options)
+    },
+    [truncateAndResend, extractMediaType],
+  )
+
+  const handleRetryFromMessage = useCallback(
+    async (messageId: string, options?: MessageEditOptions) => {
+      const current = messagesRef.current
+      const msg = current.find((m) => m.id === messageId)
+      if (!msg) return
+      const parts = ((msg as any).parts ?? []) as any[]
+      const textPart = parts.find((p: any) => p?.type === "text")
+      const content = textPart?.text || extractTextContent(msg) || ""
+      const fileParts = parts.filter((p: any) => p?.type === "file" && p?.url)
+      const files: FileAttachment[] | undefined =
+        fileParts.length > 0
+          ? fileParts.map((p: any) => ({
+              dataUrl: p.url,
+              name: p.name ?? p.filename ?? "file",
+              type: p.mediaType ?? extractMediaType(p.url),
+            }))
+          : undefined
+      if (!content && !files) return
+      await truncateAndResend(messageId, content, files, options)
+    },
+    [truncateAndResend, extractMediaType],
+  )
+
+  // Used by the EditConfirmDialog to decide whether to render the
+  // "Also revert project files" checkbox. We resolve through the
+  // SDK env's HttpClient (via shared-app helper) so the remote-aware
+  // interceptor proxies to the desktop instance when one is
+  // connected — same code path as truncate-from.
+  //
+  // A null collection / null checkpoint short-circuits to "no
+  // rollback available" so the bubble's lookup never blocks on
+  // sessionMessages being ready.
+  const handleGetPrecedingCheckpoint = useCallback(
+    async (messageId: string): Promise<PrecedingCheckpointResult> => {
+      if (!sessionMessages) {
+        return { ok: true, checkpoint: null, reason: "no_checkpoint" }
+      }
+      return getPrecedingCheckpoint(sessionMessages, messageId)
+    },
+    [sessionMessages],
+  )
+
+  const countMessagesAfter = useCallback((messageId: string) => {
+    const current = messagesRef.current
+    const idx = current.findIndex((m) => m.id === messageId)
+    if (idx === -1) return 0
+    return Math.max(0, current.length - idx - 1)
+  }, [])
+
+  const canEditMessage = useCallback((message: UIMessage) => {
+    if (message.role !== "user") return false
+    const id = message.id
+    if (!id) return false
+    // Optimistic / not-yet-persisted ids — see buildOptimisticUserMessage
+    // and the `temp-` prefix from chatMessageCollection.create.
+    if (id.startsWith("temp-")) return false
+    if (id.startsWith("optimistic-")) return false
+    return true
+  }, [])
+
+  const messageEditValue = useMemo(
+    () => ({
+      editMessage: handleEditMessage,
+      retryFromMessage: handleRetryFromMessage,
+      countMessagesAfter,
+      isStreaming,
+      canEditMessage,
+      getPrecedingCheckpoint: handleGetPrecedingCheckpoint,
+    }),
+    [
+      handleEditMessage,
+      handleRetryFromMessage,
+      countMessagesAfter,
+      isStreaming,
+      canEditMessage,
+      handleGetPrecedingCheckpoint,
+    ],
+  )
+
   const resolvedAgentUrl = localAgentUrl || (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
 
   // Generate a business-language translation for a plan that doesn't have
@@ -3926,6 +4127,11 @@ export const ChatPanel = observer(function ChatPanel({
 
   return (
     <ChatContextProvider value={contextValue}>
+      {/* Hosts the destructive-confirmation modal for in-place message
+          edit and "retry from here". Rendered once per ChatPanel and
+          accepts requests pushed from any nested EditableUserMessage
+          via the module-level subscriber in EditConfirmDialog.tsx. */}
+      <EditConfirmDialogHost />
       <View className={cn("flex-row flex-1", className)}>
         {/* Main content area */}
         {children && (
@@ -4001,14 +4207,16 @@ export const ChatPanel = observer(function ChatPanel({
               </Pressable>
             )}
             {displayMessages.length > 0 ? (
-              <TurnList
-                messages={displayMessages}
-                isStreaming={isStreaming}
-                phase={phase}
-                activeSubagents={activeSubagentsList}
-                recentTools={recentToolsList}
-                subagentToolCalls={accumulatedSubagentTools}
-              />
+              <MessageEditProvider {...messageEditValue}>
+                <TurnList
+                  messages={displayMessages}
+                  isStreaming={isStreaming}
+                  phase={phase}
+                  activeSubagents={activeSubagentsList}
+                  recentTools={recentToolsList}
+                  subagentToolCalls={accumulatedSubagentTools}
+                />
+              </MessageEditProvider>
             ) : !isStreaming && !isInitialLoadComplete && currentSessionId ? (
               <View className="flex-col items-center justify-center flex-1 gap-3">
                 <View className="flex-row items-center gap-1">
