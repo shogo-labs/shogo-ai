@@ -92,7 +92,13 @@ export default observer(function BillingPage() {
     isLoading: isBillingLoading,
     refetchSubscription,
     refetchUsageWallet,
+    planSource,
   } = useBillingData(currentWorkspace?.id)
+  // A grant-conferred plan has no Stripe customer / portal, so hide
+  // "Manage" / Stripe-only affordances and let "Free Plan"-style copy
+  // adapt by checking `planSource === 'subscription'` instead of just
+  // `subscription` truthiness.
+  const hasStripeSubscription = planSource === 'subscription'
 
   const [billingInterval, setBillingInterval] = useState<'monthly' | 'annual'>('monthly')
   const [proSeats, setProSeats] = useState(1)
@@ -551,7 +557,7 @@ export default observer(function BillingPage() {
               </View>
             </View>
             <View className="flex-row items-center gap-2">
-              {subscription && (
+              {hasStripeSubscription && (
                 <Button
                   variant="outline"
                   size="sm"
