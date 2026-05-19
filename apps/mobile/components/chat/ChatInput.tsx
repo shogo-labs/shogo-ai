@@ -213,6 +213,37 @@ export interface ChatInputProps {
   onQuickActionClick?: (prompt: string) => void
   restoreDraftRequest?: RestoreDraftRequest | null
   dimWhenDisabled?: boolean
+  /**
+   * When true, draws an accent-colored ring on the visible input
+   * container to mark this composer as the active edit target
+   * (used by inline-edit-from-history flows in EditableUserMessage).
+   * The ring is applied to the inner "main input container" rather
+   * than to a wrapping View so it hugs the actual rounded box the
+   * user sees — wrapping a ring around ChatInput from outside leaves
+   * a visible 12px gap on three sides because ChatInput's outermost
+   * View carries `p-3 pt-0` of its own. Drag-over state still wins
+   * over this prop.
+   */
+  highlighted?: boolean
+  /**
+   * Strip the outer wrapper's horizontal padding so the visible
+   * input box sits flush against its parent's left/right edges.
+   * The vertical `pb-3` is kept — it's spacing between the input
+   * box and whatever sits below it (file previews, model picker,
+   * etc.).
+   *
+   * Used by `EditableUserMessage` in edit mode so the in-place
+   * ChatInput aligns with the surrounding display-mode bubble
+   * (which itself uses `px-3` on a Pressable). Without this, the
+   * edit-mode bordered box is inset 12px relative to where the
+   * display-row text sits, which reads as "the chat got fatter
+   * when I clicked it" — see PR feedback.
+   *
+   * Bottom-composer callers (the regular chat input below the
+   * messages) deliberately keep the default to preserve the gap
+   * between the composer's bordered box and the panel edges.
+   */
+  flush?: boolean
 }
 
 function ChatInputImpl({
@@ -238,6 +269,8 @@ function ChatInputImpl({
   onQuickActionClick,
   restoreDraftRequest,
   dimWhenDisabled = true,
+  highlighted = false,
+  flush = false,
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
   const effectiveIsPro = features.billing ? isPro : true
@@ -665,7 +698,13 @@ function ChatInputImpl({
   }, [])
 
   return (
-    <View className="p-3 pt-0">
+    // `flush` callers (EditableUserMessage's inline edit) want the
+    // bordered input box to extend to the parent's left/right
+    // edges so it aligns with the surrounding display-mode bubble.
+    // We keep the bottom padding either way — it separates the
+    // composer from whatever sits beneath it (file previews,
+    // toolbar dropdowns, etc.).
+    <View className={cn(flush ? "pb-3" : "p-3 pt-0")}>
       {/* File previews */}
       {pendingFiles.length > 0 && (
         <ScrollView
@@ -890,7 +929,13 @@ function ChatInputImpl({
         className={cn(
           "relative border bg-muted/30 overflow-hidden",
           queuedMessages.length > 0 ? "rounded-b-xl" : "rounded-xl",
-          isDragOver ? "border-primary border-dashed" : "border-border/60"
+          isDragOver ? "border-primary border-dashed" : "border-border/60",
+          // Accent ring for the inline-edit "active edit target"
+          // state. Drag-over still takes precedence (its dashed
+          // primary border is more important to surface than the
+          // edit-target highlight). The inner border stays at
+          // 1px so toggling `highlighted` doesn't shift layout.
+          highlighted && !isDragOver && "ring-2 ring-primary/70"
         )}
       >
         {/* Skill picker dropdown */}

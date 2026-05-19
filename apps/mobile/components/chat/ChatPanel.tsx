@@ -3812,22 +3812,23 @@ export const ChatPanel = observer(function ChatPanel({
   )
 
   const handleEditMessage = useCallback(
-    async (messageId: string, newContent: string, options?: MessageEditOptions) => {
-      const current = messagesRef.current
-      const msg = current.find((m) => m.id === messageId)
-      const parts = ((msg as any)?.parts ?? []) as any[]
-      const fileParts = parts.filter((p: any) => p?.type === "file" && p?.url)
-      const files: FileAttachment[] | undefined =
-        fileParts.length > 0
-          ? fileParts.map((p: any) => ({
-              dataUrl: p.url,
-              name: p.name ?? p.filename ?? "file",
-              type: p.mediaType ?? extractMediaType(p.url),
-            }))
-          : undefined
-      await truncateAndResend(messageId, newContent, files, options)
+    async (
+      messageId: string,
+      newContent: string,
+      newFiles: FileAttachment[] | undefined,
+      options?: MessageEditOptions,
+    ) => {
+      // `newFiles` is the authoritative attachment set chosen by
+      // the user in the in-place ChatInput (which is pre-filled
+      // with the original message's files via `restoreDraftRequest`).
+      // We do NOT fall back to the original message's file parts
+      // here on purpose — a user who removed the original
+      // screenshot before re-sending should get a clean resend
+      // WITHOUT it. The "no-touch edit" case still round-trips the
+      // originals because the ChatInput hands them back unchanged.
+      await truncateAndResend(messageId, newContent, newFiles, options)
     },
-    [truncateAndResend, extractMediaType],
+    [truncateAndResend],
   )
 
   const handleRetryFromMessage = useCallback(
@@ -3890,6 +3891,22 @@ export const ChatPanel = observer(function ChatPanel({
     return true
   }, [])
 
+  // Stable shape forwarded to the in-place ChatInput inside
+  // EditableUserMessage. Mirrors the props the bottom composer
+  // receives below for selectedModel/onModelChange/isPro/upgrade —
+  // see `<ChatInput ... />` near the end of this file — so changes
+  // made inside an edit-in-progress bubble keep the global model
+  // selection in sync with the resend.
+  const messageEditComposerProps = useMemo(
+    () => ({
+      selectedModel,
+      onModelChange: handleModelChange,
+      isPro: hasAdvancedModelAccess,
+      onUpgradeClick: handleUpgradeClick,
+    }),
+    [selectedModel, handleModelChange, hasAdvancedModelAccess, handleUpgradeClick],
+  )
+
   const messageEditValue = useMemo(
     () => ({
       editMessage: handleEditMessage,
@@ -3898,6 +3915,7 @@ export const ChatPanel = observer(function ChatPanel({
       isStreaming,
       canEditMessage,
       getPrecedingCheckpoint: handleGetPrecedingCheckpoint,
+      composerProps: messageEditComposerProps,
     }),
     [
       handleEditMessage,
@@ -3906,6 +3924,7 @@ export const ChatPanel = observer(function ChatPanel({
       isStreaming,
       canEditMessage,
       handleGetPrecedingCheckpoint,
+      messageEditComposerProps,
     ],
   )
 
