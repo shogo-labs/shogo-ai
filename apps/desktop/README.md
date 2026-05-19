@@ -118,6 +118,40 @@ SQLite database and never leave your machine.
 | Anthropic API Key | Yes      | Powers the AI agent (Claude)        |
 | OpenAI API Key    | Optional | Embeddings and alternative models   |
 
+## Computer Control (Desktop-only MCP)
+
+Shogo Desktop bundles [`computer-use-mcp`](https://github.com/domdomegg/computer-use-mcp)
+as an opt-in MCP server. When enabled on an agent, the agent can move the mouse,
+type on the keyboard, and take full-screen screenshots — i.e. drive arbitrary
+GUI applications on your machine, not just a Playwright-controlled browser.
+
+**Enabling it.** It is off by default. Toggle it on per agent via the agent's
+MCP settings (catalog id `computer-use`, category *System & Desktop*). It is
+hard-disabled in cloud sessions; the bundled package is only shipped with
+desktop builds.
+
+**Security.** With this enabled, the agent can do anything you can do at the
+keyboard. The existing security tiers gate it:
+
+- `strict`: every `computer(...)` call prompts you for approval
+- `balanced`: prompts unless `computer` is on your auto-approve list
+- `full_autonomy` (default): runs without prompting
+
+We strongly recommend running in `strict` or `balanced` mode while a computer-
+control agent is active. Adjust under **Settings → Security**.
+
+**Platform notes.**
+
+- **Windows**: works out of the box; no extra setup.
+- **macOS**: the OS shows an Accessibility permission prompt the first time
+  the agent tries to move the mouse or type. Approve under
+  *System Settings → Privacy & Security → Accessibility* and add Shogo Desktop.
+  Until you do, mouse/keyboard actions silently no-op.
+- **Linux**: requires an X11 session. Under Wayland, the underlying nut.js
+  bindings cannot send synthetic input; switch to an X11 session if you need
+  computer control. The MCP automatically prefers `xdotool` for typing when
+  available (handles non-US keyboard layouts).
+
 ## What's Different in Local Mode
 
 | Feature             | Cloud                      | Local                           |

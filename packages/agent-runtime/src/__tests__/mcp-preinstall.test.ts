@@ -7,9 +7,9 @@
  * resolves npx commands to direct node invocations, and rejects non-whitelisted servers.
  */
 
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdirSync, writeFileSync, rmSync } from 'fs'
-import { join } from 'path'
+import { join, sep } from 'path'
 
 const TEST_PREINSTALL_DIR = join(import.meta.dir, '.test-mcp-packages')
 const TEST_WORKSPACE_DIR = join(import.meta.dir, '.test-workspace')
@@ -19,7 +19,14 @@ process.env.MCP_PREINSTALL_DIR = TEST_PREINSTALL_DIR
 
 // Dynamic import so env is set first
 const { MCPClientManager } = await import('../mcp-client')
-const { isPreinstalledMcpId, getPreinstalledPackages, getPreinstalledEntry, MCP_CATALOG } = await import('../mcp-catalog')
+const {
+  isPreinstalledMcpId,
+  getPreinstalledPackages,
+  getPreinstalledEntry,
+  MCP_CATALOG,
+  getCatalogEntry,
+  isMcpServerAllowed,
+} = await import('../mcp-catalog')
 
 function setupFakePackage(pkgName: string, binEntry: string | Record<string, string>) {
   const pkgDir = join(TEST_PREINSTALL_DIR, 'node_modules', pkgName)
@@ -62,7 +69,9 @@ describe('MCP pre-install resolution', () => {
 
     expect(resolved.command).toBe('node')
     expect(resolved.args[0]).toContain('mcp-server-airbnb')
-    expect(resolved.args[0]).toContain('dist/index.js')
+    // Use path.sep so the assertion is portable between POSIX (`dist/index.js`)
+    // and Windows (`dist\index.js`). Matches the computer-use-mcp test below.
+    expect(resolved.args[0]).toContain(`dist${sep}index.js`)
     expect(resolved.args).not.toContain('-y')
     expect(resolved.args).not.toContain('@openbnb/mcp-server-airbnb@latest')
   })
@@ -76,7 +85,7 @@ describe('MCP pre-install resolution', () => {
 
     expect(resolved.command).toBe('node')
     expect(resolved.args[0]).toContain('mcp-server-sqlite')
-    expect(resolved.args[0]).toContain('src/index.js')
+    expect(resolved.args[0]).toContain(`src${sep}index.js`)
   })
 
   test('strips version specifiers correctly', () => {
@@ -125,6 +134,24 @@ describe('MCP pre-install resolution', () => {
     expect(resolved.command).toBe('node')
     expect(resolved.args).toContain('--port')
     expect(resolved.args).toContain('3000')
+  })
+
+  test('resolves computer-use-mcp from preinstall dir to direct node invocation', () => {
+    // Mirrors how the desktop bundle ships computer-use-mcp inside
+    // resources/mcp-packages so the runtime can skip the cold `npx`.
+    setupFakePackage('computer-use-mcp', 'dist/main.js')
+
+    const manager = createManager()
+    const resolved = (manager as any).resolvePreinstalled({
+      command: 'npx',
+      args: ['-y', 'computer-use-mcp@latest'],
+    })
+
+    expect(resolved.command).toBe('node')
+    expect(resolved.args[0]).toContain('computer-use-mcp')
+    // Use path.sep so the assertion is portable between POSIX (`dist/main.js`)
+    // and Windows (`dist\main.js`).
+    expect(resolved.args[0]).toContain(`dist${sep}main.js`)
   })
 
   test('preserves env and cwd from original config', () => {
@@ -266,6 +293,66 @@ describe('MCP whitelist enforcement', () => {
 
     const tools = await manager.startAll(configs)
     expect(tools).toEqual([])
+  })
+})
+
+describe('computer-use catalog entry', () => {
+  test('catalog contains computer-use marked desktop-only', () => {
+    const entry = getCatalogEntry('computer-use')
+    expect(entry).toBeDefined()
+    expect(entry!.id).toBe('computer-use')
+    expect(entry!.package).toBe('computer-use-mcp@latest')
+    expect(entry!.category).toBe('system')
+    expect(entry!.cloudCompatible).toBe(false)
+    expect(entry!.preinstalled).toBe(true)
+    expect(entry!.providedTools).toContain('computer')
+  })
+
+  test('is included in the preinstalled list (so desktop bundle picks it up)', () => {
+    expect(isPreinstalledMcpId('computer-use')).toBe(true)
+    const ids = getPreinstalledPackages().map((e) => e.id)
+    expect(ids).toContain('computer-use')
+  })
+})
+
+describe('cloudCompatible enforcement in isMcpServerAllowed', () => {
+  const originalLocalMode = process.env.SHOGO_LOCAL_MODE
+
+  afterAll(() => {
+    if (originalLocalMode === undefined) {
+      delete process.env.SHOGO_LOCAL_MODE
+    } else {
+      process.env.SHOGO_LOCAL_MODE = originalLocalMode
+    }
+  })
+
+  test('cloud (no SHOGO_LOCAL_MODE): cloudCompatible:false entries are blocked', () => {
+    delete process.env.SHOGO_LOCAL_MODE
+    expect(isMcpServerAllowed('computer-use')).toBe(false)
+    expect(isMcpServerAllowed('filesystem')).toBe(false)
+  })
+
+  test('cloud (no SHOGO_LOCAL_MODE): cloud-compatible entries still allowed', () => {
+    delete process.env.SHOGO_LOCAL_MODE
+    expect(isMcpServerAllowed('fetch')).toBe(true)
+    expect(isMcpServerAllowed('playwright')).toBe(true)
+    expect(isMcpServerAllowed('sqlite')).toBe(true)
+  })
+
+  test('cloud (no SHOGO_LOCAL_MODE): arbitrary non-catalog ids still rejected', () => {
+    delete process.env.SHOGO_LOCAL_MODE
+    expect(isMcpServerAllowed('totally-random-package')).toBe(false)
+  })
+
+  test('local (SHOGO_LOCAL_MODE=true): desktop-only entries are allowed', () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    expect(isMcpServerAllowed('computer-use')).toBe(true)
+    expect(isMcpServerAllowed('filesystem')).toBe(true)
+  })
+
+  test('local (SHOGO_LOCAL_MODE=true): non-catalog ids are still allowed (user controls the box)', () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    expect(isMcpServerAllowed('any-custom-mcp')).toBe(true)
   })
 })
 

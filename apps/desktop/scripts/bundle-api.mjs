@@ -49,11 +49,26 @@ const ITEMS_TO_CLEAN = [
   'canvas-runtime',
   'tree-sitter-wasm',
   'scripts',
+  'mcp-packages',
   'package.json',
   'bun.lock',
   'tsconfig.base.json',
   'prisma.config.local.ts',
   'seed.db',
+]
+
+/**
+ * MCP server npm packages that the desktop build needs to bundle locally so
+ * the runtime can resolve them via `node <pkg>/...` instead of paying the
+ * cold-`npx` install cost on first use. Mirrors what cloud's Dockerfile.base
+ * preinstalls into `/app/mcp-packages`.
+ *
+ * `computer-use-mcp` has a native dependency (`@nut-tree-fork/nut-js`), so it
+ * is bundled per-arch via the platform-specific build matrix. The catalog
+ * marks it `cloudCompatible: false`, so it never ships in cloud images.
+ */
+const PREINSTALLED_MCP_PACKAGES = [
+  'computer-use-mcp@latest',
 ]
 
 /**
@@ -316,6 +331,29 @@ function main() {
       console.log('  ✓ Chromium headless shell installed')
     } catch (err) {
       console.warn('  ⚠ Chromium install failed (non-fatal):', err.message)
+    }
+
+    // Preinstall MCP packages that the desktop runtime ships with. Without
+    // this, the first time the agent tries to use computer-use-mcp (or any
+    // future desktop-only MCP) it would pay the ~30-45s cold `npx` cost
+    // before its very first invocation. Installing here resolves the native
+    // nut.js prebuilt for the host platform at bundle time.
+    if (PREINSTALLED_MCP_PACKAGES.length > 0) {
+      const mcpPkgDir = path.join(RESOURCES_DIR, 'mcp-packages')
+      fs.mkdirSync(mcpPkgDir, { recursive: true })
+      fs.writeFileSync(
+        path.join(mcpPkgDir, 'package.json'),
+        JSON.stringify({ name: 'shogo-desktop-mcp-packages', private: true }, null, 2) + '\n',
+      )
+      const mcpInstall = `npm install --omit=dev --no-audit --no-fund ${PREINSTALLED_MCP_PACKAGES.join(' ')}`
+      console.log(`  Running: ${mcpInstall} (in ${mcpPkgDir})`)
+      try {
+        execSync(mcpInstall, { cwd: mcpPkgDir, stdio: 'inherit', timeout: 5 * 60_000 })
+        try { fs.rmSync(path.join(mcpPkgDir, 'package-lock.json')) } catch {}
+        console.log(`  ✓ Preinstalled ${PREINSTALLED_MCP_PACKAGES.length} MCP package(s)`)
+      } catch (err) {
+        console.warn('  ⚠ MCP package preinstall failed (non-fatal — runtime will fall back to npx):', err.message)
+      }
     }
   }
 

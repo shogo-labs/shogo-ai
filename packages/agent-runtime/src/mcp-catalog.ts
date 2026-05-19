@@ -49,6 +49,7 @@ export type MCPCategory =
   | 'monitoring'
   | 'files'
   | 'travel'
+  | 'system'
 
 export const MCP_CATEGORIES: Record<MCPCategory, { label: string; icon: string }> = {
   browse: { label: 'Browse & Scrape', icon: '🌐' },
@@ -61,6 +62,7 @@ export const MCP_CATEGORIES: Record<MCPCategory, { label: string; icon: string }
   monitoring: { label: 'Monitoring', icon: '📊' },
   files: { label: 'Files & Storage', icon: '📁' },
   travel: { label: 'Travel & Booking', icon: '✈️' },
+  system: { label: 'System & Desktop', icon: '🖥️' },
 }
 
 export const MCP_CATALOG: MCPCatalogEntry[] = [
@@ -215,6 +217,22 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     cloudCompatible: false,
     preinstalled: true,
   },
+  {
+    id: 'computer-use',
+    name: 'Computer Control (Desktop)',
+    description:
+      'Gives the agent control of this computer — mouse, keyboard, and full-screen screenshots. ' +
+      'Desktop-only. The agent can see and click anything you can. Treat this like handing over your keyboard; ' +
+      'review actions in `strict` or `balanced` security mode.',
+    category: 'system',
+    package: 'computer-use-mcp@latest',
+    defaultArgs: [],
+    requiredEnv: {},
+    providedTools: ['computer'],
+    icon: '🖱️',
+    cloudCompatible: false,
+    preinstalled: true,
+  },
 ]
 
 /** Look up a catalog entry by ID */
@@ -238,9 +256,18 @@ export function isPreinstalledMcpId(id: string): boolean {
  * instantly from Docker; others are installed to .mcp-packages/ and cached
  * via S3 for fast cold starts). Non-catalog arbitrary packages are still
  * blocked unless the project explicitly allows them via allowedMcpPackages.
+ *
+ * Catalog entries marked `cloudCompatible: false` are hard-blocked outside
+ * `SHOGO_LOCAL_MODE` — they require host-level access (filesystem, OS APIs,
+ * GUI) that cloud sandboxes cannot provide.
  */
 export function isMcpServerAllowed(id: string): boolean {
-  if (process.env.SHOGO_LOCAL_MODE === 'true') return true
+  const entry = getCatalogEntry(id)
+  const isLocal = process.env.SHOGO_LOCAL_MODE === 'true'
+  if (entry && entry.cloudCompatible === false && !isLocal) {
+    return false
+  }
+  if (isLocal) return true
   return isCatalogEntry(id)
 }
 
