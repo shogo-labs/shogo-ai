@@ -107,6 +107,44 @@ describe('AI proxy Shogo Cloud forwarding', () => {
     expect((await res.json() as any).id).toBe('chatcmpl_cloud')
   })
 
+  test('preserves providerOptions on the chat-completions body forwarded to Shogo Cloud (no local stripping)', async () => {
+    // The convertToAnthropicFormat fix runs on whichever Shogo instance is NOT
+    // cloud-forwarding (typically the staging cloud terminating the request).
+    // The local side must stay a verbatim pass-through so providerOptions
+    // actually reach the instance that translates it to Anthropic cache_control.
+    nextFetchResponses.push(() => new Response(JSON.stringify({
+      id: 'chatcmpl_passthrough',
+      choices: [{ message: { role: 'assistant', content: 'ok' } }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/ai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        messages: [
+          {
+            role: 'system',
+            content: 'system text',
+            providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
+          },
+          { role: 'user', content: 'hi' },
+        ],
+        providerOptions: { anthropic: { cacheControl: { type: 'ephemeral', ttl: '5m' } } },
+      }),
+    }))
+
+    expect(res.status).toBe(200)
+    expect(lastFetchUrl).toBe('https://cloud.example/api/ai/v1/chat/completions')
+    const forwarded = JSON.parse(String(lastFetchInit?.body))
+    expect(forwarded.providerOptions).toEqual({ anthropic: { cacheControl: { type: 'ephemeral', ttl: '5m' } } })
+    expect(forwarded.messages[0].providerOptions).toEqual({ anthropic: { cacheControl: { type: 'ephemeral' } } })
+    // System message is still in its original OpenAI shape; cloud translates.
+    expect(forwarded.messages[0].role).toBe('system')
+    expect(forwarded.messages[0].content).toBe('system text')
+  })
+
   test('forwards streaming OpenAI-compatible chat completions to Shogo Cloud', async () => {
     nextFetchResponses.push(() => new Response('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n', {
       status: 200,
