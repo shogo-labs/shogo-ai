@@ -150,11 +150,36 @@ mock.module('../config/usage-plans', () => ({
   DAILY_INCLUDED_USD: 1,
   MONTHLY_DAILY_CAP_USD: 30,
   PLAN_INCLUDED_USD: { free: 0, basic: 5, pro: 20, business: 40 },
+  PLAN_RANK: { free: 0, basic: 1, pro: 2, business: 3, enterprise: 4 },
   getMonthlyIncludedForPlan: (plan: string, seats: number) => {
     if (plan === 'basic') return 5
     if (plan === 'pro') return 20 * seats
     if (plan === 'business') return 40 * seats
+    if (plan === 'enterprise') return 2000 * seats
     return 0
+  },
+  normalizePlanId: (planId: string | null | undefined) => {
+    if (!planId) return null
+    const lc = String(planId).toLowerCase().trim()
+    if (lc.startsWith('enterprise')) return 'enterprise'
+    if (lc.startsWith('business')) return 'business'
+    if (lc.startsWith('pro')) return 'pro'
+    if (lc.startsWith('basic')) return 'basic'
+    if (lc.startsWith('free')) return 'free'
+    return null
+  },
+  comparePlanRank: (a: string | null | undefined, b: string | null | undefined) => {
+    const rank: Record<string, number> = { free: 0, basic: 1, pro: 2, business: 3, enterprise: 4 }
+    const norm = (v: string | null | undefined) => {
+      if (!v) return 'free'
+      const lc = String(v).toLowerCase().trim()
+      if (lc.startsWith('enterprise')) return 'enterprise'
+      if (lc.startsWith('business')) return 'business'
+      if (lc.startsWith('pro')) return 'pro'
+      if (lc.startsWith('basic')) return 'basic'
+      return 'free'
+    }
+    return (rank[norm(a)] ?? 0) - (rank[norm(b)] ?? 0)
   },
 }))
 
@@ -305,6 +330,7 @@ describe('getActiveGrantsForWorkspace', () => {
     const g = await billing.getActiveGrantsForWorkspace('ws-1')
     expect(g.freeSeats).toBe(3)
     expect(g.monthlyIncludedUsd).toBe(15)
+    expect(g.planId).toBeNull()
     expect(g.rowCount).toBe(2)
   })
 
@@ -312,7 +338,18 @@ describe('getActiveGrantsForWorkspace', () => {
     const g = await billing.getActiveGrantsForWorkspace('ws-none')
     expect(g.freeSeats).toBe(0)
     expect(g.monthlyIncludedUsd).toBe(0)
+    expect(g.planId).toBeNull()
     expect(g.rowCount).toBe(0)
+  })
+
+  test('picks the highest-tier planId across stacked grants', async () => {
+    grantsByWs.set('ws-1', [
+      { freeSeats: 0, monthlyIncludedUsd: 0, planId: 'pro' },
+      { freeSeats: 0, monthlyIncludedUsd: 0, planId: 'business' },
+      { freeSeats: 0, monthlyIncludedUsd: 0, planId: null },
+    ])
+    const g = await billing.getActiveGrantsForWorkspace('ws-1')
+    expect(g.planId).toBe('business')
   })
 })
 
@@ -343,21 +380,42 @@ describe('allocateFreeWallet', () => {
 
 describe('applyGrantMonthlyAllocation', () => {
   test('upserts a wallet with the active grant USD', async () => {
-    grantsByWs.set('ws-1', [{ freeSeats: 0, monthlyIncludedUsd: 100 }])
+    grantsByWs.set('ws-1', [{ freeSeats: 0, monthlyIncludedUsd: 100, planId: null }])
     const wallet = await billing.applyGrantMonthlyAllocation('ws-1')
     expect(wallet.monthlyIncludedUsd).toBe(100)
+    // Credit-only grant on a free workspace doesn't flip overage on.
+    expect(wallet.overageEnabled).toBe(false)
   })
 
   test('resets daily / overage counters when refreshing an existing wallet', async () => {
     seedWallet('ws-1', {
       dailyUsedThisMonthUsd: 7, overageAccumulatedUsd: 99, overageBilledUsd: 100,
     })
-    grantsByWs.set('ws-1', [{ freeSeats: 0, monthlyIncludedUsd: 25 }])
+    grantsByWs.set('ws-1', [{ freeSeats: 0, monthlyIncludedUsd: 25, planId: null }])
     const wallet = await billing.applyGrantMonthlyAllocation('ws-1')
     expect(wallet.monthlyIncludedUsd).toBe(25)
     expect(wallet.dailyUsedThisMonthUsd).toBe(0)
     expect(wallet.overageAccumulatedUsd).toBe(0)
     expect(wallet.overageBilledUsd).toBe(0)
+  })
+
+  test('grant-conferred Pro plan allocates per-seat USD + flips overage on', async () => {
+    grantsByWs.set('ws-1', [
+      { freeSeats: 3, monthlyIncludedUsd: 10, planId: 'pro' },
+    ])
+    const wallet = await billing.applyGrantMonthlyAllocation('ws-1')
+    // 3 seats * $20 (Pro per-seat) + $10 stacked credits.
+    expect(wallet.monthlyIncludedUsd).toBe(70)
+    expect(wallet.overageEnabled).toBe(true)
+  })
+
+  test('grant-conferred Business plan with zero freeSeats still gets 1 seat of USD', async () => {
+    grantsByWs.set('ws-1', [
+      { freeSeats: 0, monthlyIncludedUsd: 0, planId: 'business' },
+    ])
+    const wallet = await billing.applyGrantMonthlyAllocation('ws-1')
+    expect(wallet.monthlyIncludedUsd).toBe(40)
+    expect(wallet.overageEnabled).toBe(true)
   })
 })
 
@@ -418,6 +476,49 @@ describe('hasPaidSubscription / hasAdvancedModelAccess / isBusinessOrHigherPlan'
   test('Enterprise plan ID is treated as business-or-higher', async () => {
     subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'Enterprise-Annual' }])
     expect(await billing.isBusinessOrHigherPlan('ws-1')).toBe(true)
+  })
+
+  test('grant-conferred Pro lifts a workspace with no subscription to advanced access', async () => {
+    grantsByWs.set('ws-1', [{ freeSeats: 0, monthlyIncludedUsd: 0, planId: 'pro' }])
+    expect(await billing.hasPaidSubscription('ws-1')).toBe(true)
+    expect(await billing.hasAdvancedModelAccess('ws-1')).toBe(true)
+    expect(await billing.isBusinessOrHigherPlan('ws-1')).toBe(false)
+  })
+
+  test('grant-conferred Business lifts a workspace with no subscription to business+', async () => {
+    grantsByWs.set('ws-1', [{ freeSeats: 0, monthlyIncludedUsd: 0, planId: 'business' }])
+    expect(await billing.isBusinessOrHigherPlan('ws-1')).toBe(true)
+  })
+
+  test('credit-only grant (no planId) does not change plan tier', async () => {
+    grantsByWs.set('ws-1', [{ freeSeats: 0, monthlyIncludedUsd: 500, planId: null }])
+    expect(await billing.hasPaidSubscription('ws-1')).toBe(false)
+    expect(await billing.hasAdvancedModelAccess('ws-1')).toBe(false)
+  })
+
+  test('paid subscription wins over a grant-conferred plan', async () => {
+    // Subscription is Basic; grant says Business. Sub wins → not advanced.
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'basic' }])
+    grantsByWs.set('ws-1', [{ freeSeats: 0, monthlyIncludedUsd: 0, planId: 'business' }])
+    expect(await billing.hasAdvancedModelAccess('ws-1')).toBe(false)
+    expect(await billing.isBusinessOrHigherPlan('ws-1')).toBe(false)
+  })
+})
+
+describe('getEffectivePlanId', () => {
+  test("falls back to 'free' when no sub and no grant", async () => {
+    expect(await billing.getEffectivePlanId('ws-1')).toBe('free')
+  })
+
+  test('returns the subscription plan when present (ignores grant)', async () => {
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'Business-Annual' }])
+    grantsByWs.set('ws-1', [{ freeSeats: 0, monthlyIncludedUsd: 0, planId: 'enterprise' }])
+    expect(await billing.getEffectivePlanId('ws-1')).toBe('business')
+  })
+
+  test('returns the grant planId when there is no subscription', async () => {
+    grantsByWs.set('ws-1', [{ freeSeats: 0, monthlyIncludedUsd: 0, planId: 'pro' }])
+    expect(await billing.getEffectivePlanId('ws-1')).toBe('pro')
   })
 })
 

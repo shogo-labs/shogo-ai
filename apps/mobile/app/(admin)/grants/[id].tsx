@@ -41,6 +41,12 @@ interface AdminGrant {
   workspaceId: string
   freeSeats: number
   monthlyIncludedUsd: number
+  /**
+   * Optional paid plan tier this grant confers when the workspace has
+   * no active Stripe subscription. Mirrors the `WorkspaceGrant.planId`
+   * Prisma field; `null` = additive credit only (legacy behavior).
+   */
+  planId: GrantPlanId | null
   startsAt: string
   expiresAt: string | null
   note: string | null
@@ -48,6 +54,21 @@ interface AdminGrant {
   createdAt: string
   updatedAt: string
 }
+
+/**
+ * Plan tiers a super-admin can pick for a grant. Kept in lockstep with
+ * `PLAN_RANK` in `apps/api/src/config/usage-plans.ts`. Order here is
+ * also the order shown in the picker.
+ */
+const GRANT_PLAN_OPTIONS = [
+  { id: null, label: 'None (credits only)' },
+  { id: 'basic', label: 'Basic' },
+  { id: 'pro', label: 'Pro' },
+  { id: 'business', label: 'Business' },
+  { id: 'enterprise', label: 'Enterprise' },
+] as const
+
+type GrantPlanId = Exclude<(typeof GRANT_PLAN_OPTIONS)[number]['id'], null>
 
 interface WorkspaceLite {
   id: string
@@ -122,6 +143,7 @@ export default function AdminGrantDetailPage() {
   const [workspaceId, setWorkspaceId] = useState(params.workspaceId ?? '')
   const [freeSeats, setFreeSeats] = useState('0')
   const [monthlyIncludedUsd, setMonthlyIncludedUsd] = useState('0')
+  const [planId, setPlanId] = useState<GrantPlanId | null>(null)
   const [startsAt, setStartsAt] = useState('')
   const [expiresAt, setExpiresAt] = useState('')
   const [note, setNote] = useState('')
@@ -134,6 +156,7 @@ export default function AdminGrantDetailPage() {
       setWorkspaceId(data.workspaceId)
       setFreeSeats(String(data.freeSeats))
       setMonthlyIncludedUsd(String(data.monthlyIncludedUsd))
+      setPlanId(data.planId ?? null)
       setStartsAt(toDateInput(data.startsAt))
       setExpiresAt(toDateInput(data.expiresAt))
       setNote(data.note ?? '')
@@ -170,6 +193,7 @@ export default function AdminGrantDetailPage() {
       workspaceId: workspaceId.trim(),
       freeSeats: Math.max(0, parseInt(freeSeats || '0', 10) || 0),
       monthlyIncludedUsd: Math.max(0, parseFloat(monthlyIncludedUsd || '0') || 0),
+      planId,
       startsAt: fromDateInput(startsAt) ?? new Date().toISOString(),
       expiresAt: fromDateInput(expiresAt),
       note: note.trim() || null,
@@ -355,6 +379,8 @@ export default function AdminGrantDetailPage() {
             </View>
           </View>
 
+          <PlanPicker value={planId} onChange={setPlanId} />
+
           <View className={cn(isWide ? 'flex-row gap-4' : 'gap-4')}>
             <View className="flex-1">
               <Field
@@ -462,6 +488,52 @@ export default function AdminGrantDetailPage() {
         )}
       </View>
     </ScrollView>
+  )
+}
+
+function PlanPicker({
+  value,
+  onChange,
+}: {
+  value: GrantPlanId | null
+  onChange: (v: GrantPlanId | null) => void
+}) {
+  return (
+    <View>
+      <Text className="text-xs font-medium text-muted-foreground mb-1.5">
+        Plan upgrade
+      </Text>
+      <View className="flex-row flex-wrap gap-2">
+        {GRANT_PLAN_OPTIONS.map((opt) => {
+          const active = value === opt.id
+          return (
+            <Pressable
+              key={opt.label}
+              onPress={() => onChange(opt.id)}
+              className={cn(
+                'px-3 py-1.5 rounded-md border',
+                active
+                  ? 'bg-primary border-primary'
+                  : 'bg-card border-border active:bg-muted/40',
+              )}
+            >
+              <Text
+                className={cn(
+                  'text-xs font-medium',
+                  active ? 'text-primary-foreground' : 'text-foreground',
+                )}
+              >
+                {opt.label}
+              </Text>
+            </Pressable>
+          )
+        })}
+      </View>
+      <Text className="text-[11px] text-muted-foreground mt-1">
+        Upgrades the workspace to this plan when it has no active Stripe
+        subscription. Ignored if Stripe already has an active sub.
+      </Text>
+    </View>
   )
 }
 

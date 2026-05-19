@@ -21,6 +21,7 @@ export const WorkspaceGrantModel = types
     workspaceId: types.string,
     freeSeats: types.optional(types.number, 0),
     monthlyIncludedUsd: types.optional(types.number, 0),
+    planId: types.optional(types.string, ""),
     startsAt: types.optional(types.number, 0),
     expiresAt: types.optional(types.number, 0),
     note: types.optional(types.string, ""),

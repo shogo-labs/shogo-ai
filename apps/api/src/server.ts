@@ -6094,6 +6094,8 @@ app.post(
     if (paidSub) {
       // Paid path: re-allocate using current plan + paid seat count;
       // grant USD/seats are stacked inside `allocateMonthlyIncluded`.
+      // The grant's own `planId` is ignored here because the Stripe
+      // subscription is the authoritative billed plan.
       await billingService.allocateMonthlyIncluded(workspaceId, paidSub.planId, paidSub.seats)
       // Push the new effective Stripe seat quantity (members - freeSeats).
       const sync = await billingService.syncSeatsFromMembership(workspaceId)
@@ -6106,10 +6108,14 @@ app.post(
       })
     }
 
+    // Grant-only path: `applyGrantMonthlyAllocation` honors the grant's
+    // `planId` (if set) so workspaces upgraded purely via a credit grant
+    // get the right per-seat USD + trust-first overage.
     const wallet = await billingService.applyGrantMonthlyAllocation(workspaceId)
     return c.json({
       ok: true,
-      path: 'free',
+      path: grant.planId ? 'grant_plan' : 'free',
+      grantPlanId: grant.planId ?? null,
       monthlyIncludedUsd: wallet.monthlyIncludedUsd,
     })
   },
