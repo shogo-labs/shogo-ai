@@ -96,6 +96,22 @@ export function generateModelRoutes(
     'import { PrismaClient } from "./prisma/client"',
     `import type { ${modelName}Hooks } from "./${toFileName(modelName)}.hooks"`,
     '',
+    '// JSON replacer that coerces native BigInt values to strings so they can',
+    '// be serialized by JSON.stringify (and therefore by Hono\'s default json',
+    '// helper, which throws on bare BigInt values). Strings preserve full',
+    '// precision for very large counts (e.g. byte totals). Consumers that need',
+    '// a numeric should coerce explicitly.',
+    'const bigIntReplacer = (_key: string, value: unknown) =>',
+    '  typeof value === "bigint" ? value.toString() : value',
+    '',
+    '// Drop-in replacement for c.json that uses bigIntReplacer. Keeps the same',
+    '// (body, status?) ergonomics as c.json so call sites are mechanical.',
+    'function sendJson(c: any, body: unknown, status: number = 200) {',
+    '  return c.body(JSON.stringify(body, bigIntReplacer), status, {',
+    '    "content-type": "application/json; charset=UTF-8",',
+    '  })',
+    '}',
+    '',
     '// Prisma client instance (injected)',
     'let prisma: PrismaClient | null = null',
     '',
@@ -179,7 +195,7 @@ export function generateModelRoutes(
       lines.push('      if (hooks.beforeList) {')
       lines.push('        const result = await hooks.beforeList(ctx)')
       lines.push('        if (result && !result.ok) {')
-      lines.push('          return c.json({ error: result.error }, 400)')
+      lines.push('          return sendJson(c, { error: result.error }, 400)')
       lines.push('        }')
       lines.push('        if (result?.data) {')
       lines.push('          where = result.data.where || where')
@@ -199,10 +215,10 @@ export function generateModelRoutes(
   lines.push(`        prisma.${modelLower}.count({ where }),`)
   lines.push('      ])')
   lines.push('')
-  lines.push('      return c.json({ ok: true, items, total })')
+  lines.push('      return sendJson(c, { ok: true, items, total })')
   lines.push('    } catch (error: any) {')
   lines.push(`      console.error("[${modelName}] List error:", error)`)
-  lines.push('      return c.json({ error: { code: "list_failed", message: error.message } }, 500)')
+  lines.push('      return sendJson(c, { error: { code: "list_failed", message: error.message } }, 500)')
   lines.push('    }')
   lines.push('  })')
   lines.push('')
@@ -219,7 +235,7 @@ export function generateModelRoutes(
   lines.push('      if (hooks.beforeGet) {')
   lines.push('        const result = await hooks.beforeGet(id, ctx)')
   lines.push('        if (result && !result.ok) {')
-  lines.push('          return c.json({ error: result.error }, result.error?.code === "not_found" ? 404 : 400)')
+  lines.push('          return sendJson(c, { error: result.error }, result.error?.code === "not_found" ? 404 : 400)')
   lines.push('        }')
   lines.push('      }')
   lines.push('')
@@ -228,13 +244,13 @@ export function generateModelRoutes(
   lines.push('      })')
   lines.push('')
   lines.push('      if (!item) {')
-  lines.push(`        return c.json({ error: { code: "not_found", message: "${modelName} not found" } }, 404)`)
+  lines.push(`        return sendJson(c, { error: { code: "not_found", message: "${modelName} not found" } }, 404)`)
   lines.push('      }')
   lines.push('')
-  lines.push('      return c.json({ ok: true, data: item })')
+  lines.push('      return sendJson(c, { ok: true, data: item })')
   lines.push('    } catch (error: any) {')
   lines.push(`      console.error("[${modelName}] Get error:", error)`)
-  lines.push('      return c.json({ error: { code: "get_failed", message: error.message } }, 500)')
+  lines.push('      return sendJson(c, { error: { code: "get_failed", message: error.message } }, 500)')
   lines.push('    }')
   lines.push('  })')
   lines.push('')
@@ -251,7 +267,7 @@ export function generateModelRoutes(
   lines.push('      if (hooks.beforeCreate) {')
   lines.push('        const result = await hooks.beforeCreate(body, ctx)')
   lines.push('        if (result && !result.ok) {')
-  lines.push('          return c.json({ error: result.error }, 400)')
+  lines.push('          return sendJson(c, { error: result.error }, 400)')
   lines.push('        }')
   lines.push('        if (result?.data) {')
   lines.push('          body = result.data')
@@ -267,10 +283,10 @@ export function generateModelRoutes(
   lines.push('        await hooks.afterCreate(item, ctx)')
   lines.push('      }')
   lines.push('')
-  lines.push('      return c.json({ ok: true, data: item }, 201)')
+  lines.push('      return sendJson(c, { ok: true, data: item }, 201)')
   lines.push('    } catch (error: any) {')
   lines.push(`      console.error("[${modelName}] Create error:", error)`)
-  lines.push('      return c.json({ error: { code: "create_failed", message: error.message } }, 500)')
+  lines.push('      return sendJson(c, { error: { code: "create_failed", message: error.message } }, 500)')
   lines.push('    }')
   lines.push('  })')
   lines.push('')
@@ -288,7 +304,7 @@ export function generateModelRoutes(
   lines.push('      if (hooks.beforeUpdate) {')
   lines.push('        const result = await hooks.beforeUpdate(id, body, ctx)')
   lines.push('        if (result && !result.ok) {')
-  lines.push('          return c.json({ error: result.error }, 400)')
+  lines.push('          return sendJson(c, { error: result.error }, 400)')
   lines.push('        }')
   lines.push('        if (result?.data) {')
   lines.push('          body = result.data')
@@ -305,10 +321,10 @@ export function generateModelRoutes(
   lines.push('        await hooks.afterUpdate(item, ctx)')
   lines.push('      }')
   lines.push('')
-  lines.push('      return c.json({ ok: true, data: item })')
+  lines.push('      return sendJson(c, { ok: true, data: item })')
   lines.push('    } catch (error: any) {')
   lines.push(`      console.error("[${modelName}] Update error:", error)`)
-  lines.push('      return c.json({ error: { code: "update_failed", message: error.message } }, 500)')
+  lines.push('      return sendJson(c, { error: { code: "update_failed", message: error.message } }, 500)')
   lines.push('    }')
   lines.push('  })')
   lines.push('')
@@ -325,7 +341,7 @@ export function generateModelRoutes(
   lines.push('      if (hooks.beforeDelete) {')
   lines.push('        const result = await hooks.beforeDelete(id, ctx)')
   lines.push('        if (result && !result.ok) {')
-  lines.push('          return c.json({ error: result.error }, 400)')
+  lines.push('          return sendJson(c, { error: result.error }, 400)')
   lines.push('        }')
   lines.push('      }')
   lines.push('')
@@ -338,10 +354,10 @@ export function generateModelRoutes(
   lines.push('        await hooks.afterDelete(id, ctx)')
   lines.push('      }')
   lines.push('')
-  lines.push('      return c.json({ ok: true })')
+  lines.push('      return sendJson(c, { ok: true })')
   lines.push('    } catch (error: any) {')
   lines.push(`      console.error("[${modelName}] Delete error:", error)`)
-  lines.push('      return c.json({ error: { code: "delete_failed", message: error.message } }, 500)')
+  lines.push('      return sendJson(c, { error: { code: "delete_failed", message: error.message } }, 500)')
   lines.push('    }')
   lines.push('  })')
   lines.push('')

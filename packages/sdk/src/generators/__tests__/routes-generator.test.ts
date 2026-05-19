@@ -137,7 +137,7 @@ describe('Routes Generator', () => {
         expect(result!.code).toContain('if (hooks.beforeList) {')
         expect(result!.code).toContain('const result = await hooks.beforeList(ctx)')
         expect(result!.code).toContain('if (result && !result.ok) {')
-        expect(result!.code).toContain('return c.json({ error: result.error }, 400)')
+        expect(result!.code).toContain('return sendJson(c, { error: result.error }, 400)')
       })
 
       it('should allow hook to override where clause', () => {
@@ -168,7 +168,7 @@ describe('Routes Generator', () => {
       it('should return items and total in response', () => {
         const result = generateModelRoutes(mockProjectModel)
 
-        expect(result!.code).toContain('return c.json({ ok: true, items, total })')
+        expect(result!.code).toContain('return sendJson(c, { ok: true, items, total })')
       })
 
       it('should include error handling', () => {
@@ -176,7 +176,7 @@ describe('Routes Generator', () => {
 
         expect(result!.code).toContain('} catch (error: any) {')
         expect(result!.code).toContain('console.error("[Project] List error:", error)')
-        expect(result!.code).toContain('return c.json({ error: { code: "list_failed", message: error.message } }, 500)')
+        expect(result!.code).toContain('return sendJson(c, { error: { code: "list_failed", message: error.message } }, 500)')
       })
     })
 
@@ -200,7 +200,7 @@ describe('Routes Generator', () => {
         const result = generateModelRoutes(mockProjectModel)
 
         expect(result!.code).toContain('if (!item) {')
-        expect(result!.code).toContain('return c.json({ error: { code: "not_found", message: "Project not found" } }, 404)')
+        expect(result!.code).toContain('return sendJson(c, { error: { code: "not_found", message: "Project not found" } }, 404)')
       })
     })
 
@@ -229,7 +229,7 @@ describe('Routes Generator', () => {
       it('should return 201 status', () => {
         const result = generateModelRoutes(mockProjectModel)
 
-        expect(result!.code).toContain('return c.json({ ok: true, data: item }, 201)')
+        expect(result!.code).toContain('return sendJson(c, { ok: true, data: item }, 201)')
       })
     })
 
@@ -487,7 +487,31 @@ describe('Routes Generator', () => {
       expect(result.code).toContain('router.post("/workspaces"')
       expect(result.code).toContain('prisma.project.create({')
       expect(result.code).toContain('prisma.workspace.create({')
-      expect(result.code).toContain('return c.json({ ok: true, data: item }, 201)')
+      expect(result.code).toContain('return sendJson(c, { ok: true, data: item }, 201)')
+    })
+
+    it('should emit a BigInt-safe sendJson helper', () => {
+      const result = generateAdminRoutes([mockProjectModel, mockWorkspaceModel])
+
+      // The helper coerces native BigInt values to strings so Hono\'s default
+      // JSON.stringify path (which throws on bare BigInts) does not 500 on
+      // responses that include columns like StorageUsage.totalBytes.
+      expect(result.code).toContain('const bigIntReplacer = (_key: string, value: unknown) =>')
+      expect(result.code).toContain('typeof value === "bigint" ? value.toString() : value')
+      expect(result.code).toContain('function sendJson(c: any, body: unknown, status: number = 200) {')
+      expect(result.code).toContain('c.body(JSON.stringify(body, bigIntReplacer), status,')
+      // And no raw c.json call sites should leak through.
+      expect(result.code).not.toContain('return c.json(')
+    })
+  })
+
+  describe('generateModelRoutes BigInt safety', () => {
+    it('should emit a BigInt-safe sendJson helper in per-model routes', () => {
+      const result = generateModelRoutes(mockProjectModel)
+
+      expect(result!.code).toContain('const bigIntReplacer = (_key: string, value: unknown) =>')
+      expect(result!.code).toContain('function sendJson(c: any, body: unknown, status: number = 200) {')
+      expect(result!.code).not.toContain('return c.json(')
     })
   })
 })
