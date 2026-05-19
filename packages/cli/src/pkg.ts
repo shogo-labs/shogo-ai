@@ -254,8 +254,25 @@ export class PlatformPackageManager {
           // uninstalled Node mid-session), fall through to bun. Any
           // other npm error is a real install problem — rethrow it.
           const wrapped = wrapWindowsNpmError(err)
-          if (!wrapped) throw err
-          // wrapped is NodeMissingError → fall through to bun fallback.
+          if (wrapped) {
+            // NodeMissingError → fall through to bun fallback.
+          } else if (isNpmEresolveError(err)) {
+            // Peer-dep conflict (npm 7+ enforces even peerOptional). In
+            // user project sandboxes we'd rather complete the install with
+            // a slightly-wrong peer graph than fail outright — the agent's
+            // app code is what we actually care about resolving, and
+            // `peerOptional` mismatches almost never break runtime.
+            // Retry once with `--legacy-peer-deps` before giving up.
+            console.warn(
+              '[platform-pkg] npm install hit ERESOLVE — retrying with --legacy-peer-deps.',
+            )
+            nodeExecSync('npm.cmd install --loglevel=error --legacy-peer-deps', {
+              cwd, timeout, stdio, env, shell: 'cmd.exe',
+            })
+            return
+          } else {
+            throw err
+          }
         }
       }
       // npm unavailable (or vanished mid-run) → bun with --backend=copyfile
@@ -342,34 +359,56 @@ export class PlatformPackageManager {
     const timeout = opts?.timeout ?? DEFAULT_INSTALL_TIMEOUT
     const env = this.spawnEnv(opts?.env)
     const cmd = 'npm.cmd'
-    const args = ['install', '--loglevel=error']
-    return new Promise<void>((resolve, reject) => {
-      const proc = spawn(cmd, args, {
-        cwd,
-        stdio: 'pipe',
-        env,
-        shell: true,
+
+    const runOnce = (extraArgs: string[]): Promise<{ code: number | null; stderr: string }> =>
+      new Promise((resolvePromise, rejectPromise) => {
+        const proc = spawn(cmd, ['install', '--loglevel=error', ...extraArgs], {
+          cwd,
+          stdio: 'pipe',
+          env,
+          shell: true,
+        })
+        const timer = setTimeout(() => {
+          proc.kill()
+          rejectPromise(new Error(`${cmd} install timed out after ${timeout / 1000}s`))
+        }, timeout)
+        let stderr = ''
+        proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
+        proc.on('exit', (code) => {
+          clearTimeout(timer)
+          resolvePromise({ code, stderr })
+        })
+        proc.on('error', (err: NodeJS.ErrnoException) => {
+          clearTimeout(timer)
+          if (err.code === 'ENOENT') return rejectPromise(new NodeMissingError())
+          rejectPromise(err)
+        })
       })
-      const timer = setTimeout(() => {
-        proc.kill()
-        reject(new Error(`${cmd} install timed out after ${timeout / 1000}s`))
-      }, timeout)
-      let stderr = ''
-      proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
-      proc.on('exit', (code) => {
-        clearTimeout(timer)
-        if (code === 0) return resolve()
-        if (/not recognized as an internal or external command/i.test(stderr)) {
-          return reject(new NodeMissingError())
-        }
-        reject(new Error(`${cmd} install exited with code ${code}\n${stderr}`))
-      })
-      proc.on('error', (err: NodeJS.ErrnoException) => {
-        clearTimeout(timer)
-        if (err.code === 'ENOENT') return reject(new NodeMissingError())
-        reject(err)
-      })
-    })
+
+    return (async () => {
+      const first = await runOnce([])
+      if (first.code === 0) return
+      if (/not recognized as an internal or external command/i.test(first.stderr)) {
+        throw new NodeMissingError()
+      }
+      // npm 7+ rejects peer-dep conflicts (including `peerOptional`) with
+      // ERESOLVE. In user project sandboxes we'd rather complete the install
+      // with a slightly-wrong peer graph than fail outright — the agent's
+      // app code is what we care about resolving. Retry once with
+      // `--legacy-peer-deps` before giving up. Mirrors the bun
+      // `--frozen-lockfile` retry pattern below.
+      if (isEresolveStderr(first.stderr)) {
+        console.warn(
+          '[platform-pkg] npm install hit ERESOLVE — retrying with --legacy-peer-deps.',
+        )
+        const second = await runOnce(['--legacy-peer-deps'])
+        if (second.code === 0) return
+        throw new Error(
+          `${cmd} install --legacy-peer-deps exited with code ${second.code}\n${second.stderr}`,
+        )
+      }
+      throw new Error(`${cmd} install exited with code ${first.code}\n${first.stderr}`)
+    })()
   }
 
   private installAsyncBunCopyfile(cwd: string, opts?: PkgInstallOptions): Promise<void> {
@@ -602,6 +641,26 @@ function wrapWindowsNpmError(err: any): NodeMissingError | null {
   }
   if (err?.code === 'ENOENT') return new NodeMissingError()
   return null
+}
+
+/**
+ * True if `npm install` produced an ERESOLVE peer-dependency failure.
+ *
+ * Exported for tests. npm prints `npm error code ERESOLVE` (npm 10+) or
+ * `npm ERR! code ERESOLVE` (older). Match both with a loose regex to stay
+ * forward-compatible.
+ */
+export function isEresolveStderr(stderr: string): boolean {
+  return /ERESOLVE/i.test(stderr)
+}
+
+/**
+ * True if an `execSync` error from `npm install` was an ERESOLVE peer-dep
+ * conflict. Mirrors `isEresolveStderr` for the sync code path.
+ */
+function isNpmEresolveError(err: any): boolean {
+  const blob = `${err?.stderr?.toString?.() ?? ''}\n${err?.stdout?.toString?.() ?? ''}\n${err?.message ?? ''}`
+  return isEresolveStderr(blob)
 }
 
 /** Singleton — most consumers just need one. */
