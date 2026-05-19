@@ -38,9 +38,16 @@ const ROTATE_TRANSITION = {
   duration: ANIM_DURATION,
   easing: "easeInOut",
 }
+// damping = 2*sqrt(stiffness*mass) puts the height spring at critical
+// damping (ζ ≈ 1) so it converges to its target without overshoot.
+// The previous damping=22 value was underdamped (ζ ≈ 0.68, ~6%
+// overshoot per re-target) which compounded with the
+// `onContentSizeChange`-driven re-targets while reasoning text
+// streamed in — visible as a wobbling/pulsing widget that the parent
+// chat ScrollView then auto-followed.
 const HEIGHT_TRANSITION = {
   opacity: { type: "timing", duration: ANIM_DURATION, easing: "easeInOut" },
-  height: { type: "spring", damping: 22, stiffness: 260, mass: 1 },
+  height: { type: "spring", damping: 32, stiffness: 260, mass: 1 },
 }
 const ROTATE_OPEN = { rotateZ: "180deg" }
 const ROTATE_CLOSED = { rotateZ: "0deg" }
@@ -183,10 +190,15 @@ function ThinkingWidgetImpl({
       : "Thought"
 
   const hasText = text.length > 0
-  const capHeight = isStreaming
-  const targetHeight = capHeight
-    ? Math.min(measuredHeight, STREAM_MAX_HEIGHT)
-    : measuredHeight
+  // Always cap at STREAM_MAX_HEIGHT with the inner ScrollView handling
+  // overflow. Previously this was `isStreaming` only, which caused a
+  // visible "expand to full content height" jump on the falling edge of
+  // streaming (200 → ~600+ for long reasoning), wasted motion the user
+  // never gets to read because the auto-close fires 3s later anyway.
+  // Keeping the cap on means the only height transitions a widget
+  // animates through are 0 → STREAM_MAX_HEIGHT (open) and
+  // STREAM_MAX_HEIGHT → 0 (close).
+  const targetHeight = Math.min(measuredHeight, STREAM_MAX_HEIGHT)
 
   // Composite bg color for gradient fades (muted/30 over page background)
   const fadeColor =
@@ -204,8 +216,8 @@ function ThinkingWidgetImpl({
   )
 
   const scrollStyle = useMemo(
-    () => [capHeight ? styles.capHeight : undefined, WEB_FADE_MASK],
-    [capHeight],
+    () => [styles.capHeight, WEB_FADE_MASK],
+    [],
   )
 
   const heightAnimate = useMemo(
@@ -280,7 +292,7 @@ function ThinkingWidgetImpl({
                 ref={innerScrollRef}
                 className="rounded-md border border-border/50 bg-muted/30 p-2.5"
                 style={scrollStyle}
-                scrollEnabled={capHeight}
+                scrollEnabled
                 nestedScrollEnabled
                 onScrollBeginDrag={handleScrollBeginDrag}
                 onContentSizeChange={handleContentSizeChange}
