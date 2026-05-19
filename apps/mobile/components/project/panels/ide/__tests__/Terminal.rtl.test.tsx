@@ -21,6 +21,7 @@
  */
 import {
   afterEach,
+  beforeAll,
   beforeEach,
   describe,
   expect,
@@ -29,113 +30,19 @@ import {
 } from 'bun:test'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import * as React from 'react'
-
+import {
+  fakePtyClients,
+  ptySendCalls,
+  ptySignalCalls,
+  resetTerminalPtyMocks,
+  xtermClearCalls,
+} from '../../../../../test/helpers/mockTerminalPty'
 import {
   installAgentFetchMock,
   recordedAgentFetch,
   restoreAgentFetch,
 } from '../../../../../test/helpers/mockAgentFetch'
 import { __resetSessionIdSeqForTest } from '../terminal/session-reducer'
-
-// ─── Mock createPtyClient: no real WebSocket; record calls + expose state.
-// We mock the *factory* (pty-factory) rather than the underlying PtyClient
-// module so the dedicated `pty-client.test.ts` keeps seeing the real
-// implementation when both files run in the same Bun process.
-interface FakePtyClient {
-  url: string
-  state: 'idle' | 'connecting' | 'open' | 'closed' | 'disposed'
-  connect: () => void
-  send: (text: string | Uint8Array) => void
-  resize: (cols: number, rows: number) => void
-  signal: (sig: 'INT' | 'TERM' | 'KILL') => void
-  dispose: () => void
-  onState: (cb: (s: string) => void) => () => void
-  onData: (cb: (b: Uint8Array) => void) => () => void
-  onExit: (cb: (info: unknown) => void) => () => void
-  onError: (cb: (e: Error) => void) => () => void
-  onTruncated: (cb: () => void) => () => void
-  __fireOpen: () => void
-}
-
-const fakeClients: FakePtyClient[] = []
-const sendCalls: Array<{ url: string; text: string }> = []
-const signalCalls: Array<{ url: string; sig: string }> = []
-
-function createFakeClient(url: string): FakePtyClient {
-  const stateListeners = new Set<(s: string) => void>()
-  const errorListeners = new Set<(e: Error) => void>()
-  const client: FakePtyClient = {
-    url,
-    state: 'idle',
-    connect() {
-      this.state = 'connecting'
-      stateListeners.forEach((cb) => cb('connecting'))
-    },
-    send(text) {
-      const s = typeof text === 'string' ? text : new TextDecoder().decode(text)
-      sendCalls.push({ url, text: s })
-    },
-    resize() {},
-    signal(sig) {
-      signalCalls.push({ url, sig })
-    },
-    dispose() {
-      this.state = 'disposed'
-      stateListeners.forEach((cb) => cb('disposed'))
-    },
-    onState(cb) {
-      stateListeners.add(cb)
-      return () => stateListeners.delete(cb)
-    },
-    onData() { return () => {} },
-    onExit() { return () => {} },
-    onError(cb) {
-      errorListeners.add(cb)
-      return () => errorListeners.delete(cb)
-    },
-    onTruncated() { return () => {} },
-    __fireOpen() {
-      this.state = 'open'
-      stateListeners.forEach((cb) => cb('open'))
-    },
-  }
-  fakeClients.push(client)
-  return client
-}
-
-mock.module(
-  require.resolve('../terminal/pty-factory'),
-  () => ({
-    createPtyClient: (url: string) => createFakeClient(url),
-  }),
-)
-
-// ─── Mock XtermView: render a placeholder div + expose the imperative
-// ── handle so the parent's clear/focus wiring still binds.
-const xtermClearCalls: number[] = []
-const xtermFocusCalls: number[] = []
-
-mock.module(
-  require.resolve('../terminal/XtermView'),
-  () => ({
-    XtermView: React.forwardRef(function FakeXtermView(
-      _props: { client: unknown; hidden?: boolean; autoFocus?: boolean },
-      ref: React.Ref<{ clear: () => void; focus: () => void; refit: () => void }>,
-    ) {
-      React.useImperativeHandle(ref, () => ({
-        clear: () => xtermClearCalls.push(Date.now()),
-        focus: () => xtermFocusCalls.push(Date.now()),
-        refit: () => {},
-      }))
-      return React.createElement('div', {
-        'data-testid': 'xterm-view',
-        role: 'group',
-        'aria-label': 'Terminal viewport',
-      })
-    }),
-  }),
-)
 
 // ─── HTTP fixtures ──────────────────────────────────────────────────
 function jsonOk<T>(body: T): Response {
@@ -185,14 +92,16 @@ function createSessionResponse(): Response {
 }
 
 let fetcher: ReturnType<typeof recordedAgentFetch>
+type TerminalComponent = typeof import('../Terminal').Terminal
+let Terminal: TerminalComponent
+
+beforeAll(async () => {
+  ;({ Terminal } = await import('../Terminal'))
+})
 
 beforeEach(() => {
   __resetSessionIdSeqForTest()
-  fakeClients.length = 0
-  sendCalls.length = 0
-  signalCalls.length = 0
-  xtermClearCalls.length = 0
-  xtermFocusCalls.length = 0
+  resetTerminalPtyMocks()
   createCounter = 0
   fetcher = recordedAgentFetch()
   fetcher.setRoute('/terminal/commands', () => presetCommandsResponse())
@@ -218,7 +127,7 @@ async function waitForSessionsCreated(count: number): Promise<void> {
     expect(created.length).toBeGreaterThanOrEqual(count)
   })
   await waitFor(() => {
-    expect(fakeClients.length).toBeGreaterThanOrEqual(count)
+    expect(fakePtyClients.length).toBeGreaterThanOrEqual(count)
   })
 }
 
@@ -287,7 +196,7 @@ describe('Terminal — preset menu', () => {
     const user = userEvent.setup()
     render(<Terminal projectId="p1" visible />)
     await waitForSessionsCreated(1)
-    act(() => fakeClients[0].__fireOpen())
+    act(() => fakePtyClients[0].__fireOpen())
 
     await user.click(screen.getByRole('button', { name: /terminal actions/i }))
     const menu = await screen.findByRole('menu')
@@ -295,11 +204,11 @@ describe('Terminal — preset menu', () => {
 
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText(/destructive command/i)).toBeInTheDocument()
-    expect(sendCalls).toHaveLength(0)
+    expect(ptySendCalls).toHaveLength(0)
 
     await user.click(within(dialog).getByRole('button', { name: /cancel/i }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    expect(sendCalls).toHaveLength(0)
+    expect(ptySendCalls).toHaveLength(0)
 
     await user.click(screen.getByRole('button', { name: /terminal actions/i }))
     const reopened = await screen.findByRole('menu')
@@ -308,25 +217,25 @@ describe('Terminal — preset menu', () => {
     await user.click(within(dialog2).getByRole('button', { name: /run anyway/i }))
 
     await waitFor(() => {
-      expect(sendCalls).toHaveLength(1)
+      expect(ptySendCalls).toHaveLength(1)
     })
-    expect(sendCalls[0].text).toBe('bun run db:reset\r')
+    expect(ptySendCalls[0].text).toBe('bun run db:reset\r')
   })
 
   test('non-dangerous presets type the command into the active shell', async () => {
     const user = userEvent.setup()
     render(<Terminal projectId="p1" visible />)
     await waitForSessionsCreated(1)
-    act(() => fakeClients[0].__fireOpen())
+    act(() => fakePtyClients[0].__fireOpen())
 
     await user.click(screen.getByRole('button', { name: /terminal actions/i }))
     const menu = await screen.findByRole('menu')
     await user.click(within(menu).getByRole('menuitem', { name: /bun install/i }))
 
     await waitFor(() => {
-      expect(sendCalls).toHaveLength(1)
+      expect(ptySendCalls).toHaveLength(1)
     })
-    expect(sendCalls[0].text).toBe('bun install\r')
+    expect(ptySendCalls[0].text).toBe('bun install\r')
   })
 })
 
@@ -336,20 +245,20 @@ describe('Terminal — toolbar', () => {
     render(<Terminal projectId="p1" visible />)
     await waitForSessionsCreated(1)
     // Flip to "ready" so the Stop button renders.
-    act(() => fakeClients[0].__fireOpen())
+    act(() => fakePtyClients[0].__fireOpen())
 
     const stopBtn = await screen.findByRole('button', { name: /stop running command/i })
     await user.click(stopBtn)
 
-    expect(signalCalls).toHaveLength(1)
-    expect(signalCalls[0].sig).toBe('INT')
+    expect(ptySignalCalls).toHaveLength(1)
+    expect(ptySignalCalls[0].sig).toBe('INT')
   })
 
   test('Clear button blanks the xterm buffer for the active session', async () => {
     const user = userEvent.setup()
     render(<Terminal projectId="p1" visible />)
     await waitForSessionsCreated(1)
-    act(() => fakeClients[0].__fireOpen())
+    act(() => fakePtyClients[0].__fireOpen())
 
     const clearBtn = await screen.findByRole('button', { name: /clear output/i })
     expect(clearBtn).not.toBeDisabled()
@@ -359,6 +268,3 @@ describe('Terminal — toolbar', () => {
   })
 })
 
-// Defer the SUT import until after `mock.module` registrations are
-// installed; otherwise Bun resolves the real module first.
-import { Terminal } from '../Terminal'
