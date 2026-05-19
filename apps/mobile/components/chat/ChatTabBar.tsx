@@ -25,6 +25,7 @@ import {
   Pencil,
   Trash2,
   Search,
+  Loader2,
 } from 'lucide-react-native'
 import {
   Popover,
@@ -58,6 +59,12 @@ export interface ChatTabBarProps {
   showHistory?: boolean
   /** Set of tab IDs that currently have an active stream running. */
   streamingTabIds?: Set<string>
+  /**
+   * Set of tab IDs whose stream has finished but whose tab has not yet been
+   * viewed by the user. Renders a static theme-colored dot to flag that the
+   * background chat has new activity.
+   */
+  completedTabIds?: Set<string>
   /** Persist a new display name for the active session. */
   onRenameSession?: (sessionId: string, newName: string) => void | Promise<void>
   /** Delete the session on the server and remove it from open tabs (parent handles tab state). */
@@ -78,6 +85,7 @@ export function ChatTabBar({
   onHistoryToggle,
   showHistory,
   streamingTabIds,
+  completedTabIds,
   onRenameSession,
   onDeleteSession,
   onSearchChats,
@@ -136,6 +144,8 @@ export function ChatTabBar({
         {tabs.map((tab) => {
           const isActive = tab.id === activeTabId
           const isStreaming = !isActive && streamingTabIds?.has(tab.id)
+          const isCompleted =
+            !isActive && !isStreaming && completedTabIds?.has(tab.id)
           return (
             <Pressable
               key={tab.id}
@@ -149,7 +159,17 @@ export function ChatTabBar({
               style={{ maxWidth: 180 }}
             >
               {isStreaming && (
-                <View className="h-1.5 w-1.5 rounded-full bg-blue-500 shrink-0" />
+                <Loader2
+                  size={10}
+                  className="text-primary animate-spin shrink-0"
+                  aria-label="Chat running"
+                />
+              )}
+              {isCompleted && (
+                <View
+                  className="h-1.5 w-1.5 rounded-full bg-primary shrink-0"
+                  accessibilityLabel="Chat has new activity"
+                />
               )}
               <Text
                 className={cn(
