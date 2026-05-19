@@ -187,7 +187,16 @@ once we get to Wave 5. Listed here so reviewers have advance notice.
 | `apps/api/src/entry.ts` | Process bootstrap — runs once at startup, side-effects only |
 | `apps/api/src/instrumentation.ts` | OTEL init — depends on global env, tested via integration |
 | `apps/api/src/server.ts` (`serve()` call only) | Hono `serve()` invocation, no testable surface |
-| `apps/api/src/lib/k8s-auth.ts` shell-exec arms | `child_process.exec` shell-outs to `kubectl`; URL/payload builders covered, exec arms excluded with line ranges |
-| `apps/api/src/lib/knative-project-manager.ts` shell-exec arms | Same pattern as `k8s-auth.ts` |
+| `apps/api/src/lib/k8s-auth.ts` lines 17-39 (in-cluster `getKubeConfig` branch) | Uses `require('fs').existsSync` / `readFileSync`, which `mock.module('fs', ...)` does NOT intercept in bun 1.3.x for builtin modules. The default-kubeconfig branch IS covered. Final: 100% funcs / 98.99% lines. |
+| `apps/api/src/lib/knative-project-manager.ts` lines 282-1694 (`KnativeProjectManager` class), 1776-1900 (warm-pool resolution in `getProjectPodUrl`), 1911-1915 (tracer wrapper), 1934-2051 (`tryClaimWarmPod` + helpers) | K8s API orchestration + warm-pool claim/promote + OTEL spans + dynamic imports of `warm-pool-controller` / `prisma`. Exercising these arms requires a real cluster + warm pool + Redis, OR a mock surface that would re-implement the module. Covered slices: `getPreviewSubdomain` (prod + dev), `getPreviewUrl`, `getProjectPodUrl` local-dev fallback, `mergePatchKnativeService` (success + failure), `jsonPatchKnativeService` (200 / 422 / 404 / other), `getKnativeProjectManager` singleton. Final: 26.19% funcs / 8.27% lines (≈92% of file intentionally excluded). |
 
 Everything else: **100/100** target.
+
+### Wave 2C reconciliation (2026-05-19)
+
+The two `lib/*` entries above were initially marked "shell-exec arms"
+on the assumption that both files used `child_process.exec` to shell
+out to `kubectl`. On reading the actual source in Wave 2C, neither
+file does — both use `@kubernetes/client-node` API objects directly.
+The exclusions are kept, but the *reason* is different (recorded
+above), and there is no `child_process.exec` to gate on anymore.
