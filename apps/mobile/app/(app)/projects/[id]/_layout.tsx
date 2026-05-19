@@ -754,6 +754,12 @@ export default observer(function ProjectLayout() {
       next.delete(tabId)
       return next
     })
+    setCompletedTabIds((prev) => {
+      if (!prev.has(tabId)) return prev
+      const next = new Set(prev)
+      next.delete(tabId)
+      return next
+    })
     setDebugInitMessages((prev) => {
       if (!(tabId in prev)) return prev
       const next = { ...prev }
@@ -955,6 +961,14 @@ export default observer(function ProjectLayout() {
 
   const [chatMessages, setChatMessages] = useState<any[]>([])
   const [streamingTabIds, setStreamingTabIds] = useState<Set<string>>(new Set())
+  const [completedTabIds, setCompletedTabIds] = useState<Set<string>>(new Set())
+  // Tracks the active chat tab so streaming-change callbacks (which capture an
+  // older closure) can decide whether a finishing stream belongs to the tab
+  // the user is currently looking at.
+  const activeChatTabIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    activeChatTabIdRef.current = chatSessionId
+  }, [chatSessionId])
   const handleTabStreamingChange = useCallback((tabId: string, isStreaming: boolean) => {
     setStreamingTabIds((prev) => {
       const has = prev.has(tabId)
@@ -965,7 +979,31 @@ export default observer(function ProjectLayout() {
       else next.delete(tabId)
       return next
     })
+    setCompletedTabIds((prev) => {
+      if (isStreaming) {
+        if (!prev.has(tabId)) return prev
+        const next = new Set(prev)
+        next.delete(tabId)
+        return next
+      }
+      // Stream finished: only flag the tab when the user isn't looking at it.
+      if (tabId === activeChatTabIdRef.current) return prev
+      if (prev.has(tabId)) return prev
+      const next = new Set(prev)
+      next.add(tabId)
+      return next
+    })
   }, [])
+  // Clear the "new activity" dot once the user opens that tab.
+  useEffect(() => {
+    if (!chatSessionId) return
+    setCompletedTabIds((prev) => {
+      if (!prev.has(chatSessionId)) return prev
+      const next = new Set(prev)
+      next.delete(chatSessionId)
+      return next
+    })
+  }, [chatSessionId])
   const streamingChangeHandlersRef = useRef<Map<string, (streaming: boolean) => void>>(new Map())
   const getStreamingChangeHandler = useCallback((tabId: string) => {
     let handler = streamingChangeHandlersRef.current.get(tabId)
@@ -1858,6 +1896,7 @@ export default observer(function ProjectLayout() {
                         onHistoryToggle={() => setShowChatSessions((s: boolean) => !s)}
                         showHistory={showChatSessions}
                         streamingTabIds={streamingTabIds}
+                        completedTabIds={completedTabIds}
                         onRenameSession={handleRenameChatSession}
                         onDeleteSession={handleDeleteChatSession}
                       />
