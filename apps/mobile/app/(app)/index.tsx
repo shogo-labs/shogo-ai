@@ -39,6 +39,8 @@ import {
 import { loadModelPreference, saveModelPreference } from '../../lib/agent-mode-preference'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { workspaceProjectFilter } from '../../lib/project-load'
+import { getActiveWorkspaceId } from '../../lib/workspace-store'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { api, getOnboardingMessage } from '../../lib/api'
@@ -415,14 +417,17 @@ const HomeScreen = observer(function HomeScreen() {
     })
   }, [])
 
+  const currentWorkspace = useActiveWorkspace()
+
   useEffect(() => {
     if (!isAuthenticated) return
     let cancelled = false
 
     async function loadData(attempt = 0) {
       setWorkspaceError(false)
+      const projectFilter = workspaceProjectFilter()
       const results = await Promise.allSettled([
-        projects.loadAll(),
+        projectFilter ? projects.loadAll(projectFilter) : Promise.resolve(),
         workspaces.loadAll(),
         user?.id ? membersColl.loadAll({ userId: user.id }) : Promise.resolve(),
       ])
@@ -450,9 +455,7 @@ const HomeScreen = observer(function HomeScreen() {
     loadData()
 
     return () => { cancelled = true }
-  }, [isAuthenticated, user?.id])
-
-  const currentWorkspace = useActiveWorkspace()
+  }, [isAuthenticated, user?.id, currentWorkspace?.id])
   const billingData = useBillingData(currentWorkspace?.id)
   const hasAdvancedModelAccess = billingData.hasAdvancedModelAccess
 
@@ -494,7 +497,9 @@ const HomeScreen = observer(function HomeScreen() {
   const myProjects = useMemo((): IProject[] => {
     try {
       const all = projects?.all
+      const workspaceId = currentWorkspace?.id ?? getActiveWorkspaceId()
       return [...(Array.isArray(all) ? all : [])]
+        .filter((p) => !workspaceId || p.workspaceId === workspaceId)
         .sort((a: any, b: any) => {
           const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
           const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0
@@ -503,7 +508,7 @@ const HomeScreen = observer(function HomeScreen() {
     } catch {
       return []
     }
-  }, [projects?.all])
+  }, [projects?.all, currentWorkspace?.id])
 
   const sharedProjects = useMemo((): IProject[] => {
     if (!user?.id) return []
@@ -692,7 +697,8 @@ const HomeScreen = observer(function HomeScreen() {
       if (files && files.length > 0) {
         setPendingFiles(files)
       }
-      projects.loadAll()
+      const filter = workspaceProjectFilter(currentWorkspace.id)
+      if (filter) projects.loadAll(filter)
       const consumed = draft
       // Consume the draft so subsequent home interactions create a new one.
       draftRef.current = null
@@ -754,7 +760,8 @@ const HomeScreen = observer(function HomeScreen() {
       if (!draft) return
 
       trackEvent(posthog, EVENTS.PROJECT_CREATED, { source: 'voice' })
-      projects.loadAll()
+      const filter = workspaceProjectFilter(currentWorkspace.id)
+      if (filter) projects.loadAll(filter)
       const consumed = draft
       draftRef.current = null
       router.push({
@@ -820,7 +827,8 @@ const HomeScreen = observer(function HomeScreen() {
       // we let the project layout fetch them from /api/marketplace/:slug
       // when `showIntegrations=1` is set, so always pass it through and
       // let the layout decide whether to actually render the card.
-      projects.loadAll()
+      const filter = workspaceProjectFilter(currentWorkspace.id)
+      if (filter) projects.loadAll(filter)
       router.push({
         pathname: '/(app)/projects/[id]',
         params: {

@@ -55,6 +55,7 @@ import { useAuth } from '../../../../contexts/auth'
 import { useDomainHttp } from '../../../../contexts/domain'
 import { authClient } from '../../../../lib/auth-client'
 import { API_URL, api } from '../../../../lib/api'
+import { workspaceProjectFilter } from '../../../../lib/project-load'
 import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingFiles } from '../../../../lib/pending-image-store'
 import { isNativePhoneIntegrationsLayout } from '../../../../lib/native-phone-layout'
@@ -628,7 +629,12 @@ export default observer(function ProjectLayout() {
 
       try {
         await store.workspaceCollection.loadAll({ userId: user!.id })
-        store.projectCollection.loadAll().catch((e) => console.error('[ProjectLayout] Failed to preload projects:', e))
+        const projectFilter = workspaceProjectFilter()
+        if (projectFilter) {
+          store.projectCollection
+            .loadAll(projectFilter)
+            .catch((e) => console.error('[ProjectLayout] Failed to preload projects:', e))
+        }
         const proj = await store.projectCollection.loadById(projectId)
 
         if (cancelled) return

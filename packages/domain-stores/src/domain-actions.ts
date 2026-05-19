@@ -146,7 +146,9 @@ export function createDomainActions(store: IDomainStore) {
       if (!projectId) return null
       // Refresh the project collection so the navigator can find the
       // newly-installed project by id without a manual reload.
-      await store.projectCollection.loadAll().catch(() => undefined)
+      await store.projectCollection
+        .loadAll({ workspaceId })
+        .catch(() => undefined)
       return { projectId, installId: res.data?.install?.id }
     },
 
