@@ -52,6 +52,12 @@ const prismaCalls = {
 }
 
 mock.module('../lib/prisma', () => ({
+  // `mock.module` is process-global in bun — if a sibling test file
+  // imports `InstanceKind` from this module after we've mocked it, the
+  // import resolves against our mock object. Forward the real enum
+  // (a string-literal union shipped as runtime values) so any consumer
+  // of `prisma.ts` still works.
+  InstanceKind: { desktop: 'desktop', cli_worker: 'cli_worker' },
   prisma: {
     project: {
       findUnique: async () => ({ id: 'p-split', name: 'Split', workspaceId: 'ws-split' }),
