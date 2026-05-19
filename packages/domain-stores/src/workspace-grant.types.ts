@@ -11,7 +11,7 @@ export interface WorkspaceGrantType {
   workspaceId: string
   freeSeats: number
   monthlyIncludedUsd: number
-  planId?: string | null
+  planId?: string
   startsAt: Date
   expiresAt?: Date
   note?: string
@@ -24,7 +24,7 @@ export interface WorkspaceGrantCreateInput {
   workspaceId: string
   freeSeats?: number
   monthlyIncludedUsd?: number
-  planId?: string | null
+  planId?: string
   startsAt?: Date
   expiresAt?: Date
   note?: string
@@ -35,7 +35,7 @@ export interface WorkspaceGrantUpdateInput {
   workspaceId?: string
   freeSeats?: number
   monthlyIncludedUsd?: number
-  planId?: string | null
+  planId?: string
   startsAt?: Date
   expiresAt?: Date
   note?: string
