@@ -85,6 +85,11 @@ interface WorkspaceGrant {
   workspaceId: string
   freeSeats: number
   monthlyIncludedUsd: number
+  /**
+   * Paid plan tier this grant upgrades the workspace to (when no
+   * active Stripe subscription exists). `null` = additive credit only.
+   */
+  planId: string | null
   startsAt: string
   expiresAt: string | null
   note: string | null
@@ -545,7 +550,7 @@ export default function AdminWorkspaceDetailPage() {
           </View>
           {grants.length === 0 ? (
             <Text className="text-sm text-muted-foreground">
-              No grants. Use "New grant" to give this workspace free seats and/or monthly USD.
+              No grants. Use "New grant" to give this workspace free seats, monthly USD, or a plan upgrade.
             </Text>
           ) : (
             <View className="gap-2">
@@ -569,6 +574,13 @@ export default function AdminWorkspaceDetailPage() {
                             : 'No expiry'}
                       </Text>
                     </View>
+                    {g.planId && (
+                      <View className="px-2 py-0.5 rounded-full mr-2 bg-primary/10">
+                        <Text className="text-[10px] font-medium capitalize text-primary">
+                          {g.planId}
+                        </Text>
+                      </View>
+                    )}
                     <View
                       className={cn(
                         'px-2 py-0.5 rounded-full mr-2',
