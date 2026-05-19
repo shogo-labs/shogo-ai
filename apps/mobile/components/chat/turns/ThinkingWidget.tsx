@@ -27,6 +27,7 @@ import { MarkdownText } from "../MarkdownText"
 const ANIM_DURATION = 500
 const STREAM_MAX_HEIGHT = 200
 const FADE_HEIGHT = 16
+const AUTO_CLOSE_DELAY_MS = 3000
 
 // Hoisted-stable references for legendapp/motion props. Keeping these out of
 // the render body means @legendapp/motion sees identity-equal `transition` /
@@ -108,15 +109,27 @@ function ThinkingWidgetImpl({
 }: ThinkingWidgetProps) {
   const [isOpen, setIsOpen] = useState(isStreaming)
   const userClosedRef = useRef(false)
+  const userEngagedRef = useRef(false)
   const startTimeRef = useRef<number | null>(null)
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [duration, setDuration] = useState<number | undefined>(durationSeconds)
   const [measuredHeight, setMeasuredHeight] = useState(0)
   const colorScheme = useColorScheme()
   const innerScrollRef = useRef<ScrollView>(null)
   const userScrolledThinkingRef = useRef(false)
 
+  const clearCloseTimer = useCallback(() => {
+    if (closeTimerRef.current !== null) {
+      clearTimeout(closeTimerRef.current)
+      closeTimerRef.current = null
+    }
+  }, [])
+
   useEffect(() => {
     if (isStreaming) {
+      // Rising edge: a new reasoning burst should cancel any pending close
+      // so the widget doesn't snap shut mid-stream.
+      clearCloseTimer()
       if (startTimeRef.current === null) {
         startTimeRef.current = Date.now()
       }
@@ -129,19 +142,39 @@ function ThinkingWidgetImpl({
         setDuration(Math.ceil((Date.now() - startTimeRef.current) / 1000))
         startTimeRef.current = null
       }
-      setIsOpen(false)
       userClosedRef.current = false
+      // Don't auto-close if the user is actively engaging with the widget.
+      if (userEngagedRef.current) return
+      clearCloseTimer()
+      closeTimerRef.current = setTimeout(() => {
+        closeTimerRef.current = null
+        setIsOpen(false)
+      }, AUTO_CLOSE_DELAY_MS)
     }
-  }, [isStreaming])
+  }, [isStreaming, clearCloseTimer])
+
+  useEffect(
+    () => () => {
+      clearCloseTimer()
+    },
+    [clearCloseTimer],
+  )
 
   const toggleOpen = useCallback(() => {
     setIsOpen((prev) => {
+      const next = !prev
       if (isStreaming && prev) {
         userClosedRef.current = true
       }
-      return !prev
+      if (next) {
+        // User is opening the widget — pin it open and cancel any pending
+        // auto-close so a falling-edge timer doesn't yank it shut on them.
+        userEngagedRef.current = true
+        clearCloseTimer()
+      }
+      return next
     })
-  }, [isStreaming])
+  }, [isStreaming, clearCloseTimer])
 
   const label = isStreaming
     ? "Thinking…"
@@ -187,7 +220,11 @@ function ThinkingWidgetImpl({
 
   const handleScrollBeginDrag = useCallback(() => {
     userScrolledThinkingRef.current = true
-  }, [])
+    // Scrolling counts as engagement — the user is reading, so don't yank
+    // the panel shut from underneath them when the stream ends.
+    userEngagedRef.current = true
+    clearCloseTimer()
+  }, [clearCloseTimer])
 
   const handleContentSizeChange = useCallback(
     (_w: number, h: number) => {
