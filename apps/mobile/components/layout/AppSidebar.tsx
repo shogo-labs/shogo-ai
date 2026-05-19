@@ -1052,11 +1052,19 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   }, [user?.id, http])
 
   useEffect(() => {
-    workspaces.loadAll().catch((e) => console.error('[AppSidebar] Failed to load workspaces:', e))
-    const filter = workspaceProjectFilter()
-    if (filter) {
-      projects.loadAll(filter).catch((e) => console.error('[AppSidebar] Failed to load projects:', e))
-    }
+    // Chain projects after workspaces so that, on a fresh first load where
+    // no active workspace has been persisted yet, we can still scope to
+    // the first workspace the user belongs to.
+    workspaces
+      .loadAll()
+      .then(() => {
+        const wsId = getActiveWorkspaceId() ?? (workspaces.all?.[0] as any)?.id
+        const filter = workspaceProjectFilter(wsId)
+        if (filter) {
+          projects.loadAll(filter).catch((e) => console.error('[AppSidebar] Failed to load projects:', e))
+        }
+      })
+      .catch((e) => console.error('[AppSidebar] Failed to load workspaces:', e))
   }, [])
 
   const loadInvites = useCallback(() => {

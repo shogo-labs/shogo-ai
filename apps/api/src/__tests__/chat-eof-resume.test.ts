@@ -4,7 +4,7 @@
  * Auto-resume + partial-persist tests for `trackUsageFromStream` in
  * `project-chat.ts`.
  *
- * Covers the three real-world stream-end shapes:
+ * Covers the four real-world stream-end shapes:
  *
  *   1. Clean stream — `data-turn-complete` arrives before EOF: the resume
  *      hook is never invoked and the assistant message + tool calls are
@@ -15,10 +15,17 @@
  *      runtime): the parser resets state and re-consumes the full
  *      replay so the persisted row reflects the FULL turn.
  *
- *   3. EOF without `data-turn-complete`, resume returns 204 (user clicked
- *      Stop, pod crashed, buffer expired): the partial accumulated from
- *      the original stream is persisted so the user's truncated turn
- *      still lands in DB.
+ *   3. EOF without `data-turn-complete`, resume returns 200 with a
+ *      `data-turn-complete{status:'aborted'}` + trailing `data-usage`
+ *      tail (user clicked Stop): the buffer wasn't torn down, so the
+ *      auto-resume drains the wind-down frames, billing charges the
+ *      partial usage, and the persisted row reflects what the user
+ *      actually saw before pressing Stop.
+ *
+ *   4. EOF without `data-turn-complete`, resume returns 204 (pod crashed
+ *      mid-turn, buffer expired): the partial accumulated from the
+ *      original stream is persisted so the user's truncated turn still
+ *      lands in DB.
  *
  * Run: bun test apps/api/src/__tests__/chat-eof-resume.test.ts
  */
@@ -217,14 +224,92 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
     expect(consumeUsageCalls[0].actionMetadata.requestCount).toBe(2)
   })
 
-  test('EOF without turn-complete + resume(204) persists partial (stop button case)', async () => {
+  test('EOF without turn-complete + resume(200) drains aborted tail (stop button case)', async () => {
     const projectId = 'proj-stop'
     const chatSessionId = 'sess-stop'
     openSession(projectId, 'ws-s', 'user-s')
     accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 30)
 
-    // The user clicked stop before the turn finished. We saw some text +
-    // one completed tool call before the abort hit.
+    // User clicked Stop. The original POST stream EOFs without a
+    // `data-turn-complete` because the runtime's response was cut as the
+    // agent loop unwound. The runtime did NOT tear down the buffer
+    // (post-fix behaviour) — the wind-down `data-usage` +
+    // `data-turn-complete{status:'aborted'}` frames live on the buffer and
+    // are drained on auto-resume.
+    const originalStream = makeSseStream([
+      dataFrame({ type: 'text-delta', delta: 'partial reply' }),
+      dataFrame({
+        type: 'tool-input-available',
+        toolCallId: 'tc-1',
+        toolName: 'exec',
+        input: { command: 'ls' },
+      }),
+      dataFrame({
+        type: 'tool-output-available',
+        toolCallId: 'tc-1',
+        output: { stdout: 'ok' },
+      }),
+      dataFrame({ type: 'data-turn-seq', data: { turnId: 't', seq: 3 } }),
+    ])
+
+    const resumeBody = makeSseStream([
+      dataFrame({ type: 'text-delta', delta: 'partial reply' }),
+      dataFrame({
+        type: 'tool-input-available',
+        toolCallId: 'tc-1',
+        toolName: 'exec',
+        input: { command: 'ls' },
+      }),
+      dataFrame({
+        type: 'tool-output-available',
+        toolCallId: 'tc-1',
+        output: { stdout: 'ok' },
+      }),
+      dataFrame({
+        type: 'data-usage',
+        data: { inputTokens: 200, outputTokens: 65, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      }),
+      dataFrame({
+        type: 'data-turn-complete',
+        data: { status: 'aborted', lastSeq: 5 },
+      }),
+      dataFrame({ type: 'finish', finishReason: 'abort', usage: { inputTokens: 200, outputTokens: 65 } }),
+    ])
+
+    let resumeCalls = 0
+    const resumeFn = async () => {
+      resumeCalls++
+      return new Response(resumeBody, { status: 200 })
+    }
+
+    await trackUsageFromStream(
+      originalStream,
+      { chatSessionId, agentMode: 'sonnet' },
+      { id: projectId, workspaceId: 'ws-s' },
+      { resume: resumeFn },
+    )
+
+    expect(resumeCalls).toBe(1)
+    // Persisted row reflects what the user saw before Stop.
+    expect(persistedMessages.length).toBe(1)
+    expect(persistedMessages[0].content).toBe('partial reply')
+    expect(persistedToolCalls.length).toBe(1)
+    expect(persistedToolCalls[0].toolName).toBe('exec')
+    // Billing closed (NOT discarded) — partial usage is charged.
+    expect(hasSession(projectId)).toBe(false)
+    expect(consumeUsageCalls.length).toBe(1)
+    expect(consumeUsageCalls[0].actionMetadata.requestCount).toBe(1)
+  })
+
+  test('EOF without turn-complete + resume(204) persists partial (pod crash case)', async () => {
+    const projectId = 'proj-crash'
+    const chatSessionId = 'sess-crash'
+    openSession(projectId, 'ws-c', 'user-c')
+    accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 30)
+
+    // The runtime pod died mid-turn (OOM, crash) — the in-memory buffer
+    // is gone with the process, so resume returns 204. We fall back to
+    // persisting whatever we accumulated up to the cut.
     const originalStream = makeSseStream([
       dataFrame({ type: 'text-delta', delta: 'partial reply' }),
       dataFrame({
@@ -244,25 +329,21 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
     let resumeCalls = 0
     const resumeFn = async () => {
       resumeCalls++
-      // Buffer was aborted by `/agent/stop` → 204
       return new Response(null, { status: 204 })
     }
 
     await trackUsageFromStream(
       originalStream,
       { chatSessionId, agentMode: 'sonnet' },
-      { id: projectId, workspaceId: 'ws-s' },
+      { id: projectId, workspaceId: 'ws-c' },
       { resume: resumeFn },
     )
 
     expect(resumeCalls).toBe(1)
-    // Partial row was persisted — the user's truncated turn lands in DB.
     expect(persistedMessages.length).toBe(1)
     expect(persistedMessages[0].content).toBe('partial reply')
     expect(persistedToolCalls.length).toBe(1)
     expect(persistedToolCalls[0].toolName).toBe('exec')
-    // Billing closed (NOT discarded) — we charge for what the user actually
-    // consumed up to the cut.
     expect(hasSession(projectId)).toBe(false)
     expect(consumeUsageCalls.length).toBe(1)
     expect(consumeUsageCalls[0].actionMetadata.requestCount).toBe(1)

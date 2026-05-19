@@ -56,6 +56,7 @@ import { useDomainHttp } from '../../../../contexts/domain'
 import { authClient } from '../../../../lib/auth-client'
 import { API_URL, api } from '../../../../lib/api'
 import { workspaceProjectFilter } from '../../../../lib/project-load'
+import { getActiveWorkspaceId } from '../../../../lib/workspace-store'
 import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingFiles } from '../../../../lib/pending-image-store'
 import { isNativePhoneIntegrationsLayout } from '../../../../lib/native-phone-layout'
@@ -629,7 +630,13 @@ export default observer(function ProjectLayout() {
 
       try {
         await store.workspaceCollection.loadAll({ userId: user!.id })
-        const projectFilter = workspaceProjectFilter()
+        // Fall back to the first workspace the user belongs to when nothing
+        // has been persisted yet — otherwise the project-list preload is
+        // silently skipped and the sidebar's Recent stays empty on a fresh
+        // load that lands on a project URL.
+        const wsId =
+          getActiveWorkspaceId() ?? (store.workspaceCollection.all?.[0] as any)?.id
+        const projectFilter = workspaceProjectFilter(wsId)
         if (projectFilter) {
           store.projectCollection
             .loadAll(projectFilter)

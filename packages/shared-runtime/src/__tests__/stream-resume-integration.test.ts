@@ -9,7 +9,12 @@
  *                                   disconnect doesn't cancel the "agent")
  *   GET  /agent/chat/:id/stream  → reconnect; returns 204 if no active buffer,
  *                                   else replay buffered chunks + live tail
- *   POST /agent/stop             → abort buffer so future GETs return 204
+ *   POST /agent/stop             → flip the agent's abort signal. The agent
+ *                                   loop emits its trailing wind-down frames
+ *                                   into the buffer and then completes
+ *                                   naturally; the buffer is NOT torn down
+ *                                   synchronously so partial-usage frames
+ *                                   reach reconnecting clients.
  *
  * These tests exercise the contract end-to-end by calling the Hono app's
  * `.fetch()` directly (no localhost roundtrip) against a deterministic mock
@@ -22,7 +27,9 @@
  *   2. Tab switch mid-stream → reconnect replays buffered chunks + live tail.
  *   3. Rapid disconnect/reconnect cycles retain full coverage (no dropped chunks).
  *   4. Concurrent tabs / chat sessions don't cross-contaminate.
- *   5. Stop (abort) → subsequent resume returns 204.
+ *   5. Stop mid-stream → resume drains partial body + the trailing
+ *      wind-down frame the mock agent emits on abort (regression for the
+ *      "tokens: 0 on stopped turn" billing bug).
  *   6. Late reconnect after completion still replays full content.
  *   7. Resume on unknown session returns 204.
  *   8. Client disconnect doesn't cancel the underlying "agent" work.
@@ -47,6 +54,8 @@ interface ChatHarness {
   chunkDelayMs: number
   /** Resolves when the background agent work for `sessionId` finishes. */
   agentDone: Map<string, Promise<void>>
+  /** Per-session abort signals — flipped by `/agent/stop`. */
+  agentAborts: Map<string, AbortController>
   /** Send a request to the Hono app without going over the network. */
   request(path: string, init?: RequestInit): Promise<Response>
 }
@@ -55,20 +64,42 @@ function encode(text: string): Uint8Array {
   return new TextEncoder().encode(text)
 }
 
-/** Deterministic "agent" stream — emits `count` chunks with a delay between each. */
+/**
+ * Deterministic "agent" stream — emits up to `count` chunks with a delay
+ * between each. If `signal` aborts mid-emission, the stream emits one final
+ * `${sessionId}:winddown\n` chunk (analogous to the runtime's trailing
+ * `data-usage` + `data-turn-complete{status:'aborted'}` frames) and closes.
+ * Production mirrors this contract: agent-loop catches the abort, the
+ * gateway sets `_lastTurnUsage`, and server.ts writes the wind-down frames
+ * into the buffer before `bufWriter.complete()`.
+ */
 function makeAgentStream(
   sessionId: string,
   count: number,
   delayMs: number,
+  signal?: AbortSignal,
 ): ReadableStream<Uint8Array> {
   let i = 0
+  let windDownEmitted = false
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
+      if (signal?.aborted && !windDownEmitted) {
+        windDownEmitted = true
+        controller.enqueue(encode(`${sessionId}:winddown\n`))
+        controller.close()
+        return
+      }
       if (i >= count) {
         controller.close()
         return
       }
       if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs))
+      if (signal?.aborted && !windDownEmitted) {
+        windDownEmitted = true
+        controller.enqueue(encode(`${sessionId}:winddown\n`))
+        controller.close()
+        return
+      }
       controller.enqueue(encode(`${sessionId}:chunk-${i}\n`))
       i++
     },
@@ -84,15 +115,21 @@ function createChatHarness(opts?: {
   const chunksPerTurn = opts?.chunksPerTurn ?? 6
   const chunkDelayMs = opts?.chunkDelayMs ?? 15
   const agentDone = new Map<string, Promise<void>>()
+  const agentAborts = new Map<string, AbortController>()
 
   // POST /agent/chat → start stream, return replay-backed response.
   app.post('/agent/chat', async (c) => {
     const body = await c.req.json<{ chatSessionId?: string }>().catch(() => ({} as { chatSessionId?: string }))
     const sessionId = body.chatSessionId || 'chat'
 
+    // Per-turn abort controller — `/agent/stop` flips this, the mock agent
+    // observes it, emits a wind-down chunk, and closes.
+    const abortController = new AbortController()
+    agentAborts.set(sessionId, abortController)
+
     // Replace any existing buffer for this key.
     const bufWriter = store.create(sessionId)
-    const agentStream = makeAgentStream(sessionId, chunksPerTurn, chunkDelayMs)
+    const agentStream = makeAgentStream(sessionId, chunksPerTurn, chunkDelayMs, abortController.signal)
 
     // Background reader: decouples agent work from HTTP connection.
     const reader = agentStream.getReader()
@@ -105,6 +142,7 @@ function createChatHarness(opts?: {
         }
       } finally {
         bufWriter.complete()
+        agentAborts.delete(sessionId)
       }
     })()
     agentDone.set(sessionId, done)
@@ -130,11 +168,15 @@ function createChatHarness(opts?: {
     })
   })
 
-  // POST /agent/stop → abort buffer, future GETs return 204.
+  // POST /agent/stop → flip the abort signal so the agent emits its
+  // wind-down frame and the buffer completes naturally. We deliberately
+  // do NOT call `store.abort(sessionId)` here — mirrors the production
+  // change in `packages/agent-runtime/src/server.ts` so partial-usage
+  // frames are not lost.
   app.post('/agent/stop', async (c) => {
     const body = await c.req.json<{ chatSessionId?: string }>().catch(() => ({} as { chatSessionId?: string }))
     const sessionId = body.chatSessionId || 'chat'
-    store.abort(sessionId)
+    agentAborts.get(sessionId)?.abort()
     return c.json({ stopped: true })
   })
 
@@ -151,6 +193,7 @@ function createChatHarness(opts?: {
     chunksPerTurn,
     chunkDelayMs,
     agentDone,
+    agentAborts,
     request,
   }
 }
@@ -343,7 +386,14 @@ describe('streaming + tab-switch resume', () => {
     expect(t2.text).toBe(expectedFullPayload(sess, h.chunksPerTurn))
   })
 
-  test('stop mid-stream: subsequent resume returns 204', async () => {
+  test('stop mid-stream: resume drains the agent wind-down frame (no partial-usage loss)', async () => {
+    // Regression for the "tokens: 0 on stopped turn" bug. Production used
+    // to call `store.abort()` synchronously from `/agent/stop`, which
+    // killed the buffer before the agent loop could write its trailing
+    // `data-usage` + `data-turn-complete{status:'aborted'}` frames. Now
+    // `/agent/stop` only signals abort; the buffer completes naturally
+    // once the wind-down frame lands, so reconnecting clients (and the
+    // server-side billing tracker) still see the partial-usage payload.
     const sess = 'sess-stop'
     const res1 = await h.request('/agent/chat', {
       method: 'POST',
@@ -351,6 +401,8 @@ describe('streaming + tab-switch resume', () => {
       body: JSON.stringify({ chatSessionId: sess }),
     })
     expect(res1.ok).toBe(true)
+    // Drop the original POST connection after one chunk to mirror the
+    // real client cut on Stop.
     await readText(res1.body!, { maxChunks: 1 })
 
     const stopRes = await h.request('/agent/stop', {
@@ -360,8 +412,25 @@ describe('streaming + tab-switch resume', () => {
     })
     expect(stopRes.ok).toBe(true)
 
+    // Wait for the mock agent's wind-down to finish flushing into the
+    // buffer (analogous to project-chat's auto-resume waiting on the
+    // runtime's bgReader).
+    await h.agentDone.get(sess)
+
     const resumeRes = await h.request(`/agent/chat/${sess}/stream`)
-    expect(resumeRes.status).toBe(204)
+    // Buffer is preserved (in 'completed' grace window), so resume gets
+    // the full replay including the trailing wind-down frame.
+    expect(resumeRes.status).toBe(200)
+    const tail = await readText(resumeRes.body!, { maxMs: 5_000 })
+    expect(tail.done).toBe(true)
+    expect(tail.text).toContain(`${sess}:winddown\n`)
+    // And we got at least one real chunk before the wind-down (proving
+    // the partial body was preserved).
+    expect(tail.text).toContain(`${sess}:chunk-0\n`)
+    // Verify the wind-down frame is the LAST line, mirroring the real
+    // ordering (data-usage / data-turn-complete only fire after every
+    // text-delta and tool-output the agent produced before abort).
+    expect(tail.text.trim().endsWith(`${sess}:winddown`)).toBe(true)
   })
 
   test('resume on unknown session returns 204', async () => {
