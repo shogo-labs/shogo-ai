@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 //
-// CanvasBuildManager is now stack-aware: it accepts either Vite or Expo as
-// the bundler binary. These tests pin the contract so a future stack
-// addition (e.g. parcel, rspack) doesn't silently regress the gate, and
-// verify the atomic dist.canvas.staging -> dist swap that fixes the
-// "rebuild deletes dist, refresh 404s" regression.
+// CanvasBuildManager is now Expo-only: Vite stacks are owned by
+// PreviewManager's `vite build --watch`. These tests pin
+//   (a) the atomic `dist.canvas.staging -> dist` swap for Expo
+//   (b) that vite-only workspaces are deliberately skipped (so the
+//       Windows EPERM race that motivated this split can't re-emerge if
+//       someone re-adds vite scanning later — see canvas-build-manager.ts
+//       file docstring and scratch/repro-eperm.ts).
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
@@ -125,7 +127,7 @@ describe('CanvasBuildManager bundler-bin gate', () => {
   })
 
   test('skips build when package.json is missing', async () => {
-    freshWorkspace({ withPkg: false, withVite: true })
+    freshWorkspace({ withPkg: false, withExpo: true })
     let completed = false
     const mgr = new CanvasBuildManager(TMP, {
       onBuildComplete: () => { completed = true },
@@ -135,7 +137,14 @@ describe('CanvasBuildManager bundler-bin gate', () => {
     expect(completed).toBe(false)
   })
 
-  test('runs build when only Vite bin is present (existing Vite contract)', async () => {
+  test('skips vite-only workspaces (PreviewManager owns vite-watch)', async () => {
+    // Pins the contract introduced when we removed vite from
+    // CanvasBuildManager: even when a `vite` bin is present in
+    // node_modules/.bin/, this manager must not invoke it. The vite
+    // build path is owned exclusively by PreviewManager.startBuildWatch
+    // — see canvas-build-manager.ts file docstring for the EPERM-race
+    // reasoning. Regression bar: if a future change re-introduces
+    // vite as a fallback scan target, this test fails loudly.
     freshWorkspace({ withVite: true })
     let completed = false
     let errored = false
@@ -144,9 +153,30 @@ describe('CanvasBuildManager bundler-bin gate', () => {
       onBuildError: () => { errored = true },
     })
     await mgr.start()
-    // The shim script `echo built` exits 0 → onBuildComplete fires.
-    expect(completed).toBe(true)
+    expect(completed).toBe(false)
     expect(errored).toBe(false)
+    // Neither dist/ nor the canvas staging dir should exist — proves
+    // the build process never ran (rather than "ran and was quiet").
+    expect(existsSync(join(TMP, 'dist'))).toBe(false)
+    expect(existsSync(join(TMP, CANVAS_STAGING_DIR))).toBe(false)
+  })
+
+  test('skips vite stacks even when .tech-stack marker points to one', async () => {
+    // Marker-driven path: the workspace declares itself a vite stack
+    // and ships the vite bin. The manager must still bail. This is the
+    // higher-confidence variant of the test above — it pins the marker
+    // codepath specifically, since gateway.ts now relies on it as the
+    // canonical "should I skip?" signal for vite stacks.
+    freshWorkspace({ withVite: true })
+    writeFileSync(join(TMP, '.tech-stack'), 'react-app')
+    let completed = false
+    const mgr = new CanvasBuildManager(TMP, {
+      onBuildComplete: () => { completed = true },
+      onBuildError: () => {},
+    })
+    await mgr.start()
+    expect(completed).toBe(false)
+    expect(existsSync(join(TMP, 'dist'))).toBe(false)
   })
 
   test('runs build when only Expo bin is present (Metro contract)', async () => {
@@ -168,8 +198,10 @@ describe('CanvasBuildManager atomic dist swap', () => {
   afterEach(() => rmSync(TMP, { recursive: true, force: true }))
 
   test('promotes dist.canvas.staging into dist on successful build', async () => {
-    // Vite shim writes a payload into dist.canvas.staging/index.html and exits 0.
-    freshWorkspace({ withVite: true, stagingPayload: '<html>fresh</html>' })
+    // Expo shim writes a payload into dist.canvas.staging/index.html and exits 0.
+    // (Was vite pre-2026-05; now expo since vite is owned by PreviewManager
+    // and CanvasBuildManager bails for vite stacks.)
+    freshWorkspace({ withExpo: true, stagingPayload: '<html>fresh</html>' })
     const mgr = new CanvasBuildManager(TMP, {
       onBuildComplete: () => {},
       onBuildError: () => {},
@@ -193,10 +225,12 @@ describe('CanvasBuildManager atomic dist swap', () => {
     mkdirSync(join(TMP, 'dist'), { recursive: true })
     writeFileSync(join(TMP, 'dist', 'index.html'), '<html>previous</html>')
 
-    // Now drop in a vite shim that fails (exit 1) without producing output.
+    // Now drop in an expo shim that fails (exit 1) without producing output.
+    // (Was a vite shim before the vite-stacks-go-to-PreviewManager split;
+    // expo exercises the same failed-build codepath in this manager.)
     const binDir = join(TMP, 'node_modules', '.bin')
     mkdirSync(binDir, { recursive: true })
-    writeShim(binDir, 'vite', { exitCode: 1 })
+    writeShim(binDir, 'expo', { exitCode: 1 })
 
     let completed = false
     let errored = false
@@ -218,7 +252,7 @@ describe('CanvasBuildManager atomic dist swap', () => {
   })
 
   test('isBuilding flips during runBuild and clears afterwards', async () => {
-    freshWorkspace({ withVite: true, stagingPayload: '<html>x</html>' })
+    freshWorkspace({ withExpo: true, stagingPayload: '<html>x</html>' })
     const mgr = new CanvasBuildManager(TMP, {
       onBuildComplete: () => {},
       onBuildError: () => {},
@@ -254,7 +288,7 @@ describe('CanvasBuildManager waitForDeps gate', () => {
   afterEach(() => rmSync(TMP, { recursive: true, force: true }))
 
   test('blocks the build until waitForDeps resolves', async () => {
-    freshWorkspace({ withVite: true, stagingPayload: '<html>gated</html>' })
+    freshWorkspace({ withExpo: true, stagingPayload: '<html>gated</html>' })
 
     let depsResolve: (() => void) | undefined
     const depsPromise = new Promise<void>((r) => { depsResolve = r })
@@ -287,7 +321,7 @@ describe('CanvasBuildManager waitForDeps gate', () => {
   })
 
   test('proceeds without waitForDeps wired (no gate is a valid configuration)', async () => {
-    freshWorkspace({ withVite: true, stagingPayload: '<html>ungated</html>' })
+    freshWorkspace({ withExpo: true, stagingPayload: '<html>ungated</html>' })
     let completed = false
     const mgr = new CanvasBuildManager(TMP, {
       onBuildComplete: () => { completed = true },
@@ -300,7 +334,7 @@ describe('CanvasBuildManager waitForDeps gate', () => {
   })
 
   test('falls through when waitForDeps rejects (build attempts and reports the real error)', async () => {
-    freshWorkspace({ withVite: true, stagingPayload: '<html>after-reject</html>' })
+    freshWorkspace({ withExpo: true, stagingPayload: '<html>after-reject</html>' })
     let completed = false
     const mgr = new CanvasBuildManager(TMP, {
       onBuildComplete: () => { completed = true },
@@ -346,7 +380,7 @@ describe('CanvasBuildManager preview-manager staging isolation', () => {
   afterEach(() => rmSync(TMP, { recursive: true, force: true }))
 
   test('does not touch a preexisting dist.staging/ during build', async () => {
-    freshWorkspace({ withVite: true, stagingPayload: '<html>canvas</html>' })
+    freshWorkspace({ withExpo: true, stagingPayload: '<html>canvas</html>' })
     // Simulate PreviewManager's in-flight expo export: a populated
     // `dist.staging/` that would be wiped if CanvasBuildManager's
     // cleanup ever pointed at the shared name again.
@@ -402,7 +436,10 @@ describe('CanvasBuildManager error reporting', () => {
     freshWorkspace({ withVite: false })
     const binDir = join(TMP, 'node_modules', '.bin')
     mkdirSync(binDir, { recursive: true })
-    writeShim(binDir, 'vite', { exitCode: 1 })
+    // Was a vite shim originally; switched to expo because CanvasBuild-
+    // Manager no longer drives vite (PreviewManager owns it). The
+    // error-string contract under test is bundler-agnostic.
+    writeShim(binDir, 'expo', { exitCode: 1 })
 
     let reportedError: string | null = null
     const mgr = new CanvasBuildManager(TMP, {

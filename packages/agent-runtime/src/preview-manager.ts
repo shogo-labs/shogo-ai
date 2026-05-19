@@ -106,6 +106,26 @@ export interface PreviewManagerConfig {
    */
   onLogLine?: (line: string, stream: 'stdout' | 'stderr') => void
   /**
+   * Fires once per successful `vite build --watch` rebuild — invoked
+   * when we see vite's `built in N ms` line on stdout. Wired by
+   * `AgentGateway` to `CanvasFileWatcher.broadcastReload()` so the
+   * canvas iframe gets the "Update available" toast that used to be
+   * driven by `CanvasBuildManager.onBuildComplete`.
+   *
+   * Why this lives on PreviewManager: vite-watch *is* the canvas
+   * builder for vite stacks now — see `canvas-build-manager.ts`'s
+   * file-level docstring on the Windows EPERM race. Without this
+   * callback, vite-watch rebuilds land silently and users have to
+   * notice on their own that the iframe content changed.
+   *
+   * Only invoked by the watch-mode build (`startBuildWatch`); the
+   * one-shot seed (`runViteOneShotBuild`) doesn't fire it because no
+   * SSE subscribers are connected during that early-boot window. For
+   * Metro/Expo stacks vite-watch never runs and the callback stays
+   * silent — those stacks are still driven by CanvasBuildManager.
+   */
+  onBuildComplete?: () => void
+  /**
    * Local mode (developer machine, Shogo Desktop) versus cloud (Knative pod).
    * In local mode we can spawn `expo start --tunnel` to expose Metro to a real
    * phone via Expo's tunnel infrastructure; in cloud mode we ship only the web
@@ -152,6 +172,17 @@ function resolveApiServerPort(): number {
 const SCHEMA_DEBOUNCE_MS = 1500
 const HEALTH_CHECK_RETRIES = 10
 const HEALTH_CHECK_INTERVAL_MS = 500
+
+// Matches vite's per-rebuild summary line in `--watch` mode:
+//   "built in 1234ms."
+//   "built in 2.96s"
+// Both forms appear in the wild; the unit varies depending on whether
+// vite formatted using its ms or seconds branch. Anchored on the
+// distinctive `built in <number>` prefix so we don't false-positive on
+// user app output. ANSI-color sequences are stripped by .trim() but
+// the escape codes themselves can still appear in the chunk, so we
+// don't anchor at the start of the line.
+const BUILT_IN_MS_PATTERN = /built in \d/
 
 // Crash-recovery tunables. Mirrors the pre-merge `SkillServerManager`
 // behaviour: exponential backoff capped at 30s, give up after 5 attempts
@@ -321,6 +352,7 @@ export class PreviewManager {
   private runtimePort: number
   private publicUrl?: string
   private onConsoleLogReset?: () => void
+  private onBuildComplete?: () => void
   private buildWatchProcess: ChildProcess | null = null
   private apiServerProcess: ChildProcess | null = null
   private metroProcess: ChildProcess | null = null
@@ -441,12 +473,24 @@ export class PreviewManager {
     this.runtimePort = config.runtimePort
     this.publicUrl = config.publicUrl
     this.onConsoleLogReset = config.onConsoleLogReset
+    this.onBuildComplete = config.onBuildComplete
     this.onLogLine = config.onLogLine
     this.localMode = config.localMode ?? detectLocalMode()
     this.apiPort = resolveApiServerPort()
     this.depsReadyPromise = new Promise<void>((resolve) => {
       this.depsReadyResolve = resolve
     })
+  }
+
+  /**
+   * Wire (or rewire) the rebuild-complete callback at runtime. Used by
+   * AgentGateway, which has access to the CanvasFileWatcher singleton
+   * but is constructed *after* PreviewManager (server.ts creates pm at
+   * boot, gateway later via attachPreviewManager). Idempotent — calling
+   * again replaces the previous subscriber.
+   */
+  setOnBuildComplete(cb: (() => void) | undefined): void {
+    this.onBuildComplete = cb
   }
 
   /**
@@ -1724,6 +1768,25 @@ export class PreviewManager {
     viteProcess.stdout?.on('data', (data: Buffer) => {
       const line = data.toString().trim()
       emitBuildLine(buildLogPath, '[stdout]', line, 'stdout')
+      // Vite's `--watch` mode emits a `built in 1234ms.` line as the
+      // last entry of every successful rebuild — after `dist/` has
+      // been rewritten in place. Fire the reload signal here instead
+      // of from CanvasBuildManager (which used to race vite-watch on
+      // dist/ and is now disabled for vite stacks). Cheap regex on
+      // every line, but only the rebuild summary line trips it.
+      // Multi-chunk emissions can pack several log lines into one
+      // 'data' event, so we scan the whole buffer rather than relying
+      // on each chunk being a single line.
+      if (this.onBuildComplete && BUILT_IN_MS_PATTERN.test(line)) {
+        try {
+          this.onBuildComplete()
+        } catch (err: any) {
+          // Swallow callback errors — a broken subscriber must not
+          // tear down vite-watch, which is the workspace's only
+          // remaining build pipeline.
+          console.warn(`[${LOG_PREFIX}] onBuildComplete subscriber threw: ${err?.message ?? err}`)
+        }
+      }
     })
 
     viteProcess.stderr?.on('data', (data: Buffer) => {

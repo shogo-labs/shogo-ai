@@ -71,6 +71,18 @@ const IGNORED_PATH_PREFIXES = [
                    // `.shogo/`, which we ignore wholesale next:
   '.shogo/cache',
   'dist',
+  // Build-output-commit staging/rotation dirs. Must be ignored or
+  // chokidar's recursive ReadDirectoryChangesW on Windows pins a handle
+  // inside the staging tree while the bundler is writing into it, which
+  // then makes `renameSync(dist.canvas.staging, dist)` fail with EPERM
+  // even after the full retry budget. POSIX doesn't care, but the cost
+  // of watching these dirs is zero either way — they contain build
+  // artefacts, never source files anyone wants live-edit events for.
+  // Keep in sync with the staging names in build-output-commit.ts and
+  // canvas-build-manager.ts.
+  'dist.canvas.staging',
+  'dist.staging',
+  'dist.prev',
   'build',
   '.next',
   '.turbo',

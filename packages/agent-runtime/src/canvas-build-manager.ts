@@ -1,40 +1,62 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * CanvasBuildManager — Drives the workspace's web bundler on file changes.
+ * CanvasBuildManager — Drives the workspace's Metro/Expo bundler on file
+ * changes and atomically promotes the result into `dist/`.
  *
- * Stack-aware: works for any first-party stack whose bundler binary is in
- * `node_modules/.bin/`.
+ * Scope today: **Metro stacks only** (`expo-app`, `expo-three`). Invokes
+ * `expo export --platform web --output-dir dist.canvas.staging` and
+ * commits via `build-output-commit.ts`'s atomic swap.
  *
- * Concretely today:
- *   - Vite stacks (`react-app`, `threejs-game`, `phaser-game`) — invokes
- *     `vite build --outDir dist.canvas.staging --emptyOutDir` and atomically
- *     swaps the result into `dist/`.
- *   - Metro stacks (`expo-app`, `expo-three`) — invokes
- *     `expo export --platform web --output-dir dist.canvas.staging` and atomically
- *     swaps the result into `dist/`.
+ * Why not Vite stacks anymore:
  *
- * The historical implementation ran `bun run build` and let package.json
- * pick the command. That worked, but the templates' build scripts target
- * `dist/` directly — both `expo export` and `vite build` clear the output
- * dir before writing, so refreshes during a rebuild (and any failed
- * rebuild) left users staring at a 404. We now invoke the bundler
- * ourselves so we control the output dir and can promote it atomically;
- * see `build-output-commit.ts`.
+ * Vite stacks used to go through this path too — `vite build --outDir
+ * dist.canvas.staging --emptyOutDir` followed by atomic swap into
+ * `dist/`. That worked on POSIX but collided fatally with
+ * `PreviewManager`'s `vite build --watch` on Windows: both builders
+ * react to the same source-file changes, and both write to (or
+ * eventually rename into) the same `dist/`. The race is intrinsic:
+ *
+ *   - PreviewManager's vite-watch holds rolling open handles in `dist/`
+ *     for in-place chunk rewrites (`--emptyOutDir false`).
+ *   - CanvasBuildManager finishes its one-shot vite build, tries to
+ *     `renameSync(dist, dist.prev)` — fails because of the vite-watch
+ *     handles. Force-replace deletes `dist/` out from under vite-watch
+ *     (whose internal rollup chokidar then emits an `ENOENT … mkdir
+ *     dist/assets/` chain that's visible in `.build.log`).
+ *   - Subsequent `renameSync(dist.canvas.staging, dist)` then fails
+ *     EPERM because vite-watch's rollup watcher noticed `dist/`
+ *     disappear and immediately recreated it with new open handles
+ *     before our second rename could land.
+ *
+ * `scratch/repro-eperm.ts` reproduces the race deterministically at
+ * ~13% of attempts under a deliberately throttled writer; in production
+ * with vite rebuilding every ~1s the rate is much higher. There's no
+ * retry budget or chokidar tuning that fixes it because the two
+ * builders are doing the same job from the same trigger — they're
+ * actively breaking each other.
+ *
+ * Resolution: Vite stacks now build exclusively through PreviewManager's
+ * vite-watch. The atomic-swap property we lose isn't actually needed for
+ * vite — `--emptyOutDir false` rewrites files in place, so a failed
+ * incremental build leaves the previous good `dist/` untouched (the
+ * exact safety property `build-output-commit.ts` was created to
+ * provide). The reload-toast signal that used to come from
+ * `onBuildComplete` is now driven by PreviewManager parsing
+ * vite-watch's `built in N ms` stdout line; see
+ * `preview-manager.ts`'s `onBuildComplete` callback.
  *
  * Why `dist.canvas.staging/` and not the shared `dist.staging/`:
- * `PreviewManager.runExpoExportWeb` (Metro stacks) and
- * `PreviewManager.runViteOneShotBuild` (Vite stacks) also build into a
- * staging dir at boot to seed `dist/` for the runtime's preview iframe.
- * Both calls run in parallel with `CanvasBuildManager.start()`'s first
- * build, and both call `cleanupStagingOutput` (a recursive `rmSync`)
- * before spawning their bundler. With a shared staging name, one
- * builder's cleanup can wipe the other's in-progress output mid-copy —
- * surfaces as `ENOENT … copyfile 'public/<asset>' -> 'dist.staging/<asset>'`
- * from CopyFileW when the destination directory disappears under a
- * large-file copy (e.g. a multi-megabyte GLB in `public/`). Giving the
- * canvas builder its own staging dir keeps both managers' cleanups
- * disjoint without changing the rest of the architecture.
+ * `PreviewManager.runExpoExportWeb` also builds into a staging dir at
+ * boot to seed `dist/` for the runtime's preview iframe. That call runs
+ * in parallel with `CanvasBuildManager.start()`'s first build, and both
+ * call `cleanupStagingOutput` (a recursive `rmSync`) before spawning
+ * their bundler. With a shared staging name, one builder's cleanup can
+ * wipe the other's in-progress output mid-copy — surfaces as `ENOENT …
+ * copyfile 'public/<asset>' -> 'dist.staging/<asset>'` from CopyFileW
+ * when the destination directory disappears under a large-file copy
+ * (e.g. a multi-megabyte GLB in `public/`). Giving the canvas builder
+ * its own staging dir keeps both managers' cleanups disjoint.
  *
  * Builds are debounced so rapid file writes don't cause build storms.
  */
@@ -62,37 +84,36 @@ const CANVAS_STAGING_DIR = 'dist.canvas.staging'
 const BUILD_DEBOUNCE_MS = 500
 const LOG_PREFIX = '[CanvasBuildManager]'
 
-type BundlerKind = 'vite' | 'expo'
+type BundlerKind = 'expo'
 
 /**
- * Bundler binaries we know how to drive directly. When `.tech-stack`
- * doesn't pin a preference (legacy workspaces, unknown ids), the first
- * one we find under `node_modules/.bin/` decides the build command.
- * Vite is listed first as the historical default for Vite-and-Expo
- * hybrids that don't carry a marker.
+ * Bundler binaries we know how to drive directly. Limited to Metro/Expo
+ * — Vite stacks are handled exclusively by PreviewManager's
+ * `vite build --watch` (see the file-level docstring for why parallel
+ * vite-build paths collide fatally on Windows).
  *
- * Note: `.tech-stack` (when present and known) overrides this scan
- * order — see `resolveBundler()` and `STACK_TO_BUNDLER`. This is what
- * fixes the cloud Expo rebuild bug: warm pods always have
- * `node_modules/.bin/vite` from the pre-seed, so plain scan order
- * picks Vite forever even after the workspace becomes Expo.
+ * `.tech-stack` (when present and known) overrides this scan order —
+ * see `resolveBundler()` and `STACK_TO_BUNDLER`. The scan-order fallback
+ * exists for marker-less workspaces (legacy projects, ad-hoc evals);
+ * since vite isn't in the list a workspace with only a vite bin will
+ * skip the canvas build entirely, which is the correct outcome — its
+ * vite-watch in PreviewManager already covers rebuilds-on-change.
  */
-const KNOWN_BUNDLERS: readonly BundlerKind[] = ['vite', 'expo'] as const
+const KNOWN_BUNDLERS: readonly BundlerKind[] = ['expo'] as const
 
 /**
  * Tech-stack id (as written to `<workspace>/.tech-stack` by
- * `seedTechStack`) → preferred bundler. Anything not in this map
- * falls back to `KNOWN_BUNDLERS` scan order, preserving today's
- * behavior for marker-less or third-party stacks.
+ * `seedTechStack`) → bundler this manager will drive. Vite stacks are
+ * deliberately absent: they are owned by PreviewManager's vite-watch.
+ * A marker that maps to nothing here falls through to `KNOWN_BUNDLERS`
+ * scan order, which for vite-only workspaces ultimately resolves to
+ * `null` (no build), and that's intentional — see file docstring.
  *
  * Source of truth for the id list lives in
  * `packages/agent-runtime/tech-stacks/<id>/stack.json` (`runtime.devServer`).
  * Keep this map in sync when adding a new first-party stack.
  */
 const STACK_TO_BUNDLER: Readonly<Record<string, BundlerKind>> = {
-  'react-app': 'vite',
-  'threejs-game': 'vite',
-  'phaser-game': 'vite',
   'expo-app': 'expo',
   'expo-three': 'expo',
 }
@@ -196,19 +217,22 @@ export class CanvasBuildManager {
    *
    * Selection order:
    *   1. `.tech-stack` marker, when it names a stack we recognize in
-   *      `STACK_TO_BUNDLER`. The corresponding bin must actually exist
-   *      under `node_modules/.bin/`; otherwise we fall through.
-   *   2. Scan `KNOWN_BUNDLERS` in declaration order and return the
-   *      first hit. This is the historical (pre-marker) behavior and
-   *      covers legacy workspaces with no marker, third-party stacks,
-   *      and the agent-runtime's evals.
+   *      `STACK_TO_BUNDLER` (Expo stacks only post-2026-05 — see file
+   *      docstring on the vite removal). The corresponding bin must
+   *      actually exist under `node_modules/.bin/`; otherwise we
+   *      return null (no fallthrough to scan order). This guards the
+   *      cloud Expo cold-start: warm pods used to have a stale `vite`
+   *      bin around that scan order would pick first; we now never
+   *      build vite, but the marker→null bail also covers
+   *      `expo bin not yet installed` so the build retries after deps
+   *      land.
+   *   2. Scan `KNOWN_BUNDLERS` for marker-less workspaces. Today this
+   *      is just `['expo']`.
    *
-   * Returns `null` when no known bundler is installed.
-   *
-   * Why marker-first: in cloud, warm pods always have
-   * `node_modules/.bin/vite` from the pool pre-seed, so plain scan
-   * order would pick Vite for every Expo workspace forever — see
-   * `__tests__/expo-cloud-rebuild.test.ts` for the regression bar.
+   * Returns `null` when no known bundler is installed, when the
+   * workspace's marker resolves to a bundler this manager no longer
+   * drives (vite stacks), or when the resolved bundler's bin isn't
+   * present yet.
    */
   private resolveBundler(): { kind: BundlerKind; bin: string } | null {
     const binDir = join(this.workspaceDir, 'node_modules', '.bin')
@@ -221,15 +245,16 @@ export class CanvasBuildManager {
       return candidates.find((p) => existsSync(p))
     }
 
+    // Vite stacks are owned by PreviewManager; bail without falling
+    // through to scan order so a workspace that ships both `vite` and
+    // `expo` bins (rare but possible) still gets the marker-driven
+    // verdict (skip).
+    if (this.markerNamesViteStack()) return null
+
     const preferred = this.preferredBundlerFromMarker()
     if (preferred) {
       const bin = findBin(preferred)
       if (bin) return { kind: preferred, bin }
-      // Marker says expo but no expo bin yet (deps still installing).
-      // Falling through to scan order would pick the leftover vite
-      // bin and rebuild dist/ with the wrong bundler — which is the
-      // exact cloud bug. Bail instead so the next debounced rebuild
-      // (after deps land) gets a clean shot.
       return null
     }
 
@@ -244,7 +269,8 @@ export class CanvasBuildManager {
    * Read `<workspace>/.tech-stack` (written by `seedTechStack`) and
    * map it through `STACK_TO_BUNDLER`. Returns `null` for missing,
    * unreadable, or unrecognized markers — caller falls back to
-   * `KNOWN_BUNDLERS` scan order in that case.
+   * `KNOWN_BUNDLERS` scan order in that case. Vite stack ids resolve
+   * to `null` here because `STACK_TO_BUNDLER` deliberately omits them.
    */
   private preferredBundlerFromMarker(): BundlerKind | null {
     try {
@@ -258,15 +284,28 @@ export class CanvasBuildManager {
   }
 
   /**
-   * Build args that route output into `CANVAS_STAGING_DIR` instead of
-   * `dist/` so we can atomically swap on success. `--emptyOutDir` is
-   * passed to Vite explicitly to suppress its "outDir outside project
-   * root" warning when users seed exotic vite.config.ts setups.
+   * Returns true when `.tech-stack` explicitly names a Vite stack.
+   * Used by `resolveBundler` to bail without falling through to
+   * `KNOWN_BUNDLERS` scan order — PreviewManager's vite-watch owns
+   * those workspaces. Kept as a tight string-set check so adding a
+   * new vite-flavored stack id only requires one edit (here).
    */
-  private buildArgsFor(kind: BundlerKind): string[] {
-    if (kind === 'vite') {
-      return ['build', '--outDir', CANVAS_STAGING_DIR, '--emptyOutDir']
+  private markerNamesViteStack(): boolean {
+    try {
+      const markerPath = join(this.workspaceDir, '.tech-stack')
+      if (!existsSync(markerPath)) return false
+      const stackId = readFileSync(markerPath, 'utf-8').trim()
+      return stackId === 'react-app' || stackId === 'threejs-game' || stackId === 'phaser-game'
+    } catch {
+      return false
     }
+  }
+
+  /**
+   * Build args that route output into `CANVAS_STAGING_DIR` instead of
+   * `dist/` so we can atomically swap on success.
+   */
+  private buildArgsFor(_kind: BundlerKind): string[] {
     return ['export', '--platform', 'web', '--output-dir', CANVAS_STAGING_DIR]
   }
 

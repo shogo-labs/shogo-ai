@@ -765,6 +765,14 @@ export class AgentGateway {
 
       const watcher = this.canvasFileWatcher
       const pm = this.previewManager
+      // For Vite stacks, PreviewManager's `vite build --watch` is now
+      // the only builder (see canvas-build-manager.ts file docstring on
+      // the Windows EPERM race). Route the reload-toast signal through
+      // it instead of CanvasBuildManager, which self-disables for vite
+      // stacks. For Expo stacks vite-watch never starts and this
+      // callback stays silent; CanvasBuildManager fires the reload as
+      // before.
+      pm?.setOnBuildComplete(() => watcher.broadcastReload())
       this.canvasBuildManager = new CanvasBuildManager(this.workspaceDir, {
         onBuildComplete: () => watcher.broadcastReload(),
         onBuildError: (err) => console.error(`${this.logPrefix} Canvas build error:`, err),
