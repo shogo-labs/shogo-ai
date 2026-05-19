@@ -116,3 +116,78 @@ Inline ignore comments live in source code, but each one must have a
 one-line justification appended here so reviewers can audit the set.
 
 _(none yet — Phase 8 will populate this)_
+
+---
+
+## `apps/api` — 100% target (Wave plan)
+
+Tracked separately from the backend roll-up. Goal: drive `apps/api` to
+**100% line + function** coverage on `chore/backend-test-coverage-100`,
+six waves, one PR per wave. Plan:
+[`.shogo/plans/appsapi-to-100-coverage_z36z1f1j.plan.md`](.shogo/plans/appsapi-to-100-coverage_z36z1f1j.plan.md).
+
+### Baseline (Wave 0 — captured 2026-05-19)
+
+Captured via `cd apps/api && bun run test:coverage`, merged across all
+255 test files by `scripts/run-tests-isolated.ts`. Raw artefacts under
+`coverage/baselines/`:
+
+- `apps-api.lcov` — merged lcov.info
+- `apps-api.gaps.json` — per-file gap report (consumed by every later wave)
+- `apps-api.summary.txt` — human-readable summary
+
+| Metric | Measured |
+|---|---:|
+| Files instrumented | 65 |
+| Lines | **89.96%** (10,309 / 11,459) |
+| Functions | **93.97%** (920 / 979) |
+| Branches | n/a (see below) |
+
+**Note on branches:** Bun's lcov reporter (`bun test --coverage --coverage-reporter=lcov`)
+does not emit `BRDA` / `BRF` / `BRH` records — branch coverage is reported
+as 0/0 for every file. The wave plan therefore enforces **line + function**
+only; branch hotspots in `scripts/coverage-gap-report.ts` are a no-op until
+Bun ships branch support or we move apps/api to c8/istanbul. Tracked
+separately; not a blocker for the 100% goal.
+
+**Note on file count:** the 65-file figure counts only files actually
+imported by passing tests. apps/api has 131 source files total (per
+`find src -name '*.ts' -not -name '*.test.ts'`); the remaining 66 files
+have no test importing them at all and don't appear in lcov. Wave 1–4 PRs
+add those imports and tests; the gap report will grow toward 131 as we go.
+
+### Top uncovered files at baseline
+
+From `coverage/baselines/apps-api.gaps.json` → `topUncovered` (line count):
+
+| Uncovered lines | Line% | File |
+|---:|---:|---|
+| 353 | 74.44% | `apps/api/src/services/analytics.service.ts` |
+| 148 | 80.93% | `apps/api/src/services/billing.service.ts` |
+|  81 | 80.53% | `apps/api/src/lib/tunnel-redis.ts` |
+|  81 | 87.36% | `apps/api/src/services/git.service.ts` |
+|  57 | 83.09% | `apps/api/src/services/apple-iap.service.ts` |
+|  56 | 70.37% | `apps/api/src/services/email.service.ts` |
+|  50 | 29.58% | `apps/api/src/lib/usage-cost.ts` |
+|  44 | 75.14% | `apps/api/src/lib/sync-engine.ts` |
+|  41 | 81.70% | `apps/api/src/services/transcription.service.ts` |
+|  34 | 82.74% | `apps/api/src/lib/base-heartbeat-scheduler.ts` |
+
+`analytics.service.ts` is the single biggest line gap and is also the
+most recently touched file (commit `720917be` from Worker-B). Wave 3A
+revisits it for the remaining 353 uncovered lines.
+
+### Planned exclusions (justified, finalized in Wave 5)
+
+These will be added to `apps/api/bunfig.toml` `coveragePathIgnorePatterns`
+once we get to Wave 5. Listed here so reviewers have advance notice.
+
+| File / range | Reason |
+|---|---|
+| `apps/api/src/entry.ts` | Process bootstrap — runs once at startup, side-effects only |
+| `apps/api/src/instrumentation.ts` | OTEL init — depends on global env, tested via integration |
+| `apps/api/src/server.ts` (`serve()` call only) | Hono `serve()` invocation, no testable surface |
+| `apps/api/src/lib/k8s-auth.ts` shell-exec arms | `child_process.exec` shell-outs to `kubectl`; URL/payload builders covered, exec arms excluded with line ranges |
+| `apps/api/src/lib/knative-project-manager.ts` shell-exec arms | Same pattern as `k8s-auth.ts` |
+
+Everything else: **100/100** target.

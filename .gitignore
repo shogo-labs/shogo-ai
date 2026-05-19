@@ -20,6 +20,8 @@ coverage
 !coverage/
 coverage/*
 !coverage/thresholds.json
+!coverage/baselines/
+!coverage/baselines/*
 
 # logs
 logs

@@ -1,0 +1,82 @@
+wrote coverage/baselines/apps-api.gaps.json (65 files)
+
+Coverage gap report — coverage/baselines/apps-api.lcov
+Generated 2026-05-19T14:02:58.364Z
+────────────────────────────────────────────────────────────────────────────────────────────────
+Totals: 65 files · lines  89.96% (10309/11459) · funcs  93.97% (920/979) · branches 100.00% (0/0)
+────────────────────────────────────────────────────────────────────────────────────────────────
+FILE                                                               LINES   FUNCS  BRANCH   GAP
+────────────────────────────────────────────────────────────────────────────────────────────────
+apps/api/src/lib/usage-cost.ts                                   29.58%  20.00% 100.00%    50
+apps/api/src/services/email.service.ts                           70.37% 100.00% 100.00%    56
+apps/api/src/config/usage-plans.ts                               70.49%  33.33% 100.00%    18
+apps/api/src/services/analytics.service.ts                       74.44%  95.70% 100.00%   353
+apps/api/src/lib/heartbeat-scheduler.ts                          74.77%  93.33% 100.00%    27
+apps/api/src/lib/sync-engine.ts                                  75.14% 100.00% 100.00%    44
+packages/agent-runtime/src/quiet-hours.ts                        76.32% 100.00% 100.00%     9
+apps/api/src/lib/tunnel-redis.ts                                 80.53%  80.00% 100.00%    81
+apps/api/src/services/billing.service.ts                         80.93%  98.00% 100.00%   148
+apps/api/src/services/transcription.service.ts                   81.70%  84.21% 100.00%    41
+apps/api/src/lib/base-heartbeat-scheduler.ts                     82.74%  96.55% 100.00%    34
+apps/api/src/services/apple-iap.service.ts                       83.09%  79.17% 100.00%    57
+apps/api/src/services/node-metrics.service.ts                    86.89% 100.00% 100.00%    16
+apps/api/src/services/git.service.ts                             87.36%  90.00% 100.00%    81
+apps/api/src/services/diarization.service.ts                     88.50% 100.00% 100.00%    23
+apps/api/src/lib/crypto-util.ts                                  92.16% 100.00% 100.00%     4
+apps/api/src/services/marketplace-audit.service.ts               92.70%  92.86% 100.00%    13
+apps/api/src/lib/pending-login-store.ts                          93.44% 100.00% 100.00%     4
+apps/api/src/lib/resolve-pod-url.ts                              93.65% 100.00% 100.00%     4
+apps/api/src/jobs/grant-monthly-refill.ts                        94.52%  75.00% 100.00%     4
+apps/api/src/services/marketplace.service.ts                     94.85%  95.65% 100.00%    20
+apps/api/src/services/marketplace-install.service.ts             95.00%  91.67% 100.00%    17
+apps/api/src/middleware/auth.ts                                  96.51% 100.00% 100.00%    11
+apps/api/src/config/currencies.ts                                97.01% 100.00% 100.00%     2
+apps/api/src/services/cost-analytics.service.ts                  97.86%  95.74% 100.00%    23
+apps/api/src/services/projectAgentSync.service.ts                98.85% 100.00% 100.00%     4
+apps/api/src/lib/k8s-auth.ts                                     98.99% 100.00% 100.00%     1
+apps/api/src/config/instance-sizes.ts                            99.13% 100.00% 100.00%     1
+apps/api/src/services/creator-gamification.service.ts            99.13% 100.00% 100.00%     3
+apps/api/src/services/stripe-connect.service.ts                  99.64% 100.00% 100.00%     1
+apps/api/src/config/stripe-prices.ts                            100.00% 100.00% 100.00%     0
+apps/api/src/lib/admin-heartbeat.ts                             100.00% 100.00% 100.00%     0
+apps/api/src/lib/ai-proxy-token.ts                              100.00% 100.00% 100.00%     0
+apps/api/src/lib/api-keys-mint.ts                               100.00% 100.00% 100.00%     0
+apps/api/src/lib/boot-marketplace-migrations.ts                 100.00%  66.67% 100.00%     0
+apps/api/src/lib/bundle-crypto.ts                               100.00% 100.00% 100.00%     0
+apps/api/src/lib/cloud-key-wipe.ts                              100.00% 100.00% 100.00%     0
+apps/api/src/lib/cloud-urls.ts                                  100.00% 100.00% 100.00%     0
+apps/api/src/lib/cloudflare-dns.ts                              100.00% 100.00% 100.00%     0
+apps/api/src/lib/eval-job-manager.ts                            100.00% 100.00% 100.00%     0
+apps/api/src/lib/infra-metrics-collector.ts                     100.00%  81.82% 100.00%     0
+apps/api/src/lib/local-heartbeat-scheduler.ts                   100.00%  90.00% 100.00%     0
+apps/api/src/lib/preview-token.ts                               100.00% 100.00% 100.00%     0
+apps/api/src/lib/project-user-context.ts                        100.00% 100.00% 100.00%     0
+apps/api/src/lib/proxy-headers.ts                               100.00% 100.00% 100.00%     0
+apps/api/src/lib/push-notifications.ts                          100.00% 100.00% 100.00%     0
+apps/api/src/lib/runtime-token.ts                               100.00% 100.00% 100.00%     0
+apps/api/src/lib/runtime/build-project-env.ts                   100.00% 100.00% 100.00%     0
+apps/api/src/lib/twilio.ts                                      100.00% 100.00% 100.00%     0
+apps/api/src/lib/url-validation.ts                              100.00% 100.00% 100.00%     0
+apps/api/src/lib/voice-context.ts                               100.00%  72.73% 100.00%     0
+apps/api/src/lib/voice-meter.ts                                 100.00% 100.00% 100.00%     0
+apps/api/src/lib/warm-pool-rescue.ts                            100.00%  90.00% 100.00%     0
+apps/api/src/lib/warm-pool-self-heal.ts                         100.00% 100.00% 100.00%     0
+apps/api/src/middleware/marketplace-feature.ts                  100.00% 100.00% 100.00%     0
+apps/api/src/middleware/super-admin.ts                          100.00% 100.00% 100.00%     0
+apps/api/src/middleware/tracing.ts                              100.00% 100.00% 100.00%     0
+apps/api/src/services/exchange-rate.service.ts                  100.00% 100.00% 100.00%     0
+apps/api/src/services/instance.service.ts                       100.00% 100.00% 100.00%     0
+apps/api/src/services/projectAgent.service.ts                   100.00% 100.00% 100.00%     0
+apps/api/src/services/recording.service.ts                      100.00%  92.86% 100.00%     0
+apps/api/src/services/storage.service.ts                        100.00% 100.00% 100.00%     0
+apps/api/src/services/workspace.service.ts                      100.00% 100.00% 100.00%     0
+apps/api/src/types/progress.ts                                  100.00% 100.00% 100.00%     0
+apps/api/src/webhooks/stripe.ts                                 100.00% 100.00% 100.00%     0
+
+Top 5 files by uncovered lines:
+    353   74.44%  apps/api/src/services/analytics.service.ts
+    148   80.93%  apps/api/src/services/billing.service.ts
+     81   80.53%  apps/api/src/lib/tunnel-redis.ts
+     81   87.36%  apps/api/src/services/git.service.ts
+     57   83.09%  apps/api/src/services/apple-iap.service.ts
+
