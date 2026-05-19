@@ -215,3 +215,6 @@ apps/desktop/resources/sherpa-onnx/
 demo/
 
 vendor/agent-native
+apps/api/coverage/
+*.tmp
+*.info

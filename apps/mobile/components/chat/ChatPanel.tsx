@@ -89,6 +89,11 @@ import {
   saveInteractionModePreference,
 } from "../../lib/interaction-mode-preference"
 import { useDualPlan } from "../../lib/dual-plan-preference"
+import {
+  isChatStalled,
+  DEFAULT_SUBMITTED_STALL_MS,
+  DEFAULT_STREAMING_STALL_MS,
+} from "../../lib/chat-stall-watchdog"
 import { createTodoStateStore, TodoStateStoreContext } from "../../lib/todo-state-store"
 import {
   loadModelPreference,
@@ -3469,6 +3474,52 @@ export const ChatPanel = observer(function ChatPanel({
       }
     }
   }, [isStreaming, messageQueue.length, processMessageQueue, currentSessionId])
+
+  // Stall watchdog — break a wedged `submitted`/`streaming` status so the
+  // queue-drain effect above gets its falling edge.
+  //
+  // The AI SDK's `AbstractChat.makeRequest` blocks on `reader.read()` until
+  // the body closes; there's no internal timeout. When the upstream proxy
+  // cuts mid-turn AND `auto-resuming-fetch` exhausts its resume budget
+  // while still inside an open `data:` frame, the durable body can sit
+  // pinned without enqueuing or closing. Without this effect, `status`
+  // pins at `submitted`/`streaming` forever, `handleSendMessage` routes
+  // every subsequent user send into `messageQueue`, and the user observes
+  // "AI never replied". See `chat-panel-wedge.test.ts` for the contract.
+  //
+  // Forward-progress signal: any update to `messages` (text-delta, tool
+  // events, etc.) timestamps the watchdog. A status entering `submitted`
+  // / `streaming` also counts as fresh progress. When that timestamp
+  // goes stale past the threshold for the current status, we call
+  // `stop()` — the SDK aborts the active response and flips to `ready`.
+  const lastChatProgressAtRef = useRef<number>(Date.now())
+  useEffect(() => {
+    lastChatProgressAtRef.current = Date.now()
+  }, [messages, status])
+
+  useEffect(() => {
+    if (!isStreaming) return
+    const intervalMs = Math.min(DEFAULT_SUBMITTED_STALL_MS, DEFAULT_STREAMING_STALL_MS, 15_000)
+    const timer = setInterval(() => {
+      if (
+        isChatStalled({
+          status,
+          lastProgressAt: lastChatProgressAtRef.current,
+          now: Date.now(),
+        })
+      ) {
+        console.warn(
+          `[ChatPanel] stall watchdog tripped — status=${status} pinned with no progress; calling stop() to recover`
+        )
+        try {
+          void stop()
+        } catch (err) {
+          console.warn("[ChatPanel] stall watchdog stop() threw:", err)
+        }
+      }
+    }, intervalMs)
+    return () => clearInterval(timer)
+  }, [isStreaming, status, stop])
 
   // Hydrate the queue for the active session from the per-session cache when
   // the session changes. Previously this effect *cleared* the queue on every
