@@ -89,7 +89,7 @@ import {
   saveInteractionModePreference,
 } from "../../lib/interaction-mode-preference"
 import { useDualPlan } from "../../lib/dual-plan-preference"
-import { todoStateStore } from "../../lib/todo-state-store"
+import { createTodoStateStore, TodoStateStoreContext } from "../../lib/todo-state-store"
 import {
   loadModelPreference,
   saveModelPreference,
@@ -1059,13 +1059,20 @@ export const ChatPanel = observer(function ChatPanel({
 
   const planStream = usePlanStreamSafe()
 
+  // Per-panel TodoWrite store. Each open chat tab gets its own
+  // instance so descendants (AssistantContent, TodoWidget) read
+  // and write isolated state — see todo-state-store.ts. Stable
+  // for the panel's lifetime; the clear() below is a defensive
+  // reset for the rare case where a panel switches sessions.
+  const todoStateStore = useMemo(() => createTodoStateStore(), [])
+
   useEffect(() => {
     pendingPlanRef.current = null
     setPendingPlan(null)
     setConfirmedPlan(null)
     confirmedPlanRef.current = null
     todoStateStore.clear()
-  }, [currentSessionId])
+  }, [currentSessionId, todoStateStore])
 
   // Load session metadata from API if not already cached. Gated on
   // `isActive` so the N-1 hidden sibling ChatPanels mounted for every
@@ -4116,9 +4123,11 @@ export const ChatPanel = observer(function ChatPanel({
     return (
       <View className={cn("flex-row flex-1", className)}>
         {children && (
-          <ChatContextProvider value={contextValue}>
-            <View className="flex-1 min-w-0 overflow-hidden">{children}</View>
-          </ChatContextProvider>
+          <TodoStateStoreContext.Provider value={todoStateStore}>
+            <ChatContextProvider value={contextValue}>
+              <View className="flex-1 min-w-0 overflow-hidden">{children}</View>
+            </ChatContextProvider>
+          </TodoStateStoreContext.Provider>
         )}
         <ExpandTab onExpand={handleToggleCollapse} />
       </View>
@@ -4126,6 +4135,7 @@ export const ChatPanel = observer(function ChatPanel({
   }
 
   return (
+    <TodoStateStoreContext.Provider value={todoStateStore}>
     <ChatContextProvider value={contextValue}>
       {/* Hosts the destructive-confirmation modal for in-place message
           edit and "retry from here". Rendered once per ChatPanel and
@@ -4532,5 +4542,6 @@ export const ChatPanel = observer(function ChatPanel({
         </KeyboardAvoidingView>
       </View>
     </ChatContextProvider>
+    </TodoStateStoreContext.Provider>
   )
 })
