@@ -4,12 +4,12 @@
  * Shared helpers for normalizing AI SDK `UIMessage.parts` into the
  * `MessagePart` shape rendered by the chat UI, plus a small extractor
  * that returns just the task / agent_spawn tool calls so non-chat
- * surfaces (e.g. the Shogo Mode overlay) can render the same
+ * surfaces (e.g. the EZ Mode overlay) can render the same
  * `<SubagentCard>` UI without duplicating part-parsing.
  *
  * The AssistantContent component used to own these helpers privately;
  * they have been hoisted here so `ChatPanel` can publish a snapshot of
- * subagent tool calls through the ChatBridge for the Shogo overlay.
+ * subagent tool calls through the ChatBridge for the EZ Mode overlay.
  */
 
 import type { UIMessage } from "@ai-sdk/react"
@@ -185,7 +185,7 @@ export function extractOrderedParts(message: UIMessage): MessagePart[] {
 /**
  * Walk every assistant message in `messages` and return the ordered list
  * of `task` / `Task` / `agent_spawn` tool calls as `ToolCallData`. The
- * Shogo Mode overlay re-uses this snapshot to render `<SubagentCard>`
+ * EZ Mode overlay re-uses this snapshot to render `<SubagentCard>`
  * without owning any AI SDK message state itself.
  *
  * The returned array is keyed by the tool call id, so re-deriving it on

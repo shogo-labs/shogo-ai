@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Provision (or refresh) the shared "Shogo Mode" ElevenLabs convai
+ * Provision (or refresh) the shared "EZ Mode" ElevenLabs convai
  * agent.
  *
  * The agent's prompt + tools + first_message live in
@@ -35,7 +35,7 @@
  *
  * Optional env:
  *   - SHOGO_VOICE_MODE_VOICE_ID  — ElevenLabs voice id (default: Rachel / EXAVITQu4vr4xnSDxMaL).
- *   - SHOGO_VOICE_MODE_NAME      — Display name for the agent (default: "Shogo Mode").
+ *   - SHOGO_VOICE_MODE_NAME      — Display name for the agent (default: "EZ Mode").
  */
 
 import { ElevenLabsClient } from '@shogo-ai/sdk/voice'
@@ -46,7 +46,7 @@ import {
 } from '../src/voice-mode/translator-persona'
 
 const DEFAULT_VOICE_ID = 'EXAVITQu4vr4xnSDxMaL' // Rachel — calm, concierge-y.
-const DEFAULT_DISPLAY_NAME = 'Shogo Mode'
+const DEFAULT_DISPLAY_NAME = 'EZ Mode'
 // ElevenLabs rejects `eleven_turbo_v2_5` for English-only agents on most
 // plans ("English Agents must use turbo or flash v2"). Default to
 // `eleven_turbo_v2`, which is accepted everywhere; override via

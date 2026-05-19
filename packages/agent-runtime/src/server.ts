@@ -1602,9 +1602,9 @@ app.get('/agent/plans/:filename', async (c) => {
     return c.json({ error: 'Plan not found' }, 404)
   }
   const content = readFileSync(filepath, 'utf-8')
-  const { extractBusinessSection } = await import('./plan-translation')
-  const business = extractBusinessSection(content)
-  return c.json({ filename, content, business: business ?? undefined })
+  const { extractSummarySection } = await import('./plan-translation')
+  const summary = extractSummarySection(content)
+  return c.json({ filename, content, summary: summary ?? undefined })
 })
 
 app.put('/agent/plans/:filename', async (c) => {
@@ -1677,11 +1677,11 @@ app.delete('/agent/plans/:filename', async (c) => {
   return c.json({ deleted: true })
 })
 
-// On-demand business translation for an existing plan. Works for plans
+// On-demand summary generation for an existing plan. Works for plans
 // created BEFORE the Dual Plan feature existed (or with the toggle off) —
 // the endpoint reads the current technical body, runs the fast-tier
 // translator, and persists the result back into the same .plan.md file.
-app.post('/agent/plans/:filename/translate', async (c) => {
+app.post('/agent/plans/:filename/summarize', async (c) => {
   const filename = c.req.param('filename')
   if (!filename || !filename.endsWith('.plan.md')) {
     return c.json({ error: 'Invalid plan filename' }, 400)
@@ -1701,31 +1701,31 @@ app.post('/agent/plans/:filename/translate', async (c) => {
   const overview = fm.match(/overview:\s*"?([^"\n]*)"?/)?.[1] ?? ''
 
   const {
-    translateToBusiness,
-    upsertBusinessSection,
-    stripBusinessSection,
+    summarizePlan,
+    upsertSummarySection,
+    stripSummarySection,
   } = await import('./plan-translation')
 
-  // The body for translation must be the *technical* markdown only — strip
-  // any previously-stored business section first, then take everything
+  // The body for the summary must be the *technical* markdown only — strip
+  // any previously-stored summary section first, then take everything
   // after the frontmatter and the leading `# Heading` line.
-  const withoutBusiness = stripBusinessSection(current)
-  const afterFrontmatter = withoutBusiness.substring(withoutBusiness.indexOf('---', 4) + 3).trim()
+  const withoutSummary = stripSummarySection(current)
+  const afterFrontmatter = withoutSummary.substring(withoutSummary.indexOf('---', 4) + 3).trim()
   const planMarkdown = afterFrontmatter.replace(/^#[^\n]*\n*/, '')
 
   try {
     // parentModel intentionally omitted: the fast tier maps to a concrete
     // model regardless of parent, so no need to surface a gateway hook.
-    const business = await translateToBusiness({
+    const summary = await summarizePlan({
       name,
       overview,
       planMarkdown,
     })
-    const next = upsertBusinessSection(current, business)
+    const next = upsertSummarySection(current, summary)
     writeFileSync(filepath, next, 'utf-8')
-    return c.json({ business })
+    return c.json({ summary })
   } catch (err: any) {
-    return c.json({ error: err?.message || 'Translation failed' }, 500)
+    return c.json({ error: err?.message || 'Summary generation failed' }, 500)
   }
 })
 

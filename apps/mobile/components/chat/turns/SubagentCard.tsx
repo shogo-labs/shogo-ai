@@ -28,7 +28,7 @@ export interface SubagentCardProps {
    * Override the agent runtime base URL used for the live browser
    * preview. Defaults to the value resolved from `ChatContext` (when
    * mounted under `ChatPanel`) or the `ChatBridge` (when mounted under
-   * the Shogo overlay). Tests / standalone surfaces can pass it
+   * the EZ Mode overlay). Tests / standalone surfaces can pass it
    * explicitly.
    */
   agentUrl?: string | null

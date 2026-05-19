@@ -148,9 +148,9 @@ export interface ToolContext {
   effectiveModel?: string
   /** When true, Auto mode is active — sub-agents should use the spawn-time model router */
   autoRouting?: boolean
-  /** When true, create_plan/update_plan additionally generate a business-language
+  /** When true, create_plan/update_plan additionally generate a stakeholder
    *  translation of the technical plan using the fast-tier model and emit it via
-   *  the `data-plan-translation` stream event. Persistent per-user preference. */
+   *  the `data-plan-summary` stream event. Persistent per-user preference. */
   dualPlan?: boolean
   /** Persistent shell cwd state — survives across exec calls within a session */
   shellState?: { getCwd: () => string; setCwd: (cwd: string) => void }
@@ -5847,24 +5847,24 @@ function parsePlanTodosFromFrontmatter(fm: string): Array<{ id: string; content:
 }
 
 // ---------------------------------------------------------------------------
-// Plan Mode: business-language translation (Dual Plan)
+// Plan Mode: stakeholder summary (Dual Plan)
 //
 // When ctx.dualPlan is true, every successful create_plan / update_plan call
-// kicks off a background translation pass via the fast-tier model. The pass:
-//   1. Emits `data-plan-translation-start` so the UI can render a spinner.
-//   2. Calls translateToBusiness() (one-shot tool-less runAgentLoop).
-//   3. Rewrites the .plan.md file in place, appending/replacing the business
-//      section delimited by BUSINESS_SECTION_START/END.
-//   4. Emits `data-plan-translation` with the markdown, or
-//      `data-plan-translation-error` with a message on failure.
+// kicks off a background summary pass via the fast-tier model. The pass:
+//   1. Emits `data-plan-summary-start` so the UI can render a spinner.
+//   2. Calls summarizePlan() (one-shot tool-less runAgentLoop).
+//   3. Rewrites the .plan.md file in place, appending/replacing the summary
+//      section delimited by SUMMARY_SECTION_START/END.
+//   4. Emits `data-plan-summary` with the markdown, or
+//      `data-plan-summary-error` with a message on failure.
 //
 // The work is fired-and-forgotten with respect to the tool's return value —
 // the create_plan tool result fires immediately so the model can continue
-// reasoning, and the UI receives the translation asynchronously via the
+// reasoning, and the UI receives the summary asynchronously via the
 // stream.
 // ---------------------------------------------------------------------------
 
-interface PlanTranslationJob {
+interface PlanSummaryJob {
   filepath: string
   relativePath: string
   name: string
@@ -5873,17 +5873,17 @@ interface PlanTranslationJob {
   toolCallId: string
 }
 
-function runPlanTranslation(ctx: ToolContext, job: PlanTranslationJob): void {
+function runPlanSummary(ctx: ToolContext, job: PlanSummaryJob): void {
   const writer = ctx.uiWriter
   writer?.write({
-    type: 'data-plan-translation-start',
+    type: 'data-plan-summary-start',
     data: { filepath: job.relativePath, toolCallId: job.toolCallId },
   })
 
   void (async () => {
     try {
-      const { translateToBusiness, upsertBusinessSection } = await import('./plan-translation')
-      const business = await translateToBusiness({
+      const { summarizePlan, upsertSummarySection } = await import('./plan-translation')
+      const summary = await summarizePlan({
         name: job.name,
         overview: job.overview,
         planMarkdown: job.planMarkdown,
@@ -5893,26 +5893,26 @@ function runPlanTranslation(ctx: ToolContext, job: PlanTranslationJob): void {
       try {
         if (existsSync(job.filepath)) {
           const current = readFileSync(job.filepath, 'utf-8')
-          const next = upsertBusinessSection(current, business)
+          const next = upsertSummarySection(current, summary)
           writeFileSync(job.filepath, next, 'utf-8')
         }
       } catch (writeErr) {
-        console.error(`[create_plan][dual-plan] failed to persist business section for ${job.relativePath}:`, writeErr)
+        console.error(`[create_plan][dual-plan] failed to persist summary section for ${job.relativePath}:`, writeErr)
       }
 
       writer?.write({
-        type: 'data-plan-translation',
+        type: 'data-plan-summary',
         data: {
           filepath: job.relativePath,
-          business,
+          summary,
           toolCallId: job.toolCallId,
         },
       })
     } catch (err: any) {
       const message = err?.message || String(err)
-      console.error(`[create_plan][dual-plan] translation failed for ${job.relativePath}:`, message)
+      console.error(`[create_plan][dual-plan] summary generation failed for ${job.relativePath}:`, message)
       writer?.write({
-        type: 'data-plan-translation-error',
+        type: 'data-plan-summary-error',
         data: {
           filepath: job.relativePath,
           message,
@@ -5986,7 +5986,7 @@ function createCreatePlanTool(ctx: ToolContext): AgentTool {
 
       if (ctx.dualPlan) {
         const relPath = `.shogo/plans/${filename}`
-        runPlanTranslation(ctx, {
+        runPlanSummary(ctx, {
           filepath: filepath,
           relativePath: relPath,
           name: params.name,
@@ -6107,7 +6107,7 @@ function createUpdatePlanTool(ctx: ToolContext): AgentTool {
         (params.name !== undefined && params.name !== existingName) ||
         (params.overview !== undefined && params.overview !== existingOverview)
       if (ctx.dualPlan && (bodyChanged || nameOrOverviewChanged)) {
-        runPlanTranslation(ctx, {
+        runPlanSummary(ctx, {
           filepath: resolved,
           relativePath: planFilepath,
           name: updatedName,

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Shogo Mode persistence — read helpers for the Shogo overlay.
+ * EZ Mode persistence — read helpers for the EZ Mode overlay.
  *
- * All Shogo Mode state (voice transcript + translator AI-SDK thread)
+ * All EZ Mode state (voice transcript + translator AI-SDK thread)
  * lives in the `chat_messages` table tagged with `agent="voice"`, in
  * the same `ChatSession` as the technical thread. The `parts` column
  * on voice rows carries a tiny JSON envelope that discriminates the
@@ -12,6 +12,7 @@
  *   { kind: 'shogo-text',       uiParts: [...] }   // AI-SDK turn
  *   { kind: 'voice' }                               // spoken turn
  *   { kind: 'agent-activity' }                      // narration mirror
+ *   { kind: 'agent-reply' }                         // technical agent final reply mirror
  *
  * The client never POSTs to `/api/chat-messages` directly. All writes
  * go through purpose-built endpoints on `/api/voice/*` that do the
@@ -30,21 +31,25 @@ function debugLog(msg: string, data?: unknown) {
   }
 }
 
-export type ShogoMessageKind = 'shogo-text' | 'voice' | 'agent-activity'
+export type EzModeMessageKind =
+  | 'shogo-text'
+  | 'voice'
+  | 'agent-activity'
+  | 'agent-reply'
 
-export interface ShogoPartsEnvelope {
-  kind: ShogoMessageKind
+export interface EzModePartsEnvelope {
+  kind: EzModeMessageKind
   /** Original AI-SDK UIMessage parts — only present on `shogo-text` rows. */
   uiParts?: unknown[]
 }
 
-export interface ShogoMessageRow {
+export interface EzModeMessageRow {
   id: string
   sessionId: string
   role: 'user' | 'assistant'
   content: string
   /** Parsed envelope. `null` if the row has no `parts` column value. */
-  envelope: ShogoPartsEnvelope | null
+  envelope: EzModePartsEnvelope | null
   createdAt: number
 }
 
@@ -63,7 +68,7 @@ function credentials(): RequestCredentials {
   return Platform.OS === 'web' ? 'include' : 'omit'
 }
 
-function parseEnvelope(raw: string | null): ShogoPartsEnvelope | null {
+function parseEnvelope(raw: string | null): EzModePartsEnvelope | null {
   if (!raw) return null
   try {
     const parsed = JSON.parse(raw)
@@ -72,9 +77,10 @@ function parseEnvelope(raw: string | null): ShogoPartsEnvelope | null {
       typeof parsed === 'object' &&
       (parsed.kind === 'shogo-text' ||
         parsed.kind === 'voice' ||
-        parsed.kind === 'agent-activity')
+        parsed.kind === 'agent-activity' ||
+        parsed.kind === 'agent-reply')
     ) {
-      return parsed as ShogoPartsEnvelope
+      return parsed as EzModePartsEnvelope
     }
   } catch {
     // Fall through — row has malformed parts; surface as null envelope.
@@ -82,7 +88,7 @@ function parseEnvelope(raw: string | null): ShogoPartsEnvelope | null {
   return null
 }
 
-function wireToRow(m: ChatMessageWire): ShogoMessageRow {
+function wireToRow(m: ChatMessageWire): EzModeMessageRow {
   return {
     id: m.id,
     sessionId: m.sessionId,
@@ -101,10 +107,10 @@ function wireToRow(m: ChatMessageWire): ShogoMessageRow {
  * keeps pagination / filtering / offset support for free if we want to
  * window long transcripts later.
  */
-export async function loadShogoMessages(
+export async function loadEzModeMessages(
   chatSessionId: string,
   options: { signal?: AbortSignal; limit?: number } = {},
-): Promise<ShogoMessageRow[]> {
+): Promise<EzModeMessageRow[]> {
   const base = API_URL ?? ''
   const params = new URLSearchParams({
     sessionId: chatSessionId,
@@ -114,7 +120,7 @@ export async function loadShogoMessages(
     params.set('limit', String(options.limit))
   }
   const url = `${base}/api/chat-messages?${params.toString()}`
-  debugLog('[shogoMessages] load request', { chatSessionId, url })
+  debugLog('[ezModeMessages] load request', { chatSessionId, url })
 
   const res = await fetch(url, {
     method: 'GET',
@@ -122,12 +128,12 @@ export async function loadShogoMessages(
     signal: options.signal,
   })
   if (!res.ok) {
-    debugLog('[shogoMessages] load failed', {
+    debugLog('[ezModeMessages] load failed', {
       status: res.status,
       statusText: res.statusText,
     })
     throw new Error(
-      `[shogoMessages] load failed (${res.status} ${res.statusText})`,
+      `[ezModeMessages] load failed (${res.status} ${res.statusText})`,
     )
   }
   const body = (await res.json()) as
@@ -136,7 +142,7 @@ export async function loadShogoMessages(
   const items = Array.isArray(body?.items) ? body!.items : []
   const rows = items.map(wireToRow)
   rows.sort((a, b) => a.createdAt - b.createdAt)
-  debugLog('[shogoMessages] load ok', {
+  debugLog('[ezModeMessages] load ok', {
     chatSessionId,
     count: rows.length,
     byKind: rows.reduce<Record<string, number>>((acc, r) => {
@@ -150,7 +156,7 @@ export async function loadShogoMessages(
 
 export interface PersistTranscriptArgs {
   chatSessionId: string
-  kind: 'voice-user' | 'voice-agent' | 'agent-activity'
+  kind: 'voice-user' | 'voice-agent' | 'agent-activity' | 'agent-reply'
   text: string
   /**
    * Stable client-generated id. Strongly recommended — the server
@@ -166,14 +172,14 @@ export interface PersistTranscriptArgs {
  * does the envelope shaping and ownership check. Returns the persisted
  * row on success.
  */
-export async function persistShogoTranscriptEntry(
+export async function persistEzModeTranscriptEntry(
   args: PersistTranscriptArgs,
   options: { signal?: AbortSignal } = {},
-): Promise<ShogoMessageRow | null> {
+): Promise<EzModeMessageRow | null> {
   const base = API_URL ?? ''
   const url = `${base}/api/voice/transcript/${encodeURIComponent(args.chatSessionId)}`
 
-  debugLog('[shogoMessages] persist POST', {
+  debugLog('[ezModeMessages] persist POST', {
     id: args.id,
     kind: args.kind,
     chatSessionId: args.chatSessionId,
@@ -191,16 +197,16 @@ export async function persistShogoTranscriptEntry(
     signal: options.signal,
   })
   if (!res.ok) {
-    debugLog('[shogoMessages] persist POST failed', {
+    debugLog('[ezModeMessages] persist POST failed', {
       id: args.id,
       status: res.status,
       statusText: res.statusText,
     })
     throw new Error(
-      `[shogoMessages] transcript persist failed (${res.status} ${res.statusText})`,
+      `[ezModeMessages] transcript persist failed (${res.status} ${res.statusText})`,
     )
   }
-  debugLog('[shogoMessages] persist POST ok', {
+  debugLog('[ezModeMessages] persist POST ok', {
     id: args.id,
     status: res.status,
   })

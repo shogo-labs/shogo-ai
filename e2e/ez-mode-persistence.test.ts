@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * E2E tests for Shogo Mode persistence.
+ * E2E tests for EZ Mode persistence.
  *
- * Validates that Shogo Mode's voice + translator threads round-trip
+ * Validates that EZ Mode's voice + translator threads round-trip
  * correctly through the same `chat_messages` table as the technical
  * thread, with `agent="voice"` vs `agent="technical"` cleanly
  * partitioning the two threads on both reads and writes.
  *
  * Covered surfaces
  * ----------------
- *   Writes (server-only; the Shogo client never POSTs ChatMessage rows
+ *   Writes (server-only; the EZ Mode client never POSTs ChatMessage rows
  *   directly):
  *     - `POST /api/voice/transcript/:chatSessionId` — one row per
  *       voice / agent-activity event, keyed by client id for
@@ -23,7 +23,7 @@
  *
  *   Reads:
  *     - `GET /api/chat-messages?sessionId=X&agent=voice` returns only
- *       Shogo rows.
+ *       EZ Mode rows.
  *     - `GET /api/chat-messages?sessionId=X&agent=technical` returns
  *       only technical rows.
  *     - `GET /api/chat-messages?sessionId=X` (no filter) returns both
@@ -46,7 +46,7 @@
  *
  * Run:
  *   SHOGO_LOCAL_MODE=true DATABASE_URL=file:./shogo.db \
- *     bun test e2e/shogo-persistence.test.ts
+ *     bun test e2e/ez-mode-persistence.test.ts
  *
  * Prerequisites:
  *   Run `bun run db:generate:all` once first so the SQLite schema has
@@ -189,7 +189,7 @@ async function listChatMessages(
 // Setup / teardown
 // ---------------------------------------------------------------------
 
-describe('Shogo Mode persistence (chat_messages · agent discriminator)', () => {
+describe('EZ Mode persistence (chat_messages · agent discriminator)', () => {
   beforeAll(async () => {
     const workspace = await prisma.workspace.findFirst()
     if (!workspace) {

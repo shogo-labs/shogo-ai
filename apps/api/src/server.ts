@@ -710,7 +710,7 @@ app.get('/api/config', async (c) => {
     analytics: true,
     publishing: !localMode,
     marketplace: true,
-    shogoMode: true,
+    ezMode: true,
     phoneChannel: !localMode,
   }
 
@@ -718,12 +718,12 @@ app.get('/api/config', async (c) => {
   let overrides: Record<string, boolean> = {}
   try {
     const rows = await prisma.platformSetting.findMany({
-      where: { key: { in: ['feature.marketplace', 'feature.shogo_mode', 'feature.phone_channel'] } },
+      where: { key: { in: ['feature.marketplace', 'feature.ez_mode', 'feature.phone_channel'] } },
     })
     for (const row of rows) {
       const bool = row.value === 'true'
       if (row.key === 'feature.marketplace') overrides.marketplace = bool
-      if (row.key === 'feature.shogo_mode') overrides.shogoMode = bool
+      if (row.key === 'feature.ez_mode') overrides.ezMode = bool
       if (row.key === 'feature.phone_channel') overrides.phoneChannel = bool
     }
   } catch (err) {
@@ -4760,7 +4760,7 @@ app.put('/api/admin/settings/agent-models', async (c) => {
 
 const FEATURE_FLAG_KEYS = {
   marketplace: 'feature.marketplace',
-  shogoMode: 'feature.shogo_mode',
+  ezMode: 'feature.ez_mode',
   phoneChannel: 'feature.phone_channel',
 } as const
 
@@ -4774,7 +4774,7 @@ app.get('/api/admin/settings/features', async (c) => {
     })
     const flags: Record<FeatureFlagName, boolean | null> = {
       marketplace: null,
-      shogoMode: null,
+      ezMode: null,
       phoneChannel: null,
     }
     for (const row of rows) {
@@ -4817,7 +4817,7 @@ app.put('/api/admin/settings/features', async (c) => {
     })
     const flags: Record<FeatureFlagName, boolean | null> = {
       marketplace: null,
-      shogoMode: null,
+      ezMode: null,
       phoneChannel: null,
     }
     for (const row of rows) {
@@ -6057,7 +6057,7 @@ app.route('/api', aiProxy)
 const toolsProxy = toolsProxyRoutes()
 app.route('/api', toolsProxy)
 
-// Shogo Mode / voice translator routes (session-auth'd via authMiddleware
+// EZ Mode / voice translator routes (session-auth'd via authMiddleware
 // above). Keeps ELEVENLABS_API_KEY on the server and serves the shared
 // translator persona for both voice (signed URL) and text (streaming chat).
 app.route('/api', voiceRoutes())

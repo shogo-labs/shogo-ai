@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * useTranslatorChat — text modality for the Shogo Mode translator.
+ * useTranslatorChat — text modality for the EZ Mode translator.
  *
  * Thin wrapper around `@ai-sdk/react`'s `useChat`, pointed at the
  * per-session translator endpoint on `apps/api`. The server declares
@@ -18,7 +18,7 @@
  * The client never writes to the `chat_messages` table directly.
  *
  *   - On mount (or when `chatSessionId` changes), the hook fetches all
- *     Shogo `shogo-text` rows for the session via
+ *     EZ Mode `shogo-text` rows for the session via
  *     `GET /api/chat-messages?sessionId=...&agent=voice` and applies
  *     them via `chat.setMessages(...)` so the AI-SDK thread is
  *     hydrated.
@@ -41,7 +41,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport, type UIMessage } from 'ai'
 import { API_URL } from '../../lib/api'
-import { loadShogoMessages, type ShogoMessageRow } from './shogoMessages'
+import { loadEzModeMessages, type EzModeMessageRow } from './ezModeMessages'
 
 /**
  * Minimal shape that `useTranslatorChat` expects from its client tools.
@@ -61,7 +61,7 @@ export interface UseTranslatorChatOptions {
    */
   clientTools: TranslatorClientTools
   /**
-   * ChatSession id that scopes the Shogo thread. Used for both the
+   * ChatSession id that scopes the EZ Mode thread. Used for both the
    * server POST URL (`/api/voice/translator/chat/:chatSessionId`) and
    * for hydrating `shogo-text` rows on mount. `null` disables
    * persistence.
@@ -81,7 +81,7 @@ export interface UseTranslatorChatOptions {
   id?: string
 }
 
-const DEFAULT_CHAT_ID = 'shogo-mode-translator'
+const DEFAULT_CHAT_ID = 'ez-mode-translator'
 
 /**
  * Rebuild an AI-SDK `UIMessage` from a persisted row. Falls back to a
@@ -89,7 +89,7 @@ const DEFAULT_CHAT_ID = 'shogo-mode-translator'
  * written before the envelope format existed, or by the transcript
  * endpoint).
  */
-function rowToUIMessage(row: ShogoMessageRow): UIMessage | null {
+function rowToUIMessage(row: EzModeMessageRow): UIMessage | null {
   if (row.role !== 'user' && row.role !== 'assistant') return null
   const envelope = row.envelope
   const uiParts =
@@ -141,7 +141,7 @@ export function useTranslatorChat({
   const toolsRef = useRef<TranslatorClientTools>(clientTools)
   toolsRef.current = clientTools
 
-  const resolvedId = id ?? (chatSessionId ? `shogo:${chatSessionId}` : DEFAULT_CHAT_ID)
+  const resolvedId = id ?? (chatSessionId ? `ez-mode:${chatSessionId}` : DEFAULT_CHAT_ID)
 
   const chat = useChat({
     id: resolvedId,
@@ -210,14 +210,14 @@ export function useTranslatorChat({
     const controller = new AbortController()
     ;(async () => {
       try {
-        const rows = await loadShogoMessages(chatSessionId, {
+        const rows = await loadEzModeMessages(chatSessionId, {
           signal: controller.signal,
         })
         if (controller.signal.aborted) return
-        const shogoTextRows = rows.filter(
+        const ezModeTextRows = rows.filter(
           (r) => r.envelope?.kind === 'shogo-text',
         )
-        const uiMessages = shogoTextRows
+        const uiMessages = ezModeTextRows
           .map(rowToUIMessage)
           .filter((m): m is UIMessage => !!m)
         chatRef.current?.setMessages?.(uiMessages as never)

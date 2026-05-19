@@ -3,7 +3,7 @@
 
 /**
  * Dual Plan preference — when on, plans generated in Plan mode also produce
- * a business-language translation alongside the technical body.
+ * a stakeholder summary alongside the technical body.
  *
  * Implemented as a tiny singleton cache + listener set so every surface
  * that toggles or reads the value stays in sync without prop drilling.
@@ -12,7 +12,7 @@
  *   - web:    safe-storage (localStorage with in-memory fallback)
  *
  * NOTE on the default: this feature ships ON by default. Users who never
- * toggled it still get a business summary every time they generate a plan,
+ * toggled it still get a stakeholder summary every time they generate a plan,
  * and can opt out from the chat input, Plans panel header, or user settings.
  */
 

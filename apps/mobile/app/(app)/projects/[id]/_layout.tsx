@@ -66,7 +66,7 @@ import {
   ChatBridgeProvider,
   useChatBridge,
 } from '../../../../components/voice-mode/ChatBridgeContext'
-import { ShogoChatPanel } from '../../../../components/voice-mode/ShogoChatPanel'
+import { EzModeChatPanel } from '../../../../components/voice-mode/EzModeChatPanel'
 import type { InteractionMode } from '../../../../components/chat/ChatInput'
 import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../../../components/chat/ChatInput'
 import { loadModelPreference, saveModelPreference } from '../../../../lib/agent-mode-preference'
@@ -133,7 +133,7 @@ const CHAT_PANEL_WIDTH_STORAGE_KEY = 'shogo:chatPanelWidth'
 
 /** Suppress duplicate "[canvas-error]" toasts within this many ms. */
 const CANVAS_ERROR_DEDUP_MS = 10_000
-/** How many recent runtime log entries to attach to a debug-with-Shogo prompt. */
+/** How many recent runtime log entries to attach to a debug-with-EZ-Mode prompt. */
 const CANVAS_ERROR_LOG_TAIL = 30
 /** Cap any single error / log line so the seed prompt stays bounded. */
 const CANVAS_ERROR_MAX_LINE = 1200
@@ -241,9 +241,9 @@ export default observer(function ProjectLayout() {
     initialInteractionMode?: string
     appTemplateName?: string
     showIntegrations?: string
-    /** When '1', enter Shogo Mode immediately on mount (homepage mic flow). */
-    startShogoMode?: string
-    /** When '1' alongside `startShogoMode`, auto-connect the voice session once. */
+    /** When '1', enter EZ Mode immediately on mount (homepage mic flow). */
+    startEzMode?: string
+    /** When '1' alongside `startEzMode`, auto-connect the voice session once. */
     autoStartVoice?: string
   }>()
   const projectId = params.id
@@ -276,8 +276,8 @@ export default observer(function ProjectLayout() {
   const [capturedInitialFiles] = useState(() => consumePendingFiles())
   // APP_MODE_DISABLED: capturedAppTemplateName removed
   const [capturedShowIntegrations] = useState(() => params.showIntegrations === '1')
-  // Capture once so router param changes don't re-fire Shogo Mode.
-  const [capturedStartShogoMode] = useState(() => params.startShogoMode === '1')
+  // Capture once so router param changes don't re-fire EZ Mode.
+  const [capturedStartEzMode] = useState(() => params.startEzMode === '1')
   const [capturedAutoStartVoice] = useState(() => params.autoStartVoice === '1')
 
   // Tab state for narrow screens
@@ -1475,7 +1475,7 @@ export default observer(function ProjectLayout() {
       try {
         await actions.deleteChatSession(sessionId)
         handleCloseTab(sessionId)
-        // No client-side Shogo teardown needed: voice rows are stored
+        // No client-side EZ Mode teardown needed: voice rows are stored
         // in chat_messages with agent="voice" and cascade-delete with
         // the ChatSession on the server.
       } catch (err) {
@@ -1812,8 +1812,8 @@ export default observer(function ProjectLayout() {
       <ChatBridgeProvider
         chatSessionId={chatSessionId}
         agentUrl={agentUrl}
-        initialShogoModeActive={Platform.OS === 'web' && capturedStartShogoMode}
-        initialAutoStartVoice={Platform.OS === 'web' && capturedStartShogoMode && capturedAutoStartVoice}
+        initialEzModeActive={Platform.OS === 'web' && capturedStartEzMode}
+        initialAutoStartVoice={Platform.OS === 'web' && capturedStartEzMode && capturedAutoStartVoice}
       >
       <CanvasThemeProvider projectSettings={projectSettings} onUpdateSettings={handleUpdateCanvasSettings} activeSurfaceId={effectiveSurfaceId} surfaceIds={surfaceIds}>
         <EditModeProvider agentUrl={agentUrl}>
@@ -1886,7 +1886,7 @@ export default observer(function ProjectLayout() {
                       style={showEmptyChatState ? { opacity: 0 } : undefined}
                       pointerEvents={showEmptyChatState ? 'none' : 'auto'}
                     >
-                      <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
+                      <EzModeAwareChatPanels>{chatPanels}</EzModeAwareChatPanels>
                     </View>
                     {showEmptyChatState && (
                       <View className="absolute inset-0 bg-background items-center justify-center px-8">
@@ -1926,7 +1926,7 @@ export default observer(function ProjectLayout() {
                           (isWide && showChatSessions) || showEmptyChatState ? 'none' : 'auto'
                         }
                       >
-                        <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
+                        <EzModeAwareChatPanels>{chatPanels}</EzModeAwareChatPanels>
                       </View>
                       {showEmptyChatState && !(isWide && showChatSessions) && (
                         <View className="absolute inset-0 bg-background">
@@ -2144,37 +2144,37 @@ export default observer(function ProjectLayout() {
 })
 
 // ---------------------------------------------------------------------------
-// ShogoAwareChatPanels — wraps `{chatPanels}` and overlays `ShogoChatPanel`
-// on top (absolute inset-0) when the user has Shogo Mode enabled. The
+// EzModeAwareChatPanels — wraps `{chatPanels}` and overlays `EzModeChatPanel`
+// on top (absolute inset-0) when the user has EZ Mode enabled. The
 // underlying `ChatPanel` stack stays mounted beneath so its `ChatBridge`
 // registration (send / setMode / assistant emit) stays live — the
 // translator drives those imperatively.
 // ---------------------------------------------------------------------------
 
-function ShogoAwareChatPanels({ children }: { children: React.ReactNode }) {
-  const { shogoModeActive, shogoPeekActive, setShogoPeekActive } = useChatBridge()
+function EzModeAwareChatPanels({ children }: { children: React.ReactNode }) {
+  const { ezModeActive, ezPeekActive, setEzPeekActive } = useChatBridge()
   const { features } = usePlatformConfig()
-  const showShogo = Platform.OS === 'web' && shogoModeActive && features.shogoMode
-  // "Peek" hides the Shogo overlay without tearing it down, so the voice
+  const showEzMode = Platform.OS === 'web' && ezModeActive && features.ezMode
+  // "Peek" hides the EZ Mode overlay without tearing it down, so the voice
   // session + translator thread keep running while the user interacts
   // with the real ChatPanel underneath.
-  const hideForPeek = showShogo && shogoPeekActive
+  const hideForPeek = showEzMode && ezPeekActive
   return (
     <View className="min-h-0 flex-1 relative">
       <View
         className="absolute inset-0"
-        style={showShogo && !hideForPeek ? { opacity: 0 } : undefined}
-        pointerEvents={showShogo && !hideForPeek ? 'none' : 'auto'}
+        style={showEzMode && !hideForPeek ? { opacity: 0 } : undefined}
+        pointerEvents={showEzMode && !hideForPeek ? 'none' : 'auto'}
       >
         {children}
       </View>
-      {showShogo && (
+      {showEzMode && (
         <View
           className="absolute inset-0 z-10 bg-background"
           style={hideForPeek ? { opacity: 0 } : undefined}
           pointerEvents={hideForPeek ? 'none' : 'auto'}
         >
-          <ShogoChatPanel />
+          <EzModeChatPanel />
         </View>
       )}
       {hideForPeek && (
@@ -2183,13 +2183,13 @@ function ShogoAwareChatPanels({ children }: { children: React.ReactNode }) {
           pointerEvents="box-none"
         >
           <Pressable
-            onPress={() => setShogoPeekActive(false)}
+            onPress={() => setEzPeekActive(false)}
             className="flex-row items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 shadow-lg"
-            accessibilityLabel="Return to Shogo Mode"
+            accessibilityLabel="Return to EZ Mode"
           >
             <Sparkles size={12} className="text-primary-foreground" />
             <Text className="text-[11px] font-semibold text-primary-foreground">
-              Return to Shogo
+              Return to EZ Mode
             </Text>
           </Pressable>
         </View>

@@ -276,8 +276,8 @@ function ChatInputImpl({
   const effectiveIsPro = features.billing ? isPro : true
 
   const bridge = useChatBridgeOptional()
-  const shogoAvailable = Platform.OS === "web" && features.shogoMode && !!bridge
-  const shogoActive = bridge?.shogoModeActive ?? false
+  const ezAvailable = Platform.OS === "web" && features.ezMode && !!bridge
+  const ezActive = bridge?.ezModeActive ?? false
 
   const textInputRef = useRef<TextInput>(null)
   const dropZoneRef = useRef<View>(null)
@@ -1132,18 +1132,18 @@ function ChatInputImpl({
                       </Pressable>
                     )
                   })}
-                  {shogoAvailable && (
+                  {ezAvailable && (
                     <>
                       <View className="h-px bg-border/50 mx-2 my-1" />
                       <Pressable
-                        testID="shogo-mode-toggle"
+                        testID="ez-mode-toggle"
                         onPress={() => {
-                          bridge?.toggleShogoMode()
+                          bridge?.toggleEzMode()
                           setInteractionModeOpen(false)
                         }}
                         className={cn(
                           "flex-row items-center p-1 rounded-lg mb-1",
-                          shogoActive &&
+                          ezActive &&
                             "border border-violet-500/35 bg-violet-500/12"
                         )}
                       >
@@ -1151,7 +1151,7 @@ function ChatInputImpl({
                           <Sparkles
                             className={cn(
                               "h-3.5 w-3.5",
-                              shogoActive
+                              ezActive
                                 ? "text-violet-400"
                                 : "text-muted-foreground"
                             )}
@@ -1162,12 +1162,12 @@ function ChatInputImpl({
                           <Text
                             className={cn(
                               "text-xs",
-                              shogoActive
+                              ezActive
                                 ? "text-violet-400"
                                 : "text-foreground"
                             )}
                           >
-                            Shogo Mode
+                            EZ Mode
                           </Text>
                         </View>
                       </Pressable>
@@ -1179,14 +1179,14 @@ function ChatInputImpl({
 
             {/* Dual Plan toggle — surfaces only while in Plan mode. Persistent
                 per-device preference: once on, every plan generated in Plan
-                mode also produces a business-language version. */}
+                mode also produces a stakeholder summary. */}
             {interactionMode === "plan" && (
-              <WebTooltip label="Also generate a business-language version">
+              <WebTooltip label="Also generate a stakeholder summary">
                 <Pressable
                   testID="dual-plan-toggle"
                   disabled={disabled}
                   onPress={() => onDualPlanChange?.(!dualPlan)}
-                  accessibilityLabel="Also generate a business-language version"
+                  accessibilityLabel="Also generate a stakeholder summary"
                   className={cn(
                     "h-[22px] w-[22px] items-center justify-center rounded-md",
                     dualPlan

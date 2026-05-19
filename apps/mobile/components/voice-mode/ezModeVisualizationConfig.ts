@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Shogo Voice Mode visualization preset.
+ * EZ Mode visualization preset.
  *
  * Generated from the SDK playground (packages/sdk/playgrounds/sphere)
  * by tuning sliders against the looping Shogo greeting. Load a JSON
@@ -9,13 +9,13 @@
  *
  * Lives in the app (not the SDK) because it's a product-level
  * design choice, not a library default. Changing this only affects the
- * in-panel Voice Mode hero; the SDK defaults (`DEFAULT_ORGANIC_*_CONFIG`)
+ * in-panel EZ Mode hero; the SDK defaults (`DEFAULT_ORGANIC_*_CONFIG`)
  * are independent.
  */
 
 import type { OrganicParticlesConfig } from '@shogo-ai/sdk/voice/react'
 
-export const SHOGO_PARTICLES_CONFIG: OrganicParticlesConfig = {
+export const EZ_MODE_PARTICLES_CONFIG: OrganicParticlesConfig = {
   count: 18000,
   innerRadius: 0.18,
   outerRadius: 1.94,
