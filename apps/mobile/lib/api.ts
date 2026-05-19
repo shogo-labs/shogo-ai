@@ -143,7 +143,7 @@ export const api = {
   },
 
   async getWorkspacePlans(http: HttpClient, workspaceIds: string[]) {
-    const res = await http.get<{ ok?: boolean; plans?: Record<string, { planId: string; status: string | null }> }>(
+    const res = await http.get<{ ok?: boolean; plans?: Record<string, { planId: string; status: string | null; source?: 'subscription' | 'grant' | 'free' }> }>(
       `/api/billing/workspace-plan?workspaceIds=${workspaceIds.join(',')}`
     )
     return res.data?.plans ?? {}
