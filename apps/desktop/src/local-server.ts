@@ -336,6 +336,13 @@ export async function startLocalServer(): Promise<void> {
       // would look in ~/AppData/Local/ms-playwright (or ~/.cache on linux/mac),
       // which is empty for end users who never ran `playwright install`.
       PLAYWRIGHT_BROWSERS_PATH: path.join(projectRoot, 'ms-playwright'),
+      // Point MCPClient at the bundled MCP packages copied into resources/
+      // by apps/desktop/scripts/bundle-api.mjs. Without this, the runtime's
+      // default `/app/mcp-packages` path doesn't exist on desktop and the
+      // first agent invocation of e.g. `computer-use-mcp` would pay the
+      // ~30-45s cold `npx` install cost. With this set, mcp-client.ts
+      // resolves to a direct `node <pkg>/dist/main.js` instead.
+      MCP_PREINSTALL_DIR: path.join(projectRoot, 'mcp-packages'),
     }),
     SHOGO_DATA_DIR: getDataDir(),
     SHOGO_SHERPA_DIR: path.join(getDataDir(), 'sherpa-onnx'),
