@@ -50,9 +50,57 @@ import {
 } from './subagent'
 import {
   findActualString, preserveQuoteStyle, stripTrailingWhitespace,
-  applyEditToFile, readFileWithMetadata, writeWithMetadata, getStructuredPatch,
-  type LineEndingType,
+  applyEditToFile, readFileWithMetadata, writeWithMetadata,
+  getStructuredPatch, getLocalStructuredPatch,
+  findCRLFNormalizedMatch, findLineAnchoredTrailingWS, findLineAnchoredFlexibleIndent,
+  reindentNewString, countOccurrences, applyExactEdit, findAllOccurrences,
+  suggestCorrectedNeedle,
+  type LineEndingType, type FuzzyMatch, type FuzzyStage,
 } from './edit-file-utils'
+
+// Curly quote codepoints (LEFT/RIGHT SINGLE/DOUBLE QUOTATION MARK). Used as
+// a single-pass cheap pre-check before the full curly-quote normalization
+// stage runs.
+const CURLY_QUOTE_RE = /[\u2018\u2019\u201C\u201D]/
+
+/** Which match stage produced an edit. Surfaced in result telemetry. */
+type EditMatchStage = 'exact' | 'curly-quote' | FuzzyStage | 'no-match'
+
+/** Telemetry attached to every edit_file result (success and failure). */
+type EditTelemetry = {
+  /** Stage that produced the splice (or `'no-match'` on failure). */
+  stage: EditMatchStage
+  /** Wall-clock time spent inside the match cascade (ms). */
+  matchMs: number
+  /** Wall-clock time for the entire execute() invocation (ms). */
+  totalMs: number
+  /** File size in bytes (post-read). */
+  fileBytes: number
+  /** Number of replacements committed (1 normally, N for replace_all). */
+  occurrences: number
+}
+
+/**
+ * Single-line structured log for ops scraping. Keys mirror `EditTelemetry`
+ * plus the file path and outcome — easy to grep, parse, and aggregate
+ * without pulling in a logging framework. Errors go to the same log line
+ * with `outcome: 'error'`; on success, `outcome: 'ok'`.
+ */
+function logEditFileTelemetry(opts: {
+  path: string
+  outcome: 'ok' | 'error'
+  telemetry: EditTelemetry
+  errorKind?: string
+}): void {
+  const payload = {
+    tool: 'edit_file',
+    path: opts.path,
+    outcome: opts.outcome,
+    ...opts.telemetry,
+    ...(opts.errorKind ? { errorKind: opts.errorKind } : {}),
+  }
+  console.log(`[edit_file] ${JSON.stringify(payload)}`)
+}
 import { MemorySearchEngine } from '@shogo-ai/sdk/memory'
 import { IndexEngine, createDefaultConfig } from './index-engine'
 import { MCP_CATALOG, isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
@@ -1204,74 +1252,52 @@ function createServerSyncTool(ctx: ToolContext): AgentTool {
 // Edit File Tool (search_replace)
 // ---------------------------------------------------------------------------
 
-function fuzzyFindInContent(content: string, needle: string): { index: number; match: string } | null {
-  // 1. Try exact match first
-  const exactIdx = content.indexOf(needle)
-  if (exactIdx !== -1) return { index: exactIdx, match: needle }
-
-  // 2. Try unescaping JSON-escaped quotes (model sometimes emits \\\" instead of ")
+/**
+ * Fuzzy-match cascade for `edit_file`. Each non-exact stage is line-anchored
+ * and refuses ambiguous matches — silently picking the wrong site is worse
+ * than a hard "not found" that the agent can retry against.
+ *
+ * Stage order (callers run after the exact-match and curly-quote stages):
+ *   1. JSON-escaped quote unescape (e.g. `\"` → `"`)
+ *   2. CRLF↔LF mismatch with original-content offset translation
+ *   3. Trailing-whitespace tolerance, line-anchored
+ *   4. Whitespace-flexible with consistent indent translation
+ *
+ * When indent translation applies, the result includes `reindentPrefix`
+ * which the caller MUST prepend to every non-empty line of `new_string`
+ * before splicing.
+ */
+function fuzzyFindInContent(content: string, needle: string): FuzzyMatch | null {
+  // 1. JSON-escaped quote unescape
   const unescaped = needle.replace(/\\"/g, '"').replace(/\\'/g, "'").replace(/\\\\/g, '\\')
   if (unescaped !== needle) {
-    const unescIdx = content.indexOf(unescaped)
-    if (unescIdx !== -1) return { index: unescIdx, match: unescaped }
-  }
-
-  // 3. Try normalizing line endings (\r\n vs \n)
-  const normalizedNeedle = needle.replace(/\r\n/g, '\n')
-  const normalizedContent = content.replace(/\r\n/g, '\n')
-  const normIdx = normalizedContent.indexOf(normalizedNeedle)
-  if (normIdx !== -1) {
-    const lines = needle.split('\n')
-    let rebuilt = ''
-    let pos = normIdx
-    for (let i = 0; i < lines.length; i++) {
-      const lineLen = lines[i].length
-      rebuilt += content.substring(pos, pos + lineLen)
-      pos += lineLen
-      if (i < lines.length - 1) {
-        if (content[pos] === '\r' && content[pos + 1] === '\n') { rebuilt += '\r\n'; pos += 2 }
-        else if (content[pos] === '\n') { rebuilt += '\n'; pos += 1 }
-      }
-    }
-    if (content.includes(rebuilt)) return { index: content.indexOf(rebuilt), match: rebuilt }
-    return { index: normIdx, match: normalizedNeedle }
-  }
-
-  // 4. Try stripping trailing whitespace per line
-  const stripTrailing = (s: string) => s.split('\n').map(l => l.trimEnd()).join('\n')
-  const strippedNeedle = stripTrailing(normalizedNeedle)
-  const strippedContent = stripTrailing(normalizedContent)
-  const stripIdx = strippedContent.indexOf(strippedNeedle)
-  if (stripIdx !== -1) {
-    const contentLines = content.split('\n')
-    const needleLineCount = needle.split('\n').length
-    const strippedLines = strippedContent.substring(0, stripIdx).split('\n')
-    const startLineIdx = strippedLines.length - 1
-    const startPos = content.split('\n').slice(0, startLineIdx).join('\n').length + (startLineIdx > 0 ? 1 : 0)
-    const matchStr = contentLines.slice(startLineIdx, startLineIdx + needleLineCount).join('\n')
-    return { index: startPos, match: matchStr }
-  }
-
-  // 5. Try whitespace-flexible matching (collapse runs of whitespace, trim lines)
-  const collapseWS = (s: string) => s.replace(/[ \t]+/g, ' ').replace(/\r\n/g, '\n')
-  const collapsedNeedle = collapseWS(needle)
-  const collapsedContent = collapseWS(content)
-  const wsIdx = collapsedContent.indexOf(collapsedNeedle)
-  if (wsIdx !== -1) {
-    const needleLines = needle.split('\n').map(l => l.trim())
-    const contentLines = content.split('\n')
-    for (let i = 0; i <= contentLines.length - needleLines.length; i++) {
-      let matched = true
-      for (let j = 0; j < needleLines.length; j++) {
-        if (contentLines[i + j].trim() !== needleLines[j]) { matched = false; break }
-      }
-      if (matched) {
-        const startPos = content.split('\n').slice(0, i).join('\n').length + (i > 0 ? 1 : 0)
-        const matchStr = contentLines.slice(i, i + needleLines.length).join('\n')
-        return { index: startPos, match: matchStr }
-      }
+    const firstIdx = content.indexOf(unescaped)
+    if (firstIdx !== -1) {
+      const secondIdx = content.indexOf(unescaped, firstIdx + unescaped.length)
+      if (secondIdx === -1) return { index: firstIdx, match: unescaped, stage: 'unescape-quote' }
+      // ambiguous — fall through to later stages
     }
   }
+
+  // 2. CRLF/LF mismatch (proper original-content offset translation). Cheap
+  // pre-check: only run when at least one side has a CR.
+  if (content.includes('\r') || needle.includes('\r')) {
+    const crlfMatch = findCRLFNormalizedMatch(content, needle)
+    if (crlfMatch) return crlfMatch
+  }
+
+  // Stages 3 and 4 both need the file split into lines. Compute once and
+  // share — saves an O(n) split when both stages run on a large file.
+  let cachedLines: string[] | null = null
+  const getLines = (): string[] => (cachedLines ??= content.split('\n'))
+
+  // 3. Trailing-whitespace tolerant, line-anchored
+  const trailMatch = findLineAnchoredTrailingWS(content, needle, getLines())
+  if (trailMatch) return trailMatch
+
+  // 4. Whitespace-flexible with consistent indent translation
+  const indentMatch = findLineAnchoredFlexibleIndent(content, needle, getLines())
+  if (indentMatch) return indentMatch
 
   return null
 }
@@ -1374,59 +1400,122 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
       const isMarkdown = /\.(md|mdx)$/i.test(filePath)
       const cleanNewString = isMarkdown ? new_string : stripTrailingWhitespace(new_string)
 
+      const totalStart = performance.now()
+      const matchStart = totalStart
+      const buildTelemetry = (stage: EditMatchStage, occurrences: number): EditTelemetry => ({
+        stage,
+        matchMs: +(performance.now() - matchStart).toFixed(3),
+        totalMs: +(performance.now() - totalStart).toFixed(3),
+        fileBytes: stats.size,
+        occurrences,
+      })
+
       // --- Match pipeline ---
-      // 1. Exact match
-      const exactOccurrences = content.split(old_string).length - 1
-      if (exactOccurrences === 1 || (exactOccurrences > 1 && replace_all)) {
-        const updated = applyEditToFile(content, old_string, cleanNewString, replace_all)
-        return commitEdit(ctx, filePath, resolved, content, updated, encoding, lineEndings, replace_all ? exactOccurrences : 1)
+      // 1. Exact match. Walk the content once with indexOf — both to count
+      // occurrences (capped at 2 when !replace_all) AND to record the
+      // splice positions, so we can splice without a second scan.
+      const positions = findAllOccurrences(content, old_string, replace_all ? undefined : 2)
+      if (positions.length === 1 || (positions.length > 1 && replace_all)) {
+        const consumeTrailingNewline =
+          cleanNewString === '' && !old_string.endsWith('\n') && content[positions[0]! + old_string.length] === '\n'
+        const updated = applyExactEdit(
+          content,
+          positions,
+          old_string.length,
+          cleanNewString,
+          consumeTrailingNewline,
+        )
+        const telemetry = buildTelemetry('exact', positions.length)
+        logEditFileTelemetry({ path: filePath, outcome: 'ok', telemetry })
+        return commitEdit(ctx, filePath, resolved, content, updated, encoding, lineEndings, positions.length, undefined, positions[0], telemetry)
       }
-      if (exactOccurrences > 1 && !replace_all) {
+      if (positions.length > 1 && !replace_all) {
+        // The cap above stopped at 2; walk to a true count for the message.
+        const total = countOccurrences(content, old_string)
+        const telemetry = buildTelemetry('no-match', total)
+        logEditFileTelemetry({ path: filePath, outcome: 'error', telemetry, errorKind: 'not-unique' })
         return textResult({
-          error: `old_string found ${exactOccurrences} times in ${filePath}. ` +
+          error: `old_string found ${total} times in ${filePath}. ` +
             'Provide more context to make it unique, or set replace_all: true.',
+          telemetry,
         })
       }
 
-      // 2. Curly quote normalization
-      if (!replace_all) {
+      // 2. Curly quote normalization. Cheap pre-check: skip the full
+      // O(n)×4 normalizeQuotes pass when neither side has a curly char.
+      if (!replace_all && (CURLY_QUOTE_RE.test(content) || CURLY_QUOTE_RE.test(old_string))) {
         const actualString = findActualString(content, old_string)
         if (actualString && actualString !== old_string) {
-          const adjustedNew = preserveQuoteStyle(old_string, actualString, cleanNewString)
-          const updated = applyEditToFile(content, actualString, adjustedNew, false)
-          return commitEdit(ctx, filePath, resolved, content, updated, encoding, lineEndings, 1, 'Matched with quote normalization')
-        }
-      }
-
-      // 3. Fuzzy match (whitespace/line-ending normalization)
-      if (!replace_all) {
-        const fuzzy = fuzzyFindInContent(content, old_string)
-        if (fuzzy) {
-          const updated = content.substring(0, fuzzy.index) + cleanNewString + content.substring(fuzzy.index + fuzzy.match.length)
-          return commitEdit(ctx, filePath, resolved, content, updated, encoding, lineEndings, 1, 'Matched with whitespace normalization')
-        }
-      }
-
-      // No match — provide helpful context
-      const lines = content.split('\n')
-      const needleFirst = old_string.split('\n')[0]?.trim()
-      const nearbyLines: string[] = []
-      if (needleFirst) {
-        for (let i = 0; i < lines.length; i++) {
-          if (lines[i]!.includes(needleFirst)) {
-            const start = Math.max(0, i - 1)
-            const end = Math.min(lines.length, i + 3)
-            nearbyLines.push(`Lines ${start + 1}-${end}: ${lines.slice(start, end).join('\n')}`)
-            if (nearbyLines.length >= 2) break
+          const matchIdx = content.indexOf(actualString)
+          if (matchIdx !== -1) {
+            const adjustedNew = preserveQuoteStyle(old_string, actualString, cleanNewString)
+            const updated = content.substring(0, matchIdx) + adjustedNew + content.substring(matchIdx + actualString.length)
+            const telemetry = buildTelemetry('curly-quote', 1)
+            logEditFileTelemetry({ path: filePath, outcome: 'ok', telemetry })
+            return commitEdit(ctx, filePath, resolved, content, updated, encoding, lineEndings, 1, 'Matched with quote normalization', matchIdx, telemetry)
           }
         }
       }
 
+      // 3. Fuzzy match (whitespace/line-ending normalization, line-anchored)
+      if (!replace_all) {
+        const fuzzy = fuzzyFindInContent(content, old_string)
+        if (fuzzy) {
+          // When a fuzzy stage selected a match by tolerating an outer indent
+          // prefix that's in the file but not the needle, propagate that
+          // prefix to every non-empty line of the replacement so we don't
+          // silently drop the file's indentation.
+          const adjustedNew = fuzzy.reindentPrefix
+            ? reindentNewString(cleanNewString, fuzzy.reindentPrefix)
+            : cleanNewString
+          const updated = content.substring(0, fuzzy.index) + adjustedNew + content.substring(fuzzy.index + fuzzy.match.length)
+          const note = fuzzy.reindentPrefix
+            ? 'Matched with indent translation'
+            : 'Matched with whitespace normalization'
+          const telemetry = buildTelemetry(fuzzy.stage ?? 'no-match', 1)
+          logEditFileTelemetry({ path: filePath, outcome: 'ok', telemetry })
+          return commitEdit(ctx, filePath, resolved, content, updated, encoding, lineEndings, 1, note, fuzzy.index, telemetry)
+        }
+      }
+
+      // No match — provide a "did you mean" suggestion when we can find a
+      // best-effort candidate (lstrip / trim / first-line anchor). Falls
+      // back to the older "nearby content" hint when nothing is similar.
+      const lines = content.split('\n')
+      const suggested = suggestCorrectedNeedle(content, old_string, lines)
+      let hint: string
+      if (suggested) {
+        hint =
+          'Did you mean this verbatim file text?\n' +
+          '----- BEGIN -----\n' +
+          suggested +
+          '\n----- END -----\n' +
+          'Tip: copy the exact bytes (indentation, line endings, trailing spaces) above into old_string.'
+      } else {
+        const needleFirst = old_string.split('\n')[0]?.trim()
+        const nearbyLines: string[] = []
+        if (needleFirst) {
+          for (let i = 0; i < lines.length; i++) {
+            if (lines[i]!.includes(needleFirst)) {
+              const start = Math.max(0, i - 1)
+              const end = Math.min(lines.length, i + 3)
+              nearbyLines.push(`Lines ${start + 1}-${end}: ${lines.slice(start, end).join('\n')}`)
+              if (nearbyLines.length >= 2) break
+            }
+          }
+        }
+        hint = nearbyLines.length > 0
+          ? `Similar content found near:\n${nearbyLines.join('\n---\n')}`
+          : 'No similar content found. Try reading the file first to get the exact text.'
+      }
+
+      const telemetry = buildTelemetry('no-match', 0)
+      logEditFileTelemetry({ path: filePath, outcome: 'error', telemetry, errorKind: 'not-found' })
       return textResult({
         error: `old_string not found in ${filePath}`,
-        hint: nearbyLines.length > 0
-          ? `Similar content found near:\n${nearbyLines.join('\n---\n')}`
-          : 'No similar content found. Try reading the file first to get the exact text.',
+        hint,
+        ...(suggested ? { suggested_old_string: suggested } : {}),
+        telemetry,
       })
     },
   }
@@ -1442,6 +1531,12 @@ async function commitEdit(
   lineEndings: LineEndingType,
   replacements: number,
   note?: string,
+  /** Byte index of the splice point in the OLD content. When provided, the
+   *  diff is computed over a window around it instead of the full file. */
+  spliceIndex?: number,
+  /** Per-stage timing + outcome surfaced on the tool result for debugging
+   *  and ops dashboards. */
+  telemetry?: EditTelemetry,
 ): Promise<AgentToolResult<any>> {
   writeWithMetadata(resolved, updated, encoding, lineEndings)
 
@@ -1458,8 +1553,11 @@ async function commitEdit(
     ctx.lspManager.notifyFileSaved?.(resolved)
   }
 
-  const patch = getStructuredPatch(filePath, originalContent, updated)
+  const patch = spliceIndex !== undefined
+    ? getLocalStructuredPatch(filePath, originalContent, updated, spliceIndex)
+    : getStructuredPatch(filePath, originalContent, updated)
   const base: Record<string, any> = { ok: true, path: filePath, replacements, patch }
+  if (telemetry) base.telemetry = telemetry
   if (note) base.note = note
   appendImpactHint(ctx, filePath, base)
   const quickActionsResult = maybeValidateQuickActions(filePath, resolved, base)
