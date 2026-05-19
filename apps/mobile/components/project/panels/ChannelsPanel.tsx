@@ -53,6 +53,13 @@ interface RunOnInstance {
   hostname: string
   kind: 'desktop' | 'cli_worker' | string
   status: 'online' | 'heartbeat' | 'offline' | string
+  /**
+   * Where this row came from. `'local'` for rows in the local API's own
+   * registry, hostname (e.g. `studio.staging.shogo.ai`) for rows the
+   * local API federated from its configured cloud upstream. Populated
+   * by `GET /api/instances` when `SHOGO_LOCAL_MODE=true`.
+   */
+  origin?: string
 }
 
 interface RunOnState {
@@ -494,6 +501,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                 runOn.candidates.map((inst) => {
                   const selected = runOn.pinnedInstance?.id === inst.id
                   const offline = inst.status === 'offline'
+                  const isFederated = !!inst.origin && inst.origin !== 'local'
                   return (
                     <Pressable
                       key={inst.id}
@@ -512,7 +520,16 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                         }`}
                       />
                       <View className="flex-1">
-                        <Text className="text-xs text-foreground">{inst.name}</Text>
+                        <View className="flex-row items-center gap-1.5">
+                          <Text className="text-xs text-foreground flex-shrink">{inst.name}</Text>
+                          {isFederated && (
+                            <View className="px-1 py-0.5 rounded bg-muted">
+                              <Text className="text-[8px] font-semibold uppercase tracking-wider text-muted-foreground">
+                                {inst.origin}
+                              </Text>
+                            </View>
+                          )}
+                        </View>
                         <Text className="text-[10px] text-muted-foreground">
                           {inst.kind === 'cli_worker' ? 'Worker' : 'Desktop'} · {inst.hostname}
                           {offline ? ' · offline' : ''}

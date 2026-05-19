@@ -45,6 +45,14 @@ import {
 import { sendPushToInstance } from '../lib/push-notifications'
 import { openSession, closeSession, hasSession } from '../lib/proxy-billing-session'
 import { trackChatStreamForBilling } from '../lib/chat-usage-tracker'
+import {
+  isFederatedEnabled,
+  listCloudInstancesForWorkspace,
+  lookupCloudInstance,
+  forwardToUpstream,
+  copyResponseHeaders,
+  getUpstreamOrigin,
+} from '../lib/federated-upstream'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -730,8 +738,16 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
     }
 
-    const instance = await prisma.instance.findUnique({ where: { id: c.req.param('id') } })
+    const id = c.req.param('id')
+    const instance = await prisma.instance.findUnique({ where: { id } })
     if (!instance) {
+      if (await isFederatedEnabled()) {
+        const upstream = await forwardToUpstream(c)
+        return new Response(upstream.body, {
+          status: upstream.status,
+          headers: copyResponseHeaders(upstream),
+        })
+      }
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
@@ -788,9 +804,27 @@ export function instanceRoutes() {
       status: tunnels.has(inst.id) || await isTunnelConnectedAnywhere(inst.id)
         ? 'online'
         : (isRecentlySeenViaHeartbeat(inst.lastSeenAt) ? 'heartbeat' : 'offline'),
+      origin: 'local' as const,
     })))
 
-    return c.json({ instances: withLiveStatus })
+    // Local mode: merge in any instances registered against the cloud
+    // upstream this local API is signed in to. Local rows win on id
+    // collision; cloud rows are tagged with the upstream hostname so
+    // the UI can render a badge.
+    let merged: Array<Record<string, unknown>> = withLiveStatus
+    if (await isFederatedEnabled()) {
+      const cloud = await listCloudInstancesForWorkspace(workspaceId)
+      if (cloud.length) {
+        const origin = getUpstreamOrigin()
+        const localIds = new Set(withLiveStatus.map((i) => i.id))
+        const tagged = cloud
+          .filter((inst) => !localIds.has(inst.id))
+          .map((inst) => ({ ...inst, origin }))
+        merged = [...withLiveStatus, ...tagged]
+      }
+    }
+
+    return c.json({ instances: merged })
   })
 
 
@@ -845,8 +879,20 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
     }
 
-    const instance = await prisma.instance.findUnique({ where: { id: c.req.param('id') } })
+    const id = c.req.param('id')
+    const instance = await prisma.instance.findUnique({ where: { id } })
     if (!instance) {
+      // Local DB miss: in local mode, fall through to the cloud upstream
+      // the local API is already signed in to. The forwarded response
+      // carries the cloud's own membership + status checks; we surface
+      // it verbatim so the UI sees the same shape as the local branch.
+      if (await isFederatedEnabled()) {
+        const upstream = await forwardToUpstream(c)
+        return new Response(upstream.body, {
+          status: upstream.status,
+          headers: copyResponseHeaders(upstream),
+        })
+      }
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
@@ -864,6 +910,7 @@ export function instanceRoutes() {
       status: tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id)
         ? 'online'
         : (isRecentlySeenViaHeartbeat(instance.lastSeenAt) ? 'heartbeat' : 'offline'),
+      origin: 'local' as const,
       controllers: controllers.map((c) => ({
         userId: c.userId,
         lastSeenAt: c.lastSeenAt,
@@ -934,8 +981,16 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
     }
 
-    const instance = await prisma.instance.findUnique({ where: { id: c.req.param('id') } })
+    const id = c.req.param('id')
+    const instance = await prisma.instance.findUnique({ where: { id } })
     if (!instance) {
+      if (await isFederatedEnabled()) {
+        const upstream = await forwardToUpstream(c)
+        return new Response(upstream.body, {
+          status: upstream.status,
+          headers: copyResponseHeaders(upstream),
+        })
+      }
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
@@ -1037,8 +1092,16 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
     }
 
-    const instance = await prisma.instance.findUnique({ where: { id: c.req.param('id') } })
+    const id = c.req.param('id')
+    const instance = await prisma.instance.findUnique({ where: { id } })
     if (!instance) {
+      if (await isFederatedEnabled()) {
+        const upstream = await forwardToUpstream(c)
+        return new Response(upstream.body, {
+          status: upstream.status,
+          headers: copyResponseHeaders(upstream),
+        })
+      }
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
@@ -1181,6 +1244,16 @@ export function instanceRoutes() {
     const instanceId = c.req.param('id')
     const instance = await prisma.instance.findUnique({ where: { id: instanceId } })
     if (!instance) {
+      // Federated transparent proxy: forward the entire request (incl. body
+      // and headers) to cloud and pipe the response back. Streaming responses
+      // (SSE/chunked) flow through `Response.body` without buffering.
+      if (await isFederatedEnabled()) {
+        const upstream = await forwardToUpstream(c)
+        return new Response(upstream.body, {
+          status: upstream.status,
+          headers: copyResponseHeaders(upstream),
+        })
+      }
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
