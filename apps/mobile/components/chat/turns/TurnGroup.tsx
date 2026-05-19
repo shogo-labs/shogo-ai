@@ -18,6 +18,7 @@ import type { ConversationTurn } from "./types"
 import { TurnHeader } from "./TurnHeader"
 import { MessageContent, extractTextContent } from "./MessageContent"
 import { AssistantContent } from "./AssistantContent"
+import { EditableUserMessage } from "./EditableUserMessage"
 import { ToolTimeline } from "../tools"
 import { SubagentPanel, type SubagentProgress, type RecentTool } from "../subagent"
 
@@ -143,10 +144,13 @@ export const TurnGroup = memo(
         className
       )}
     >
-      {/* User message */}
+      {/* User message — wrapped in EditableUserMessage so previously
+          sent bubbles expose Edit / Retry actions on hover and can be
+          edited in place. Reverts to plain MessageContent visually
+          when no edit context is mounted (Storybook, isolated tests). */}
       {turn.userMessage && (
         <View className="w-full flex-row items-end justify-end gap-2">
-          <MessageContent message={turn.userMessage} className="ml-0" />
+          <EditableUserMessage message={turn.userMessage} />
         </View>
       )}
 

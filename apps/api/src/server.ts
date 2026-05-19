@@ -49,6 +49,7 @@ import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
 import { voiceRoutes } from './routes/voice'
 import { chatRoutes } from './routes/chat'
+import { createChatMessageEditRoutes } from './routes/chat-message-edits'
 import { toolsProxyRoutes } from './routes/tools-proxy'
 import { calculateUsageCost } from './lib/usage-cost'
 import { openSession, closeSession, hasSession } from './lib/proxy-billing-session'
@@ -6634,6 +6635,12 @@ app.get('/api/invite-links/:token/info', async (c) => {
     },
   })
 })
+
+// Custom chat-message extension endpoints (truncate-from, etc.).
+// MUST be mounted BEFORE the generated routes so Hono matches the
+// more specific `/:id/truncate-from` here instead of falling through
+// to the generated `/:id` PATCH/DELETE handlers in chat-message.routes.ts.
+app.route('/api/chat-messages', createChatMessageEditRoutes())
 
 // Mount generated routes at /api
 const generatedRoutes = createGeneratedRoutes({
