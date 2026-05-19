@@ -941,6 +941,47 @@ export default observer(function BillingPage() {
         </Card>
       )}
 
+      {/*
+        App Store Guideline 3.1.2(c) — Auto-renewable subscriptions must
+        disclose, inside the app, the subscription title, length, price,
+        and functional links to the Privacy Policy and Terms of Use
+        (EULA). Title / length / price live on each plan card above; this
+        block carries the legal links + the renewal/cancellation language
+        Apple requires alongside any IAP subscription UI. Rendering it on
+        iOS only (where IAP is offered) keeps the surface relevant.
+      */}
+      {Platform.OS === 'ios' && (
+        <View className="mt-6 gap-3 px-1">
+          <Text className="text-xs leading-5 text-muted-foreground">
+            Subscriptions renew automatically at the price shown on each plan above
+            until cancelled. Payment is charged to your Apple ID at confirmation of
+            purchase. You can manage or cancel your subscription anytime in
+            Settings &gt; Apple ID &gt; Subscriptions. Any unused portion of a free
+            trial is forfeited when you purchase a subscription.
+          </Text>
+          <View className="flex-row flex-wrap gap-x-4 gap-y-1">
+            <Pressable
+              accessibilityRole="link"
+              onPress={() => WebBrowser.openBrowserAsync('https://shogo.ai/terms')}
+            >
+              <Text className="text-xs text-primary underline">Terms of Use (EULA)</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="link"
+              onPress={() => WebBrowser.openBrowserAsync('https://shogo.ai/privacy')}
+            >
+              <Text className="text-xs text-primary underline">Privacy Policy</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="link"
+              onPress={() => Linking.openURL(APP_STORE_SUBSCRIPTIONS_URL)}
+            >
+              <Text className="text-xs text-primary underline">Manage subscription</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+
       </View>
     </ScrollView>
   )
