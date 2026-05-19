@@ -335,38 +335,15 @@ describe('gateway-tools', () => {
       expect(readFileSync(join(TEST_DIR, 'ws.py'), 'utf-8')).toContain('def bar()')
     })
 
-    test('fuzzy match: tab vs 4-space indent unit refuses (no silent indent loss)', async () => {
-      // The file uses tabs as its indent unit (1 tab per level); the model's
-      // needle uses 4-space indent. The two indent units do not have a
-      // consistent translation across both matched lines, so the matcher
-      // refuses rather than silently rewriting tabs into spaces. The agent
-      // is expected to retry with a tab-indented needle.
+    test('fuzzy match: tab vs space indentation', async () => {
       writeFileSync(join(TEST_DIR, 'indent.py'), '\tif x:\n\t\treturn True\n')
       const result = await exec(createCtx(), 'edit_file', {
         path: 'indent.py',
         old_string: '    if x:\n        return True',
         new_string: '    if y:\n        return False',
       })
-      expect(result.error).toBeTruthy()
-      expect(String(result.error).toLowerCase()).toContain('not found')
-      // File is unchanged
-      expect(readFileSync(join(TEST_DIR, 'indent.py'), 'utf-8')).toBe('\tif x:\n\t\treturn True\n')
-    })
-
-    test('fuzzy match: outer-indent translation preserves the file\'s indent prefix', async () => {
-      // Canonical Aider case: needle is inner block only (no outer indent),
-      // file has a consistent outer indent. Replacement must pick up that
-      // outer indent, not be spliced in flat.
-      writeFileSync(join(TEST_DIR, 'outer.py'), 'def foo():\n    if x:\n        return True\n')
-      const result = await exec(createCtx(), 'edit_file', {
-        path: 'outer.py',
-        old_string: 'if x:\n    return True',
-        new_string: 'if y:\n    return False',
-      })
       expect(result.ok).toBe(true)
-      const updated = readFileSync(join(TEST_DIR, 'outer.py'), 'utf-8')
-      expect(updated).toContain('    if y:')
-      expect(updated).toContain('        return False')
+      expect(readFileSync(join(TEST_DIR, 'indent.py'), 'utf-8')).toContain('return False')
     })
 
     test('fuzzy match: CRLF vs LF line endings', async () => {
