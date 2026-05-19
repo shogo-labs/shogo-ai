@@ -100,6 +100,22 @@ export function generateAdminRoutes(
     '',
     'import { Hono } from "hono"',
     '',
+    '// JSON replacer that coerces native BigInt values to strings so they can',
+    '// be serialized by JSON.stringify (and therefore by Hono\'s default json',
+    '// helper, which throws on bare BigInt values). Strings preserve full',
+    '// precision for very large counts (e.g. byte totals). Consumers that need',
+    '// a numeric should coerce explicitly.',
+    'const bigIntReplacer = (_key: string, value: unknown) =>',
+    '  typeof value === "bigint" ? value.toString() : value',
+    '',
+    '// Drop-in replacement for c.json that uses bigIntReplacer. Keeps the same',
+    '// (body, status?) ergonomics as c.json so call sites are mechanical.',
+    'function sendJson(c: any, body: unknown, status: number = 200) {',
+    '  return c.body(JSON.stringify(body, bigIntReplacer), status, {',
+    '    "content-type": "application/json; charset=UTF-8",',
+    '  })',
+    '}',
+    '',
     'export interface AdminRoutesConfig {',
     '  /** Prisma client instance */',
     '  prisma: any',
@@ -215,10 +231,10 @@ export function generateAdminRoutes(
     lines.push('')
     // Use camelCase plural for the data key (routePath is kebab-case for URLs only)
     const dataKey = modelLower + 's'
-    lines.push(`      return c.json({ ok: true, data: { ${dataKey}: items, total, page, limit } })`)
+    lines.push(`      return sendJson(c, { ok: true, data: { ${dataKey}: items, total, page, limit } })`)
     lines.push('    } catch (error: any) {')
     lines.push(`      console.error("[Admin] List ${modelName} error:", error)`)
-    lines.push('      return c.json({ error: { code: "list_failed", message: error.message } }, 500)')
+    lines.push('      return sendJson(c, { error: { code: "list_failed", message: error.message } }, 500)')
     lines.push('    }')
     lines.push('  })')
     lines.push('')
@@ -233,10 +249,10 @@ export function generateAdminRoutes(
     lines.push('        data: body,')
     lines.push('      })')
     lines.push('')
-    lines.push('      return c.json({ ok: true, data: item }, 201)')
+    lines.push('      return sendJson(c, { ok: true, data: item }, 201)')
     lines.push('    } catch (error: any) {')
     lines.push(`      console.error("[Admin] Create ${modelName} error:", error)`)
-    lines.push('      return c.json({ error: { code: "create_failed", message: error.message } }, 500)')
+    lines.push('      return sendJson(c, { error: { code: "create_failed", message: error.message } }, 500)')
     lines.push('    }')
     lines.push('  })')
     lines.push('')
@@ -269,13 +285,13 @@ export function generateAdminRoutes(
 
     lines.push('')
     lines.push('      if (!item) {')
-    lines.push(`        return c.json({ error: { code: "not_found", message: "${modelName} not found" } }, 404)`)
+    lines.push(`        return sendJson(c, { error: { code: "not_found", message: "${modelName} not found" } }, 404)`)
     lines.push('      }')
     lines.push('')
-    lines.push('      return c.json({ ok: true, data: item })')
+    lines.push('      return sendJson(c, { ok: true, data: item })')
     lines.push('    } catch (error: any) {')
     lines.push(`      console.error("[Admin] Get ${modelName} error:", error)`)
-    lines.push('      return c.json({ error: { code: "get_failed", message: error.message } }, 500)')
+    lines.push('      return sendJson(c, { error: { code: "get_failed", message: error.message } }, 500)')
     lines.push('    }')
     lines.push('  })')
     lines.push('')
@@ -292,10 +308,10 @@ export function generateAdminRoutes(
     lines.push('        data: body,')
     lines.push('      })')
     lines.push('')
-    lines.push('      return c.json({ ok: true, data: item })')
+    lines.push('      return sendJson(c, { ok: true, data: item })')
     lines.push('    } catch (error: any) {')
     lines.push(`      console.error("[Admin] Update ${modelName} error:", error)`)
-    lines.push('      return c.json({ error: { code: "update_failed", message: error.message } }, 500)')
+    lines.push('      return sendJson(c, { error: { code: "update_failed", message: error.message } }, 500)')
     lines.push('    }')
     lines.push('  })')
     lines.push('')
@@ -305,11 +321,11 @@ export function generateAdminRoutes(
     lines.push(`  router.delete("/${routePath}/:id", async (c) => {`)
     lines.push('    try {')
     lines.push('      const id = c.req.param("id")')
-    lines.push(`      await prisma.${modelLower}.delete({ where: { id } })`)
-    lines.push('      return c.json({ ok: true })')
+      lines.push(`      await prisma.${modelLower}.delete({ where: { id } })`)
+    lines.push('      return sendJson(c, { ok: true })')
     lines.push('    } catch (error: any) {')
     lines.push(`      console.error("[Admin] Delete ${modelName} error:", error)`)
-    lines.push('      return c.json({ error: { code: "delete_failed", message: error.message } }, 500)')
+    lines.push('      return sendJson(c, { error: { code: "delete_failed", message: error.message } }, 500)')
     lines.push('    }')
     lines.push('  })')
     lines.push('')
@@ -333,7 +349,7 @@ export function generateAdminRoutes(
   }
   lines.push('      ])')
   lines.push('')
-  lines.push('      return c.json({')
+  lines.push('      return sendJson(c, {')
   lines.push('        ok: true,')
   lines.push('        data: {')
   for (const model of routeModels) {
@@ -344,7 +360,7 @@ export function generateAdminRoutes(
   lines.push('      })')
   lines.push('    } catch (error: any) {')
   lines.push('      console.error("[Admin] Stats error:", error)')
-  lines.push('      return c.json({ error: { code: "stats_failed", message: error.message } }, 500)')
+  lines.push('      return sendJson(c, { error: { code: "stats_failed", message: error.message } }, 500)')
   lines.push('    }')
   lines.push('  })')
   lines.push('')
