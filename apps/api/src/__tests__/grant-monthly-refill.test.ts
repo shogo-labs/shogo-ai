@@ -22,6 +22,7 @@ interface GrantRow {
   id: string
   workspaceId: string
   monthlyIncludedUsd: number
+  planId?: string | null
   startsAt: Date
   expiresAt: Date | null
   workspace: { subscriptions: Array<{ status: string }> }
@@ -41,13 +42,31 @@ mock.module('../lib/prisma', () => ({
     workspaceGrant: {
       findMany: async ({ where }: any) => {
         const now: Date = where.startsAt?.lte ?? new Date()
-        return grantRows.filter((g) => {
-          if (where.monthlyIncludedUsd?.gt != null && g.monthlyIncludedUsd <= where.monthlyIncludedUsd.gt) {
+        // The real `where` is shaped as `{ startsAt, workspace, AND: [
+        //   { OR: [{ monthlyIncludedUsd: { gt: 0 } }, { planId: { not: null } }] },
+        //   { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+        // ] }`. Walk both AND clauses so seat-only grants still get
+        // excluded but plan-only grants pass through.
+        const andClauses: any[] = Array.isArray(where.AND) ? where.AND : []
+        const allowsMonthlyOrPlan = (g: GrantRow): boolean => {
+          const clause = andClauses[0]?.OR
+          if (!clause) return true
+          return clause.some((sub: any) => {
+            if (sub.monthlyIncludedUsd?.gt != null) {
+              return g.monthlyIncludedUsd > sub.monthlyIncludedUsd.gt
+            }
+            if (sub.planId?.not === null) return g.planId != null
             return false
-          }
+          })
+        }
+        const expiryClauseOk = (g: GrantRow): boolean => {
           if (g.startsAt > now) return false
           if (g.expiresAt && g.expiresAt <= now) return false
-          // No active paid subscription.
+          return true
+        }
+        return grantRows.filter((g) => {
+          if (!allowsMonthlyOrPlan(g)) return false
+          if (!expiryClauseOk(g)) return false
           const hasActivePaid = g.workspace.subscriptions.some((s) =>
             ['active', 'trialing'].includes(s.status),
           )
@@ -214,7 +233,7 @@ describe('runGrantMonthlyRefill', () => {
     expect(applyCalls).toHaveLength(0)
   })
 
-  test('grants with $0 monthly USD (seat-only) are excluded', async () => {
+  test('seat-only grants ($0 USD, no planId) are excluded', async () => {
     const now = new Date('2026-05-15T12:00:00Z')
     const past = new Date('2020-01-01T00:00:00Z')
     grantRows = [
@@ -222,6 +241,7 @@ describe('runGrantMonthlyRefill', () => {
         id: 'g_seats_only',
         workspaceId: 'ws_seats',
         monthlyIncludedUsd: 0,
+        planId: null,
         startsAt: past,
         expiresAt: null,
         workspace: { subscriptions: [] },
@@ -235,5 +255,31 @@ describe('runGrantMonthlyRefill', () => {
 
     expect(summary.candidates).toBe(0)
     expect(applyCalls).toHaveLength(0)
+  })
+
+  test('plan-only grants ($0 USD, planId set) are refilled so the per-seat USD lands', async () => {
+    const now = new Date('2026-05-15T12:00:00Z')
+    const past = new Date('2020-01-01T00:00:00Z')
+    grantRows = [
+      {
+        id: 'g_plan_only',
+        workspaceId: 'ws_plan',
+        monthlyIncludedUsd: 0,
+        planId: 'pro',
+        startsAt: past,
+        expiresAt: null,
+        workspace: { subscriptions: [] },
+      },
+    ]
+    walletRows = [
+      { workspaceId: 'ws_plan', lastMonthlyReset: new Date('2026-04-01T00:00:00Z') },
+    ]
+
+    const summary = await runGrantMonthlyRefill({ now })
+
+    expect(summary.candidates).toBe(1)
+    expect(summary.refilled).toBe(1)
+    expect(applyCalls).toHaveLength(1)
+    expect(applyCalls[0].workspaceId).toBe('ws_plan')
   })
 })

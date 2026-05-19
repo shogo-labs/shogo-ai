@@ -70,6 +70,60 @@ export const PLAN_INCLUDED_USD = {
 } as const
 
 /**
+ * Tier order for comparing plan ids. Used to resolve the "effective"
+ * plan for a workspace when both a paid subscription and one or more
+ * `WorkspaceGrant` rows are present, and to compare granted plans
+ * against each other.
+ *
+ * Tier names match `SEAT_INCLUDED_USD` keys; legacy / decorated plan
+ * ids (`pro_200`, `Business-Annual`, etc.) are normalized via
+ * `normalizePlanId` before lookup so any caller of `comparePlanRank`
+ * can be planId-agnostic.
+ */
+export const PLAN_RANK = {
+  free: 0,
+  basic: 1,
+  pro: 2,
+  business: 3,
+  enterprise: 4,
+} as const satisfies Record<PlanId, number>
+
+/**
+ * Normalize an arbitrary planId string to one of the canonical tier
+ * names in `PLAN_RANK`. Handles the legacy underscored ids
+ * (`pro_200`, `business_1200`) and the various
+ * `business-monthly`/`Business-Annual` / `Enterprise-XL` decorations
+ * by prefix-matching against the canonical name.
+ *
+ * Returns `null` for ids that don't resolve to a known tier. Callers
+ * that want a falsy fallback should use `?? 'free'` themselves.
+ */
+export function normalizePlanId(planId: string | null | undefined): PlanId | null {
+  if (!planId) return null
+  const lc = planId.toLowerCase().trim()
+  if (lc.startsWith('enterprise')) return 'enterprise'
+  if (lc.startsWith('business')) return 'business'
+  if (lc.startsWith('pro')) return 'pro'
+  if (lc.startsWith('basic')) return 'basic'
+  if (lc.startsWith('free')) return 'free'
+  return null
+}
+
+/**
+ * Compare two plan ids by tier rank. Returns a number suitable for
+ * `Array.sort`: negative if `a < b`, zero if equal, positive if
+ * `a > b`. Unknown plans rank as `free` (`0`).
+ */
+export function comparePlanRank(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): number {
+  const ra = PLAN_RANK[normalizePlanId(a) ?? 'free']
+  const rb = PLAN_RANK[normalizePlanId(b) ?? 'free']
+  return ra - rb
+}
+
+/**
  * Voice / telephony raw provider rates (Mode B only). All values are USD.
  * The workspace is charged these rates times `MARKUP_MULTIPLIER` on top
  * of whatever daily/monthly included pool they have.

@@ -650,11 +650,23 @@ enum UsageSource {
 /// minimum of 1 paid seat) plus a monthly USD allotment that stacks on
 /// top of any plan-included USD. Multiple active grants on the same
 /// workspace are summed.
+///
+/// `planId` optionally upgrades the workspace to a paid plan tier
+/// (basic|pro|business|enterprise) for the duration of the grant *when
+/// no active paid Stripe subscription exists*. The wallet allocation
+/// then uses `getMonthlyIncludedForPlan(planId, max(1, freeSeats)) +
+/// monthlyIncludedUsd`, and the plan-gate helpers
+/// (`hasPaidSubscription`, `hasAdvancedModelAccess`,
+/// `isBusinessOrHigherPlan`) treat the workspace as on that plan.
+/// `planId = null` keeps the legacy "free seats + monthly USD" only
+/// behavior. If a paid subscription exists, the subscription's plan
+/// always takes precedence (the grant's `planId` is ignored).
 model WorkspaceGrant {
   id                 String    @id @default(uuid())
   workspaceId        String
   freeSeats          Int       @default(0)
   monthlyIncludedUsd Float     @default(0)
+  planId             String?
   startsAt           DateTime  @default(now())
   expiresAt          DateTime?
   note               String?

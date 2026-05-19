@@ -21,7 +21,10 @@ import {
   DAILY_INCLUDED_USD,
   MONTHLY_DAILY_CAP_USD,
   PLAN_INCLUDED_USD,
+  PLAN_RANK,
+  comparePlanRank,
   getMonthlyIncludedForPlan,
+  normalizePlanId,
 } from '../config/usage-plans';
 import { getOveragePriceConfig } from '../config/stripe-prices';
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
@@ -65,26 +68,68 @@ export async function getUsageWallet(workspaceId: string) {
  * "Active" means `startsAt <= now AND (expiresAt IS NULL OR expiresAt > now)`.
  * Multiple grants are summed so an admin can stack (e.g. a base 5 free
  * seats grant plus a one-off $500 promo).
+ *
+ * `planId` is the *highest* tier among any active grants that declared
+ * one (via `comparePlanRank`). It's the plan the workspace should be
+ * treated as on when there is no active paid subscription; the caller
+ * is responsible for skipping it when a paid sub exists. `null` when
+ * no grant has a planId — preserving the legacy "additive credit only"
+ * semantics for callers that don't care about plan upgrades.
  */
 export async function getActiveGrantsForWorkspace(
   workspaceId: string,
   now: Date = new Date(),
-): Promise<{ freeSeats: number; monthlyIncludedUsd: number; rowCount: number }> {
+): Promise<{
+  freeSeats: number
+  monthlyIncludedUsd: number
+  planId: string | null
+  rowCount: number
+}> {
   const rows = await prisma.workspaceGrant.findMany({
     where: {
       workspaceId,
       startsAt: { lte: now },
       OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
     },
-    select: { freeSeats: true, monthlyIncludedUsd: true },
+    select: { freeSeats: true, monthlyIncludedUsd: true, planId: true },
   })
   let freeSeats = 0
   let monthlyIncludedUsd = 0
+  let planId: string | null = null
   for (const r of rows) {
     freeSeats += r.freeSeats
     monthlyIncludedUsd += r.monthlyIncludedUsd
+    if (r.planId && comparePlanRank(r.planId, planId) > 0) {
+      planId = r.planId
+    }
   }
-  return { freeSeats, monthlyIncludedUsd, rowCount: rows.length }
+  return { freeSeats, monthlyIncludedUsd, planId, rowCount: rows.length }
+}
+
+/**
+ * Resolve the "effective" plan id for a workspace given its active
+ * paid subscription (if any) and active grants. Returns the highest
+ * tier from either source; falls back to `'free'` when neither is
+ * present. Normalized via `normalizePlanId`, so callers get one of
+ * `free|basic|pro|business|enterprise`.
+ *
+ * A paid subscription always wins over a grant's `planId` (the
+ * subscription is what Stripe is actually billing); the grant only
+ * meaningfully upgrades workspaces without a paid sub.
+ */
+export async function getEffectivePlanId(
+  workspaceId: string,
+  now: Date = new Date(),
+): Promise<keyof typeof PLAN_RANK> {
+  const sub = await prisma.subscription.findFirst({
+    where: { workspaceId, status: { in: ['active', 'trialing'] } },
+    select: { planId: true },
+  })
+  if (sub) {
+    return normalizePlanId(sub.planId) ?? 'free'
+  }
+  const grant = await getActiveGrantsForWorkspace(workspaceId, now)
+  return normalizePlanId(grant.planId) ?? 'free'
 }
 
 /**
@@ -125,19 +170,34 @@ export async function allocateFreeWallet(workspaceId: string) {
  * call repeatedly.
  *
  * Behavior:
- * - Resets `monthlyIncludedUsd` / `monthlyIncludedAllocationUsd` to
- *   `PLAN_INCLUDED_USD.free + grant.monthlyIncludedUsd` (the grant value
- *   alone for free workspaces, since `PLAN_INCLUDED_USD.free === 0`).
+ * - Resolves the wallet's plan tier from the highest active grant
+ *   `planId` (falling back to `free`), then computes monthly USD as
+ *   `getMonthlyIncludedForPlan(plan, max(1, freeSeats)) +
+ *   grant.monthlyIncludedUsd`. For grants with no `planId` this reduces
+ *   to `PLAN_INCLUDED_USD.free + grant.monthlyIncludedUsd` — the legacy
+ *   behavior.
  * - Resets `dailyUsedThisMonthUsd`, `overageAccumulatedUsd`,
  *   `overageBilledUsd` so the new period starts clean.
- * - Advances `lastMonthlyReset` to `now`.
+ * - Advances `lastMonthlyReset` to `now`. When a grant confers a paid
+ *   plan we also turn `overageEnabled` on so trust-first overage applies
+ *   the same as for paid Stripe plans.
  */
 export async function applyGrantMonthlyAllocation(
   workspaceId: string,
   now: Date = new Date(),
 ) {
   const grant = await getActiveGrantsForWorkspace(workspaceId, now)
-  const monthlyIncludedUsd = PLAN_INCLUDED_USD.free + grant.monthlyIncludedUsd
+  const plan = normalizePlanId(grant.planId) ?? 'free'
+  // Grant-conferred seats count toward the plan's per-seat included USD.
+  // Free seats default to 1 so a plan-only grant still allocates at
+  // least one seat's worth of USD.
+  const grantSeats = Math.max(1, grant.freeSeats || 0)
+  const monthlyIncludedUsd =
+    getMonthlyIncludedForPlan(plan, grantSeats) + grant.monthlyIncludedUsd
+  // Trust-first overage matches the paid-plan path only for grants that
+  // actually confer a paid tier. Pure additive credit grants on free
+  // workspaces stay on the prior `overageEnabled` value (handled below).
+  const isPaidGrant = PLAN_RANK[plan] >= PLAN_RANK.basic
 
   return prisma.usageWallet.upsert({
     where: { workspaceId },
@@ -149,6 +209,7 @@ export async function applyGrantMonthlyAllocation(
       anniversaryDay: now.getDate(),
       lastDailyReset: now,
       lastMonthlyReset: now,
+      overageEnabled: isPaidGrant,
     },
     update: {
       monthlyIncludedUsd,
@@ -157,6 +218,7 @@ export async function applyGrantMonthlyAllocation(
       overageAccumulatedUsd: 0,
       overageBilledUsd: 0,
       lastMonthlyReset: now,
+      ...(isPaidGrant ? { overageEnabled: true } : {}),
     },
   })
 }
@@ -247,56 +309,42 @@ export async function allocateMonthlyIncluded(
 }
 
 /**
- * Check if workspace has an active paid subscription (pro, business, enterprise).
- * Free users have no subscription record.
+ * Check if workspace has an active paid plan (pro, business, enterprise).
+ * Either an active Stripe subscription or a super-admin `WorkspaceGrant`
+ * with a `planId` qualifies — grants are first-class plan upgrades, not
+ * just additive credits. Free users have neither.
+ *
  * In local mode we treat all workspaces as paid so devs can use any model.
  */
 export async function hasPaidSubscription(workspaceId: string): Promise<boolean> {
   if (isLocalMode) return true
-  const sub = await prisma.subscription.findFirst({
-    where: {
-      workspaceId,
-      status: { in: ['active', 'trialing'] },
-    },
-  });
-  return !!sub;
+  const plan = await getEffectivePlanId(workspaceId)
+  return PLAN_RANK[plan] >= PLAN_RANK.basic
 }
 
 /**
  * Check if workspace has a plan that grants access to advanced (non-economy) models.
- * Returns true for Pro, Business, Enterprise. Returns false for Basic and free.
+ * Returns true for Pro, Business, Enterprise (whether granted via a paid
+ * subscription or via a super-admin grant's `planId`). Returns false for
+ * Basic and free.
  * In local mode returns true so all features are accessible during development.
  */
 export async function hasAdvancedModelAccess(workspaceId: string): Promise<boolean> {
   if (isLocalMode) return true
-  const sub = await prisma.subscription.findFirst({
-    where: {
-      workspaceId,
-      status: { in: ['active', 'trialing'] },
-    },
-    select: { planId: true },
-  });
-  if (!sub) return false
-  return sub.planId !== 'basic'
+  const plan = await getEffectivePlanId(workspaceId)
+  return PLAN_RANK[plan] >= PLAN_RANK.pro
 }
 
 /**
- * Check if workspace has a Business or Enterprise plan (active/trialing).
- * Returns false for Pro, free, or no subscription.
+ * Check if workspace has a Business or Enterprise plan, whether via
+ * Stripe subscription or super-admin grant. Returns false for Pro,
+ * free, or unconfigured workspaces.
  * In local mode returns true so all features are accessible during development.
  */
 export async function isBusinessOrHigherPlan(workspaceId: string): Promise<boolean> {
   if (isLocalMode) return true
-  const sub = await prisma.subscription.findFirst({
-    where: {
-      workspaceId,
-      status: { in: ['active', 'trialing'] },
-    },
-    select: { planId: true },
-  });
-  if (!sub) return false
-  const plan = sub.planId.toLowerCase()
-  return plan.startsWith('business') || plan.startsWith('enterprise')
+  const plan = await getEffectivePlanId(workspaceId)
+  return PLAN_RANK[plan] >= PLAN_RANK.business
 }
 
 /**
