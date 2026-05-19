@@ -14,6 +14,12 @@ dist-client
 # code coverage
 coverage
 *.lcov
+# …except the policy file consumed by scripts/run-all-tests.ts (see
+# COVERAGE_EXCLUSIONS.md). It's policy, not generated output, and must
+# be tracked so the strict gate has the same floors across machines.
+!coverage/
+coverage/*
+!coverage/thresholds.json
 
 # logs
 logs

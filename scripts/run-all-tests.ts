@@ -409,26 +409,32 @@ function main() {
       for (const pkg of BACKEND_PACKAGES) {
         backendArgs.push('--include-package', pkg)
       }
-      // Floors ratcheted to current `coverage/summary.json` actuals
-      // (Phase 0 of the 100%-coverage roadmap — see docs/testing.md
-      // and COVERAGE_EXCLUSIONS.md). Numbers move UP only; each phase
+      // Floors + excludes are sourced from `coverage/thresholds.json`
+      // so the policy and the runner stay in sync (Phase 0 of the
+      // 100%-coverage roadmap — see docs/testing.md and
+      // COVERAGE_EXCLUSIONS.md). Numbers move UP only; each phase
       // ratchets the floor for the package(s) it touched so coverage
-      // can never silently regress. Aggregate floor tracks the current
-      // backend roll-up (70.31% lines / 76.69% funcs as of 2026-05-15).
+      // can never silently regress.
+      const thresholdsPath = join(REPO_ROOT, 'coverage', 'thresholds.json')
+      if (!existsSync(thresholdsPath)) {
+        console.error(`[run-all-tests] coverage/thresholds.json missing at ${thresholdsPath}`)
+        process.exit(1)
+      }
+      const thresholds = JSON.parse(readFileSync(thresholdsPath, 'utf-8')) as {
+        aggregate: { lines: number; functions: number }
+        perPackage: Record<string, number>
+        excludeDirs?: string[]
+      }
       backendArgs.push(
-        '--threshold-line', '0.71',
-        '--threshold-function', '0.78',
-        '--per-package-floor', 'apps/api:0.72',
-        // Phase 1 (agent-runtime small-files sweep) bumped this from 0.64 → 0.67.
-        // Phase 2 (mcp-client + subagent) bumped to 0.68.
-        '--per-package-floor', 'packages/agent-runtime:0.68',
-        // shared-runtime: git-sync.ts (264 lines, 4.92% covered) became visible
-        // in the merged report after Phase 1's broader shard set. Phase 6 will
-        // cover it; floor reflects honest current measurement.
-        '--per-package-floor', 'packages/shared-runtime:0.63',
-        '--per-package-floor', 'packages/sdk:0.86',
-        '--per-package-floor', 'packages/model-catalog:1.0',
+        '--threshold-line', String(thresholds.aggregate.lines),
+        '--threshold-function', String(thresholds.aggregate.functions),
       )
+      for (const [pkg, floor] of Object.entries(thresholds.perPackage)) {
+        backendArgs.push('--per-package-floor', `${pkg}:${floor}`)
+      }
+      for (const dir of thresholds.excludeDirs ?? []) {
+        backendArgs.push('--exclude-dir', dir)
+      }
       backendArgs.push(...allLcovs)
       const backendMerge = spawnSync('bun', backendArgs, { stdio: 'inherit' })
       coverageExit = backendMerge.status ?? 1

@@ -91,6 +91,25 @@ so reviewers know why a future PR adding them back would be wrong.
 
 ---
 
+## Thresholds source of truth
+
+Per-package floors and the aggregate backend line/function thresholds
+live in **`coverage/thresholds.json`**. `scripts/run-all-tests.ts`
+reads that file at merge time and passes the values to
+`merge-lcov.ts` as `--per-package-floor` / `--threshold-line` /
+`--threshold-function`. To ratchet a floor up after a milestone,
+edit `coverage/thresholds.json` only — do not touch the runner.
+
+`coverage/thresholds.json` also carries `excludeDirs` (default
+`["dist", "build", "generated"]`). The runner translates each entry
+into a `--exclude-dir <segment>` flag so cross-package imports of
+built bundles (e.g. `packages/cli/dist/chunk-*.js` pulled in by
+another package's tests) are dropped from the backend roll-up
+without each importing package having to remember to ignore them
+locally.
+
+---
+
 ## `/* c8 ignore */` log
 
 Inline ignore comments live in source code, but each one must have a
