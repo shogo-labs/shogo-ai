@@ -101,6 +101,7 @@ import {
 import { api } from '../../lib/api'
 import { trackPurchase } from '../../lib/tracking'
 import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
+import { workspaceProjectFilter } from '../../lib/project-load'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { invitationEvents } from '../../lib/invitation-events'
 
@@ -1052,7 +1053,10 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
 
   useEffect(() => {
     workspaces.loadAll().catch((e) => console.error('[AppSidebar] Failed to load workspaces:', e))
-    projects.loadAll().catch((e) => console.error('[AppSidebar] Failed to load projects:', e))
+    const filter = workspaceProjectFilter()
+    if (filter) {
+      projects.loadAll(filter).catch((e) => console.error('[AppSidebar] Failed to load projects:', e))
+    }
   }, [])
 
   const loadInvites = useCallback(() => {
@@ -1100,13 +1104,15 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   let currentWorkspace: any
   try {
     if (selectedWorkspaceId) {
-      currentWorkspace = workspaces?.all?.find((w: any) => w.id === selectedWorkspaceId) ?? workspaces?.all?.[0]
+      currentWorkspace = workspaces?.all?.find((w: any) => w.id === selectedWorkspaceId)
     } else {
       currentWorkspace = workspaces?.all?.[0]
     }
   } catch {
     currentWorkspace = undefined
   }
+
+  const activeWorkspaceId = currentWorkspace?.id ?? selectedWorkspaceId
 
   const billingData = useBillingData(features.billing ? currentWorkspace?.id : undefined)
 
@@ -1115,7 +1121,10 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   let recentProjects: any[]
   try {
     const all = projects?.all ?? []
-    recentProjects = [...all]
+    const workspaceScoped = activeWorkspaceId
+      ? all.filter((p: any) => p.workspaceId === activeWorkspaceId)
+      : all
+    recentProjects = [...workspaceScoped]
       .sort((a: any, b: any) => {
         const aTime = a.lastMessageAt || a.updatedAt || 0
         const bTime = b.lastMessageAt || b.updatedAt || 0
@@ -1168,7 +1177,12 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       trackEvent(posthog, EVENTS.WORKSPACE_SWITCHED)
       setSelectedWorkspaceId(workspaceId)
       setActiveWorkspaceId(workspaceId)
-      projects.loadAll({ workspaceId }).catch((e) => console.error('[AppSidebar] Failed to load projects after workspace switch:', e))
+      projects.clear()
+      projects
+        .loadAll({ workspaceId })
+        .catch((e) =>
+          console.error('[AppSidebar] Failed to load projects after workspace switch:', e),
+        )
     },
     [projects, posthog]
   )
@@ -1194,7 +1208,9 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
         if (newWorkspace?.id) {
           trackEvent(posthog, EVENTS.WORKSPACE_CREATED)
           setSelectedWorkspaceId(newWorkspace.id)
+          setActiveWorkspaceId(newWorkspace.id)
           await workspaces.loadAll()
+          projects.clear()
           await projects.loadAll({ workspaceId: newWorkspace.id })
         }
       } catch (e) {
