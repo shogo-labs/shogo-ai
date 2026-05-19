@@ -218,8 +218,15 @@ async function generatePrismaClients() {
 
 async function generateRoutes() {
   console.log("[dev:all] Generating SDK routes…");
+  // `--conditions=development` activates the `"development"` export
+  // condition declared by each `@shogo-ai/*` workspace package, so Bun
+  // resolves `@shogo-ai/cli/pkg`, `@shogo-ai/db`, etc. to their in-tree
+  // `src/*.ts` files instead of the `dist/` build (which isn't produced
+  // until `bun run build:packages`). Without this, a fresh clone hits
+  // `Cannot find module '@shogo-ai/cli/pkg'` here. Mirrors the
+  // `generate:routes` script in the root `package.json`.
   const proc = spawn({
-    cmd: ["bun", "run", "packages/sdk/bin/shogo.ts", "generate"],
+    cmd: ["bun", "--conditions=development", "run", "packages/sdk/bin/shogo.ts", "generate"],
     cwd: ROOT,
     stdout: "inherit",
     stderr: "inherit",
