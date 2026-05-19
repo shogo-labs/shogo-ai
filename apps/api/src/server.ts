@@ -5096,10 +5096,23 @@ app.get('/api/billing/workspace-plan', async (c) => {
         ? await prisma.member.findMany({ where: { userId, workspaceId: { in: ids } }, select: { workspaceId: true } })
         : []
       const allowedIds = new Set(memberships.map((m: any) => m.workspaceId))
-      const plans: Record<string, { planId: string; status: string | null }> = {}
+      // `planId` here is the *effective* plan: a paid Stripe subscription
+      // wins, otherwise an active super-admin grant's `planId` confers the
+      // tier. `source` lets the client distinguish so it doesn't try to send
+      // a grant-only workspace through Stripe portal/checkout flows.
+      const plans: Record<string, { planId: string; status: string | null; source: 'subscription' | 'grant' | 'free' }> = {}
       await Promise.all(ids.filter(id => allowedIds.has(id)).map(async (id) => {
-        const sub = await billingService.getSubscription(id)
-        plans[id] = { planId: sub?.planId ?? 'free', status: sub?.status ?? null }
+        const [sub, effective] = await Promise.all([
+          billingService.getSubscription(id),
+          billingService.getEffectivePlanId(id),
+        ])
+        const source: 'subscription' | 'grant' | 'free' =
+          sub ? 'subscription' : effective !== 'free' ? 'grant' : 'free'
+        plans[id] = {
+          planId: sub?.planId ?? effective,
+          status: sub?.status ?? (source === 'grant' ? 'active' : null),
+          source,
+        }
       }))
       return c.json({ ok: true, plans })
     }
@@ -5109,12 +5122,21 @@ app.get('/api/billing/workspace-plan', async (c) => {
     if (!await verifyWorkspaceMembership(c, workspaceId)) {
       return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
     }
-    const sub = await billingService.getSubscription(workspaceId)
-    const wallet = await billingService.getUsageWallet(workspaceId)
+    const [sub, wallet, effective] = await Promise.all([
+      billingService.getSubscription(workspaceId),
+      billingService.getUsageWallet(workspaceId),
+      billingService.getEffectivePlanId(workspaceId),
+    ])
+    const source: 'subscription' | 'grant' | 'free' =
+      sub ? 'subscription' : effective !== 'free' ? 'grant' : 'free'
     return c.json({
       ok: true,
-      planId: sub?.planId ?? 'free',
-      status: sub?.status ?? null,
+      // Effective plan: subscription wins, else grant tier, else 'free'.
+      planId: sub?.planId ?? effective,
+      // `source` tells the client whether this came from Stripe or a grant
+      // so portal/checkout buttons can adapt without inferring from shape.
+      source,
+      status: sub?.status ?? (source === 'grant' ? 'active' : null),
       billingInterval: sub?.billingInterval ?? null,
       seats: (sub as any)?.seats ?? 1,
       monthlyIncludedUsd: wallet?.monthlyIncludedUsd ?? 0,
