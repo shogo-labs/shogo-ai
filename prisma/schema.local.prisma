@@ -483,11 +483,17 @@ model Subscription {
 /// minimum of 1 paid seat) plus a monthly USD allotment that stacks on
 /// top of any plan-included USD. Multiple active grants on the same
 /// workspace are summed. Mirrors prisma/schema.prisma WorkspaceGrant.
+///
+/// `planId` optionally upgrades the workspace to a paid plan tier
+/// (basic|pro|business|enterprise) for the duration of the grant when
+/// no active paid subscription exists. See prisma/schema.prisma for
+/// full semantics.
 model WorkspaceGrant {
   id                 String    @id @default(uuid())
   workspaceId        String
   freeSeats          Int       @default(0)
   monthlyIncludedUsd Float     @default(0)
+  planId             String?
   startsAt           DateTime  @default(now())
   expiresAt          DateTime?
   note               String?

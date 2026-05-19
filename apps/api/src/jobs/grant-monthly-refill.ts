@@ -39,18 +39,25 @@ export async function runGrantMonthlyRefill(
   const now = options.now ?? new Date()
   const period = startOfMonthUtc(now)
 
-  // Find workspaces that have at least one currently-active grant with a
-  // monthly USD allotment and no active paid subscription.
+  // Find workspaces that have at least one currently-active grant that
+  // contributes to the monthly allotment — either a monthly USD amount
+  // or a `planId` that confers per-seat included USD — and no active
+  // paid subscription. Seat-only grants (`freeSeats > 0`, no USD, no
+  // planId) are excluded because their only effect is reducing the
+  // Stripe seat quantity, which is irrelevant when there's no Stripe
+  // subscription.
   const grants = await prisma.workspaceGrant.findMany({
     where: {
-      monthlyIncludedUsd: { gt: 0 },
       startsAt: { lte: now },
-      OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
       workspace: {
         subscriptions: {
           none: { status: { in: ['active', 'trialing'] } },
         },
       },
+      AND: [
+        { OR: [{ monthlyIncludedUsd: { gt: 0 } }, { planId: { not: null } }] },
+        { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+      ],
     },
     select: { workspaceId: true },
   })
