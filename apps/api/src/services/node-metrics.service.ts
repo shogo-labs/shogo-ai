@@ -11,11 +11,18 @@
 
 import { prisma } from '../lib/prisma'
 
-const SIGNOZ_ENDPOINT = process.env.SIGNOZ_QUERY_ENDPOINT
-  || process.env.OTEL_EXPORTER_OTLP_ENDPOINT
-  || ''
+// Read SigNoz config lazily so tests can flip env state between cases
+// without forcing a module reload. Both helpers default to empty string
+// to keep call-site truthiness checks unchanged.
+function signozEndpoint(): string {
+  return process.env.SIGNOZ_QUERY_ENDPOINT
+    || process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+    || ''
+}
 
-const SIGNOZ_KEY = process.env.SIGNOZ_INGESTION_KEY || ''
+function signozKey(): string {
+  return process.env.SIGNOZ_INGESTION_KEY || ''
+}
 
 export type MetricsPeriod = '1h' | '6h' | '24h' | '7d' | '30d'
 
@@ -55,7 +62,8 @@ export async function getWorkspaceMetrics(
   workspaceId: string,
   period: MetricsPeriod = '24h',
 ): Promise<WorkspaceMetrics | null> {
-  if (!SIGNOZ_ENDPOINT) {
+  const endpoint = signozEndpoint()
+  if (!endpoint) {
     return getFallbackMetrics(period)
   }
 
@@ -130,7 +138,7 @@ async function querySigNoz(params: {
   end: number
   step: number
 }): Promise<Array<[number, string]>> {
-  const url = new URL('/api/v1/query_range', SIGNOZ_ENDPOINT)
+  const url = new URL('/api/v1/query_range', signozEndpoint())
   url.searchParams.set('query', params.query)
   url.searchParams.set('start', String(params.start))
   url.searchParams.set('end', String(params.end))
@@ -139,8 +147,9 @@ async function querySigNoz(params: {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   }
-  if (SIGNOZ_KEY) {
-    headers['signoz-access-token'] = SIGNOZ_KEY
+  const key = signozKey()
+  if (key) {
+    headers['signoz-access-token'] = key
   }
 
   const response = await fetch(url.toString(), { headers })
