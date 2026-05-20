@@ -61,6 +61,7 @@ import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { createPtyWsHandlers, type WsData } from './pty-ws-handler'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
+import { startAiProxyTokenRefresher } from './ai-proxy-token-refresher'
 import { userMessage } from './pi-adapter'
 import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
@@ -3788,6 +3789,19 @@ async function initializeEssentials(): Promise<void> {
   // Bootstrap workspace files
   ensureWorkspaceFiles()
   logTiming('Workspace files ready')
+
+  // Start the AI_PROXY_TOKEN refresher. Long-lived warm pods (min-scale=1
+  // with active heartbeat / Slack traffic) outlive the 7d JWT baked into
+  // the Knative revision env at boot; without in-place rotation every
+  // LLM call 401s around day 7 while heartbeat metrics stay green. The
+  // refresher mutates process.env.AI_PROXY_TOKEN in place so every
+  // existing reader naturally picks up the fresh value. Idempotent and
+  // safe to call before AI_PROXY_TOKEN is populated.
+  try {
+    startAiProxyTokenRefresher()
+  } catch (err: any) {
+    console.error('[agent-runtime] Failed to start AI proxy token refresher:', err?.message ?? err)
+  }
 
   // Seed tech stack if specified (covers warm pool assignment path where
   // TECH_STACK_ID is injected after module-level code has already run).

@@ -324,6 +324,87 @@ app.post('/validate-runtime-token', async (c) => {
 })
 
 /**
+ * POST /api/internal/refresh-ai-proxy-token/:projectId
+ *   → 200 { token: string, exp: number }   exp = unix seconds
+ *
+ * Called by long-lived runtime pods to rotate their AI_PROXY_TOKEN in place
+ * before the JWT exp elapses.
+ *
+ * Why this exists
+ * ---------------
+ * AI_PROXY_TOKEN is a short-lived HS256 JWT (see ai-proxy-token.ts) that's
+ * minted exactly once per pod, at revision-creation time, and injected as
+ * a Knative env var. Knative revision env is immutable; project pods run
+ * with min-scale=1 to avoid cold starts; therefore a pod kept warm by
+ * heartbeat or Slack traffic outlives the credential it was issued with.
+ * Around exp the proxy starts 401-ing every LLM call and the agent
+ * silently no-ops while heartbeat metrics remain green.
+ *
+ * The fix is to give the pod a refresh path it can drive itself, using
+ * the long-lived identity it already has (K8s SA token in cluster,
+ * RUNTIME_AUTH_SECRET in local mode). Same shape as kubelet rotating a
+ * projected SA token before expiry — the runtime-side refresher mutates
+ * process.env.AI_PROXY_TOKEN in place, so every existing consumer that
+ * reads from process.env naturally picks up the fresh value.
+ *
+ * Auth: K8s SA bearer (cluster) OR x-runtime-token (local mode), via the
+ * same validateAuth() helper used by the other /internal routes. The
+ * caller MUST be authenticated for the project being refreshed — a pod
+ * can only refresh its own token, not someone else's.
+ */
+app.post('/refresh-ai-proxy-token/:projectId', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  if (!projectId) {
+    return c.json({ error: 'projectId is required' }, 400)
+  }
+
+  if (!checkRateLimit(`refresh-proxy:${projectId}`)) {
+    return c.json({ error: 'Rate limit exceeded' }, 429)
+  }
+
+  if (!(await validateAuth(c, projectId))) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+
+  try {
+    const { prisma } = await import('../lib/prisma')
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { id: true, workspaceId: true },
+    })
+    if (!project) {
+      return c.json({ error: 'Project not found' }, 404)
+    }
+
+    const { getProjectOwnerUserId } = await import('../lib/project-user-context')
+    const ownerUserId = await getProjectOwnerUserId(projectId)
+
+    // Match the TTL used at provisioning time (build-project-env.ts /
+    // knative-project-manager.ts). The refresher schedules itself well
+    // inside this window, so the effective rotation cadence is what
+    // controls security, not this number. Lowering this default back to
+    // the original 24h is a follow-up once the refresher has been observed
+    // in staging.
+    const expiryMs = 7 * 24 * 60 * 60 * 1000
+    const { generateProxyToken } = await import('../lib/ai-proxy-token')
+    const token = await generateProxyToken(
+      project.id,
+      project.workspaceId ?? 'local-dev',
+      ownerUserId,
+      expiryMs,
+    )
+
+    const exp = Math.floor((Date.now() + expiryMs) / 1000)
+    console.log(`[Internal] Refreshed AI_PROXY_TOKEN for ${projectId} (exp=${exp})`)
+    return c.json({ token, exp })
+  } catch (err: any) {
+    console.error(`[Internal] refresh-ai-proxy-token failed for ${projectId}:`, err?.message ?? err)
+    return c.json({ error: 'Refresh failed' }, 500)
+  }
+})
+
+/**
  * GET /api/internal/subagent-overrides/resolve
  *   ?workspaceId=...&projectId=...&agentType=...
  *
