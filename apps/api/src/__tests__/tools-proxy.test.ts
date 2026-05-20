@@ -331,5 +331,58 @@ describe('Tools Proxy', () => {
 
       expect(res.status).toBe(200)
     })
+
+    test('shogo_sk_ token: resolveApiKey returns ws → projectId ws_{workspaceId}', async () => {
+      resolveApiKeyMock.mockImplementation(async () => ({ workspaceId: 'w-77', userId: 'u-77' }) as any)
+      process.env.OPENAI_API_KEY = 'sk-openai-real'
+      const calls: any[] = []
+      globalThis.fetch = (async (url: string, init: any) => {
+        calls.push({ url, init })
+        return Response.json({ ok: true })
+      }) as any
+
+      const app = await makeApp()
+      const res = await app.request('/tools/openai/v1/embeddings', {
+        method: 'POST',
+        headers: { authorization: 'Bearer shogo_sk_validkey' },
+        body: JSON.stringify({}),
+      })
+      expect(res.status).toBe(200)
+      expect(calls[0].url).toBe('https://api.openai.com/v1/embeddings')
+      expect(resolveApiKeyMock).toHaveBeenCalled()
+    })
+
+    test('shogo_sk_ token: resolveApiKey throws → catch swallows → 401', async () => {
+      resolveApiKeyMock.mockImplementation(async () => {
+        throw new Error('db down')
+      })
+
+      const app = await makeApp()
+      const res = await app.request('/tools/serper/search', {
+        headers: { authorization: 'Bearer shogo_sk_bad' },
+      })
+      expect(res.status).toBe(401)
+      expect(await res.json()).toEqual({ error: 'Invalid or expired proxy token' })
+    })
+
+    test('OpenAI non-embedding path forwards with Authorization: Bearer header', async () => {
+      process.env.OPENAI_API_KEY = 'sk-openai-real'
+      const calls: any[] = []
+      globalThis.fetch = (async (url: string, init: any) => {
+        calls.push({ url, init })
+        return Response.json({ ok: true })
+      }) as any
+
+      const app = await makeApp()
+      const token = await makeToken()
+      const res = await app.request('/tools/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ model: 'gpt-4o' }),
+      })
+      expect(res.status).toBe(200)
+      expect(calls[0].url).toBe('https://api.openai.com/v1/chat/completions')
+      expect(calls[0].init.headers.get('Authorization')).toBe('Bearer sk-openai-real')
+    })
   })
 })

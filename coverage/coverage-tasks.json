@@ -97,8 +97,11 @@
       "uncoveredLines": 4,
       "linePct": 98.06763285024155,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "finishedAt": "2026-05-20T08:41:23.955Z",
+      "beforeLinePct": 98.06763285024155,
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/lib/federated-upstream.ts",
