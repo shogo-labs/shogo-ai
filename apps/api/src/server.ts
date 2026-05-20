@@ -2233,7 +2233,38 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
         (response.body && responseContentType.includes('text/plain'))
       if (isStreaming && response.body) {
         activeProxyConnections++
+
+        // Keep the locally-managed agent-runtime warm while bytes flow.
+        // The embedded WorkerRuntimeManager only resets its idle timer
+        // on fresh proxy resolutions, so a long-lived SSE that lasts
+        // longer than RUNTIME_IDLE_MS (15min by default) would get
+        // SIGTERM'd mid-stream and produce a cascade of `ECONNRESET`
+        // → `Resume fetch failed` → `[AgentProxy] failed after 24
+        // attempts` errors. Throttled to once per 60s — calling on
+        // every chunk would hit the manager hundreds of times per
+        // second on an active stream. No-op in cloud-pod / k8s mode
+        // because RuntimeManager.touch() short-circuits on unknown
+        // project IDs.
+        let lastRuntimeTouchAt = Date.now()
+        const RUNTIME_TOUCH_INTERVAL_MS = 60_000
+
         let outBody: ReadableStream<Uint8Array> = response.body.pipeThrough(new TransformStream({
+          transform(chunk, controller) {
+            controller.enqueue(chunk)
+            const now = Date.now()
+            if (now - lastRuntimeTouchAt >= RUNTIME_TOUCH_INTERVAL_MS) {
+              lastRuntimeTouchAt = now
+              try {
+                getRuntimeManager().touch(projectId)
+              } catch {
+                // Best-effort: a touch failure must never abort the
+                // user-visible stream. RuntimeManager.touch already
+                // catches downstream errors; this is a final guard
+                // for the (unlikely) case that getRuntimeManager()
+                // itself throws during shutdown.
+              }
+            }
+          },
           flush() { activeProxyConnections-- },
         }))
         // For chat-stream calls, tee the body through the billing tracker
