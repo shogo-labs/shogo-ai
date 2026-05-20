@@ -828,7 +828,21 @@ function setupSessionHandlers(): void {
       headers['Access-Control-Allow-Origin'] = [appOrigin]
       headers['Access-Control-Allow-Credentials'] = ['true']
       headers['Access-Control-Allow-Methods'] = ['GET,POST,PUT,PATCH,DELETE,OPTIONS']
-      headers['Access-Control-Allow-Headers'] = ['Content-Type,Authorization,X-Requested-With']
+
+      // Preserve the API server's `Access-Control-Allow-Headers` when present:
+      // Hono's `cors()` middleware reflects the request's
+      // `Access-Control-Request-Headers`, so the API already echoes back any
+      // custom header the renderer sends (`X-Chat-Session-Id`, `X-Session-Id`,
+      // `x-client-version`, `x-sync-version`, …). Overwriting it with a static
+      // list silently broke preflights as soon as we added new headers — see
+      // the 1.7.15 chat regression where `x-chat-session-id` was rejected.
+      // Fall back to a permissive default only if the server didn't send one.
+      const hasAllowHeaders =
+        (headers['Access-Control-Allow-Headers']?.length ?? 0) > 0 ||
+        (headers['access-control-allow-headers']?.length ?? 0) > 0
+      if (!hasAllowHeaders) {
+        headers['Access-Control-Allow-Headers'] = ['Content-Type,Authorization,X-Requested-With']
+      }
 
       const setCookies = headers['Set-Cookie'] || headers['set-cookie']
       if (setCookies) {
