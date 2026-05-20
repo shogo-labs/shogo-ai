@@ -1,0 +1,57 @@
+# SigNoz alert: warm-pool starvation
+#
+# Why: when warm-pool depth drops to <3, every new project request
+# eats a 5-minute cold start (the b11c65dd-shaped tail latency). The
+# warm-pool controller is supposed to refill, but it can't if the
+# system pool is out of memory or if the runtime image fails to pull.
+# Either way: page on-call.
+#
+# Threshold is "running, available, not yet claimed" pods only — a
+# warm pod that's mid-handoff to a project still serves its role
+# but doesn't count toward future cold-start avoidance.
+
+alert: WarmPoolStarvation
+ruleType: threshold_rule
+condition:
+  compositeQuery:
+    queryType: promql
+    promQueries:
+      A:
+        query: |
+          sum(kube_pod_status_phase{
+            namespace="shogo-production-workspaces",
+            phase="Running",
+            pod=~"warm-pool-.*"
+          }
+          * on(pod) group_left()
+          kube_pod_labels{label_shogo_io_pool_status="available"})
+        legend: warm_available
+        disabled: false
+  op: "<"
+  target: 3
+  matchType: "1" # at-least-once-during
+  selectedQuery: A
+evalWindow: "10m0s"
+frequency: "1m0s"
+labels:
+  severity: warning
+  team: platform
+  incident_class: warm_pool
+annotations:
+  summary: "Warm pool has fewer than 3 available pods for 10+ minutes"
+  description: |
+    Warm-pool depth has been below 3 for 10+ minutes. This means
+    most new project starts are hitting the 5-minute cold-start path
+    instead of the sub-second warm-pool handoff.
+
+    Triage:
+    1. `kubectl get pods -n shogo-production-workspaces -l app.kubernetes.io/name=warm-pool`
+    2. Check warm-pool-controller logs in the API pod:
+       `kubectl logs -n shogo-production-system deployment/api -c api | grep WarmPool`
+    3. Common causes:
+       - System pool out of memory -> see ProdNodeCountBelowMin alert
+       - Runtime image pull failing -> `kubectl describe pod` on the
+         most recently-stuck warm pod for ImagePullBackoff events
+       - Warm-pool controller crashed -> restart the API pod
+
+    Runbook: docs/runbooks/deploy-prod.md
