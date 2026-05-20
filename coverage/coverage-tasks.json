@@ -215,8 +215,9 @@
       "uncoveredLines": 9,
       "linePct": 96.28099173553719,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "completedAt": "2026-05-20T17:39:11.704Z"
     },
     {
       "file": "apps/api/src/lib/voice-cost.ts",
