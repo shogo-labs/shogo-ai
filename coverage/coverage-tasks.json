@@ -40,8 +40,12 @@
       "uncoveredLines": 2,
       "linePct": 98.78048780487805,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "finishedAt": "2026-05-20T08:06:31.612Z",
+      "beforeLinePct": 98.78048780487805,
+      "afterLinePct": 100,
+      "note": "already at 100% on this branch — no source/test change required, queue gap was stale"
     },
     {
       "file": "apps/api/src/lib/preview-token.ts",
