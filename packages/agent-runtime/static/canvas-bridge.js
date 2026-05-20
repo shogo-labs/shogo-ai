@@ -132,41 +132,80 @@
     document.head.appendChild(style)
   }
 
-  function showUpdateToast() {
-    // Cross-script dedup: if any prior bridge (e.g. an old embedded copy
-    // baked into a stale main.tsx) already mounted a toast, don't add a
-    // second one.
+  // Transient "Updating…" pill shown *while* the auto-reload is in flight.
+  // We deliberately no longer expose a manual "Refresh" button — the canvas
+  // is agent-driven, so the moment a rebuild lands the user expects to see
+  // it. The pill exists purely for affordance so the swap isn't a
+  // mysterious flash.
+  function showUpdatingPill() {
     if (document.getElementById(TOAST_ID)) return
     injectToastStyles()
-
     var toastEl = document.createElement('div')
     toastEl.id = TOAST_ID
-
     var label = document.createElement('span')
-    label.textContent = 'Update available'
-
-    var refreshBtn = document.createElement('button')
-    refreshBtn.className = 'refresh-btn'
-    refreshBtn.textContent = 'Refresh'
-    refreshBtn.onclick = function () { window.location.reload() }
-
-    var dismissBtn = document.createElement('button')
-    dismissBtn.className = 'dismiss-btn'
-    dismissBtn.textContent = '\u00d7'
-    dismissBtn.onclick = function () {
-      var el = document.getElementById(TOAST_ID)
-      if (el) el.remove()
-    }
-
+    label.textContent = 'Updating\u2026'
     toastEl.appendChild(label)
-    toastEl.appendChild(refreshBtn)
-    toastEl.appendChild(dismissBtn)
     document.body.appendChild(toastEl)
   }
 
   // -------------------------------------------------------------------------
   // SSE listener — rebuild events from the agent runtime
   // -------------------------------------------------------------------------
+  //
+  // Behavior:
+  //   1. Server replays an `init` event on connect — gate live updates on it
+  //      so the very first message can't double-reload.
+  //   2. On `reload`, debounce ~250ms (a single rebuild can fan out into
+  //      multiple file-watcher events) then `window.location.reload()`.
+  //   3. If the tab is hidden (e.g. user is on a different IDE tab inside
+  //      the canvas), defer the reload until visibility returns so we don't
+  //      thrash backgrounded previews.
+  //   4. Show a transient "Updating…" pill while the reload is in flight so
+  //      the swap has an affordance and doesn't feel like a random flash.
+  //
+  // This is the source of truth for live-refresh — the parent <CanvasWebView />
+  // explicitly does NOT remount the iframe on rebuild (see comment in
+  // CanvasWebView.tsx). All other refresh paths (tab switch unmounting the
+  // iframe, manual page refresh) were workarounds for this handler showing a
+  // manual "Refresh" toast instead of actually reloading. They still work,
+  // but should no longer be necessary.
+
+  var RELOAD_DEBOUNCE_MS = 250
+  var reloadTimer = null
+  var reloadPending = false
+  var reloadInFlight = false
+
+  function scheduleReload() {
+    if (reloadInFlight) return
+    reloadPending = true
+    if (reloadTimer) clearTimeout(reloadTimer)
+    reloadTimer = setTimeout(performReloadIfVisible, RELOAD_DEBOUNCE_MS)
+  }
+
+  function performReloadIfVisible() {
+    if (!reloadPending) return
+    if (typeof document !== 'undefined' && document.hidden) {
+      // Wait for the tab to come back into focus — visibilitychange handler
+      // below will call us again.
+      return
+    }
+    reloadPending = false
+    reloadInFlight = true
+    showUpdatingPill()
+    // Defer one frame so the pill paints before the navigation tears down
+    // the document.
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(function () { window.location.reload() })
+    } else {
+      window.location.reload()
+    }
+  }
+
+  if (typeof document !== 'undefined' && document.addEventListener) {
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden && reloadPending) performReloadIfVisible()
+    })
+  }
 
   try {
     var es = new EventSource('/agent/canvas/stream')
@@ -175,11 +214,11 @@
       try {
         var evt = JSON.parse(e.data)
         if (evt && evt.type === 'init') { ready = true; return }
-        if (evt && evt.type === 'reload' && ready) showUpdateToast()
+        if (evt && evt.type === 'reload' && ready) scheduleReload()
       } catch (_err) { /* ignore malformed events */ }
     }
   } catch (_err) {
-    // Older browsers without EventSource: degrade gracefully (no live toasts).
+    // Older browsers without EventSource: degrade gracefully (no live reload).
   }
 
   // -------------------------------------------------------------------------
