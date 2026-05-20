@@ -74,8 +74,12 @@
       "uncoveredLines": 3,
       "linePct": 95.16129032258065,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "finishedAt": "2026-05-20T08:32:11.642Z",
+      "beforeLinePct": 95.16129032258065,
+      "afterLinePct": 100,
+      "note": "already at 100% across runtime-token{.test, -coverage, -extra, lib/__tests__/runtime-token}.test.ts — queue baseline was stale"
     },
     {
       "file": "apps/api/src/routes/cli-auth.ts",
