@@ -912,8 +912,7 @@ const HomeScreen = observer(function HomeScreen() {
             display: 'grid' as any,
             gridTemplateColumns: `repeat(${gridColumns}, 1fr)`,
             gap: isMobile ? 10 : 16,
-            maxWidth: 1100,
-            marginHorizontal: 'auto',
+            width: '100%',
           } as any)
         : {},
     [gridColumns, isMobile],
