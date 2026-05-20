@@ -51,7 +51,7 @@ mock.module('fs', () => ({
   readFileSync: (p: string) => readFileImpls[p] ?? '',
 }))
 
-const { createEvalJob, getEvalJobStatus, deleteEvalJob } = await import('../eval-job-manager')
+const { createEvalJob, getEvalJobStatus, deleteEvalJob, _resetBatchApi } = await import('../eval-job-manager')
 
 const SAVED_ENV = { ...process.env }
 
@@ -66,10 +66,52 @@ beforeEach(() => {
   readFileImpls = {}
   loadFromDefaultCalled = 0
   loadFromOptionsCalled = null
+  _resetBatchApi()
 })
 
 afterEach(() => {
   process.env = { ...SAVED_ENV }
+})
+
+// MUST be the first describe block in this file so that the batchApi
+// module-level singleton (eval-job-manager.ts:17) gets bootstrapped via
+// the in-cluster getKubeConfig() branch (lines 26-36). Once the singleton
+// is cached, getKubeConfig() is never re-entered, so any subsequent test
+// that tries to exercise the loadFromOptions branch is a no-op. The
+// existing 'getKubeConfig branches (via createEvalJob)' block at the
+// bottom of the file even acknowledges this with a noop expectation.
+describe('getKubeConfig — in-cluster credentials branch (lines 26-36)', () => {
+  it('loadFromOptions with serviceaccount ca + token when both files exist', async () => {
+    existsImpls = {
+      '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt': true,
+      '/var/run/secrets/kubernetes.io/serviceaccount/token': true,
+    }
+    readFileImpls = {
+      '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt': '-----BEGIN CA-----\nfake\n-----END CA-----',
+      '/var/run/secrets/kubernetes.io/serviceaccount/token': 'fake-token-abc',
+    }
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    process.env.KUBERNETES_SERVICE_PORT = '443'
+    await createEvalJob({
+      runId: 'in-cluster-bootstrap',
+      track: 't',
+      model: 'm',
+      workers: 1,
+      callbackUrl: 'u',
+      callbackSecret: 's',
+    })
+    expect(loadFromOptionsCalled).not.toBeNull()
+    expect(loadFromOptionsCalled.currentContext).toBe('in-cluster')
+    expect(loadFromOptionsCalled.clusters[0].server).toBe('https://10.0.0.1:443')
+    expect(loadFromOptionsCalled.users[0].token).toBe('fake-token-abc')
+    expect(loadFromOptionsCalled.clusters[0].caData).toBe(
+      Buffer.from('-----BEGIN CA-----\nfake\n-----END CA-----').toString('base64'),
+    )
+    expect(loadFromDefaultCalled).toBe(0)
+  })
+    // Reset the cached BatchV1Api so the next call re-enters getKubeConfig()
+    // and exercises the loadFromDefault (else) branch in subsequent tests.
+    _resetBatchApi()
 })
 
 describe('createEvalJob', () => {
