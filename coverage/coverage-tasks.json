@@ -234,8 +234,10 @@
       "uncoveredLines": 10,
       "linePct": 86.66666666666667,
       "phase": 2,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "completedAt": "2026-05-20T18:07:36.698Z",
+      "note": "stale lines (already 100% under CI isolated runner via existing gc-and-bypass test in its own process); 1 phantom func preserved from baseline (bun lcov omits FN: records — wave-17 precedent)"
     },
     {
       "file": "apps/api/src/config/usage-plans.ts",
