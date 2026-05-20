@@ -185,8 +185,11 @@
       "uncoveredLines": 8,
       "linePct": 98.53479853479854,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "afterLinePct": 100.0,
+      "afterFuncPct": 98.36,
+      "note": "Closed all 8 uncovered lines tracked by the queue: L496-499 (GET /heartbeats early-return when inBackoff=true with empty breaker snapshot), L514-515 (sort=lastHeartbeatAt orderBy branch), L659 (PATCH /heartbeats/projects/:projectId 404 when config not found), L670 (PATCH nextHeartbeatAt=null when heartbeatEnabled flips to false), L193-195 (inner empty catch in GET /analytics/infra-current when warm-pool getExtendedStatus throws \u2014 live:null fallback). Added 6 new tests across 3 new describe blocks in admin-routes.expanded.test.ts; promoted the inline getExtendedStatus mock to a captured warmPoolExtendedStatus reference so the catch test can mockImplementationOnce. Final shard state: 546/546 lines, 60/61 funcs (98.36%, preserved from baseline \u2014 bun lcov does not emit FN/FNDA records so the 1 residual phantom function entry is unidentifiable; same pattern as previous wave closures where queue tracks uncoveredLines and that is the actionable signal)."
     },
     {
       "file": "apps/api/src/routes/chat-message-edits.ts",
