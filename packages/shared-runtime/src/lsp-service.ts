@@ -85,6 +85,87 @@ export interface LSPDiagnostic {
   code?: number | string
 }
 
+/**
+ * LSP `WatchKind` bitmask (spec 3.17 §workspace/didChangeWatchedFiles).
+ * If `kind` is omitted on a registered watcher, default is Create|Change|Delete = 7.
+ */
+const WATCH_KIND_CREATE = 1
+const WATCH_KIND_CHANGE = 2
+const WATCH_KIND_DELETE = 4
+
+/** Maps our local event kind to the LSP `FileChangeType` enum (1=Created, 2=Changed, 3=Deleted). */
+const FILE_CHANGE_TYPE = { created: 1, changed: 2, deleted: 3 } as const
+export type WatchedFileEventKind = keyof typeof FILE_CHANGE_TYPE
+
+interface RegisteredWatcher {
+  /** Already-compiled regex matching absolute paths against the watcher's globPattern. */
+  matcher: RegExp
+  /** Bitmask: 1=Create, 2=Change, 4=Delete. */
+  kind: number
+}
+
+/**
+ * Compile a single LSP `globPattern` into an absolute-path regex.
+ *
+ * tsserver registers patterns like:
+ *   "**\/*.{ts,tsx,js,jsx,json,d.ts}"
+ *   "**\/tsconfig.json"
+ *   "**\/package.json"
+ *
+ * which are workspace-relative (LSP convention). We anchor at `^` and allow
+ * any prefix before the pattern via a leading `.*` so absolute paths match.
+ *
+ * Supported syntax: `**`, `*`, `?`, `{a,b,c}`. Brace nesting is not supported
+ * (tsserver doesn't emit nested braces). Char classes `[...]` are not
+ * supported either (also not used by tsserver).
+ *
+ * Conservative on purpose: anything that doesn't compile turns into a
+ * never-matching regex so we don't accidentally fire for paths the server
+ * never asked us to watch.
+ */
+function compileLspGlob(pattern: string): RegExp {
+  const REGEX_META = /[.+^$|()\\]/g
+  const escapeLit = (s: string) => s.replace(REGEX_META, m => '\\' + m)
+
+  let re = ''
+  let i = 0
+  while (i < pattern.length) {
+    const c = pattern[i]
+    if (c === '*') {
+      if (pattern[i + 1] === '*') {
+        re += '.*'
+        i += 2
+        if (pattern[i] === '/') i++
+      } else {
+        re += '[^/]*'
+        i++
+      }
+    } else if (c === '?') {
+      re += '[^/]'
+      i++
+    } else if (c === '{') {
+      const close = pattern.indexOf('}', i)
+      if (close === -1) {
+        re += '\\{'
+        i++
+      } else {
+        const opts = pattern.slice(i + 1, close).split(',').map(s => s.trim())
+        re += '(?:' + opts.map(escapeLit).join('|') + ')'
+        i = close + 1
+      }
+    } else {
+      re += escapeLit(c)
+      i++
+    }
+  }
+
+  try {
+    return new RegExp('^.*' + re + '$')
+  } catch {
+    return /^$a/ // never matches
+  }
+}
+
 export interface TSLanguageServerOptions {
   /** Explicit path to the language server binary */
   serverBin?: string
@@ -121,6 +202,20 @@ export class TSLanguageServer {
   private openDocVersions = new Map<string, number>()
   private diagnosticsByUri = new Map<string, LSPDiagnostic[]>()
   private extraInitOptions: Record<string, unknown>
+  /**
+   * `workspace/didChangeWatchedFiles` registrations. Keyed by the LSP
+   * registration id supplied in `client/registerCapability`. Cleared on
+   * `client/unregisterCapability` and on `stop()`.
+   *
+   * tsserver dynamically registers a single watcher for project file
+   * patterns shortly after `initialized`; we honor that registration so
+   * tsserver doesn't fall back to native inotify watching (saturates the
+   * per-uid kernel quota at scale — see canvas-file-watcher.ts header).
+   * Chokidar in agent-runtime is the single source of truth and bridges
+   * its (already-filtered, no-node_modules) event stream into here via
+   * `notifyWatchedFileEvent`.
+   */
+  private watchedFileRegistrations = new Map<string, RegisteredWatcher[]>()
 
   constructor(projectDir: string, opts?: TSLanguageServerOptions) {
     this.projectDir = resolve(projectDir)
@@ -404,9 +499,45 @@ export class TSLanguageServer {
         this.send({ jsonrpc: '2.0', id, result })
         break
       }
-      case 'client/registerCapability':
+      case 'client/registerCapability': {
+        // Spec: params.registrations[].{ id, method, registerOptions }
+        const params = (message.params as any) ?? {}
+        const regs = Array.isArray(params.registrations) ? params.registrations : []
+        for (const r of regs) {
+          if (r?.method !== 'workspace/didChangeWatchedFiles') continue
+          const watchersInput = (r?.registerOptions?.watchers as any[]) ?? []
+          const compiled: RegisteredWatcher[] = []
+          for (const w of watchersInput) {
+            // globPattern can be a string or a `RelativePattern`
+            // ({ baseUri, pattern }). tsserver emits strings; we still
+            // accept the structured form by extracting `.pattern`.
+            const raw = typeof w?.globPattern === 'string'
+              ? w.globPattern
+              : (typeof w?.globPattern?.pattern === 'string' ? w.globPattern.pattern : null)
+            if (!raw) continue
+            const kind = typeof w?.kind === 'number'
+              ? w.kind
+              : (WATCH_KIND_CREATE | WATCH_KIND_CHANGE | WATCH_KIND_DELETE)
+            compiled.push({ matcher: compileLspGlob(raw), kind })
+          }
+          if (compiled.length > 0 && typeof r.id === 'string') {
+            this.watchedFileRegistrations.set(r.id, compiled)
+          }
+        }
         this.send({ jsonrpc: '2.0', id, result: null })
         break
+      }
+      case 'client/unregisterCapability': {
+        const params = (message.params as any) ?? {}
+        const unregs = Array.isArray(params.unregisterations) ? params.unregisterations : []
+        for (const u of unregs) {
+          if (typeof u?.id === 'string') {
+            this.watchedFileRegistrations.delete(u.id)
+          }
+        }
+        this.send({ jsonrpc: '2.0', id, result: null })
+        break
+      }
       case 'window/workDoneProgress/create':
         this.send({ jsonrpc: '2.0', id, result: null })
         break
@@ -521,6 +652,47 @@ export class TSLanguageServer {
       this.openDocVersions.delete(uri)
       this.diagnosticsByUri.delete(uri)
     }
+  }
+
+  /**
+   * Bridge a filesystem event into tsserver as `workspace/didChangeWatchedFiles`.
+   *
+   * Only fires if the path matches a glob the server has registered via
+   * `client/registerCapability` and the event kind passes the watcher's
+   * kind bitmask. If no registration covers the path, this is a no-op —
+   * which is correct: tsserver explicitly told us it doesn't care.
+   *
+   * Should be called from the workspace's primary file watcher (chokidar
+   * in agent-runtime). Live buffers driven by `notifyFileChanged` /
+   * `didOpenDocument` already bypass this — tsserver uses the protocol
+   * buffer content for those, not on-disk content, so emitting a watched
+   * event for them would just cause a redundant disk read.
+   */
+  notifyWatchedFileEvent(absPath: string, kind: WatchedFileEventKind): void {
+    if (!this.isInitialized || !this.isRunning()) return
+    if (this.watchedFileRegistrations.size === 0) return
+    const kindMask = kind === 'created' ? WATCH_KIND_CREATE
+      : kind === 'changed' ? WATCH_KIND_CHANGE
+      : WATCH_KIND_DELETE
+    let matched = false
+    for (const watchers of this.watchedFileRegistrations.values()) {
+      for (const w of watchers) {
+        if ((w.kind & kindMask) === 0) continue
+        if (w.matcher.test(absPath)) {
+          matched = true
+          break
+        }
+      }
+      if (matched) break
+    }
+    if (!matched) return
+    this.send({
+      jsonrpc: '2.0',
+      method: 'workspace/didChangeWatchedFiles',
+      params: {
+        changes: [{ uri: `file://${absPath}`, type: FILE_CHANGE_TYPE[kind] }],
+      },
+    })
   }
 
   getDiagnostics(uri?: string): Map<string, LSPDiagnostic[]> {
@@ -639,6 +811,7 @@ export class TSLanguageServer {
       this.pendingRequests.clear()
       this.openDocVersions.clear()
       this.diagnosticsByUri.clear()
+      this.watchedFileRegistrations.clear()
     }
   }
 
@@ -795,6 +968,30 @@ export class WorkspaceLSPManager {
         tsserver: {
           useSyntaxServer: 'never',
         },
+        // Belt-and-suspenders: even with `workspace/didChangeWatchedFiles`
+        // delegation working (see TSLanguageServer.notifyWatchedFileEvent),
+        // tsserver still keeps a small baseline of native watches for
+        // tsconfig.json / package.json / ambient .d.ts lookup roots.
+        // These prevent that baseline from descending into the dep tree
+        // again. We deliberately do NOT set `watchFile: 'fixedChunkSizePolling'`
+        // or other polling modes — polling burns CPU and the LSP delegation
+        // already gives us the events we need.
+        watchOptions: {
+          excludeDirectories: [
+            '**/node_modules',
+            '**/dist',
+            '**/dist.canvas.staging',
+            '**/dist.staging',
+            '**/dist.prev',
+            '**/build',
+            '**/.git',
+            '**/.shogo',
+            '**/.next',
+            '**/.turbo',
+            '**/.cache',
+          ],
+          excludeFiles: ['**/*.lock', '**/*.lockb', '**/*.log'],
+        },
       },
     })
     await this.tsServer.start()
@@ -803,21 +1000,37 @@ export class WorkspaceLSPManager {
 
   /**
    * Ensure the workspace tsconfig.json has watchOptions.excludeDirectories
-   * so tsserver doesn't watch node_modules (tens of thousands of files).
+   * so tsserver doesn't walk node_modules during program load (separate
+   * concern from runtime watching, which is delegated via LSP — see
+   * `TSLanguageServer.notifyWatchedFileEvent`).
+   *
+   * Merges with whatever the user already set rather than early-returning.
+   * Pre-fix this skipped any project that already had `excludeDirectories`
+   * populated (even with a single unrelated entry like `["**\/dist"]`),
+   * which is how staging projects shipped with `**\/node_modules` missing
+   * for over a month before the 2026-05 incident.
    */
   private ensureTsconfigWatchExclusions(): void {
     const tsconfigPath = join(this.projectDir, 'tsconfig.json')
+    const REQUIRED = ['**/node_modules', '**/dist', '**/.git', '**/.shogo']
     try {
       if (!existsSync(tsconfigPath)) return
       const raw = readFileSync(tsconfigPath, 'utf-8')
       const config = JSON.parse(raw)
-      if (config.watchOptions?.excludeDirectories?.length) return
+
+      const existing: string[] = Array.isArray(config.watchOptions?.excludeDirectories)
+        ? config.watchOptions.excludeDirectories.filter((x: unknown): x is string => typeof x === 'string')
+        : []
+      const merged = Array.from(new Set([...existing, ...REQUIRED]))
+
+      if (merged.length === existing.length) return // nothing to add
+
       config.watchOptions = {
         ...config.watchOptions,
-        excludeDirectories: ['**/node_modules'],
+        excludeDirectories: merged,
       }
       writeFileSync(tsconfigPath, JSON.stringify(config, null, 2) + '\n', 'utf-8')
-      console.log('[LSP-TS] Added watchOptions.excludeDirectories to tsconfig.json')
+      console.log('[LSP-TS] Merged watchOptions.excludeDirectories in tsconfig.json:', merged)
     } catch {
       // Non-fatal — tsconfig may have comments or be malformed
     }
@@ -869,6 +1082,35 @@ export class WorkspaceLSPManager {
       this.pyDirtyFiles.delete(filePath)
       const uri = `file://${filePath}`
       this.pyCachedDiags.delete(uri)
+    }
+  }
+
+  /**
+   * Bridge a workspace filesystem event into the TS LSP as
+   * `workspace/didChangeWatchedFiles`. Called from the agent-runtime
+   * canvas watcher so chokidar is the only inotify consumer in the pod
+   * (tsserver delegates watching to us via the LSP capability handshake).
+   *
+   * Filtered to TS-relevant extensions because Python diagnostics go
+   * through the pyright CLI path, not LSP-watched files.
+   */
+  notifyWatchedFileEvent(absPath: string, kind: WatchedFileEventKind): void {
+    const ext = extOf(absPath)
+    // tsserver also asks to watch tsconfig.json / package.json / .d.ts —
+    // accept any extension and let the registered glob filter inside
+    // TSLanguageServer decide. We only short-circuit for paths that
+    // obviously can't be anything tsserver cares about (binaries, lock
+    // files, etc.) to keep the per-event hot path cheap.
+    if (
+      TS_EXTENSIONS.has(ext) ||
+      ext === '.json' ||
+      ext === '.cjs' ||
+      ext === '.mjs' ||
+      absPath.endsWith('.d.ts') ||
+      absPath.endsWith('/tsconfig.json') ||
+      absPath.endsWith('/package.json')
+    ) {
+      this.tsServer?.notifyWatchedFileEvent(absPath, kind)
     }
   }
 

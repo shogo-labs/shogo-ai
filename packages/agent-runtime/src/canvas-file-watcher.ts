@@ -99,6 +99,55 @@ function shouldIgnore(relativePath: string): boolean {
   return false
 }
 
+/**
+ * Build chokidar's `ignored` glob array from `IGNORED_PATH_PREFIXES`.
+ *
+ * Chokidar 3 supports two ignore shapes: anymatch glob arrays and a
+ * predicate function. The predicate form is invoked AFTER chokidar has
+ * already stat'd (and on Linux, called `inotify_add_watch` for) every
+ * directory it descends into — the function only suppresses event
+ * delivery, not traversal. With ~38k files under `node_modules/` per
+ * runtime workspace that meant ~44k watches per pod just from this
+ * watcher (saturated the per-uid `fs.inotify.max_user_watches` quota
+ * in staging on 2026-05-19; uid 1001 hit the kernel max of 164,698
+ * watches across 2 co-tenant pods on the same node).
+ *
+ * Glob patterns DO short-circuit recursion: chokidar's anymatch check
+ * against directory paths happens before the readdir + watch call, so
+ * a `**\/node_modules/**` glob means we never even read the dep tree.
+ *
+ * Two patterns per prefix: the directory itself (`<root>/<p>`) so a
+ * top-level match doesn't get a watch added, and `<root>/<p>/**` for
+ * everything inside. We also append wildcard `**\/<basename>/**`
+ * variants for the prefixes that can occur at any depth (`node_modules`,
+ * `.git`, `dist*`, `.next`, `.turbo`, `.cache`) so nested instances
+ * (e.g. `templates/foo/node_modules/`) are excluded too.
+ */
+function buildIgnoreGlobs(workspaceDir: string): string[] {
+  const NESTED_PREFIXES = new Set([
+    'node_modules',
+    '.git',
+    'dist',
+    'dist.canvas.staging',
+    'dist.staging',
+    'dist.prev',
+    'build',
+    '.next',
+    '.turbo',
+    '.cache',
+  ])
+  const globs: string[] = []
+  for (const p of IGNORED_PATH_PREFIXES) {
+    globs.push(`${workspaceDir}/${p}`)
+    globs.push(`${workspaceDir}/${p}/**`)
+    if (NESTED_PREFIXES.has(p)) {
+      globs.push(`**/${p}`)
+      globs.push(`**/${p}/**`)
+    }
+  }
+  return globs
+}
+
 export type CanvasEvent =
   | { type: 'init' }
   | { type: 'reload' }
@@ -118,6 +167,18 @@ export class CanvasFileWatcher {
   private subscribers = new Set<(event: CanvasEvent) => void>()
   private workspaceDir: string
   private onRebuildCallback: (() => void) | null = null
+  /**
+   * LSP bridge: receives every disk-side file event so the workspace
+   * language server can `workspace/didChangeWatchedFiles` instead of
+   * spinning up its own native inotify watcher (~44k watches per pod
+   * before delegation; saturated the per-uid kernel quota in staging
+   * 2026-05-19). Wired in by gateway.ts after the LSP manager is up.
+   *
+   * The bridge is a simple callback rather than a typed reference to
+   * avoid pulling shared-runtime types into this module (and to keep
+   * the watcher testable in isolation).
+   */
+  private lspBridge: ((absPath: string, kind: 'created' | 'changed' | 'deleted') => void) | null = null
 
   /** Dedupe guard: `${type}:${path}` -> timestamp (ms). */
   private recentEvents = new Map<string, number>()
@@ -137,6 +198,12 @@ export class CanvasFileWatcher {
    */
   private startChokidar(): void {
     try {
+      // Glob form (NOT predicate form) — see `buildIgnoreGlobs` for why
+      // this matters for inotify quota. The per-event `shouldIgnore`
+      // call in `handleChokidarFileEvent` below is kept as a defensive
+      // net for any event chokidar still routes through (e.g. a file
+      // at the workspace root whose name happens to match an
+      // `IGNORED_PATH_PREFIXES` entry).
       this.chokidar = chokidarWatch(this.workspaceDir, {
         ignoreInitial: true,
         persistent: true,
@@ -146,10 +213,7 @@ export class CanvasFileWatcher {
           stabilityThreshold: 60,
           pollInterval: 20,
         },
-        ignored: (absPath: string) => {
-          const rel = relative(this.workspaceDir, absPath)
-          return shouldIgnore(rel)
-        },
+        ignored: buildIgnoreGlobs(this.workspaceDir),
       })
 
       this.chokidar.on('add', (absPath) => this.handleChokidarFileEvent('add', absPath))
@@ -170,6 +234,11 @@ export class CanvasFileWatcher {
     const path = rel.split('\\').join('/')
 
     if (op === 'unlink') {
+      // LSP bridge fires regardless of dedupe — the deletion event is
+      // routed off the canvas dedupe map (which is per `${type}:${path}`)
+      // and into a separate LSP send path. The TSLanguageServer side
+      // does its own filtering against registered globs.
+      this.notifyLspBridge(absPath, 'deleted')
       if (this.shouldDedupe('file.deleted', path)) return
       this.broadcast({ type: 'file.deleted', path })
       if (isBuildableFile(path)) this.onRebuildCallback?.()
@@ -183,9 +252,20 @@ export class CanvasFileWatcher {
     } catch {
       /* deleted mid-race, fall back to Date.now() */
     }
+    this.notifyLspBridge(absPath, op === 'add' ? 'created' : 'changed')
     if (this.shouldDedupe('file.changed', path)) return
     this.broadcast({ type: 'file.changed', path, mtime })
     if (isBuildableFile(path)) this.onRebuildCallback?.()
+  }
+
+  private notifyLspBridge(absPath: string, kind: 'created' | 'changed' | 'deleted'): void {
+    const bridge = this.lspBridge
+    if (!bridge) return
+    try {
+      bridge(absPath, kind)
+    } catch (err) {
+      console.warn('[CanvasFileWatcher] LSP bridge threw:', (err as Error).message)
+    }
   }
 
   private shouldDedupe(type: string, path: string): boolean {
@@ -207,6 +287,15 @@ export class CanvasFileWatcher {
 
   setOnRebuild(callback: () => void): void {
     this.onRebuildCallback = callback
+  }
+
+  /**
+   * Install (or replace) the LSP bridge — see `lspBridge` field comment.
+   * Pass `null` to detach. Called once from gateway.ts after the
+   * `WorkspaceLSPManager` is ready.
+   */
+  setLspBridge(bridge: ((absPath: string, kind: 'created' | 'changed' | 'deleted') => void) | null): void {
+    this.lspBridge = bridge
   }
 
   /**

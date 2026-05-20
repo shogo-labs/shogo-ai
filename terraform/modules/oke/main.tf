@@ -324,11 +324,26 @@ resource "oci_containerengine_node_pool" "main" {
 
   # Custom OKE images have their own bootstrap — user_data overrides it and
   # causes RegisterTimeOut. Only set user_data for auto-detected OKE images.
+  #
+  # The inotify sysctl drop-in is intentionally redundant with
+  # k8s/base/inotify-tuner.yaml (deployed via .github/workflows/deploy.yml).
+  # The DaemonSet is what reaches existing nodes today and after kubelet
+  # restarts; cloud-init only fires on first boot of a new node, but the
+  # `lifecycle.ignore_changes = [node_metadata]` policy below means a tf
+  # apply won't propagate this to existing pools anyway. So: cloud-init
+  # makes future replacement nodes correct from boot before kubelet is
+  # ready, and the DaemonSet guarantees correctness on every running node.
+  # Do NOT remove either side without removing the other.
   node_metadata = local.use_custom_image ? {} : {
     user_data = base64encode(join("\n", [
       "#!/bin/bash",
       "curl --fail -H \"Authorization: Bearer Oracle\" -L0 http://169.254.169.254/opc/v2/instance/metadata/oke_init_script | base64 --decode >/var/run/oke-init.sh",
       "bash /usr/libexec/oci-growfs -y",
+      "cat >/etc/sysctl.d/99-shogo-inotify.conf <<'EOF'",
+      "fs.inotify.max_user_watches = 1048576",
+      "fs.inotify.max_user_instances = 8192",
+      "EOF",
+      "sysctl --system",
       "bash /var/run/oke-init.sh",
     ]))
   }
@@ -445,11 +460,21 @@ resource "oci_containerengine_node_pool" "workloads" {
     boot_volume_size_in_gbs = var.boot_volume_gb
   }
 
+  # See `oci_containerengine_node_pool.main.node_metadata` for context on why
+  # the inotify sysctl drop-in is duplicated here AND in
+  # k8s/base/inotify-tuner.yaml — short version: cloud-init for new-node
+  # boot order, DaemonSet for everything else (existing nodes, reboots,
+  # post-tf-apply, etc.).
   node_metadata = local.use_custom_image ? {} : {
     user_data = base64encode(join("\n", [
       "#!/bin/bash",
       "curl --fail -H \"Authorization: Bearer Oracle\" -L0 http://169.254.169.254/opc/v2/instance/metadata/oke_init_script | base64 --decode >/var/run/oke-init.sh",
       "bash /usr/libexec/oci-growfs -y",
+      "cat >/etc/sysctl.d/99-shogo-inotify.conf <<'EOF'",
+      "fs.inotify.max_user_watches = 1048576",
+      "fs.inotify.max_user_instances = 8192",
+      "EOF",
+      "sysctl --system",
       "bash /var/run/oke-init.sh",
     ]))
   }

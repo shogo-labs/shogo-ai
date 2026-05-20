@@ -694,6 +694,11 @@ jobs:
       - name: Apply Kubernetes manifests
         run: |
           kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
+          # Node-level inotify quota bump — DaemonSet lives in kube-system,
+          # outside the kustomize overlay (kustomize blocks reaching into
+          # ../../base/ from an overlay). See k8s/base/inotify-tuner.yaml
+          # for context.
+          kubectl apply -f k8s/base/inotify-tuner.yaml
 
       - name: Ensure docs DomainMapping
         run: |
@@ -1090,7 +1095,13 @@ jobs:
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
 
       - name: Apply Kubernetes manifests
-        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
+        run: |
+          kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
+          # Node-level inotify quota bump — DaemonSet lives in kube-system,
+          # outside the kustomize overlay (kustomize blocks reaching into
+          # ../../base/ from an overlay). See k8s/base/inotify-tuner.yaml
+          # for context.
+          kubectl apply -f k8s/base/inotify-tuner.yaml
 
       - name: Ensure Kourier TLS configuration
         run: |
@@ -1522,7 +1533,13 @@ jobs:
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
 
       - name: Apply Kubernetes manifests
-        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
+        run: |
+          kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
+          # Node-level inotify quota bump — DaemonSet lives in kube-system,
+          # outside the kustomize overlay (kustomize blocks reaching into
+          # ../../base/ from an overlay). See k8s/base/inotify-tuner.yaml
+          # for context.
+          kubectl apply -f k8s/base/inotify-tuner.yaml
 
       - name: Ensure Kourier TLS configuration
         run: |
@@ -1919,7 +1936,13 @@ jobs:
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
 
       - name: Apply Kubernetes manifests
-        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
+        run: |
+          kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
+          # Node-level inotify quota bump — DaemonSet lives in kube-system,
+          # outside the kustomize overlay (kustomize blocks reaching into
+          # ../../base/ from an overlay). See k8s/base/inotify-tuner.yaml
+          # for context.
+          kubectl apply -f k8s/base/inotify-tuner.yaml
 
       - name: Ensure Kourier TLS configuration
         run: |
