@@ -63,8 +63,11 @@
       "uncoveredLines": 2,
       "linePct": 98.63013698630137,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "finishedAt": "2026-05-20T08:29:43.820Z",
+      "beforeLinePct": 98.63013698630137,
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/lib/runtime-token.ts",

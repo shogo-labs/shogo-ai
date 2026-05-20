@@ -15,12 +15,14 @@ let sendTunnelRequestImpl: (instId: string, req: any) => Promise<any> = async ()
   body: '{"ok":true}',
   headers: { 'content-type': 'application/json' },
 })
+let markControllerActiveImpl: (instId: string, userId: string) => Promise<void> = async () => {}
 let requestIdCounter = 0
 
 mock.module('../../routes/instances', () => ({
   generateRequestId: () => `rid-${++requestIdCounter}`,
   markControllerActive: async (instId: string, userId: string) => {
     markControllerActiveCalls.push({ instId, userId })
+    return markControllerActiveImpl(instId, userId)
   },
   sendTunnelRequest: async (instId: string, req: any) => {
     sendTunnelRequestCalls.push({ instId, req })
@@ -374,6 +376,66 @@ describe('relayAgentProxyViaTunnel — streaming', () => {
     const reader = (r.body as ReadableStream<Uint8Array>).getReader()
     await reader.read().catch(() => {})
     expect(cancelled).toBe(true)
+  })
+
+  it('closes trackerController when stream-error fires during a chat turn', async () => {
+    // tracker is active (isChatTurn:true), then a stream-error chunk
+    // forces the trackerController.close() path on line 201.
+    const r = await relayAgentProxyViaTunnel({
+      c: makeCtx(),
+      instanceId: 'i', workspaceId: 'w', projectId: 'p',
+      agentPath: '/agent/chat', cleanPath: '/agent/chat',
+      method: 'POST', headers: {},
+      isChatTurn: true,
+      chatSessionId: 'sess-err',
+    })
+    expect(trackerCalls.length).toBeGreaterThan(0)
+    setTimeout(() => {
+      lastStreamCb?.({ type: 'stream-error', error: 'kaboom' })
+    }, 5)
+    const reader = (r.body as ReadableStream<Uint8Array>).getReader()
+    let err: any
+    await reader.read().catch((e) => (err = e))
+    expect(String(err?.message ?? err)).toContain('kaboom')
+  })
+
+  it('closes trackerController when context signal aborts during a chat turn', async () => {
+    // tracker active + signal abort → forces trackerController.close() on line 213.
+    const ac = new AbortController()
+    let cancelled = false
+    lastStreamCancel = () => { cancelled = true }
+    const r = await relayAgentProxyViaTunnel({
+      c: makeCtx({ signal: ac.signal }),
+      instanceId: 'i', workspaceId: 'w', projectId: 'p',
+      agentPath: '/agent/chat', cleanPath: '/agent/chat',
+      method: 'POST', headers: {},
+      isChatTurn: true,
+      chatSessionId: 'sess-abort',
+    })
+    expect(trackerCalls.length).toBeGreaterThan(0)
+    ac.abort()
+    const reader = (r.body as ReadableStream<Uint8Array>).getReader()
+    await reader.read().catch(() => {})
+    expect(cancelled).toBe(true)
+  })
+
+  it('swallows markControllerActive rejections without breaking the relay', async () => {
+    // forces line 139 markControllerActive(...).catch(() => {}) handler.
+    markControllerActiveImpl = async () => { throw new Error('flaky kv') }
+    try {
+      const r = await relayAgentProxyViaTunnel({
+        c: makeCtx(),
+        instanceId: 'i', workspaceId: 'w', projectId: 'p',
+        agentPath: '/agent/chat', cleanPath: '/agent/chat',
+        method: 'POST', headers: {},
+        userId: 'u-1',
+      })
+      setTimeout(() => lastStreamCb?.({ type: 'stream-end' }), 5)
+      await readAllChunks(r.body as ReadableStream<Uint8Array>)
+      expect(markControllerActiveCalls.length).toBeGreaterThan(0)
+    } finally {
+      markControllerActiveImpl = async () => {}
+    }
   })
 
   it('handles non-chat streaming path without invoking tracker', async () => {
