@@ -238,6 +238,29 @@ export function marketplaceRoutes() {
     }
   })
 
+  app.get('/installs/by-project/:projectId', async (c) => {
+    const authCtx = c.get('auth') as AuthContext | undefined
+    if (!authCtx?.isAuthenticated || !authCtx.userId) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    try {
+      const projectId = c.req.param('projectId')
+      const install = await prisma.marketplaceInstall.findFirst({
+        where: { projectId, userId: authCtx.userId },
+        include: {
+          listing: {
+            select: { id: true, slug: true, title: true, iconUrl: true, currentVersion: true },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      })
+      return c.json({ install: install ?? null })
+    } catch (err) {
+      console.error('[marketplace] getInstallByProject', err)
+      return c.json({ error: 'Failed to look up install' }, 500)
+    }
+  })
+
   app.get('/installs/:installId/updates', async (c) => {
     const authCtx = c.get('auth') as AuthContext | undefined
     if (!authCtx?.isAuthenticated || !authCtx.userId) {

@@ -24,6 +24,8 @@ import {
   ScrollView,
   ActivityIndicator,
   RefreshControl,
+  TextInput,
+  Image,
 } from 'react-native'
 import { observer } from 'mobx-react-lite'
 import { useRouter } from 'expo-router'
@@ -33,9 +35,46 @@ import {
   AlertTriangle,
   CheckCircle2,
   Package,
+  Search,
+  X,
 } from 'lucide-react-native'
 import { useDomainHttp } from '../../../contexts/domain'
 import { cn } from '@shogo/shared-ui/primitives'
+import { getAccentColor, getInitial } from '../../../components/marketplace/accent'
+
+const INSTALL_MODEL_LABELS: Record<'fork' | 'linked', string> = {
+  fork: 'Independent copy',
+  linked: 'Linked to publisher',
+}
+
+function InstallListingIcon({
+  iconUrl,
+  title,
+}: {
+  iconUrl: string | null
+  title: string
+}) {
+  const accent = getAccentColor(title)
+  if (iconUrl) {
+    return (
+      <Image
+        source={{ uri: iconUrl }}
+        className="w-10 h-10 rounded-xl"
+        resizeMode="cover"
+      />
+    )
+  }
+  return (
+    <View
+      className="w-10 h-10 rounded-xl items-center justify-center"
+      style={{ backgroundColor: `${accent}33` }}
+    >
+      <Text style={{ color: accent, fontSize: 16, fontWeight: '700' }}>
+        {getInitial(title)}
+      </Text>
+    </View>
+  )
+}
 
 interface InstallRow {
   id: string
@@ -70,12 +109,15 @@ export default observer(function InstallsScreen() {
   const http = useDomainHttp()
   const [installs, setInstalls] = useState<InstallRow[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
   const [updateStates, setUpdateStates] = useState<Record<string, UpdateState>>({})
 
   const loadInstalls = useCallback(async () => {
+    setLoadError(null)
     try {
-      const res = await http.get<{ installs: InstallRow[] }>('/api/marketplace/installs')
+      const res = await http.get<{ installs: InstallRow[] }>('/api/marketplace/my-installs')
       const items = res.data?.installs ?? []
       setInstalls(items)
       // Kick off update checks in parallel — they're independent so
@@ -95,6 +137,15 @@ export default observer(function InstallsScreen() {
       await Promise.all(items.map((inst) => refreshOne(inst.id)))
     } catch (err) {
       console.error('[installs] load failed', err)
+      const body = (err as { response?: { data?: { error?: string; code?: string } } })?.response?.data
+      const msg =
+        body?.code === 'cloud_signin_required'
+          ? 'Sign in to Shogo Cloud to load installs, or restart the API after updating for local installs.'
+          : typeof body?.error === 'string'
+            ? body.error
+            : 'Failed to load installs'
+      setLoadError(msg)
+      setInstalls([])
     } finally {
       setLoading(false)
       setRefreshing(false)
@@ -213,6 +264,28 @@ export default observer(function InstallsScreen() {
     [installs, updateStates],
   )
 
+  const filteredInstalls = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return sortedInstalls
+    return sortedInstalls.filter((inst) => {
+      const title = inst.listing.title.toLowerCase()
+      const slug = inst.listing.slug.toLowerCase()
+      return title.includes(q) || slug.includes(q)
+    })
+  }, [sortedInstalls, searchQuery])
+
+  const updateCount = useMemo(
+    () => sortedInstalls.filter((inst) => updateStates[inst.id]?.hasUpdate).length,
+    [sortedInstalls, updateStates],
+  )
+
+  const openProject = useCallback(
+    (projectId: string) => {
+      router.push(`/(app)/projects/${projectId}` as any)
+    },
+    [router],
+  )
+
   if (loading) {
     return (
       <View className="flex-1 bg-background items-center justify-center">
@@ -223,29 +296,87 @@ export default observer(function InstallsScreen() {
 
   return (
     <View className="flex-1 bg-background">
-      <View className="flex-row items-center gap-3 px-5 pt-3 pb-2 border-b border-border">
-        <Pressable onPress={() => router.back()} hitSlop={6} className="p-1">
-          <ArrowLeft size={20} color="#71717a" />
-        </Pressable>
-        <Text className="text-base font-semibold text-foreground flex-1">
-          My installs
-        </Text>
+      <View className="border-b border-border">
+        <View className="flex-row items-center gap-3 px-5 pt-3 pb-2">
+          <Pressable onPress={() => router.back()} hitSlop={6} className="p-1">
+            <ArrowLeft size={20} color="#71717a" />
+          </Pressable>
+          <View className="flex-1 min-w-0">
+            <Text className="text-base font-semibold text-foreground">My installs</Text>
+            {!loadError && sortedInstalls.length > 0 && (
+              <Text className="text-[11px] text-muted-foreground mt-0.5">
+                {sortedInstalls.length} installed
+                {updateCount > 0 ? ` · ${updateCount} update${updateCount === 1 ? '' : 's'} available` : ''}
+              </Text>
+            )}
+          </View>
+        </View>
+        {!loadError && sortedInstalls.length > 0 && (
+          <View className="px-5 pb-3">
+            <View className="flex-row items-center bg-card border border-input rounded-xl px-3 h-10">
+              <Search size={16} color="#71717a" />
+              <TextInput
+                className="flex-1 ml-2 text-sm text-foreground web:outline-none no-focus-ring"
+                placeholder="Search installs…"
+                placeholderTextColor="#71717a"
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              {searchQuery.length > 0 && (
+                <Pressable onPress={() => setSearchQuery('')} hitSlop={6}>
+                  <X size={14} color="#71717a" />
+                </Pressable>
+              )}
+            </View>
+          </View>
+        )}
       </View>
 
       <ScrollView
         contentContainerStyle={{ padding: 16, paddingBottom: 48, gap: 12 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
-        {sortedInstalls.length === 0 && (
-          <View className="rounded-2xl border border-border bg-card px-5 py-10 items-center gap-2">
+        {loadError && (
+          <View className="rounded-2xl border border-destructive/30 bg-destructive/10 px-5 py-6 gap-2">
+            <Text className="text-sm font-semibold text-destructive">Could not load installs</Text>
+            <Text className="text-xs text-foreground/80">{loadError}</Text>
+            <Pressable
+              onPress={onRefresh}
+              className="mt-2 self-start px-3 py-2 rounded-lg bg-primary active:opacity-80"
+            >
+              <Text className="text-xs font-semibold text-primary-foreground">Retry</Text>
+            </Pressable>
+          </View>
+        )}
+        {!loadError && sortedInstalls.length === 0 && (
+          <View className="rounded-2xl border border-border bg-card px-5 py-10 items-center gap-3">
             <Package size={28} color="#71717a" />
             <Text className="text-sm font-semibold text-foreground">No installs yet</Text>
             <Text className="text-xs text-muted-foreground text-center">
               Browse the marketplace to install your first agent.
             </Text>
+            <Pressable
+              onPress={() => router.push('/(app)/marketplace' as any)}
+              className="mt-1 px-4 py-2.5 rounded-xl bg-primary active:opacity-80"
+            >
+              <Text className="text-xs font-semibold text-primary-foreground">
+                Browse marketplace
+              </Text>
+            </Pressable>
           </View>
         )}
-        {sortedInstalls.map((inst) => {
+        {!loadError && sortedInstalls.length > 0 && filteredInstalls.length === 0 && (
+          <View className="rounded-2xl border border-border bg-card px-5 py-10 items-center gap-2">
+            <Search size={28} color="#71717a" />
+            <Text className="text-sm font-semibold text-foreground">No matching installs</Text>
+            <Text className="text-xs text-muted-foreground text-center">
+              Try a different search term.
+            </Text>
+          </View>
+        )}
+        {filteredInstalls.map((inst) => {
           const state = updateStates[inst.id] ?? {
             hasUpdate: false,
             installedVersion: inst.installedVersion,
@@ -260,12 +391,17 @@ export default observer(function InstallsScreen() {
           return (
             <View
               key={inst.id}
-              className="rounded-2xl border border-border bg-card p-4 gap-3"
+              className="rounded-2xl border border-border bg-card overflow-hidden"
             >
+              <Pressable
+                onPress={() => openProject(inst.projectId)}
+                className="p-4 gap-3 active:opacity-95"
+              >
               <View className="flex-row items-center gap-3">
-                <View className="w-10 h-10 rounded-xl bg-primary/10 items-center justify-center">
-                  <Package size={18} color="#e27927" />
-                </View>
+                <InstallListingIcon
+                  iconUrl={inst.listing.iconUrl}
+                  title={inst.listing.title}
+                />
                 <View className="flex-1 min-w-0">
                   <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
                     {inst.listing.title}
@@ -274,12 +410,12 @@ export default observer(function InstallsScreen() {
                     v{state.installedVersion}
                     {state.hasUpdate ? ` → v${state.currentVersion}` : ''}
                     {' · '}
-                    {inst.installModel}
+                    {INSTALL_MODEL_LABELS[inst.installModel]}
                   </Text>
                 </View>
                 {state.hasUpdate && (
                   <View className="px-2 py-1 rounded-full bg-amber-500/15">
-                    <Text className="text-[10px] font-semibold text-amber-700">
+                    <Text className="text-[10px] font-semibold text-amber-600 dark:text-amber-400">
                       Update available
                     </Text>
                   </View>
@@ -319,9 +455,10 @@ export default observer(function InstallsScreen() {
               {state.appliedNotice && (
                 <Text className="text-[11px] text-emerald-600">{state.appliedNotice}</Text>
               )}
+              </Pressable>
 
               {state.hasUpdate && (
-                <View className="flex-row gap-2">
+                <View className="flex-row gap-2 px-4 pb-4">
                   <Pressable
                     onPress={() => handleApply(inst.id, false)}
                     disabled={state.applying}
