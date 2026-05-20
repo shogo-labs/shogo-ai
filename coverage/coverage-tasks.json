@@ -174,8 +174,11 @@
       "uncoveredLines": 7,
       "linePct": 89.70588235294117,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "afterLinePct": 89.71,
+      "afterFuncPct": 40.0,
+      "note": "STALE ENTRY. File is excluded from CI coverage collection by apps/api bunfig.toml (coverageSkipTestFiles=true + coveragePathIgnorePatterns=[\"**/__tests__/**\"]) \u2014 it never appears in the apps-api.lcov. Gap was seeded from a pre-exclusion gaps.json snapshot. The 3 remaining DA:,0 lines (L21-23: export-const declaration + two // comments) and 1 uncovered FN are V8 module-initialisation instrumentation artifacts that cannot be exercised by test code (module-level code runs before coverage hooks are installed). All 5 logical exported units (raw, sql, PrismaClientKnownRequestError constructor, PrismaClientValidationError, withPrismaExports) are fully exercised by the 16 new tests in src/__tests__/helpers/prisma-mock-exports.test.ts."
     },
     {
       "file": "apps/api/src/routes/admin.ts",
