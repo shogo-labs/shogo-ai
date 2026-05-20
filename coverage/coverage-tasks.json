@@ -163,8 +163,11 @@
       "uncoveredLines": 6,
       "linePct": 98.4375,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "afterLinePct": 100,
+      "afterFuncPct": 100,
+      "note": "queue claimed 6 uncov (postgres-flavored isSqlite=false branches). closed via one-line lazy refactor of isSqlite const \u2192 isSqlite() function (same pattern as wave 2 node-metrics signozEndpoint), enabling dynamic toggling of SHOGO_LOCAL_MODE per test. then added 9 tests covering pricingModel/creatorId filters, tags sqlite+postgres branches, sort=rating/featured sqlite+postgres branches, searchListings postgres-hasSome branch, and generateSlug 32-retry exhaustion throw."
     },
     {
       "file": "apps/api/src/__tests__/helpers/prisma-mock-exports.ts",
