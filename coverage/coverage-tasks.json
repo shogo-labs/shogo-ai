@@ -18,8 +18,11 @@
       "uncoveredLines": 1,
       "linePct": 99.77876106194691,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "finishedAt": "2026-05-20T07:34:14.150Z",
+      "beforeLinePct": 99.77876106194691,
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/services/node-metrics.service.ts",
