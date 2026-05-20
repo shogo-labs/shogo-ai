@@ -301,14 +301,53 @@ describe('ensureTsconfigWatchExclusions (via startAll → startTS)', () => {
     const mgr = new WorkspaceLSPManager({ projectDir: TEST_DIR })
     await mgr.startAll().catch(() => {})
     const written = JSON.parse(readFileSync(join(TEST_DIR, 'tsconfig.json'), 'utf-8'))
-    expect(written.watchOptions?.excludeDirectories).toEqual(['**/node_modules'])
+    expect(written.watchOptions?.excludeDirectories).toEqual([
+      '**/node_modules',
+      '**/dist',
+      '**/.git',
+      '**/.shogo',
+    ])
     mgr.stop()
   })
 
-  test('leaves tsconfig.json alone when excludeDirectories is already set', async () => {
+  test('merges required exclusions with the project\'s existing excludeDirectories', async () => {
+    // Pre-fix this test asserted "leaves alone" because the manager
+    // early-returned when the array was non-empty. New behavior: dedupe-merge
+    // the required entries so a project that only excluded `custom/**`
+    // still gets `**/node_modules` etc. added (the staging incident
+    // pre-condition).
+    writeFileSync(
+      join(TEST_DIR, 'tsconfig.json'),
+      JSON.stringify({
+        compilerOptions: {},
+        watchOptions: { excludeDirectories: ['custom/**'] },
+      }),
+    )
+    const mgr = new WorkspaceLSPManager({ projectDir: TEST_DIR })
+    await mgr.startAll().catch(() => {})
+    const after = JSON.parse(readFileSync(join(TEST_DIR, 'tsconfig.json'), 'utf-8'))
+    expect(after.watchOptions.excludeDirectories).toEqual([
+      'custom/**',
+      '**/node_modules',
+      '**/dist',
+      '**/.git',
+      '**/.shogo',
+    ])
+    mgr.stop()
+  })
+
+  test('does not rewrite tsconfig.json when all required exclusions are already present', async () => {
     const original = JSON.stringify({
       compilerOptions: {},
-      watchOptions: { excludeDirectories: ['custom/**'] },
+      watchOptions: {
+        excludeDirectories: [
+          '**/node_modules',
+          '**/dist',
+          '**/.git',
+          '**/.shogo',
+          'custom/**',
+        ],
+      },
     })
     writeFileSync(join(TEST_DIR, 'tsconfig.json'), original)
     const mgr = new WorkspaceLSPManager({ projectDir: TEST_DIR })

@@ -867,6 +867,19 @@ export class AgentGateway {
         pyrightBin: pyResult?.resolved,
       })
       await this.lspManager.startAll()
+      // Bridge chokidar events into tsserver as
+      // `workspace/didChangeWatchedFiles`. With the bridge in place
+      // tsserver delegates all watching to chokidar (which the agent
+      // runtime already runs) — without it tsserver falls back to
+      // native inotify and burns ~44k watches per pod, saturating the
+      // per-uid kernel quota. The bridge filter inside the LSP manager
+      // restricts to TS-relevant paths; the per-glob filter inside
+      // TSLanguageServer further restricts to paths the server
+      // actually registered.
+      const lspManagerRef = this.lspManager
+      this.canvasFileWatcher.setLspBridge((absPath, kind) => {
+        lspManagerRef.notifyWatchedFileEvent(absPath, kind)
+      })
       console.log(`${this.logPrefix} LSP ready for workspace: ${this.workspaceDir}`)
     } catch (err: any) {
       console.warn(`${this.logPrefix} LSP init failed:`, err.message)
@@ -878,6 +891,10 @@ export class AgentGateway {
     console.log('[AgentGateway] Stopping...')
     this.running = false
 
+    // Detach the bridge BEFORE stopping the LSP manager so a late
+    // chokidar event during teardown doesn't try to write to a stopped
+    // server (which would throw "Language server not running").
+    this.canvasFileWatcher.setLspBridge(null)
     this.lspManager?.stop()
     this.lspManager = null
 
