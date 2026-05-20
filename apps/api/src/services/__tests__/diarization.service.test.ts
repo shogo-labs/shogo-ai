@@ -525,3 +525,104 @@ describe('splitTextBySpeakers', () => {
     expect(r[0]!.speaker).toBe('speaker_00')
   })
 })
+
+// ─── Coverage gap-closers ─────────────────────────────────────────────────
+// The platform-specific library-path branches (lines 108, 110-111) and the
+// parse-failure catch (line 139) are only reachable via platform stubs and
+// a global parseFloat hijack, respectively. Kept in their own describe so
+// the rest of the suite stays insulated from `process.platform` mutation.
+
+describe('diarize — platform-specific env wiring', () => {
+  let wavFile: string
+  beforeEach(() => {
+    seedDiarizationBinary()
+    seedSegmentationModel()
+    seedEmbeddingModel()
+    wavFile = join(tmpRoot, `gap-audio-${Date.now()}.wav`)
+    makeWav16kHz(wavFile)
+  })
+  afterEach(() => {
+    if (existsSync(wavFile)) rmSync(wavFile)
+    const resampled = wavFile.replace(/\.wav$/, '-16k.wav')
+    if (existsSync(resampled)) rmSync(resampled)
+  })
+
+  function setSpawnCapturingEnv(): { capturedEnv: NodeJS.ProcessEnv | undefined } {
+    const captured: { capturedEnv: NodeJS.ProcessEnv | undefined } = { capturedEnv: undefined }
+    spawnImpl = (_cmd, _args, opts) => {
+      captured.capturedEnv = opts?.env
+      const p = new FakeProc()
+      queueMicrotask(() => {
+        p.stdout.emit('data', Buffer.from('0.0 -- 1.0 speaker_00\n'))
+        p.emit('exit', 0)
+      })
+      return p
+    }
+    return captured
+  }
+
+  it('prepends sherpa lib dir to DYLD_LIBRARY_PATH on darwin (line 108)', async () => {
+    const orig = process.platform
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+    try {
+      const cap = setSpawnCapturingEnv()
+      await svc.diarize(wavFile)
+      expect(cap.capturedEnv?.DYLD_LIBRARY_PATH).toBeDefined()
+      expect(cap.capturedEnv?.DYLD_LIBRARY_PATH).toContain('sherpa')
+    } finally {
+      Object.defineProperty(process, 'platform', { value: orig, configurable: true })
+    }
+  })
+
+  it('prepends sherpa bin + lib dirs to PATH on win32 (lines 110-111)', async () => {
+    const orig = process.platform
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    try {
+      const cap = setSpawnCapturingEnv()
+      await svc.diarize(wavFile)
+      expect(cap.capturedEnv?.PATH).toBeDefined()
+      const pathParts = (cap.capturedEnv?.PATH ?? '').split(';')
+      expect(pathParts[0]).toContain('bin')
+      expect(pathParts[1]).toContain('sherpa')
+    } finally {
+      Object.defineProperty(process, 'platform', { value: orig, configurable: true })
+    }
+  })
+})
+
+describe('diarize — parse failure catch', () => {
+  let wavFile: string
+  beforeEach(() => {
+    seedDiarizationBinary()
+    seedSegmentationModel()
+    seedEmbeddingModel()
+    wavFile = join(tmpRoot, `gap-audio-${Date.now()}.wav`)
+    makeWav16kHz(wavFile)
+  })
+  afterEach(() => {
+    if (existsSync(wavFile)) rmSync(wavFile)
+    const resampled = wavFile.replace(/\.wav$/, '-16k.wav')
+    if (existsSync(resampled)) rmSync(resampled)
+  })
+
+  it('rejects with a "Failed to parse" error when the parser throws (line 139)', async () => {
+    spawnImpl = () => {
+      const p = new FakeProc()
+      queueMicrotask(() => {
+        // Emit a valid-looking segment line so the regex matches and the
+        // parser enters the parseFloat branch, where our hijack throws.
+        p.stdout.emit('data', Buffer.from('0.0 -- 1.0 speaker_00\n'))
+        p.emit('exit', 0)
+      })
+      return p
+    }
+
+    const origParseFloat = globalThis.parseFloat
+    globalThis.parseFloat = (() => { throw new Error('hijacked') }) as typeof parseFloat
+    try {
+      await expect(svc.diarize(wavFile)).rejects.toThrow(/Failed to parse diarization output/)
+    } finally {
+      globalThis.parseFloat = origParseFloat
+    }
+  })
+})

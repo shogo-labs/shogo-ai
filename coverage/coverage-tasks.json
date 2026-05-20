@@ -119,8 +119,11 @@
       "uncoveredLines": 5,
       "linePct": 97.23756906077348,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "afterLinePct": 100,
+      "afterFuncPct": 100,
+      "note": "queue claimed 5 uncov lines; actual was 4 (108, 110-111, 139). 3 platform-gated reached via Object.defineProperty(process, \"platform\") stubs (darwin DYLD_LIBRARY_PATH + win32 PATH); the parse-failure catch (139) reached via globalThis.parseFloat hijack confined to one test (restored in finally)"
     },
     {
       "file": "apps/api/src/lib/chat-usage-tracker.ts",
