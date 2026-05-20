@@ -96,6 +96,12 @@ export interface TestsRoutesConfig {
    * Workspaces directory where projects are stored
    */
   workspacesDir: string
+  /**
+   * @internal Test-only override for the per-run timeout in ms (default 180000).
+   * Production callers never set this; it exists so tests can force the
+   * SIGTERM-on-timeout branch deterministically without waiting 3 minutes.
+   */
+  _testTimeoutMs?: number
 }
 
 /**
@@ -315,11 +321,8 @@ export function testsRoutes(config: TestsRoutesConfig) {
     
     // Add specific file (or file:line to run a single test)
     if (file) {
-      if (line != null && line > 0) {
-        command += ` "${file}:${line}"`
-      } else {
-        command += ` "${file}"`
-      }
+      const target = line != null && line > 0 ? `${file}:${line}` : file
+      command += ` "${target}"`
     }
     
     // Add test name filter (grep) only when not targeting by line
@@ -335,7 +338,7 @@ export function testsRoutes(config: TestsRoutesConfig) {
     // Add reporter
     command += ` --reporter=${reporter}`
 
-    const timeout = 180000 // 3 minutes
+    const timeout = config._testTimeoutMs ?? 180000 // 3 minutes
 
     console.log(`[Tests] Running: ${command} in ${projectDir}`)
 

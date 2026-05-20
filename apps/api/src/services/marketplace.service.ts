@@ -14,7 +14,15 @@ import {
 } from '../lib/prisma';
 
 const slugSuffix = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 6);
-const isSqlite = process.env.SHOGO_LOCAL_MODE === 'true';
+// Lazy: re-read on every call so tests can toggle SHOGO_LOCAL_MODE
+// between sqlite and postgres-flavored branches without re-importing
+// the module (bun caches module-load constants and mock.module factory
+// results, making module re-import a no-op in the same process). Same
+// pattern as signozEndpoint() in services/node-metrics.service.ts
+// (wave 2).
+function isSqlite(): boolean {
+  return process.env.SHOGO_LOCAL_MODE === 'true';
+}
 
 export type CreateCreatorProfileData = Omit<
   Prisma.CreatorProfileUncheckedCreateInput,
@@ -191,7 +199,7 @@ function browseFilters(options: BrowseListingsOptions): Prisma.MarketplaceListin
     where.pricingModel = options.pricingModel;
   }
   if (options.tags != null && options.tags.length > 0) {
-    if (isSqlite) {
+    if (isSqlite()) {
       where.AND = options.tags.map((t) => ({ tags: { contains: t } }));
     } else {
       where.tags = { hasEvery: options.tags } as any;
@@ -213,7 +221,7 @@ function listingOrderBy(sort: ListingSort | undefined): Prisma.MarketplaceListin
     case 'rating':
       return [{ averageRating: 'desc' }, { reviewCount: 'desc' }, { publishedAt: 'desc' }];
     case 'featured':
-      if (isSqlite) {
+      if (isSqlite()) {
         return [{ featuredAt: 'desc' }, { publishedAt: 'desc' }];
       }
       return [
@@ -386,7 +394,7 @@ export async function searchListings(
   const tokens = q.split(/\s+/).filter(Boolean);
   const { page, limit, skip } = normalizePagination(options.page, options.limit);
   const filter = browseFilters(options);
-  const containsOpt = isSqlite
+  const containsOpt = isSqlite()
     ? (v: string) => ({ contains: v } as any)
     : (v: string) => ({ contains: v, mode: 'insensitive' } as any);
 
@@ -395,7 +403,7 @@ export async function searchListings(
     { shortDescription: containsOpt(q) },
   ];
   if (tokens.length > 0) {
-    if (isSqlite) {
+    if (isSqlite()) {
       searchOr.push(...tokens.map((t) => ({ tags: { contains: t } } as Prisma.MarketplaceListingWhereInput)));
     } else {
       searchOr.push({ tags: { hasSome: tokens } } as any);
