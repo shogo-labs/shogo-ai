@@ -20,7 +20,24 @@
 // ---------------------------------------------------------------------------
 
 (function () {
-  if (window.__shogoCanvasBridgeLoaded) return
+  if (window.__shogoCanvasBridgeLoaded) {
+    // A second copy of the bridge is trying to load — usually because a stale
+    // main.tsx is shipping its own embedded copy alongside the live-served
+    // /agent/canvas/bridge.js, or because the parent <CanvasWebView /> grew a
+    // separate remount-on-rebuild path. Either way, two reload handlers on the
+    // same document will fight each other (double reloads, racing state).
+    // Surface it loudly in dev so it's caught at review time instead of in
+    // production telemetry six months later.
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn(
+        '[shogo-canvas-bridge] Duplicate bridge load detected. ' +
+        'Live-refresh is the sole responsibility of /agent/canvas/bridge.js — ' +
+        'remove the duplicate (likely an embedded copy in main.tsx or a parent-side ' +
+        'remount on rebuild). See CanvasWebView.tsx for the contract.'
+      )
+    }
+    return
+  }
   window.__shogoCanvasBridgeLoaded = true
 
   // -------------------------------------------------------------------------
@@ -136,14 +153,19 @@
   // We deliberately no longer expose a manual "Refresh" button — the canvas
   // is agent-driven, so the moment a rebuild lands the user expects to see
   // it. The pill exists purely for affordance so the swap isn't a
-  // mysterious flash.
-  function showUpdatingPill() {
+  // mysterious flash. `bufferedCount` lets us surface "N changes while you
+  // were away" when emerging from a hidden state.
+  function showUpdatingPill(bufferedCount) {
     if (document.getElementById(TOAST_ID)) return
     injectToastStyles()
     var toastEl = document.createElement('div')
     toastEl.id = TOAST_ID
     var label = document.createElement('span')
-    label.textContent = 'Updating\u2026'
+    if (bufferedCount && bufferedCount > 1) {
+      label.textContent = 'Updating\u2026 (' + bufferedCount + ' changes)'
+    } else {
+      label.textContent = 'Updating\u2026'
+    }
     toastEl.appendChild(label)
     document.body.appendChild(toastEl)
   }
@@ -154,44 +176,80 @@
   //
   // Behavior:
   //   1. Server replays an `init` event on connect — gate live updates on it
-  //      so the very first message can't double-reload.
+  //      so the very first message can't double-reload. As a fallback, if
+  //      `init` never arrives within READY_FALLBACK_MS we flip `ready`
+  //      anyway so a broken server contract can't permanently mute the
+  //      bridge.
   //   2. On `reload`, debounce ~250ms (a single rebuild can fan out into
   //      multiple file-watcher events) then `window.location.reload()`.
-  //   3. If the tab is hidden (e.g. user is on a different IDE tab inside
-  //      the canvas), defer the reload until visibility returns so we don't
-  //      thrash backgrounded previews.
-  //   4. Show a transient "Updating…" pill while the reload is in flight so
-  //      the swap has an affordance and doesn't feel like a random flash.
+  //   3. Defer reload while the user is actively interacting with the
+  //      canvas (mouse/key/touch within USER_IDLE_MS). Stops the page from
+  //      yanking out from under in-flight clicks or typing.
+  //   4. If the tab is hidden, defer the reload until visibility returns
+  //      so we don't thrash backgrounded previews. Count buffered events
+  //      so we can label the "Updating…" pill with N-changes context.
+  //   5. Honor a localStorage opt-out (`shogo:canvas:pauseReload = "1"`)
+  //      for demo / presentation scenarios.
+  //   6. Show a transient "Updating…" pill while the reload is in flight
+  //      so the swap has an affordance.
   //
-  // This is the source of truth for live-refresh — the parent <CanvasWebView />
-  // explicitly does NOT remount the iframe on rebuild (see comment in
-  // CanvasWebView.tsx). All other refresh paths (tab switch unmounting the
-  // iframe, manual page refresh) were workarounds for this handler showing a
-  // manual "Refresh" toast instead of actually reloading. They still work,
-  // but should no longer be necessary.
+  // This is the source of truth for live-refresh — the parent
+  // <CanvasWebView /> explicitly does NOT remount the iframe on rebuild
+  // (see comment in CanvasWebView.tsx). All other refresh paths (tab
+  // switch unmounting the iframe, manual page refresh) were workarounds
+  // for the original handler showing a manual "Refresh" toast instead of
+  // actually reloading. They still work, but should no longer be needed.
 
   var RELOAD_DEBOUNCE_MS = 250
+  var USER_IDLE_MS = 1500
+  var READY_FALLBACK_MS = 5000
   var reloadTimer = null
   var reloadPending = false
   var reloadInFlight = false
+  var bufferedReloadCount = 0
+  var lastUserInputAt = 0
+  var ready = false
+
+  function isPausedByUser() {
+    try {
+      return typeof localStorage !== 'undefined'
+        && localStorage.getItem('shogo:canvas:pauseReload') === '1'
+    } catch (_err) {
+      return false
+    }
+  }
+
+  function isUserActive() {
+    return lastUserInputAt > 0 && (Date.now() - lastUserInputAt) < USER_IDLE_MS
+  }
 
   function scheduleReload() {
     if (reloadInFlight) return
+    if (isPausedByUser()) return
     reloadPending = true
+    bufferedReloadCount++
     if (reloadTimer) clearTimeout(reloadTimer)
-    reloadTimer = setTimeout(performReloadIfVisible, RELOAD_DEBOUNCE_MS)
+    reloadTimer = setTimeout(performReloadIfReady, RELOAD_DEBOUNCE_MS)
   }
 
-  function performReloadIfVisible() {
+  function performReloadIfReady() {
     if (!reloadPending) return
     if (typeof document !== 'undefined' && document.hidden) {
-      // Wait for the tab to come back into focus — visibilitychange handler
-      // below will call us again.
+      // visibilitychange handler below will retry.
       return
     }
+    if (isUserActive()) {
+      // Push the debounce out and try again after the user goes idle.
+      // Keep `reloadPending = true` so the visibility/idle handlers
+      // can resume us.
+      reloadTimer = setTimeout(performReloadIfReady, USER_IDLE_MS)
+      return
+    }
+    var count = bufferedReloadCount
     reloadPending = false
+    bufferedReloadCount = 0
     reloadInFlight = true
-    showUpdatingPill()
+    showUpdatingPill(count)
     // Defer one frame so the pill paints before the navigation tears down
     // the document.
     if (typeof requestAnimationFrame === 'function') {
@@ -201,25 +259,72 @@
     }
   }
 
+  function notePointerActivity() {
+    lastUserInputAt = Date.now()
+  }
+
   if (typeof document !== 'undefined' && document.addEventListener) {
     document.addEventListener('visibilitychange', function () {
-      if (!document.hidden && reloadPending) performReloadIfVisible()
+      if (!document.hidden && reloadPending) performReloadIfReady()
     })
+    // Passive listeners so we never interfere with the canvas's own
+    // event handling. Used purely to detect "user is interacting".
+    var ACTIVITY_EVENTS = ['mousedown', 'keydown', 'touchstart', 'pointerdown', 'wheel']
+    for (var i = 0; i < ACTIVITY_EVENTS.length; i++) {
+      document.addEventListener(ACTIVITY_EVENTS[i], notePointerActivity, { passive: true, capture: true })
+    }
   }
 
   try {
     var es = new EventSource('/agent/canvas/stream')
-    var ready = false
+    // Hardening: if the server contract ever changes and `init` never
+    // arrives, flip `ready` after the fallback so a real rebuild isn't
+    // silently swallowed.
+    var readyFallbackTimer = setTimeout(function () {
+      if (!ready) {
+        ready = true
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn('[shogo-canvas-bridge] No `init` event after ' + READY_FALLBACK_MS + 'ms — assuming ready.')
+        }
+      }
+    }, READY_FALLBACK_MS)
     es.onmessage = function (e) {
       try {
         var evt = JSON.parse(e.data)
-        if (evt && evt.type === 'init') { ready = true; return }
+        if (evt && evt.type === 'init') {
+          ready = true
+          if (readyFallbackTimer) { clearTimeout(readyFallbackTimer); readyFallbackTimer = null }
+          return
+        }
         if (evt && evt.type === 'reload' && ready) scheduleReload()
       } catch (_err) { /* ignore malformed events */ }
     }
   } catch (_err) {
     // Older browsers without EventSource: degrade gracefully (no live reload).
   }
+
+  // Debug handle for triage. Read-only snapshot of bridge state — useful when
+  // a user reports "canvas didn't update" so we can ask them to paste
+  // `window.__shogoCanvasBridge` from the iframe console.
+  try {
+    Object.defineProperty(window, '__shogoCanvasBridge', {
+      configurable: true,
+      enumerable: false,
+      get: function () {
+        return {
+          version: 2,
+          ready: ready,
+          reloadPending: reloadPending,
+          reloadInFlight: reloadInFlight,
+          bufferedReloadCount: bufferedReloadCount,
+          lastUserInputAt: lastUserInputAt,
+          userActive: isUserActive(),
+          pausedByUser: isPausedByUser(),
+          documentHidden: typeof document !== 'undefined' ? !!document.hidden : null,
+        }
+      },
+    })
+  } catch (_err) { /* defineProperty unavailable — non-fatal */ }
 
   // -------------------------------------------------------------------------
   // Parent bridge — receive theme + other messages from the host app
