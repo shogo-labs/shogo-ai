@@ -29,8 +29,11 @@
       "uncoveredLines": 1,
       "linePct": 99.05660377358491,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "finishedAt": "2026-05-20T07:46:03.920Z",
+      "beforeLinePct": 99.05660377358491,
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/config/stripe-prices.ts",
