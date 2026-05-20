@@ -468,19 +468,55 @@ const { app, state, logTiming } = await createRuntimeApp({
 app.get('/ready', (c) => {
   const poolModeUnassigned = state.isPoolMode && !state.poolAssigned
   const gatewayReady = agentGateway != null
-  if (poolModeUnassigned || gatewayReady) {
+
+  // 2026-05-20 cold-start fix: also accept readiness when the static
+  // serving path is functional (workspace `dist/index.html` exists).
+  // This lets Knative add the pod to the routable endpoints as soon as
+  // the project's prebuilt frontend can be served, which happens at
+  // T+12s on a deps-cache-hit cold start — versus T+88s today, where
+  // the gateway is blocked behind a 75s `tar -xzf` of node_modules
+  // that user traffic doesn't actually need.
+  //
+  // Studio (which needs LSP + chat) should poll /ready/gateway below
+  // for chat-readiness; Knative-level routing only cares that *some*
+  // useful traffic can be served, which the static dist serves.
+  const distReady = (() => {
+    try {
+      return existsSync(join(getDistDir(), 'index.html'))
+    } catch {
+      return false
+    }
+  })()
+
+  if (poolModeUnassigned || gatewayReady || distReady) {
     return c.json({
       ready: true,
       gateway: gatewayReady,
+      dist: distReady,
       poolMode: poolModeUnassigned,
     })
   }
   return c.json(
     {
       ready: false,
-      reason: 'agent-gateway not started',
+      reason: 'no dist, no gateway',
       workspace: workspaceStatus,
     },
+    503,
+  )
+})
+
+// Gateway-specific readiness probe. Studio polls this when it needs the
+// agent (chat, LSP, MCP) to be alive — separate from /ready, which only
+// gates Knative pod-level routability and accepts a static-only dist.
+app.get('/ready/gateway', (c) => {
+  const poolModeUnassigned = state.isPoolMode && !state.poolAssigned
+  const gatewayReady = agentGateway != null
+  if (poolModeUnassigned || gatewayReady) {
+    return c.json({ ready: true, gateway: gatewayReady, poolMode: poolModeUnassigned })
+  }
+  return c.json(
+    { ready: false, reason: 'agent-gateway not started', workspace: workspaceStatus },
     503,
   )
 })

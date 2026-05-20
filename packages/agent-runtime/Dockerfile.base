@@ -14,7 +14,7 @@ WORKDIR /app
 
 # System packages + Node 24 + Bun 1.3
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl bash git tar gzip ca-certificates gnupg unzip \
+    curl bash git tar gzip zstd ca-certificates gnupg unzip \
     chromium nss-plugin-pem fonts-freefont-ttf \
     ffmpeg imagemagick ripgrep \
     build-essential && \
