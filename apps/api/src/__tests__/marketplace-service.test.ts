@@ -623,3 +623,168 @@ describe('getCreatorTransactions', () => {
     expect(out.totalPages).toBe(2)
   })
 })
+
+// ─── Coverage gap-closers ──────────────────────────────────────────────────
+
+describe('browseListings — filter coverage', () => {
+  test('pricingModel filter is applied (line 191)', async () => {
+    listings.length = 0
+    listings.push(
+      { id: 'p1', status: 'published', pricingModel: 'free' },
+      { id: 'p2', status: 'published', pricingModel: 'paid' },
+    )
+    const out = await svc.browseListings({ pricingModel: 'paid', limit: 100 })
+    expect(out.items.every((l: any) => l.pricingModel === 'paid')).toBe(true)
+  })
+
+  test('creatorId filter is applied (line 201)', async () => {
+    listings.length = 0
+    listings.push(
+      { id: 'c1', status: 'published', creatorId: 'creator-a' },
+      { id: 'c2', status: 'published', creatorId: 'creator-b' },
+    )
+    const out = await svc.browseListings({ creatorId: 'creator-b', limit: 100 })
+    expect(out.items.map((l: any) => l.id)).toEqual(['c2'])
+  })
+
+  test('tags filter — sqlite branch uses contains AND-chain (lines 194-195)', async () => {
+    listings.length = 0
+    listings.push(
+      { id: 't1', status: 'published', tags: 'foo,bar,baz' },
+      { id: 't2', status: 'published', tags: 'qux' },
+    )
+    const out = await svc.browseListings({ tags: ['foo', 'bar'], limit: 100 })
+    expect(out.items.map((l: any) => l.id)).toEqual(['t1'])
+  })
+
+  test('tags filter — postgres branch uses hasEvery (lines 196-197)', async () => {
+    // Toggle isSqlite() to false by clearing the env. The lazy getter
+    // re-reads on each call, so the postgres branch fires on this
+    // browseListings call without re-importing the module.
+    const orig = process.env.SHOGO_LOCAL_MODE
+    delete process.env.SHOGO_LOCAL_MODE
+    try {
+      // Sniff the where filter via the mock so we can assert hasEvery shape.
+      const seen: any[] = []
+      const oldFindMany = listingTable.findMany
+      listingTable.findMany = async (args: any) => {
+        seen.push(args)
+        return []
+      }
+      try {
+        await svc.browseListings({ tags: ['x', 'y'], limit: 5 })
+        expect(seen[0]?.where).toMatchObject({ tags: { hasEvery: ['x', 'y'] } })
+      } finally {
+        listingTable.findMany = oldFindMany
+      }
+    } finally {
+      if (orig !== undefined) process.env.SHOGO_LOCAL_MODE = orig
+    }
+  })
+})
+
+describe('listingOrderBy — sort branches', () => {
+  test('sort=rating orders by averageRating then reviewCount then publishedAt (lines 213-214)', async () => {
+    const seen: any[] = []
+    const oldFindMany = listingTable.findMany
+    listingTable.findMany = async (args: any) => {
+      seen.push(args)
+      return []
+    }
+    try {
+      await svc.browseListings({ sort: 'rating' })
+      expect(seen[0]?.orderBy).toEqual([
+        { averageRating: 'desc' },
+        { reviewCount: 'desc' },
+        { publishedAt: 'desc' },
+      ])
+    } finally {
+      listingTable.findMany = oldFindMany
+    }
+  })
+
+  test('sort=featured — sqlite branch (lines 215-218)', async () => {
+    const seen: any[] = []
+    const oldFindMany = listingTable.findMany
+    listingTable.findMany = async (args: any) => {
+      seen.push(args)
+      return []
+    }
+    try {
+      await svc.browseListings({ sort: 'featured' })
+      // SHOGO_LOCAL_MODE='true' is set at module-load top of this file,
+      // so the sqlite branch fires.
+      expect(seen[0]?.orderBy).toEqual([
+        { featuredAt: 'desc' },
+        { publishedAt: 'desc' },
+      ])
+    } finally {
+      listingTable.findMany = oldFindMany
+    }
+  })
+
+  test('sort=featured — postgres branch with nulls:last (lines 219-221)', async () => {
+    const orig = process.env.SHOGO_LOCAL_MODE
+    delete process.env.SHOGO_LOCAL_MODE
+    const seen: any[] = []
+    const oldFindMany = listingTable.findMany
+    listingTable.findMany = async (args: any) => {
+      seen.push(args)
+      return []
+    }
+    try {
+      await svc.browseListings({ sort: 'featured' })
+      expect(seen[0]?.orderBy).toEqual([
+        { featuredAt: { sort: 'desc', nulls: 'last' } },
+        { publishedAt: 'desc' },
+      ])
+    } finally {
+      if (orig !== undefined) process.env.SHOGO_LOCAL_MODE = orig
+      listingTable.findMany = oldFindMany
+    }
+  })
+})
+
+describe('searchListings — postgres tags branch (line 400)', () => {
+  test('searchOr.push tags hasSome under non-sqlite mode', async () => {
+    const orig = process.env.SHOGO_LOCAL_MODE
+    delete process.env.SHOGO_LOCAL_MODE
+    const seen: any[] = []
+    const oldFindMany = listingTable.findMany
+    const oldCount = listingTable.count
+    listingTable.findMany = async (args: any) => {
+      seen.push(args)
+      return []
+    }
+    listingTable.count = async () => 0
+    try {
+      await svc.searchListings('foo bar')
+      const orClause = seen[0]?.where?.OR ?? []
+      // Look for the { tags: { hasSome: [...] } } shape contributed by L401.
+      const found = orClause.find((o: any) =>
+        o?.tags && Array.isArray(o.tags.hasSome),
+      )
+      expect(found).toBeDefined()
+      expect(found.tags.hasSome).toEqual(['foo', 'bar'])
+    } finally {
+      if (orig !== undefined) process.env.SHOGO_LOCAL_MODE = orig
+      listingTable.findMany = oldFindMany
+      listingTable.count = oldCount
+    }
+  })
+})
+
+describe('generateSlug — collision exhausts retries', () => {
+  test('throws after 32 failed attempts (lines 169-170)', async () => {
+    // Pre-populate the listings fixture with 33 slugs that match every
+    // suffix the deterministic nanoid stub will produce.
+    const seedBase = nanoIdSeed
+    listings.length = 0
+    listings.push({ id: 'base', slug: 'taken' })
+    for (let i = 0; i < 33; i++) {
+      const suffix = `xy${(seedBase + i + 1).toString().padStart(4, '0')}`
+      listings.push({ id: `id-${i}`, slug: `taken-${suffix}` })
+    }
+    await expect(svc.generateSlug('TAKEN')).rejects.toThrow(/unique listing slug/)
+  })
+})
