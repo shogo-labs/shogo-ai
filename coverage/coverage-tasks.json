@@ -141,8 +141,11 @@
       "uncoveredLines": 6,
       "linePct": 95.41984732824427,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "afterLinePct": 100,
+      "afterFuncPct": 100,
+      "note": "queue claimed 6 uncov; actual was the in-cluster getKubeConfig branch (lines 26-36) blocked by a module-level batchApi singleton. closed via tiny source-side _resetBatchApi() export (4 LOC, test-only, matches the _resetUpstreamCredentialCache precedent in lib/federated-upstream.ts) + beforeEach reset so each test re-enters getKubeConfig() with fresh existsImpls"
     },
     {
       "file": "apps/api/src/routes/thumbnail.ts",
