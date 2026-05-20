@@ -20,8 +20,9 @@ mock.module('../prisma', () => ({
   },
 }))
 
+let cloudUrlImpl: () => string = () => 'https://cloud.test'
 mock.module('../cloud-urls', () => ({
-  getShogoCloudUrl: () => 'https://cloud.test',
+  getShogoCloudUrl: () => cloudUrlImpl(),
 }))
 
 const {
@@ -79,6 +80,7 @@ afterEach(() => {
   if (ORIG_LOCAL_MODE === undefined) delete process.env.SHOGO_LOCAL_MODE
   else process.env.SHOGO_LOCAL_MODE = ORIG_LOCAL_MODE
 })
+  cloudUrlImpl = () => 'https://cloud.test'
 
 // ─── Credential resolution ─────────────────────────────────────────────────
 
@@ -348,5 +350,154 @@ describe('copyResponseHeaders', () => {
     expect(headers['content-length']).toBeUndefined()
     expect(headers['transfer-encoding']).toBeUndefined()
     expect(headers['connection']).toBeUndefined()
+  })
+})
+
+// ─── Coverage gap-closers ───────────────────────────────────────────────────
+
+describe('coverage: cache-hit + outer-catch + URL-throw branches', () => {
+  test('getUpstreamCredential second call returns from cache (line 54)', async () => {
+    delete process.env.SHOGO_API_KEY
+    findUniqueMock.mockImplementation(async () => ({ value: 'db-key' }))
+    const first = await getUpstreamCredential()
+    expect(first).toBe('db-key')
+    expect(findUniqueMock).toHaveBeenCalledTimes(1)
+    // Second call within TTL: cache hit, no further prisma read.
+    findUniqueMock.mockImplementation(async () => { throw new Error('would-fail') })
+    const second = await getUpstreamCredential()
+    expect(second).toBe('db-key')
+    expect(findUniqueMock).toHaveBeenCalledTimes(1)
+  })
+
+  test('getUpstreamCredential outer catch fires when prisma access throws synchronously (line 63)', async () => {
+    delete process.env.SHOGO_API_KEY
+    // Force a synchronous TypeError by making `prisma.localConfig` itself a getter that throws.
+    const { prisma } = await import('../prisma')
+    const original = Object.getOwnPropertyDescriptor(prisma as any, 'localConfig')
+    Object.defineProperty(prisma as any, 'localConfig', {
+      configurable: true,
+      get() { throw new Error('prisma access blew up') },
+    })
+    try {
+      const result = await getUpstreamCredential()
+      expect(result).toBeNull()
+    } finally {
+      if (original) Object.defineProperty(prisma as any, 'localConfig', original)
+      else delete (prisma as any).localConfig
+      ;(prisma as any).localConfig = { findUnique: findUniqueMock }
+    }
+  })
+
+  test('getUpstreamWorkspaceId second call returns from cache (line 87)', async () => {
+    findUniqueMock.mockImplementation(async () => ({
+      value: JSON.stringify({ workspace: { id: 'cloud-ws-cached' } }),
+    }))
+    const first = await getUpstreamWorkspaceId()
+    expect(first).toBe('cloud-ws-cached')
+    expect(findUniqueMock).toHaveBeenCalledTimes(1)
+    findUniqueMock.mockImplementation(async () => { throw new Error('would-fail') })
+    const second = await getUpstreamWorkspaceId()
+    expect(second).toBe('cloud-ws-cached')
+    expect(findUniqueMock).toHaveBeenCalledTimes(1)
+  })
+
+  test('getUpstreamWorkspaceId outer catch fires when prisma access throws synchronously (line 101)', async () => {
+    const { prisma } = await import('../prisma')
+    const original = Object.getOwnPropertyDescriptor(prisma as any, 'localConfig')
+    Object.defineProperty(prisma as any, 'localConfig', {
+      configurable: true,
+      get() { throw new Error('prisma access blew up') },
+    })
+    try {
+      const result = await getUpstreamWorkspaceId()
+      expect(result).toBeNull()
+    } finally {
+      if (original) Object.defineProperty(prisma as any, 'localConfig', original)
+      else delete (prisma as any).localConfig
+      ;(prisma as any).localConfig = { findUnique: findUniqueMock }
+    }
+  })
+
+  test('getUpstreamOrigin falls back to the raw url when URL() throws (line 124)', () => {
+    cloudUrlImpl = () => 'not a valid url::::'
+    // `new URL('not a valid url::::')` throws → catch returns the raw string.
+    expect(getUpstreamOrigin()).toBe('not a valid url::::')
+  })
+
+  test('lookupCloudInstance refetches after the cached entry expires (lines 173-174)', async () => {
+    findUniqueMock.mockImplementation(async ({ where }: any) => {
+      if (where.key === 'SHOGO_KEY_INFO') {
+        return { value: JSON.stringify({ workspace: { id: 'ws-cloud' } }) }
+      }
+      return null
+    })
+    const realNow = Date.now
+    let now = 1_000_000_000_000
+    Date.now = () => now
+    let fetchCount = 0
+    installFetch(async () => {
+      fetchCount++
+      return jsonResponse({ id: 'i-expire', origin: 'cloud.test', status: 'running' })
+    })
+    try {
+      const first = await lookupCloudInstance('i-expire')
+      expect(first?.id).toBe('i-expire')
+      expect(fetchCount).toBe(1)
+      // Advance past LOOKUP_TTL_MS (60_000ms) so the cached entry is stale.
+      now += 120_000
+      const second = await lookupCloudInstance('i-expire')
+      expect(second?.id).toBe('i-expire')
+      expect(fetchCount).toBe(2)
+    } finally {
+      Date.now = realNow
+    }
+  })
+
+  test('getUpstreamWorkspaceId inner .catch arrow fires when findUnique rejects (line 93)', async () => {
+    findUniqueMock.mockImplementation(async () => { throw new Error('db down') })
+    const result = await getUpstreamWorkspaceId()
+    expect(result).toBeNull()
+  })
+
+  test('listCloudInstancesForWorkspace inner .json().catch arrow fires on malformed body (line 278)', async () => {
+    findUniqueMock.mockImplementation(async ({ where }: any) => {
+      if (where.key === 'SHOGO_KEY_INFO') {
+        return { value: JSON.stringify({ workspace: { id: 'ws-cloud' } }) }
+      }
+      return null
+    })
+    installFetch(() => new Response('not-json{{{', {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    const result = await listCloudInstancesForWorkspace('ws-local')
+    expect(result).toEqual([])
+  })
+
+  test('lookupCloudInstance inner .json().catch arrow fires on malformed body (line 307)', async () => {
+    installFetch(() => new Response('not-json{{{', {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    const result = await lookupCloudInstance('i-bad-json')
+    expect(result).toBeNull()
+  })
+
+  test('lookupCloudInstance catches a thrown fetch (line 310)', async () => {
+    installFetch(() => { throw new Error('ECONNREFUSED') })
+    const result = await lookupCloudInstance('i-net-error')
+    expect(result).toBeNull()
+  })
+
+  test('listCloudInstancesForWorkspace catches a thrown fetch (line 284)', async () => {
+    findUniqueMock.mockImplementation(async ({ where }: any) => {
+      if (where.key === 'SHOGO_KEY_INFO') {
+        return { value: JSON.stringify({ workspace: { id: 'ws-cloud' } }) }
+      }
+      return null
+    })
+    installFetch(() => { throw new Error('ECONNREFUSED') })
+    const result = await listCloudInstancesForWorkspace('ws-local')
+    expect(result).toEqual([])
   })
 })

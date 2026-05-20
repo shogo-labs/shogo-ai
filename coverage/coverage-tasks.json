@@ -45,7 +45,7 @@
       "finishedAt": "2026-05-20T08:06:31.612Z",
       "beforeLinePct": 98.78048780487805,
       "afterLinePct": 100,
-      "note": "already at 100% on this branch — no source/test change required, queue gap was stale"
+      "note": "already at 100% on this branch \u2014 no source/test change required, queue gap was stale"
     },
     {
       "file": "apps/api/src/lib/preview-token.ts",
@@ -79,7 +79,7 @@
       "finishedAt": "2026-05-20T08:32:11.642Z",
       "beforeLinePct": 95.16129032258065,
       "afterLinePct": 100,
-      "note": "already at 100% across runtime-token{.test, -coverage, -extra, lib/__tests__/runtime-token}.test.ts — queue baseline was stale"
+      "note": "already at 100% across runtime-token{.test, -coverage, -extra, lib/__tests__/runtime-token}.test.ts \u2014 queue baseline was stale"
     },
     {
       "file": "apps/api/src/routes/cli-auth.ts",
@@ -108,8 +108,11 @@
       "uncoveredLines": 5,
       "linePct": 97.44897959183673,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "afterLinePct": 100,
+      "afterFuncPct": 100,
+      "note": "queue claimed 5 uncov lines; actual was 8 lines + 3 inline-arrow funcs (.catch() callbacks). closed all via mutable cloudUrlImpl pointer + Object.defineProperty getter throws for outer-catch paths + fake-time advance for cache-expiry"
     },
     {
       "file": "apps/api/src/services/diarization.service.ts",
