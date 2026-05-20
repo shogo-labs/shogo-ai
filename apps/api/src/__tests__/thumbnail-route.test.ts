@@ -131,7 +131,7 @@ mock.module('@playwright/test', () => {
 
 // ─── load route under test ────────────────────────────────────────────────
 
-const { thumbnailRoutes } = await import('../routes/thumbnail')
+const { thumbnailRoutes, _setPlaywrightImportOverride } = await import('../routes/thumbnail')
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -499,6 +499,81 @@ describe('POST /projects/:projectId/thumbnail/capture', () => {
     expect(body.error.code).toBe('capture_failed')
     expect(body.error.message).toContain('ERR_NAME_NOT_RESOLVED')
   })
+
+  // ─── coverage gap-closers ────────────────────────────────────────────────
+
+  test('falls back to @playwright/test when playwright-core import fails (lines 56-60)', async () => {
+    // Route imports through the test-only override so we can simulate
+    // a playwright-core load failure without touching the actual
+    // mock.module cache (which bun locks in after the first import).
+    _setPlaywrightImportOverride(async (spec) => {
+      if (spec === 'playwright-core') throw new Error('module not found')
+      return { chromium: { launch: chromiumLaunch } }
+    })
+    try {
+      const app = new Hono()
+      app.route('/', thumbnailRoutes())
+      const res = await app.request('/projects/proj-1/thumbnail/capture', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'https://safe.example/page' }),
+      })
+      expect(res.status).toBe(200)
+      expect(chromiumLaunch).toHaveBeenCalledTimes(1)
+    } finally {
+      _setPlaywrightImportOverride(null)
+    }
+  })
+
+  test('returns 501 playwright_missing when neither playwright variant resolves (line 142)', async () => {
+    _setPlaywrightImportOverride(async () => {
+      throw new Error('module not found')
+    })
+    try {
+      const app = new Hono()
+      app.route('/', thumbnailRoutes())
+      const res = await app.request('/projects/proj-1/thumbnail/capture', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'https://safe.example/page' }),
+      })
+      expect(res.status).toBe(501)
+      const body = await res.json() as any
+      expect(body.error.code).toBe('playwright_missing')
+      expect(chromiumLaunch).not.toHaveBeenCalled()
+    } finally {
+      _setPlaywrightImportOverride(null)
+    }
+  })
+
+
+  test('returns 400 no_url when knative preview-url lookup fails (line 135)', async () => {
+    // The catch at line 135 wraps BOTH the import AND the getPreviewUrl
+    // call. Bun's import cache makes a post-hoc toggle of the import
+    // flag a no-op once another test has cached the success module, so
+    // we make getPreviewUrl itself throw — observably equivalent for the
+    // catch handler.
+    findUnique.mockImplementation(async () => ({
+      id: 'proj-1',
+      publishedSubdomain: null,
+      thumbnailUrl: null,
+    }))
+    getPreviewUrlMock.mockImplementation(() => {
+      throw new Error('no knative project for this id')
+    })
+    const app = new Hono()
+    app.route('/', thumbnailRoutes())
+    const res = await app.request('/projects/proj-1/thumbnail/capture', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    expect(res.status).toBe(400)
+    const body = await res.json() as any
+    expect(body.error.code).toBe('no_url')
+    expect(chromiumLaunch).not.toHaveBeenCalled()
+  })
+
 })
 
 // ─── GET /projects/:id/thumbnail ──────────────────────────────────────────
