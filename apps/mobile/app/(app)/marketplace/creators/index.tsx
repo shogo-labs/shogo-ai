@@ -137,7 +137,7 @@ export default observer(function CreatorsDirectoryScreen() {
           <View className="flex-row items-center bg-card border border-input rounded-xl px-3 h-11 flex-1">
             <Search size={16} color="#71717a" />
             <TextInput
-              className="flex-1 ml-2 text-sm text-foreground web:outline-none"
+              className="flex-1 ml-2 text-sm text-foreground web:outline-none no-focus-ring"
               placeholder="Search creators…"
               placeholderTextColor="#71717a"
               value={search}
