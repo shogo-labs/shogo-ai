@@ -86,8 +86,11 @@
       "uncoveredLines": 4,
       "linePct": 98.1981981981982,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "finishedAt": "2026-05-20T08:37:51.482Z",
+      "beforeLinePct": 98.1981981981982,
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/routes/tools-proxy.ts",
