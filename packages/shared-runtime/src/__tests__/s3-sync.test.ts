@@ -1140,7 +1140,14 @@ describe('S3 key helpers', () => {
     const sync = mkSync({ prefix: 'proj-XYZ' })
     expect((sync as any).getLegacyArchiveKey()).toBe('proj-XYZ/project.tar.gz')
     expect((sync as any).getProjectArchiveKey()).toBe('proj-XYZ/project-src.tar.gz')
-    expect((sync as any).getDepsArchiveKey('hashHASH')).toBe('_deps-cache/hashHASH.tar.gz')
+    // Default ext is now zstd; opting into the legacy gzip key is explicit.
+    expect((sync as any).getDepsArchiveKey('hashHASH')).toBe('_deps-cache/hashHASH.tar.zst')
+    expect((sync as any).getDepsArchiveKey('hashHASH', 'gz')).toBe('_deps-cache/hashHASH.tar.gz')
+    expect((sync as any).getDepsArchiveKey('hashHASH', 'zst')).toBe('_deps-cache/hashHASH.tar.zst')
+    expect((sync as any).getDepsArchiveKeys('hashHASH')).toEqual([
+      { key: '_deps-cache/hashHASH.tar.zst', ext: 'zst' },
+      { key: '_deps-cache/hashHASH.tar.gz',  ext: 'gz'  },
+    ])
     expect((sync as any).getDepsPointerKey()).toBe('proj-XYZ/deps-hash.txt')
   })
 })
