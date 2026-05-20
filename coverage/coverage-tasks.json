@@ -130,8 +130,11 @@
       "uncoveredLines": 6,
       "linePct": 96.25,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "afterLinePct": 100,
+      "afterFuncPct": 100,
+      "note": "queue claimed 6 uncov lines; actual was 8 lines + 2 funcs. closed all in main shard via: (1) data: no-space SSE variant; (2) ReadableStream constructor hijack to fire trackingStream source.cancel() directly (otherwise structurally unreachable \u2014 the natural consumer trackChatStreamForBilling never calls reader.cancel); (3) globalThis.setInterval stub firing the keepalive arrow synchronously; (4) erroring upstream for the bg reader catch; (5) setQualityImpl throw to make trackChatStreamForBilling reject and hit the .catch arrow; (6) module-load env override CHAT_STREAM_IDLE_TIMEOUT_MS=200 + hanging stream to fire the idle-timeout setTimeout-reject arrow"
     },
     {
       "file": "apps/api/src/lib/eval-job-manager.ts",
