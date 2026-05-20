@@ -224,8 +224,10 @@
       "uncoveredLines": 10,
       "linePct": 82.75862068965517,
       "phase": 2,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "completedAt": "2026-05-20T17:53:28.274Z",
+      "note": "stale: file already at 100% lines / 100% funcs on current branch"
     },
     {
       "file": "apps/api/src/middleware/rate-limit.ts",
