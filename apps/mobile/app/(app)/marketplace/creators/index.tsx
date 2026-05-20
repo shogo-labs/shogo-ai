@@ -25,6 +25,13 @@ import {
   type CreatorTier,
 } from '../../../../components/marketplace'
 import { useGridColumns } from '../../../../hooks/useGridColumns'
+import { cn } from '@shogo/shared-ui/primitives'
+import {
+  Popover,
+  PopoverBackdrop,
+  PopoverBody,
+  PopoverContent,
+} from '@/components/ui/popover'
 
 interface LeaderboardCreator {
   id: string
@@ -144,36 +151,15 @@ export default observer(function CreatorsDirectoryScreen() {
               </Pressable>
             )}
           </View>
-          <View className="relative">
-            <Pressable
-              onPress={() => setSortOpen((v) => !v)}
-              className="flex-row items-center gap-1.5 px-3 h-11 rounded-xl border border-border bg-card"
-            >
-              <Text className="text-xs font-medium text-foreground">
-                {SORT_LABELS[sortMode]}
-              </Text>
-              <ChevronDown size={12} color="#71717a" />
-            </Pressable>
-            {sortOpen && (
-              <View
-                className="absolute right-0 top-12 rounded-xl border border-border bg-card overflow-hidden shadow-lg"
-                style={{ width: 170, zIndex: 50 }}
-              >
-                {(Object.keys(SORT_LABELS) as SortMode[]).map((k) => (
-                  <Pressable
-                    key={k}
-                    onPress={() => {
-                      setSortMode(k)
-                      setSortOpen(false)
-                    }}
-                    className={`px-3 py-2.5 active:bg-muted ${k === sortMode ? 'bg-muted/50' : ''}`}
-                  >
-                    <Text className="text-xs text-foreground">{SORT_LABELS[k]}</Text>
-                  </Pressable>
-                ))}
-              </View>
-            )}
-          </View>
+          <SortMenu
+            value={sortMode}
+            open={sortOpen}
+            onOpenChange={setSortOpen}
+            onChange={(v) => {
+              setSortMode(v)
+              setSortOpen(false)
+            }}
+          />
         </View>
 
         {/* Tier filter pills */}
@@ -429,4 +415,58 @@ function formatCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`
   if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`
   return String(n)
+}
+
+function SortMenu({
+  value,
+  open,
+  onOpenChange,
+  onChange,
+}: {
+  value: SortMode
+  open: boolean
+  onOpenChange: (v: boolean) => void
+  onChange: (v: SortMode) => void
+}) {
+  return (
+    <Popover
+      placement="bottom right"
+      isOpen={open}
+      onOpen={() => onOpenChange(true)}
+      onClose={() => onOpenChange(false)}
+      trigger={(triggerProps) => (
+        <Pressable
+          {...triggerProps}
+          className="flex-row items-center gap-1.5 px-3 h-11 rounded-xl border border-border bg-card"
+        >
+          <Text className="text-xs font-medium text-foreground">
+            {SORT_LABELS[value]}
+          </Text>
+          <ChevronDown size={12} color="#71717a" />
+        </Pressable>
+      )}
+    >
+      <PopoverBackdrop />
+      <PopoverContent className="p-0 min-w-[170px]">
+        <PopoverBody>
+          {(Object.keys(SORT_LABELS) as SortMode[]).map((k) => (
+            <Pressable
+              key={k}
+              onPress={() => onChange(k)}
+              className={cn('px-3 py-2.5 active:bg-muted', k === value && 'bg-accent')}
+            >
+              <Text
+                className={cn(
+                  'text-xs',
+                  k === value ? 'text-foreground font-medium' : 'text-foreground',
+                )}
+              >
+                {SORT_LABELS[k]}
+              </Text>
+            </Pressable>
+          ))}
+        </PopoverBody>
+      </PopoverContent>
+    </Popover>
+  )
 }
