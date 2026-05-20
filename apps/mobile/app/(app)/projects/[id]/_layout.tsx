@@ -463,12 +463,34 @@ export default observer(function ProjectLayout() {
     () => hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
   )
 
+  // Tracks whether we've already synced the persisted preference to the
+  // runtime for this (project, model). Without this sync, Capabilities shows
+  // the AsyncStorage-restored model while Overview shows whatever the agent
+  // booted with — because the bootstrap previously only updated React state.
+  const modelPrefSyncedRef = useRef<string | null>(null)
   useEffect(() => {
+    let cancelled = false
     loadModelPreference(projectId).then((stored) => {
-      if (stored) setSelectedModel(stored)
-      else if (hasAdvancedModelAccess) setSelectedModel(DEFAULT_MODEL_PRO)
+      if (cancelled) return
+      const next = stored ?? (hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE)
+      setSelectedModel(next)
+      if (!agentUrl) return
+      const syncKey = `${projectId}:${next}`
+      if (modelPrefSyncedRef.current === syncKey) return
+      modelPrefSyncedRef.current = syncKey
+      const entry = MODEL_CATALOG[next as keyof typeof MODEL_CATALOG]
+      if (!entry) return
+      agentFetch(`${agentUrl}/agent/config`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: { provider: entry.provider, name: entry.id } }),
+      }).catch((err) => {
+        console.error('[ProjectLayout] Failed to sync persisted model to runtime:', err)
+        modelPrefSyncedRef.current = null
+      })
     })
-  }, [hasAdvancedModelAccess, projectId])
+    return () => { cancelled = true }
+  }, [hasAdvancedModelAccess, projectId, agentUrl])
 
   const handleModelChange = useCallback(async (modelId: string) => {
     setSelectedModel(modelId)
