@@ -48,14 +48,33 @@ async function saveThumbnail(projectId: string, pngBuffer: Buffer): Promise<stri
   }
 }
 
+// Test-only seam: when set, launchPlaywright() routes its dynamic
+// imports through this function instead of calling `import()` directly.
+// Production code never touches this — the override stays null. Used
+// by unit tests to reach the @playwright/test fallback (lines 56-60)
+// and the playwright_missing 501 branch (line 142), both of which are
+// structurally unreachable from a single bun process because mock.module
+// caches the factory's first-call result for the un-installed
+// playwright-core specifier. Same shape as _resetBatchApi in
+// lib/eval-job-manager.ts and _resetUpstreamCredentialCache in
+// lib/federated-upstream.ts.
+let _playwrightImportOverride: ((spec: string) => Promise<any>) | null = null
+export function _setPlaywrightImportOverride(
+  fn: ((spec: string) => Promise<any>) | null,
+): void {
+  _playwrightImportOverride = fn
+}
+
 async function launchPlaywright(): Promise<any> {
+  const doImport = _playwrightImportOverride
+    ?? ((s: string) => import(s as any))
   try {
     // @ts-expect-error — playwright-core is optionally available at runtime
-    const pw = await import('playwright-core')
+    const pw = await doImport('playwright-core')
     return pw.chromium
   } catch {}
   try {
-    const pw = await import('@playwright/test')
+    const pw = await doImport('@playwright/test')
     return pw.chromium
   } catch {}
   return null

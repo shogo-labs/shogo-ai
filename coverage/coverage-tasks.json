@@ -152,8 +152,11 @@
       "uncoveredLines": 6,
       "linePct": 95.65217391304348,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "afterLinePct": 100,
+      "afterFuncPct": 100,
+      "note": "queue claimed 6 uncov; closed all via tiny source hook _setPlaywrightImportOverride (12-line addition, test-only seam) + 3 new tests (knative-failure via getPreviewUrl throw, @playwright/test fallback via override, playwright_missing 501 via override). Source hook precedented by _resetBatchApi in eval-job-manager and _resetUpstreamCredentialCache in federated-upstream."
     },
     {
       "file": "apps/api/src/services/marketplace.service.ts",
