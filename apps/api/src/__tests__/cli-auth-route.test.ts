@@ -64,6 +64,16 @@ mock.module('../lib/api-keys-mint', () => ({
   SHOGO_API_KEY_PREFIX: 'shogo_sk_',
 }))
 
+// Wrap pending-login-store so individual tests can neutralize
+// purgeExpiredStates() and reach the post-purge expired-record branches
+// in poll + approve.  Re-exports everything else from the real module.
+const realStore = await import('../lib/pending-login-store')
+let purgeImpl: () => void = realStore.purgeExpiredStates
+mock.module('../lib/pending-login-store', () => ({
+  ...realStore,
+  purgeExpiredStates: () => purgeImpl(),
+}))
+
 // Load AFTER mocks are registered.
 const { cliAuthRoutes, _testing } = await import('../routes/cli-auth')
 
@@ -307,6 +317,21 @@ describe('GET /cli/login/poll', () => {
     expect(_testing.pendingStates.has(state)).toBe(false)
   })
 
+  test('returns "expired" via the record.expiresAt branch when purge is suppressed (lines 160-161)', async () => {
+    // Reach the post-purge expired-check by neutralizing purgeExpiredStates.
+    const savedPurge = purgeImpl
+    purgeImpl = () => {}
+    try {
+      const { state } = await startSession()
+      _testing.pendingStates.get(state)!.expiresAt = Date.now() - 1000
+      const res = await makeApp().request(`/api/cli/login/poll?state=${state}`)
+      expect(await res.json()).toEqual({ ok: true, status: 'expired' })
+      expect(_testing.pendingStates.has(state)).toBe(false)
+    } finally {
+      purgeImpl = savedPurge
+    }
+  })
+
   test('returns "denied" AND deletes the record when status is denied', async () => {
     const { state } = await startSession()
     _testing.pendingStates.get(state)!.status = 'denied'
@@ -418,6 +443,16 @@ describe('GET /cli/login/state', () => {
 // ─── POST /cli/login/approve ──────────────────────────────────────────────
 
 describe('POST /cli/login/approve', () => {
+  test('400 when JSON body is malformed (catches parse, falls through to validation)', async () => {
+    const res = await makeApp({ userId: 'u' }).request('/api/cli/login/approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: 'not json',
+    })
+    // Missing state in the (empty object) fallback → 400.
+    expect(res.status).toBe(400)
+  })
+
   test('401 when no auth context', async () => {
     const { state } = await startSession()
     const res = await makeApp().request('/api/cli/login/approve', {
@@ -471,6 +506,31 @@ describe('POST /cli/login/approve', () => {
     expect(res.status).toBe(404)
     expect(_testing.pendingStates.has(state)).toBe(false)
     expect(mintDeviceApiKeyMock).not.toHaveBeenCalled()
+  })
+
+  test('returns 410 via record.expiresAt branch when purge is suppressed (lines 232-233)', async () => {
+    // Reach the post-purge expired-check inside POST /approve by
+    // neutralizing purgeExpiredStates. Mirrors the poll-handler test
+    // for lines 160-161.
+    const savedPurge = purgeImpl
+    purgeImpl = () => {}
+    try {
+      const { state } = await startSession()
+      _testing.pendingStates.get(state)!.expiresAt = Date.now() - 1
+      const res = await makeApp({ userId: 'u' }).request('/api/cli/login/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state }),
+      })
+      expect(res.status).toBe(410)
+      const body = await res.json()
+      expect(body.ok).toBe(false)
+      expect(body.error).toMatch(/expired/i)
+      expect(_testing.pendingStates.has(state)).toBe(false)
+      expect(mintDeviceApiKeyMock).not.toHaveBeenCalled()
+    } finally {
+      purgeImpl = savedPurge
+    }
   })
 
   test('200 + alreadyApproved: when state is already approved (idempotent re-tap)', async () => {
@@ -652,6 +712,15 @@ describe('POST /cli/login/approve', () => {
 // ─── POST /cli/login/deny ────────────────────────────────────────────────
 
 describe('POST /cli/login/deny', () => {
+  test('400 when JSON body is malformed (catches parse, falls through to validation)', async () => {
+    const res = await makeApp({ userId: 'u' }).request('/api/cli/login/deny', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: 'not json',
+    })
+    expect(res.status).toBe(400)
+  })
+
   test('401 when no auth context (deny must be authed to prevent griefing)', async () => {
     const { state } = await startSession()
     const res = await makeApp().request('/api/cli/login/deny', {
