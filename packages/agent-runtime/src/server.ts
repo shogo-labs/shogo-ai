@@ -3627,6 +3627,49 @@ function getDistDir(): string {
   return join(WORKSPACE_DIR, 'dist')
 }
 
+// Recursively collect every file under `dist/` as `{ path, content (base64) }`.
+// Consumed by apps/api/src/routes/publish.ts -> downloadDistFiles() to upload
+// the build output to the published-apps S3 bucket. Must be registered BEFORE
+// the `app.get('*')` catch-all below — that handler explicitly 404s `/api/*`.
+const PUBLISH_DIST_MAX_FILE_SIZE = 50 * 1024 * 1024
+
+function collectPublishDistFiles(dir: string, baseDir: string): Array<{ path: string; content: string }> {
+  const out: Array<{ path: string; content: string }> = []
+  if (!existsSync(dir)) return out
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (isMacOSJunkName(entry.name)) continue
+    const fullPath = join(dir, entry.name)
+    const relPath = fullPath.slice(baseDir.length + 1).replace(/\\/g, '/')
+    if (entry.isDirectory()) {
+      out.push(...collectPublishDistFiles(fullPath, baseDir))
+    } else if (entry.isFile()) {
+      try {
+        const stat = statSync(fullPath)
+        if (stat.size > PUBLISH_DIST_MAX_FILE_SIZE) continue
+        out.push({
+          path: relPath,
+          content: readFileSync(fullPath).toString('base64'),
+        })
+      } catch {
+        // skip unreadable files
+      }
+    }
+  }
+  return out
+}
+
+app.get('/api/dist-files', (c) => {
+  const distDir = getDistDir()
+  if (!existsSync(distDir)) {
+    return c.json(
+      { error: 'dist_not_found', message: 'No dist/ directory — run a build first' },
+      404,
+    )
+  }
+  const files = collectPublishDistFiles(distDir, distDir)
+  return c.json(files)
+})
+
 /**
  * Phases during which a build is plausibly in flight and `dist/` may
  * legitimately be missing. When a navigation request would otherwise
