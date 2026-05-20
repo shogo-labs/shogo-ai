@@ -25,6 +25,7 @@ import {
   List,
   ShieldCheck,
   Sparkles,
+  Package,
   X,
 } from 'lucide-react-native'
 import { useDomainHttp } from '../../../contexts/domain'
@@ -635,26 +636,35 @@ export default observer(function MarketplaceHomeScreen() {
   return (
     <View className="flex-1 bg-background">
       {/* Top bar */}
-      <View className="flex-row items-center gap-3 px-5 pt-3 pb-2">
-        <Pressable onPress={handleTopBarBack} hitSlop={6} className="p-1">
+      <View className="flex-row items-center px-5 pt-3 pb-2">
+        <Pressable onPress={handleTopBarBack} hitSlop={6} className="p-1 mr-1">
           <ArrowLeft size={20} color="#71717a" />
         </Pressable>
-        <Text className="text-base font-semibold text-foreground flex-1">
+        <Text className="text-base font-semibold text-foreground flex-1 min-w-0">
           Marketplace
         </Text>
-        <Pressable
-          onPress={() => router.push('/(app)/marketplace/creators' as any)}
-          className="px-3 py-1.5 rounded-lg active:opacity-70"
-        >
-          <Text className="text-xs font-medium text-muted-foreground">Creators</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => router.push('/(app)/marketplace/creator' as any)}
-          className="flex-row items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary"
-        >
-          <UserCircle size={14} color="#fff" />
-          <Text className="text-xs font-semibold text-primary-foreground">Creator</Text>
-        </Pressable>
+        <View className="flex-row items-center gap-3 shrink-0">
+          <Pressable
+            onPress={() => router.push('/(app)/marketplace/installs' as any)}
+            className="flex-row items-center gap-1.5 py-1.5 rounded-lg active:opacity-70"
+          >
+            <Package size={14} color="#71717a" />
+            <Text className="text-xs font-medium text-muted-foreground">My Installs</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => router.push('/(app)/marketplace/creators' as any)}
+            className="py-1.5 rounded-lg active:opacity-70"
+          >
+            <Text className="text-xs font-medium text-muted-foreground">Creators</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => router.push('/(app)/marketplace/creator' as any)}
+            className="flex-row items-center gap-1.5 py-1.5 px-2.5 rounded-lg bg-primary"
+          >
+            <UserCircle size={14} color="#fff" />
+            <Text className="text-xs font-semibold text-primary-foreground">Creator</Text>
+          </Pressable>
+        </View>
       </View>
 
       {/* Editorial hero */}
