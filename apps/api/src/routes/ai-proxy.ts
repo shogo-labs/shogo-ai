@@ -38,6 +38,7 @@ import { verifyRuntimeToken } from '../lib/runtime-token'
 import { resolveApiKey } from './api-keys'
 import { wipeCloudKey } from '../lib/cloud-key-wipe'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
+import { getRuntimeManager } from '../lib/runtime'
 import {
   MODEL_CATALOG,
   MODEL_ALIASES,
@@ -1775,13 +1776,56 @@ export function aiProxyRoutes() {
   }
 
   /**
+   * Reset the locally-managed agent runtime's idle-eviction timer for the
+   * project that owns this proxy payload.
+   *
+   * The `WorkerRuntimeManager` evicts a project's runtime after
+   * `RUNTIME_IDLE_MS` (default 15min) of "no fresh proxy resolution".
+   * The agent-proxy streaming path already touches on each chunk
+   * (PR #591), but a long agent turn whose only outbound traffic is one
+   * big model call goes silent on `/agent/*` for the duration of that
+   * call — and would otherwise tip into eviction mid-completion.
+   *
+   * Every successful `/ai/v1/*` or `/ai/anthropic/v1/*` request is the
+   * agent inside that project actively making a model call (tool use,
+   * streaming completion, embeddings) — which is the strongest possible
+   * signal that the runtime is alive and busy. Touching here means
+   * a long Opus turn whose only outbound traffic is one big model call
+   * still resets the 15-min reaper, even though the user's agent-proxy
+   * connection is silent during that span.
+   *
+   * `'api-key'` payloads come from workspace-scoped Shogo API keys
+   * (no project context) and have no local runtime to touch — skip.
+   */
+  function touchRuntimeFor(payload: ProxyTokenPayload | null): void {
+    if (!payload || !payload.projectId || payload.projectId === 'api-key') return
+    try {
+      getRuntimeManager().touch(payload.projectId)
+    } catch {
+      // RuntimeManager isn't local, isn't constructed yet, or threw —
+      // never block an auth on the touch hook. RuntimeManager.touch
+      // already swallows downstream errors; this is a final guard.
+    }
+  }
+
+  /**
    * Middleware: Validate proxy token on all /ai/v1/* routes.
    * Accepts:
    *   - Shogo API keys (`shogo_sk_*`, workspace-scoped),
    *   - per-project runtime tokens (`rt_v1_*`, pod-native), and
    *   - signed project-scoped proxy JWTs (legacy / browser previews).
+   *
+   * On a successful resolution, touches the project's local agent
+   * runtime so that long model calls don't silently age past the
+   * idle-eviction window. See `touchRuntimeFor` above.
    */
   async function validateProxyAuth(c: any): Promise<ProxyTokenPayload | null> {
+    const payload = await validateProxyAuthImpl(c)
+    touchRuntimeFor(payload)
+    return payload
+  }
+
+  async function validateProxyAuthImpl(c: any): Promise<ProxyTokenPayload | null> {
     const authHeader = c.req.header('Authorization')
     if (!authHeader?.startsWith('Bearer ')) {
       return null
@@ -2330,8 +2374,18 @@ export function aiProxyRoutes() {
    *   - Shogo API keys (`shogo_sk_*`),
    *   - per-project runtime tokens (`rt_v1_*`), and
    *   - signed project-scoped proxy JWTs.
+   *
+   * On a successful resolution, touches the project's local agent
+   * runtime so that long Anthropic-native streams keep the runtime
+   * alive past the idle-eviction window. See `touchRuntimeFor` above.
    */
   async function validateAnthropicAuth(c: any): Promise<ProxyTokenPayload | null> {
+    const payload = await validateAnthropicAuthImpl(c)
+    touchRuntimeFor(payload)
+    return payload
+  }
+
+  async function validateAnthropicAuthImpl(c: any): Promise<ProxyTokenPayload | null> {
     const apiKey = c.req.header('x-api-key')
     if (!apiKey) {
       return null
