@@ -22,6 +22,7 @@ coverage/*
 !coverage/thresholds.json
 !coverage/baselines/
 !coverage/baselines/*
+!coverage/coverage-tasks.json
 
 # logs
 logs
