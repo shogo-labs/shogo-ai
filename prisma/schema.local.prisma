@@ -156,6 +156,12 @@ model Project {
   folderId           String?
   publishedSubdomain String?   @unique
   publishedAt        DateTime?
+  // Mirrors `PublishStatus` enum in schema.prisma; SQLite has no enum
+  // support so we store the string. Allowed values: idle, building,
+  // uploading, configuring, live, failed. Set by apps/api/src/routes/publish.ts.
+  publishStatus      String    @default("idle")
+  publishError       String?
+  publishStatusAt    DateTime?
   accessLevel        String    @default("anyone")
   category           String?
   siteTitle          String?

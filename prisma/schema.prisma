@@ -175,6 +175,13 @@ model Project {
   folderId           String?
   publishedSubdomain String?          @unique
   publishedAt        DateTime?
+  // Tracks where in the publish pipeline this project currently is.
+  // Updated by apps/api/src/routes/publish.ts at each step so a stuck
+  // or cancelled HTTP request still leaves a recoverable trail in the
+  // DB. `failed` carries the last error code in `publishError`.
+  publishStatus      PublishStatus    @default(idle)
+  publishError       String?
+  publishStatusAt    DateTime?
   accessLevel        AccessLevel      @default(anyone)
   category           ProjectCategory?
   siteTitle          String?
@@ -317,6 +324,18 @@ enum AccessLevel {
   anyone
   authenticated
   private
+}
+
+// Step the publish pipeline has reached for this project. The pipeline
+// (apps/api/src/routes/publish.ts) updates this in-line so Studio (and
+// operators) can observe a frozen request without scraping logs.
+enum PublishStatus {
+  idle
+  building
+  uploading
+  configuring
+  live
+  failed
 }
 
 enum ProjectCategory {
