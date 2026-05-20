@@ -902,6 +902,17 @@ export class AgentGateway {
     this.sessionPersistence?.close()
     await this.skillServerManager.stop()
     this.canvasBuildManager?.stop()
+    // Without this, the `vite build --watch` child PreviewManager
+    // spawned in `startBuildWatch()` survives the agent-runtime's
+    // `process.exit(0)` in `gracefulShutdown` — it gets reparented to
+    // launchd (PPID 1) and keeps rebuilding on every file change
+    // forever. One orphan per restart cycle compounds quickly: a
+    // single workspace was seen accumulating 20 vite watchers (oldest
+    // ~36h old) before manual cleanup. The PreviewManager handle is
+    // wired in via `attachApiServer()` (see below) and `stop()` is
+    // synchronous + idempotent + safe to call when nothing is
+    // running — same shape as `canvasBuildManager?.stop()` above.
+    this.previewManager?.stop()
     await this.mcpClientManager.stopAll()
 
     this.workspaceGraph = null
