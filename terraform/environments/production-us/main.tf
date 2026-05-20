@@ -113,10 +113,26 @@ module "us" {
   placement_ad_names = ["XYpk:US-ASHBURN-AD-1"]
 
   # System nodes (API, web, CNPG, Knative controllers)
+  #
+  # 2026-05-20 production-us reconciliation:
+  #
+  # The b11c65dd publish incident traced back to the cluster running
+  # on a SINGLE node (kubectl --context oke-production-us get nodes)
+  # despite this terraform declaring `system_pool_min = 2`. The result
+  # was 99% memory utilization, a Knative pod scaled-to-zero waiting
+  # 60+ seconds for a memory window, and the warm-pool GC simultaneously
+  # deleting in-flight publish ksvcs. See docs/runbooks/deploy-prod.md.
+  #
+  # Two changes here:
+  #   1. `system_pool_min` 2 -> 3. A deploy churns ~30 warm-pool pods
+  #      simultaneously; the system pool needs spare capacity to absorb
+  #      that churn without `Insufficient memory` for paying users.
+  #   2. `system_pool_size` 2 -> 3 to match `min`. (terraform `size` is
+  #      the desired count, autoscaler manages above this floor.)
   system_node_ocpus     = 4
   system_node_memory_gb = 24
-  system_pool_size      = 2
-  system_pool_min       = 2
+  system_pool_size      = 3
+  system_pool_min       = 3
   system_pool_max       = 15
 
   enable_workload_pool = false
