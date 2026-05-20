@@ -39,7 +39,14 @@ jobs:
           restore-keys: bun-web-
 
       - name: Install dependencies
+        # `GITHUB_TOKEN` is required so that `@vscode/ripgrep`'s postinstall
+        # authenticates its `api.github.com/repos/microsoft/ripgrep-prebuilt`
+        # lookup. Without it, GitHub-hosted runners share the 60/hr anon quota
+        # and the install intermittently fails with `Request failed: 403` —
+        # the root cause of the flaky Windows tagged builds (e.g. v1.7.14).
         run: bun install
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build workspace packages
         run: bun run build:packages
@@ -120,6 +127,8 @@ jobs:
       - name: Install monorepo dependencies
         shell: bash
         run: bun install --linker=isolated
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build workspace packages
         shell: bash

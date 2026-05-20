@@ -39,7 +39,12 @@ jobs:
           restore-keys: bun-web-
 
       - name: Install dependencies
+        # See desktop-release-windows.yml for why GITHUB_TOKEN is required:
+        # `@vscode/ripgrep` postinstall hits api.github.com unauthenticated
+        # otherwise and gets 403'd on the shared-IP runner pool.
         run: bun install
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build workspace packages
         run: bun run build:packages
