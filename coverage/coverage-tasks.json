@@ -205,8 +205,10 @@
       "uncoveredLines": 8,
       "linePct": 93.44262295081968,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "completedAt": "2026-05-20T17:30:36.827Z",
+      "note": "stale: file at 100/100 on current branch, no test additions needed"
     },
     {
       "file": "apps/api/src/routes/tests.ts",
