@@ -20,6 +20,4 @@ When triggered, perform thorough multi-source research and present on canvas:
    - Topic breakdown (categories or comparison table)
 5. **Persist** — Save findings to MEMORY.md for future reference via `write_file`
 
-Use canvas_api_schema to define an Article model (title, source, summary, url, category) so the user can mark articles as read.
-
 Always include source URLs. Clearly label facts vs opinions.
