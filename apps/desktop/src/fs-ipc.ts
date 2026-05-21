@@ -47,11 +47,18 @@ import { ipcMain } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { getWorkspacesDir } from './paths'
-// Single source of truth for the file-tree policy. Bundled into main.js by
-// `scripts/bundle-main.mjs` (`bun build` resolves this relative path and
-// inlines the module — no workspace symlink needed because it's purely
-// node:fs / node:path + plain constants).
-import { walkFilesTree } from '../../../packages/agent-runtime/src/fs-tree-walker'
+// Single source of truth for the file-tree policy. Types come from the
+// ambient declaration at `src/types/agent-runtime-fs-tree-walker.d.ts`
+// (the real source lives outside `tsconfig.json`'s rootDir, so importing
+// it via a relative path trips TS6059 at compile time — that was the
+// regression that bricked the v1.8.0 + v1.8.1 desktop release builds).
+// The actual implementation is inlined into `dist/main.js` at bundle
+// time by `scripts/bundle-main.mjs`, which symlinks
+// `node_modules/@shogo/agent-runtime` -> `packages/agent-runtime` so
+// `bun build` can resolve this import. Module is purely node:fs +
+// node:path + plain constants, so nothing else from agent-runtime gets
+// pulled into the Electron main bundle.
+import { walkFilesTree } from '@shogo/agent-runtime/src/fs-tree-walker'
 
 /**
  * Resolve a user-supplied workspace root to its canonical absolute form,
