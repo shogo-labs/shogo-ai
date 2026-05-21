@@ -396,8 +396,9 @@
       "uncoveredLines": 78,
       "linePct": 46.57534246575342,
       "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "note": "stale: matches **/__tests__/** in apps/api/bunfig.toml coveragePathIgnorePatterns; never instrumented"
     },
     {
       "file": "apps/api/src/routes/project-chat.ts",
