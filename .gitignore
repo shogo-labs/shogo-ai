@@ -120,6 +120,10 @@ app.config.timestamp*.js
 electron.vite.config.*.mjs
 
 apps/mobile/.expo/
+# Self-hosted Monaco AMD bundle (regenerated from `node_modules/monaco-editor`
+# by `apps/mobile/scripts/copy-monaco-vs.mjs` — committing 30 MB of vendored
+# editor code into git would just bloat the repo).
+apps/mobile/public/vs/
 # Chat export logs (auto-generated agent outputs)
 shogo-chats/
 packages/agent-runtime/src/evals/dspy/__pycache__/
