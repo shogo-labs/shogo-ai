@@ -45,30 +45,6 @@ export interface ChatStreamEvent {
   data?: unknown
 }
 
-export interface Surface {
-  id: string
-  title?: string
-  components: CanvasComponent[]
-  data: Record<string, unknown>
-  apiConfig?: Record<string, unknown>
-}
-
-export interface CanvasComponent {
-  id: string
-  component: string
-  children?: string[] | { path: string; templateId?: string }
-  child?: string
-  [key: string]: unknown
-}
-
-export interface CanvasState {
-  surfaces: Record<string, Surface>
-}
-
-export interface ActionContext {
-  [key: string]: unknown
-}
-
 export interface FileNode {
   name: string
   path: string
