@@ -359,7 +359,7 @@ describe('POST /eval-outputs/import', () => {
     expect(data.createdBy).toBe('u-1')
     expect(data.tier).toBe('starter')
     expect(data.status).toBe('draft')
-    expect(JSON.parse(data.settings)).toEqual({ activeMode: 'canvas', canvasMode: 'code' })
+    expect(JSON.parse(data.settings)).toEqual({ activeMode: 'canvas' })
 
     expect(fs.mkdirCalls).toHaveLength(1)
     expect(fs.mkdirCalls[0].opts).toEqual({ recursive: true })

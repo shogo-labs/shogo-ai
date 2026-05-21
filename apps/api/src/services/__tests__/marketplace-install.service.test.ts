@@ -740,7 +740,7 @@ describe('installAgent — settings normalization', () => {
       workspaceId: 'ws_1',
     })
     const created = db.projects.get(out.projectId)!
-    expect((created.settings as any).canvasMode).toBe('code')
+    expect((created.settings as any).activeMode).toBe('none')
   })
 
   it('falls back to defaults on primitive non-object/string settings', async () => {

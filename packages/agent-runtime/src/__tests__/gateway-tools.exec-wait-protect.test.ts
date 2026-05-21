@@ -287,8 +287,8 @@ describe('rejectIfProtected (canvas code mode)', () => {
     rmSync(TEST_DIR, { recursive: true, force: true })
   })
 
-  test('write_file rejects src/main.tsx when canvasMode=code', async () => {
-    const ctx = makeCtx({ config: { ...makeCtx().config, canvasMode: 'code' } as any })
+  test('write_file rejects src/main.tsx', async () => {
+    const ctx = makeCtx()
     const result = await run(ctx, 'write_file', { path: 'src/main.tsx', content: '// hijacked' })
     expect(result.error).toContain('managed by Shogo')
     // File on disk must NOT have changed.
@@ -296,29 +296,20 @@ describe('rejectIfProtected (canvas code mode)', () => {
     expect(after.content).toBe('// original')
   })
 
-  test('write_file rejects src/ShogoErrorBoundary.tsx when canvasMode=code', async () => {
-    const ctx = makeCtx({ config: { ...makeCtx().config, canvasMode: 'code' } as any })
+  test('write_file rejects src/ShogoErrorBoundary.tsx', async () => {
+    const ctx = makeCtx()
     const result = await run(ctx, 'write_file', { path: 'src/ShogoErrorBoundary.tsx', content: 'export default null' })
     expect(result.error).toContain('managed by Shogo')
   })
 
-  test('write_file allows src/main.tsx when canvasMode is NOT code', async () => {
-    // Chat mode: the gate is a no-op, so write goes through.
-    const ctx = makeCtx({ config: { ...makeCtx().config, canvasMode: 'chat' } as any })
-    const result = await run(ctx, 'write_file', { path: 'src/main.tsx', content: '// rewritten' })
-    expect(result.error).toBeUndefined()
-    const after = await run(makeCtx(), 'read_file', { path: 'src/main.tsx' })
-    expect(after.content).toBe('// rewritten')
-  })
-
-  test('write_file allows non-protected files in canvasMode=code', async () => {
-    const ctx = makeCtx({ config: { ...makeCtx().config, canvasMode: 'code' } as any })
+  test('write_file allows non-protected files', async () => {
+    const ctx = makeCtx()
     const result = await run(ctx, 'write_file', { path: 'src/App.tsx', content: '// rewrote app' })
     expect(result.error).toBeUndefined()
   })
 
-  test('edit_file rejects src/main.tsx when canvasMode=code', async () => {
-    const ctx = makeCtx({ config: { ...makeCtx().config, canvasMode: 'code' } as any })
+  test('edit_file rejects src/main.tsx', async () => {
+    const ctx = makeCtx()
     // edit_file requires a prior read in the same turn, so seed fileStateCache.
     const fileStateCache = new FileStateCache()
     const editCtx = makeCtx({

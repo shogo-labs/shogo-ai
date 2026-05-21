@@ -237,7 +237,6 @@ function bogusPathPrefixHint(workspaceDir: string, filePath: string): string | n
  * null if the write is allowed to proceed.
  */
 function rejectIfProtected(ctx: ToolContext, resolved: string): AgentToolResult<any> | null {
-  if (ctx.config?.canvasMode !== 'code') return null
   if (!isProtectedFile(ctx.workspaceDir, resolved)) return null
   return textResult({ error: PROTECTED_FILE_REJECTION })
 }

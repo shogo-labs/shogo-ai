@@ -153,7 +153,7 @@ function makeProjectJson(extra: Record<string, unknown> = {}): string {
     includedChats: true,
     project: {
       name: 'Imported', description: 'desc', tier: 'starter', status: 'draft',
-      settings: { activeMode: 'none', canvasMode: 'code', canvasEnabled: false },
+      settings: { activeMode: 'none', canvasEnabled: false },
       category: null, schemas: [], accessLevel: 'anyone',
       siteTitle: null, siteDescription: null,
     },
