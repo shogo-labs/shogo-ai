@@ -414,8 +414,9 @@
       "uncoveredLines": 137,
       "linePct": 26.737967914438503,
       "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "note": "100/100 via __resetEmailServiceForTesting hook (eliminates ?cb= reload phantom-line pollution)."
     },
     {
       "file": "apps/api/src/services/marketplace-snapshot-storage.service.ts",
