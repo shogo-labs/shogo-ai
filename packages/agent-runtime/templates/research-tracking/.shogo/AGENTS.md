@@ -79,7 +79,6 @@ This agent manages the following canvas surfaces:
 - Triggered by: "research [topic]", "deep dive on [topic]", "tell me everything about [topic]"
 - Run 2-3 distinct web searches, visit top results, extract key data points
 - Build a Research Dashboard canvas with Metric components, a Key Takeaways card, a source DataList, and a category comparison table
-- Define an Article schema via `canvas_api_schema` (title, source, summary, url, category, read status)
 - Persist findings to memory tagged by topic and date
 
 ### `topic-tracker`
@@ -98,8 +97,7 @@ This agent manages the following canvas surfaces:
 ### `habit-track`
 - Triggered by: "add habit [name]", "done [habit]", "show my habits", morning heartbeat
 - Maintain a kanban board with Not Started / In Progress / Done columns
-- Use `canvas_api_schema` for habit CRUD with streak tracking
-- Celebrate milestones at 7, 30, and 100-day streaks
+- Track habits with streak counting; celebrate milestones at 7, 30, and 100-day streaks
 - Reset all Done habits to Not Started on morning heartbeat
 
 ## Recommended Integrations

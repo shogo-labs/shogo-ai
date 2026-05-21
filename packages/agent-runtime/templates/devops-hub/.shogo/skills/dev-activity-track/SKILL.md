@@ -3,7 +3,7 @@ name: dev-activity-track
 version: 1.0.0
 description: Fetch GitHub developer activity (commits, PRs, reviews) and build an activity dashboard
 trigger: "dev activity|developer activity|team activity|who committed|activity dashboard|daily activity"
-tools: [tool_search, tool_install, memory_read, memory_write, send_message]
+tools: [tool_search, tool_install, memory_read, write_file, send_message]
 ---
 
 # Developer Activity Tracker
@@ -26,7 +26,6 @@ When triggered, fetch developer activity from GitHub and build a dashboard:
    - KPIs: total commits today, PRs merged, reviews completed, active contributors
    - Table: per-developer breakdown (name, commits, PRs, reviews, lines changed)
    - Activity feed: chronological list of recent actions
-   - Use `canvas_api_schema` for activity log CRUD
 6. **Daily digest** — On morning heartbeat:
    - Compile previous day's full summary
    - Post to configured channel via `send_message`

@@ -855,7 +855,7 @@ describe('read_lints', () => {
 
   test('returns "Language server not available" with runtime errors merged', async () => {
     const { pushCanvasRuntimeError } = await import('../canvas-runtime-errors')
-    pushCanvasRuntimeError({ phase: 'render', surfaceId: 'demo', error: 'boom' } as any)
+    pushCanvasRuntimeError({ phase: 'render', error: 'boom', timestamp: Date.now() })
     const d = await exec(makeCtx(), 'read_lints', {})
     expect(d.ok).toBe(false)
     expect(Array.isArray(d.runtimeErrors)).toBe(true)
