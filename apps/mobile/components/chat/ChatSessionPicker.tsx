@@ -43,6 +43,8 @@ import {
   Check,
   X,
   Search,
+  Loader2,
+  Trash2,
 } from "lucide-react-native"
 
 export interface ChatSession {
@@ -66,6 +68,8 @@ export interface ChatSessionPickerProps {
   onSelect: (sessionId: string) => void
   onCreate: () => void
   onRename?: (sessionId: string, newName: string) => void
+  /** Delete a chat session. When provided, each row gets a trash button. */
+  onDelete?: (sessionId: string) => void
   onLoadMore?: () => void
   hasMore?: boolean
   isLoadingMore?: boolean
@@ -75,6 +79,13 @@ export interface ChatSessionPickerProps {
   searchOpen?: boolean
   /** Called when the externally-controlled search modal should close. */
   onSearchClose?: () => void
+  /** Set of session IDs whose stream is currently running. Renders an animated spinner on the row. */
+  streamingSessionIds?: Set<string>
+  /**
+   * Set of session IDs whose stream has finished but whose row has not yet
+   * been viewed by the user. Renders a static theme-colored dot.
+   */
+  completedSessionIds?: Set<string>
 }
 
 export function formatRelativeTime(timestamp: number): string {
@@ -301,12 +312,15 @@ export function ChatSessionSidebar({
   onSelect,
   onCreate,
   onRename,
+  onDelete,
   onLoadMore,
   hasMore,
   isLoadingMore,
   hideHeader,
   searchOpen: externalSearchOpen,
   onSearchClose,
+  streamingSessionIds,
+  completedSessionIds,
 }: ChatSessionPickerProps) {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState("")
@@ -370,6 +384,11 @@ export function ChatSessionSidebar({
   const renderSession = ({ item: session }: ListRenderItemInfo<ChatSession>) => {
     const isEditing = editingSessionId === session.id
     const isCurrent = session.id === currentSessionId
+    const isStreaming = streamingSessionIds?.has(session.id) ?? false
+    // The "new activity" dot is only meaningful for non-current sessions; opening
+    // the row clears it (parent layout handles the clearing on currentSessionId change).
+    const isCompleted =
+      !isCurrent && !isStreaming && (completedSessionIds?.has(session.id) ?? false)
 
     return (
       <Pressable
@@ -397,13 +416,34 @@ export function ChatSessionSidebar({
           </View>
         ) : (
           <>
-            <View className="flex-row items-center justify-between">
+            <View className="flex-row items-center gap-2">
+              {isStreaming ? (
+                <Loader2
+                  size={12}
+                  className="text-primary animate-spin shrink-0"
+                  aria-label="Chat running"
+                />
+              ) : isCompleted ? (
+                <View
+                  className="h-1.5 w-1.5 rounded-full bg-primary shrink-0"
+                  accessibilityLabel="Chat has new activity"
+                />
+              ) : null}
               <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
                 {session.name}
               </Text>
               {onRename && (
                 <Pressable onPress={() => handleStartEdit(session)} className="p-1 shrink-0">
                   <Pencil className="h-3 w-3 text-gray-400" size={12} />
+                </Pressable>
+              )}
+              {onDelete && (
+                <Pressable
+                  onPress={() => onDelete(session.id)}
+                  className="p-1 shrink-0"
+                  accessibilityLabel={`Delete ${session.name}`}
+                >
+                  <Trash2 className="h-3 w-3 text-gray-400" size={12} />
                 </Pressable>
               )}
             </View>
