@@ -3536,22 +3536,6 @@ app.post('/agent/canvas/error', async (c) => {
 
 export { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 
-app.post('/agent/canvas/action', async (c) => {
-  try {
-    const body = await c.req.json() as { surfaceId?: string; name?: string; context?: Record<string, unknown> }
-    if (!body.name) return c.json({ error: 'Missing action name' }, 400)
-
-    console.log(`[canvas-action] ${body.surfaceId}/${body.name}`, body.context ? JSON.stringify(body.context).slice(0, 200) : '')
-
-    // TODO: Route canvas actions to the gateway when canvas_action_wait is implemented for v2
-    // For now, just acknowledge — the agent can poll for actions or we'll add event routing.
-
-    return c.json({ ok: true })
-  } catch {
-    return c.json({ error: 'Invalid request body' }, 400)
-  }
-})
-
 // =============================================================================
 // Canvas iframe bridge — served live, injected into every workspace HTML
 // response. See packages/agent-runtime/static/canvas-bridge.js for the

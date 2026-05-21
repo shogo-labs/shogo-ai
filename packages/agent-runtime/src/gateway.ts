@@ -1330,19 +1330,6 @@ export class AgentGateway {
     return this.agentTurn(text, 'webhook')
   }
 
-  async processCanvasAction(event: { surfaceId: string; name: string; context?: Record<string, unknown> }): Promise<string> {
-    const { surfaceId, name, context } = event
-    const { _sendToAgent, ...cleanContext } = context ?? {}
-    const contextStr = Object.keys(cleanContext).length > 0
-      ? `\nContext: ${JSON.stringify(cleanContext, null, 2)}`
-      : ''
-    const prompt = [
-      `[Canvas Action] The user clicked "${name}" on surface "${surfaceId}".${contextStr}`,
-      `Process this action and update the canvas accordingly.`,
-    ].join('\n')
-    return this.agentTurn(prompt, 'canvas-action')
-  }
-
   private buildSlashContext(sessionId: string): SlashCommandContext {
     const session = this.sessionManager.getOrCreate(sessionId)
     return {
@@ -2184,8 +2171,7 @@ export class AgentGateway {
       const isRealChatSession = !!sessionId &&
         sessionId !== 'chat' &&
         sessionId !== 'default' &&
-        sessionId !== 'webhook' &&
-        sessionId !== 'canvas-action'
+        sessionId !== 'webhook'
       const extraHeaders: Record<string, string> | undefined = isRealChatSession
         ? { 'x-chat-session-id': sessionId }
         : undefined
