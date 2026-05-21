@@ -65,6 +65,36 @@ roleRef:
   name: shogo-api-db-secret-manager
   apiGroup: rbac.authorization.k8s.io
 ---
+# Read-only access to the kourier-system/kourier Service so the API can
+# auto-discover this cluster's externally-routable load balancer IP at
+# startup (used by apps/api/src/lib/kourier-lb-discovery.ts → cloudflare-dns.ts
+# to upsert per-preview CF DNS records). Scoped to the single named Service
+# to keep blast radius minimal.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: shogo-api-kourier-lb-reader
+  namespace: kourier-system
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    resourceNames: ["kourier"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: shogo-api-kourier-lb-reader
+  namespace: kourier-system
+subjects:
+  - kind: ServiceAccount
+    name: api-service-account
+    namespace: shogo-production-system
+roleRef:
+  kind: Role
+  name: shogo-api-kourier-lb-reader
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
@@ -111,16 +141,19 @@ spec:
               value: "production"
             # Per-preview Cloudflare DNS: upserts a proxied A record for
             # every preview--<projectId>.shogo.ai hostname pointing at
-            # this cluster's Kourier LB. Without these three vars,
+            # this cluster's Kourier LB. Without CF_API_TOKEN + CF_ZONE_ID,
             # `apps/api/src/lib/cloudflare-dns.ts` is a no-op and India
-            # previews fall back to the flat `*.shogo.ai` wildcard,
-            # which routes to US Kourier and returns 404 / CF 522.
-            # See docs/cloudflare-dns-per-preview.md and the
-            # 2026-05-21 incident.
+            # previews fall back to the flat `*.shogo.ai` wildcard, which
+            # routes to US Kourier and returns 404 / CF 522 (see the
+            # 2026-05-21 incident). The Kourier LB IP itself is
+            # auto-discovered at API startup from
+            # `Service kourier/kourier-system` via the
+            # `shogo-api-kourier-lb-reader` Role above, so new regions
+            # only need these two vars wired — never a region-specific
+            # IP literal. Set KOURIER_LB_IP below to override discovery
+            # if needed. See docs/cloudflare-dns-per-preview.md.
             - name: CF_ZONE_ID
               value: "c2d56140e7de85a4ac5ab5bea8e7434f"
-            - name: KOURIER_LB_IP
-              value: "161.118.170.159"
             - name: CF_API_TOKEN
               valueFrom:
                 secretKeyRef:
