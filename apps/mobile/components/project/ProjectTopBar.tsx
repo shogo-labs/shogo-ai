@@ -138,10 +138,6 @@ export interface ProjectTopBarProps {
   selectedComponentId?: string | null
   onDeleteComponent?: () => void
   onAddComponent?: () => void
-  // Surface switching
-  surfaceEntries?: { id: string; title: string; themeSwatchColor?: string }[]
-  activeSurfaceId?: string | null
-  onSurfaceChange?: (surfaceId: string) => void
   // Chat controls
   showChatSessions?: boolean
   isChatCollapsed?: boolean
@@ -242,9 +238,6 @@ export function ProjectTopBar({
   selectedComponentId,
   onDeleteComponent,
   onAddComponent,
-  surfaceEntries,
-  activeSurfaceId,
-  onSurfaceChange,
   showChatSessions = false,
   isChatCollapsed = false,
   onChatSessionsToggle,
@@ -270,7 +263,6 @@ export function ProjectTopBar({
   const [showDropdown, setShowDropdown] = useState(false)
   const [dropdownKey, setDropdownKey] = useState(0)
   const [showNarrowMore, setShowNarrowMore] = useState(false)
-  const [showSurfaceDropdown, setShowSurfaceDropdown] = useState(false)
   const [chatMoreOpen, setChatMoreOpen] = useState(false)
   const [chatRenameOpen, setChatRenameOpen] = useState(false)
   const [chatRenameValue, setChatRenameValue] = useState('')
@@ -303,8 +295,6 @@ export function ProjectTopBar({
   }, [activeChatSessionId, chatRenameValue, onRenameChat])
 
   const isCanvasActive = activeTab === 'canvas'
-  const showSurfacePicker = (surfaceEntries?.length ?? 0) > 1
-  const activeSurfaceEntry = surfaceEntries?.find(s => s.id === activeSurfaceId)
 
   const visibleTabs = AGENT_TABS.filter(tab => !hiddenTabs.includes(tab.id))
   const narrowPrimaryIds = new Set(['chat-fullscreen', 'canvas', 'app-preview'])
@@ -672,76 +662,6 @@ export function ProjectTopBar({
           ))}
         </View>
 
-        {/* Context zone: canvas surface picker (web only) */}
-        {Platform.OS === 'web' && isCanvasActive && showSurfacePicker && (
-          <>
-            <View className="w-px h-5 bg-border mx-1" />
-            <View className="flex-row items-center gap-0.5">
-              <Popover
-                placement="bottom left"
-                isOpen={showSurfaceDropdown}
-                onOpen={() => setShowSurfaceDropdown(true)}
-                onClose={() => setShowSurfaceDropdown(false)}
-                trigger={(triggerProps) => (
-                  <Pressable
-                    {...triggerProps}
-                    className="h-7 flex-row items-center gap-1 px-2 rounded-md active:bg-muted"
-                    accessibilityLabel="Switch canvas"
-                  >
-                    {activeSurfaceEntry?.themeSwatchColor && (
-                      <View
-                        className="w-2.5 h-2.5 rounded-full"
-                        style={{ backgroundColor: activeSurfaceEntry.themeSwatchColor }}
-                      />
-                    )}
-                    <Text className="text-[10px] font-medium text-muted-foreground max-w-[100px]" numberOfLines={1}>
-                      {activeSurfaceEntry?.title || 'Canvas'}
-                    </Text>
-                    <ChevronDown size={10} className="text-muted-foreground" />
-                  </Pressable>
-                )}
-              >
-                <PopoverBackdrop />
-                <PopoverContent className="min-w-[160px] p-0">
-                  <PopoverBody>
-                    {surfaceEntries?.map((s) => (
-                      <Pressable
-                        key={s.id}
-                        onPress={() => {
-                          onSurfaceChange?.(s.id)
-                          setShowSurfaceDropdown(false)
-                        }}
-                        className={cn(
-                          'px-3 py-2 active:bg-muted',
-                          s.id === activeSurfaceId && 'bg-accent',
-                        )}
-                        style={s.themeSwatchColor ? { borderBottomWidth: 2, borderBottomColor: s.themeSwatchColor } : undefined}
-                      >
-                        <View className="flex-row items-center gap-2">
-                          {s.themeSwatchColor && (
-                            <View
-                              className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                              style={{ backgroundColor: s.themeSwatchColor }}
-                            />
-                          )}
-                          <Text
-                            className={cn(
-                              'text-xs',
-                              s.id === activeSurfaceId ? 'font-semibold text-foreground' : 'text-muted-foreground',
-                            )}
-                            numberOfLines={1}
-                          >
-                            {s.title || s.id}
-                          </Text>
-                        </View>
-                      </Pressable>
-                    ))}
-                  </PopoverBody>
-                </PopoverContent>
-              </Popover>
-            </View>
-          </>
-        )}
         {/* Visual edit controls — temporarily disabled
         {Platform.OS === 'web' && isCanvasActive && onToggleEditMode && (
           <>
