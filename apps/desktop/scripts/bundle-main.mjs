@@ -50,12 +50,42 @@ const OUT_FILE = path.join(DESKTOP_DIR, 'dist', 'main.js');
  * across `npm install` cycles for apps/desktop's own deps.
  */
 function ensureWorkerSymlink() {
-  const namespaceDir = path.join(DESKTOP_DIR, 'node_modules', '@shogo-ai');
-  const linkPath = path.join(namespaceDir, 'worker');
-  const targetAbs = path.join(REPO_ROOT, 'packages', 'shogo-worker');
+  ensureWorkspaceSymlink({
+    namespace: '@shogo-ai',
+    packageName: 'worker',
+    sourceDir: path.join(REPO_ROOT, 'packages', 'shogo-worker'),
+    label: 'worker',
+  });
+}
 
-  if (!existsSync(targetAbs)) {
-    console.error(`[bundle-main] worker source missing at ${targetAbs}`);
+/**
+ * Same trick for `@shogo/agent-runtime`. Only `src/fs-tree-walker.ts`
+ * gets imported from apps/desktop (the rest of agent-runtime — Hono,
+ * RAG, voice mode, etc. — is intentionally NOT pulled into the
+ * Electron main bundle), so this is a narrow surface that bun resolves
+ * + inlines straight from source.
+ *
+ * Apps/api's Dockerfile uses the same `ln -sf` pattern at deploy time
+ * (`ln -sf ../../../packages/agent-runtime node_modules/@shogo/agent-runtime`).
+ * We replicate it here so the build works on Windows + macOS GitHub
+ * runners where apps/desktop is npm-installed and never sees the
+ * workspace symlink that bun install would create.
+ */
+function ensureAgentRuntimeSymlink() {
+  ensureWorkspaceSymlink({
+    namespace: '@shogo',
+    packageName: 'agent-runtime',
+    sourceDir: path.join(REPO_ROOT, 'packages', 'agent-runtime'),
+    label: 'agent-runtime',
+  });
+}
+
+function ensureWorkspaceSymlink({ namespace, packageName, sourceDir, label }) {
+  const namespaceDir = path.join(DESKTOP_DIR, 'node_modules', namespace);
+  const linkPath = path.join(namespaceDir, packageName);
+
+  if (!existsSync(sourceDir)) {
+    console.error(`[bundle-main] ${label} source missing at ${sourceDir}`);
     process.exit(1);
   }
   mkdirSync(namespaceDir, { recursive: true });
@@ -66,8 +96,27 @@ function ensureWorkerSymlink() {
     try { unlinkSync(linkPath); } catch { /* dir, leave alone */ }
   }
   if (!existsSync(linkPath)) {
-    const relTarget = path.relative(namespaceDir, targetAbs);
-    symlinkSync(relTarget, linkPath, 'dir');
+    // On Windows, `symlinkSync(..., 'dir')` requires
+    // SeCreateSymbolicLinkPrivilege — i.e. an elevated terminal OR
+    // Developer Mode enabled. Junctions (directory reparse points)
+    // don't need that privilege and behave identically for module
+    // resolution, so use them on Windows. The 'junction' type is
+    // ignored on POSIX and the second arg there is just 'dir'.
+    //
+    // This change fixes local-dev `npm run build` on Windows without
+    // changing CI behavior (the GitHub windows-latest runners would
+    // also benefit — they used to need admin context for the existing
+    // worker symlink and would silently break if that ever changed).
+    //
+    // Junctions also require an ABSOLUTE target on Windows; relative
+    // targets get resolved against the current working directory at
+    // creation time rather than against the link's own directory.
+    if (process.platform === 'win32') {
+      symlinkSync(sourceDir, linkPath, 'junction');
+    } else {
+      const relTarget = path.relative(namespaceDir, sourceDir);
+      symlinkSync(relTarget, linkPath, 'dir');
+    }
   }
 }
 
@@ -98,6 +147,7 @@ const EXTERNALS = [
 ];
 
 ensureWorkerSymlink();
+ensureAgentRuntimeSymlink();
 
 // Inject `packages/shogo-worker`'s version as a build-time constant so
 // `readWorkerVersion()` in `cloud-login.ts` doesn't have to read its own
