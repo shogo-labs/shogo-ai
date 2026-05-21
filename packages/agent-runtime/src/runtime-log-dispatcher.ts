@@ -26,8 +26,6 @@ export interface RuntimeLogEntry {
   level: RuntimeLogLevel
   /** Visible payload; usually a single line, may include trailing newlines. */
   text: string
-  /** Optional canvas surface id for `source: 'canvas-error'`. */
-  surfaceId?: string
 }
 
 /** Hard cap on the in-memory ring buffer. Picked to match LogsPanel sizing. */
@@ -62,7 +60,6 @@ export function recordRuntimeLogEntry(
     source: partial.source,
     level: partial.level,
     text: partial.text,
-    surfaceId: partial.surfaceId,
   }
   broadcast(entry)
   return entry
@@ -103,15 +100,11 @@ export function recordBuildEntry(
  * Canvas surface threw a runtime error (uncaught exception, unhandled
  * rejection, hydration mismatch). Always level=error.
  */
-export function recordCanvasErrorEntry(
-  text: string,
-  surfaceId: string | undefined,
-): RuntimeLogEntry {
+export function recordCanvasErrorEntry(text: string): RuntimeLogEntry {
   return recordRuntimeLogEntry({
     source: 'canvas-error',
     level: 'error',
     text,
-    surfaceId,
   })
 }
 
