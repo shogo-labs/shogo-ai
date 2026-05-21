@@ -39,7 +39,7 @@ const STORAGE_KEY = "ai_data_sharing_consent_v1"
  * new data category, etc.). A bump invalidates the stored consent and forces
  * the user to re-accept on next app open.
  */
-export const AI_CONSENT_VERSION = 2
+export const AI_CONSENT_VERSION = 1
 
 export type AiProvider = {
   name: string
