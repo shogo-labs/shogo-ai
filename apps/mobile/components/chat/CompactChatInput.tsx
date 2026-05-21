@@ -365,6 +365,17 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       setViewingPastedId((curr) => (curr === id ? null : curr))
     }, [])
 
+    const handleUpdatePastedText = useCallback(
+      (id: string, content: string) => {
+        setPastedTexts((prev) =>
+          prev.map((p) =>
+            p.id === id ? { ...p, content, info: analyzeContent(content) } : p
+          )
+        )
+      },
+      []
+    )
+
     const viewingPasted = useMemo(
       () => pastedTexts.find((p) => p.id === viewingPastedId) ?? null,
       [pastedTexts, viewingPastedId]
@@ -984,6 +995,8 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             title={`${kindLabel(viewingPasted.info.kind)} content`}
             kind={viewingPasted.info.kind}
             sizeLabel={viewingPasted.info.sizeLabel}
+            editable
+            onSave={(next) => handleUpdatePastedText(viewingPasted.id, next)}
           />
         )}
 
