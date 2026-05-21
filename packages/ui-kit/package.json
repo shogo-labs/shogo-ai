@@ -9,8 +9,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./theme": "./src/theme/index.ts",
-    "./platform": "./src/platform/index.ts",
-    "./dynamic-app": "./src/dynamic-app/index.ts"
+    "./platform": "./src/platform/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
