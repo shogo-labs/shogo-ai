@@ -65,9 +65,17 @@ function isTextLikely(path: string): boolean {
 }
 
 function toWsNode(fn: FileNode): WsNode {
-  return fn.type === 'directory'
-    ? { name: fn.name, path: fn.path, kind: 'dir', children: fn.children?.map(toWsNode) }
-    : { name: fn.name, path: fn.path, kind: 'file', language: languageFor(fn.path) }
+  if (fn.type !== 'directory') {
+    return { name: fn.name, path: fn.path, kind: 'file', language: languageFor(fn.path) }
+  }
+  const dir: WsNode = { name: fn.name, path: fn.path, kind: 'dir' }
+  // Heavy dirs come back as `lazy: true` with no children — the IDE will
+  // fetch them on expand via `sdkFs.listTree(path)`. Don't set `children`
+  // here so the tree UI can distinguish "lazy, not yet loaded" from
+  // "loaded but empty".
+  if (fn.lazy) dir.lazy = true
+  else dir.children = fn.children?.map(toWsNode) ?? []
+  return dir
 }
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -123,8 +131,13 @@ export class SdkFs implements WorkspaceService {
     return URL.createObjectURL(blob)
   }
 
-  async listTree(): Promise<WsNode[]> {
-    const tree = await retry429(() => this.client.getWorkspaceTree())
+  /**
+   * Without `path`, fetches the top-level workspace tree. With `path`, fetches
+   * just that subtree — used to lazy-load `node_modules`/`dist`/etc. when the
+   * user expands them in the FileTree.
+   */
+  async listTree(path?: string): Promise<WsNode[]> {
+    const tree = await retry429(() => this.client.getWorkspaceTree(path))
     return tree.map(toWsNode)
   }
 
@@ -209,8 +222,14 @@ export class SdkFs implements WorkspaceService {
     const walk = (nodes: FileNode[]) => {
       for (const n of nodes) {
         if (candidates.length >= MAX_FILES) return
-        if (n.type === 'directory') walk(n.children ?? [])
-        else if (isTextLikely(n.path)) candidates.push(n.path)
+        if (n.type === 'directory') {
+          // Skip lazy-loaded heavy dirs (node_modules/dist/etc.) — searching
+          // them would require an N-RPC explosion to fetch every subtree, and
+          // matches there are almost always noise. VS Code excludes the same
+          // set from full-text search by default.
+          if (n.lazy) continue
+          walk(n.children ?? [])
+        } else if (isTextLikely(n.path)) candidates.push(n.path)
       }
     }
     walk(tree)

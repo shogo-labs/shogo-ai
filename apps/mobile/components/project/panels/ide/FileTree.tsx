@@ -6,7 +6,9 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  Loader2,
   Pencil,
+  RefreshCw,
   Trash2,
 } from "lucide-react-native";
 import type { TreeNode } from "./types";
@@ -18,23 +20,52 @@ export interface FileTreeHandlers {
   onRename: (node: TreeNode, newName: string) => Promise<void>;
   onDelete: (node: TreeNode) => Promise<void>;
   onMove: (from: TreeNode, toDir: TreeNode | null) => Promise<void>;
+  /**
+   * Fetch the children of a directory whose `lazy` flag was set by the
+   * server (e.g. `node_modules`, `dist`). The handler is expected to splice
+   * the loaded children into the tree so the next render shows them under
+   * the directory. Rejects on error; the FileTree surfaces it inline with
+   * a retry affordance.
+   */
+  onLoadSubtree?: (rootId: string, path: string) => Promise<void>;
 }
 
 type FlatRow =
   | { kind: "node"; node: TreeNode; depth: number; parentPath: string }
-  | { kind: "new"; depth: number; parentPath: string; mode: "file" | "dir" };
+  | { kind: "new"; depth: number; parentPath: string; mode: "file" | "dir" }
+  // Synthetic rows rendered beneath an expanded lazy directory whose
+  // children haven't materialised yet (loading) or whose fetch failed
+  // (error, with a Retry button). Carries the parent node so the retry
+  // handler can re-invoke `onLoadSubtree`.
+  | { kind: "lazy-loading"; depth: number; parent: TreeNode }
+  | { kind: "lazy-error"; depth: number; parent: TreeNode; message: string }
+  | { kind: "lazy-empty"; depth: number; parent: TreeNode };
 
 function flatten(
   tree: TreeNode[],
   expanded: Set<string>,
+  loadingLazy: Set<string>,
+  lazyErrors: Map<string, string>,
   depth = 0,
   parentPath = "",
   out: FlatRow[] = [],
 ): FlatRow[] {
   for (const n of tree) {
     out.push({ kind: "node", node: n, depth, parentPath });
-    if (n.kind === "dir" && expanded.has(n.path) && n.children) {
-      flatten(n.children, expanded, depth + 1, n.path, out);
+    if (n.kind === "dir" && expanded.has(n.path)) {
+      if (n.children && n.children.length > 0) {
+        flatten(n.children, expanded, loadingLazy, lazyErrors, depth + 1, n.path, out);
+      } else if (n.lazy) {
+        const k = keyOf(n);
+        const err = lazyErrors.get(k);
+        if (err) out.push({ kind: "lazy-error", depth: depth + 1, parent: n, message: err });
+        else if (loadingLazy.has(k)) out.push({ kind: "lazy-loading", depth: depth + 1, parent: n });
+        else out.push({ kind: "lazy-empty", depth: depth + 1, parent: n });
+      } else if (n.children) {
+        // Loaded directory that just happens to be empty — fall through with
+        // no synthetic row.
+        flatten(n.children, expanded, loadingLazy, lazyErrors, depth + 1, n.path, out);
+      }
     }
   }
   return out;
@@ -77,6 +108,12 @@ export function FileTree({
     for (const n of tree) if (n.kind === "dir") s.add(n.path);
     return s;
   });
+  // Lazy-load state for `node_modules`/`dist`/etc. Keyed by `rootId::path` so
+  // two roots with a same-named lazy dir don't share state. `loadingLazy`
+  // tracks in-flight fetches (rendered as a spinner row), `lazyErrors`
+  // captures failures (rendered as an error row with Retry).
+  const [loadingLazy, setLoadingLazy] = useState<Set<string>>(new Set());
+  const [lazyErrors, setLazyErrors] = useState<Map<string, string>>(new Map());
   const [selected, setSelected] = useState<string | null>(null);
   /** Additional selected entries (stored by stable keyOf()). Always includes
    *  `selected` when it's set. Used for multi-select actions (Cmd/Shift+click).
@@ -96,7 +133,7 @@ export function FileTree({
   const containerRef = useRef<HTMLDivElement>(null);
 
   const rows = useMemo(() => {
-    const base = flatten(tree, expanded);
+    const base = flatten(tree, expanded, loadingLazy, lazyErrors);
     if (creating) {
       const insertIdx = creating.parentPath
         ? base.findIndex(
@@ -165,6 +202,73 @@ export function FileTree({
       return n;
     });
   }, []);
+
+  /**
+   * Fetch the children of a lazy directory. Idempotent: if a load is already
+   * in flight for this node, do nothing. Clears any prior error before the
+   * attempt so the spinner takes over from the error row. The success path
+   * does NOT clear the loading flag explicitly — once the parent splices in
+   * children, `node.lazy` becomes undefined and the synthetic row stops
+   * rendering. The loading flag is dropped here on the catch / finally edge.
+   */
+  const loadLazy = useCallback(
+    async (node: TreeNode) => {
+      if (!handlers.onLoadSubtree) return;
+      const k = keyOf(node);
+      if (loadingLazy.has(k)) return;
+      setLoadingLazy((prev) => {
+        const next = new Set(prev);
+        next.add(k);
+        return next;
+      });
+      setLazyErrors((prev) => {
+        if (!prev.has(k)) return prev;
+        const next = new Map(prev);
+        next.delete(k);
+        return next;
+      });
+      try {
+        await handlers.onLoadSubtree(node.rootId, node.path);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setLazyErrors((prev) => {
+          const next = new Map(prev);
+          next.set(k, msg);
+          return next;
+        });
+      } finally {
+        setLoadingLazy((prev) => {
+          if (!prev.has(k)) return prev;
+          const next = new Set(prev);
+          next.delete(k);
+          return next;
+        });
+      }
+    },
+    [handlers, loadingLazy],
+  );
+
+  /**
+   * Click-handler for directory rows. Always toggles expand state so the
+   * arrow rotates immediately; additionally kicks off a lazy fetch the first
+   * time a `lazy` dir without children is opened. Repeated expand/collapse
+   * after a successful load is just an `expanded` set tweak — no new RPCs.
+   */
+  const toggleDir = useCallback(
+    (node: TreeNode) => {
+      toggle(node.path);
+      const wasExpanded = expanded.has(node.path);
+      if (
+        !wasExpanded &&
+        node.lazy &&
+        (!node.children || node.children.length === 0) &&
+        !lazyErrors.has(keyOf(node))
+      ) {
+        void loadLazy(node);
+      }
+    },
+    [toggle, expanded, lazyErrors, loadLazy],
+  );
 
   const openContextMenu = (e: React.MouseEvent, node: TreeNode | null) => {
     e.preventDefault();
@@ -311,10 +415,10 @@ export function FileTree({
       anchorRef.current = k;
       setMultiSelected(new Set([k]));
       setSelected(node.path);
-      if (node.kind === "dir") toggle(node.path);
+      if (node.kind === "dir") toggleDir(node);
       else handlers.onOpen(node);
     },
-    [visibleNodes, toggle, handlers],
+    [visibleNodes, toggleDir, handlers],
   );
 
   useEffect(() => {
@@ -364,8 +468,10 @@ export function FileTree({
       } else if (e.key === "ArrowRight") {
         const n = nodes[idx];
         if (n?.kind === "dir") {
-          if (!expanded.has(n.path)) expand(n.path);
-          else {
+          if (!expanded.has(n.path)) {
+            // Expand-via-arrow on a lazy dir triggers the fetch too.
+            toggleDir(n);
+          } else {
             const next = nodes[idx + 1];
             if (next) setSelected(next.path);
           }
@@ -389,7 +495,7 @@ export function FileTree({
         }
         const n = nodes[idx];
         if (!n) return;
-        if (n.kind === "dir") toggle(n.path);
+        if (n.kind === "dir") toggleDir(n);
         else handlers.onOpen(n);
       } else if (e.key === "a" && (e.metaKey || e.ctrlKey)) {
         // Select-all *visible* entries (don't clobber browser find/replace
@@ -410,7 +516,7 @@ export function FileTree({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [visibleNodes, selected, expanded, renaming, creating, handlers, expand, toggle, multiSelected, openSelected]);
+  }, [visibleNodes, selected, expanded, renaming, creating, handlers, expand, toggle, toggleDir, multiSelected, openSelected]);
 
   const menuItems = (node: TreeNode | null): MenuEntry[] => {
     const defaultRootId = tree[0]?.rootId ?? "agent";
@@ -474,7 +580,7 @@ export function FileTree({
       { separator: true },
       {
         label: node.kind === "file" ? "Open" : expanded.has(node.path) ? "Collapse" : "Expand",
-        onClick: () => (node.kind === "file" ? handlers.onOpen(node) : toggle(node.path)),
+        onClick: () => (node.kind === "file" ? handlers.onOpen(node) : toggleDir(node)),
       },
       {
         label: "Rename",
@@ -528,6 +634,54 @@ export function FileTree({
               onCommit={commitCreate}
               onCancel={() => setCreating(null)}
             />
+          );
+        }
+
+        if (row.kind === "lazy-loading") {
+          return (
+            <div
+              key={`lazy-loading-${row.parent.rootId}::${row.parent.path}`}
+              className="flex items-center gap-1 px-2 py-[3px] text-[12px] text-[color:var(--ide-muted)] italic"
+              style={{ paddingLeft: 8 + row.depth * 12 }}
+            >
+              <Loader2 size={13} className="animate-spin" />
+              <span>Loading…</span>
+            </div>
+          );
+        }
+
+        if (row.kind === "lazy-empty") {
+          return (
+            <div
+              key={`lazy-empty-${row.parent.rootId}::${row.parent.path}`}
+              className="flex items-center gap-1 px-2 py-[3px] text-[12px] text-[color:var(--ide-muted)] italic"
+              style={{ paddingLeft: 8 + row.depth * 12 }}
+            >
+              <span>(empty)</span>
+            </div>
+          );
+        }
+
+        if (row.kind === "lazy-error") {
+          const parent = row.parent;
+          return (
+            <div
+              key={`lazy-error-${parent.rootId}::${parent.path}`}
+              className="flex items-center gap-2 px-2 py-[3px] text-[12px] text-[color:var(--ide-error)]"
+              style={{ paddingLeft: 8 + row.depth * 12 }}
+              title={row.message}
+            >
+              <span className="truncate min-w-0 flex-1">Failed to load: {row.message}</span>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void loadLazy(parent);
+                }}
+                className="flex items-center gap-1 rounded px-1 py-[1px] text-[11px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover)] hover:text-[color:var(--ide-text-strong)]"
+              >
+                <RefreshCw size={11} /> Retry
+              </button>
+            </div>
           );
         }
 

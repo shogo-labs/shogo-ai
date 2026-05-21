@@ -16,6 +16,7 @@ import {
 } from 'react-native'
 import { AgentClient, type FileNode, type SearchResult } from '@shogo-ai/sdk/agent'
 import { agentFetch } from '../../../lib/agent-fetch'
+import { filterForFilesBrowser } from './files-browser-filter'
 import {
   FileText,
   Folder,
@@ -316,7 +317,11 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
     if (showLoading) setIsLoadingTree(true)
     setError(null)
     try {
-      const newTree = await client.getWorkspaceTree()
+      const rawTree = await client.getWorkspaceTree()
+      // Curate down to the agent-files narrow view — the raw tree now
+      // matches what the IDE Monaco file tree wants (VS Code defaults).
+      // See `filterForFilesBrowser` for the policy.
+      const newTree = filterForFilesBrowser(rawTree)
       const json = JSON.stringify(newTree)
       if (json !== treeJsonRef.current) {
         treeJsonRef.current = json

@@ -4,6 +4,14 @@ export interface WsNode {
   kind: "file" | "dir";
   children?: WsNode[];
   language?: string;
+  /**
+   * True on directories whose children were not walked by the backing
+   * service (e.g. `node_modules` from the agent runtime). The IDE's
+   * FileTree renders these as a regular directory row but defers fetching
+   * children until the user expands it — see `Workbench.loadSubtree`.
+   * Backends that walk the whole tree up-front (LocalFs) leave this unset.
+   */
+  lazy?: boolean;
 }
 
 export interface WsFile {

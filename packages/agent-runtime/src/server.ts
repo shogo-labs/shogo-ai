@@ -57,6 +57,12 @@ import {
 } from './workspace-defaults'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
+import {
+  walkFilesTree,
+  WORKSPACE_TREE_HIDDEN_DIRS,
+  WORKSPACE_TREE_LAZY_DIRS,
+  WORKSPACE_TREE_HIDDEN_FILES,
+} from './fs-tree-walker'
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { createPtyWsHandlers, type WsData } from './pty-ws-handler'
@@ -2441,58 +2447,11 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
-const WORKSPACE_TREE_EXCLUDE_DIRS = new Set([
-  'node_modules', 'dist', '.next', '.cache', '.turbo', '.parcel-cache',
-  'coverage', '.nyc_output', '__pycache__', '.venv', 'venv',
-  'memory', 'scripts',
-])
-
-const WORKSPACE_TREE_EXCLUDE_FILES = new Set([
-  'bun.lock', '.virtfs_metadata',
-  'AGENTS.md', 'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md',
-  'package.json', 'tsconfig.json', 'vite.config.ts', 'tailwind.config.ts',
-  'postcss.config.js', 'postcss.config.mjs', 'components.json',
-  'pyrightconfig.json', 'LICENSE', 'README.md',
-  '.app-template',
-])
-
-function walkFilesTree(
-  dir: string,
-  rootDir: string,
-  excludeDirs?: Set<string>,
-  excludeFiles?: Set<string>,
-): any[] {
-  if (!existsSync(dir)) return []
-  const results: any[] = []
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name.startsWith('.')) continue
-    const absPath = join(dir, entry.name)
-    // Always emit POSIX-style separators so Windows runtimes don't surface
-    // `tools\foo\bar.ts` (which the IDE would then URL-encode as `%5C`).
-    const relPath = absPath.slice(rootDir.length + 1).replace(/\\/g, '/')
-    const stat = statSync(absPath)
-    if (entry.isDirectory()) {
-      if (excludeDirs?.has(entry.name)) continue
-      results.push({
-        name: entry.name,
-        path: relPath,
-        type: 'directory',
-        modified: stat.mtimeMs,
-        children: walkFilesTree(absPath, rootDir, excludeDirs, excludeFiles),
-      })
-    } else {
-      if (excludeFiles?.has(entry.name)) continue
-      results.push({
-        name: entry.name,
-        path: relPath,
-        type: 'file',
-        size: stat.size,
-        modified: stat.mtimeMs,
-      })
-    }
-  }
-  return results
-}
+// File-tree exclusion policy (VS Code defaults) + the walker itself live in
+// `./fs-tree-walker` so both this HTTP route and the Electron desktop IPC
+// fast-path (`apps/desktop/src/fs-ipc.ts`) share one implementation. See the
+// file-level doc-comment in `fs-tree-walker.ts` for the three-bucket policy
+// and the rationale for keeping product-UX excludes client-side.
 
 // Bundle all workspace files for project export (called by the API server in K8s mode).
 // `dist/` and `build/` are intentionally NOT excluded here: shipping the built app output
@@ -2561,9 +2520,33 @@ function resolveWorkspacePath(subPath: string): string | null {
   return resolved
 }
 
-// Recursive file tree for the file browser UI
+// Recursive file tree for the file browser UI.
+//
+// Without `?path=`, walks from the workspace root. With `?path=<rel>`, walks
+// just that subtree — used by the IDE to lazy-load `node_modules/`, `dist/`,
+// and friends only when the user expands them. The same three exclusion sets
+// apply at every depth, so a `node_modules/foo/node_modules` nested dep still
+// comes back as a `lazy: true` entry rather than recursing.
 app.get('/agent/workspace/tree', (c) => {
-  const tree = walkFilesTree(WORKSPACE_DIR, resolve(WORKSPACE_DIR), WORKSPACE_TREE_EXCLUDE_DIRS, WORKSPACE_TREE_EXCLUDE_FILES)
+  const subPath = c.req.query('path') ?? ''
+  const rootResolved = resolve(WORKSPACE_DIR)
+  let startDir = WORKSPACE_DIR
+  if (subPath) {
+    const resolved = resolveWorkspacePath(subPath)
+    if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
+    if (!existsSync(resolved)) return c.json({ error: 'Path not found' }, 404)
+    if (!statSync(resolved).isDirectory()) {
+      return c.json({ error: 'Path is not a directory' }, 400)
+    }
+    startDir = resolved
+  }
+  const tree = walkFilesTree(
+    startDir,
+    rootResolved,
+    WORKSPACE_TREE_HIDDEN_DIRS,
+    WORKSPACE_TREE_LAZY_DIRS,
+    WORKSPACE_TREE_HIDDEN_FILES,
+  )
   return c.json({ tree })
 })
 
