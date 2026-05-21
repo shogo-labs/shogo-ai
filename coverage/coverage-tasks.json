@@ -45,7 +45,7 @@
       "finishedAt": "2026-05-20T08:06:31.612Z",
       "beforeLinePct": 98.78048780487805,
       "afterLinePct": 100,
-      "note": "already at 100% on this branch — no source/test change required, queue gap was stale"
+      "note": "already at 100% on this branch \u2014 no source/test change required, queue gap was stale"
     },
     {
       "file": "apps/api/src/lib/preview-token.ts",
@@ -79,7 +79,7 @@
       "finishedAt": "2026-05-20T08:32:11.642Z",
       "beforeLinePct": 95.16129032258065,
       "afterLinePct": 100,
-      "note": "already at 100% across runtime-token{.test, -coverage, -extra, lib/__tests__/runtime-token}.test.ts — queue baseline was stale"
+      "note": "already at 100% across runtime-token{.test, -coverage, -extra, lib/__tests__/runtime-token}.test.ts \u2014 queue baseline was stale"
     },
     {
       "file": "apps/api/src/routes/cli-auth.ts",
@@ -134,7 +134,7 @@
       "createdAt": "2026-05-19T22:37:52.960Z",
       "afterLinePct": 100,
       "afterFuncPct": 100,
-      "note": "queue claimed 6 uncov lines; actual was 8 lines + 2 funcs. closed all in main shard via: (1) data: no-space SSE variant; (2) ReadableStream constructor hijack to fire trackingStream source.cancel() directly (otherwise structurally unreachable — the natural consumer trackChatStreamForBilling never calls reader.cancel); (3) globalThis.setInterval stub firing the keepalive arrow synchronously; (4) erroring upstream for the bg reader catch; (5) setQualityImpl throw to make trackChatStreamForBilling reject and hit the .catch arrow; (6) module-load env override CHAT_STREAM_IDLE_TIMEOUT_MS=200 + hanging stream to fire the idle-timeout setTimeout-reject arrow"
+      "note": "queue claimed 6 uncov lines; actual was 8 lines + 2 funcs. closed all in main shard via: (1) data: no-space SSE variant; (2) ReadableStream constructor hijack to fire trackingStream source.cancel() directly (otherwise structurally unreachable \u2014 the natural consumer trackChatStreamForBilling never calls reader.cancel); (3) globalThis.setInterval stub firing the keepalive arrow synchronously; (4) erroring upstream for the bg reader catch; (5) setQualityImpl throw to make trackChatStreamForBilling reject and hit the .catch arrow; (6) module-load env override CHAT_STREAM_IDLE_TIMEOUT_MS=200 + hanging stream to fire the idle-timeout setTimeout-reject arrow"
     },
     {
       "file": "apps/api/src/lib/eval-job-manager.ts",
@@ -167,7 +167,7 @@
       "createdAt": "2026-05-19T22:37:52.960Z",
       "afterLinePct": 100,
       "afterFuncPct": 100,
-      "note": "queue claimed 6 uncov (postgres-flavored isSqlite=false branches). closed via one-line lazy refactor of isSqlite const → isSqlite() function (same pattern as wave 2 node-metrics signozEndpoint), enabling dynamic toggling of SHOGO_LOCAL_MODE per test. then added 9 tests covering pricingModel/creatorId filters, tags sqlite+postgres branches, sort=rating/featured sqlite+postgres branches, searchListings postgres-hasSome branch, and generateSlug 32-retry exhaustion throw."
+      "note": "queue claimed 6 uncov (postgres-flavored isSqlite=false branches). closed via one-line lazy refactor of isSqlite const \u2192 isSqlite() function (same pattern as wave 2 node-metrics signozEndpoint), enabling dynamic toggling of SHOGO_LOCAL_MODE per test. then added 9 tests covering pricingModel/creatorId filters, tags sqlite+postgres branches, sort=rating/featured sqlite+postgres branches, searchListings postgres-hasSome branch, and generateSlug 32-retry exhaustion throw."
     },
     {
       "file": "apps/api/src/__tests__/helpers/prisma-mock-exports.ts",
@@ -178,7 +178,7 @@
       "createdAt": "2026-05-19T22:37:52.960Z",
       "afterLinePct": 89.71,
       "afterFuncPct": 40,
-      "note": "STALE ENTRY. File is excluded from CI coverage collection by apps/api bunfig.toml (coverageSkipTestFiles=true + coveragePathIgnorePatterns=[\"**/__tests__/**\"]) — it never appears in the apps-api.lcov. Gap was seeded from a pre-exclusion gaps.json snapshot. The 3 remaining DA:,0 lines (L21-23: export-const declaration + two // comments) and 1 uncovered FN are V8 module-initialisation instrumentation artifacts that cannot be exercised by test code (module-level code runs before coverage hooks are installed). All 5 logical exported units (raw, sql, PrismaClientKnownRequestError constructor, PrismaClientValidationError, withPrismaExports) are fully exercised by the 16 new tests in src/__tests__/helpers/prisma-mock-exports.test.ts."
+      "note": "STALE ENTRY. File is excluded from CI coverage collection by apps/api bunfig.toml (coverageSkipTestFiles=true + coveragePathIgnorePatterns=[\"**/__tests__/**\"]) \u2014 it never appears in the apps-api.lcov. Gap was seeded from a pre-exclusion gaps.json snapshot. The 3 remaining DA:,0 lines (L21-23: export-const declaration + two // comments) and 1 uncovered FN are V8 module-initialisation instrumentation artifacts that cannot be exercised by test code (module-level code runs before coverage hooks are installed). All 5 logical exported units (raw, sql, PrismaClientKnownRequestError constructor, PrismaClientValidationError, withPrismaExports) are fully exercised by the 16 new tests in src/__tests__/helpers/prisma-mock-exports.test.ts."
     },
     {
       "file": "apps/api/src/routes/admin.ts",
@@ -189,7 +189,7 @@
       "createdAt": "2026-05-19T22:37:52.960Z",
       "afterLinePct": 100,
       "afterFuncPct": 98.36,
-      "note": "Closed all 8 uncovered lines tracked by the queue: L496-499 (GET /heartbeats early-return when inBackoff=true with empty breaker snapshot), L514-515 (sort=lastHeartbeatAt orderBy branch), L659 (PATCH /heartbeats/projects/:projectId 404 when config not found), L670 (PATCH nextHeartbeatAt=null when heartbeatEnabled flips to false), L193-195 (inner empty catch in GET /analytics/infra-current when warm-pool getExtendedStatus throws — live:null fallback). Added 6 new tests across 3 new describe blocks in admin-routes.expanded.test.ts; promoted the inline getExtendedStatus mock to a captured warmPoolExtendedStatus reference so the catch test can mockImplementationOnce. Final shard state: 546/546 lines, 60/61 funcs (98.36%, preserved from baseline — bun lcov does not emit FN/FNDA records so the 1 residual phantom function entry is unidentifiable; same pattern as previous wave closures where queue tracks uncoveredLines and that is the actionable signal)."
+      "note": "Closed all 8 uncovered lines tracked by the queue: L496-499 (GET /heartbeats early-return when inBackoff=true with empty breaker snapshot), L514-515 (sort=lastHeartbeatAt orderBy branch), L659 (PATCH /heartbeats/projects/:projectId 404 when config not found), L670 (PATCH nextHeartbeatAt=null when heartbeatEnabled flips to false), L193-195 (inner empty catch in GET /analytics/infra-current when warm-pool getExtendedStatus throws \u2014 live:null fallback). Added 6 new tests across 3 new describe blocks in admin-routes.expanded.test.ts; promoted the inline getExtendedStatus mock to a captured warmPoolExtendedStatus reference so the catch test can mockImplementationOnce. Final shard state: 546/546 lines, 60/61 funcs (98.36%, preserved from baseline \u2014 bun lcov does not emit FN/FNDA records so the 1 residual phantom function entry is unidentifiable; same pattern as previous wave closures where queue tracks uncoveredLines and that is the actionable signal)."
     },
     {
       "file": "apps/api/src/routes/chat-message-edits.ts",
@@ -237,14 +237,14 @@
       "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z",
       "completedAt": "2026-05-20T18:07:36.698Z",
-      "note": "stale lines (already 100% under CI isolated runner via existing gc-and-bypass test in its own process); 1 phantom func preserved from baseline (bun lcov omits FN: records — wave-17 precedent)"
+      "note": "stale lines (already 100% under CI isolated runner via existing gc-and-bypass test in its own process); 1 phantom func preserved from baseline (bun lcov omits FN: records \u2014 wave-17 precedent)"
     },
     {
       "file": "apps/api/src/config/usage-plans.ts",
       "uncoveredLines": 14,
       "linePct": 75.43859649122807,
       "phase": 2,
-      "status": "pending",
+      "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
@@ -252,7 +252,7 @@
       "uncoveredLines": 14,
       "linePct": 93.60730593607306,
       "phase": 2,
-      "status": "pending",
+      "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
@@ -260,7 +260,7 @@
       "uncoveredLines": 20,
       "linePct": 4.761904761904762,
       "phase": 2,
-      "status": "pending",
+      "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
@@ -268,7 +268,7 @@
       "uncoveredLines": 21,
       "linePct": 79.20792079207921,
       "phase": 2,
-      "status": "pending",
+      "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
@@ -276,7 +276,7 @@
       "uncoveredLines": 25,
       "linePct": 93.93203883495146,
       "phase": 2,
-      "status": "pending",
+      "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
@@ -284,7 +284,7 @@
       "uncoveredLines": 28,
       "linePct": 85.64102564102564,
       "phase": 2,
-      "status": "pending",
+      "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
@@ -292,7 +292,7 @@
       "uncoveredLines": 28,
       "linePct": 6.666666666666667,
       "phase": 2,
-      "status": "pending",
+      "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
@@ -300,7 +300,7 @@
       "uncoveredLines": 28,
       "linePct": 90.93851132686083,
       "phase": 2,
-      "status": "pending",
+      "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
@@ -308,7 +308,7 @@
       "uncoveredLines": 29,
       "linePct": 86.81818181818181,
       "phase": 2,
-      "status": "pending",
+      "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
@@ -316,7 +316,7 @@
       "uncoveredLines": 29,
       "linePct": 91.61849710982659,
       "phase": 2,
-      "status": "pending",
+      "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
@@ -324,7 +324,7 @@
       "uncoveredLines": 29,
       "linePct": 85.05154639175258,
       "phase": 2,
-      "status": "pending",
+      "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
@@ -332,7 +332,7 @@
       "uncoveredLines": 31,
       "linePct": 50.79365079365079,
       "phase": 2,
-      "status": "pending",
+      "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
@@ -340,7 +340,7 @@
       "uncoveredLines": 39,
       "linePct": 60.60606060606061,
       "phase": 2,
-      "status": "pending",
+      "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
@@ -348,7 +348,7 @@
       "uncoveredLines": 42,
       "linePct": 19.230769230769234,
       "phase": 2,
-      "status": "pending",
+      "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
@@ -356,7 +356,7 @@
       "uncoveredLines": 44,
       "linePct": 79.72350230414746,
       "phase": 2,
-      "status": "pending",
+      "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
@@ -364,7 +364,7 @@
       "uncoveredLines": 47,
       "linePct": 82.97101449275362,
       "phase": 2,
-      "status": "pending",
+      "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
@@ -372,7 +372,7 @@
       "uncoveredLines": 48,
       "linePct": 2.0408163265306123,
       "phase": 2,
-      "status": "pending",
+      "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
@@ -380,7 +380,7 @@
       "uncoveredLines": 51,
       "linePct": 94.12442396313364,
       "phase": 3,
-      "status": "pending",
+      "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
@@ -388,7 +388,7 @@
       "uncoveredLines": 69,
       "linePct": 86.25498007968127,
       "phase": 3,
-      "status": "pending",
+      "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z"
     },
     {
@@ -396,32 +396,36 @@
       "uncoveredLines": 78,
       "linePct": 46.57534246575342,
       "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "note": "stale: matches **/__tests__/** in apps/api/bunfig.toml coveragePathIgnorePatterns; never instrumented"
     },
     {
       "file": "apps/api/src/routes/project-chat.ts",
       "uncoveredLines": 85,
       "linePct": 91.74757281553399,
       "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "note": "partial 100: lines 94.86%, funcs 90.48%. 53 lines unreachable in practice \u2014 see commit message."
     },
     {
       "file": "apps/api/src/services/email.service.ts",
       "uncoveredLines": 137,
       "linePct": 26.737967914438503,
       "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "note": "100/100 via __resetEmailServiceForTesting hook (eliminates ?cb= reload phantom-line pollution)."
     },
     {
       "file": "apps/api/src/services/marketplace-snapshot-storage.service.ts",
       "uncoveredLines": 168,
       "linePct": 38.23529411764706,
       "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "note": "100/100 via 2 test-only exports (_trySystemTarExtractForTests + _walkExtractForTests) and a NUL-byte path trick for sync spawn() throws."
     },
     {
       "file": "apps/api/src/routes/instances.ts",
