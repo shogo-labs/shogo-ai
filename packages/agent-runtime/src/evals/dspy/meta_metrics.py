@@ -261,9 +261,9 @@ class MetaMetricsTracker:
 if __name__ == "__main__":
     ex = dspy.Example(optimal_tool_calls=3, optimal_iterations=1)
 
-    good = dspy.Prediction(tool_sequence="canvas_create, canvas_update, canvas_data")
-    ok = dspy.Prediction(tool_sequence="canvas_create, canvas_update, canvas_data, canvas_data, canvas_delete")
-    bad = dspy.Prediction(tool_sequence="canvas_create, canvas_update, canvas_data, bogus_tool, fake_tool, extra, extra2, extra3")
+    good = dspy.Prediction(tool_sequence="read_file, write_file, edit_file")
+    ok = dspy.Prediction(tool_sequence="read_file, write_file, edit_file, edit_file, delete_file")
+    bad = dspy.Prediction(tool_sequence="read_file, write_file, edit_file, bogus_tool, fake_tool, extra, extra2, extra3")
 
     for label, pred in [("good", good), ("ok", ok), ("bad", bad)]:
         print(f"{label}: efficiency={tool_call_efficiency(ex, pred):.2f}  "
