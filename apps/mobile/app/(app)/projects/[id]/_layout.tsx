@@ -71,8 +71,8 @@ import { agentFetch } from '../../../../lib/agent-fetch'
 import { useActiveInstance } from '../../../../contexts/active-instance'
 import { ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
 import { ChatTabBar, type ChatTab } from '../../../../components/chat/ChatTabBar'
-import { CanvasWebView } from '../../../../components/dynamic-app/CanvasWebView'
-import { CanvasThemeProvider, CanvasThemedContainer } from '../../../../components/dynamic-app/CanvasThemeContext'
+import { CanvasWebView } from '../../../../components/canvas/CanvasWebView'
+import { CanvasThemeProvider, CanvasThemedContainer } from '../../../../components/canvas/CanvasThemeContext'
 import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
 import { PanelErrorBoundary } from '../../../../components/project/panels/PanelErrorBoundary'
 import {
@@ -854,7 +854,7 @@ export default observer(function ProjectLayout() {
   const [chatCollapsed, setChatCollapsed] = useState(false)
   const [showChatSessions, setShowChatSessions] = useState(false)
   const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
-  const [previewTab, setPreviewTab] = useState('dynamic-app')
+  const [previewTab, setPreviewTab] = useState('canvas')
 
   // Resizable chat panel width (wide split mode only)
   const [chatPanelWidth, setChatPanelWidth] = useState(DEFAULT_CHAT_PANEL_WIDTH)
@@ -878,12 +878,17 @@ export default observer(function ProjectLayout() {
     AsyncStorage.setItem(CHAT_PANEL_WIDTH_STORAGE_KEY, String(w)).catch(() => {})
   }, [])
 
-  const PERSISTABLE_PREVIEW_TABS = useMemo(() => new Set(['dynamic-app', 'chat-fullscreen', 'app-preview']), [])
+  const PERSISTABLE_PREVIEW_TABS = useMemo(() => new Set(['canvas', 'chat-fullscreen', 'app-preview']), [])
 
   useEffect(() => {
     if (!projectId) return
     AsyncStorage.getItem(`shogo:lastPreviewTab:${projectId}`).then((saved) => {
-      if (saved) setPreviewTab(saved)
+      if (!saved) return
+      // Legacy values written before the v1 dynamic-app -> canvas tab rename
+      // (chore/remove-canvas-v1) get normalized on read so existing users don't
+      // land on an unknown tab and fall back to the default.
+      const normalized = saved === 'dynamic-app' ? 'canvas' : saved
+      setPreviewTab(normalized)
     }).catch(() => {})
   }, [projectId])
 
@@ -963,16 +968,16 @@ export default observer(function ProjectLayout() {
         setActiveTab('chat')
       }
       // Canvas is off (e.g. external folder project): the default
-      // `dynamic-app` tab would render an empty right panel and, on
+      // `canvas` tab would render an empty right panel and, on
       // wide screens, leave the chat squeezed alongside it. Flip the
       // preview tab to chat-fullscreen so the user lands in a clean
       // chat-only IDE view. The user can still pick any non-canvas
       // sub-tab (Files, IDE, Capabilities, …) from the top bar.
-      if (previewTab === 'dynamic-app') {
+      if (previewTab === 'canvas') {
         setPreviewTab('chat-fullscreen')
       }
     } else if (canvasEnabled) {
-      if (previewTab === 'app-preview') setPreviewTab('dynamic-app')
+      if (previewTab === 'app-preview') setPreviewTab('canvas')
     }
   }, [canvasEnabled, activeMode, previewTab, activeTab])
 
@@ -1027,7 +1032,7 @@ export default observer(function ProjectLayout() {
         console.error(`[ProjectLayout] Failed to push ${key} config to runtime:`, err)
       }
     }
-    if (key === 'canvasEnabled' && !enabled && previewTab === 'dynamic-app') {
+    if (key === 'canvasEnabled' && !enabled && previewTab === 'canvas') {
       setPreviewTab('chat-fullscreen')
     }
   }, [updateProjectSettings, agentUrl, nativeHeaders, previewTab])
@@ -1062,7 +1067,7 @@ export default observer(function ProjectLayout() {
       activeMode === 'none'
     ) {
       setActiveTab('chat')
-      setPreviewTab('dynamic-app')
+      setPreviewTab('canvas')
     }
   }, [isWide, updateProjectSettings, agentUrl, nativeHeaders, previewTab, activeMode])
 
@@ -1121,7 +1126,7 @@ export default observer(function ProjectLayout() {
     setBuildPlanRequest({ plan, modelId, nonce: buildPlanNonceRef.current })
     setActiveTab('chat')
     if (canvasEnabled) {
-      setPreviewTab('dynamic-app')
+      setPreviewTab('canvas')
     } else {
       setPreviewTab('chat-fullscreen')
     }
@@ -1661,7 +1666,7 @@ export default observer(function ProjectLayout() {
   ) : null
 
   const hiddenTabs: string[] = ['app-preview'] // APP_MODE_DISABLED: always hide app-preview
-  if (activeMode !== 'canvas') hiddenTabs.push('dynamic-app')
+  if (activeMode !== 'canvas') hiddenTabs.push('canvas')
 
   const isChatFullscreen = isWide && previewTab === 'chat-fullscreen'
 
@@ -1702,7 +1707,7 @@ export default observer(function ProjectLayout() {
     onDeleteChat: isChatFullscreen ? handleDeleteChatSession : undefined,
     activeChatSessionId: isChatFullscreen ? chatSessionId : undefined,
     activeChatSessionName: isChatFullscreen ? (openChatTabs.find(t => t.id === chatSessionId)?.name ?? null) : undefined,
-    canvasActive: canvasEnabled && previewTab === 'dynamic-app',
+    canvasActive: canvasEnabled && previewTab === 'canvas',
     canvasThemeSupported,
     onCanvasRefresh: () => setIframeRefreshKey(k => k + 1),
     onCanvasOpenInNewTab:
@@ -1740,7 +1745,7 @@ export default observer(function ProjectLayout() {
                 onNarrowTabChange={(tab: 'chat' | 'canvas') => {
                   setActiveTab(tab)
                   if (tab === 'canvas') {
-                    setPreviewTab('dynamic-app')
+                    setPreviewTab('canvas')
                   } else {
                     // Clear standalone preview (files, capabilities, …) so the chat column shows
                     // and the next “canvas” visit doesn’t reopen the old panel on top.
@@ -1749,7 +1754,7 @@ export default observer(function ProjectLayout() {
                 }}
                 onTabChange={(tabId: string) => {
                   handlePreviewTabChange(tabId)
-                  if (tabId !== 'dynamic-app' && tabId !== 'app-preview' && tabId !== 'chat-fullscreen') setActiveTab('canvas')
+                  if (tabId !== 'canvas' && tabId !== 'app-preview' && tabId !== 'chat-fullscreen') setActiveTab('canvas')
                 }}
               />
             )}
@@ -1925,7 +1930,7 @@ export default observer(function ProjectLayout() {
               </SafeAreaView>
             )}
 
-            {canvasEnabled && previewTab === 'dynamic-app' && (
+            {canvasEnabled && previewTab === 'canvas' && (
               <View className="absolute inset-0">
                 <PanelErrorBoundary panelName="Canvas">
                   {canvasPanel}

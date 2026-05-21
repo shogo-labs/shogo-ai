@@ -85,7 +85,7 @@ function narrowProjectDropdownWidth(screenWidth: number): number {
 
 const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'chat-fullscreen', label: 'Chat', icon: MessageSquare },
-  { id: 'dynamic-app', label: 'Canvas', icon: LayoutDashboard },
+  { id: 'canvas', label: 'Canvas', icon: LayoutDashboard },
   // APP_MODE_DISABLED: { id: 'app-preview', label: 'App', icon: AppWindow },
   ...(Platform.OS === 'web'
     ? [{ id: 'ide', label: 'IDE', icon: Code2 }]
@@ -213,7 +213,7 @@ export function ProjectTopBar({
   projectName,
   projectId,
   projects = [],
-  activeTab = 'dynamic-app',
+  activeTab = 'canvas',
   onTabChange,
   onProjectSwitch,
   hasActiveSubscription = false,
@@ -302,12 +302,12 @@ export function ProjectTopBar({
     }
   }, [activeChatSessionId, chatRenameValue, onRenameChat])
 
-  const isCanvasActive = activeTab === 'dynamic-app'
+  const isCanvasActive = activeTab === 'canvas'
   const showSurfacePicker = (surfaceEntries?.length ?? 0) > 1
   const activeSurfaceEntry = surfaceEntries?.find(s => s.id === activeSurfaceId)
 
   const visibleTabs = AGENT_TABS.filter(tab => !hiddenTabs.includes(tab.id))
-  const narrowPrimaryIds = new Set(['chat-fullscreen', 'dynamic-app', 'app-preview'])
+  const narrowPrimaryIds = new Set(['chat-fullscreen', 'canvas', 'app-preview'])
   const narrowPrimaryTabs = visibleTabs.filter(t => narrowPrimaryIds.has(t.id))
   const narrowOverflowTabs = visibleTabs.filter(t => !narrowPrimaryIds.has(t.id))
   const narrowMoreItems = [
