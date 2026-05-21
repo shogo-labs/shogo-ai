@@ -51,6 +51,35 @@ const prismaCalls = {
   chatSessionFindUnique: [] as any[],
 }
 
+
+// @shogo/model-catalog re-exports from @shogo-ai/sdk/model-catalog which has no
+// built dist on this branch — stub before the dynamic import chain loads it.
+mock.module('@shogo/model-catalog', () => ({
+  getModelTier: (_modelId: string) => 'standard',
+  resolveModelId: (mode: string) => mode || 'claude-haiku-4-5',
+  MODEL_CATALOG: {},
+  getModelEntry: (_id: string) => null,
+  MODEL_DOLLAR_COSTS: {} as Record<string, any>,
+  calculateDollarCost: () => 0,
+  getModelBillingModel: (id: string) => id,
+  resolveAgentModeDefault: (mode: string) => mode,
+}))
+
+mock.module('../services/cost-analytics.service', () => ({
+  recordAgentCostMetric: async () => {},
+  getAgentCostBreakdown: async () => [],
+  getCostRecommendations: async () => [],
+  getBudgetAlerts: async () => [],
+  checkBudgetAlerts: async () => [],
+  getActiveThrottleModel: async () => null,
+  getCostTrends: async () => [],
+  deriveActiveThrottleModel: () => null,
+  isCostPeriod: () => false,
+  isBudgetPeriod: () => false,
+  VALID_COST_PERIODS: ['7d', '30d', '90d', '1y'],
+  VALID_BUDGET_PERIODS: ['daily', 'weekly', 'monthly'],
+}))
+
 mock.module('../lib/prisma', () => ({
   // `mock.module` is process-global in bun — if a sibling test file
   // imports `InstanceKind` from this module after we've mocked it, the
