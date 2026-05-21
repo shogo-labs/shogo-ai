@@ -101,5 +101,31 @@ jobs:
       - name: Check replication publication is self-maintaining
         run: bun run check:publication
 
+      - name: Replay desktop SQLite migrations against an empty DB
+        # Guards against the "shipped a migration without its prerequisite"
+        # failure mode — e.g. an ALTER TABLE whose CREATE TABLE was never
+        # mirrored from prisma/migrations/ into apps/desktop/prisma/migrations/.
+        # That bug class can't be caught by typecheck or test (which use a
+        # fresh DB built from the current schema, not the migration history)
+        # and silently bricks every customer's packaged desktop app on the
+        # next launch with Prisma's P3009 "failed migration" lock.
+        run: bun run check:migrations
+
+      - name: Check desktop SQLite migrations match schema.local.prisma
+        # Catches the OTHER half of the v1.7.8 bug class: schema.local.prisma
+        # has a model (CreatorProfile, MarketplaceListing, ...) but the
+        # migration tree never CREATE TABLEs it, so a follow-up ALTER lands
+        # with no base — and the packaged desktop app silently exits on
+        # first launch with `no such table: X` -> P3009 lock.
+        #
+        # This is the highest-leverage of our three migration checks. It
+        # uses Prisma's own `migrate diff --from-migrations --to-schema`
+        # (which already knows the full SQLite dialect, FK inlining,
+        # partial-index translation, etc.) — no custom translator needed.
+        # See scripts/check-desktop-schema-drift.ts for the allow-list
+        # of pre-existing drift; the goal is to drain that to empty and
+        # then add `--strict` here.
+        run: bun run check:desktop-schema-drift
+
       - name: Test
         run: bun run test

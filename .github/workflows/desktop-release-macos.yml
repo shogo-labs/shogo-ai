@@ -17,8 +17,35 @@ env:
   GO_VERSION: '1.22'
 
 jobs:
+  preflight:
+    # Release-blocking sanity checks that have no platform dependencies.
+    # Runs FIRST and gates every downstream job — see the matching
+    # `preflight` job in desktop-release-windows.yml for the
+    # narrative. Identical step set on purpose: a release is only ever
+    # promoted when both platforms' tagged builds succeed, so any drift
+    # in what we check between the two workflows would be a bug.
+    name: Preflight checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Replay desktop SQLite migrations against an empty DB
+        run: bun scripts/check-migrations.ts
+
+      - name: Install dependencies (for prisma migrate diff)
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Check desktop SQLite migrations match schema.local.prisma
+        run: bun run check:desktop-schema-drift
+
   build-web:
     name: Build Expo Web
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -63,7 +90,7 @@ jobs:
 
   build-desktop:
     name: Build Desktop (macOS ${{ matrix.arch }})
-    needs: build-web
+    needs: [preflight, build-web]
     strategy:
       fail-fast: false
       matrix:
