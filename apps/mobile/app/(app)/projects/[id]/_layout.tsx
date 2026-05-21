@@ -78,16 +78,38 @@ import {
   ChannelsPanel,
   FilesBrowserPanel,
   IDEPanel,
-  CapabilitiesPanel,
-  MonitorPanel,
+  CapabilitiesConfigPane,
+  CapabilitiesSkillsPane,
+  CapabilitiesIntegrationsPane,
   PlansPanel,
   AgentsPanel,
   CheckpointsPanel,
+  SettingsPanel,
+  StatusPanel,
+  AnalyticsPanel,
+  LogsPanel,
+  type SettingsSectionGroup,
+  type SettingsSectionItem,
 } from '../../../../components/project/panels'
 import { FoldersPanel } from '../../../../components/project/panels/FoldersPanel'
 import { TrustPrompt, type TrustDecision } from '../../../../components/project/TrustPrompt'
 import { DrawerHost } from '../../../../components/project/panels/ide/DrawerHost'
-import { RefreshCw, MessageSquare, Sparkles, Bug, X as XIcon } from 'lucide-react-native'
+import {
+  RefreshCw,
+  MessageSquare,
+  Sparkles,
+  Bug,
+  X as XIcon,
+  FolderTree,
+  GitCommit,
+  Sliders,
+  Plug,
+  Radio,
+  Bot,
+  Activity,
+  BarChart3,
+  FileText,
+} from 'lucide-react-native'
 import {
   useToast,
   Toast,
@@ -116,7 +138,7 @@ const WIDE_BREAKPOINT = 1024
 const HIDDEN_HEADER_OPTIONS = { headerShown: false } as const
 // `terminal` is intentionally absent — chat exec entries now appear in
 // the IDE bottom drawer's "Output" tab (filterable to "Exec").
-const STANDALONE_PANELS = ['ide', 'files', 'capabilities', 'channels', 'agents', 'monitor', 'plans', 'checkpoints', 'folders', 'external-preview']
+const STANDALONE_PANELS = ['ide', 'files', 'plans', 'external-preview', 'settings']
 
 const DEFAULT_CHAT_PANEL_WIDTH = 480
 const MIN_CHAT_PANEL_WIDTH = 320
@@ -262,6 +284,13 @@ export default observer(function ProjectLayout() {
 
   // Tab state for narrow screens
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat')
+
+  // Imperative request to focus a specific section inside SettingsPanel
+  // (e.g. when a subagent stream starts and we want to show "Agents").
+  // The nonce ensures a fresh request lands even when the id doesn't change.
+  const [requestedSettingsItem, setRequestedSettingsItem] = useState<
+    { id: string; nonce: number } | null
+  >(null)
 
   // Chat session tracking — seed from route param if provided
   const [chatSessionId, setChatSessionId] = useState<string | null>(
@@ -1140,12 +1169,12 @@ export default observer(function ProjectLayout() {
     }
   }, [canvasEnabled, activeMode, previewTab, activeTab, isExternalProject])
 
-  // Narrow + Android: back from Capabilities → chat column, with Canvas preview selected when canvas is on.
+  // Narrow + Android: back from Settings → chat column, with Canvas preview selected when canvas is on.
   useEffect(() => {
     if (Platform.OS !== 'android' || isWide) return
 
     const onBack = () => {
-      if (previewTab !== 'capabilities') return false
+      if (previewTab !== 'settings') return false
       setActiveTab('chat')
       setPreviewTab('chat-fullscreen')
       return true
@@ -1169,7 +1198,13 @@ export default observer(function ProjectLayout() {
   useEffect(() => {
     subagentStreamStore.onRequestTabSwitch((toolId?: string) => {
       setSelectedAgentToolId(toolId ?? null)
-      setPreviewTab('agents')
+      // Agents lives inside the Settings panel now — open Settings and
+      // imperatively focus the Agents section via the nonce-bumped request.
+      setPreviewTab('settings')
+      setRequestedSettingsItem((prev) => ({
+        id: 'agents',
+        nonce: (prev?.nonce ?? 0) + 1,
+      }))
       if (!isWide) setActiveTab('canvas')
     })
     return () => subagentStreamStore.onRequestTabSwitch(null)
@@ -1221,7 +1256,7 @@ export default observer(function ProjectLayout() {
       setPreviewTab('chat-fullscreen')
     } else if (
       !isWide &&
-      previewTab === 'capabilities' &&
+      previewTab === 'settings' &&
       enableCanvas &&
       activeMode === 'none'
     ) {
@@ -1851,7 +1886,9 @@ export default observer(function ProjectLayout() {
   // them for managed projects.
   if (!isExternalProject) {
     hiddenTabs.push('external-preview')
-    hiddenTabs.push('folders')
+    // `folders` is no longer a top-level tab — it lives inside the
+    // Settings panel and is gated to external projects there directly
+    // (see settingsGroups below).
   }
 
   const isChatFullscreen = isWide && previewTab === 'chat-fullscreen'
@@ -2141,45 +2178,220 @@ export default observer(function ProjectLayout() {
             <PanelErrorBoundary panelName="Files">
               <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
             </PanelErrorBoundary>
-            <PanelErrorBoundary panelName="Capabilities">
-              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} techStackId={techStackId} onTechStackChange={handleTechStackChange} selectedModel={selectedModel} onModelChange={handleModelChange} />
-            </PanelErrorBoundary>
-            <PanelErrorBoundary panelName="Channels">
-              <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} workspaceId={project?.workspaceId} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
-            </PanelErrorBoundary>
-            <PanelErrorBoundary panelName="Agents">
-              <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} agentUrl={agentUrl} />
-            </PanelErrorBoundary>
-            <PanelErrorBoundary panelName="Monitor">
-              <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
-            </PanelErrorBoundary>
             <PanelErrorBoundary panelName="Plans">
               <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} selectedModel={selectedModel} requestedPlanPath={requestedPlanPath} onBuildPlan={handleBuildPlan} />
             </PanelErrorBoundary>
-            <PanelErrorBoundary panelName="Checkpoints">
-              <CheckpointsPanel visible={previewTab === 'checkpoints'} projectId={projectId!} />
-            </PanelErrorBoundary>
-            <PanelErrorBoundary panelName="Folders">
-              <FoldersPanel
-                visible={previewTab === 'folders'}
-                projectId={projectId!}
-                onChange={() => {
-                  // Re-pull the project so workingMode/trust/folders
-                  // changes propagate without a full page refresh.
-                  if (projectId) {
-                    void fetch(
-                      `${API_URL}/api/projects/${encodeURIComponent(projectId)}?include=projectFolders`,
-                      { credentials: Platform.OS === 'web' ? 'include' : 'omit' },
-                    )
-                      .then((r) => (r.ok ? r.json() : null))
-                      .then((data) => {
-                        const next = data?.project ?? data
-                        if (next) setProject(next)
-                      })
-                      .catch(() => {})
-                  }
-                }}
-              />
+            <PanelErrorBoundary panelName="Settings">
+              {(() => {
+                // Folders' onChange refreshes the project so workingMode /
+                // trust / folders changes propagate without a full reload.
+                const reloadProject = () => {
+                  if (!projectId) return
+                  void fetch(
+                    `${API_URL}/api/projects/${encodeURIComponent(projectId)}?include=projectFolders`,
+                    { credentials: Platform.OS === 'web' ? 'include' : 'omit' },
+                  )
+                    .then((r) => (r.ok ? r.json() : null))
+                    .then((data) => {
+                      const next = data?.project ?? data
+                      if (next) setProject(next)
+                    })
+                    .catch(() => {})
+                }
+                const workspaceItems: SettingsSectionItem[] = []
+                // Folders is only meaningful for external projects (it lets
+                // the user pick which local directories the agent has
+                // access to). Managed projects don't expose this knob.
+                if (isExternalProject) {
+                  workspaceItems.push({
+                    id: 'folders',
+                    label: 'Folders',
+                    icon: FolderTree,
+                    render: () => (
+                      <PanelErrorBoundary panelName="Folders">
+                        <FoldersPanel
+                          visible
+                          projectId={projectId!}
+                          onChange={reloadProject}
+                        />
+                      </PanelErrorBoundary>
+                    ),
+                  })
+                }
+                // Checkpoints on web lives in the IDE's Source Control
+                // activity-bar entry; native users still reach it from
+                // Settings.
+                if (Platform.OS !== 'web') {
+                  workspaceItems.push({
+                    id: 'checkpoints',
+                    label: 'Checkpoints',
+                    icon: GitCommit,
+                    render: () => (
+                      <PanelErrorBoundary panelName="Checkpoints">
+                        <CheckpointsPanel visible projectId={projectId!} />
+                      </PanelErrorBoundary>
+                    ),
+                  })
+                }
+                const settingsGroups: SettingsSectionGroup[] = []
+                if (workspaceItems.length > 0) {
+                  settingsGroups.push({
+                    id: 'workspace',
+                    label: 'WORKSPACE',
+                    items: workspaceItems,
+                  })
+                }
+                settingsGroups.push(
+                  {
+                    id: 'agent',
+                    label: 'AGENT',
+                    items: [
+                      {
+                        id: 'capabilities-config',
+                        label: 'Configuration',
+                        icon: Sliders,
+                        render: () => (
+                          <PanelErrorBoundary panelName="Configuration">
+                            <CapabilitiesConfigPane
+                              visible
+                              agentUrl={agentUrl}
+                              capabilities={capabilitySettings}
+                              onCapabilityToggle={handleCapabilityToggle}
+                              isPaidPlan={effectiveHasActiveSubscription}
+                              activeMode={activeMode}
+                              onModeChange={handleManualModeChange}
+                              techStackId={techStackId}
+                              onTechStackChange={handleTechStackChange}
+                              selectedModel={selectedModel}
+                              onModelChange={handleModelChange}
+                            />
+                          </PanelErrorBoundary>
+                        ),
+                      },
+                      {
+                        id: 'capabilities-skills',
+                        label: 'Skills',
+                        icon: Sparkles,
+                        render: () => (
+                          <PanelErrorBoundary panelName="Skills">
+                            <CapabilitiesSkillsPane
+                              visible
+                              projectId={projectId!}
+                              agentUrl={agentUrl}
+                            />
+                          </PanelErrorBoundary>
+                        ),
+                      },
+                      {
+                        id: 'capabilities-integrations',
+                        label: 'Integrations',
+                        icon: Plug,
+                        render: () => (
+                          <PanelErrorBoundary panelName="Integrations">
+                            <CapabilitiesIntegrationsPane
+                              visible
+                              projectId={projectId!}
+                              agentUrl={agentUrl}
+                            />
+                          </PanelErrorBoundary>
+                        ),
+                      },
+                    ],
+                  },
+                  {
+                    id: 'connections',
+                    label: 'CONNECTIONS',
+                    items: [
+                      {
+                        id: 'channels',
+                        label: 'Channels',
+                        icon: Radio,
+                        render: () => (
+                          <PanelErrorBoundary panelName="Channels">
+                            <ChannelsPanel
+                              visible
+                              projectId={projectId!}
+                              workspaceId={project?.workspaceId}
+                              agentUrl={agentUrl}
+                              hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true}
+                            />
+                          </PanelErrorBoundary>
+                        ),
+                      },
+                      {
+                        id: 'agents',
+                        label: 'Agents',
+                        icon: Bot,
+                        render: () => (
+                          <PanelErrorBoundary panelName="Agents">
+                            <AgentsPanel
+                              visible
+                              selectedToolId={selectedAgentToolId}
+                              agentUrl={agentUrl}
+                            />
+                          </PanelErrorBoundary>
+                        ),
+                      },
+                    ],
+                  },
+                  {
+                    id: 'monitoring',
+                    label: 'MONITORING',
+                    items: [
+                      {
+                        id: 'monitor-overview',
+                        label: 'Overview',
+                        icon: Activity,
+                        render: () => (
+                          <PanelErrorBoundary panelName="Overview">
+                            <StatusPanel
+                              projectId={projectId!}
+                              agentUrl={agentUrl}
+                              visible
+                              isPaidPlan={effectiveHasActiveSubscription}
+                            />
+                          </PanelErrorBoundary>
+                        ),
+                      },
+                      {
+                        id: 'monitor-analytics',
+                        label: 'Analytics',
+                        icon: BarChart3,
+                        render: () => (
+                          <PanelErrorBoundary panelName="Analytics">
+                            <AnalyticsPanel
+                              projectId={projectId!}
+                              agentUrl={agentUrl}
+                              visible
+                            />
+                          </PanelErrorBoundary>
+                        ),
+                      },
+                      {
+                        id: 'monitor-logs',
+                        label: 'Logs',
+                        icon: FileText,
+                        render: () => (
+                          <PanelErrorBoundary panelName="Logs">
+                            <LogsPanel
+                              projectId={projectId!}
+                              agentUrl={agentUrl}
+                              visible
+                            />
+                          </PanelErrorBoundary>
+                        ),
+                      },
+                    ],
+                  },
+                )
+                return (
+                  <SettingsPanel
+                    visible={previewTab === 'settings'}
+                    groups={settingsGroups}
+                    requestedItem={requestedSettingsItem}
+                  />
+                )
+              })()}
             </PanelErrorBoundary>
             <PanelErrorBoundary panelName="ExternalPreview">
               {previewTab === 'external-preview' && (

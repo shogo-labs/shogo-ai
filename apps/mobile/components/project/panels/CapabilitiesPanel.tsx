@@ -219,8 +219,32 @@ interface CapabilitiesPanelProps {
   onModelChange?: (modelId: string) => void
 }
 
-export function CapabilitiesPanel({
-  projectId,
+/**
+ * Props for the Configuration sub-pane — same shape as the parent panel minus
+ * `projectId`, which only the Skills/Integrations sub-panes need.
+ */
+export interface CapabilitiesConfigPaneProps {
+  agentUrl: string | null
+  visible: boolean
+  capabilities: CapabilitySettings
+  onCapabilityToggle: (key: string, enabled: boolean) => void
+  isPaidPlan?: boolean
+  activeMode?: AgentMode
+  onModeChange?: (mode: AgentMode) => void
+  techStackId?: string
+  onTechStackChange?: (stackId: string, capabilities?: Record<string, boolean>) => void
+  selectedModel?: string
+  onModelChange?: (modelId: string) => void
+}
+
+/**
+ * The "Configuration" half of the old CapabilitiesPanel: agent type picker,
+ * tech-stack picker (with destructive-confirm), model picker, and the
+ * collapsible "Advanced" list of capability toggles with browser-extension
+ * token entry. Extracted so the Settings sidebar can render it as a top-level
+ * entry without the old tab toggle bar.
+ */
+export function CapabilitiesConfigPane({
   agentUrl,
   visible,
   capabilities,
@@ -232,10 +256,9 @@ export function CapabilitiesPanel({
   onTechStackChange,
   selectedModel: controlledModelId,
   onModelChange: controlledOnModelChange,
-}: CapabilitiesPanelProps) {
+}: CapabilitiesConfigPaneProps) {
   const { localMode } = usePlatformConfig()
   const canSelectAllModels = localMode || isPaidPlan
-  const [subTab, setSubTab] = useState<SubTab>('built-in')
   const [expandedCap, setExpandedCap] = useState<string | null>(null)
   const [pendingToggle, setPendingToggle] = useState<{ key: string; enabled: boolean } | null>(null)
 
@@ -373,6 +396,533 @@ export function CapabilitiesPanel({
 
   const enabledCount = CAPABILITIES.filter(c => capabilities[c.key]).length
 
+  return (
+    <ScrollView className="flex-1" contentContainerStyle={{ paddingBottom: 24 }}>
+      {/* Agent type selector */}
+      <View className="px-4 pt-3 pb-1">
+        <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Agent Type</Text>
+        <View className="flex-row gap-2">
+          {AGENT_TYPES.map(({ mode, label, description, icon: Icon }) => {
+            const isActive = activeMode === mode
+            return (
+              <Pressable
+                key={mode}
+                onPress={() => onModeChange?.(mode)}
+                className={cn(
+                  'flex-1 border rounded-lg px-3 py-2.5 items-center gap-1.5',
+                  isActive
+                    ? 'border-primary bg-primary/10'
+                    : 'border-border active:bg-muted',
+                )}
+              >
+                <Icon size={18} className={isActive ? 'text-primary' : 'text-muted-foreground'} />
+                <Text className={cn(
+                  'text-xs font-semibold',
+                  isActive ? 'text-primary' : 'text-foreground',
+                )}>
+                  {label}
+                </Text>
+                <Text className="text-[10px] text-muted-foreground text-center">{description}</Text>
+              </Pressable>
+            )
+          })}
+        </View>
+      </View>
+
+      {/* Tech Stack selector */}
+      {techStacks.length > 0 && (
+        <View className="px-4 pt-3 pb-1">
+          <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Tech Stack</Text>
+          <View className="border border-border rounded-lg px-3 py-2.5 flex-row items-center gap-3">
+            <View className="w-8 h-8 rounded-md items-center justify-center bg-primary/10">
+              <Layers size={15} className="text-primary" />
+            </View>
+            <View className="flex-1">
+              <Text className="text-xs text-muted-foreground">Stack</Text>
+              <Popover
+                placement="bottom left"
+                isOpen={stackPickerOpen}
+                onOpen={() => setStackPickerOpen(true)}
+                onClose={() => setStackPickerOpen(false)}
+                trigger={(triggerProps) => (
+                  <Pressable
+                    {...triggerProps}
+                    onPress={() => setStackPickerOpen(prev => !prev)}
+                    className="flex-row items-center gap-1.5 mt-0.5"
+                  >
+                    <Text className="text-sm font-medium text-foreground">
+                      {techStacks.find(s => s.id === techStackId)?.name ?? 'None'}
+                    </Text>
+                    <ChevronDown size={14} className="text-muted-foreground" />
+                  </Pressable>
+                )}
+              >
+                <PopoverBackdrop />
+                <PopoverContent className="w-72 bg-card border border-border rounded-xl shadow-lg">
+                  <PopoverBody className="py-1">
+                    {techStacks.map((stack) => {
+                      const isSelected = stack.id === (techStackId ?? 'none')
+                      return (
+                        <Pressable
+                          key={stack.id}
+                          onPress={() => {
+                            setStackPickerOpen(false)
+                            if (isSelected) return
+                            setPendingStackChange({
+                              id: stack.id,
+                              name: stack.name,
+                              capabilities: stack.capabilities as Record<string, boolean> | undefined,
+                            })
+                          }}
+                          className={cn(
+                            'px-3 py-2.5 flex-row items-center gap-3',
+                            isSelected ? 'bg-primary/10' : 'active:bg-muted',
+                          )}
+                        >
+                          <View className="flex-1">
+                            <Text className={cn(
+                              'text-sm font-medium',
+                              isSelected ? 'text-primary' : 'text-foreground',
+                            )}>
+                              {stack.name}
+                            </Text>
+                            <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
+                              {stack.description}
+                            </Text>
+                          </View>
+                          {isSelected && <Check size={14} className="text-primary" />}
+                        </Pressable>
+                      )
+                    })}
+                  </PopoverBody>
+                </PopoverContent>
+              </Popover>
+            </View>
+          </View>
+
+          {/* Destructive confirm: reset project to a different tech stack.
+              Replaces project source files with the new stack's starter
+              while preserving .shogo/, memory/, chat history, and project
+              settings. Mirrors the pendingToggle warning pattern below. */}
+          {pendingStackChange && (
+            <View className="mt-2 border border-destructive/40 bg-destructive/5 rounded-lg p-3">
+              <View className="flex-row items-start gap-2">
+                <AlertTriangle size={14} className="text-destructive mt-0.5" />
+                <View className="flex-1">
+                  <Text className="text-sm font-medium text-foreground mb-1">
+                    Reset project to {pendingStackChange.name}?
+                  </Text>
+                  <Text className="text-xs text-muted-foreground mb-3">
+                    This will replace your project files (src/, package.json, prisma/, configs)
+                    with the {pendingStackChange.name} starter. Your chat history, skills, and
+                    memory are preserved. This cannot be undone.
+                  </Text>
+                  <View className="flex-row gap-2">
+                    <Pressable
+                      onPress={() => {
+                        const change = pendingStackChange
+                        setPendingStackChange(null)
+                        onTechStackChange?.(change.id, change.capabilities)
+                      }}
+                      className="px-3 py-1.5 bg-destructive rounded-md active:bg-destructive/80"
+                    >
+                      <Text className="text-xs font-medium text-white">Reset project</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => setPendingStackChange(null)}
+                      className="px-3 py-1.5 border border-border rounded-md active:bg-muted"
+                    >
+                      <Text className="text-xs font-medium text-foreground">Cancel</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* Model selector */}
+      <View className="px-4 pt-3 pb-1">
+        <View className="border border-border rounded-lg px-3 py-2.5 flex-row items-center gap-3">
+          <View className="w-8 h-8 rounded-md items-center justify-center bg-primary/10">
+            <Cpu size={15} className="text-primary" />
+          </View>
+          <View className="flex-1">
+            <Text className="text-xs text-muted-foreground">Model</Text>
+            <Popover
+              placement="bottom left"
+              isOpen={modelPickerOpen}
+              onOpen={() => setModelPickerOpen(true)}
+              onClose={() => setModelPickerOpen(false)}
+              trigger={(triggerProps) => (
+                <Pressable
+                  {...triggerProps}
+                  onPress={() => setModelPickerOpen(prev => !prev)}
+                  className="flex-row items-center gap-1.5 mt-0.5"
+                  disabled={modelUpdating}
+                >
+                  {modelUpdating ? (
+                    <ActivityIndicator size="small" />
+                  ) : (
+                    <>
+                      <Text className="text-sm font-medium text-foreground">
+                        {resolvedModel?.displayName ?? currentModel?.name ?? 'Loading...'}
+                      </Text>
+                      <ChevronDown size={14} className="text-muted-foreground" />
+                    </>
+                  )}
+                </Pressable>
+              )}
+            >
+              <PopoverBackdrop />
+              <PopoverContent className="p-0 min-w-[220px]">
+                <PopoverBody>
+                  <Pressable
+                    onPress={() => handleModelChange(AUTO_MODEL_OPTION)}
+                    className={cn(
+                      'flex-row items-center gap-2.5 px-3 py-2.5',
+                      'active:bg-muted',
+                      isAutoSelected && 'bg-accent',
+                    )}
+                  >
+                    <Zap size={14} className="text-primary" />
+                    <View className="flex-1">
+                      <Text className="text-sm font-medium text-foreground">Auto</Text>
+                      <Text className="text-[10px] text-muted-foreground">Picks the best model per turn to save cost</Text>
+                    </View>
+                    {isAutoSelected && <Check size={14} className="text-primary" />}
+                  </Pressable>
+                  <View className="h-px bg-border/50 mx-2" />
+                  {MODEL_GROUPS.map((group) => (
+                    <View key={group.label}>
+                      <View className="px-3 pt-2.5 pb-1">
+                        <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                          {group.label}
+                        </Text>
+                      </View>
+                      {group.models.map((model) => {
+                        const isSelected = currentModel?.name === model.name
+                          || (currentModel?.name && model.name === currentModel.name.replace(/-\d{8}$/, ''))
+                        const isLocked = !canSelectAllModels && model.tier !== 'economy'
+                        return (
+                          <Pressable
+                            key={model.name}
+                            onPress={() => !isLocked && handleModelChange(model)}
+                            className={cn(
+                              'flex-row items-center gap-2.5 px-3 py-2',
+                              isLocked ? 'opacity-50' : 'active:bg-muted',
+                              isSelected && !isLocked && 'bg-accent',
+                            )}
+                          >
+                            <View className="flex-1">
+                              <Text className={cn('text-sm', isLocked ? 'text-muted-foreground' : 'text-foreground')}>{model.displayName}</Text>
+                            </View>
+                            {isLocked ? (
+                              <View className="flex-row items-center gap-1">
+                                <Lock size={10} className="text-muted-foreground" />
+                                <Text className="text-[10px] font-medium text-muted-foreground">Pro</Text>
+                              </View>
+                            ) : (
+                              <>
+                                <Text className={cn(
+                                  'text-[10px]',
+                                  model.tier === 'premium' ? 'text-amber-500' :
+                                  model.tier === 'economy' ? 'text-emerald-500' :
+                                  'text-muted-foreground',
+                                )}>
+                                  {TIER_LABELS[model.tier]}
+                                </Text>
+                                {isSelected && (
+                                  <Check size={14} className="text-primary" />
+                                )}
+                              </>
+                            )}
+                          </Pressable>
+                        )
+                      })}
+                    </View>
+                  ))}
+                </PopoverBody>
+              </PopoverContent>
+            </Popover>
+          </View>
+        </View>
+      </View>
+
+      {/* Advanced capabilities (collapsible) */}
+      <View className="px-4 pt-4">
+        <Pressable
+          onPress={() => setAdvancedOpen(prev => !prev)}
+          className="flex-row items-center gap-2 py-2"
+        >
+          <Settings size={14} className="text-muted-foreground" />
+          <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex-1">
+            Advanced
+          </Text>
+          <Text className="text-[10px] text-muted-foreground mr-1">
+            {enabledCount}/{CAPABILITIES.length} enabled
+          </Text>
+          {advancedOpen ? (
+            <ChevronDown size={14} className="text-muted-foreground" />
+          ) : (
+            <ChevronRight size={14} className="text-muted-foreground" />
+          )}
+        </Pressable>
+
+        {advancedOpen && (
+          <View className="gap-2 pt-1">
+            {CAPABILITIES.map((cap) => {
+              const enabled = capabilities[cap.key]
+              const isExpanded = expandedCap === cap.key
+              const Icon = cap.icon
+
+              return (
+                <View
+                  key={cap.key}
+                  className={cn(
+                    'border rounded-lg overflow-hidden',
+                    enabled ? 'border-border' : 'border-border/50',
+                  )}
+                >
+                  <View className={cn(
+                    'px-3 py-2.5 flex-row items-center gap-3',
+                    !enabled && 'opacity-60',
+                  )}>
+                    <Pressable
+                      onPress={() => setExpandedCap(isExpanded ? null : cap.key)}
+                      className="flex-row items-center gap-3 flex-1"
+                    >
+                      <View className={cn(
+                        'w-8 h-8 rounded-md items-center justify-center',
+                        enabled ? 'bg-primary/10' : 'bg-muted',
+                      )}>
+                        <Icon size={15} className={enabled ? 'text-primary' : 'text-muted-foreground'} />
+                      </View>
+                      <View className="flex-1">
+                        <View className="flex-row items-center gap-2">
+                          <Text className="text-sm font-medium text-foreground">{cap.label}</Text>
+                          <Text className="text-[10px] text-muted-foreground">
+                            {cap.badgeLabel
+                              ?? `${cap.toolNames.length} tool${cap.toolNames.length !== 1 ? 's' : ''}`}
+                          </Text>
+                        </View>
+                        <Text className="text-xs text-muted-foreground mt-0.5">
+                          {enabled ? cap.description : cap.disabledDescription}
+                        </Text>
+                      </View>
+                      {isExpanded ? (
+                        <ChevronDown size={14} className="text-muted-foreground" />
+                      ) : (
+                        <ChevronRight size={14} className="text-muted-foreground" />
+                      )}
+                    </Pressable>
+                    <Switch
+                      value={enabled}
+                      onValueChange={(v) => handleToggle(cap, v)}
+                      size="sm"
+                    />
+                  </View>
+
+                  {isExpanded && (
+                    <View className="px-3 pb-3 pt-1 border-t border-border ml-11">
+                      <Text className="text-xs text-muted-foreground mb-2.5">
+                        {cap.detail}
+                      </Text>
+                      {cap.examples && cap.examples.length > 0 && (
+                        <View className="mb-2.5">
+                          <Text className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1.5">
+                            Try saying
+                          </Text>
+                          <View className="gap-1.5">
+                            {cap.examples.map((ex, i) => (
+                              <Text key={i} className="text-[11px] text-foreground/70 italic">
+                                {ex}
+                              </Text>
+                            ))}
+                          </View>
+                        </View>
+                      )}
+                      {cap.toolNames.length > 0 && (
+                        <>
+                          <Text className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1.5">
+                            Tools
+                          </Text>
+                          <View className="flex-row flex-wrap gap-1">
+                            {cap.toolNames.map((name) => (
+                              <View key={name} className="px-2 py-0.5 bg-muted rounded-md">
+                                <Text className="text-[10px] text-muted-foreground font-mono">{name}</Text>
+                              </View>
+                            ))}
+                          </View>
+                        </>
+                      )}
+
+                      {cap.key === 'browserEnabled' && (
+                        <View className="mt-3 pt-2 border-t border-border/50">
+                          <Text className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1">
+                            Browser Extension
+                          </Text>
+                          <Text className="text-[10px] text-muted-foreground mb-2">
+                            Paste a Playwright extension token to control your real browser (with your logins and cookies). Without a token, a headless browser is used.
+                          </Text>
+                          <View className="flex-row items-center gap-2">
+                            <View className="flex-1 flex-row items-center border border-border rounded-md bg-background">
+                              <TextInput
+                                value={extensionToken}
+                                onChangeText={(v) => { setExtensionToken(v.replace(/^\s*PLAYWRIGHT_MCP_EXTENSION_TOKEN\s*=\s*/i, '').trim()); setTokenSaved(false) }}
+                                secureTextEntry={!tokenVisible}
+                                placeholder="Extension token..."
+                                placeholderTextColor="#999"
+                                className="flex-1 text-xs text-foreground px-2 py-1.5 font-mono"
+                                autoCapitalize="none"
+                                autoCorrect={false}
+                              />
+                              <Pressable onPress={() => setTokenVisible(!tokenVisible)} className="px-2">
+                                {tokenVisible
+                                  ? <EyeOff size={12} className="text-muted-foreground" />
+                                  : <Eye size={12} className="text-muted-foreground" />}
+                              </Pressable>
+                            </View>
+                            <Pressable
+                              onPress={handleSaveToken}
+                              disabled={tokenSaving || tokenSaved}
+                              className={cn(
+                                'px-2.5 py-1.5 rounded-md flex-row items-center gap-1',
+                                tokenSaved ? 'bg-emerald-500/15' : 'bg-primary active:bg-primary/80',
+                                (tokenSaving || tokenSaved) && 'opacity-70',
+                              )}
+                            >
+                              {tokenSaving ? (
+                                <ActivityIndicator size="small" />
+                              ) : tokenSaved ? (
+                                <Check size={12} className="text-emerald-600" />
+                              ) : (
+                                <Save size={12} className="text-primary-foreground" />
+                              )}
+                              <Text className={cn(
+                                'text-[10px] font-medium',
+                                tokenSaved ? 'text-emerald-600' : 'text-primary-foreground',
+                              )}>
+                                {tokenSaved ? 'Saved' : 'Save'}
+                              </Text>
+                            </Pressable>
+                          </View>
+                          {extensionToken && tokenSaved && (
+                            <Text className="text-[10px] text-emerald-600 mt-1">
+                              Extension mode active — using your real browser
+                            </Text>
+                          )}
+                        </View>
+                      )}
+                    </View>
+                  )}
+                </View>
+              )
+            })}
+
+            {/* Confirmation dialog for dangerous toggles */}
+            {pendingToggle && (
+              <View className="mt-1 border border-orange-400/50 bg-orange-50/50 dark:bg-orange-900/10 rounded-lg p-3">
+                <View className="flex-row items-start gap-2">
+                  <AlertTriangle size={14} className="text-orange-500 mt-0.5" />
+                  <View className="flex-1">
+                    <Text className="text-sm font-medium text-foreground mb-1">
+                      Disable {CAPABILITIES.find(c => c.key === pendingToggle.key)?.label}?
+                    </Text>
+                    <Text className="text-xs text-muted-foreground mb-3">
+                      {CAPABILITIES.find(c => c.key === pendingToggle.key)?.warning}
+                    </Text>
+                    <View className="flex-row gap-2">
+                      <Pressable
+                        onPress={confirmToggle}
+                        className="px-3 py-1.5 bg-orange-500 rounded-md active:bg-orange-600"
+                      >
+                        <Text className="text-xs font-medium text-white">Disable</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => setPendingToggle(null)}
+                        className="px-3 py-1.5 border border-border rounded-md active:bg-muted"
+                      >
+                        <Text className="text-xs font-medium text-foreground">Cancel</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                </View>
+              </View>
+            )}
+          </View>
+        )}
+      </View>
+    </ScrollView>
+  )
+}
+
+/**
+ * Skills sub-pane. Thin wrapper around SkillsPanel so the Settings sidebar
+ * can render Skills as a top-level entry.
+ */
+export function CapabilitiesSkillsPane({
+  projectId,
+  agentUrl,
+  visible,
+}: {
+  projectId: string
+  agentUrl: string | null
+  visible: boolean
+}) {
+  if (!visible) return null
+  return (
+    <View className="flex-1 relative">
+      <SkillsPanel projectId={projectId} agentUrl={agentUrl} visible />
+    </View>
+  )
+}
+
+/**
+ * Integrations sub-pane. Thin wrapper around ToolsPanel so the Settings
+ * sidebar can render Integrations as a top-level entry.
+ */
+export function CapabilitiesIntegrationsPane({
+  projectId,
+  agentUrl,
+  visible,
+}: {
+  projectId: string
+  agentUrl: string | null
+  visible: boolean
+}) {
+  if (!visible) return null
+  return (
+    <View className="flex-1 relative">
+      <ToolsPanel projectId={projectId} agentUrl={agentUrl} visible />
+    </View>
+  )
+}
+
+/**
+ * Legacy wrapper kept for backward compatibility (e.g. tests, any caller that
+ * still wants the original "one panel with internal tab toggle" experience).
+ * The new Settings UI renders the three exported sub-panes directly.
+ */
+export function CapabilitiesPanel({
+  projectId,
+  agentUrl,
+  visible,
+  capabilities,
+  onCapabilityToggle,
+  isPaidPlan,
+  activeMode = 'none',
+  onModeChange,
+  techStackId,
+  onTechStackChange,
+  selectedModel,
+  onModelChange,
+}: CapabilitiesPanelProps) {
+  const [subTab, setSubTab] = useState<SubTab>('built-in')
+
+  if (!visible) return null
+
   const TABS: { id: SubTab; label: string }[] = [
     { id: 'built-in', label: 'Configuration' },
     { id: 'skills', label: 'Skills' },
@@ -406,481 +956,29 @@ export function CapabilitiesPanel({
         </View>
       </View>
 
-      {/* Built-in capabilities tab */}
-      {subTab === 'built-in' && (
-        <ScrollView className="flex-1" contentContainerStyle={{ paddingBottom: 24 }}>
-          {/* Agent type selector */}
-          <View className="px-4 pt-3 pb-1">
-            <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Agent Type</Text>
-            <View className="flex-row gap-2">
-              {AGENT_TYPES.map(({ mode, label, description, icon: Icon }) => {
-                const isActive = activeMode === mode
-                return (
-                  <Pressable
-                    key={mode}
-                    onPress={() => onModeChange?.(mode)}
-                    className={cn(
-                      'flex-1 border rounded-lg px-3 py-2.5 items-center gap-1.5',
-                      isActive
-                        ? 'border-primary bg-primary/10'
-                        : 'border-border active:bg-muted',
-                    )}
-                  >
-                    <Icon size={18} className={isActive ? 'text-primary' : 'text-muted-foreground'} />
-                    <Text className={cn(
-                      'text-xs font-semibold',
-                      isActive ? 'text-primary' : 'text-foreground',
-                    )}>
-                      {label}
-                    </Text>
-                    <Text className="text-[10px] text-muted-foreground text-center">{description}</Text>
-                  </Pressable>
-                )
-              })}
-            </View>
-          </View>
-
-          {/* Tech Stack selector */}
-          {techStacks.length > 0 && (
-            <View className="px-4 pt-3 pb-1">
-              <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Tech Stack</Text>
-              <View className="border border-border rounded-lg px-3 py-2.5 flex-row items-center gap-3">
-                <View className="w-8 h-8 rounded-md items-center justify-center bg-primary/10">
-                  <Layers size={15} className="text-primary" />
-                </View>
-                <View className="flex-1">
-                  <Text className="text-xs text-muted-foreground">Stack</Text>
-                  <Popover
-                    placement="bottom left"
-                    isOpen={stackPickerOpen}
-                    onOpen={() => setStackPickerOpen(true)}
-                    onClose={() => setStackPickerOpen(false)}
-                    trigger={(triggerProps) => (
-                      <Pressable
-                        {...triggerProps}
-                        onPress={() => setStackPickerOpen(prev => !prev)}
-                        className="flex-row items-center gap-1.5 mt-0.5"
-                      >
-                        <Text className="text-sm font-medium text-foreground">
-                          {techStacks.find(s => s.id === techStackId)?.name ?? 'None'}
-                        </Text>
-                        <ChevronDown size={14} className="text-muted-foreground" />
-                      </Pressable>
-                    )}
-                  >
-                    <PopoverBackdrop />
-                    <PopoverContent className="w-72 bg-card border border-border rounded-xl shadow-lg">
-                      <PopoverBody className="py-1">
-                        {techStacks.map((stack) => {
-                          const isSelected = stack.id === (techStackId ?? 'none')
-                          return (
-                            <Pressable
-                              key={stack.id}
-                              onPress={() => {
-                                setStackPickerOpen(false)
-                                if (isSelected) return
-                                setPendingStackChange({
-                                  id: stack.id,
-                                  name: stack.name,
-                                  capabilities: stack.capabilities as Record<string, boolean> | undefined,
-                                })
-                              }}
-                              className={cn(
-                                'px-3 py-2.5 flex-row items-center gap-3',
-                                isSelected ? 'bg-primary/10' : 'active:bg-muted',
-                              )}
-                            >
-                              <View className="flex-1">
-                                <Text className={cn(
-                                  'text-sm font-medium',
-                                  isSelected ? 'text-primary' : 'text-foreground',
-                                )}>
-                                  {stack.name}
-                                </Text>
-                                <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
-                                  {stack.description}
-                                </Text>
-                              </View>
-                              {isSelected && <Check size={14} className="text-primary" />}
-                            </Pressable>
-                          )
-                        })}
-                      </PopoverBody>
-                    </PopoverContent>
-                  </Popover>
-                </View>
-              </View>
-
-              {/* Destructive confirm: reset project to a different tech stack.
-                  Replaces project source files with the new stack's starter
-                  while preserving .shogo/, memory/, chat history, and project
-                  settings. Mirrors the pendingToggle warning pattern below. */}
-              {pendingStackChange && (
-                <View className="mt-2 border border-destructive/40 bg-destructive/5 rounded-lg p-3">
-                  <View className="flex-row items-start gap-2">
-                    <AlertTriangle size={14} className="text-destructive mt-0.5" />
-                    <View className="flex-1">
-                      <Text className="text-sm font-medium text-foreground mb-1">
-                        Reset project to {pendingStackChange.name}?
-                      </Text>
-                      <Text className="text-xs text-muted-foreground mb-3">
-                        This will replace your project files (src/, package.json, prisma/, configs)
-                        with the {pendingStackChange.name} starter. Your chat history, skills, and
-                        memory are preserved. This cannot be undone.
-                      </Text>
-                      <View className="flex-row gap-2">
-                        <Pressable
-                          onPress={() => {
-                            const change = pendingStackChange
-                            setPendingStackChange(null)
-                            onTechStackChange?.(change.id, change.capabilities)
-                          }}
-                          className="px-3 py-1.5 bg-destructive rounded-md active:bg-destructive/80"
-                        >
-                          <Text className="text-xs font-medium text-white">Reset project</Text>
-                        </Pressable>
-                        <Pressable
-                          onPress={() => setPendingStackChange(null)}
-                          className="px-3 py-1.5 border border-border rounded-md active:bg-muted"
-                        >
-                          <Text className="text-xs font-medium text-foreground">Cancel</Text>
-                        </Pressable>
-                      </View>
-                    </View>
-                  </View>
-                </View>
-              )}
-            </View>
-          )}
-
-          {/* Model selector */}
-          <View className="px-4 pt-3 pb-1">
-            <View className="border border-border rounded-lg px-3 py-2.5 flex-row items-center gap-3">
-              <View className="w-8 h-8 rounded-md items-center justify-center bg-primary/10">
-                <Cpu size={15} className="text-primary" />
-              </View>
-              <View className="flex-1">
-                <Text className="text-xs text-muted-foreground">Model</Text>
-                <Popover
-                  placement="bottom left"
-                  isOpen={modelPickerOpen}
-                  onOpen={() => setModelPickerOpen(true)}
-                  onClose={() => setModelPickerOpen(false)}
-                  trigger={(triggerProps) => (
-                    <Pressable
-                      {...triggerProps}
-                      onPress={() => setModelPickerOpen(prev => !prev)}
-                      className="flex-row items-center gap-1.5 mt-0.5"
-                      disabled={modelUpdating}
-                    >
-                      {modelUpdating ? (
-                        <ActivityIndicator size="small" />
-                      ) : (
-                        <>
-                          <Text className="text-sm font-medium text-foreground">
-                            {resolvedModel?.displayName ?? currentModel?.name ?? 'Loading...'}
-                          </Text>
-                          <ChevronDown size={14} className="text-muted-foreground" />
-                        </>
-                      )}
-                    </Pressable>
-                  )}
-                >
-                  <PopoverBackdrop />
-                  <PopoverContent className="p-0 min-w-[220px]">
-                    <PopoverBody>
-                      <Pressable
-                        onPress={() => handleModelChange(AUTO_MODEL_OPTION)}
-                        className={cn(
-                          'flex-row items-center gap-2.5 px-3 py-2.5',
-                          'active:bg-muted',
-                          isAutoSelected && 'bg-accent',
-                        )}
-                      >
-                        <Zap size={14} className="text-primary" />
-                        <View className="flex-1">
-                          <Text className="text-sm font-medium text-foreground">Auto</Text>
-                          <Text className="text-[10px] text-muted-foreground">Picks the best model per turn to save cost</Text>
-                        </View>
-                        {isAutoSelected && <Check size={14} className="text-primary" />}
-                      </Pressable>
-                      <View className="h-px bg-border/50 mx-2" />
-                      {MODEL_GROUPS.map((group) => (
-                        <View key={group.label}>
-                          <View className="px-3 pt-2.5 pb-1">
-                            <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                              {group.label}
-                            </Text>
-                          </View>
-                          {group.models.map((model) => {
-                            const isSelected = currentModel?.name === model.name
-                              || (currentModel?.name && model.name === currentModel.name.replace(/-\d{8}$/, ''))
-                            const isLocked = !canSelectAllModels && model.tier !== 'economy'
-                            return (
-                              <Pressable
-                                key={model.name}
-                                onPress={() => !isLocked && handleModelChange(model)}
-                                className={cn(
-                                  'flex-row items-center gap-2.5 px-3 py-2',
-                                  isLocked ? 'opacity-50' : 'active:bg-muted',
-                                  isSelected && !isLocked && 'bg-accent',
-                                )}
-                              >
-                                <View className="flex-1">
-                                  <Text className={cn('text-sm', isLocked ? 'text-muted-foreground' : 'text-foreground')}>{model.displayName}</Text>
-                                </View>
-                                {isLocked ? (
-                                  <View className="flex-row items-center gap-1">
-                                    <Lock size={10} className="text-muted-foreground" />
-                                    <Text className="text-[10px] font-medium text-muted-foreground">Pro</Text>
-                                  </View>
-                                ) : (
-                                  <>
-                                    <Text className={cn(
-                                      'text-[10px]',
-                                      model.tier === 'premium' ? 'text-amber-500' :
-                                      model.tier === 'economy' ? 'text-emerald-500' :
-                                      'text-muted-foreground',
-                                    )}>
-                                      {TIER_LABELS[model.tier]}
-                                    </Text>
-                                    {isSelected && (
-                                      <Check size={14} className="text-primary" />
-                                    )}
-                                  </>
-                                )}
-                              </Pressable>
-                            )
-                          })}
-                        </View>
-                      ))}
-                    </PopoverBody>
-                  </PopoverContent>
-                </Popover>
-              </View>
-            </View>
-          </View>
-
-          {/* Advanced capabilities (collapsible) */}
-          <View className="px-4 pt-4">
-            <Pressable
-              onPress={() => setAdvancedOpen(prev => !prev)}
-              className="flex-row items-center gap-2 py-2"
-            >
-              <Settings size={14} className="text-muted-foreground" />
-              <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex-1">
-                Advanced
-              </Text>
-              <Text className="text-[10px] text-muted-foreground mr-1">
-                {enabledCount}/{CAPABILITIES.length} enabled
-              </Text>
-              {advancedOpen ? (
-                <ChevronDown size={14} className="text-muted-foreground" />
-              ) : (
-                <ChevronRight size={14} className="text-muted-foreground" />
-              )}
-            </Pressable>
-
-            {advancedOpen && (
-              <View className="gap-2 pt-1">
-                {CAPABILITIES.map((cap) => {
-                  const enabled = capabilities[cap.key]
-                  const isExpanded = expandedCap === cap.key
-                  const Icon = cap.icon
-
-                  return (
-                    <View
-                      key={cap.key}
-                      className={cn(
-                        'border rounded-lg overflow-hidden',
-                        enabled ? 'border-border' : 'border-border/50',
-                      )}
-                    >
-                      <View className={cn(
-                        'px-3 py-2.5 flex-row items-center gap-3',
-                        !enabled && 'opacity-60',
-                      )}>
-                        <Pressable
-                          onPress={() => setExpandedCap(isExpanded ? null : cap.key)}
-                          className="flex-row items-center gap-3 flex-1"
-                        >
-                          <View className={cn(
-                            'w-8 h-8 rounded-md items-center justify-center',
-                            enabled ? 'bg-primary/10' : 'bg-muted',
-                          )}>
-                            <Icon size={15} className={enabled ? 'text-primary' : 'text-muted-foreground'} />
-                          </View>
-                          <View className="flex-1">
-                            <View className="flex-row items-center gap-2">
-                              <Text className="text-sm font-medium text-foreground">{cap.label}</Text>
-                              <Text className="text-[10px] text-muted-foreground">
-                                {cap.badgeLabel
-                                  ?? `${cap.toolNames.length} tool${cap.toolNames.length !== 1 ? 's' : ''}`}
-                              </Text>
-                            </View>
-                            <Text className="text-xs text-muted-foreground mt-0.5">
-                              {enabled ? cap.description : cap.disabledDescription}
-                            </Text>
-                          </View>
-                          {isExpanded ? (
-                            <ChevronDown size={14} className="text-muted-foreground" />
-                          ) : (
-                            <ChevronRight size={14} className="text-muted-foreground" />
-                          )}
-                        </Pressable>
-                        <Switch
-                          value={enabled}
-                          onValueChange={(v) => handleToggle(cap, v)}
-                          size="sm"
-                        />
-                      </View>
-
-                      {isExpanded && (
-                        <View className="px-3 pb-3 pt-1 border-t border-border ml-11">
-                          <Text className="text-xs text-muted-foreground mb-2.5">
-                            {cap.detail}
-                          </Text>
-                          {cap.examples && cap.examples.length > 0 && (
-                            <View className="mb-2.5">
-                              <Text className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1.5">
-                                Try saying
-                              </Text>
-                              <View className="gap-1.5">
-                                {cap.examples.map((ex, i) => (
-                                  <Text key={i} className="text-[11px] text-foreground/70 italic">
-                                    {ex}
-                                  </Text>
-                                ))}
-                              </View>
-                            </View>
-                          )}
-                          {cap.toolNames.length > 0 && (
-                            <>
-                              <Text className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1.5">
-                                Tools
-                              </Text>
-                              <View className="flex-row flex-wrap gap-1">
-                                {cap.toolNames.map((name) => (
-                                  <View key={name} className="px-2 py-0.5 bg-muted rounded-md">
-                                    <Text className="text-[10px] text-muted-foreground font-mono">{name}</Text>
-                                  </View>
-                                ))}
-                              </View>
-                            </>
-                          )}
-
-                          {cap.key === 'browserEnabled' && (
-                            <View className="mt-3 pt-2 border-t border-border/50">
-                              <Text className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1">
-                                Browser Extension
-                              </Text>
-                              <Text className="text-[10px] text-muted-foreground mb-2">
-                                Paste a Playwright extension token to control your real browser (with your logins and cookies). Without a token, a headless browser is used.
-                              </Text>
-                              <View className="flex-row items-center gap-2">
-                                <View className="flex-1 flex-row items-center border border-border rounded-md bg-background">
-                                  <TextInput
-                                    value={extensionToken}
-                                    onChangeText={(v) => { setExtensionToken(v.replace(/^\s*PLAYWRIGHT_MCP_EXTENSION_TOKEN\s*=\s*/i, '').trim()); setTokenSaved(false) }}
-                                    secureTextEntry={!tokenVisible}
-                                    placeholder="Extension token..."
-                                    placeholderTextColor="#999"
-                                    className="flex-1 text-xs text-foreground px-2 py-1.5 font-mono"
-                                    autoCapitalize="none"
-                                    autoCorrect={false}
-                                  />
-                                  <Pressable onPress={() => setTokenVisible(!tokenVisible)} className="px-2">
-                                    {tokenVisible
-                                      ? <EyeOff size={12} className="text-muted-foreground" />
-                                      : <Eye size={12} className="text-muted-foreground" />}
-                                  </Pressable>
-                                </View>
-                                <Pressable
-                                  onPress={handleSaveToken}
-                                  disabled={tokenSaving || tokenSaved}
-                                  className={cn(
-                                    'px-2.5 py-1.5 rounded-md flex-row items-center gap-1',
-                                    tokenSaved ? 'bg-emerald-500/15' : 'bg-primary active:bg-primary/80',
-                                    (tokenSaving || tokenSaved) && 'opacity-70',
-                                  )}
-                                >
-                                  {tokenSaving ? (
-                                    <ActivityIndicator size="small" />
-                                  ) : tokenSaved ? (
-                                    <Check size={12} className="text-emerald-600" />
-                                  ) : (
-                                    <Save size={12} className="text-primary-foreground" />
-                                  )}
-                                  <Text className={cn(
-                                    'text-[10px] font-medium',
-                                    tokenSaved ? 'text-emerald-600' : 'text-primary-foreground',
-                                  )}>
-                                    {tokenSaved ? 'Saved' : 'Save'}
-                                  </Text>
-                                </Pressable>
-                              </View>
-                              {extensionToken && tokenSaved && (
-                                <Text className="text-[10px] text-emerald-600 mt-1">
-                                  Extension mode active — using your real browser
-                                </Text>
-                              )}
-                            </View>
-                          )}
-                        </View>
-                      )}
-                    </View>
-                  )
-                })}
-
-                {/* Confirmation dialog for dangerous toggles */}
-                {pendingToggle && (
-                  <View className="mt-1 border border-orange-400/50 bg-orange-50/50 dark:bg-orange-900/10 rounded-lg p-3">
-                    <View className="flex-row items-start gap-2">
-                      <AlertTriangle size={14} className="text-orange-500 mt-0.5" />
-                      <View className="flex-1">
-                        <Text className="text-sm font-medium text-foreground mb-1">
-                          Disable {CAPABILITIES.find(c => c.key === pendingToggle.key)?.label}?
-                        </Text>
-                        <Text className="text-xs text-muted-foreground mb-3">
-                          {CAPABILITIES.find(c => c.key === pendingToggle.key)?.warning}
-                        </Text>
-                        <View className="flex-row gap-2">
-                          <Pressable
-                            onPress={confirmToggle}
-                            className="px-3 py-1.5 bg-orange-500 rounded-md active:bg-orange-600"
-                          >
-                            <Text className="text-xs font-medium text-white">Disable</Text>
-                          </Pressable>
-                          <Pressable
-                            onPress={() => setPendingToggle(null)}
-                            className="px-3 py-1.5 border border-border rounded-md active:bg-muted"
-                          >
-                            <Text className="text-xs font-medium text-foreground">Cancel</Text>
-                          </Pressable>
-                        </View>
-                      </View>
-                    </View>
-                  </View>
-                )}
-              </View>
-            )}
-          </View>
-        </ScrollView>
-      )}
-
-      {/* Skills tab */}
-      {subTab === 'skills' && (
-        <View className="flex-1 relative">
-          <SkillsPanel projectId={projectId} agentUrl={agentUrl} visible />
-        </View>
-      )}
-
-      {/* Integrations tab */}
-      {subTab === 'integrations' && (
-        <View className="flex-1 relative">
-          <ToolsPanel projectId={projectId} agentUrl={agentUrl} visible />
-        </View>
-      )}
+      <CapabilitiesConfigPane
+        agentUrl={agentUrl}
+        visible={subTab === 'built-in'}
+        capabilities={capabilities}
+        onCapabilityToggle={onCapabilityToggle}
+        isPaidPlan={isPaidPlan}
+        activeMode={activeMode}
+        onModeChange={onModeChange}
+        techStackId={techStackId}
+        onTechStackChange={onTechStackChange}
+        selectedModel={selectedModel}
+        onModelChange={onModelChange}
+      />
+      <CapabilitiesSkillsPane
+        projectId={projectId}
+        agentUrl={agentUrl}
+        visible={subTab === 'skills'}
+      />
+      <CapabilitiesIntegrationsPane
+        projectId={projectId}
+        agentUrl={agentUrl}
+        visible={subTab === 'integrations'}
+      />
     </View>
   )
 }

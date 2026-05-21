@@ -1,9 +1,10 @@
-import { Files, Search, Settings, Terminal as TerminalIcon } from "lucide-react-native";
+import { Files, GitCommit, Search, Settings, Terminal as TerminalIcon } from "lucide-react-native";
 import type { ActivityId } from "./types";
 
 const ITEMS: { id: ActivityId; icon: React.ComponentType<{ size?: number }>; label: string; hint?: string }[] = [
   { id: "files", icon: Files, label: "Explorer", hint: "⌘⇧E" },
   { id: "search", icon: Search, label: "Search", hint: "⌘⇧F" },
+  { id: "git", icon: GitCommit, label: "Source Control", hint: "⌃⇧G" },
 ];
 
 /**
