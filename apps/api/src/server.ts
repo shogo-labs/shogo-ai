@@ -77,6 +77,7 @@ import internalRoutes from './routes/internal'
 import internalE2eRoutes from './routes/internal-e2e'
 import { vmRoutes, triggerVMImageDownload } from './routes/vm'
 import { localProjectsRoutes } from './routes/local-projects'
+import { externalPreviewRoutes } from './routes/external-preview'
 import { requireSuperAdmin } from './middleware/super-admin'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
 import { createAdminRoutes } from './generated/admin-routes'
@@ -1118,6 +1119,12 @@ app.route('/api', evalOutputRoutes())
 
 // Project export/import — full project bundle (.shogo-project ZIP)
 app.route('/api/projects', projectExportImportRoutes())
+
+// External preview: saved + detected dev-server URL for the desktop
+// folder-linked project view. Lives under /api/projects/:id so it can
+// be consumed alongside the regular project APIs without any new
+// middleware glue.
+app.route('/api/projects', externalPreviewRoutes())
 
 // Eval admin — run management, results viewer, trigger (super-admin only)
 app.route('/api/admin/evals', evalAdminRoutes())

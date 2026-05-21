@@ -1934,6 +1934,60 @@ app.post('/preview/stop', (c) => {
  *   - message:     human-readable status / nudge
  *   - docs:        optional doc URL for the cloud-todo case
  */
+// ──────────────────────────────────────────────────────────────────────
+// External preview URL detection (folder-linked / external projects)
+//
+// We sniff PTY stdout for the standard `Local: http://localhost:PORT`
+// banners emitted by Vite, Next, Vue, Rails, Django, etc. The actual
+// detection lives in `detected-urls.ts` and is fed from
+// `PtySessionManager.create()` — these routes just surface the state
+// to the desktop UI so the external-preview tab can offer a one-click
+// "Open this URL" affordance.
+// ──────────────────────────────────────────────────────────────────────
+
+app.get('/preview/detected-urls', (c) => {
+  const { listAllDetections, getMostRecentDetection } = require('./detected-urls') as typeof import('./detected-urls')
+  return c.json({
+    detections: listAllDetections(),
+    mostRecent: getMostRecentDetection(),
+  })
+})
+
+app.get('/preview/detected-urls/stream', (c) => {
+  const { listAllDetections, getMostRecentDetection, onDetectedUrl } =
+    require('./detected-urls') as typeof import('./detected-urls')
+
+  const stream = new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder()
+      const send = (event: string, data: unknown) => {
+        try {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
+        } catch {}
+      }
+      send('snapshot', {
+        detections: listAllDetections(),
+        mostRecent: getMostRecentDetection(),
+      })
+      const unsubscribe = onDetectedUrl((detection) => {
+        send('detected', detection)
+      })
+      c.req.raw.signal.addEventListener('abort', () => {
+        unsubscribe()
+        try { controller.close() } catch {}
+      })
+    },
+  })
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection': 'keep-alive',
+    },
+  })
+})
+
 app.get('/preview/metro', (c) => {
   const pm = getPreviewManager()
   return c.json(pm.getDevicePreview())

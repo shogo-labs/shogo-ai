@@ -65,6 +65,8 @@ import {
   ExternalLink,
   GitCommit,
   Upload,
+  FolderTree,
+  Globe,
 } from 'lucide-react-native'
 import { cn, Badge, Progress } from '@shogo/shared-ui/primitives'
 import { useTheme, type ThemePreference } from '../../contexts/theme'
@@ -86,11 +88,17 @@ function narrowProjectDropdownWidth(screenWidth: number): number {
 const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'chat-fullscreen', label: 'Chat', icon: MessageSquare },
   { id: 'dynamic-app', label: 'Canvas', icon: LayoutDashboard },
+  // `external-preview` and `folders` are gated on workingMode=external
+  // at the layout level (via `hiddenTabs`) so managed projects never
+  // see them. They live next to Canvas because that's where the user
+  // expects "view of my running app" to be.
+  { id: 'external-preview', label: 'Preview', icon: Globe },
   // APP_MODE_DISABLED: { id: 'app-preview', label: 'App', icon: AppWindow },
   ...(Platform.OS === 'web'
     ? [{ id: 'ide', label: 'IDE', icon: Code2 }]
     : [{ id: 'files', label: 'Files', icon: FolderOpen }]),
   // { id: 'terminal', label: 'Terminal', icon: Terminal },
+  { id: 'folders', label: 'Folders', icon: FolderTree },
   { id: 'capabilities', label: 'Capabilities', icon: Sliders },
   { id: 'channels', label: 'Channels', icon: Radio },
   { id: 'agents', label: 'Agents', icon: Bot },
@@ -307,7 +315,7 @@ export function ProjectTopBar({
   const activeSurfaceEntry = surfaceEntries?.find(s => s.id === activeSurfaceId)
 
   const visibleTabs = AGENT_TABS.filter(tab => !hiddenTabs.includes(tab.id))
-  const narrowPrimaryIds = new Set(['chat-fullscreen', 'dynamic-app', 'app-preview'])
+  const narrowPrimaryIds = new Set(['chat-fullscreen', 'dynamic-app', 'app-preview', 'external-preview'])
   const narrowPrimaryTabs = visibleTabs.filter(t => narrowPrimaryIds.has(t.id))
   const narrowOverflowTabs = visibleTabs.filter(t => !narrowPrimaryIds.has(t.id))
   const narrowMoreItems = [

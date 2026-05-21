@@ -7,7 +7,6 @@ import {
   Pressable,
   ScrollView,
   Platform,
-  ActivityIndicator,
   Alert,
   useWindowDimensions,
 } from 'react-native'
@@ -47,7 +46,7 @@ import { api, getOnboardingMessage } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { safeGetItem, safeRemoveItem } from '../../lib/safe-storage'
 import type { AgentTileListing } from '../../components/marketplace/AgentTile'
-import { FolderPickerModal } from '../../components/local/FolderPickerModal'
+import { ProjectSourceMenu } from '../../components/project/ProjectSourceMenu'
 
 /**
  * Home-rail listing shape. Mirrors `AgentTileListing` plus the
@@ -199,148 +198,11 @@ const LovableGradient = memo(function LovableGradient({ isDark }: { isDark: bool
   )
 })
 
-/**
- * "Open Folder…" CTA for VS Code-style external projects. Only renders
- * when:
- *   1. `localMode` is true (we're running inside Shogo Desktop / a
- *      local-mode dev shell), AND
- *   2. The renderer is web (Electron's webContents or `bun dev:all`'s
- *      browser tab — anywhere `window` exists).
- *
- * The handler walks the user through:
- *   - Folder picker: Electron's native `shogoDesktop.pickFolders` IPC
- *     when present; otherwise the in-app `<FolderPickerModal>` (a
- *     server-side directory-listing picker, JupyterLab-style) used
- *     during `bun dev:all` where Electron isn't attached. The API
- *     validates every path either way (under `$HOME`, not a system
- *     root, realpath'd).
- *   - POST /from-folders, with the git-root walk-up prompt if the
- *     picked path is inside a `.git` repo.
- *   - Route to the new project page on success.
- */
-const OpenFolderCta = memo(function OpenFolderCta({ visible }: { visible: boolean }) {
-  const router = useRouter()
-  const http = useDomainHttp()
-  const activeWorkspace = useActiveWorkspace()
-  const activeWorkspaceId: string | undefined = (activeWorkspace as { id?: string } | null)?.id
-  const [isPicking, setIsPicking] = useState(false)
-  // Modal open state for the in-app folder picker (web fallback when
-  // Electron's native dialog isn't available). Promise resolver lives
-  // in a ref so the same modal instance can power any number of
-  // open-folder sessions without re-mounting.
-  const [pickerOpen, setPickerOpen] = useState(false)
-  const pickerResolveRef = useRef<((p: string | null) => void) | null>(null)
-
-  if (!visible) return null
-  // Native folder picker is only present when Electron's preload has
-  // injected `window.shogoDesktop.pickFolders`. The web-only File System
-  // Access API doesn't expose absolute paths to JS, so it can't replace
-  // it. When running `bun dev:all` (web bundle in a regular browser, no
-  // Electron) we drop into the in-app `<FolderPickerModal>` — a
-  // server-side directory-listing picker. The API validates every path
-  // (under `$HOME`, not a system root, realpath'd) so the modal can
-  // never surface anything POST /from-folders wouldn't accept.
-  if (Platform.OS !== 'web' || typeof window === 'undefined') return null
-  const desktop = (window as any).shogoDesktop as
-    | { pickFolders?: (opts?: { multi?: boolean }) => Promise<any> }
-    | undefined
-  const hasNativePicker = Boolean(desktop?.pickFolders)
-
-  const pickViaModal = (): Promise<{ ok: true; paths: string[] } | { ok: false }> => {
-    return new Promise((resolve) => {
-      pickerResolveRef.current = (path) => {
-        pickerResolveRef.current = null
-        setPickerOpen(false)
-        if (!path) resolve({ ok: false })
-        else resolve({ ok: true, paths: [path] })
-      }
-      setPickerOpen(true)
-    })
-  }
-
-  const handleOpenFolder = async () => {
-    if (isPicking) return
-    setIsPicking(true)
-    try {
-      const picked = hasNativePicker
-        ? await desktop!.pickFolders!({ multi: false })
-        : await pickViaModal()
-      if (!picked?.ok || !Array.isArray(picked.paths) || picked.paths.length === 0) {
-        return
-      }
-      // First attempt — no git-root opinion yet.
-      let res = (await api.createLocalFolderProject(http, {
-        paths: picked.paths,
-        workspaceId: activeWorkspaceId,
-      })) as any
-
-      if (res?.needsGitRootChoice) {
-        // Confirm with the user inside an Alert. We can't use the same
-        // modal stack as ProjectExportModal because we'd have to wire
-        // it into the home page; an Alert is the right weight for a
-        // yes/no question, and matches how aider's CLI prompts you.
-        const choice = await new Promise<'parent' | 'subfolder' | null>((resolve) => {
-          Alert.alert(
-            'Use parent repo?',
-            `The folder you picked is inside a git repo:\n\n${res.gitRoot}\n\n` +
-              `Opening the repo root gives the agent context across the whole project. ` +
-              `Or stick with the subfolder you picked: ${res.picked}.`,
-            [
-              { text: 'Use repo root', onPress: () => resolve('parent') },
-              { text: 'Keep subfolder', onPress: () => resolve('subfolder') },
-              { text: 'Cancel', style: 'cancel', onPress: () => resolve(null) },
-            ],
-            { cancelable: true, onDismiss: () => resolve(null) },
-          )
-        })
-        if (!choice) return
-        res = (await api.createLocalFolderProject(http, {
-          paths: picked.paths,
-          workspaceId: activeWorkspaceId,
-          acceptedGitRoot: choice === 'parent',
-        })) as any
-      }
-
-      const project = res?.project as { id?: string } | undefined
-      if (project?.id) {
-        router.push({ pathname: '/(app)/projects/[id]' as any, params: { id: project.id } })
-      } else if (res?.error || res?.message) {
-        Alert.alert('Could not open folder', String(res.message ?? res.error))
-      }
-    } catch (err: any) {
-      console.error('[OpenFolderCta] open folder failed:', err)
-      Alert.alert('Could not open folder', err?.message ?? 'Unknown error')
-    } finally {
-      setIsPicking(false)
-    }
-  }
-
-  return (
-    <View className="mt-4 flex-row items-center justify-center">
-      <Pressable
-        onPress={handleOpenFolder}
-        disabled={isPicking}
-        className={cn(
-          'flex-row items-center gap-2 rounded-full px-4 py-2 border border-border',
-          isPicking ? 'opacity-60' : 'active:opacity-80',
-        )}
-      >
-        {isPicking ? <ActivityIndicator size="small" /> : null}
-        <Text className="text-xs font-medium text-foreground">Open folder…</Text>
-      </Pressable>
-      {/* In-app folder picker for the web/dev path. Mounted once and
-          driven by `pickViaModal` above so a single instance handles
-          repeated open-folder gestures. Native Electron skips this
-          modal entirely — `hasNativePicker` short-circuits before we
-          ever set `pickerOpen`. */}
-      <FolderPickerModal
-        open={pickerOpen}
-        onSelect={(p) => pickerResolveRef.current?.(p)}
-        onClose={() => pickerResolveRef.current?.(null)}
-      />
-    </View>
-  )
-})
+// The home-page "Open Folder…" pill was consolidated into the composer's
+// `ProjectSourceMenu` chip. The folder-pick → /from-folders → git-root
+// walk-up flow now lives in `useOpenLocalFolder`
+// (apps/mobile/components/project/useOpenLocalFolder.ts), shared with
+// the `/projects` page's "New project" menu so both surfaces stay in sync.
 
 // Tab descriptors are static — keep them at module scope so the array
 // reference doesn't churn on every render of HomeScreen.
@@ -982,18 +844,21 @@ const HomeScreen = observer(function HomeScreen() {
                 onStartVoiceProjectCreation={
                   Platform.OS === 'web' ? handleStartVoiceProjectCreation : undefined
                 }
+                // Consolidated "where does this project come from?" entry
+                // point. Sits at the leftmost edge of the toolbar so it
+                // reads as "what am I creating?" before model + mode.
+                // Selecting "Blank" is a no-op (the composer itself IS
+                // the blank-project surface — Send creates one); "Open
+                // folder" / "Import" fire their flows immediately and
+                // route into the resulting project.
+                leadingControls={
+                  <ProjectSourceMenu
+                    workspaceId={currentWorkspace?.id}
+                    variant="chip"
+                  />
+                }
               />
             </View>
-
-            {/* "Open Folder…" — desktop local-mode CTA for VS Code-style
-                external projects. Temporarily hidden on the home page
-                while the chat-on-external-folder flow is being
-                stabilised (canvas timeout + chat send hangs are still
-                being investigated). The picker itself, the
-                `POST /from-folders` route, and the project-level
-                Folders panel remain wired up; flip this back to
-                `<OpenFolderCta visible={localMode} />` when ready. */}
-            <OpenFolderCta visible={false} />
           </View>
         </View>
 

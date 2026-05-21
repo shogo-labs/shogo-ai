@@ -152,6 +152,14 @@ export interface CompactChatInputProps {
    * actively rendering.
    */
   agentPlaceholderActive?: boolean
+  /**
+   * Optional element rendered at the very left of the bottom toolbar,
+   * before the mode picker. Used by the home composer to surface the
+   * project-source menu ("New project / Open folder / Import") as a
+   * first-class chip alongside model + mode. Pass `null` (the default)
+   * for in-project chats where source-of-project doesn't apply.
+   */
+  leadingControls?: React.ReactNode
 }
 
 export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
@@ -175,6 +183,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       dimWhenDisabled = true,
       onStartVoiceProjectCreation,
       agentPlaceholderActive = false,
+      leadingControls,
     },
     ref
   ) {
@@ -643,6 +652,11 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
           <View className="flex-row items-center justify-between p-1.5">
             {/* Left side buttons */}
             <View className="flex-row items-center gap-1">
+              {/* Caller-supplied leading slot (e.g. project-source menu
+                  on the home composer). Rendered before built-in
+                  controls so it reads as "what am I creating?" prior to
+                  "what mode / what model". */}
+              {leadingControls}
               {/* Interaction mode selector (Agent / Plan / Ask) */}
               <Popover
                 placement="top"

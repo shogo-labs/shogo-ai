@@ -78,6 +78,7 @@ import { ChatTabBar, type ChatTab } from '../../../../components/chat/ChatTabBar
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
 import { CanvasErrorBoundary } from '../../../../components/dynamic-app/CanvasErrorBoundary'
 import { CanvasWebView } from '../../../../components/dynamic-app/CanvasWebView'
+import { ExternalPreviewWebView } from '../../../../components/dynamic-app/ExternalPreviewWebView'
 import { EditModeProvider, useEditModeOptional } from '../../../../components/dynamic-app/edit/EditModeContext'
 import { AddComponentDialog } from '../../../../components/dynamic-app/edit/AddComponentDialog'
 import { InspectorPanel } from '../../../../components/dynamic-app/edit/InspectorPanel'
@@ -95,6 +96,8 @@ import {
   AgentsPanel,
   CheckpointsPanel,
 } from '../../../../components/project/panels'
+import { FoldersPanel } from '../../../../components/project/panels/FoldersPanel'
+import { TrustPrompt, type TrustDecision } from '../../../../components/project/TrustPrompt'
 import { DrawerHost } from '../../../../components/project/panels/ide/DrawerHost'
 import { RefreshCw, MessageSquare, Sparkles, Bug, X as XIcon } from 'lucide-react-native'
 import {
@@ -125,7 +128,7 @@ const WIDE_BREAKPOINT = 1024
 const HIDDEN_HEADER_OPTIONS = { headerShown: false } as const
 // `terminal` is intentionally absent — chat exec entries now appear in
 // the IDE bottom drawer's "Output" tab (filterable to "Exec").
-const STANDALONE_PANELS = ['ide', 'files', 'capabilities', 'channels', 'agents', 'monitor', 'plans', 'checkpoints']
+const STANDALONE_PANELS = ['ide', 'files', 'capabilities', 'channels', 'agents', 'monitor', 'plans', 'checkpoints', 'folders', 'external-preview']
 
 const DEFAULT_CHAT_PANEL_WIDTH = 480
 const MIN_CHAT_PANEL_WIDTH = 320
@@ -408,6 +411,146 @@ export default observer(function ProjectLayout() {
   const handleCanvasCapabilities = useCallback((caps: { supportsTheme: boolean }) => {
     setCanvasThemeSupported(caps.supportsTheme)
   }, [])
+
+  // ── External preview (folder-linked / `workingMode === 'external'`) ─
+  //
+  // For Open-Folder projects we expose a desktop-only Electron
+  // WebContentsView that loads the user's own dev server (Vite/Next/etc).
+  // The URL comes from two sources:
+  //   1. Auto-detection: agent-runtime sniffs `Local: http://...` lines
+  //      from any PTY session and surfaces the most recent via
+  //      /preview/detected-urls.
+  //   2. Manual: user typed into the address bar; persisted on
+  //      Project.settings.externalPreview.savedUrl via the
+  //      /api/projects/:id/external-preview endpoints.
+  //
+  // We keep both in state here so the address-bar and the empty-state
+  // chip can both surface the detected URL even when nothing is saved.
+  const isExternalProject = (project?.workingMode ?? 'managed') === 'external'
+  const projectTrustLevel: 'restricted' | 'trusted' = project?.trustLevel === 'trusted' ? 'trusted' : 'restricted'
+  const primaryFolderPath = useMemo<string | null>(() => {
+    const folders = (project?.projectFolders ?? []) as Array<{ path: string; isPrimary?: boolean }>
+    const primary = folders.find((f) => f.isPrimary) ?? folders[0]
+    return primary?.path ?? null
+  }, [project?.projectFolders])
+  const [externalSavedUrl, setExternalSavedUrl] = useState<string | null>(null)
+  const [externalDetectedUrl, setExternalDetectedUrl] = useState<string | null>(null)
+  const [trustPromptOpen, setTrustPromptOpen] = useState(false)
+  const [trustSubmitting, setTrustSubmitting] = useState(false)
+  const trustAutoShownRef = useRef(false)
+
+  // Pull the saved/detected URL pair when the project resolves as
+  // external. We re-fetch on `agentUrl` change because the detected URL
+  // routes through the agent-runtime — once the pod URL changes, we may
+  // discover a new fresher detection.
+  useEffect(() => {
+    if (!projectId || !isExternalProject) return
+    let cancelled = false
+    const fetchState = async () => {
+      try {
+        const res = await fetch(
+          `${API_URL}/api/projects/${encodeURIComponent(projectId)}/external-preview`,
+          { credentials: Platform.OS === 'web' ? 'include' : 'omit' },
+        )
+        if (!res.ok) return
+        const body = await res.json()
+        if (cancelled) return
+        if (typeof body?.savedUrl === 'string') setExternalSavedUrl(body.savedUrl)
+        else setExternalSavedUrl(null)
+        if (typeof body?.detectedUrl === 'string') setExternalDetectedUrl(body.detectedUrl)
+      } catch (err) {
+        if (!cancelled) console.warn('[external-preview] fetch failed:', err)
+      }
+    }
+    void fetchState()
+    // Poll modestly while the user is on the project page — the SSE
+    // detected-urls stream lives on the agent-runtime and isn't yet
+    // proxied through the API; a 5 s poll is fine until we wire that.
+    const t = setInterval(fetchState, 5000)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [projectId, isExternalProject])
+
+  const handleSaveExternalPreviewUrl = useCallback(async (url: string) => {
+    if (!projectId) return
+    try {
+      const res = await fetch(
+        `${API_URL}/api/projects/${encodeURIComponent(projectId)}/external-preview`,
+        {
+          method: 'PUT',
+          credentials: Platform.OS === 'web' ? 'include' : 'omit',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ savedUrl: url }),
+        },
+      )
+      if (res.status === 403) {
+        const body = await res.json().catch(() => ({}))
+        if (body?.needsTrust) {
+          // Non-local URL on a restricted project → nudge the user to
+          // trust the workspace. The URL isn't saved; once they trust
+          // and retry, the same handler will persist it.
+          setTrustPromptOpen(true)
+          return
+        }
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        Alert.alert('Could not set preview URL', String(body?.error ?? `HTTP ${res.status}`))
+        return
+      }
+      const body = await res.json().catch(() => ({}))
+      if (typeof body?.savedUrl === 'string') setExternalSavedUrl(body.savedUrl)
+    } catch (err: any) {
+      Alert.alert('Could not set preview URL', err?.message ?? String(err))
+    }
+  }, [projectId])
+
+  const handleTrustDecision = useCallback(async (decision: TrustDecision) => {
+    if (!projectId) return
+    setTrustSubmitting(true)
+    try {
+      // "restricted" → just close; the agent-runtime keeps blocking
+      // writes/exec server-side regardless.
+      if (decision === 'restricted') {
+        setTrustPromptOpen(false)
+        return
+      }
+      const res = await fetch(
+        `${API_URL}/api/local/projects/${encodeURIComponent(projectId)}/trust`,
+        {
+          method: 'POST',
+          credentials: Platform.OS === 'web' ? 'include' : 'omit',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ trusted: true }),
+        },
+      )
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        Alert.alert('Could not update trust', String(body?.error ?? `HTTP ${res.status}`))
+        return
+      }
+      const body = await res.json().catch(() => ({}))
+      if (body?.project) setProject(body.project)
+      setTrustPromptOpen(false)
+    } catch (err: any) {
+      Alert.alert('Could not update trust', err?.message ?? String(err))
+    } finally {
+      setTrustSubmitting(false)
+    }
+  }, [projectId])
+
+  // Auto-show the trust prompt the first time an external + restricted
+  // project lands on this layout. We track this with a ref so the modal
+  // doesn't re-pop after the user has dismissed it once per session.
+  useEffect(() => {
+    if (!isExternalProject) return
+    if (projectTrustLevel !== 'restricted') return
+    if (trustAutoShownRef.current) return
+    trustAutoShownRef.current = true
+    setTrustPromptOpen(true)
+  }, [isExternalProject, projectTrustLevel])
 
   // Reset theme support detection when the iframe reloads (code-mode only).
   const prevRefreshKeyRef = useRef(iframeRefreshKey)
@@ -994,7 +1137,7 @@ export default observer(function ProjectLayout() {
     AsyncStorage.setItem(CHAT_PANEL_WIDTH_STORAGE_KEY, String(w)).catch(() => {})
   }, [])
 
-  const PERSISTABLE_PREVIEW_TABS = useMemo(() => new Set(['dynamic-app', 'chat-fullscreen', 'app-preview']), [])
+  const PERSISTABLE_PREVIEW_TABS = useMemo(() => new Set(['dynamic-app', 'chat-fullscreen', 'app-preview', 'external-preview']), [])
 
   useEffect(() => {
     if (!projectId) return
@@ -1078,19 +1221,18 @@ export default observer(function ProjectLayout() {
       ) {
         setActiveTab('chat')
       }
-      // Canvas is off (e.g. external folder project): the default
-      // `dynamic-app` tab would render an empty right panel and, on
-      // wide screens, leave the chat squeezed alongside it. Flip the
-      // preview tab to chat-fullscreen so the user lands in a clean
-      // chat-only IDE view. The user can still pick any non-canvas
-      // sub-tab (Files, IDE, Capabilities, …) from the top bar.
+      // Canvas is off. For folder-linked external projects we have a
+      // first-class preview surface (the embedded Electron webview), so
+      // land there by default; users still get chat-fullscreen for
+      // managed-but-canvas-off projects, where there's no preview to
+      // show.
       if (previewTab === 'dynamic-app') {
-        setPreviewTab('chat-fullscreen')
+        setPreviewTab(isExternalProject ? 'external-preview' : 'chat-fullscreen')
       }
     } else if (canvasEnabled) {
       if (previewTab === 'app-preview') setPreviewTab('dynamic-app')
     }
-  }, [canvasEnabled, activeMode, previewTab, activeTab])
+  }, [canvasEnabled, activeMode, previewTab, activeTab, isExternalProject])
 
   // Narrow + Android: back from Capabilities → chat column, with Canvas preview selected when canvas is on.
   useEffect(() => {
@@ -1794,6 +1936,14 @@ export default observer(function ProjectLayout() {
 
   const hiddenTabs: string[] = ['app-preview'] // APP_MODE_DISABLED: always hide app-preview
   if (activeMode !== 'canvas') hiddenTabs.push('dynamic-app')
+  // Hide the external-only tabs on managed projects so the top-bar
+  // stays uncluttered. The renderer/state for these panels is
+  // workingMode-aware too, so even a direct deep-link won't render
+  // them for managed projects.
+  if (!isExternalProject) {
+    hiddenTabs.push('external-preview')
+    hiddenTabs.push('folders')
+  }
 
   const isChatFullscreen = isWide && previewTab === 'chat-fullscreen'
 
@@ -2116,9 +2266,56 @@ export default observer(function ProjectLayout() {
               <PanelErrorBoundary panelName="Checkpoints">
                 <CheckpointsPanel visible={previewTab === 'checkpoints'} projectId={projectId!} />
               </PanelErrorBoundary>
+              <PanelErrorBoundary panelName="Folders">
+                <FoldersPanel
+                  visible={previewTab === 'folders'}
+                  projectId={projectId!}
+                  onChange={() => {
+                    // Re-pull the project so workingMode/trust/folders
+                    // changes propagate without a full page refresh.
+                    if (projectId) {
+                      void fetch(
+                        `${API_URL}/api/projects/${encodeURIComponent(projectId)}?include=projectFolders`,
+                        { credentials: Platform.OS === 'web' ? 'include' : 'omit' },
+                      )
+                        .then((r) => (r.ok ? r.json() : null))
+                        .then((data) => {
+                          const next = data?.project ?? data
+                          if (next) setProject(next)
+                        })
+                        .catch(() => {})
+                    }
+                  }}
+                />
+              </PanelErrorBoundary>
+              <PanelErrorBoundary panelName="ExternalPreview">
+                {previewTab === 'external-preview' && (
+                  <ExternalPreviewWebView
+                    projectId={projectId!}
+                    url={externalSavedUrl ?? externalDetectedUrl ?? null}
+                    visible={previewTab === 'external-preview'}
+                    detectedUrl={externalDetectedUrl}
+                    onUrlSubmit={handleSaveExternalPreviewUrl}
+                    isTrusted={projectTrustLevel === 'trusted'}
+                    onTrustRequired={() => setTrustPromptOpen(true)}
+                  />
+                )}
+              </PanelErrorBoundary>
             </View>
             </DrawerHost>
           </View>
+
+          {/* Workspace trust prompt — first-mount only, dismissible. */}
+          {isExternalProject ? (
+            <TrustPrompt
+              open={trustPromptOpen}
+              projectName={project?.name}
+              folderPath={primaryFolderPath ?? undefined}
+              isSubmitting={trustSubmitting}
+              onDecision={handleTrustDecision}
+              onClose={() => setTrustPromptOpen(false)}
+            />
+          ) : null}
 
           {/* Floating integrations card */}
           {showIntegrationsCardUi && (
