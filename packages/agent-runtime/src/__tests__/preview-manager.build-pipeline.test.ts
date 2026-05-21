@@ -125,6 +125,11 @@ describe('PreviewManager runShogoGenerate (private — invoked indirectly)', () 
   it('detects legacy "bunx shogo generate" scripts and refuses to invoke them', async () => {
     const cwd = join(dir, 'project')
     mkdirSync(cwd, { recursive: true })
+    // PreviewManager.runShogoGenerate watches prisma/schema.prisma to
+    // detect a successful regen (mtime bump). Without the file the fs.watch
+    // call throws ENOENT before the legacy-script detector even runs.
+    mkdirSync(join(cwd, 'prisma'), { recursive: true })
+    writeFileSync(join(cwd, 'prisma', 'schema.prisma'), 'datasource db {}')
     writeFileSync(join(cwd, 'package.json'), JSON.stringify({
       scripts: { generate: 'bunx shogo generate' },
     }))

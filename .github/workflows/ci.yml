@@ -9,6 +9,12 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  # Also run on every push to main so a partial test refactor that slips
+  # through (e.g. via a directly-merged feature branch with no PR CI
+  # against the post-merge HEAD) shows up attributable to the offending
+  # commit, instead of silently red-ing every downstream PR.
+  push:
+    branches: [main]
 
 permissions: {}
 
