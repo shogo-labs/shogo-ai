@@ -1372,6 +1372,15 @@ model AnalyticsDigest {
   id     String   @id @default(uuid())
   date   DateTime @db.Date
   period String   @default("24h")
+  // Region that produced this digest (e.g. `us-ashburn-1`, `eu-frankfurt-1`,
+  // `ap-mumbai-1`). Folded into the unique key so each region's daily cron
+  // can write its own row without colliding when the rows replicate across
+  // regions via logical replication. NOT NULL: the prior nullable rollout
+  // was tightened once the 2026-05-21 backfill confirmed every existing
+  // row has a region tag. The analytics-digest collector defaults missing
+  // `REGION_ID` env to `'unknown'` (single, distinct sentinel) so local
+  // dev/test runs still satisfy the constraint.
+  region String
 
   funnelSignups        Int    @default(0)
   funnelOnboarded      Int    @default(0)
@@ -1394,7 +1403,7 @@ model AnalyticsDigest {
 
   createdAt DateTime @default(now())
 
-  @@unique([date, period])
+  @@unique([date, period, region])
   @@map("analytics_digests")
 }
 
