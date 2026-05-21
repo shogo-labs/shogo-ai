@@ -208,8 +208,17 @@ export class AgentClient {
   // Workspace Files
   // ---------------------------------------------------------------------------
 
-  async getWorkspaceTree(): Promise<FileNode[]> {
-    const data = await this.fetchJson<{ tree: FileNode[] }>('/agent/workspace/tree')
+  /**
+   * Fetch the workspace file tree.
+   *
+   * Without `path`, returns the tree from the workspace root. Heavy
+   * directories (`node_modules`, `dist`, `.next`, …) come back as
+   * `{ type: 'directory', lazy: true }` entries with no children — call this
+   * again with the entry's `path` to load that subtree on demand.
+   */
+  async getWorkspaceTree(path?: string): Promise<FileNode[]> {
+    const qs = path ? `?path=${encodeURIComponent(path)}` : ''
+    const data = await this.fetchJson<{ tree: FileNode[] }>(`/agent/workspace/tree${qs}`)
     return data.tree ?? []
   }
 
