@@ -39,10 +39,9 @@ import {
   useProjectCollection,
   getChatMessageCollectionForSession,
 } from '@shogo/shared-app/domain'
-import { useAgentUrl } from '@shogo/shared-app/dynamic-app'
 import type { IDomainStore } from '@shogo/domain-stores'
 import { cn } from '@shogo/shared-ui/primitives'
-import { useBillingData } from '@shogo/shared-app/hooks'
+import { useAgentUrl, useBillingData } from '@shogo/shared-app/hooks'
 import {
   getIncludedUsdForPlan,
   getIncludedUsdCapacityForDisplay,
