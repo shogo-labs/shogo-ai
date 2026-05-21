@@ -70,9 +70,7 @@ import { MODEL_CATALOG } from '@shogo/model-catalog'
 import { agentFetch } from '../../../../lib/agent-fetch'
 import { useActiveInstance } from '../../../../contexts/active-instance'
 import { ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
-import { ChatTabBar, type ChatTab } from '../../../../components/chat/ChatTabBar'
 import { CanvasWebView } from '../../../../components/canvas/CanvasWebView'
-import { CanvasThemeProvider, CanvasThemedContainer } from '../../../../components/canvas/CanvasThemeContext'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
 import { CanvasErrorBoundary } from '../../../../components/dynamic-app/CanvasErrorBoundary'
 import { CanvasWebView } from '../../../../components/dynamic-app/CanvasWebView'
@@ -1004,8 +1002,27 @@ export default observer(function ProjectLayout() {
   // Chat panel visibility
   const [chatCollapsed, setChatCollapsed] = useState(false)
   const [showChatSessions, setShowChatSessions] = useState(false)
+  // Hydrated from AsyncStorage so the user's "history sidebar open/closed"
+  // preference survives navigation; only read once per project mount.
+  const showChatSessionsHydratedRef = useRef<string | null>(null)
   const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
   const [previewTab, setPreviewTab] = useState('canvas')
+
+  useEffect(() => {
+    if (!projectId) return
+    if (showChatSessionsHydratedRef.current === projectId) return
+    showChatSessionsHydratedRef.current = projectId
+    AsyncStorage.getItem(`shogo:showChatHistory:${projectId}`).then((raw) => {
+      if (raw === '1') setShowChatSessions(true)
+      else if (raw === '0') setShowChatSessions(false)
+    }).catch(() => {})
+  }, [projectId])
+
+  useEffect(() => {
+    if (!projectId) return
+    if (showChatSessionsHydratedRef.current !== projectId) return
+    AsyncStorage.setItem(`shogo:showChatHistory:${projectId}`, showChatSessions ? '1' : '0').catch(() => {})
+  }, [projectId, showChatSessions])
 
   // Resizable chat panel width (wide split mode only)
   const [chatPanelWidth, setChatPanelWidth] = useState(DEFAULT_CHAT_PANEL_WIDTH)
@@ -1369,17 +1386,6 @@ export default observer(function ProjectLayout() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store?.chatSessionCollection?.all, sessionNames, projectId, _sessionNameKey])
 
-  // Build ordered tab list with display names from openChatTabIds
-  const openChatTabs: ChatTab[] = useMemo(() => {
-    const sessionMap = new Map(chatSessions.map((s) => [s.id, s.name]))
-    return openChatTabIds
-      .map((id) => ({ id, name: sessionMap.get(id) || 'Untitled' }))
-  }, [openChatTabIds, chatSessions])
-
-  const handleSelectTab = useCallback((tabId: string) => {
-    setChatSessionId(tabId)
-  }, [])
-
   const handleCreateNewSession = useCallback(async () => {
     try {
       const newSession = await actions.createChatSession({
@@ -1531,7 +1537,7 @@ export default observer(function ProjectLayout() {
       try {
         await actions.updateChatSession(sessionId, { name: newName })
         // Flush into the local sessionNames cache so the useMemo dep changes
-        // and chatSessions / openChatTabs recompute immediately.
+        // and chatSessions recomputes immediately.
         setSessionNames((prev) => ({ ...prev, [sessionId]: newName }))
       } catch (err) {
         console.error('[ProjectLayout] Failed to rename chat session:', err)
@@ -1857,14 +1863,16 @@ export default observer(function ProjectLayout() {
     onChatSessionsToggle: isChatFullscreen ? undefined : () => setShowChatSessions((s: boolean) => !s),
     onChatCollapseToggle: isChatFullscreen ? undefined : () => setChatCollapsed((c: boolean) => !c),
     onCreateNewSession: isChatFullscreen ? undefined : handleCreateNewSession,
-    chatPanelWidth: clampChatWidth(chatPanelWidth),
+    // Top bar chat zone spans the chat column. When the collapsible history
+    // sidebar is open in split mode, include its 280px so the zone aligns.
+    chatPanelWidth: clampChatWidth(chatPanelWidth) + (isWide && !isChatFullscreen && showChatSessions ? 280 : 0),
     chatFullscreenSidebarWidth: isChatFullscreen ? 280 : undefined,
     onSearchChats: isChatFullscreen ? () => setSidebarSearchOpen(true) : undefined,
     onNewChat: isChatFullscreen ? handleCreateNewSession : undefined,
     onRenameChat: isChatFullscreen ? handleRenameChatSession : undefined,
     onDeleteChat: isChatFullscreen ? handleDeleteChatSession : undefined,
     activeChatSessionId: isChatFullscreen ? chatSessionId : undefined,
-    activeChatSessionName: isChatFullscreen ? (openChatTabs.find(t => t.id === chatSessionId)?.name ?? null) : undefined,
+    activeChatSessionName: isChatFullscreen ? (chatSessions.find(s => s.id === chatSessionId)?.name ?? null) : undefined,
     canvasActive: canvasEnabled && previewTab === 'canvas',
     canvasThemeSupported,
     onCanvasRefresh: () => setIframeRefreshKey(k => k + 1),
@@ -1920,119 +1928,75 @@ export default observer(function ProjectLayout() {
             {/* Content — chat panel stays mounted across layout/tab changes */}
             <View className={cn('flex-1', isWide && 'flex-row')} ref={splitRowRef}>
               {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
-              <View
-                className={cn(
-                  'flex min-h-0 flex-col',
-                  isChatFullscreen
-                    ? 'flex-1 flex-row'
-                    : isWide
-                      ? 'shrink-0 bg-background z-10'
-                      : 'relative flex-1',
-                  !isChatFullscreen && chatHidden && 'hidden',
-                )}
-                style={!isChatFullscreen && isWide && !chatHidden ? { width: clampChatWidth(chatPanelWidth) } : undefined}
-              >
-                {isChatFullscreen && (
-                  <View className="w-[280px] bg-muted/50 dark:bg-black/30">
-                    <ChatSessionSidebar
-                      sessions={chatSessions}
-                      currentSessionId={chatSessionId ?? undefined}
-                      onSelect={(sessionId) => {
-                        setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
-                        setChatSessionId(sessionId)
-                      }}
-                      onCreate={handleCreateNewSession}
-                      onLoadMore={handleLoadMoreSessions}
-                      hasMore={store?.chatSessionCollection?.hasMore ?? false}
-                      isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
-                      hideHeader
-                      searchOpen={sidebarSearchOpen}
-                      onSearchClose={() => setSidebarSearchOpen(false)}
-                    />
-                  </View>
-                )}
-                {isChatFullscreen ? (
-                  <View className="flex-1 min-h-0 relative">
-                    <View
-                      className="absolute inset-0"
-                      style={showEmptyChatState ? { opacity: 0 } : undefined}
-                      pointerEvents={showEmptyChatState ? 'none' : 'auto'}
-                    >
-                      <EzModeAwareChatPanels>{chatPanels}</EzModeAwareChatPanels>
-                    </View>
-                    {showEmptyChatState && (
-                      <View className="absolute inset-0 bg-background items-center justify-center px-8">
-                        <MessageSquare size={28} className="text-muted-foreground" />
-                        <Text className="text-sm text-muted-foreground mt-3 text-center">
-                          No chat open. Pick one from the list on the left, or start a new chat.
-                        </Text>
-                      </View>
+              {/* Sidebar is shown always in fullscreen and toggleable in wide-split via showChatSessions. */}
+              {(() => {
+                const showSidebar = isChatFullscreen || (isWide && showChatSessions)
+                return (
+                  <View
+                    className={cn(
+                      'flex min-h-0',
+                      isChatFullscreen
+                        ? 'flex-1 flex-row'
+                        : isWide
+                          ? cn('shrink-0 bg-background z-10', showSidebar ? 'flex-row' : 'flex-col')
+                          : 'relative flex-1 flex-col',
+                      !isChatFullscreen && chatHidden && 'hidden',
                     )}
-                  </View>
-                ) : (
-                  <>
-                    {isWide && (
-                      <ChatTabBar
-                        tabs={openChatTabs}
-                        activeTabId={chatSessionId}
-                        onSelectTab={handleSelectTab}
-                        onCloseTab={handleCloseTab}
-                        onNewChat={handleCreateNewSession}
-                        onHistoryToggle={() => setShowChatSessions((s: boolean) => !s)}
-                        showHistory={showChatSessions}
-                        streamingTabIds={streamingTabIds}
-                        completedTabIds={completedTabIds}
-                        onRenameSession={handleRenameChatSession}
-                        onDeleteSession={handleDeleteChatSession}
-                      />
+                    style={
+                      !isChatFullscreen && isWide && !chatHidden
+                        ? { width: clampChatWidth(chatPanelWidth) + (showSidebar ? 280 : 0) }
+                        : undefined
+                    }
+                  >
+                    {showSidebar && (
+                      <View className="w-[280px] bg-muted/50 dark:bg-black/30 border-r border-border">
+                        <ChatSessionSidebar
+                          sessions={chatSessions}
+                          currentSessionId={chatSessionId ?? undefined}
+                          onSelect={(sessionId) => {
+                            setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
+                            setChatSessionId(sessionId)
+                          }}
+                          onCreate={handleCreateNewSession}
+                          onRename={handleRenameChatSession}
+                          onDelete={handleDeleteChatSession}
+                          onLoadMore={handleLoadMoreSessions}
+                          hasMore={store?.chatSessionCollection?.hasMore ?? false}
+                          isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
+                          hideHeader
+                          searchOpen={sidebarSearchOpen}
+                          onSearchClose={() => setSidebarSearchOpen(false)}
+                          streamingSessionIds={streamingTabIds}
+                          completedSessionIds={completedTabIds}
+                        />
+                      </View>
                     )}
                     <View className="flex-1 min-h-0 relative">
                       <View
                         className="absolute inset-0"
-                        style={
-                          (isWide && showChatSessions) || showEmptyChatState
-                            ? { opacity: 0 }
-                            : undefined
-                        }
-                        pointerEvents={
-                          (isWide && showChatSessions) || showEmptyChatState ? 'none' : 'auto'
-                        }
+                        style={showEmptyChatState ? { opacity: 0 } : undefined}
+                        pointerEvents={showEmptyChatState ? 'none' : 'auto'}
                       >
                         <EzModeAwareChatPanels>{chatPanels}</EzModeAwareChatPanels>
                       </View>
-                      {showEmptyChatState && !(isWide && showChatSessions) && (
-                        <View className="absolute inset-0 bg-background">
-                          {renderEmptyChatList()}
-                        </View>
-                      )}
-                      {isWide && showChatSessions && (
-                        <View className="absolute inset-0 bg-background">
-                          <ChatSessionSidebar
-                            sessions={chatSessions}
-                            currentSessionId={chatSessionId ?? undefined}
-                            onSelect={(sessionId) => {
-                              setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
-                              setChatSessionId(sessionId)
-                              setShowChatSessions(false)
-                            }}
-                            onCreate={() => {
-                              void handleCreateNewSession()
-                              setShowChatSessions(false)
-                            }}
-                            onRename={handleRenameChatSession}
-                            onLoadMore={handleLoadMoreSessions}
-                            hasMore={store?.chatSessionCollection?.hasMore ?? false}
-                            isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
-                            hideHeader
-                            searchOpen={sidebarSearchOpen}
-                            onSearchClose={() => setSidebarSearchOpen(false)}
-                          />
-                        </View>
+                      {showEmptyChatState && (
+                        isChatFullscreen || showSidebar ? (
+                          <View className="absolute inset-0 bg-background items-center justify-center px-8">
+                            <MessageSquare size={28} className="text-muted-foreground" />
+                            <Text className="text-sm text-muted-foreground mt-3 text-center">
+                              No chat open. Pick one from the list on the left, or start a new chat.
+                            </Text>
+                          </View>
+                        ) : (
+                          <View className="absolute inset-0 bg-background">
+                            {renderEmptyChatList()}
+                          </View>
+                        )
                       )}
                     </View>
-                  </>
-                )}
-              </View>
+                  </View>
+                )
+              })()}
 
               {/* Drag handle to resize chat panel (web only, wide split mode) */}
               {Platform.OS === 'web' && isWide && !isChatFullscreen && !chatHidden && (
@@ -2044,6 +2008,7 @@ export default observer(function ProjectLayout() {
                   onResize={setChatPanelWidth}
                   onResizeEnd={persistChatPanelWidth}
                   defaultWidth={DEFAULT_CHAT_PANEL_WIDTH}
+                  leftOffset={showChatSessions ? 280 : 0}
                 />
               )}
 
@@ -2328,6 +2293,7 @@ function ChatPanelResizeHandle({
   onResize,
   onResizeEnd,
   defaultWidth,
+  leftOffset = 0,
 }: {
   splitRowRef: React.RefObject<View | null>
   chatPanelWidth: number
@@ -2336,6 +2302,8 @@ function ChatPanelResizeHandle({
   onResize: (w: number) => void
   onResizeEnd: (w: number) => void
   defaultWidth: number
+  /** Pixels of fixed-width content (e.g. the chat history sidebar) sitting to the left of the resizable chat panel. */
+  leftOffset?: number
 }) {
   const [dragging, setDragging] = useState(false)
   const [hovered, setHovered] = useState(false)
@@ -2350,7 +2318,10 @@ function ChatPanelResizeHandle({
     const containerRect = container.getBoundingClientRect()
 
     const onPointerMove = (ev: PointerEvent) => {
-      const newWidth = Math.max(minWidth, Math.min(maxWidth, ev.clientX - containerRect.left))
+      const newWidth = Math.max(
+        minWidth,
+        Math.min(maxWidth, ev.clientX - containerRect.left - leftOffset),
+      )
       latestWidthRef.current = newWidth
       onResize(newWidth)
     }
@@ -2368,7 +2339,7 @@ function ChatPanelResizeHandle({
     document.body.style.userSelect = 'none'
     document.addEventListener('pointermove', onPointerMove)
     document.addEventListener('pointerup', onPointerUp)
-  }, [splitRowRef, minWidth, maxWidth, onResize, onResizeEnd])
+  }, [splitRowRef, minWidth, maxWidth, onResize, onResizeEnd, leftOffset])
 
   const handleDoubleClick = useCallback(() => {
     onResizeEnd(defaultWidth)

@@ -67,6 +67,7 @@ import {
   Upload,
   FolderTree,
   Globe,
+  History,
 } from 'lucide-react-native'
 import { cn, Badge, Progress } from '@shogo/shared-ui/primitives'
 import { useTheme, type ThemePreference } from '../../contexts/theme'
@@ -156,7 +157,7 @@ export interface ProjectTopBarProps {
   chatFullscreenSidebarWidth?: number
   /** Search chats — shown in the top bar left zone when in fullscreen chat mode. */
   onSearchChats?: () => void
-  // Fullscreen chat actions (replaces ChatTabBar in fullscreen mode)
+  // Fullscreen chat actions (rendered in the topbar chat zone in fullscreen mode)
   onNewChat?: () => void
   onRenameChat?: (sessionId: string, newName: string) => void | Promise<void>
   onDeleteChat?: (sessionId: string) => void | Promise<void>
@@ -643,7 +644,26 @@ export function ProjectTopBar({
           </Popover>
         )}
 
-        {/* Chat collapse/expand — history and new-chat are now in ChatTabBar */}
+        {/* New chat — split mode (fullscreen has its own button in the right zone). */}
+        {onCreateNewSession && (
+          <BarIconButton
+            icon={Plus}
+            onPress={onCreateNewSession}
+            title="New chat"
+          />
+        )}
+
+        {/* Chat history toggle — shown in split mode (fullscreen pins the rail). */}
+        {onChatSessionsToggle && (
+          <BarIconButton
+            icon={History}
+            onPress={onChatSessionsToggle}
+            active={showChatSessions}
+            title={showChatSessions ? 'Hide chat history' : 'Show chat history'}
+          />
+        )}
+
+        {/* Chat collapse/expand */}
         {onChatCollapseToggle && (
           <View className="flex-row items-center gap-0.5">
             {!isChatCollapsed ? (
