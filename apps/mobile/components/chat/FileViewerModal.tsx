@@ -84,6 +84,13 @@ export function FileViewerModal({
   const [copied, setCopied] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState(content)
+  /**
+   * Bumped whenever we want to *remount* the TextInput so its uncontrolled
+   * `defaultValue` is re-applied (entering edit mode, reverting, or the
+   * parent swapping content). Keeping the editor uncontrolled is what
+   * prevents the React-Native-Web cursor-jump-to-end bug on every keystroke.
+   */
+  const [editorKey, setEditorKey] = useState(0)
   const { height: screenHeight } = useWindowDimensions()
   /** Centered dialog — capped height so it reads as a panel, not a fullscreen takeover. */
   const panelMaxHeight = Math.min(screenHeight * 0.7, 600)
@@ -95,6 +102,7 @@ export function FileViewerModal({
   useEffect(() => {
     setDraft(content)
     setIsEditing(false)
+    setEditorKey((k) => k + 1)
   }, [content, visible])
 
   const draftInfo = useMemo(
@@ -119,9 +127,15 @@ export function FileViewerModal({
     setIsEditing(false)
   }, [draft, onSave])
 
-  const handleCancelEdit = useCallback(() => {
+  const handleStartEdit = useCallback(() => {
     setDraft(content)
-    setIsEditing(false)
+    setEditorKey((k) => k + 1)
+    setIsEditing(true)
+  }, [content])
+
+  const handleRevert = useCallback(() => {
+    setDraft(content)
+    setEditorKey((k) => k + 1)
   }, [content])
 
   const canEdit = editable && typeof onSave === "function"
@@ -153,7 +167,7 @@ export function FileViewerModal({
           <View className="flex-row items-center gap-2">
             {canEdit && !isEditing ? (
               <Pressable
-                onPress={() => setIsEditing(true)}
+                onPress={handleStartEdit}
                 className="h-8 w-8 items-center justify-center rounded-md"
                 accessibilityLabel="Edit content"
                 accessibilityRole="button"
@@ -164,8 +178,12 @@ export function FileViewerModal({
             {canEdit && isEditing ? (
               <>
                 <Pressable
-                  onPress={handleCancelEdit}
-                  className="h-8 w-8 items-center justify-center rounded-md"
+                  onPress={handleRevert}
+                  disabled={!isDirty}
+                  className={cn(
+                    "h-8 w-8 items-center justify-center rounded-md",
+                    !isDirty && "opacity-40",
+                  )}
                   accessibilityLabel="Revert edits"
                   accessibilityRole="button"
                 >
@@ -216,7 +234,16 @@ export function FileViewerModal({
           {isEditing ? (
             <View className="px-4 py-3" style={{ maxHeight: bodyMaxHeight }}>
               <TextInput
-                value={draft}
+                /**
+                 * `key` + `defaultValue` keep this input *uncontrolled* so
+                 * React doesn't re-apply `value` on every keystroke — that
+                 * re-application is what causes the cursor to jump to the
+                 * end after each character on React-Native-Web. We remount
+                 * (bump `editorKey`) only when entering edit mode, reverting,
+                 * or the parent swaps content.
+                 */
+                key={editorKey}
+                defaultValue={draft}
                 onChangeText={setDraft}
                 multiline
                 autoFocus
