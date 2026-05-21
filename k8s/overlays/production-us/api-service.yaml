@@ -109,6 +109,23 @@ spec:
               value: "shogo.ai"
             - name: PREVIEW_ENVIRONMENT
               value: "production"
+            # Per-preview Cloudflare DNS: upserts a proxied A record for
+            # every preview--<projectId>.shogo.ai hostname pointing at
+            # this cluster's Kourier LB. US currently works via the flat
+            # `*.shogo.ai` wildcard (which also points at this LB), but
+            # wiring per-preview records here keeps all three regions
+            # consistent and avoids surprises if we ever repoint the
+            # wildcard. See docs/cloudflare-dns-per-preview.md.
+            - name: CF_ZONE_ID
+              value: "c2d56140e7de85a4ac5ab5bea8e7434f"
+            - name: KOURIER_LB_IP
+              value: "152.70.192.220"
+            - name: CF_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflare-dns
+                  key: CF_API_TOKEN
+                  optional: true
             - name: S3_WORKSPACES_BUCKET
               value: "shogo-workspaces-production"
             - name: S3_REGION

@@ -109,6 +109,24 @@ spec:
               value: "shogo.ai"
             - name: PREVIEW_ENVIRONMENT
               value: "production"
+            # Per-preview Cloudflare DNS: upserts a proxied A record for
+            # every preview--<projectId>.shogo.ai hostname pointing at
+            # this cluster's Kourier LB. Without these three vars,
+            # `apps/api/src/lib/cloudflare-dns.ts` is a no-op and India
+            # previews fall back to the flat `*.shogo.ai` wildcard,
+            # which routes to US Kourier and returns 404 / CF 522.
+            # See docs/cloudflare-dns-per-preview.md and the
+            # 2026-05-21 incident.
+            - name: CF_ZONE_ID
+              value: "c2d56140e7de85a4ac5ab5bea8e7434f"
+            - name: KOURIER_LB_IP
+              value: "161.118.170.159"
+            - name: CF_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflare-dns
+                  key: CF_API_TOKEN
+                  optional: true
             - name: S3_WORKSPACES_BUCKET
               value: "shogo-workspaces-production"
             - name: S3_REGION
