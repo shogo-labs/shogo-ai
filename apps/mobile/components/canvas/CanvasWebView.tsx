@@ -5,8 +5,8 @@
  *
  * Loads the canvas-runtime SPA shell inside a WebView (native) or iframe (web).
  * The iframe handles its own same-origin SSE for live reload via canvas-bridge.js;
- * this parent only relays theme + active-surface messages and forwards canvas
- * actions / errors back to the agent over HTTP.
+ * this parent only relays theme messages and forwards canvas actions / errors
+ * back to the agent over HTTP.
  */
 
 import { useCallback, useEffect, useRef, useMemo } from 'react'
@@ -37,7 +37,6 @@ interface CanvasWebViewProps {
   /** Direct runtime URL for the canvas iframe. When set, the iframe loads from
    *  here so fetch('/api/...') resolves same-origin — no proxy needed. */
   canvasBaseUrl?: string | null
-  activeSurfaceId?: string | null
   onCanvasError?: (
     surfaceId: string,
     phase: 'compile' | 'runtime',
@@ -87,7 +86,7 @@ function postCanvasError(
 // CanvasWebView — public component
 // ---------------------------------------------------------------------------
 
-export function CanvasWebView({ agentUrl, canvasBaseUrl, activeSurfaceId, onCanvasError, onCanvasCapabilities, refreshKey }: CanvasWebViewProps) {
+export function CanvasWebView({ agentUrl, canvasBaseUrl, onCanvasError, onCanvasCapabilities, refreshKey }: CanvasWebViewProps) {
   const iframeBase = canvasBaseUrl || agentUrl
   const canvasUrl = iframeBase ? `${iframeBase}/` : null
   const canvasTheme = useCanvasThemeOptional()
@@ -113,10 +112,10 @@ export function CanvasWebView({ agentUrl, canvasBaseUrl, activeSurfaceId, onCanv
   }
 
   if (Platform.OS === 'web') {
-    return <CanvasIframe key={refreshKey} url={canvasUrl} agentUrl={agentUrl} activeSurfaceId={activeSurfaceId} themeMessage={themeMessage} onCanvasError={onCanvasError} onCanvasCapabilities={onCanvasCapabilities} />
+    return <CanvasIframe key={refreshKey} url={canvasUrl} agentUrl={agentUrl} themeMessage={themeMessage} onCanvasError={onCanvasError} onCanvasCapabilities={onCanvasCapabilities} />
   }
 
-  return <CanvasNativeWebView url={canvasUrl} agentUrl={agentUrl} activeSurfaceId={activeSurfaceId} themeMessage={themeMessage} onCanvasError={onCanvasError} onCanvasCapabilities={onCanvasCapabilities} />
+  return <CanvasNativeWebView url={canvasUrl} agentUrl={agentUrl} themeMessage={themeMessage} onCanvasError={onCanvasError} onCanvasCapabilities={onCanvasCapabilities} />
 }
 
 // ---------------------------------------------------------------------------
@@ -132,7 +131,6 @@ interface ThemeMessage {
 interface BridgeProps {
   url: string
   agentUrl: string
-  activeSurfaceId?: string | null
   themeMessage: ThemeMessage | null
   onCanvasError?: (
     surfaceId: string,
@@ -143,7 +141,7 @@ interface BridgeProps {
   onCanvasCapabilities?: (caps: CanvasCapabilities) => void
 }
 
-function CanvasIframe({ url, agentUrl, activeSurfaceId, themeMessage, onCanvasError, onCanvasCapabilities }: BridgeProps) {
+function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapabilities }: BridgeProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const readyRef = useRef(false)
 
@@ -153,13 +151,6 @@ function CanvasIframe({ url, agentUrl, activeSurfaceId, themeMessage, onCanvasEr
 
   // Reload is handled inside the iframe itself (main.tsx listens to the SSE
   // stream on the same origin, avoiding cross-origin issues entirely).
-
-  // Relay active surface selection from parent tabs
-  useEffect(() => {
-    if (activeSurfaceId && readyRef.current) {
-      sendToIframe({ type: 'canvas-set-active-surface', surfaceId: activeSurfaceId })
-    }
-  }, [activeSurfaceId, sendToIframe])
 
   // Send theme when it changes
   useEffect(() => {
@@ -229,7 +220,7 @@ function CanvasIframe({ url, agentUrl, activeSurfaceId, themeMessage, onCanvasEr
 // Native — react-native-webview + postMessage bridge
 // ---------------------------------------------------------------------------
 
-function CanvasNativeWebView({ url, agentUrl, activeSurfaceId, themeMessage, onCanvasError, onCanvasCapabilities }: BridgeProps) {
+function CanvasNativeWebView({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapabilities }: BridgeProps) {
   const WebView = require('react-native-webview').default
   const webViewRef = useRef<any>(null)
   const readyRef = useRef(false)
@@ -237,13 +228,6 @@ function CanvasNativeWebView({ url, agentUrl, activeSurfaceId, themeMessage, onC
   const sendToWebView = useCallback((msg: Record<string, unknown>) => {
     webViewRef.current?.postMessage(JSON.stringify(msg))
   }, [])
-
-  // Relay active surface selection from parent tabs
-  useEffect(() => {
-    if (activeSurfaceId && readyRef.current) {
-      sendToWebView({ type: 'canvas-set-active-surface', surfaceId: activeSurfaceId })
-    }
-  }, [activeSurfaceId, sendToWebView])
 
   // Send theme when it changes
   useEffect(() => {
