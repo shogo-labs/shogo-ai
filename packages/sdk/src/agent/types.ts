@@ -74,7 +74,18 @@ export interface FileNode {
   path: string
   type: 'file' | 'directory'
   size?: number
+  /** Last-modified time as a Unix epoch in milliseconds (mtimeMs). */
+  modified?: number
   children?: FileNode[]
+  /**
+   * True on directories whose children were intentionally not walked
+   * server-side (heavy build/dependency dirs like `node_modules`, `dist`).
+   * Clients should fetch children on demand via
+   * `client.getWorkspaceTree(node.path)` and treat the returned entries as
+   * the children of this node. `children` will be undefined when `lazy` is
+   * true.
+   */
+  lazy?: boolean
 }
 
 export interface SearchResult {

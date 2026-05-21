@@ -2387,47 +2387,97 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
-const WORKSPACE_TREE_EXCLUDE_DIRS = new Set([
-  'node_modules', 'dist', '.next', '.cache', '.turbo', '.parcel-cache',
-  'coverage', '.nyc_output', '__pycache__', '.venv', 'venv',
-  'memory', 'scripts',
+// ─────────────────────────────────────────────────────────────────────────────
+// File-tree exclusion policy (VS Code defaults).
+//
+// `GET /agent/workspace/tree` is the single source of truth for every consumer
+// that lists workspace files (IDE Monaco file tree, Cmd-P quick-open, search,
+// FilesBrowserPanel). The policy mirrors VS Code's `files.exclude` defaults
+// plus the watcher's `IGNORED_PATH_PREFIXES`:
+//
+//   HIDDEN_DIRS  — Never returned at all. VCS metadata. VS Code's
+//                  `files.exclude` defaults: .git / .svn / .hg / CVS.
+//
+//   LAZY_DIRS    — Returned as a directory entry with `lazy: true` and no
+//                  `children`. The IDE fetches children on demand by hitting
+//                  `/agent/workspace/tree?path=<rel>`. Mirrors the watcher's
+//                  `IGNORED_PATH_PREFIXES` (canvas-file-watcher.ts) so the
+//                  invariant "shown in the tree, ignored by the watcher" holds
+//                  by construction. Walking `node_modules` recursively up-front
+//                  blows the response up to multiple MB and the watcher up to
+//                  the inotify quota; we explicitly want neither.
+//
+//   HIDDEN_FILES — Never returned. OS junk + agent-runtime internals only.
+//
+// Product-UX filtering (hiding `package.json`, the four pinned `*.md`
+// shortcuts, etc.) is NOT done here. That lives client-side in
+// FilesBrowserPanel's `filterForFilesBrowser` — the IDE Monaco tree needs to
+// see configs and dotfiles, the agent-files panel doesn't. Do not re-introduce
+// product-UX excludes server-side: they'll silently break the IDE.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const WORKSPACE_TREE_HIDDEN_DIRS = new Set([
+  '.git', '.svn', '.hg', 'CVS',
 ])
 
-const WORKSPACE_TREE_EXCLUDE_FILES = new Set([
-  'bun.lock', '.virtfs_metadata',
-  'AGENTS.md', 'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md',
-  'package.json', 'tsconfig.json', 'vite.config.ts', 'tailwind.config.ts',
-  'postcss.config.js', 'postcss.config.mjs', 'components.json',
-  'pyrightconfig.json', 'LICENSE', 'README.md',
-  '.app-template',
+const WORKSPACE_TREE_LAZY_DIRS = new Set([
+  'node_modules',
+  'dist', 'build',
+  'dist.canvas.staging', 'dist.staging', 'dist.prev',
+  '.next', '.cache', '.turbo', '.parcel-cache',
+  'coverage', '.nyc_output',
+  '__pycache__', '.venv', 'venv',
+])
+
+const WORKSPACE_TREE_HIDDEN_FILES = new Set([
+  '.DS_Store', 'Thumbs.db', 'desktop.ini',
+  '.virtfs_metadata',
 ])
 
 function walkFilesTree(
   dir: string,
   rootDir: string,
-  excludeDirs?: Set<string>,
-  excludeFiles?: Set<string>,
+  hiddenDirs: Set<string>,
+  lazyDirs: Set<string>,
+  hiddenFiles: Set<string>,
 ): any[] {
   if (!existsSync(dir)) return []
   const results: any[] = []
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name.startsWith('.')) continue
     const absPath = join(dir, entry.name)
     // Always emit POSIX-style separators so Windows runtimes don't surface
     // `tools\foo\bar.ts` (which the IDE would then URL-encode as `%5C`).
     const relPath = absPath.slice(rootDir.length + 1).replace(/\\/g, '/')
-    const stat = statSync(absPath)
+    let stat
+    try {
+      stat = statSync(absPath)
+    } catch {
+      // Broken symlink or race with a concurrent delete — skip rather than 500.
+      continue
+    }
     if (entry.isDirectory()) {
-      if (excludeDirs?.has(entry.name)) continue
+      if (hiddenDirs.has(entry.name)) continue
+      if (lazyDirs.has(entry.name)) {
+        // Visible in the tree but children not walked. The IDE fetches them
+        // on expand via `/agent/workspace/tree?path=<relPath>`.
+        results.push({
+          name: entry.name,
+          path: relPath,
+          type: 'directory',
+          modified: stat.mtimeMs,
+          lazy: true,
+        })
+        continue
+      }
       results.push({
         name: entry.name,
         path: relPath,
         type: 'directory',
         modified: stat.mtimeMs,
-        children: walkFilesTree(absPath, rootDir, excludeDirs, excludeFiles),
+        children: walkFilesTree(absPath, rootDir, hiddenDirs, lazyDirs, hiddenFiles),
       })
     } else {
-      if (excludeFiles?.has(entry.name)) continue
+      if (hiddenFiles.has(entry.name)) continue
       results.push({
         name: entry.name,
         path: relPath,
@@ -2507,9 +2557,33 @@ function resolveWorkspacePath(subPath: string): string | null {
   return resolved
 }
 
-// Recursive file tree for the file browser UI
+// Recursive file tree for the file browser UI.
+//
+// Without `?path=`, walks from the workspace root. With `?path=<rel>`, walks
+// just that subtree — used by the IDE to lazy-load `node_modules/`, `dist/`,
+// and friends only when the user expands them. The same three exclusion sets
+// apply at every depth, so a `node_modules/foo/node_modules` nested dep still
+// comes back as a `lazy: true` entry rather than recursing.
 app.get('/agent/workspace/tree', (c) => {
-  const tree = walkFilesTree(WORKSPACE_DIR, resolve(WORKSPACE_DIR), WORKSPACE_TREE_EXCLUDE_DIRS, WORKSPACE_TREE_EXCLUDE_FILES)
+  const subPath = c.req.query('path') ?? ''
+  const rootResolved = resolve(WORKSPACE_DIR)
+  let startDir = WORKSPACE_DIR
+  if (subPath) {
+    const resolved = resolveWorkspacePath(subPath)
+    if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
+    if (!existsSync(resolved)) return c.json({ error: 'Path not found' }, 404)
+    if (!statSync(resolved).isDirectory()) {
+      return c.json({ error: 'Path is not a directory' }, 400)
+    }
+    startDir = resolved
+  }
+  const tree = walkFilesTree(
+    startDir,
+    rootResolved,
+    WORKSPACE_TREE_HIDDEN_DIRS,
+    WORKSPACE_TREE_LAZY_DIRS,
+    WORKSPACE_TREE_HIDDEN_FILES,
+  )
   return c.json({ tree })
 })
 
