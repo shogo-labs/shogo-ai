@@ -11,6 +11,5 @@
     "provider": "anthropic",
     "name": "claude-sonnet-4-5"
   },
-  "activeMode": "canvas",
-  "canvasMode": "code"
+  "activeMode": "canvas"
 }
