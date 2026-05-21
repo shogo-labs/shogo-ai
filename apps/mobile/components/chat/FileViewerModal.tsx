@@ -26,6 +26,7 @@ import {
   Braces,
   FileType,
   Pencil,
+  PencilOff,
   RotateCcw,
 } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
@@ -138,6 +139,19 @@ export function FileViewerModal({
     setEditorKey((k) => k + 1)
   }, [content])
 
+  /**
+   * Exit edit mode without saving. Discards any unsaved draft and snaps the
+   * editor back to the last saved content. The button is wired so that
+   * unsaved changes still require an explicit Save or Revert first — this
+   * is the "I clicked edit by accident" escape hatch when the draft is
+   * still clean.
+   */
+  const handleExitEdit = useCallback(() => {
+    setDraft(content)
+    setEditorKey((k) => k + 1)
+    setIsEditing(false)
+  }, [content])
+
   const canEdit = editable && typeof onSave === "function"
 
   return (
@@ -177,6 +191,18 @@ export function FileViewerModal({
             ) : null}
             {canEdit && isEditing ? (
               <>
+                <Pressable
+                  onPress={handleExitEdit}
+                  disabled={isDirty}
+                  className={cn(
+                    "h-8 w-8 items-center justify-center rounded-md",
+                    isDirty && "opacity-40",
+                  )}
+                  accessibilityLabel="Exit edit mode"
+                  accessibilityRole="button"
+                >
+                  <PencilOff size={16} className="text-muted-foreground" />
+                </Pressable>
                 <Pressable
                   onPress={handleRevert}
                   disabled={!isDirty}
