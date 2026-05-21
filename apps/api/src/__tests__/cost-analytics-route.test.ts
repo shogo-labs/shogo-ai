@@ -562,3 +562,95 @@ describe('agent-eval-sets list', () => {
     expect(arg.enabled).toBeUndefined()
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════
+// gap-closing: forbidden + catch arms on every endpoint
+// (closes the 25 remaining DA:N,0 lines in cost-analytics.ts)
+// ═══════════════════════════════════════════════════════════════════════
+
+const MEMBER_ENDPOINTS: Array<{
+  label: string
+  method: string
+  suffix: string
+  svcKey: keyof typeof svcSpies
+  body?: any
+}> = [
+  { label: 'recommendations',           method: 'GET',  suffix: 'recommendations',                         svcKey: 'getCostRecommendations' },
+  { label: 'trends',                    method: 'GET',  suffix: 'trends',                                  svcKey: 'getCostTrends' },
+  { label: 'budget-alerts list',        method: 'GET',  suffix: 'budget-alerts',                           svcKey: 'getBudgetAlerts' },
+  { label: 'budget-status',             method: 'GET',  suffix: 'budget-status',                           svcKey: 'getBudgetAlertUsage' },
+  { label: 'experiments list',          method: 'GET',  suffix: 'experiments',                             svcKey: 'getExperiments' },
+  { label: 'experiment get',            method: 'GET',  suffix: 'experiments/exp_1',                       svcKey: 'getExperiment' },
+  { label: 'experiment summary',        method: 'GET',  suffix: 'experiments/exp_1/summary',               svcKey: 'summarizeExperiment' },
+  { label: 'optimizer-in-action',       method: 'GET',  suffix: 'optimizer-in-action',                     svcKey: 'getOptimizerInActionReport' },
+  { label: 'agent-eval-sets list',      method: 'GET',  suffix: 'agent-eval-sets',                         svcKey: 'listAgentEvalSets' },
+]
+
+const ADMIN_CATCH_ENDPOINTS: Array<{
+  label: string
+  method: string
+  suffix: string
+  svcKey: keyof typeof svcSpies
+  body?: any
+}> = [
+  { label: 'budget-alerts PATCH', method: 'PATCH',  suffix: 'budget-alerts/ba_1',          svcKey: 'updateBudgetAlert', body: { name: 'x' } },
+  { label: 'budget-alerts DELETE', method: 'DELETE', suffix: 'budget-alerts/ba_1',          svcKey: 'deleteBudgetAlert' },
+  { label: 'experiment stop',      method: 'POST',   suffix: 'experiments/exp_1/stop',      svcKey: 'stopExperiment' },
+]
+
+describe('forbidden 403 on member-guarded endpoints', () => {
+  test.each(MEMBER_ENDPOINTS)('$label → 403 when caller is not a member', async ({ method, suffix }) => {
+    const res = await call(method, PATH(suffix))
+    expect(res.status).toBe(403)
+    expect(res.body.error.code).toBe('forbidden')
+    expect(res.body.error.message).toContain('Not a member')
+  })
+})
+
+describe('catch → 500 cost_analytics_failed on every endpoint', () => {
+  test.each(MEMBER_ENDPOINTS)('$label → 500 when service throws', async ({ method, suffix, svcKey, body }) => {
+    seedMember('owner')
+    ;(svcSpies as any)[svcKey].mockImplementationOnce(async () => {
+      throw new Error('boom')
+    })
+    const res = await call(method, PATH(suffix), body)
+    expect(res.status).toBe(500)
+    expect(res.body.error.code).toBe('cost_analytics_failed')
+    expect(res.body.error.message).toBe('boom')
+  })
+
+  test.each(ADMIN_CATCH_ENDPOINTS)('$label → 500 when service throws', async ({ method, suffix, svcKey, body }) => {
+    seedMember('admin')
+    ;(svcSpies as any)[svcKey].mockImplementationOnce(async () => {
+      throw new Error('boom')
+    })
+    const res = await call(method, PATH(suffix), body)
+    expect(res.status).toBe(500)
+    expect(res.body.error.code).toBe('cost_analytics_failed')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// POST /agent-eval-sets — non-string description / non-boolean enabled
+// (closes the ternary-undefined arms at L447-448 + L453-454)
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('POST /agent-eval-sets — body type normalization', () => {
+  test('non-string description rejected as bad_request (closes desc ternary undefined arm)', async () => {
+    seedMember('admin')
+    const res = await call('POST', PATH('agent-eval-sets'), {
+      agentType: 'main', name: 'N', description: 123, examples: [{ a: 1 }],
+    })
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('bad_request')
+  })
+
+  test('non-boolean enabled rejected as bad_request (closes enabled ternary undefined arm)', async () => {
+    seedMember('admin')
+    const res = await call('POST', PATH('agent-eval-sets'), {
+      agentType: 'main', name: 'N', enabled: 'yes', examples: [{ a: 1 }],
+    })
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('bad_request')
+  })
+})

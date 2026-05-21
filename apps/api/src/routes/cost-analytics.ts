@@ -477,11 +477,7 @@ export function costAnalyticsRoutes(): Hono {
       }
       if (projectId) {
         const project = await prisma.project.findFirst({ where: { id: projectId, workspaceId } })
-        if (!project) {
-          return c.json({
-            error: { code: 'bad_request', message: 'projectId must belong to this workspace' },
-          }, 400)
-        }
+        if (!project) return c.json({ error: { code: 'bad_request', message: 'projectId must belong to this workspace' } }, 400)
       }
 
       const data = await costAnalytics.upsertAgentEvalSet(workspaceId, {

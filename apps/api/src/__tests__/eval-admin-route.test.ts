@@ -138,6 +138,10 @@ const prismaMock = {
     },
   },
   evalRunResult: {
+    findFirst: async ({ where, select: _select }: any) => {
+      const hit = results.find((r) => r.runId === where.runId && r.evalId === where.evalId)
+      return hit ? { log: hit.log ?? null } : null
+    },
     findMany: async ({ where }: any) => results.filter((r) => r.runId === where.runId),
     create: async ({ data }: any) => { results.push(data); return data },
     deleteMany: async ({ where }: any) => {
@@ -612,5 +616,208 @@ describe('evalInternalRoutes()', () => {
   test('POST /evals/:id/fail 401 on bad secret', async () => {
     const res = await authedReq('/evals/r/fail', { error: 'x' }, 'wrong')
     expect(res.status).toBe(401)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// gap-closing: phase-3 holdouts in eval-admin.ts
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('GET /runs/:id/log/:evalId (L348-360)', () => {
+  test('404 when no result row matches', async () => {
+    runs.set('r1', makeRun({ id: 'r1' }))
+    const res = await admin.request('/runs/r1/log/eval_x')
+    expect(res.status).toBe(404)
+    expect((await res.json()).error).toMatch(/Log not found/)
+  })
+
+  test('404 when result exists but log field is null', async () => {
+    runs.set('r1', makeRun({ id: 'r1' }))
+    results.push({ runId: 'r1', evalId: 'eval_x', log: null })
+    const res = await admin.request('/runs/r1/log/eval_x')
+    expect(res.status).toBe(404)
+  })
+
+  test('200 returns log content when present', async () => {
+    runs.set('r1', makeRun({ id: 'r1' }))
+    results.push({ runId: 'r1', evalId: 'eval_x', log: 'hello log' })
+    const res = await admin.request('/runs/r1/log/eval_x')
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data).toEqual({ evalId: 'eval_x', content: 'hello log' })
+  })
+})
+
+describe('GET /runs/:id — K8s-done synthesis + isRunning summary (L305-313, L324-330)', () => {
+  test('synthesizes completion when isKubernetes and getEvalJobStatus says succeeded (L306-313)', async () => {
+    process.env.KUBERNETES_SERVICE_HOST = 'k8s'
+    const r = makeRun({ id: 'rk', status: 'running', jobName: 'job-rk' })
+    runs.set(r.id, r)
+    // Seed at least one result so synthesizeCompletionFromResults has data.
+    results.push({
+      runId: r.id, evalId: 'e1', score: 1, maxScore: 1, passed: true,
+      durationMs: 10, category: 'core', name: 'e1', tokens: null,
+      toolCallCount: 0, failedToolCalls: 0, iterations: 0, log: null,
+    })
+    evalJobMgr.getEvalJobStatus.mockImplementation(async () => 'succeeded')
+    const res = await admin.request(`/runs/${r.id}`)
+    expect(res.status).toBe(200)
+  })
+
+  test('synthesizes summary from progress array on a still-running run (L324-330)', async () => {
+    const r = makeRun({
+      id: 'rp', status: 'running',
+      progress: [
+        { passed: true,  score: 3, max: 5 },
+        { passed: false, score: 1, max: 5 },
+        { passed: true,  score: 5, max: 5 },
+      ],
+      summary: null,
+    })
+    runs.set(r.id, r)
+    const res = await admin.request(`/runs/${r.id}`)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data.summary.total).toBe(3)
+    expect(body.data.summary.passed).toBe(2)
+    expect(body.data.summary.failed).toBe(1)
+    expect(body.data.summary.totalPoints).toBe(9)
+    expect(body.data.summary.maxPoints).toBe(15)
+  })
+})
+
+describe('isK8sJobDone catch arm (L61-62)', () => {
+  test('returns "running" when getEvalJobStatus throws', async () => {
+    process.env.KUBERNETES_SERVICE_HOST = 'k8s'
+    const r = makeRun({ id: 'rt', status: 'running', jobName: 'job-rt' })
+    runs.set(r.id, r)
+    evalJobMgr.getEvalJobStatus.mockImplementation(async () => {
+      throw new Error('k8s api offline')
+    })
+    // The /runs/:id endpoint calls isK8sJobDone -> getEvalJobStatus throws
+    // -> isK8sJobDone catches -> returns 'running' -> the if at L305 is false
+    // -> no synthesis. Net effect: 200 with status still running.
+    const res = await admin.request(`/runs/${r.id}`)
+    expect(res.status).toBe(200)
+    expect((await res.json()).data.status).toBe('running')
+  })
+})
+
+describe('POST /runs/trigger — child stdout/stderr/error/exit handlers (L803-816)', () => {
+  test('local spawn handlers swallow stdout/stderr lines + exit codes', async () => {
+    const origLog = console.log
+    const origErr = console.error
+    const logs: any[][] = []
+    const errs: any[][] = []
+    console.log = (...a: any[]) => { logs.push(a) }
+    console.error = (...a: any[]) => { errs.push(a) }
+    try {
+      const res = await admin.request('/runs/trigger', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ track: 'agentic', model: 'sonnet' }),
+      })
+      expect(res.status).toBe(200)
+      const child = lastSpawn!
+      child.stdout.emit('data', Buffer.from('line1\nline2\n'))
+      child.stderr.emit('data', Buffer.from('errA\nerrB\n'))
+      child.emit('error', new Error('spawn ENOENT'))
+      child.emit('exit', 1, null)
+      child.emit('exit', 0, null)
+      expect(logs.some((a) => String(a[0]).includes('line1'))).toBe(true)
+      expect(errs.some((a) => String(a[0]).includes('errA'))).toBe(true)
+      expect(errs.some((a) => String(a[0]).includes('Failed to spawn'))).toBe(true)
+      expect(errs.some((a) => String(a[0]).includes('Eval process exited: code=1'))).toBe(true)
+    } finally {
+      console.log = origLog
+      console.error = origErr
+    }
+  })
+})
+
+describe('criteriaResults map arrow (L1005-1011, L1066-1071) + result-create catch (L1018-1020)', () => {
+  function authedReq(path: string, body: any, secret = 'test-secret') {
+    return internal.request(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Authorization: `Bearer ${secret}` },
+      body: JSON.stringify(body),
+    })
+  }
+
+  test('/evals/:id/result maps non-empty criteriaResults (closes L1005-1011)', async () => {
+    runs.set('rcm', makeRun({ id: 'rcm', status: 'running' }))
+    await authedReq('/evals/rcm/result', {
+      result: {
+        eval: { id: 'e_crit', name: 'crit', category: 'core', level: 1 },
+        passed: true, score: 2, maxScore: 2, percentage: 100,
+        timing: { startTime: 0, endTime: 50, durationMs: 50 },
+        metrics: { tokens: null, toolCallCount: 0, failedToolCalls: 0, iterations: 0 },
+        phaseScores: null,
+        criteriaResults: [
+          { criterion: { description: 'A', phase: 'p1', points: 1 }, pointsEarned: 1, passed: true },
+          { criterion: { description: 'B', phase: 'p2', points: 1 }, pointsEarned: 0, passed: false },
+        ],
+        triggeredAntiPatterns: [],
+      },
+      log: 'l',
+    })
+    expect(results).toHaveLength(1)
+    expect(results[0].criteria).toHaveLength(2)
+    expect(results[0].criteria[0]).toEqual({ description: 'A', phase: 'p1', points: 1, pointsEarned: 1, passed: true })
+    expect(results[0].criteria[1].pointsEarned).toBe(0)
+  })
+
+  test('/evals/:id/result catches prisma create failure (closes L1018-1020)', async () => {
+    runs.set('rcf', makeRun({ id: 'rcf', status: 'running' }))
+    const origErr = console.error
+    const errs: any[][] = []
+    console.error = (...a: any[]) => { errs.push(a) }
+    const origCreate = prismaMock.evalRunResult.create
+    prismaMock.evalRunResult.create = (async () => { throw new Error('db boom') }) as any
+    try {
+      const res = await authedReq('/evals/rcf/result', {
+        result: {
+          eval: { id: 'e_boom', name: 'b', category: 'core', level: 1 },
+          passed: false, score: 0, maxScore: 1, percentage: 0,
+          timing: { startTime: 0, endTime: 1, durationMs: 1 },
+          metrics: { tokens: null, toolCallCount: 0, failedToolCalls: 0, iterations: 0 },
+          phaseScores: null, criteriaResults: [], triggeredAntiPatterns: [],
+        },
+        log: null,
+      })
+      expect(res.status).toBe(200)
+      expect(errs.some((a) => String(a[0]).includes('Failed to create result for e_boom'))).toBe(true)
+    } finally {
+      prismaMock.evalRunResult.create = origCreate
+      console.error = origErr
+    }
+  })
+
+  test('/evals/:id/complete maps non-empty criteriaResults inside results array (closes L1066-1071)', async () => {
+    runs.set('rcc', makeRun({ id: 'rcc', status: 'running' }))
+    await authedReq('/evals/rcc/complete', {
+      suite: {
+        name: 'agentic', model: 'sonnet', timestamp: new Date().toISOString(),
+        summary: { total: 1, passed: 1, failed: 0 },
+        cost: { totalCost: 0.1 },
+        byCategory: {},
+        results: [{
+          eval: { id: 'e_crit2', name: 'c', category: 'core' },
+          passed: true, score: 1, maxScore: 1, percentage: 100,
+          timing: { durationMs: 10 },
+          metrics: { tokens: null, toolCallCount: 0, failedToolCalls: 0, iterations: 0 },
+          phaseScores: null,
+          criteriaResults: [
+            { criterion: { description: 'X', phase: 'p', points: 2 }, pointsEarned: 2, passed: true },
+          ],
+          triggeredAntiPatterns: [],
+        }],
+      },
+      logs: { e_crit2: 'log here' },
+    })
+    expect(results).toHaveLength(1)
+    expect(results[0].criteria).toEqual([
+      { description: 'X', phase: 'p', points: 2, pointsEarned: 2, passed: true },
+    ])
   })
 })

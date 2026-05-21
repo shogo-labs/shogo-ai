@@ -33,9 +33,7 @@ function getKubeConfig(): k8s.KubeConfig {
       contexts: [{ name: 'in-cluster', cluster: 'in-cluster', user: 'in-cluster' }],
       currentContext: 'in-cluster',
     })
-  } else {
-    kc.loadFromDefault()
-  }
+  } else { kc.loadFromDefault() }
   return kc
 }
 

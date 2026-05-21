@@ -3,6 +3,17 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 
+// Capture the orphan-GC setInterval callback BEFORE the module is imported
+// below. The module schedules a periodic orphan-session sweep at import-time;
+// the stub lets the test drive that callback synchronously. Same module-
+// load-capture-via-dynamic-import pattern as waves 12 + 22.
+let capturedGcCb: (() => void) | null = null
+const realSetInterval = globalThis.setInterval
+;(globalThis as any).setInterval = (cb: () => void, _ms: number) => {
+  capturedGcCb = cb
+  return 9999 as any
+}
+
 // Mocks must be installed before importing the module under test.
 let calcImpl = (inT: number, outT: number, _model: string, cIn = 0, cWr = 0) => ({
   rawUsd: (inT + outT + cIn + cWr) * 0.001,
@@ -39,6 +50,8 @@ const {
   setQualitySignals,
   closeSession,
 } = await import('../proxy-billing-session')
+
+;(globalThis as any).setInterval = realSetInterval
 
 const origConsole = { log: console.log, warn: console.warn, error: console.error }
 const logs: { log: any[][]; warn: any[][]; error: any[][] } = { log: [], warn: [], error: [] }
@@ -98,6 +111,22 @@ describe('openSession + hasSession', () => {
     openSession('p1', 'w1', 'u1', 'cA')
     openSession('p1', 'w2', 'u2', 'cA')
     expect(logs.error.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('swallows closeSession failure when overwriting an existing session (closes the inline .catch arrow at L109)', async () => {
+    openSession('p1', 'w1', 'u1')
+    accumulateUsage('p1', 'sonnet', 10, 20)
+    const origCalc = calcImpl
+    calcImpl = (() => { throw new Error('calc-explode-overwrite') }) as any
+    try {
+      // Second open with same legacy key triggers the inline
+      // `closeSession(...).catch(() => {})` branch, which must not throw.
+      expect(() => openSession('p1', 'w2', 'u2')).not.toThrow()
+      await new Promise((r) => setImmediate(r))
+      await new Promise((r) => setImmediate(r))
+    } finally {
+      calcImpl = origCalc
+    }
   })
 })
 
@@ -255,5 +284,69 @@ describe('closeSession', () => {
     expect(r.billedUsd).toBeGreaterThan(0)
     expect(r.totalTokens).toBe(0)
     expect(consumeUsageCalls).toHaveLength(1)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// Orphan-session GC (module-load setInterval callback)
+// Closes L72-82 + the 2 uncovered functions (the setInterval arrow and
+// its inline .catch arrow).
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('orphan-session GC', () => {
+  const origDateNow = Date.now
+  afterEach(() => {
+    Date.now = origDateNow
+  })
+
+  it('captured the setInterval callback at module load', () => {
+    expect(typeof capturedGcCb).toBe('function')
+  })
+
+  it('no-op when no sessions are open', () => {
+    expect(() => capturedGcCb!()).not.toThrow()
+  })
+
+  it('no-op when sessions exist but none are past the timeout', async () => {
+    openSession('p_fresh', 'ws_x', 'u_x', 'cs_fresh')
+    const before = logs.warn.length
+    capturedGcCb!()
+    expect(logs.warn.length).toBe(before)
+    await closeSession('p_fresh', { chatSessionId: 'cs_fresh' })
+  })
+
+  it('flushes orphaned sessions and logs a warning (closes L72-80 happy path)', async () => {
+    openSession('p_old', 'ws_x', 'u_x', 'cs_old')
+    Date.now = () => origDateNow() + 11 * 60 * 1000
+    capturedGcCb!()
+    const orphanLogs = logs.warn.filter((a) =>
+      String(a[0]).includes('Flushing orphaned session for p_old:cs_old'),
+    )
+    expect(orphanLogs.length).toBeGreaterThanOrEqual(1)
+    await new Promise((r) => setImmediate(r))
+  })
+
+  it('inline .catch arrow fires when closeSession rejects (closes L77-79 + the catch-arrow function)', async () => {
+    openSession('p_boom', 'ws_x', 'u_x', 'cs_boom')
+    accumulateUsage('p_boom', 'sonnet', 100, 200, 0, 0, 'cs_boom')
+    Date.now = () => origDateNow() + 11 * 60 * 1000
+    // closeSession internally catches consumeUsage failures, so reject it
+    // upstream by making calculateUsageCost throw synchronously — that
+    // unhandled throw propagates out of closeSession and the inline
+    // .catch arrow at L77 finally has something to handle.
+    const origCalc = calcImpl
+    calcImpl = (() => { throw new Error('calc-explode') }) as any
+    try {
+      capturedGcCb!()
+      await new Promise((r) => setImmediate(r))
+      await new Promise((r) => setImmediate(r))
+      await new Promise((r) => setImmediate(r))
+      const errMsgs = logs.error.filter((a) =>
+        String(a[0]).includes('Failed to flush orphaned session'),
+      )
+      expect(errMsgs.length).toBeGreaterThanOrEqual(1)
+    } finally {
+      calcImpl = origCalc
+    }
   })
 })

@@ -289,3 +289,81 @@ describe('port allocation', () => {
     expect(b1.port).not.toBe(b2.port)
   }, 10_000)
 })
+
+// ═══════════════════════════════════════════════════════════════════════
+// Stream + lifecycle event handlers (stderr / error)
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('child stream + lifecycle handlers (start)', () => {
+  test('stderr "Started on" flips status to running', async () => {
+    seedProject('p_stderr')
+    const startP = router.request('/projects/p_stderr/database/start', { method: 'POST' })
+    await new Promise((r) => setTimeout(r, 10))
+    lastSpawned!.stderr.emit('data', Buffer.from('Started on http://localhost:9999'))
+    lastSpawned!.stderr.emit('data', Buffer.from('a non-matching log line'))
+    const res = await startP
+    expect(res.status).toBe(200)
+  }, 10_000)
+
+  test('child "error" event sets instance.status to error', async () => {
+    seedProject('p_err')
+    const startP = router.request('/projects/p_err/database/start', { method: 'POST' })
+    await new Promise((r) => setTimeout(r, 10))
+    lastSpawned!.exitCode = 1
+    lastSpawned!.emit('error', new Error('spawn ENOENT'))
+    await startP
+    const status = await (
+      await router.request('/projects/p_err/database/status')
+    ).json()
+    expect(status.status).toBe('error')
+  }, 10_000)
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// /stop: catch arm when kill throws
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('POST /database/stop kill error path', () => {
+  test('catches synchronous throw from process.kill', async () => {
+    seedProject('p_killthrow')
+    await router.request('/projects/p_killthrow/database/start', { method: 'POST' })
+    const child = lastSpawned!
+    child.kill = mock(() => {
+      throw new Error('ESRCH')
+    }) as any
+    const res = await router.request('/projects/p_killthrow/database/stop', {
+      method: 'POST',
+    })
+    expect(res.status).toBe(200)
+    expect((await res.json()).success).toBe(true)
+  }, 10_000)
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// /url auto-start: stderr + error handlers on the second spawn block
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('GET /database/url auto-start stream + lifecycle handlers', () => {
+  test('auto-start stderr "Started on" flips status to running', async () => {
+    seedProject('p_url_stderr')
+    const urlP = router.request('/projects/p_url_stderr/database/url')
+    await new Promise((r) => setTimeout(r, 10))
+    lastSpawned!.stderr.emit('data', Buffer.from('Started on http://localhost:9000'))
+    lastSpawned!.stderr.emit('data', Buffer.from('noise'))
+    const res = await urlP
+    expect(res.status).toBe(200)
+  }, 10_000)
+
+  test('auto-start child "error" event sets instance.status to error', async () => {
+    seedProject('p_url_err')
+    const urlP = router.request('/projects/p_url_err/database/url')
+    await new Promise((r) => setTimeout(r, 10))
+    lastSpawned!.exitCode = 1
+    lastSpawned!.emit('error', new Error('spawn EACCES'))
+    await urlP
+    const status = await (
+      await router.request('/projects/p_url_err/database/status')
+    ).json()
+    expect(status.status).toBe('error')
+  }, 10_000)
+})

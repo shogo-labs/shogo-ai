@@ -22,6 +22,19 @@
 import { describe, test, expect, beforeAll, beforeEach, afterAll, mock } from 'bun:test'
 import { Hono } from 'hono'
 
+// @shogo/model-catalog re-exports from @shogo-ai/sdk/model-catalog which has no
+// built dist on this branch — stub before the dynamic import chain loads it.
+mock.module('@shogo/model-catalog', () => ({
+  getModelTier: (_modelId: string) => 'standard',
+  resolveModelId: (mode: string) => mode || 'claude-haiku-4-5',
+  MODEL_CATALOG: {},
+  getModelEntry: (_id: string) => null,
+  MODEL_DOLLAR_COSTS: {} as Record<string, any>,
+  calculateDollarCost: () => 0,
+  getModelBillingModel: (id: string) => id,
+  resolveAgentModeDefault: (mode: string) => mode,
+}))
+
 process.env.AI_PROXY_SECRET = process.env.AI_PROXY_SECRET ?? 'test-secret'
 delete process.env.KUBERNETES_SERVICE_HOST
 delete process.env.SHOGO_VM_ISOLATION
@@ -61,6 +74,7 @@ mock.module('../services/git.service', () => ({
 
 mock.module('../services/checkpoint.service', () => ({
   createAutoCheckpoint: async () => ({ id: 'ck-1' }),
+  createCheckpoint: async () => ({ id: 'ck-1' }),
 }))
 
 mock.module('../lib/proxy-billing-session', () => ({
