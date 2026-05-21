@@ -713,12 +713,21 @@ describe('saveCheckpointMetadata / readCheckpointMetadata', () => {
 
   it('skips mkdir when .shogo already exists', async () => {
     mkdirSync(join(ws, '.shogo'))
-    const before = statSync(join(ws, '.shogo')).ctimeMs
+    // Drop a sentinel inside .shogo so we can prove the directory wasn't
+    // recreated (which would either wipe the file or change the dir's
+    // inode). The earlier ctimeMs comparison was racy — writing
+    // checkpoint.json inside the dir bumps the parent's ctime on Linux
+    // (metadata change) by ~1ms even when mkdirSync is never called.
+    // Asserting on inode + sentinel survival captures the real
+    // idempotency guarantee without depending on sub-ms wall clock.
+    writeFileSync(join(ws, '.shogo', 'sentinel.txt'), 'preserved')
+    const inoBefore = statSync(join(ws, '.shogo')).ino
     await svc.saveCheckpointMetadata(ws, {
       id: 'cp_2', createdAt: new Date(), includesDb: false,
     })
-    const after = statSync(join(ws, '.shogo')).ctimeMs
-    expect(after).toBe(before)
+    expect(statSync(join(ws, '.shogo')).ino).toBe(inoBefore)
+    expect(readFileSync(join(ws, '.shogo', 'sentinel.txt'), 'utf8')).toBe('preserved')
+    expect(existsSync(join(ws, '.shogo', 'checkpoint.json'))).toBe(true)
   })
 
   it('returns null when checkpoint.json is malformed JSON', async () => {
