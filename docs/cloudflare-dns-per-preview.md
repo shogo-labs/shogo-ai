@@ -24,22 +24,37 @@ The flat `*.shogo.ai` wildcard stays in place as a fallback.
   `KnativeProjectManager.createPreviewDomainMapping` and
   `deletePreviewDomainMapping`. Failures are logged and swallowed so
   pod lifecycle never depends on Cloudflare.
-- **Tests**: `apps/api/src/lib/__tests__/cloudflare-dns.test.ts` —
-  covers no-op mode, create, idempotent no-write, patch on drift,
-  delete, and error-swallowing.
-- **Config** (per overlay): `KOURIER_LB_IP`, `CF_ZONE_ID`,
-  `CF_API_TOKEN` (via `cloudflare-dns` secret). Helper is inert when
-  any of the three is missing, so staging / local dev are unaffected.
-
-### Region → LB IP table
-
-| Overlay | `KOURIER_LB_IP` |
-| --- | --- |
-| `production-us` | `152.70.192.220` |
-| `production-eu` | `79.76.126.115` |
-| `production-india` | `161.118.170.159` |
+- **LB IP discovery**: `apps/api/src/lib/kourier-lb-discovery.ts` —
+  reads `Service kourier/kourier-system` on first call and returns
+  `.status.loadBalancer.ingress[0].ip`. The result is cached for the
+  lifetime of the API pod. RBAC: each production overlay grants the
+  api ServiceAccount a `shogo-api-kourier-lb-reader` Role scoped to
+  the single named Service.
+- **Tests**: `apps/api/src/lib/__tests__/cloudflare-dns.test.ts` and
+  `apps/api/src/__tests__/cloudflare-dns.test.ts` — cover no-op mode,
+  create, idempotent no-write, patch on drift, delete, error
+  swallowing, **and** the LB IP discovery fallback (env override,
+  cache reuse, concurrent first-call coalescing, RBAC denial → safe
+  no-op, missing-ingress → safe no-op).
+- **Config** (per overlay): `CF_ZONE_ID` + `CF_API_TOKEN` (via the
+  `cloudflare-dns` secret). `KOURIER_LB_IP` is **optional**: when
+  unset, the helper auto-discovers it from the Kourier Service.
+  Helper is inert when either `CF_*` value is missing, so staging /
+  local dev are unaffected.
 
 Zone ID (same for every region): `c2d56140e7de85a4ac5ab5bea8e7434f`.
+
+### Region → LB IP reference
+
+These are reported for ops convenience — they are no longer the source
+of truth for the helper, which reads them at startup directly from
+each cluster's `kourier-system/kourier` Service.
+
+| Region | Kourier LB IP |
+| --- | --- |
+| `production-us` (us-ashburn-1) | `152.70.192.220` |
+| `production-eu` (eu-frankfurt-1) | `79.76.126.115` |
+| `production-india` (ap-mumbai-1) | `161.118.170.159` |
 
 ## Rollout
 
@@ -81,8 +96,15 @@ Standard deploy; the overlays already reference the secret
 After deploy, create or load a project and confirm logs:
 
 ```
+[cloudflare-dns] Discovered Kourier LB IP: <region LB IP>
 [cloudflare-dns] Created preview--<id>.shogo.ai -> <region LB IP> (proxied)
 ```
+
+(The first line appears once per pod, on first preview claim. If you
+see `[cloudflare-dns] Kourier LB discovery failed` instead, the
+api ServiceAccount likely doesn't have the
+`shogo-api-kourier-lb-reader` Role in `kourier-system` — re-apply the
+overlay.)
 
 Then confirm DNS resolution through Cloudflare's proxy:
 

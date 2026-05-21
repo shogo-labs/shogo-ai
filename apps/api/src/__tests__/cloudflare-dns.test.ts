@@ -16,6 +16,7 @@
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test'
 import {
   _resetCloudflareDnsConfigForTest,
+  _setKourierDiscovererForTest,
   deletePreviewDnsRecord,
   getCloudflareDnsConfig,
   upsertPreviewDnsRecord,
@@ -32,6 +33,9 @@ beforeEach(() => {
     delete process.env[k]
   }
   _resetCloudflareDnsConfigForTest()
+  // Default: discovery returns null (no LB ingress) so tests that don't
+  // explicitly set KOURIER_LB_IP don't accidentally hit the real K8s API.
+  _setKourierDiscovererForTest(async () => null)
 })
 
 afterEach(() => {
@@ -40,6 +44,7 @@ afterEach(() => {
     else process.env[k] = SAVED[k]
   }
   _resetCloudflareDnsConfigForTest()
+  _setKourierDiscovererForTest(null)
 })
 
 // ─── fake fetch helpers ───────────────────────────────────────────────────
@@ -83,27 +88,28 @@ function setEnv(over: Partial<Record<(typeof ENV_KEYS)[number], string>> = {}) {
 // ─── getCloudflareDnsConfig ───────────────────────────────────────────────
 
 describe('getCloudflareDnsConfig', () => {
-  test('returns null when CF_API_TOKEN is missing', () => {
+  test('returns null when CF_API_TOKEN is missing', async () => {
     process.env.CF_ZONE_ID = 'z'
     process.env.KOURIER_LB_IP = '1.1.1.1'
-    expect(getCloudflareDnsConfig()).toBeNull()
+    expect(await getCloudflareDnsConfig()).toBeNull()
   })
 
-  test('returns null when CF_ZONE_ID is missing', () => {
+  test('returns null when CF_ZONE_ID is missing', async () => {
     process.env.CF_API_TOKEN = 't'
     process.env.KOURIER_LB_IP = '1.1.1.1'
-    expect(getCloudflareDnsConfig()).toBeNull()
+    expect(await getCloudflareDnsConfig()).toBeNull()
   })
 
-  test('returns null when KOURIER_LB_IP is missing', () => {
+  test('returns null when KOURIER_LB_IP is missing AND discovery returns null', async () => {
     process.env.CF_API_TOKEN = 't'
     process.env.CF_ZONE_ID = 'z'
-    expect(getCloudflareDnsConfig()).toBeNull()
+    // Default discoverer (set in beforeEach) returns null.
+    expect(await getCloudflareDnsConfig()).toBeNull()
   })
 
-  test('returns config when all three env vars are set', () => {
+  test('returns config when all three env vars are set', async () => {
     setEnv()
-    const cfg = getCloudflareDnsConfig()
+    const cfg = await getCloudflareDnsConfig()
     expect(cfg).toEqual({
       apiToken: 'cf-token',
       zoneId: 'zone-abc',
@@ -112,38 +118,169 @@ describe('getCloudflareDnsConfig', () => {
     })
   })
 
-  test('honors CF_DNS_COMMENT override', () => {
+  test('honors CF_DNS_COMMENT override', async () => {
     setEnv({ CF_DNS_COMMENT: 'staging-env' })
-    expect(getCloudflareDnsConfig()?.comment).toBe('staging-env')
+    expect((await getCloudflareDnsConfig())?.comment).toBe('staging-env')
   })
 
-  test('caches the result — flipping env after the first call does NOT change the answer', () => {
+  test('caches the result — flipping env after the first call does NOT change the answer', async () => {
     setEnv()
-    const first = getCloudflareDnsConfig()
+    const first = await getCloudflareDnsConfig()
     expect(first).not.toBeNull()
     delete process.env.CF_API_TOKEN
     // Cache lives until _resetCloudflareDnsConfigForTest fires (or process restart).
-    expect(getCloudflareDnsConfig()).toBe(first as any)
+    expect(await getCloudflareDnsConfig()).toBe(first as any)
   })
 
-  test('_resetCloudflareDnsConfigForTest re-reads env on next call', () => {
+  test('_resetCloudflareDnsConfigForTest re-reads env on next call', async () => {
     setEnv()
-    expect(getCloudflareDnsConfig()).not.toBeNull()
+    expect(await getCloudflareDnsConfig()).not.toBeNull()
     delete process.env.CF_API_TOKEN
     _resetCloudflareDnsConfigForTest()
-    expect(getCloudflareDnsConfig()).toBeNull()
+    expect(await getCloudflareDnsConfig()).toBeNull()
   })
 
-  test('caches null too — once disabled, stays disabled until reset', () => {
+  test('caches null too — once disabled, stays disabled until reset', async () => {
     // No env set → null.
-    expect(getCloudflareDnsConfig()).toBeNull()
+    expect(await getCloudflareDnsConfig()).toBeNull()
     // Set env directly (NOT via setEnv — that helper resets the cache).
     process.env.CF_API_TOKEN = 'cf-token'
     process.env.CF_ZONE_ID = 'zone-abc'
     process.env.KOURIER_LB_IP = '10.0.0.1'
-    expect(getCloudflareDnsConfig()).toBeNull() // cache still says null
+    expect(await getCloudflareDnsConfig()).toBeNull() // cache still says null
     _resetCloudflareDnsConfigForTest()
-    expect(getCloudflareDnsConfig()).not.toBeNull()
+    expect(await getCloudflareDnsConfig()).not.toBeNull()
+  })
+})
+
+// ─── Kourier LB IP discovery fallback ─────────────────────────────────────
+
+describe('getCloudflareDnsConfig — Kourier LB discovery', () => {
+  test('uses discoverer when CF env present but KOURIER_LB_IP env missing', async () => {
+    process.env.CF_API_TOKEN = 'cf-token'
+    process.env.CF_ZONE_ID = 'zone-abc'
+    delete process.env.KOURIER_LB_IP
+    _setKourierDiscovererForTest(async () => '203.0.113.42')
+    _resetCloudflareDnsConfigForTest()
+
+    const cfg = await getCloudflareDnsConfig()
+    expect(cfg).toEqual({
+      apiToken: 'cf-token',
+      zoneId: 'zone-abc',
+      lbIp: '203.0.113.42',
+      comment: 'shogo-preview (managed by api)',
+    })
+  })
+
+  test('prefers env over discovery — env is the operator escape hatch', async () => {
+    process.env.CF_API_TOKEN = 'cf-token'
+    process.env.CF_ZONE_ID = 'zone-abc'
+    process.env.KOURIER_LB_IP = '10.0.0.1'
+    let discovererCalled = false
+    _setKourierDiscovererForTest(async () => {
+      discovererCalled = true
+      return '203.0.113.42'
+    })
+    _resetCloudflareDnsConfigForTest()
+
+    const cfg = await getCloudflareDnsConfig()
+    expect(cfg?.lbIp).toBe('10.0.0.1')
+    expect(discovererCalled).toBe(false)
+  })
+
+  test('disables helper when discovery throws (e.g. RBAC denial)', async () => {
+    process.env.CF_API_TOKEN = 'cf-token'
+    process.env.CF_ZONE_ID = 'zone-abc'
+    delete process.env.KOURIER_LB_IP
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      _setKourierDiscovererForTest(async () => {
+        throw new Error('Forbidden: services "kourier" is forbidden')
+      })
+      _resetCloudflareDnsConfigForTest()
+
+      expect(await getCloudflareDnsConfig()).toBeNull()
+      const joined = errSpy.mock.calls.map((c) => c.join(' ')).join('\n')
+      expect(joined).toContain('Kourier LB discovery failed')
+      expect(joined).toContain('Forbidden')
+    } finally {
+      errSpy.mockRestore()
+    }
+  })
+
+  test('disables helper when service exists but has no LB ingress yet', async () => {
+    process.env.CF_API_TOKEN = 'cf-token'
+    process.env.CF_ZONE_ID = 'zone-abc'
+    delete process.env.KOURIER_LB_IP
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      _setKourierDiscovererForTest(async () => null)
+      _resetCloudflareDnsConfigForTest()
+
+      expect(await getCloudflareDnsConfig()).toBeNull()
+      const joined = errSpy.mock.calls.map((c) => c.join(' ')).join('\n')
+      expect(joined).toContain('no loadBalancer.ingress')
+    } finally {
+      errSpy.mockRestore()
+    }
+  })
+
+  test('only invokes discoverer once across many config calls (caches resolved IP)', async () => {
+    process.env.CF_API_TOKEN = 'cf-token'
+    process.env.CF_ZONE_ID = 'zone-abc'
+    delete process.env.KOURIER_LB_IP
+    let calls = 0
+    _setKourierDiscovererForTest(async () => {
+      calls++
+      return '203.0.113.7'
+    })
+    _resetCloudflareDnsConfigForTest()
+
+    for (let i = 0; i < 5; i++) {
+      const cfg = await getCloudflareDnsConfig()
+      expect(cfg?.lbIp).toBe('203.0.113.7')
+    }
+    expect(calls).toBe(1)
+  })
+
+  test('concurrent first-call requests share a single in-flight discovery', async () => {
+    process.env.CF_API_TOKEN = 'cf-token'
+    process.env.CF_ZONE_ID = 'zone-abc'
+    delete process.env.KOURIER_LB_IP
+    let calls = 0
+    _setKourierDiscovererForTest(async () => {
+      calls++
+      await new Promise((r) => setTimeout(r, 5))
+      return '198.51.100.10'
+    })
+    _resetCloudflareDnsConfigForTest()
+
+    const [a, b, c] = await Promise.all([
+      getCloudflareDnsConfig(),
+      getCloudflareDnsConfig(),
+      getCloudflareDnsConfig(),
+    ])
+    expect(a?.lbIp).toBe('198.51.100.10')
+    expect(b?.lbIp).toBe('198.51.100.10')
+    expect(c?.lbIp).toBe('198.51.100.10')
+    // Only one in-flight discovery despite three concurrent callers — this
+    // is the property that makes the lazy-async pattern safe under burst
+    // load (e.g. many warm pods being claimed in parallel at pod startup).
+    expect(calls).toBe(1)
+  })
+
+  test('skips discovery entirely when CF env is missing — no kourier service read', async () => {
+    delete process.env.CF_API_TOKEN
+    delete process.env.CF_ZONE_ID
+    let called = false
+    _setKourierDiscovererForTest(async () => {
+      called = true
+      return '1.1.1.1'
+    })
+    _resetCloudflareDnsConfigForTest()
+
+    expect(await getCloudflareDnsConfig()).toBeNull()
+    expect(called).toBe(false)
   })
 })
 
@@ -164,7 +301,7 @@ describe('upsertPreviewDnsRecord', () => {
       if (call.method === 'GET') return { result: [] }
       return { result: { id: 'new-rec' } }
     })
-    const cfg = getCloudflareDnsConfig()!
+    const cfg = (await getCloudflareDnsConfig())!
     cfg.fetch = fetchImpl
 
     await upsertPreviewDnsRecord('preview--p1.shogo.ai')
@@ -195,7 +332,7 @@ describe('upsertPreviewDnsRecord', () => {
   test('uses the configured comment when set', async () => {
     setEnv({ CF_DNS_COMMENT: 'staging' })
     const { fetchImpl, calls } = makeFakeFetch(() => ({ result: [] }))
-    const cfg = getCloudflareDnsConfig()!
+    const cfg = (await getCloudflareDnsConfig())!
     cfg.fetch = fetchImpl
 
     await upsertPreviewDnsRecord('preview--p1.shogo.ai')
@@ -215,7 +352,7 @@ describe('upsertPreviewDnsRecord', () => {
         },
       ],
     }))
-    const cfg = getCloudflareDnsConfig()!
+    const cfg = (await getCloudflareDnsConfig())!
     cfg.fetch = fetchImpl
 
     await upsertPreviewDnsRecord('preview--p1.shogo.ai')
@@ -242,7 +379,7 @@ describe('upsertPreviewDnsRecord', () => {
       }
       return { result: { id: 'rec-1' } }
     })
-    const cfg = getCloudflareDnsConfig()!
+    const cfg = (await getCloudflareDnsConfig())!
     cfg.fetch = fetchImpl
 
     await upsertPreviewDnsRecord('preview--p1.shogo.ai')
@@ -271,7 +408,7 @@ describe('upsertPreviewDnsRecord', () => {
       }
       return { result: { id: 'rec-1' } }
     })
-    const cfg = getCloudflareDnsConfig()!
+    const cfg = (await getCloudflareDnsConfig())!
     cfg.fetch = fetchImpl
 
     await upsertPreviewDnsRecord('preview--p1.shogo.ai')
@@ -287,7 +424,7 @@ describe('upsertPreviewDnsRecord', () => {
         ok: false,
         errors: [{ code: 9109, message: 'Invalid token' }],
       }))
-      const cfg = getCloudflareDnsConfig()!
+      const cfg = (await getCloudflareDnsConfig())!
       cfg.fetch = fetchImpl
 
       await expect(upsertPreviewDnsRecord('preview--p1.shogo.ai')).resolves.toBeUndefined()
@@ -309,7 +446,7 @@ describe('upsertPreviewDnsRecord', () => {
         if (call.method === 'GET') return { result: [] }
         return { ok: false, errors: [{ code: 81057, message: 'Record already exists' }] }
       })
-      const cfg = getCloudflareDnsConfig()!
+      const cfg = (await getCloudflareDnsConfig())!
       cfg.fetch = fetchImpl
 
       await expect(upsertPreviewDnsRecord('preview--p2.shogo.ai')).resolves.toBeUndefined()
@@ -334,7 +471,7 @@ describe('upsertPreviewDnsRecord', () => {
         }
         return { ok: false, errors: [{ code: 81000, message: 'patch denied' }] }
       })
-      const cfg = getCloudflareDnsConfig()!
+      const cfg = (await getCloudflareDnsConfig())!
       cfg.fetch = fetchImpl
 
       await expect(upsertPreviewDnsRecord('preview--p3.shogo.ai')).resolves.toBeUndefined()
@@ -352,7 +489,7 @@ describe('upsertPreviewDnsRecord', () => {
       const thrower = mock(async () => {
         throw new Error('ECONNREFUSED')
       }) as unknown as typeof globalThis.fetch
-      const cfg = getCloudflareDnsConfig()!
+      const cfg = (await getCloudflareDnsConfig())!
       cfg.fetch = thrower
 
       await expect(upsertPreviewDnsRecord('preview--p4.shogo.ai')).resolves.toBeUndefined()
@@ -367,7 +504,7 @@ describe('upsertPreviewDnsRecord', () => {
   test('URL-encodes the hostname in the list query', async () => {
     setEnv()
     const { fetchImpl, calls } = makeFakeFetch(() => ({ result: [] }))
-    const cfg = getCloudflareDnsConfig()!
+    const cfg = (await getCloudflareDnsConfig())!
     cfg.fetch = fetchImpl
 
     await upsertPreviewDnsRecord('weird host.shogo.ai')
@@ -388,7 +525,7 @@ describe('deletePreviewDnsRecord', () => {
   test('no-op when the record does not exist (no DELETE issued)', async () => {
     setEnv()
     const { fetchImpl, calls } = makeFakeFetch(() => ({ result: [] }))
-    const cfg = getCloudflareDnsConfig()!
+    const cfg = (await getCloudflareDnsConfig())!
     cfg.fetch = fetchImpl
 
     await deletePreviewDnsRecord('preview--p1.shogo.ai')
@@ -414,7 +551,7 @@ describe('deletePreviewDnsRecord', () => {
       }
       return { result: { id: 'rec-42' } }
     })
-    const cfg = getCloudflareDnsConfig()!
+    const cfg = (await getCloudflareDnsConfig())!
     cfg.fetch = fetchImpl
 
     await deletePreviewDnsRecord('preview--p1.shogo.ai')
@@ -435,7 +572,7 @@ describe('deletePreviewDnsRecord', () => {
         ok: false,
         errors: [{ code: 7003, message: 'No such zone' }],
       }))
-      const cfg = getCloudflareDnsConfig()!
+      const cfg = (await getCloudflareDnsConfig())!
       cfg.fetch = fetchImpl
 
       await expect(deletePreviewDnsRecord('h.shogo.ai')).resolves.toBeUndefined()
@@ -461,7 +598,7 @@ describe('deletePreviewDnsRecord', () => {
         }
         return { ok: false, errors: [{ code: 81044, message: 'Record locked' }] }
       })
-      const cfg = getCloudflareDnsConfig()!
+      const cfg = (await getCloudflareDnsConfig())!
       cfg.fetch = fetchImpl
 
       await expect(deletePreviewDnsRecord('h.shogo.ai')).resolves.toBeUndefined()
@@ -479,7 +616,7 @@ describe('deletePreviewDnsRecord', () => {
       const thrower = mock(async () => {
         throw new Error('socket hang up')
       }) as unknown as typeof globalThis.fetch
-      const cfg = getCloudflareDnsConfig()!
+      const cfg = (await getCloudflareDnsConfig())!
       cfg.fetch = thrower
 
       await expect(deletePreviewDnsRecord('preview--zz.shogo.ai')).resolves.toBeUndefined()
