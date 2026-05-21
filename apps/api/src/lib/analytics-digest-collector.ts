@@ -152,8 +152,19 @@ export async function generateDigest(prisma: PrismaClient) {
   const now = new Date()
   const since = new Date(now.getTime() - 24 * 60 * 60 * 1000)
   const dateOnly = new Date(now.toISOString().split('T')[0])
+  // Region that produced this digest. Folded into the `analytics_digests`
+  // unique key so the daily cron in each region (`us-ashburn-1`,
+  // `eu-frankfurt-1`, `ap-mumbai-1`) writes its own row without colliding
+  // with sibling regions' rows after they replicate in via logical
+  // replication. Defaulting to `'unknown'` (rather than throwing) keeps
+  // local/dev/test runs working where REGION_ID isn't set — that string
+  // is distinct from every real region tag so it can't accidentally
+  // collide with a production row.
+  const region = process.env.REGION_ID || 'unknown'
 
-  console.log('[AnalyticsDigest] Generating digest for', dateOnly.toISOString().split('T')[0])
+  console.log(
+    `[AnalyticsDigest] Generating digest for ${dateOnly.toISOString().split('T')[0]} (region=${region})`,
+  )
 
   const [funnel, activityResult, templates, sourceData, convos] = await Promise.all([
     getUserFunnel('30d', true),
@@ -193,10 +204,11 @@ export async function generateDigest(prisma: PrismaClient) {
   }
 
   const digest = await prisma.analyticsDigest.upsert({
-    where: { date_period: { date: dateOnly, period: '24h' } },
+    where: { date_period_region: { date: dateOnly, period: '24h', region } },
     create: {
       date: dateOnly,
       period: '24h',
+      region,
       funnelSignups: funnel.signups,
       funnelOnboarded: funnel.onboarded,
       funnelCreatedProject: funnel.createdProject,

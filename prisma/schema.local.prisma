@@ -1240,6 +1240,11 @@ model AnalyticsDigest {
   id     String   @id @default(uuid())
   date   DateTime
   period String   @default("24h")
+  // Region that produced this digest. Mirrors the cloud schema so the
+  // unique constraint stays consistent across cloud (PG) and desktop
+  // (SQLite); desktop is single-region so the value is just a static
+  // tag (`desktop`) when/if the desktop app ever writes a digest.
+  region String
 
   funnelSignups        Int    @default(0)
   funnelOnboarded      Int    @default(0)
@@ -1262,7 +1267,7 @@ model AnalyticsDigest {
 
   createdAt DateTime @default(now())
 
-  @@unique([date, period])
+  @@unique([date, period, region])
   @@map("analytics_digests")
 }
 
