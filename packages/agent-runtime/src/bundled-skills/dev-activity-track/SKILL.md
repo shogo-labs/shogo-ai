@@ -26,7 +26,6 @@ When triggered, fetch developer activity from GitHub and build a dashboard:
    - KPIs: total commits today, PRs merged, reviews completed, active contributors
    - Table: per-developer breakdown (name, commits, PRs, reviews, lines changed)
    - Activity feed: chronological list of recent actions
-   - Use `canvas_api_schema` for activity log CRUD
 6. **Daily digest** — On morning heartbeat:
    - Compile previous day's full summary
    - Post to configured channel via `send_message`

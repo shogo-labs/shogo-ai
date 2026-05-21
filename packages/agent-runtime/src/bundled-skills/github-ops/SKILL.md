@@ -19,7 +19,6 @@ When triggered, check GitHub repos and build a triage dashboard:
    - KPIs: open PRs count, open issues count, CI passing/failing
    - Table: PR review queue (repo, title, author, age, CI status, reviewers)
    - Table: recent issues sorted by priority labels
-   - Use canvas_api_schema for PR tracking with status field (Open, Reviewed, Merged)
 4. **Alert** — For PRs open >2 days with no reviewer:
    - `send_message` to alert channel if configured
 5. **Persist** — Log findings to memory for trend tracking

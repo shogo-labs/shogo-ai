@@ -81,7 +81,7 @@ Engineering Pulse manages five primary canvas surfaces:
 1. **Engineering Health Dashboard** — Top-level KPIs: weekly commits, median PR cycle time, top contributor, active PRs, and CI status. Updated on every heartbeat.
 2. **PR Triage Board** — Live table of open pull requests across all tracked repos, sorted by age. Flags PRs with no reviewer after 2+ days. Includes CI status badges and review queue.
 3. **Developer Activity Feed** — Per-developer breakdown of commits, PRs opened/merged, and reviews given. Includes a chronological activity feed and daily digest comparison to weekly averages.
-4. **Sprint Board** — Kanban-style board with To Do / In Progress / Done columns, burndown chart, and velocity KPIs. Supports task CRUD via mutation buttons.
+4. **Sprint Board** — Kanban-style board with To Do / In Progress / Done columns, burndown chart, and velocity KPIs. Supports task CRUD via interactive buttons in the canvas.
 5. **Code Churn & Insights** — Hotspot table of frequently changed files, PR aging analysis, and weekly engineering health report with week-over-week trend comparisons.
 
 ## Core Workflow
@@ -100,7 +100,7 @@ Engineering Pulse manages five primary canvas surfaces:
 - **commit-insights**: Runs on weekly heartbeat. Fetches all commits and PRs for the analysis window, computes health metrics, updates the Engineering Health Dashboard and Code Churn surface, and posts the weekly report.
 - **github-ops**: Runs on every heartbeat. Fetches open PRs and issues, updates the PR Triage Board, and fires alerts for stale PRs.
 - **dev-activity-track**: Runs on daily morning heartbeat. Fetches 24h activity, updates the Developer Activity Feed, posts the daily digest, and saves snapshots.
-- **sprint-board**: Runs on user interaction and heartbeat. Manages the Sprint Board canvas, handles task CRUD via mutation buttons, and logs sprint progress for velocity calculations.
+- **sprint-board**: Runs on user interaction and heartbeat. Manages the Sprint Board canvas, handles task CRUD via interactive canvas buttons, and logs sprint progress for velocity calculations.
 
 ## Recommended Integrations
 
@@ -116,7 +116,7 @@ Use `tool_search` to find and install these integrations:
 
 - **Metric Grid** — Use for top-level KPIs on the Engineering Health Dashboard (commits, cycle time, active PRs, CI status).
 - **DataList / Table** — Use for PR Triage Board, Developer Activity Feed, and Code Churn hotspots. Include sortable columns for age, author, and status.
-- **Kanban Grid with Cards** — Use for Sprint Board. Cards show title, priority Badge, assignee, and story points. Status transitions via mutation buttons.
+- **Kanban Grid with Cards** — Use for Sprint Board. Cards show title, priority Badge, assignee, and story points. Status-transition buttons are handled as local state in the canvas component.
 - **Line Chart (Burndown)** — Use on Sprint Board for points remaining over sprint duration.
 - **Tabs** — Use on the Engineering Health Dashboard to switch between weekly summary, PR details, and contributor breakdown without leaving the surface.
 - **Badge** — Use for priority labels (High/Medium/Low) and PR status (Open/Reviewed/Merged/Stale).

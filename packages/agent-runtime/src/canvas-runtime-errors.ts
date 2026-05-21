@@ -15,7 +15,6 @@ export interface CanvasRuntimeErrorAction {
 }
 
 export interface CanvasRuntimeError {
-  surfaceId: string
   phase: string
   error: string
   timestamp: number

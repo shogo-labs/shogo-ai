@@ -3,7 +3,7 @@ name: meeting-notes-v2
 version: 2.0.0
 description: Generate structured meeting summaries with action items and follow-ups
 trigger: "meeting notes|meeting summary|summarize meeting|action items|what happened in"
-tools: [memory_write, send_message]
+tools: [write_file, send_message]
 ---
 
 # Meeting Notes
@@ -20,7 +20,7 @@ When the user shares meeting notes or asks for a summary:
    - Card: Key Decisions (bullet points)
    - CRUD Table: Action Items (owner, task, deadline, status)
    - Card: Next Steps and open questions
-3. **Track** — Use canvas_api_schema for action items so users can mark them complete
+3. **Track** — Render action items as interactive rows in the canvas so users can mark them complete
 4. **Persist** — Save summary to memory for future reference
 5. **Notify** — If channel configured, post summary via `send_message`
 

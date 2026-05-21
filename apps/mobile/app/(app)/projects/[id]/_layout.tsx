@@ -144,8 +144,6 @@ const CANVAS_ERROR_MAX_LINE = 1200
  * router) don't, and the page route is the meaningful identifier there.
  */
 function buildCanvasErrorDebugPrompt(args: {
-  surfaceId: string
-  surfaceTitle?: string | null
   phase: 'compile' | 'runtime'
   error: string
   /** Iframe `pathname + search + hash` at the moment of the error. */
@@ -164,24 +162,15 @@ function buildCanvasErrorDebugPrompt(args: {
     ts: number
   }>
 }): string {
-  const { surfaceId, surfaceTitle, phase, error, route, recentActions, recentLogs } = args
+  const { phase, error, route, recentActions, recentLogs } = args
   const truncate = (s: string, n: number) =>
     s.length <= n ? s : `${s.slice(0, n - 1)}…`
   const phaseLabel = phase === 'compile' ? 'compile-time' : 'runtime'
-  // Only call out the surface when one is actually known — for plain
-  // workspace canvases `surfaceId` is empty/`undefined` and the old
-  // wording ("on `undefined`") was actively confusing.
-  const hasSurface = !!surfaceTitle || (!!surfaceId && surfaceId !== 'undefined')
-  const surfaceLabel = surfaceTitle
-    ? ` on \`${surfaceTitle}\``
-    : hasSurface
-      ? ` on \`${surfaceId}\``
-      : ''
   const pageLabel = route ? ` (page \`${route}\`)` : ''
 
   const lines: string[] = []
   lines.push(
-    `🐞 The canvas just hit a ${phaseLabel} error${surfaceLabel}${pageLabel}. Please diagnose the root cause and propose / apply a minimal fix.`,
+    `🐞 The canvas just hit a ${phaseLabel} error${pageLabel}. Please diagnose the root cause and propose / apply a minimal fix.`,
   )
   lines.push('')
   lines.push('**Error**')
@@ -1413,7 +1402,6 @@ export default observer(function ProjectLayout() {
   const lastCanvasErrorRef = useRef<{ key: string; ts: number } | null>(null)
   const openDebugChatForCanvasError = useCallback(
     async (
-      surfaceId: string,
       phase: 'compile' | 'runtime',
       error: string,
       context?: {
@@ -1425,8 +1413,6 @@ export default observer(function ProjectLayout() {
       try {
         const recentLogs = getRuntimeLogEntries(projectId).slice(-CANVAS_ERROR_LOG_TAIL)
         const prompt = buildCanvasErrorDebugPrompt({
-          surfaceId,
-          surfaceTitle: null,
           phase,
           error,
           route: context?.route,
@@ -1460,7 +1446,6 @@ export default observer(function ProjectLayout() {
 
   const handleCanvasError = useCallback(
     (
-      surfaceId: string,
       phase: 'compile' | 'runtime',
       error: string,
       context?: {
@@ -1471,7 +1456,7 @@ export default observer(function ProjectLayout() {
       if (!projectId) return
       // Dedup: the canvas iframe re-throws the same error on every retry /
       // HMR loop. One toast per unique error within the dedup window.
-      const key = `${surfaceId}|${phase}|${error}`
+      const key = `${phase}|${error}`
       const now = Date.now()
       const last = lastCanvasErrorRef.current
       if (last && last.key === key && now - last.ts < CANVAS_ERROR_DEDUP_MS) {
@@ -1484,7 +1469,7 @@ export default observer(function ProjectLayout() {
       const description = where
         ? `${phaseWord} error${where}.`
         : `${phaseWord} error in the canvas.`
-      const toastId = `canvas-error-${surfaceId}-${now}`
+      const toastId = `canvas-error-${now}`
 
       toast.show({
         id: toastId,
@@ -1507,7 +1492,7 @@ export default observer(function ProjectLayout() {
                 accessibilityLabel="Debug this canvas error in a new chat"
                 onPress={() => {
                   toast.close(tId)
-                  void openDebugChatForCanvasError(surfaceId, phase, error, context)
+                  void openDebugChatForCanvasError(phase, error, context)
                 }}
                 className="flex-row items-center gap-1.5 rounded-md bg-white/95 px-3 py-1.5 active:opacity-80"
               >
@@ -2486,7 +2471,6 @@ function CanvasPanel({
   iframeRefreshKey?: number
   onCanvasCapabilities?: (caps: { supportsTheme: boolean }) => void
   onCanvasError?: (
-    surfaceId: string,
     phase: 'compile' | 'runtime',
     error: string,
     context?: {
