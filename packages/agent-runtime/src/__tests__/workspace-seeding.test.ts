@@ -260,7 +260,6 @@ describe('seedWorkspaceDefaults', () => {
 
     const config = JSON.parse(require('fs').readFileSync(configPath, 'utf-8'))
     expect(config.activeMode).toBe('canvas')
-    expect(config.canvasMode).toBe('code')
   })
 
   test('creates AGENTS.md describing Vite + React + Tailwind', () => {

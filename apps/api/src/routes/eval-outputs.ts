@@ -125,7 +125,7 @@ export function evalOutputRoutes() {
         tier: 'starter',
         status: 'draft',
         accessLevel: 'anyone',
-        settings: JSON.stringify({ activeMode: 'canvas', canvasMode: 'code' }),
+        settings: JSON.stringify({ activeMode: 'canvas' }),
       },
     })
 

@@ -398,7 +398,6 @@ export async function runImport(
           : JSON.stringify(bp.settings)
         : JSON.stringify({
             activeMode: 'none',
-            canvasMode: 'code',
             canvasEnabled: false,
           }),
     },

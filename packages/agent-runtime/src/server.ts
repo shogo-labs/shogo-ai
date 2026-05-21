@@ -618,25 +618,12 @@ function ensureWorkspaceFiles(): void {
   }
 
   // Seed tech stack if specified via env var or marker file.
-  // For backward compat: existing canvasMode 'code' projects without a tech stack get react-app.
+  // Projects without an explicit tech stack default to `react-app` (the
+  // canvas v2 Vite + React + Tailwind workspace).
   const techStackMarker = join(WORKSPACE_DIR, '.tech-stack')
   const techStackIdFromEnv = process.env.TECH_STACK_ID
   const techStackIdFromFile = existsSync(techStackMarker) ? readFileSync(techStackMarker, 'utf-8').trim() : undefined
-  let techStackId = techStackIdFromEnv || techStackIdFromFile
-
-  if (!techStackId) {
-    for (const configCandidate of [join(WORKSPACE_DIR, 'config.json'), join(WORKSPACE_DIR, '.shogo', 'config.json')]) {
-      if (existsSync(configCandidate)) {
-        try {
-          const config = JSON.parse(readFileSync(configCandidate, 'utf-8'))
-          if (config.canvasMode === 'code') {
-            techStackId = 'react-app'
-            break
-          }
-        } catch { /* ignore parse errors */ }
-      }
-    }
-  }
+  let techStackId = techStackIdFromEnv || techStackIdFromFile || 'react-app'
 
   if (techStackId) {
     seedTechStack(WORKSPACE_DIR, techStackId)

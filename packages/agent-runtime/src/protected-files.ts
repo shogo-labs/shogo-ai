@@ -3,8 +3,8 @@
 /**
  * Protected workspace files
  * ---------------------------------------------------------------------------
- * In canvas-code mode the agent runtime owns a small platform contract for
- * the iframe-side bridge (update toast, theme sync, capability detection,
+ * The agent runtime owns a small platform contract for the iframe-side
+ * canvas bridge (update toast, theme sync, capability detection,
  * canvas-ready handshake, error forwarding). The user's `src/main.tsx` is
  * the entry point of that contract: it MUST stay slim and only render the
  * React app — the bridge itself is injected at HTML response time by the
@@ -12,9 +12,7 @@
  *
  * To prevent agents from drifting these files back to a custom version, the
  * mutation-tools (`write_file`, `edit_file`, `delete_file`) consult this
- * list and reject any change that targets a protected path — but ONLY when
- * `ctx.config.canvasMode === 'code'`. Chat / app / json-canvas modes don't
- * have the bridge contract and stay completely unrestricted.
+ * list and reject any change that targets a protected path.
  *
  * The migration pass at workspace boot uses raw `fs.writeFileSync` and is
  * unaffected by the gate, so self-healing still works.
@@ -23,8 +21,8 @@
 import { resolve, relative, sep } from 'path'
 
 /**
- * Workspace-relative paths that may not be modified by agent tools while
- * `canvasMode === 'code'`. Paths use forward slashes regardless of platform.
+ * Workspace-relative paths that may not be modified by agent tools.
+ * Paths use forward slashes regardless of platform.
  */
 export const PROTECTED_WORKSPACE_FILES: readonly string[] = [
   'src/main.tsx',

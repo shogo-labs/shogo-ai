@@ -99,7 +99,7 @@ describe('Project Export/Import E2E', () => {
         tier: 'starter',
         status: 'draft',
         accessLevel: 'anyone',
-        settings: JSON.stringify({ activeMode: 'canvas', canvasMode: 'code' }),
+        settings: JSON.stringify({ activeMode: 'canvas' }),
       },
     })
     testProjectId = project.id

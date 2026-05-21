@@ -225,8 +225,6 @@ export interface GatewayConfig {
   sdkGuideEnabled?: boolean
   /** Whether canvas tools are enabled (default: true). Automatically set false when switching to app/none mode. */
   canvasEnabled?: boolean
-  /** Canvas rendering mode: 'json' = v1 declarative JSON, 'code' = v2 agent-written React code */
-  canvasMode?: 'json' | 'code'
   /** Prompt profile: 'full' = all sections (default), 'swe' = minimal coding-only profile for SWE evals, 'general' = workspace + tools + skills (no personality/canvas) */
   promptProfile?: 'full' | 'swe' | 'general'
   /** Enable coordinator mode (leader only delegates, never does work directly) */
@@ -556,7 +554,6 @@ export class AgentGateway {
       model: { provider: 'anthropic', name: 'claude-haiku-4-5' },
       maxSessionMessages: 30,
       activeMode: 'canvas',
-      canvasMode: 'code',
       allowedModes: ['canvas', 'none'],
       mainSessionIds: ['chat'],
     }
@@ -748,14 +745,12 @@ export class AgentGateway {
     )
 
     // Start LSP for canvas code diagnostics (fire-and-forget — don't block startup)
-    if (this.config.canvasMode === 'code') {
-      this.startLSP().catch(err => {
-        console.warn(`${this.logPrefix} LSP startup failed (non-fatal):`, err.message)
-      })
-    }
+    this.startLSP().catch(err => {
+      console.warn(`${this.logPrefix} LSP startup failed (non-fatal):`, err.message)
+    })
 
     // Start canvas build manager for Vite builds (fire-and-forget)
-    if (this.config.canvasMode === 'code') {
+    {
       // Self-heal: ensure src/main.tsx matches the canonical slim version.
       // Older workspaces baked the iframe bridge (toast / theme / SSE / error
       // forwarding) into main.tsx; that's now served live from
