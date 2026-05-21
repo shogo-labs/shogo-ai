@@ -440,8 +440,23 @@ export default observer(function ProjectLayout() {
     }
   }, [])
 
-  // Resolve agent + preview URLs
-  const { agentUrl: resolvedAgentUrl, previewUrl, canvasBaseUrl } = useAgentUrl(API_URL!, projectId, {
+  // Resolve agent + preview URLs.
+  //
+  // `runtimeReady` is held false until `/sandbox/url` reports `ready:true`,
+  // so the hook only exposes URLs once the per-project runtime is actually
+  // listening. Without this gate, a project navigated to right after the
+  // home composer's `runtime/prewarm` would see canvas / preview / agent
+  // SSE all hit ECONNREFUSED for the first few seconds while Vite + the
+  // agent-runtime were still booting. We extend the existing
+  // `isLoading || !project` guard below with `!runtimeReady` so the
+  // project page shows a spinner ("Starting your project…") instead of
+  // rendering panels that would silently fail.
+  const {
+    agentUrl: resolvedAgentUrl,
+    previewUrl,
+    canvasBaseUrl,
+    ready: runtimeReady,
+  } = useAgentUrl(API_URL!, projectId, {
     credentials: Platform.OS === 'web' ? 'include' : 'omit',
     headers: nativeHeaders,
   })
@@ -1655,14 +1670,23 @@ export default observer(function ProjectLayout() {
     [billingHasActive, billingHasAdvanced, billingRefetch],
   )
 
-  // Loading state
-  if (isLoading || !project) {
+  // Loading state. We also gate on `runtimeReady` so the panels never
+  // render with stale URLs — see `useAgentUrl` for the polling contract.
+  // The copy differs once project metadata has loaded but the per-project
+  // runtime is still booting, so the user understands why the wait is
+  // happening (a remote instance pins its own URL via `localAgentUrl`,
+  // which `useAgentUrl` treats as immediately-ready, so this only
+  // surfaces for the host/VM/K8s paths).
+  if (isLoading || !project || (!remoteProjectAgentBaseUrl && !runtimeReady)) {
+    const stillBootingRuntime = !isLoading && project && !remoteProjectAgentBaseUrl && !runtimeReady
     return (
       <>
         <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
         <View className="flex-1 bg-background items-center justify-center">
           <ActivityIndicator size="large" />
-          <Text className="text-muted-foreground mt-3 text-sm">Loading project...</Text>
+          <Text className="text-muted-foreground mt-3 text-sm">
+            {stillBootingRuntime ? 'Starting your project…' : 'Loading project...'}
+          </Text>
         </View>
       </>
     )
@@ -2455,6 +2479,14 @@ function CanvasPanel({
   // Until ready, treat canvasBaseUrl as null so the loading screen stays visible.
   const readyCanvasBaseUrl = usePreviewReadiness(canvasBaseUrl)
 
+  // Phase-level visibility into what the runtime is doing while we wait
+  // (installing deps, building, starting the API server, …). Drives the
+  // user-facing "what's happening" label below in place of the previous
+  // generic "Connecting to agent runtime…" + misleading "Send a message
+  // in the Chat tab to wake the agent" hint (the runtime already starts
+  // via `runtime/prewarm`; chat sends are not what wakes it).
+  const { phase: previewPhase } = usePreviewPhase(agentUrl)
+
   const CONNECTION_TIMEOUT_MS = 60_000
   const [timedOut, setTimedOut] = useState(false)
   useEffect(() => {
@@ -2468,6 +2500,18 @@ function CanvasPanel({
   }, [connected, agentUrl, readyCanvasBaseUrl])
 
   if (!agentUrl || !readyCanvasBaseUrl) {
+    // Order matters: prefer the runtime's self-reported phase
+    // (`/preview/status`) when we have one, fall back to a coarse "agent
+    // runtime" / "preview" distinction otherwise. With the layout-level
+    // `runtimeReady` gate now waiting on `/sandbox/url`, the most common
+    // remaining states here are PreviewManager phases like
+    // 'installing' / 'building' / 'starting-api'.
+    const phaseLabel =
+      previewPhase && previewPhase !== 'idle'
+        ? PHASE_LABELS[previewPhase] ?? 'Preparing preview...'
+        : !agentUrl
+          ? 'Connecting to agent runtime...'
+          : 'Loading preview...'
     return (
       <View className="flex-1 items-center justify-center px-6">
         {timedOut ? (
@@ -2492,11 +2536,11 @@ function CanvasPanel({
         ) : (
           <>
             <ActivityIndicator size="large" className="mb-4" />
-            <Text className="text-muted-foreground text-center">
-              Connecting to agent runtime...
+            <Text className="text-foreground font-medium text-base mb-1">
+              {phaseLabel}
             </Text>
-            <Text className="text-muted-foreground text-xs text-center mt-2">
-              Send a message in the Chat tab to wake the agent
+            <Text className="text-muted-foreground text-xs text-center">
+              This usually takes 20-40 seconds
             </Text>
           </>
         )}
@@ -2595,14 +2639,35 @@ const PHASE_LABELS: Record<string, string> = {
   ready: 'Ready',
 }
 
-function AppPreviewPanel({ previewUrl, agentUrl }: { previewUrl: string | null; agentUrl: string | null }) {
-  const [iframeKey, setIframeKey] = useState(0)
-  const [previewReady, setPreviewReady] = useState(false)
+/**
+ * Polls `${agentUrl}/preview/status` so callers can show the user *what*
+ * the runtime is doing (installing deps, building, starting API, …)
+ * rather than a generic spinner. Returns:
+ *   phase    – PreviewManager phase string ('idle', 'installing', …)
+ *   running  – true once the preview is fully up and the iframe / canvas
+ *              should be loaded
+ *
+ * Polling stops as soon as `running === true` and resumes if the
+ * `agentUrl` changes (e.g. the user navigates to a different project).
+ *
+ * Reused by both the AppPreviewPanel and CanvasPanel so their "waiting"
+ * states stay consistent and the previously misleading "Send a message
+ * in the Chat tab to wake the agent" hint can be replaced with real,
+ * accurate phase labels.
+ */
+function usePreviewPhase(agentUrl: string | null): { phase: string; running: boolean } {
   const [phase, setPhase] = useState<string>('idle')
+  const [running, setRunning] = useState<boolean>(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
-    if (!agentUrl || previewReady) return
+    // Reset on agentUrl change so consumers see a fresh "idle" phase on
+    // navigation instead of a stale `running=true` from the previous
+    // project.
+    setPhase('idle')
+    setRunning(false)
+
+    if (!agentUrl) return
 
     let cancelled = false
     const poll = async () => {
@@ -2616,8 +2681,11 @@ function AppPreviewPanel({ previewUrl, agentUrl }: { previewUrl: string | null; 
           const data = await resp.json()
           if (data.phase) setPhase(data.phase)
           if (data.running) {
-            setPreviewReady(true)
-            setIframeKey(k => k + 1)
+            setRunning(true)
+            if (pollRef.current) {
+              clearInterval(pollRef.current)
+              pollRef.current = null
+            }
           }
         }
       } catch {
@@ -2630,14 +2698,32 @@ function AppPreviewPanel({ previewUrl, agentUrl }: { previewUrl: string | null; 
 
     return () => {
       cancelled = true
-      if (pollRef.current) clearInterval(pollRef.current)
+      if (pollRef.current) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
     }
-  }, [agentUrl, previewReady])
+  }, [agentUrl])
+
+  return { phase, running }
+}
+
+function AppPreviewPanel({ previewUrl, agentUrl }: { previewUrl: string | null; agentUrl: string | null }) {
+  const [iframeKey, setIframeKey] = useState(0)
+  const { phase, running } = usePreviewPhase(agentUrl)
+  // Latches once the preview reports `running`. Manual refresh resets it
+  // so the user can re-trigger the iframe load if Vite/HMR drops.
+  const [previewReady, setPreviewReady] = useState(false)
+  useEffect(() => {
+    if (running && !previewReady) {
+      setPreviewReady(true)
+      setIframeKey(k => k + 1)
+    }
+  }, [running, previewReady])
 
   // Reset ready state when previewUrl changes (new project)
   useEffect(() => {
     setPreviewReady(false)
-    setPhase('idle')
   }, [previewUrl])
 
   if (!previewUrl) {
