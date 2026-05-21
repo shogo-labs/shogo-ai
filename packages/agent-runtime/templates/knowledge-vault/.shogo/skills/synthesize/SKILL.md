@@ -3,7 +3,7 @@ name: synthesize
 version: 1.0.0
 description: Scan recent vault notes for unnamed patterns across sources — create synthesis pages linking back to evidence
 trigger: "synthesize|find patterns|connect dots|what themes|what patterns|connect the dots|emerging trends|what's recurring"
-tools: [web, read_file, edit_file, memory_write, canvas_update, canvas_api_seed]
+tools: [web, read_file, edit_file, memory_write]
 ---
 
 # Knowledge Synthesis

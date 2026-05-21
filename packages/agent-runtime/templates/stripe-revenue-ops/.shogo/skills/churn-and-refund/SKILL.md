@@ -3,7 +3,7 @@ name: churn-and-refund
 version: 1.0.0
 description: Surface churn-risk customers from Stripe + support signals and execute refunds with receipts after explicit confirmation
 trigger: "churn|refund|emailed support|at risk|failed payment|cancel|stripe ops"
-tools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_read, memory_write, send_message]
+tools: [tool_search, tool_install, memory_read, memory_write, send_message]
 ---
 
 # Churn & Refund Workflow

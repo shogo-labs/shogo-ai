@@ -22,7 +22,6 @@ import { describe, expect, test } from 'bun:test'
 import {
   useAgentStatus,
   useAgentChat,
-  useCanvasStream,
   useAgentMode,
   useAgentFiles,
 } from '../hooks'
@@ -30,7 +29,6 @@ import {
 const hooks = {
   useAgentStatus,
   useAgentChat,
-  useCanvasStream,
   useAgentMode,
   useAgentFiles,
 }
@@ -42,13 +40,12 @@ describe('agent/hooks — exports', () => {
     })
   }
 
-  test('all five hooks are present', () => {
+  test('all four hooks are present', () => {
     expect(Object.keys(hooks).sort()).toEqual([
       'useAgentChat',
       'useAgentFiles',
       'useAgentMode',
       'useAgentStatus',
-      'useCanvasStream',
     ])
   })
 })
@@ -72,10 +69,6 @@ describe('agent/hooks — invocation outside React render', () => {
 
   test('useAgentChat throws a React hook error when called outside render', () => {
     expectDispatcherError(() => useAgentChat())
-  })
-
-  test('useCanvasStream throws a React hook error when called outside render', () => {
-    expectDispatcherError(() => useCanvasStream())
   })
 
   test('useAgentMode throws a React hook error when called outside render', () => {
