@@ -10,7 +10,6 @@ import {
 
 function mk(i: number, over: Partial<CanvasRuntimeError> = {}): CanvasRuntimeError {
   return {
-    surfaceId: `surface-${i}`,
     phase: 'render',
     error: `boom-${i}`,
     timestamp: 1000 + i,

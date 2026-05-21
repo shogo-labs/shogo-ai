@@ -3476,7 +3476,6 @@ app.get('/agent/canvas/stream', (c) => {
 app.post('/agent/canvas/error', async (c) => {
   try {
     const body = await c.req.json() as {
-      surfaceId?: string
       phase?: string
       error?: string
       route?: string
@@ -3503,7 +3502,6 @@ app.post('/agent/canvas/error', async (c) => {
     const route = typeof body.route === 'string' ? body.route : undefined
 
     pushCanvasRuntimeError({
-      surfaceId: body.surfaceId || 'unknown',
       phase: body.phase || 'unknown',
       error: body.error,
       timestamp: Date.now(),
@@ -3523,10 +3521,7 @@ app.post('/agent/canvas/error', async (c) => {
     if (route) suffixParts.push(`page=${route}`)
     if (lastAction) suffixParts.push(`lastAction=${lastAction.kind}${lastAction.target ? ' ' + lastAction.target : ''}`)
     const suffix = suffixParts.length > 0 ? ` (${suffixParts.join(', ')})` : ''
-    recordCanvasErrorEntry(
-      `[${body.phase || 'unknown'}] ${body.error}${suffix}`,
-      body.surfaceId,
-    )
+    recordCanvasErrorEntry(`[${body.phase || 'unknown'}] ${body.error}${suffix}`)
 
     return c.json({ ok: true })
   } catch {

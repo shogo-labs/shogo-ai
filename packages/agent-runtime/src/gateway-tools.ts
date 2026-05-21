@@ -6141,7 +6141,7 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
       if (!lsp || !lsp.isRunning()) {
         const runtimeErrors = getCanvasRuntimeErrors()
         if (runtimeErrors.length > 0) {
-          const errors = runtimeErrors.map(e => `[${e.phase}] ${e.surfaceId}: ${e.error}`)
+          const errors = runtimeErrors.map(e => `[${e.phase}] ${e.error}`)
           clearCanvasRuntimeErrors()
           return textResult({ ok: false, error: 'Language server not available.', runtimeErrors: errors })
         }
@@ -6185,7 +6185,7 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
       // Collect canvas runtime errors (compile/render failures from the live preview)
       const runtimeErrorEntries = getCanvasRuntimeErrors()
       const runtimeErrors = runtimeErrorEntries.length > 0
-        ? runtimeErrorEntries.map(e => `[${e.phase}] ${e.surfaceId}: ${e.error}`)
+        ? runtimeErrorEntries.map(e => `[${e.phase}] ${e.error}`)
         : undefined
       if (runtimeErrorEntries.length > 0) clearCanvasRuntimeErrors()
 

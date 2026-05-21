@@ -38,7 +38,6 @@ interface CanvasWebViewProps {
    *  here so fetch('/api/...') resolves same-origin — no proxy needed. */
   canvasBaseUrl?: string | null
   onCanvasError?: (
-    surfaceId: string,
     phase: 'compile' | 'runtime',
     error: string,
     context?: CanvasErrorContext,
@@ -51,7 +50,6 @@ interface CanvasWebViewProps {
 function postCanvasError(
   agentUrl: string,
   payload: {
-    surfaceId: string
     phase: string
     error: string
     route?: string
@@ -117,7 +115,6 @@ interface BridgeProps {
   agentUrl: string
   themeMessage: ThemeMessage | null
   onCanvasError?: (
-    surfaceId: string,
     phase: 'compile' | 'runtime',
     error: string,
     context?: CanvasErrorContext,
@@ -158,14 +155,12 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
           ? (msg.recentActions as CanvasErrorAction[])
           : undefined
         postCanvasError(agentUrl, {
-          surfaceId: msg.surfaceId as string,
           phase: msg.phase as string,
           error: msg.error as string,
           route,
           recentActions,
         })
         onCanvasError?.(
-          msg.surfaceId as string,
           msg.phase as 'compile' | 'runtime',
           msg.error as string,
           { route, recentActions },
@@ -227,14 +222,12 @@ function CanvasNativeWebView({ url, agentUrl, themeMessage, onCanvasError, onCan
           ? (msg.recentActions as CanvasErrorAction[])
           : undefined
         postCanvasError(agentUrl, {
-          surfaceId: msg.surfaceId as string,
           phase: msg.phase as string,
           error: msg.error as string,
           route,
           recentActions,
         })
         onCanvasError?.(
-          msg.surfaceId as string,
           msg.phase as 'compile' | 'runtime',
           msg.error as string,
           { route, recentActions },
