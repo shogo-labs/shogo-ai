@@ -48,15 +48,11 @@ export function getMonthlyIncludedForPlan(planId: string, seats: number = 1): nu
   const safeSeats = Math.max(1, Math.floor(seats || 1))
   if (planId in SEAT_INCLUDED_USD) {
     const base = SEAT_INCLUDED_USD[planId as PlanId]
-    // Basic and free are single-user, ignore seats.
     if (planId === 'free' || planId === 'basic') return base
     return base * safeSeats
   }
-
-  // Legacy tier id support: `pro_200` -> $20 included, `business_1200` -> $120.
   const m = planId.match(/^(basic|pro|business)_(\d+)$/)
   if (m) return parseInt(m[2], 10) * 0.10
-
   return 0
 }
 
