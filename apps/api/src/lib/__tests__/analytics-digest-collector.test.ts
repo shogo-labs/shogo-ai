@@ -165,7 +165,15 @@ describe('generateDigest', () => {
     const digest = await generateDigest(fakePrisma)
     expect(upsertCalls).toHaveLength(1)
     const u = upsertCalls[0]
-    expect(u.where.date_period.period).toBe('24h')
+    // The unique key was widened from `(date, period)` to
+    // `(date, period, region)` in the 2026-05-21 migration that fixed
+    // the cross-region poison-pill on analytics_digests; the Prisma
+    // compound-key name moved from `date_period` to
+    // `date_period_region` to match. `region` defaults to `'unknown'`
+    // when REGION_ID is unset (local/dev runs, including this test).
+    expect(u.where.date_period_region.period).toBe('24h')
+    expect(u.where.date_period_region.region).toBe('unknown')
+    expect(u.create.region).toBe('unknown')
     expect(u.create.totalSpendUsd).toBe(2)
     expect(u.create.totalToolCalls).toBe(3)
     expect(u.create.totalMessages).toBe(4)
