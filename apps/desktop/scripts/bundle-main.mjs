@@ -139,6 +139,8 @@ if (!existsSync(OUT_FILE)) {
 // pulling node-gyp artifacts into the JS bundle.
 const EXTERNALS = [
   'electron',
+  '@sentry/electron',
+  '@sentry/electron/main',
   'bonjour-service',
   'fflate',
   'multicast-dns',
@@ -160,6 +162,28 @@ const workerPkg = JSON.parse(
 if (typeof workerPkg.version !== 'string' || workerPkg.version.length === 0) {
   console.error('[bundle-main] shogo-worker package.json has no version field');
   process.exit(1);
+}
+
+// Bake the desktop Sentry DSN into the bundle when CI provides it. Same
+// `--define` pattern as the worker version above — keeps the runtime
+// import-free and means the packaged app doesn't need a config file to
+// know where to phone home. The matching declaration lives in
+// `apps/desktop/src/sentry.ts`. Empty string is treated as "no DSN" by
+// `resolveDsn()` so contributor / fork builds without the secret stay
+// telemetry-free. We REJECT a DSN containing a double quote so a
+// malformed secret can't break out of the JSON-string `--define` value
+// and corrupt other defines (defense-in-depth — the value comes from a
+// trusted GitHub secret, but the bundler is too easy to corrupt to
+// trust without a sanity check).
+const desktopSentryDsn = process.env.SHOGO_DESKTOP_SENTRY_DSN || '';
+if (desktopSentryDsn.includes('"')) {
+  console.error('[bundle-main] SHOGO_DESKTOP_SENTRY_DSN contains a double quote — refusing to bake into bundle');
+  process.exit(1);
+}
+if (desktopSentryDsn) {
+  console.log('[bundle-main] baking SHOGO_DESKTOP_SENTRY_DSN into bundle');
+} else {
+  console.log('[bundle-main] SHOGO_DESKTOP_SENTRY_DSN not set — Sentry will be a no-op in this build');
 }
 
 // Build the bun invocation as an argv array and run via `spawnSync` with
@@ -186,6 +210,7 @@ const args = [
   '--format', 'cjs',
   '--outfile', OUT_FILE,
   '--define', `__SHOGO_WORKER_VERSION__="${workerPkg.version}"`,
+  '--define', `__SHOGO_DESKTOP_SENTRY_DSN__="${desktopSentryDsn}"`,
   ...EXTERNALS.flatMap((p) => ['--external', p]),
 ];
 

@@ -81,6 +81,14 @@ jobs:
         env:
           EXPO_PUBLIC_LOCAL_MODE: 'true'
           EXPO_PUBLIC_API_URL: 'http://localhost:8002'
+          # Pass the desktop Sentry DSN into the renderer build so the
+          # existing `@sentry/react-native` init in apps/mobile/app/_layout.tsx
+          # activates inside the Electron BrowserWindow. Renderer events
+          # land in the same `shogo-desktop` Sentry project as main-process
+          # events, separate from the mobile app's `shogo-mobile` project.
+          # Falls back to empty (Sentry self-disables) on forks / branches
+          # without the secret.
+          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.SHOGO_DESKTOP_SENTRY_DSN }}
 
       - name: Upload web build
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -251,6 +259,12 @@ jobs:
         # apps/desktop is npm-installed, not a bun workspace member.
         # See apps/desktop/scripts/bundle-main.mjs for details.
         run: npx tsc && npm run bundle:main
+        env:
+          # Baked into dist/main.js via `--define` in bundle-main.mjs
+          # so the packaged app reports main-process crashes without
+          # needing a runtime config file. Empty on forks / branches
+          # without the secret — Sentry self-disables in that case.
+          SHOGO_DESKTOP_SENTRY_DSN: ${{ secrets.SHOGO_DESKTOP_SENTRY_DSN }}
 
       # Desktop notarization (xcrun notarytool) requires a "Developer ID
       # Application" certificate, which is distinct from the "Apple

@@ -9,6 +9,14 @@ if (handleSquirrelEvent()) {
   process.exit(0)
 }
 
+// Sentry must be the first non-Squirrel import so its uncaughtException
+// / unhandledRejection / Crashpad hooks are installed BEFORE anything
+// that can throw (db-recovery, prisma migrations, native module loads,
+// etc.). `initSentry()` is a no-op when the build-time DSN is unset,
+// so contributor / fork builds remain telemetry-free.
+import { initSentry, setSentryDeviceTag } from './sentry'
+initSentry()
+
 import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification, dialog } from 'electron'
 import path from 'path'
 import fs from 'fs'
@@ -1151,6 +1159,13 @@ function startVMImageUpdateChecker(): void {
 app.whenReady().then(async () => {
   const config = readConfig()
   isCloudMode = config.mode === 'cloud'
+
+  // Tag Sentry events with the stable per-install device id now that
+  // `readConfig()` has materialised it. Done here (not inside
+  // `initSentry()`) because `app.getPath('userData')` is only reliably
+  // resolvable once Electron is ready, and `readConfig()` reads from
+  // that path. No-op when Sentry was never initialised.
+  setSentryDeviceTag(config.deviceId)
 
   console.log(`[Desktop] Starting in ${isCloudMode ? 'cloud' : 'local'} mode`)
 
