@@ -6,6 +6,7 @@ import { existsSync } from 'fs'
 import path from 'path'
 import { getBunPath, getDbPath, getWorkspacesDir, getProjectRoot, getDataDir } from './paths'
 import { isVMAvailable } from './vm'
+import { DatabaseRecoveryError, detectFailedMigrations } from './db-recovery'
 
 // Shogo-reserved port range — chosen to avoid conflicts with common dev tools
 const PREFERRED_PORT = 39100
@@ -949,6 +950,35 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
     }
   }
 
+  // Pre-flight: if `_prisma_migrations` already contains a row with
+  // `finished_at = NULL`, `prisma migrate deploy` will fail with P3009
+  // and refuse to run any other migrations on top of it. We detect
+  // that state *before* shelling out so main.ts can surface a typed
+  // recovery dialog instead of the generic "failed to start local
+  // server -> app.quit()" path that ends in a silent dock-icon exit
+  // for the user.
+  //
+  // This handles the most common upstream cause of "Shogo won't open":
+  // a release shipped a broken migration, the user's first launch on
+  // that release left it half-applied, and every subsequent launch is
+  // now permanently bricked by P3009 with no UI signal. See
+  // db-recovery.ts for the full background.
+  const preflightFailures = (() => {
+    try {
+      return detectFailedMigrations(bunPath, getDbPath())
+    } catch (err) {
+      // Pre-flight failing is non-fatal — we still attempt the deploy
+      // below, which will surface its own error. We just log so the
+      // bun/sqlite-shim issue isn't completely silent if it's the
+      // actual root cause of a future failure mode.
+      console.warn('[Desktop] detectFailedMigrations preflight skipped:', err)
+      return []
+    }
+  })()
+  if (preflightFailures.length > 0) {
+    throw new DatabaseRecoveryError(preflightFailures, getDbPath())
+  }
+
   console.log('[Desktop] Running database migrations...')
   let attempt = runDeploy()
 
@@ -1014,6 +1044,29 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
 
   console.error('[Desktop] [ERROR] Migration failed:', attempt.stderr || attempt.error?.message)
   console.error('[Desktop] [ERROR] Migration stdout:', attempt.stdout)
+
+  // If the failure was P3009 (a migration recorded as failed mid-run on
+  // *this* launch — typically a buggy migration in a brand-new release
+  // that just got installed), the pre-flight above missed it (the row
+  // didn't exist yet) but the DB is now in the same recoverable state.
+  // Re-query and rethrow as DatabaseRecoveryError so main.ts surfaces
+  // the same dialog rather than the silent-quit path.
+  const combined = attempt.stdout + attempt.stderr
+  if (combined.includes('P3009') || /migrate found failed migrations/i.test(combined)) {
+    try {
+      const postFailures = detectFailedMigrations(bunPath, getDbPath())
+      if (postFailures.length > 0) {
+        throw new DatabaseRecoveryError(postFailures, getDbPath())
+      }
+    } catch (err) {
+      if (err instanceof DatabaseRecoveryError) throw err
+      // Fall through to the generic error if even the recovery query
+      // fails — main.ts will show a less specific dialog but still
+      // won't silently exit.
+      console.warn('[Desktop] Post-fail recovery query failed:', err)
+    }
+  }
+
   throw new Error('Failed to run database migrations')
 }
 

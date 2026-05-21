@@ -14,7 +14,12 @@ import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
 import { startLocalServer, stopLocalServer, getApiUrl, getApiPort } from './local-server'
-import { getWebDir } from './paths'
+import { getWebDir, getBunPath, getDbPath } from './paths'
+import {
+  DatabaseRecoveryError,
+  backupDatabase,
+  repairFailedMigrations,
+} from './db-recovery'
 import { readConfig, writeConfig, getDeviceInfo, getCloudUrl } from './config'
 import { buildBugReportZip, submitToDiscord, submitToGitHub, collectSystemInfo, type BugReportPayload } from './bug-report'
 import { initAutoUpdater, getIsApplyingUpdate } from './updater'
@@ -54,6 +59,23 @@ interface CloudLoginBody {
 }
 
 // --- Persistent file logging ---
+//
+// We keep two write paths on purpose:
+//
+//   * `writeLog()` uses a buffered `fs.createWriteStream`. Fast, batched,
+//     fine for the high-volume INFO/WARN traffic that the app produces
+//     during normal operation. NEVER call this for messages you need to
+//     survive a crash — the buffer flushes asynchronously and is lost if
+//     the process exits before the next tick.
+//
+//   * `writeLogSync()` uses `fs.appendFileSync`. Slower (a real syscall
+//     per line), but guarantees the bytes are on disk by the time it
+//     returns. Use this for FATAL / startup-failure events that we
+//     specifically want to see in `main.log` when the user reports
+//     "Shogo doesn't open" — those used to disappear with the buffer
+//     when the buggy v1.7.8 release auto-quit after a failed migration,
+//     leaving only `[Desktop] === Shogo starting ===` in the log and
+//     nothing else to diagnose from.
 const logDir = process.platform === 'win32'
   ? path.join(app.getPath('userData'), 'logs')
   : path.join(app.getPath('home'), 'Library', 'Logs', 'Shogo')
@@ -61,10 +83,24 @@ fs.mkdirSync(logDir, { recursive: true })
 const logFile = path.join(logDir, 'main.log')
 const logStream = fs.createWriteStream(logFile, { flags: 'a' })
 
-function writeLog(level: string, ...args: unknown[]): void {
+function formatLogLine(level: string, args: unknown[]): string {
   const ts = new Date().toISOString()
   const msg = args.map(a => (a instanceof Error ? a.stack || a.message : String(a))).join(' ')
-  logStream.write(`${ts} [${level}] ${msg}\n`)
+  return `${ts} [${level}] ${msg}\n`
+}
+
+function writeLog(level: string, ...args: unknown[]): void {
+  logStream.write(formatLogLine(level, args))
+}
+
+function writeLogSync(level: string, ...args: unknown[]): void {
+  try {
+    fs.appendFileSync(logFile, formatLogLine(level, args))
+  } catch {
+    // If even the sync write fails (full disk, EACCES from a virus
+    // scanner) there is nothing useful we can do — the process is
+    // already on its way out.
+  }
 }
 
 const origLog = console.log
@@ -75,11 +111,14 @@ console.error = (...args: unknown[]) => { origError(...args); writeLog('ERROR', 
 console.warn = (...args: unknown[]) => { origWarn(...args); writeLog('WARN', ...args) }
 
 process.on('uncaughtException', (err) => {
-  writeLog('FATAL', 'Uncaught exception:', err)
-  logStream.end()
+  // Sync write so the FATAL line actually reaches disk before Electron
+  // tears the process down. The previous async `logStream.write` +
+  // `logStream.end` sequence raced the exit and routinely lost the
+  // line on Windows.
+  writeLogSync('FATAL', 'Uncaught exception:', err)
 })
 process.on('unhandledRejection', (reason) => {
-  writeLog('FATAL', 'Unhandled rejection:', reason)
+  writeLogSync('FATAL', 'Unhandled rejection:', reason)
 })
 
 console.log(`[Desktop] === Shogo starting (v${app.getVersion()}, packaged=${app.isPackaged}) ===`)
@@ -300,6 +339,128 @@ function startCloudLoginHeartbeat(): void {
   }
   heartbeatTimer = setInterval(() => { void tick() }, HEARTBEAT_INTERVAL_MS)
   setTimeout(() => { void tick() }, 30_000)
+}
+
+// =============================================================================
+// Database recovery dialog
+// =============================================================================
+//
+// When startLocalServer() throws a DatabaseRecoveryError (i.e. Prisma has a
+// row in `_prisma_migrations` with finished_at = NULL and refuses to run
+// any further migrations), this function turns it into a modal dialog with
+// three options:
+//
+//   1. Repair — back up the current DB, clear the failed-migration row, and
+//      relaunch the app so `prisma migrate deploy` can retry the migration
+//      cleanly. (Only succeeds if the user is on a release where the
+//      underlying migration bug has been fixed; if not, they hit the same
+//      dialog again on next launch, and they have the backup.)
+//
+//   2. Show Logs — opens the log directory in the OS file manager so the
+//      user can attach `main.log` to a bug report.
+//
+//   3. Quit — closes the dialog and exits. User can manually delete the
+//      DB, restore an external backup, or wait for a new release.
+//
+// Returns 'relaunched' if the user chose Repair and the recovery
+// succeeded (caller should NOT call app.quit() — we already called
+// app.relaunch + app.exit). Returns 'quit' otherwise (caller should
+// call app.quit() to exit cleanly).
+async function handleDatabaseRecovery(
+  err: DatabaseRecoveryError,
+): Promise<'relaunched' | 'quit'> {
+  const { failures, dbPath } = err
+  const names = failures.map((f) => f.name).join('\n  • ')
+  const firstExcerpt = failures[0]?.errorExcerpt?.split('\n')[0] ?? '(no error excerpt available)'
+
+  const detail =
+    `Shogo's local database has ${failures.length} migration(s) recorded as failed:\n\n  • ${names}\n\n` +
+    `Error: ${firstExcerpt}\n\n` +
+    `This usually means a previous app update shipped a buggy database migration. ` +
+    `Repair backs up your current database (to a .bak-<timestamp> file next to it), ` +
+    `clears the failed migration record, and relaunches Shogo so the migration can be ` +
+    `re-attempted with the current app version.\n\n` +
+    `If you've already installed an update since the failure, repair will most likely ` +
+    `succeed. If it doesn't, you can quit and report the bug — your data is safe in ` +
+    `the backup file.`
+
+  let choice: number
+  try {
+    const res = await dialog.showMessageBox({
+      type: 'error',
+      title: 'Shogo: database needs repair',
+      message: 'A previous update left the database in an inconsistent state.',
+      detail,
+      buttons: ['Repair and relaunch', 'Show logs', 'Quit'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true,
+    })
+    choice = res.response
+  } catch (dialogErr) {
+    // Headless environments (e2e tests, CI smoke tests) can't show
+    // dialogs. Fall back to quitting so the parent process sees the
+    // non-zero exit code rather than hanging forever.
+    writeLogSync('FATAL', '[Desktop] Recovery dialog unavailable, exiting:', dialogErr)
+    return 'quit'
+  }
+
+  if (choice === 1) {
+    // Show logs: open the log directory and quit so the user can read
+    // it without the dialog blocking the file manager.
+    try {
+      void shell.openPath(logDir)
+    } catch {
+      // Best-effort — if opening fails, the dialog already told them
+      // the path in the body text.
+    }
+    return 'quit'
+  }
+  if (choice === 2) {
+    return 'quit'
+  }
+
+  // Choice 0: Repair. Belt-and-braces — back up first, ALWAYS, even if
+  // the user clicks through multiple repair attempts in a row.
+  try {
+    const bunPath = getBunPath()
+    const backupPath = backupDatabase(dbPath)
+    writeLogSync('INFO', `[Desktop] DB backup written to ${backupPath} before repair`)
+
+    repairFailedMigrations(
+      bunPath,
+      dbPath,
+      failures.map((f) => f.name),
+    )
+    writeLogSync(
+      'INFO',
+      `[Desktop] Cleared ${failures.length} failed migration row(s); relaunching to retry deploy.`,
+    )
+  } catch (repairErr) {
+    writeLogSync('FATAL', '[Desktop] Repair attempt failed:', repairErr)
+    try {
+      dialog.showErrorBox(
+        'Repair failed',
+        `Could not repair the database automatically.\n\n` +
+          `Error: ${repairErr instanceof Error ? repairErr.message : String(repairErr)}\n\n` +
+          `A backup of the original database may still have been created next to:\n${dbPath}\n\n` +
+          `Logs: ${logFile}`,
+      )
+    } catch {
+      // Headless — already logged FATAL above.
+    }
+    return 'quit'
+  }
+
+  // Successful repair: relaunch Shogo so the next startup sees a
+  // recovered DB and runs `prisma migrate deploy` against it. We use
+  // app.relaunch + app.exit (instead of app.quit) because we want to
+  // skip the normal shutdown hooks — there's no API server to drain,
+  // no window to confirm closing, and we want the dock icon to bounce
+  // again immediately rather than waiting for whenever-quit-completes.
+  app.relaunch()
+  app.exit(0)
+  return 'relaunched'
 }
 
 function buildAppMenu(): void {
@@ -1010,7 +1171,32 @@ app.whenReady().then(async () => {
     try {
       await startLocalServer()
     } catch (err) {
-      console.error('[Desktop] Failed to start local server:', err)
+      writeLogSync('FATAL', '[Desktop] Failed to start local server:', err)
+
+      if (err instanceof DatabaseRecoveryError) {
+        const handled = await handleDatabaseRecovery(err)
+        if (handled === 'relaunched') return
+        // 'quit' / 'show-logs' falls through to app.quit().
+      } else {
+        // Non-DB startup failure (port conflict, missing binary, etc.):
+        // surface it as a single-button error dialog before quitting so
+        // users don't see a dock icon that does nothing. The message
+        // intentionally points at main.log so support handoffs are
+        // self-serve.
+        try {
+          dialog.showErrorBox(
+            'Shogo could not start',
+            `Shogo failed to start its local server and will now exit.\n\n` +
+              `Details: ${err instanceof Error ? err.message : String(err)}\n\n` +
+              `Logs are at:\n${logFile}`,
+          )
+        } catch {
+          // If even the dialog throws (e.g. running headless under e2e
+          // without a display), we've already logged the FATAL above —
+          // the quit path below is still correct.
+        }
+      }
+
       app.quit()
       return
     }
