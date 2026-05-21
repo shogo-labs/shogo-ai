@@ -38,6 +38,7 @@ import {
   type CreatorTier,
 } from '../../../components/marketplace'
 import { MARKETPLACE_CATEGORIES, type MarketplaceCategory } from '@shogo/shared-app'
+import { useAuth } from '../../../contexts/auth'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
   Popover,
@@ -176,6 +177,7 @@ export default observer(function MarketplaceHomeScreen() {
   const router = useRouter()
   const http = useDomainHttp()
   const numColumns = useGridColumns()
+  const { user } = useAuth()
 
   const [searchQuery, setSearchQuery] = useState('')
   const debouncedSearchQuery = useDebouncedValue(searchQuery)
@@ -194,6 +196,7 @@ export default observer(function MarketplaceHomeScreen() {
   const [freeAgents, setFreeAgents] = useState<ListingFromAPI[]>([])
   const [topCreators, setTopCreators] = useState<LeaderboardCreator[]>([])
   const [recommended, setRecommended] = useState<ListingFromAPI[]>([])
+  const [followingAgents, setFollowingAgents] = useState<ListingFromAPI[]>([])
 
   const [listings, setListings] = useState<ListingFromAPI[]>([])
   const [loading, setLoading] = useState(true)
@@ -314,6 +317,28 @@ export default observer(function MarketplaceHomeScreen() {
   useEffect(() => {
     loadEditorial()
   }, [loadEditorial])
+
+  useEffect(() => {
+    if (!user?.id) {
+      setFollowingAgents([])
+      return
+    }
+    ;(async () => {
+      try {
+        const followingRes = await http.get<{ items: Array<{ id: string }> }>(
+          '/api/marketplace/creators/following?limit=10',
+        )
+        const creatorIds = (followingRes.data.items ?? []).map((c) => c.id)
+        if (creatorIds.length === 0) return
+        const agentRes = await http.get<BrowseResponse>(
+          `/api/marketplace?creatorId=${creatorIds[0]}&sort=popular&limit=8`,
+        )
+        setFollowingAgents(agentRes.data.items ?? [])
+      } catch {
+        // non-critical
+      }
+    })()
+  }, [user?.id, http])
 
   const browseListRef = useRef<FlatList>(null)
 
@@ -487,6 +512,17 @@ export default observer(function MarketplaceHomeScreen() {
             title="Recommended for you"
             subtitle="Popular agents that match how you work"
             items={recommended}
+            onPress={handleCardPress}
+          />
+        )}
+
+        {/* From creators you follow */}
+        {followingAgents.length > 0 && showRails && (
+          <AgentCollectionSection
+            viewMode={viewMode}
+            title="From creators you follow"
+            subtitle="Latest from the creators you're following"
+            items={followingAgents}
             onPress={handleCardPress}
           />
         )}

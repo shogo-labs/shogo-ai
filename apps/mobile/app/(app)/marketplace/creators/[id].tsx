@@ -19,6 +19,7 @@ import { useDomainHttp } from '../../../../contexts/domain'
 import {
   AgentTile,
   type AgentTileListing,
+  FollowCreatorButton,
   HorizontalRail,
   MarketplaceHero,
   SectionHeader,
@@ -40,6 +41,8 @@ interface CreatorPublicProfile {
   totalAgentsPublished: number
   totalInstalls: number
   averageAgentRating: number
+  followerCount?: number
+  isFollowing?: boolean
   badges: Array<{
     badgeType: string
     earnedAt: string
@@ -277,12 +280,17 @@ export default observer(function CreatorProfileScreen() {
                     }
                   />
                   <ProfileStat label="Badges" value={String(profile.badges.length)} />
+                  <ProfileStat label="Followers" value={(profile.followerCount ?? 0).toLocaleString()} />
                 </View>
                 <View className="flex-row items-center gap-2 mt-2">
-                  <Pressable className="flex-row items-center gap-1.5 rounded-xl bg-foreground/10 px-4 py-2 active:opacity-80">
-                    <UserPlus size={14} color="#71717a" />
-                    <Text className="text-xs font-semibold text-foreground">Follow</Text>
-                  </Pressable>
+                  <FollowCreatorButton
+                    creatorId={profile.id}
+                    initialFollowing={profile.isFollowing ?? false}
+                    followerCount={profile.followerCount ?? 0}
+                    onToggle={(following, newCount) => {
+                      setProfile((p) => p ? { ...p, isFollowing: following, followerCount: newCount } : p)
+                    }}
+                  />
                   {profile.websiteUrl && (
                     <Pressable
                       className="flex-row items-center gap-1.5 rounded-xl border border-border px-4 py-2 active:opacity-80"
