@@ -48,22 +48,6 @@ interface CanvasWebViewProps {
   refreshKey?: number
 }
 
-// ---------------------------------------------------------------------------
-// Action forwarder — POSTs canvas actions back to the agent
-// ---------------------------------------------------------------------------
-
-function postCanvasAction(
-  agentUrl: string,
-  payload: { surfaceId?: string; name?: string; context?: Record<string, unknown> },
-) {
-  fetch(`${agentUrl}/agent/canvas/action`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify(payload),
-  }).catch(() => {})
-}
-
 function postCanvasError(
   agentUrl: string,
   payload: {
@@ -168,12 +152,6 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
         if (themeMessage) sendToIframe(themeMessage)
       } else if (msg.type === 'canvas-capabilities') {
         onCanvasCapabilities?.({ supportsTheme: !!msg.supportsTheme })
-      } else if (msg.type === 'canvas-action') {
-        postCanvasAction(agentUrl, {
-          surfaceId: msg.surfaceId,
-          name: msg.name,
-          context: msg.context,
-        })
       } else if (msg.type === 'canvas-error') {
         const route = typeof msg.route === 'string' ? (msg.route as string) : undefined
         const recentActions = Array.isArray(msg.recentActions)
@@ -243,12 +221,6 @@ function CanvasNativeWebView({ url, agentUrl, themeMessage, onCanvasError, onCan
         if (themeMessage) sendToWebView(themeMessage)
       } else if (msg.type === 'canvas-capabilities') {
         onCanvasCapabilities?.({ supportsTheme: !!msg.supportsTheme })
-      } else if (msg.type === 'canvas-action') {
-        postCanvasAction(agentUrl, {
-          surfaceId: msg.surfaceId,
-          name: msg.name,
-          context: msg.context,
-        })
       } else if (msg.type === 'canvas-error') {
         const route = typeof msg.route === 'string' ? (msg.route as string) : undefined
         const recentActions = Array.isArray(msg.recentActions)
