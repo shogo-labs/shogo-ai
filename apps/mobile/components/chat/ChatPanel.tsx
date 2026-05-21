@@ -3302,11 +3302,11 @@ export const ChatPanel = observer(function ChatPanel({
       if (Platform.OS === "ios") {
         const alreadyAccepted = await hasAcceptedAiConsent().catch(() => false)
         if (!alreadyAccepted) {
-          const providerNames = AI_PROVIDERS.map((p) => p.name).join(", ")
+          const providerNames = AI_PROVIDERS.map((p) => p.name).join(" or ")
           const accepted = await new Promise<boolean>((resolve) => {
             Alert.alert(
-              "Share your message with AI providers?",
-              `To generate a response, your message and any attachments will be sent to ${providerNames}. We don\u2019t send your email, payment info, or device identifiers.`,
+              "Share your message with the selected AI provider?",
+              `To generate a response, your message and any attachments will be sent to the AI provider you\u2019ve selected (${providerNames}). We don\u2019t send your email, payment info, or device identifiers.`,
               [
                 { text: "Don\u2019t allow", style: "cancel", onPress: () => resolve(false) },
                 { text: "Allow", onPress: () => resolve(true) },
