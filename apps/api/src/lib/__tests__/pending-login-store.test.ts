@@ -240,3 +240,32 @@ describe('pending-login-store', () => {
 // Restore env for sibling test files in the same `bun test` process.
 if (prevLocalMode === undefined) delete process.env.SHOGO_LOCAL_MODE
 else process.env.SHOGO_LOCAL_MODE = prevLocalMode
+
+describe('pending-login-store — deletePendingState Redis error path', () => {
+  test('logs and continues when Redis DEL throws, still clearing the local fallback (closes L152-156 catch arm)', async () => {
+    const origWarn = console.warn
+    const warns: any[][] = []
+    console.warn = (...args: any[]) => {
+      warns.push(args)
+    }
+    try {
+      const record = fixtureRecord()
+      _testing.pendingStates.set('boom-key', record)
+      // Make Redis DEL reject for this one call.
+      fakeRedis.del.mockImplementationOnce(async () => {
+        throw new Error('redis offline')
+      })
+
+      await expect(deletePendingState('boom-key')).resolves.toBeUndefined()
+
+      // Despite the redis throw, the local fallback was still purged.
+      expect(_testing.pendingStates.has('boom-key')).toBe(false)
+      const matching = warns.filter((a) =>
+        String(a[0]).includes('[pending-login-store] Redis DEL failed'),
+      )
+      expect(matching.length).toBeGreaterThanOrEqual(1)
+    } finally {
+      console.warn = origWarn
+    }
+  })
+})
