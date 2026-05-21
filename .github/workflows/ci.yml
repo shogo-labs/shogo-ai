@@ -107,6 +107,35 @@ jobs:
       - name: Check replication publication is self-maintaining
         run: bun run check:publication
 
+      - name: Check multi-region cron locks + unique-key classification
+        # Guards against the 2026-05-21 analytics_digests poison-pill class
+        # of failure: an in-process cron upserting on a non-PK unique index
+        # in every API replica in every region, where logical replication's
+        # `last_update_wins` cannot resolve the conflict and the apply
+        # worker halts until manual intervention.
+        #
+        # The check has two halves:
+        #   1. Every cron entry point in apps/api/src/jobs/ (and the two
+        #      directly-invoked-from-server.ts ones — recalculateAllStorageUsage,
+        #      generateDigest) must EITHER wrap its body in
+        #      `withGlobalJobLock('<name>', ...)` AND register `<name>` in
+        #      KNOWN_JOB_IDS in apps/api/src/lib/global-job-lock.ts, OR be
+        #      listed in INTENTIONALLY_REGIONAL with a regionKeyColumn that
+        #      the schema actually proves out.
+        #   2. Every @unique / @@unique in prisma/schema.prisma must be
+        #      classified in ACCEPTED_UNIQUE_KEYS with one of
+        #      random_secret | external_global_id | request_scoped |
+        #      single_tenant_upsert | cron_locked | cron_regional, plus a
+        #      one-line justification.
+        #
+        # Both halves cross-reference: a cron_locked classification has to
+        # point at a real KNOWN_JOB_IDS entry, a cron_regional at a real
+        # INTENTIONALLY_REGIONAL entry, and stale allowlist entries fail
+        # the check loudly so a model rename can't silently bypass the
+        # guard. The friction is intentional — this is the human review
+        # gate that would have caught the storage_usage shape at PR time.
+        run: bun run check:multiregion
+
       - name: Replay desktop SQLite migrations against an empty DB
         # Guards against the "shipped a migration without its prerequisite"
         # failure mode — e.g. an ALTER TABLE whose CREATE TABLE was never

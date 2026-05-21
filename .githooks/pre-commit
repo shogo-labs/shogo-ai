@@ -139,4 +139,22 @@ if printf '%s\n' "$staged_files" | grep -qxE "${LOCAL_SCHEMA}" \
   fi
 fi
 
+# Multi-region cron-lock + unique-key classification guard. Runs when any
+# of the inputs change: prisma/schema.prisma (new @unique adds a row that
+# must be classified), apps/api/src/lib/global-job-lock.ts (KNOWN_JOB_IDS
+# is the source of truth for "which crons are wrapped"), apps/api/src/jobs/
+# (new cron files), apps/api/src/server.ts (cron startup wiring), or the
+# storage/analytics-digest files directly invoked from server.ts. Catches
+# the 2026-05-21 analytics_digests poison-pill class at commit time.
+if printf '%s\n' "$staged_files" | grep -qE "^(${CLOUD_SCHEMA}|apps/api/src/lib/global-job-lock\.ts|apps/api/src/jobs/|apps/api/src/server\.ts|apps/api/src/services/storage\.service\.ts|apps/api/src/lib/analytics-digest-collector\.ts|scripts/check-multiregion-cron-locks\.ts)"; then
+  echo "[pre-commit] Cron or schema unique-key change detected — checking multi-region lock + classification..."
+  if command -v bun >/dev/null 2>&1; then
+    if ! bun scripts/check-multiregion-cron-locks.ts --quiet; then
+      rc=1
+    fi
+  else
+    echo "[pre-commit] WARN: bun not on PATH — skipping multi-region check."
+  fi
+fi
+
 exit $rc

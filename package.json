@@ -47,6 +47,7 @@
     "check:publication": "bun scripts/check-publication-drift.ts",
     "check:migrations": "bun scripts/check-migrations.ts",
     "check:desktop-schema-drift": "bun scripts/check-desktop-schema-drift.ts",
+    "check:multiregion": "bun scripts/check-multiregion-cron-locks.ts",
     "db:reset": "npx prisma migrate reset",
     "seed:marketplace": "bun scripts/seed-marketplace.ts",
     "docker:prod": "docker-compose up",

@@ -1380,6 +1380,30 @@ model AnalyticsDigest {
   // row has a region tag. The analytics-digest collector defaults missing
   // `REGION_ID` env to `'unknown'` (single, distinct sentinel) so local
   // dev/test runs still satisfy the constraint.
+  //
+  // INTENTIONALLY REGIONAL — DO NOT wrap `generateDigest` in
+  // `withGlobalJobLock`. Every other globally-aggregating cron uses
+  // the lock pattern in `apps/api/src/lib/global-job-lock.ts`, but
+  // this one is the seed for genuine per-region analytics (a dashboard
+  // showing separate funnel numbers for US/EU/India). The
+  // `INTENTIONALLY_REGIONAL` allowlist in
+  // `scripts/check-multiregion-cron-locks.ts` records this exemption
+  // explicitly so the CI guard doesn't flag it as a missing wrapper,
+  // and conversely so the wrapper can't be added without also
+  // updating the allowlist (one human review).
+  //
+  // TODO(analytics-regional): today's `getUserFunnel` /
+  // `getUserActivityTable` / `getTemplateEngagement` /
+  // `getChatConversations` / `getSourceBreakdown` queries are global
+  // aggregates over the (logically-replicated) full row set — every
+  // region computes the same numbers. To make this column carry real
+  // meaning, add `signupRegion` / `writeRegion` columns to source
+  // tables (`users`, `chat_messages`, `usage_events`, `projects`),
+  // backfill historical rows to `'unknown'`, and add `region`
+  // parameters to the analytics-service queries. Until then the
+  // contents are global-tagged-with-region and the row-per-region
+  // shape is correct only as a defense-in-depth backstop against the
+  // replication poison-pill class.
   region String
 
   funnelSignups        Int    @default(0)
