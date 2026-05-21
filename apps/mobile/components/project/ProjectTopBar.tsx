@@ -89,23 +89,21 @@ function narrowProjectDropdownWidth(screenWidth: number): number {
 const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'chat-fullscreen', label: 'Chat', icon: MessageSquare },
   { id: 'canvas', label: 'Canvas', icon: LayoutDashboard },
-  // `external-preview` and `folders` are gated on workingMode=external
-  // at the layout level (via `hiddenTabs`) so managed projects never
-  // see them. They live next to Canvas because that's where the user
-  // expects "view of my running app" to be.
+  // `external-preview` is gated on workingMode=external at the layout
+  // level (via `hiddenTabs`) so managed projects never see it. It lives
+  // next to Canvas because that's where the user expects "view of my
+  // running app" to be.
   { id: 'external-preview', label: 'Preview', icon: Globe },
   // APP_MODE_DISABLED: { id: 'app-preview', label: 'App', icon: AppWindow },
   ...(Platform.OS === 'web'
     ? [{ id: 'ide', label: 'IDE', icon: Code2 }]
     : [{ id: 'files', label: 'Files', icon: FolderOpen }]),
-  // { id: 'terminal', label: 'Terminal', icon: Terminal },
-  { id: 'folders', label: 'Folders', icon: FolderTree },
-  { id: 'capabilities', label: 'Capabilities', icon: Sliders },
-  { id: 'channels', label: 'Channels', icon: Radio },
-  { id: 'agents', label: 'Agents', icon: Bot },
-  { id: 'monitor', label: 'Monitor', icon: Activity },
   { id: 'plans', label: 'Plans', icon: ClipboardList },
-  { id: 'checkpoints', label: 'Checkpoints', icon: GitCommit },
+  // Folders, Capabilities, Channels, Agents, Monitor, Checkpoints all
+  // live behind this Settings tab now (rendered by SettingsPanel with a
+  // grouped left sidebar). Checkpoints on web is also accessible from
+  // the IDE Source Control activity-bar entry.
+  { id: 'settings', label: 'Settings', icon: Settings },
 ]
 
 export interface ProjectSwitcherItem {
@@ -316,7 +314,19 @@ export function ProjectTopBar({
   const isCanvasActive = activeTab === 'canvas'
 
   const visibleTabs = AGENT_TABS.filter(tab => !hiddenTabs.includes(tab.id))
-  const narrowPrimaryIds = new Set(['chat-fullscreen', 'canvas', 'app-preview', 'external-preview'])
+  // Every remaining tab is primary now that secondary controls live behind
+  // the Settings tab. Files (native) and IDE (web) sit next to Chat/Canvas/
+  // Preview/Plans/Settings on narrow screens too.
+  const narrowPrimaryIds = new Set([
+    'chat-fullscreen',
+    'canvas',
+    'app-preview',
+    'external-preview',
+    'ide',
+    'files',
+    'plans',
+    'settings',
+  ])
   const narrowPrimaryTabs = visibleTabs.filter(t => narrowPrimaryIds.has(t.id))
   const narrowOverflowTabs = visibleTabs.filter(t => !narrowPrimaryIds.has(t.id))
   const narrowMoreItems = [

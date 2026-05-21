@@ -29,6 +29,7 @@ import {
 } from "./types";
 import { SearchPane } from "./SearchPane";
 import { SettingsPane } from "./SettingsPane";
+import { CheckpointsPanel } from "../CheckpointsPanel";
 import { useLiveAgentEdits, type LiveConflict } from "./useLiveAgentEdits";
 import { AgentEditBanner } from "./AgentEditBanner";
 import { applyAgentEdit, type MonacoNs } from "./agentEditAnimation";
@@ -1197,6 +1198,15 @@ export function Workbench({
         run: () => setActivity("search"),
       },
       {
+        id: "view.openSourceControl",
+        label: "View: Show Source Control",
+        shortcut: "⌃⇧G",
+        run: () => {
+          setActivity("git");
+          if (!sidebarOpen) setSidebarOpen(true);
+        },
+      },
+      {
         id: "goto.line",
         label: "Go to Line…",
         shortcut: "⌘G",
@@ -1272,6 +1282,14 @@ export function Workbench({
       if (matchesShortcut(e, { meta: true, shift: true, key: "f" })) {
         e.preventDefault();
         setActivity("search");
+        if (!sidebarOpen) setSidebarOpen(true);
+        return;
+      }
+      // VS Code parity: ⌃⇧G opens the Source Control activity. Uses Ctrl
+      // (not ⌘) on both mac and Windows/Linux to match VS Code's default.
+      if (e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey && (e.key === "g" || e.key === "G")) {
+        e.preventDefault();
+        setActivity("git");
         if (!sidebarOpen) setSidebarOpen(true);
         return;
       }
@@ -1370,6 +1388,17 @@ export function Workbench({
                       );
                     }}
                   />
+                )}
+                {activity === "git" && (
+                  projectId ? (
+                    <CheckpointsPanel visible projectId={projectId} />
+                  ) : (
+                    <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-[color:var(--ide-muted)]">
+                      <div className="text-[13px]">
+                        Source control requires a project context.
+                      </div>
+                    </div>
+                  )
                 )}
                 {activity === "settings" && (
                   <SettingsPane settings={settings} onChange={setSettings} />
