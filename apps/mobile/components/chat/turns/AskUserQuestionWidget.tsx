@@ -7,19 +7,18 @@
  * Renders questions with clickable options inline in the chat flow.
  */
 
-import { useState, useCallback, useMemo } from "react"
-import { View, Text, TextInput, Pressable } from "react-native"
+import { useState, useCallback, useMemo, useRef } from "react"
+import { View, Text, TextInput, Pressable, Animated } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
   CheckCircle2,
+  ChevronLeft,
   ChevronRight,
   ChevronDown,
-  MessageCircleQuestion,
   RefreshCw,
 } from "lucide-react-native"
 import {
   type ToolCallData,
-  type AskUserQuestionArgs,
   type AskUserQuestionItem,
 } from "../tools/types"
 import { useAskUserQuestionDraft } from "./useAskUserQuestionDraft"
@@ -103,7 +102,7 @@ function formatResponse(
       responseLine += regularSelections.join(", ")
     }
 
-    if (responseLine) {
+    if (responseLine && (regularSelections.length > 0 || (hasOther && otherText?.trim()))) {
       lines.push(responseLine)
     }
   })
@@ -111,7 +110,22 @@ function formatResponse(
   return lines.join("\n")
 }
 
-function OptionButton({
+/**
+ * Returns "A", "B", … "Z", "AA", "AB", … for the supplied 0-based index.
+ * Stays human-readable even past 26 options.
+ */
+function letterForIndex(index: number): string {
+  let n = index
+  let out = ""
+  do {
+    out = String.fromCharCode(65 + (n % 26)) + out
+    n = Math.floor(n / 26) - 1
+  } while (n >= 0)
+  return out
+}
+
+function OptionRow({
+  letter,
   label,
   description,
   isSelected,
@@ -119,12 +133,12 @@ function OptionButton({
   onSelect,
   disabled,
 }: {
+  letter: string
   label: string
   description: string
   isSelected: boolean
   isMultiSelect: boolean
   onSelect: () => void
-  animationDelay: number
   disabled?: boolean
 }) {
   return (
@@ -132,95 +146,51 @@ function OptionButton({
       onPress={onSelect}
       disabled={disabled}
       className={cn(
-        "w-full p-2 rounded-md border",
+        "w-full p-2.5 rounded-md border",
         isSelected
-          ? "border-primary bg-primary/5"
-          : "border-border/50 bg-background/50"
+          ? "border-primary/40 bg-primary/10"
+          : "border-border/50 bg-background/40"
       )}
     >
-      <View className="flex-row items-start gap-2">
+      <View className="flex-row items-start gap-2.5">
+        {/* Letter badge — doubles as the selection indicator. */}
         <View
           className={cn(
-            "mt-0.5 w-3.5 h-3.5 rounded-full border-2 items-center justify-center",
-            isMultiSelect && "rounded-sm",
+            "w-6 h-6 items-center justify-center border",
+            isMultiSelect ? "rounded-sm" : "rounded-full",
             isSelected
               ? "border-primary bg-primary"
-              : "border-muted-foreground/40"
+              : "border-border/60 bg-muted/40"
           )}
         >
-          {isSelected && (
-            <View
-              className={cn(
-                "bg-primary-foreground",
-                isMultiSelect
-                  ? "w-1.5 h-1.5 rounded-sm"
-                  : "w-1 h-1 rounded-full"
-              )}
-            />
-          )}
+          <Text
+            className={cn(
+              "font-mono text-[10px] font-semibold",
+              isSelected ? "text-primary-foreground" : "text-muted-foreground"
+            )}
+          >
+            {letter}
+          </Text>
         </View>
 
         <View className="flex-1">
-          <Text className="font-medium text-xs text-foreground">{label}</Text>
-          {description ? (
-            <Text
-              className="text-[10px] text-muted-foreground mt-0.5"
-              numberOfLines={2}
-            >
-              {description}
+          {label !== description && label.length <= 32 ? (
+            <Text className="font-medium text-xs text-foreground">
+              {label}
             </Text>
           ) : null}
+          {description ? (
+            <Text className="text-[11px] leading-[15px] text-foreground/90">
+              {description}
+            </Text>
+          ) : (
+            <Text className="text-[11px] leading-[15px] text-foreground/90">
+              {label}
+            </Text>
+          )}
         </View>
       </View>
     </Pressable>
-  )
-}
-
-function QuestionTabs({
-  questions,
-  activeTab,
-  onTabChange,
-  selections,
-}: {
-  questions: AskUserQuestionItem[]
-  activeTab: number
-  onTabChange: (index: number) => void
-  selections: Map<number, string[]>
-}) {
-  if (questions.length <= 1) return null
-
-  return (
-    <View className="flex-row gap-1 mb-2 border-b border-border/50 pb-1.5">
-      {questions.map((_, index) => {
-        const hasSelection = (selections.get(index)?.length || 0) > 0
-        return (
-          <Pressable
-            key={index}
-            onPress={() => onTabChange(index)}
-            className={cn(
-              "px-2 py-1 rounded-md flex-row items-center gap-1",
-              activeTab === index
-                ? "bg-primary"
-                : ""
-            )}
-          >
-            <Text
-              className={cn(
-                "text-[10px] font-medium",
-                activeTab === index
-                  ? "text-primary-foreground"
-                  : "text-muted-foreground"
-              )}
-            >
-              Q{index + 1}
-            </Text>
-            {hasSelection && (
-              <CheckCircle2 className="w-2.5 h-2.5 text-green-500" />
-            )}
-          </Pressable>
-        )
-      })}
-    </View>
   )
 }
 
@@ -259,19 +229,78 @@ export function AskUserQuestionWidget({
   // the user accidentally re-answer.
   const effectivelyPending = isPending && submittedResponse == null
 
-  const [internalExpanded, setInternalExpanded] = useState(isPending)
-  const isExpanded = controlledExpanded ?? internalExpanded
+  // For the pending state we want the card open by default; once answered we
+  // collapse to a one-line summary that the user can re-expand if they want.
+  const [internalExpanded, setInternalExpanded] = useState(true)
+  const isExpanded = controlledExpanded ?? (effectivelyPending ? true : internalExpanded)
 
   const handleToggle = useCallback(() => {
+    // Toggling is only meaningful in the answered state — while pending we
+    // keep the card open so the question is always front-and-centre.
+    if (effectivelyPending) return
     if (onToggle) {
       onToggle()
     } else {
       setInternalExpanded((prev) => !prev)
     }
-  }, [onToggle])
+  }, [onToggle, effectivelyPending])
+
+  // Body fade for question transitions. Auto-advance and chevron navigation
+  // both run through `animateToQuestion`, which fades the body out, swaps the
+  // visible question, then fades back in. Lets the user actually see the
+  // selection register before the next question appears.
+  const bodyOpacity = useRef(new Animated.Value(1)).current
+  const isAnimatingRef = useRef(false)
+
+  const animateToQuestion = useCallback(
+    (target: number) => {
+      const clamped = Math.max(0, Math.min(questions.length - 1, target))
+      if (clamped === activeTab) return
+      if (isAnimatingRef.current) {
+        // Drop overlapping animations but still ensure we land on the latest
+        // requested target.
+        bodyOpacity.stopAnimation(() => {
+          setActiveTab(clamped)
+          isAnimatingRef.current = false
+          Animated.timing(bodyOpacity, {
+            toValue: 1,
+            duration: 160,
+            useNativeDriver: true,
+          }).start()
+        })
+        return
+      }
+      isAnimatingRef.current = true
+      Animated.timing(bodyOpacity, {
+        toValue: 0,
+        duration: 120,
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (!finished) {
+          isAnimatingRef.current = false
+          return
+        }
+        setActiveTab(clamped)
+        Animated.timing(bodyOpacity, {
+          toValue: 1,
+          duration: 160,
+          useNativeDriver: true,
+        }).start(() => {
+          isAnimatingRef.current = false
+        })
+      })
+    },
+    [activeTab, questions.length, setActiveTab, bodyOpacity]
+  )
 
   const handleSelect = useCallback(
     (questionIndex: number, optionLabel: string, isMultiSelect: boolean) => {
+      // Capture before mutating: only auto-advance on a true first pick.
+      // If the user already has any selection for this question, treat the
+      // tap as "changing my answer" and stay put.
+      const prevSelections = selections.get(questionIndex) || []
+      const wasUnanswered = prevSelections.length === 0
+
       setSelections((prev) => {
         const next = new Map(prev)
         const current = next.get(questionIndex) || []
@@ -291,8 +320,21 @@ export function AskUserQuestionWidget({
 
         return next
       })
+
+      // Auto-advance only on the first single-select pick. Multi-select stays
+      // put (user might pick more); "Other" stays put (user still needs to
+      // type); changing an existing answer stays put (the user explicitly
+      // navigated back to change it).
+      if (
+        wasUnanswered &&
+        !isMultiSelect &&
+        optionLabel !== "__other__" &&
+        questionIndex < questions.length - 1
+      ) {
+        animateToQuestion(questionIndex + 1)
+      }
     },
-    []
+    [setSelections, selections, questions.length, animateToQuestion]
   )
 
   const handleOtherTextChange = useCallback(
@@ -303,45 +345,49 @@ export function AskUserQuestionWidget({
         return next
       })
     },
-    []
+    [setOtherTexts]
   )
 
-  const isValid = useMemo(() => {
-    return questions.every((_, index) => {
-      const selected = selections.get(index) || []
-      if (selected.length === 0) return false
-
-      if (selected.includes("__other__")) {
-        const otherText = otherTexts.get(index)
-        return (otherText?.trim().length ?? 0) > 0
+  const hasAnyAnswer = useMemo(() => {
+    return questions.some((_, i) => {
+      const sel = selections.get(i) || []
+      if (sel.length === 0) return false
+      if (sel.includes("__other__")) {
+        return (otherTexts.get(i)?.trim().length ?? 0) > 0
       }
-
       return true
     })
   }, [questions, selections, otherTexts])
 
   const handleSubmit = useCallback(() => {
-    if (!isValid) return
+    if (!hasAnyAnswer) return
 
     const response = formatResponse(questions, selections, otherTexts)
+    if (!response) return
     // Persist BEFORE firing the network call so a mid-submit app kill still
     // leaves a recoverable record on disk.
     void markSubmitted(response).then(() => {
       onSubmitResponse(response)
     })
-
-    if (!onToggle) {
-      setInternalExpanded(false)
-    }
   }, [
-    isValid,
+    hasAnyAnswer,
     questions,
     selections,
     otherTexts,
     onSubmitResponse,
-    onToggle,
     markSubmitted,
   ])
+
+  const isLastQuestion = activeTab >= questions.length - 1
+  const isFirstQuestion = activeTab <= 0
+
+  const handleNext = useCallback(() => {
+    if (isLastQuestion) {
+      handleSubmit()
+      return
+    }
+    animateToQuestion(activeTab + 1)
+  }, [activeTab, isLastQuestion, handleSubmit, animateToQuestion])
 
   const handleRetry = useCallback(() => {
     if (!submittedResponse) return
@@ -385,16 +431,15 @@ export function AskUserQuestionWidget({
     return (
       <View
         className={cn(
-          "rounded-md border border-primary/20 bg-primary/5 p-2",
+          "rounded-md border border-primary/20 bg-primary/5 p-2.5",
           className
         )}
       >
         <View className="flex-row items-center gap-1.5">
-          <MessageCircleQuestion className="w-3 h-3 text-primary" />
-          <Text className="font-mono text-[10px] font-medium text-foreground">
-            AskUserQuestion
+          <Text className="text-xs font-medium text-foreground">
+            Questions
           </Text>
-          <Text className="text-[9px] text-muted-foreground">Loading...</Text>
+          <Text className="text-[10px] text-muted-foreground">Loading…</Text>
         </View>
       </View>
     )
@@ -415,6 +460,20 @@ export function AskUserQuestionWidget({
     )
   }
 
+  const showPagination = questions.length > 1
+  // Without a Skip button the only way to advance is to answer, so gate Next
+  // on the current question being validly answered (single-select still
+  // auto-advances on pick, but this also catches multi-select / Other).
+  const currentAnswered = (() => {
+    const sel = selections.get(activeTab) || []
+    if (sel.length === 0) return false
+    if (sel.includes("__other__")) {
+      return (otherTexts.get(activeTab)?.trim().length ?? 0) > 0
+    }
+    return true
+  })()
+  const nextDisabled = !currentAnswered
+
   return (
     <View
       className={cn(
@@ -428,28 +487,20 @@ export function AskUserQuestionWidget({
       {/* Header */}
       <Pressable
         onPress={handleToggle}
-        className="w-full flex-row items-center gap-1.5 py-1.5 px-2"
+        disabled={effectivelyPending}
+        className="w-full flex-row items-center gap-2 px-3 py-2"
       >
-        {isExpanded ? (
-          <ChevronDown className="w-3 h-3 text-muted-foreground" />
-        ) : (
-          <ChevronRight className="w-3 h-3 text-muted-foreground" />
-        )}
-
-        <MessageCircleQuestion
-          className={cn(
-            "w-3 h-3",
-            effectivelyPending ? "text-primary" : "text-muted-foreground"
-          )}
-        />
-
-        <Text className="font-mono text-[10px] font-medium text-foreground">
-          AskUserQuestion
+        <Text className="text-xs font-medium text-foreground">
+          Questions
         </Text>
+
+        {effectivelyAnswered && (
+          <CheckCircle2 className="w-3 h-3 text-green-500" />
+        )}
 
         {!isExpanded && effectivelyAnswered && summaryText && (
           <Text
-            className="flex-1 text-[9px] text-muted-foreground text-right"
+            className="flex-1 text-[10px] text-muted-foreground"
             numberOfLines={1}
           >
             {summaryText}
@@ -458,34 +509,56 @@ export function AskUserQuestionWidget({
 
         {(isExpanded || !effectivelyAnswered) && <View className="flex-1" />}
 
-        {effectivelyAnswered && (
-          <CheckCircle2 className="w-3 h-3 text-green-500" />
+        {/* Pagination — only when there is more than one question and the card is open. */}
+        {isExpanded && showPagination && (
+          <View className="flex-row items-center gap-1.5">
+            <Pressable
+              onPress={() => animateToQuestion(activeTab - 1)}
+              disabled={isFirstQuestion}
+              hitSlop={6}
+              className={cn(
+                "w-5 h-5 items-center justify-center rounded",
+                isFirstQuestion ? "opacity-30" : "opacity-100"
+              )}
+            >
+              <ChevronLeft className="w-3.5 h-3.5 text-muted-foreground" />
+            </Pressable>
+            <Text className="text-[10px] text-muted-foreground tabular-nums">
+              {activeTab + 1} of {questions.length}
+            </Text>
+            <Pressable
+              onPress={() => animateToQuestion(activeTab + 1)}
+              disabled={isLastQuestion}
+              hitSlop={6}
+              className={cn(
+                "w-5 h-5 items-center justify-center rounded",
+                isLastQuestion ? "opacity-30" : "opacity-100"
+              )}
+            >
+              <ChevronRight className="w-3.5 h-3.5 text-muted-foreground" />
+            </Pressable>
+          </View>
+        )}
+
+        {/* Answered-state collapse caret. */}
+        {!effectivelyPending && (
+          <View className="ml-1">
+            {isExpanded ? (
+              <ChevronDown className="w-3 h-3 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="w-3 h-3 text-muted-foreground" />
+            )}
+          </View>
         )}
       </Pressable>
 
       {/* Expanded content */}
       {isExpanded && (
-        <View className="border-t border-border/50 p-3 gap-3">
-          <QuestionTabs
-            questions={questions}
-            activeTab={activeTab}
-            onTabChange={setActiveTab}
-            selections={selections}
-          />
-
+        <View className="border-t border-border/40 px-3 pt-2.5 pb-3 gap-2.5">
           {currentQuestion && (
-            <View className="gap-2">
-              {/* Header badge */}
-              <View className="flex-row items-center gap-2">
-                <View className="px-1.5 py-0.5 rounded-full bg-primary/10 border border-primary/20">
-                  <Text className="text-[10px] font-medium text-primary">
-                    {currentQuestion.header}
-                  </Text>
-                </View>
-              </View>
-
+            <Animated.View className="gap-2.5" style={{ opacity: bodyOpacity }}>
               {/* Question text */}
-              <Text className="text-xs font-medium text-foreground">
+              <Text className="text-[13px] font-semibold text-foreground leading-[18px]">
                 {currentQuestion.question}
               </Text>
 
@@ -500,8 +573,9 @@ export function AskUserQuestionWidget({
                     )
 
                     return (
-                      <OptionButton
+                      <OptionRow
                         key={option.label}
+                        letter={letterForIndex(optionIndex)}
                         label={option.label}
                         description={option.description}
                         isSelected={isSelected}
@@ -515,7 +589,6 @@ export function AskUserQuestionWidget({
                             currentQuestion.multiSelect ?? false
                           )
                         }
-                        animationDelay={optionIndex * 50}
                         disabled={effectivelyAnswered}
                       />
                     )
@@ -524,7 +597,10 @@ export function AskUserQuestionWidget({
 
                 {/* "Other" option */}
                 <View>
-                  <OptionButton
+                  <OptionRow
+                    letter={letterForIndex(
+                      currentQuestion.options?.length ?? 0
+                    )}
                     label="Other"
                     description="Provide a custom response"
                     isSelected={(
@@ -540,16 +616,13 @@ export function AskUserQuestionWidget({
                         currentQuestion.multiSelect ?? false
                       )
                     }
-                    animationDelay={
-                      (currentQuestion.options?.length ?? 0) * 50
-                    }
                     disabled={effectivelyAnswered}
                   />
 
                   {(selections.get(activeTab) || []).includes(
                     "__other__"
                   ) && (
-                    <View className="mt-1.5 ml-5">
+                    <View className="mt-1.5 ml-8">
                       <TextInput
                         placeholder="Type your custom response..."
                         placeholderTextColor="#71717a"
@@ -565,29 +638,29 @@ export function AskUserQuestionWidget({
                   )}
                 </View>
               </View>
-            </View>
+            </Animated.View>
           )}
 
-          {/* Submit button */}
+          {/* Next/Submit footer (pending state only) */}
           {effectivelyPending && (
-            <View className="flex-row justify-end pt-1.5">
+            <View className="flex-row items-center justify-end pt-1">
               <Pressable
-                onPress={handleSubmit}
-                disabled={!isValid}
+                onPress={handleNext}
+                disabled={nextDisabled}
                 className={cn(
-                  "min-w-[100px] h-7 rounded-md items-center justify-center px-3",
-                  isValid ? "bg-primary" : "bg-muted"
+                  "h-7 rounded-md items-center justify-center px-3 min-w-[68px]",
+                  nextDisabled ? "bg-muted" : "bg-primary"
                 )}
               >
                 <Text
                   className={cn(
                     "text-xs font-medium",
-                    isValid
-                      ? "text-primary-foreground"
-                      : "text-muted-foreground"
+                    nextDisabled
+                      ? "text-muted-foreground"
+                      : "text-primary-foreground"
                   )}
                 >
-                  Submit
+                  {isLastQuestion ? "Submit" : "Next"}
                 </Text>
               </Pressable>
             </View>
