@@ -191,7 +191,7 @@ function makeProjectJson(): string {
       description: 'desc',
       tier: 'starter',
       status: 'draft',
-      settings: { activeMode: 'none', canvasMode: 'code', canvasEnabled: false },
+      settings: { activeMode: 'none', canvasEnabled: false },
       category: null,
       schemas: [],
       accessLevel: 'anyone',

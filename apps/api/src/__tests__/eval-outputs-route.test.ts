@@ -410,7 +410,7 @@ describe('POST /eval-outputs/import', () => {
     expect(opts.filter('/some/path/other.ts')).toBe(true)
   })
 
-  test('uses settings JSON with activeMode=canvas and canvasMode=code', async () => {
+  test('uses settings JSON with activeMode=canvas', async () => {
     existsSyncMock.mockImplementation(() => true)
     readFileSyncMock.mockImplementation(() => JSON.stringify({}))
 
@@ -421,6 +421,6 @@ describe('POST /eval-outputs/import', () => {
       body: importBody(),
     })
     const data = projectCreateMock.mock.calls[0][0].data
-    expect(JSON.parse(data.settings)).toEqual({ activeMode: 'canvas', canvasMode: 'code' })
+    expect(JSON.parse(data.settings)).toEqual({ activeMode: 'canvas' })
   })
 })

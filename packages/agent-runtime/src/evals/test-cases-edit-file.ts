@@ -10,8 +10,8 @@
  * 2. Sequential edits — 2nd edit breaks because file changed from 1st
  * 3. Falls back to write_file — agent rewrites entire file instead of targeted edit
  *
- * All evals run in canvas code mode (canvasMode: 'code', activeMode: 'canvas')
- * so the v2 system prompt with edit_file guidance is active.
+ * All evals run with `activeMode: 'canvas'` so the v2 system prompt with
+ * edit_file guidance is active.
  */
 
 import type { AgentEval, EvalResult } from './types'
@@ -89,7 +89,7 @@ function anyFileOutputContains(r: EvalResult, text: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Shared V2 config — every eval seeds canvasMode: 'code' + activeMode: 'canvas'
+// Shared V2 config — every eval seeds activeMode: 'canvas'
 // ---------------------------------------------------------------------------
 
 const V2_CONFIG = JSON.stringify({
@@ -97,7 +97,6 @@ const V2_CONFIG = JSON.stringify({
   heartbeatEnabled: false,
   channels: [],
   activeMode: 'canvas',
-  canvasMode: 'code',
   model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
 }, null, 2)
 

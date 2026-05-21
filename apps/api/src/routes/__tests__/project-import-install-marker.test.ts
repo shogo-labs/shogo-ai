@@ -103,7 +103,7 @@ function buildBundleZipWithInstallMarker(): Uint8Array {
       name: 'imported-with-stale-marker',
       tier: 'starter',
       status: 'draft',
-      settings: { activeMode: 'none', canvasMode: 'code', canvasEnabled: false },
+      settings: { activeMode: 'none', canvasEnabled: false },
       schemas: [],
       accessLevel: 'anyone',
     },

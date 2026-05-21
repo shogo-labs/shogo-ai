@@ -41,3 +41,4 @@ export {
   useRemoteState,
   type RemoteState,
 } from './useRemoteState'
+export { useAgentUrl } from './useAgentUrl'

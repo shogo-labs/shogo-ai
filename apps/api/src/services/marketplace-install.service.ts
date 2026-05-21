@@ -108,7 +108,6 @@ export function copyWorkspaceFiles(sourceProjectId: string, destProjectId: strin
 function defaultProjectSettings(): object {
   return {
     activeMode: 'none',
-    canvasMode: 'code',
     canvasEnabled: false,
   }
 }

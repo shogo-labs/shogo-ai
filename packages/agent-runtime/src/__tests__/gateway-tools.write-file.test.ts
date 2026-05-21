@@ -83,21 +83,13 @@ describe('createWriteFileTool', () => {
     expect(readFileSync(join(TEST_DIR, 'fresh.txt'), 'utf8')).toBe('only')
   })
 
-  test('protected path (src/main.tsx in canvas-code mode) is rejected', async () => {
+  test('protected path (src/main.tsx) is rejected', async () => {
     // PROTECTED_WORKSPACE_FILES = ['src/main.tsx', 'src/ShogoErrorBoundary.tsx']
-    // and rejectIfProtected only trips when ctx.config.canvasMode === 'code'.
     mkdirSync(join(TEST_DIR, 'src'), { recursive: true })
-    const ctx = makeCtx({ config: { canvasMode: 'code' } as any })
+    const ctx = makeCtx()
     const r = await run(ctx, 'write_file', { path: 'src/main.tsx', content: 'export {}' })
     expect(typeof r.details.error).toBe('string')
     expect(r.details.error.toLowerCase()).toMatch(/protected|cannot|not allowed/)
-  })
-
-  test('protected path is allowed when canvasMode is not "code"', async () => {
-    mkdirSync(join(TEST_DIR, 'src'), { recursive: true })
-    const ctx = makeCtx({ config: { canvasMode: 'app' } as any })
-    const r = await run(ctx, 'write_file', { path: 'src/main.tsx', content: 'export {}' })
-    expect(r.details.ok).toBe(true)
   })
 
   test('invalidates fileStateCache so subsequent edit reads the new content', async () => {

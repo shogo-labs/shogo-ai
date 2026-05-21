@@ -106,7 +106,6 @@ export function createDomainActions(store: IDomainStore) {
     ) => {
       const settings = JSON.stringify({
         activeMode: 'canvas',
-        canvasMode: 'code',
       })
 
       const project = await store.projectCollection.create({

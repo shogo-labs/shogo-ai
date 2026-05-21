@@ -3,13 +3,12 @@
 /**
  * CanvasThemeContext
  *
- * Manages canvas-local theming state (color scheme + per-surface color theme).
- * Each canvas surface gets its own color theme preset, randomly assigned on
- * first encounter. The color scheme (light/dark/system) is shared globally.
+ * Manages canvas-local theming state: the color scheme (light/dark/system)
+ * and the active theme preset (a named palette of CSS custom properties).
  *
- * Provides a themed container that wraps canvas content with scoped
- * CSS variable overrides so the canvas can be themed independently
- * from the rest of the app.
+ * Provides a themed container that wraps canvas content with scoped CSS
+ * variable overrides so the canvas can be themed independently from the
+ * rest of the app.
  */
 
 import { createContext, useContext, useState, useMemo, useCallback, useRef, useEffect, type ReactNode } from 'react'
@@ -21,6 +20,8 @@ import { CANVAS_THEMES, type CanvasColorScheme, type CanvasThemePreset } from '.
 interface CanvasThemeSettings {
   canvasColorScheme?: CanvasColorScheme
   canvasThemeId?: string
+  // Legacy v1 shape: { [surfaceId]: themeId } map. v2 has a single canvas
+  // surface so we collapse this on read.
   canvasSurfaceThemes?: Record<string, string>
 }
 
@@ -32,8 +33,6 @@ interface CanvasThemeState {
   setThemeId: (id: string) => void
   resolvedIsDark: boolean
   activePreset: CanvasThemePreset
-  surfaceThemes: Record<string, string>
-  getSwatchForSurface: (surfaceId: string) => string
 }
 
 const CanvasThemeCtx = createContext<CanvasThemeState | null>(null)
@@ -48,22 +47,12 @@ export function useCanvasThemeOptional() {
   return useContext(CanvasThemeCtx)
 }
 
-function pickRandomTheme(usedThemeIds: string[]): string {
-  const available = CANVAS_THEMES.filter((t) => !usedThemeIds.includes(t.id))
-  if (available.length === 0) {
-    return CANVAS_THEMES[Math.floor(Math.random() * CANVAS_THEMES.length)].id
-  }
-  return available[Math.floor(Math.random() * available.length)].id
-}
-
 interface CanvasThemeProviderProps {
   children: ReactNode
   projectSettings?: Record<string, unknown> | null
   onUpdateSettings?: (settings: Record<string, unknown>) => void
   defaultThemeId?: string
   defaultColorScheme?: CanvasColorScheme
-  activeSurfaceId?: string | null
-  surfaceIds?: string[]
 }
 
 export function CanvasThemeProvider({
@@ -72,11 +61,9 @@ export function CanvasThemeProvider({
   onUpdateSettings,
   defaultThemeId = 'default',
   defaultColorScheme = 'system',
-  activeSurfaceId,
-  surfaceIds,
 }: CanvasThemeProviderProps) {
   const [colorScheme, setColorSchemeRaw] = useState<CanvasColorScheme>(defaultColorScheme)
-  const [surfaceThemes, setSurfaceThemesRaw] = useState<Record<string, string>>({})
+  const [themeId, setThemeIdRaw] = useState<string>(defaultThemeId)
   const hydratedRef = useRef(false)
 
   // Hydrate from project settings once
@@ -86,20 +73,23 @@ export function CanvasThemeProvider({
     if (!s) return
     hydratedRef.current = true
     if (s.canvasColorScheme) setColorSchemeRaw(s.canvasColorScheme)
-    if (s.canvasSurfaceThemes && typeof s.canvasSurfaceThemes === 'object') {
-      setSurfaceThemesRaw(s.canvasSurfaceThemes)
-    } else if (s.canvasThemeId) {
-      // Backward compat: migrate global themeId — no surfaces to assign yet,
-      // but keep the old themeId as a fallback that gets assigned to the first surface.
-      setSurfaceThemesRaw({ __legacyDefault: s.canvasThemeId })
+    if (s.canvasThemeId) {
+      setThemeIdRaw(s.canvasThemeId)
+    } else if (s.canvasSurfaceThemes && typeof s.canvasSurfaceThemes === 'object') {
+      // Legacy v1 settings carried a per-surface map. Collapse to the first
+      // non-empty value so existing projects keep their chosen theme on
+      // first read; the next setThemeId/setColorScheme write persists the
+      // new flat shape.
+      const firstValue = Object.values(s.canvasSurfaceThemes).find((v) => typeof v === 'string' && v.length > 0)
+      if (firstValue) setThemeIdRaw(firstValue)
     }
   }, [projectSettings])
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pendingRef = useRef<{ cs: CanvasColorScheme; themes: Record<string, string> } | null>(null)
+  const pendingRef = useRef<{ cs: CanvasColorScheme; themeId: string } | null>(null)
   const flushingRef = useRef(false)
-  const latestRef = useRef({ colorScheme, surfaceThemes })
-  latestRef.current = { colorScheme, surfaceThemes }
+  const latestRef = useRef({ colorScheme, themeId })
+  latestRef.current = { colorScheme, themeId }
 
   const flushPersist = useCallback(async () => {
     if (!onUpdateSettings || flushingRef.current) return
@@ -108,7 +98,7 @@ export function CanvasThemeProvider({
     pendingRef.current = null
     flushingRef.current = true
     try {
-      await onUpdateSettings({ canvasColorScheme: pending.cs, canvasSurfaceThemes: pending.themes })
+      await onUpdateSettings({ canvasColorScheme: pending.cs, canvasThemeId: pending.themeId })
     } catch {
       // Silently ignore concurrent-update errors from domain stores
     } finally {
@@ -117,67 +107,22 @@ export function CanvasThemeProvider({
     }
   }, [onUpdateSettings])
 
-  const persistToDb = useCallback((cs: CanvasColorScheme, themes: Record<string, string>) => {
+  const persistToDb = useCallback((cs: CanvasColorScheme, tid: string) => {
     if (!onUpdateSettings) return
-    pendingRef.current = { cs, themes }
+    pendingRef.current = { cs, themeId: tid }
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(flushPersist, 500)
   }, [onUpdateSettings, flushPersist])
 
   const setColorScheme = useCallback((scheme: CanvasColorScheme) => {
     setColorSchemeRaw(scheme)
-    persistToDb(scheme, latestRef.current.surfaceThemes)
+    persistToDb(scheme, latestRef.current.themeId)
   }, [persistToDb])
 
-  // Auto-assign random themes to surfaces that don't have one yet
-  useEffect(() => {
-    if (!surfaceIds || surfaceIds.length === 0) return
-    setSurfaceThemesRaw((prev) => {
-      const usedIds = Object.values(prev).filter((v) => v !== '__legacyDefault')
-      let changed = false
-      const next = { ...prev }
-
-      // Consume legacy default: assign it to the first surface that needs a theme
-      const legacyDefault = next.__legacyDefault
-      if (legacyDefault) {
-        delete next.__legacyDefault
-        changed = true
-      }
-
-      let legacyUsed = false
-      for (const sid of surfaceIds) {
-        if (!next[sid]) {
-          if (legacyDefault && !legacyUsed) {
-            next[sid] = legacyDefault
-            legacyUsed = true
-          } else {
-            const allUsed = [...usedIds, ...Object.values(next)]
-            next[sid] = pickRandomTheme(allUsed)
-          }
-          changed = true
-        }
-      }
-      if (!changed) return prev
-      // Persist the new assignments
-      persistToDb(latestRef.current.colorScheme, next)
-      return next
-    })
-  }, [surfaceIds, persistToDb])
-
-  // Set theme for the currently active surface (or global fallback for code-mode)
   const setThemeId = useCallback((id: string) => {
-    const key = activeSurfaceId || '__global'
-    setSurfaceThemesRaw((prev) => {
-      const next = { ...prev, [key]: id }
-      persistToDb(latestRef.current.colorScheme, next)
-      return next
-    })
-  }, [activeSurfaceId, persistToDb])
-
-  // Derive themeId for the active surface (with global fallback for code-mode)
-  const themeId = (activeSurfaceId && surfaceThemes[activeSurfaceId])
-    || surfaceThemes.__global
-    || defaultThemeId
+    setThemeIdRaw(id)
+    persistToDb(latestRef.current.colorScheme, id)
+  }, [persistToDb])
 
   const { colorScheme: systemScheme } = useColorScheme()
   const { theme: appTheme } = useTheme()
@@ -196,12 +141,6 @@ export function CanvasThemeProvider({
     [themeId],
   )
 
-  const getSwatchForSurface = useCallback((surfaceId: string): string => {
-    const tid = surfaceThemes[surfaceId]
-    const preset = tid ? CANVAS_THEMES.find((t) => t.id === tid) : undefined
-    return preset?.swatch ?? CANVAS_THEMES[0].swatch
-  }, [surfaceThemes])
-
   const value = useMemo<CanvasThemeState>(
     () => ({
       colorScheme,
@@ -210,10 +149,8 @@ export function CanvasThemeProvider({
       setThemeId,
       resolvedIsDark,
       activePreset,
-      surfaceThemes,
-      getSwatchForSurface,
     }),
-    [colorScheme, themeId, resolvedIsDark, activePreset, surfaceThemes, getSwatchForSurface],
+    [colorScheme, themeId, setColorScheme, setThemeId, resolvedIsDark, activePreset],
   )
 
   return (
