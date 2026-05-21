@@ -24,6 +24,7 @@ import {
   cleanupRecording,
   startRecordingHttpBridge,
 } from './recording'
+import { registerFsIpcHandlers } from './fs-ipc'
 import { createTray, destroyTray } from './tray'
 import { runCloudLogin, CloudLoginError } from '@shogo-ai/worker/cloud-login'
 
@@ -909,6 +910,12 @@ app.whenReady().then(async () => {
   registerProtocol()
   registerIpcHandlers()
   registerRecordingIpcHandlers()
+  // Local-mode filesystem fast-path: lets the IDE renderer skip the HTTP
+  // round-trip to agent-runtime for tree listing + file reads on managed
+  // projects. Safe to register in cloud mode too — the handlers reject any
+  // root that isn't under the local workspaces dir, so cloud-only sessions
+  // simply never invoke them.
+  registerFsIpcHandlers()
   buildAppMenu()
 
   const skipLocalServer = !isCloudMode && process.env.SHOGO_SKIP_LOCAL_SERVER === 'true'
