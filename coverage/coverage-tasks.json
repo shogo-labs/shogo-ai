@@ -407,7 +407,7 @@
       "phase": 3,
       "status": "done",
       "createdAt": "2026-05-19T22:37:52.960Z",
-      "note": "partial: 94.86% lines (979/1032), 90.48% funcs (57/63). Remaining 53 lines are infeasible: 30-retry exhaustion paths (L1048/L1050-1053/L1264-1280 \u2014 would need 100+ seconds of consecutive 5xx/ECONNREFUSED to exercise), waitForRuntimeReady inner-function closure (L693-706 \u2014 bun instrumenter does not track inner functions defined within factory functions, verified executing via thrown error trace), L531 dead-code else branch (resumeOutcome typed union cannot reach the else), and various stream-cancel/keepalive/disconnect timing-dependent paths (L1112-1114/L1123-1126/L1141-1143/L1148-1149/L1223-1226/L1288). Wave contributions: +8 percentage points lines, +infrastructure (model-catalog stub pattern, dynamic-import migration for 5 files, checkpoint-mock cross-file fix)."
+      "note": "partial 100: lines 94.86%, funcs 90.48%. 53 lines unreachable in practice \u2014 see commit message."
     },
     {
       "file": "apps/api/src/services/email.service.ts",
