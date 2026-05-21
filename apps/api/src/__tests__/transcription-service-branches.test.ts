@@ -209,3 +209,44 @@ describe('transcribeCloud and transcribe orchestrator', () => {
     expect(spawnCalls).toEqual([])
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════
+// gap-closing: platform branches + parseSherpaOutput JSON catch arm
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('transcribeLocal — per-platform env var selection', () => {
+  const realPlatform = process.platform
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true })
+  })
+
+  test('darwin: prepends libDir to DYLD_LIBRARY_PATH (closes L106)', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+    installSherpa()
+    spawnPlan.stdout = JSON.stringify({ text: 'ok', tokens: [], timestamps: [], lang: 'en' })
+    await transcribeLocal('/audio/x.wav')
+    expect(spawnCalls[0].options.env.DYLD_LIBRARY_PATH).toContain('/tmp/sherpa/lib')
+  })
+
+  test('win32: prepends sherpaBinDir + libDir to PATH (closes L108-109)', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    installSherpa()
+    spawnPlan.stdout = JSON.stringify({ text: 'ok', tokens: [], timestamps: [], lang: 'en' })
+    await transcribeLocal('/audio/x.wav')
+    expect(spawnCalls[0].options.env.PATH).toContain('/tmp/sherpa/lib')
+    expect(spawnCalls[0].options.env.PATH).toContain('/tmp/sherpa/bin')
+  })
+})
+
+describe('parseSherpaOutput — JSON catch arm', () => {
+  test('skips lines that look like JSON but fail to parse (closes L154 catch)', async () => {
+    installSherpa()
+    spawnPlan.stdout = [
+      '{ not_actually_valid_json: yes }',
+      JSON.stringify({ text: 'good', tokens: ['good'], timestamps: [0.5], lang: 'en' }),
+    ].join('\n')
+    const result = await transcribeLocal('/audio/x.wav')
+    expect(result.text).toBe('good')
+  })
+})
