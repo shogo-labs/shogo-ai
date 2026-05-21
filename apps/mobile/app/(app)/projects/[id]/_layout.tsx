@@ -1657,6 +1657,40 @@ export default observer(function ProjectLayout() {
     return pending
   }, [chatMessages])
 
+  // When Shogo emits a pending `ask_user` question, force-switch to chat so
+  // the user sees the prompt regardless of which panel they're currently on.
+  // Tracks the toolCallId to only fire on the rising edge — users can still
+  // navigate away from chat while a question is pending without being
+  // repeatedly yanked back.
+  const pendingAskUserId = useMemo<string | null>(() => {
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+      const msg = chatMessages[i] as any
+      if (msg?.role !== 'assistant') continue
+      const parts = msg.parts as any[] | undefined
+      if (!parts) continue
+      for (const p of parts) {
+        if (
+          p?.type === 'dynamic-tool' &&
+          p?.toolName === 'ask_user' &&
+          (p?.state === 'input-available' || p?.state === 'input-streaming')
+        ) {
+          return p.toolCallId ?? p.id ?? 'pending'
+        }
+      }
+      break
+    }
+    return null
+  }, [chatMessages])
+
+  const lastSwitchedAskUserIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!pendingAskUserId) return
+    if (lastSwitchedAskUserIdRef.current === pendingAskUserId) return
+    lastSwitchedAskUserIdRef.current = pendingAskUserId
+    setActiveTab('chat')
+    setPreviewTab('chat-fullscreen')
+  }, [pendingAskUserId])
+
   const showIntegrationsCard =
     !integrationsCardDismissed && (
       (capturedShowIntegrations && integrationsCardData != null) ||
