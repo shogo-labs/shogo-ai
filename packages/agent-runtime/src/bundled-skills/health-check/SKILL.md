@@ -18,9 +18,9 @@ Monitor service health and build a status page:
    - Status indicators per service: Badge (green "Healthy" / red "Down" / yellow "Degraded")
    - Chart: response time over recent checks (bar chart)
    - Table: detailed check results (service, status, response time, last checked)
-3. **Track** — Use canvas_api_schema for historical check data:
+3. **Track** — Store historical check data in the canvas component state:
    - Fields: service, status, responseTimeMs, checkedAt
-   - Seed current results via canvas_api_seed
+   - Update the canvas file via `write_file` after each check run
 4. **Alert** — If any endpoint returns non-200:
    - `send_message` to alert channel immediately
    - Include which service, what error, and when it started
