@@ -17,7 +17,7 @@ import type { ToolMockMap } from './tool-mocks'
 import { usedTool, neverUsedTool, responseContains, toolCallArgsContain } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
-// Shared config — every eval seeds canvasMode: 'code' + activeMode: 'canvas'
+// Shared config — every eval seeds activeMode: 'canvas'
 // ---------------------------------------------------------------------------
 
 const V2_CONFIG = JSON.stringify({
@@ -25,7 +25,6 @@ const V2_CONFIG = JSON.stringify({
   heartbeatEnabled: false,
   channels: [],
   activeMode: 'canvas',
-  canvasMode: 'code',
   model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
 }, null, 2)
 

@@ -30,7 +30,7 @@ import {
 import { usedTool, usedToolAnywhere, neverUsedTool, toolCallCount, responseContains, toolCallsJson } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
-// Shared V2 config — canvasMode: 'code' + activeMode: 'canvas'
+// Shared V2 config — activeMode: 'canvas'
 // ---------------------------------------------------------------------------
 
 const V2_CONFIG = JSON.stringify({
@@ -38,7 +38,6 @@ const V2_CONFIG = JSON.stringify({
   heartbeatEnabled: false,
   channels: [],
   activeMode: 'canvas',
-  canvasMode: 'code',
   model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
 }, null, 2)
 

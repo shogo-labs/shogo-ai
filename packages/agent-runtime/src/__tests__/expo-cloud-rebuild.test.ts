@@ -155,7 +155,7 @@ function seedPoolPreSeedState(workspaceDir: string): void {
   writeFileSync(join(workspaceDir, '.shogo', 'install-marker'), hash)
   writeFileSync(
     join(workspaceDir, '.shogo', 'config.json'),
-    JSON.stringify({ canvasMode: 'code' }),
+    JSON.stringify({}),
   )
 
   // The Vite bin shim. This is what resolveBundler() finds first

@@ -174,7 +174,6 @@ Long-lived facts and learnings are stored here.
       quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
       channels: [],
       activeMode: 'canvas',
-      canvasMode: 'code',
       model: {
         provider: 'anthropic',
         name: 'claude-sonnet-4-6',

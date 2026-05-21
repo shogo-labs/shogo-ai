@@ -87,7 +87,7 @@ function narrowProjectDropdownWidth(screenWidth: number): number {
 
 const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'chat-fullscreen', label: 'Chat', icon: MessageSquare },
-  { id: 'dynamic-app', label: 'Canvas', icon: LayoutDashboard },
+  { id: 'canvas', label: 'Canvas', icon: LayoutDashboard },
   // `external-preview` and `folders` are gated on workingMode=external
   // at the layout level (via `hiddenTabs`) so managed projects never
   // see them. They live next to Canvas because that's where the user
@@ -221,7 +221,7 @@ export function ProjectTopBar({
   projectName,
   projectId,
   projects = [],
-  activeTab = 'dynamic-app',
+  activeTab = 'canvas',
   onTabChange,
   onProjectSwitch,
   hasActiveSubscription = false,
@@ -310,12 +310,12 @@ export function ProjectTopBar({
     }
   }, [activeChatSessionId, chatRenameValue, onRenameChat])
 
-  const isCanvasActive = activeTab === 'dynamic-app'
+  const isCanvasActive = activeTab === 'canvas'
   const showSurfacePicker = (surfaceEntries?.length ?? 0) > 1
   const activeSurfaceEntry = surfaceEntries?.find(s => s.id === activeSurfaceId)
 
   const visibleTabs = AGENT_TABS.filter(tab => !hiddenTabs.includes(tab.id))
-  const narrowPrimaryIds = new Set(['chat-fullscreen', 'dynamic-app', 'app-preview', 'external-preview'])
+  const narrowPrimaryIds = new Set(['chat-fullscreen', 'canvas', 'app-preview', 'external-preview'])
   const narrowPrimaryTabs = visibleTabs.filter(t => narrowPrimaryIds.has(t.id))
   const narrowOverflowTabs = visibleTabs.filter(t => !narrowPrimaryIds.has(t.id))
   const narrowMoreItems = [
