@@ -3,7 +3,7 @@ name: research-deep
 version: 2.0.0
 description: Deep research on a topic — search multiple sources, build a canvas dashboard with findings
 trigger: "research|look up|find out about|deep dive|analyze|compare"
-tools: [web, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_write]
+tools: [web, memory_write]
 ---
 
 # Deep Research

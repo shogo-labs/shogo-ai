@@ -3,7 +3,7 @@ name: video-generation
 version: 1.0.0
 description: Generate AI marketing videos and images using Arcads API (Sora 2, Veo 3.1, Kling 3.0, Seedance 2.0, Nano Banana)
 trigger: "generate video|create ad|make video|ugc|video ad|ai video|render video|product video|b-roll|talking head|creative asset|generate image|character sheet|influencer"
-tools: [canvas_create, canvas_update, memory_read, memory_write, web, browser, shell]
+tools: [memory_read, memory_write, web, browser, shell]
 ---
 
 # Video Generation

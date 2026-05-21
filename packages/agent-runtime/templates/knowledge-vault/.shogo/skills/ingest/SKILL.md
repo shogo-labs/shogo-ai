@@ -3,7 +3,7 @@ name: ingest
 version: 1.0.0
 description: Capture any source (URL, PDF, audio, video, image, text) into the knowledge vault — extracts entities and claims, rewrites existing notes, flags contradictions
 trigger: "ingest|save|capture|add source|read this|import|bookmark|clip|highlight"
-tools: [web, browser, shell_exec, read_file, edit_file, memory_write, canvas_update, canvas_api_schema, canvas_api_seed]
+tools: [web, browser, shell_exec, read_file, edit_file, memory_write]
 ---
 
 # Source Ingestion

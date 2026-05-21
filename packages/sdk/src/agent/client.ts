@@ -9,8 +9,6 @@ import type {
   AgentStatus,
   ChatMessage,
   ChatOptions,
-  CanvasState,
-  ActionContext,
   FileNode,
   SearchResult,
   VisualMode,
@@ -126,23 +124,14 @@ export class AgentClient {
   }
 
   // ---------------------------------------------------------------------------
-  // Canvas / Dynamic App
+  // Workspace event stream
   // ---------------------------------------------------------------------------
 
   /**
-   * Subscribe to canvas surface updates via SSE.
-   * Returns an EventSource — listen to `message` events for JSON payloads.
-   */
-  subscribeToCanvas(): EventSource {
-    return new EventSource(this.url('/agent/canvas/stream'), { withCredentials: true })
-  }
-
-  /**
-   * Subscribe to live workspace events (file.changed / file.deleted / reload).
-   *
-   * Unlike {@link subscribeToCanvas}, this parses event JSON, filters/types
-   * it, and transparently reconnects with exponential backoff on error. Use
-   * this for IDE-style "agent is editing my file" UX.
+   * Subscribe to live workspace events (file.changed / file.deleted / reload)
+   * emitted by `/agent/canvas/stream`. Parses event JSON, filters/types it,
+   * and transparently reconnects with exponential backoff on error. Use this
+   * for IDE-style "agent is editing my file" UX.
    *
    * @returns A disposer — call it to close the stream. Idempotent.
    */
@@ -186,22 +175,6 @@ export class AgentClient {
       try { es?.close() } catch {}
       es = null
     }
-  }
-
-  async getCanvasState(): Promise<CanvasState> {
-    return this.fetchJson<CanvasState>('/agent/canvas/state')
-  }
-
-  async dispatchAction(
-    surfaceId: string,
-    actionName: string,
-    context?: ActionContext,
-  ): Promise<void> {
-    await this.fetchJson('/agent/canvas/action', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ surfaceId, name: actionName, context }),
-    })
   }
 
   // ---------------------------------------------------------------------------

@@ -4,8 +4,8 @@
  * @shogo-ai/sdk/agent
  *
  * First-class agent connection module. Provides a typed client and React hooks
- * for communicating with a Shogo agent runtime — status, chat, canvas streaming,
- * workspace files, and mode control.
+ * for communicating with a Shogo agent runtime — status, chat, workspace
+ * files, and mode control.
  *
  * Apps built on Shogo run on the same pod as their agent, so the client defaults
  * to relative URLs with zero configuration.
@@ -20,12 +20,11 @@
  *
  * @example React hooks
  * ```typescript
- * import { useAgentStatus, useAgentChat, useCanvasStream } from '@shogo-ai/sdk/agent'
+ * import { useAgentStatus, useAgentChat } from '@shogo-ai/sdk/agent'
  *
  * function Dashboard() {
  *   const { status } = useAgentStatus({ pollInterval: 5000 })
  *   const { messages, send, isStreaming } = useAgentChat()
- *   const { surfaces, dispatchAction } = useCanvasStream()
  *   // ...
  * }
  * ```
@@ -39,7 +38,6 @@ export type { WorkspaceEvent } from './client.js'
 export {
   useAgentStatus,
   useAgentChat,
-  useCanvasStream,
   useAgentMode,
   useAgentFiles,
 } from './hooks.js'
@@ -55,10 +53,6 @@ export type {
   ChatMessagePart,
   ChatOptions,
   ChatStreamEvent,
-  Surface,
-  CanvasComponent,
-  CanvasState,
-  ActionContext,
   FileNode,
   SearchResult,
   VisualMode,
@@ -71,8 +65,6 @@ export type {
   UseAgentStatusResult,
   UseAgentChatOptions,
   UseAgentChatResult,
-  UseCanvasStreamOptions,
-  UseCanvasStreamResult,
   UseAgentModeOptions,
   UseAgentModeResult,
   UseAgentFilesOptions,
