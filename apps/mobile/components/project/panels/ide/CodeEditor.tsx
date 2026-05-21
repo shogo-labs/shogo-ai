@@ -1,10 +1,41 @@
-import Editor, { type OnMount } from "@monaco-editor/react";
+import Editor, { loader, type OnMount } from "@monaco-editor/react";
 import { useEffect, useRef } from "react";
 import type { editor } from "monaco-editor";
 import type { EditorSettings } from "./types";
 import { setupAgentFix } from "./agentFixProvider";
 import { setMonacoRef } from "./monaco/workspaceModels";
 import { setupExtraLibs } from "./monaco/extraLibs";
+
+// Point `@monaco-editor/loader` at our self-hosted Monaco bundle (mirrored
+// from `node_modules/monaco-editor/min/vs` into `public/vs` by
+// `scripts/copy-monaco-vs.mjs`) so the AMD loader script is served from
+// the same origin as the app shell.
+//
+// Why we can't use the default CDN (`https://cdn.jsdelivr.net/...`):
+//   - Packaged desktop loads the renderer from `shogo://app/` under a tight
+//     CSP — `script-src 'self' shogo: blob: 'unsafe-inline' 'unsafe-eval'`
+//     (apps/desktop/src/main.ts, `setupSessionHandlers`). That has no
+//     `https:`, so the CDN script load is blocked, `@monaco-editor/loader`
+//     rejects with a script-load `Event`, and the renderer logs
+//     `Monaco initialization: error: Event`. The IDE editor stays blank.
+//   - Even when the CDN is reachable, self-hosting is the offline-friendly
+//     default and matches what `bundle-monaco-types.mjs` already does for
+//     React/CSS-type extraLibs.
+//
+// `loader.config()` mutates the loader's internal paths object; it must run
+// before any `<Editor>` mounts (i.e. before the first `loader.init()`).
+// Module-level evaluation runs on first import of this file, which is
+// guaranteed to be before React renders the component below.
+//
+// The `/vs` path resolves the same way in every host:
+//   - Expo dev (`expo start --web`) serves `public/` at `/`, so the loader
+//     fetches `http://localhost:8081/vs/loader.js`.
+//   - Expo `export --platform web` copies `public/` into `dist/`, so the
+//     loader fetches `${origin}/vs/loader.js` from whatever host serves it.
+//   - Desktop's `shogo://app/` protocol handler resolves URL paths against
+//     `resources/web/`, so `/vs/loader.js` lands on `resources/web/vs/loader.js`
+//     — matching `'self'` in CSP.
+loader.config({ paths: { vs: "/vs" } });
 
 /* -------------------------------------------------------------------------- *
  * One-time Monaco setup: TS/JSX compiler defaults so the TS worker gives us
