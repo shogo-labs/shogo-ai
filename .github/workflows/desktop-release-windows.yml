@@ -17,8 +17,51 @@ env:
   QEMU_VERSION: '9.2.0'
 
 jobs:
+  preflight:
+    # Release-blocking sanity checks that have no platform dependencies.
+    # Runs FIRST and gates every downstream job. The intent is that a
+    # broken migration (or any other check we add here) stops the
+    # release before we spend ~20 build-minutes on Windows / macOS
+    # runners producing an installer nobody can use anyway.
+    #
+    # PR CI runs the same checks via .github/workflows/ci.yml; this job
+    # is the backstop for the case where a regression sneaks in via
+    # direct main push, merge-queue race, or out-of-PR tag push.
+    name: Preflight checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Replay desktop SQLite migrations against an empty DB
+        # Catches the "shipped a migration without its prerequisite"
+        # bug class that bricked v1.7.8 for every existing user. See
+        # scripts/check-migrations.ts for the full background.
+        # No dependency install needed — the script uses bun:sqlite
+        # which is statically linked into the bun binary.
+        run: bun scripts/check-migrations.ts
+
+      - name: Install dependencies (for prisma migrate diff)
+        # The drift check shells out to `prisma migrate diff`, which
+        # needs the `prisma` package installed. We install with
+        # --frozen-lockfile to avoid recomputing the lock during a
+        # release and skip postinstall scripts for speed (db
+        # generation isn't needed for a CLI invocation).
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Check desktop SQLite migrations match schema.local.prisma
+        # Backstop for the other half of the v1.7.8 bug class — see the
+        # equivalent step in .github/workflows/ci.yml for the full
+        # narrative. Gates the release the same way ci.yml gates the PR.
+        run: bun run check:desktop-schema-drift
+
   build-web:
     name: Build Expo Web
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -65,7 +108,7 @@ jobs:
 
   build-desktop:
     name: Build Desktop (Windows x64)
-    needs: build-web
+    needs: [preflight, build-web]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

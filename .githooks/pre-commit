@@ -7,12 +7,13 @@
 # This catches the common "forgot to generate a migration" mistake before it
 # hits main.
 #
-# Previous versions of this hook ran `prisma migrate diff --from-migrations
-# --to-schema-datamodel ...` to catch partial migrations too, but Prisma v7
-# removed --to-schema-datamodel and now requires a shadow database URL for
-# --from-migrations, which is too heavy for a pre-commit hook. The file-
-# presence check covers the vast majority of real-world mistakes without any
-# DB dependency.
+# As of 2026-05-21 the hook also runs scripts/check-desktop-schema-drift.ts
+# when the desktop SQLite schema or any of its migrations change — that
+# script wraps `prisma migrate diff --from-migrations --to-schema` (Prisma
+# v7's rename of the old --to-schema-datamodel) and catches the "schema
+# updated but no migration generated for it" failure mode. SQLite uses an
+# in-memory shadow DB so no external connection is needed; the check runs
+# in ~3s locally.
 #
 # To skip this check (e.g. comment-only reformatting of the schema), use
 # `git commit --no-verify`.
@@ -91,6 +92,50 @@ if printf '%s\n' "$staged_files" | grep -qxE "${CLOUD_SCHEMA}|${LOCAL_SCHEMA}"; 
     fi
   else
     echo "[pre-commit] WARN: bun not on PATH — skipping schema parity check."
+  fi
+fi
+
+# When a desktop SQLite migration is added or changed, replay the full
+# history from scratch. Catches the failure mode where a migration is
+# shipped without its prerequisite — e.g. an ALTER TABLE for which no
+# earlier migration ever CREATE TABLEs the target. That bug silently
+# bricks the packaged desktop app for every user on next launch (Prisma
+# records the failure with finished_at=NULL and P3009 trips forever
+# after). The replay is fast (~1s, in-memory SQLite via bun) so we can
+# afford it on pre-commit when migrations are touched.
+if printf '%s\n' "$staged_files" | grep -qE "^${LOCAL_MIGRATIONS}/[^/]+/migration\.sql$"; then
+  echo "[pre-commit] Desktop SQLite migration changed — replaying full history..."
+  if command -v bun >/dev/null 2>&1; then
+    if ! bun scripts/check-migrations.ts --quiet; then
+      rc=1
+    fi
+  else
+    echo "[pre-commit] WARN: bun not on PATH — skipping migration replay check."
+  fi
+fi
+
+# When the SQLite schema OR any desktop migration changes, also verify
+# the migration history *actually produces* the schema. The replay
+# above proves the migrations run, but doesn't notice when a model is
+# added to schema.local.prisma without a corresponding CREATE TABLE —
+# the exact failure mode that bricked v1.7.8 (marketplace tables in
+# the schema, only follow-up ALTERs in the migration tree). Uses
+# `prisma migrate diff --from-migrations --to-schema` under the hood;
+# Prisma's in-memory shadow DB makes this fast (~3s).
+#
+# The script applies an allow-list of pre-existing drift so today's
+# tech-debt doesn't break new PRs (run `bun run check:desktop-schema-drift`
+# locally to see the full state). New drift on any table NOT on the
+# allow-list fails the commit with a pointer to `bun run db:migrate:desktop`.
+if printf '%s\n' "$staged_files" | grep -qxE "${LOCAL_SCHEMA}" \
+   || printf '%s\n' "$staged_files" | grep -qE "^${LOCAL_MIGRATIONS}/[^/]+/migration\.sql$"; then
+  echo "[pre-commit] Desktop SQLite schema or migration changed — checking drift..."
+  if command -v bun >/dev/null 2>&1; then
+    if ! bun scripts/check-desktop-schema-drift.ts --quiet; then
+      rc=1
+    fi
+  else
+    echo "[pre-commit] WARN: bun not on PATH — skipping schema drift check."
   fi
 fi
 
