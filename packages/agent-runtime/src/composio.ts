@@ -587,8 +587,21 @@ async function initiateComposioAuth(
     const callbackBase = isCloudProxy
       ? (process.env.SHOGO_CLOUD_URL || 'https://studio.shogo.ai').replace(/\/$/, '')
       : (process.env.BETTER_AUTH_URL || process.env.API_URL || 'http://localhost:8002')
+    // No `redirect` param: the agent-runtime initiates this from the
+    // server side and has no first-class knowledge of which UI client
+    // (localhost browser, native, Electron) is actually waiting for the
+    // connection. The post-callback page falls through to the
+    // "you can close this window" branch and the UI then polls
+    // `/api/integrations/status/:toolkit` to discover completion. Any
+    // UI client that wants an explicit return navigation re-initiates
+    // through `POST /api/integrations/connect` with its own `callbackUrl`.
+    //
+    // We used to hardcode `redirect=shogo://integrations-callback` here,
+    // which OS-routed the user to the registered desktop-app protocol
+    // handler regardless of where they actually came from — sending
+    // localhost-web users into the desktop app on completion.
     const connection = await session.authorize(toolkitSlug, {
-      callbackUrl: `${callbackBase}/api/integrations/callback?toolkit=${encodeURIComponent(toolkitSlug)}&redirect=${encodeURIComponent('shogo://integrations-callback')}`,
+      callbackUrl: `${callbackBase}/api/integrations/callback?toolkit=${encodeURIComponent(toolkitSlug)}`,
     })
 
     const redirectUrl = (connection as any)?.redirectUrl || (connection as any)?.redirect_url
