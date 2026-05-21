@@ -233,6 +233,30 @@ describe('resolveProjectPodUrl', () => {
       expect(mgr.start).toHaveBeenCalledTimes(1)
     })
 
+    it('calls manager.start when status is starting (joins inflight prewarm)', async () => {
+      // Regression: the home composer fires `POST /runtime/prewarm` which
+      // allocates `agentPort` synchronously and sets `status: 'starting'`
+      // long before Vite + the agent-runtime are listening. A previous
+      // gate of "agentPort set & status !== stopped/error" would skip the
+      // await and let `/sandbox/url` return URLs the runtime wasn't
+      // listening on yet — ECONNREFUSED on the canvas / preview iframe /
+      // agent SSE. `manager.start()` dedupes via `startingPromises`, so
+      // calling it here joins the inflight start instead of triggering a
+      // second spawn.
+      const starting = fakeRuntime({ status: 'starting' })
+      const mgr = fakeRuntimeManager(starting)
+      const res = await resolveProjectPodUrl('proj-1', {
+        _isKubernetes: () => false,
+        _isVMIsolation: () => false,
+        runtimeManager: mgr as any,
+      })
+      expect(mgr.start).toHaveBeenCalledTimes(1)
+      expect(res.mode).toBe('host')
+      // start() resolves to a `running` runtime (see fakeRuntimeManager),
+      // so the resolved URL reflects the now-ready agent port.
+      expect(res.url).toBe('http://localhost:38500')
+    })
+
     it('falls back to runtime.port+1000 when agentPort is set later but undefined now', async () => {
       // Captures the legacy convention `agentPort ?? port + 1000`.
       const mgr = fakeRuntimeManager()
