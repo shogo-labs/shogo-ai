@@ -26,6 +26,19 @@ import {
 } from './recording'
 import { createTray, destroyTray } from './tray'
 import { runCloudLogin, CloudLoginError } from '@shogo-ai/worker/cloud-login'
+import {
+  openPreview,
+  closePreview,
+  setPreviewBounds,
+  setPreviewVisible,
+  reloadPreview,
+  goBackPreview,
+  goForwardPreview,
+  getPreviewState,
+  closeAllForWindow,
+  onPreviewEvent,
+  type PreviewBounds,
+} from './preview-views'
 
 // Shape of JSON responses from the local API's cloud-login endpoints
 // (used by the heartbeat + signout helpers below). Every field is optional
@@ -648,6 +661,78 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('get-system-info', () => collectSystemInfo())
+
+  // ---------------------------------------------------------------------
+  // External preview: Electron WebContentsView overlay
+  // ---------------------------------------------------------------------
+  //
+  // For projects with `workingMode === 'external'` we let users embed a
+  // real Chromium view of their own dev server. The view lives in
+  // `preview-views.ts` as a per-project registry; main.ts is the IPC
+  // bridge between the renderer (React layout) and that registry.
+  //
+  // Bounds are pushed by the renderer in window-local CSS pixels; we pass
+  // them straight through because `WebContentsView.setBounds` operates in
+  // the same coordinate space as the host BrowserWindow.
+
+  ipcMain.handle(
+    'preview:open',
+    (event, args: { projectId: string; url: string; allowNonLocal?: boolean }) => {
+      const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow()
+      if (!win) return { ok: false, error: 'no-window' }
+      return openPreview(args?.projectId, args?.url, win, {
+        allowNonLocal: !!args?.allowNonLocal,
+      })
+    },
+  )
+
+  ipcMain.handle('preview:close', (_event, args: { projectId: string }) => {
+    closePreview(args?.projectId)
+    return { ok: true }
+  })
+
+  ipcMain.handle('preview:set-bounds', (_event, args: { projectId: string; bounds: PreviewBounds }) => {
+    if (!args?.projectId || !args?.bounds) return { ok: false }
+    setPreviewBounds(args.projectId, args.bounds)
+    return { ok: true }
+  })
+
+  ipcMain.handle('preview:set-visible', (_event, args: { projectId: string; visible: boolean }) => {
+    if (!args?.projectId) return { ok: false }
+    setPreviewVisible(args.projectId, !!args.visible)
+    return { ok: true }
+  })
+
+  ipcMain.handle('preview:reload', (_event, args: { projectId: string }) => {
+    reloadPreview(args?.projectId)
+    return { ok: true }
+  })
+
+  ipcMain.handle('preview:go-back', (_event, args: { projectId: string }) => {
+    goBackPreview(args?.projectId)
+    return { ok: true }
+  })
+
+  ipcMain.handle('preview:go-forward', (_event, args: { projectId: string }) => {
+    goForwardPreview(args?.projectId)
+    return { ok: true }
+  })
+
+  ipcMain.handle('preview:get-state', (_event, args: { projectId: string }) => {
+    return getPreviewState(args?.projectId)
+  })
+
+  // Forward preview events to every renderer. The renderer ignores events
+  // for project IDs it doesn't care about, so a single shared channel is
+  // fine — there's only one BrowserWindow in practice.
+  onPreviewEvent((ev) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue
+      try {
+        win.webContents.send('preview:event', ev)
+      } catch {}
+    }
+  })
 }
 
 function createWindow(): void {
@@ -693,6 +778,7 @@ function createWindow(): void {
   })
 
   mainWindow.on('closed', () => {
+    if (mainWindow) closeAllForWindow(mainWindow)
     mainWindow = null
   })
 
