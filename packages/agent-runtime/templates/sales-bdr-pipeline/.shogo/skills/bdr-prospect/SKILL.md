@@ -3,7 +3,7 @@ name: bdr-prospect
 version: 1.0.0
 description: Research target accounts, enrich leads, draft personalized cold-email openers, and queue Gmail drafts for review
 trigger: "bdr|prospect|cold email|cold outreach|outbound|lead list|enrich|series a|founders"
-tools: [tool_search, tool_install, web, browser, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_read, memory_write, send_message]
+tools: [tool_search, tool_install, web, browser, memory_read, memory_write, send_message]
 ---
 
 # BDR Prospecting

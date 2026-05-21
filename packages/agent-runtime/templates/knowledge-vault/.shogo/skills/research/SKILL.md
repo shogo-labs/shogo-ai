@@ -3,7 +3,7 @@ name: research
 version: 1.0.0
 description: Deep research with citations — vault-first knowledge check then targeted web research to fill gaps
 trigger: "research|look up|investigate|deep dive|what do we know about|explore topic|find out about"
-tools: [web, browser, read_file, edit_file, memory_write, canvas_update, canvas_api_seed]
+tools: [web, browser, read_file, edit_file, memory_write]
 ---
 
 # Research Engine

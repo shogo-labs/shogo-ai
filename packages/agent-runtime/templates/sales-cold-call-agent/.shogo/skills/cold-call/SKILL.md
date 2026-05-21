@@ -3,7 +3,7 @@ name: cold-call
 version: 1.0.0
 description: Place outbound cold calls via Twilio + ElevenLabs, qualify prospects, stream live transcripts, and book demos
 trigger: "cold call|call the|dial|outbound call|book a demo|qualify"
-tools: [tool_search, tool_install, voice_call, voice_stream, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_read, memory_write, send_message]
+tools: [tool_search, tool_install, voice_call, voice_stream, memory_read, memory_write, send_message]
 ---
 
 # Cold Call Workflow
