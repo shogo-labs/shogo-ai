@@ -153,6 +153,14 @@ export interface ProjectTopBarProps {
   onChatSessionsToggle?: () => void
   onChatCollapseToggle?: () => void
   onCreateNewSession?: () => void
+  /**
+   * Narrow (mobile) only: toggle the in-place chat-session picker that
+   * temporarily replaces the chat panel with the session list. The wide
+   * layout uses `onChatSessionsToggle` for the inline sidebar instead.
+   */
+  onOpenChatSessions?: () => void
+  /** Narrow (mobile) only: whether the in-place picker is currently shown. */
+  chatSessionsOpen?: boolean
   chatPanelWidth?: number
   chatFullscreenSidebarWidth?: number
   /** Search chats — shown in the top bar left zone when in fullscreen chat mode. */
@@ -252,6 +260,8 @@ export function ProjectTopBar({
   onChatSessionsToggle,
   onChatCollapseToggle,
   onCreateNewSession,
+  onOpenChatSessions,
+  chatSessionsOpen = false,
   chatPanelWidth: chatPanelWidthProp,
   chatFullscreenSidebarWidth,
   onSearchChats,
@@ -437,6 +447,15 @@ export function ProjectTopBar({
         </View>
 
         <View className="flex-1" />
+
+        {onOpenChatSessions && narrowActiveTab === 'chat' && (
+          <BarIconButton
+            icon={History}
+            onPress={onOpenChatSessions}
+            active={chatSessionsOpen}
+            title={chatSessionsOpen ? 'Hide chat history' : 'Chat history'}
+          />
+        )}
 
         {narrowMoreItems.length > 0 && (
           <Popover

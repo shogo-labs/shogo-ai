@@ -71,15 +71,7 @@ import { agentFetch } from '../../../../lib/agent-fetch'
 import { useActiveInstance } from '../../../../contexts/active-instance'
 import { ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
 import { CanvasWebView } from '../../../../components/canvas/CanvasWebView'
-import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
-import { CanvasErrorBoundary } from '../../../../components/dynamic-app/CanvasErrorBoundary'
-import { CanvasWebView } from '../../../../components/dynamic-app/CanvasWebView'
-import { ExternalPreviewWebView } from '../../../../components/dynamic-app/ExternalPreviewWebView'
-import { EditModeProvider, useEditModeOptional } from '../../../../components/dynamic-app/edit/EditModeContext'
-import { AddComponentDialog } from '../../../../components/dynamic-app/edit/AddComponentDialog'
-import { InspectorPanel } from '../../../../components/dynamic-app/edit/InspectorPanel'
-import { ComponentTreePanel } from '../../../../components/dynamic-app/edit/ComponentTreePanel'
-import { CanvasThemeProvider, CanvasThemedContainer, useCanvasThemeOptional } from '../../../../components/dynamic-app/CanvasThemeContext'
+import { ExternalPreviewWebView } from '../../../../components/canvas/ExternalPreviewWebView'
 import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
 import { PanelErrorBoundary } from '../../../../components/project/panels/PanelErrorBoundary'
 import {
@@ -1006,7 +998,18 @@ export default observer(function ProjectLayout() {
   // preference survives navigation; only read once per project mount.
   const showChatSessionsHydratedRef = useRef<string | null>(null)
   const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
+  // Narrow (mobile) chat-session picker that temporarily replaces the chat
+  // panel with the session list. Auto-closes when the user leaves the chat tab.
+  const [narrowChatPickerOpen, setNarrowChatPickerOpen] = useState(false)
   const [previewTab, setPreviewTab] = useState('canvas')
+
+  // Close the narrow picker as soon as the layout shifts off the chat tab
+  // (e.g. user switched to canvas, or the viewport widened into split mode).
+  useEffect(() => {
+    if (narrowChatPickerOpen && (isWide || activeTab !== 'chat')) {
+      setNarrowChatPickerOpen(false)
+    }
+  }, [narrowChatPickerOpen, isWide, activeTab])
 
   useEffect(() => {
     if (!projectId) return
@@ -1868,6 +1871,11 @@ export default observer(function ProjectLayout() {
     chatPanelWidth: clampChatWidth(chatPanelWidth) + (isWide && !isChatFullscreen && showChatSessions ? 280 : 0),
     chatFullscreenSidebarWidth: isChatFullscreen ? 280 : undefined,
     onSearchChats: isChatFullscreen ? () => setSidebarSearchOpen(true) : undefined,
+    // Narrow-only: tapping the History icon swaps the chat panel for the
+    // session list. Closing happens when the user picks/creates a session,
+    // taps the icon again, or leaves the chat tab.
+    onOpenChatSessions: !isWide ? () => setNarrowChatPickerOpen((p) => !p) : undefined,
+    chatSessionsOpen: !isWide && narrowChatPickerOpen,
     onNewChat: isChatFullscreen ? handleCreateNewSession : undefined,
     onRenameChat: isChatFullscreen ? handleRenameChatSession : undefined,
     onDeleteChat: isChatFullscreen ? handleDeleteChatSession : undefined,
@@ -1896,296 +1904,320 @@ export default observer(function ProjectLayout() {
         initialEzModeActive={Platform.OS === 'web' && capturedStartEzMode}
         initialAutoStartVoice={Platform.OS === 'web' && capturedStartEzMode && capturedAutoStartVoice}
       >
-      <CanvasThemeProvider projectSettings={projectSettings} onUpdateSettings={handleUpdateCanvasSettings}>
-        <View className="flex-1 bg-background">
-            {isWide ? (
-              <ProjectTopBar
-                {...topBarSharedProps}
-                onTabChange={handlePreviewTabChange}
-              />
-            ) : (
-              <ProjectTopBar
-                {...topBarSharedProps}
-                narrowActiveTab={activeTab}
-                narrowPreviewTab={previewTab}
-                onNarrowTabChange={(tab: 'chat' | 'canvas') => {
-                  setActiveTab(tab)
-                  if (tab === 'canvas') {
-                    setPreviewTab('canvas')
-                  } else {
-                    // Clear standalone preview (files, capabilities, …) so the chat column shows
-                    // and the next “canvas” visit doesn’t reopen the old panel on top.
-                    setPreviewTab('chat-fullscreen')
-                  }
-                }}
-                onTabChange={(tabId: string) => {
-                  handlePreviewTabChange(tabId)
-                  if (tabId !== 'canvas' && tabId !== 'app-preview' && tabId !== 'chat-fullscreen') setActiveTab('canvas')
-                }}
-              />
-            )}
+      <View className="flex-1 bg-background">
+          {isWide ? (
+            <ProjectTopBar
+              {...topBarSharedProps}
+              onTabChange={handlePreviewTabChange}
+            />
+          ) : (
+            <ProjectTopBar
+              {...topBarSharedProps}
+              narrowActiveTab={activeTab}
+              narrowPreviewTab={previewTab}
+              onNarrowTabChange={(tab: 'chat' | 'canvas') => {
+                setActiveTab(tab)
+                if (tab === 'canvas') {
+                  setPreviewTab('canvas')
+                } else {
+                  // Clear standalone preview (files, capabilities, …) so the chat column shows
+                  // and the next “canvas” visit doesn’t reopen the old panel on top.
+                  setPreviewTab('chat-fullscreen')
+                }
+              }}
+              onTabChange={(tabId: string) => {
+                handlePreviewTabChange(tabId)
+                if (tabId !== 'canvas' && tabId !== 'app-preview' && tabId !== 'chat-fullscreen') setActiveTab('canvas')
+              }}
+            />
+          )}
 
-            {/* Content — chat panel stays mounted across layout/tab changes */}
-            <View className={cn('flex-1', isWide && 'flex-row')} ref={splitRowRef}>
-              {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
-              {/* Sidebar is shown always in fullscreen and toggleable in wide-split via showChatSessions. */}
-              {(() => {
-                const showSidebar = isChatFullscreen || (isWide && showChatSessions)
-                return (
-                  <View
-                    className={cn(
-                      'flex min-h-0',
-                      isChatFullscreen
-                        ? 'flex-1 flex-row'
-                        : isWide
-                          ? cn('shrink-0 bg-background z-10', showSidebar ? 'flex-row' : 'flex-col')
-                          : 'relative flex-1 flex-col',
-                      !isChatFullscreen && chatHidden && 'hidden',
+          {/* Content — chat panel stays mounted across layout/tab changes */}
+          <View className={cn('flex-1', isWide && 'flex-row')} ref={splitRowRef}>
+            {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
+            {/* Sidebar is shown always in fullscreen and toggleable in wide-split via showChatSessions. */}
+            {(() => {
+              const showSidebar = isChatFullscreen || (isWide && showChatSessions)
+              return (
+                <View
+                  className={cn(
+                    'flex min-h-0',
+                    isChatFullscreen
+                      ? 'flex-1 flex-row'
+                      : isWide
+                        ? cn('shrink-0 bg-background z-10', showSidebar ? 'flex-row' : 'flex-col')
+                        : 'relative flex-1 flex-col',
+                    !isChatFullscreen && chatHidden && 'hidden',
+                  )}
+                  style={
+                    !isChatFullscreen && isWide && !chatHidden
+                      ? { width: clampChatWidth(chatPanelWidth) + (showSidebar ? 280 : 0) }
+                      : undefined
+                  }
+                >
+                  {showSidebar && (
+                    <View className="w-[200px] bg-muted/50 dark:bg-black/30 border-r border-border">
+                      <ChatSessionSidebar
+                        sessions={chatSessions}
+                        currentSessionId={chatSessionId ?? undefined}
+                        onSelect={(sessionId) => {
+                          setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
+                          setChatSessionId(sessionId)
+                        }}
+                        onCreate={handleCreateNewSession}
+                        onRename={handleRenameChatSession}
+                        onDelete={handleDeleteChatSession}
+                        onLoadMore={handleLoadMoreSessions}
+                        hasMore={store?.chatSessionCollection?.hasMore ?? false}
+                        isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
+                        hideHeader
+                        searchOpen={sidebarSearchOpen}
+                        onSearchClose={() => setSidebarSearchOpen(false)}
+                        streamingSessionIds={streamingTabIds}
+                        completedSessionIds={completedTabIds}
+                      />
+                    </View>
+                  )}
+                  <View className="flex-1 min-h-0 relative">
+                    <View
+                      className="absolute inset-0"
+                      style={showEmptyChatState || narrowChatPickerOpen ? { opacity: 0 } : undefined}
+                      pointerEvents={showEmptyChatState || narrowChatPickerOpen ? 'none' : 'auto'}
+                    >
+                      <EzModeAwareChatPanels>{chatPanels}</EzModeAwareChatPanels>
+                    </View>
+                    {showEmptyChatState && (
+                      isChatFullscreen || showSidebar ? (
+                        <View className="absolute inset-0 bg-background items-center justify-center px-8">
+                          <MessageSquare size={28} className="text-muted-foreground" />
+                          <Text className="text-sm text-muted-foreground mt-3 text-center">
+                            No chat open. Pick one from the list on the left, or start a new chat.
+                          </Text>
+                        </View>
+                      ) : (
+                        <View className="absolute inset-0 bg-background">
+                          {renderEmptyChatList()}
+                        </View>
+                      )
                     )}
-                    style={
-                      !isChatFullscreen && isWide && !chatHidden
-                        ? { width: clampChatWidth(chatPanelWidth) + (showSidebar ? 280 : 0) }
-                        : undefined
-                    }
-                  >
-                    {showSidebar && (
-                      <View className="w-[280px] bg-muted/50 dark:bg-black/30 border-r border-border">
+                    {!showEmptyChatState && narrowChatPickerOpen && !isWide && activeTab === 'chat' && (
+                      <View className="absolute inset-0 bg-background">
                         <ChatSessionSidebar
                           sessions={chatSessions}
                           currentSessionId={chatSessionId ?? undefined}
                           onSelect={(sessionId) => {
-                            setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
+                            setOpenChatTabIds((prev) =>
+                              prev.includes(sessionId) ? prev : [...prev, sessionId],
+                            )
                             setChatSessionId(sessionId)
+                            setNarrowChatPickerOpen(false)
                           }}
-                          onCreate={handleCreateNewSession}
+                          onCreate={() => {
+                            void handleCreateNewSession()
+                            setNarrowChatPickerOpen(false)
+                          }}
                           onRename={handleRenameChatSession}
                           onDelete={handleDeleteChatSession}
                           onLoadMore={handleLoadMoreSessions}
                           hasMore={store?.chatSessionCollection?.hasMore ?? false}
                           isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
-                          hideHeader
-                          searchOpen={sidebarSearchOpen}
-                          onSearchClose={() => setSidebarSearchOpen(false)}
                           streamingSessionIds={streamingTabIds}
                           completedSessionIds={completedTabIds}
                         />
                       </View>
                     )}
-                    <View className="flex-1 min-h-0 relative">
-                      <View
-                        className="absolute inset-0"
-                        style={showEmptyChatState ? { opacity: 0 } : undefined}
-                        pointerEvents={showEmptyChatState ? 'none' : 'auto'}
-                      >
-                        <EzModeAwareChatPanels>{chatPanels}</EzModeAwareChatPanels>
-                      </View>
-                      {showEmptyChatState && (
-                        isChatFullscreen || showSidebar ? (
-                          <View className="absolute inset-0 bg-background items-center justify-center px-8">
-                            <MessageSquare size={28} className="text-muted-foreground" />
-                            <Text className="text-sm text-muted-foreground mt-3 text-center">
-                              No chat open. Pick one from the list on the left, or start a new chat.
-                            </Text>
-                          </View>
-                        ) : (
-                          <View className="absolute inset-0 bg-background">
-                            {renderEmptyChatList()}
-                          </View>
-                        )
-                      )}
-                    </View>
                   </View>
-                )
-              })()}
+                </View>
+              )
+            })()}
 
-              {/* Drag handle to resize chat panel (web only, wide split mode) */}
-              {Platform.OS === 'web' && isWide && !isChatFullscreen && !chatHidden && (
-                <ChatPanelResizeHandle
-                  splitRowRef={splitRowRef}
-                  chatPanelWidth={clampChatWidth(chatPanelWidth)}
-                  minWidth={MIN_CHAT_PANEL_WIDTH}
-                  maxWidth={maxChatPanelWidth}
-                  onResize={setChatPanelWidth}
-                  onResizeEnd={persistChatPanelWidth}
-                  defaultWidth={DEFAULT_CHAT_PANEL_WIDTH}
-                  leftOffset={showChatSessions ? 280 : 0}
-                />
-              )}
-
-          {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
-          <View
-            className={cn(
-              'relative flex-1 overflow-hidden',
-              canvasAreaHidden && 'hidden',
-              Platform.OS === 'web' && !canvasAreaHidden && 'min-h-0',
+            {/* Drag handle to resize chat panel (web only, wide split mode) */}
+            {Platform.OS === 'web' && isWide && !isChatFullscreen && !chatHidden && (
+              <ChatPanelResizeHandle
+                splitRowRef={splitRowRef}
+                chatPanelWidth={clampChatWidth(chatPanelWidth)}
+                minWidth={MIN_CHAT_PANEL_WIDTH}
+                maxWidth={maxChatPanelWidth}
+                onResize={setChatPanelWidth}
+                onResizeEnd={persistChatPanelWidth}
+                defaultWidth={DEFAULT_CHAT_PANEL_WIDTH}
+                leftOffset={showChatSessions ? 280 : 0}
+              />
             )}
+
+        {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
+        <View
+          className={cn(
+            'relative flex-1 overflow-hidden',
+            canvasAreaHidden && 'hidden',
+            Platform.OS === 'web' && !canvasAreaHidden && 'min-h-0',
+          )}
+        >
+          <DrawerHost
+            projectId={projectId ?? null}
+            agentUrl={agentUrl ?? null}
+            messages={chatMessages}
+            platformIsWeb={Platform.OS === 'web'}
+            canvasAreaHidden={canvasAreaHidden}
+            isChatFullscreen={isChatFullscreen}
           >
-            <DrawerHost
-              projectId={projectId ?? null}
-              agentUrl={agentUrl ?? null}
-              messages={chatMessages}
-              platformIsWeb={Platform.OS === 'web'}
-              canvasAreaHidden={canvasAreaHidden}
-              isChatFullscreen={isChatFullscreen}
-            >
-            {/* Floating chat button on native narrow canvas — above every canvas sub-tab (z-20 panels) */}
-            {showNativeNarrowChatFab && (
-              <SafeAreaView
-                edges={['bottom']}
-                className="absolute bottom-0 right-0 z-30 pr-4 pb-4"
-                pointerEvents="box-none"
-                style={
-                  narrowCanvasKeyboardInset > 0
-                    ? { marginBottom: narrowCanvasKeyboardInset }
-                    : undefined
-                }
-              >
-                <Pressable
-                  onPress={() => {
-                    setActiveTab('chat')
-                    setPreviewTab('chat-fullscreen')
-                  }}
-                  className="flex-row items-center gap-1.5 rounded-full bg-primary px-4 py-2.5 shadow-lg"
-                >
-                  <MessageSquare size={16} className="text-primary-foreground" />
-                  <Text className="text-sm font-semibold text-primary-foreground">Chat</Text>
-                </Pressable>
-              </SafeAreaView>
-            )}
-
-            {canvasEnabled && previewTab === 'canvas' && (
-              <View className="absolute inset-0">
-                <PanelErrorBoundary panelName="Canvas">
-                  {canvasPanel}
-                </PanelErrorBoundary>
-              </View>
-            )}
-            {previewTab === 'app-preview' && (
-              <View
-                className={cn(
-                  'absolute inset-0 overflow-hidden',
-                  Platform.OS === 'web' && 'z-0',
-                )}
-              >
-                <AppPreviewPanel previewUrl={previewUrl ?? null} agentUrl={agentUrl ?? null} />
-              </View>
-            )}
-            <View
-              className={cn(
-                'absolute inset-0',
-                STANDALONE_PANELS.includes(previewTab)
-                  ? 'z-20 bg-background'
-                  : 'pointer-events-none',
-              )}
-              pointerEvents={
-                STANDALONE_PANELS.includes(previewTab)
-                  ? 'auto'
-                  : 'none'
-              }
-            >
-              <PanelErrorBoundary panelName="IDE">
-                <IDEPanel visible={previewTab === 'ide'} projectId={projectId!} projectName={project.name} agentUrl={agentUrl} />
-              </PanelErrorBoundary>
-              <PanelErrorBoundary panelName="Files">
-                <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
-              </PanelErrorBoundary>
-              <PanelErrorBoundary panelName="Capabilities">
-                <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} techStackId={techStackId} onTechStackChange={handleTechStackChange} selectedModel={selectedModel} onModelChange={handleModelChange} />
-              </PanelErrorBoundary>
-              <PanelErrorBoundary panelName="Channels">
-                <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} workspaceId={project?.workspaceId} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
-              </PanelErrorBoundary>
-              <PanelErrorBoundary panelName="Agents">
-                <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} agentUrl={agentUrl} />
-              </PanelErrorBoundary>
-              <PanelErrorBoundary panelName="Monitor">
-                <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
-              </PanelErrorBoundary>
-              <PanelErrorBoundary panelName="Plans">
-                <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} selectedModel={selectedModel} requestedPlanPath={requestedPlanPath} onBuildPlan={handleBuildPlan} />
-              </PanelErrorBoundary>
-              <PanelErrorBoundary panelName="Checkpoints">
-                <CheckpointsPanel visible={previewTab === 'checkpoints'} projectId={projectId!} />
-              </PanelErrorBoundary>
-              <PanelErrorBoundary panelName="Folders">
-                <FoldersPanel
-                  visible={previewTab === 'folders'}
-                  projectId={projectId!}
-                  onChange={() => {
-                    // Re-pull the project so workingMode/trust/folders
-                    // changes propagate without a full page refresh.
-                    if (projectId) {
-                      void fetch(
-                        `${API_URL}/api/projects/${encodeURIComponent(projectId)}?include=projectFolders`,
-                        { credentials: Platform.OS === 'web' ? 'include' : 'omit' },
-                      )
-                        .then((r) => (r.ok ? r.json() : null))
-                        .then((data) => {
-                          const next = data?.project ?? data
-                          if (next) setProject(next)
-                        })
-                        .catch(() => {})
-                    }
-                  }}
-                />
-              </PanelErrorBoundary>
-              <PanelErrorBoundary panelName="ExternalPreview">
-                {previewTab === 'external-preview' && (
-                  <ExternalPreviewWebView
-                    projectId={projectId!}
-                    url={externalSavedUrl ?? externalDetectedUrl ?? null}
-                    visible={previewTab === 'external-preview'}
-                    detectedUrl={externalDetectedUrl}
-                    onUrlSubmit={handleSaveExternalPreviewUrl}
-                    isTrusted={projectTrustLevel === 'trusted'}
-                    onTrustRequired={() => setTrustPromptOpen(true)}
-                  />
-                )}
-              </PanelErrorBoundary>
-            </View>
-            </DrawerHost>
-          </View>
-
-          {/* Workspace trust prompt — first-mount only, dismissible. */}
-          {isExternalProject ? (
-            <TrustPrompt
-              open={trustPromptOpen}
-              projectName={project?.name}
-              folderPath={primaryFolderPath ?? undefined}
-              isSubmitting={trustSubmitting}
-              onDecision={handleTrustDecision}
-              onClose={() => setTrustPromptOpen(false)}
-            />
-          ) : null}
-
-          {/* Floating integrations card */}
-          {showIntegrationsCardUi && (
-            <View
-              className={cn(
-                'absolute z-30',
-                liftIntegrationsAboveComposer ? 'right-3' : 'bottom-4 right-4',
-              )}
+          {/* Floating chat button on native narrow canvas — above every canvas sub-tab (z-20 panels) */}
+          {showNativeNarrowChatFab && (
+            <SafeAreaView
+              edges={['bottom']}
+              className="absolute bottom-0 right-0 z-30 pr-4 pb-4"
+              pointerEvents="box-none"
               style={
-                liftIntegrationsAboveComposer
-                  ? { bottom: insets.bottom + 84 }
+                narrowCanvasKeyboardInset > 0
+                  ? { marginBottom: narrowCanvasKeyboardInset }
                   : undefined
               }
-              pointerEvents="box-none"
             >
-              <IntegrationsCard
-                projectId={projectId!}
-                integrations={integrationsCardData?.integrations}
-                templateName={integrationsCardData?.templateName}
-                pendingToolkits={pendingToolInstalls}
-                onDismiss={() => setIntegrationsCardDismissed(true)}
-              />
-            </View>
+              <Pressable
+                onPress={() => {
+                  setActiveTab('chat')
+                  setPreviewTab('chat-fullscreen')
+                }}
+                className="flex-row items-center gap-1.5 rounded-full bg-primary px-4 py-2.5 shadow-lg"
+              >
+                <MessageSquare size={16} className="text-primary-foreground" />
+                <Text className="text-sm font-semibold text-primary-foreground">Chat</Text>
+              </Pressable>
+            </SafeAreaView>
           )}
 
+          {canvasEnabled && previewTab === 'canvas' && (
+            <View className="absolute inset-0">
+              <PanelErrorBoundary panelName="Canvas">
+                {canvasPanel}
+              </PanelErrorBoundary>
+            </View>
+          )}
+          {previewTab === 'app-preview' && (
+            <View
+              className={cn(
+                'absolute inset-0 overflow-hidden',
+                Platform.OS === 'web' && 'z-0',
+              )}
+            >
+              <AppPreviewPanel previewUrl={previewUrl ?? null} agentUrl={agentUrl ?? null} />
+            </View>
+          )}
+          <View
+            className={cn(
+              'absolute inset-0',
+              STANDALONE_PANELS.includes(previewTab)
+                ? 'z-20 bg-background'
+                : 'pointer-events-none',
+            )}
+            pointerEvents={
+              STANDALONE_PANELS.includes(previewTab)
+                ? 'auto'
+                : 'none'
+            }
+          >
+            <PanelErrorBoundary panelName="IDE">
+              <IDEPanel visible={previewTab === 'ide'} projectId={projectId!} projectName={project.name} agentUrl={agentUrl} />
+            </PanelErrorBoundary>
+            <PanelErrorBoundary panelName="Files">
+              <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
+            </PanelErrorBoundary>
+            <PanelErrorBoundary panelName="Capabilities">
+              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} techStackId={techStackId} onTechStackChange={handleTechStackChange} selectedModel={selectedModel} onModelChange={handleModelChange} />
+            </PanelErrorBoundary>
+            <PanelErrorBoundary panelName="Channels">
+              <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} workspaceId={project?.workspaceId} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
+            </PanelErrorBoundary>
+            <PanelErrorBoundary panelName="Agents">
+              <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} agentUrl={agentUrl} />
+            </PanelErrorBoundary>
+            <PanelErrorBoundary panelName="Monitor">
+              <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
+            </PanelErrorBoundary>
+            <PanelErrorBoundary panelName="Plans">
+              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} selectedModel={selectedModel} requestedPlanPath={requestedPlanPath} onBuildPlan={handleBuildPlan} />
+            </PanelErrorBoundary>
+            <PanelErrorBoundary panelName="Checkpoints">
+              <CheckpointsPanel visible={previewTab === 'checkpoints'} projectId={projectId!} />
+            </PanelErrorBoundary>
+            <PanelErrorBoundary panelName="Folders">
+              <FoldersPanel
+                visible={previewTab === 'folders'}
+                projectId={projectId!}
+                onChange={() => {
+                  // Re-pull the project so workingMode/trust/folders
+                  // changes propagate without a full page refresh.
+                  if (projectId) {
+                    void fetch(
+                      `${API_URL}/api/projects/${encodeURIComponent(projectId)}?include=projectFolders`,
+                      { credentials: Platform.OS === 'web' ? 'include' : 'omit' },
+                    )
+                      .then((r) => (r.ok ? r.json() : null))
+                      .then((data) => {
+                        const next = data?.project ?? data
+                        if (next) setProject(next)
+                      })
+                      .catch(() => {})
+                  }
+                }}
+              />
+            </PanelErrorBoundary>
+            <PanelErrorBoundary panelName="ExternalPreview">
+              {previewTab === 'external-preview' && (
+                <ExternalPreviewWebView
+                  projectId={projectId!}
+                  url={externalSavedUrl ?? externalDetectedUrl ?? null}
+                  visible={previewTab === 'external-preview'}
+                  detectedUrl={externalDetectedUrl}
+                  onUrlSubmit={handleSaveExternalPreviewUrl}
+                  isTrusted={projectTrustLevel === 'trusted'}
+                  onTrustRequired={() => setTrustPromptOpen(true)}
+                />
+              )}
+            </PanelErrorBoundary>
           </View>
+          </DrawerHost>
+        </View>
+
+        {/* Workspace trust prompt — first-mount only, dismissible. */}
+        {isExternalProject ? (
+          <TrustPrompt
+            open={trustPromptOpen}
+            projectName={project?.name}
+            folderPath={primaryFolderPath ?? undefined}
+            isSubmitting={trustSubmitting}
+            onDecision={handleTrustDecision}
+            onClose={() => setTrustPromptOpen(false)}
+          />
+        ) : null}
+
+        {/* Floating integrations card */}
+        {showIntegrationsCardUi && (
+          <View
+            className={cn(
+              'absolute z-30',
+              liftIntegrationsAboveComposer ? 'right-3' : 'bottom-4 right-4',
+            )}
+            style={
+              liftIntegrationsAboveComposer
+                ? { bottom: insets.bottom + 84 }
+                : undefined
+            }
+            pointerEvents="box-none"
+          >
+            <IntegrationsCard
+              projectId={projectId!}
+              integrations={integrationsCardData?.integrations}
+              templateName={integrationsCardData?.templateName}
+              pendingToolkits={pendingToolInstalls}
+              onDismiss={() => setIntegrationsCardDismissed(true)}
+            />
+          </View>
+        )}
 
         </View>
-    </CanvasThemeProvider>
+
+      </View>
     </ChatBridgeProvider>
 
       {Platform.OS === 'web' && (
