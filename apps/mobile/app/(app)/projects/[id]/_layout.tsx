@@ -39,10 +39,7 @@ import {
   useProjectCollection,
   getChatMessageCollectionForSession,
 } from '@shogo/shared-app/domain'
-import {
-  useDynamicAppStream,
-  useAgentUrl,
-} from '@shogo/shared-app/dynamic-app'
+import { useAgentUrl } from '@shogo/shared-app/dynamic-app'
 import type { IDomainStore } from '@shogo/domain-stores'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useBillingData } from '@shogo/shared-app/hooks'
@@ -75,14 +72,8 @@ import { agentFetch } from '../../../../lib/agent-fetch'
 import { useActiveInstance } from '../../../../contexts/active-instance'
 import { ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
 import { ChatTabBar, type ChatTab } from '../../../../components/chat/ChatTabBar'
-import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
-import { CanvasErrorBoundary } from '../../../../components/dynamic-app/CanvasErrorBoundary'
 import { CanvasWebView } from '../../../../components/dynamic-app/CanvasWebView'
-import { EditModeProvider, useEditModeOptional } from '../../../../components/dynamic-app/edit/EditModeContext'
-import { AddComponentDialog } from '../../../../components/dynamic-app/edit/AddComponentDialog'
-import { InspectorPanel } from '../../../../components/dynamic-app/edit/InspectorPanel'
-import { ComponentTreePanel } from '../../../../components/dynamic-app/edit/ComponentTreePanel'
-import { CanvasThemeProvider, CanvasThemedContainer, useCanvasThemeOptional } from '../../../../components/dynamic-app/CanvasThemeContext'
+import { CanvasThemeProvider, CanvasThemedContainer } from '../../../../components/dynamic-app/CanvasThemeContext'
 import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
 import { PanelErrorBoundary } from '../../../../components/project/panels/PanelErrorBoundary'
 import {
@@ -374,9 +365,8 @@ export default observer(function ProjectLayout() {
   }, [project?.settings])
 
   const canvasEnabled = projectSettings.canvasEnabled !== false
-  const canvasMode = (projectSettings.canvasMode as 'json' | 'code') || 'json'
   const [iframeRefreshKey, setIframeRefreshKey] = useState(0)
-  const [canvasThemeSupported, setCanvasThemeSupported] = useState<boolean | null>(canvasMode === 'json' ? true : null)
+  const [canvasThemeSupported, setCanvasThemeSupported] = useState<boolean | null>(null)
   // APP_MODE_DISABLED: treat 'app' as 'none' for existing projects
   const rawMode = (projectSettings.activeMode as 'canvas' | 'app' | 'none') || (canvasEnabled ? 'canvas' : 'none')
   const activeMode = rawMode === 'app' ? 'none' : rawMode
@@ -409,14 +399,14 @@ export default observer(function ProjectLayout() {
     setCanvasThemeSupported(caps.supportsTheme)
   }, [])
 
-  // Reset theme support detection when the iframe reloads (code-mode only).
+  // Reset theme support detection when the canvas iframe reloads.
   const prevRefreshKeyRef = useRef(iframeRefreshKey)
   useEffect(() => {
-    if (canvasMode === 'code' && iframeRefreshKey !== prevRefreshKeyRef.current) {
+    if (iframeRefreshKey !== prevRefreshKeyRef.current) {
       prevRefreshKeyRef.current = iframeRefreshKey
       setCanvasThemeSupported(null)
     }
-  }, [iframeRefreshKey, canvasMode])
+  }, [iframeRefreshKey])
 
   const allProjects = useMemo(() => {
     try {
@@ -526,124 +516,19 @@ export default observer(function ProjectLayout() {
     }
   }, [agentUrl, projectId])
 
-  // Dynamic app canvas — all unified projects use the agent URL for canvas streaming
-  const dynamicAppStreamUrl = agentUrl
-  const { surfaces, activeSurfaceId, connected, dispatchAction, updateLocalData, reconnect, applyMessage } = useDynamicAppStream(
-    dynamicAppStreamUrl,
-    {
-      ...(nativeHeaders ? { headers: nativeHeaders } : {}),
-      withCredentials: Platform.OS === 'web',
-    },
-  )
-  const [userSelectedSurfaceId, setUserSelectedSurfaceId] = useState<string | null>(null)
-  const mountTimeRef = useRef(Date.now())
   const splitRowRef = useRef<View>(null)
 
-  // Restore last-viewed surface from AsyncStorage
-  useEffect(() => {
-    if (!projectId) return
-    AsyncStorage.getItem(`shogo:lastCanvasSurface:${projectId}`).then((savedId) => {
-      if (savedId) setUserSelectedSurfaceId(savedId)
-    }).catch(() => {})
-  }, [projectId])
+  // Connection state for the canvas. The canvas iframe owns its own data
+  // (SSE / HMR / API calls happen inside the workspace SPA); the parent
+  // only needs to know whether the agent runtime is reachable.
+  const connected = !!agentUrl
 
-  const effectiveSurfaceId = userSelectedSurfaceId && surfaces.has(userSelectedSurfaceId)
-    ? userSelectedSurfaceId
-    : activeSurfaceId
-
-  // Persist active surface selection to AsyncStorage
-  useEffect(() => {
-    if (projectId && effectiveSurfaceId) {
-      AsyncStorage.setItem(`shogo:lastCanvasSurface:${projectId}`, effectiveSurfaceId).catch(() => {})
-    }
-  }, [projectId, effectiveSurfaceId])
-
-  const activeSurface = useMemo(() => {
-    return effectiveSurfaceId ? surfaces.get(effectiveSurfaceId) || null : null
-  }, [surfaces, effectiveSurfaceId])
-
-  const surfaceEntries = useMemo(() =>
-    Array.from(surfaces.values())
-      .sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''))
-      .map(s => ({ id: s.surfaceId, title: s.title || s.surfaceId })),
-    [surfaces],
-  )
-
-  const surfaceIds = useMemo(() =>
-    surfaceEntries.map(s => s.id),
-    [surfaceEntries],
-  )
-
-  // Auto-switch to new surfaces created by the agent.
-  // Suppressed for the first 2 s after mount so the SSE replay doesn't
-  // override the surface selection we just restored from AsyncStorage.
-  const prevActiveSurfaceIdRef = useRef(activeSurfaceId)
-  useEffect(() => {
-    if (Date.now() - mountTimeRef.current < 2000) {
-      prevActiveSurfaceIdRef.current = activeSurfaceId
-      return
-    }
-    if (activeSurfaceId && activeSurfaceId !== prevActiveSurfaceIdRef.current) {
-      setUserSelectedSurfaceId(null)
-    }
-    prevActiveSurfaceIdRef.current = activeSurfaceId
-  }, [activeSurfaceId])
-
-  // Canvas action handler
-  const handleCanvasAction = useCallback(
-    (surfaceId: string, name: string, context?: Record<string, unknown>) => {
-      dispatchAction(surfaceId, name, context)
-    },
-    [dispatchAction],
-  )
-
-  const handleCanvasPreview = useCallback(
-    (surfaceId: string, components: any[]) => {
-      applyMessage({ type: 'updateComponents', surfaceId, components, merge: true })
-    },
-    [applyMessage],
-  )
-
-  // Auto-capture thumbnail when the agent finishes building the canvas UI (web only).
-  const thumbnailCapturedRef = useRef(false)
-  const hasCanvasUI = activeSurface && activeSurface.components.size > 0 && activeSurface.components.has('root')
-
-  useEffect(() => {
-    if (Platform.OS !== 'web') return
-    if (!projectId || !hasCanvasUI || thumbnailCapturedRef.current) return
-
-    let currentProject: any
-    try {
-      currentProject = store?.projectCollection?.all?.find((p: any) => p.id === projectId)
-    } catch { return }
-    if (currentProject?.thumbnailUrl) return
-
-    thumbnailCapturedRef.current = true
-
-    const timer = setTimeout(async () => {
-      try {
-        const { default: html2canvas } = await import('html2canvas')
-        const canvasEl = document.querySelector('[data-thumbnail-target]') as HTMLElement
-          ?? document.querySelector('[class*="flex-1"] [class*="p-4"]') as HTMLElement
-        if (!canvasEl) return
-
-        const canvas = await html2canvas(canvasEl, {
-          scale: 0.5,
-          useCORS: true,
-          logging: false,
-          backgroundColor: null,
-          width: canvasEl.scrollWidth,
-          height: Math.min(canvasEl.scrollHeight, 800),
-        })
-
-        canvas.toBlob(async (blob: Blob | null) => {
-          if (!blob) return
-          await api.uploadThumbnail(blob, projectId)
-        }, 'image/png')
-      } catch {}
-    }, 1500)
-    return () => clearTimeout(timer)
-  }, [projectId, hasCanvasUI, store])
+  // Stub `reconnect` for callers that still trigger a manual canvas refresh.
+  // Bumping `iframeRefreshKey` reloads the iframe; v1's SSE reconnect path
+  // is gone.
+  const reconnect = useCallback(() => {
+    setIframeRefreshKey(k => k + 1)
+  }, [])
 
   // Load project data
   const domainsReady = sdkReady && !!store?.projectCollection
@@ -1375,11 +1260,10 @@ export default observer(function ProjectLayout() {
     ) => {
       if (!projectId) return
       try {
-        const surfaceTitle = surfaces.get(surfaceId)?.title ?? null
         const recentLogs = getRuntimeLogEntries(projectId).slice(-CANVAS_ERROR_LOG_TAIL)
         const prompt = buildCanvasErrorDebugPrompt({
           surfaceId,
-          surfaceTitle,
+          surfaceTitle: null,
           phase,
           error,
           route: context?.route,
@@ -1408,7 +1292,7 @@ export default observer(function ProjectLayout() {
         console.error('[ProjectLayout] Failed to open debug chat:', err)
       }
     },
-    [projectId, surfaces, actions, isWide],
+    [projectId, actions, isWide],
   )
 
   const handleCanvasError = useCallback(
@@ -1432,13 +1316,8 @@ export default observer(function ProjectLayout() {
       }
       lastCanvasErrorRef.current = { key, ts: now }
 
-      const surfaceTitle = surfaces.get(surfaceId)?.title ?? null
       const phaseWord = phase === 'compile' ? 'Compile-time' : 'Runtime'
-      const where = surfaceTitle
-        ? ` on “${surfaceTitle}”`
-        : context?.route
-          ? ` on ${context.route}`
-          : ''
+      const where = context?.route ? ` on ${context.route}` : ''
       const description = where
         ? `${phaseWord} error${where}.`
         : `${phaseWord} error in the canvas.`
@@ -1490,7 +1369,7 @@ export default observer(function ProjectLayout() {
         ),
       })
     },
-    [projectId, surfaces, toast, openDebugChatForCanvasError],
+    [projectId, toast, openDebugChatForCanvasError],
   )
 
   const handleRenameChatSession = useCallback(
@@ -1754,7 +1633,6 @@ export default observer(function ProjectLayout() {
                 initialInteractionMode={isInitialSession ? capturedInitialInteractionMode : undefined}
                 initialFiles={isInitialSession ? capturedInitialFiles : undefined}
                 billingData={billingDataResolved}
-                onCanvasPreview={handleCanvasPreview}
                 onMessagesChange={isActive ? setChatMessages : undefined}
                 onStreamingChange={getStreamingChangeHandler(tabId)}
                 buildPlanRequest={isActive ? buildPlanRequest : null}
@@ -1773,19 +1651,10 @@ export default observer(function ProjectLayout() {
 
   const canvasPanel = canvasEnabled ? (
     <CanvasPanel
-      surface={activeSurface}
-      surfaces={surfaces}
-      activeSurfaceId={effectiveSurfaceId}
-      onSurfaceChange={setUserSelectedSurfaceId}
-      connected={connected}
       agentUrl={agentUrl}
       canvasBaseUrl={canvasBaseUrl}
-      onAction={handleCanvasAction}
-      onDataChange={updateLocalData}
-      authHeaders={nativeHeaders}
       onRefresh={reconnect}
       fullBleed={!isWide}
-      canvasMode={canvasMode}
       iframeRefreshKey={iframeRefreshKey}
       onCanvasCapabilities={handleCanvasCapabilities}
       onCanvasError={handleCanvasError}
@@ -1821,9 +1690,6 @@ export default observer(function ProjectLayout() {
     hiddenTabs,
     canvasEnabled,
     activeMode,
-    surfaceEntries,
-    activeSurfaceId: effectiveSurfaceId,
-    onSurfaceChange: setUserSelectedSurfaceId,
     showChatSessions: isChatFullscreen ? false : showChatSessions,
     isChatCollapsed: isChatFullscreen ? true : chatCollapsed,
     onChatSessionsToggle: isChatFullscreen ? undefined : () => setShowChatSessions((s: boolean) => !s),
@@ -1839,10 +1705,9 @@ export default observer(function ProjectLayout() {
     activeChatSessionName: isChatFullscreen ? (openChatTabs.find(t => t.id === chatSessionId)?.name ?? null) : undefined,
     canvasActive: canvasEnabled && previewTab === 'dynamic-app',
     canvasThemeSupported,
-    effectiveSurfaceId,
-    onCanvasRefresh: canvasMode === 'code' ? () => setIframeRefreshKey(k => k + 1) : undefined,
+    onCanvasRefresh: () => setIframeRefreshKey(k => k + 1),
     onCanvasOpenInNewTab:
-      canvasMode === 'code' && Platform.OS === 'web' && (canvasBaseUrl || agentUrl)
+      Platform.OS === 'web' && (canvasBaseUrl || agentUrl)
         ? () => {
             const base = canvasBaseUrl || agentUrl
             if (base) window.open(`${base}/`, '_blank', 'noopener,noreferrer')
@@ -1861,16 +1726,15 @@ export default observer(function ProjectLayout() {
         initialEzModeActive={Platform.OS === 'web' && capturedStartEzMode}
         initialAutoStartVoice={Platform.OS === 'web' && capturedStartEzMode && capturedAutoStartVoice}
       >
-      <CanvasThemeProvider projectSettings={projectSettings} onUpdateSettings={handleUpdateCanvasSettings} activeSurfaceId={effectiveSurfaceId} surfaceIds={surfaceIds}>
-        <EditModeProvider agentUrl={agentUrl}>
-          <View className="flex-1 bg-background">
+      <CanvasThemeProvider projectSettings={projectSettings} onUpdateSettings={handleUpdateCanvasSettings}>
+        <View className="flex-1 bg-background">
             {isWide ? (
-              <TopBarBridge
+              <ProjectTopBar
                 {...topBarSharedProps}
                 onTabChange={handlePreviewTabChange}
               />
             ) : (
-              <TopBarBridge
+              <ProjectTopBar
                 {...topBarSharedProps}
                 narrowActiveTab={activeTab}
                 narrowPreviewTab={previewTab}
@@ -2147,7 +2011,6 @@ export default observer(function ProjectLayout() {
           </View>
 
         </View>
-      </EditModeProvider>
     </CanvasThemeProvider>
     </ChatBridgeProvider>
 
@@ -2330,72 +2193,7 @@ function ChatPanelResizeHandle({
 }
 
 // ---------------------------------------------------------------------------
-// TopBarBridge — reads EditModeContext and passes values to ProjectTopBar
-// ---------------------------------------------------------------------------
-
-function TopBarBridge({
-  canvasActive,
-  canvasThemeSupported,
-  effectiveSurfaceId,
-  surfaceEntries,
-  ...props
-}: React.ComponentProps<typeof ProjectTopBar> & {
-  canvasActive: boolean
-  canvasThemeSupported: boolean | null
-  effectiveSurfaceId: string | null
-}) {
-  const editMode = useEditModeOptional()
-  const [showAddDialog, setShowAddDialog] = useState(false)
-  const canvasTheme = useCanvasThemeOptional()
-
-  const themedSurfaceEntries = useMemo(() => {
-    if (!surfaceEntries || !canvasTheme) return surfaceEntries
-    return surfaceEntries.map((s) => ({
-      ...s,
-      themeSwatchColor: canvasTheme.getSwatchForSurface(s.id),
-    }))
-  }, [surfaceEntries, canvasTheme])
-
-  const handleDelete = useCallback(() => {
-    if (effectiveSurfaceId && editMode?.selectedComponentId) {
-      editMode.deleteComponent(effectiveSurfaceId, editMode.selectedComponentId)
-    }
-  }, [effectiveSurfaceId, editMode])
-
-  const isEditActive = canvasActive && editMode?.isEditMode
-
-  return (
-    <>
-      <ProjectTopBar
-        {...props}
-        surfaceEntries={themedSurfaceEntries}
-        isEditMode={canvasActive ? editMode?.isEditMode : undefined}
-        onToggleEditMode={canvasActive ? editMode?.toggleEditMode : undefined}
-        showTreePanel={canvasActive ? editMode?.showTreePanel : undefined}
-        onToggleTreePanel={canvasActive ? editMode?.toggleTreePanel : undefined}
-        selectedComponentId={canvasActive ? editMode?.selectedComponentId : undefined}
-        onDeleteComponent={
-          isEditActive && editMode?.selectedComponentId && editMode.selectedComponentId !== 'root'
-            ? handleDelete
-            : undefined
-        }
-        onAddComponent={isEditActive ? () => setShowAddDialog(true) : undefined}
-        canvasThemeSupported={canvasThemeSupported}
-      />
-      {showAddDialog && effectiveSurfaceId && (
-        <AddComponentDialog
-          visible={showAddDialog}
-          onClose={() => setShowAddDialog(false)}
-          surfaceId={effectiveSurfaceId}
-          parentId={editMode?.selectedComponentId || 'root'}
-        />
-      )}
-    </>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Canvas Panel — renders dynamic app surfaces or runtime preview placeholder
+// Canvas Panel — renders the v2 canvas iframe (Vite-built workspace SPA)
 // ---------------------------------------------------------------------------
 
 /** Polls the preview root URL until it stops returning 404.
@@ -2428,36 +2226,17 @@ function usePreviewReadiness(baseUrl: string | null | undefined): string | null 
 }
 
 function CanvasPanel({
-  surface,
-  surfaces,
-  activeSurfaceId,
-  onSurfaceChange,
-  connected,
   agentUrl,
   canvasBaseUrl,
-  onAction,
-  onDataChange,
-  authHeaders,
   onRefresh,
-  fullBleed,
-  canvasMode = 'json',
   iframeRefreshKey = 0,
   onCanvasCapabilities,
   onCanvasError,
 }: {
-  surface: any | null
-  surfaces: Map<string, any>
-  activeSurfaceId: string | null
-  onSurfaceChange: (surfaceId: string) => void
-  connected: boolean
   agentUrl: string | null
   canvasBaseUrl?: string | null
-  onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void
-  onDataChange?: (surfaceId: string, path: string, value: unknown) => void
-  authHeaders?: () => Record<string, string>
   onRefresh?: () => void
   fullBleed?: boolean
-  canvasMode?: 'json' | 'code'
   iframeRefreshKey?: number
   onCanvasCapabilities?: (caps: { supportsTheme: boolean }) => void
   onCanvasError?: (
@@ -2470,11 +2249,6 @@ function CanvasPanel({
     },
   ) => void
 }) {
-  const editMode = useEditModeOptional()
-  const isEditMode = editMode?.isEditMode ?? false
-  const showTreePanel = editMode?.showTreePanel ?? false
-  const surfaceId = surface?.surfaceId ?? null
-
   // Poll the preview URL's /health endpoint until the DomainMapping propagates.
   // Until ready, treat canvasBaseUrl as null so the loading screen stays visible.
   const readyCanvasBaseUrl = usePreviewReadiness(canvasBaseUrl)
@@ -2490,22 +2264,16 @@ function CanvasPanel({
   const CONNECTION_TIMEOUT_MS = 60_000
   const [timedOut, setTimedOut] = useState(false)
   useEffect(() => {
-    if (connected && agentUrl && readyCanvasBaseUrl) {
+    if (agentUrl && readyCanvasBaseUrl) {
       setTimedOut(false)
       return
     }
     setTimedOut(false)
     const timer = setTimeout(() => setTimedOut(true), CONNECTION_TIMEOUT_MS)
     return () => clearTimeout(timer)
-  }, [connected, agentUrl, readyCanvasBaseUrl])
+  }, [agentUrl, readyCanvasBaseUrl])
 
   if (!agentUrl || !readyCanvasBaseUrl) {
-    // Order matters: prefer the runtime's self-reported phase
-    // (`/preview/status`) when we have one, fall back to a coarse "agent
-    // runtime" / "preview" distinction otherwise. With the layout-level
-    // `runtimeReady` gate now waiting on `/sandbox/url`, the most common
-    // remaining states here are PreviewManager phases like
-    // 'installing' / 'building' / 'starting-api'.
     const phaseLabel =
       previewPhase && previewPhase !== 'idle'
         ? PHASE_LABELS[previewPhase] ?? 'Preparing preview...'
@@ -2548,79 +2316,15 @@ function CanvasPanel({
     )
   }
 
-  // Canvas v2: render the CanvasWebView (parent owns SSE, bridges via postMessage)
-  if (canvasMode === 'code') {
-    return (
-      <View className="flex-1 overflow-hidden rounded-2xl mx-2 mb-2">
-        <CanvasWebView agentUrl={agentUrl} canvasBaseUrl={readyCanvasBaseUrl} activeSurfaceId={activeSurfaceId} refreshKey={iframeRefreshKey} onCanvasCapabilities={onCanvasCapabilities} onCanvasError={onCanvasError} />
-      </View>
-    )
-  }
-
-  if (!surface) {
-    return (
-      <View className="flex-1">
-        <View className={cn('flex-1', !fullBleed && 'p-2')}>
-          <CanvasThemedContainer noBorder={fullBleed}>
-            <View className="flex-1 items-center justify-center px-6">
-              <View
-                className={cn(
-                  'w-3 h-3 rounded-full mb-3',
-                  connected ? 'bg-emerald-500' : timedOut ? 'bg-destructive' : 'bg-muted',
-                )}
-              />
-              <Text className="text-foreground font-semibold mb-1">
-                {connected
-                  ? 'Connected'
-                  : timedOut
-                    ? 'Connection timed out'
-                    : 'Waiting for connection...'}
-              </Text>
-              {(connected || timedOut) && onRefresh && (
-                <Pressable
-                  onPress={onRefresh}
-                  className="mt-4 flex-row items-center gap-2 rounded-md border border-border px-4 py-2 active:opacity-70"
-                >
-                  <RefreshCw size={14} className="text-muted-foreground" />
-                  <Text className="text-muted-foreground text-sm">{timedOut ? 'Retry' : 'Refresh'}</Text>
-                </Pressable>
-              )}
-            </View>
-          </CanvasThemedContainer>
-        </View>
-      </View>
-    )
-  }
-
   return (
-    <View className="flex-1">
-      <View className="flex-1 flex-row">
-        {isEditMode && showTreePanel && (
-          <ComponentTreePanel surfaceId={surfaceId} components={surface.components} />
-        )}
-        <View className={cn('flex-1', !fullBleed && 'p-2')}>
-          <CanvasThemedContainer noBorder={fullBleed}>
-            <ScrollView
-              className="flex-1"
-              contentContainerClassName={fullBleed ? 'p-0' : 'p-4'}
-              {...(Platform.OS === 'web' ? { dataSet: { thumbnailTarget: '' } } as any : {})}
-            >
-              <CanvasErrorBoundary surfaceTitle={surface?.title}>
-                <DynamicAppRenderer
-                  surface={surface}
-                  agentUrl={agentUrl}
-                  onAction={onAction}
-                  onDataChange={onDataChange}
-                  authHeaders={authHeaders}
-                />
-              </CanvasErrorBoundary>
-            </ScrollView>
-          </CanvasThemedContainer>
-        </View>
-        {isEditMode && (
-          <InspectorPanel surfaceId={surfaceId} components={surface.components} />
-        )}
-      </View>
+    <View className="flex-1 overflow-hidden rounded-2xl mx-2 mb-2">
+      <CanvasWebView
+        agentUrl={agentUrl}
+        canvasBaseUrl={readyCanvasBaseUrl}
+        refreshKey={iframeRefreshKey}
+        onCanvasCapabilities={onCanvasCapabilities}
+        onCanvasError={onCanvasError}
+      />
     </View>
   )
 }
