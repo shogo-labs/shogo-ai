@@ -17,7 +17,7 @@ An autonomous AI process you build in Shogo. Agents can monitor systems, process
 A workspace file that defines your agent's core behavior rules, canvas strategy, heartbeat behavior, and recommended integrations.
 
 ### Canvas
-A visual dashboard that your agent builds to display information. The canvas shows metrics, charts, tables, status indicators, and more. It is not an interactive application — it presents summaries and dashboards.
+A visual surface that your agent builds to display information and (when useful) accept input. The canvas shows metrics, charts, tables, status indicators, forms, and more. It is primarily a reporting surface that the agent writes to on each heartbeat, but it can also include interactive controls — buttons, inputs, and forms — that either manage local UI state or send a request back to the agent.
 
 ### Channel
 A messaging platform connected to your agent (Slack, Discord, Telegram, etc.). Channels let your agent send proactive alerts and receive messages from users.

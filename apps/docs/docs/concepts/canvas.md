@@ -6,9 +6,9 @@ slug: /concepts/canvas
 
 # Canvas
 
-The canvas is the visual dashboard your agent builds and updates. It lives in the right panel of your agent project and displays whatever your agent finds useful — KPI metrics, data tables, charts, status indicators, and more.
+The canvas is the visual surface your agent builds and updates. It lives in the right panel of your agent project and displays whatever your agent finds useful — KPI metrics, data tables, charts, status indicators, forms, and more.
 
-The canvas is **not an interactive application**. It's a display layer — think of it as your agent's reporting surface. The agent writes to it, and you read it.
+The canvas is primarily a **reporting surface** — the agent writes to it on each heartbeat and on chat, and you read it. It can also include interactive controls (buttons, inputs, forms) when the agent decides they're useful, and those controls can either run locally in the canvas or send a request back to the agent.
 
 ## What the canvas can show
 
@@ -68,14 +68,16 @@ A vertical list of items with labels and values. Good for key-value pairs and se
 
 ### Interactive components
 
-**Button** — Triggers an agent action when clicked (e.g., "Refresh data", "Mark resolved").
+**Button** — A clickable button. Buttons can update canvas state locally (e.g., toggle a section, filter a table) or send a request back to the agent (e.g., "Refresh data", "Mark resolved") — the agent decides which is right for the situation.
 
-**TextField / Select / Checkbox** — Input elements for simple forms.
+**Input / Textarea** — Text entry fields for simple forms.
 
-**ChoicePicker** — A set of options to choose from.
+**Select** — A dropdown of options to choose from.
+
+**Checkbox / Switch** — Boolean toggles.
 
 :::note
-Interactive components that trigger actions (like a Button) still route through the agent. They're not purely frontend — they send a message to the agent to take action and update the canvas.
+Interactive controls in the canvas are real React components — they can manage their own local state for things like filters, accordions, or unsaved form input. When an action genuinely belongs to the agent (calling a tool, mutating workspace state, sending a message), the button sends a request back to the agent and the canvas updates from its response.
 :::
 
 ## How the canvas is updated
