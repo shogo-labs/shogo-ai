@@ -78,11 +78,28 @@ function extractRedirectFromCallbackUrl(callbackUrl: string): string | null {
   }
 }
 
+/**
+ * Construct the cloud-proxy callback URL for Composio.
+ *
+ * If the originating client passed a `redirectParam` (i.e. it told us
+ * "send me back here when OAuth completes") we forward it. If it did
+ * not, we deliberately omit the `redirect` query entirely — the cloud
+ * callback handler then falls through to the popup-close-and-poll
+ * branch ("You can close this window."), which is safe for every
+ * client.
+ *
+ * We used to default to `shogo://integrations-callback` here, which
+ * forced the OS protocol handler to launch the registered desktop app
+ * regardless of where the user actually came from — a localhost
+ * browser tab that initiated the connect would mysteriously open the
+ * desktop app on completion. Letting the no-redirect branch handle
+ * the fallback keeps every client in its own window/tab.
+ */
 function buildCloudCallbackUrl(redirectParam?: string | null): string {
   const cloudUrl = getShogoCloudUrl()
   const base = `${cloudUrl}/api/integrations/callback`
-  const redirect = redirectParam || 'shogo://integrations-callback'
-  return `${base}?redirect=${encodeURIComponent(redirect)}`
+  if (!redirectParam) return base
+  return `${base}?redirect=${encodeURIComponent(redirectParam)}`
 }
 
 // =============================================================================

@@ -19,7 +19,7 @@ import {
   X,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from '@shogo/ui-kit/platform'
+import { openAuthFlow, preCreateAuthWindow } from '@shogo/ui-kit/platform'
 import { API_URL, api } from '../../../lib/api'
 
 const LOG_PREFIX = '[ServicesPanel]'
@@ -104,7 +104,10 @@ export function ServicesPanel({ projectId, agentUrl, visible }: ServicesPanelPro
       let redirect: string | undefined
       if (isNative) {
         redirect = ExpoLinking.createURL('integrations-callback')
-      } else if (isMobileWeb()) {
+      } else {
+        // Web (desktop browser, mobile web, Electron): always pass our own
+        // URL so the OAuth callback returns here. See ConnectToolWidget.tsx
+        // for the rationale on why every web client must opt in.
         const returnUrl = new URL(window.location.href)
         returnUrl.searchParams.set('fromOAuth', '1')
         redirect = returnUrl.toString()
