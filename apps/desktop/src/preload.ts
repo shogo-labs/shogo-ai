@@ -251,6 +251,24 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     ipcRenderer.removeAllListeners('cloud-connection-status')
   },
 
+  // Local filesystem fast-path for the IDE Monaco file tree + file reads.
+  // Bypasses the loopback HTTP round-trip to per-project agent-runtimes so
+  // the tree renders the moment the user opens a project, before the
+  // runtime has finished spawning. Backed by `fs-ipc.ts` in main, which
+  // validates every path against `getWorkspacesDir()` — calls for external
+  // (folder-bound) projects return `ok: false` and the renderer falls back
+  // to the HTTP `SdkFs` path. Writes / SSE subscriptions are intentionally
+  // NOT included here: those still flow through agent-runtime so its file
+  // watcher + RAG indexer stay authoritative for mutations.
+  fs: {
+    resolveWorkspace: (projectId: string): Promise<{ ok: boolean; root?: string; reason?: string }> =>
+      ipcRenderer.invoke('fs:resolveWorkspace', projectId),
+    listTree: (root: string, path?: string): Promise<{ ok: boolean; tree?: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('fs:listTree', root, path),
+    readFile: (root: string, relPath: string): Promise<{ ok: boolean; content?: string; size?: number; mtime?: number; error?: string }> =>
+      ipcRenderer.invoke('fs:readFile', root, relPath),
+  },
+
   // --- External preview (Electron WebContentsView) ---------------------
   // Used by ExternalPreviewWebView in apps/mobile to embed a real
   // Chromium view of the user's own dev server. Lives outside the React
