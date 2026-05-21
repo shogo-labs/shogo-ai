@@ -18,6 +18,23 @@
 --   bunx prisma migrate resolve \
 --     --rolled-back 20260516000000_marketplace_versioning_audit
 --
+-- IDEMPOTENT (CREATE … IF NOT EXISTS everywhere):
+--   The v1.8.2 release of this file used plain CREATE TABLE / CREATE INDEX
+--   and broke every user whose seed.db already contained the marketplace
+--   schema. seed.db is generated at build time by
+--   apps/desktop/scripts/bundle-api.mjs via
+--   `prisma db push --schema=prisma/schema.local.prisma`, which has
+--   materialised the marketplace models since commit 2286a52b
+--   ("marketplacev0.1", 2026-04-08). For those users the CREATE TABLE
+--   fails with `table already exists`, leaves the migration recorded as
+--   failed in _prisma_migrations, and the desktop app sits in the
+--   DatabaseRecoveryError dialog on every relaunch — Repair clears the
+--   row but the next deploy hits the same collision. Making every DDL
+--   here `IF NOT EXISTS` turns the migration into a no-op for
+--   seed-baselined DBs while still doing the real CREATEs on the original
+--   target audience (DBs that pre-date marketplacev0.1 and genuinely
+--   lack these tables).
+--
 -- SQLite notes vs the PG source:
 --   * Enums (PayoutStatus, CreatorTier, BadgeType, PricingModel,
 --     InstallModel, ListingStatus, InstallStatus, TransactionType,
@@ -32,7 +49,7 @@
 PRAGMA foreign_keys = OFF;
 
 -- ─── creator_profiles ─────────────────────────────────────────────────────
-CREATE TABLE "creator_profiles" (
+CREATE TABLE IF NOT EXISTS "creator_profiles" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "userId" TEXT NOT NULL,
     "displayName" TEXT NOT NULL,
@@ -57,12 +74,12 @@ CREATE TABLE "creator_profiles" (
     "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "creator_profiles_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
-CREATE UNIQUE INDEX "creator_profiles_userId_key" ON "creator_profiles"("userId");
-CREATE INDEX "creator_profiles_creatorTier_idx" ON "creator_profiles"("creatorTier");
-CREATE INDEX "creator_profiles_reputationScore_idx" ON "creator_profiles"("reputationScore");
+CREATE UNIQUE INDEX IF NOT EXISTS "creator_profiles_userId_key" ON "creator_profiles"("userId");
+CREATE INDEX IF NOT EXISTS "creator_profiles_creatorTier_idx" ON "creator_profiles"("creatorTier");
+CREATE INDEX IF NOT EXISTS "creator_profiles_reputationScore_idx" ON "creator_profiles"("reputationScore");
 
 -- ─── creator_badges ───────────────────────────────────────────────────────
-CREATE TABLE "creator_badges" (
+CREATE TABLE IF NOT EXISTS "creator_badges" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "creatorId" TEXT NOT NULL,
     "badgeType" TEXT NOT NULL,
@@ -70,15 +87,15 @@ CREATE TABLE "creator_badges" (
     "metadata" TEXT,
     CONSTRAINT "creator_badges_creatorId_fkey" FOREIGN KEY ("creatorId") REFERENCES "creator_profiles" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
-CREATE UNIQUE INDEX "creator_badges_creatorId_badgeType_key" ON "creator_badges"("creatorId", "badgeType");
-CREATE INDEX "creator_badges_creatorId_idx" ON "creator_badges"("creatorId");
+CREATE UNIQUE INDEX IF NOT EXISTS "creator_badges_creatorId_badgeType_key" ON "creator_badges"("creatorId", "badgeType");
+CREATE INDEX IF NOT EXISTS "creator_badges_creatorId_idx" ON "creator_badges"("creatorId");
 
 -- ─── marketplace_listings ─────────────────────────────────────────────────
 -- The Phase 7 admin-review columns (rejectionReason, reviewedAt, reviewedBy)
 -- are added separately by 20260516000000_marketplace_versioning_audit — we
 -- omit them here so the subsequent ALTER doesn't hit a duplicate-column
 -- error.
-CREATE TABLE "marketplace_listings" (
+CREATE TABLE IF NOT EXISTS "marketplace_listings" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "projectId" TEXT NOT NULL,
     "creatorId" TEXT NOT NULL,
@@ -110,22 +127,22 @@ CREATE TABLE "marketplace_listings" (
     CONSTRAINT "marketplace_listings_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "projects" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "marketplace_listings_creatorId_fkey" FOREIGN KEY ("creatorId") REFERENCES "creator_profiles" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
-CREATE UNIQUE INDEX "marketplace_listings_projectId_key" ON "marketplace_listings"("projectId");
-CREATE UNIQUE INDEX "marketplace_listings_slug_key" ON "marketplace_listings"("slug");
-CREATE INDEX "marketplace_listings_creatorId_idx" ON "marketplace_listings"("creatorId");
-CREATE INDEX "marketplace_listings_status_idx" ON "marketplace_listings"("status");
-CREATE INDEX "marketplace_listings_category_idx" ON "marketplace_listings"("category");
-CREATE INDEX "marketplace_listings_pricingModel_idx" ON "marketplace_listings"("pricingModel");
-CREATE INDEX "marketplace_listings_installCount_idx" ON "marketplace_listings"("installCount");
-CREATE INDEX "marketplace_listings_averageRating_idx" ON "marketplace_listings"("averageRating");
-CREATE INDEX "marketplace_listings_publishedAt_idx" ON "marketplace_listings"("publishedAt");
+CREATE UNIQUE INDEX IF NOT EXISTS "marketplace_listings_projectId_key" ON "marketplace_listings"("projectId");
+CREATE UNIQUE INDEX IF NOT EXISTS "marketplace_listings_slug_key" ON "marketplace_listings"("slug");
+CREATE INDEX IF NOT EXISTS "marketplace_listings_creatorId_idx" ON "marketplace_listings"("creatorId");
+CREATE INDEX IF NOT EXISTS "marketplace_listings_status_idx" ON "marketplace_listings"("status");
+CREATE INDEX IF NOT EXISTS "marketplace_listings_category_idx" ON "marketplace_listings"("category");
+CREATE INDEX IF NOT EXISTS "marketplace_listings_pricingModel_idx" ON "marketplace_listings"("pricingModel");
+CREATE INDEX IF NOT EXISTS "marketplace_listings_installCount_idx" ON "marketplace_listings"("installCount");
+CREATE INDEX IF NOT EXISTS "marketplace_listings_averageRating_idx" ON "marketplace_listings"("averageRating");
+CREATE INDEX IF NOT EXISTS "marketplace_listings_publishedAt_idx" ON "marketplace_listings"("publishedAt");
 
 -- ─── marketplace_listing_versions ─────────────────────────────────────────
 -- The Phase 7 audit columns (auditStatus, auditedAt, auditedBy,
 -- auditFindings, auditModel) are added by 20260516000000; the S3 snapshot
 -- columns (workspaceSnapshotKey/Bytes/Checksum) are added by
 -- 20260516120000. We create only the original PG-era columns here.
-CREATE TABLE "marketplace_listing_versions" (
+CREATE TABLE IF NOT EXISTS "marketplace_listing_versions" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "listingId" TEXT NOT NULL,
     "version" TEXT NOT NULL,
@@ -134,13 +151,13 @@ CREATE TABLE "marketplace_listing_versions" (
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "marketplace_listing_versions_listingId_fkey" FOREIGN KEY ("listingId") REFERENCES "marketplace_listings" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
-CREATE UNIQUE INDEX "marketplace_listing_versions_listingId_version_key" ON "marketplace_listing_versions"("listingId", "version");
-CREATE INDEX "marketplace_listing_versions_listingId_idx" ON "marketplace_listing_versions"("listingId");
+CREATE UNIQUE INDEX IF NOT EXISTS "marketplace_listing_versions_listingId_version_key" ON "marketplace_listing_versions"("listingId", "version");
+CREATE INDEX IF NOT EXISTS "marketplace_listing_versions_listingId_idx" ON "marketplace_listing_versions"("listingId");
 
 -- ─── marketplace_installs ─────────────────────────────────────────────────
 -- The Phase 6 drift-detection column (baselineManifest) is added by
 -- 20260516000000_marketplace_versioning_audit — omit it here.
-CREATE TABLE "marketplace_installs" (
+CREATE TABLE IF NOT EXISTS "marketplace_installs" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "listingId" TEXT NOT NULL,
     "projectId" TEXT NOT NULL,
@@ -154,13 +171,13 @@ CREATE TABLE "marketplace_installs" (
     "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "marketplace_installs_listingId_fkey" FOREIGN KEY ("listingId") REFERENCES "marketplace_listings" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
-CREATE INDEX "marketplace_installs_listingId_idx" ON "marketplace_installs"("listingId");
-CREATE INDEX "marketplace_installs_userId_idx" ON "marketplace_installs"("userId");
-CREATE INDEX "marketplace_installs_workspaceId_idx" ON "marketplace_installs"("workspaceId");
-CREATE INDEX "marketplace_installs_projectId_idx" ON "marketplace_installs"("projectId");
+CREATE INDEX IF NOT EXISTS "marketplace_installs_listingId_idx" ON "marketplace_installs"("listingId");
+CREATE INDEX IF NOT EXISTS "marketplace_installs_userId_idx" ON "marketplace_installs"("userId");
+CREATE INDEX IF NOT EXISTS "marketplace_installs_workspaceId_idx" ON "marketplace_installs"("workspaceId");
+CREATE INDEX IF NOT EXISTS "marketplace_installs_projectId_idx" ON "marketplace_installs"("projectId");
 
 -- ─── marketplace_reviews ──────────────────────────────────────────────────
-CREATE TABLE "marketplace_reviews" (
+CREATE TABLE IF NOT EXISTS "marketplace_reviews" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "listingId" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -173,12 +190,12 @@ CREATE TABLE "marketplace_reviews" (
     CONSTRAINT "marketplace_reviews_listingId_fkey" FOREIGN KEY ("listingId") REFERENCES "marketplace_listings" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "marketplace_reviews_installId_fkey" FOREIGN KEY ("installId") REFERENCES "marketplace_installs" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
-CREATE UNIQUE INDEX "marketplace_reviews_listingId_userId_key" ON "marketplace_reviews"("listingId", "userId");
-CREATE INDEX "marketplace_reviews_listingId_idx" ON "marketplace_reviews"("listingId");
-CREATE INDEX "marketplace_reviews_userId_idx" ON "marketplace_reviews"("userId");
+CREATE UNIQUE INDEX IF NOT EXISTS "marketplace_reviews_listingId_userId_key" ON "marketplace_reviews"("listingId", "userId");
+CREATE INDEX IF NOT EXISTS "marketplace_reviews_listingId_idx" ON "marketplace_reviews"("listingId");
+CREATE INDEX IF NOT EXISTS "marketplace_reviews_userId_idx" ON "marketplace_reviews"("userId");
 
 -- ─── marketplace_transactions ─────────────────────────────────────────────
-CREATE TABLE "marketplace_transactions" (
+CREATE TABLE IF NOT EXISTS "marketplace_transactions" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "listingId" TEXT NOT NULL,
     "installId" TEXT,
@@ -197,10 +214,10 @@ CREATE TABLE "marketplace_transactions" (
     CONSTRAINT "marketplace_transactions_installId_fkey" FOREIGN KEY ("installId") REFERENCES "marketplace_installs" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT "marketplace_transactions_creatorId_fkey" FOREIGN KEY ("creatorId") REFERENCES "creator_profiles" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
-CREATE INDEX "marketplace_transactions_listingId_idx" ON "marketplace_transactions"("listingId");
-CREATE INDEX "marketplace_transactions_creatorId_idx" ON "marketplace_transactions"("creatorId");
-CREATE INDEX "marketplace_transactions_buyerUserId_idx" ON "marketplace_transactions"("buyerUserId");
-CREATE INDEX "marketplace_transactions_status_idx" ON "marketplace_transactions"("status");
-CREATE INDEX "marketplace_transactions_createdAt_idx" ON "marketplace_transactions"("createdAt");
+CREATE INDEX IF NOT EXISTS "marketplace_transactions_listingId_idx" ON "marketplace_transactions"("listingId");
+CREATE INDEX IF NOT EXISTS "marketplace_transactions_creatorId_idx" ON "marketplace_transactions"("creatorId");
+CREATE INDEX IF NOT EXISTS "marketplace_transactions_buyerUserId_idx" ON "marketplace_transactions"("buyerUserId");
+CREATE INDEX IF NOT EXISTS "marketplace_transactions_status_idx" ON "marketplace_transactions"("status");
+CREATE INDEX IF NOT EXISTS "marketplace_transactions_createdAt_idx" ON "marketplace_transactions"("createdAt");
 
 PRAGMA foreign_keys = ON;
