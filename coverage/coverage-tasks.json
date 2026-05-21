@@ -423,8 +423,9 @@
       "uncoveredLines": 168,
       "linePct": 38.23529411764706,
       "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "done",
+      "createdAt": "2026-05-19T22:37:52.960Z",
+      "note": "100/100 via 2 test-only exports (_trySystemTarExtractForTests + _walkExtractForTests) and a NUL-byte path trick for sync spawn() throws."
     },
     {
       "file": "apps/api/src/routes/instances.ts",
