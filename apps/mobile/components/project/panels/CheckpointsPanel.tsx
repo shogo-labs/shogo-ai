@@ -97,8 +97,19 @@ export function CheckpointsPanel({ projectId, visible }: CheckpointsPanelProps) 
 
   if (!visible) return null
 
+  // NOTE: This panel is mounted in two very different parents:
+  //   1) The mobile SettingsPanel render slot, which is itself an absolutely
+  //      positioned tab host — children can safely be position:absolute.
+  //   2) The web IDE Workbench sidebar (Workbench.tsx), which is a plain
+  //      flex item <div> with no `position: relative`. An `absolute inset-0`
+  //      root here escapes the sidebar's containing block and overlays the
+  //      entire IDE (editor tabs + content), which is exactly what the
+  //      "checkpoint tab breaks the UI" report (SHOG-664) was about.
+  //
+  // Using `h-full w-full flex-col` makes the panel fill whatever parent it
+  // is placed in — flex item OR positioned tab host — without leaking out.
   return (
-    <View className="absolute inset-0 flex-col bg-background" style={{ display: visible ? 'flex' : 'none' }}>
+    <View className="h-full w-full flex-col bg-background">
       {/* Header */}
       <View className="px-4 py-3 border-b border-border flex-row items-center justify-between">
         <View className="flex-row items-center gap-2">
