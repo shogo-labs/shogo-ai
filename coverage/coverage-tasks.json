@@ -89,8 +89,11 @@
       "linePct": 98.4375,
       "funcPct": 100,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T05:54:23.819554Z",
+      "beforeLinePct": 98.4375,
+      "afterLinePct": 100.0
     },
     {
       "file": "packages/agent-runtime/src/mcp-catalog.ts",
