@@ -29,6 +29,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import {
+  Alert,
   View,
   Text,
   Pressable,
@@ -70,6 +71,12 @@ import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import { probeChatTurnStatus, shouldAttachLiveStream } from "./probe-turn-status"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
+import {
+  hasAcceptedAiConsent,
+  acceptAiConsent,
+  revokeAiConsent,
+  AI_PROVIDERS,
+} from "../../lib/ai-consent"
 
 import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
 import { authClient } from "../../lib/auth-client"
@@ -3283,6 +3290,35 @@ export const ChatPanel = observer(function ChatPanel({
 
       if (!content.trim() && fileArray.length === 0) {
         return
+      }
+
+      // App Store guideline 5.1.1(i) / 5.1.2(i): before the first outbound
+      // message, ask the user to explicitly allow transmitting prompt
+      // content to the third-party AI provider they've selected. Runs on
+      // iOS, Android, and web — Apple flagged this on iOS, but a unified
+      // consent surface across platforms is the cleanest read of the
+      // guideline and avoids the per-platform divergence that contributed
+      // to the original rejection. Allow is persisted at the current
+      // AI_CONSENT_VERSION; bumping that constant re-prompts every user.
+      const alreadyAccepted = await hasAcceptedAiConsent().catch(() => false)
+      if (!alreadyAccepted) {
+        const providerNames = AI_PROVIDERS.map((p) => p.name).join(", ")
+        const accepted = await new Promise<boolean>((resolve) => {
+          Alert.alert(
+            "Send your message to the selected AI provider?",
+            `To generate a response, your message text and any attachments will be transmitted to the AI provider you've selected (${providerNames}). We don't send your account email, password, payment info, contacts, location, or device identifiers. Each provider is bound by a data processing agreement that prohibits training on your data. You can review the full disclosure at https://shogo.ai/privacy.`,
+            [
+              { text: "Don\u2019t Allow", style: "cancel", onPress: () => resolve(false) },
+              { text: "Allow", onPress: () => resolve(true) },
+            ],
+            { cancelable: false },
+          )
+        })
+        if (!accepted) {
+          await revokeAiConsent().catch(() => {})
+          return
+        }
+        await acceptAiConsent().catch(() => {})
       }
 
       const trimmedContent = content.trim()
