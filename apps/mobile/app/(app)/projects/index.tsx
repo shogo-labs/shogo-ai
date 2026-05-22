@@ -736,14 +736,7 @@ export default observer(function AllProjectsPage() {
     [currentWorkspace?.id, store, router, toast],
   )
 
-  const handleMoreOptions = useCallback(() => {
-    Alert.alert('More options', undefined, [
-      { text: 'Import project', onPress: handleImportProject },
-      { text: 'New folder', onPress: () => setNewFolderModalVisible(true) },
-      { text: 'Select projects', onPress: handleToggleSelect },
-      { text: 'Cancel', style: 'cancel' },
-    ])
-  }, [handleToggleSelect, handleImportProject])
+
 
   // Build combined data for FlatList (folders first, then projects)
   type ListItem =
@@ -1293,11 +1286,8 @@ export default observer(function AllProjectsPage() {
   return (
     <View className="flex-1 bg-background">
       {/* Header */}
-      <View className="flex-row items-center justify-between px-4 pt-3 pb-1">
+      <View className="flex-row items-center px-4 pt-3 pb-1">
         <Text className="text-lg font-semibold text-foreground">Projects</Text>
-        <Pressable onPress={handleMoreOptions} className="p-1.5 rounded-md active:bg-muted">
-          <MoreHorizontal size={18} className="text-muted-foreground" />
-        </Pressable>
       </View>
 
       {/* Breadcrumb navigation */}
