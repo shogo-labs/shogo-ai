@@ -12,11 +12,22 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test'
 let grantFindManyImpl: (args: any) => Promise<any[]> = async () => []
 let walletFindUniqueImpl: (args: any) => Promise<any> = async () => null
 let applyGrantImpl: (workspaceId: string, now: Date) => Promise<any> = async () => {}
+let lockAcquiredImpl: boolean = true
 
 mock.module('../../lib/prisma', () => ({
   prisma: {
     workspaceGrant: { findMany: (args: any) => grantFindManyImpl(args) },
     usageWallet: { findUnique: (args: any) => walletFindUniqueImpl(args) },
+  },
+}))
+
+mock.module('../../lib/global-job-lock', () => ({
+  withGlobalJobLock: async (_name: string, body: () => Promise<any>) => {
+    if (lockAcquiredImpl) {
+      const result = await body()
+      return { acquired: true, result }
+    }
+    return { acquired: false, skipped: true, reason: 'lock_not_acquired' }
   },
 }))
 
@@ -161,5 +172,22 @@ describe('startGrantMonthlyRefillCron', () => {
       ;(globalThis as any).setTimeout = origSetTimeout
       ;(globalThis as any).setInterval = origSetInterval
     }
+  })
+})
+
+describe('runGrantMonthlyRefill — lock skipped path (lines 125-132)', () => {
+  beforeEach(() => {
+    lockAcquiredImpl = false
+  })
+
+  it('returns lockSkipped:true when the global advisory lock is held by another region', async () => {
+    const { runGrantMonthlyRefill } = await import('../grant-monthly-refill')
+    const result = await runGrantMonthlyRefill()
+    expect(result.lockSkipped).toBe(true)
+    expect(result.candidates).toBe(0)
+    expect(result.refilled).toBe(0)
+    expect(result.skipped).toBe(0)
+    expect(result.failed).toBe(0)
+    expect(result.period).toBeTruthy() // period is a Date or string
   })
 })
