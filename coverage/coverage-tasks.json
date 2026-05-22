@@ -635,8 +635,11 @@
       "linePct": 72.2222,
       "funcPct": 46.6667,
       "phase": 2,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T15:31:19.179674Z",
+      "beforeLinePct": 72.22,
+      "afterLinePct": 100.0
     },
     {
       "file": "packages/sdk/src/memory/drivers/node.ts",
