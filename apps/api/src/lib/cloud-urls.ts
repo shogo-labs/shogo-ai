@@ -42,6 +42,35 @@ export function getShogoCloudUrl(): string {
 }
 
 /**
+ * Build the agent-runtime's `AI_PROXY_URL` from the api server's base URL
+ * (e.g. `http://localhost:8002`, `http://api.shogo-system.svc.cluster.local`).
+ *
+ * Centralized so the desktop `RuntimeManager`, the cloud `KnativeProjectManager`
+ * and the warm-pool controller can't drift on the suffix. The agent-runtime's
+ * AI proxy clients in `packages/agent-runtime/src/gateway.ts` and
+ * `packages/agent-runtime/src/agent-loop.ts` rely on the path being exactly
+ * `/api/ai/v1`.
+ */
+export function buildAiProxyUrl(apiBase: string): string {
+  return `${apiBase.replace(/\/$/, '')}/api/ai/v1`
+}
+
+/**
+ * Build the agent-runtime's `TOOLS_PROXY_URL` from the api server's base URL.
+ *
+ * Centralized for the same reason as {@link buildAiProxyUrl}: the runtime
+ * appends `/serper/...`, `/composio`, `/openai` to this value (see
+ * `gateway-tools.ts`, `composio.ts`, `index-engine.ts`), so the suffix MUST
+ * be `/api/tools` to match the routes mounted in `apps/api/src/server.ts`
+ * (`/api/tools/...`). Drifting to `/api` makes the runtime hit
+ * `/api/serper/...` which falls outside the proxy auth allowlist and 401s
+ * — see the `runtime-manager-proxy-urls.test.ts` regression test.
+ */
+export function buildToolsProxyUrl(apiBase: string): string {
+  return `${apiBase.replace(/\/$/, '')}/api/tools`
+}
+
+/**
  * Returns the user-browser-reachable URL of this API's frontend.
  * Resolution priority:
  *   1. `process.env.APP_URL`

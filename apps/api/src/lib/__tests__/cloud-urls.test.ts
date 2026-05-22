@@ -3,6 +3,8 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import {
+  buildAiProxyUrl,
+  buildToolsProxyUrl,
   getShogoCloudUrl,
   getFrontendUrl,
   SHOGO_CLOUD_URL_DEFAULT,
@@ -42,6 +44,46 @@ describe('getShogoCloudUrl', () => {
   it('treats an empty SHOGO_CLOUD_URL as unset', () => {
     process.env.SHOGO_CLOUD_URL = ''
     expect(getShogoCloudUrl()).toBe(SHOGO_CLOUD_URL_DEFAULT)
+  })
+})
+
+describe('buildAiProxyUrl / buildToolsProxyUrl', () => {
+  it('appends the AI proxy suffix the agent-runtime expects', () => {
+    expect(buildAiProxyUrl('http://localhost:8002')).toBe(
+      'http://localhost:8002/api/ai/v1',
+    )
+    expect(buildAiProxyUrl('http://api.shogo-system.svc.cluster.local')).toBe(
+      'http://api.shogo-system.svc.cluster.local/api/ai/v1',
+    )
+  })
+
+  it('appends `/api/tools` so the runtime hits the proxy router, not requireAuth', () => {
+    expect(buildToolsProxyUrl('http://localhost:8002')).toBe(
+      'http://localhost:8002/api/tools',
+    )
+    expect(buildToolsProxyUrl('http://api.shogo-system.svc.cluster.local')).toBe(
+      'http://api.shogo-system.svc.cluster.local/api/tools',
+    )
+  })
+
+  it('trims a trailing slash on the base so callers can be sloppy', () => {
+    expect(buildAiProxyUrl('http://localhost:8002/')).toBe(
+      'http://localhost:8002/api/ai/v1',
+    )
+    expect(buildToolsProxyUrl('http://localhost:8002/')).toBe(
+      'http://localhost:8002/api/tools',
+    )
+  })
+
+  it('cloud and desktop end up with structurally identical suffixes', () => {
+    const desktopBase = 'http://localhost:8002'
+    const cloudBase = 'http://api.shogo-system.svc.cluster.local'
+    const desktopTools = buildToolsProxyUrl(desktopBase)
+    const cloudTools = buildToolsProxyUrl(cloudBase)
+    expect(desktopTools.replace(desktopBase, '')).toBe(
+      cloudTools.replace(cloudBase, ''),
+    )
+    expect(desktopTools).toMatch(/\/api\/tools$/)
   })
 })
 

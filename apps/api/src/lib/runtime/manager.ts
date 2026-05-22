@@ -23,7 +23,7 @@ import type {
   IHealthStatus,
   RuntimeStatus,
 } from './types'
-import { getShogoCloudUrl } from '../cloud-urls'
+import { getShogoCloudUrl, buildAiProxyUrl, buildToolsProxyUrl } from '../cloud-urls'
 
 /** Get the directory where this module is located */
 const __filename = fileURLToPath(import.meta.url)
@@ -1351,7 +1351,8 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         // The raw ANTHROPIC_API_KEY is explicitly deleted from the child env so the
         // runtime process cannot fall back to the platform API key.
         const apiPort = process.env.API_PORT || '8002'
-        const proxyUrl = `http://localhost:${apiPort}/api/ai/v1`
+        const apiBase = `http://localhost:${apiPort}`
+        const proxyUrl = buildAiProxyUrl(apiBase)
         runtimeEnv.AI_PROXY_URL = proxyUrl
 
         let proxyConfigured = false
@@ -1371,7 +1372,14 @@ export class ShogoErrorBoundary extends Component<Props, State> {
 
         // Tools proxy URL — enables index engine embeddings and other tool
         // requests to route through the API server (same as Kubernetes managers do).
-        runtimeEnv.TOOLS_PROXY_URL = `http://localhost:${apiPort}/api`
+        // The agent-runtime appends `/serper/...`, `/composio`, `/openai` to this
+        // value, so the suffix MUST be `/api/tools` to land on the proxy router
+        // mounted in `server.ts`. Historically this was `/api`, which silently
+        // 401'd on cloud-authed desktop installs (no local SERPER_API_KEY ⇒ proxy
+        // fallback ⇒ wrong URL ⇒ caught by the `requireAuth` middleware that
+        // gates everything outside the `/api/tools/*` allowlist). See
+        // `runtime-manager-proxy-urls.test.ts` for the regression guard.
+        runtimeEnv.TOOLS_PROXY_URL = buildToolsProxyUrl(apiBase)
 
         runtimeEnv.WORKSPACE_ID = workspaceId
 

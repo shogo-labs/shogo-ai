@@ -29,6 +29,7 @@ import * as k8s from '@kubernetes/client-node'
 import * as fs from 'fs'
 import { trace, SpanStatusCode, metrics } from '@opentelemetry/api'
 import * as databaseService from '../services/database.service'
+import { buildAiProxyUrl, buildToolsProxyUrl } from './cloud-urls'
 
 import { RUNTIME_CONFIG } from '@shogo/shared-runtime'
 
@@ -2151,8 +2152,8 @@ export class WarmPoolController {
       process.env.API_URL ||
       process.env.SHOGO_API_URL ||
       `http://api.${systemNamespace}.svc.cluster.local`
-    env.push({ name: 'AI_PROXY_URL', value: `${apiUrl}/api/ai/v1` })
-    env.push({ name: 'TOOLS_PROXY_URL', value: `${apiUrl}/api/tools` })
+    env.push({ name: 'AI_PROXY_URL', value: buildAiProxyUrl(apiUrl) })
+    env.push({ name: 'TOOLS_PROXY_URL', value: buildToolsProxyUrl(apiUrl) })
 
     // Public API URL for browser-facing contexts (e.g. webchat widget embed snippets)
     if (process.env.SHOGO_PUBLIC_API_URL) {
