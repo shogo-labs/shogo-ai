@@ -27,13 +27,13 @@ import {
   LayoutGrid,
   Star,
   Users,
-  FileCode2,
   CreditCard,
   User,
   ArrowRight,
   X,
   BarChart3,
   Key,
+  Store,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useProjectCollection } from '../../contexts/domain'
@@ -70,7 +70,7 @@ export const CommandPalette = observer(function CommandPalette({
 }: CommandPaletteProps) {
   const router = useRouter()
   const projects = useProjectCollection()
-  const { localMode } = usePlatformConfig()
+  const { localMode, features } = usePlatformConfig()
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
   const inputRef = useRef<TextInput>(null)
@@ -113,14 +113,14 @@ export const CommandPalette = observer(function CommandPalette({
         category: 'navigation',
         keywords: ['shared', 'team'],
       },
-      {
-        id: 'nav-templates',
-        label: 'Templates',
-        description: 'Browse templates',
-        icon: FileCode2,
-        href: '/(app)/templates',
+      features.marketplace && {
+        id: 'nav-marketplace',
+        label: 'Marketplace',
+        description: 'Browse agents and templates',
+        icon: Store,
+        href: '/(app)/marketplace',
         category: 'navigation',
-        keywords: ['templates', 'starter'],
+        keywords: ['marketplace', 'templates', 'agents', 'starter', 'install'],
       },
       {
         id: 'nav-api-keys',
@@ -145,7 +145,7 @@ export const CommandPalette = observer(function CommandPalette({
         label: 'Profile',
         description: 'View your profile',
         icon: User,
-        href: '/(app)/settings',
+        href: '/(app)/profile',
         category: 'settings',
         keywords: ['profile', 'account', 'settings'],
       },
@@ -154,7 +154,7 @@ export const CommandPalette = observer(function CommandPalette({
         label: 'Members',
         description: 'Manage workspace members',
         icon: Users,
-        href: '/(app)/settings',
+        href: '/(app)/settings?tab=people',
         category: 'settings',
         keywords: ['members', 'team', 'invite'],
       },
@@ -185,7 +185,7 @@ export const CommandPalette = observer(function CommandPalette({
     }
 
     return items
-  }, [projects?.all])
+  }, [projects?.all, localMode, features.marketplace])
 
   const filteredCommands = useMemo(() => {
     if (!query.trim()) return commands
@@ -315,7 +315,7 @@ export const CommandPalette = observer(function CommandPalette({
               placeholderTextColor="#9ca3af"
               autoCapitalize="none"
               autoCorrect={false}
-              className="flex-1 text-base text-foreground web:outline-none"
+              className="flex-1 text-base text-foreground web:outline-none no-focus-ring"
               returnKeyType="go"
               onSubmitEditing={() => {
                 if (filteredCommands[selectedIndex]) {
