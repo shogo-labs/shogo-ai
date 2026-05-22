@@ -6,7 +6,7 @@ import { cn } from "@shogo/shared-ui/primitives"
 import { CheckCircle2, Circle, Play, ClipboardList, ChevronDown, ChevronUp, ChevronRight, Languages } from "lucide-react-native"
 import { MarkdownText } from "./MarkdownText"
 
-export type PlanBusinessStatus = "idle" | "pending" | "ready" | "error"
+export type PlanSummaryStatus = "idle" | "pending" | "ready" | "error"
 
 export interface PlanData {
   name: string
@@ -15,16 +15,16 @@ export interface PlanData {
   todos: Array<{ id: string; content: string }>
   filepath?: string
   toolCallId?: string
-  /** Business-language translation, populated asynchronously by the runtime
+  /** Stakeholder-friendly summary, populated asynchronously by the runtime
    *  when the user has the Dual Plan preference enabled. */
-  business?: string
-  /** Lifecycle of the business translation. Absent / `idle` means the user
-   *  did not opt in for this plan; "pending" shows a spinner; "ready" enables
-   *  the Business tab; "error" surfaces an inline message. */
-  businessStatus?: PlanBusinessStatus
+  summary?: string
+  /** Lifecycle of the summary. Absent / `idle` means the user did not opt
+   *  in for this plan; "pending" shows a spinner; "ready" enables the
+   *  Summary tab; "error" surfaces an inline message. */
+  summaryStatus?: PlanSummaryStatus
 }
 
-type PlanTab = "technical" | "business"
+type PlanTab = "technical" | "summary"
 
 const PLAN_TRUNCATE_LENGTH = 2000
 
@@ -35,9 +35,9 @@ interface PlanCardProps {
   onOpenPlan?: () => void
   onViewFull?: () => void
   isConfirmed?: boolean
-  /** Triggers an on-demand business-language translation for a plan that
-   *  does not yet have one. Surfaced when business is missing and idle. */
-  onGenerateBusiness?: () => void | Promise<void>
+  /** Triggers an on-demand summary generation for a plan that does not yet
+   *  have one. Surfaced when summary is missing and idle. */
+  onGenerateSummary?: () => void | Promise<void>
 }
 
 // `AssistantContent` rebuilds the `plan` object literal on every commit while
@@ -52,7 +52,7 @@ function planCardPropsEqual(prev: PlanCardProps, next: PlanCardProps) {
   if (prev.onConfirm !== next.onConfirm) return false
   if (prev.onOpenPlan !== next.onOpenPlan) return false
   if (prev.onViewFull !== next.onViewFull) return false
-  if (prev.onGenerateBusiness !== next.onGenerateBusiness) return false
+  if (prev.onGenerateSummary !== next.onGenerateSummary) return false
   const a = prev.plan
   const b = next.plan
   if (a === b) return true
@@ -63,8 +63,8 @@ function planCardPropsEqual(prev: PlanCardProps, next: PlanCardProps) {
     a.filepath !== b.filepath ||
     a.toolCallId !== b.toolCallId ||
     a.todos.length !== b.todos.length ||
-    a.business !== b.business ||
-    a.businessStatus !== b.businessStatus
+    a.summary !== b.summary ||
+    a.summaryStatus !== b.summaryStatus
   ) {
     return false
   }
@@ -75,22 +75,22 @@ function planCardPropsEqual(prev: PlanCardProps, next: PlanCardProps) {
   return true
 }
 
-function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConfirmed, onGenerateBusiness }: PlanCardProps) {
+function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConfirmed, onGenerateSummary }: PlanCardProps) {
   const [expanded, setExpanded] = useState(false)
   const [tasksExpanded, setTasksExpanded] = useState(false)
   const [activeTab, setActiveTab] = useState<PlanTab>("technical")
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState<string | null>(null)
 
-  const handleGenerate = onGenerateBusiness
+  const handleGenerate = onGenerateSummary
     ? async () => {
         if (generating) return
         setGenerating(true)
         setGenerateError(null)
         try {
-          await onGenerateBusiness()
+          await onGenerateSummary()
         } catch (err: any) {
-          setGenerateError(err?.message || "Failed to generate business summary")
+          setGenerateError(err?.message || "Failed to generate summary")
         } finally {
           setGenerating(false)
         }
@@ -102,14 +102,14 @@ function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConf
   const technicalDisplayedPlan = expanded || !isTruncatable
     ? plan.plan
     : plan.plan.substring(0, PLAN_TRUNCATE_LENGTH) + "\n\n..."
-  const businessStatus: PlanBusinessStatus = plan.businessStatus ?? "idle"
-  const businessAvailable = businessStatus !== "idle"
-  const isBusinessTab = activeTab === "business" && businessAvailable
-  const businessTextRaw = plan.business ?? ""
-  const businessIsTruncatable = businessTextRaw.length > PLAN_TRUNCATE_LENGTH
-  const businessDisplayed = expanded || !businessIsTruncatable
-    ? businessTextRaw
-    : businessTextRaw.substring(0, PLAN_TRUNCATE_LENGTH) + "\n\n..."
+  const summaryStatus: PlanSummaryStatus = plan.summaryStatus ?? "idle"
+  const summaryAvailable = summaryStatus !== "idle"
+  const isSummaryTab = activeTab === "summary" && summaryAvailable
+  const summaryTextRaw = plan.summary ?? ""
+  const summaryIsTruncatable = summaryTextRaw.length > PLAN_TRUNCATE_LENGTH
+  const summaryDisplayed = expanded || !summaryIsTruncatable
+    ? summaryTextRaw
+    : summaryTextRaw.substring(0, PLAN_TRUNCATE_LENGTH) + "\n\n..."
 
   // "View Full Plan" navigates to the plan page when a filepath is available;
   // it only falls back to expanding inline if the plan hasn't been saved yet
@@ -136,8 +136,8 @@ function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConf
         </View>
       </View>
 
-      {/* Tab strip — only visible when a business translation exists or is in flight */}
-      {businessAvailable && (
+      {/* Tab strip — only visible when a summary exists or is in flight */}
+      {summaryAvailable && (
         <View className="flex-row items-center border-b border-border/40">
           <Pressable
             onPress={() => setActiveTab("technical")}
@@ -158,23 +158,23 @@ function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConf
             </Text>
           </Pressable>
           <Pressable
-            onPress={() => setActiveTab("business")}
+            onPress={() => setActiveTab("summary")}
             className={cn(
               "flex-1 flex-row items-center justify-center gap-1 py-2",
-              activeTab === "business" && "border-b-2 border-sky-400"
+              activeTab === "summary" && "border-b-2 border-sky-400"
             )}
           >
             <Text
               className={cn(
                 "text-xs font-semibold",
-                activeTab === "business"
+                activeTab === "summary"
                   ? "text-sky-400"
                   : "text-muted-foreground"
               )}
             >
-              Business
+              Summary
             </Text>
-            {businessStatus === "pending" && (
+            {summaryStatus === "pending" && (
               <ActivityIndicator size="small" />
             )}
           </Pressable>
@@ -183,20 +183,20 @@ function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConf
 
       {/* Plan body */}
       <ScrollView className={cn("px-4 py-3", expanded ? "max-h-[600px]" : "max-h-[300px]")}>
-        {isBusinessTab ? (
-          businessStatus === "pending" ? (
+        {isSummaryTab ? (
+          summaryStatus === "pending" ? (
             <View className="flex-row items-center gap-2 py-3">
               <ActivityIndicator size="small" />
               <Text className="text-xs text-muted-foreground">
-                Generating business summary...
+                Generating summary...
               </Text>
             </View>
-          ) : businessStatus === "error" ? (
+          ) : summaryStatus === "error" ? (
             <Text className="text-xs text-destructive">
-              Failed to generate business summary. The technical plan above is unaffected.
+              Failed to generate summary. The technical plan above is unaffected.
             </Text>
           ) : (
-            <MarkdownText>{businessDisplayed}</MarkdownText>
+            <MarkdownText>{summaryDisplayed}</MarkdownText>
           )
         ) : (
           <MarkdownText>{technicalDisplayedPlan}</MarkdownText>
@@ -259,10 +259,10 @@ function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConf
               </Text>
             </Pressable>
           )}
-          {/* On-demand business translation for plans that didn't have one
+          {/* On-demand summary generation for plans that didn't have one
               auto-generated (Dual Plan off, or older plan). Requires a saved
               filepath because the runtime endpoint operates on .plan.md. */}
-          {handleGenerate && !businessAvailable && !!plan.filepath && (
+          {handleGenerate && !summaryAvailable && !!plan.filepath && (
             <Pressable
               onPress={handleGenerate}
               disabled={generating}
@@ -279,14 +279,14 @@ function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConf
                 <Languages className="h-3.5 w-3.5 text-sky-400" size={14} />
               )}
               <Text className="text-xs font-semibold text-sky-400">
-                {generating ? "Generating..." : "Business Summary"}
+                {generating ? "Generating..." : "Summary"}
               </Text>
             </Pressable>
           )}
         </View>
       )}
 
-      {generateError && !businessAvailable && (
+      {generateError && !summaryAvailable && (
         <Text className="px-4 pb-2 text-xs text-destructive">
           {generateError}
         </Text>

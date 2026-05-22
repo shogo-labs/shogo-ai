@@ -609,4 +609,99 @@ describe.skipIf(!RUN_INTEGRATION)('Workspace HTTP API Integration', () => {
     const res = await fetch(`${BASE}/agent/workspace/files/../../../etc/passwd`)
     expect(res.ok).toBe(false)
   })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // VS Code-style tree visibility + lazy loading
+  //
+  // After the 2026-05-20 fix, `walkFilesTree` no longer applies a blanket
+  // `startsWith('.')` filter. Dotfiles / config files / AGENTS.md show up so
+  // the IDE Monaco tree behaves like VS Code. Heavy dirs (`node_modules`,
+  // `dist`, …) come back as `{ type: 'directory', lazy: true }` with no
+  // `children`, and the IDE fetches them on expand via `?path=`.
+  //
+  // These tests seed an explicit set of representative entries on the live
+  // server, then assert the tree shape end-to-end.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('tree visibility (VS Code defaults)', () => {
+    beforeAll(async () => {
+      // Files: a dotfile, a config the panel previously hid, an OS-junk file.
+      mkdirSync(join(TEST_API_DIR, '.shogo'), { recursive: true })
+      writeFileSync(join(TEST_API_DIR, '.env'), 'SECRET=visible-to-ide\n')
+      writeFileSync(join(TEST_API_DIR, '.gitignore'), 'node_modules\n')
+      writeFileSync(join(TEST_API_DIR, 'package.json'), '{"name":"vis-test"}\n')
+      writeFileSync(join(TEST_API_DIR, '.DS_Store'), 'macOS junk')
+      // Directories: a hard-hidden VCS dir, two lazy heavy dirs, a regular dir.
+      mkdirSync(join(TEST_API_DIR, '.git', 'objects'), { recursive: true })
+      writeFileSync(join(TEST_API_DIR, '.git', 'HEAD'), 'ref: refs/heads/main\n')
+      mkdirSync(join(TEST_API_DIR, 'node_modules', 'lodash'), { recursive: true })
+      writeFileSync(
+        join(TEST_API_DIR, 'node_modules', 'lodash', 'package.json'),
+        '{"name":"lodash"}',
+      )
+      mkdirSync(join(TEST_API_DIR, 'dist'), { recursive: true })
+      writeFileSync(join(TEST_API_DIR, 'dist', 'bundle.js'), '/* built */\n')
+    })
+
+    test('dotfiles and configs are visible at the workspace root', async () => {
+      const res = await fetch(`${BASE}/agent/workspace/tree`)
+      expect(res.ok).toBe(true)
+      const { tree } = (await res.json()) as { tree: any[] }
+      const names = new Set(tree.map((n: any) => n.name))
+      expect(names.has('.env')).toBe(true)
+      expect(names.has('.gitignore')).toBe(true)
+      expect(names.has('.shogo')).toBe(true)
+      expect(names.has('package.json')).toBe(true)
+      expect(names.has('AGENTS.md')).toBe(true)
+    })
+
+    test('.git is hard-hidden and OS junk is filtered', async () => {
+      const res = await fetch(`${BASE}/agent/workspace/tree`)
+      const { tree } = (await res.json()) as { tree: any[] }
+      const names = new Set(tree.map((n: any) => n.name))
+      expect(names.has('.git')).toBe(false)
+      expect(names.has('.DS_Store')).toBe(false)
+    })
+
+    test('node_modules and dist come back as lazy: true with no children', async () => {
+      const res = await fetch(`${BASE}/agent/workspace/tree`)
+      const { tree } = (await res.json()) as { tree: any[] }
+      const nm = tree.find((n: any) => n.name === 'node_modules')
+      expect(nm).toBeDefined()
+      expect(nm.type).toBe('directory')
+      expect(nm.lazy).toBe(true)
+      expect(nm.children).toBeUndefined()
+      const dist = tree.find((n: any) => n.name === 'dist')
+      expect(dist).toBeDefined()
+      expect(dist.lazy).toBe(true)
+      expect(dist.children).toBeUndefined()
+    })
+
+    test('?path= fetches a lazy subtree on demand', async () => {
+      const res = await fetch(
+        `${BASE}/agent/workspace/tree?path=${encodeURIComponent('node_modules')}`,
+      )
+      expect(res.ok).toBe(true)
+      const { tree } = (await res.json()) as { tree: any[] }
+      const lodash = tree.find((n: any) => n.name === 'lodash')
+      expect(lodash).toBeDefined()
+      expect(lodash.type).toBe('directory')
+      // Nested `node_modules` (none here) would still be lazy. `lodash` itself
+      // is a regular dir and should have walked children.
+      expect(Array.isArray(lodash.children)).toBe(true)
+    })
+
+    test('?path= rejects escapes outside the workspace root', async () => {
+      const res = await fetch(
+        `${BASE}/agent/workspace/tree?path=${encodeURIComponent('../../etc')}`,
+      )
+      expect(res.status).toBe(400)
+    })
+
+    test('?path= returns 404 for a missing subtree', async () => {
+      const res = await fetch(
+        `${BASE}/agent/workspace/tree?path=${encodeURIComponent('does-not-exist')}`,
+      )
+      expect(res.status).toBe(404)
+    })
+  })
 })

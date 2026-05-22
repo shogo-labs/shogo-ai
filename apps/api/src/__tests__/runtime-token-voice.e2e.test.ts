@@ -35,7 +35,7 @@ process.env.AI_PROXY_SECRET =
 process.env.ELEVENLABS_API_KEY =
   process.env.ELEVENLABS_API_KEY ?? 'test-el-key'
 process.env.ELEVENLABS_VOICE_MODE_AGENT_ID =
-  process.env.ELEVENLABS_VOICE_MODE_AGENT_ID ?? 'agent_shared_shogo_mode'
+  process.env.ELEVENLABS_VOICE_MODE_AGENT_ID ?? 'agent_shared_ez_mode'
 
 // ─── Shogo API mocks ─────────────────────────────────────────────────────
 type ProjectFixture = {

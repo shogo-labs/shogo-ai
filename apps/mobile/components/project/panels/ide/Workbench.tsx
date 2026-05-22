@@ -29,6 +29,7 @@ import {
 } from "./types";
 import { SearchPane } from "./SearchPane";
 import { SettingsPane } from "./SettingsPane";
+import { CheckpointsPanel } from "../CheckpointsPanel";
 import { useLiveAgentEdits, type LiveConflict } from "./useLiveAgentEdits";
 import { AgentEditBanner } from "./AgentEditBanner";
 import { applyAgentEdit, type MonacoNs } from "./agentEditAnimation";
@@ -134,6 +135,32 @@ function annotateRoot(nodes: RawNode[], rootId: string): TreeNode[] {
     rootId,
     children: n.children ? annotateRoot(n.children, rootId) : undefined,
   }));
+}
+
+/**
+ * Walk `tree`, find the directory at `path`, and replace its children with
+ * `children` (clearing the `lazy` flag). Used by `loadSubtree` to splice a
+ * just-fetched subtree into the root in a structurally-shared, immutable
+ * fashion so React only re-renders the affected branch.
+ */
+function spliceSubtree(
+  tree: TreeNode[],
+  path: string,
+  children: TreeNode[],
+): TreeNode[] {
+  return tree.map((n) => {
+    if (n.path === path && n.kind === "dir") {
+      return { ...n, children, lazy: undefined };
+    }
+    if (
+      n.kind === "dir" &&
+      n.children &&
+      (n.path === "" || path.startsWith(n.path + "/"))
+    ) {
+      return { ...n, children: spliceSubtree(n.children, path, children) };
+    }
+    return n;
+  });
 }
 
 function flattenFiles(tree: TreeNode[], out: TreeNode[] = []): TreeNode[] {
@@ -307,6 +334,28 @@ export function Workbench({
   const refreshAllRoots = useCallback(async () => {
     await Promise.all(Object.keys(services).map((id) => loadRoot(id)));
   }, [services, loadRoot]);
+
+  /**
+   * Fetch the children of a lazy directory on demand and splice them into the
+   * root's tree. Used when the user expands `node_modules`, `dist`, etc. —
+   * the server returns those as `{ lazy: true, children: undefined }` to keep
+   * the initial tree payload small. Throws on failure so the FileTree can
+   * surface a per-row error + retry affordance.
+   */
+  const loadSubtree = useCallback(
+    async (rootId: string, path: string) => {
+      const svc = services[rootId];
+      if (!svc) throw new Error(`Unknown workspace: ${rootId}`);
+      const raw = await svc.listTree(path);
+      const children = annotateRoot(raw, rootId);
+      setRoots((prev) =>
+        prev.map((r) =>
+          r.id === rootId ? { ...r, tree: spliceSubtree(r.tree, path, children) } : r,
+        ),
+      );
+    },
+    [services],
+  );
 
   // Keep open editors in sync with agent filesystem writes (Cursor-style).
   // Only hooks into the "agent" workspace; local folders never emit events.
@@ -889,8 +938,9 @@ export function Workbench({
       onRename: handleRenameNode,
       onDelete: handleDeleteNode,
       onMove: handleMove,
+      onLoadSubtree: loadSubtree,
     }),
-    [handleOpenFile, handleCreate, handleRenameNode, handleDeleteNode, handleMove],
+    [handleOpenFile, handleCreate, handleRenameNode, handleDeleteNode, handleMove, loadSubtree],
   );
 
   // ─── Save ────────────────────────────────────────────────────────────
@@ -1148,6 +1198,15 @@ export function Workbench({
         run: () => setActivity("search"),
       },
       {
+        id: "view.openSourceControl",
+        label: "View: Show Source Control",
+        shortcut: "⌃⇧G",
+        run: () => {
+          setActivity("git");
+          if (!sidebarOpen) setSidebarOpen(true);
+        },
+      },
+      {
         id: "goto.line",
         label: "Go to Line…",
         shortcut: "⌘G",
@@ -1223,6 +1282,14 @@ export function Workbench({
       if (matchesShortcut(e, { meta: true, shift: true, key: "f" })) {
         e.preventDefault();
         setActivity("search");
+        if (!sidebarOpen) setSidebarOpen(true);
+        return;
+      }
+      // VS Code parity: ⌃⇧G opens the Source Control activity. Uses Ctrl
+      // (not ⌘) on both mac and Windows/Linux to match VS Code's default.
+      if (e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey && (e.key === "g" || e.key === "G")) {
+        e.preventDefault();
+        setActivity("git");
         if (!sidebarOpen) setSidebarOpen(true);
         return;
       }
@@ -1321,6 +1388,17 @@ export function Workbench({
                       );
                     }}
                   />
+                )}
+                {activity === "git" && (
+                  projectId ? (
+                    <CheckpointsPanel visible projectId={projectId} />
+                  ) : (
+                    <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-[color:var(--ide-muted)]">
+                      <div className="text-[13px]">
+                        Source control requires a project context.
+                      </div>
+                    </div>
+                  )
                 )}
                 {activity === "settings" && (
                   <SettingsPane settings={settings} onChange={setSettings} />

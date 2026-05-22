@@ -97,11 +97,10 @@ describe('recordBuildEntry', () => {
 })
 
 describe('recordCanvasErrorEntry', () => {
-  test('always stamps level=error and copies surfaceId', () => {
-    const e = recordCanvasErrorEntry('Uncaught TypeError', 'surface-42')
+  test('always stamps level=error', () => {
+    const e = recordCanvasErrorEntry('Uncaught TypeError')
     expect(e.source).toBe('canvas-error')
     expect(e.level).toBe('error')
-    expect(e.surfaceId).toBe('surface-42')
   })
 })
 
@@ -109,7 +108,7 @@ describe('getRuntimeLogsSnapshot', () => {
   test('returns all entries in insertion order', () => {
     recordConsoleEntry('a')
     recordBuildEntry('b')
-    recordCanvasErrorEntry('c', 'surface')
+    recordCanvasErrorEntry('c')
     const snap = getRuntimeLogsSnapshot()
     expect(snap.map((e) => e.text)).toEqual(['a', 'b', 'c'])
   })

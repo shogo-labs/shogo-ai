@@ -932,13 +932,13 @@ function DualPlanCard() {
         <View className="px-6 py-5 flex-row items-center justify-between">
           <View className="flex-1 mr-4">
             <Text className="text-sm font-semibold text-foreground">
-              Generate business summaries for plans
+              Generate summaries for plans
             </Text>
             <Text className="text-sm text-muted-foreground mt-0.5">
-              When on, every plan you generate also gets a
-              business-language summary translated. You can
-              flip between the Technical and Business views from any plan,
-              and generate summaries on demand for older plans.
+              When on, every plan you generate also gets a stakeholder
+              summary alongside the technical body. You can flip between
+              the Technical and Summary views from any plan, and generate
+              summaries on demand for older plans.
             </Text>
           </View>
           <Switch

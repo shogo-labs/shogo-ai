@@ -1,19 +1,93 @@
 ---
-description: After Prisma schema changes, create a migration and commit it with the schema
-globs: prisma/schema.prisma
+description: After Prisma schema changes, create a migration and commit it with the schema. Covers both the PG track (prisma/schema.prisma) and the desktop SQLite track (prisma/schema.local.prisma).
+globs: prisma/schema.prisma,prisma/schema.local.prisma
 alwaysApply: false
 ---
 
 # Prisma schema and migrations
 
-When you change `prisma/schema.prisma`:
+Shogo maintains **two** Prisma schemas because the runtime database
+differs between cloud (PostgreSQL) and desktop (SQLite). Each has its
+own migration tree:
 
-1. **Generate a migration** (do not leave schema edits without a matching migration under `prisma/migrations/`):
-   - From the repo root: `bun run db:migrate -- --name <short_descriptive_snake_case>`
-   - This runs `prisma migrate dev` and creates a new migration folder.
+| Schema                       | Migrations directory               | Used by                                   |
+| ---------------------------- | ---------------------------------- | ----------------------------------------- |
+| `prisma/schema.prisma`       | `prisma/migrations/`               | Cloud API (`apps/api`)                    |
+| `prisma/schema.local.prisma` | `apps/desktop/prisma/migrations/`  | Desktop app + `dev:all` local mode        |
 
-2. **Commit together**: Include both `prisma/schema.prisma` and the new `prisma/migrations/<timestamp>_<name>/` files in the same change set so CI and other environments stay in sync.
+When you change EITHER file, generate a matching migration in the
+SAME PR. Schema-without-migration PRs are blocked at pre-commit and at
+CI.
 
-3. Prefer **`migrate dev` / committed SQL** for evolving the tracked schema. Reserve **`db push`** for quick local experiments only, not as a substitute for migrations when the goal is a mergeable schema change.
+## When `prisma/schema.prisma` changes (cloud / PG track)
 
-If a migration cannot be applied interactively in this environment, still add the generated migration SQL to the tree and note any manual deploy step; do not skip the migration file.
+1. **Generate a migration:**
+   ```bash
+   bun run db:migrate -- --name <short_descriptive_snake_case>
+   ```
+   This runs `prisma migrate dev` against your local Postgres dev DB
+   and creates a new migration folder under `prisma/migrations/`.
+2. **Commit together**: include both `prisma/schema.prisma` and the
+   new migration directory in the same change set.
+
+## When `prisma/schema.local.prisma` changes (desktop / SQLite track)
+
+1. **Generate a migration:**
+   ```bash
+   bun run db:migrate:desktop -- --name <short_descriptive_snake_case>
+   ```
+   This wraps `prisma migrate diff --from-migrations --to-schema` to
+   emit a SQLite migration into
+   `apps/desktop/prisma/migrations/<timestamp>_<name>/migration.sql`.
+
+   DO NOT hand-write the SQL by translating from the PG migration —
+   that's the human-process bug that bricked v1.7.8 (someone added
+   `MarketplaceListing` to `schema.local.prisma` and shipped only the
+   follow-up ALTER, never the base CREATE TABLE). The `db:migrate:desktop`
+   command uses Prisma's own SQLite SQL generator, which handles
+   enums → TEXT, `String[]` → JSON-encoded TEXT, JSONB → TEXT, FK
+   inlining into CREATE TABLE (SQLite can't ADD CONSTRAINT), and
+   partial indexes correctly.
+
+2. **Commit together**: include both `prisma/schema.local.prisma`
+   and the new migration directory in the same change set.
+
+3. The pre-commit hook runs `bun run check:desktop-schema-drift`
+   after a schema or migration change. If the generated migration
+   doesn't fully cover the schema change you'll see something like
+   ```
+   [drift] FAIL — 1 table(s) drift between apps/desktop/prisma/migrations
+   and prisma/schema.local.prisma that are NOT on the accepted-drift allow-list:
+     - [+] Added the `foo_bar` table
+   ```
+   Fix: re-run `bun run db:migrate:desktop -- --name <name>` (or
+   amend the existing migration) so the diff is empty.
+
+## When you change BOTH schemas
+
+Run both generators. The PG track usually leads (the desktop schema
+is intentionally a subset). Keep the migration content semantically
+equivalent — `bun run check:schema-parity` enforces this at PR time
+via the allow-list in `scripts/check-schema-parity.ts`.
+
+## Migration hygiene
+
+- Prefer **`migrate dev` / `migrate diff` / committed SQL** for evolving
+  the tracked schemas. Reserve **`db push`** for quick local
+  experiments only, never as a substitute for a real migration.
+- NEVER edit a shipped migration's SQL in place. If you need to
+  correct a previously-shipped migration, ship a NEW migration that
+  fixes it forward — old desktop installs have the broken version
+  already recorded in `_prisma_migrations` and any in-place edit will
+  silently diverge between fresh installs and upgrade installs.
+- If a migration cannot be applied interactively in your environment,
+  still add the generated SQL to the tree and note the manual deploy
+  step in the PR description; do not skip the migration file.
+
+## What the CI gates catch
+
+| Check                              | What it catches                                                                                                                                          |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `check:schema-parity`              | Drift between `schema.prisma` and `schema.local.prisma` (e.g. column added to PG but not mirrored to SQLite).                                             |
+| `check:migrations`                 | A SQLite migration that fails to replay against an empty DB or against any of the historical checkpoint scenarios in `scripts/check-migrations.ts`.      |
+| `check:desktop-schema-drift`       | A model in `schema.local.prisma` that the desktop migration history doesn't materialise (the v1.7.8 marketplace bug). Wraps `prisma migrate diff`.       |

@@ -397,9 +397,37 @@ describe('Full cold start simulation', () => {
 // ---------------------------------------------------------------------------
 
 describe('Whitelist allows all catalog entries', () => {
-  test('isMcpServerAllowed returns true for all catalog entries', () => {
-    for (const entry of MCP_CATALOG) {
+  test('isMcpServerAllowed returns true for every cloud-compatible catalog entry', () => {
+    // mcp-catalog.ts:264–272: in cloud mode (SHOGO_LOCAL_MODE !== 'true')
+    // entries marked `cloudCompatible: false` are hard-blocked because
+    // they require host-level access (filesystem, OS APIs, GUI) that
+    // cloud sandboxes cannot provide. The cloud-incompatible bucket is
+    // exercised separately by the local-mode test below.
+    for (const entry of MCP_CATALOG.filter((e) => e.cloudCompatible !== false)) {
       expect(isMcpServerAllowed(entry.id)).toBe(true)
+    }
+  })
+
+  test('cloud-incompatible catalog entries are blocked in cloud mode but allowed in local mode', () => {
+    const cloudIncompatible = MCP_CATALOG.filter((e) => e.cloudCompatible === false)
+    // Sanity check: this guard exists to document a real bucket. If the
+    // catalog ever drains to all-cloud-compatible we want this test to
+    // fail loud so we revisit the assertion above.
+    expect(cloudIncompatible.length).toBeGreaterThan(0)
+
+    const prev = process.env.SHOGO_LOCAL_MODE
+    delete process.env.SHOGO_LOCAL_MODE
+    try {
+      for (const entry of cloudIncompatible) {
+        expect(isMcpServerAllowed(entry.id)).toBe(false)
+      }
+      process.env.SHOGO_LOCAL_MODE = 'true'
+      for (const entry of cloudIncompatible) {
+        expect(isMcpServerAllowed(entry.id)).toBe(true)
+      }
+    } finally {
+      if (prev === undefined) delete process.env.SHOGO_LOCAL_MODE
+      else process.env.SHOGO_LOCAL_MODE = prev
     }
   })
 

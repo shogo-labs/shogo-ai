@@ -12,7 +12,6 @@
     "./domain": "./src/domain/index.ts",
     "./hooks": "./src/hooks/index.ts",
     "./services": "./src/services/index.ts",
-    "./dynamic-app": "./src/dynamic-app/index.ts",
     "./chat": "./src/chat/index.ts"
   },
   "scripts": {

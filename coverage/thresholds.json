@@ -1,0 +1,19 @@
+{
+  "$schema-comment": "Per-package + aggregate coverage floors enforced by scripts/run-all-tests.ts (which forwards them to scripts/merge-lcov.ts as --threshold-line / --threshold-function / --per-package-floor). Fractions in [0,1]. Ratchet UP only — each milestone in .shogo/plans/backend-coverage-to-100_*.plan.md raises the floor for the package(s) it touched so coverage can never silently regress. See COVERAGE_EXCLUSIONS.md for policy. Baseline established 2026-05-19 from a clean strict merge of every package's lcov shard after applying excludeDirs (dist/build/generated and the merge-lcov DEFAULT_EXCLUDE_DIRS).",
+  "aggregate": {
+    "lines": 0.74,
+    "functions": 0.80
+  },
+  "perPackage": {
+    "apps/api": 0.75,
+    "packages/agent-runtime": 0.71,
+    "packages/shared-runtime": 0.70,
+    "packages/sdk": 0.78,
+    "packages/model-catalog": 1.00
+  },
+  "excludeDirs": [
+    "dist",
+    "build",
+    "generated"
+  ]
+}

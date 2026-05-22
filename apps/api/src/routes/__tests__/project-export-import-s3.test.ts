@@ -144,7 +144,7 @@ function buildBundleZip(opts: { projectName?: string } = {}): Uint8Array {
       description: 'imported for testing',
       tier: 'starter',
       status: 'draft',
-      settings: { activeMode: 'none', canvasMode: 'code', canvasEnabled: false },
+      settings: { activeMode: 'none', canvasEnabled: false },
       schemas: [],
       accessLevel: 'anyone',
     },

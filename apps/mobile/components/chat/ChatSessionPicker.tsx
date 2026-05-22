@@ -11,7 +11,7 @@
  * Rename uses a text input inline approach.
  */
 
-import { useState, useMemo, useCallback } from "react"
+import { useState, useMemo, useCallback, useRef } from "react"
 import {
   View,
   Text,
@@ -43,6 +43,8 @@ import {
   Check,
   X,
   Search,
+  Loader2,
+  Trash2,
 } from "lucide-react-native"
 
 export interface ChatSession {
@@ -66,6 +68,8 @@ export interface ChatSessionPickerProps {
   onSelect: (sessionId: string) => void
   onCreate: () => void
   onRename?: (sessionId: string, newName: string) => void
+  /** Delete a chat session. When provided, each row gets a trash button. */
+  onDelete?: (sessionId: string) => void
   onLoadMore?: () => void
   hasMore?: boolean
   isLoadingMore?: boolean
@@ -75,6 +79,13 @@ export interface ChatSessionPickerProps {
   searchOpen?: boolean
   /** Called when the externally-controlled search modal should close. */
   onSearchClose?: () => void
+  /** Set of session IDs whose stream is currently running. Renders an animated spinner on the row. */
+  streamingSessionIds?: Set<string>
+  /**
+   * Set of session IDs whose stream has finished but whose row has not yet
+   * been viewed by the user. Renders a static theme-colored dot.
+   */
+  completedSessionIds?: Set<string>
 }
 
 export function formatRelativeTime(timestamp: number): string {
@@ -106,6 +117,24 @@ export function ChatSessionPicker({
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState("")
   const [searchQuery, setSearchQuery] = useState("")
+  const [hoveredSessionId, setHoveredSessionId] = useState<string | null>(null)
+  // Deferred clear so moving the cursor from the row onto a nested icon Pressable
+  // (which fires the row's onHoverOut) doesn't briefly hide the icons.
+  const clearHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const setRowHover = (id: string) => {
+    if (clearHoverTimerRef.current) {
+      clearTimeout(clearHoverTimerRef.current)
+      clearHoverTimerRef.current = null
+    }
+    setHoveredSessionId(id)
+  }
+  const scheduleClearRowHover = (id: string) => {
+    if (clearHoverTimerRef.current) clearTimeout(clearHoverTimerRef.current)
+    clearHoverTimerRef.current = setTimeout(() => {
+      clearHoverTimerRef.current = null
+      setHoveredSessionId((prev) => (prev === id ? null : prev))
+    }, 0)
+  }
 
   const sortedSessions = useMemo(() => {
     return [...sessions].sort((a, b) => b.updatedAt - a.updatedAt)
@@ -157,10 +186,13 @@ export function ChatSessionPicker({
   const renderSession = ({ item: session }: ListRenderItemInfo<ChatSession>) => {
     const isEditing = editingSessionId === session.id
     const isCurrent = session.id === currentSessionId
+    const isHovered = hoveredSessionId === session.id
 
     return (
       <Pressable
         onPress={() => handleSessionSelect(session.id)}
+        onHoverIn={() => setRowHover(session.id)}
+        onHoverOut={() => scheduleClearRowHover(session.id)}
         className={cn(
           "px-4 py-3 border-b border-gray-200/50 dark:border-gray-700/50 hover:bg-muted",
           isCurrent && "bg-primary/10"
@@ -189,8 +221,13 @@ export function ChatSessionPicker({
                 {session.name}
               </Text>
               <View className="flex-row items-center gap-2 shrink-0">
-                {onRename && (
-                  <Pressable onPress={() => handleStartEdit(session)} className="p-1">
+                {onRename && isHovered && (
+                  <Pressable
+                    onPress={() => handleStartEdit(session)}
+                    onHoverIn={() => setRowHover(session.id)}
+                    onHoverOut={() => scheduleClearRowHover(session.id)}
+                    className="p-1"
+                  >
                     <Pencil className="h-3 w-3 text-gray-400" size={12} />
                   </Pressable>
                 )}
@@ -301,15 +338,36 @@ export function ChatSessionSidebar({
   onSelect,
   onCreate,
   onRename,
+  onDelete,
   onLoadMore,
   hasMore,
   isLoadingMore,
   hideHeader,
   searchOpen: externalSearchOpen,
   onSearchClose,
+  streamingSessionIds,
+  completedSessionIds,
 }: ChatSessionPickerProps) {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState("")
+  const [hoveredSessionId, setHoveredSessionId] = useState<string | null>(null)
+  // Deferred clear so moving the cursor from the row onto a nested icon Pressable
+  // (which fires the row's onHoverOut) doesn't briefly hide the icons.
+  const clearHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const setRowHover = (id: string) => {
+    if (clearHoverTimerRef.current) {
+      clearTimeout(clearHoverTimerRef.current)
+      clearHoverTimerRef.current = null
+    }
+    setHoveredSessionId(id)
+  }
+  const scheduleClearRowHover = (id: string) => {
+    if (clearHoverTimerRef.current) clearTimeout(clearHoverTimerRef.current)
+    clearHoverTimerRef.current = setTimeout(() => {
+      clearHoverTimerRef.current = null
+      setHoveredSessionId((prev) => (prev === id ? null : prev))
+    }, 0)
+  }
   const [internalSearchOpen, setInternalSearchOpen] = useState(false)
   const searchOpen = externalSearchOpen ?? internalSearchOpen
   const setSearchOpen = (open: boolean) => {
@@ -370,12 +428,20 @@ export function ChatSessionSidebar({
   const renderSession = ({ item: session }: ListRenderItemInfo<ChatSession>) => {
     const isEditing = editingSessionId === session.id
     const isCurrent = session.id === currentSessionId
+    const isHovered = hoveredSessionId === session.id
+    const isStreaming = streamingSessionIds?.has(session.id) ?? false
+    // The "new activity" dot is only meaningful for non-current sessions; opening
+    // the row clears it (parent layout handles the clearing on currentSessionId change).
+    const isCompleted =
+      !isCurrent && !isStreaming && (completedSessionIds?.has(session.id) ?? false)
 
     return (
       <Pressable
         onPress={() => handleSessionSelect(session.id)}
+        onHoverIn={() => setRowHover(session.id)}
+        onHoverOut={() => scheduleClearRowHover(session.id)}
         className={cn(
-          "px-4 py-2 hover:bg-muted",
+          "px-2 py-1 hover:bg-muted",
           isCurrent && "bg-primary/10"
         )}
       >
@@ -386,24 +452,52 @@ export function ChatSessionSidebar({
               onChangeText={setEditValue}
               onSubmitEditing={handleSaveEdit}
               autoFocus
-              className="flex-1 h-8 px-2 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-foreground"
+              className="flex-1 h-8 px-2 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-foreground"
             />
             <Pressable onPress={handleSaveEdit} className="p-1">
-              <Check className="h-4 w-4 text-green-500" size={16} />
+              <Check className="h-2 w-2 text-green-500" size={16} />
             </Pressable>
             <Pressable onPress={handleCancelEdit} className="p-1">
-              <X className="h-4 w-4 text-red-500" size={16} />
+              <X className="h-2 w-2 text-red-500" size={16} />
             </Pressable>
           </View>
         ) : (
           <>
-            <View className="flex-row items-center justify-between">
-              <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+            <View className="flex-row items-center gap-2">
+              {isStreaming ? (
+                <Loader2
+                  size={12}
+                  className="text-primary animate-spin shrink-0"
+                  aria-label="Chat running"
+                />
+              ) : isCompleted ? (
+                <View
+                  className="h-1.5 w-1.5 rounded-full bg-primary shrink-0"
+                  accessibilityLabel="Chat has new activity"
+                />
+              ) : null}
+              <Text className="text-xs text-foreground flex-1" numberOfLines={1}>
                 {session.name}
               </Text>
-              {onRename && (
-                <Pressable onPress={() => handleStartEdit(session)} className="p-1 shrink-0">
-                  <Pencil className="h-3 w-3 text-gray-400" size={12} />
+              {onRename && isHovered && (
+                <Pressable
+                  onPress={() => handleStartEdit(session)}
+                  onHoverIn={() => setRowHover(session.id)}
+                  onHoverOut={() => scheduleClearRowHover(session.id)}
+                  className="p-1 shrink-0"
+                >
+                  <Pencil className="h-2 w-2 text-gray-400" size={6} />
+                </Pressable>
+              )}
+              {onDelete && isHovered && (
+                <Pressable
+                  onPress={() => onDelete(session.id)}
+                  onHoverIn={() => setRowHover(session.id)}
+                  onHoverOut={() => scheduleClearRowHover(session.id)}
+                  className="p-1 shrink-0"
+                  accessibilityLabel={`Delete ${session.name}`}
+                >
+                  <Trash2 className="h-2 w-2 text-gray-400" size={6} />
                 </Pressable>
               )}
             </View>

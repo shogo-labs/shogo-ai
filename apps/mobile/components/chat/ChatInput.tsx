@@ -213,6 +213,37 @@ export interface ChatInputProps {
   onQuickActionClick?: (prompt: string) => void
   restoreDraftRequest?: RestoreDraftRequest | null
   dimWhenDisabled?: boolean
+  /**
+   * When true, draws an accent-colored ring on the visible input
+   * container to mark this composer as the active edit target
+   * (used by inline-edit-from-history flows in EditableUserMessage).
+   * The ring is applied to the inner "main input container" rather
+   * than to a wrapping View so it hugs the actual rounded box the
+   * user sees — wrapping a ring around ChatInput from outside leaves
+   * a visible 12px gap on three sides because ChatInput's outermost
+   * View carries `p-3 pt-0` of its own. Drag-over state still wins
+   * over this prop.
+   */
+  highlighted?: boolean
+  /**
+   * Strip the outer wrapper's horizontal padding so the visible
+   * input box sits flush against its parent's left/right edges.
+   * The vertical `pb-3` is kept — it's spacing between the input
+   * box and whatever sits below it (file previews, model picker,
+   * etc.).
+   *
+   * Used by `EditableUserMessage` in edit mode so the in-place
+   * ChatInput aligns with the surrounding display-mode bubble
+   * (which itself uses `px-3` on a Pressable). Without this, the
+   * edit-mode bordered box is inset 12px relative to where the
+   * display-row text sits, which reads as "the chat got fatter
+   * when I clicked it" — see PR feedback.
+   *
+   * Bottom-composer callers (the regular chat input below the
+   * messages) deliberately keep the default to preserve the gap
+   * between the composer's bordered box and the panel edges.
+   */
+  flush?: boolean
 }
 
 function ChatInputImpl({
@@ -238,13 +269,15 @@ function ChatInputImpl({
   onQuickActionClick,
   restoreDraftRequest,
   dimWhenDisabled = true,
+  highlighted = false,
+  flush = false,
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
   const effectiveIsPro = features.billing ? isPro : true
 
   const bridge = useChatBridgeOptional()
-  const shogoAvailable = Platform.OS === "web" && features.shogoMode && !!bridge
-  const shogoActive = bridge?.shogoModeActive ?? false
+  const ezAvailable = Platform.OS === "web" && features.ezMode && !!bridge
+  const ezActive = bridge?.ezModeActive ?? false
 
   const textInputRef = useRef<TextInput>(null)
   const dropZoneRef = useRef<View>(null)
@@ -369,6 +402,14 @@ function ChatInputImpl({
   const handleRemovePastedText = useCallback((id: string) => {
     setPastedTexts((prev) => prev.filter((p) => p.id !== id))
     setViewingPastedId((curr) => (curr === id ? null : curr))
+  }, [])
+
+  const handleUpdatePastedText = useCallback((id: string, content: string) => {
+    setPastedTexts((prev) =>
+      prev.map((p) =>
+        p.id === id ? { ...p, content, info: analyzeContent(content) } : p
+      )
+    )
   }, [])
 
   const viewingPasted = useMemo(
@@ -665,7 +706,13 @@ function ChatInputImpl({
   }, [])
 
   return (
-    <View className="p-3 pt-0">
+    // `flush` callers (EditableUserMessage's inline edit) want the
+    // bordered input box to extend to the parent's left/right
+    // edges so it aligns with the surrounding display-mode bubble.
+    // We keep the bottom padding either way — it separates the
+    // composer from whatever sits beneath it (file previews,
+    // toolbar dropdowns, etc.).
+    <View className={cn(flush ? "pb-3" : "p-3 pt-0")}>
       {/* File previews */}
       {pendingFiles.length > 0 && (
         <ScrollView
@@ -890,7 +937,13 @@ function ChatInputImpl({
         className={cn(
           "relative border bg-muted/30 overflow-hidden",
           queuedMessages.length > 0 ? "rounded-b-xl" : "rounded-xl",
-          isDragOver ? "border-primary border-dashed" : "border-border/60"
+          isDragOver ? "border-primary border-dashed" : "border-border/60",
+          // Accent ring for the inline-edit "active edit target"
+          // state. Drag-over still takes precedence (its dashed
+          // primary border is more important to surface than the
+          // edit-target highlight). The inner border stays at
+          // 1px so toggling `highlighted` doesn't shift layout.
+          highlighted && !isDragOver && "ring-2 ring-primary/70"
         )}
       >
         {/* Skill picker dropdown */}
@@ -1087,18 +1140,18 @@ function ChatInputImpl({
                       </Pressable>
                     )
                   })}
-                  {shogoAvailable && (
+                  {ezAvailable && (
                     <>
                       <View className="h-px bg-border/50 mx-2 my-1" />
                       <Pressable
-                        testID="shogo-mode-toggle"
+                        testID="ez-mode-toggle"
                         onPress={() => {
-                          bridge?.toggleShogoMode()
+                          bridge?.toggleEzMode()
                           setInteractionModeOpen(false)
                         }}
                         className={cn(
                           "flex-row items-center p-1 rounded-lg mb-1",
-                          shogoActive &&
+                          ezActive &&
                             "border border-violet-500/35 bg-violet-500/12"
                         )}
                       >
@@ -1106,7 +1159,7 @@ function ChatInputImpl({
                           <Sparkles
                             className={cn(
                               "h-3.5 w-3.5",
-                              shogoActive
+                              ezActive
                                 ? "text-violet-400"
                                 : "text-muted-foreground"
                             )}
@@ -1117,12 +1170,12 @@ function ChatInputImpl({
                           <Text
                             className={cn(
                               "text-xs",
-                              shogoActive
+                              ezActive
                                 ? "text-violet-400"
                                 : "text-foreground"
                             )}
                           >
-                            Shogo Mode
+                            EZ Mode
                           </Text>
                         </View>
                       </Pressable>
@@ -1134,14 +1187,14 @@ function ChatInputImpl({
 
             {/* Dual Plan toggle — surfaces only while in Plan mode. Persistent
                 per-device preference: once on, every plan generated in Plan
-                mode also produces a business-language version. */}
+                mode also produces a stakeholder summary. */}
             {interactionMode === "plan" && (
-              <WebTooltip label="Also generate a business-language version">
+              <WebTooltip label="Also generate a stakeholder summary">
                 <Pressable
                   testID="dual-plan-toggle"
                   disabled={disabled}
                   onPress={() => onDualPlanChange?.(!dualPlan)}
-                  accessibilityLabel="Also generate a business-language version"
+                  accessibilityLabel="Also generate a stakeholder summary"
                   className={cn(
                     "h-[22px] w-[22px] items-center justify-center rounded-md",
                     dualPlan
@@ -1425,6 +1478,8 @@ function ChatInputImpl({
           title={`${kindLabel(viewingPasted.info.kind)} content`}
           kind={viewingPasted.info.kind}
           sizeLabel={viewingPasted.info.sizeLabel}
+          editable
+          onSave={(next) => handleUpdatePastedText(viewingPasted.id, next)}
         />
       )}
 

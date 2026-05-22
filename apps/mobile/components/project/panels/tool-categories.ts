@@ -11,18 +11,6 @@ export interface ToolCategory {
 
 export const TOOL_CATEGORIES: readonly ToolCategory[] = [
   {
-    id: 'canvas',
-    label: 'Canvas',
-    color: 'purple',
-    tools: [
-      'canvas_create',
-      'canvas_update',
-      'canvas_api_schema',
-      'canvas_api_seed',
-      'canvas_api_bind',
-    ],
-  },
-  {
     id: 'web',
     label: 'Web',
     color: 'blue',

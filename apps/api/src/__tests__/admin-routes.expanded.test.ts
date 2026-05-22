@@ -56,16 +56,18 @@ mock.module('../lib/admin-heartbeat', () => ({
   getSchedulerKind: mock(() => 'local'),
 }))
 
+const warmPoolExtendedStatus = mock(async (): Promise<any> => ({
+  cluster: { nodes: 2 },
+  enabled: true,
+  available: 3,
+  assigned: 1,
+  targetSize: 4,
+  gcStats: { scanned: 5 },
+}))
+
 mock.module('../lib/warm-pool-controller', () => ({
   getWarmPoolController: mock(() => ({
-    getExtendedStatus: mock(async () => ({
-      cluster: { nodes: 2 },
-      enabled: true,
-      available: 3,
-      assigned: 1,
-      targetSize: 4,
-      gcStats: { scanned: 5 },
-    })),
+    getExtendedStatus: warmPoolExtendedStatus,
   })),
 }))
 
@@ -327,6 +329,78 @@ describe('userAttributionRoute', () => {
         sourceTag: 'google:cpc',
       }),
       update: {},
+    })
+  })
+})
+
+describe('GET /heartbeats — gap-closer branches', () => {
+  test('inBackoff=true with empty breaker returns early empty page (L496-499)', async () => {
+    scheduler.getBreakerSnapshot.mockImplementationOnce(() => [])
+    const res = await json(await adminRoutes().request(
+      'http://api.test/heartbeats?inBackoff=true',
+    ))
+    expect(res).toEqual({
+      ok: true,
+      data: { rows: [], page: 1, pageSize: 50, total: 0 },
+    })
+  })
+
+  test('sort=lastHeartbeatAt orders by lastHeartbeatAt desc (L514-515)', async () => {
+    prisma.agentConfig.findMany.mockImplementationOnce(async (args: any) => {
+      expect(args.orderBy).toEqual({ lastHeartbeatAt: 'desc' })
+      return []
+    })
+    const res = await json(await adminRoutes().request(
+      'http://api.test/heartbeats?sort=lastHeartbeatAt',
+    ))
+    expect(res.ok).toBe(true)
+  })
+})
+
+describe('PATCH /heartbeats/projects/:projectId — gap-closer branches', () => {
+  test('returns 404 when agent config does not exist (L659)', async () => {
+    prisma.agentConfig.findUnique.mockImplementationOnce(async () => null)
+    const res = await adminRoutes().request('http://api.test/heartbeats/projects/missing', {
+      method: 'PATCH',
+      body: JSON.stringify({ heartbeatEnabled: true }),
+      headers: { 'content-type': 'application/json' },
+    })
+    expect(res.status).toBe(404)
+    const body = await json(res)
+    expect(body.error.code).toBe('not_found')
+  })
+
+  test('sets nextHeartbeatAt to null when heartbeatEnabled flips to false (L670)', async () => {
+    prisma.agentConfig.findUnique.mockImplementationOnce(async () => ({
+      id: 'config-1',
+      projectId: 'project-1',
+      heartbeatEnabled: true,
+      heartbeatInterval: 300,
+    }))
+    const res = await json(await adminRoutes().request(
+      'http://api.test/heartbeats/projects/project-1',
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ heartbeatEnabled: false }),
+        headers: { 'content-type': 'application/json' },
+      },
+    ))
+    expect(res.ok).toBe(true)
+    const lastCall = prisma.agentConfig.update.mock.calls.at(-1)![0]
+    expect(lastCall.data.heartbeatEnabled).toBe(false)
+    expect(lastCall.data.nextHeartbeatAt).toBeNull()
+  })
+})
+
+describe('GET /analytics/infra-current — inner catch (live data unavailable)', () => {
+  test('returns ok with live:null when warm-pool getExtendedStatus throws (L193-195)', async () => {
+    warmPoolExtendedStatus.mockImplementationOnce(async () => {
+      throw new Error('warm-pool unreachable')
+    })
+    const res = await json(await adminRoutes().request('http://api.test/analytics/infra-current'))
+    expect(res).toMatchObject({
+      ok: true,
+      data: { snapshot: { id: 'snapshot-1' }, live: null },
     })
   })
 })

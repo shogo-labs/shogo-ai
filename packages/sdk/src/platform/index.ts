@@ -37,7 +37,7 @@ export interface PlatformConfig {
     analytics: boolean
     publishing: boolean
     marketplace: boolean
-    shogoMode: boolean
+    ezMode: boolean
     phoneChannel: boolean
   }
 }
@@ -45,14 +45,14 @@ export interface PlatformConfig {
 /** Super-admin feature flag overrides. `null` means "use platform default". */
 export interface FeatureFlagOverrides {
   marketplace: boolean | null
-  shogoMode: boolean | null
+  ezMode: boolean | null
   phoneChannel: boolean | null
 }
 
 /** Partial feature flag patch; omit a key to leave it unchanged; `null` to reset to default. */
 export type FeatureFlagPatch = Partial<{
   marketplace: boolean | null
-  shogoMode: boolean | null
+  ezMode: boolean | null
   phoneChannel: boolean | null
 }>
 
@@ -444,7 +444,7 @@ export class PlatformApi {
   /** Read super-admin feature flag overrides. `null` means "use platform default". */
   async getFeatureFlags(): Promise<FeatureFlagOverrides> {
     const res = await this.http.get<FeatureFlagOverrides>('/api/admin/settings/features')
-    return res.data ?? { marketplace: null, shogoMode: null, phoneChannel: null }
+    return res.data ?? { marketplace: null, ezMode: null, phoneChannel: null }
   }
 
   /** Update feature flag overrides. Pass `null` for a flag to reset to platform default. */
@@ -453,7 +453,7 @@ export class PlatformApi {
       '/api/admin/settings/features',
       { method: 'PUT', body: patch },
     )
-    return res.data ?? { ok: false, flags: { marketplace: null, shogoMode: null, phoneChannel: null } }
+    return res.data ?? { ok: false, flags: { marketplace: null, ezMode: null, phoneChannel: null } }
   }
 
   // ===========================================================================

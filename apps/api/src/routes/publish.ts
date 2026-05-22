@@ -29,6 +29,21 @@ const PUBLISH_BUCKET = process.env.PUBLISH_BUCKET || "shogo-published-apps-stagi
 const PUBLISH_DOMAIN = process.env.PUBLISH_DOMAIN || "shogo.one"
 const AWS_REGION = process.env.S3_REGION || process.env.AWS_REGION || "us-east-1"
 
+// Per-step timeouts for outbound calls into the runtime pod. Without these,
+// a frozen pod (e.g. node memory-pressure stalls or scale-to-zero races)
+// hangs the publish HTTP request indefinitely — which is exactly what
+// happened to project b11c65dd on 2026-05-20: the runtime went silent for
+// 4 minutes, Knative reaped the ksvc mid-flight, and the publish API never
+// returned a structured error to Studio. 60s covers a healthy bun-rebuild
+// of a typical app; anything longer is almost certainly a stuck pod.
+const PUBLISH_BUILD_TIMEOUT_MS = Number(process.env.PUBLISH_BUILD_TIMEOUT_MS) || 60_000
+const PUBLISH_DOWNLOAD_TIMEOUT_MS = Number(process.env.PUBLISH_DOWNLOAD_TIMEOUT_MS) || 60_000
+
+// In-flight lock TTL on the project's Knative Service annotation. The
+// warm-pool GC honors this annotation and skips deletion while a publish
+// is mid-flight; the TTL means a forgotten/crashed lock self-heals.
+const PUBLISH_IN_FLIGHT_TTL_MS = 10 * 60 * 1000
+
 // Initialize AWS clients
 const s3Client = new S3Client({
   region: AWS_REGION,
@@ -113,30 +128,106 @@ function getMimeType(filename: string): string {
 }
 
 /**
+ * Update the project's publish status. Best-effort: never throws — a DB
+ * blip should not abort the publish itself, since the source of truth
+ * for "is the published service alive" lives in Knative, not Postgres.
+ */
+async function setPublishStatus(
+  projectId: string,
+  status: 'idle' | 'building' | 'uploading' | 'configuring' | 'live' | 'failed',
+  errorCode: string | null = null,
+): Promise<void> {
+  try {
+    await prisma.project.update({
+      where: { id: projectId },
+      data: {
+        publishStatus: status as any,
+        publishError: errorCode,
+        publishStatusAt: new Date(),
+      },
+    })
+  } catch (err: any) {
+    console.warn(`[Publish] setPublishStatus(${projectId}, ${status}) failed:`, err.message)
+  }
+}
+
+/**
+ * Acquire / release a publish-in-flight lock on the project's Knative
+ * Service via a `shogo.io/publish-in-flight` annotation that carries an
+ * absolute unix-ms expiry. The warm-pool GC reads this annotation and
+ * defers deletion while a publish is mid-flight, mirroring the existing
+ * `shogo.io/active=true` deferral. The TTL ensures a forgotten lock
+ * self-heals on the next GC pass.
+ */
+async function acquirePublishLock(projectId: string): Promise<void> {
+  if (!isKubernetes()) return
+  try {
+    const { mergePatchKnativeService } = await import("../lib/knative-project-manager")
+    const namespace = process.env.PROJECT_NAMESPACE || 'shogo-staging-workspaces'
+    const serviceName = `project-${projectId}`
+    const expiry = String(Date.now() + PUBLISH_IN_FLIGHT_TTL_MS)
+    await mergePatchKnativeService(namespace, serviceName, {
+      metadata: { annotations: { 'shogo.io/publish-in-flight': expiry } },
+    })
+  } catch (err: any) {
+    // Lock failures are non-fatal: a missing ksvc still means publish
+    // proceeds (downstream calls will fail cleanly with their own
+    // structured errors), and we'd rather not block publish on a
+    // transient k8s API hiccup.
+    console.warn(`[Publish] acquirePublishLock(${projectId}) failed:`, err.message)
+  }
+}
+
+async function releasePublishLock(projectId: string): Promise<void> {
+  if (!isKubernetes()) return
+  try {
+    const { mergePatchKnativeService } = await import("../lib/knative-project-manager")
+    const namespace = process.env.PROJECT_NAMESPACE || 'shogo-staging-workspaces'
+    const serviceName = `project-${projectId}`
+    // null on a merge-patch annotation deletes the key.
+    await mergePatchKnativeService(namespace, serviceName, {
+      metadata: { annotations: { 'shogo.io/publish-in-flight': null } },
+    })
+  } catch (err: any) {
+    console.warn(`[Publish] releasePublishLock(${projectId}) failed:`, err.message)
+  }
+}
+
+/**
  * Trigger a build in the runtime pod
  */
-async function triggerBuild(projectId: string): Promise<{ success: boolean; error?: string }> {
+async function triggerBuild(projectId: string): Promise<{ success: boolean; error?: string; code?: string }> {
   try {
     const { getProjectPodUrl } = await import("../lib/knative-project-manager")
     const podUrl = await getProjectPodUrl(projectId)
     console.log(`[Publish] Triggering build for project ${projectId} at ${podUrl}`)
-    
+
     const response = await fetch(`${podUrl}/preview/restart`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(PUBLISH_BUILD_TIMEOUT_MS),
     })
-    
+
     if (!response.ok) {
       const errorText = await response.text()
-      return { success: false, error: `Build failed: ${response.status} - ${errorText}` }
+      return { success: false, code: 'build_failed', error: `Build failed: ${response.status} - ${errorText}` }
     }
-    
+
     const result = await response.json()
     console.log(`[Publish] Build complete:`, result)
     return { success: true }
   } catch (err: any) {
+    const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+    if (isTimeout) {
+      console.error(`[Publish] Build timed out after ${PUBLISH_BUILD_TIMEOUT_MS}ms for ${projectId}`)
+      return {
+        success: false,
+        code: 'build_timeout',
+        error: `Build timed out after ${PUBLISH_BUILD_TIMEOUT_MS / 1000}s — the runtime pod is unresponsive`,
+      }
+    }
     console.error(`[Publish] Build error:`, err)
-    return { success: false, error: err.message || 'Build failed' }
+    return { success: false, code: 'build_failed', error: err.message || 'Build failed' }
   }
 }
 
@@ -147,26 +238,24 @@ async function downloadDistFiles(projectId: string): Promise<Map<string, Buffer>
   const { getProjectPodUrl } = await import("../lib/knative-project-manager")
   const podUrl = await getProjectPodUrl(projectId)
   const files = new Map<string, Buffer>()
-  
-  // Get the file list from the pod
+
   console.log(`[Publish] Downloading dist files from ${podUrl}`)
-  
-  // The runtime should expose an endpoint to list/download dist files
-  // For now, we'll use a simple API that returns all files
-  const response = await fetch(`${podUrl}/api/dist-files`)
-  
+
+  const response = await fetch(`${podUrl}/api/dist-files`, {
+    signal: AbortSignal.timeout(PUBLISH_DOWNLOAD_TIMEOUT_MS),
+  })
+
   if (!response.ok) {
     throw new Error(`Failed to get dist files: ${response.status}`)
   }
-  
+
   const distFiles = await response.json() as Array<{ path: string; content: string }>
-  
+
   for (const file of distFiles) {
-    // Content is base64 encoded
     const buffer = Buffer.from(file.content, 'base64')
     files.set(file.path, buffer)
   }
-  
+
   console.log(`[Publish] Downloaded ${files.size} files`)
   return files
 }
@@ -307,52 +396,74 @@ export function publishRoutes() {
 
       // In Kubernetes: Build, download, and upload to S3
       if (isKubernetes()) {
-        // Step 1: Trigger build
-        const buildResult = await triggerBuild(projectId)
-        if (!buildResult.success) {
-          return c.json({
-            error: { code: "build_failed", message: buildResult.error || "Build failed" }
-          }, 500)
-        }
-
-        // Step 2: Download dist files
-        let files: Map<string, Buffer>
+        // Hold the publish-in-flight lock for the entire pipeline so the
+        // warm-pool GC can't yank the runtime ksvc out from under us.
+        await acquirePublishLock(projectId)
         try {
-          files = await downloadDistFiles(projectId)
-        } catch (err: any) {
-          console.error("[Publish] Failed to download dist files:", err)
-          return c.json({
-            error: { code: "download_failed", message: err.message || "Failed to download build files" }
-          }, 500)
-        }
+          // Step 1: Trigger build
+          await setPublishStatus(projectId, 'building')
+          const buildResult = await triggerBuild(projectId)
+          if (!buildResult.success) {
+            await setPublishStatus(projectId, 'failed', buildResult.code || 'build_failed')
+            return c.json({
+              error: { code: buildResult.code || "build_failed", message: buildResult.error || "Build failed" }
+            }, 500)
+          }
 
-        if (files.size === 0) {
-          return c.json({
-            error: { code: "no_files", message: "No files to publish - build may have failed" }
-          }, 400)
-        }
+          // Step 2: Download dist files
+          let files: Map<string, Buffer>
+          try {
+            files = await downloadDistFiles(projectId)
+          } catch (err: any) {
+            console.error("[Publish] Failed to download dist files:", err)
+            const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+            const code = isTimeout ? 'download_timeout' : 'download_failed'
+            await setPublishStatus(projectId, 'failed', code)
+            return c.json({
+              error: { code, message: err.message || "Failed to download build files" }
+            }, 500)
+          }
 
-        // Step 3: Upload to S3
-        try {
-          await uploadToS3(subdomain, files)
-        } catch (err: any) {
-          console.error("[Publish] Failed to upload to S3:", err)
-          return c.json({
-            error: { code: "upload_failed", message: err.message || "Failed to upload to S3" }
-          }, 500)
-        }
+          if (files.size === 0) {
+            await setPublishStatus(projectId, 'failed', 'no_files')
+            return c.json({
+              error: { code: "no_files", message: "No files to publish - build may have failed" }
+            }, 400)
+          }
 
-        // Step 4: Create/update published Knative service (nginx + S3 init container)
-        try {
-          const { getKnativeProjectManager } = await import("../lib/knative-project-manager")
-          const manager = getKnativeProjectManager()
-          const serviceUrl = await manager.createPublishedService(projectId, subdomain)
-          console.log(`[Publish] Published service created: ${serviceUrl}`)
+          // Step 3: Upload to S3
+          await setPublishStatus(projectId, 'uploading')
+          try {
+            await uploadToS3(subdomain, files)
+          } catch (err: any) {
+            console.error("[Publish] Failed to upload to S3:", err)
+            await setPublishStatus(projectId, 'failed', 'upload_failed')
+            return c.json({
+              error: { code: "upload_failed", message: err.message || "Failed to upload to S3" }
+            }, 500)
+          }
 
-          // Step 5: Create DomainMapping {subdomain}.shogo.one -> published-{projectId}
-          await manager.createPublishedDomainMapping(subdomain, projectId)
-        } catch (err: any) {
-          console.warn("[Publish] Published service/DomainMapping creation failed:", err.message)
+          // Step 4: Create/update published Knative service (nginx + S3 init container)
+          await setPublishStatus(projectId, 'configuring')
+          try {
+            const { getKnativeProjectManager } = await import("../lib/knative-project-manager")
+            const manager = getKnativeProjectManager()
+            const serviceUrl = await manager.createPublishedService(projectId, subdomain)
+            console.log(`[Publish] Published service created: ${serviceUrl}`)
+
+            // Step 5: Create DomainMapping {subdomain}.shogo.one -> published-{projectId}
+            await manager.createPublishedDomainMapping(subdomain, projectId)
+          } catch (err: any) {
+            console.warn("[Publish] Published service/DomainMapping creation failed:", err.message)
+            await setPublishStatus(projectId, 'failed', 'configure_failed')
+            return c.json({
+              error: { code: "configure_failed", message: err.message || "Failed to configure published service" }
+            }, 500)
+          }
+        } finally {
+          // Always release the lock, even on a thrown error path. The
+          // 10-min TTL is a backstop, not the primary release mechanism.
+          await releasePublishLock(projectId)
         }
       } else {
         // Local development: Just log and update database
@@ -366,6 +477,9 @@ export function publishRoutes() {
         data: {
           publishedSubdomain: subdomain,
           publishedAt,
+          publishStatus: 'live' as any,
+          publishError: null,
+          publishStatusAt: publishedAt,
           accessLevel: accessLevel as any,
           siteTitle,
           siteDescription,
@@ -402,6 +516,11 @@ export function publishRoutes() {
       )
     } catch (error: any) {
       console.error("[Publish] Publish error:", error)
+      // Best-effort status update — the projectId comes from the route
+      // param so we may have crashed before validating it; swallow.
+      try {
+        await setPublishStatus(c.req.param("projectId"), 'failed', 'publish_failed')
+      } catch {}
       return c.json({ error: { code: "publish_failed", message: error.message } }, 500)
     }
   })
@@ -449,6 +568,9 @@ export function publishRoutes() {
         data: {
           publishedSubdomain: null,
           publishedAt: null,
+          publishStatus: 'idle' as any,
+          publishError: null,
+          publishStatusAt: new Date(),
           accessLevel: "anyone",
           siteTitle: null,
           siteDescription: null,
@@ -483,29 +605,48 @@ export function publishRoutes() {
       const subdomain = project.publishedSubdomain
 
       if (isKubernetes()) {
-        const buildResult = await triggerBuild(projectId)
-        if (!buildResult.success) {
-          return c.json({
-            error: { code: "build_failed", message: buildResult.error || "Build failed" }
-          }, 500)
-        }
-
-        const files = await downloadDistFiles(projectId)
-        if (files.size === 0) {
-          return c.json({
-            error: { code: "no_files", message: "No files to publish" }
-          }, 400)
-        }
-
-        await uploadToS3(subdomain, files)
-
-        // Force a new Knative revision so the init container re-syncs from S3
+        await acquirePublishLock(projectId)
         try {
-          const { getKnativeProjectManager } = await import("../lib/knative-project-manager")
-          const manager = getKnativeProjectManager()
-          await manager.forcePublishedRevision(projectId)
-        } catch (err: any) {
-          console.warn("[Publish] Failed to force new revision:", err.message)
+          await setPublishStatus(projectId, 'building')
+          const buildResult = await triggerBuild(projectId)
+          if (!buildResult.success) {
+            await setPublishStatus(projectId, 'failed', buildResult.code || 'build_failed')
+            return c.json({
+              error: { code: buildResult.code || "build_failed", message: buildResult.error || "Build failed" }
+            }, 500)
+          }
+
+          let files: Map<string, Buffer>
+          try {
+            files = await downloadDistFiles(projectId)
+          } catch (err: any) {
+            const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+            const code = isTimeout ? 'download_timeout' : 'download_failed'
+            await setPublishStatus(projectId, 'failed', code)
+            return c.json({ error: { code, message: err.message || 'Failed to download build files' } }, 500)
+          }
+
+          if (files.size === 0) {
+            await setPublishStatus(projectId, 'failed', 'no_files')
+            return c.json({
+              error: { code: "no_files", message: "No files to publish" }
+            }, 400)
+          }
+
+          await setPublishStatus(projectId, 'uploading')
+          await uploadToS3(subdomain, files)
+
+          // Force a new Knative revision so the init container re-syncs from S3
+          await setPublishStatus(projectId, 'configuring')
+          try {
+            const { getKnativeProjectManager } = await import("../lib/knative-project-manager")
+            const manager = getKnativeProjectManager()
+            await manager.forcePublishedRevision(projectId)
+          } catch (err: any) {
+            console.warn("[Publish] Failed to force new revision:", err.message)
+          }
+        } finally {
+          await releasePublishLock(projectId)
         }
       }
 
@@ -513,7 +654,12 @@ export function publishRoutes() {
       const publishedAt = new Date()
       await prisma.project.update({
         where: { id: projectId },
-        data: { publishedAt },
+        data: {
+          publishedAt,
+          publishStatus: 'live' as any,
+          publishError: null,
+          publishStatusAt: publishedAt,
+        },
       })
 
       // Auto-checkpoint on republish (fire-and-forget)
@@ -535,6 +681,9 @@ export function publishRoutes() {
       }, 200)
     } catch (error: any) {
       console.error("[Publish] Republish error:", error)
+      try {
+        await setPublishStatus(c.req.param("projectId"), 'failed', 'republish_failed')
+      } catch {}
       return c.json({ error: { code: "republish_failed", message: error.message } }, 500)
     }
   })

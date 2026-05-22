@@ -14,6 +14,8 @@ export type ProjectStatus = 'draft' | 'active' | 'archived'
 
 export type AccessLevel = 'anyone' | 'authenticated' | 'private'
 
+export type PublishStatus = 'idle' | 'building' | 'uploading' | 'configuring' | 'live' | 'failed'
+
 export type ProjectCategory = 'app' | 'website' | 'tool' | 'game'
 
 export interface ProjectType {
@@ -30,6 +32,9 @@ export interface ProjectType {
   folderId?: string
   publishedSubdomain?: string
   publishedAt?: Date
+  publishStatus: PublishStatus
+  publishError?: string
+  publishStatusAt?: Date
   accessLevel: AccessLevel
   category?: ProjectCategory
   siteTitle?: string
@@ -58,6 +63,9 @@ export interface ProjectCreateInput {
   folderId?: string
   publishedSubdomain?: string
   publishedAt?: Date
+  publishStatus?: PublishStatus
+  publishError?: string
+  publishStatusAt?: Date
   accessLevel?: AccessLevel
   category?: ProjectCategory
   siteTitle?: string
@@ -86,6 +94,9 @@ export interface ProjectUpdateInput {
   folderId?: string
   publishedSubdomain?: string
   publishedAt?: Date
+  publishStatus?: PublishStatus
+  publishError?: string
+  publishStatusAt?: Date
   accessLevel?: AccessLevel
   category?: ProjectCategory
   siteTitle?: string

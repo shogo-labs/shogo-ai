@@ -470,8 +470,10 @@ jobs:
             ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_API_URL={0}', vars.EXPO_PUBLIC_API_URL) || '' }}
             ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_BUILD_HASH={0}', github.sha) || '' }}
             ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_APP_ENV={0}_web', needs.resolve-config.outputs.environment) || '' }}
-            ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_SENTRY_DSN={0}', secrets.EXPO_PUBLIC_SENTRY_DSN) || '' }}
+            ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_SENTRY_DSN_WEB={0}', secrets.EXPO_PUBLIC_SENTRY_DSN_WEB) || '' }}
             ${{ matrix.build_args == 'web' && format('SENTRY_AUTH_TOKEN={0}', secrets.SENTRY_AUTH_TOKEN) || '' }}
+            ${{ matrix.build_args == 'web' && 'SENTRY_ORG=shogo-ai' || '' }}
+            ${{ matrix.build_args == 'web' && 'SENTRY_PROJECT=javascript-react' || '' }}
             ${{ matrix.build_args == 'web' && needs.resolve-config.outputs.environment == 'production' && format('GA4_MEASUREMENT_ID={0}', secrets.GA4_MEASUREMENT_ID) || '' }}
             ${{ matrix.build_args == 'web' && needs.resolve-config.outputs.environment == 'production' && format('FB_PIXEL_ID={0}', secrets.FB_PIXEL_ID) || '' }}
             ${{ matrix.build_args == 'runtime' && format('BASE_IMAGE={0}/shogo/shogo-runtime-base:latest', needs.resolve-config.outputs.ocir_registry) || '' }}
@@ -694,6 +696,11 @@ jobs:
       - name: Apply Kubernetes manifests
         run: |
           kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
+          # Node-level inotify quota bump — DaemonSet lives in kube-system,
+          # outside the kustomize overlay (kustomize blocks reaching into
+          # ../../base/ from an overlay). See k8s/base/inotify-tuner.yaml
+          # for context.
+          kubectl apply -f k8s/base/inotify-tuner.yaml
 
       - name: Ensure docs DomainMapping
         run: |
@@ -1090,7 +1097,13 @@ jobs:
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
 
       - name: Apply Kubernetes manifests
-        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
+        run: |
+          kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
+          # Node-level inotify quota bump — DaemonSet lives in kube-system,
+          # outside the kustomize overlay (kustomize blocks reaching into
+          # ../../base/ from an overlay). See k8s/base/inotify-tuner.yaml
+          # for context.
+          kubectl apply -f k8s/base/inotify-tuner.yaml
 
       - name: Ensure Kourier TLS configuration
         run: |
@@ -1522,7 +1535,13 @@ jobs:
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
 
       - name: Apply Kubernetes manifests
-        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
+        run: |
+          kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
+          # Node-level inotify quota bump — DaemonSet lives in kube-system,
+          # outside the kustomize overlay (kustomize blocks reaching into
+          # ../../base/ from an overlay). See k8s/base/inotify-tuner.yaml
+          # for context.
+          kubectl apply -f k8s/base/inotify-tuner.yaml
 
       - name: Ensure Kourier TLS configuration
         run: |
@@ -1919,7 +1938,13 @@ jobs:
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
 
       - name: Apply Kubernetes manifests
-        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
+        run: |
+          kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
+          # Node-level inotify quota bump — DaemonSet lives in kube-system,
+          # outside the kustomize overlay (kustomize blocks reaching into
+          # ../../base/ from an overlay). See k8s/base/inotify-tuner.yaml
+          # for context.
+          kubectl apply -f k8s/base/inotify-tuner.yaml
 
       - name: Ensure Kourier TLS configuration
         run: |

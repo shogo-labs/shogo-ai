@@ -12,14 +12,23 @@
  * per-preview records at the moment a DomainMapping is created, and
  * remove them when the DomainMapping is deleted.
  *
- * Only active when all three env vars are set:
+ * Active when both of these are set:
  *   CF_API_TOKEN   — Zone.DNS:Edit scope on the zone
  *   CF_ZONE_ID     — Cloudflare zone id for the preview base domain
- *   KOURIER_LB_IP  — this cluster's externally-routable Kourier IP
  *
- * If any is missing the helper is a no-op, which means local dev and
- * single-region deployments keep working unchanged.
+ * The cluster's Kourier LB IP is resolved in this order:
+ *   1. `KOURIER_LB_IP` env var, if set (operator override / single source of truth)
+ *   2. Auto-discovery from `Service kourier/kourier-system` in this cluster
+ *      (see `kourier-lb-discovery.ts`) — this is the recommended path so
+ *      that adding a new region only requires the two CF env vars above
+ *      and never a region-specific IP literal in the kustomize overlay.
+ *
+ * If any required piece is missing (e.g. local dev, or kourier RBAC not
+ * yet granted), the helper is a complete no-op which leaves the flat
+ * `*.shogo.ai` wildcard as the fallback.
  */
+
+import { discoverKourierLbIp as defaultDiscoverer } from './kourier-lb-discovery'
 
 const CF_API_BASE = 'https://api.cloudflare.com/client/v4'
 
@@ -33,36 +42,76 @@ export interface CloudflareDnsConfig {
   fetch?: typeof globalThis.fetch
 }
 
-let cachedConfig: CloudflareDnsConfig | null | undefined
+let cachedConfigPromise: Promise<CloudflareDnsConfig | null> | undefined
+let kourierDiscoverer: () => Promise<string | null> = defaultDiscoverer
 
 /**
- * Resolve config from env once. Returns null when any required var is
+ * Resolve config from env once. Returns null when any required piece is
  * missing, which disables the helper.
+ *
+ * Async because the cluster Kourier LB IP may need to be discovered from
+ * the K8s API on first call (when `KOURIER_LB_IP` env is not set).
+ * Subsequent calls return the cached result.
  */
-export function getCloudflareDnsConfig(): CloudflareDnsConfig | null {
-  if (cachedConfig !== undefined) return cachedConfig
+export async function getCloudflareDnsConfig(): Promise<CloudflareDnsConfig | null> {
+  if (cachedConfigPromise !== undefined) return cachedConfigPromise
+  cachedConfigPromise = resolveConfig()
+  return cachedConfigPromise
+}
 
+async function resolveConfig(): Promise<CloudflareDnsConfig | null> {
   const apiToken = process.env.CF_API_TOKEN
   const zoneId = process.env.CF_ZONE_ID
-  const lbIp = process.env.KOURIER_LB_IP
 
-  if (!apiToken || !zoneId || !lbIp) {
-    cachedConfig = null
-    return null
+  if (!apiToken || !zoneId) return null
+
+  let lbIp = process.env.KOURIER_LB_IP
+  if (!lbIp) {
+    try {
+      lbIp = (await kourierDiscoverer()) ?? undefined
+    } catch (err: any) {
+      console.error(
+        `[cloudflare-dns] Kourier LB discovery failed (non-fatal, helper disabled):`,
+        err?.message ?? err,
+      )
+      return null
+    }
+    if (!lbIp) {
+      // Discovery succeeded but the service has no LB ingress yet. This is
+      // a "not ready" state — we log once and stay disabled. The negative
+      // cache will be flushed on next pod restart, which is the right
+      // window to retry (LB IP allocation is a one-time per-cluster event).
+      console.error(
+        `[cloudflare-dns] Kourier service has no loadBalancer.ingress[].ip — helper disabled. Set KOURIER_LB_IP env or check kourier-system/kourier Service.`,
+      )
+      return null
+    }
+    console.log(`[cloudflare-dns] Discovered Kourier LB IP: ${lbIp}`)
   }
 
-  cachedConfig = {
+  return {
     apiToken,
     zoneId,
     lbIp,
     comment: process.env.CF_DNS_COMMENT || 'shogo-preview (managed by api)',
   }
-  return cachedConfig
 }
 
 /** Reset cached config (for tests). */
 export function _resetCloudflareDnsConfigForTest(): void {
-  cachedConfig = undefined
+  cachedConfigPromise = undefined
+}
+
+/**
+ * Inject a custom Kourier LB discoverer for tests. Pass `null` to restore
+ * the default (which reads the K8s API). Always call
+ * `_resetCloudflareDnsConfigForTest()` after swapping discoverers so the
+ * next config resolution actually uses the new one.
+ */
+export function _setKourierDiscovererForTest(
+  fn: (() => Promise<string | null>) | null,
+): void {
+  kourierDiscoverer = fn ?? defaultDiscoverer
 }
 
 interface CfEnvelope<T> {
@@ -122,7 +171,7 @@ async function findRecord(
  * wildcard still provides fallback routing.
  */
 export async function upsertPreviewDnsRecord(hostname: string): Promise<void> {
-  const cfg = getCloudflareDnsConfig()
+  const cfg = await getCloudflareDnsConfig()
   if (!cfg) return
 
   try {
@@ -182,7 +231,7 @@ export async function upsertPreviewDnsRecord(hostname: string): Promise<void> {
  * reasonable safety net if deletion failures become common.
  */
 export async function deletePreviewDnsRecord(hostname: string): Promise<void> {
-  const cfg = getCloudflareDnsConfig()
+  const cfg = await getCloudflareDnsConfig()
   if (!cfg) return
 
   try {

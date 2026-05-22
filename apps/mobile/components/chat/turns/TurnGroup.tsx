@@ -144,15 +144,16 @@ export const TurnGroup = memo(
         className
       )}
     >
-      {/* User message — wrapped in EditableUserMessage so previously
-          sent bubbles expose Edit / Retry actions on hover and can be
-          edited in place. Reverts to plain MessageContent visually
-          when no edit context is mounted (Storybook, isolated tests). */}
-      {turn.userMessage && (
-        <View className="w-full flex-row items-end justify-end gap-2">
-          <EditableUserMessage message={turn.userMessage} />
-        </View>
-      )}
+      {/* User message — full-width clickable row. Clicking it swaps
+          in an in-place ChatInput pre-filled with the message's
+          content + attachments, so the user can edit and re-send
+          from this point in history.
+
+          We deliberately drop the prior `flex-row justify-end`
+          right-align wrapper here: EditableUserMessage now claims
+          the full chat-panel width (matching the bottom composer)
+          so the click target is unambiguous and large. */}
+      {turn.userMessage && <EditableUserMessage message={turn.userMessage} />}
 
       {/* Tool timeline (legacy mode only) */}
       {showToolTimeline && turn.toolCalls.length > 0 && (

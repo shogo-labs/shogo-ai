@@ -50,12 +50,42 @@ const OUT_FILE = path.join(DESKTOP_DIR, 'dist', 'main.js');
  * across `npm install` cycles for apps/desktop's own deps.
  */
 function ensureWorkerSymlink() {
-  const namespaceDir = path.join(DESKTOP_DIR, 'node_modules', '@shogo-ai');
-  const linkPath = path.join(namespaceDir, 'worker');
-  const targetAbs = path.join(REPO_ROOT, 'packages', 'shogo-worker');
+  ensureWorkspaceSymlink({
+    namespace: '@shogo-ai',
+    packageName: 'worker',
+    sourceDir: path.join(REPO_ROOT, 'packages', 'shogo-worker'),
+    label: 'worker',
+  });
+}
 
-  if (!existsSync(targetAbs)) {
-    console.error(`[bundle-main] worker source missing at ${targetAbs}`);
+/**
+ * Same trick for `@shogo/agent-runtime`. Only `src/fs-tree-walker.ts`
+ * gets imported from apps/desktop (the rest of agent-runtime — Hono,
+ * RAG, voice mode, etc. — is intentionally NOT pulled into the
+ * Electron main bundle), so this is a narrow surface that bun resolves
+ * + inlines straight from source.
+ *
+ * Apps/api's Dockerfile uses the same `ln -sf` pattern at deploy time
+ * (`ln -sf ../../../packages/agent-runtime node_modules/@shogo/agent-runtime`).
+ * We replicate it here so the build works on Windows + macOS GitHub
+ * runners where apps/desktop is npm-installed and never sees the
+ * workspace symlink that bun install would create.
+ */
+function ensureAgentRuntimeSymlink() {
+  ensureWorkspaceSymlink({
+    namespace: '@shogo',
+    packageName: 'agent-runtime',
+    sourceDir: path.join(REPO_ROOT, 'packages', 'agent-runtime'),
+    label: 'agent-runtime',
+  });
+}
+
+function ensureWorkspaceSymlink({ namespace, packageName, sourceDir, label }) {
+  const namespaceDir = path.join(DESKTOP_DIR, 'node_modules', namespace);
+  const linkPath = path.join(namespaceDir, packageName);
+
+  if (!existsSync(sourceDir)) {
+    console.error(`[bundle-main] ${label} source missing at ${sourceDir}`);
     process.exit(1);
   }
   mkdirSync(namespaceDir, { recursive: true });
@@ -66,8 +96,27 @@ function ensureWorkerSymlink() {
     try { unlinkSync(linkPath); } catch { /* dir, leave alone */ }
   }
   if (!existsSync(linkPath)) {
-    const relTarget = path.relative(namespaceDir, targetAbs);
-    symlinkSync(relTarget, linkPath, 'dir');
+    // On Windows, `symlinkSync(..., 'dir')` requires
+    // SeCreateSymbolicLinkPrivilege — i.e. an elevated terminal OR
+    // Developer Mode enabled. Junctions (directory reparse points)
+    // don't need that privilege and behave identically for module
+    // resolution, so use them on Windows. The 'junction' type is
+    // ignored on POSIX and the second arg there is just 'dir'.
+    //
+    // This change fixes local-dev `npm run build` on Windows without
+    // changing CI behavior (the GitHub windows-latest runners would
+    // also benefit — they used to need admin context for the existing
+    // worker symlink and would silently break if that ever changed).
+    //
+    // Junctions also require an ABSOLUTE target on Windows; relative
+    // targets get resolved against the current working directory at
+    // creation time rather than against the link's own directory.
+    if (process.platform === 'win32') {
+      symlinkSync(sourceDir, linkPath, 'junction');
+    } else {
+      const relTarget = path.relative(namespaceDir, sourceDir);
+      symlinkSync(relTarget, linkPath, 'dir');
+    }
   }
 }
 
@@ -90,6 +139,8 @@ if (!existsSync(OUT_FILE)) {
 // pulling node-gyp artifacts into the JS bundle.
 const EXTERNALS = [
   'electron',
+  '@sentry/electron',
+  '@sentry/electron/main',
   'bonjour-service',
   'fflate',
   'multicast-dns',
@@ -98,6 +149,7 @@ const EXTERNALS = [
 ];
 
 ensureWorkerSymlink();
+ensureAgentRuntimeSymlink();
 
 // Inject `packages/shogo-worker`'s version as a build-time constant so
 // `readWorkerVersion()` in `cloud-login.ts` doesn't have to read its own
@@ -110,6 +162,28 @@ const workerPkg = JSON.parse(
 if (typeof workerPkg.version !== 'string' || workerPkg.version.length === 0) {
   console.error('[bundle-main] shogo-worker package.json has no version field');
   process.exit(1);
+}
+
+// Bake the desktop Sentry DSN into the bundle when CI provides it. Same
+// `--define` pattern as the worker version above — keeps the runtime
+// import-free and means the packaged app doesn't need a config file to
+// know where to phone home. The matching declaration lives in
+// `apps/desktop/src/sentry.ts`. Empty string is treated as "no DSN" by
+// `resolveDsn()` so contributor / fork builds without the secret stay
+// telemetry-free. We REJECT a DSN containing a double quote so a
+// malformed secret can't break out of the JSON-string `--define` value
+// and corrupt other defines (defense-in-depth — the value comes from a
+// trusted GitHub secret, but the bundler is too easy to corrupt to
+// trust without a sanity check).
+const desktopSentryDsn = process.env.SHOGO_DESKTOP_SENTRY_DSN || '';
+if (desktopSentryDsn.includes('"')) {
+  console.error('[bundle-main] SHOGO_DESKTOP_SENTRY_DSN contains a double quote — refusing to bake into bundle');
+  process.exit(1);
+}
+if (desktopSentryDsn) {
+  console.log('[bundle-main] baking SHOGO_DESKTOP_SENTRY_DSN into bundle');
+} else {
+  console.log('[bundle-main] SHOGO_DESKTOP_SENTRY_DSN not set — Sentry will be a no-op in this build');
 }
 
 // Build the bun invocation as an argv array and run via `spawnSync` with
@@ -136,6 +210,7 @@ const args = [
   '--format', 'cjs',
   '--outfile', OUT_FILE,
   '--define', `__SHOGO_WORKER_VERSION__="${workerPkg.version}"`,
+  '--define', `__SHOGO_DESKTOP_SENTRY_DSN__="${desktopSentryDsn}"`,
   ...EXTERNALS.flatMap((p) => ['--external', p]),
 ];
 

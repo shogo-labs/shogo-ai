@@ -23,7 +23,7 @@ import type {
   IHealthStatus,
   RuntimeStatus,
 } from './types'
-import { getShogoCloudUrl } from '../cloud-urls'
+import { getShogoCloudUrl, buildAiProxyUrl, buildToolsProxyUrl } from '../cloud-urls'
 
 /** Get the directory where this module is located */
 const __filename = fileURLToPath(import.meta.url)
@@ -127,7 +127,21 @@ export class RuntimeManager implements IRuntimeManager {
       // Spawn `bun run <RUNTIME_SERVER>` so the desktop dev path can
       // use the source bundle / TS entry directly without depending on
       // a prebuilt agent-runtime binary on disk.
-      spawnCommand: (entry: string) => ({ command: pkg.bunBinary, args: ['run', entry] }),
+      //
+      // `--conditions=development` activates the `"development"` export
+      // condition declared by each `@shogo-ai/*` workspace package, so
+      // the agent-runtime resolves `@shogo-ai/sdk/model-catalog`,
+      // `@shogo-ai/cli/pkg`, etc. to their in-tree `src/*.ts` files
+      // instead of the `dist/` build (which isn't produced until
+      // `bun run build:packages`). Without this, a fresh clone crashes
+      // the child runtime on first spawn with `Cannot find module
+      // '@shogo-ai/sdk/model-catalog'`. Mirrors the same flag used by
+      // `scripts/watch-api.ts` and `scripts/dev-all.ts` for the
+      // top-level API + route-generation entry points.
+      spawnCommand: (entry: string) => ({
+        command: pkg.bunBinary,
+        args: ['--conditions=development', 'run', entry],
+      }),
       // Bypass the worker's binary-resolution chain (which expects a
       // compiled `agent-runtime` under ~/.shogo/runtime/) and point at
       // the in-tree source. AGENT_RUNTIME_ENTRY env override still
@@ -1237,9 +1251,13 @@ export class ShogoErrorBoundary extends Component<Props, State> {
 
         proc.stdout?.on('data', (data) => {
           const output = data.toString()
-          if (output.includes('Local:') || output.includes('ready in')) {
-            console.log(`[RuntimeManager] Vite ready for ${projectId} on port ${port}`)
-          }
+          // Note: we intentionally DO NOT log a "Vite ready" line here even
+          // when stdout contains `Local:` or `ready in`. Vite prints both of
+          // those tokens *before* its HTTP server is reliably accepting
+          // connections — the previous stdout-sniff log misled debugging by
+          // claiming "ready" while `waitForReady()` was still failing every
+          // probe. The authoritative "ready" log now lives in `waitForReady`
+          // and only fires after a real HEAD response.
           // Forward Vite output to the agent server's console log for the Server tab
           for (const line of output.split('\n')) {
             if (line.trim()) {
@@ -1337,7 +1355,8 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         // The raw ANTHROPIC_API_KEY is explicitly deleted from the child env so the
         // runtime process cannot fall back to the platform API key.
         const apiPort = process.env.API_PORT || '8002'
-        const proxyUrl = `http://localhost:${apiPort}/api/ai/v1`
+        const apiBase = `http://localhost:${apiPort}`
+        const proxyUrl = buildAiProxyUrl(apiBase)
         runtimeEnv.AI_PROXY_URL = proxyUrl
 
         let proxyConfigured = false
@@ -1357,7 +1376,14 @@ export class ShogoErrorBoundary extends Component<Props, State> {
 
         // Tools proxy URL — enables index engine embeddings and other tool
         // requests to route through the API server (same as Kubernetes managers do).
-        runtimeEnv.TOOLS_PROXY_URL = `http://localhost:${apiPort}/api`
+        // The agent-runtime appends `/serper/...`, `/composio`, `/openai` to this
+        // value, so the suffix MUST be `/api/tools` to land on the proxy router
+        // mounted in `server.ts`. Historically this was `/api`, which silently
+        // 401'd on cloud-authed desktop installs (no local SERPER_API_KEY ⇒ proxy
+        // fallback ⇒ wrong URL ⇒ caught by the `requireAuth` middleware that
+        // gates everything outside the `/api/tools/*` allowlist). See
+        // `runtime-manager-proxy-urls.test.ts` for the regression guard.
+        runtimeEnv.TOOLS_PROXY_URL = buildToolsProxyUrl(apiBase)
 
         runtimeEnv.WORKSPACE_ID = workspaceId
 
@@ -1452,11 +1478,24 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         console.warn(`[RuntimeManager] Runtime server not found at ${runtimeServerPath}, skipping startup`)
       }
 
-      // Wait for Vite dev server if it was started and is still alive.
-      // If the process already exited (e.g. vite binary missing during dep install),
-      // skip the wait — the agent server alone is sufficient for chat.
+      // Wait for Vite dev server if it was started and is still alive —
+      // best-effort. If the process already exited (e.g. vite binary
+      // missing during dep install) or the readiness probe itself times
+      // out / errors, the agent server alone is still sufficient for
+      // chat (file tools, agent endpoints, runtime APIs). Tearing the
+      // whole runtime down on a Vite hiccup used to SIGTERM a healthy
+      // agent gateway too — see the SIGTERM cascade we hit on Windows
+      // when the workspace's bun install raced Vite's listen(). The
+      // preview iframe will retry against Vite independently.
       if (runtime.process && !runtime.process.killed && runtime.process.exitCode === null) {
-        await this.waitForReady(projectId, port, 30000, runtime.process)
+        try {
+          await this.waitForReady(projectId, port, 60000, runtime.process)
+        } catch (viteErr: any) {
+          console.warn(
+            `[RuntimeManager] Vite readiness probe failed for ${projectId}: ${viteErr?.message ?? viteErr}. ` +
+              `Continuing — agent server is healthy and chat will work; preview will retry independently.`,
+          )
+        }
       } else if (runtime.process) {
         console.warn(`[RuntimeManager] Vite process already exited for ${projectId} (code=${runtime.process.exitCode}), skipping waitForReady`)
       }
@@ -1517,6 +1556,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   ): Promise<void> {
     const startTime = Date.now()
     const checkInterval = 500
+    const heartbeatIntervalMs = 10_000
 
     // A spawned child can die two distinct ways:
     //   - cleanly: `exitCode` flips to a number, `signalCode` stays null
@@ -1528,7 +1568,37 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     const isDead = (p: typeof process): boolean =>
       !!p && (p.exitCode !== null || p.signalCode != null || p.killed === true)
 
+    // Diagnostic state: we capture the last few distinct failure modes
+    // observed during the wait so the eventual timeout error message
+    // carries actionable information instead of the generic
+    // "Timeout waiting for runtime X on port P". This unblocked a Windows
+    // recurrence where Vite stdout printed `Local:` (so the old
+    // stdout-sniff log lied that Vite was "ready") but the HEAD probe
+    // never got a response — without the last-error capture there was
+    // no way to tell apart "port not bound", "TCP bound but HTTP hang",
+    // and "Bun fetch ECONN-style failure" from the log alone.
+    let attempts = 0
+    let httpAttempts = 0
+    let lastError: string | null = null
+    let lastTcpListening: boolean | null = null
+    let firstTcpListeningAt: number | null = null
+    let nextHeartbeatAt = startTime + heartbeatIntervalMs
+
+    // Once TCP has been listening for this long without HTTP returning,
+    // accept the TCP listener as the readiness signal and let `doStart`
+    // proceed. Vite frequently holds the very first HTTP request open
+    // while it pre-bundles dependencies (esbuild + first
+    // `transformIndexHtml`), which on a cold Windows workspace can take
+    // 10-60s. That's a "preview iframe gets a slow first response"
+    // problem, not a "runtime is broken" problem — and gating doStart
+    // on it queues every concurrent start()/chat caller behind
+    // `startingPromises` for the same duration. A short TCP grace
+    // period unblocks them while leaving the HTTP HEAD as a faster
+    // happy-path return when Vite is responsive.
+    const tcpAcceptGraceMs = 5_000
+
     while (Date.now() - startTime < timeoutMs) {
+      attempts++
       if (isDead(process)) {
         throw new Error(
           `Vite process for runtime ${projectId} exited (code=${process!.exitCode}` +
@@ -1536,22 +1606,90 @@ export class ShogoErrorBoundary extends Component<Props, State> {
             `) before becoming ready on port ${port}`,
         )
       }
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 1000)
+
+      // Two-phase probe so the failure mode is observable in the log:
+      //   1. TCP-level check (`isPortListening`) — does anything own
+      //      the port at all? Distinguishes "Vite hasn't bound yet" from
+      //      "Vite is bound but its HTTP server isn't responding".
+      //   2. HTTP HEAD against `127.0.0.1`. Targeting `127.0.0.1`
+      //      directly (not `localhost`) bypasses the Windows ::1 /
+      //      127.0.0.1 preference race — see the historical 30s
+      //      blackout that motivated this in `waitForAgentReady`'s
+      //      sibling.
+      // Both probes run every iteration so HTTP success can short-
+      // circuit the wait even when the TCP probe is unavailable (e.g.
+      // in unit tests where `netstat`/`lsof` find nothing on the fake
+      // port and fetch is mocked).
+      let tcpListening = false
       try {
-        const response = await fetch(`http://localhost:${port}`, {
+        tcpListening = await this.isPortListening(port)
+      } catch (err: any) {
+        lastError = `isPortListening threw: ${err?.message ?? err}`
+      }
+      lastTcpListening = tcpListening
+      if (tcpListening && firstTcpListeningAt === null) {
+        firstTcpListeningAt = Date.now()
+      }
+
+      httpAttempts++
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 3000)
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}`, {
           method: 'HEAD',
           signal: controller.signal,
         })
         clearTimeout(timer)
-        // Accept any response - server is running even if app has errors
+        // Accept any response - server is running even if app has errors.
         // This includes 200, 404, 500, etc.
-        void response
+        const elapsedMs = Date.now() - startTime
+        console.log(
+          `[RuntimeManager] Vite ready for ${projectId} on port ${port} ` +
+            `(HTTP ${response.status} after ${elapsedMs}ms, ${attempts} attempt(s))`,
+        )
         return
-      } catch {
+      } catch (err: any) {
         clearTimeout(timer)
-        // Server not ready yet (connection refused, timeout, etc.)
+        const name = err?.name ?? 'Error'
+        const code = err?.code ?? err?.cause?.code
+        lastError = `HTTP probe failed: ${name}${code ? `(${code})` : ''}: ${err?.message ?? err}`
       }
+
+      // TCP-only fallback success: if Vite's listener has been up for
+      // long enough but HTTP requests keep aging out, declare ready and
+      // let the caller move on. Logs the diagnostic so the slow first
+      // response is still attributable when someone reviews the log
+      // later.
+      if (
+        tcpListening &&
+        firstTcpListeningAt !== null &&
+        Date.now() - firstTcpListeningAt >= tcpAcceptGraceMs
+      ) {
+        const elapsedMs = Date.now() - startTime
+        console.warn(
+          `[RuntimeManager] Vite TCP-listening on port ${port} for ` +
+            `${Date.now() - firstTcpListeningAt}ms but HTTP HEAD never returned ` +
+            `(${httpAttempts} attempts, lastError=${lastError ?? 'n/a'}). ` +
+            `Declaring ready for ${projectId} after ${elapsedMs}ms — Vite is likely ` +
+            `mid optimizeDeps / first-request transform; the preview iframe will absorb ` +
+            `the slow first response itself.`,
+        )
+        return
+      }
+
+      // Periodic heartbeat so a long wait is visible in real time
+      // rather than only at the eventual 60s timeout.
+      const now = Date.now()
+      if (now >= nextHeartbeatAt) {
+        console.log(
+          `[RuntimeManager] Vite readiness probe in progress for ${projectId} on port ${port} ` +
+            `(${Math.round((now - startTime) / 1000)}s elapsed, ` +
+            `attempts=${attempts}, httpAttempts=${httpAttempts}, ` +
+            `tcpListening=${lastTcpListening}, lastError=${lastError ?? 'n/a'})`,
+        )
+        nextHeartbeatAt = now + heartbeatIntervalMs
+      }
+
       await new Promise((resolve) => setTimeout(resolve, checkInterval))
     }
 
@@ -1564,7 +1702,11 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           `) before becoming ready on port ${port}`,
       )
     }
-    throw new Error(`Timeout waiting for runtime ${projectId} to start on port ${port}`)
+    throw new Error(
+      `Timeout waiting for runtime ${projectId} to start on port ${port} ` +
+        `after ${attempts} attempt(s) (httpAttempts=${httpAttempts}, ` +
+        `tcpListening=${lastTcpListening}, lastError=${lastError ?? 'n/a'})`,
+    )
   }
 
   /**
@@ -1601,7 +1743,10 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 2000)
       try {
-        const response = await fetch(`http://localhost:${port}/health`, {
+        // Probe `127.0.0.1` directly — see the matching comment in
+        // `waitForReady()` for the Windows IPv6/IPv4 `localhost`
+        // resolution gotcha this avoids.
+        const response = await fetch(`http://127.0.0.1:${port}/health`, {
           method: 'GET',
           signal: controller.signal,
         })

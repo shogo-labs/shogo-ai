@@ -10,6 +10,7 @@
 import { prisma } from '../lib/prisma'
 import { listAllObjectsInS3 } from '../lib/s3'
 import { INSTANCE_SIZES, type InstanceSizeName } from '../config/instance-sizes'
+import { withGlobalJobLock } from '../lib/global-job-lock'
 
 const S3_WORKSPACES_BUCKET = process.env.S3_WORKSPACES_BUCKET || 'shogo-workspaces'
 
@@ -140,21 +141,32 @@ export async function isOverStorageLimit(workspaceId: string): Promise<boolean> 
 /**
  * Recalculate storage for all workspaces. Intended to be called
  * periodically (e.g., every 6 hours) from a cron/timer.
+ *
+ * Multi-region safety: wrapped in `withGlobalJobLock('storage-recalculate-all')`
+ * so that across all API replicas in US/EU/India exactly one writer
+ * runs per tick. Without this, every region's 6h tick concurrently
+ * upserts on `storage_usage.workspaceId` (a non-PK unique index),
+ * which logical replication's `last_update_wins` cannot resolve and
+ * which would poison the apply worker until manually unwedged — same
+ * failure class as the 2026-05-21 `analytics_digests` incident. See
+ * `apps/api/src/lib/global-job-lock.ts` for the lock contract.
  */
 export async function recalculateAllStorageUsage() {
-  const workspaces = await prisma.workspace.findMany({
-    select: { id: true },
-  })
+  await withGlobalJobLock('storage-recalculate-all', async () => {
+    const workspaces = await prisma.workspace.findMany({
+      select: { id: true },
+    })
 
-  console.log(`[Storage] Recalculating storage for ${workspaces.length} workspaces`)
+    console.log(`[Storage] Recalculating storage for ${workspaces.length} workspaces`)
 
-  for (const ws of workspaces) {
-    try {
-      await calculateWorkspaceStorageUsage(ws.id)
-    } catch (err: any) {
-      console.error(`[Storage] Failed to recalculate for workspace ${ws.id}:`, err.message)
+    for (const ws of workspaces) {
+      try {
+        await calculateWorkspaceStorageUsage(ws.id)
+      } catch (err: any) {
+        console.error(`[Storage] Failed to recalculate for workspace ${ws.id}:`, err.message)
+      }
     }
-  }
 
-  console.log(`[Storage] Recalculation complete`)
+    console.log(`[Storage] Recalculation complete`)
+  })
 }

@@ -528,7 +528,14 @@ describe('buildKnativeService / patchProjectResources', () => {
       const env = Object.fromEntries(container.env.filter((e: any) => 'value' in e).map((e: any) => [e.name, e.value]))
 
       expect(service.metadata.name).toBe('project-p1')
-      expect(env.TEMPLATE_ID).toBe('template-a')
+      // TEMPLATE_ID was removed from the env contract by the marketplace
+      // consolidation (build-project-env.ts:48–51). Pods now derive
+      // their template/stack state from settings.techStackId only — and
+      // that derivation happens inside buildProjectEnv on the warm-pool
+      // path, not here. The inline buildKnativeService path (see
+      // knative-project-manager.ts:1057) intentionally doesn't surface
+      // TECH_STACK_ID either; it's read by warm-pool assignment.
+      expect(env.TEMPLATE_ID).toBeUndefined()
       expect(env.AGENT_NAME).toBe('Agent Name')
       expect(env.WORKSPACE_ID).toBe('ws-1')
       expect(env.COMPOSIO_USER_SCOPE).toBe('project')

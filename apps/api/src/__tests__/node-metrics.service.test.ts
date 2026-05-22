@@ -222,3 +222,27 @@ describe('getWorkspaceMetrics — SigNoz failure handling', () => {
     errorSpy.mockRestore()
   })
 })
+
+describe('getWorkspaceMetrics — SIGNOZ_ENDPOINT unset', () => {
+  test('returns zero-fill fallback when no signoz endpoint is configured', async () => {
+    const saved = {
+      query: process.env.SIGNOZ_QUERY_ENDPOINT,
+      otel: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
+    }
+    delete process.env.SIGNOZ_QUERY_ENDPOINT
+    delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+    try {
+      const result = await getWorkspaceMetrics('ws_1', '24h')
+      expect(result).toEqual({
+        current: { cpuPercent: 0, memoryBytes: 0, memoryTotalBytes: 0 },
+        history: { timestamps: [], cpuPercent: [], memoryBytes: [] },
+        period: '24h',
+      })
+      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(findUniqueWorkspace).not.toHaveBeenCalled()
+    } finally {
+      if (saved.query !== undefined) process.env.SIGNOZ_QUERY_ENDPOINT = saved.query
+      if (saved.otel !== undefined) process.env.OTEL_EXPORTER_OTLP_ENDPOINT = saved.otel
+    }
+  })
+})

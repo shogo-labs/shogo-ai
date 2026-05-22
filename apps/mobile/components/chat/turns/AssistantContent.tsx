@@ -819,9 +819,9 @@ export const AssistantContent = memo(
                     ? () => chatContext.openPlan?.(planData.filepath)
                     : undefined
                 }
-                onGenerateBusiness={
-                  chatContext?.generateBusinessSummary && planData.filepath
-                    ? () => chatContext.generateBusinessSummary!(planData.filepath!)
+                onGenerateSummary={
+                  chatContext?.generateSummary && planData.filepath
+                    ? () => chatContext.generateSummary!(planData.filepath!)
                     : undefined
                 }
                 isConfirmed={isConfirmed}

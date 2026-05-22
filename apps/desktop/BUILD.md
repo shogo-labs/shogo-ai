@@ -45,10 +45,16 @@ node apps/desktop/scripts/download-bun.mjs
 
 ### 3. Export the Expo web build
 
-Builds the React Native web frontend with local-mode flags:
+Builds the React Native web frontend with local-mode flags. The Monaco IDE
+editor is self-hosted (its AMD loader can't be fetched from a CDN under the
+packaged renderer's CSP — see `apps/mobile/scripts/copy-monaco-vs.mjs`), so
+mirror `node_modules/monaco-editor/min/vs` into the public dir before exporting.
+`npm run build` does this automatically; if you invoke `expo export` directly,
+run the copy step yourself:
 
 ```bash
 cd apps/mobile
+node scripts/copy-monaco-vs.mjs
 EXPO_PUBLIC_LOCAL_MODE=true EXPO_PUBLIC_API_URL=http://localhost:39100 npx expo export --platform web
 cd ../..
 ```
@@ -98,7 +104,7 @@ The unsigned `.app` bundle is at `apps/desktop/out/Shogo-darwin-arm64/Shogo.app`
 ```bash
 source .env.local \
   && rm -rf apps/desktop/resources/bun && node apps/desktop/scripts/download-bun.mjs \
-  && (cd apps/mobile && EXPO_PUBLIC_LOCAL_MODE=true EXPO_PUBLIC_API_URL=http://localhost:39100 npx expo export --platform web) \
+  && (cd apps/mobile && node scripts/copy-monaco-vs.mjs && EXPO_PUBLIC_LOCAL_MODE=true EXPO_PUBLIC_API_URL=http://localhost:39100 npx expo export --platform web) \
   && rm -rf apps/desktop/resources/web && cp -R apps/mobile/dist apps/desktop/resources/web \
   && rm -rf apps/desktop/resources/{node_modules,bundle,canvas-runtime,templates,runtime-template} \
   && node apps/desktop/scripts/bundle-api.mjs \

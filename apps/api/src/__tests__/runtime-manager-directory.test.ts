@@ -30,10 +30,12 @@ function privateRuntimeManager(config: ConstructorParameters<typeof RuntimeManag
     ...config,
   }) as unknown as {
     createMinimalProject: (projectDir: string) => void
+    // Post-marketplace-consolidation signature: the legacy `templateId`
+    // parameter was dropped, so `externalProject` is the 3rd arg, not
+    // the 4th. (manager.ts:701–707)
     ensureProjectDirectory: (
       projectId: string,
       techStackId?: string,
-      templateId?: string,
       externalProject?: { primaryPath: string },
     ) => Promise<string>
   }
@@ -64,7 +66,7 @@ describe('RuntimeManager directory bootstrap helpers', () => {
     const externalDir = join(tmp, 'user-owned-folder')
     const rm = privateRuntimeManager()
 
-    const result = await rm.ensureProjectDirectory('proj-external', undefined, undefined, {
+    const result = await rm.ensureProjectDirectory('proj-external', undefined, {
       primaryPath: externalDir,
     })
 

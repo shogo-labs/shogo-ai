@@ -1,0 +1,107 @@
+# =============================================================================
+# inotify Tuner DaemonSet
+# =============================================================================
+# Raises the kernel's inotify budget on every node so the runtime workload
+# (chokidar workspace watcher + tsserver + per-project bun --watch) doesn't
+# exhaust the per-uid quota and start failing inotify_add_watch with ENOSPC.
+#
+# Why a DaemonSet and not just cloud-init in the OKE Terraform module:
+# `terraform/modules/oke/main.tf` puts `node_metadata` in
+# `lifecycle.ignore_changes`, so a cloud-init drift only takes effect on
+# *new* nodes. The 2026-05 staging incident saturated three already-running
+# nodes (uid 1001 watches at the kernel max of 164,698 / 164,698) — those
+# needed the bump immediately, not after the next pool replace. Cloud-init
+# is still updated alongside this DaemonSet so future nodes are correct on
+# first boot, but this DaemonSet is what reaches existing nodes today and
+# what re-applies the sysctl after a node reboot or kubelet restart.
+#
+# Targets:
+#   fs.inotify.max_user_watches    = 1048576   (modern Linux default; ~6.5x bump)
+#   fs.inotify.max_user_instances  = 8192      (default 128 was the worse limit
+#                                               in practice — chokidar +
+#                                               tsserver + bun-watch in N
+#                                               co-tenant pods chews through
+#                                               instances faster than watches.)
+#
+# The init container does the actual work (write drop-in + sysctl --system);
+# the pause main container exists only so the DaemonSet stays Running and
+# the sysctl is re-applied if kubelet restarts the pod (e.g. after node
+# reboot — boot order doesn't guarantee /etc/sysctl.d is applied before
+# kubelet starts pulling images and pods come up).
+# =============================================================================
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: inotify-tuner
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: inotify-tuner
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: infrastructure
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inotify-tuner
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 100%
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inotify-tuner
+        app.kubernetes.io/part-of: shogo
+    spec:
+      hostPID: true
+      hostNetwork: true
+      priorityClassName: system-node-critical
+      tolerations:
+        - operator: Exists
+      initContainers:
+        - name: tune
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              echo "[inotify-tuner] writing /etc/sysctl.d/99-shogo-inotify.conf"
+              cat >/host/etc/sysctl.d/99-shogo-inotify.conf <<'EOF'
+              # Managed by k8s/base/inotify-tuner.yaml — DO NOT EDIT BY HAND.
+              # See the DaemonSet's header comment for context.
+              fs.inotify.max_user_watches = 1048576
+              fs.inotify.max_user_instances = 8192
+              EOF
+              echo "[inotify-tuner] applying sysctls"
+              chroot /host sysctl --system 2>&1 | grep -E 'inotify|^\* |applying' || true
+              echo "[inotify-tuner] verifying"
+              chroot /host sysctl fs.inotify.max_user_watches fs.inotify.max_user_instances
+              echo "[inotify-tuner] done"
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: host
+              mountPath: /host
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+          resources:
+            requests:
+              cpu: 1m
+              memory: 8Mi
+            limits:
+              cpu: 10m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65535
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: host
+          hostPath:
+            path: /
+      restartPolicy: Always

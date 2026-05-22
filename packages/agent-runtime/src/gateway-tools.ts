@@ -148,9 +148,9 @@ export interface ToolContext {
   effectiveModel?: string
   /** When true, Auto mode is active — sub-agents should use the spawn-time model router */
   autoRouting?: boolean
-  /** When true, create_plan/update_plan additionally generate a business-language
+  /** When true, create_plan/update_plan additionally generate a stakeholder
    *  translation of the technical plan using the fast-tier model and emit it via
-   *  the `data-plan-translation` stream event. Persistent per-user preference. */
+   *  the `data-plan-summary` stream event. Persistent per-user preference. */
   dualPlan?: boolean
   /** Persistent shell cwd state — survives across exec calls within a session */
   shellState?: { getCwd: () => string; setCwd: (cwd: string) => void }
@@ -237,7 +237,6 @@ function bogusPathPrefixHint(workspaceDir: string, filePath: string): string | n
  * null if the write is allowed to proceed.
  */
 function rejectIfProtected(ctx: ToolContext, resolved: string): AgentToolResult<any> | null {
-  if (ctx.config?.canvasMode !== 'code') return null
   if (!isProtectedFile(ctx.workspaceDir, resolved)) return null
   return textResult({ error: PROTECTED_FILE_REJECTION })
 }
@@ -1492,9 +1491,6 @@ const APP_TEMPLATE_METADATA: Array<{
   { name: 'feedback-form', description: 'Feedback and survey collection system', complexity: 'intermediate', models: ['User', 'Form', 'Question', 'Response', 'Answer'] },
   { name: 'form-builder', description: 'Dynamic form builder with drag-and-drop', complexity: 'advanced', models: ['User', 'Form', 'Field', 'Submission', 'FieldValue'] },
   { name: 'ai-chat', description: 'Full-featured AI chat interface with conversations, artifacts, and documents', complexity: 'advanced', models: ['User', 'Chat', 'Message', 'Vote', 'Document'] },
-  { name: 'agent-dashboard', description: 'Agent monitoring dashboard with status, chat, canvas, and file browser', complexity: 'beginner', models: ['User'] },
-  { name: 'approval-workflow', description: 'Human-in-the-loop approval workflow with review queue and agent chat', complexity: 'intermediate', models: ['User', 'ApprovalRequest', 'ApprovalStep', 'Comment'] },
-  { name: 'data-explorer', description: 'Data exploration tool with tables, metrics, and agent-driven data collection', complexity: 'intermediate', models: ['User', 'Dataset', 'SavedQuery'] },
 ]
 
 function createTemplateListTool(): AgentTool {
@@ -5847,24 +5843,24 @@ function parsePlanTodosFromFrontmatter(fm: string): Array<{ id: string; content:
 }
 
 // ---------------------------------------------------------------------------
-// Plan Mode: business-language translation (Dual Plan)
+// Plan Mode: stakeholder summary (Dual Plan)
 //
 // When ctx.dualPlan is true, every successful create_plan / update_plan call
-// kicks off a background translation pass via the fast-tier model. The pass:
-//   1. Emits `data-plan-translation-start` so the UI can render a spinner.
-//   2. Calls translateToBusiness() (one-shot tool-less runAgentLoop).
-//   3. Rewrites the .plan.md file in place, appending/replacing the business
-//      section delimited by BUSINESS_SECTION_START/END.
-//   4. Emits `data-plan-translation` with the markdown, or
-//      `data-plan-translation-error` with a message on failure.
+// kicks off a background summary pass via the fast-tier model. The pass:
+//   1. Emits `data-plan-summary-start` so the UI can render a spinner.
+//   2. Calls summarizePlan() (one-shot tool-less runAgentLoop).
+//   3. Rewrites the .plan.md file in place, appending/replacing the summary
+//      section delimited by SUMMARY_SECTION_START/END.
+//   4. Emits `data-plan-summary` with the markdown, or
+//      `data-plan-summary-error` with a message on failure.
 //
 // The work is fired-and-forgotten with respect to the tool's return value —
 // the create_plan tool result fires immediately so the model can continue
-// reasoning, and the UI receives the translation asynchronously via the
+// reasoning, and the UI receives the summary asynchronously via the
 // stream.
 // ---------------------------------------------------------------------------
 
-interface PlanTranslationJob {
+interface PlanSummaryJob {
   filepath: string
   relativePath: string
   name: string
@@ -5873,17 +5869,17 @@ interface PlanTranslationJob {
   toolCallId: string
 }
 
-function runPlanTranslation(ctx: ToolContext, job: PlanTranslationJob): void {
+function runPlanSummary(ctx: ToolContext, job: PlanSummaryJob): void {
   const writer = ctx.uiWriter
   writer?.write({
-    type: 'data-plan-translation-start',
+    type: 'data-plan-summary-start',
     data: { filepath: job.relativePath, toolCallId: job.toolCallId },
   })
 
   void (async () => {
     try {
-      const { translateToBusiness, upsertBusinessSection } = await import('./plan-translation')
-      const business = await translateToBusiness({
+      const { summarizePlan, upsertSummarySection } = await import('./plan-translation')
+      const summary = await summarizePlan({
         name: job.name,
         overview: job.overview,
         planMarkdown: job.planMarkdown,
@@ -5893,26 +5889,26 @@ function runPlanTranslation(ctx: ToolContext, job: PlanTranslationJob): void {
       try {
         if (existsSync(job.filepath)) {
           const current = readFileSync(job.filepath, 'utf-8')
-          const next = upsertBusinessSection(current, business)
+          const next = upsertSummarySection(current, summary)
           writeFileSync(job.filepath, next, 'utf-8')
         }
       } catch (writeErr) {
-        console.error(`[create_plan][dual-plan] failed to persist business section for ${job.relativePath}:`, writeErr)
+        console.error(`[create_plan][dual-plan] failed to persist summary section for ${job.relativePath}:`, writeErr)
       }
 
       writer?.write({
-        type: 'data-plan-translation',
+        type: 'data-plan-summary',
         data: {
           filepath: job.relativePath,
-          business,
+          summary,
           toolCallId: job.toolCallId,
         },
       })
     } catch (err: any) {
       const message = err?.message || String(err)
-      console.error(`[create_plan][dual-plan] translation failed for ${job.relativePath}:`, message)
+      console.error(`[create_plan][dual-plan] summary generation failed for ${job.relativePath}:`, message)
       writer?.write({
-        type: 'data-plan-translation-error',
+        type: 'data-plan-summary-error',
         data: {
           filepath: job.relativePath,
           message,
@@ -5986,7 +5982,7 @@ function createCreatePlanTool(ctx: ToolContext): AgentTool {
 
       if (ctx.dualPlan) {
         const relPath = `.shogo/plans/${filename}`
-        runPlanTranslation(ctx, {
+        runPlanSummary(ctx, {
           filepath: filepath,
           relativePath: relPath,
           name: params.name,
@@ -6107,7 +6103,7 @@ function createUpdatePlanTool(ctx: ToolContext): AgentTool {
         (params.name !== undefined && params.name !== existingName) ||
         (params.overview !== undefined && params.overview !== existingOverview)
       if (ctx.dualPlan && (bodyChanged || nameOrOverviewChanged)) {
-        runPlanTranslation(ctx, {
+        runPlanSummary(ctx, {
           filepath: resolved,
           relativePath: planFilepath,
           name: updatedName,
@@ -6145,7 +6141,7 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
       if (!lsp || !lsp.isRunning()) {
         const runtimeErrors = getCanvasRuntimeErrors()
         if (runtimeErrors.length > 0) {
-          const errors = runtimeErrors.map(e => `[${e.phase}] ${e.surfaceId}: ${e.error}`)
+          const errors = runtimeErrors.map(e => `[${e.phase}] ${e.error}`)
           clearCanvasRuntimeErrors()
           return textResult({ ok: false, error: 'Language server not available.', runtimeErrors: errors })
         }
@@ -6189,7 +6185,7 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
       // Collect canvas runtime errors (compile/render failures from the live preview)
       const runtimeErrorEntries = getCanvasRuntimeErrors()
       const runtimeErrors = runtimeErrorEntries.length > 0
-        ? runtimeErrorEntries.map(e => `[${e.phase}] ${e.surfaceId}: ${e.error}`)
+        ? runtimeErrorEntries.map(e => `[${e.phase}] ${e.error}`)
         : undefined
       if (runtimeErrorEntries.length > 0) clearCanvasRuntimeErrors()
 

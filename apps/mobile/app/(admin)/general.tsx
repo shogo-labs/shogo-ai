@@ -749,8 +749,8 @@ const FEATURE_FLAG_DEFINITIONS: Array<{
     hint: 'Browse, install, and publish agent listings. When off, the Marketplace nav link and screens are hidden.',
   },
   {
-    key: 'shogoMode',
-    label: 'Shogo Mode',
+    key: 'ezMode',
+    label: 'EZ Mode',
     hint: 'Floating voice-mode / translator overlay inside projects. When off, the toggle and overlay are hidden.',
   },
   {
@@ -763,12 +763,12 @@ const FEATURE_FLAG_DEFINITIONS: Array<{
 function FeatureFlagsCard() {
   const [flags, setFlags] = useState<FeatureFlagOverrides>({
     marketplace: null,
-    shogoMode: null,
+    ezMode: null,
     phoneChannel: null,
   })
   const [effective, setEffective] = useState<Record<keyof FeatureFlagOverrides, boolean | null>>({
     marketplace: null,
-    shogoMode: null,
+    ezMode: null,
     phoneChannel: null,
   })
   const [loading, setLoading] = useState(true)
@@ -785,7 +785,7 @@ function FeatureFlagsCard() {
         setFlags(overrides)
         setEffective({
           marketplace: cfg.features?.marketplace ?? null,
-          shogoMode: cfg.features?.shogoMode ?? null,
+          ezMode: cfg.features?.ezMode ?? null,
           phoneChannel: cfg.features?.phoneChannel ?? null,
         })
       })
@@ -805,7 +805,7 @@ function FeatureFlagsCard() {
         const cfg = await platform.getConfig()
         setEffective({
           marketplace: cfg.features?.marketplace ?? null,
-          shogoMode: cfg.features?.shogoMode ?? null,
+          ezMode: cfg.features?.ezMode ?? null,
           phoneChannel: cfg.features?.phoneChannel ?? null,
         })
       } catch {}

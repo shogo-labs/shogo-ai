@@ -1533,7 +1533,7 @@ export class PreviewManager {
     }
     if (this.buildWatchProcess) {
       console.log(`[${LOG_PREFIX}] Stopping Vite build watch...`)
-      this.buildWatchProcess.kill('SIGTERM')
+      this.killBuildWatchProcessGroup(this.buildWatchProcess)
       this.buildWatchProcess = null
     }
     if (this.metroProcess) {
@@ -1545,6 +1545,36 @@ export class PreviewManager {
     this.started = false
     this._phase = 'idle'
     this.apiPhase = 'stopped'
+  }
+
+  /**
+   * Send SIGTERM to vite-watch and (on POSIX) every process in its
+   * group. The group is established at spawn via `detached: true` in
+   * `startBuildWatch()`; a single signal here covers rollup native-
+   * binding workers and any other grandchildren so they don't strand
+   * as launchd-orphans.
+   *
+   * Falls back to a plain `proc.kill('SIGTERM')` when:
+   *   - on Windows (no PGID concept),
+   *   - the OS already reaped the leader (`proc.pid` is null), or
+   *   - `process.kill(-pid, …)` raises (typically ESRCH because the
+   *     group is already empty — still attempt the leader in case
+   *     the kernel hasn't fully torn it down yet).
+   *
+   * The fall-back path is also what the lifecycle unit test exercises:
+   * it wires a `{ kill, killed: false }` fake with no `pid`, so the
+   * `!proc.pid` branch is what records the `'build:SIGTERM'` assertion.
+   */
+  private killBuildWatchProcessGroup(proc: ChildProcess): void {
+    if (process.platform === 'win32' || !proc.pid) {
+      try { proc.kill('SIGTERM') } catch { /* already gone */ }
+      return
+    }
+    try {
+      process.kill(-proc.pid, 'SIGTERM')
+    } catch {
+      try { proc.kill('SIGTERM') } catch { /* already gone */ }
+    }
   }
 
   /**
@@ -1731,6 +1761,20 @@ export class PreviewManager {
     // Same node-missing fallback as runViteOneShotBuild — see
     // resolveBinInvocation() for rationale.
     const invocation = resolveBinInvocation(cwd, 'vite') ?? { cmd: viteBin, argsPrefix: [] }
+    // POSIX: spawn vite as its own process-group leader so `stop()` can
+    // tear down the entire subtree below it — rollup workers, native-
+    // binding loaders, any future grandchildren — with a single
+    // `process.kill(-pid, SIGTERM)`. Without this, a direct
+    // `proc.kill('SIGTERM')` only reaches vite itself and any
+    // grandchildren survive as launchd-orphans, which compounded into
+    // the 20-watcher accumulation in workspace 291eda2a-… (see
+    // AgentGateway.stop()'s previewManager-stop comment for the full
+    // chain). Windows has no PGID concept and Node's docs warn that
+    // `detached: true` there spawns a separate console window instead
+    // of a process group, so we keep the attached default on win32.
+    // Mirrors `packages/shogo-worker/src/lib/runtime-manager.ts`'s
+    // detach for the outer agent-runtime spawn.
+    const useProcessGroup = !isWindows
     let viteProcess: ChildProcess
     try {
       viteProcess = spawn(
@@ -1741,6 +1785,7 @@ export class PreviewManager {
           stdio: ['ignore', 'pipe', 'pipe'],
           // `.CMD` shims must go through cmd.exe on Windows.
           shell: isWindows,
+          detached: useProcessGroup,
           env: {
             ...process.env,
             NODE_ENV: 'development',
@@ -1754,6 +1799,17 @@ export class PreviewManager {
     }
 
     this.buildWatchProcess = viteProcess
+
+    // Drop the internal handle from the agent-runtime's event-loop
+    // ref-count. The HTTP server keeps the loop alive in steady state
+    // anyway, so this is purely defensive: if the runtime ever tries
+    // to exit cleanly without going through `stop()`, the detached
+    // group shouldn't pin the parent alive. Stdio pipes stay ref'd so
+    // the build-log writer keeps draining vite's stdout/stderr.
+    // Matches the worker-manager precedent at runtime-manager.ts:969.
+    if (useProcessGroup) {
+      try { viteProcess.unref() } catch { /* unref is best-effort */ }
+    }
 
     // Async spawn errors (e.g. ENOENT surfaced after the call returns) must
     // not bubble up — without this listener Node treats them as uncaught and

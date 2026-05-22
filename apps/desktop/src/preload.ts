@@ -251,6 +251,84 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     ipcRenderer.removeAllListeners('cloud-connection-status')
   },
 
+  // Local filesystem fast-path for the IDE Monaco file tree + file reads.
+  // Bypasses the loopback HTTP round-trip to per-project agent-runtimes so
+  // the tree renders the moment the user opens a project, before the
+  // runtime has finished spawning. Backed by `fs-ipc.ts` in main, which
+  // validates every path against `getWorkspacesDir()` — calls for external
+  // (folder-bound) projects return `ok: false` and the renderer falls back
+  // to the HTTP `SdkFs` path. Writes / SSE subscriptions are intentionally
+  // NOT included here: those still flow through agent-runtime so its file
+  // watcher + RAG indexer stay authoritative for mutations.
+  fs: {
+    resolveWorkspace: (projectId: string): Promise<{ ok: boolean; root?: string; reason?: string }> =>
+      ipcRenderer.invoke('fs:resolveWorkspace', projectId),
+    listTree: (root: string, path?: string): Promise<{ ok: boolean; tree?: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('fs:listTree', root, path),
+    readFile: (root: string, relPath: string): Promise<{ ok: boolean; content?: string; size?: number; mtime?: number; error?: string }> =>
+      ipcRenderer.invoke('fs:readFile', root, relPath),
+  },
+
+  // --- External preview (Electron WebContentsView) ---------------------
+  // Used by ExternalPreviewWebView in apps/mobile to embed a real
+  // Chromium view of the user's own dev server. Lives outside the React
+  // tree as an absolutely-positioned overlay; the renderer publishes
+  // bounds and main keeps the view aligned. See preview-views.ts.
+  preview: {
+    open: (
+      projectId: string,
+      url: string,
+      opts?: { allowNonLocal?: boolean },
+    ): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('preview:open', {
+        projectId,
+        url,
+        allowNonLocal: !!opts?.allowNonLocal,
+      }),
+    close: (projectId: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('preview:close', { projectId }),
+    setBounds: (
+      projectId: string,
+      bounds: { x: number; y: number; width: number; height: number },
+    ): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('preview:set-bounds', { projectId, bounds }),
+    setVisible: (projectId: string, visible: boolean): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('preview:set-visible', { projectId, visible }),
+    reload: (projectId: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('preview:reload', { projectId }),
+    goBack: (projectId: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('preview:go-back', { projectId }),
+    goForward: (projectId: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('preview:go-forward', { projectId }),
+    getState: (projectId: string): Promise<
+      | { url: string; title: string; canGoBack: boolean; canGoForward: boolean; loading: boolean }
+      | null
+    > => ipcRenderer.invoke('preview:get-state', { projectId }),
+    /**
+     * Subscribe to preview lifecycle events (url-changed, load-failed,
+     * title-changed, loading-changed). Returns an unsubscribe handle.
+     * Events for all projects share a single channel; the callback is
+     * expected to filter by `projectId`.
+     */
+    onEvent: (
+      callback: (ev: {
+        projectId: string
+        event: 'url-changed' | 'load-failed' | 'title-changed' | 'loading-changed'
+        url?: string
+        title?: string
+        errorCode?: number
+        errorDescription?: string
+        loading?: boolean
+      }) => void,
+    ): (() => void) => {
+      const listener = (_event: unknown, ev: any) => callback(ev)
+      ipcRenderer.on('preview:event', listener)
+      return () => {
+        ipcRenderer.removeListener('preview:event', listener)
+      }
+    },
+  },
+
   // Bug report / log sharing
   captureScreenshot: (): Promise<{ ok: boolean; base64?: string; error?: string }> =>
     ipcRenderer.invoke('capture-screenshot'),

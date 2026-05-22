@@ -35,6 +35,16 @@ spec:
       track_commit_timestamp: "on"
       log_min_duration_statement: "1000"
       log_checkpoints: "on"
+      # Bump from CNPG's default 5s. With Mumbai<->Ashburn RTT around
+      # 250ms, a 5s timeout flapped wal_senders/receivers on any minor
+      # cross-region congestion and was the runtime amplifier of the
+      # 2026-05-21 stuck-replication incident: every apply-worker retry
+      # immediately tripped a `could not send data to client: Connection
+      # reset by peer` 08006 on the publisher side. 30s gives the streams
+      # enough headroom for transient WAN hiccups without delaying real
+      # disconnection detection by more than half a minute.
+      wal_sender_timeout: "30s"
+      wal_receiver_timeout: "30s"
     pg_hba:
       - host all all 10.0.0.0/8 md5
       - host all all 172.16.0.0/12 md5

@@ -49,6 +49,35 @@ const prismaCalls = {
   chatSessionFindUnique: [] as any[],
 }
 
+
+// @shogo/model-catalog re-exports from @shogo-ai/sdk/model-catalog which has no
+// built dist on this branch — stub before the dynamic import chain loads it.
+mock.module('@shogo/model-catalog', () => ({
+  getModelTier: (_modelId: string) => 'standard',
+  resolveModelId: (mode: string) => mode || 'claude-haiku-4-5',
+  MODEL_CATALOG: {},
+  getModelEntry: (_id: string) => null,
+  MODEL_DOLLAR_COSTS: {} as Record<string, any>,
+  calculateDollarCost: () => 0,
+  getModelBillingModel: (id: string) => id,
+  resolveAgentModeDefault: (mode: string) => mode,
+}))
+
+mock.module('../services/cost-analytics.service', () => ({
+  recordAgentCostMetric: async () => {},
+  getAgentCostBreakdown: async () => [],
+  getCostRecommendations: async () => [],
+  getBudgetAlerts: async () => [],
+  checkBudgetAlerts: async () => [],
+  getActiveThrottleModel: async () => null,
+  getCostTrends: async () => [],
+  deriveActiveThrottleModel: () => null,
+  isCostPeriod: () => false,
+  isBudgetPeriod: () => false,
+  VALID_COST_PERIODS: ['7d', '30d', '90d', '1y'],
+  VALID_BUDGET_PERIODS: ['daily', 'weekly', 'monthly'],
+}))
+
 mock.module('../lib/prisma', () => ({
   prisma: {
     project: {
@@ -872,5 +901,22 @@ describe('trackUsageFromStream — auto-checkpoint enabled path', () => {
     ])
     await trackUsageFromStream(stream, { chatSessionId: 's-no-ws' }, { id: 'p-1', workspaceId: 'w-1' })
     expect(checkpointCalls.length).toBe(0)
+  })
+
+  test('createCheckpoint rejects → .catch arm fires, no throw propagated (L658)', async () => {
+    isGitAvailableResult = true
+    existsSyncResult = true
+    createCheckpointImpl = async (_opts: any) => { throw new Error('git error') }
+    const warnSpy: string[] = []
+    const origWarn = console.warn.bind(console)
+    console.warn = (...args: any[]) => { warnSpy.push(args.join(' ')); origWarn(...args) }
+    const stream = streamFromChunks([
+      'data: {"type":"tool-input-available","toolCallId":"t1","toolName":"write_file","input":{"path":"a"}}\n',
+      'data: {"type":"tool-output-available","toolCallId":"t1","output":{"ok":true}}\n',
+      'data: {"type":"data-turn-complete","data":{"status":"completed"}}\n',
+    ])
+    await trackUsageFromStream(stream, { chatSessionId: 's-cp-catch' }, { id: 'p-1', workspaceId: 'w-1' })
+    console.warn = origWarn
+    expect(warnSpy.some(m => m.includes('Auto-checkpoint failed'))).toBe(true)
   })
 })

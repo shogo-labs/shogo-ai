@@ -213,6 +213,62 @@ jobs:
           path: packages/shogo-worker/dist/release/*
           retention-days: 30
 
+      - name: Rewrite workspace:* deps in package.json for npm publish
+        working-directory: packages/shogo-worker
+        run: |
+          set -euo pipefail
+          # `npm publish` (unlike `bun publish`) does NOT rewrite
+          # `workspace:*` specifiers. If we ship the manifest as-is,
+          # `npm install -g @shogo-ai/worker` fails with
+          # `EUNSUPPORTEDPROTOCOL Unsupported URL Type "workspace:"`
+          # because npm sees the literal `workspace:*` in the registry
+          # tarball. (This is exactly what happened on 1.7.14 — see
+          # `npm view @shogo-ai/worker dependencies`.)
+          #
+          # `publish-sdk.yml` solves the same problem by lockstep-pinning
+          # every `@shogo-ai/*` workspace dep to the tag version. The
+          # worker ships independently of @shogo-ai/sdk, so we instead
+          # resolve each `@shogo-ai/*` workspace dep to whatever is
+          # currently on the npm `latest` dist-tag and pin with a `^`
+          # range. Non-`@shogo-ai/*` workspace deps are stripped (they
+          # can't be installed from the public registry anyway).
+          node -e '
+            const fs = require("fs");
+            const { execSync } = require("child_process");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            const cache = new Map();
+            const lookup = (name) => {
+              if (cache.has(name)) return cache.get(name);
+              const v = execSync(`npm view ${name} version`, { encoding: "utf8" }).trim();
+              if (!v) throw new Error(`npm view ${name} version returned empty`);
+              cache.set(name, v);
+              return v;
+            };
+            for (const key of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
+              if (!pkg[key]) continue;
+              for (const [name, spec] of Object.entries(pkg[key])) {
+                if (typeof spec !== "string" || !spec.startsWith("workspace:")) continue;
+                if (name.startsWith("@shogo-ai/")) {
+                  const v = lookup(name);
+                  pkg[key][name] = `^${v}`;
+                  console.log(`Rewrote ${key}.${name}: ${spec} -> ^${v}`);
+                } else {
+                  delete pkg[key][name];
+                  console.log(`Stripped ${key}.${name} (${spec})`);
+                }
+              }
+            }
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+          '
+          echo "--- Final packages/shogo-worker/package.json ---"
+          cat package.json
+          # Hard guard: refuse to publish if any `workspace:` made it
+          # through (e.g. a future dep type we forgot to handle).
+          if grep -q '"workspace:' package.json; then
+            echo "::error::workspace: specifier still present in published manifest — refusing to publish"
+            exit 1
+          fi
+
       - name: Publish to npm
         if: github.event.inputs.dry_run != 'true'
         working-directory: packages/shogo-worker

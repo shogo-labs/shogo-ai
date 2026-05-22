@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Platform, View, Text } from 'react-native'
 import { Code2 } from 'lucide-react-native'
 import { Workbench } from './ide/Workbench'
 import { sdkFsFor } from './ide/workspace/sdkFs'
+import { DesktopFs, getDesktopFsBridge } from './ide/workspace/desktopFs'
+import type { WorkspaceService } from './ide/workspace/types'
 import { agentFetch } from '../../../lib/agent-fetch'
 
 interface IDEPanelProps {
@@ -33,10 +35,37 @@ interface IDEPanelProps {
  * whole page to see them.
  */
 export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanelProps) {
-  const agentService = useMemo(
+  // SdkFs is always-on: it's the canonical backend for writes, search, and
+  // SSE subscriptions even when the desktop IPC fast-path is available
+  // (DesktopFs wraps and delegates to it). Memo keeps the AgentClient +
+  // its in-flight read map alive across re-renders.
+  const sdkService = useMemo(
     () => (agentUrl ? sdkFsFor(agentUrl, `project/${projectId}`, agentFetch) : null),
     [agentUrl, projectId],
   )
+
+  // Desktop fast-path: on first mount, ask the Electron preload bridge
+  // whether this project has a resolvable managed workspace root. If yes,
+  // wrap SdkFs in DesktopFs so reads + tree listing skip the loopback HTTP
+  // round-trip to agent-runtime. If no (web build, cloud mode, or external
+  // folder-bound project), fall through to plain SdkFs.
+  const [agentService, setAgentService] = useState<WorkspaceService | null>(sdkService)
+  useEffect(() => {
+    setAgentService(sdkService)
+    if (!sdkService) return
+    const bridge = getDesktopFsBridge()
+    if (!bridge) return
+    let cancelled = false
+    void bridge.resolveWorkspace(projectId).then((res) => {
+      if (cancelled) return
+      if (res.ok && res.root) {
+        setAgentService(
+          new DesktopFs(bridge, res.root, sdkService, `project/${projectId} (desktop-fast-path)`),
+        )
+      }
+    })
+    return () => { cancelled = true }
+  }, [sdkService, projectId])
 
   if (Platform.OS !== 'web') {
     if (!visible) return null

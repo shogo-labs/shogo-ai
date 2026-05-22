@@ -60,6 +60,8 @@ const store: Store = {
 let queryRawNext: 'flags' | 'trends' | null = null
 let throwMetricCreate = false
 let throwEvalFindFirst: any = null
+let throwEvalResultFindMany: any = null
+let throwExperimentExecuteRaw: any = null
 let throwExperimentFindMany: any = null
 let throwOverrideFindMany: any = null
 let throwEvalSetFindMany: any = null
@@ -112,7 +114,10 @@ mock.module('../lib/prisma', () => withPrismaExports({
           && (where.workspaceId === null ? r.workspaceId == null : r.workspaceId === where.workspaceId)
         ) ?? null
       },
-      findMany: async () => store.agentEvalResults,
+      findMany: async () => {
+        if (throwEvalResultFindMany) throw throwEvalResultFindMany
+        return store.agentEvalResults
+      },
       create: async (args: any) => args.data,
     },
     budgetAlert: {
@@ -231,6 +236,7 @@ mock.module('../lib/prisma', () => withPrismaExports({
       return store.flagsRows
     },
     $executeRaw: async (...args: any[]) => {
+      if (throwExperimentExecuteRaw) throw throwExperimentExecuteRaw
       store.experimentUpdates.push({ id: 'unknown', sql: args })
       return 1
     },
@@ -279,6 +285,8 @@ beforeEach(() => {
   queryRawNext = null
   throwMetricCreate = false
   throwEvalFindFirst = null
+  throwEvalResultFindMany = null
+  throwExperimentExecuteRaw = null
   throwExperimentFindMany = null
   throwOverrideFindMany = null
   throwEvalSetFindMany = null
@@ -1158,5 +1166,190 @@ describe('recordAgentCostMetric — no active experiment', () => {
     })
 
     expect(store.metricInserts).toHaveLength(0)
+  })
+})
+
+// =========================================================================
+// wave-3D-h coverage closure — tests for the remaining lcov gaps
+// (deriveConfidence happy path, updateBudgetAlert success branch,
+//  getActiveThrottleModel, getPeriodStart('daily'),
+//  getCostTrends same-day accumulation + decreasing-trend forecast,
+//  optimizer report catch-paths for eval + experiment table outages)
+// =========================================================================
+
+describe('wave-3D-h coverage gaps', () => {
+  test('updateBudgetAlert: happy path returns the updated row', async () => {
+    const created = await cost.createBudgetAlert('ws-1', { name: 'cap', creditLimit: 10 })
+    const updated = await cost.updateBudgetAlert(created.id, 'ws-1', {
+      name: 'cap-renamed',
+      creditLimit: 25,
+      periodType: 'weekly',
+    })
+    expect(updated.name).toBe('cap-renamed')
+    expect(updated.creditLimit).toBe(25)
+    expect(updated.periodType).toBe('weekly')
+    expect(store.budgetUpdates.at(-1)?.data.name).toBe('cap-renamed')
+  })
+
+  test('updateBudgetAlert: no-periodType-supplied path skips the validation guard', async () => {
+    const created = await cost.createBudgetAlert('ws-1', { name: 'cap2', creditLimit: 5 })
+    const updated = await cost.updateBudgetAlert(created.id, 'ws-1', { creditLimit: 50 })
+    expect(updated.creditLimit).toBe(50)
+  })
+
+  test('getActiveThrottleModel: returns the throttle model from the breached alert', async () => {
+    await cost.createBudgetAlert('ws-throttle', {
+      name: 'cap', creditLimit: 10, autoThrottle: true, throttleToModel: 'claude-haiku-4-5',
+    })
+    store.metrics = [{ workspaceId: 'ws-throttle', creditCost: 11, createdAt: new Date() }]
+    const out = await cost.getActiveThrottleModel('ws-throttle')
+    expect(out).toBe('claude-haiku-4-5')
+  })
+
+  test('getActiveThrottleModel: returns null when no alert breaches', async () => {
+    await cost.createBudgetAlert('ws-throttle-2', {
+      name: 'cap', creditLimit: 100, autoThrottle: true, throttleToModel: 'claude-haiku-4-5',
+    })
+    store.metrics = [{ workspaceId: 'ws-throttle-2', creditCost: 1, createdAt: new Date() }]
+    const out = await cost.getActiveThrottleModel('ws-throttle-2')
+    expect(out).toBeNull()
+  })
+
+  test('getBudgetAlertUsage: daily-period alert exercises the daily getPeriodStart branch', async () => {
+    await cost.createBudgetAlert('ws-daily', {
+      name: 'daily-cap', creditLimit: 10, periodType: 'daily',
+    })
+    const now = new Date()
+    store.metrics = [
+      { workspaceId: 'ws-daily', creditCost: 4, createdAt: now },
+      // A metric from yesterday should be excluded from the daily window.
+      {
+        workspaceId: 'ws-daily',
+        creditCost: 99,
+        createdAt: new Date(now.getTime() - 36 * 60 * 60 * 1000),
+      },
+    ]
+    const out = await cost.getBudgetAlertUsage('ws-daily')
+    expect(out).toHaveLength(1)
+    expect(out[0].currentSpend).toBe(4)
+    expect(out[0].percentUsed).toBe(40)
+  })
+
+  test('getCostTrends: same-date rows from multiple models accumulate into one bucket', async () => {
+    queryRawNext = 'trends'
+    const day = new Date('2026-05-10')
+    store.trendRows = [
+      // Two rows with the SAME day key but different models exercise the
+      // `existing` branch of the dayMap accumulator (cost-analytics.service:742-744).
+      { day, totalCost: 3, totalRuns: BigInt(2), model: 'sonnet' },
+      { day, totalCost: 2, totalRuns: BigInt(1), model: 'haiku' },
+      { day: new Date('2026-05-11'), totalCost: 1, totalRuns: BigInt(1), model: 'sonnet' },
+    ]
+    const { trends } = await cost.getCostTrends('ws-1')
+    expect(trends).toHaveLength(2)
+    const first = trends.find((t) => t.date === '2026-05-10')!
+    expect(first.totalCost).toBe(5)
+    expect(first.totalRuns).toBe(3)
+    expect(first.byModel.sonnet).toBe(3)
+    expect(first.byModel.haiku).toBe(2)
+  })
+
+  test('getCostTrends: decreasing forecast fires when later half drops by > 10%', async () => {
+    queryRawNext = 'trends'
+    store.trendRows = [
+      { day: new Date('2026-05-01'), totalCost: 100, totalRuns: BigInt(10), model: 'sonnet' },
+      { day: new Date('2026-05-02'), totalCost: 100, totalRuns: BigInt(10), model: 'sonnet' },
+      { day: new Date('2026-05-03'), totalCost: 10, totalRuns: BigInt(10), model: 'sonnet' },
+      { day: new Date('2026-05-04'), totalCost: 10, totalRuns: BigInt(10), model: 'sonnet' },
+    ]
+    const { forecast } = await cost.getCostTrends('ws-1')
+    expect(forecast.trend).toBe('decreasing')
+    expect(forecast.percentChange).toBeLessThan(-10)
+  })
+
+  test('getOptimizerInActionReport: swallows eval-table-missing errors (P2021)', async () => {
+    throwEvalResultFindMany = Object.assign(new Error('relation "agent_eval_results" does not exist'), { code: 'P2021' })
+    const report = await cost.getOptimizerInActionReport('ws-no-evals')
+    expect(report.evalScores).toEqual([])
+    // The experiments side still works.
+    expect(report.experiments).toEqual([])
+  })
+
+  test('getOptimizerInActionReport: swallows experiment-table-missing errors (P2022)', async () => {
+    throwExperimentFindMany = Object.assign(new Error('column does not exist'), { code: 'P2022' })
+    const report = await cost.getOptimizerInActionReport('ws-no-exp')
+    expect(report.experiments).toEqual([])
+    expect(report.evalScores).toEqual([])
+  })
+
+  test('getOptimizerInActionReport: re-throws non-analytics-table errors from eval query', async () => {
+    throwEvalResultFindMany = new Error('connection refused')
+    await expect(cost.getOptimizerInActionReport('ws-boom')).rejects.toThrow(/connection refused/)
+  })
+
+  test('getOptimizerInActionReport: re-throws non-analytics-table errors from experiment query', async () => {
+    throwExperimentFindMany = new Error('connection lost')
+    await expect(cost.getOptimizerInActionReport('ws-boom-2')).rejects.toThrow(/connection lost/)
+  })
+
+  test('getCostRecommendations: medium-confidence path when totalRuns < 50 (deriveConfidence medium branch)', async () => {
+    store.groupByRows = [{
+      agentType: 'reviewer', model: 'claude-sonnet-4-6',
+      _sum: { inputTokens: 50, outputTokens: 50, cachedInputTokens: 50, toolCalls: 1, creditCost: 10, wallTimeMs: 1000 },
+      _count: { _all: 25 },  // ≥ minRuns (20) but < 50, so deriveConfidence returns 'medium'.
+    }]
+    store.flagsRows = [{
+      agentType: 'reviewer', model: 'claude-sonnet-4-6',
+      promiseSuccesses: BigInt(25), qualitySuccesses: BigInt(25),
+      hitMaxTurns: BigInt(0), loopDetected: BigInt(0),
+      escalated: BigInt(0), responseEmpty: BigInt(0),
+    }]
+    const recs = await cost.getCostRecommendations('ws-conf', '30d')
+    const downgrade = recs.find((r) => r.recommendedModel === 'claude-haiku-4-5')
+    expect(downgrade?.confidence).toBe('medium')
+  })
+})
+
+describe('wave-3D-h: getPeriodStart weekly branch', () => {
+  test('getBudgetAlertUsage: weekly-period alert exercises the weekly getPeriodStart branch', async () => {
+    await cost.createBudgetAlert('ws-weekly', {
+      name: 'wk-cap', creditLimit: 20, periodType: 'weekly',
+    })
+    const now = new Date()
+    store.metrics = [
+      { workspaceId: 'ws-weekly', creditCost: 5, createdAt: now },
+    ]
+    const out = await cost.getBudgetAlertUsage('ws-weekly')
+    expect(out).toHaveLength(1)
+    expect(out[0].currentSpend).toBe(5)
+    expect(out[0].percentUsed).toBe(25)
+  })
+})
+
+describe('wave-3D-h: recordAgentCostMetric inner experiment catch path', () => {
+  test('logs but does not throw when maybeRecordExperimentRun rejects', async () => {
+    // Active experiment where the model matches variant A.
+    store.experiments.push({
+      id: 'exp_throw', workspaceId: 'ws-exp', name: 'live', agentType: 'reviewer',
+      modelA: 'claude-haiku-4-5', modelB: 'claude-sonnet-4-6',
+      status: 'running', expectedEndAt: null, updatedAt: new Date(),
+      totalRunsA: 0, totalRunsB: 0, totalCostA: 0, totalCostB: 0,
+      successRateA: 0, successRateB: 0, avgLatencyMsA: 0, avgLatencyMsB: 0,
+      escalationsA: 0, escalationsB: 0, loopDetectedA: 0, loopDetectedB: 0,
+      hitMaxTurnsA: 0, hitMaxTurnsB: 0, responseEmptyA: 0, responseEmptyB: 0,
+    })
+    throwExperimentExecuteRaw = new Error('experiment update SQL boom')
+
+    // Must NOT throw — recordAgentCostMetric swallows the inner error.
+    await cost.recordAgentCostMetric({
+      workspaceId: 'ws-exp', agentType: 'reviewer',
+      model: 'claude-haiku-4-5',
+      inputTokens: 100, outputTokens: 50, toolCalls: 1,
+      creditCost: 0.1, wallTimeMs: 10, success: true,
+      metadata: null,
+    })
+
+    // The base metric insert still succeeded — only the experiment side blew up.
+    expect(store.metricInserts.length).toBe(1)
   })
 })

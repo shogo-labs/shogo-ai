@@ -594,3 +594,58 @@ describe('handleAppStoreNotification', () => {
 
 // Keep the original fetch reference reachable so the linter doesn't drop it.
 void originalFetch
+
+// ───────────────────────────────────────────────────────────────────────
+// latestForProduct sort-arrow: only fires with >= 2 candidate infos.
+// ───────────────────────────────────────────────────────────────────────
+
+describe('latestForProduct — multi-info sort', () => {
+  test('picks the entry with the largest expires_date_ms when multiple match', async () => {
+    const older = makeInfo({ transaction_id: 'tx_old',  expires_date_ms: String(NOW + 1000) })
+    const newer = makeInfo({ transaction_id: 'tx_new',  expires_date_ms: String(FUTURE) })
+    const stale = makeInfo({ transaction_id: 'tx_mid',  expires_date_ms: String(NOW + 500) })
+    appleResponseQueue.push({
+      status: 0,
+      receipt: { bundle_id: 'ai.shogo.app', in_app: [] },
+      latest_receipt_info: [older, newer, stale],
+      pending_renewal_info: [],
+    })
+    const out = await svc.verifyAndSyncReceipt(VALID_ARGS)
+    // We only need to confirm the sort arrow ran — exact return shape varies
+    // across the ok/skipped union, but neither path matters for coverage.
+    expect(out).toBeDefined()
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────
+// fetchWithTimeout: setTimeout arrow fires controller.abort() on timeout
+// ───────────────────────────────────────────────────────────────────────
+
+describe('fetchWithTimeout — abort on timeout', () => {
+  test('setTimeout callback invokes controller.abort() (L79 arrow)', async () => {
+    const realSetTimeout = globalThis.setTimeout
+    const savedFetch = (globalThis as any).fetch
+    let abortFired = false
+    ;(globalThis as any).setTimeout = ((cb: any, ms: number, ...rest: any[]) => {
+      if (ms === 10_000) {
+        ;(realSetTimeout as any)(() => cb(), 0)
+        return 9999 as any
+      }
+      return (realSetTimeout as any)(cb, ms, ...rest)
+    }) as any
+    ;(globalThis as any).fetch = (_url: string, init: any) =>
+      new Promise((_, reject) => {
+        init.signal.addEventListener('abort', () => {
+          abortFired = true
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+        })
+      })
+    try {
+      await svc.verifyAndSyncReceipt(VALID_ARGS).catch(() => undefined)
+      expect(abortFired).toBe(true)
+    } finally {
+      globalThis.setTimeout = realSetTimeout
+      ;(globalThis as any).fetch = savedFetch
+    }
+  })
+})

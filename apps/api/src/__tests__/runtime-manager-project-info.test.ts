@@ -46,7 +46,6 @@ beforeEach(() => {
 function managerWithPrivateGetInfo() {
   return new RuntimeManager() as unknown as {
     getProjectInfo: (projectId: string) => Promise<{
-      templateId?: string
       name?: string
       techStackId?: string
       workingMode?: 'managed' | 'external'
@@ -60,6 +59,9 @@ function managerWithPrivateGetInfo() {
 describe('RuntimeManager.getProjectInfo', () => {
   test('reads explicit tech stack, external mode fields, and project folders', async () => {
     projectResult = {
+      // `templateId` is no longer selected/surfaced by getProjectInfo
+      // after the marketplace consolidation (manager.ts:891–942) — leave
+      // it on the row so we also prove it doesn't leak into the result.
       templateId: 'template-1',
       name: 'Project One',
       settings: { techStackId: 'python-data' },
@@ -75,7 +77,6 @@ describe('RuntimeManager.getProjectInfo', () => {
     const info = await managerWithPrivateGetInfo().getProjectInfo('project-1')
 
     expect(info).toEqual({
-      templateId: 'template-1',
       name: 'Project One',
       techStackId: 'python-data',
       workingMode: 'external',
@@ -88,7 +89,13 @@ describe('RuntimeManager.getProjectInfo', () => {
     })
   })
 
-  test('falls back from template id to template tech stack and defaults managed runtime fields', async () => {
+  test('omits techStackId (no template fallback) and defaults managed runtime fields when settings is empty', async () => {
+    // Pre-marketplace builds had a `templateId → template.techStack`
+    // fallback here. That path was deliberately removed (manager.ts:920)
+    // — techStackId now comes exclusively from `settings.techStackId`,
+    // populated by the marketplace install flow. With `settings: null`
+    // the field is undefined and the consumer is expected to treat the
+    // workspace as stackless.
     projectResult = {
       templateId: 'template-with-stack',
       name: 'Template Project',
@@ -102,9 +109,8 @@ describe('RuntimeManager.getProjectInfo', () => {
     const info = await managerWithPrivateGetInfo().getProjectInfo('project-2')
 
     expect(info).toEqual({
-      templateId: 'template-with-stack',
       name: 'Template Project',
-      techStackId: 'expo-app',
+      techStackId: undefined,
       workingMode: 'managed',
       runtimeEnabled: true,
       trustLevel: 'trusted',

@@ -3,7 +3,7 @@ name: challenge
 version: 1.0.0
 description: Challenge user assumptions with their own vault history — surface past failures, reversed decisions, and contradicting evidence
 trigger: "challenge|push back|devil's advocate|am I wrong|check my thinking|stress test|question my assumption|red team"
-tools: [read_file, memory_write, canvas_update]
+tools: [read_file, memory_write]
 ---
 
 # Assumption Challenger

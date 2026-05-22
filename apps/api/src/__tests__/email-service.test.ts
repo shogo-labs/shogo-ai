@@ -43,18 +43,15 @@ mock.module('@shogo-ai/sdk/email/server', () => ({
 // init flag in module scope. Bun doesn't expose a `vi.resetModules()`
 // equivalent — but using a query-string trick on the import path forces
 // a re-evaluation.
-let svcCounter = 0
 async function loadFreshService() {
-  svcCounter++
-  // Bun resolves identical specifiers; we workaround by clearing the
-  // initialized state via a module-reload technique: re-register the
-  // mock with a new factory closure each time so the cache is busted.
-  // (mock.module is sticky but re-registering swaps the factory.)
-  mock.module('@shogo-ai/sdk/email/server', () => ({
-    createEmail: createEmailMock,
-    createEmailOptional: createEmailOptionalMock,
-  }))
-  return import('../services/email.service?cb=' + svcCounter)
+  // Resets the module-scope singleton via the test-only hook so a fresh
+  // createEmailOptional() factory call is observable. Previously this used
+  // import('../services/email.service?cb=' + n) but that produced phantom
+  // lcov DA: entries on TypeScript-only parameter lines per ?cb= reload
+  // (53 extra lines), wrecking the merged-shard coverage report. The
+  // single-import path keeps bun's instrumentation stable.
+  svc.__resetEmailServiceForTesting()
+  return svc
 }
 
 beforeEach(() => {

@@ -35,6 +35,12 @@ spec:
       track_commit_timestamp: "on"
       log_min_duration_statement: "1000"
       log_checkpoints: "on"
+      # Bumped from CNPG's default 5s to give cross-region wal_sender /
+      # wal_receiver pairs enough headroom for transient WAN hiccups.
+      # See India's matching k8s/cnpg/production-india-oci/platform-cluster.yaml
+      # for the 2026-05-21 incident context.
+      wal_sender_timeout: "30s"
+      wal_receiver_timeout: "30s"
     pg_hba:
       - host all all 10.0.0.0/8 md5
       - host all all 172.16.0.0/12 md5

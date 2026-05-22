@@ -191,3 +191,82 @@ describe('extractProjectIdFromToken', () => {
     expect(extractProjectIdFromToken(expired)).toBe('proj_routing')
   })
 })
+
+describe('getPreviewSecret — missing-secret branches', () => {
+  test('throws in production when no signing secret is configured', async () => {
+    const savedSecret = process.env.BETTER_AUTH_SECRET
+    const savedFallback = process.env.PREVIEW_TOKEN_SECRET
+    const savedNodeEnv = process.env.NODE_ENV
+    delete process.env.BETTER_AUTH_SECRET
+    delete process.env.PREVIEW_TOKEN_SECRET
+    process.env.NODE_ENV = 'production'
+    try {
+      await expect(generatePreviewToken('p', 'u')).rejects.toThrow(/No signing secret configured in production/)
+    } finally {
+      if (savedSecret !== undefined) process.env.BETTER_AUTH_SECRET = savedSecret
+      if (savedFallback !== undefined) process.env.PREVIEW_TOKEN_SECRET = savedFallback
+      if (savedNodeEnv !== undefined) process.env.NODE_ENV = savedNodeEnv
+    }
+  })
+
+  test('falls back to dev secret with console.warn when not in production', async () => {
+    const savedSecret = process.env.BETTER_AUTH_SECRET
+    const savedFallback = process.env.PREVIEW_TOKEN_SECRET
+    const savedNodeEnv = process.env.NODE_ENV
+    delete process.env.BETTER_AUTH_SECRET
+    delete process.env.PREVIEW_TOKEN_SECRET
+    process.env.NODE_ENV = 'development'
+    const originalWarn = console.warn
+    const warnings: string[] = []
+    console.warn = (msg: string) => { warnings.push(String(msg)) }
+    try {
+      const token = await generatePreviewToken('p', 'u')
+      expect(token.split('.')).toHaveLength(3)
+      const verified = await verifyPreviewToken(token)
+      expect(verified?.projectId).toBe('p')
+      expect(warnings.some(w => w.includes('development-only fallback'))).toBe(true)
+    } finally {
+      console.warn = originalWarn
+      if (savedSecret !== undefined) process.env.BETTER_AUTH_SECRET = savedSecret
+      if (savedFallback !== undefined) process.env.PREVIEW_TOKEN_SECRET = savedFallback
+      if (savedNodeEnv !== undefined) process.env.NODE_ENV = savedNodeEnv
+    }
+  })
+})
+
+describe('verifyPreviewToken — catch branch', () => {
+  test('returns null and logs when an internal step throws', async () => {
+    // Force getPreviewSecret() to throw from INSIDE the try block by
+    // putting the env in the 'production-with-no-secret' state. The
+    // throw bubbles into verifyPreviewToken's catch and we get null +
+    // a console.error, exercising the only remaining uncovered branch.
+    const b64url = (s: string) =>
+      btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+    const header = b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))
+    const payload = b64url(JSON.stringify({ projectId: 'p', userId: 'u', iat: 0, exp: 1 }))
+    const sig = b64url('xxxx')
+    const token = `${header}.${payload}.${sig}`
+
+    const savedSecret = process.env.BETTER_AUTH_SECRET
+    const savedFallback = process.env.PREVIEW_TOKEN_SECRET
+    const savedNodeEnv = process.env.NODE_ENV
+    delete process.env.BETTER_AUTH_SECRET
+    delete process.env.PREVIEW_TOKEN_SECRET
+    process.env.NODE_ENV = 'production'
+
+    const originalError = console.error
+    const errors: unknown[] = []
+    console.error = (...args: unknown[]) => { errors.push(args) }
+    try {
+      const result = await verifyPreviewToken(token)
+      expect(result).toBeNull()
+      expect(errors.length).toBeGreaterThan(0)
+      expect(String(errors[0])).toContain('Error verifying token')
+    } finally {
+      console.error = originalError
+      if (savedSecret !== undefined) process.env.BETTER_AUTH_SECRET = savedSecret
+      if (savedFallback !== undefined) process.env.PREVIEW_TOKEN_SECRET = savedFallback
+      if (savedNodeEnv !== undefined) process.env.NODE_ENV = savedNodeEnv
+    }
+  })
+})

@@ -29,6 +29,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import {
+  Alert,
   View,
   Text,
   Pressable,
@@ -70,6 +71,7 @@ import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import { probeChatTurnStatus, shouldAttachLiveStream } from "./probe-turn-status"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
+import { hasAcceptedAiConsent, acceptAiConsent, revokeAiConsent, AI_PROVIDERS } from "../../lib/ai-consent"
 
 import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
 import { authClient } from "../../lib/auth-client"
@@ -89,6 +91,11 @@ import {
   saveInteractionModePreference,
 } from "../../lib/interaction-mode-preference"
 import { useDualPlan } from "../../lib/dual-plan-preference"
+import {
+  isChatStalled,
+  DEFAULT_SUBMITTED_STALL_MS,
+  DEFAULT_STREAMING_STALL_MS,
+} from "../../lib/chat-stall-watchdog"
 import { createTodoStateStore, TodoStateStoreContext } from "../../lib/todo-state-store"
 import {
   loadModelPreference,
@@ -275,8 +282,6 @@ export interface ChatPanelProps {
   onSelectTheme?: (themeId: string) => void
   onCreateTheme?: () => void
   projectType?: string
-  /** Called with canvas preview components streamed through the chat channel */
-  onCanvasPreview?: (surfaceId: string, components: any[]) => void
   /** Legacy domain stores (platformFeatures, componentBuilder) — optional on mobile */
   legacyDomains?: {
     platformFeatures?: any
@@ -651,8 +656,8 @@ function normalizePlanData(plan: PlanData): PlanData {
     ...plan,
     todos: plan.todos ?? [],
     filepath: normalizePlanFilepath(plan.filepath),
-    business: plan.business,
-    businessStatus: plan.businessStatus,
+    summary: plan.summary,
+    summaryStatus: plan.summaryStatus,
   }
 }
 
@@ -695,7 +700,6 @@ export const ChatPanel = observer(function ChatPanel({
   onSelectTheme,
   onCreateTheme,
   projectType,
-  onCanvasPreview,
   legacyDomains,
   billingData,
   onMessagesChange,
@@ -821,6 +825,14 @@ export const ChatPanel = observer(function ChatPanel({
   const pendingScrollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastScrollTimeRef = useRef(0)
   const SCROLL_THROTTLE_MS = 300
+  /**
+   * Minimum positive `onContentSizeChange` delta that triggers an
+   * auto-follow on native. Filters out spring-jitter (≤3px) and
+   * contractions (negative delta, e.g. a thinking widget closing) so
+   * the parent ScrollView only chases real new content. See the long
+   * comment at the call site (~line 4220).
+   */
+  const AUTOSCROLL_MIN_DELTA_PX = 4
   /** Duration of the programmatic-scroll guard window (ms). Must comfortably
    * exceed the time between a scrollTo* call and the resulting onScroll event. */
   const PROGRAMMATIC_SCROLL_GUARD_MS = 250
@@ -1029,7 +1041,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   const [restoreDraftRequest, setRestoreDraftRequest] = useState<RestoreDraftRequest | null>(null)
 
-  // Bridge for Shogo Mode overlay (voice + text translator). The overlay
+  // Bridge for EZ Mode overlay (voice + text translator). The overlay
   // calls `send` / `setMode` to drive this panel, and subscribes to the
   // typed lifecycle event stream (turn-start / tool-activity / turn-end)
   // emitted below. We capture the emitters in refs so hooks declared
@@ -1685,18 +1697,13 @@ export const ChatPanel = observer(function ChatPanel({
         })
       }
 
-      if (dataPart.type === "data-canvas-preview") {
-        const { surfaceId, components } = (dataPart as any).data
-        onCanvasPreview?.(surfaceId, components)
-      }
-
       if ((dataPart as any).type === "data-plan") {
         const planData = (dataPart as any).data
         if (planData) {
-          // A fresh plan event always discards any stale business translation
-          // belonging to a previous plan; the runtime will re-emit
-          // data-plan-translation-* if Dual Plan is enabled for this turn.
-          planStream?.resetBusinessPlan()
+          // A fresh plan event always discards any stale summary belonging
+          // to a previous plan; the runtime will re-emit
+          // data-plan-summary-* if Dual Plan is enabled for this turn.
+          planStream?.resetSummary()
           const normalizedPlan = normalizePlanData(planData)
           pendingPlanRef.current = normalizedPlan
           setPendingPlan(normalizedPlan)
@@ -1719,8 +1726,8 @@ export const ChatPanel = observer(function ChatPanel({
             todos: planData.todos ?? previousPlan?.todos ?? [],
             filepath: planData.filepath ?? previousPlan?.filepath,
             toolCallId: planData.toolCallId ?? previousPlan?.toolCallId,
-            business: previousPlan?.business,
-            businessStatus: previousPlan?.businessStatus,
+            summary: previousPlan?.summary,
+            summaryStatus: previousPlan?.summaryStatus,
           })
           pendingPlanRef.current = normalizedPlan
           setPendingPlan(normalizedPlan)
@@ -1732,20 +1739,20 @@ export const ChatPanel = observer(function ChatPanel({
         planStream?.notifyPlanCreated()
       }
 
-      // Dual Plan: business-language translation lifecycle. The runtime emits
-      // these three events asynchronously after create_plan / update_plan so
-      // the UI can show a "Business" tab spinner immediately and then swap in
-      // the translated markdown when it's ready.
-      if ((dataPart as any).type === "data-plan-translation-start") {
-        planStream?.setBusinessStatus("pending")
-        planStream?.setStreamingBusinessPlan(null)
-        planStream?.setBusinessError(null)
+      // Dual Plan: stakeholder summary lifecycle. The runtime emits these
+      // three events asynchronously after create_plan / update_plan so
+      // the UI can show a "Summary" tab spinner immediately and then swap in
+      // the summary markdown when it's ready.
+      if ((dataPart as any).type === "data-plan-summary-start") {
+        planStream?.setSummaryStatus("pending")
+        planStream?.setStreamingSummary(null)
+        planStream?.setSummaryError(null)
         const previousPlan = pendingPlanRef.current
         if (previousPlan) {
           const next = normalizePlanData({
             ...previousPlan,
-            business: undefined,
-            businessStatus: "pending",
+            summary: undefined,
+            summaryStatus: "pending",
           })
           pendingPlanRef.current = next
           setPendingPlan(next)
@@ -1753,19 +1760,19 @@ export const ChatPanel = observer(function ChatPanel({
         }
       }
 
-      if ((dataPart as any).type === "data-plan-translation") {
+      if ((dataPart as any).type === "data-plan-summary") {
         const data = (dataPart as any).data
-        const business = typeof data?.business === "string" ? data.business : null
-        if (business) {
-          planStream?.setBusinessStatus("ready")
-          planStream?.setStreamingBusinessPlan(business)
-          planStream?.setBusinessError(null)
+        const summary = typeof data?.summary === "string" ? data.summary : null
+        if (summary) {
+          planStream?.setSummaryStatus("ready")
+          planStream?.setStreamingSummary(summary)
+          planStream?.setSummaryError(null)
           const previousPlan = pendingPlanRef.current
           if (previousPlan) {
             const next = normalizePlanData({
               ...previousPlan,
-              business,
-              businessStatus: "ready",
+              summary,
+              summaryStatus: "ready",
             })
             pendingPlanRef.current = next
             setPendingPlan(next)
@@ -1775,19 +1782,19 @@ export const ChatPanel = observer(function ChatPanel({
         }
       }
 
-      if ((dataPart as any).type === "data-plan-translation-error") {
+      if ((dataPart as any).type === "data-plan-summary-error") {
         const data = (dataPart as any).data
         const message =
           typeof data?.message === "string" && data.message
             ? data.message
-            : "Failed to generate business summary"
-        planStream?.setBusinessStatus("error")
-        planStream?.setBusinessError(message)
+            : "Failed to generate summary"
+        planStream?.setSummaryStatus("error")
+        planStream?.setSummaryError(message)
         const previousPlan = pendingPlanRef.current
         if (previousPlan) {
           const next = normalizePlanData({
             ...previousPlan,
-            businessStatus: "error",
+            summaryStatus: "error",
           })
           pendingPlanRef.current = next
           setPendingPlan(next)
@@ -1849,7 +1856,7 @@ export const ChatPanel = observer(function ChatPanel({
     onFinish: async ({ message }) => {
       const contentLength = (message as any).content?.length ?? message.parts?.length ?? 0
 
-      // Push a `turn-end` event to the Shogo Mode bridge so the translator
+      // Push a `turn-end` event to the EZ Mode bridge so the translator
       // overlay (voice or text) can summarise the outcome for the user.
       // De-dupe by message id so retries / React strict-mode double-invokes
       // don't fire twice.
@@ -2018,7 +2025,7 @@ export const ChatPanel = observer(function ChatPanel({
   const filesChangedFiredRef = useRef(false)
 
   // Watch messages for tool-invocation state transitions during a live
-  // turn and emit `tool-activity` events so the Shogo Mode overlay can
+  // turn and emit `tool-activity` events so the EZ Mode overlay can
   // (a) keep a fresh activity buffer for mid-turn summaries, and
   // (b) surface the activity in its on-screen log.
   //
@@ -2109,7 +2116,7 @@ export const ChatPanel = observer(function ChatPanel({
   }, [messages])
 
   // Publish a snapshot of the technical agent's task / agent_spawn tool
-  // calls through the ChatBridge so the Shogo Mode overlay can render
+  // calls through the ChatBridge so the EZ Mode overlay can render
   // the same `<SubagentCard>` UI as the regular chat (including any
   // card-level features like the live browser preview). The bridge
   // dedupes by reference so this is cheap to call on every messages
@@ -3280,6 +3287,33 @@ export const ChatPanel = observer(function ChatPanel({
         return
       }
 
+      // App Store 5.1.1(i)/5.1.2(i): on iOS, request explicit one-time consent
+      // before transmitting the user's prompt to third-party AI providers.
+      // Uses the native iOS alert primitive (same UI as camera/location
+      // permissions) — no new screen, persisted in expo-secure-store.
+      if (Platform.OS === "ios") {
+        const alreadyAccepted = await hasAcceptedAiConsent().catch(() => false)
+        if (!alreadyAccepted) {
+          const providerNames = AI_PROVIDERS.map((p) => p.name).join(" or ")
+          const accepted = await new Promise<boolean>((resolve) => {
+            Alert.alert(
+              "Share your message with the selected AI provider?",
+              `To generate a response, your message and any attachments will be sent to the AI provider you\u2019ve selected (${providerNames}). We don\u2019t send your email, payment info, or device identifiers.`,
+              [
+                { text: "Don\u2019t allow", style: "cancel", onPress: () => resolve(false) },
+                { text: "Allow", onPress: () => resolve(true) },
+              ],
+              { cancelable: false },
+            )
+          })
+          if (!accepted) {
+            await revokeAiConsent().catch(() => {})
+            return
+          }
+          await acceptAiConsent().catch(() => {})
+        }
+      }
+
       const trimmedContent = content.trim()
       if (Platform.OS !== "web") {
         stickToBottomRef.current = true
@@ -3309,7 +3343,7 @@ export const ChatPanel = observer(function ChatPanel({
 
       isSendingMessageRef.current = true
 
-      // Let Shogo Mode know a new turn is starting. This is what
+      // Let EZ Mode know a new turn is starting. This is what
       // triggers the overlay to arm its heartbeat / activity buffer.
       try {
         emitTurnStartRef.current?.()
@@ -3386,7 +3420,7 @@ export const ChatPanel = observer(function ChatPanel({
     ]
   )
 
-  // Register bridge endpoints so the Shogo Mode overlay can send messages
+  // Register bridge endpoints so the EZ Mode overlay can send messages
   // and toggle interaction mode on our behalf. The registrar is a no-op
   // when no <ChatBridgeProvider> is mounted (e.g. tests), so it's safe to
   // call unconditionally.
@@ -3461,6 +3495,52 @@ export const ChatPanel = observer(function ChatPanel({
       }
     }
   }, [isStreaming, messageQueue.length, processMessageQueue, currentSessionId])
+
+  // Stall watchdog — break a wedged `submitted`/`streaming` status so the
+  // queue-drain effect above gets its falling edge.
+  //
+  // The AI SDK's `AbstractChat.makeRequest` blocks on `reader.read()` until
+  // the body closes; there's no internal timeout. When the upstream proxy
+  // cuts mid-turn AND `auto-resuming-fetch` exhausts its resume budget
+  // while still inside an open `data:` frame, the durable body can sit
+  // pinned without enqueuing or closing. Without this effect, `status`
+  // pins at `submitted`/`streaming` forever, `handleSendMessage` routes
+  // every subsequent user send into `messageQueue`, and the user observes
+  // "AI never replied". See `chat-panel-wedge.test.ts` for the contract.
+  //
+  // Forward-progress signal: any update to `messages` (text-delta, tool
+  // events, etc.) timestamps the watchdog. A status entering `submitted`
+  // / `streaming` also counts as fresh progress. When that timestamp
+  // goes stale past the threshold for the current status, we call
+  // `stop()` — the SDK aborts the active response and flips to `ready`.
+  const lastChatProgressAtRef = useRef<number>(Date.now())
+  useEffect(() => {
+    lastChatProgressAtRef.current = Date.now()
+  }, [messages, status])
+
+  useEffect(() => {
+    if (!isStreaming) return
+    const intervalMs = Math.min(DEFAULT_SUBMITTED_STALL_MS, DEFAULT_STREAMING_STALL_MS, 15_000)
+    const timer = setInterval(() => {
+      if (
+        isChatStalled({
+          status,
+          lastProgressAt: lastChatProgressAtRef.current,
+          now: Date.now(),
+        })
+      ) {
+        console.warn(
+          `[ChatPanel] stall watchdog tripped — status=${status} pinned with no progress; calling stop() to recover`
+        )
+        try {
+          void stop()
+        } catch (err) {
+          console.warn("[ChatPanel] stall watchdog stop() threw:", err)
+        }
+      }
+    }, intervalMs)
+    return () => clearInterval(timer)
+  }, [isStreaming, status, stop])
 
   // Hydrate the queue for the active session from the per-session cache when
   // the session changes. Previously this effect *cleared* the queue on every
@@ -3812,22 +3892,23 @@ export const ChatPanel = observer(function ChatPanel({
   )
 
   const handleEditMessage = useCallback(
-    async (messageId: string, newContent: string, options?: MessageEditOptions) => {
-      const current = messagesRef.current
-      const msg = current.find((m) => m.id === messageId)
-      const parts = ((msg as any)?.parts ?? []) as any[]
-      const fileParts = parts.filter((p: any) => p?.type === "file" && p?.url)
-      const files: FileAttachment[] | undefined =
-        fileParts.length > 0
-          ? fileParts.map((p: any) => ({
-              dataUrl: p.url,
-              name: p.name ?? p.filename ?? "file",
-              type: p.mediaType ?? extractMediaType(p.url),
-            }))
-          : undefined
-      await truncateAndResend(messageId, newContent, files, options)
+    async (
+      messageId: string,
+      newContent: string,
+      newFiles: FileAttachment[] | undefined,
+      options?: MessageEditOptions,
+    ) => {
+      // `newFiles` is the authoritative attachment set chosen by
+      // the user in the in-place ChatInput (which is pre-filled
+      // with the original message's files via `restoreDraftRequest`).
+      // We do NOT fall back to the original message's file parts
+      // here on purpose — a user who removed the original
+      // screenshot before re-sending should get a clean resend
+      // WITHOUT it. The "no-touch edit" case still round-trips the
+      // originals because the ChatInput hands them back unchanged.
+      await truncateAndResend(messageId, newContent, newFiles, options)
     },
-    [truncateAndResend, extractMediaType],
+    [truncateAndResend],
   )
 
   const handleRetryFromMessage = useCallback(
@@ -3890,6 +3971,22 @@ export const ChatPanel = observer(function ChatPanel({
     return true
   }, [])
 
+  // Stable shape forwarded to the in-place ChatInput inside
+  // EditableUserMessage. Mirrors the props the bottom composer
+  // receives below for selectedModel/onModelChange/isPro/upgrade —
+  // see `<ChatInput ... />` near the end of this file — so changes
+  // made inside an edit-in-progress bubble keep the global model
+  // selection in sync with the resend.
+  const messageEditComposerProps = useMemo(
+    () => ({
+      selectedModel,
+      onModelChange: handleModelChange,
+      isPro: hasAdvancedModelAccess,
+      onUpgradeClick: handleUpgradeClick,
+    }),
+    [selectedModel, handleModelChange, hasAdvancedModelAccess, handleUpgradeClick],
+  )
+
   const messageEditValue = useMemo(
     () => ({
       editMessage: handleEditMessage,
@@ -3898,6 +3995,7 @@ export const ChatPanel = observer(function ChatPanel({
       isStreaming,
       canEditMessage,
       getPrecedingCheckpoint: handleGetPrecedingCheckpoint,
+      composerProps: messageEditComposerProps,
     }),
     [
       handleEditMessage,
@@ -3906,16 +4004,17 @@ export const ChatPanel = observer(function ChatPanel({
       isStreaming,
       canEditMessage,
       handleGetPrecedingCheckpoint,
+      messageEditComposerProps,
     ],
   )
 
   const resolvedAgentUrl = localAgentUrl || (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
 
-  // Generate a business-language translation for a plan that doesn't have
-  // one yet. Mutates the local pending/streaming plan as soon as the
-  // translation comes back so the in-chat PlanCard switches to its
-  // Business tab without waiting for a panel refetch.
-  const handleGenerateBusinessSummary = useCallback(
+  // Generate a stakeholder summary for a plan that doesn't have one yet.
+  // Mutates the local pending/streaming plan as soon as the summary comes
+  // back so the in-chat PlanCard switches to its Summary tab without
+  // waiting for a panel refetch.
+  const handleGenerateSummary = useCallback(
     async (filepath: string): Promise<string> => {
       if (!resolvedAgentUrl) {
         throw new Error("Agent URL is not available")
@@ -3928,46 +4027,46 @@ export const ChatPanel = observer(function ChatPanel({
       if (previousPlan?.filepath === `.shogo/plans/${filename}`) {
         const pendingNext = normalizePlanData({
           ...previousPlan,
-          businessStatus: "pending",
-          business: undefined,
+          summaryStatus: "pending",
+          summary: undefined,
         })
         pendingPlanRef.current = pendingNext
         setPendingPlan(pendingNext)
-        planStream?.setBusinessStatus("pending")
+        planStream?.setSummaryStatus("pending")
       }
       try {
         const client = new AgentClient({
           baseUrl: resolvedAgentUrl.replace(/\/$/, ""),
           fetch: agentFetch,
         })
-        const result = await client.translatePlan(filename)
-        const business = result.business
+        const result = await client.summarizePlan(filename)
+        const summary = result.summary
         const refreshed = pendingPlanRef.current
         if (refreshed?.filepath === `.shogo/plans/${filename}`) {
           const readyNext = normalizePlanData({
             ...refreshed,
-            business,
-            businessStatus: "ready",
+            summary,
+            summaryStatus: "ready",
           })
           pendingPlanRef.current = readyNext
           setPendingPlan(readyNext)
           planStream?.setStreamingPlan(readyNext)
         }
-        planStream?.setStreamingBusinessPlan(business)
-        planStream?.setBusinessStatus("ready")
+        planStream?.setStreamingSummary(summary)
+        planStream?.setSummaryStatus("ready")
         planStream?.notifyPlanCreated()
-        return business
+        return summary
       } catch (err) {
         const refreshed = pendingPlanRef.current
         if (refreshed?.filepath === `.shogo/plans/${filename}`) {
           const errNext = normalizePlanData({
             ...refreshed,
-            businessStatus: "error",
+            summaryStatus: "error",
           })
           pendingPlanRef.current = errNext
           setPendingPlan(errNext)
         }
-        planStream?.setBusinessStatus("error")
+        planStream?.setSummaryStatus("error")
         throw err
       }
     },
@@ -4074,7 +4173,7 @@ export const ChatPanel = observer(function ChatPanel({
       pendingPlan,
       confirmedPlan,
       openPlan: onOpenPlan,
-      generateBusinessSummary: handleGenerateBusinessSummary,
+      generateSummary: handleGenerateSummary,
     }),
     [
       sessionSummary,
@@ -4089,7 +4188,7 @@ export const ChatPanel = observer(function ChatPanel({
       handleConfirmPlan,
       confirmedPlan,
       onOpenPlan,
-      handleGenerateBusinessSummary,
+      handleGenerateSummary,
     ],
   )
 
@@ -4198,7 +4297,21 @@ export const ChatPanel = observer(function ChatPanel({
                   isLoadingOlderRef.current = false
                 })
               } else if (isNative && stickToBottomRef.current && contentHeightBeforeLoadRef.current > 0) {
-                setTimeout(() => throttledScrollToEnd(), 200)
+                // Only follow real growth. The height springs inside
+                // ThinkingWidget / CollapsibleToolGroup fire
+                // onContentSizeChange continuously during their 500ms
+                // re-target (and on widget close, the chat *contracts*).
+                // Without this gate every spring frame queued a fresh
+                // throttledScrollToEnd, which was the "the whole screen
+                // scrolls" symptom that accompanied widgets animating
+                // open/closed. AUTOSCROLL_MIN_DELTA_PX is set just
+                // above sub-pixel jitter (≤3px) but well below a single
+                // line of new text (~16-20px) or a fresh tool widget
+                // appearing, so token streaming still follows.
+                const delta = h - contentHeightBeforeLoadRef.current
+                if (delta >= AUTOSCROLL_MIN_DELTA_PX) {
+                  setTimeout(() => throttledScrollToEnd(), 200)
+                }
               }
               contentHeightBeforeLoadRef.current = h
             }}

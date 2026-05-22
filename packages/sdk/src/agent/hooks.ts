@@ -7,7 +7,6 @@ import type {
   AgentClientConfig,
   AgentStatus,
   ChatMessage,
-  Surface,
   VisualMode,
   FileNode,
 } from './types.js'
@@ -146,94 +145,6 @@ export function useAgentChat(options?: UseAgentChatOptions): UseAgentChatResult 
   }, [client, messages, options?.sessionId])
 
   return { messages, send, isStreaming, error }
-}
-
-// ---------------------------------------------------------------------------
-// useCanvasStream
-// ---------------------------------------------------------------------------
-
-export interface UseCanvasStreamOptions {
-  config?: AgentClientConfig
-}
-
-export interface UseCanvasStreamResult {
-  surfaces: Map<string, Surface>
-  connected: boolean
-  dispatchAction: (surfaceId: string, actionName: string, context?: Record<string, unknown>) => Promise<void>
-}
-
-export function useCanvasStream(options?: UseCanvasStreamOptions): UseCanvasStreamResult {
-  const client = useClient(options?.config)
-  const [surfaces, setSurfaces] = useState<Map<string, Surface>>(new Map())
-  const [connected, setConnected] = useState(false)
-
-  useEffect(() => {
-    const es = client.subscribeToCanvas()
-
-    es.onopen = () => setConnected(true)
-    es.onerror = () => setConnected(false)
-
-    es.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data)
-        setSurfaces((prev) => {
-          const next = new Map(prev)
-          switch (msg.type) {
-            case 'createSurface':
-              next.set(msg.surfaceId, {
-                id: msg.surfaceId,
-                title: msg.title,
-                components: [],
-                data: {},
-              })
-              break
-            case 'updateComponents':
-              if (next.has(msg.surfaceId)) {
-                const s = { ...next.get(msg.surfaceId)! }
-                s.components = msg.merge
-                  ? mergeComponents(s.components, msg.components)
-                  : msg.components
-                next.set(msg.surfaceId, s)
-              }
-              break
-            case 'updateData':
-              if (next.has(msg.surfaceId)) {
-                const s = { ...next.get(msg.surfaceId)! }
-                s.data = { ...s.data, [msg.path]: msg.value }
-                next.set(msg.surfaceId, s)
-              }
-              break
-            case 'deleteSurface':
-              next.delete(msg.surfaceId)
-              break
-            case 'clearAll':
-              next.clear()
-              break
-          }
-          return next
-        })
-      } catch { /* skip malformed messages */ }
-    }
-
-    return () => es.close()
-  }, [client])
-
-  const dispatchAction = useCallback(
-    (surfaceId: string, actionName: string, context?: Record<string, unknown>) =>
-      client.dispatchAction(surfaceId, actionName, context),
-    [client],
-  )
-
-  return { surfaces, connected, dispatchAction }
-}
-
-function mergeComponents(
-  existing: Surface['components'],
-  updates: Surface['components'],
-): Surface['components'] {
-  const byId = new Map(existing.map((c) => [c.id, c]))
-  for (const u of updates) byId.set(u.id, u)
-  return Array.from(byId.values())
 }
 
 // ---------------------------------------------------------------------------

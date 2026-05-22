@@ -22,10 +22,12 @@
     "test:vm-pool-concurrency": "bun test-vm-pool-concurrency.ts",
     "test:vm-pool-reentrancy": "bun test-vm-pool-reentrancy.ts",
     "test:vm-pool-host-cap": "RUN_VM_E2E=1 bun test-vm-pool-host-cap.ts",
-    "test:vm-pool-idle-memory": "RUN_VM_E2E=1 bun test-vm-pool-idle-memory.ts"
+    "test:vm-pool-idle-memory": "RUN_VM_E2E=1 bun test-vm-pool-idle-memory.ts",
+    "test:db-recovery": "bun test-db-recovery.ts"
   },
   "//comment": "Note: apps/desktop is installed via `npm install` (not the bun workspace) — see local package-lock.json. Workspace TS deps like @shogo-ai/worker are NOT a node_modules entry here; they're resolved via tsconfig `paths` for type-checking and inlined into dist/main.js by `scripts/bundle-main.mjs` (which runs `bun build` from the repo root where workspace symlinks DO exist).",
   "dependencies": {
+    "@sentry/electron": "^7.13.0",
     "bonjour-service": "^1.2.1",
     "fflate": "^0.8.2",
     "multicast-dns": "^7.2.5",

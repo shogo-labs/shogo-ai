@@ -473,3 +473,57 @@ describe('POST /github/webhook', () => {
     expect(res.status).toBe(500)
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════
+// gap-closing: remaining catch arms + sync project_not_found
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('500 catch arms on every remaining endpoint', () => {
+  test('GET /github/install-url → url_error when service throws', async () => {
+    githubSvc.getInstallationUrl.mockImplementation(() => { throw new Error('boom') })
+    const res = await router.request('/github/install-url')
+    expect(res.status).toBe(500)
+    expect((await res.json()).error.code).toBe('url_error')
+  })
+
+  test('POST /github/repos → create_error when service throws', async () => {
+    githubSvc.createRepository.mockImplementation(async () => { throw new Error('boom') })
+    const res = await router.request('/github/repos', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ installation_id: 1, name: 'r' }),
+    })
+    expect(res.status).toBe(500)
+    expect((await res.json()).error.code).toBe('create_error')
+  })
+
+  test('POST /projects/:id/github/push → push_error when service throws', async () => {
+    seedProject('p1')
+    githubSvc.pushToGitHub.mockImplementation(async () => { throw new Error('boom') })
+    const res = await router.request('/projects/p1/github/push', { method: 'POST' })
+    expect(res.status).toBe(500)
+    expect((await res.json()).error.code).toBe('push_error')
+  })
+
+  test('POST /projects/:id/github/pull → pull_error when service throws', async () => {
+    seedProject('p1')
+    githubSvc.pullFromGitHub.mockImplementation(async () => { throw new Error('boom') })
+    const res = await router.request('/projects/p1/github/pull', { method: 'POST' })
+    expect(res.status).toBe(500)
+    expect((await res.json()).error.code).toBe('pull_error')
+  })
+
+  test('POST /projects/:id/github/sync → 404 project_not_found when project missing', async () => {
+    const res = await router.request('/projects/nope/github/sync', { method: 'POST' })
+    expect(res.status).toBe(404)
+    expect((await res.json()).error.code).toBe('project_not_found')
+  })
+
+  test('POST /projects/:id/github/sync → sync_error when service throws', async () => {
+    seedProject('p1')
+    githubSvc.syncWithGitHub.mockImplementation(async () => { throw new Error('boom') })
+    const res = await router.request('/projects/p1/github/sync', { method: 'POST' })
+    expect(res.status).toBe(500)
+    expect((await res.json()).error.code).toBe('sync_error')
+  })
+})

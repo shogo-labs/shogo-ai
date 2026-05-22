@@ -175,6 +175,13 @@ model Project {
   folderId           String?
   publishedSubdomain String?          @unique
   publishedAt        DateTime?
+  // Tracks where in the publish pipeline this project currently is.
+  // Updated by apps/api/src/routes/publish.ts at each step so a stuck
+  // or cancelled HTTP request still leaves a recoverable trail in the
+  // DB. `failed` carries the last error code in `publishError`.
+  publishStatus      PublishStatus    @default(idle)
+  publishError       String?
+  publishStatusAt    DateTime?
   accessLevel        AccessLevel      @default(anyone)
   category           ProjectCategory?
   siteTitle          String?
@@ -317,6 +324,18 @@ enum AccessLevel {
   anyone
   authenticated
   private
+}
+
+// Step the publish pipeline has reached for this project. The pipeline
+// (apps/api/src/routes/publish.ts) updates this in-line so Studio (and
+// operators) can observe a frozen request without scraping logs.
+enum PublishStatus {
+  idle
+  building
+  uploading
+  configuring
+  live
+  failed
 }
 
 enum ProjectCategory {
@@ -761,11 +780,11 @@ model ChatMessage {
   createdAt DateTime @default(now())
   /// Which agent authored this row:
   ///   "technical" — the main technical agent (default; preserves legacy rows).
-  ///   "voice"     — the Shogo Mode translator (voice + text). Rows of this
-  ///                 kind belong to the Shogo overlay thread, not the
+  ///   "voice"     — the EZ Mode translator (voice + text). Rows of this
+  ///                 kind belong to the EZ Mode overlay thread, not the
   ///                 main ChatPanel thread. `parts` may carry an
   ///                 envelope describing the sub-kind
-  ///                 (voice / agent-activity / shogo-text).
+  ///                 (voice / agent-activity / agent-reply / shogo-text).
   agent     String   @default("technical")
 
   // Relations
@@ -1353,6 +1372,39 @@ model AnalyticsDigest {
   id     String   @id @default(uuid())
   date   DateTime @db.Date
   period String   @default("24h")
+  // Region that produced this digest (e.g. `us-ashburn-1`, `eu-frankfurt-1`,
+  // `ap-mumbai-1`). Folded into the unique key so each region's daily cron
+  // can write its own row without colliding when the rows replicate across
+  // regions via logical replication. NOT NULL: the prior nullable rollout
+  // was tightened once the 2026-05-21 backfill confirmed every existing
+  // row has a region tag. The analytics-digest collector defaults missing
+  // `REGION_ID` env to `'unknown'` (single, distinct sentinel) so local
+  // dev/test runs still satisfy the constraint.
+  //
+  // INTENTIONALLY REGIONAL — DO NOT wrap `generateDigest` in
+  // `withGlobalJobLock`. Every other globally-aggregating cron uses
+  // the lock pattern in `apps/api/src/lib/global-job-lock.ts`, but
+  // this one is the seed for genuine per-region analytics (a dashboard
+  // showing separate funnel numbers for US/EU/India). The
+  // `INTENTIONALLY_REGIONAL` allowlist in
+  // `scripts/check-multiregion-cron-locks.ts` records this exemption
+  // explicitly so the CI guard doesn't flag it as a missing wrapper,
+  // and conversely so the wrapper can't be added without also
+  // updating the allowlist (one human review).
+  //
+  // TODO(analytics-regional): today's `getUserFunnel` /
+  // `getUserActivityTable` / `getTemplateEngagement` /
+  // `getChatConversations` / `getSourceBreakdown` queries are global
+  // aggregates over the (logically-replicated) full row set — every
+  // region computes the same numbers. To make this column carry real
+  // meaning, add `signupRegion` / `writeRegion` columns to source
+  // tables (`users`, `chat_messages`, `usage_events`, `projects`),
+  // backfill historical rows to `'unknown'`, and add `region`
+  // parameters to the analytics-service queries. Until then the
+  // contents are global-tagged-with-region and the row-per-region
+  // shape is correct only as a defense-in-depth backstop against the
+  // replication poison-pill class.
+  region String
 
   funnelSignups        Int    @default(0)
   funnelOnboarded      Int    @default(0)
@@ -1375,7 +1427,7 @@ model AnalyticsDigest {
 
   createdAt DateTime @default(now())
 
-  @@unique([date, period])
+  @@unique([date, period, region])
   @@map("analytics_digests")
 }
 

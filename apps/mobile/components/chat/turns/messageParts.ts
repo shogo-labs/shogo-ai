@@ -4,12 +4,12 @@
  * Shared helpers for normalizing AI SDK `UIMessage.parts` into the
  * `MessagePart` shape rendered by the chat UI, plus a small extractor
  * that returns just the task / agent_spawn tool calls so non-chat
- * surfaces (e.g. the Shogo Mode overlay) can render the same
+ * surfaces (e.g. the EZ Mode overlay) can render the same
  * `<SubagentCard>` UI without duplicating part-parsing.
  *
  * The AssistantContent component used to own these helpers privately;
  * they have been hoisted here so `ChatPanel` can publish a snapshot of
- * subagent tool calls through the ChatBridge for the Shogo overlay.
+ * subagent tool calls through the ChatBridge for the EZ Mode overlay.
  */
 
 import type { UIMessage } from "@ai-sdk/react"
@@ -47,6 +47,16 @@ export function mapToolState(
 /**
  * Convert AI SDK `UIMessage.parts` into the ordered `MessagePart[]`
  * structure rendered by AssistantContent and the Shogo overlay.
+ *
+ * Adjacent reasoning parts (no other part type between them) are
+ * coalesced into a single `MessagePart` so they render as one
+ * `ThinkingWidget` instead of N separate widgets that each open and
+ * auto-close on their own ~3s timer. Extended-thinking models
+ * (Anthropic with extended thinking, GPT-5 with reasoning) routinely
+ * emit several `reasoning-start`/`reasoning-end` chunks back-to-back
+ * — without coalescing, the chat column visibly bounces as the
+ * cascade of close timers fires and the parent ScrollView auto-
+ * follows each height change.
  */
 export function extractOrderedParts(message: UIMessage): MessagePart[] {
   const parts = (message as any).parts as any[] | undefined
@@ -67,16 +77,43 @@ export function extractOrderedParts(message: UIMessage): MessagePart[] {
     const part = parts[index]
 
     if (part.type === "reasoning") {
-      const hasContent = part.text?.trim().length > 0
-      const isPartStreaming = "state" in part && part.state === "streaming"
-      if (hasContent || isPartStreaming) {
-        const durationMs = part.durationMs as number | undefined
+      const firstIndex = index
+      let mergedText = ""
+      let anyStreaming = false
+      let totalDurationMs = 0
+      let hasDuration = false
+
+      while (index < parts.length && parts[index].type === "reasoning") {
+        const r = parts[index]
+        if (r.text) {
+          if (mergedText.length > 0) mergedText += "\n\n"
+          mergedText += r.text
+        }
+        if ("state" in r && r.state === "streaming") {
+          anyStreaming = true
+        }
+        if (typeof r.durationMs === "number") {
+          totalDurationMs += r.durationMs
+          hasDuration = true
+        }
+        index++
+      }
+      // Step back so the outer-loop `index++` lands on the next part
+      // (the one that broke the reasoning run).
+      index--
+
+      const hasContent = mergedText.trim().length > 0
+      if (hasContent || anyStreaming) {
         result.push({
           type: "reasoning",
-          text: part.text || "",
-          isStreaming: isPartStreaming,
-          durationSeconds: durationMs ? Math.ceil(durationMs / 1000) : undefined,
-          id: `reasoning-${index}`,
+          text: mergedText,
+          isStreaming: anyStreaming,
+          durationSeconds: hasDuration
+            ? Math.ceil(totalDurationMs / 1000)
+            : undefined,
+          // Key on the FIRST index of the run so the coalesced widget's
+          // identity stays stable as later bursts get appended into it.
+          id: `reasoning-${firstIndex}`,
         })
       }
     } else if (part.type === "text") {
@@ -148,7 +185,7 @@ export function extractOrderedParts(message: UIMessage): MessagePart[] {
 /**
  * Walk every assistant message in `messages` and return the ordered list
  * of `task` / `Task` / `agent_spawn` tool calls as `ToolCallData`. The
- * Shogo Mode overlay re-uses this snapshot to render `<SubagentCard>`
+ * EZ Mode overlay re-uses this snapshot to render `<SubagentCard>`
  * without owning any AI SDK message state itself.
  *
  * The returned array is keyed by the tool call id, so re-deriving it on

@@ -3,7 +3,7 @@ name: storyboard
 version: 1.0.0
 description: Create structured video ad storyboards with beat-by-beat breakdown, model selection, and credit estimation
 trigger: "storyboard|plan ad|script ad|ad concept|creative brief|ad structure|video plan|campaign concept|ad sequence"
-tools: [canvas_create, canvas_update, memory_read, memory_write, web]
+tools: [memory_read, memory_write, web]
 ---
 
 # Storyboard

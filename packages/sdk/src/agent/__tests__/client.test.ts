@@ -266,17 +266,8 @@ describe('AgentClient — chat', () => {
 })
 
 // ---------------------------------------------------------------------------
-// canvas SSE
+// workspace event stream (SSE)
 // ---------------------------------------------------------------------------
-
-describe('AgentClient — subscribeToCanvas', () => {
-  test('opens an EventSource at /agent/canvas/stream', () => {
-    const c = new AgentClient({ baseUrl: 'http://x.test' })
-    const es = c.subscribeToCanvas()
-    expect((es as unknown as { url: string }).url).toBe('http://x.test/agent/canvas/stream')
-    expect((es as unknown as { withCredentials: boolean }).withCredentials).toBe(true)
-  })
-})
 
 describe('AgentClient — subscribeToWorkspace', () => {
   test('parses JSON events and invokes onEvent with typed payload', () => {
@@ -423,41 +414,6 @@ describe('AgentClient — subscribeToWorkspace', () => {
     expect(esInstances).toHaveLength(1)
     dispose()
     expect(esInstances[0]!.closed).toBe(true)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// canvas state / action
-// ---------------------------------------------------------------------------
-
-describe('AgentClient — canvas state/action', () => {
-  test('getCanvasState GETs /agent/canvas/state', async () => {
-    const calls: Call[] = []
-    const f = makeFetch(() => jsonResponse({ surfaces: {} }), calls)
-    const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
-    const state = await c.getCanvasState()
-    expect(state).toEqual({ surfaces: {} })
-    expect(calls[0]!.url).toBe('http://x.test/agent/canvas/state')
-  })
-
-  test('dispatchAction POSTs the action payload', async () => {
-    const calls: Call[] = []
-    const f = makeFetch(() => jsonResponse({}), calls)
-    const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
-    await c.dispatchAction('surf1', 'submit', { id: 42 })
-    expect(calls[0]!.url).toBe('http://x.test/agent/canvas/action')
-    expect(calls[0]!.init!.method).toBe('POST')
-    const body = JSON.parse(calls[0]!.init!.body as string)
-    expect(body).toEqual({ surfaceId: 'surf1', name: 'submit', context: { id: 42 } })
-  })
-
-  test('dispatchAction without context omits the field', async () => {
-    const calls: Call[] = []
-    const f = makeFetch(() => jsonResponse({}), calls)
-    const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
-    await c.dispatchAction('surf1', 'submit')
-    const body = JSON.parse(calls[0]!.init!.body as string)
-    expect(body).toEqual({ surfaceId: 'surf1', name: 'submit' })
   })
 })
 
@@ -623,16 +579,16 @@ describe('AgentClient — plans', () => {
     expect(calls[0]!.url).toBe('http://x.test/agent/plans/a.plan.md')
   })
 
-  test('deletePlan and translatePlan hit the right URLs', async () => {
+  test('deletePlan and summarizePlan hit the right URLs', async () => {
     const calls: Call[] = []
-    const f = makeFetch(() => jsonResponse({ business: 'biz' }), calls)
+    const f = makeFetch(() => jsonResponse({ summary: 'sum' }), calls)
     const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
     await c.deletePlan('a.plan.md')
-    const res = await c.translatePlan('a.plan.md')
-    expect(res.business).toBe('biz')
+    const res = await c.summarizePlan('a.plan.md')
+    expect(res.summary).toBe('sum')
     expect(calls[0]!.init!.method).toBe('DELETE')
     expect(calls[1]!.init!.method).toBe('POST')
-    expect(calls[1]!.url).toBe('http://x.test/agent/plans/a.plan.md/translate')
+    expect(calls[1]!.url).toBe('http://x.test/agent/plans/a.plan.md/summarize')
   })
 })
 

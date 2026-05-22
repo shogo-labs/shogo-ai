@@ -36,8 +36,12 @@ function setFile(p: string, c: string) {
 }
 function setDir(p: string) { fsState.set(p, { type: 'dir' }) }
 
+const existsSyncReturnFalse = new Set<string>()
 mock.module('fs', () => ({
-  existsSync: (p: string) => fsState.has(p),
+  existsSync: (p: string) => {
+    if (existsSyncReturnFalse.has(p)) return false
+    return fsState.has(p)
+  },
   readdirSync: (dir: string, _opts?: any) => {
     const prefix = dir.endsWith('/') ? dir : dir + '/'
     const entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }> = []
@@ -101,6 +105,7 @@ const router = testsRoutes({ workspacesDir: '/ws' })
 
 beforeEach(() => {
   fsState.clear()
+  existsSyncReturnFalse.clear()
   spawnSpy.mockClear()
   execSyncSpy.mockClear()
   execSyncSpy.mockImplementation(() => Buffer.from(''))
@@ -424,5 +429,101 @@ describe('POST /projects/:id/tests/run', () => {
     const res = await run('p_err')
     const out = await readStream(res)
     expect(out).toContain('spawn failed')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// Gap-closing tests: findTestFiles edge cases + run-handler defensive paths
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('findTestFiles edge cases (via /list)', () => {
+  test('returns early when a recursive subdir does not exist on disk', async () => {
+    // tests/ is real; tests/phantom appears in readdirSync output but
+    // existsSync(tests/phantom) returns false (e.g. raced-deletion).
+    // Forces findTestFiles's recursive `if (!existsSync(dir)) return files`.
+    setDir('/ws/p_phantom')
+    setDir('/ws/p_phantom/tests')
+    setDir('/ws/p_phantom/tests/phantom')
+    existsSyncReturnFalse.add('/ws/p_phantom/tests/phantom')
+    const body = await (await router.request('/projects/p_phantom/tests/list')).json()
+    expect(body.hasTests).toBe(false)
+    expect(body.files).toEqual([])
+  })
+
+  test('skips node_modules subdir during recursive walk', async () => {
+    setDir('/ws/p_nm')
+    setDir('/ws/p_nm/tests')
+    setDir('/ws/p_nm/tests/node_modules')
+    setDir('/ws/p_nm/tests/node_modules/somepkg')
+    setFile(
+      '/ws/p_nm/tests/node_modules/somepkg/inner.test.ts',
+      `test('should not be discovered', () => {})\n`,
+    )
+    setFile('/ws/p_nm/tests/real.test.ts', `test('real', () => {})\n`)
+    const body = await (await router.request('/projects/p_nm/tests/list')).json()
+    expect(body.hasTests).toBe(true)
+    expect(body.files).toHaveLength(1)
+    expect(body.files[0].path).toBe('tests/real.test.ts')
+  })
+})
+
+describe('POST /run defensive paths', () => {
+  function runDef(pid: string, body: any = {}) {
+    return router.request(`/projects/${pid}/tests/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+  async function readStreamDef(res: Response): Promise<string> {
+    const reader = res.body!.getReader()
+    const decoder = new TextDecoder()
+    let out = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      out += decoder.decode(value)
+    }
+    return out
+  }
+
+  test('per-run timeout fires SIGTERM + writes timeout error to stream', async () => {
+    setDir('/ws/p_timeout')
+    setDir('/ws/p_timeout/node_modules')
+
+    // FakeChild that NEVER auto-closes; only kill() forces a close.
+    nextSpawnBehavior = (c) => {
+      const realKill = c.kill
+      c.kill = mock((signal?: any) => {
+        realKill(signal)
+        queueMicrotask(() => c.emit('close', 143))
+        return true
+      })
+    }
+
+    // Build a fresh router with _testTimeoutMs:1 so the timeout fires
+    // before anything else races it.
+    const fastRouter = testsRoutes({ workspacesDir: '/ws', _testTimeoutMs: 1 })
+    const res = await fastRouter.request('/projects/p_timeout/tests/run', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    expect(res.status).toBe(200)
+    const out = await readStreamDef(res)
+    expect(out).toContain('[ERROR] Tests timed out')
+    expect(lastSpawn?.kill).toHaveBeenCalled()
+  })
+
+  test('synchronous spawn() throw is caught by outer try and surfaced in stream', async () => {
+    setDir('/ws/p_spawnthrow')
+    setDir('/ws/p_spawnthrow/node_modules')
+    spawnSpy.mockImplementationOnce(() => {
+      throw new Error('exec format error')
+    })
+    const res = await runDef('p_spawnthrow')
+    expect(res.status).toBe(200)
+    const out = await readStreamDef(res)
+    expect(out).toContain('[ERROR] exec format error')
   })
 })

@@ -72,6 +72,6 @@ Proactively suggest these based on user needs:
 
 ## Canvas Patterns
 - Use Metric grids for KPIs (conversion rates, traffic, engagement)
-- Use DataList for displaying items (audit findings, content calendar entries) — bind live data with canvas_api_bind when integrations are installed
+- Use DataList for displaying items (audit findings, content calendar entries) — fetch live data from installed integrations and render in the canvas
 - Use Charts for trends (traffic over time, experiment results)
 - Use Tabs to organize sections within a surface

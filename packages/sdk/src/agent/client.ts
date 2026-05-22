@@ -9,8 +9,6 @@ import type {
   AgentStatus,
   ChatMessage,
   ChatOptions,
-  CanvasState,
-  ActionContext,
   FileNode,
   SearchResult,
   VisualMode,
@@ -126,23 +124,14 @@ export class AgentClient {
   }
 
   // ---------------------------------------------------------------------------
-  // Canvas / Dynamic App
+  // Workspace event stream
   // ---------------------------------------------------------------------------
 
   /**
-   * Subscribe to canvas surface updates via SSE.
-   * Returns an EventSource — listen to `message` events for JSON payloads.
-   */
-  subscribeToCanvas(): EventSource {
-    return new EventSource(this.url('/agent/canvas/stream'), { withCredentials: true })
-  }
-
-  /**
-   * Subscribe to live workspace events (file.changed / file.deleted / reload).
-   *
-   * Unlike {@link subscribeToCanvas}, this parses event JSON, filters/types
-   * it, and transparently reconnects with exponential backoff on error. Use
-   * this for IDE-style "agent is editing my file" UX.
+   * Subscribe to live workspace events (file.changed / file.deleted / reload)
+   * emitted by `/agent/canvas/stream`. Parses event JSON, filters/types it,
+   * and transparently reconnects with exponential backoff on error. Use this
+   * for IDE-style "agent is editing my file" UX.
    *
    * @returns A disposer — call it to close the stream. Idempotent.
    */
@@ -188,28 +177,21 @@ export class AgentClient {
     }
   }
 
-  async getCanvasState(): Promise<CanvasState> {
-    return this.fetchJson<CanvasState>('/agent/canvas/state')
-  }
-
-  async dispatchAction(
-    surfaceId: string,
-    actionName: string,
-    context?: ActionContext,
-  ): Promise<void> {
-    await this.fetchJson('/agent/canvas/action', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ surfaceId, name: actionName, context }),
-    })
-  }
-
   // ---------------------------------------------------------------------------
   // Workspace Files
   // ---------------------------------------------------------------------------
 
-  async getWorkspaceTree(): Promise<FileNode[]> {
-    const data = await this.fetchJson<{ tree: FileNode[] }>('/agent/workspace/tree')
+  /**
+   * Fetch the workspace file tree.
+   *
+   * Without `path`, returns the tree from the workspace root. Heavy
+   * directories (`node_modules`, `dist`, `.next`, …) come back as
+   * `{ type: 'directory', lazy: true }` entries with no children — call this
+   * again with the entry's `path` to load that subtree on demand.
+   */
+  async getWorkspaceTree(path?: string): Promise<FileNode[]> {
+    const qs = path ? `?path=${encodeURIComponent(path)}` : ''
+    const data = await this.fetchJson<{ tree: FileNode[] }>(`/agent/workspace/tree${qs}`)
     return data.tree ?? []
   }
 
@@ -293,7 +275,7 @@ export class AgentClient {
     return data.plans ?? []
   }
 
-  async getPlan(filename: string): Promise<{ filename: string; content: string; business?: string }> {
+  async getPlan(filename: string): Promise<{ filename: string; content: string; summary?: string }> {
     return this.fetchJson(`/agent/plans/${encodeURIComponent(filename)}`)
   }
 
@@ -301,10 +283,10 @@ export class AgentClient {
     await this.fetchJson(`/agent/plans/${encodeURIComponent(filename)}`, { method: 'DELETE' })
   }
 
-  /** Generate (or regenerate) a business-language translation for an
-   *  existing plan and persist it inside the plan's .plan.md file. */
-  async translatePlan(filename: string): Promise<{ business: string }> {
-    return this.fetchJson(`/agent/plans/${encodeURIComponent(filename)}/translate`, {
+  /** Generate (or regenerate) a stakeholder summary for an existing plan
+   *  and persist it inside the plan's .plan.md file. */
+  async summarizePlan(filename: string): Promise<{ summary: string }> {
+    return this.fetchJson(`/agent/plans/${encodeURIComponent(filename)}/summarize`, {
       method: 'POST',
     })
   }
