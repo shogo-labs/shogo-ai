@@ -414,8 +414,11 @@
       "linePct": 76.3158,
       "funcPct": 100,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T11:33:39.646807Z",
+      "beforeLinePct": 72.73,
+      "afterLinePct": 100.0
     },
     {
       "file": "packages/sdk/src/projects/index.ts",
