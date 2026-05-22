@@ -28,6 +28,7 @@ import * as databaseService from '../services/database.service'
 import { upsertPreviewDnsRecord, deletePreviewDnsRecord } from './cloudflare-dns'
 import { RUNTIME_CONFIG } from '@shogo/shared-runtime'
 import type { InstanceSizeName } from '../config/instance-sizes'
+import { buildAiProxyUrl, buildToolsProxyUrl } from './cloud-urls'
 
 const knativeTracer = trace.getTracer('shogo-knative-manager')
 
@@ -1088,8 +1089,8 @@ export class KnativeProjectManager {
     // The API is a Knative service exposed on port 80 via kourier
     const systemNamespace = process.env.SYSTEM_NAMESPACE || 'shogo-system'
     const apiUrl = process.env.API_URL || process.env.SHOGO_API_URL || `http://api.${systemNamespace}.svc.cluster.local`
-    env.push({ name: "AI_PROXY_URL", value: `${apiUrl}/api/ai/v1` })
-    env.push({ name: "TOOLS_PROXY_URL", value: `${apiUrl}/api/tools` })
+    env.push({ name: "AI_PROXY_URL", value: buildAiProxyUrl(apiUrl) })
+    env.push({ name: "TOOLS_PROXY_URL", value: buildToolsProxyUrl(apiUrl) })
 
     let proxyTokenGenerated = false
 
