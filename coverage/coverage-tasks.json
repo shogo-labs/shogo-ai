@@ -49,8 +49,12 @@
       "linePct": 99.1304,
       "funcPct": 100,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T05:38:53.520722Z",
+      "beforeLinePct": 99.1304,
+      "afterLinePct": 100.0,
+      "note": "Already at 100% under own tests (apps/api/src/__tests__/instance-sizes.test.ts + apps/api/src/config/__tests__/instance-sizes.test.ts). Baseline 99.13% was a merged-shard instrumentation artifact, not a real gap. No new test code added."
     },
     {
       "file": "apps/api/src/services/stripe-connect.service.ts",
