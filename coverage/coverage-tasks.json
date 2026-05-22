@@ -115,8 +115,11 @@
       "linePct": 98.75,
       "funcPct": 92.3077,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T06:48:48.263875Z",
+      "beforeLinePct": 98.75,
+      "afterLinePct": 100.0
     },
     {
       "file": "packages/sdk/src/generators/api-client.ts",
