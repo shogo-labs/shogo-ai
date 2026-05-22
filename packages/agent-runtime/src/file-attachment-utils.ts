@@ -52,6 +52,20 @@ function formatSavedPathSuffix(savedPath?: string): string {
  * tool (e.g. unzip via shell, dedicated parsers) instead of guessing at
  * binary content.
  */
+/**
+ * Test-only indirection seam — production code routes through the default
+ * `Buffer.from(..., 'base64').toString('utf-8')` implementation. Swap
+ * `decodeBase64Utf8` in a unit test to drive the otherwise unreachable
+ * `catch { ... }` arm inside the base64-decode block (Buffer.from with
+ * invalid base64 input does not throw under Bun/Node — it silently
+ * filters — so the catch is a defensive guard without a natural trigger).
+ */
+export const _fileAttachmentSeamForTests: {
+  decodeBase64Utf8: (b64: string) => string
+} = {
+  decodeBase64Utf8: (b64: string) => Buffer.from(b64, 'base64').toString('utf-8'),
+}
+
 export function parseFileAttachments(parts: FilePart[]): ParsedAttachments {
   const fileParts = parts.filter((p) => p.type === 'file' && p.url)
   if (fileParts.length === 0) return { images: [], textContext: '' }
@@ -82,7 +96,7 @@ export function parseFileAttachments(parts: FilePart[]): ParsedAttachments {
       mediaType.startsWith('text/') || TEXT_MEDIA_TYPES.has(mediaType)
 
     try {
-      const decoded = Buffer.from(base64Match[1], 'base64').toString('utf-8')
+      const decoded = _fileAttachmentSeamForTests.decodeBase64Utf8(base64Match[1])
       if (isTextBased || (!decoded.includes('\0') && decoded.length > 0)) {
         const header = `[Attached File (${label})]:${savedSuffix}`
         sections.push(`${header}\n${decoded}\n[End of Attached File]`)
