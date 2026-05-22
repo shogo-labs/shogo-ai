@@ -109,7 +109,7 @@ describe('Self-Assign', () => {
 })
 
 describe('Self-Assign whoami fallback', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     mockFetch.mockClear()
     process.env = { ...originalEnv }
     delete process.env.ASSIGNED_PROJECT
@@ -178,6 +178,18 @@ describe('Self-Assign whoami fallback', () => {
     expect(result).toBeNull()
   })
 
+  test('returns null when whoami non-2xx and res.text() also rejects (covers .catch arrow)', async () => {
+    process.env.KNATIVE_SERVICE_NAME = 'warm-pool-text-fail'
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      text: () => Promise.reject(new Error('body unreadable')),
+    } as any)
+    const { discoverAssignedProject } = await import('../self-assign')
+    const r = await discoverAssignedProject(undefined, 'http://api.test.local')
+    expect(r).toBeNull()
+  })
+
   test('returns null when whoami fetch throws', async () => {
     process.env.KNATIVE_SERVICE_NAME = 'warm-pool-net-fail'
     mockFetch.mockRejectedValueOnce(new Error('ECONNREFUSED'))
@@ -238,5 +250,123 @@ describe('Self-Assign whoami fallback', () => {
     expect(mockFetch).toHaveBeenCalledTimes(2)
     expect(mockFetch.mock.calls[0][0]).toBe('http://api.test.local/api/internal/whoami/warm-pool-recover')
     expect(mockFetch.mock.calls[1][0]).toBe('http://api.test.local/api/internal/pod-config/recovered')
+  })
+})
+
+describe('self-assign gap coverage', () => {
+  const { mkdirSync, writeFileSync, rmSync } = require('node:fs')
+  const { join: pj } = require('node:path')
+  const origEnv = { ...process.env }
+
+  beforeEach(async () => {
+    mockFetch.mockClear()
+    process.env = { ...origEnv }
+    delete process.env.ASSIGNED_PROJECT
+    delete process.env.SHOGO_API_URL
+    delete process.env.API_URL
+    delete process.env.AI_PROXY_URL
+    delete process.env.KNATIVE_SERVICE_NAME
+    delete process.env.WORKSPACE_DIR
+    delete process.env.K8S_SA_TOKEN_OVERRIDE
+    process.env.SYSTEM_NAMESPACE = 'test-system'
+    const m = await import('../self-assign')
+    m._selfAssignSeams.saTokenPath = '/nonexistent-sa-token-path'
+    m._selfAssignSeams.overrideDeriveApiUrl = null
+  })
+
+  afterEach(() => { process.env = { ...origEnv } })
+
+  test('DA:51 — checkSelfAssign returns null when no assignment found', async () => {
+    const { checkSelfAssign } = await import('../self-assign')
+    expect(await checkSelfAssign('http://api.test.local')).toBeNull()
+  })
+
+  test('DA:57,58 — dead !baseUrl guard via overrideDeriveApiUrl seam', async () => {
+    process.env.ASSIGNED_PROJECT = 'proj-deadcode'
+    const { checkSelfAssign, _selfAssignSeams } = await import('../self-assign')
+    _selfAssignSeams.overrideDeriveApiUrl = () => null
+    try {
+      expect(await checkSelfAssign()).toBeNull()
+    } finally { _selfAssignSeams.overrideDeriveApiUrl = null }
+  })
+
+  test('DA:114 — readSAToken returns token when saTokenPath exists', async () => {
+    const tmp = '/tmp/__sa-token-test__'
+    writeFileSync(tmp, '  my-token  ', 'utf-8')
+    const { readSAToken, _selfAssignSeams } = await import('../self-assign')
+    _selfAssignSeams.saTokenPath = tmp
+    try {
+      expect(readSAToken()).toBe('my-token')
+    } finally {
+      _selfAssignSeams.saTokenPath = '/nonexistent-sa-token-path'
+      rmSync(tmp, { force: true })
+    }
+  })
+
+  test('DA:115 — readSAToken catch fires when saTokenPath is a directory', async () => {
+    const tmp = '/tmp/__sa-token-dir-test__'
+    mkdirSync(tmp, { recursive: true })
+    const { readSAToken, _selfAssignSeams } = await import('../self-assign')
+    _selfAssignSeams.saTokenPath = tmp
+    try {
+      expect(readSAToken()).toBeNull()
+    } finally {
+      _selfAssignSeams.saTokenPath = '/nonexistent-sa-token-path'
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  test('DA:140 — deriveApiUrl catch fires for unparseable AI_PROXY_URL', async () => {
+    process.env.AI_PROXY_URL = 'not a valid url'
+    const { deriveApiUrl } = await import('../self-assign')
+    expect(deriveApiUrl()).toContain('test-system')
+  })
+
+  test('DA:160,161 — readAssignmentMarker returns valid project from marker file', async () => {
+    const tmp = '/tmp/__marker-test__'
+    mkdirSync(tmp, { recursive: true })
+    writeFileSync(pj(tmp, '.shogo-pool-assignment'), 'marker-proj-id', 'utf-8')
+    const { discoverAssignedProject } = await import('../self-assign')
+    try {
+      expect(await discoverAssignedProject(tmp, null)).toBe('marker-proj-id')
+    } finally { rmSync(tmp, { recursive: true, force: true }) }
+  })
+
+  test('DA:162 — readAssignmentMarker catch fires when marker is a directory', async () => {
+    const tmp = '/tmp/__marker-catch-test__'
+    mkdirSync(pj(tmp, '.shogo-pool-assignment'), { recursive: true })
+    const { discoverAssignedProject } = await import('../self-assign')
+    try {
+      expect(await discoverAssignedProject(tmp, null)).toBeNull()
+    } finally { rmSync(tmp, { recursive: true, force: true }) }
+  })
+
+  test('DA:168 — readAssignmentMarker skips __POOL__ marker', async () => {
+    const tmp = '/tmp/__marker-pool-test__'
+    mkdirSync(tmp, { recursive: true })
+    writeFileSync(pj(tmp, '.shogo-pool-assignment'), '__POOL__', 'utf-8')
+    const { discoverAssignedProject } = await import('../self-assign')
+    try {
+      expect(await discoverAssignedProject(tmp, null)).toBeNull()
+    } finally { rmSync(tmp, { recursive: true, force: true }) }
+  })
+
+  test('DA:205,206 — whoamiLookup warns when KNATIVE set but no apiUrl', async () => {
+    process.env.KNATIVE_SERVICE_NAME = 'no-url'
+    process.env.K8S_SA_TOKEN_OVERRIDE = 'tok'
+    const warns: string[] = []
+    const origWarn = console.warn
+    console.warn = (...a: any[]) => warns.push(a.join(' '))
+    const { discoverAssignedProject } = await import('../self-assign')
+    try {
+      expect(await discoverAssignedProject(undefined, null)).toBeNull()
+      expect(warns.some(w => w.includes('no API URL'))).toBe(true)
+    } finally { console.warn = origWarn }
+  })
+
+  test('DA:212 — whoamiLookup returns null when KNATIVE set but no SA token', async () => {
+    process.env.KNATIVE_SERVICE_NAME = 'no-token'
+    const { discoverAssignedProject } = await import('../self-assign')
+    expect(await discoverAssignedProject(undefined, 'http://api.test.local')).toBeNull()
   })
 })
