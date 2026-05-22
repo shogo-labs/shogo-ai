@@ -33,6 +33,7 @@ let spawnResponder: SpawnResponder = () => ({
   exitCode: 0,
 })
 
+let spawnFastExit = false
 function makeFakeChild(call: SpawnCall): any {
   const proc = new EventEmitter() as any
   proc.stdin = {
@@ -45,12 +46,21 @@ function makeFakeChild(call: SpawnCall): any {
   proc.exitCode = null
 
   const res = spawnResponder(call)
-  setTimeout(() => {
+  const emit = () => {
     proc.stdout.emit('data', Buffer.from(res.stdout))
     proc.exitCode = res.exitCode
     proc.stdout.emit('end')
     proc.emit('exit', res.exitCode)
-  }, 5)
+  }
+  if (spawnFastExit) {
+    // SHOG-664 regression mode: emit on the next microtask so the child's
+    // `exit` fires *before* any code after `await headerReady` in the route
+    // can attach its own `child.on('exit')` listener. This reproduces the
+    // production race where the post-receive hook was silently skipped.
+    queueMicrotask(emit)
+  } else {
+    setTimeout(emit, 5)
+  }
   return proc
 }
 
@@ -368,6 +378,55 @@ describe('git-http route — POST handlers + auth edges', () => {
     }
   })
 
+})
+
+describe('SHOG-664 regression — post-receive hook fires even on fast child exit', () => {
+  it('runs runPostReceiveHook (inserts ProjectCheckpoint) when child exits before late .on("exit") would attach', async () => {
+    // Reproduce the original race: the spawned `git http-backend` exits on
+    // the next microtask, which is *before* the route handler's late
+    // `child.on('exit')` listener (the one that triggered the post-receive
+    // hook) used to be attached. With the bug, the listener missed the
+    // event and no ProjectCheckpoint row was ever created → empty IDE tab.
+    spawnFastExit = true
+    spawnResponder = () => ({
+      stdout:
+        'Status: 200 OK\r\nContent-Type: application/x-git-receive-pack-result\r\n\r\nOK',
+      exitCode: 0,
+    })
+    const { mkdtempSync, rmSync, mkdirSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const baseDir = mkdtempSync(join(tmpdir(), 'git-http-shog664-'))
+    try {
+      mkdirSync(join(baseDir, 'p_race'))
+      checkpointCreate.mockClear()
+      checkpointFindFirst.mockImplementation(async () => null)
+      const app = new Hono()
+      app.use('*', async (c, next) => {
+        c.set('auth', { userId: 'u_race', isAuthenticated: true } as any)
+        await next()
+      })
+      app.route('/api', gitHttpRoutes({ workspacesDir: baseDir }))
+      const res = await app.request('/api/projects/p_race/git/git-receive-pack', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-git-receive-pack-request' },
+        body: 'fake-receive-pack-data',
+      })
+      expect(res.status).toBe(200)
+      await res.text()
+      // Let the exitPromise's .then microtask + runPostReceiveHook's
+      // internal awaits flush.
+      await new Promise((r) => setTimeout(r, 20))
+      expect(checkpointCreate).toHaveBeenCalled()
+      const data = (checkpointCreate as any).mock.calls.at(-1)?.[0]?.data
+      expect(data.projectId).toBe('p_race')
+      expect(data.isAutomatic).toBe(true)
+      expect(data.createdBy).toBe('u_race')
+    } finally {
+      rmSync(baseDir, { recursive: true, force: true })
+      spawnFastExit = false
+    }
+  })
 })
 
 describe('runPostReceiveHook — defensive edges', () => {
