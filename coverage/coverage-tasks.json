@@ -466,8 +466,11 @@
       "linePct": 95.2991,
       "funcPct": 94.1176,
       "phase": 2,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T12:06:36.702189Z",
+      "beforeLinePct": 95.3,
+      "afterLinePct": 100.0
     },
     {
       "file": "packages/agent-runtime/src/migrations/skill-server-to-root.ts",
