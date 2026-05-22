@@ -275,4 +275,60 @@ describe('start/stopAnalyticsDigestCollector', () => {
       ;(globalThis as any).setTimeout = realSetTimeout
     }
   })
+
+  it('timer callback runs generateDigest then re-schedules (success path, lines 267-269,273)', async () => {
+    const realSetTimeout = globalThis.setTimeout
+    const calls: Array<() => Promise<void> | void> = []
+    ;(globalThis as any).setTimeout = (fn: any, _ms: number) => {
+      calls.push(fn)
+      return realSetTimeout(() => {}, 0) as any
+    }
+    // generateDigest reads prisma.message.findMany — fakePrisma returns []
+    // by default, so the digest path runs to completion without throwing.
+    try {
+      startAnalyticsDigestCollector(fakePrisma)
+      expect(calls.length).toBe(1)
+      // Invoke the captured callback once. It will call generateDigest then
+      // scheduleNext() → setTimeout again → calls.push.
+      await calls[0]!()
+      expect(calls.length).toBe(2) // recursive scheduleNext fired
+      stopAnalyticsDigestCollector()
+    } finally {
+      ;(globalThis as any).setTimeout = realSetTimeout
+    }
+  })
+
+  it('timer callback catches generateDigest errors and re-schedules (lines 270-272)', async () => {
+    const realSetTimeout = globalThis.setTimeout
+    const realConsoleError = console.error
+    const errors: any[] = []
+    console.error = (...args: any[]) => errors.push(args)
+    const calls: Array<() => Promise<void> | void> = []
+    ;(globalThis as any).setTimeout = (fn: any, _ms: number) => {
+      calls.push(fn)
+      return realSetTimeout(() => {}, 0) as any
+    }
+    // Force generateDigest to throw by giving prisma a findMany that rejects.
+    const throwingPrisma: any = {
+      message: { findMany: async () => { throw new Error('db read failed') } },
+      analyticsDigest: { create: async () => {}, findFirst: async () => null },
+    }
+    try {
+      startAnalyticsDigestCollector(throwingPrisma)
+      expect(calls.length).toBe(1)
+      await calls[0]!()
+      // Error logged, callback survived → next tick scheduled.
+      expect(errors.length).toBeGreaterThan(0)
+      const msgs = errors.flat().map(String).join(' ')
+      expect(msgs).toContain('Digest generation failed')
+      // generateDigest can fail at any of several prisma method calls
+      // depending on which is missing/throwing first; covering the catch
+      // arm is what matters.
+      expect(calls.length).toBe(2)
+      stopAnalyticsDigestCollector()
+    } finally {
+      ;(globalThis as any).setTimeout = realSetTimeout
+      console.error = realConsoleError
+    }
+  })
 })

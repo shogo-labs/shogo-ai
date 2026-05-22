@@ -349,8 +349,11 @@
       "linePct": 96.9231,
       "funcPct": 95.4545,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T11:21:48.094783Z",
+      "beforeLinePct": 96.91,
+      "afterLinePct": 100.0
     },
     {
       "file": "packages/agent-runtime/src/composio-auto-bind.ts",
