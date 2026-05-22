@@ -245,8 +245,11 @@
       "linePct": 92.1569,
       "funcPct": 100,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T11:04:31.763635Z",
+      "beforeLinePct": 97.9592,
+      "afterLinePct": 100.0
     },
     {
       "file": "apps/api/src/lib/resolve-pod-url.ts",
