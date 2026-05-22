@@ -1,0 +1,107 @@
+{
+  "generatedAt": "2026-05-22T05:04:53.186Z",
+  "source": "packages/shared-runtime/coverage/lcov.info",
+  "totals": {
+    "files": 5,
+    "linesFound": 1549,
+    "linesHit": 870,
+    "funcsFound": 117,
+    "funcsHit": 91,
+    "branchesFound": 0,
+    "branchesHit": 0,
+    "linePct": 56.16526791478373,
+    "funcPct": 77.77777777777779,
+    "branchPct": 100
+  },
+  "files": [
+    {
+      "file": "packages/shared-runtime/src/diagnostics-build-buffer.ts",
+      "linesFound": 14,
+      "linesHit": 14,
+      "funcsFound": 4,
+      "funcsHit": 4,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 100,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 0
+    },
+    {
+      "file": "packages/shared-runtime/src/git-sync.ts",
+      "linesFound": 264,
+      "linesHit": 155,
+      "funcsFound": 22,
+      "funcsHit": 15,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 58.71212121212122,
+      "funcPct": 68.18181818181817,
+      "branchPct": 100,
+      "uncoveredLines": 109
+    },
+    {
+      "file": "packages/shared-runtime/src/lsp-service.ts",
+      "linesFound": 1061,
+      "linesHit": 582,
+      "funcsFound": 75,
+      "funcsHit": 61,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 54.853911404335534,
+      "funcPct": 81.33333333333333,
+      "branchPct": 100,
+      "uncoveredLines": 479
+    },
+    {
+      "file": "packages/shared-runtime/src/preview-token.ts",
+      "linesFound": 89,
+      "linesHit": 10,
+      "funcsFound": 6,
+      "funcsHit": 2,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 11.235955056179774,
+      "funcPct": 33.33333333333333,
+      "branchPct": 100,
+      "uncoveredLines": 79
+    },
+    {
+      "file": "packages/shared-runtime/src/self-assign.ts",
+      "linesFound": 121,
+      "linesHit": 109,
+      "funcsFound": 10,
+      "funcsHit": 9,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 90.08264462809917,
+      "funcPct": 90,
+      "branchPct": 100,
+      "uncoveredLines": 12
+    }
+  ],
+  "topUncovered": [
+    {
+      "file": "packages/shared-runtime/src/lsp-service.ts",
+      "uncoveredLines": 479,
+      "linePct": 54.853911404335534
+    },
+    {
+      "file": "packages/shared-runtime/src/git-sync.ts",
+      "uncoveredLines": 109,
+      "linePct": 58.71212121212122
+    },
+    {
+      "file": "packages/shared-runtime/src/preview-token.ts",
+      "uncoveredLines": 79,
+      "linePct": 11.235955056179774
+    },
+    {
+      "file": "packages/shared-runtime/src/self-assign.ts",
+      "uncoveredLines": 12,
+      "linePct": 90.08264462809917
+    }
+  ],
+  "branchHotspots": [],
+  "zeroPercent": []
+}

@@ -1,0 +1,744 @@
+{
+  "generatedAt": "2026-05-22T05:04:53.077Z",
+  "source": "packages/agent-runtime/coverage/lcov.info",
+  "totals": {
+    "files": 44,
+    "linesFound": 7240,
+    "linesHit": 5122,
+    "funcsFound": 548,
+    "funcsHit": 419,
+    "branchesFound": 0,
+    "branchesHit": 0,
+    "linePct": 70.74585635359117,
+    "funcPct": 76.45985401459853,
+    "branchPct": 100
+  },
+  "files": [
+    {
+      "file": "apps/desktop/src/vm/prepare-bundle.ts",
+      "linesFound": 238,
+      "linesHit": 22,
+      "funcsFound": 8,
+      "funcsHit": 1,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 9.243697478991598,
+      "funcPct": 12.5,
+      "branchPct": 100,
+      "uncoveredLines": 216
+    },
+    {
+      "file": "packages/agent-runtime/src/agent-templates.ts",
+      "linesFound": 24,
+      "linesHit": 23,
+      "funcsFound": 7,
+      "funcsHit": 7,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 95.83333333333334,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 1
+    },
+    {
+      "file": "packages/agent-runtime/src/block-chunker.ts",
+      "linesFound": 72,
+      "linesHit": 67,
+      "funcsFound": 13,
+      "funcsHit": 12,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 93.05555555555556,
+      "funcPct": 92.3076923076923,
+      "branchPct": 100,
+      "uncoveredLines": 5
+    },
+    {
+      "file": "packages/agent-runtime/src/build-output-commit.ts",
+      "linesFound": 139,
+      "linesHit": 121,
+      "funcsFound": 24,
+      "funcsHit": 23,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 87.05035971223022,
+      "funcPct": 95.83333333333334,
+      "branchPct": 100,
+      "uncoveredLines": 18
+    },
+    {
+      "file": "packages/agent-runtime/src/canvas-bridge-migration.ts",
+      "linesFound": 66,
+      "linesHit": 64,
+      "funcsFound": 1,
+      "funcsHit": 1,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 96.96969696969697,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 2
+    },
+    {
+      "file": "packages/agent-runtime/src/canvas-runtime-errors.ts",
+      "linesFound": 11,
+      "linesHit": 11,
+      "funcsFound": 3,
+      "funcsHit": 3,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 100,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 0
+    },
+    {
+      "file": "packages/agent-runtime/src/code-extractor.ts",
+      "linesFound": 713,
+      "linesHit": 112,
+      "funcsFound": 24,
+      "funcsHit": 6,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 15.708274894810659,
+      "funcPct": 25,
+      "branchPct": 100,
+      "uncoveredLines": 601
+    },
+    {
+      "file": "packages/agent-runtime/src/composio-auto-bind.ts",
+      "linesFound": 30,
+      "linesHit": 24,
+      "funcsFound": 2,
+      "funcsHit": 2,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 80,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 6
+    },
+    {
+      "file": "packages/agent-runtime/src/detected-urls.ts",
+      "linesFound": 96,
+      "linesHit": 80,
+      "funcsFound": 10,
+      "funcsHit": 8,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 83.33333333333334,
+      "funcPct": 80,
+      "branchPct": 100,
+      "uncoveredLines": 16
+    },
+    {
+      "file": "packages/agent-runtime/src/file-attachment-utils.ts",
+      "linesFound": 53,
+      "linesHit": 50,
+      "funcsFound": 4,
+      "funcsHit": 4,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 94.33962264150944,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 3
+    },
+    {
+      "file": "packages/agent-runtime/src/fs-tree-walker.ts",
+      "linesFound": 64,
+      "linesHit": 63,
+      "funcsFound": 1,
+      "funcsHit": 1,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 98.4375,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 1
+    },
+    {
+      "file": "packages/agent-runtime/src/graph-extractors.ts",
+      "linesFound": 144,
+      "linesHit": 144,
+      "funcsFound": 7,
+      "funcsHit": 6,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 100,
+      "funcPct": 85.71428571428571,
+      "branchPct": 100,
+      "uncoveredLines": 0
+    },
+    {
+      "file": "packages/agent-runtime/src/image-size-guard.ts",
+      "linesFound": 65,
+      "linesHit": 65,
+      "funcsFound": 3,
+      "funcsHit": 3,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 100,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 0
+    },
+    {
+      "file": "packages/agent-runtime/src/internal-api.ts",
+      "linesFound": 43,
+      "linesHit": 43,
+      "funcsFound": 6,
+      "funcsHit": 5,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 100,
+      "funcPct": 83.33333333333334,
+      "branchPct": 100,
+      "uncoveredLines": 0
+    },
+    {
+      "file": "packages/agent-runtime/src/lib/cloud-fetcher.ts",
+      "linesFound": 58,
+      "linesHit": 51,
+      "funcsFound": 6,
+      "funcsHit": 4,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 87.93103448275862,
+      "funcPct": 66.66666666666666,
+      "branchPct": 100,
+      "uncoveredLines": 7
+    },
+    {
+      "file": "packages/agent-runtime/src/lib/mcp-transport-routing.ts",
+      "linesFound": 20,
+      "linesHit": 20,
+      "funcsFound": 3,
+      "funcsHit": 3,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 100,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 0
+    },
+    {
+      "file": "packages/agent-runtime/src/mcp-catalog.ts",
+      "linesFound": 201,
+      "linesHit": 200,
+      "funcsFound": 13,
+      "funcsHit": 13,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 99.50248756218906,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 1
+    },
+    {
+      "file": "packages/agent-runtime/src/migrations/extract-custom-routes.ts",
+      "linesFound": 256,
+      "linesHit": 227,
+      "funcsFound": 7,
+      "funcsHit": 7,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 88.671875,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 29
+    },
+    {
+      "file": "packages/agent-runtime/src/migrations/skill-server-to-root.ts",
+      "linesFound": 292,
+      "linesHit": 280,
+      "funcsFound": 8,
+      "funcsHit": 8,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 95.8904109589041,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 12
+    },
+    {
+      "file": "packages/agent-runtime/src/permission-engine.ts",
+      "linesFound": 595,
+      "linesHit": 584,
+      "funcsFound": 41,
+      "funcsHit": 33,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 98.15126050420167,
+      "funcPct": 80.48780487804879,
+      "branchPct": 100,
+      "uncoveredLines": 11
+    },
+    {
+      "file": "packages/agent-runtime/src/pty-protocol.ts",
+      "linesFound": 106,
+      "linesHit": 106,
+      "funcsFound": 8,
+      "funcsHit": 8,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 100,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 0
+    },
+    {
+      "file": "packages/agent-runtime/src/pty-scrollback.ts",
+      "linesFound": 52,
+      "linesHit": 41,
+      "funcsFound": 5,
+      "funcsHit": 5,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 78.84615384615384,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 11
+    },
+    {
+      "file": "packages/agent-runtime/src/pty-session-manager.ts",
+      "linesFound": 116,
+      "linesHit": 116,
+      "funcsFound": 19,
+      "funcsHit": 15,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 100,
+      "funcPct": 78.94736842105263,
+      "branchPct": 100,
+      "uncoveredLines": 0
+    },
+    {
+      "file": "packages/agent-runtime/src/pty-session.ts",
+      "linesFound": 153,
+      "linesHit": 100,
+      "funcsFound": 23,
+      "funcsHit": 15,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 65.359477124183,
+      "funcPct": 65.21739130434783,
+      "branchPct": 100,
+      "uncoveredLines": 53
+    },
+    {
+      "file": "packages/agent-runtime/src/pty-ws-handler.ts",
+      "linesFound": 98,
+      "linesHit": 98,
+      "funcsFound": 13,
+      "funcsHit": 13,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 100,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 0
+    },
+    {
+      "file": "packages/agent-runtime/src/quick-actions.ts",
+      "linesFound": 105,
+      "linesHit": 105,
+      "funcsFound": 8,
+      "funcsHit": 8,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 100,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 0
+    },
+    {
+      "file": "packages/agent-runtime/src/quiet-hours.ts",
+      "linesFound": 33,
+      "linesHit": 33,
+      "funcsFound": 1,
+      "funcsHit": 1,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 100,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 0
+    },
+    {
+      "file": "packages/agent-runtime/src/response-transforms.ts",
+      "linesFound": 239,
+      "linesHit": 226,
+      "funcsFound": 27,
+      "funcsHit": 23,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 94.56066945606695,
+      "funcPct": 85.18518518518519,
+      "branchPct": 100,
+      "uncoveredLines": 13
+    },
+    {
+      "file": "packages/agent-runtime/src/rg-resolve.ts",
+      "linesFound": 13,
+      "linesHit": 11,
+      "funcsFound": 1,
+      "funcsHit": 1,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 84.61538461538461,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 2
+    },
+    {
+      "file": "packages/agent-runtime/src/runtime-log-dispatcher.ts",
+      "linesFound": 80,
+      "linesHit": 79,
+      "funcsFound": 13,
+      "funcsHit": 12,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 98.75,
+      "funcPct": 92.3076923076923,
+      "branchPct": 100,
+      "uncoveredLines": 1
+    },
+    {
+      "file": "packages/agent-runtime/src/runtime-trust.ts",
+      "linesFound": 118,
+      "linesHit": 115,
+      "funcsFound": 8,
+      "funcsHit": 8,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 97.45762711864407,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 3
+    },
+    {
+      "file": "packages/agent-runtime/src/sandbox-exec.ts",
+      "linesFound": 437,
+      "linesHit": 233,
+      "funcsFound": 21,
+      "funcsHit": 12,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 53.31807780320366,
+      "funcPct": 57.14285714285714,
+      "branchPct": 100,
+      "uncoveredLines": 204
+    },
+    {
+      "file": "packages/agent-runtime/src/screencast-broadcaster.ts",
+      "linesFound": 58,
+      "linesHit": 58,
+      "funcsFound": 9,
+      "funcsHit": 9,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 100,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 0
+    },
+    {
+      "file": "packages/agent-runtime/src/screenshot-manager.ts",
+      "linesFound": 106,
+      "linesHit": 101,
+      "funcsFound": 8,
+      "funcsHit": 8,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 95.28301886792453,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 5
+    },
+    {
+      "file": "packages/agent-runtime/src/server-tsx-drift.ts",
+      "linesFound": 179,
+      "linesHit": 158,
+      "funcsFound": 8,
+      "funcsHit": 8,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 88.26815642458101,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 21
+    },
+    {
+      "file": "packages/agent-runtime/src/session-manager.ts",
+      "linesFound": 496,
+      "linesHit": 327,
+      "funcsFound": 45,
+      "funcsHit": 27,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 65.92741935483872,
+      "funcPct": 60,
+      "branchPct": 100,
+      "uncoveredLines": 169
+    },
+    {
+      "file": "packages/agent-runtime/src/skill-server-manager.ts",
+      "linesFound": 53,
+      "linesHit": 53,
+      "funcsFound": 19,
+      "funcsHit": 19,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 100,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 0
+    },
+    {
+      "file": "packages/agent-runtime/src/slash-commands.ts",
+      "linesFound": 139,
+      "linesHit": 116,
+      "funcsFound": 13,
+      "funcsHit": 11,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 83.45323741007195,
+      "funcPct": 84.61538461538461,
+      "branchPct": 100,
+      "uncoveredLines": 23
+    },
+    {
+      "file": "packages/agent-runtime/src/sqlite-session-persistence.ts",
+      "linesFound": 174,
+      "linesHit": 85,
+      "funcsFound": 14,
+      "funcsHit": 6,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 48.85057471264368,
+      "funcPct": 42.857142857142854,
+      "branchPct": 100,
+      "uncoveredLines": 89
+    },
+    {
+      "file": "packages/agent-runtime/src/subagent-prompts.ts",
+      "linesFound": 24,
+      "linesHit": 24,
+      "funcsFound": 2,
+      "funcsHit": 2,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 100,
+      "funcPct": 100,
+      "branchPct": 100,
+      "uncoveredLines": 0
+    },
+    {
+      "file": "packages/agent-runtime/src/team-manager.ts",
+      "linesFound": 234,
+      "linesHit": 223,
+      "funcsFound": 34,
+      "funcsHit": 32,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 95.2991452991453,
+      "funcPct": 94.11764705882352,
+      "branchPct": 100,
+      "uncoveredLines": 11
+    },
+    {
+      "file": "packages/agent-runtime/src/template-loader.ts",
+      "linesFound": 72,
+      "linesHit": 60,
+      "funcsFound": 11,
+      "funcsHit": 6,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 83.33333333333334,
+      "funcPct": 54.54545454545454,
+      "branchPct": 100,
+      "uncoveredLines": 12
+    },
+    {
+      "file": "packages/agent-runtime/src/upload-attachments.ts",
+      "linesFound": 104,
+      "linesHit": 104,
+      "funcsFound": 8,
+      "funcsHit": 6,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 100,
+      "funcPct": 75,
+      "branchPct": 100,
+      "uncoveredLines": 0
+    },
+    {
+      "file": "packages/agent-runtime/src/workspace-defaults.ts",
+      "linesFound": 871,
+      "linesHit": 299,
+      "funcsFound": 39,
+      "funcsHit": 14,
+      "branchesFound": 0,
+      "branchesHit": 0,
+      "linePct": 34.32835820895522,
+      "funcPct": 35.8974358974359,
+      "branchPct": 100,
+      "uncoveredLines": 572
+    }
+  ],
+  "topUncovered": [
+    {
+      "file": "packages/agent-runtime/src/code-extractor.ts",
+      "uncoveredLines": 601,
+      "linePct": 15.708274894810659
+    },
+    {
+      "file": "packages/agent-runtime/src/workspace-defaults.ts",
+      "uncoveredLines": 572,
+      "linePct": 34.32835820895522
+    },
+    {
+      "file": "apps/desktop/src/vm/prepare-bundle.ts",
+      "uncoveredLines": 216,
+      "linePct": 9.243697478991598
+    },
+    {
+      "file": "packages/agent-runtime/src/sandbox-exec.ts",
+      "uncoveredLines": 204,
+      "linePct": 53.31807780320366
+    },
+    {
+      "file": "packages/agent-runtime/src/session-manager.ts",
+      "uncoveredLines": 169,
+      "linePct": 65.92741935483872
+    },
+    {
+      "file": "packages/agent-runtime/src/sqlite-session-persistence.ts",
+      "uncoveredLines": 89,
+      "linePct": 48.85057471264368
+    },
+    {
+      "file": "packages/agent-runtime/src/pty-session.ts",
+      "uncoveredLines": 53,
+      "linePct": 65.359477124183
+    },
+    {
+      "file": "packages/agent-runtime/src/migrations/extract-custom-routes.ts",
+      "uncoveredLines": 29,
+      "linePct": 88.671875
+    },
+    {
+      "file": "packages/agent-runtime/src/slash-commands.ts",
+      "uncoveredLines": 23,
+      "linePct": 83.45323741007195
+    },
+    {
+      "file": "packages/agent-runtime/src/server-tsx-drift.ts",
+      "uncoveredLines": 21,
+      "linePct": 88.26815642458101
+    },
+    {
+      "file": "packages/agent-runtime/src/build-output-commit.ts",
+      "uncoveredLines": 18,
+      "linePct": 87.05035971223022
+    },
+    {
+      "file": "packages/agent-runtime/src/detected-urls.ts",
+      "uncoveredLines": 16,
+      "linePct": 83.33333333333334
+    },
+    {
+      "file": "packages/agent-runtime/src/response-transforms.ts",
+      "uncoveredLines": 13,
+      "linePct": 94.56066945606695
+    },
+    {
+      "file": "packages/agent-runtime/src/migrations/skill-server-to-root.ts",
+      "uncoveredLines": 12,
+      "linePct": 95.8904109589041
+    },
+    {
+      "file": "packages/agent-runtime/src/template-loader.ts",
+      "uncoveredLines": 12,
+      "linePct": 83.33333333333334
+    },
+    {
+      "file": "packages/agent-runtime/src/permission-engine.ts",
+      "uncoveredLines": 11,
+      "linePct": 98.15126050420167
+    },
+    {
+      "file": "packages/agent-runtime/src/pty-scrollback.ts",
+      "uncoveredLines": 11,
+      "linePct": 78.84615384615384
+    },
+    {
+      "file": "packages/agent-runtime/src/team-manager.ts",
+      "uncoveredLines": 11,
+      "linePct": 95.2991452991453
+    },
+    {
+      "file": "packages/agent-runtime/src/lib/cloud-fetcher.ts",
+      "uncoveredLines": 7,
+      "linePct": 87.93103448275862
+    },
+    {
+      "file": "packages/agent-runtime/src/composio-auto-bind.ts",
+      "uncoveredLines": 6,
+      "linePct": 80
+    },
+    {
+      "file": "packages/agent-runtime/src/block-chunker.ts",
+      "uncoveredLines": 5,
+      "linePct": 93.05555555555556
+    },
+    {
+      "file": "packages/agent-runtime/src/screenshot-manager.ts",
+      "uncoveredLines": 5,
+      "linePct": 95.28301886792453
+    },
+    {
+      "file": "packages/agent-runtime/src/file-attachment-utils.ts",
+      "uncoveredLines": 3,
+      "linePct": 94.33962264150944
+    },
+    {
+      "file": "packages/agent-runtime/src/runtime-trust.ts",
+      "uncoveredLines": 3,
+      "linePct": 97.45762711864407
+    },
+    {
+      "file": "packages/agent-runtime/src/canvas-bridge-migration.ts",
+      "uncoveredLines": 2,
+      "linePct": 96.96969696969697
+    },
+    {
+      "file": "packages/agent-runtime/src/rg-resolve.ts",
+      "uncoveredLines": 2,
+      "linePct": 84.61538461538461
+    },
+    {
+      "file": "packages/agent-runtime/src/agent-templates.ts",
+      "uncoveredLines": 1,
+      "linePct": 95.83333333333334
+    },
+    {
+      "file": "packages/agent-runtime/src/fs-tree-walker.ts",
+      "uncoveredLines": 1,
+      "linePct": 98.4375
+    },
+    {
+      "file": "packages/agent-runtime/src/mcp-catalog.ts",
+      "uncoveredLines": 1,
+      "linePct": 99.50248756218906
+    },
+    {
+      "file": "packages/agent-runtime/src/runtime-log-dispatcher.ts",
+      "uncoveredLines": 1,
+      "linePct": 98.75
+    }
+  ],
+  "branchHotspots": [],
+  "zeroPercent": []
+}
