@@ -34,6 +34,7 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { resolveRuntime, type ResolvedRuntime } from './runtime-resolver.ts';
@@ -84,8 +85,41 @@ const STARTUP_GRACE_MS = 60_000;
 
 /** Health check poll interval while waiting for /health. */
 const HEALTH_POLL_MS = 500;
-/** Total timeout waiting for first /health success after spawn. */
-const HEALTH_BOOT_TIMEOUT_MS = 30_000;
+/**
+ * Absolute ceiling on how long we'll wait for a freshly-spawned
+ * agent-runtime to clear the boot gate (either a 200 /health response
+ * or the TCP-listening + stdout-progress fallback below). Was 30s
+ * before the Windows `--conditions=development` cold-boot
+ * investigation surfaced that Bun routinely takes 30-45s just to JIT
+ * the agent-runtime's TS dep graph (shared-runtime + generators +
+ * tools + hooks + gateway) on a cold workspace, leaving zero budget
+ * for /health to actually respond. 60s gives the slow path room
+ * without giving a truly-hung process a free pass — the progress
+ * detector below catches that case independently.
+ */
+const HEALTH_BOOT_TIMEOUT_MS = 60_000;
+/**
+ * If the child's TCP listener is up AND its stdout has emitted a line
+ * within this window, we accept it as ready even though /health
+ * hasn't returned yet. Models "is the process making forward
+ * progress?" — a Bun runtime mid `optimizeDeps` / LSP-spawn / hook
+ * registration is unresponsive to HTTP but still emits `[LSP-TS]`,
+ * `[preview-manager]`, `[AgentGateway]` etc. log lines as it walks
+ * its boot sequence, so stdout activity is a reliable liveness
+ * signal. A truly-hung child (event-loop wedged, zero log output)
+ * stays silent past this window and falls through to the normal
+ * /health timeout + SIGTERM + restart loop.
+ */
+const STDOUT_PROGRESS_WINDOW_MS = 10_000;
+/**
+ * Per-attempt TCP connect budget for the kernel-level readiness
+ * probe. Connect attempts only need a TCP SYN/SYN-ACK roundtrip on
+ * loopback — anything past ~50ms means the kernel doesn't have the
+ * listener bound yet (the agent-runtime hasn't reached the
+ * Bun.serve() default-export evaluation), so 500ms is comfortably
+ * above the noise floor without prolonging probe iterations.
+ */
+const TCP_CONNECT_TIMEOUT_MS = 500;
 
 export type RuntimeStatus =
   | 'starting'
@@ -267,6 +301,18 @@ interface InternalRuntime {
    */
   pid: number | null;
   startedAt: number;
+  /**
+   * Wall-clock timestamp of the most recent stdout/stderr line emitted
+   * by `proc`. Read by {@link WorkerRuntimeManager.waitForHealth} as a
+   * "process is making forward progress" signal that lets a slow boot
+   * clear the readiness gate even when /health hasn't responded yet.
+   * See the {@link STDOUT_PROGRESS_WINDOW_MS} doc and the comment block
+   * inside `waitForHealth` for the full rationale (Windows
+   * `--conditions=development` cold-boot pattern where Bun
+   * JIT-compiles the entire TS dep graph on first request and the
+   * 30s HTTP /health budget vanishes before the first response).
+   */
+  lastStdoutAt: number;
   lastUsedAt: number;
   restarts: number;
   /** Consecutive non-clean exits since the last healthy run. */
@@ -908,6 +954,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       proc: null,
       pid: null,
       startedAt: 0,
+      lastStdoutAt: 0,
       lastUsedAt: Date.now(),
       restarts: 0,
       consecutiveFailures: 0,
@@ -973,6 +1020,11 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     slot.pid = proc.pid ?? null;
     slot.status = 'starting';
     slot.startedAt = Date.now();
+    // Seed the progress timestamp at spawn so a child that emits its
+    // first line within `STDOUT_PROGRESS_WINDOW_MS` is treated as
+    // "making progress since spawn" without the readiness check having
+    // to special-case the cold-start gap.
+    slot.lastStdoutAt = slot.startedAt;
 
     proc.on('error', (err) => {
       slot.lastError = err?.message ?? String(err);
@@ -984,19 +1036,25 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     });
 
     const prefix = `[runtime:${slot.projectId.slice(0, 8)}]`;
+    // Each output line bumps `lastStdoutAt` — used by waitForHealth as
+    // a forward-progress signal so a long-but-still-booting child
+    // (LSP spawn, optimizeDeps, hook registration) doesn't get
+    // SIGTERM'd mid-boot just because /health hasn't responded yet.
     proc.stdout?.on('data', (data) => {
+      slot.lastStdoutAt = Date.now();
       for (const line of data.toString().trimEnd().split('\n')) {
         if (line) this.log.log(`${prefix} ${line}`);
       }
     });
     proc.stderr?.on('data', (data) => {
+      slot.lastStdoutAt = Date.now();
       for (const line of data.toString().trimEnd().split('\n')) {
         if (line) this.log.error(`${prefix} ${line}`);
       }
     });
 
     try {
-      await this.waitForHealth(slot.agentPort, slot.proc, HEALTH_BOOT_TIMEOUT_MS);
+      await this.waitForHealth(slot, HEALTH_BOOT_TIMEOUT_MS);
       slot.status = 'running';
       slot.lastUsedAt = Date.now();
       this.armIdleTimer(slot);
@@ -1288,18 +1346,101 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     }
   }
 
-  private async waitForHealth(
-    port: number,
-    proc: ChildProcess,
-    timeoutMs: number,
-  ): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
+  /**
+   * Kernel-level TCP-accept probe. Resolves `true` if a TCP connection
+   * to `127.0.0.1:port` succeeds within {@link TCP_CONNECT_TIMEOUT_MS},
+   * `false` for any failure mode (refused, timed out, host unreachable).
+   *
+   * This is intentionally distinct from {@link isPortListening} (which
+   * fires an HTTP HEAD): we want to know whether `Bun.serve()` has
+   * bound the socket, NOT whether its request handler is responding.
+   * Once the kernel has the listener, the agent-runtime's
+   * `export default { port, fetch }` has been evaluated — which is
+   * sufficient evidence to clear the boot gate even if the event loop
+   * is still busy JIT-compiling the rest of the TS dep graph. Without
+   * this distinction every `--conditions=development` cold boot on
+   * Windows hits the HEALTH_BOOT_TIMEOUT_MS ceiling because /health
+   * is the very last thing the saturated event loop gets to.
+   */
+  private tcpProbe(port: number): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        try {
+          socket.destroy();
+        } catch {
+          /* socket may already be torn down */
+        }
+        resolve(ok);
+      };
+      const socket = createConnection({ host: '127.0.0.1', port });
+      socket.setTimeout(TCP_CONNECT_TIMEOUT_MS);
+      socket.once('connect', () => finish(true));
+      socket.once('error', () => finish(false));
+      socket.once('timeout', () => finish(false));
+    });
+  }
+
+  /**
+   * Wait for a freshly-spawned agent-runtime to clear the boot gate.
+   *
+   * Three independent readiness signals, in priority order:
+   *
+   *   1. **HTTP /health returns 2xx.** Happy path — the runtime is
+   *      fully booted and its event loop is responsive. We return
+   *      immediately and the caller transitions the slot to
+   *      `'running'`.
+   *
+   *   2. **TCP listener bound + recent stdout activity.** The kernel
+   *      has the port (so `Bun.serve()` evaluated its default export)
+   *      AND the child has printed a log line in the last
+   *      {@link STDOUT_PROGRESS_WINDOW_MS}. The process is alive,
+   *      bound, and making forward progress — just slow because Bun
+   *      is JIT-compiling the rest of the TS dep graph (the
+   *      `--conditions=development` cold-boot pattern) and /health
+   *      hasn't gotten a turn on the event loop yet. Accepting this
+   *      as ready unblocks the AgentProxy retry storm that would
+   *      otherwise compound the saturation. Once the child starts
+   *      handling requests for real, /health will respond and the
+   *      AgentProxy retries will succeed independently of this gate.
+   *
+   *   3. **Hard timeout at `timeoutMs`.** Neither HTTP nor the
+   *      TCP-plus-progress fallback has cleared. Throw the
+   *      descriptive "Timeout waiting for agent-runtime /health" so
+   *      the restart-with-backoff loop in `handleExit()` SIGTERMs the
+   *      child and respawns.
+   *
+   * Process-death short-circuit applies throughout: if the child exits
+   * mid-wait (e.g. spawn-time port conflict, missing native binding),
+   * we throw immediately with the exit code/signal rather than spinning
+   * for the full `timeoutMs`.
+   */
+  private async waitForHealth(slot: InternalRuntime, timeoutMs: number): Promise<void> {
+    const port = slot.agentPort;
+    const proc = slot.proc;
+    if (!proc) {
+      throw new Error(`waitForHealth: slot ${slot.projectId} has no spawned process`);
+    }
+    const startedAt = Date.now();
+    const deadline = startedAt + timeoutMs;
+    let lastError: string | null = null;
+    let lastTcpListening = false;
+    let httpAttempts = 0;
+    let tcpAttempts = 0;
+    let iteration = 0;
+
     while (Date.now() < deadline) {
+      iteration++;
       if (proc.exitCode !== null || proc.signalCode != null || proc.killed) {
         throw new Error(
           `agent-runtime exited (code=${proc.exitCode}, signal=${proc.signalCode}) before becoming healthy on port ${port}`,
         );
       }
+
+      // Signal 1: HTTP /health (happy path).
+      httpAttempts++;
       const controller = new AbortController();
       const t = setTimeout(() => controller.abort(), 1500);
       try {
@@ -1308,13 +1449,56 @@ export class WorkerRuntimeManager implements RuntimeResolver {
           signal: controller.signal,
         });
         clearTimeout(t);
-        if (resp.ok) return;
-      } catch {
+        if (resp.ok) {
+          this.log.log(
+            `[WorkerRuntimeManager] /health ready for ${slot.projectId} on port ${port} ` +
+              `(HTTP ${resp.status} after ${Date.now() - startedAt}ms, ${iteration} iter, ${httpAttempts} http)`,
+          );
+          return;
+        }
+        // Non-2xx is recorded but doesn't short-circuit — the runtime
+        // may briefly serve 503 while initializing post-bind, and the
+        // TCP-progress fallback below covers that window too.
+        lastError = `HTTP /health returned ${resp.status}`;
+      } catch (err: any) {
         clearTimeout(t);
+        const name = err?.name ?? 'Error';
+        const code = err?.code ?? err?.cause?.code;
+        lastError = `HTTP /health failed: ${name}${code ? `(${code})` : ''}: ${err?.message ?? err}`;
       }
+
+      // Signal 2: TCP listener bound + recent stdout activity.
+      tcpAttempts++;
+      lastTcpListening = await this.tcpProbe(port);
+      if (lastTcpListening) {
+        const sinceStdoutMs = Date.now() - slot.lastStdoutAt;
+        if (sinceStdoutMs < STDOUT_PROGRESS_WINDOW_MS) {
+          this.log.log(
+            `[WorkerRuntimeManager] TCP-listening + stdout-active for ${slot.projectId} on ` +
+              `port ${port} (last stdout ${sinceStdoutMs}ms ago, ` +
+              `${Date.now() - startedAt}ms since spawn, ${httpAttempts} http, ${tcpAttempts} tcp). ` +
+              `Accepting as ready — /health still warming up but the child is bound and making progress.`,
+          );
+          return;
+        }
+        lastError =
+          `TCP listening but stdout silent for ${sinceStdoutMs}ms ` +
+          `(> ${STDOUT_PROGRESS_WINDOW_MS}ms window); last http: ${lastError ?? 'n/a'}`;
+      }
+
       await new Promise((r) => setTimeout(r, HEALTH_POLL_MS));
     }
-    throw new Error(`Timeout waiting for agent-runtime /health on port ${port}`);
+
+    if (proc.exitCode !== null || proc.signalCode != null || proc.killed) {
+      throw new Error(
+        `agent-runtime exited (code=${proc.exitCode}, signal=${proc.signalCode}) before becoming healthy on port ${port}`,
+      );
+    }
+    throw new Error(
+      `Timeout waiting for agent-runtime /health on port ${port} ` +
+        `after ${iteration} iter (httpAttempts=${httpAttempts}, tcpAttempts=${tcpAttempts}, ` +
+        `tcpListening=${lastTcpListening}, lastError=${lastError ?? 'n/a'})`,
+    );
   }
 
   private async waitForExit(proc: ChildProcess, timeoutMs: number): Promise<void> {
