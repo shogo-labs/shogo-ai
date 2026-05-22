@@ -41,6 +41,7 @@ model User {
   apiKeys           ApiKey[]
   creatorProfile    CreatorProfile?
   signupAttribution SignupAttribution?
+  creatorFollows    CreatorFollow[]   @relation("UserFollows")
 
   @@map("users")
 }
@@ -1334,6 +1335,7 @@ model CreatorProfile {
   averageAgentRating       Float     @default(0)
   totalVersionsShipped     Int       @default(0)
   activeMaintenanceStreak  Int       @default(0)
+  followerCount            Int       @default(0)
   createdAt                DateTime  @default(now())
   updatedAt                DateTime  @updatedAt
 
@@ -1341,6 +1343,7 @@ model CreatorProfile {
   badges       CreatorBadge[]
   listings     MarketplaceListing[]
   transactions MarketplaceTransaction[] @relation("CreatorTransactions")
+  followers    CreatorFollow[]
 
   @@index([creatorTier])
   @@index([reputationScore])
@@ -1359,6 +1362,21 @@ model CreatorBadge {
   @@unique([creatorId, badgeType])
   @@index([creatorId])
   @@map("creator_badges")
+}
+
+model CreatorFollow {
+  id         String   @id @default(cuid())
+  followerId String
+  creatorId  String
+  createdAt  DateTime @default(now())
+
+  follower User           @relation("UserFollows", fields: [followerId], references: [id], onDelete: Cascade)
+  creator  CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, creatorId])
+  @@index([followerId])
+  @@index([creatorId])
+  @@map("creator_follows")
 }
 
 model MarketplaceListing {
