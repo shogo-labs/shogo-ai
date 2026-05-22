@@ -224,10 +224,14 @@ export class DarwinVMManager implements VMManager {
     const { config, overlayPath, seedISOPath, qmpPort, hostFwds } = opts
 
     // Memory layout:
-    // - `memory-backend-ram,discard-data=on,prealloc=off`: lazy host
-    //   allocation (HVF demand-pages anyway, but the discard-data flag
-    //   tells QEMU to `MADV_FREE` the backing pages when the guest
-    //   signals it no longer needs them).
+    // - `memory-backend-ram,prealloc=off`: lazy host allocation (HVF
+    //   demand-pages anyway). NOTE: `discard-data=on` is *not* a valid
+    //   property of `memory-backend-ram` in modern QEMU (≥ ~9.x rejects
+    //   it outright; older builds silently ignored it). It only applies
+    //   to `memory-backend-file` / `memory-backend-memfd`. Including it
+    //   here causes QEMU to exit with `Invalid parameter 'discard-data'`
+    //   and breaks VM warm pool boot. Memory reclamation is handled by
+    //   the balloon below.
     // - `virtio-balloon-pci,free-page-reporting=on`: the Linux guest's
     //   page reporting subsystem asynchronously tells QEMU about runs of
     //   free pages, which QEMU `madvise(MADV_DONTNEED)`s back to macOS.
@@ -240,7 +244,7 @@ export class DarwinVMManager implements VMManager {
       '-accel', 'hvf',
       '-machine', 'virt,memory-backend=mem0',
       '-cpu', 'host',
-      '-object', `memory-backend-ram,id=mem0,size=${config.memoryMB}M,prealloc=off,discard-data=on`,
+      '-object', `memory-backend-ram,id=mem0,size=${config.memoryMB}M,prealloc=off`,
       '-m', `${config.memoryMB}M`,
       '-smp', String(config.cpus),
       '-kernel', path.join(this.vmImageDir, 'vmlinuz'),
