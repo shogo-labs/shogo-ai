@@ -206,8 +206,11 @@
       "linePct": 84.6154,
       "funcPct": 100,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T09:00:04.115013Z",
+      "beforeLinePct": 69.23,
+      "afterLinePct": 100.0
     },
     {
       "file": "packages/agent-runtime/src/file-attachment-utils.ts",
