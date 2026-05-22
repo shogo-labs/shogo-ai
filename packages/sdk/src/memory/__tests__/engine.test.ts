@@ -105,4 +105,39 @@ describe('MemorySearchEngine', () => {
     expect(hits[0]!.chunk.toLowerCase()).toContain('window')
     engine.close()
   })
+  test('DA:218-238 — falls back to keyword scan when FTS5 query throws', () => {
+    writeFileSync(
+      join(dir, 'MEMORY.md'),
+      '# Memory\n\n- User prefers window seats on flights\n- Lives in Honolulu since 2026\n',
+      'utf-8',
+    )
+    const engine = new MemorySearchEngine(dir)
+    engine.search('warmup')
+    const origPrepare = (engine as any).db.prepare.bind((engine as any).db)
+    ;(engine as any).db.prepare = (sql: string) => {
+      if (sql.includes('memory_fts MATCH')) throw new Error('synthetic FTS5 failure')
+      return origPrepare(sql)
+    }
+    const hits = engine.search('window', 5)
+    expect(hits.length).toBeGreaterThan(0)
+    expect(hits[0]!.chunk.toLowerCase()).toContain('window')
+    expect(['keyword', 'hybrid']).toContain(hits[0]!.matchType)
+    engine.close()
+  })
+
+  test('fallback keyword search caps at limit and returns descending scores', () => {
+    const text = Array.from({ length: 10 }, (_, i) => `- entry ${i} contains the word coffee`).join('\n')
+    writeFileSync(join(dir, 'MEMORY.md'), `# Memory\n\n${text}\n`, 'utf-8')
+    const engine = new MemorySearchEngine(dir)
+    engine.search('warmup')
+    ;(engine as any).db.prepare = ((origPrepare) => (sql: string) => {
+      if (sql.includes('memory_fts MATCH')) throw new Error('forced fallback')
+      return origPrepare(sql)
+    })((engine as any).db.prepare.bind((engine as any).db))
+    const hits = engine.search('coffee', 3)
+    expect(hits.length).toBe(3)
+    expect(hits[0]!.score).toBeGreaterThan(hits[2]!.score)
+    engine.close()
+  })
 })
+

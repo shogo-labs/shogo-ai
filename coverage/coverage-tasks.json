@@ -609,8 +609,11 @@
       "linePct": 93,
       "funcPct": 96.1538,
       "phase": 2,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T15:26:46.160497Z",
+      "beforeLinePct": 93.0,
+      "afterLinePct": 100.0
     },
     {
       "file": "packages/agent-runtime/src/slash-commands.ts",
