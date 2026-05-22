@@ -392,7 +392,7 @@ export const UserCollection = types
 // ============================================================================
 
 // Relation fields that expect IDs (safeReference)
-const relationFields = ["sessions","accounts","members","notifications","starredProjects","signupAttribution","apiKeys","creatorProfile"]
+const relationFields = ["sessions","accounts","members","notifications","starredProjects","signupAttribution","apiKeys","creatorProfile","creatorFollows"]
 
 /**
  * Transform API response for MST compatibility:

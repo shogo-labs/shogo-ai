@@ -12,6 +12,8 @@ import * as snapshotStorage from '../services/marketplace-snapshot-storage.servi
 import * as auditService from '../services/marketplace-audit.service'
 import * as stripeConnect from '../services/stripe-connect.service'
 import * as gamification from '../services/creator-gamification.service'
+import * as creatorFollowService from '../services/creator-follow.service'
+import { ensureLocalCreatorForFollow } from '../services/creator-follow.service'
 import { getShogoCloudUrl, getFrontendUrl } from '../lib/cloud-urls'
 import {
   shouldSkipForwardedHeader,
@@ -69,8 +71,30 @@ export function marketplaceRoutes() {
   app.use('*', async (c, next) => {
     if (process.env.SHOGO_LOCAL_MODE !== 'true') return next()
 
+    // Handle follow endpoints locally — Cloud doesn't have them yet.
+    const path = c.req.path
+    if (
+      path.endsWith('/follow') ||
+      path.endsWith('/following') ||
+      path.includes('/creator/')
+    ) {
+      return next()
+    }
+
     const cloudKey = process.env.SHOGO_API_KEY
-    const url = `${getShogoCloudUrl()}${c.req.path}${new URL(c.req.url).search}`
+    const fullUrl = `${getShogoCloudUrl()}${c.req.path}${new URL(c.req.url).search}`
+
+    // For creator profile and listing detail, enrich the Cloud response
+    // with local follow data after proxying.
+    const creatorProfileMatch = path.match(/\/creators\/([^/]+)$/)
+    // Listing detail: /api/marketplace/<slug> — must have a slug segment
+    // that isn't a known sub-route prefix.
+    const slugSegment = !creatorProfileMatch && path.match(/\/api\/marketplace\/([a-z0-9][a-z0-9-]+)$/)
+    const listingDetailMatch = slugSegment && c.req.method === 'GET'
+      && !['search', 'featured', 'creators', 'creator', 'my-installs', 'installs'].includes(slugSegment[1])
+    const needsFollowEnrich = (creatorProfileMatch || listingDetailMatch) && c.req.method === 'GET'
+
+    const url = fullUrl
 
     const headers = new Headers()
     c.req.raw.headers.forEach((value, key) => {
@@ -112,6 +136,36 @@ export function marketplaceRoutes() {
         { error: 'Sign in to Shogo Cloud to use the marketplace.', code: 'cloud_signin_required' },
         503,
       )
+    }
+
+    // Enrich creator profile / listing detail with local follow state
+    if (needsFollowEnrich && upstream.status === 200) {
+      try {
+        const body = await upstream.json()
+        const authCtx = c.get('auth') as AuthContext | undefined
+        const userId = authCtx?.isAuthenticated ? authCtx.userId : undefined
+
+        if (creatorProfileMatch) {
+          const creatorId = creatorProfileMatch[1]
+          const followerCount = await creatorFollowService.getFollowersCount(creatorId)
+          const isFollowing = userId
+            ? await creatorFollowService.isFollowing(userId, creatorId)
+            : false
+          return c.json({ ...body, followerCount, isFollowing })
+        }
+        if (listingDetailMatch && body.listing?.creatorId) {
+          const creatorId = body.listing.creatorId
+          const isFollowingCreator = userId
+            ? await creatorFollowService.isFollowing(userId, creatorId)
+            : false
+          return c.json({ listing: { ...body.listing, isFollowingCreator } })
+        }
+        // Body was consumed but enrichment didn't apply — return parsed JSON
+        return c.json(body)
+      } catch {
+        // JSON parse failed — body may already be consumed, return error
+        return c.json({ error: 'Failed to process response' }, 502)
+      }
     }
 
     const responseHeaders = new Headers()
@@ -198,6 +252,22 @@ export function marketplaceRoutes() {
     }
   })
 
+  app.get('/creators/following', async (c) => {
+    const authCtx = c.get('auth') as AuthContext | undefined
+    if (!authCtx?.isAuthenticated || !authCtx.userId) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    try {
+      const page = parseIntParam(c.req.query('page') ?? undefined, 1)
+      const limit = parseIntParam(c.req.query('limit') ?? undefined, 20)
+      const result = await creatorFollowService.getFollowingCreators(authCtx.userId, page, limit)
+      return c.json(result)
+    } catch (err) {
+      console.error('[marketplace] getFollowingCreators', err)
+      return c.json({ error: 'Failed to load following' }, 500)
+    }
+  })
+
   app.get('/creators/:id/badges', async (c) => {
     try {
       const profile = await gamification.getCreatorPublicProfile(c.req.param('id'))
@@ -211,13 +281,60 @@ export function marketplaceRoutes() {
     }
   })
 
+  app.post('/creators/:id/follow', async (c) => {
+    const authCtx = c.get('auth') as AuthContext | undefined
+    if (!authCtx?.isAuthenticated || !authCtx.userId) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    try {
+      const creatorId = c.req.param('id')
+      if (process.env.SHOGO_LOCAL_MODE === 'true') {
+        await ensureLocalCreatorForFollow(creatorId, getShogoCloudUrl())
+      }
+      const result = await creatorFollowService.followCreator(authCtx.userId, creatorId)
+      return c.json(result)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg === 'creator_not_found') return c.json({ error: 'Creator not found' }, 404)
+      if (msg === 'cannot_follow_self') return c.json({ error: 'Cannot follow yourself' }, 400)
+      console.error('[marketplace] followCreator', err)
+      return c.json({ error: 'Failed to follow creator' }, 500)
+    }
+  })
+
+  app.delete('/creators/:id/follow', async (c) => {
+    const authCtx = c.get('auth') as AuthContext | undefined
+    if (!authCtx?.isAuthenticated || !authCtx.userId) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    try {
+      const creatorId = c.req.param('id')
+      if (process.env.SHOGO_LOCAL_MODE === 'true') {
+        await ensureLocalCreatorForFollow(creatorId, getShogoCloudUrl())
+      }
+      const result = await creatorFollowService.unfollowCreator(authCtx.userId, creatorId)
+      return c.json(result)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg === 'creator_not_found') return c.json({ error: 'Creator not found' }, 404)
+      console.error('[marketplace] unfollowCreator', err)
+      return c.json({ error: 'Failed to unfollow creator' }, 500)
+    }
+  })
+
   app.get('/creators/:id', async (c) => {
     try {
       const profile = await gamification.getCreatorPublicProfile(c.req.param('id'))
       if (!profile) {
         return c.json({ error: 'Creator not found' }, 404)
       }
-      return c.json(profile)
+      const authCtx = c.get('auth') as AuthContext | undefined
+      const followerCount = await creatorFollowService.getFollowersCount(profile.id)
+      let isFollowing = false
+      if (authCtx?.isAuthenticated && authCtx.userId) {
+        isFollowing = await creatorFollowService.isFollowing(authCtx.userId, profile.id)
+      }
+      return c.json({ ...profile, followerCount, isFollowing })
     } catch (err) {
       console.error('[marketplace] getCreatorPublicProfile', err)
       return c.json({ error: 'Failed to load creator' }, 500)
@@ -978,7 +1095,12 @@ export function marketplaceRoutes() {
       if (!listing) {
         return c.json({ error: 'Listing not found' }, 404)
       }
-      return c.json({ listing })
+      const authCtx = c.get('auth') as AuthContext | undefined
+      let isFollowingCreator = false
+      if (authCtx?.isAuthenticated && authCtx.userId && listing.creatorId) {
+        isFollowingCreator = await creatorFollowService.isFollowing(authCtx.userId, listing.creatorId)
+      }
+      return c.json({ listing: { ...listing, isFollowingCreator } })
     } catch (err) {
       console.error('[marketplace] getListingBySlug', err)
       return c.json({ error: 'Failed to load listing' }, 500)

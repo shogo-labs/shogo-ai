@@ -40,6 +40,7 @@ import {
   AgentTile,
   type AgentTileListing,
   CreatorChip,
+  FollowCreatorButton,
   HorizontalRail,
   IntegrationStrip,
   MarketplaceHero,
@@ -93,6 +94,7 @@ interface ListingDetail {
   publishedAt?: string | null
   updatedAt?: string | null
   creator: CreatorFromAPI
+  isFollowingCreator?: boolean
 }
 
 interface Review {
@@ -756,7 +758,13 @@ export default observer(function MarketplaceDetailScreen() {
                 size="lg"
                 disablePress
               />
-              <View className="ml-auto">
+              <View className="ml-auto flex-row items-center gap-2">
+                <FollowCreatorButton
+                  creatorId={listing.creator.id}
+                  initialFollowing={listing.isFollowingCreator ?? false}
+                  followerCount={0}
+                  size="sm"
+                />
                 <ChevronRight size={16} color="#71717a" />
               </View>
             </View>

@@ -21,6 +21,8 @@ import {
   Plus,
   Award,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   AlertCircle,
   ArrowUpRight,
   ArrowDownRight,
@@ -30,11 +32,13 @@ import {
   RefreshCcw,
   CheckCircle2,
   Circle,
+  ShieldCheck,
 } from 'lucide-react-native'
 import { useAuth } from '../../../../contexts/auth'
 import { useDomainHttp } from '../../../../contexts/domain'
 import { cn } from '@shogo/shared-ui/primitives'
-import { Sparkline, TIER_BG, TIER_LABEL, type CreatorTier } from '../../../../components/marketplace'
+import { Sparkline, TIER_BG, TIER_COLORS, TIER_LABEL, type CreatorTier } from '../../../../components/marketplace'
+import { FollowCreatorButton } from '../../../../components/marketplace/FollowCreatorButton'
 
 interface CreatorProfile {
   id: string
@@ -49,6 +53,7 @@ interface CreatorProfile {
   pendingPayoutInCents: number
   totalInstalls: number
   averageAgentRating: number
+  followerCount: number
   createdAt: string
 }
 
@@ -82,6 +87,25 @@ interface Transaction {
 
 interface TransactionsResponse {
   items: Transaction[]
+  total: number
+}
+
+interface FollowingCreator {
+  id: string
+  displayName: string
+  bio: string | null
+  avatarUrl: string | null
+  verified: boolean
+  creatorTier: CreatorTier
+  reputationScore: number
+  totalAgentsPublished: number
+  totalInstalls: number
+  averageAgentRating: number
+  followerCount: number
+}
+
+interface FollowingResponse {
+  items: FollowingCreator[]
   total: number
 }
 
@@ -145,6 +169,9 @@ export default observer(function CreatorDashboardScreen() {
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [hasProfile, setHasProfile] = useState<boolean | null>(null)
+  const [followingCreators, setFollowingCreators] = useState<FollowingCreator[]>([])
+  const [followingTotal, setFollowingTotal] = useState(0)
+  const [showFollowing, setShowFollowing] = useState(false)
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -157,13 +184,16 @@ export default observer(function CreatorDashboardScreen() {
       setProfile(prof)
       setHasProfile(true)
 
-      const [dashboardRes, transactionsRes] = await Promise.all([
+      const [dashboardRes, transactionsRes, followingRes] = await Promise.all([
         http.get<DashboardAPIResponse>('/api/marketplace/creator/dashboard'),
         http.get<TransactionsResponse>('/api/marketplace/creator/transactions?limit=100'),
+        http.get<FollowingResponse>('/api/marketplace/creators/following?limit=10'),
       ])
       setDashboardListings(dashboardRes.data.listings ?? [])
       setTotalReviews(dashboardRes.data.totalReviews ?? 0)
       setTransactions(transactionsRes.data.items ?? [])
+      setFollowingCreators(followingRes.data.items ?? [])
+      setFollowingTotal(followingRes.data.total ?? 0)
     } catch (err: any) {
       if (err?.status === 404 || err?.message?.includes('not found')) {
         setHasProfile(false)
@@ -334,36 +364,108 @@ export default observer(function CreatorDashboardScreen() {
 
       {/* Tier card */}
       {profile && (
-        <View className="rounded-2xl border border-border bg-card p-4 mb-5 flex-row items-center gap-3">
-          {profile.avatarUrl ? (
-            <Image
-              source={{ uri: profile.avatarUrl }}
-              style={{ width: 44, height: 44, borderRadius: 999 }}
-            />
-          ) : (
-            <View
-              className={`${TIER_BG[profile.creatorTier]} rounded-full items-center justify-center`}
-              style={{ width: 44, height: 44 }}
-            >
-              <Text className="text-white font-bold text-lg">
-                {profile.displayName.charAt(0).toUpperCase()}
+        <View className="rounded-2xl border border-border bg-card mb-5">
+          <View className="p-4 flex-row items-center gap-3">
+            {profile.avatarUrl ? (
+              <Image
+                source={{ uri: profile.avatarUrl }}
+                style={{ width: 44, height: 44, borderRadius: 999 }}
+              />
+            ) : (
+              <View
+                className={`${TIER_BG[profile.creatorTier]} rounded-full items-center justify-center`}
+                style={{ width: 44, height: 44 }}
+              >
+                <Text className="text-white font-bold text-lg">
+                  {profile.displayName.charAt(0).toUpperCase()}
+                </Text>
+              </View>
+            )}
+            <View className="flex-1 min-w-0">
+              <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+                {profile.displayName}
+              </Text>
+              <View className="flex-row items-center gap-2 mt-1">
+                <View
+                  className="px-2 py-0.5 rounded-full"
+                  style={{ backgroundColor: `${TIER_COLORS[profile.creatorTier] ?? TIER_COLORS.newcomer}20` }}
+                >
+                  <Text
+                    className="text-[10px] font-semibold capitalize"
+                    style={{ color: TIER_COLORS[profile.creatorTier] ?? TIER_COLORS.newcomer }}
+                  >
+                    {TIER_LABEL[profile.creatorTier]}
+                  </Text>
+                </View>
+                <Text className="text-xs text-muted-foreground">
+                  {profile.reputationScore} rep
+                </Text>
+              </View>
+            </View>
+            <View className="flex-row items-center gap-2">
+              <View className={cn('w-2 h-2 rounded-full', payoutColor(profile.payoutStatus))} />
+              <Text className="text-xs text-muted-foreground">
+                {payoutLabel(profile.payoutStatus)}
               </Text>
             </View>
+          </View>
+
+          {/* Followers / Following stat badges */}
+          <View className="flex-row border-t border-border">
+            <View className="flex-1 items-center py-3 border-r border-border">
+              <Text className="text-base font-bold text-foreground">
+                {(profile.followerCount ?? 0).toLocaleString()}
+              </Text>
+              <Text className="text-[11px] text-muted-foreground">Followers</Text>
+            </View>
+            <Pressable
+              onPress={() => setShowFollowing((v) => !v)}
+              className="flex-1 items-center py-3 active:opacity-70"
+            >
+              <View className="flex-row items-center gap-1">
+                <Text className="text-base font-bold text-foreground">
+                  {followingTotal}
+                </Text>
+                {showFollowing ? (
+                  <ChevronUp size={14} color="#71717a" />
+                ) : (
+                  <ChevronDown size={14} color="#71717a" />
+                )}
+              </View>
+              <Text className="text-[11px] text-muted-foreground">Following</Text>
+            </Pressable>
+          </View>
+
+          {/* Expandable following list */}
+          {showFollowing && (
+            <View className="border-t border-border px-4 py-3">
+              {followingCreators.length > 0 ? (
+                <View className="gap-3">
+                  {followingCreators.map((creator) => (
+                    <FollowingCreatorCard
+                      key={creator.id}
+                      creator={creator}
+                      onPress={() => router.push(`/(app)/marketplace/creators/${creator.id}` as any)}
+                      onUnfollow={() => {
+                        setFollowingCreators((prev) => prev.filter((c) => c.id !== creator.id))
+                        setFollowingTotal((prev) => Math.max(0, prev - 1))
+                      }}
+                    />
+                  ))}
+                </View>
+              ) : (
+                <View className="items-center py-4">
+                  <Text className="text-xs text-muted-foreground">Not following anyone yet</Text>
+                  <Pressable
+                    onPress={() => router.push('/(app)/marketplace/creators' as any)}
+                    className="mt-2 px-3 py-1.5 rounded-lg bg-primary/10 active:opacity-80"
+                  >
+                    <Text className="text-xs font-semibold text-primary">Browse Creators</Text>
+                  </Pressable>
+                </View>
+              )}
+            </View>
           )}
-          <View className="flex-1 min-w-0">
-            <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
-              {profile.displayName}
-            </Text>
-            <Text className="text-xs text-muted-foreground">
-              {TIER_LABEL[profile.creatorTier]} · {profile.reputationScore} reputation
-            </Text>
-          </View>
-          <View className="flex-row items-center gap-2">
-            <View className={cn('w-2 h-2 rounded-full', payoutColor(profile.payoutStatus))} />
-            <Text className="text-xs text-muted-foreground">
-              {payoutLabel(profile.payoutStatus)}
-            </Text>
-          </View>
         </View>
       )}
 
@@ -457,6 +559,12 @@ export default observer(function CreatorDashboardScreen() {
               tint="text-blue-500"
             />
             <MiniStat
+              label="Followers"
+              value={(profile.followerCount ?? 0).toLocaleString()}
+              icon={Users}
+              tint="text-violet-500"
+            />
+            <MiniStat
               label="Avg rating"
               value={
                 profile.averageAgentRating > 0
@@ -537,6 +645,7 @@ export default observer(function CreatorDashboardScreen() {
           </Text>
         </View>
       )}
+
     </ScrollView>
   )
 })
@@ -754,5 +863,61 @@ function TransactionRow({ transaction }: { transaction: Transaction }) {
         </Text>
       </View>
     </View>
+  )
+}
+
+function FollowingCreatorCard({
+  creator,
+  onPress,
+  onUnfollow,
+}: {
+  creator: FollowingCreator
+  onPress: () => void
+  onUnfollow: () => void
+}) {
+  const tierBg = TIER_BG[creator.creatorTier] ?? TIER_BG.newcomer
+  return (
+    <Pressable
+      onPress={onPress}
+      className="rounded-2xl border border-border bg-card p-4 active:opacity-90"
+    >
+      <View className="flex-row items-center gap-3">
+        {creator.avatarUrl ? (
+          <Image
+            source={{ uri: creator.avatarUrl }}
+            style={{ width: 40, height: 40, borderRadius: 999 }}
+          />
+        ) : (
+          <View
+            className={`${tierBg} rounded-full items-center justify-center`}
+            style={{ width: 40, height: 40 }}
+          >
+            <Text className="text-white font-bold text-base">
+              {creator.displayName.charAt(0).toUpperCase()}
+            </Text>
+          </View>
+        )}
+        <View className="flex-1 min-w-0">
+          <View className="flex-row items-center gap-1.5">
+            <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+              {creator.displayName}
+            </Text>
+            {creator.verified && <ShieldCheck size={12} color="#3b82f6" />}
+          </View>
+          <Text className="text-[11px] text-muted-foreground capitalize">
+            {TIER_LABEL[creator.creatorTier] ?? 'Creator'} · {(creator.followerCount ?? 0).toLocaleString()} followers
+          </Text>
+        </View>
+        <FollowCreatorButton
+          creatorId={creator.id}
+          initialFollowing={true}
+          followerCount={creator.followerCount ?? 0}
+          size="sm"
+          onToggle={(following) => {
+            if (!following) onUnfollow()
+          }}
+        />
+      </View>
+    </Pressable>
   )
 }

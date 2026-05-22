@@ -972,6 +972,33 @@ async function main() {
     })
   }
 
+  // Seed follow relationships: demo buyers follow some creators
+  console.log('[seed-marketplace] seeding follow relationships…')
+  const buyerUsers = await prisma.user.findMany({
+    where: { email: { startsWith: 'demo-buyer-' } },
+    select: { id: true },
+    take: 6,
+  })
+  for (const buyer of buyerUsers) {
+    for (const creator of creators.slice(0, 3)) {
+      await prisma.creatorFollow.upsert({
+        where: {
+          followerId_creatorId: { followerId: buyer.id, creatorId: creator.id },
+        },
+        create: { followerId: buyer.id, creatorId: creator.id },
+        update: {},
+      })
+    }
+  }
+  // Update follower counts
+  for (const creator of creators) {
+    const count = await prisma.creatorFollow.count({ where: { creatorId: creator.id } })
+    await prisma.creatorProfile.update({
+      where: { id: creator.id },
+      data: { followerCount: count },
+    })
+  }
+
   console.log('[seed-marketplace] done.')
   console.log(`  · ${creators.length} creators (${creators.map((c) => c.tier).join(', ')})`)
   console.log(`  · ${LISTINGS.length} listings across 7 categories`)

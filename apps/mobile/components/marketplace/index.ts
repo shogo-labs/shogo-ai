@@ -3,6 +3,7 @@
 
 export { AgentTile, type AgentTileListing, type AgentTileSize } from './AgentTile'
 export { CreatorChip, TIER_COLORS, TIER_BG, TIER_LABEL, type CreatorTier } from './CreatorChip'
+export { FollowCreatorButton } from './FollowCreatorButton'
 export { HorizontalRail } from './HorizontalRail'
 export { IntegrationStrip } from './IntegrationStrip'
 export { MarketplaceHero } from './MarketplaceHero'
