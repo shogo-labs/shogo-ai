@@ -27,6 +27,16 @@ import {
 import { join, resolve } from 'node:path'
 
 const SCREENSHOTS_DIRNAME = '.shogo/screenshots'
+/**
+ * Test-only seam — wraps the inner \`statSync(src)\` call inside the
+ * collision-rename branch of sweepLooseScreenshots() so its defensive
+ * catch (line 125) can be exercised. Production routes through the
+ * real \`statSync\` by default.
+ */
+export const _screenshotMgrSeamForTests: {
+  statSync: typeof statSync
+} = { statSync }
+
 const LEGACY_DIRNAME = 'legacy'
 
 function screenshotsRoot(workspaceDir: string): string {
@@ -120,7 +130,7 @@ export function sweepLooseScreenshots(workspaceDir: string): number {
     // the mtime so we never overwrite anything.
     if (existsSync(dest)) {
       try {
-        const ms = statSync(src).mtimeMs
+        const ms = _screenshotMgrSeamForTests.statSync(src).mtimeMs
         dest = join(legacyDir, `${Math.trunc(ms)}-${name}`)
       } catch {
         dest = join(legacyDir, `${Date.now()}-${name}`)
