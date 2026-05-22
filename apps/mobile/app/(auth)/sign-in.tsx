@@ -85,8 +85,22 @@ export default function SignInScreen() {
   // with Apple as an equivalent option. This handler runs the native
   // Apple flow via expo-apple-authentication, then hands the resulting
   // identity token to better-auth (server validates issuer/audience/sig
-  // against Apple JWKS, plus the SHA-256 nonce we generate here).
+  // against Apple JWKS, plus a nonce match).
   // Only wired on iOS — Android/web/desktop only show Google.
+  //
+  // Nonce contract (must match exactly — this is what was broken in 1.0
+  // build 182 and caused App Review Guideline 2.1(a) rejection):
+  //   1. Generate a random raw nonce.
+  //   2. SHA-256 hash it → `hashedNonce`.
+  //   3. Pass `hashedNonce` to AppleAuthentication.signInAsync({ nonce }).
+  //      Apple echoes this exact string back as the `nonce` claim of the
+  //      returned identity token (OIDC spec — opaque, no server hashing).
+  //   4. Pass that same `hashedNonce` to better-auth. better-auth's apple
+  //      provider performs a literal `jwtClaims.nonce !== nonce` check
+  //      (see @better-auth/core/social-providers/apple), so we have to
+  //      send the exact value Apple put in the token — not the raw nonce.
+  //      The raw value never leaves the client; the hashed value travels
+  //      with both legs of the flow so they can be compared.
   const handleAppleSignIn = async () => {
     try {
       const rawNonce = Array.from(Crypto.getRandomBytes(32))
@@ -106,7 +120,7 @@ export default function SignInScreen() {
       if (!credential.identityToken) {
         throw new Error('Apple did not return an identity token')
       }
-      await signInWithApple({ idToken: credential.identityToken, nonce: rawNonce })
+      await signInWithApple({ idToken: credential.identityToken, nonce: hashedNonce })
       trackLogin('apple')
       sendAttribution('apple')
       try { router.replace(resolveNext() as any) } catch {}
