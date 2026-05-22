@@ -161,4 +161,75 @@ describe('parseSlashCommand', () => {
     const result = parseSlashCommand('/NEW', createMockCtx())
     expect(result.handled).toBe(true)
   })
+
+  test('/status includes Last heartbeat line when lastTick is set (DA:126)', () => {
+    const ctx = createMockCtx({
+      getStatus: () => ({
+        running: true,
+        heartbeat: {
+          enabled: true,
+          intervalSeconds: 1800,
+          lastTick: '2026-05-22T12:00:00Z',
+          nextTick: null,
+          quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
+        },
+        channels: [
+          { type: 'telegram', connected: true, id: 'tg-1' } as any,
+          { type: 'discord', connected: false, id: 'dc-1' } as any,
+        ],
+        skills: [],
+        model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
+      }),
+    })
+    const result = parseSlashCommand('/status', ctx)
+    expect(result.handled).toBe(true)
+    expect(result.response).toContain('Last heartbeat: 2026-05-22T12:00:00Z')
+  })
+
+  test('/memory returns empty message when memory dir does not exist (DA:140)', () => {
+    const { mkdtempSync, rmSync } = require('node:fs')
+    const { tmpdir } = require('node:os')
+    const { join } = require('node:path')
+    const dir = mkdtempSync(join(tmpdir(), 'slash-mem-noexist-'))
+    try {
+      const result = parseSlashCommand('/memory', createMockCtx({ workspaceDir: dir }))
+      expect(result.handled).toBe(true)
+      expect(result.response).toBe('No memory entries yet.')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  test('/memory returns empty message when memory dir has no .md files (DA:148-149)', () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs')
+    const { tmpdir } = require('node:os')
+    const { join } = require('node:path')
+    const dir = mkdtempSync(join(tmpdir(), 'slash-mem-empty-'))
+    mkdirSync(join(dir, 'memory'), { recursive: true })
+    writeFileSync(join(dir, 'memory', 'notes.txt'), 'ignored', 'utf-8')
+    try {
+      const result = parseSlashCommand('/memory', createMockCtx({ workspaceDir: dir }))
+      expect(result.handled).toBe(true)
+      expect(result.response).toBe('No memory entries yet.')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  test('/memory returns reverse-sorted previews of up to 5 .md files (DA:142-155)', () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs')
+    const { tmpdir } = require('node:os')
+    const { join } = require('node:path')
+    const dir = mkdtempSync(join(tmpdir(), 'slash-mem-files-'))
+    mkdirSync(join(dir, 'memory'), { recursive: true })
+    for (const d of ['2026-05-19', '2026-05-20', '2026-05-21', '2026-05-22']) {
+      writeFileSync(join(dir, 'memory', `${d}.md`), `# Daily ${d}\nentry content for ${d}\n`, 'utf-8')
+    }
+    try {
+      const result = parseSlashCommand('/memory', createMockCtx({ workspaceDir: dir }))
+      expect(result.handled).toBe(true)
+      expect(result.response).toContain('2026-05-22.md')
+      // newest first
+      const idxNewest = result.response!.indexOf('2026-05-22.md')
+      const idxOldest = result.response!.indexOf('2026-05-19.md')
+      expect(idxNewest).toBeLessThan(idxOldest)
+      expect(result.response).toContain('...')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
 })
