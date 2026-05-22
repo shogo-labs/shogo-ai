@@ -11,7 +11,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -178,5 +178,31 @@ describe('walkFilesTree (custom policy sets)', () => {
     expect(nm?.lazy).toBeUndefined()
     expect(nm?.children).toBeDefined() // walked fully now
     expect(nm?.children?.length).toBeGreaterThan(0)
+  })
+})
+
+
+describe('walkFilesTree (statSync failures)', () => {
+  test('skips entries whose statSync() throws (broken symlink) instead of bubbling', () => {
+    // Set up a freshly isolated root so the broken symlink is the ONLY
+    // entry — that way an assertion-shaped "missing the file" check
+    // proves the catch-and-continue branch actually fired.
+    const brokenRoot = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-broken-'))
+    try {
+      // Mix one regular file in so we can confirm the walker continued
+      // past the broken symlink rather than aborting.
+      writeFileSync(join(brokenRoot, 'survivor.txt'), 'ok')
+      // Point a symlink at a path that does not exist. statSync() will
+      // throw ENOENT for this; the walker's try/catch must swallow it.
+      symlinkSync(join(brokenRoot, '__does_not_exist__'), join(brokenRoot, 'broken-link'))
+
+      const out = walkFilesTree(brokenRoot, brokenRoot)
+      const names = out.map((n) => n.name).sort()
+      // The broken symlink is dropped, the survivor stays — and the call
+      // did not throw, which is the whole point of the catch.
+      expect(names).toEqual(['survivor.txt'])
+    } finally {
+      rmSync(brokenRoot, { recursive: true, force: true })
+    }
   })
 })
