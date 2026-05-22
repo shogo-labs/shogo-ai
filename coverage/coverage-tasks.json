@@ -492,8 +492,11 @@
       "linePct": 83.3333,
       "funcPct": 54.5455,
       "phase": 2,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T14:50:51.350071Z",
+      "beforeLinePct": 83.33,
+      "afterLinePct": 100.0
     },
     {
       "file": "packages/shared-runtime/src/self-assign.ts",
