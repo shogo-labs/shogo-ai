@@ -1,519 +1,806 @@
 {
-  "generatedAt": "2026-05-19T22:37:52.960Z",
-  "total": 56,
+  "generatedAt": "2026-05-22T05:05:30.108447Z",
+  "campaign": "backend-coverage-to-100-v2",
+  "branch": "fix/unit-backend-testCases",
+  "scope": [
+    "apps/api",
+    "packages/agent-runtime",
+    "packages/sdk",
+    "packages/shared-runtime",
+    "packages/model-catalog (when lcov stabilizes)"
+  ],
+  "total": 76,
+  "perPackageTotals": {
+    "apps/api": {
+      "lines": "13627/14723",
+      "linePct": 92.56,
+      "funcs": "1226/1272",
+      "funcPct": 96.38
+    },
+    "packages/agent-runtime": {
+      "lines": "5122/7240",
+      "linePct": 70.75,
+      "funcs": "419/548",
+      "funcPct": 76.46
+    },
+    "packages/sdk": {
+      "lines": "5159/5836",
+      "linePct": 88.4,
+      "funcs": "415/465",
+      "funcPct": 89.25
+    },
+    "packages/shared-runtime": {
+      "lines": "870/1549",
+      "linePct": 56.17,
+      "funcs": "91/117",
+      "funcPct": 77.78
+    }
+  },
+  "phaseBreakdown": {
+    "1": 30,
+    "2": 27,
+    "3": 19
+  },
   "tasks": [
     {
-      "file": "apps/api/src/lib/crypto-util.ts",
+      "file": "apps/api/src/config/instance-sizes.ts",
+      "package": "apps/api",
       "uncoveredLines": 1,
-      "linePct": 97.91666666666666,
+      "linePct": 99.1304,
+      "funcPct": 100,
       "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "finishedAt": "2026-05-19T22:37:56.622Z",
-      "beforeLinePct": 97.92,
-      "afterLinePct": 100
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/routes/admin-marketplace.ts",
+      "file": "apps/api/src/services/stripe-connect.service.ts",
+      "package": "apps/api",
       "uncoveredLines": 1,
-      "linePct": 99.77876106194691,
+      "linePct": 99.6364,
+      "funcPct": 100,
       "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "finishedAt": "2026-05-20T07:34:14.150Z",
-      "beforeLinePct": 99.77876106194691,
-      "afterLinePct": 100
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/services/node-metrics.service.ts",
+      "file": "packages/agent-runtime/src/agent-templates.ts",
+      "package": "packages/agent-runtime",
       "uncoveredLines": 1,
-      "linePct": 99.05660377358491,
+      "linePct": 95.8333,
+      "funcPct": 100,
       "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "finishedAt": "2026-05-20T07:46:03.920Z",
-      "beforeLinePct": 99.05660377358491,
-      "afterLinePct": 100
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/config/stripe-prices.ts",
+      "file": "packages/agent-runtime/src/fs-tree-walker.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 1,
+      "linePct": 98.4375,
+      "funcPct": 100,
+      "phase": 1,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/agent-runtime/src/mcp-catalog.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 1,
+      "linePct": 99.5025,
+      "funcPct": 100,
+      "phase": 1,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/agent-runtime/src/runtime-log-dispatcher.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 1,
+      "linePct": 98.75,
+      "funcPct": 92.3077,
+      "phase": 1,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/sdk/src/generators/api-client.ts",
+      "package": "packages/sdk",
+      "uncoveredLines": 1,
+      "linePct": 99.5652,
+      "funcPct": 100,
+      "phase": 1,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/sdk/src/generators/routes-generator.ts",
+      "package": "packages/sdk",
+      "uncoveredLines": 1,
+      "linePct": 99.7899,
+      "funcPct": 100,
+      "phase": 1,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/sdk/src/memory/drivers/bun.ts",
+      "package": "packages/sdk",
+      "uncoveredLines": 1,
+      "linePct": 96.1538,
+      "funcPct": 100,
+      "phase": 1,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "apps/api/src/config/currencies.ts",
+      "package": "apps/api",
       "uncoveredLines": 2,
-      "linePct": 98.78048780487805,
+      "linePct": 97.0149,
+      "funcPct": 100,
       "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "finishedAt": "2026-05-20T08:06:31.612Z",
-      "beforeLinePct": 98.78048780487805,
-      "afterLinePct": 100,
-      "note": "already at 100% on this branch \u2014 no source/test change required, queue gap was stale"
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/lib/preview-token.ts",
+      "file": "apps/api/src/services/marketplace-manifest.service.ts",
+      "package": "apps/api",
       "uncoveredLines": 2,
-      "linePct": 98.05825242718447,
+      "linePct": 98.8304,
+      "funcPct": 100,
       "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "finishedAt": "2026-05-20T08:11:33.248Z",
-      "beforeLinePct": 98.05825242718447,
-      "afterLinePct": 100
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/lib/tunnel-relay.ts",
+      "file": "packages/agent-runtime/src/canvas-bridge-migration.ts",
+      "package": "packages/agent-runtime",
       "uncoveredLines": 2,
-      "linePct": 98.63013698630137,
+      "linePct": 96.9697,
+      "funcPct": 100,
       "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "finishedAt": "2026-05-20T08:29:43.820Z",
-      "beforeLinePct": 98.63013698630137,
-      "afterLinePct": 100
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/lib/runtime-token.ts",
+      "file": "packages/agent-runtime/src/rg-resolve.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 2,
+      "linePct": 84.6154,
+      "funcPct": 100,
+      "phase": 1,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/agent-runtime/src/file-attachment-utils.ts",
+      "package": "packages/agent-runtime",
       "uncoveredLines": 3,
-      "linePct": 95.16129032258065,
+      "linePct": 94.3396,
+      "funcPct": 100,
       "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "finishedAt": "2026-05-20T08:32:11.642Z",
-      "beforeLinePct": 95.16129032258065,
-      "afterLinePct": 100,
-      "note": "already at 100% across runtime-token{.test, -coverage, -extra, lib/__tests__/runtime-token}.test.ts \u2014 queue baseline was stale"
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/routes/cli-auth.ts",
+      "file": "packages/agent-runtime/src/runtime-trust.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 3,
+      "linePct": 97.4576,
+      "funcPct": 100,
+      "phase": 1,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "apps/api/src/lib/crypto-util.ts",
+      "package": "apps/api",
       "uncoveredLines": 4,
-      "linePct": 98.1981981981982,
+      "linePct": 92.1569,
+      "funcPct": 100,
       "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "finishedAt": "2026-05-20T08:37:51.482Z",
-      "beforeLinePct": 98.1981981981982,
-      "afterLinePct": 100
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/routes/tools-proxy.ts",
+      "file": "apps/api/src/lib/resolve-pod-url.ts",
+      "package": "apps/api",
       "uncoveredLines": 4,
-      "linePct": 98.06763285024155,
+      "linePct": 93.6508,
+      "funcPct": 100,
       "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "finishedAt": "2026-05-20T08:41:23.955Z",
-      "beforeLinePct": 98.06763285024155,
-      "afterLinePct": 100
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/lib/federated-upstream.ts",
-      "uncoveredLines": 5,
-      "linePct": 97.44897959183673,
+      "file": "apps/api/src/lib/usage-cost.ts",
+      "package": "apps/api",
+      "uncoveredLines": 4,
+      "linePct": 94.4444,
+      "funcPct": 100,
       "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "afterLinePct": 100,
-      "afterFuncPct": 100,
-      "note": "queue claimed 5 uncov lines; actual was 8 lines + 3 inline-arrow funcs (.catch() callbacks). closed all via mutable cloudUrlImpl pointer + Object.defineProperty getter throws for outer-catch paths + fake-time advance for cache-expiry"
-    },
-    {
-      "file": "apps/api/src/services/diarization.service.ts",
-      "uncoveredLines": 5,
-      "linePct": 97.23756906077348,
-      "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "afterLinePct": 100,
-      "afterFuncPct": 100,
-      "note": "queue claimed 5 uncov lines; actual was 4 (108, 110-111, 139). 3 platform-gated reached via Object.defineProperty(process, \"platform\") stubs (darwin DYLD_LIBRARY_PATH + win32 PATH); the parse-failure catch (139) reached via globalThis.parseFloat hijack confined to one test (restored in finally)"
-    },
-    {
-      "file": "apps/api/src/lib/chat-usage-tracker.ts",
-      "uncoveredLines": 6,
-      "linePct": 96.25,
-      "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "afterLinePct": 100,
-      "afterFuncPct": 100,
-      "note": "queue claimed 6 uncov lines; actual was 8 lines + 2 funcs. closed all in main shard via: (1) data: no-space SSE variant; (2) ReadableStream constructor hijack to fire trackingStream source.cancel() directly (otherwise structurally unreachable \u2014 the natural consumer trackChatStreamForBilling never calls reader.cancel); (3) globalThis.setInterval stub firing the keepalive arrow synchronously; (4) erroring upstream for the bg reader catch; (5) setQualityImpl throw to make trackChatStreamForBilling reject and hit the .catch arrow; (6) module-load env override CHAT_STREAM_IDLE_TIMEOUT_MS=200 + hanging stream to fire the idle-timeout setTimeout-reject arrow"
-    },
-    {
-      "file": "apps/api/src/lib/eval-job-manager.ts",
-      "uncoveredLines": 6,
-      "linePct": 95.41984732824427,
-      "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "afterLinePct": 100,
-      "afterFuncPct": 100,
-      "note": "queue claimed 6 uncov; actual was the in-cluster getKubeConfig branch (lines 26-36) blocked by a module-level batchApi singleton. closed via tiny source-side _resetBatchApi() export (4 LOC, test-only, matches the _resetUpstreamCredentialCache precedent in lib/federated-upstream.ts) + beforeEach reset so each test re-enters getKubeConfig() with fresh existsImpls"
-    },
-    {
-      "file": "apps/api/src/routes/thumbnail.ts",
-      "uncoveredLines": 6,
-      "linePct": 95.65217391304348,
-      "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "afterLinePct": 100,
-      "afterFuncPct": 100,
-      "note": "queue claimed 6 uncov; closed all via tiny source hook _setPlaywrightImportOverride (12-line addition, test-only seam) + 3 new tests (knative-failure via getPreviewUrl throw, @playwright/test fallback via override, playwright_missing 501 via override). Source hook precedented by _resetBatchApi in eval-job-manager and _resetUpstreamCredentialCache in federated-upstream."
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
       "file": "apps/api/src/services/marketplace.service.ts",
+      "package": "apps/api",
+      "uncoveredLines": 4,
+      "linePct": 98.9717,
+      "funcPct": 100,
+      "phase": 1,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/sdk/src/generators/mst-collection-generator.ts",
+      "package": "packages/sdk",
+      "uncoveredLines": 4,
+      "linePct": 99.1579,
+      "funcPct": 57.1429,
+      "phase": 1,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "apps/api/src/services/marketplace-install.service.ts",
+      "package": "apps/api",
+      "uncoveredLines": 5,
+      "linePct": 98.5251,
+      "funcPct": 91.6667,
+      "phase": 1,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/agent-runtime/src/block-chunker.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 5,
+      "linePct": 93.0556,
+      "funcPct": 92.3077,
+      "phase": 1,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/agent-runtime/src/screenshot-manager.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 5,
+      "linePct": 95.283,
+      "funcPct": 100,
+      "phase": 1,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "apps/api/src/lib/analytics-digest-collector.ts",
+      "package": "apps/api",
       "uncoveredLines": 6,
-      "linePct": 98.4375,
+      "linePct": 96.9231,
+      "funcPct": 95.4545,
       "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "afterLinePct": 100,
-      "afterFuncPct": 100,
-      "note": "queue claimed 6 uncov (postgres-flavored isSqlite=false branches). closed via one-line lazy refactor of isSqlite const \u2192 isSqlite() function (same pattern as wave 2 node-metrics signozEndpoint), enabling dynamic toggling of SHOGO_LOCAL_MODE per test. then added 9 tests covering pricingModel/creatorId filters, tags sqlite+postgres branches, sort=rating/featured sqlite+postgres branches, searchListings postgres-hasSome branch, and generateSlug 32-retry exhaustion throw."
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/__tests__/helpers/prisma-mock-exports.ts",
+      "file": "packages/agent-runtime/src/composio-auto-bind.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 6,
+      "linePct": 80,
+      "funcPct": 100,
+      "phase": 1,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/agent-runtime/src/lib/cloud-fetcher.ts",
+      "package": "packages/agent-runtime",
       "uncoveredLines": 7,
-      "linePct": 89.70588235294117,
+      "linePct": 87.931,
+      "funcPct": 66.6667,
       "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "afterLinePct": 89.71,
-      "afterFuncPct": 40,
-      "note": "STALE ENTRY. File is excluded from CI coverage collection by apps/api bunfig.toml (coverageSkipTestFiles=true + coveragePathIgnorePatterns=[\"**/__tests__/**\"]) \u2014 it never appears in the apps-api.lcov. Gap was seeded from a pre-exclusion gaps.json snapshot. The 3 remaining DA:,0 lines (L21-23: export-const declaration + two // comments) and 1 uncovered FN are V8 module-initialisation instrumentation artifacts that cannot be exercised by test code (module-level code runs before coverage hooks are installed). All 5 logical exported units (raw, sql, PrismaClientKnownRequestError constructor, PrismaClientValidationError, withPrismaExports) are fully exercised by the 16 new tests in src/__tests__/helpers/prisma-mock-exports.test.ts."
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/routes/admin.ts",
+      "file": "apps/api/src/jobs/grant-monthly-refill.ts",
+      "package": "apps/api",
       "uncoveredLines": 8,
-      "linePct": 98.53479853479854,
+      "linePct": 90.9091,
+      "funcPct": 100,
       "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "afterLinePct": 100,
-      "afterFuncPct": 98.36,
-      "note": "Closed all 8 uncovered lines tracked by the queue: L496-499 (GET /heartbeats early-return when inBackoff=true with empty breaker snapshot), L514-515 (sort=lastHeartbeatAt orderBy branch), L659 (PATCH /heartbeats/projects/:projectId 404 when config not found), L670 (PATCH nextHeartbeatAt=null when heartbeatEnabled flips to false), L193-195 (inner empty catch in GET /analytics/infra-current when warm-pool getExtendedStatus throws \u2014 live:null fallback). Added 6 new tests across 3 new describe blocks in admin-routes.expanded.test.ts; promoted the inline getExtendedStatus mock to a captured warmPoolExtendedStatus reference so the catch test can mockImplementationOnce. Final shard state: 546/546 lines, 60/61 funcs (98.36%, preserved from baseline \u2014 bun lcov does not emit FN/FNDA records so the 1 residual phantom function entry is unidentifiable; same pattern as previous wave closures where queue tracks uncoveredLines and that is the actionable signal)."
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/routes/chat-message-edits.ts",
+      "file": "apps/api/src/jobs/voice-monthly-rebill.ts",
+      "package": "apps/api",
       "uncoveredLines": 8,
-      "linePct": 95.48022598870057,
+      "linePct": 92.5926,
+      "funcPct": 100,
       "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "completedAt": "2026-05-20T17:23:03.460Z"
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/services/instance.service.ts",
-      "uncoveredLines": 8,
-      "linePct": 93.44262295081968,
-      "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "completedAt": "2026-05-20T17:30:36.827Z",
-      "note": "stale: file at 100/100 on current branch, no test additions needed"
-    },
-    {
-      "file": "apps/api/src/routes/tests.ts",
+      "file": "packages/agent-runtime/src/quiet-hours.ts",
+      "package": "apps/api",
       "uncoveredLines": 9,
-      "linePct": 96.28099173553719,
+      "linePct": 76.3158,
+      "funcPct": 100,
       "phase": 1,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "completedAt": "2026-05-20T17:39:11.704Z"
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/lib/voice-cost.ts",
-      "uncoveredLines": 10,
-      "linePct": 82.75862068965517,
+      "file": "packages/sdk/src/projects/index.ts",
+      "package": "packages/sdk",
+      "uncoveredLines": 9,
+      "linePct": 86.5672,
+      "funcPct": 93.3333,
+      "phase": 1,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/agent-runtime/src/permission-engine.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 11,
+      "linePct": 98.1513,
+      "funcPct": 80.4878,
       "phase": 2,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "completedAt": "2026-05-20T17:53:28.274Z",
-      "note": "stale: file already at 100% lines / 100% funcs on current branch"
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/middleware/rate-limit.ts",
-      "uncoveredLines": 10,
-      "linePct": 86.66666666666667,
+      "file": "packages/agent-runtime/src/pty-scrollback.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 11,
+      "linePct": 78.8462,
+      "funcPct": 100,
       "phase": 2,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "completedAt": "2026-05-20T18:07:36.698Z",
-      "note": "stale lines (already 100% under CI isolated runner via existing gc-and-bypass test in its own process); 1 phantom func preserved from baseline (bun lcov omits FN: records \u2014 wave-17 precedent)"
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/config/usage-plans.ts",
-      "uncoveredLines": 14,
-      "linePct": 75.43859649122807,
+      "file": "packages/agent-runtime/src/team-manager.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 11,
+      "linePct": 95.2991,
+      "funcPct": 94.1176,
       "phase": 2,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/routes/database.ts",
-      "uncoveredLines": 14,
-      "linePct": 93.60730593607306,
+      "file": "packages/agent-runtime/src/migrations/skill-server-to-root.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 12,
+      "linePct": 95.8904,
+      "funcPct": 100,
       "phase": 2,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/lib/cloud-urls.ts",
-      "uncoveredLines": 20,
-      "linePct": 4.761904761904762,
+      "file": "packages/agent-runtime/src/template-loader.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 12,
+      "linePct": 83.3333,
+      "funcPct": 54.5455,
       "phase": 2,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/routes/remote-audit.ts",
+      "file": "packages/shared-runtime/src/self-assign.ts",
+      "package": "packages/shared-runtime",
+      "uncoveredLines": 12,
+      "linePct": 90.0826,
+      "funcPct": 90,
+      "phase": 2,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/agent-runtime/src/response-transforms.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 13,
+      "linePct": 94.5607,
+      "funcPct": 85.1852,
+      "phase": 2,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/agent-runtime/src/detected-urls.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 16,
+      "linePct": 83.3333,
+      "funcPct": 80,
+      "phase": 2,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/sdk/src/generators/admin-routes-generator.ts",
+      "package": "packages/sdk",
+      "uncoveredLines": 16,
+      "linePct": 94.2446,
+      "funcPct": 70,
+      "phase": 2,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/sdk/src/machines/index.ts",
+      "package": "packages/sdk",
+      "uncoveredLines": 16,
+      "linePct": 65.2174,
+      "funcPct": 91.6667,
+      "phase": 2,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/agent-runtime/src/build-output-commit.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 18,
+      "linePct": 87.0504,
+      "funcPct": 95.8333,
+      "phase": 2,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "apps/api/src/services/diarization.service.ts",
+      "package": "apps/api",
+      "uncoveredLines": 19,
+      "linePct": 90.5,
+      "funcPct": 100,
+      "phase": 2,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/agent-runtime/src/server-tsx-drift.ts",
+      "package": "packages/agent-runtime",
       "uncoveredLines": 21,
-      "linePct": 79.20792079207921,
+      "linePct": 88.2682,
+      "funcPct": 100,
       "phase": 2,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/routes/cost-analytics.ts",
+      "file": "packages/sdk/src/memory/engine.ts",
+      "package": "packages/sdk",
+      "uncoveredLines": 21,
+      "linePct": 93,
+      "funcPct": 96.1538,
+      "phase": 2,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/agent-runtime/src/slash-commands.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 23,
+      "linePct": 83.4532,
+      "funcPct": 84.6154,
+      "phase": 2,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/sdk/src/errors.ts",
+      "package": "packages/sdk",
       "uncoveredLines": 25,
-      "linePct": 93.93203883495146,
+      "linePct": 72.2222,
+      "funcPct": 46.6667,
       "phase": 2,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/lib/proxy-billing-session.ts",
-      "uncoveredLines": 28,
-      "linePct": 85.64102564102564,
+      "file": "packages/sdk/src/memory/drivers/node.ts",
+      "package": "packages/sdk",
+      "uncoveredLines": 26,
+      "linePct": 16.129,
+      "funcPct": 0,
       "phase": 2,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/lib/push-notifications.ts",
-      "uncoveredLines": 28,
-      "linePct": 6.666666666666667,
+      "file": "apps/api/src/lib/heartbeat-scheduler.ts",
+      "package": "apps/api",
+      "uncoveredLines": 27,
+      "linePct": 74.7664,
+      "funcPct": 93.3333,
       "phase": 2,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/services/apple-iap.service.ts",
-      "uncoveredLines": 28,
-      "linePct": 90.93851132686083,
-      "phase": 2,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z"
-    },
-    {
-      "file": "apps/api/src/routes/checkpoints.ts",
+      "file": "packages/agent-runtime/src/migrations/extract-custom-routes.ts",
+      "package": "packages/agent-runtime",
       "uncoveredLines": 29,
-      "linePct": 86.81818181818181,
+      "linePct": 88.6719,
+      "funcPct": 100,
       "phase": 2,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/routes/github.ts",
-      "uncoveredLines": 29,
-      "linePct": 91.61849710982659,
+      "file": "packages/sdk/src/generators/server-generator.ts",
+      "package": "packages/sdk",
+      "uncoveredLines": 31,
+      "linePct": 81.0976,
+      "funcPct": 66.6667,
       "phase": 2,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/sdk/src/projects/cloud-file-transport.ts",
+      "package": "packages/sdk",
+      "uncoveredLines": 31,
+      "linePct": 91.092,
+      "funcPct": 98.3607,
+      "phase": 2,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "apps/api/src/lib/base-heartbeat-scheduler.ts",
+      "package": "apps/api",
+      "uncoveredLines": 34,
+      "linePct": 82.7411,
+      "funcPct": 96.5517,
+      "phase": 2,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
       "file": "apps/api/src/services/transcription.service.ts",
-      "uncoveredLines": 29,
-      "linePct": 85.05154639175258,
+      "package": "apps/api",
+      "uncoveredLines": 37,
+      "linePct": 83.4821,
+      "funcPct": 100,
       "phase": 2,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/lib/pending-login-store.ts",
-      "uncoveredLines": 31,
-      "linePct": 50.79365079365079,
-      "phase": 2,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z"
-    },
-    {
-      "file": "apps/api/src/lib/k8s-auth.ts",
+      "file": "apps/api/src/lib/global-job-lock.ts",
+      "package": "apps/api",
       "uncoveredLines": 39,
-      "linePct": 60.60606060606061,
+      "linePct": 38.0952,
+      "funcPct": 60,
       "phase": 2,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/lib/cloud-key-wipe.ts",
-      "uncoveredLines": 42,
-      "linePct": 19.230769230769234,
+      "file": "packages/sdk/src/memory/server.ts",
+      "package": "packages/sdk",
+      "uncoveredLines": 40,
+      "linePct": 70.1493,
+      "funcPct": 91.6667,
       "phase": 2,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/routes/project-admin.ts",
+      "file": "packages/sdk/src/generators/types-generator.ts",
+      "package": "packages/sdk",
+      "uncoveredLines": 43,
+      "linePct": 79.9065,
+      "funcPct": 62.5,
+      "phase": 2,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "apps/api/src/lib/sync-engine.ts",
+      "package": "apps/api",
       "uncoveredLines": 44,
-      "linePct": 79.72350230414746,
+      "linePct": 75.1412,
+      "funcPct": 100,
       "phase": 2,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/routes/api-keys.ts",
-      "uncoveredLines": 47,
-      "linePct": 82.97101449275362,
-      "phase": 2,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z"
-    },
-    {
-      "file": "apps/api/src/lib/project-user-context.ts",
-      "uncoveredLines": 48,
-      "linePct": 2.0408163265306123,
-      "phase": 2,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z"
-    },
-    {
-      "file": "apps/api/src/routes/eval-admin.ts",
-      "uncoveredLines": 51,
-      "linePct": 94.12442396313364,
-      "phase": 3,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z"
-    },
-    {
-      "file": "apps/api/src/lib/vm-warm-pool-controller.ts",
-      "uncoveredLines": 69,
-      "linePct": 86.25498007968127,
-      "phase": 3,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z"
-    },
-    {
-      "file": "apps/api/src/__tests__/helpers/k8s-mock.ts",
-      "uncoveredLines": 78,
-      "linePct": 46.57534246575342,
-      "phase": 3,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "note": "stale: matches **/__tests__/** in apps/api/bunfig.toml coveragePathIgnorePatterns; never instrumented"
-    },
-    {
-      "file": "apps/api/src/routes/project-chat.ts",
-      "uncoveredLines": 85,
-      "linePct": 91.74757281553399,
-      "phase": 3,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "note": "partial 100: lines 94.86%, funcs 90.48%. 53 lines unreachable in practice \u2014 see commit message."
-    },
-    {
-      "file": "apps/api/src/services/email.service.ts",
-      "uncoveredLines": 137,
-      "linePct": 26.737967914438503,
-      "phase": 3,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "note": "100/100 via __resetEmailServiceForTesting hook (eliminates ?cb= reload phantom-line pollution)."
-    },
-    {
-      "file": "apps/api/src/services/marketplace-snapshot-storage.service.ts",
-      "uncoveredLines": 168,
-      "linePct": 38.23529411764706,
-      "phase": 3,
-      "status": "done",
-      "createdAt": "2026-05-19T22:37:52.960Z",
-      "note": "100/100 via 2 test-only exports (_trySystemTarExtractForTests + _walkExtractForTests) and a NUL-byte path trick for sync spawn() throws."
-    },
-    {
-      "file": "apps/api/src/routes/instances.ts",
-      "uncoveredLines": 197,
-      "linePct": 82.07461328480437,
+      "file": "packages/agent-runtime/src/pty-session.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 53,
+      "linePct": 65.3595,
+      "funcPct": 65.2174,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
-    },
-    {
-      "file": "apps/api/src/routes/ai-proxy.ts",
-      "uncoveredLines": 264,
-      "linePct": 88.38028169014085,
-      "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
-    },
-    {
-      "file": "apps/api/src/routes/scoped-analytics.ts",
-      "uncoveredLines": 268,
-      "linePct": 14.920634920634921,
-      "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
       "file": "apps/api/src/lib/tunnel-redis.ts",
-      "uncoveredLines": 271,
-      "linePct": 32.92079207920792,
+      "package": "apps/api",
+      "uncoveredLines": 55,
+      "linePct": 87.239,
+      "funcPct": 87.1429,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/routes/project-export-import.ts",
-      "uncoveredLines": 290,
-      "linePct": 68.40958605664488,
+      "file": "apps/api/src/services/apple-iap.service.ts",
+      "package": "apps/api",
+      "uncoveredLines": 56,
+      "linePct": 83.3828,
+      "funcPct": 87.5,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/routes/meetings.ts",
-      "uncoveredLines": 295,
-      "linePct": 53.834115805946794,
+      "file": "apps/api/src/services/github.service.ts",
+      "package": "apps/api",
+      "uncoveredLines": 73,
+      "linePct": 84.0263,
+      "funcPct": 100,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/routes/local-projects.ts",
-      "uncoveredLines": 352,
-      "linePct": 36.80430879712747,
+      "file": "apps/api/src/services/git.service.ts",
+      "package": "apps/api",
+      "uncoveredLines": 79,
+      "linePct": 87.6755,
+      "funcPct": 92.5,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/shared-runtime/src/preview-token.ts",
+      "package": "packages/shared-runtime",
+      "uncoveredLines": 79,
+      "linePct": 11.236,
+      "funcPct": 33.3333,
+      "phase": 3,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/agent-runtime/src/sqlite-session-persistence.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 89,
+      "linePct": 48.8506,
+      "funcPct": 42.8571,
+      "phase": 3,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "apps/api/src/services/database.service.ts",
+      "package": "apps/api",
+      "uncoveredLines": 92,
+      "linePct": 79.3722,
+      "funcPct": 100,
+      "phase": 3,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/sdk/src/generators/mst-model-generator.ts",
+      "package": "packages/sdk",
+      "uncoveredLines": 106,
+      "linePct": 47,
+      "funcPct": 44.4444,
+      "phase": 3,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/shared-runtime/src/git-sync.ts",
+      "package": "packages/shared-runtime",
+      "uncoveredLines": 109,
+      "linePct": 58.7121,
+      "funcPct": 68.1818,
+      "phase": 3,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
       "file": "apps/api/src/services/billing.service.ts",
-      "uncoveredLines": 433,
-      "linePct": 39.09985935302391,
+      "package": "apps/api",
+      "uncoveredLines": 130,
+      "linePct": 83.2474,
+      "funcPct": 98,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/routes/security.ts",
-      "uncoveredLines": 495,
-      "linePct": 40.930787589498806,
+      "file": "packages/agent-runtime/src/session-manager.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 169,
+      "linePct": 65.9274,
+      "funcPct": 60,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/lib/runtime/manager.ts",
-      "uncoveredLines": 541,
-      "linePct": 55.215231788079464,
+      "file": "packages/agent-runtime/src/sandbox-exec.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 204,
+      "linePct": 53.3181,
+      "funcPct": 57.1429,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     },
     {
-      "file": "apps/api/src/services/cost-analytics.service.ts",
-      "uncoveredLines": 911,
-      "linePct": 25.814332247557005,
+      "file": "apps/desktop/src/vm/prepare-bundle.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 216,
+      "linePct": 9.2437,
+      "funcPct": 12.5,
       "phase": 3,
       "status": "pending",
-      "createdAt": "2026-05-19T22:37:52.960Z"
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/sdk/src/generators/prisma-generator.ts",
+      "package": "packages/sdk",
+      "uncoveredLines": 306,
+      "linePct": 13.5593,
+      "funcPct": 52.1739,
+      "phase": 3,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "apps/api/src/services/analytics.service.ts",
+      "package": "apps/api",
+      "uncoveredLines": 353,
+      "linePct": 74.4388,
+      "funcPct": 95.6989,
+      "phase": 3,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/shared-runtime/src/lsp-service.ts",
+      "package": "packages/shared-runtime",
+      "uncoveredLines": 479,
+      "linePct": 54.8539,
+      "funcPct": 81.3333,
+      "phase": 3,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/agent-runtime/src/workspace-defaults.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 572,
+      "linePct": 34.3284,
+      "funcPct": 35.8974,
+      "phase": 3,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
+    },
+    {
+      "file": "packages/agent-runtime/src/code-extractor.ts",
+      "package": "packages/agent-runtime",
+      "uncoveredLines": 601,
+      "linePct": 15.7083,
+      "funcPct": 25,
+      "phase": 3,
+      "status": "pending",
+      "createdAt": "2026-05-22T05:05:30.108447Z"
     }
   ]
 }
