@@ -464,6 +464,35 @@ describe('Routes Generator', () => {
 
       expect(code).toContain('export type { WorkspaceHooks } from "./workspace.hooks"')
     })
+
+    describe('toRoutePath pluralization (-es suffix branch)', () => {
+      // Covers the second pluralization arm in toRoutePath():
+      //   names ending in s, x, ch, or sh get '+es' instead of '+s'.
+      // All baseline mocks (Project, Workspace) hit the default '+s' arm, so
+      // line 54 — the `return kebab + 'es'` — was the only residual gap.
+      const idField = { name: 'id', kind: 'scalar' as const, type: 'String', isRequired: true, isList: false, isId: true, isUnique: true, hasDefaultValue: true }
+      const mk = (name: string): PrismaModel => ({ name, dbName: null, fields: [idField] })
+
+      it('appends "es" to a model name ending in "s"', () => {
+        const code = generateRoutesIndex([mk('Class')])
+        expect(code).toContain('app.route("/classes", createClassRoutes())')
+      })
+
+      it('appends "es" to a model name ending in "x"', () => {
+        const code = generateRoutesIndex([mk('Box')])
+        expect(code).toContain('app.route("/boxes", createBoxRoutes())')
+      })
+
+      it('appends "es" to a model name ending in "ch"', () => {
+        const code = generateRoutesIndex([mk('Match')])
+        expect(code).toContain('app.route("/matches", createMatchRoutes())')
+      })
+
+      it('appends "es" to a model name ending in "sh"', () => {
+        const code = generateRoutesIndex([mk('Dish')])
+        expect(code).toContain('app.route("/dishes", createDishRoutes())')
+      })
+    })
   })
 
   describe('generateAdminRoutes', () => {

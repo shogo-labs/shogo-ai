@@ -141,8 +141,11 @@
       "linePct": 99.7899,
       "funcPct": 100,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T07:56:50.671983Z",
+      "beforeLinePct": 99.7899,
+      "afterLinePct": 100.0
     },
     {
       "file": "packages/sdk/src/memory/drivers/bun.ts",
