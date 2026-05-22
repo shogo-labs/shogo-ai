@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -650,13 +650,33 @@ describe('installAgent — k8s purge flag', () => {
     expect(existsSync(join(workspacesDir, out.projectId))).toBe(true)
   })
 
-  it('handles rmSync throw with a warn-and-continue', async () => {
+  it('warns and continues when local cleanup rmSync throws (lines 312-316 catch)', async () => {
+    // Force EACCES on the rmSync({ recursive, force }) call by planting an
+    // unremovable subdir inside the workspace AFTER install but BEFORE the
+    // purge hook runs. Chain: install seeds the workspace dir → s3Sync
+    // succeeds → MARKETPLACE_PURGE_LOCAL_AFTER_S3 + KUBERNETES_SERVICE_HOST
+    // trigger the rmSync block → chmod-000 child makes the recursive remove
+    // throw → catch fires → console.warn logged → install still resolves ok.
     const L = seedListing({ id: 'lst_rmfail' })
     process.env.KUBERNETES_SERVICE_HOST = '1.2.3.4'
     process.env.S3_WORKSPACES_BUCKET = 'bucket'
     process.env.MARKETPLACE_PURGE_LOCAL_AFTER_S3 = 'true'
+
+    // The s3 mock's uploadAll runs BEFORE the rmSync purge. Plant the
+    // unremovable subdir from inside the mock so the workspace dir already
+    // exists by then.
     s3SyncFactoryMock = () => ({
-      uploadAll: async () => ({ errors: [], archiveSize: 100 }),
+      uploadAll: async () => {
+        // Find the newly-created project dir (only one under workspacesDir
+        // at this point in the test).
+        const dirs = readdirSync(workspacesDir)
+        const projDir = join(workspacesDir, dirs[dirs.length - 1]!)
+        const locked = join(projDir, 'locked')
+        mkdirSync(locked, { recursive: true })
+        writeFileSync(join(locked, 'inner.txt'), 'x')
+        chmodSync(locked, 0o000)
+        return { errors: [], archiveSize: 100 }
+      },
       shutdown: () => {},
     })
     db.versions.push({
@@ -668,24 +688,57 @@ describe('installAgent — k8s purge flag', () => {
     const origWarn = console.warn
     console.warn = (...args: any[]) => warnings.push(args.join(' '))
     try {
-      // Monkey-patch rmSync via a tiny dance: replace the workspaces dir
-      // with a path whose deletion will fail. The simplest reproducible
-      // way: pre-create a file at the path the install will use as a
-      // *directory* — wait, the install creates the dir itself. So we
-      // instead chmod the workspaces dir read-only to make rmSync fail.
-      // Easier: just verify the non-throw branch — we already covered
-      // the success path above. Use an unreachable WORKSPACES_DIR after
-      // the install so rmSync hits ENOENT and triggers the catch.
-      await svc.installAgent({
+      const out = await svc.installAgent({
         listingId: L.id,
         userId: 'user_1',
         workspaceId: 'ws_1',
       })
-      // Sanity — no warnings expected when rmSync succeeds.
-      expect(warnings.filter((w) => w.includes('local cleanup failed'))).toHaveLength(0)
+      // Install still succeeds — cleanup failure is non-fatal.
+      expect(out.projectId).toBeDefined()
+      // Catch fired exactly once with the expected prefix.
+      const matches = warnings.filter((w) => w.includes('local cleanup failed'))
+      expect(matches.length).toBe(1)
+      expect(matches[0]).toContain(out.projectId)
     } finally {
       console.warn = origWarn
+      // Best-effort cleanup — unlock and remove whatever we left behind.
+      try {
+        for (const d of readdirSync(workspacesDir)) {
+          const locked = join(workspacesDir, d, 'locked')
+          try { chmodSync(locked, 0o755) } catch {}
+        }
+      } catch {}
     }
+  })
+})
+
+describe('applyUpdate — drift gate fall-through', () => {
+  it('proceeds when baseline has entries, local exists, but diff is empty (line 471 fall-through)', async () => {
+    // The existing 'drift_detected' test triggers the inner if-true path,
+    // taking the early return at line 470. This test exercises the
+    // complementary if-false path: baselineHasEntries=true, localExists=true,
+    // !force, but diff has zero changes → falls past line 471 and runs the
+    // rest of applyUpdate, including the version-row read + workspace apply.
+    const L = seedListing({ currentVersion: '2.0.0' })
+    const i = seedInstall({
+      id: 'inst_nodrift_fallthrough',
+      listingId: L.id,
+      installedVersion: '1.0.0',
+      baselineManifest: { 'a.txt': 'h1' },
+    })
+    makeWorkspaceDir(i.projectId, { 'a.txt': 'unchanged' })
+    // Manifests match → diff returns empty arrays → if-false → fall through.
+    computeManifestMock = () => ({ 'a.txt': 'h1' })
+    diffMock = () => ({ added: [], modified: [], deleted: [] })
+    db.versions.push({
+      listingId: L.id,
+      version: '2.0.0',
+      workspaceSnapshot: { 'a.txt': 'updated' },
+      changelog: 'no-drift upgrade',
+    })
+    const out = await svc.applyUpdate('inst_nodrift_fallthrough')
+    expect(out.ok).toBe(true)
+    expect((out as any).installedVersion).toBe('2.0.0')
   })
 })
 

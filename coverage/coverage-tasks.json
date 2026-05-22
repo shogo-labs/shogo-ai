@@ -310,8 +310,11 @@
       "linePct": 98.5251,
       "funcPct": 91.6667,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T11:17:55.549509Z",
+      "beforeLinePct": 98.5251,
+      "afterLinePct": 100.0
     },
     {
       "file": "packages/agent-runtime/src/block-chunker.ts",
