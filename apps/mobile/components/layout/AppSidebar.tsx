@@ -502,6 +502,7 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
       <Popover
         placement="top"
         size="xs"
+        className="flex-1 min-w-0 w-auto h-auto items-stretch"
         isOpen={isOpen}
         onOpen={() => setIsOpen(true)}
         onClose={() => setIsOpen(false)}
@@ -512,7 +513,7 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
             accessibilityLabel={`${user?.name || 'User'} — open user menu`}
             accessibilityHint="Opens menu with profile, appearance, and sign out options"
             accessibilityState={{ expanded: isOpen }}
-            className="flex-row items-center gap-2 active:opacity-80"
+            className="flex-row items-center gap-2 active:opacity-80 flex-1 min-w-0"
           >
             <Avatar
               fallback={getInitials(user?.name)}
@@ -520,7 +521,11 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
               size="sm"
             />
             {!collapsed && (
-              <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+              <Text
+                className="text-sm text-foreground flex-1 min-w-0"
+                numberOfLines={1}
+                ellipsizeMode="tail"
+              >
                 {user?.name || 'User'}
               </Text>
             )}
@@ -551,7 +556,7 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
         accessibilityLabel={`${user?.name || 'User'} — open user menu`}
         accessibilityHint="Opens menu with profile, appearance, and sign out options"
         accessibilityState={{ expanded: isOpen }}
-        className="flex-row items-center gap-2 active:opacity-80"
+        className="flex-row items-center gap-2 active:opacity-80 flex-1 min-w-0"
       >
         <Avatar
           fallback={getInitials(user?.name)}
@@ -559,7 +564,11 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
           size="sm"
         />
         {!collapsed && (
-          <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+          <Text
+            className="text-sm text-foreground flex-1 min-w-0"
+            numberOfLines={1}
+            ellipsizeMode="tail"
+          >
             {user?.name || 'User'}
           </Text>
         )}
@@ -1477,20 +1486,22 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
             collapsed ? 'justify-center' : 'px-3'
           )}
         >
-          <UserMenu
-            user={user}
-            onSignOut={handleSignOut}
-            onNavigate={(href) => { router.push(href as any); onNavPress() }}
-            isSuperAdmin={isSuperAdmin}
-            isWide={isWide}
-            bottomInset={insets.bottom}
-            collapsed={collapsed}
-          />
+          <View className={cn('min-w-0', !collapsed && 'flex-1')}>
+            <UserMenu
+              user={user}
+              onSignOut={handleSignOut}
+              onNavigate={(href) => { router.push(href as any); onNavPress() }}
+              isSuperAdmin={isSuperAdmin}
+              isWide={isWide}
+              bottomInset={insets.bottom}
+              collapsed={collapsed}
+            />
+          </View>
 
           {!collapsed && (
             <Pressable
               onPress={() => setInboxOpen(true)}
-              className="relative p-1.5 rounded-md active:bg-muted"
+              className="relative shrink-0 p-1.5 rounded-md active:bg-muted"
             >
               <Inbox size={18} className="text-muted-foreground" />
               {pendingInvites.length > 0 && (
