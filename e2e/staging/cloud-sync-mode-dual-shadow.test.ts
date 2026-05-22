@@ -51,6 +51,10 @@ test.describe("CloudSyncMode rollout — dual_shadow fresh assignment", () => {
     await page.getByPlaceholder("you@example.com").fill(EMAIL)
     // The sign-in placeholder is "Enter your password", not "Create a password"
     await page.getByPlaceholder(/Enter your password|password/i).first().fill(PASSWORD)
+    // Mandatory Privacy/Terms consent (SHOG-666) — gates the Sign In CTA.
+    await page
+      .getByRole("checkbox", { name: /Privacy Policy and Terms of Use/i })
+      .click()
     await page.getByText("Sign In", { exact: true }).last().click()
 
     await page.waitForURL((url) => !url.pathname.startsWith("/sign-in"), {
