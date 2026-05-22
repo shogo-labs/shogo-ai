@@ -27,6 +27,14 @@
 import { Agent, fetch as undiciFetch } from 'undici'
 
 /**
+ * Test-only seam — wraps the undiciFetch call inside cloudFetch so
+ * tests can drive it without spinning up a real HTTP server.
+ */
+export const _cloudFetchSeamForTests: {
+  fetch: typeof undiciFetch
+} = { fetch: undiciFetch }
+
+/**
  * Hosts considered "private" — not reachable from the cloud pod and therefore
  * must NOT be pinned to cloud. This is a pragmatic allowlist, not an RFC 1918
  * verifier; the set is intentionally conservative.
@@ -107,7 +115,7 @@ export function cloudFetch(
 ): Promise<Response> {
   // @ts-expect-error — undici's fetch accepts a dispatcher option that is
   // not part of the standard RequestInit type.
-  return undiciFetch(input, { ...init, dispatcher: getCloudDispatcher() })
+  return _cloudFetchSeamForTests.fetch(input as any, { ...init, dispatcher: getCloudDispatcher() } as any)
 }
 
 /**
