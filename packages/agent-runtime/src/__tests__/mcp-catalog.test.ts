@@ -56,6 +56,29 @@ describe('mcp-catalog', () => {
     expect(isMcpServerAllowed('___nope___')).toBe(false)
   })
 
+  test('isMcpServerAllowed rejects cloudCompatible:false entries outside SHOGO_LOCAL_MODE', () => {
+    // Find a catalog entry that is explicitly NOT cloud-compatible — these
+    // are host-only (filesystem, computer-use) and must be hard-blocked
+    // unless SHOGO_LOCAL_MODE is set. The early-return on line 268 is the
+    // branch we are after.
+    const nonCloud = MCP_CATALOG.find((e) => e.cloudCompatible === false)
+    expect(nonCloud).toBeDefined()
+
+    const saved = process.env.SHOGO_LOCAL_MODE
+    delete (process.env as any).SHOGO_LOCAL_MODE
+    try {
+      expect(isMcpServerAllowed(nonCloud!.id)).toBe(false)
+    } finally {
+      if (saved !== undefined) process.env.SHOGO_LOCAL_MODE = saved
+    }
+
+    // And the same entry IS allowed once SHOGO_LOCAL_MODE flips on —
+    // pins the contract end-to-end so a regression that always-returned
+    // false would still fail.
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    expect(isMcpServerAllowed(nonCloud!.id)).toBe(true)
+  })
+
   test('getCatalogByCategory filters entries by category', () => {
     const sample = MCP_CATALOG[0]
     const list = getCatalogByCategory(sample.category)
