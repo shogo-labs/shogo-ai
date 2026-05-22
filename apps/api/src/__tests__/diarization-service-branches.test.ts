@@ -192,3 +192,28 @@ describe('speaker merge helpers', () => {
     ])).toEqual([{ start: 10, end: 11, text: 'alone', speaker: undefined }])
   })
 })
+
+// Regression pin for queue task #42 — these scenarios were the original
+// 10-line gap. The platform-specific env wiring + parse-failure catch +
+// segment merge + remaining-words branches are covered by the larger
+// suites, but isolating them here gives an at-a-glance audit signal if
+// any future refactor regresses them.
+describe('diarization.service regression pin (queue #42)', () => {
+  test('mergeTranscriptWithSpeakers picks the speaker with maximum overlap (DA:231-232)', () => {
+    const segments: TranscriptSegment[] = [{ start: 0, end: 10, text: 'hello world' }]
+    const speakers: SpeakerSegment[] = [
+      { start: 0, end: 3, speaker: 'spk_A' },
+      { start: 3, end: 10, speaker: 'spk_B' },
+    ]
+    const merged = mergeTranscriptWithSpeakers(segments, speakers)
+    expect(merged[0].speaker).toBe('spk_B')
+  })
+
+  test('splitTextBySpeakers returns one zero-window segment when all windows are zero (DA:250)', () => {
+    const out = splitTextBySpeakers('full text body', [
+      { start: 0, end: 0, speaker: 'A' },
+      { start: 0, end: 0, speaker: 'B' },
+    ])
+    expect(out).toEqual([{ start: 0, end: 0, text: 'full text body' }])
+  })
+})
