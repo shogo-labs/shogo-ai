@@ -25,6 +25,20 @@ function getStripe(): Stripe {
   return stripeInstance;
 }
 
+// test-only: reset module-private Stripe singleton so tests can re-trigger
+// the `STRIPE_SECRET_KEY not set` branch in `getStripe()` deterministically.
+export function __resetStripeInstanceForTesting(): void {
+  stripeInstance = null;
+}
+
+// test-only: every public caller pre-checks `isStripeConfigured()` before
+// reaching `getStripe()`, which leaves the singleton's internal guard
+// unreachable from the public API. Re-export it so the guard branch is
+// exercisable.
+export function __getStripeForTesting(): Stripe {
+  return getStripe();
+}
+
 export type PayoutDetails = {
   bankAccountToken?: string;
   firstName: string;
