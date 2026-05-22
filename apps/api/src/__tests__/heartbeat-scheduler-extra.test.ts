@@ -102,5 +102,36 @@ describe('HeartbeatScheduler — fresh instance vs singleton', () => {
   })
 })
 
+describe('HeartbeatScheduler — triggerAgent text-fail arrow', () => {
+  test('response.text() rejects → catch arrow returns "unknown" (DA inner-fn)', async () => {
+    mock.module('../lib/knative-project-manager', () => ({
+      getProjectPodUrl: async () => 'http://pod.test.local',
+    }))
+    mock.module('../lib/runtime-token', () => ({
+      deriveRuntimeToken: () => 'rt-tok',
+    }))
+    const evictSpy = mock(async (_p: string, _s: number, body: string) => {
+      evictedWith = body
+    })
+    let evictedWith = ''
+    mock.module('../lib/warm-pool-self-heal', () => ({
+      evictOnSingleMissingAuth: evictSpy,
+    }))
+    ;(globalThis as any).fetch = async () => ({
+      ok: false,
+      status: 502,
+      text: () => Promise.reject(new Error('body unreadable')),
+    })
+    const sched = new HeartbeatScheduler() as any
+    sched.breaker = { clearFailure: () => undefined, recordFailure: () => undefined }
+    const origErr = console.error
+    console.error = () => undefined
+    try {
+      await sched.triggerAgent('proj-text-fail')
+    } finally { console.error = origErr }
+    expect(evictedWith).toBe('unknown')
+  })
+})
+
 // Restore the real start so other test files aren't affected.
 startProto.start = realStart
