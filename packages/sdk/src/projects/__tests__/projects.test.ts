@@ -142,5 +142,30 @@ describe('ProjectsApi', () => {
       expect(stats).toBeDefined()
       expect(stats.downloaded).toBe(0)
     })
+
+    it('push creates a transport and calls uploadAll (covers lines 152-155)', async () => {
+      const { http } = makeHttp(() => ({ ok: true, files: [], source: 's3', generatedAt: '' }))
+      const api = new ProjectsApi(http, () => 'test-key', () => 'https://api.test')
+      const fetchImpl = (async (input: any) => {
+        const url = typeof input === 'string' ? input : input.url
+        if (url.endsWith('/workspace/manifest')) {
+          return new Response(JSON.stringify({ ok: true, files: [], source: 's3', generatedAt: '' }), { status: 200 })
+        }
+        return new Response('{}', { status: 200 })
+      }) as unknown as typeof fetch
+      const fakeFs = {
+        readFile: async () => new Uint8Array(),
+        writeFile: async () => undefined,
+        mkdir: async () => undefined,
+        unlink: async () => undefined,
+        stat: async () => ({ size: 0, mtimeMs: 0, isDirectory: () => false }),
+        readdir: async () => [],
+        rename: async () => undefined,
+        rm: async () => undefined,
+      }
+      const stats = await api.push('p-1', { from: '/tmp/x', fetchImpl, fs: fakeFs })
+      expect(stats).toBeDefined()
+      expect(stats.uploaded).toBe(0)
+    })
   })
 })
