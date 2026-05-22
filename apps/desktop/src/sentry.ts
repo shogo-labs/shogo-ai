@@ -5,9 +5,11 @@
 //
 // The renderer (Expo web build under `apps/mobile/dist`) keeps its own
 // `@sentry/react-native` init in `apps/mobile/app/_layout.tsx`, which
-// activates whenever `EXPO_PUBLIC_SENTRY_DSN` was set at web-build time
-// — the desktop release workflows pass through the same DSN so renderer
-// crashes also reach Sentry.
+// activates whenever `EXPO_PUBLIC_SENTRY_DSN_WEB` was set at web-build
+// time. The desktop release workflows inject the desktop project's DSN
+// into that `_WEB` slot (sourced from the SHOGO_DESKTOP_SENTRY_DSN
+// secret), so renderer events land in the `shogo-desktop` Sentry project
+// alongside the main-process events captured here.
 //
 // The DSN is injected at bundle time by
 // `apps/desktop/scripts/bundle-main.mjs` via
