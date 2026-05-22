@@ -48,3 +48,90 @@ describe('template-loader', () => {
     expect(getTemplateDistDir('___this-template-does-not-exist___')).toBeNull()
   })
 })
+
+import {
+  getTemplateShogoDir,
+  getTemplateCanvasStatePath,
+  getTemplateCanvasCodeDir,
+  getTemplateSrcDir,
+  getTemplatePrismaDir,
+} from '../template-loader'
+import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
+
+describe('template-loader path helpers', () => {
+  const FIXTURE = join(TEMPLATES_BASE, '__test_fixture__')
+
+  const setup = () => {
+    mkdirSync(join(FIXTURE, '.shogo'), { recursive: true })
+    writeFileSync(join(FIXTURE, '.canvas-state.json'), '{}', 'utf-8')
+    mkdirSync(join(FIXTURE, 'canvas'), { recursive: true })
+    mkdirSync(join(FIXTURE, 'src'), { recursive: true })
+    mkdirSync(join(FIXTURE, 'prisma'), { recursive: true })
+  }
+  const teardown = () => rmSync(FIXTURE, { recursive: true, force: true })
+
+  test('getTemplateShogoDir returns path when .shogo exists', () => {
+    setup()
+    try {
+      const r = getTemplateShogoDir('__test_fixture__')
+      expect(r).not.toBeNull()
+      expect(r).toContain('.shogo')
+    } finally { teardown() }
+  })
+
+  test('getTemplateShogoDir returns null when template missing', () => {
+    expect(getTemplateShogoDir('__nope__')).toBeNull()
+  })
+
+  test('getTemplateCanvasStatePath returns path when .canvas-state.json exists', () => {
+    setup()
+    try {
+      const r = getTemplateCanvasStatePath('__test_fixture__')
+      expect(r).not.toBeNull()
+      expect(r).toContain('.canvas-state.json')
+    } finally { teardown() }
+  })
+
+  test('getTemplateCanvasStatePath returns null when missing', () => {
+    expect(getTemplateCanvasStatePath('__nope__')).toBeNull()
+  })
+
+  test('getTemplateCanvasCodeDir returns path when canvas/ exists', () => {
+    setup()
+    try {
+      const r = getTemplateCanvasCodeDir('__test_fixture__')
+      expect(r).not.toBeNull()
+      expect(r).toContain('canvas')
+    } finally { teardown() }
+  })
+
+  test('getTemplateCanvasCodeDir returns null when missing', () => {
+    expect(getTemplateCanvasCodeDir('__nope__')).toBeNull()
+  })
+
+  test('getTemplateSrcDir returns path when src/ exists', () => {
+    setup()
+    try {
+      const r = getTemplateSrcDir('__test_fixture__')
+      expect(r).not.toBeNull()
+      expect(r).toContain('src')
+    } finally { teardown() }
+  })
+
+  test('getTemplateSrcDir returns null when missing', () => {
+    expect(getTemplateSrcDir('__nope__')).toBeNull()
+  })
+
+  test('getTemplatePrismaDir returns path when prisma/ exists', () => {
+    setup()
+    try {
+      const r = getTemplatePrismaDir('__test_fixture__')
+      expect(r).not.toBeNull()
+      expect(r).toContain('prisma')
+    } finally { teardown() }
+  })
+
+  test('getTemplatePrismaDir returns null when missing', () => {
+    expect(getTemplatePrismaDir('__nope__')).toBeNull()
+  })
+})
