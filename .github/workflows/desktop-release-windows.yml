@@ -101,12 +101,14 @@ jobs:
           EXPO_PUBLIC_API_URL: 'http://localhost:8002'
           # Pass the desktop Sentry DSN into the renderer build so the
           # existing `@sentry/react-native` init in apps/mobile/app/_layout.tsx
-          # activates inside the Electron BrowserWindow. Renderer events
-          # land in the same `shogo-desktop` Sentry project as main-process
-          # events, separate from the mobile app's `shogo-mobile` project.
+          # activates inside the Electron BrowserWindow. The renderer is a
+          # web build (`Platform.OS === 'web'`), so `_layout.tsx` reads
+          # `EXPO_PUBLIC_SENTRY_DSN_WEB`. Renderer events land in the
+          # `shogo-desktop` Sentry project (same as main-process events,
+          # separate from `shogo-ios` / `shogo-android` / `javascript-react`).
           # Falls back to empty (Sentry self-disables) on forks / branches
           # without the secret.
-          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.SHOGO_DESKTOP_SENTRY_DSN }}
+          EXPO_PUBLIC_SENTRY_DSN_WEB: ${{ secrets.SHOGO_DESKTOP_SENTRY_DSN }}
 
       - name: Upload web build
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0

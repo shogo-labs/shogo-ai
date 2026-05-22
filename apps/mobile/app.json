@@ -50,8 +50,8 @@
       [
         "@sentry/react-native/expo",
         {
-          "organization": "shogo",
-          "project": "shogo-mobile"
+          "organization": "shogo-ai",
+          "project": "shogo-ios"
         }
       ],
       "./plugins/withRemoveOrientationLocks",

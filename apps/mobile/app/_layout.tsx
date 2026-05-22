@@ -11,6 +11,22 @@ import { Stack } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
 import { useColorScheme } from 'react-native'
 import * as Sentry from '@sentry/react-native'
+
+// Per-platform Sentry DSNs. Each native binary / web bundle only ever has
+// one of these populated (Metro inlines `process.env.EXPO_PUBLIC_*` at
+// bundle time, and the workflows only set the relevant one), so this is
+// effectively a compile-time switch — the others resolve to `undefined`.
+//
+//   ios          -> shogo-ios     (set by .github/workflows/ios.yml)
+//   android      -> shogo-android (set by .github/workflows/android.yml)
+//   web (mobile) -> javascript-react (set by apps/mobile/Dockerfile via deploy.yml)
+//   web (desktop renderer) -> shogo-desktop (set by desktop-release-*.yml,
+//                              sourced from SHOGO_DESKTOP_SENTRY_DSN)
+const sentryDsn = Platform.select({
+  ios: process.env.EXPO_PUBLIC_SENTRY_DSN_IOS,
+  android: process.env.EXPO_PUBLIC_SENTRY_DSN_ANDROID,
+  default: process.env.EXPO_PUBLIC_SENTRY_DSN_WEB,
+})
 import { GluestackUIProvider } from '@/components/ui/gluestack-ui-provider'
 import { AuthProvider } from '../contexts/auth'
 import { ActiveInstanceProvider } from '../contexts/active-instance'
@@ -24,11 +40,11 @@ import { captureAttribution } from '../lib/attribution'
 import { safeSetItem } from '../lib/safe-storage'
 
 Sentry.init({
-  dsn: process.env.EXPO_PUBLIC_SENTRY_DSN,
+  dsn: sentryDsn,
   environment: process.env.EXPO_PUBLIC_APP_ENV || 'development',
   release: process.env.EXPO_PUBLIC_BUILD_HASH || 'dev',
   tracesSampleRate: 0.2,
-  enabled: !!process.env.EXPO_PUBLIC_SENTRY_DSN,
+  enabled: !!sentryDsn,
   // Drop unhandled promise rejections whose "reason" was a non-Error value
   // (e.g. `Promise.reject(new Event(...))` from third-party libs, or string
   // rejections from Stripe / posthog). They show up in Sentry as a single

@@ -25,11 +25,17 @@
 #   APPLE_CERTIFICATE_BASE64            - Base64 of the iOS Distribution .p12
 #   APPLE_CERTIFICATE_PASSWORD          - Password for the .p12
 #   APPLE_PROVISIONING_PROFILE_BASE64   - Base64 of the App Store .mobileprovision
-#   EXPO_PUBLIC_SENTRY_DSN              - (optional) Sentry DSN for runtime
+#   EXPO_PUBLIC_SENTRY_DSN_IOS          - (optional) Sentry DSN for the iOS
+#                                          binary's runtime, sourced into the
+#                                          JS bundle by Metro. Should match
+#                                          the DSN of the `shogo-ios` Sentry
+#                                          project. When unset, Sentry self-
+#                                          disables at app start.
 #   SENTRY_AUTH_TOKEN                   - (optional) Sentry auth token. When set,
-#                                          the post-archive job uploads dSYMs to
-#                                          Sentry (org=shogo, project=shogo-mobile).
-#                                          When unset, the upload step skips
+#                                          the post-archive job uploads dSYMs
+#                                          and JS sourcemaps to Sentry
+#                                          (org=shogo-ai, project=shogo-ios).
+#                                          When unset, the upload steps skip
 #                                          silently and the rest of the pipeline
 #                                          still completes.
 # =============================================================================
@@ -232,7 +238,12 @@ jobs:
           COMMIT_MSG: ${{ github.event.head_commit.message || format('Manual OTA from {0}', github.sha) }}
           EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
-          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
+          EXPO_PUBLIC_SENTRY_DSN_IOS: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_IOS }}
+          # `Sentry.init({ release: process.env.EXPO_PUBLIC_BUILD_HASH || 'dev' })`
+          # in apps/mobile/app/_layout.tsx reads this at bundle time. Without it
+          # every OTA bundle reports as `dev` in Sentry, which collapses every
+          # release into one bucket and makes sourcemap matching impossible.
+          EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
         run: |
           SUBJECT=$(printf '%s' "$COMMIT_MSG" | head -n1)
           eas update \
@@ -240,6 +251,66 @@ jobs:
             --platform ios \
             --message "$SUBJECT" \
             --non-interactive
+
+      - name: Upload OTA sourcemaps to Sentry (optional, non-fatal)
+        # Re-bundles the iOS JS app with `expo export:embed` (same Metro
+        # invocation EAS uses internally) so we get an `.jsbundle` + `.map`
+        # pair on disk, then uploads them via sentry-cli with debug-id
+        # injection. The release tag matches `EXPO_PUBLIC_BUILD_HASH`
+        # baked into the OTA bundle above so events from devices that pulled
+        # this update will resolve to symbolicated frames.
+        #
+        # Non-fatal: a Sentry misconfiguration must not block an OTA roll-out.
+        working-directory: apps/mobile
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: shogo-ai
+          SENTRY_PROJECT: shogo-ios
+          SENTRY_LOG_LEVEL: info
+          EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
+          EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
+          EXPO_PUBLIC_SENTRY_DSN_IOS: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_IOS }}
+          EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
+        run: |
+          set +e
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "::notice title=Sentry sourcemap upload (iOS OTA)::SENTRY_AUTH_TOKEN secret not configured — skipping."
+            exit 0
+          fi
+          BUNDLE_DIR="$RUNNER_TEMP/ota-ios-bundle"
+          mkdir -p "$BUNDLE_DIR"
+          bunx expo export:embed \
+            --platform ios \
+            --dev false \
+            --reset-cache \
+            --bundle-output "$BUNDLE_DIR/main.jsbundle" \
+            --sourcemap-output "$BUNDLE_DIR/main.jsbundle.map" \
+            --assets-dest "$BUNDLE_DIR/assets" \
+            --entry-file apps/mobile/index.js
+          EXPORT_RC=$?
+          if [ "$EXPORT_RC" -ne 0 ]; then
+            echo "::warning title=Sentry sourcemap upload (iOS OTA)::expo export:embed exited $EXPORT_RC — skipping upload."
+            exit 0
+          fi
+          SENTRY_CLI="./node_modules/.bin/sentry-cli"
+          [ -x "$SENTRY_CLI" ] || SENTRY_CLI="bunx @sentry/cli"
+          # `--ext jsbundle --ext map` is required because RN's iOS bundle
+          # extension (`.jsbundle`) isn't part of sentry-cli's default file
+          # filter — without it, inject/upload would silently skip the
+          # bundle and only ship the map (and Sentry would refuse to match).
+          $SENTRY_CLI sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" \
+            --ext jsbundle --ext map "$BUNDLE_DIR"
+          $SENTRY_CLI sourcemaps upload \
+            --release "$EXPO_PUBLIC_BUILD_HASH" \
+            --dist ios \
+            --ext jsbundle --ext map \
+            --strip-prefix "$GITHUB_WORKSPACE" \
+            "$BUNDLE_DIR"
+          UPLOAD_RC=$?
+          if [ "$UPLOAD_RC" -ne 0 ]; then
+            echo "::warning title=Sentry sourcemap upload (iOS OTA)::sentry-cli exited $UPLOAD_RC — release continuing without symbolication."
+          fi
+          exit 0
 
       - name: Summary
         run: |
@@ -249,6 +320,7 @@ jobs:
           echo "- **Branch:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Runtime Version:** ${{ needs.check-fingerprint.outputs.runtime_version }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Sentry release:** \`${{ github.sha }}\` (dist=\`ios\`)" >> $GITHUB_STEP_SUMMARY
 
   # ===========================================================================
   # Full Native Build — macOS runner with xcodebuild
@@ -366,7 +438,8 @@ jobs:
         env:
           EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
-          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
+          EXPO_PUBLIC_SENTRY_DSN_IOS: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_IOS }}
+          EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
           EXPO_UPDATES_CHANNEL: ${{ needs.check-fingerprint.outputs.environment }}
         run: bunx expo prebuild --platform ios --clean
 
@@ -465,7 +538,11 @@ jobs:
           # localhost. See android.yml "Build AAB" for the parallel.
           EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
-          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
+          EXPO_PUBLIC_SENTRY_DSN_IOS: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_IOS }}
+          # Becomes the Sentry `release` tag on every event captured from
+          # this IPA — keep in sync with the post-archive sourcemap upload
+          # below so events are matchable to bundles.
+          EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
         run: |
           set -o pipefail
           xcodebuild archive \
@@ -492,15 +569,13 @@ jobs:
         # without the secret), and emits a `::warning::` annotation when the
         # upload itself fails, so failures stay loud and visible.
         #
-        # Org defaults to "shogo-ai" to match the slug embedded in the auth
-        # token; override at the repo level via SENTRY_ORG if it ever moves.
         # Bun strict-hoists transitive deps so we use the bin shim Bun does
         # write for every dep with `bin`, with `bunx` as a clean fallback.
         working-directory: apps/mobile
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: shogo-ai
-          SENTRY_PROJECT: shogo-mobile
+          SENTRY_PROJECT: shogo-ios
           SENTRY_LOG_LEVEL: info
         run: |
           set +e
@@ -551,6 +626,83 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
+          exit 0
+
+      - name: Upload JS sourcemaps to Sentry (optional, non-fatal)
+        # The companion to the dSYM step above for the JS half of the
+        # binary. The Sentry-injected "Bundle React Native code and images"
+        # phase is stripped from the Xcode project (see strip-sentry-build-
+        # phases.rb), so the IPA doesn't ship with debug-id-stamped JS and
+        # we'd otherwise see fully-minified `index.ios.bundle` frames in
+        # Sentry events. We re-bundle here with `expo export:embed` (same
+        # Metro config that produced the bundle in the IPA) and upload the
+        # resulting bundle + map to Sentry under the same release tag baked
+        # into the binary via EXPO_PUBLIC_BUILD_HASH. dist=`ios` keeps it
+        # disjoint from the Android upload at the same SHA.
+        #
+        # Non-fatal for the same reason as the dSYM step.
+        working-directory: apps/mobile
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: shogo-ai
+          SENTRY_PROJECT: shogo-ios
+          SENTRY_LOG_LEVEL: info
+          EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
+          EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
+          EXPO_PUBLIC_SENTRY_DSN_IOS: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_IOS }}
+          EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
+        run: |
+          set +e
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "::notice title=Sentry sourcemap upload (iOS)::SENTRY_AUTH_TOKEN secret not configured — skipping."
+            exit 0
+          fi
+          BUNDLE_DIR="$RUNNER_TEMP/ios-bundle"
+          mkdir -p "$BUNDLE_DIR"
+          bunx expo export:embed \
+            --platform ios \
+            --dev false \
+            --reset-cache \
+            --bundle-output "$BUNDLE_DIR/main.jsbundle" \
+            --sourcemap-output "$BUNDLE_DIR/main.jsbundle.map" \
+            --assets-dest "$BUNDLE_DIR/assets" \
+            --entry-file apps/mobile/index.js
+          EXPORT_RC=$?
+          if [ "$EXPORT_RC" -ne 0 ]; then
+            echo "::warning title=Sentry sourcemap upload (iOS)::expo export:embed exited $EXPORT_RC — skipping upload."
+            {
+              echo "## Sentry sourcemap upload (iOS)"
+              echo ""
+              echo "_Skipped — \`expo export:embed\` exited $EXPORT_RC._"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          SENTRY_CLI="./node_modules/.bin/sentry-cli"
+          [ -x "$SENTRY_CLI" ] || SENTRY_CLI="bunx @sentry/cli"
+          # See ios.yml OTA step for the `--ext jsbundle` rationale.
+          $SENTRY_CLI sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" \
+            --ext jsbundle --ext map "$BUNDLE_DIR"
+          $SENTRY_CLI sourcemaps upload \
+            --release "$EXPO_PUBLIC_BUILD_HASH" \
+            --dist ios \
+            --ext jsbundle --ext map \
+            --strip-prefix "$GITHUB_WORKSPACE" \
+            "$BUNDLE_DIR"
+          UPLOAD_RC=$?
+          if [ "$UPLOAD_RC" -eq 0 ]; then
+            {
+              echo "## Sentry sourcemap upload (iOS)"
+              echo ""
+              echo "Uploaded JS bundle + sourcemap to Sentry (release=\`$EXPO_PUBLIC_BUILD_HASH\`, dist=\`ios\`)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=Sentry sourcemap upload (iOS)::sentry-cli exited $UPLOAD_RC — release continuing."
+            {
+              echo "## Sentry sourcemap upload (iOS)"
+              echo ""
+              echo "_Failed (sentry-cli exit $UPLOAD_RC)._"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
           exit 0
 
       - name: Create exportOptions.plist
