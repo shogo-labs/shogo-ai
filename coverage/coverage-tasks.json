@@ -622,8 +622,11 @@
       "linePct": 83.4532,
       "funcPct": 84.6154,
       "phase": 2,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T15:29:22.313757Z",
+      "beforeLinePct": 83.45,
+      "afterLinePct": 100.0
     },
     {
       "file": "packages/sdk/src/errors.ts",
