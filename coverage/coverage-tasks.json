@@ -362,8 +362,11 @@
       "linePct": 80,
       "funcPct": 100,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T11:29:08.943152Z",
+      "beforeLinePct": 80.0,
+      "afterLinePct": 100.0
     },
     {
       "file": "packages/agent-runtime/src/lib/cloud-fetcher.ts",
