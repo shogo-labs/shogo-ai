@@ -297,8 +297,11 @@
       "linePct": 99.1579,
       "funcPct": 57.1429,
       "phase": 1,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T11:15:04.605089Z",
+      "beforeLinePct": 99.16,
+      "afterLinePct": 100.0
     },
     {
       "file": "apps/api/src/services/marketplace-install.service.ts",
