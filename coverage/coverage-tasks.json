@@ -505,8 +505,11 @@
       "linePct": 90.0826,
       "funcPct": 90,
       "phase": 2,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T14:52:26.004540Z",
+      "beforeLinePct": 90.08,
+      "afterLinePct": 100.0
     },
     {
       "file": "packages/agent-runtime/src/response-transforms.ts",
