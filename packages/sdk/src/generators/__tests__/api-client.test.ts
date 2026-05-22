@@ -269,4 +269,28 @@ describe('API Client Generator', () => {
       expect(code).toContain('userId?: string')
     })
   })
+
+  describe('models without an @id field', () => {
+    it('emits a "Skipped" comment and no client object for the model', () => {
+      // Mirror a Prisma model that legitimately has no @id (e.g. a composite-key
+      // model). generateModelClient() should short-circuit on line 171 and emit
+      // the skipped comment without producing a typed client export for it.
+      const noIdModel: PrismaModel = {
+        name: 'AuditEntry',
+        dbName: null,
+        fields: [
+          { name: 'workspaceId', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+          { name: 'timestamp',   kind: 'scalar', type: 'DateTime', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: true },
+        ],
+      }
+
+      const code = generateApiClient([mockWorkspaceModel, noIdModel])
+
+      expect(code).toContain('// Skipped AuditEntry - no @id field found')
+      expect(code).not.toContain('export const auditEntryApi')
+      // Cohabiting valid model still gets its client emitted — proves the
+      // early-return aborts the model only, not the whole generator.
+      expect(code).toContain('export const workspaceApi')
+    })
+  })
 })
