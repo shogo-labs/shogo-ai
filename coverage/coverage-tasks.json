@@ -661,8 +661,11 @@
       "linePct": 74.7664,
       "funcPct": 93.3333,
       "phase": 2,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T15:38:31.004117Z",
+      "beforeLinePct": 74.77,
+      "afterLinePct": 82.47
     },
     {
       "file": "packages/agent-runtime/src/migrations/extract-custom-routes.ts",
