@@ -28,7 +28,7 @@ import {
   Globe,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from '@shogo/ui-kit/platform'
+import { openAuthFlow, preCreateAuthWindow } from '@shogo/ui-kit/platform'
 import { API_URL, api } from '../../../lib/api'
 
 const LOG_PREFIX = '[ToolsPanel]'
@@ -231,7 +231,12 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
         let redirect: string | undefined
         if (isNative) {
           redirect = ExpoLinking.createURL('integrations-callback')
-        } else if (isMobileWeb()) {
+        } else {
+          // Web (desktop browser, mobile web, Electron): always return to the
+          // initiating tab/window. See ConnectToolWidget.tsx for the full
+          // rationale — every web client must pass an explicit redirect so
+          // the callback never falls back to a `shogo://` deep link that
+          // would launch the desktop app from a localhost browser session.
           const returnUrl = new URL(window.location.href)
           returnUrl.searchParams.set('fromOAuth', '1')
           redirect = returnUrl.toString()
@@ -277,7 +282,10 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
       let redirect: string | undefined
       if (isNative) {
         redirect = ExpoLinking.createURL('integrations-callback')
-      } else if (isMobileWeb()) {
+      } else {
+        // Web (desktop browser, mobile web, Electron): always pass our own
+        // URL — see the connect-flow above and ConnectToolWidget.tsx for
+        // why every web client must opt in explicitly.
         const returnUrl = new URL(window.location.href)
         returnUrl.searchParams.set('fromOAuth', '1')
         redirect = returnUrl.toString()

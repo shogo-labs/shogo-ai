@@ -140,7 +140,7 @@ import { type PlanData } from "./PlanCard"
 import { usePlanStreamSafe } from "./PlanStreamContext"
 import { AgentClient } from "@shogo-ai/sdk/agent"
 import { agentFetch } from "../../lib/agent-fetch"
-import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from "@shogo/ui-kit/platform"
+import { openAuthFlow, preCreateAuthWindow } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 import { buildStopRequest } from "../../lib/chat-stop"
 import { configureSubagentStop } from "../../lib/subagent-stop"
@@ -4461,7 +4461,12 @@ export const ChatPanel = observer(function ChatPanel({
                           let redirect: string | undefined
                           if (isNative) {
                             redirect = ExpoLinking.createURL('integrations-callback')
-                          } else if (isMobileWeb()) {
+                          } else {
+                            // Web (desktop browser, mobile web, Electron):
+                            // always pass our own URL so the OAuth callback
+                            // returns here instead of OS-routing through a
+                            // `shogo://` protocol handler. See
+                            // ConnectToolWidget.tsx for the full rationale.
                             const returnUrl = new URL(window.location.href)
                             returnUrl.searchParams.set('fromOAuth', '1')
                             redirect = returnUrl.toString()

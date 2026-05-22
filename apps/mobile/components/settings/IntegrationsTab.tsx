@@ -40,7 +40,7 @@ import {
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useDomainHttp } from '../../contexts/domain'
 import { api, API_URL } from '../../lib/api'
-import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from '@shogo/ui-kit/platform'
+import { openAuthFlow, preCreateAuthWindow } from '@shogo/ui-kit/platform'
 import {
   Card,
   CardContent,
@@ -195,7 +195,10 @@ export function IntegrationsTab() {
         let redirect: string | undefined
         if (isNative) {
           redirect = ExpoLinking.createURL('integrations-callback')
-        } else if (isMobileWeb()) {
+        } else {
+          // Web (desktop browser, mobile web, Electron): always pass our own
+          // URL so the OAuth callback returns here. See ConnectToolWidget.tsx
+          // for the rationale on why every web client must opt in.
           const returnUrl = new URL(window.location.href)
           returnUrl.searchParams.set('fromOAuth', '1')
           redirect = returnUrl.toString()
