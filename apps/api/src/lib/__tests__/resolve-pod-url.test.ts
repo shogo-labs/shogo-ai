@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { describe, expect, it, mock } from 'bun:test'
+import { afterEach, describe, expect, it, mock, test } from 'bun:test'
 import { resolveProjectPodUrl, type ResolvePodUrlOpts } from '../resolve-pod-url'
 
 class FakeVMPoolPermanentlyDisabledError extends Error {
@@ -299,5 +299,37 @@ describe('resolveProjectPodUrl', () => {
       expect(res.mode).toBe('vm')
       expect(mgr.start).toHaveBeenCalledTimes(0)
     })
+  })
+})
+
+describe('defaultIsKubernetes and defaultIsVMIsolation (env probes)', () => {
+  const origK8s = process.env.KUBERNETES_SERVICE_HOST
+  const origVM  = process.env.SHOGO_VM_ISOLATION
+
+  afterEach(() => {
+    if (origK8s === undefined) delete process.env.KUBERNETES_SERVICE_HOST
+    else process.env.KUBERNETES_SERVICE_HOST = origK8s
+    if (origVM === undefined) delete process.env.SHOGO_VM_ISOLATION
+    else process.env.SHOGO_VM_ISOLATION = origVM
+  })
+
+  test('routes to k8s when KUBERNETES_SERVICE_HOST is set (covers defaultIsKubernetes)', async () => {
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    delete process.env.SHOGO_VM_ISOLATION
+    const res = await resolveProjectPodUrl('proj-env', {
+      _k8sResolver: async () => 'http://knative-pod:8080',
+    })
+    expect(res.mode).toBe('k8s')
+    expect(res.url).toBe('http://knative-pod:8080')
+  })
+
+  test('routes to vm when SHOGO_VM_ISOLATION=true and no k8s (covers defaultIsVMIsolation)', async () => {
+    delete process.env.KUBERNETES_SERVICE_HOST
+    process.env.SHOGO_VM_ISOLATION = 'true'
+    const res = await resolveProjectPodUrl('proj-env', {
+      _vmResolver: async () => 'http://vm-pool:39000',
+    })
+    expect(res.mode).toBe('vm')
+    expect(res.url).toBe('http://vm-pool:39000')
   })
 })
