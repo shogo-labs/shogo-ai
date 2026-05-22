@@ -471,4 +471,34 @@ describe('Stripe configuration', () => {
     await sc.createCustomAccount('c2', 'me2@x.io')
     expect(stripeCalls.filter((c) => c.method === 'accounts.create')).toHaveLength(2)
   })
+
+  it('throws "Stripe is not configured" when getStripe() is reached with STRIPE_SECRET_KEY unset', () => {
+    // Every public caller pre-checks isStripeConfigured() before reaching
+    // getStripe(), so the guard inside getStripe() is unreachable from the
+    // public API. __getStripeForTesting() lets us drive the singleton init
+    // path directly to cover the "not configured" throw.
+    sc.__resetStripeInstanceForTesting()
+    const saved = process.env.STRIPE_SECRET_KEY
+    delete (process.env as any).STRIPE_SECRET_KEY
+    try {
+      expect(() => sc.__getStripeForTesting()).toThrow(
+        'Stripe is not configured (STRIPE_SECRET_KEY not set)',
+      )
+    } finally {
+      if (saved !== undefined) process.env.STRIPE_SECRET_KEY = saved
+      sc.__resetStripeInstanceForTesting()
+    }
+  })
+
+  it('memoizes the Stripe singleton across __getStripeForTesting() calls', () => {
+    sc.__resetStripeInstanceForTesting()
+    process.env.STRIPE_SECRET_KEY = 'sk_test_singleton'
+    try {
+      const a = sc.__getStripeForTesting()
+      const b = sc.__getStripeForTesting()
+      expect(a).toBe(b)
+    } finally {
+      sc.__resetStripeInstanceForTesting()
+    }
+  })
 })
