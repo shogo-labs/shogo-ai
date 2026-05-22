@@ -94,3 +94,48 @@ describe('detected-urls', () => {
     expect(ingestChunk('g', 'Local: not-a-url\n')).toBeNull()
   })
 })
+
+import { listAllDetections, clearDetection } from '../detected-urls'
+
+describe('detected-urls gap coverage', () => {
+  afterEach(() => _resetForTests())
+
+  test('DA:105 — normalize catch fires for URL with invalid port', () => {
+    expect(ingestChunk('badport', 'Local: http://localhost:abc')).toBeNull()
+  })
+
+  test('DA:122 — tail buffer slices when input exceeds TAIL_MAX_BYTES (8KB)', () => {
+    const filler = 'x'.repeat(9000)
+    expect(ingestChunk('overflow', filler)).toBeNull()
+  })
+
+  test('DA:172 — listAllDetections returns sorted detections', () => {
+    ingestChunk('a', 'Local: http://localhost:3001')
+    ingestChunk('b', 'Local: http://localhost:3002')
+    const all = listAllDetections()
+    expect(all.length).toBe(2)
+    expect(all[0].sessionId).toBe('b')
+    expect(all[1].sessionId).toBe('a')
+  })
+
+  test('DA:176-178 — clearDetection removes session, lastAny unchanged when different', () => {
+    ingestChunk('x', 'Local: http://localhost:4001')
+    ingestChunk('y', 'Local: http://localhost:4002')
+    clearDetection('x')
+    expect(getDetectedForSession('x')).toBeNull()
+    expect(getMostRecentDetection()?.sessionId).toBe('y')
+  })
+
+  test('DA:179-181 — clearDetection updates lastAny when it matches', () => {
+    ingestChunk('p', 'Local: http://localhost:5001')
+    ingestChunk('q', 'Local: http://localhost:5002')
+    clearDetection('q')
+    expect(getMostRecentDetection()?.sessionId).toBe('p')
+  })
+
+  test('clearDetection sets lastAny to null when no sessions remain', () => {
+    ingestChunk('only', 'Local: http://localhost:6001')
+    clearDetection('only')
+    expect(getMostRecentDetection()).toBeNull()
+  })
+})
