@@ -121,6 +121,36 @@ describe('MachinesApi', () => {
     })
   })
 
+  describe('getProjectPin', () => {
+    it('GETs /api/projects/:id/preferred-instance and URL-encodes the projectId', async () => {
+      const { http, calls } = makeHttp(() => ({
+        preferredInstanceId: 'inst-7',
+        preferredInstancePolicy: 'pinned',
+        instance: { id: 'inst-7', name: 'prod-vps-7' },
+      }))
+      const api = new MachinesApi(http)
+      const pin = await api.getProjectPin('proj/with/slash')
+      expect(pin.preferredInstanceId).toBe('inst-7')
+      expect(calls[0]).toEqual({
+        method: 'GET',
+        path: '/api/projects/proj%2Fwith%2Fslash/preferred-instance',
+      })
+    })
+
+    it('returns the cloud-routed default shape when response body is missing', async () => {
+      const http = {
+        get: async () => ({ data: null, status: 200, error: null }) as ShogoResponse<any>,
+      } as unknown as HttpClient
+      const api = new MachinesApi(http)
+      const pin = await api.getProjectPin('proj-x')
+      expect(pin).toEqual({
+        preferredInstanceId: null,
+        preferredInstancePolicy: 'pinned',
+        instance: null,
+      })
+    })
+  })
+
   describe('pinProject', () => {
     it('PUTs /api/projects/:id/preferred-instance with default policy omitted', async () => {
       const { http, calls } = makeHttp(() => ({
