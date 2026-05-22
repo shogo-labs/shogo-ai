@@ -17,7 +17,7 @@ import { useState, useEffect, useCallback, useRef } from "react"
 import { View, Text, Pressable, Platform } from "react-native"
 import * as ExpoLinking from "expo-linking"
 import { cn } from "@shogo/shared-ui/primitives"
-import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from "@shogo/ui-kit/platform"
+import { openAuthFlow, preCreateAuthWindow } from "@shogo/ui-kit/platform"
 import {
   CheckCircle2,
   Loader2,
@@ -203,8 +203,15 @@ export function ConnectToolWidget({
             redirect = ExpoLinking.createURL(
               `integrations-callback?projectId=${encodeURIComponent(projectId)}`,
             )
-          } else if (isMobileWeb()) {
-            // Mobile web: tell the server callback to redirect back to our page
+          } else {
+            // Web (desktop browser, mobile web, Electron-bundled UI): pass
+            // our own URL so the server's callback returns to *this* tab/
+            // window. Without this every web client falls through to whatever
+            // server-side default exists, which historically pointed at
+            // `shogo://integrations-callback` and OS-routed to the registered
+            // desktop-app protocol handler — sending users away from the
+            // browser tab they initiated from (e.g. localhost web → desktop
+            // app launch).
             const returnUrl = new URL(window.location.href)
             returnUrl.searchParams.set("fromOAuth", "1")
             redirect = returnUrl.toString()
