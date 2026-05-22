@@ -570,8 +570,11 @@
       "linePct": 87.0504,
       "funcPct": 95.8333,
       "phase": 2,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T15:13:37.491574Z",
+      "beforeLinePct": 87.05,
+      "afterLinePct": 99.28
     },
     {
       "file": "apps/api/src/services/diarization.service.ts",
