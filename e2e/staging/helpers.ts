@@ -48,6 +48,12 @@ export async function signUpAndOnboard(page: Page, user: TestUser): Promise<void
   await page.getByPlaceholder("you@example.com").fill(user.email)
   const passwordField = page.getByPlaceholder(/Create a password/)
   await passwordField.fill(user.password)
+  // Mandatory Privacy/Terms consent (SHOG-666). The Sign Up CTA is disabled
+  // until this Pressable-as-checkbox is ticked. It exposes role="checkbox"
+  // with accessibilityLabel "I accept the Privacy Policy and Terms of Use".
+  await page
+    .getByRole("checkbox", { name: /Privacy Policy and Terms of Use/i })
+    .click()
   // The shared-ui <Button> renders as a non-semantic Pressable on web, so
   // the inner "Sign Up" text is the only stable handle. Click the *last*
   // "Sign Up" element on the page (tab is first, form CTA is last).
@@ -115,6 +121,10 @@ export async function signUpAndOnboardWithAppTemplate(
   await page.getByPlaceholder("Enter your name").fill(user.name)
   await page.getByPlaceholder("you@example.com").fill(user.email)
   await page.getByPlaceholder("Create a password").fill(user.password)
+  // Mandatory Privacy/Terms consent (SHOG-666) — gates the Sign Up CTA.
+  await page
+    .getByRole("checkbox", { name: /Privacy Policy and Terms of Use/i })
+    .click()
   await page.getByText("Sign Up", { exact: true }).last().click()
 
   await page.waitForURL((url) => !url.pathname.startsWith("/sign-in"), {
