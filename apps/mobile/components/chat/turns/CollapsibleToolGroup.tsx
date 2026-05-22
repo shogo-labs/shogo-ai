@@ -44,9 +44,12 @@ const ROTATE_TRANSITION = {
   duration: ANIM_DURATION,
   easing: "easeInOut",
 }
+// Critically damped (ζ ≈ 1) so the height spring converges without
+// overshoot when re-targeted by `onContentSizeChange` while tools
+// stream in. See ThinkingWidget for the long version of this comment.
 const HEIGHT_TRANSITION = {
   opacity: { type: "timing", duration: ANIM_DURATION, easing: "easeInOut" },
-  height: { type: "spring", damping: 22, stiffness: 260, mass: 1 },
+  height: { type: "spring", damping: 32, stiffness: 260, mass: 1 },
 }
 const ROTATE_OPEN = { rotateZ: "180deg" }
 const ROTATE_CLOSED = { rotateZ: "0deg" }
@@ -164,10 +167,12 @@ function CollapsibleToolGroupImpl({
     })
   }, [onToggle, isStreaming, isOpen])
 
-  const capHeight = isStreaming
-  const targetHeight = capHeight
-    ? Math.min(measuredHeight, STREAM_MAX_HEIGHT)
-    : measuredHeight
+  // Cap height + scroll inside while OPEN, regardless of streaming
+  // state. Letting `capHeight` follow `isStreaming` produced a visible
+  // "expand to full content height" jump on the falling edge of the
+  // stream, then a separate close animation 1.5s later — the same
+  // wasted-motion path we eliminated in ThinkingWidget.
+  const targetHeight = Math.min(measuredHeight, STREAM_MAX_HEIGHT)
 
   const fadeColor =
     colorScheme === "dark" ? "rgb(25, 25, 25)" : "rgb(252, 252, 252)"
@@ -184,8 +189,8 @@ function CollapsibleToolGroupImpl({
   )
 
   const scrollStyle = useMemo(
-    () => [capHeight ? styles.capHeight : undefined, WEB_FADE_MASK],
-    [capHeight],
+    () => [styles.capHeight, WEB_FADE_MASK],
+    [],
   )
 
   const heightAnimate = useMemo(
@@ -257,7 +262,7 @@ function CollapsibleToolGroupImpl({
                 ref={innerScrollRef}
                 className="ml-2 pl-2 border-l border-border/40 pt-2.5 pb-1"
                 style={scrollStyle}
-                scrollEnabled={capHeight}
+                scrollEnabled
                 nestedScrollEnabled
                 onScrollBeginDrag={handleScrollBeginDrag}
                 onContentSizeChange={handleContentSizeChange}
@@ -265,7 +270,7 @@ function CollapsibleToolGroupImpl({
                 {children}
               </ScrollView>
 
-              {Platform.OS !== "web" && capHeight && (
+              {Platform.OS !== "web" && (
                 <>
                   <LinearGradient
                     colors={topFadeColors}

@@ -142,6 +142,12 @@ export function InstancePicker({ workspaceId, collapsed }: InstancePickerProps) 
       {!loading && instances.map((inst) => {
         const isActive = activeInstance?.instanceId === inst.id
         const isConnecting = connecting === inst.id
+        // `origin` is set by the federated proxy on the local API: 'local'
+        // for rows owned by this local DB, hostname (e.g.
+        // 'studio.staging.shogo.ai') for rows pulled from the cloud the
+        // local API is signed in to. Surface a small badge so users can
+        // tell paired-locally vs federated-from-cloud at a glance.
+        const isFederated = !!inst.origin && inst.origin !== 'local'
 
         return (
           <Pressable
@@ -155,9 +161,21 @@ export function InstancePicker({ workspaceId, collapsed }: InstancePickerProps) 
           >
             <Laptop size={16} className="text-muted-foreground" />
             <View className="flex-1 min-w-0">
-              <Text className="text-sm text-foreground" numberOfLines={1}>
-                {inst.name}
-              </Text>
+              <View className="flex-row items-center gap-1.5">
+                <Text className="text-sm text-foreground flex-shrink" numberOfLines={1}>
+                  {inst.name}
+                </Text>
+                {isFederated && (
+                  <View className="px-1.5 py-0.5 rounded bg-muted">
+                    <Text
+                      className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground"
+                      numberOfLines={1}
+                    >
+                      {inst.origin}
+                    </Text>
+                  </View>
+                )}
+              </View>
               <View className="flex-row items-center gap-1.5 mt-0.5">
                 <StatusDot status={inst.status} />
                 <Text className="text-[11px] text-muted-foreground">

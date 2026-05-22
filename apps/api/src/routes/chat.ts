@@ -17,7 +17,7 @@
  *   - Auth surface. This route is the FIRST public, non-overlay-only
  *     dual-mode auth surface for an SDK consumer (bearer + project).
  *     The existing `voice/translator/chat/:chatSessionId` endpoint
- *     is product-coupled to Shogo Mode (chatSession scope, translator
+ *     is product-coupled to EZ Mode (chatSession scope, translator
  *     persona, `send_to_chat` tool). External callers wouldn't have
  *     a `chatSessionId`, and they don't want the translator persona.
  *
@@ -50,6 +50,7 @@
 
 import { Hono } from 'hono'
 import { streamText, convertToModelMessages, jsonSchema, tool, type UIMessage } from 'ai'
+import { stripOrphanToolParts } from '../lib/strip-orphan-tool-parts'
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { z } from 'zod'
 import { apiKeyOrSession, authorizeProject } from '../middleware/auth'
@@ -394,9 +395,24 @@ export function chatRoutes() {
       }
     }
 
+    // Defensive: an earlier turn whose stream was interrupted (page
+    // refresh, network blip, abandoned tool call) can leave tool-call
+    // parts in `rawMessages` without matching results.
+    // `convertToModelMessages` throws `AI_MissingToolResultsError` on
+    // those, returning an opaque 500/400 to the client and wedging the
+    // session. Drop the orphan parts up front so the thread stays
+    // usable.
+    const { messages: sanitizedRawMessages, droppedCount: droppedOrphans } =
+      stripOrphanToolParts(rawMessages as UIMessage[])
+    if (droppedOrphans > 0) {
+      console.warn(
+        `[Chat] /chat/turn: dropped ${droppedOrphans} orphan tool part(s) before convertToModelMessages`,
+      )
+    }
+
     let modelMessages
     try {
-      modelMessages = await convertToModelMessages(rawMessages as UIMessage[])
+      modelMessages = await convertToModelMessages(sanitizedRawMessages)
     } catch (err: any) {
       return c.json(
         {

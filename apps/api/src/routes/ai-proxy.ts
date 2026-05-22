@@ -55,12 +55,36 @@ import {
 // Types
 // =============================================================================
 
+/**
+ * Anthropic prompt-cache directive. Wire shape is `{ type: 'ephemeral', ttl?: '5m' | '1h' }`.
+ * Kept loose (string) to avoid going stale if Anthropic adds new variants.
+ */
+interface AnthropicCacheControl { type: string; ttl?: string }
+
+/** Vercel AI SDK provider-options shape for Anthropic (per-message / per-block / top-level). */
+interface AnthropicProviderOptions { cacheControl?: AnthropicCacheControl }
+interface ProviderOptionsField { anthropic?: AnthropicProviderOptions }
+
+/** A content block on a chat-completion message. We accept both OpenAI-shaped
+ *  parts and Anthropic-shaped passthrough metadata so SDK clients that set
+ *  `providerOptions.anthropic.cacheControl` (or pre-translated `cache_control`)
+ *  on individual parts have those preserved through to the Anthropic body. */
+interface ChatCompletionContentBlock {
+  type: string
+  text?: string
+  image_url?: { url: string }
+  /** Anthropic-native passthrough (used when client pre-translated). */
+  cache_control?: AnthropicCacheControl
+  /** Vercel AI SDK style; translated to wire `cache_control` in convertToAnthropicFormat. */
+  providerOptions?: ProviderOptionsField
+}
+
 /** OpenAI-compatible chat completion request */
 interface ChatCompletionRequest {
   model: string
   messages: Array<{
     role: 'system' | 'user' | 'assistant' | 'tool'
-    content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>
+    content: string | Array<ChatCompletionContentBlock>
     name?: string
     tool_call_id?: string
     tool_calls?: Array<{
@@ -68,6 +92,9 @@ interface ChatCompletionRequest {
       type: 'function'
       function: { name: string; arguments: string }
     }>
+    /** Per-message provider options. The Anthropic cache directive is applied
+     *  to the last content block of the message (matching SDK semantics). */
+    providerOptions?: ProviderOptionsField
   }>
   temperature?: number
   top_p?: number
@@ -83,6 +110,10 @@ interface ChatCompletionRequest {
     }
   }>
   tool_choice?: 'none' | 'auto' | 'required' | { type: 'function'; function: { name: string } }
+  /** Top-level provider options. The Anthropic cache directive is applied to
+   *  the last system block AND the last user message's last content block,
+   *  matching Anthropic's documented cacheable anchors. */
+  providerOptions?: ProviderOptionsField
 }
 
 /** Model routing configuration (derived from the shared catalog) */
@@ -681,26 +712,136 @@ export function wrapSseForErrorVisibility(
 // =============================================================================
 
 /**
+ * Map a Vercel AI SDK `cacheControl` to the Anthropic wire `cache_control`.
+ * 1:1 today; isolates future spec drift (e.g. additional `ttl` variants).
+ */
+function mapCacheControl(cc?: AnthropicCacheControl): AnthropicCacheControl | undefined {
+  if (!cc?.type) return undefined
+  return cc.ttl ? { type: cc.type, ttl: cc.ttl } : { type: cc.type }
+}
+
+/**
+ * Opt-in diagnostic: when AI_PROXY_LOG_CACHE=1, log how many system / last-user
+ * content blocks carry `cache_control` immediately before the outbound Anthropic
+ * fetch. Lets us confirm cache directives actually reach the wire without
+ * relying on an Anthropic SDK trace.
+ */
+function logCacheControlIfEnabled(body: Record<string, unknown>, where: string): void {
+  if (process.env.AI_PROXY_LOG_CACHE !== '1') return
+  const system = (body as { system?: unknown }).system
+  const sysArr = Array.isArray(system) ? system as Array<{ cache_control?: unknown }> : []
+  const sysCC = sysArr.filter(b => b?.cache_control).length
+  const sysShape = typeof system === 'string' ? 'string' : (Array.isArray(system) ? `array(${sysArr.length})` : 'none')
+  const msgs = (body as { messages?: Array<{ role?: string; content?: unknown }> }).messages || []
+  const lastUser = [...msgs].reverse().find(m => m.role === 'user')
+  const lastUserContent = Array.isArray(lastUser?.content)
+    ? lastUser!.content as Array<{ cache_control?: unknown }>
+    : []
+  const lastUserCC = lastUserContent.filter(b => b?.cache_control).length
+  console.log(
+    `[AI Proxy] [cache:${where}] system=${sysShape} system_cache_control=${sysCC}, ` +
+    `lastUserMsg blocks=${lastUserContent.length} cache_control=${lastUserCC}`
+  )
+}
+
+/**
  * Convert OpenAI-format messages to Anthropic format.
  * Anthropic uses a separate `system` parameter and has different message structure.
+ *
+ * When the incoming request carries Vercel AI SDK `providerOptions.anthropic.cacheControl`
+ * (top-level, per-message, or per-content-block) OR pre-translated Anthropic `cache_control`
+ * on content parts, we promote `system` to a block array and propagate `cache_control` onto
+ * the appropriate Anthropic blocks so prompt caching takes effect. Without cache metadata,
+ * we keep the simpler string-system fast path for full backwards compatibility with every
+ * existing chat-completions caller.
  */
 function convertToAnthropicFormat(request: ChatCompletionRequest) {
-  let systemPrompt: string | undefined
+  // Detect whether ANY cache metadata is present. If not, take the fast path.
+  const topCC = mapCacheControl(request.providerOptions?.anthropic?.cacheControl)
+  const anyCacheMeta = !!topCC || request.messages.some(m => {
+    if (m.providerOptions?.anthropic?.cacheControl) return true
+    if (Array.isArray(m.content)) {
+      return m.content.some(b => b.cache_control || b.providerOptions?.anthropic?.cacheControl)
+    }
+    return false
+  })
+
+  const systemBlocks: Array<{ type: 'text'; text: string; cache_control?: AnthropicCacheControl }> = []
+  let systemPromptString: string | undefined
   const messages: Array<{ role: string; content: string | Array<any> }> = []
 
   for (const msg of request.messages) {
     if (msg.role === 'system') {
-      // Anthropic takes system as a separate parameter
-      systemPrompt = typeof msg.content === 'string'
+      const text = typeof msg.content === 'string'
         ? msg.content
         : msg.content.map(p => p.text || '').join('\n')
+
+      if (anyCacheMeta) {
+        // Prefer per-message providerOptions; fall back to the last content block's
+        // cache_control / providerOptions when the message-level field is absent.
+        let cc = mapCacheControl(msg.providerOptions?.anthropic?.cacheControl)
+        if (!cc && Array.isArray(msg.content) && msg.content.length) {
+          const last = msg.content[msg.content.length - 1]
+          cc = mapCacheControl(last.cache_control ?? last.providerOptions?.anthropic?.cacheControl)
+        }
+        systemBlocks.push({ type: 'text', text, ...(cc ? { cache_control: cc } : {}) })
+      } else {
+        // Fast path: merge multiple system messages into a single string, as before.
+        systemPromptString = systemPromptString
+          ? `${systemPromptString}\n${text}`
+          : text
+      }
       continue
     }
 
-    messages.push({
-      role: msg.role === 'tool' ? 'user' : msg.role,
-      content: msg.content,
-    })
+    const msgCC = mapCacheControl(msg.providerOptions?.anthropic?.cacheControl)
+
+    if (Array.isArray(msg.content)) {
+      // Preserve / translate per-content-block cache metadata.
+      const blocks = msg.content.map(b => {
+        const bcc = b.cache_control ?? mapCacheControl(b.providerOptions?.anthropic?.cacheControl)
+        const rest = { ...b }
+        delete (rest as { providerOptions?: unknown }).providerOptions
+        if (bcc) (rest as { cache_control?: AnthropicCacheControl }).cache_control = bcc
+        else delete (rest as { cache_control?: unknown }).cache_control
+        return rest
+      })
+      // Per-message providerOptions applies to the last block (matches SDK semantics).
+      if (msgCC && blocks.length) {
+        const last = blocks[blocks.length - 1] as { cache_control?: AnthropicCacheControl }
+        if (!last.cache_control) last.cache_control = msgCC
+      }
+      messages.push({ role: msg.role === 'tool' ? 'user' : msg.role, content: blocks })
+    } else if (typeof msg.content === 'string' && msgCC) {
+      // Coerce string content to a single text block so cache_control has a home.
+      messages.push({
+        role: msg.role === 'tool' ? 'user' : msg.role,
+        content: [{ type: 'text', text: msg.content, cache_control: msgCC }],
+      })
+    } else {
+      // No cache metadata on this message — pass through unchanged.
+      messages.push({
+        role: msg.role === 'tool' ? 'user' : msg.role,
+        content: msg.content,
+      })
+    }
+  }
+
+  // Top-level cache_control: apply to the last system block AND the last user
+  // message's last content block — matches Anthropic's documented cacheable
+  // anchors and lets clients enable caching with a single top-level directive.
+  if (topCC) {
+    if (systemBlocks.length && !systemBlocks[systemBlocks.length - 1].cache_control) {
+      systemBlocks[systemBlocks.length - 1].cache_control = topCC
+    }
+    const lastUser = [...messages].reverse().find(m => m.role === 'user')
+    if (lastUser && Array.isArray(lastUser.content) && lastUser.content.length) {
+      const lastBlock = lastUser.content[lastUser.content.length - 1] as { cache_control?: AnthropicCacheControl }
+      if (!lastBlock.cache_control) lastBlock.cache_control = topCC
+    } else if (lastUser && typeof lastUser.content === 'string') {
+      // Promote to a text block so the cache anchor has a place to live.
+      lastUser.content = [{ type: 'text', text: lastUser.content, cache_control: topCC }]
+    }
   }
 
   const body: Record<string, unknown> = {
@@ -709,7 +850,8 @@ function convertToAnthropicFormat(request: ChatCompletionRequest) {
     max_tokens: request.max_tokens || getMaxOutputTokens(request.model),
   }
 
-  if (systemPrompt) body.system = systemPrompt
+  if (anyCacheMeta && systemBlocks.length) body.system = systemBlocks
+  else if (systemPromptString) body.system = systemPromptString
   if (request.temperature !== undefined) body.temperature = request.temperature
   if (request.top_p !== undefined) body.top_p = request.top_p
   if (request.stop) body.stop_sequences = Array.isArray(request.stop) ? request.stop : [request.stop]
@@ -980,6 +1122,8 @@ async function proxyAnthropicStream(
     stream: true,
   })
 
+  logCacheControlIfEnabled(body, 'stream')
+
   const response = await fetchAnthropicWithRetry(
     'https://api.anthropic.com/v1/messages',
     {
@@ -1215,6 +1359,8 @@ async function proxyAnthropicNonStream(
     model: modelConfig.apiModel,
     stream: false,
   })
+
+  logCacheControlIfEnabled(body, 'nonstream')
 
   const response = await fetchAnthropicWithRetry(
     'https://api.anthropic.com/v1/messages',

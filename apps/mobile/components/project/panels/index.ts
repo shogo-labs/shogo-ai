@@ -7,8 +7,18 @@ export { SkillsPanel } from './SkillsPanel'
 export { ToolsPanel } from './ToolsPanel'
 export { FilesBrowserPanel } from './FilesBrowserPanel'
 export { AnalyticsPanel } from './AnalyticsPanel'
-export { CapabilitiesPanel } from './CapabilitiesPanel'
+export {
+  CapabilitiesPanel,
+  CapabilitiesConfigPane,
+  CapabilitiesSkillsPane,
+  CapabilitiesIntegrationsPane,
+} from './CapabilitiesPanel'
 export type { CapabilitySettings } from './CapabilitiesPanel'
+export { SettingsPanel } from './SettingsPanel'
+export type {
+  SettingsSectionGroup,
+  SettingsSectionItem,
+} from './SettingsPanel'
 export { MonitorPanel } from './MonitorPanel'
 export { TerminalPanel } from './TerminalPanel'
 export { PlansPanel } from './PlansPanel'

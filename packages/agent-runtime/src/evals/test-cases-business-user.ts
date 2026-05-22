@@ -40,7 +40,6 @@ const V2_CONFIG = JSON.stringify({
   heartbeatEnabled: false,
   channels: [],
   activeMode: 'canvas',
-  canvasMode: 'code',
   model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
 }, null, 2)
 
@@ -52,7 +51,6 @@ const V2_CONFIG_WITH_CHANNELS = JSON.stringify({
     { type: 'email', config: { email: 'maya@pixelandco.com', imapHost: 'imap.pixelandco.com', smtpHost: 'smtp.pixelandco.com' } },
   ],
   activeMode: 'canvas',
-  canvasMode: 'code',
   model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
 }, null, 2)
 

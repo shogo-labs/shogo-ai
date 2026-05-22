@@ -1,0 +1,48 @@
+# SigNoz alert: production node count below declared minimum
+#
+# Why: the b11c65dd incident root-cause was a single-node prod-us
+# cluster despite terraform declaring `system_pool_min = 2`. Live
+# state had drifted (autoscaler scaled past min during a quiet window
+# OR an OCI VM died and didn't get replaced) and we had no alert on
+# the drift. This rule catches the drift within 5 minutes.
+#
+# Threshold mirrors the Phase 3 bump: prod-us min is now 3.
+# When you adjust min in terraform/environments/production-us/main.tf,
+# update this threshold to match.
+
+alert: ProdNodeCountBelowMin
+ruleType: threshold_rule
+condition:
+  compositeQuery:
+    queryType: promql
+    promQueries:
+      A:
+        query: |
+          count(kube_node_info{cluster="oke-production-us"})
+        legend: nodes
+        disabled: false
+  op: "<"
+  target: 3
+  matchType: "1" # at-least-once-during
+  selectedQuery: A
+evalWindow: "5m0s"
+frequency: "1m0s"
+labels:
+  severity: critical
+  team: platform
+  cluster: oke-production-us
+annotations:
+  summary: "oke-production-us has fewer than 3 nodes"
+  description: |
+    Live node count has dropped below the terraform-declared
+    `system_pool_min = 3`. Either:
+      (a) An OCI VM has died and the node pool isn't replacing it.
+          Check OCI Console -> OKE -> oke-production-us -> Node Pools.
+      (b) The cluster autoscaler is ignoring the min floor. Check
+          autoscaler logs:
+            kubectl logs -n kube-system deployment/cluster-autoscaler
+
+    Without 3+ nodes the warm-pool churn during a deploy will
+    starve paying users on `Insufficient memory`.
+
+    Runbook: docs/runbooks/deploy-prod.md

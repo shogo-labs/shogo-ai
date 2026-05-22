@@ -21,6 +21,12 @@
 
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
 
+// Bun does not auto-set NODE_ENV=test, so the marketplace-feature
+// middleware (gates every mutation route) would otherwise hit Prisma
+// and 503 the whole suite. Set the bypass flag before the route module
+// is imported.
+process.env.NODE_ENV = 'test'
+
 // ─── Middleware mocks ─────────────────────────────────────────────────
 
 mock.module('../middleware/auth', () => ({
@@ -676,6 +682,13 @@ describe('POST /listings/:id/approve', () => {
 })
 
 describe('POST /listings/:id/reject', () => {
+  test('400 invalid_json on malformed body', async () => {
+    listings.push({ id: 'l1', status: 'pending_review', creator: { user: {} } })
+    const res = await call('POST', '/listings/l1/reject', '{not-json')
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('invalid_json')
+  })
+
   test('400 when reason missing', async () => {
     listings.push({ id: 'l1', status: 'pending_review', creator: { user: {} } })
     const res = await call('POST', '/listings/l1/reject', {})

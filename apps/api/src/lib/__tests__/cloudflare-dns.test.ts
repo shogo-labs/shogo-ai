@@ -16,6 +16,7 @@ import {
   deletePreviewDnsRecord,
   getCloudflareDnsConfig,
   _resetCloudflareDnsConfigForTest,
+  _setKourierDiscovererForTest,
 } from '../cloudflare-dns'
 
 interface FetchCall {
@@ -57,23 +58,38 @@ function clearEnv() {
   delete process.env.KOURIER_LB_IP
   delete process.env.CF_DNS_COMMENT
   _resetCloudflareDnsConfigForTest()
+  // Avoid accidentally falling through to the real K8s-based discoverer
+  // in tests that only set CF_API_TOKEN + CF_ZONE_ID.
+  _setKourierDiscovererForTest(async () => null)
 }
 
 describe('cloudflare-dns configuration', () => {
   beforeEach(() => clearEnv())
   afterEach(() => clearEnv())
 
-  test('returns null when any var is missing', () => {
-    expect(getCloudflareDnsConfig()).toBeNull()
+  test('returns null when any var is missing', async () => {
+    expect(await getCloudflareDnsConfig()).toBeNull()
     process.env.CF_API_TOKEN = 't'
     _resetCloudflareDnsConfigForTest()
-    expect(getCloudflareDnsConfig()).toBeNull()
+    expect(await getCloudflareDnsConfig()).toBeNull()
     process.env.CF_ZONE_ID = 'z'
     _resetCloudflareDnsConfigForTest()
-    expect(getCloudflareDnsConfig()).toBeNull()
+    // CF env now satisfied but discoverer (stubbed in clearEnv) returns null,
+    // so helper stays disabled.
+    expect(await getCloudflareDnsConfig()).toBeNull()
     process.env.KOURIER_LB_IP = '1.1.1.1'
     _resetCloudflareDnsConfigForTest()
-    expect(getCloudflareDnsConfig()).not.toBeNull()
+    expect(await getCloudflareDnsConfig()).not.toBeNull()
+  })
+
+  test('falls back to Kourier service discovery when KOURIER_LB_IP is missing', async () => {
+    process.env.CF_API_TOKEN = 't'
+    process.env.CF_ZONE_ID = 'z'
+    delete process.env.KOURIER_LB_IP
+    _setKourierDiscovererForTest(async () => '198.51.100.7')
+    _resetCloudflareDnsConfigForTest()
+    const cfg = await getCloudflareDnsConfig()
+    expect(cfg?.lbIp).toBe('198.51.100.7')
   })
 
   test('upsert is a no-op without config', async () => {

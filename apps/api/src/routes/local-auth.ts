@@ -32,11 +32,33 @@
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
+import { onUpstreamRejection } from '../lib/federated-upstream'
 
 /** Tracks whether the cloud has rejected our key so the UI can show a
  * degraded-connection banner without wiping credentials. Only an explicit
  * user-initiated sign-out deletes the stored key. */
 let cloudKeyRejected = false
+
+/**
+ * Set the cloudKeyRejected flag from outside this module. Used by the
+ * federated-upstream proxy when a forwarded request returns 401 — same
+ * UX as the heartbeat path detecting a revoked key, just driven by
+ * actual user traffic instead of the periodic ping.
+ */
+export function markCloudKeyRejected(reason?: string): void {
+  if (!cloudKeyRejected) {
+    console.warn(
+      `[CloudLogin] Cloud rejected API key${reason ? ` (${reason})` : ''} — key may be revoked or expired. User must re-sign-in.`,
+    )
+  }
+  cloudKeyRejected = true
+}
+
+// Wire the federated-upstream observer once at module load so any 401
+// surfaced from a federated proxy call flips the same flag the
+// heartbeat path uses. The `/local/cloud-login/status` endpoint and the
+// sign-out flow are the single source of truth for clearing it.
+onUpstreamRejection((reason) => markCloudKeyRejected(reason))
 
 async function readStoredKey(localDb: any): Promise<string | null> {
   const row = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_API_KEY' } }).catch(() => null)

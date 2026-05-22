@@ -184,8 +184,24 @@ export async function resolveProjectPodUrl(
   const manager: IRuntimeManager = opts.runtimeManager
     ?? (await import('./runtime/index')).getRuntimeManager()
 
+  // Only short-circuit when the runtime is fully `running` AND has an
+  // `agentPort` (the latter guards an interrupted-boot edge case where
+  // a stale `running` runtime is missing its agent port).
+  //
+  // The `status !== 'running'` half catches the prewarm race: `doStart()`
+  // (apps/api/src/lib/runtime/manager.ts) allocates `agentPort`
+  // synchronously and flips `status` to `'starting'` long before Vite +
+  // the agent-runtime are listening. The previous gate ("agentPort set &
+  // status !== stopped/error") happily skipped the await for that
+  // `'starting'` state, so when the home composer fired
+  // `POST /runtime/prewarm` and the user navigated before the runtime
+  // finished booting, `/sandbox/url` returned `ready:false` with URLs
+  // whose ports weren't accepting connections yet — ECONNREFUSED on
+  // the canvas / preview iframe / agent SSE. `manager.start()` already
+  // dedupes via `startingPromises`, so awaiting it here joins the
+  // inflight prewarm rather than triggering a second spawn.
   let runtime = manager.status(projectId) ?? undefined
-  if (!runtime || runtime.status === 'stopped' || runtime.status === 'error' || !runtime.agentPort) {
+  if (!runtime || runtime.status !== 'running' || !runtime.agentPort) {
     runtime = await manager.start(projectId)
   }
 

@@ -1502,12 +1502,12 @@ TWILIO_AUTH_TOKEN=...
 Customers never paste these — Shogo owns them. No Shogo-specific
 prefix; we use the conventional EL / Twilio env-var names.
 
-### Recipe: "Shogo Mode" translator overlay (voice + text)
+### Recipe: "EZ Mode" translator overlay (voice + text)
 
 Build a single overlay that lets a business user drive a *second*, technical
 chat agent through a translator persona — via voice **or** text, sharing the
 same system prompt and tools. The example below is exactly how the Shogo IDE
-mounts its own Shogo Mode on top of the existing chat.
+mounts its own EZ Mode on top of the existing chat.
 
 The persona exposes two client-side tools:
 
@@ -1531,28 +1531,28 @@ import { voiceRoutes } from './routes/voice'
 app.route('/api', voiceRoutes())
 ```
 
-Step 3 — on the browser, render the Shogo panel *inside your chat column*
+Step 3 — on the browser, render the EZ Mode panel *inside your chat column*
 on top of the existing `ChatPanel` and wrap both under a `ChatBridgeProvider`.
-The bridge lets the Shogo panel drive the real chat without either
+The bridge lets the EZ Mode panel drive the real chat without either
 component knowing about the other; the normal `ChatPanel` stays mounted
 underneath so its bridge registration (send / setMode / assistant emit)
 stays live:
 
 ```tsx
 import { useChatBridge, ChatBridgeProvider } from './voice-mode/ChatBridgeContext'
-import { ShogoChatPanel } from './voice-mode/ShogoChatPanel'
-import { ShogoModeToggle } from './voice-mode/ShogoModeToggle'
+import { EzModeChatPanel } from './voice-mode/EzModeChatPanel'
+import { EzModeToggle } from './voice-mode/EzModeToggle'
 
 function ChatColumn({ children }: { children: React.ReactNode }) {
-  const { shogoModeActive } = useChatBridge()
+  const { ezModeActive } = useChatBridge()
   return (
     <View className="flex-1 relative">
-      <View style={shogoModeActive ? { opacity: 0 } : undefined}>
+      <View style={ezModeActive ? { opacity: 0 } : undefined}>
         {children /* regular ChatPanel */}
       </View>
-      {shogoModeActive && (
+      {ezModeActive && (
         <View className="absolute inset-0 z-10 bg-background">
-          <ShogoChatPanel />
+          <EzModeChatPanel />
         </View>
       )}
     </View>
@@ -1562,8 +1562,8 @@ function ChatColumn({ children }: { children: React.ReactNode }) {
 export function ProjectLayout() {
   return (
     <ChatBridgeProvider>
-      {/* Small pill that flips the chat column into Shogo Mode */}
-      {Platform.OS === 'web' && <ShogoModeToggle />}
+      {/* Small pill that flips the chat column into EZ Mode */}
+      {Platform.OS === 'web' && <EzModeToggle />}
       <ChatColumn>
         <ChatPanel /* calls useChatBridgeRegistrar inside */ />
       </ChatColumn>
@@ -1572,7 +1572,7 @@ export function ProjectLayout() {
 }
 ```
 
-Inside the panel, the SDK's `useVoiceConversation` handles the voice
+Inside the EZ Mode panel, the SDK's `useVoiceConversation` handles the voice
 session and `@ai-sdk/react`'s `useChat` (pointed at `/api/voice/translator/chat`)
 handles the text session. Both call the same `createBridgeClientTools(bridge)`
 so their effects on the main chat are identical.

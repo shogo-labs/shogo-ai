@@ -2,6 +2,30 @@
 
 This module deploys the SigNoz K8s Infra Helm chart for comprehensive Kubernetes cluster observability.
 
+## Alerts and dashboards (manual sync)
+
+The Terraform module deploys the **collector** only — alert rules and
+dashboards are content that lives in SigNoz, not in the Helm chart, so
+they're managed separately as YAML/JSON files under this directory:
+
+- `alerts/publish-failure-rate.yaml` — pages on-call when publish
+  failures sustain >1/min for 5 minutes.
+- `alerts/prod-node-count-low.yaml` — pages when prod-us drops below
+  the terraform-declared `system_pool_min`.
+- `alerts/warm-pool-starvation.yaml` — pages when warm-pool depth
+  stays below 3 for 10+ minutes (every new project hitting cold start).
+- `dashboards/publish-funnel.json` — per-step counters for the publish
+  pipeline so we can spot exactly where publishes are dying.
+
+To apply, either import via the SigNoz UI (`Alert Rules` /
+`Dashboards` → `Import`) or POST the file body to
+`POST /api/v1/rules` / `POST /api/v1/dashboards`. Re-run after every
+change to a YAML/JSON file in this directory.
+
+These were introduced in the post-2026-05-20 publish-pipeline-hardening
+PR; see `docs/runbooks/deploy-prod.md` for triage steps each one
+points to.
+
 ## What It Monitors
 
 ### Node-Level Metrics

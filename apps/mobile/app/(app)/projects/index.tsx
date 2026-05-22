@@ -58,7 +58,6 @@ import {
   Trash2,
   ArrowRightLeft,
   Pencil,
-  Download,
 } from 'lucide-react-native'
 import {
   useSDKDomain,
@@ -79,6 +78,7 @@ import { ProjectCard } from '../../../components/home/ProjectCard'
 import { api } from '../../../lib/api'
 import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
 import { ProjectImportModal } from '../../../components/projects/ProjectImportModal'
+import { ProjectSourceMenu } from '../../../components/project/ProjectSourceMenu'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 
 // Types
@@ -1450,14 +1450,18 @@ export default observer(function AllProjectsPage() {
           {/* Spacer */}
           <View className="flex-1" />
 
-          {/* Import project */}
-          <Pressable
-            onPress={handleImportProject}
-            className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input active:bg-muted"
-          >
-            <Download size={14} className="text-muted-foreground" />
-            <Text className="text-xs text-foreground">Import</Text>
-          </Pressable>
+          {/* Consolidated "New project" — blank / open folder / import.
+              Owns the import modal internally; the page-level
+              `ProjectImportModal` below remains for the "More options
+              → Import project" Alert path. */}
+          {currentWorkspace?.id ? (
+            <ProjectSourceMenu
+              workspaceId={currentWorkspace.id}
+              variant="button"
+              onSelectBlank={handleCreateProject}
+              onProjectOpened={handleImportCompleted}
+            />
+          ) : null}
 
           {/* New folder */}
           <Pressable

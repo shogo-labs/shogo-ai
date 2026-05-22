@@ -167,3 +167,13 @@ export async function deleteEvalJob(jobName: string): Promise<void> {
     console.warn(`[EvalJobManager] Failed to delete Job ${jobName}: ${err.message}`)
   }
 }
+
+// Test-only: reset the cached BatchV1Api so getBatchApi() re-enters
+// getKubeConfig() on the next invocation. Without this, the module-level
+// singleton would cache whichever branch (in-cluster vs loadFromDefault)
+// fired first in the test process, making the other branch structurally
+// unreachable within the same bun process. Same precedent as
+// _resetUpstreamCredentialCache in lib/federated-upstream.ts.
+export function _resetBatchApi(): void {
+  batchApi = null
+}

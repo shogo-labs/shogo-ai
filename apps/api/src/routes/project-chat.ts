@@ -79,18 +79,23 @@ export function hasFileModifyingTools(toolCallMap: Map<string, { toolName: strin
  *
  * EOF-without-turn-complete handling:
  *   The runtime emits `data-turn-complete` exactly once at the tail of every
- *   turn it brings to a terminal state. If our reader EOFs before seeing that
- *   marker, the API↔runtime body was cut while the agent was still working.
- *   Two real triggers:
- *     1. Knative activator's 5-min request timeout — the buffer on the
- *        runtime's `streamBufferStore` is still alive and growing.
- *     2. User clicked Stop — `/agent/stop` aborts the buffer; the resume
- *        endpoint returns 204.
+ *   turn it brings to a terminal state — including `status: 'aborted'` when
+ *   the user clicked Stop. If our reader EOFs before seeing that marker, the
+ *   API↔runtime body was cut while the agent was still working.
+ *   Two real triggers now:
+ *     1. Knative activator's 5-min request timeout, or pod restart mid-turn
+ *        — the runtime's `streamBufferStore` is still alive and growing.
+ *     2. The pod itself died (crash, OOM) — buffer is gone with the process.
  *   We try server-side auto-resume against `/agent/chat/:id/stream?fromSeq=0`
- *   to drain the full turn from the runtime's buffer when it's still alive
- *   (case 1). If the resume returns 204 / errors (case 2 + crashes), we fall
+ *   to drain the rest of the turn from the runtime's buffer when it's still
+ *   alive (case 1). If the resume returns 204 / errors (case 2), we fall
  *   back to persisting whatever was accumulated when the original cut hit,
  *   so the user's truncated turn still lands in DB.
+ *
+ *   User-initiated Stop is no longer a 204 case — `/agent/stop` only flips
+ *   the abort signal; the buffer is closed naturally once the agent loop's
+ *   wind-down emits `data-usage` and `data-turn-complete{status:'aborted'}`,
+ *   so we observe a real terminal frame and bill the partial usage.
  */
 export async function trackUsageFromStream(
   stream: ReadableStream<Uint8Array>,
@@ -105,6 +110,16 @@ export async function trackUsageFromStream(
      * buffer.
      */
     resume?: (fromSeq: number) => Promise<Response | null>
+    /**
+     * Resolved chat-session id from the route handler. Takes precedence
+     * over `requestBody.chatSessionId`. When the route handler reads
+     * `X-Chat-Session-Id` from the request headers, it must pass that
+     * value here so persistence and closeSession key on the same id
+     * the billing session was opened under — otherwise the billing
+     * bucket leaks and the assistant row lands in (or is dropped from)
+     * the wrong session. See project-chat-session-id-split.test.ts.
+     */
+    chatSessionId?: string | null
   } = {},
 ) {
   const decoder = new TextDecoder()
@@ -429,8 +444,13 @@ export async function trackUsageFromStream(
   const firstOk = await consumeStream(stream.getReader())
   if (!firstOk) originalStreamErrored = true
 
-  // Extract context
-  const chatSessionId = requestBody?.chatSessionId || null
+  // Extract context. The route handler resolves chatSessionId from
+  // `X-Chat-Session-Id` header OR `requestBody.chatSessionId` and passes
+  // the resolved value via `options.chatSessionId`; we treat that as
+  // authoritative so billing (open/close) and persistence agree. The
+  // `requestBody.chatSessionId` fallback exists for older callers that
+  // don't yet thread the option through.
+  const chatSessionId = options.chatSessionId ?? requestBody?.chatSessionId ?? null
   const agentMode = requestBody?.agentMode || 'advanced'
 
   // Auto-resume drive: when the original stream EOF'd cleanly but the runtime
@@ -1144,6 +1164,12 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           // our finally guard doesn't double-close.
           billingSessionHandedOff = true
           trackUsageFromStream(trackingStream, parsedBody, project, {
+            // Single source of truth for the chat-session id. The route
+            // handler resolved it from `X-Chat-Session-Id` || body, and
+            // the billing session was opened with this exact value; we
+            // pass it through so closeSession + persistence key on the
+            // same id and never diverge from billing.
+            chatSessionId: incomingChatSessionId,
             // Server-side auto-resume hook. When the original POST stream
             // EOFs before `data-turn-complete`, the tracker reconnects
             // here to drain the rest of the turn from the runtime's
@@ -1153,7 +1179,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             // runtime token, so the resume hits the same pod that owns
             // the buffer.
             resume: async (fromSeq) => {
-              const sessionId = parsedBody?.chatSessionId
+              const sessionId = incomingChatSessionId
               if (!sessionId) return null
               try {
                 return await fetchFromRuntime(

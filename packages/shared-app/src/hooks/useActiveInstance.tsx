@@ -60,6 +60,17 @@ export interface ActiveInstance {
    * window where this is unknown is at most one poll.
    */
   kind?: InstanceKind
+  /**
+   * Where this instance came from. `'local'` (or `undefined` for
+   * older persisted state) means the local API's own registry;
+   * any other value is the hostname of the cloud upstream the
+   * local API federated the row from (e.g.
+   * `studio.staging.shogo.ai`). Used by `useInstancePicker` to
+   * decide whether the auto-clear-on-workspace-change effect
+   * applies — federated rows are cloud-scoped and survive local
+   * workspace switches.
+   */
+  origin?: string
 }
 
 export type InstanceStatus = 'online' | 'heartbeat' | 'offline' | 'unknown'

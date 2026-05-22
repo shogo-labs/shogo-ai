@@ -57,6 +57,12 @@ import {
 } from './workspace-defaults'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
+import {
+  walkFilesTree,
+  WORKSPACE_TREE_HIDDEN_DIRS,
+  WORKSPACE_TREE_LAZY_DIRS,
+  WORKSPACE_TREE_HIDDEN_FILES,
+} from './fs-tree-walker'
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { createPtyWsHandlers, type WsData } from './pty-ws-handler'
@@ -468,19 +474,55 @@ const { app, state, logTiming } = await createRuntimeApp({
 app.get('/ready', (c) => {
   const poolModeUnassigned = state.isPoolMode && !state.poolAssigned
   const gatewayReady = agentGateway != null
-  if (poolModeUnassigned || gatewayReady) {
+
+  // 2026-05-20 cold-start fix: also accept readiness when the static
+  // serving path is functional (workspace `dist/index.html` exists).
+  // This lets Knative add the pod to the routable endpoints as soon as
+  // the project's prebuilt frontend can be served, which happens at
+  // T+12s on a deps-cache-hit cold start — versus T+88s today, where
+  // the gateway is blocked behind a 75s `tar -xzf` of node_modules
+  // that user traffic doesn't actually need.
+  //
+  // Studio (which needs LSP + chat) should poll /ready/gateway below
+  // for chat-readiness; Knative-level routing only cares that *some*
+  // useful traffic can be served, which the static dist serves.
+  const distReady = (() => {
+    try {
+      return existsSync(join(getDistDir(), 'index.html'))
+    } catch {
+      return false
+    }
+  })()
+
+  if (poolModeUnassigned || gatewayReady || distReady) {
     return c.json({
       ready: true,
       gateway: gatewayReady,
+      dist: distReady,
       poolMode: poolModeUnassigned,
     })
   }
   return c.json(
     {
       ready: false,
-      reason: 'agent-gateway not started',
+      reason: 'no dist, no gateway',
       workspace: workspaceStatus,
     },
+    503,
+  )
+})
+
+// Gateway-specific readiness probe. Studio polls this when it needs the
+// agent (chat, LSP, MCP) to be alive — separate from /ready, which only
+// gates Knative pod-level routability and accepts a static-only dist.
+app.get('/ready/gateway', (c) => {
+  const poolModeUnassigned = state.isPoolMode && !state.poolAssigned
+  const gatewayReady = agentGateway != null
+  if (poolModeUnassigned || gatewayReady) {
+    return c.json({ ready: true, gateway: gatewayReady, poolMode: poolModeUnassigned })
+  }
+  return c.json(
+    { ready: false, reason: 'agent-gateway not started', workspace: workspaceStatus },
     503,
   )
 })
@@ -582,25 +624,12 @@ function ensureWorkspaceFiles(): void {
   }
 
   // Seed tech stack if specified via env var or marker file.
-  // For backward compat: existing canvasMode 'code' projects without a tech stack get react-app.
+  // Projects without an explicit tech stack default to `react-app` (the
+  // canvas v2 Vite + React + Tailwind workspace).
   const techStackMarker = join(WORKSPACE_DIR, '.tech-stack')
   const techStackIdFromEnv = process.env.TECH_STACK_ID
   const techStackIdFromFile = existsSync(techStackMarker) ? readFileSync(techStackMarker, 'utf-8').trim() : undefined
-  let techStackId = techStackIdFromEnv || techStackIdFromFile
-
-  if (!techStackId) {
-    for (const configCandidate of [join(WORKSPACE_DIR, 'config.json'), join(WORKSPACE_DIR, '.shogo', 'config.json')]) {
-      if (existsSync(configCandidate)) {
-        try {
-          const config = JSON.parse(readFileSync(configCandidate, 'utf-8'))
-          if (config.canvasMode === 'code') {
-            techStackId = 'react-app'
-            break
-          }
-        } catch { /* ignore parse errors */ }
-      }
-    }
-  }
+  let techStackId = techStackIdFromEnv || techStackIdFromFile || 'react-app'
 
   if (techStackId) {
     seedTechStack(WORKSPACE_DIR, techStackId)
@@ -1262,17 +1291,24 @@ app.post('/agent/chat', async (c) => {
         // Explicit terminal marker the client uses to differentiate "really
         // done" from "stream EOF mid-turn". Anything past this point on the
         // wire is purely framing noise and should be ignored by clients.
+        //
+        // When the user clicked Stop, the agent loop unwinds with
+        // `result.abortReason === 'external'` and the gateway sets
+        // `usage.wasAborted`. We tag the terminal frame `status: 'aborted'`
+        // so project-chat (and other consumers) can distinguish a
+        // user-initiated stop from a clean turn end and bill the partial
+        // usage that was just emitted.
         writer.write({
           type: 'data-turn-complete',
           data: {
             turnId,
             chatSessionId: chatSessionKey,
-            status: 'completed',
+            status: usage?.wasAborted ? 'aborted' : 'completed',
             lastSeq: bufWriter.lastSeq,
             completedAt: Date.now(),
           },
         } as any)
-        writer.write({ type: 'finish', finishReason: 'stop' })
+        writer.write({ type: 'finish', finishReason: usage?.wasAborted ? 'abort' : 'stop' })
         turnSucceeded = true
 
         // Per-turn git push: in `dual_shadow` / `git_only` modes,
@@ -1595,9 +1631,9 @@ app.get('/agent/plans/:filename', async (c) => {
     return c.json({ error: 'Plan not found' }, 404)
   }
   const content = readFileSync(filepath, 'utf-8')
-  const { extractBusinessSection } = await import('./plan-translation')
-  const business = extractBusinessSection(content)
-  return c.json({ filename, content, business: business ?? undefined })
+  const { extractSummarySection } = await import('./plan-translation')
+  const summary = extractSummarySection(content)
+  return c.json({ filename, content, summary: summary ?? undefined })
 })
 
 app.put('/agent/plans/:filename', async (c) => {
@@ -1670,11 +1706,11 @@ app.delete('/agent/plans/:filename', async (c) => {
   return c.json({ deleted: true })
 })
 
-// On-demand business translation for an existing plan. Works for plans
+// On-demand summary generation for an existing plan. Works for plans
 // created BEFORE the Dual Plan feature existed (or with the toggle off) —
 // the endpoint reads the current technical body, runs the fast-tier
 // translator, and persists the result back into the same .plan.md file.
-app.post('/agent/plans/:filename/translate', async (c) => {
+app.post('/agent/plans/:filename/summarize', async (c) => {
   const filename = c.req.param('filename')
   if (!filename || !filename.endsWith('.plan.md')) {
     return c.json({ error: 'Invalid plan filename' }, 400)
@@ -1694,31 +1730,31 @@ app.post('/agent/plans/:filename/translate', async (c) => {
   const overview = fm.match(/overview:\s*"?([^"\n]*)"?/)?.[1] ?? ''
 
   const {
-    translateToBusiness,
-    upsertBusinessSection,
-    stripBusinessSection,
+    summarizePlan,
+    upsertSummarySection,
+    stripSummarySection,
   } = await import('./plan-translation')
 
-  // The body for translation must be the *technical* markdown only — strip
-  // any previously-stored business section first, then take everything
+  // The body for the summary must be the *technical* markdown only — strip
+  // any previously-stored summary section first, then take everything
   // after the frontmatter and the leading `# Heading` line.
-  const withoutBusiness = stripBusinessSection(current)
-  const afterFrontmatter = withoutBusiness.substring(withoutBusiness.indexOf('---', 4) + 3).trim()
+  const withoutSummary = stripSummarySection(current)
+  const afterFrontmatter = withoutSummary.substring(withoutSummary.indexOf('---', 4) + 3).trim()
   const planMarkdown = afterFrontmatter.replace(/^#[^\n]*\n*/, '')
 
   try {
     // parentModel intentionally omitted: the fast tier maps to a concrete
     // model regardless of parent, so no need to surface a gateway hook.
-    const business = await translateToBusiness({
+    const summary = await summarizePlan({
       name,
       overview,
       planMarkdown,
     })
-    const next = upsertBusinessSection(current, business)
+    const next = upsertSummarySection(current, summary)
     writeFileSync(filepath, next, 'utf-8')
-    return c.json({ business })
+    return c.json({ summary })
   } catch (err: any) {
-    return c.json({ error: err?.message || 'Translation failed' }, 500)
+    return c.json({ error: err?.message || 'Summary generation failed' }, 500)
   }
 })
 
@@ -1734,9 +1770,18 @@ app.post('/agent/stop', async (c) => {
   // signal does not reach these instances because each has its own AbortController.
   const cancelledSubagents = agentGateway.agentManager.cancelAll()
 
-  // Remove the buffer entirely so resume after stop returns 204 (not a replay)
-  streamBufferStore.abort(stopSessionKey)
-
+  // We deliberately do NOT call `streamBufferStore.abort(stopSessionKey)` here.
+  // The agent loop, the `createUIMessageStream` execute callback, and the
+  // background reader that drains it into `bufWriter` all keep running after
+  // `abortCurrentTurn` flips the signal. Within ~ms they emit the trailing
+  // `data-usage` (with whatever partial token counts were accumulated) and
+  // `data-turn-complete{status:'aborted'}` frames, then the bgReader's
+  // `finally` block calls `bufWriter.complete()` which closes the buffer
+  // cleanly. Tearing the buffer down synchronously here would race those
+  // wind-down writes against the abort, dropping the partial-usage frame on
+  // the floor and causing project-chat's auto-resume to return 204 (which it
+  // bills as a $0 stop-or-crash partial — see the comment in
+  // `apps/api/src/routes/project-chat.ts`).
   return c.json({ stopped: aborted, cancelledSubagents })
 })
 
@@ -1882,6 +1927,60 @@ app.post('/preview/stop', (c) => {
  *   - message:     human-readable status / nudge
  *   - docs:        optional doc URL for the cloud-todo case
  */
+// ──────────────────────────────────────────────────────────────────────
+// External preview URL detection (folder-linked / external projects)
+//
+// We sniff PTY stdout for the standard `Local: http://localhost:PORT`
+// banners emitted by Vite, Next, Vue, Rails, Django, etc. The actual
+// detection lives in `detected-urls.ts` and is fed from
+// `PtySessionManager.create()` — these routes just surface the state
+// to the desktop UI so the external-preview tab can offer a one-click
+// "Open this URL" affordance.
+// ──────────────────────────────────────────────────────────────────────
+
+app.get('/preview/detected-urls', (c) => {
+  const { listAllDetections, getMostRecentDetection } = require('./detected-urls') as typeof import('./detected-urls')
+  return c.json({
+    detections: listAllDetections(),
+    mostRecent: getMostRecentDetection(),
+  })
+})
+
+app.get('/preview/detected-urls/stream', (c) => {
+  const { listAllDetections, getMostRecentDetection, onDetectedUrl } =
+    require('./detected-urls') as typeof import('./detected-urls')
+
+  const stream = new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder()
+      const send = (event: string, data: unknown) => {
+        try {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
+        } catch {}
+      }
+      send('snapshot', {
+        detections: listAllDetections(),
+        mostRecent: getMostRecentDetection(),
+      })
+      const unsubscribe = onDetectedUrl((detection) => {
+        send('detected', detection)
+      })
+      c.req.raw.signal.addEventListener('abort', () => {
+        unsubscribe()
+        try { controller.close() } catch {}
+      })
+    },
+  })
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection': 'keep-alive',
+    },
+  })
+})
+
 app.get('/preview/metro', (c) => {
   const pm = getPreviewManager()
   return c.json(pm.getDevicePreview())
@@ -2335,58 +2434,11 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
-const WORKSPACE_TREE_EXCLUDE_DIRS = new Set([
-  'node_modules', 'dist', '.next', '.cache', '.turbo', '.parcel-cache',
-  'coverage', '.nyc_output', '__pycache__', '.venv', 'venv',
-  'memory', 'scripts',
-])
-
-const WORKSPACE_TREE_EXCLUDE_FILES = new Set([
-  'bun.lock', '.virtfs_metadata',
-  'AGENTS.md', 'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md',
-  'package.json', 'tsconfig.json', 'vite.config.ts', 'tailwind.config.ts',
-  'postcss.config.js', 'postcss.config.mjs', 'components.json',
-  'pyrightconfig.json', 'LICENSE', 'README.md',
-  '.app-template',
-])
-
-function walkFilesTree(
-  dir: string,
-  rootDir: string,
-  excludeDirs?: Set<string>,
-  excludeFiles?: Set<string>,
-): any[] {
-  if (!existsSync(dir)) return []
-  const results: any[] = []
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name.startsWith('.')) continue
-    const absPath = join(dir, entry.name)
-    // Always emit POSIX-style separators so Windows runtimes don't surface
-    // `tools\foo\bar.ts` (which the IDE would then URL-encode as `%5C`).
-    const relPath = absPath.slice(rootDir.length + 1).replace(/\\/g, '/')
-    const stat = statSync(absPath)
-    if (entry.isDirectory()) {
-      if (excludeDirs?.has(entry.name)) continue
-      results.push({
-        name: entry.name,
-        path: relPath,
-        type: 'directory',
-        modified: stat.mtimeMs,
-        children: walkFilesTree(absPath, rootDir, excludeDirs, excludeFiles),
-      })
-    } else {
-      if (excludeFiles?.has(entry.name)) continue
-      results.push({
-        name: entry.name,
-        path: relPath,
-        type: 'file',
-        size: stat.size,
-        modified: stat.mtimeMs,
-      })
-    }
-  }
-  return results
-}
+// File-tree exclusion policy (VS Code defaults) + the walker itself live in
+// `./fs-tree-walker` so both this HTTP route and the Electron desktop IPC
+// fast-path (`apps/desktop/src/fs-ipc.ts`) share one implementation. See the
+// file-level doc-comment in `fs-tree-walker.ts` for the three-bucket policy
+// and the rationale for keeping product-UX excludes client-side.
 
 // Bundle all workspace files for project export (called by the API server in K8s mode).
 // `dist/` and `build/` are intentionally NOT excluded here: shipping the built app output
@@ -2455,9 +2507,33 @@ function resolveWorkspacePath(subPath: string): string | null {
   return resolved
 }
 
-// Recursive file tree for the file browser UI
+// Recursive file tree for the file browser UI.
+//
+// Without `?path=`, walks from the workspace root. With `?path=<rel>`, walks
+// just that subtree — used by the IDE to lazy-load `node_modules/`, `dist/`,
+// and friends only when the user expands them. The same three exclusion sets
+// apply at every depth, so a `node_modules/foo/node_modules` nested dep still
+// comes back as a `lazy: true` entry rather than recursing.
 app.get('/agent/workspace/tree', (c) => {
-  const tree = walkFilesTree(WORKSPACE_DIR, resolve(WORKSPACE_DIR), WORKSPACE_TREE_EXCLUDE_DIRS, WORKSPACE_TREE_EXCLUDE_FILES)
+  const subPath = c.req.query('path') ?? ''
+  const rootResolved = resolve(WORKSPACE_DIR)
+  let startDir = WORKSPACE_DIR
+  if (subPath) {
+    const resolved = resolveWorkspacePath(subPath)
+    if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
+    if (!existsSync(resolved)) return c.json({ error: 'Path not found' }, 404)
+    if (!statSync(resolved).isDirectory()) {
+      return c.json({ error: 'Path is not a directory' }, 400)
+    }
+    startDir = resolved
+  }
+  const tree = walkFilesTree(
+    startDir,
+    rootResolved,
+    WORKSPACE_TREE_HIDDEN_DIRS,
+    WORKSPACE_TREE_LAZY_DIRS,
+    WORKSPACE_TREE_HIDDEN_FILES,
+  )
   return c.json({ tree })
 })
 
@@ -3437,7 +3513,6 @@ app.get('/agent/canvas/stream', (c) => {
 app.post('/agent/canvas/error', async (c) => {
   try {
     const body = await c.req.json() as {
-      surfaceId?: string
       phase?: string
       error?: string
       route?: string
@@ -3464,7 +3539,6 @@ app.post('/agent/canvas/error', async (c) => {
     const route = typeof body.route === 'string' ? body.route : undefined
 
     pushCanvasRuntimeError({
-      surfaceId: body.surfaceId || 'unknown',
       phase: body.phase || 'unknown',
       error: body.error,
       timestamp: Date.now(),
@@ -3484,10 +3558,7 @@ app.post('/agent/canvas/error', async (c) => {
     if (route) suffixParts.push(`page=${route}`)
     if (lastAction) suffixParts.push(`lastAction=${lastAction.kind}${lastAction.target ? ' ' + lastAction.target : ''}`)
     const suffix = suffixParts.length > 0 ? ` (${suffixParts.join(', ')})` : ''
-    recordCanvasErrorEntry(
-      `[${body.phase || 'unknown'}] ${body.error}${suffix}`,
-      body.surfaceId,
-    )
+    recordCanvasErrorEntry(`[${body.phase || 'unknown'}] ${body.error}${suffix}`)
 
     return c.json({ ok: true })
   } catch {
@@ -3496,22 +3567,6 @@ app.post('/agent/canvas/error', async (c) => {
 })
 
 export { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
-
-app.post('/agent/canvas/action', async (c) => {
-  try {
-    const body = await c.req.json() as { surfaceId?: string; name?: string; context?: Record<string, unknown> }
-    if (!body.name) return c.json({ error: 'Missing action name' }, 400)
-
-    console.log(`[canvas-action] ${body.surfaceId}/${body.name}`, body.context ? JSON.stringify(body.context).slice(0, 200) : '')
-
-    // TODO: Route canvas actions to the gateway when canvas_action_wait is implemented for v2
-    // For now, just acknowledge — the agent can poll for actions or we'll add event routing.
-
-    return c.json({ ok: true })
-  } catch {
-    return c.json({ error: 'Invalid request body' }, 400)
-  }
-})
 
 // =============================================================================
 // Canvas iframe bridge — served live, injected into every workspace HTML
@@ -3610,6 +3665,49 @@ app.route('/', runtimeLspRoutes({
 function getDistDir(): string {
   return join(WORKSPACE_DIR, 'dist')
 }
+
+// Recursively collect every file under `dist/` as `{ path, content (base64) }`.
+// Consumed by apps/api/src/routes/publish.ts -> downloadDistFiles() to upload
+// the build output to the published-apps S3 bucket. Must be registered BEFORE
+// the `app.get('*')` catch-all below — that handler explicitly 404s `/api/*`.
+const PUBLISH_DIST_MAX_FILE_SIZE = 50 * 1024 * 1024
+
+function collectPublishDistFiles(dir: string, baseDir: string): Array<{ path: string; content: string }> {
+  const out: Array<{ path: string; content: string }> = []
+  if (!existsSync(dir)) return out
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (isMacOSJunkName(entry.name)) continue
+    const fullPath = join(dir, entry.name)
+    const relPath = fullPath.slice(baseDir.length + 1).replace(/\\/g, '/')
+    if (entry.isDirectory()) {
+      out.push(...collectPublishDistFiles(fullPath, baseDir))
+    } else if (entry.isFile()) {
+      try {
+        const stat = statSync(fullPath)
+        if (stat.size > PUBLISH_DIST_MAX_FILE_SIZE) continue
+        out.push({
+          path: relPath,
+          content: readFileSync(fullPath).toString('base64'),
+        })
+      } catch {
+        // skip unreadable files
+      }
+    }
+  }
+  return out
+}
+
+app.get('/api/dist-files', (c) => {
+  const distDir = getDistDir()
+  if (!existsSync(distDir)) {
+    return c.json(
+      { error: 'dist_not_found', message: 'No dist/ directory — run a build first' },
+      404,
+    )
+  }
+  const files = collectPublishDistFiles(distDir, distDir)
+  return c.json(files)
+})
 
 /**
  * Phases during which a build is plausibly in flight and `dist/` may

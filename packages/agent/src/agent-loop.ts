@@ -155,6 +155,14 @@ export interface AgentLoopResult {
   lastStopReason?: string
   /** Whether the last turn included tool call executions (more reliable than checking stopReason) */
   lastTurnHadToolCalls?: boolean
+  /**
+   * Set when the loop terminated due to an explicit abort. Distinguishes a
+   * user-initiated stop (`'external'`) from natural completion so callers
+   * can tag the trailing `data-turn-complete` frame with `status: 'aborted'`
+   * and downstream billing can charge the partial usage rather than
+   * discarding the turn as a clean completion.
+   */
+  abortReason?: 'external' | 'max_iterations' | 'loop_detected'
 }
 
 export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoopResult> {
@@ -564,6 +572,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     maxIterationsExhausted,
     lastStopReason,
     lastTurnHadToolCalls,
+    abortReason: abortTriggered ? abortReason : undefined,
   }
 
   await onAgentEnd?.(result)

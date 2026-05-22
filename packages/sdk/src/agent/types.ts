@@ -45,36 +45,23 @@ export interface ChatStreamEvent {
   data?: unknown
 }
 
-export interface Surface {
-  id: string
-  title?: string
-  components: CanvasComponent[]
-  data: Record<string, unknown>
-  apiConfig?: Record<string, unknown>
-}
-
-export interface CanvasComponent {
-  id: string
-  component: string
-  children?: string[] | { path: string; templateId?: string }
-  child?: string
-  [key: string]: unknown
-}
-
-export interface CanvasState {
-  surfaces: Record<string, Surface>
-}
-
-export interface ActionContext {
-  [key: string]: unknown
-}
-
 export interface FileNode {
   name: string
   path: string
   type: 'file' | 'directory'
   size?: number
+  /** Last-modified time as a Unix epoch in milliseconds (mtimeMs). */
+  modified?: number
   children?: FileNode[]
+  /**
+   * True on directories whose children were intentionally not walked
+   * server-side (heavy build/dependency dirs like `node_modules`, `dist`).
+   * Clients should fetch children on demand via
+   * `client.getWorkspaceTree(node.path)` and treat the returned entries as
+   * the children of this node. `children` will be undefined when `lazy` is
+   * true.
+   */
+  lazy?: boolean
 }
 
 export interface SearchResult {

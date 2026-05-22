@@ -65,6 +65,9 @@ import {
   ExternalLink,
   GitCommit,
   Upload,
+  FolderTree,
+  Globe,
+  History,
 } from 'lucide-react-native'
 import { cn, Badge, Progress } from '@shogo/shared-ui/primitives'
 import { useTheme, type ThemePreference } from '../../contexts/theme'
@@ -85,18 +88,22 @@ function narrowProjectDropdownWidth(screenWidth: number): number {
 
 const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'chat-fullscreen', label: 'Chat', icon: MessageSquare },
-  { id: 'dynamic-app', label: 'Canvas', icon: LayoutDashboard },
+  { id: 'canvas', label: 'Canvas', icon: LayoutDashboard },
+  // `external-preview` is gated on workingMode=external at the layout
+  // level (via `hiddenTabs`) so managed projects never see it. It lives
+  // next to Canvas because that's where the user expects "view of my
+  // running app" to be.
+  { id: 'external-preview', label: 'Preview', icon: Globe },
   // APP_MODE_DISABLED: { id: 'app-preview', label: 'App', icon: AppWindow },
   ...(Platform.OS === 'web'
     ? [{ id: 'ide', label: 'IDE', icon: Code2 }]
     : [{ id: 'files', label: 'Files', icon: FolderOpen }]),
-  // { id: 'terminal', label: 'Terminal', icon: Terminal },
-  { id: 'capabilities', label: 'Capabilities', icon: Sliders },
-  { id: 'channels', label: 'Channels', icon: Radio },
-  { id: 'agents', label: 'Agents', icon: Bot },
-  { id: 'monitor', label: 'Monitor', icon: Activity },
   { id: 'plans', label: 'Plans', icon: ClipboardList },
-  { id: 'checkpoints', label: 'Checkpoints', icon: GitCommit },
+  // Folders, Capabilities, Channels, Agents, Monitor, Checkpoints all
+  // live behind this Settings tab now (rendered by SettingsPanel with a
+  // grouped left sidebar). Checkpoints on web is also accessible from
+  // the IDE Source Control activity-bar entry.
+  { id: 'settings', label: 'Settings', icon: Settings },
 ]
 
 export interface ProjectSwitcherItem {
@@ -138,21 +145,25 @@ export interface ProjectTopBarProps {
   selectedComponentId?: string | null
   onDeleteComponent?: () => void
   onAddComponent?: () => void
-  // Surface switching
-  surfaceEntries?: { id: string; title: string; themeSwatchColor?: string }[]
-  activeSurfaceId?: string | null
-  onSurfaceChange?: (surfaceId: string) => void
   // Chat controls
   showChatSessions?: boolean
   isChatCollapsed?: boolean
   onChatSessionsToggle?: () => void
   onChatCollapseToggle?: () => void
   onCreateNewSession?: () => void
+  /**
+   * Narrow (mobile) only: toggle the in-place chat-session picker that
+   * temporarily replaces the chat panel with the session list. The wide
+   * layout uses `onChatSessionsToggle` for the inline sidebar instead.
+   */
+  onOpenChatSessions?: () => void
+  /** Narrow (mobile) only: whether the in-place picker is currently shown. */
+  chatSessionsOpen?: boolean
   chatPanelWidth?: number
   chatFullscreenSidebarWidth?: number
   /** Search chats — shown in the top bar left zone when in fullscreen chat mode. */
   onSearchChats?: () => void
-  // Fullscreen chat actions (replaces ChatTabBar in fullscreen mode)
+  // Fullscreen chat actions (rendered in the topbar chat zone in fullscreen mode)
   onNewChat?: () => void
   onRenameChat?: (sessionId: string, newName: string) => void | Promise<void>
   onDeleteChat?: (sessionId: string) => void | Promise<void>
@@ -213,7 +224,7 @@ export function ProjectTopBar({
   projectName,
   projectId,
   projects = [],
-  activeTab = 'dynamic-app',
+  activeTab = 'canvas',
   onTabChange,
   onProjectSwitch,
   hasActiveSubscription = false,
@@ -242,14 +253,13 @@ export function ProjectTopBar({
   selectedComponentId,
   onDeleteComponent,
   onAddComponent,
-  surfaceEntries,
-  activeSurfaceId,
-  onSurfaceChange,
   showChatSessions = false,
   isChatCollapsed = false,
   onChatSessionsToggle,
   onChatCollapseToggle,
   onCreateNewSession,
+  onOpenChatSessions,
+  chatSessionsOpen = false,
   chatPanelWidth: chatPanelWidthProp,
   chatFullscreenSidebarWidth,
   onSearchChats,
@@ -270,7 +280,6 @@ export function ProjectTopBar({
   const [showDropdown, setShowDropdown] = useState(false)
   const [dropdownKey, setDropdownKey] = useState(0)
   const [showNarrowMore, setShowNarrowMore] = useState(false)
-  const [showSurfaceDropdown, setShowSurfaceDropdown] = useState(false)
   const [chatMoreOpen, setChatMoreOpen] = useState(false)
   const [chatRenameOpen, setChatRenameOpen] = useState(false)
   const [chatRenameValue, setChatRenameValue] = useState('')
@@ -302,12 +311,22 @@ export function ProjectTopBar({
     }
   }, [activeChatSessionId, chatRenameValue, onRenameChat])
 
-  const isCanvasActive = activeTab === 'dynamic-app'
-  const showSurfacePicker = (surfaceEntries?.length ?? 0) > 1
-  const activeSurfaceEntry = surfaceEntries?.find(s => s.id === activeSurfaceId)
+  const isCanvasActive = activeTab === 'canvas'
 
   const visibleTabs = AGENT_TABS.filter(tab => !hiddenTabs.includes(tab.id))
-  const narrowPrimaryIds = new Set(['chat-fullscreen', 'dynamic-app', 'app-preview'])
+  // Every remaining tab is primary now that secondary controls live behind
+  // the Settings tab. Files (native) and IDE (web) sit next to Chat/Canvas/
+  // Preview/Plans/Settings on narrow screens too.
+  const narrowPrimaryIds = new Set([
+    'chat-fullscreen',
+    'canvas',
+    'app-preview',
+    'external-preview',
+    'ide',
+    'files',
+    'plans',
+    'settings',
+  ])
   const narrowPrimaryTabs = visibleTabs.filter(t => narrowPrimaryIds.has(t.id))
   const narrowOverflowTabs = visibleTabs.filter(t => !narrowPrimaryIds.has(t.id))
   const narrowMoreItems = [
@@ -438,6 +457,15 @@ export function ProjectTopBar({
         </View>
 
         <View className="flex-1" />
+
+        {onOpenChatSessions && narrowActiveTab === 'chat' && (
+          <BarIconButton
+            icon={History}
+            onPress={onOpenChatSessions}
+            active={chatSessionsOpen}
+            title={chatSessionsOpen ? 'Hide chat history' : 'Chat history'}
+          />
+        )}
 
         {narrowMoreItems.length > 0 && (
           <Popover
@@ -645,7 +673,26 @@ export function ProjectTopBar({
           </Popover>
         )}
 
-        {/* Chat collapse/expand — history and new-chat are now in ChatTabBar */}
+        {/* New chat — split mode (fullscreen has its own button in the right zone). */}
+        {onCreateNewSession && (
+          <BarIconButton
+            icon={Plus}
+            onPress={onCreateNewSession}
+            title="New chat"
+          />
+        )}
+
+        {/* Chat history toggle — shown in split mode (fullscreen pins the rail). */}
+        {onChatSessionsToggle && (
+          <BarIconButton
+            icon={History}
+            onPress={onChatSessionsToggle}
+            active={showChatSessions}
+            title={showChatSessions ? 'Hide chat history' : 'Show chat history'}
+          />
+        )}
+
+        {/* Chat collapse/expand */}
         {onChatCollapseToggle && (
           <View className="flex-row items-center gap-0.5">
             {!isChatCollapsed ? (
@@ -672,76 +719,6 @@ export function ProjectTopBar({
           ))}
         </View>
 
-        {/* Context zone: canvas surface picker (web only) */}
-        {Platform.OS === 'web' && isCanvasActive && showSurfacePicker && (
-          <>
-            <View className="w-px h-5 bg-border mx-1" />
-            <View className="flex-row items-center gap-0.5">
-              <Popover
-                placement="bottom left"
-                isOpen={showSurfaceDropdown}
-                onOpen={() => setShowSurfaceDropdown(true)}
-                onClose={() => setShowSurfaceDropdown(false)}
-                trigger={(triggerProps) => (
-                  <Pressable
-                    {...triggerProps}
-                    className="h-7 flex-row items-center gap-1 px-2 rounded-md active:bg-muted"
-                    accessibilityLabel="Switch canvas"
-                  >
-                    {activeSurfaceEntry?.themeSwatchColor && (
-                      <View
-                        className="w-2.5 h-2.5 rounded-full"
-                        style={{ backgroundColor: activeSurfaceEntry.themeSwatchColor }}
-                      />
-                    )}
-                    <Text className="text-[10px] font-medium text-muted-foreground max-w-[100px]" numberOfLines={1}>
-                      {activeSurfaceEntry?.title || 'Canvas'}
-                    </Text>
-                    <ChevronDown size={10} className="text-muted-foreground" />
-                  </Pressable>
-                )}
-              >
-                <PopoverBackdrop />
-                <PopoverContent className="min-w-[160px] p-0">
-                  <PopoverBody>
-                    {surfaceEntries?.map((s) => (
-                      <Pressable
-                        key={s.id}
-                        onPress={() => {
-                          onSurfaceChange?.(s.id)
-                          setShowSurfaceDropdown(false)
-                        }}
-                        className={cn(
-                          'px-3 py-2 active:bg-muted',
-                          s.id === activeSurfaceId && 'bg-accent',
-                        )}
-                        style={s.themeSwatchColor ? { borderBottomWidth: 2, borderBottomColor: s.themeSwatchColor } : undefined}
-                      >
-                        <View className="flex-row items-center gap-2">
-                          {s.themeSwatchColor && (
-                            <View
-                              className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                              style={{ backgroundColor: s.themeSwatchColor }}
-                            />
-                          )}
-                          <Text
-                            className={cn(
-                              'text-xs',
-                              s.id === activeSurfaceId ? 'font-semibold text-foreground' : 'text-muted-foreground',
-                            )}
-                            numberOfLines={1}
-                          >
-                            {s.title || s.id}
-                          </Text>
-                        </View>
-                      </Pressable>
-                    ))}
-                  </PopoverBody>
-                </PopoverContent>
-              </Popover>
-            </View>
-          </>
-        )}
         {/* Visual edit controls — temporarily disabled
         {Platform.OS === 'web' && isCanvasActive && onToggleEditMode && (
           <>

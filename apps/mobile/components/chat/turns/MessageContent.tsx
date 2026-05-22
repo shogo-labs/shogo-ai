@@ -247,11 +247,18 @@ export function MessageContent({
     ? analyzeContent(content).isLong
     : false
 
+  // For assistants we keep the original "transparent, padded" style.
+  // For users we render full-width and let EditableUserMessage own
+  // the bubble chrome (bg, rounding, click target) — see
+  // `apps/mobile/components/chat/turns/EditableUserMessage.tsx`.
+  // Concretely: this used to be `max-w-[85%] bg-secondary ml-auto`
+  // (a right-aligned chat bubble) but the new edit/resend UX needs
+  // the user row to be a full-width clickable target so the entire
+  // row can swap into an in-place ChatInput on press.
   const baseClasses = cn(
-    "rounded-md px-3 py-1.5",
     isUser
-      ? "max-w-[85%] bg-secondary dark:bg-secondary ml-auto"
-      : "w-full bg-transparent",
+      ? "w-full bg-transparent"
+      : "rounded-md px-3 py-1.5 w-full bg-transparent",
     className
   )
 

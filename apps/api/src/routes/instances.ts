@@ -45,6 +45,15 @@ import {
 import { sendPushToInstance } from '../lib/push-notifications'
 import { openSession, closeSession, hasSession } from '../lib/proxy-billing-session'
 import { trackChatStreamForBilling } from '../lib/chat-usage-tracker'
+import { trackUsageFromStream } from './project-chat'
+import {
+  isFederatedEnabled,
+  listCloudInstancesForWorkspace,
+  lookupCloudInstance,
+  forwardToUpstream,
+  copyResponseHeaders,
+  getUpstreamOrigin,
+} from '../lib/federated-upstream'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -730,8 +739,16 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
     }
 
-    const instance = await prisma.instance.findUnique({ where: { id: c.req.param('id') } })
+    const id = c.req.param('id')
+    const instance = await prisma.instance.findUnique({ where: { id } })
     if (!instance) {
+      if (await isFederatedEnabled()) {
+        const upstream = await forwardToUpstream(c)
+        return new Response(upstream.body, {
+          status: upstream.status,
+          headers: copyResponseHeaders(upstream),
+        })
+      }
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
@@ -788,9 +805,27 @@ export function instanceRoutes() {
       status: tunnels.has(inst.id) || await isTunnelConnectedAnywhere(inst.id)
         ? 'online'
         : (isRecentlySeenViaHeartbeat(inst.lastSeenAt) ? 'heartbeat' : 'offline'),
+      origin: 'local' as const,
     })))
 
-    return c.json({ instances: withLiveStatus })
+    // Local mode: merge in any instances registered against the cloud
+    // upstream this local API is signed in to. Local rows win on id
+    // collision; cloud rows are tagged with the upstream hostname so
+    // the UI can render a badge.
+    let merged: Array<Record<string, unknown>> = withLiveStatus
+    if (await isFederatedEnabled()) {
+      const cloud = await listCloudInstancesForWorkspace(workspaceId)
+      if (cloud.length) {
+        const origin = getUpstreamOrigin()
+        const localIds = new Set(withLiveStatus.map((i) => i.id))
+        const tagged = cloud
+          .filter((inst) => !localIds.has(inst.id))
+          .map((inst) => ({ ...inst, origin }))
+        merged = [...withLiveStatus, ...tagged]
+      }
+    }
+
+    return c.json({ instances: merged })
   })
 
 
@@ -845,8 +880,20 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
     }
 
-    const instance = await prisma.instance.findUnique({ where: { id: c.req.param('id') } })
+    const id = c.req.param('id')
+    const instance = await prisma.instance.findUnique({ where: { id } })
     if (!instance) {
+      // Local DB miss: in local mode, fall through to the cloud upstream
+      // the local API is already signed in to. The forwarded response
+      // carries the cloud's own membership + status checks; we surface
+      // it verbatim so the UI sees the same shape as the local branch.
+      if (await isFederatedEnabled()) {
+        const upstream = await forwardToUpstream(c)
+        return new Response(upstream.body, {
+          status: upstream.status,
+          headers: copyResponseHeaders(upstream),
+        })
+      }
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
@@ -864,6 +911,7 @@ export function instanceRoutes() {
       status: tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id)
         ? 'online'
         : (isRecentlySeenViaHeartbeat(instance.lastSeenAt) ? 'heartbeat' : 'offline'),
+      origin: 'local' as const,
       controllers: controllers.map((c) => ({
         userId: c.userId,
         lastSeenAt: c.lastSeenAt,
@@ -934,8 +982,16 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
     }
 
-    const instance = await prisma.instance.findUnique({ where: { id: c.req.param('id') } })
+    const id = c.req.param('id')
+    const instance = await prisma.instance.findUnique({ where: { id } })
     if (!instance) {
+      if (await isFederatedEnabled()) {
+        const upstream = await forwardToUpstream(c)
+        return new Response(upstream.body, {
+          status: upstream.status,
+          headers: copyResponseHeaders(upstream),
+        })
+      }
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
@@ -1037,8 +1093,16 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
     }
 
-    const instance = await prisma.instance.findUnique({ where: { id: c.req.param('id') } })
+    const id = c.req.param('id')
+    const instance = await prisma.instance.findUnique({ where: { id } })
     if (!instance) {
+      if (await isFederatedEnabled()) {
+        const upstream = await forwardToUpstream(c)
+        return new Response(upstream.body, {
+          status: upstream.status,
+          headers: copyResponseHeaders(upstream),
+        })
+      }
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
@@ -1181,6 +1245,16 @@ export function instanceRoutes() {
     const instanceId = c.req.param('id')
     const instance = await prisma.instance.findUnique({ where: { id: instanceId } })
     if (!instance) {
+      // Federated transparent proxy: forward the entire request (incl. body
+      // and headers) to cloud and pipe the response back. Streaming responses
+      // (SSE/chunked) flow through `Response.body` without buffering.
+      if (await isFederatedEnabled()) {
+        const upstream = await forwardToUpstream(c)
+        return new Response(upstream.body, {
+          status: upstream.status,
+          headers: copyResponseHeaders(upstream),
+        })
+      }
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
@@ -1295,22 +1369,62 @@ export function instanceRoutes() {
         summary: 'streaming',
       })
 
-      // Bracket chat turns with a billing session so the AI proxy
-      // accumulates per-turn usage into a single `chat_message` row.
-      // The remote runtime makes its own calls back to the cloud AI proxy
-      // for billing, keyed by tunnelProjectId.
+      // Bracket chat turns with a billing session AND persist the
+      // assistant `ChatMessage` row.
+      //
+      // We tee the upstream SSE into `trackUsageFromStream` (the same
+      // function the cloud-direct path in `project-chat.ts` uses).
+      // That function closes the billing session, persists the
+      // accumulated text + parts + tool calls, and is robust to
+      // partial turns. Without this tee the tunneled path would only
+      // bracket billing and never write `chat_messages.assistant`,
+      // so the user would see the reply on screen but lose it on
+      // page reload. See `instance-tunnel-chat-persistence.test.ts`.
+      //
+      // Persistence requires both a `chatSessionId` (header) and the
+      // referenced project existing in our DB. When either is missing
+      // (legacy probe traffic, mismatched project) we fall through to
+      // the billing-only tracker so we never silently mis-attribute
+      // tokens to a project we can't validate.
       const isChatTurn = method === 'POST' && cleanPath === '/agent/chat' && !!tunnelProjectId
       let billingSessionHandedOff = false
       let trackerController: ReadableStreamDefaultController<Uint8Array> | null = null
       let trackerStream: ReadableStream<Uint8Array> | null = null
       if (isChatTurn && tunnelProjectId) {
+        const tunnelProject = transparentChatSessionId
+          ? await prisma.project.findUnique({
+              where: { id: tunnelProjectId },
+              select: { id: true, workspaceId: true, workingMode: true },
+            }).catch(() => null)
+          : null
+
         openSession(tunnelProjectId, instance.workspaceId, auth.userId, transparentChatSessionId)
         trackerStream = new ReadableStream<Uint8Array>({
           start(c) { trackerController = c },
         })
-        trackChatStreamForBilling(trackerStream, tunnelProjectId, transparentChatSessionId).catch((err) =>
-          console.error(`[InstanceTunnel] Tracking error for project ${tunnelProjectId}:`, err),
-        )
+
+        if (tunnelProject) {
+          // Re-create the body shape `trackUsageFromStream` reads.
+          // The header is authoritative for chatSessionId (matches
+          // the cloud-direct fix in `project-chat.ts`); we still
+          // forward whatever the body claimed for `agentMode` so the
+          // log lines match.
+          let parsedBodyForTracker: any = {}
+          if (body) {
+            try { parsedBodyForTracker = JSON.parse(body) } catch { /* not JSON, leave empty */ }
+          }
+          trackUsageFromStream(trackerStream, parsedBodyForTracker, tunnelProject, {
+            chatSessionId: transparentChatSessionId,
+          }).catch((err) =>
+            console.error(`[InstanceTunnel] Usage tracking error for project ${tunnelProjectId}:`, err),
+          )
+        } else {
+          // No chat-session header or project not found in DB —
+          // bracket billing only, never persist.
+          trackChatStreamForBilling(trackerStream, tunnelProjectId, transparentChatSessionId).catch((err) =>
+            console.error(`[InstanceTunnel] Tracking error for project ${tunnelProjectId}:`, err),
+          )
+        }
         billingSessionHandedOff = true
       }
 

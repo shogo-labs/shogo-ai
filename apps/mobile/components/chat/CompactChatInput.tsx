@@ -139,7 +139,7 @@ export interface CompactChatInputProps {
    * Optional opt-in handler that replaces the default `useVoiceInput`
    * dictation behavior on the empty-composer mic button. When provided,
    * tapping the mic invokes this handler instead of starting local
-   * speech-to-text — the homepage uses this to open Shogo Mode for
+   * speech-to-text — the homepage uses this to open EZ Mode for
    * project creation while preemptively warming a runtime pod.
    */
   onStartVoiceProjectCreation?: () => void | Promise<void>
@@ -152,6 +152,14 @@ export interface CompactChatInputProps {
    * actively rendering.
    */
   agentPlaceholderActive?: boolean
+  /**
+   * Optional element rendered at the very left of the bottom toolbar,
+   * before the mode picker. Used by the home composer to surface the
+   * project-source menu ("New project / Open folder / Import") as a
+   * first-class chip alongside model + mode. Pass `null` (the default)
+   * for in-project chats where source-of-project doesn't apply.
+   */
+  leadingControls?: React.ReactNode
 }
 
 export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
@@ -175,6 +183,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       dimWhenDisabled = true,
       onStartVoiceProjectCreation,
       agentPlaceholderActive = false,
+      leadingControls,
     },
     ref
   ) {
@@ -355,6 +364,17 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       setPastedTexts((prev) => prev.filter((p) => p.id !== id))
       setViewingPastedId((curr) => (curr === id ? null : curr))
     }, [])
+
+    const handleUpdatePastedText = useCallback(
+      (id: string, content: string) => {
+        setPastedTexts((prev) =>
+          prev.map((p) =>
+            p.id === id ? { ...p, content, info: analyzeContent(content) } : p
+          )
+        )
+      },
+      []
+    )
 
     const viewingPasted = useMemo(
       () => pastedTexts.find((p) => p.id === viewingPastedId) ?? null,
@@ -643,6 +663,11 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
           <View className="flex-row items-center justify-between p-1.5">
             {/* Left side buttons */}
             <View className="flex-row items-center gap-1">
+              {/* Caller-supplied leading slot (e.g. project-source menu
+                  on the home composer). Rendered before built-in
+                  controls so it reads as "what am I creating?" prior to
+                  "what mode / what model". */}
+              {leadingControls}
               {/* Interaction mode selector (Agent / Plan / Ask) */}
               <Popover
                 placement="top"
@@ -749,14 +774,14 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
               {/* Dual Plan toggle — only visible in Plan mode. Persistent
                   per-device preference; every subsequent plan auto-generates
-                  a business-language version until disabled. */}
+                  a stakeholder summary until disabled. */}
               {interactionMode === "plan" && (
-                <WebTooltip label="Also generate a business-language version">
+                <WebTooltip label="Also generate a stakeholder summary">
                   <Pressable
                     testID="home-dual-plan-toggle"
                     disabled={disabled}
                     onPress={() => onDualPlanChange?.(!dualPlan)}
-                    accessibilityLabel="Also generate a business-language version"
+                    accessibilityLabel="Also generate a stakeholder summary"
                     className={cn(
                       "h-[22px] w-[22px] items-center justify-center rounded-md",
                       dualPlan
@@ -970,6 +995,8 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             title={`${kindLabel(viewingPasted.info.kind)} content`}
             kind={viewingPasted.info.kind}
             sizeLabel={viewingPasted.info.sizeLabel}
+            editable
+            onSave={(next) => handleUpdatePastedText(viewingPasted.id, next)}
           />
         )}
 

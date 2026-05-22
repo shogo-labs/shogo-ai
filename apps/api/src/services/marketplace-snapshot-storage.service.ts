@@ -473,6 +473,33 @@ export function _setClientForTests(client: S3Client | null): void {
   cachedClient = client
 }
 
+/**
+ * @internal Test-only — drive `trySystemTarExtract` directly so tests can
+ * force a pathological `destDir` (e.g. containing a NUL byte) to exercise
+ * the `spawn()` sync-throw catch arm without then falling through to
+ * `tar.extract()` (which would emit an uncaught stream-level error on the
+ * same bad path).
+ */
+export async function _trySystemTarExtractForTests(
+  archivePath: string,
+  destDir: string,
+): Promise<boolean> {
+  return trySystemTarExtract(archivePath, destDir)
+}
+
+/**
+ * @internal Test-only — drive `walkExtract` directly so tests can pass a
+ * non-existent or unreadable directory and exercise the `readdirSync`
+ * catch arm (L419) without going through `loadSnapshotFiles`.
+ */
+export function _walkExtractForTests(
+  absDir: string,
+  root: string,
+  out: Record<string, string | { data: string; encoding: 'base64' }>,
+): void {
+  walkExtract(absDir, root, out)
+}
+
 // ─── Local FS fallback (rarely useful) ──────────────────────────────
 
 /**

@@ -39,13 +39,9 @@ import {
   useProjectCollection,
   getChatMessageCollectionForSession,
 } from '@shogo/shared-app/domain'
-import {
-  useDynamicAppStream,
-  useAgentUrl,
-} from '@shogo/shared-app/dynamic-app'
 import type { IDomainStore } from '@shogo/domain-stores'
 import { cn } from '@shogo/shared-ui/primitives'
-import { useBillingData } from '@shogo/shared-app/hooks'
+import { useAgentUrl, useBillingData } from '@shogo/shared-app/hooks'
 import {
   getIncludedUsdForPlan,
   getIncludedUsdCapacityForDisplay,
@@ -55,6 +51,8 @@ import { useAuth } from '../../../../contexts/auth'
 import { useDomainHttp } from '../../../../contexts/domain'
 import { authClient } from '../../../../lib/auth-client'
 import { API_URL, api } from '../../../../lib/api'
+import { workspaceProjectFilter } from '../../../../lib/project-load'
+import { getActiveWorkspaceId } from '../../../../lib/workspace-store'
 import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingFiles } from '../../../../lib/pending-image-store'
 import { isNativePhoneIntegrationsLayout } from '../../../../lib/native-phone-layout'
@@ -64,7 +62,7 @@ import {
   ChatBridgeProvider,
   useChatBridge,
 } from '../../../../components/voice-mode/ChatBridgeContext'
-import { ShogoChatPanel } from '../../../../components/voice-mode/ShogoChatPanel'
+import { EzModeChatPanel } from '../../../../components/voice-mode/EzModeChatPanel'
 import type { InteractionMode } from '../../../../components/chat/ChatInput'
 import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../../../components/chat/ChatInput'
 import { loadModelPreference, saveModelPreference } from '../../../../lib/agent-mode-preference'
@@ -72,29 +70,46 @@ import { MODEL_CATALOG } from '@shogo/model-catalog'
 import { agentFetch } from '../../../../lib/agent-fetch'
 import { useActiveInstance } from '../../../../contexts/active-instance'
 import { ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
-import { ChatTabBar, type ChatTab } from '../../../../components/chat/ChatTabBar'
-import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
-import { CanvasErrorBoundary } from '../../../../components/dynamic-app/CanvasErrorBoundary'
-import { CanvasWebView } from '../../../../components/dynamic-app/CanvasWebView'
-import { EditModeProvider, useEditModeOptional } from '../../../../components/dynamic-app/edit/EditModeContext'
-import { AddComponentDialog } from '../../../../components/dynamic-app/edit/AddComponentDialog'
-import { InspectorPanel } from '../../../../components/dynamic-app/edit/InspectorPanel'
-import { ComponentTreePanel } from '../../../../components/dynamic-app/edit/ComponentTreePanel'
-import { CanvasThemeProvider, CanvasThemedContainer, useCanvasThemeOptional } from '../../../../components/dynamic-app/CanvasThemeContext'
+import { CanvasWebView } from '../../../../components/canvas/CanvasWebView'
+import { ExternalPreviewWebView } from '../../../../components/canvas/ExternalPreviewWebView'
 import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
 import { PanelErrorBoundary } from '../../../../components/project/panels/PanelErrorBoundary'
 import {
   ChannelsPanel,
   FilesBrowserPanel,
   IDEPanel,
-  CapabilitiesPanel,
-  MonitorPanel,
+  CapabilitiesConfigPane,
+  CapabilitiesSkillsPane,
+  CapabilitiesIntegrationsPane,
   PlansPanel,
   AgentsPanel,
   CheckpointsPanel,
+  SettingsPanel,
+  StatusPanel,
+  AnalyticsPanel,
+  LogsPanel,
+  type SettingsSectionGroup,
+  type SettingsSectionItem,
 } from '../../../../components/project/panels'
+import { FoldersPanel } from '../../../../components/project/panels/FoldersPanel'
+import { TrustPrompt, type TrustDecision } from '../../../../components/project/TrustPrompt'
 import { DrawerHost } from '../../../../components/project/panels/ide/DrawerHost'
-import { RefreshCw, MessageSquare, Sparkles, Bug, X as XIcon } from 'lucide-react-native'
+import {
+  RefreshCw,
+  MessageSquare,
+  Sparkles,
+  Bug,
+  X as XIcon,
+  FolderTree,
+  GitCommit,
+  Sliders,
+  Plug,
+  Radio,
+  Bot,
+  Activity,
+  BarChart3,
+  FileText,
+} from 'lucide-react-native'
 import {
   useToast,
   Toast,
@@ -123,7 +138,7 @@ const WIDE_BREAKPOINT = 1024
 const HIDDEN_HEADER_OPTIONS = { headerShown: false } as const
 // `terminal` is intentionally absent — chat exec entries now appear in
 // the IDE bottom drawer's "Output" tab (filterable to "Exec").
-const STANDALONE_PANELS = ['ide', 'files', 'capabilities', 'channels', 'agents', 'monitor', 'plans', 'checkpoints']
+const STANDALONE_PANELS = ['ide', 'files', 'plans', 'external-preview', 'settings']
 
 const DEFAULT_CHAT_PANEL_WIDTH = 480
 const MIN_CHAT_PANEL_WIDTH = 320
@@ -131,7 +146,7 @@ const CHAT_PANEL_WIDTH_STORAGE_KEY = 'shogo:chatPanelWidth'
 
 /** Suppress duplicate "[canvas-error]" toasts within this many ms. */
 const CANVAS_ERROR_DEDUP_MS = 10_000
-/** How many recent runtime log entries to attach to a debug-with-Shogo prompt. */
+/** How many recent runtime log entries to attach to a debug-with-EZ-Mode prompt. */
 const CANVAS_ERROR_LOG_TAIL = 30
 /** Cap any single error / log line so the seed prompt stays bounded. */
 const CANVAS_ERROR_MAX_LINE = 1200
@@ -151,8 +166,6 @@ const CANVAS_ERROR_MAX_LINE = 1200
  * router) don't, and the page route is the meaningful identifier there.
  */
 function buildCanvasErrorDebugPrompt(args: {
-  surfaceId: string
-  surfaceTitle?: string | null
   phase: 'compile' | 'runtime'
   error: string
   /** Iframe `pathname + search + hash` at the moment of the error. */
@@ -171,24 +184,15 @@ function buildCanvasErrorDebugPrompt(args: {
     ts: number
   }>
 }): string {
-  const { surfaceId, surfaceTitle, phase, error, route, recentActions, recentLogs } = args
+  const { phase, error, route, recentActions, recentLogs } = args
   const truncate = (s: string, n: number) =>
     s.length <= n ? s : `${s.slice(0, n - 1)}…`
   const phaseLabel = phase === 'compile' ? 'compile-time' : 'runtime'
-  // Only call out the surface when one is actually known — for plain
-  // workspace canvases `surfaceId` is empty/`undefined` and the old
-  // wording ("on `undefined`") was actively confusing.
-  const hasSurface = !!surfaceTitle || (!!surfaceId && surfaceId !== 'undefined')
-  const surfaceLabel = surfaceTitle
-    ? ` on \`${surfaceTitle}\``
-    : hasSurface
-      ? ` on \`${surfaceId}\``
-      : ''
   const pageLabel = route ? ` (page \`${route}\`)` : ''
 
   const lines: string[] = []
   lines.push(
-    `🐞 The canvas just hit a ${phaseLabel} error${surfaceLabel}${pageLabel}. Please diagnose the root cause and propose / apply a minimal fix.`,
+    `🐞 The canvas just hit a ${phaseLabel} error${pageLabel}. Please diagnose the root cause and propose / apply a minimal fix.`,
   )
   lines.push('')
   lines.push('**Error**')
@@ -239,9 +243,9 @@ export default observer(function ProjectLayout() {
     initialInteractionMode?: string
     appTemplateName?: string
     showIntegrations?: string
-    /** When '1', enter Shogo Mode immediately on mount (homepage mic flow). */
-    startShogoMode?: string
-    /** When '1' alongside `startShogoMode`, auto-connect the voice session once. */
+    /** When '1', enter EZ Mode immediately on mount (homepage mic flow). */
+    startEzMode?: string
+    /** When '1' alongside `startEzMode`, auto-connect the voice session once. */
     autoStartVoice?: string
   }>()
   const projectId = params.id
@@ -274,12 +278,19 @@ export default observer(function ProjectLayout() {
   const [capturedInitialFiles] = useState(() => consumePendingFiles())
   // APP_MODE_DISABLED: capturedAppTemplateName removed
   const [capturedShowIntegrations] = useState(() => params.showIntegrations === '1')
-  // Capture once so router param changes don't re-fire Shogo Mode.
-  const [capturedStartShogoMode] = useState(() => params.startShogoMode === '1')
+  // Capture once so router param changes don't re-fire EZ Mode.
+  const [capturedStartEzMode] = useState(() => params.startEzMode === '1')
   const [capturedAutoStartVoice] = useState(() => params.autoStartVoice === '1')
 
   // Tab state for narrow screens
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat')
+
+  // Imperative request to focus a specific section inside SettingsPanel
+  // (e.g. when a subagent stream starts and we want to show "Agents").
+  // The nonce ensures a fresh request lands even when the id doesn't change.
+  const [requestedSettingsItem, setRequestedSettingsItem] = useState<
+    { id: string; nonce: number } | null
+  >(null)
 
   // Chat session tracking — seed from route param if provided
   const [chatSessionId, setChatSessionId] = useState<string | null>(
@@ -372,9 +383,8 @@ export default observer(function ProjectLayout() {
   }, [project?.settings])
 
   const canvasEnabled = projectSettings.canvasEnabled !== false
-  const canvasMode = (projectSettings.canvasMode as 'json' | 'code') || 'json'
   const [iframeRefreshKey, setIframeRefreshKey] = useState(0)
-  const [canvasThemeSupported, setCanvasThemeSupported] = useState<boolean | null>(canvasMode === 'json' ? true : null)
+  const [canvasThemeSupported, setCanvasThemeSupported] = useState<boolean | null>(null)
   // APP_MODE_DISABLED: treat 'app' as 'none' for existing projects
   const rawMode = (projectSettings.activeMode as 'canvas' | 'app' | 'none') || (canvasEnabled ? 'canvas' : 'none')
   const activeMode = rawMode === 'app' ? 'none' : rawMode
@@ -407,14 +417,154 @@ export default observer(function ProjectLayout() {
     setCanvasThemeSupported(caps.supportsTheme)
   }, [])
 
+  // ── External preview (folder-linked / `workingMode === 'external'`) ─
+  //
+  // For Open-Folder projects we expose a desktop-only Electron
+  // WebContentsView that loads the user's own dev server (Vite/Next/etc).
+  // The URL comes from two sources:
+  //   1. Auto-detection: agent-runtime sniffs `Local: http://...` lines
+  //      from any PTY session and surfaces the most recent via
+  //      /preview/detected-urls.
+  //   2. Manual: user typed into the address bar; persisted on
+  //      Project.settings.externalPreview.savedUrl via the
+  //      /api/projects/:id/external-preview endpoints.
+  //
+  // We keep both in state here so the address-bar and the empty-state
+  // chip can both surface the detected URL even when nothing is saved.
+  const isExternalProject = (project?.workingMode ?? 'managed') === 'external'
+  const projectTrustLevel: 'restricted' | 'trusted' = project?.trustLevel === 'trusted' ? 'trusted' : 'restricted'
+  const primaryFolderPath = useMemo<string | null>(() => {
+    const folders = (project?.projectFolders ?? []) as Array<{ path: string; isPrimary?: boolean }>
+    const primary = folders.find((f) => f.isPrimary) ?? folders[0]
+    return primary?.path ?? null
+  }, [project?.projectFolders])
+  const [externalSavedUrl, setExternalSavedUrl] = useState<string | null>(null)
+  const [externalDetectedUrl, setExternalDetectedUrl] = useState<string | null>(null)
+  const [trustPromptOpen, setTrustPromptOpen] = useState(false)
+  const [trustSubmitting, setTrustSubmitting] = useState(false)
+  const trustAutoShownRef = useRef(false)
+
+  // Pull the saved/detected URL pair when the project resolves as
+  // external. We re-fetch on `agentUrl` change because the detected URL
+  // routes through the agent-runtime — once the pod URL changes, we may
+  // discover a new fresher detection.
+  useEffect(() => {
+    if (!projectId || !isExternalProject) return
+    let cancelled = false
+    const fetchState = async () => {
+      try {
+        const res = await fetch(
+          `${API_URL}/api/projects/${encodeURIComponent(projectId)}/external-preview`,
+          { credentials: Platform.OS === 'web' ? 'include' : 'omit' },
+        )
+        if (!res.ok) return
+        const body = await res.json()
+        if (cancelled) return
+        if (typeof body?.savedUrl === 'string') setExternalSavedUrl(body.savedUrl)
+        else setExternalSavedUrl(null)
+        if (typeof body?.detectedUrl === 'string') setExternalDetectedUrl(body.detectedUrl)
+      } catch (err) {
+        if (!cancelled) console.warn('[external-preview] fetch failed:', err)
+      }
+    }
+    void fetchState()
+    // Poll modestly while the user is on the project page — the SSE
+    // detected-urls stream lives on the agent-runtime and isn't yet
+    // proxied through the API; a 5 s poll is fine until we wire that.
+    const t = setInterval(fetchState, 5000)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [projectId, isExternalProject])
+
+  const handleSaveExternalPreviewUrl = useCallback(async (url: string) => {
+    if (!projectId) return
+    try {
+      const res = await fetch(
+        `${API_URL}/api/projects/${encodeURIComponent(projectId)}/external-preview`,
+        {
+          method: 'PUT',
+          credentials: Platform.OS === 'web' ? 'include' : 'omit',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ savedUrl: url }),
+        },
+      )
+      if (res.status === 403) {
+        const body = await res.json().catch(() => ({}))
+        if (body?.needsTrust) {
+          // Non-local URL on a restricted project → nudge the user to
+          // trust the workspace. The URL isn't saved; once they trust
+          // and retry, the same handler will persist it.
+          setTrustPromptOpen(true)
+          return
+        }
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        Alert.alert('Could not set preview URL', String(body?.error ?? `HTTP ${res.status}`))
+        return
+      }
+      const body = await res.json().catch(() => ({}))
+      if (typeof body?.savedUrl === 'string') setExternalSavedUrl(body.savedUrl)
+    } catch (err: any) {
+      Alert.alert('Could not set preview URL', err?.message ?? String(err))
+    }
+  }, [projectId])
+
+  const handleTrustDecision = useCallback(async (decision: TrustDecision) => {
+    if (!projectId) return
+    setTrustSubmitting(true)
+    try {
+      // "restricted" → just close; the agent-runtime keeps blocking
+      // writes/exec server-side regardless.
+      if (decision === 'restricted') {
+        setTrustPromptOpen(false)
+        return
+      }
+      const res = await fetch(
+        `${API_URL}/api/local/projects/${encodeURIComponent(projectId)}/trust`,
+        {
+          method: 'POST',
+          credentials: Platform.OS === 'web' ? 'include' : 'omit',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ trusted: true }),
+        },
+      )
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        Alert.alert('Could not update trust', String(body?.error ?? `HTTP ${res.status}`))
+        return
+      }
+      const body = await res.json().catch(() => ({}))
+      if (body?.project) setProject(body.project)
+      setTrustPromptOpen(false)
+    } catch (err: any) {
+      Alert.alert('Could not update trust', err?.message ?? String(err))
+    } finally {
+      setTrustSubmitting(false)
+    }
+  }, [projectId])
+
+  // Auto-show the trust prompt the first time an external + restricted
+  // project lands on this layout. We track this with a ref so the modal
+  // doesn't re-pop after the user has dismissed it once per session.
+  useEffect(() => {
+    if (!isExternalProject) return
+    if (projectTrustLevel !== 'restricted') return
+    if (trustAutoShownRef.current) return
+    trustAutoShownRef.current = true
+    setTrustPromptOpen(true)
+  }, [isExternalProject, projectTrustLevel])
+
   // Reset theme support detection when the iframe reloads (code-mode only).
   const prevRefreshKeyRef = useRef(iframeRefreshKey)
   useEffect(() => {
-    if (canvasMode === 'code' && iframeRefreshKey !== prevRefreshKeyRef.current) {
+    if (iframeRefreshKey !== prevRefreshKeyRef.current) {
       prevRefreshKeyRef.current = iframeRefreshKey
       setCanvasThemeSupported(null)
     }
-  }, [iframeRefreshKey, canvasMode])
+  }, [iframeRefreshKey])
 
   const allProjects = useMemo(() => {
     try {
@@ -438,8 +588,23 @@ export default observer(function ProjectLayout() {
     }
   }, [])
 
-  // Resolve agent + preview URLs
-  const { agentUrl: resolvedAgentUrl, previewUrl, canvasBaseUrl } = useAgentUrl(API_URL!, projectId, {
+  // Resolve agent + preview URLs.
+  //
+  // `runtimeReady` is held false until `/sandbox/url` reports `ready:true`,
+  // so the hook only exposes URLs once the per-project runtime is actually
+  // listening. Without this gate, a project navigated to right after the
+  // home composer's `runtime/prewarm` would see canvas / preview / agent
+  // SSE all hit ECONNREFUSED for the first few seconds while Vite + the
+  // agent-runtime were still booting. We extend the existing
+  // `isLoading || !project` guard below with `!runtimeReady` so the
+  // project page shows a spinner ("Starting your project…") instead of
+  // rendering panels that would silently fail.
+  const {
+    agentUrl: resolvedAgentUrl,
+    previewUrl,
+    canvasBaseUrl,
+    ready: runtimeReady,
+  } = useAgentUrl(API_URL!, projectId, {
     credentials: Platform.OS === 'web' ? 'include' : 'omit',
     headers: nativeHeaders,
   })
@@ -461,12 +626,34 @@ export default observer(function ProjectLayout() {
     () => hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
   )
 
+  // Tracks whether we've already synced the persisted preference to the
+  // runtime for this (project, model). Without this sync, Capabilities shows
+  // the AsyncStorage-restored model while Overview shows whatever the agent
+  // booted with — because the bootstrap previously only updated React state.
+  const modelPrefSyncedRef = useRef<string | null>(null)
   useEffect(() => {
+    let cancelled = false
     loadModelPreference(projectId).then((stored) => {
-      if (stored) setSelectedModel(stored)
-      else if (hasAdvancedModelAccess) setSelectedModel(DEFAULT_MODEL_PRO)
+      if (cancelled) return
+      const next = stored ?? (hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE)
+      setSelectedModel(next)
+      if (!agentUrl) return
+      const syncKey = `${projectId}:${next}`
+      if (modelPrefSyncedRef.current === syncKey) return
+      modelPrefSyncedRef.current = syncKey
+      const entry = MODEL_CATALOG[next as keyof typeof MODEL_CATALOG]
+      if (!entry) return
+      agentFetch(`${agentUrl}/agent/config`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: { provider: entry.provider, name: entry.id } }),
+      }).catch((err) => {
+        console.error('[ProjectLayout] Failed to sync persisted model to runtime:', err)
+        modelPrefSyncedRef.current = null
+      })
     })
-  }, [hasAdvancedModelAccess, projectId])
+    return () => { cancelled = true }
+  }, [hasAdvancedModelAccess, projectId, agentUrl])
 
   const handleModelChange = useCallback(async (modelId: string) => {
     setSelectedModel(modelId)
@@ -487,124 +674,19 @@ export default observer(function ProjectLayout() {
     }
   }, [agentUrl, projectId])
 
-  // Dynamic app canvas — all unified projects use the agent URL for canvas streaming
-  const dynamicAppStreamUrl = agentUrl
-  const { surfaces, activeSurfaceId, connected, dispatchAction, updateLocalData, reconnect, applyMessage } = useDynamicAppStream(
-    dynamicAppStreamUrl,
-    {
-      ...(nativeHeaders ? { headers: nativeHeaders } : {}),
-      withCredentials: Platform.OS === 'web',
-    },
-  )
-  const [userSelectedSurfaceId, setUserSelectedSurfaceId] = useState<string | null>(null)
-  const mountTimeRef = useRef(Date.now())
   const splitRowRef = useRef<View>(null)
 
-  // Restore last-viewed surface from AsyncStorage
-  useEffect(() => {
-    if (!projectId) return
-    AsyncStorage.getItem(`shogo:lastCanvasSurface:${projectId}`).then((savedId) => {
-      if (savedId) setUserSelectedSurfaceId(savedId)
-    }).catch(() => {})
-  }, [projectId])
+  // Connection state for the canvas. The canvas iframe owns its own data
+  // (SSE / HMR / API calls happen inside the workspace SPA); the parent
+  // only needs to know whether the agent runtime is reachable.
+  const connected = !!agentUrl
 
-  const effectiveSurfaceId = userSelectedSurfaceId && surfaces.has(userSelectedSurfaceId)
-    ? userSelectedSurfaceId
-    : activeSurfaceId
-
-  // Persist active surface selection to AsyncStorage
-  useEffect(() => {
-    if (projectId && effectiveSurfaceId) {
-      AsyncStorage.setItem(`shogo:lastCanvasSurface:${projectId}`, effectiveSurfaceId).catch(() => {})
-    }
-  }, [projectId, effectiveSurfaceId])
-
-  const activeSurface = useMemo(() => {
-    return effectiveSurfaceId ? surfaces.get(effectiveSurfaceId) || null : null
-  }, [surfaces, effectiveSurfaceId])
-
-  const surfaceEntries = useMemo(() =>
-    Array.from(surfaces.values())
-      .sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''))
-      .map(s => ({ id: s.surfaceId, title: s.title || s.surfaceId })),
-    [surfaces],
-  )
-
-  const surfaceIds = useMemo(() =>
-    surfaceEntries.map(s => s.id),
-    [surfaceEntries],
-  )
-
-  // Auto-switch to new surfaces created by the agent.
-  // Suppressed for the first 2 s after mount so the SSE replay doesn't
-  // override the surface selection we just restored from AsyncStorage.
-  const prevActiveSurfaceIdRef = useRef(activeSurfaceId)
-  useEffect(() => {
-    if (Date.now() - mountTimeRef.current < 2000) {
-      prevActiveSurfaceIdRef.current = activeSurfaceId
-      return
-    }
-    if (activeSurfaceId && activeSurfaceId !== prevActiveSurfaceIdRef.current) {
-      setUserSelectedSurfaceId(null)
-    }
-    prevActiveSurfaceIdRef.current = activeSurfaceId
-  }, [activeSurfaceId])
-
-  // Canvas action handler
-  const handleCanvasAction = useCallback(
-    (surfaceId: string, name: string, context?: Record<string, unknown>) => {
-      dispatchAction(surfaceId, name, context)
-    },
-    [dispatchAction],
-  )
-
-  const handleCanvasPreview = useCallback(
-    (surfaceId: string, components: any[]) => {
-      applyMessage({ type: 'updateComponents', surfaceId, components, merge: true })
-    },
-    [applyMessage],
-  )
-
-  // Auto-capture thumbnail when the agent finishes building the canvas UI (web only).
-  const thumbnailCapturedRef = useRef(false)
-  const hasCanvasUI = activeSurface && activeSurface.components.size > 0 && activeSurface.components.has('root')
-
-  useEffect(() => {
-    if (Platform.OS !== 'web') return
-    if (!projectId || !hasCanvasUI || thumbnailCapturedRef.current) return
-
-    let currentProject: any
-    try {
-      currentProject = store?.projectCollection?.all?.find((p: any) => p.id === projectId)
-    } catch { return }
-    if (currentProject?.thumbnailUrl) return
-
-    thumbnailCapturedRef.current = true
-
-    const timer = setTimeout(async () => {
-      try {
-        const { default: html2canvas } = await import('html2canvas')
-        const canvasEl = document.querySelector('[data-thumbnail-target]') as HTMLElement
-          ?? document.querySelector('[class*="flex-1"] [class*="p-4"]') as HTMLElement
-        if (!canvasEl) return
-
-        const canvas = await html2canvas(canvasEl, {
-          scale: 0.5,
-          useCORS: true,
-          logging: false,
-          backgroundColor: null,
-          width: canvasEl.scrollWidth,
-          height: Math.min(canvasEl.scrollHeight, 800),
-        })
-
-        canvas.toBlob(async (blob: Blob | null) => {
-          if (!blob) return
-          await api.uploadThumbnail(blob, projectId)
-        }, 'image/png')
-      } catch {}
-    }, 1500)
-    return () => clearTimeout(timer)
-  }, [projectId, hasCanvasUI, store])
+  // Stub `reconnect` for callers that still trigger a manual canvas refresh.
+  // Bumping `iframeRefreshKey` reloads the iframe; v1's SSE reconnect path
+  // is gone.
+  const reconnect = useCallback(() => {
+    setIframeRefreshKey(k => k + 1)
+  }, [])
 
   // Load project data
   const domainsReady = sdkReady && !!store?.projectCollection
@@ -628,7 +710,18 @@ export default observer(function ProjectLayout() {
 
       try {
         await store.workspaceCollection.loadAll({ userId: user!.id })
-        store.projectCollection.loadAll().catch((e) => console.error('[ProjectLayout] Failed to preload projects:', e))
+        // Fall back to the first workspace the user belongs to when nothing
+        // has been persisted yet — otherwise the project-list preload is
+        // silently skipped and the sidebar's Recent stays empty on a fresh
+        // load that lands on a project URL.
+        const wsId =
+          getActiveWorkspaceId() ?? (store.workspaceCollection.all?.[0] as any)?.id
+        const projectFilter = workspaceProjectFilter(wsId)
+        if (projectFilter) {
+          store.projectCollection
+            .loadAll(projectFilter)
+            .catch((e) => console.error('[ProjectLayout] Failed to preload projects:', e))
+        }
         const proj = await store.projectCollection.loadById(projectId)
 
         if (cancelled) return
@@ -919,8 +1012,38 @@ export default observer(function ProjectLayout() {
   // Chat panel visibility
   const [chatCollapsed, setChatCollapsed] = useState(false)
   const [showChatSessions, setShowChatSessions] = useState(false)
+  // Hydrated from AsyncStorage so the user's "history sidebar open/closed"
+  // preference survives navigation; only read once per project mount.
+  const showChatSessionsHydratedRef = useRef<string | null>(null)
   const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
-  const [previewTab, setPreviewTab] = useState('dynamic-app')
+  // Narrow (mobile) chat-session picker that temporarily replaces the chat
+  // panel with the session list. Auto-closes when the user leaves the chat tab.
+  const [narrowChatPickerOpen, setNarrowChatPickerOpen] = useState(false)
+  const [previewTab, setPreviewTab] = useState('canvas')
+
+  // Close the narrow picker as soon as the layout shifts off the chat tab
+  // (e.g. user switched to canvas, or the viewport widened into split mode).
+  useEffect(() => {
+    if (narrowChatPickerOpen && (isWide || activeTab !== 'chat')) {
+      setNarrowChatPickerOpen(false)
+    }
+  }, [narrowChatPickerOpen, isWide, activeTab])
+
+  useEffect(() => {
+    if (!projectId) return
+    if (showChatSessionsHydratedRef.current === projectId) return
+    showChatSessionsHydratedRef.current = projectId
+    AsyncStorage.getItem(`shogo:showChatHistory:${projectId}`).then((raw) => {
+      if (raw === '1') setShowChatSessions(true)
+      else if (raw === '0') setShowChatSessions(false)
+    }).catch(() => {})
+  }, [projectId])
+
+  useEffect(() => {
+    if (!projectId) return
+    if (showChatSessionsHydratedRef.current !== projectId) return
+    AsyncStorage.setItem(`shogo:showChatHistory:${projectId}`, showChatSessions ? '1' : '0').catch(() => {})
+  }, [projectId, showChatSessions])
 
   // Resizable chat panel width (wide split mode only)
   const [chatPanelWidth, setChatPanelWidth] = useState(DEFAULT_CHAT_PANEL_WIDTH)
@@ -944,12 +1067,17 @@ export default observer(function ProjectLayout() {
     AsyncStorage.setItem(CHAT_PANEL_WIDTH_STORAGE_KEY, String(w)).catch(() => {})
   }, [])
 
-  const PERSISTABLE_PREVIEW_TABS = useMemo(() => new Set(['dynamic-app', 'chat-fullscreen', 'app-preview']), [])
+  const PERSISTABLE_PREVIEW_TABS = useMemo(() => new Set(['canvas', 'chat-fullscreen', 'app-preview', 'external-preview']), [])
 
   useEffect(() => {
     if (!projectId) return
     AsyncStorage.getItem(`shogo:lastPreviewTab:${projectId}`).then((saved) => {
-      if (saved) setPreviewTab(saved)
+      if (!saved) return
+      // Legacy values written before the v1 dynamic-app -> canvas tab rename
+      // (chore/remove-canvas-v1) get normalized on read so existing users don't
+      // land on an unknown tab and fall back to the default.
+      const normalized = saved === 'dynamic-app' ? 'canvas' : saved
+      setPreviewTab(normalized)
     }).catch(() => {})
   }, [projectId])
 
@@ -1028,26 +1156,25 @@ export default observer(function ProjectLayout() {
       ) {
         setActiveTab('chat')
       }
-      // Canvas is off (e.g. external folder project): the default
-      // `dynamic-app` tab would render an empty right panel and, on
-      // wide screens, leave the chat squeezed alongside it. Flip the
-      // preview tab to chat-fullscreen so the user lands in a clean
-      // chat-only IDE view. The user can still pick any non-canvas
-      // sub-tab (Files, IDE, Capabilities, …) from the top bar.
-      if (previewTab === 'dynamic-app') {
-        setPreviewTab('chat-fullscreen')
+      // Canvas is off. For folder-linked external projects we have a
+      // first-class preview surface (the embedded Electron webview), so
+      // land there by default; users still get chat-fullscreen for
+      // managed-but-canvas-off projects, where there's no preview to
+      // show.
+      if (previewTab === 'canvas') {
+        setPreviewTab(isExternalProject ? 'external-preview' : 'chat-fullscreen')
       }
     } else if (canvasEnabled) {
-      if (previewTab === 'app-preview') setPreviewTab('dynamic-app')
+      if (previewTab === 'app-preview') setPreviewTab('canvas')
     }
-  }, [canvasEnabled, activeMode, previewTab, activeTab])
+  }, [canvasEnabled, activeMode, previewTab, activeTab, isExternalProject])
 
-  // Narrow + Android: back from Capabilities → chat column, with Canvas preview selected when canvas is on.
+  // Narrow + Android: back from Settings → chat column, with Canvas preview selected when canvas is on.
   useEffect(() => {
     if (Platform.OS !== 'android' || isWide) return
 
     const onBack = () => {
-      if (previewTab !== 'capabilities') return false
+      if (previewTab !== 'settings') return false
       setActiveTab('chat')
       setPreviewTab('chat-fullscreen')
       return true
@@ -1071,7 +1198,13 @@ export default observer(function ProjectLayout() {
   useEffect(() => {
     subagentStreamStore.onRequestTabSwitch((toolId?: string) => {
       setSelectedAgentToolId(toolId ?? null)
-      setPreviewTab('agents')
+      // Agents lives inside the Settings panel now — open Settings and
+      // imperatively focus the Agents section via the nonce-bumped request.
+      setPreviewTab('settings')
+      setRequestedSettingsItem((prev) => ({
+        id: 'agents',
+        nonce: (prev?.nonce ?? 0) + 1,
+      }))
       if (!isWide) setActiveTab('canvas')
     })
     return () => subagentStreamStore.onRequestTabSwitch(null)
@@ -1093,7 +1226,7 @@ export default observer(function ProjectLayout() {
         console.error(`[ProjectLayout] Failed to push ${key} config to runtime:`, err)
       }
     }
-    if (key === 'canvasEnabled' && !enabled && previewTab === 'dynamic-app') {
+    if (key === 'canvasEnabled' && !enabled && previewTab === 'canvas') {
       setPreviewTab('chat-fullscreen')
     }
   }, [updateProjectSettings, agentUrl, nativeHeaders, previewTab])
@@ -1123,12 +1256,12 @@ export default observer(function ProjectLayout() {
       setPreviewTab('chat-fullscreen')
     } else if (
       !isWide &&
-      previewTab === 'capabilities' &&
+      previewTab === 'settings' &&
       enableCanvas &&
       activeMode === 'none'
     ) {
       setActiveTab('chat')
-      setPreviewTab('dynamic-app')
+      setPreviewTab('canvas')
     }
   }, [isWide, updateProjectSettings, agentUrl, nativeHeaders, previewTab, activeMode])
 
@@ -1187,7 +1320,7 @@ export default observer(function ProjectLayout() {
     setBuildPlanRequest({ plan, modelId, nonce: buildPlanNonceRef.current })
     setActiveTab('chat')
     if (canvasEnabled) {
-      setPreviewTab('dynamic-app')
+      setPreviewTab('canvas')
     } else {
       setPreviewTab('chat-fullscreen')
     }
@@ -1280,17 +1413,6 @@ export default observer(function ProjectLayout() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store?.chatSessionCollection?.all, sessionNames, projectId, _sessionNameKey])
 
-  // Build ordered tab list with display names from openChatTabIds
-  const openChatTabs: ChatTab[] = useMemo(() => {
-    const sessionMap = new Map(chatSessions.map((s) => [s.id, s.name]))
-    return openChatTabIds
-      .map((id) => ({ id, name: sessionMap.get(id) || 'Untitled' }))
-  }, [openChatTabIds, chatSessions])
-
-  const handleSelectTab = useCallback((tabId: string) => {
-    setChatSessionId(tabId)
-  }, [])
-
   const handleCreateNewSession = useCallback(async () => {
     try {
       const newSession = await actions.createChatSession({
@@ -1315,7 +1437,6 @@ export default observer(function ProjectLayout() {
   const lastCanvasErrorRef = useRef<{ key: string; ts: number } | null>(null)
   const openDebugChatForCanvasError = useCallback(
     async (
-      surfaceId: string,
       phase: 'compile' | 'runtime',
       error: string,
       context?: {
@@ -1325,11 +1446,8 @@ export default observer(function ProjectLayout() {
     ) => {
       if (!projectId) return
       try {
-        const surfaceTitle = surfaces.get(surfaceId)?.title ?? null
         const recentLogs = getRuntimeLogEntries(projectId).slice(-CANVAS_ERROR_LOG_TAIL)
         const prompt = buildCanvasErrorDebugPrompt({
-          surfaceId,
-          surfaceTitle,
           phase,
           error,
           route: context?.route,
@@ -1358,12 +1476,11 @@ export default observer(function ProjectLayout() {
         console.error('[ProjectLayout] Failed to open debug chat:', err)
       }
     },
-    [projectId, surfaces, actions, isWide],
+    [projectId, actions, isWide],
   )
 
   const handleCanvasError = useCallback(
     (
-      surfaceId: string,
       phase: 'compile' | 'runtime',
       error: string,
       context?: {
@@ -1374,7 +1491,7 @@ export default observer(function ProjectLayout() {
       if (!projectId) return
       // Dedup: the canvas iframe re-throws the same error on every retry /
       // HMR loop. One toast per unique error within the dedup window.
-      const key = `${surfaceId}|${phase}|${error}`
+      const key = `${phase}|${error}`
       const now = Date.now()
       const last = lastCanvasErrorRef.current
       if (last && last.key === key && now - last.ts < CANVAS_ERROR_DEDUP_MS) {
@@ -1382,17 +1499,12 @@ export default observer(function ProjectLayout() {
       }
       lastCanvasErrorRef.current = { key, ts: now }
 
-      const surfaceTitle = surfaces.get(surfaceId)?.title ?? null
       const phaseWord = phase === 'compile' ? 'Compile-time' : 'Runtime'
-      const where = surfaceTitle
-        ? ` on “${surfaceTitle}”`
-        : context?.route
-          ? ` on ${context.route}`
-          : ''
+      const where = context?.route ? ` on ${context.route}` : ''
       const description = where
         ? `${phaseWord} error${where}.`
         : `${phaseWord} error in the canvas.`
-      const toastId = `canvas-error-${surfaceId}-${now}`
+      const toastId = `canvas-error-${now}`
 
       toast.show({
         id: toastId,
@@ -1415,7 +1527,7 @@ export default observer(function ProjectLayout() {
                 accessibilityLabel="Debug this canvas error in a new chat"
                 onPress={() => {
                   toast.close(tId)
-                  void openDebugChatForCanvasError(surfaceId, phase, error, context)
+                  void openDebugChatForCanvasError(phase, error, context)
                 }}
                 className="flex-row items-center gap-1.5 rounded-md bg-white/95 px-3 py-1.5 active:opacity-80"
               >
@@ -1440,7 +1552,7 @@ export default observer(function ProjectLayout() {
         ),
       })
     },
-    [projectId, surfaces, toast, openDebugChatForCanvasError],
+    [projectId, toast, openDebugChatForCanvasError],
   )
 
   const handleRenameChatSession = useCallback(
@@ -1448,7 +1560,7 @@ export default observer(function ProjectLayout() {
       try {
         await actions.updateChatSession(sessionId, { name: newName })
         // Flush into the local sessionNames cache so the useMemo dep changes
-        // and chatSessions / openChatTabs recompute immediately.
+        // and chatSessions recomputes immediately.
         setSessionNames((prev) => ({ ...prev, [sessionId]: newName }))
       } catch (err) {
         console.error('[ProjectLayout] Failed to rename chat session:', err)
@@ -1462,7 +1574,7 @@ export default observer(function ProjectLayout() {
       try {
         await actions.deleteChatSession(sessionId)
         handleCloseTab(sessionId)
-        // No client-side Shogo teardown needed: voice rows are stored
+        // No client-side EZ Mode teardown needed: voice rows are stored
         // in chat_messages with agent="voice" and cascade-delete with
         // the ChatSession on the server.
       } catch (err) {
@@ -1565,6 +1677,40 @@ export default observer(function ProjectLayout() {
     return pending
   }, [chatMessages])
 
+  // When Shogo emits a pending `ask_user` question, force-switch to chat so
+  // the user sees the prompt regardless of which panel they're currently on.
+  // Tracks the toolCallId to only fire on the rising edge — users can still
+  // navigate away from chat while a question is pending without being
+  // repeatedly yanked back.
+  const pendingAskUserId = useMemo<string | null>(() => {
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+      const msg = chatMessages[i] as any
+      if (msg?.role !== 'assistant') continue
+      const parts = msg.parts as any[] | undefined
+      if (!parts) continue
+      for (const p of parts) {
+        if (
+          p?.type === 'dynamic-tool' &&
+          p?.toolName === 'ask_user' &&
+          (p?.state === 'input-available' || p?.state === 'input-streaming')
+        ) {
+          return p.toolCallId ?? p.id ?? 'pending'
+        }
+      }
+      break
+    }
+    return null
+  }, [chatMessages])
+
+  const lastSwitchedAskUserIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!pendingAskUserId) return
+    if (lastSwitchedAskUserIdRef.current === pendingAskUserId) return
+    lastSwitchedAskUserIdRef.current = pendingAskUserId
+    setActiveTab('chat')
+    setPreviewTab('chat-fullscreen')
+  }, [pendingAskUserId])
+
   const showIntegrationsCard =
     !integrationsCardDismissed && (
       (capturedShowIntegrations && integrationsCardData != null) ||
@@ -1620,14 +1766,23 @@ export default observer(function ProjectLayout() {
     [billingHasActive, billingHasAdvanced, billingRefetch],
   )
 
-  // Loading state
-  if (isLoading || !project) {
+  // Loading state. We also gate on `runtimeReady` so the panels never
+  // render with stale URLs — see `useAgentUrl` for the polling contract.
+  // The copy differs once project metadata has loaded but the per-project
+  // runtime is still booting, so the user understands why the wait is
+  // happening (a remote instance pins its own URL via `localAgentUrl`,
+  // which `useAgentUrl` treats as immediately-ready, so this only
+  // surfaces for the host/VM/K8s paths).
+  if (isLoading || !project || (!remoteProjectAgentBaseUrl && !runtimeReady)) {
+    const stillBootingRuntime = !isLoading && project && !remoteProjectAgentBaseUrl && !runtimeReady
     return (
       <>
         <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
         <View className="flex-1 bg-background items-center justify-center">
           <ActivityIndicator size="large" />
-          <Text className="text-muted-foreground mt-3 text-sm">Loading project...</Text>
+          <Text className="text-muted-foreground mt-3 text-sm">
+            {stillBootingRuntime ? 'Starting your project…' : 'Loading project...'}
+          </Text>
         </View>
       </>
     )
@@ -1695,7 +1850,6 @@ export default observer(function ProjectLayout() {
                 initialInteractionMode={isInitialSession ? capturedInitialInteractionMode : undefined}
                 initialFiles={isInitialSession ? capturedInitialFiles : undefined}
                 billingData={billingDataResolved}
-                onCanvasPreview={handleCanvasPreview}
                 onMessagesChange={isActive ? setChatMessages : undefined}
                 onStreamingChange={getStreamingChangeHandler(tabId)}
                 buildPlanRequest={isActive ? buildPlanRequest : null}
@@ -1714,19 +1868,10 @@ export default observer(function ProjectLayout() {
 
   const canvasPanel = canvasEnabled ? (
     <CanvasPanel
-      surface={activeSurface}
-      surfaces={surfaces}
-      activeSurfaceId={effectiveSurfaceId}
-      onSurfaceChange={setUserSelectedSurfaceId}
-      connected={connected}
       agentUrl={agentUrl}
       canvasBaseUrl={canvasBaseUrl}
-      onAction={handleCanvasAction}
-      onDataChange={updateLocalData}
-      authHeaders={nativeHeaders}
       onRefresh={reconnect}
       fullBleed={!isWide}
-      canvasMode={canvasMode}
       iframeRefreshKey={iframeRefreshKey}
       onCanvasCapabilities={handleCanvasCapabilities}
       onCanvasError={handleCanvasError}
@@ -1734,7 +1879,17 @@ export default observer(function ProjectLayout() {
   ) : null
 
   const hiddenTabs: string[] = ['app-preview'] // APP_MODE_DISABLED: always hide app-preview
-  if (activeMode !== 'canvas') hiddenTabs.push('dynamic-app')
+  if (activeMode !== 'canvas') hiddenTabs.push('canvas')
+  // Hide the external-only tabs on managed projects so the top-bar
+  // stays uncluttered. The renderer/state for these panels is
+  // workingMode-aware too, so even a direct deep-link won't render
+  // them for managed projects.
+  if (!isExternalProject) {
+    hiddenTabs.push('external-preview')
+    // `folders` is no longer a top-level tab — it lives inside the
+    // Settings panel and is gated to external projects there directly
+    // (see settingsGroups below).
+  }
 
   const isChatFullscreen = isWide && previewTab === 'chat-fullscreen'
 
@@ -1762,28 +1917,31 @@ export default observer(function ProjectLayout() {
     hiddenTabs,
     canvasEnabled,
     activeMode,
-    surfaceEntries,
-    activeSurfaceId: effectiveSurfaceId,
-    onSurfaceChange: setUserSelectedSurfaceId,
     showChatSessions: isChatFullscreen ? false : showChatSessions,
     isChatCollapsed: isChatFullscreen ? true : chatCollapsed,
     onChatSessionsToggle: isChatFullscreen ? undefined : () => setShowChatSessions((s: boolean) => !s),
     onChatCollapseToggle: isChatFullscreen ? undefined : () => setChatCollapsed((c: boolean) => !c),
     onCreateNewSession: isChatFullscreen ? undefined : handleCreateNewSession,
-    chatPanelWidth: clampChatWidth(chatPanelWidth),
+    // Top bar chat zone spans the chat column. When the collapsible history
+    // sidebar is open in split mode, include its 280px so the zone aligns.
+    chatPanelWidth: clampChatWidth(chatPanelWidth) + (isWide && !isChatFullscreen && showChatSessions ? 280 : 0),
     chatFullscreenSidebarWidth: isChatFullscreen ? 280 : undefined,
     onSearchChats: isChatFullscreen ? () => setSidebarSearchOpen(true) : undefined,
+    // Narrow-only: tapping the History icon swaps the chat panel for the
+    // session list. Closing happens when the user picks/creates a session,
+    // taps the icon again, or leaves the chat tab.
+    onOpenChatSessions: !isWide ? () => setNarrowChatPickerOpen((p) => !p) : undefined,
+    chatSessionsOpen: !isWide && narrowChatPickerOpen,
     onNewChat: isChatFullscreen ? handleCreateNewSession : undefined,
     onRenameChat: isChatFullscreen ? handleRenameChatSession : undefined,
     onDeleteChat: isChatFullscreen ? handleDeleteChatSession : undefined,
     activeChatSessionId: isChatFullscreen ? chatSessionId : undefined,
-    activeChatSessionName: isChatFullscreen ? (openChatTabs.find(t => t.id === chatSessionId)?.name ?? null) : undefined,
-    canvasActive: canvasEnabled && previewTab === 'dynamic-app',
+    activeChatSessionName: isChatFullscreen ? (chatSessions.find(s => s.id === chatSessionId)?.name ?? null) : undefined,
+    canvasActive: canvasEnabled && previewTab === 'canvas',
     canvasThemeSupported,
-    effectiveSurfaceId,
-    onCanvasRefresh: canvasMode === 'code' ? () => setIframeRefreshKey(k => k + 1) : undefined,
+    onCanvasRefresh: () => setIframeRefreshKey(k => k + 1),
     onCanvasOpenInNewTab:
-      canvasMode === 'code' && Platform.OS === 'web' && (canvasBaseUrl || agentUrl)
+      Platform.OS === 'web' && (canvasBaseUrl || agentUrl)
         ? () => {
             const base = canvasBaseUrl || agentUrl
             if (base) window.open(`${base}/`, '_blank', 'noopener,noreferrer')
@@ -1799,297 +1957,498 @@ export default observer(function ProjectLayout() {
       <ChatBridgeProvider
         chatSessionId={chatSessionId}
         agentUrl={agentUrl}
-        initialShogoModeActive={Platform.OS === 'web' && capturedStartShogoMode}
-        initialAutoStartVoice={Platform.OS === 'web' && capturedStartShogoMode && capturedAutoStartVoice}
+        initialEzModeActive={Platform.OS === 'web' && capturedStartEzMode}
+        initialAutoStartVoice={Platform.OS === 'web' && capturedStartEzMode && capturedAutoStartVoice}
       >
-      <CanvasThemeProvider projectSettings={projectSettings} onUpdateSettings={handleUpdateCanvasSettings} activeSurfaceId={effectiveSurfaceId} surfaceIds={surfaceIds}>
-        <EditModeProvider agentUrl={agentUrl}>
-          <View className="flex-1 bg-background">
-            {isWide ? (
-              <TopBarBridge
-                {...topBarSharedProps}
-                onTabChange={handlePreviewTabChange}
-              />
-            ) : (
-              <TopBarBridge
-                {...topBarSharedProps}
-                narrowActiveTab={activeTab}
-                narrowPreviewTab={previewTab}
-                onNarrowTabChange={(tab: 'chat' | 'canvas') => {
-                  setActiveTab(tab)
-                  if (tab === 'canvas') {
-                    setPreviewTab('dynamic-app')
-                  } else {
-                    // Clear standalone preview (files, capabilities, …) so the chat column shows
-                    // and the next “canvas” visit doesn’t reopen the old panel on top.
-                    setPreviewTab('chat-fullscreen')
-                  }
-                }}
-                onTabChange={(tabId: string) => {
-                  handlePreviewTabChange(tabId)
-                  if (tabId !== 'dynamic-app' && tabId !== 'app-preview' && tabId !== 'chat-fullscreen') setActiveTab('canvas')
-                }}
-              />
-            )}
+      <View className="flex-1 bg-background">
+          {isWide ? (
+            <ProjectTopBar
+              {...topBarSharedProps}
+              onTabChange={handlePreviewTabChange}
+            />
+          ) : (
+            <ProjectTopBar
+              {...topBarSharedProps}
+              narrowActiveTab={activeTab}
+              narrowPreviewTab={previewTab}
+              onNarrowTabChange={(tab: 'chat' | 'canvas') => {
+                setActiveTab(tab)
+                if (tab === 'canvas') {
+                  setPreviewTab('canvas')
+                } else {
+                  // Clear standalone preview (files, capabilities, …) so the chat column shows
+                  // and the next “canvas” visit doesn’t reopen the old panel on top.
+                  setPreviewTab('chat-fullscreen')
+                }
+              }}
+              onTabChange={(tabId: string) => {
+                handlePreviewTabChange(tabId)
+                if (tabId !== 'canvas' && tabId !== 'app-preview' && tabId !== 'chat-fullscreen') setActiveTab('canvas')
+              }}
+            />
+          )}
 
-            {/* Content — chat panel stays mounted across layout/tab changes */}
-            <View className={cn('flex-1', isWide && 'flex-row')} ref={splitRowRef}>
-              {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
-              <View
-                className={cn(
-                  'flex min-h-0 flex-col',
-                  isChatFullscreen
-                    ? 'flex-1 flex-row'
-                    : isWide
-                      ? 'shrink-0 bg-background z-10'
-                      : 'relative flex-1',
-                  !isChatFullscreen && chatHidden && 'hidden',
-                )}
-                style={!isChatFullscreen && isWide && !chatHidden ? { width: clampChatWidth(chatPanelWidth) } : undefined}
-              >
-                {isChatFullscreen && (
-                  <View className="w-[280px] bg-muted/50 dark:bg-black/30">
-                    <ChatSessionSidebar
-                      sessions={chatSessions}
-                      currentSessionId={chatSessionId ?? undefined}
-                      onSelect={(sessionId) => {
-                        setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
-                        setChatSessionId(sessionId)
-                      }}
-                      onCreate={handleCreateNewSession}
-                      onLoadMore={handleLoadMoreSessions}
-                      hasMore={store?.chatSessionCollection?.hasMore ?? false}
-                      isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
-                      hideHeader
-                      searchOpen={sidebarSearchOpen}
-                      onSearchClose={() => setSidebarSearchOpen(false)}
-                    />
-                  </View>
-                )}
-                {isChatFullscreen ? (
+          {/* Content — chat panel stays mounted across layout/tab changes */}
+          <View className={cn('flex-1', isWide && 'flex-row')} ref={splitRowRef}>
+            {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
+            {/* Sidebar is shown always in fullscreen and toggleable in wide-split via showChatSessions. */}
+            {(() => {
+              const showSidebar = isChatFullscreen || (isWide && showChatSessions)
+              return (
+                <View
+                  className={cn(
+                    'flex min-h-0',
+                    isChatFullscreen
+                      ? 'flex-1 flex-row'
+                      : isWide
+                        ? cn('shrink-0 bg-background z-10', showSidebar ? 'flex-row' : 'flex-col')
+                        : 'relative flex-1 flex-col',
+                    !isChatFullscreen && chatHidden && 'hidden',
+                  )}
+                  style={
+                    !isChatFullscreen && isWide && !chatHidden
+                      ? { width: clampChatWidth(chatPanelWidth) + (showSidebar ? 280 : 0) }
+                      : undefined
+                  }
+                >
+                  {showSidebar && (
+                    <View className="w-[200px] bg-muted/50 dark:bg-black/30 border-r border-border">
+                      <ChatSessionSidebar
+                        sessions={chatSessions}
+                        currentSessionId={chatSessionId ?? undefined}
+                        onSelect={(sessionId) => {
+                          setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
+                          setChatSessionId(sessionId)
+                        }}
+                        onCreate={handleCreateNewSession}
+                        onRename={handleRenameChatSession}
+                        onDelete={handleDeleteChatSession}
+                        onLoadMore={handleLoadMoreSessions}
+                        hasMore={store?.chatSessionCollection?.hasMore ?? false}
+                        isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
+                        hideHeader
+                        searchOpen={sidebarSearchOpen}
+                        onSearchClose={() => setSidebarSearchOpen(false)}
+                        streamingSessionIds={streamingTabIds}
+                        completedSessionIds={completedTabIds}
+                      />
+                    </View>
+                  )}
                   <View className="flex-1 min-h-0 relative">
                     <View
                       className="absolute inset-0"
-                      style={showEmptyChatState ? { opacity: 0 } : undefined}
-                      pointerEvents={showEmptyChatState ? 'none' : 'auto'}
+                      style={showEmptyChatState || narrowChatPickerOpen ? { opacity: 0 } : undefined}
+                      pointerEvents={showEmptyChatState || narrowChatPickerOpen ? 'none' : 'auto'}
                     >
-                      <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
+                      <EzModeAwareChatPanels>{chatPanels}</EzModeAwareChatPanels>
                     </View>
                     {showEmptyChatState && (
-                      <View className="absolute inset-0 bg-background items-center justify-center px-8">
-                        <MessageSquare size={28} className="text-muted-foreground" />
-                        <Text className="text-sm text-muted-foreground mt-3 text-center">
-                          No chat open. Pick one from the list on the left, or start a new chat.
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-                ) : (
-                  <>
-                    {isWide && (
-                      <ChatTabBar
-                        tabs={openChatTabs}
-                        activeTabId={chatSessionId}
-                        onSelectTab={handleSelectTab}
-                        onCloseTab={handleCloseTab}
-                        onNewChat={handleCreateNewSession}
-                        onHistoryToggle={() => setShowChatSessions((s: boolean) => !s)}
-                        showHistory={showChatSessions}
-                        streamingTabIds={streamingTabIds}
-                        completedTabIds={completedTabIds}
-                        onRenameSession={handleRenameChatSession}
-                        onDeleteSession={handleDeleteChatSession}
-                      />
-                    )}
-                    <View className="flex-1 min-h-0 relative">
-                      <View
-                        className="absolute inset-0"
-                        style={
-                          (isWide && showChatSessions) || showEmptyChatState
-                            ? { opacity: 0 }
-                            : undefined
-                        }
-                        pointerEvents={
-                          (isWide && showChatSessions) || showEmptyChatState ? 'none' : 'auto'
-                        }
-                      >
-                        <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
-                      </View>
-                      {showEmptyChatState && !(isWide && showChatSessions) && (
+                      isChatFullscreen || showSidebar ? (
+                        <View className="absolute inset-0 bg-background items-center justify-center px-8">
+                          <MessageSquare size={28} className="text-muted-foreground" />
+                          <Text className="text-sm text-muted-foreground mt-3 text-center">
+                            No chat open. Pick one from the list on the left, or start a new chat.
+                          </Text>
+                        </View>
+                      ) : (
                         <View className="absolute inset-0 bg-background">
                           {renderEmptyChatList()}
                         </View>
-                      )}
-                      {isWide && showChatSessions && (
-                        <View className="absolute inset-0 bg-background">
-                          <ChatSessionSidebar
-                            sessions={chatSessions}
-                            currentSessionId={chatSessionId ?? undefined}
-                            onSelect={(sessionId) => {
-                              setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
-                              setChatSessionId(sessionId)
-                              setShowChatSessions(false)
-                            }}
-                            onCreate={() => {
-                              void handleCreateNewSession()
-                              setShowChatSessions(false)
-                            }}
-                            onRename={handleRenameChatSession}
-                            onLoadMore={handleLoadMoreSessions}
-                            hasMore={store?.chatSessionCollection?.hasMore ?? false}
-                            isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
-                            hideHeader
-                            searchOpen={sidebarSearchOpen}
-                            onSearchClose={() => setSidebarSearchOpen(false)}
-                          />
-                        </View>
-                      )}
-                    </View>
-                  </>
-                )}
-              </View>
+                      )
+                    )}
+                    {!showEmptyChatState && narrowChatPickerOpen && !isWide && activeTab === 'chat' && (
+                      <View className="absolute inset-0 bg-background">
+                        <ChatSessionSidebar
+                          sessions={chatSessions}
+                          currentSessionId={chatSessionId ?? undefined}
+                          onSelect={(sessionId) => {
+                            setOpenChatTabIds((prev) =>
+                              prev.includes(sessionId) ? prev : [...prev, sessionId],
+                            )
+                            setChatSessionId(sessionId)
+                            setNarrowChatPickerOpen(false)
+                          }}
+                          onCreate={() => {
+                            void handleCreateNewSession()
+                            setNarrowChatPickerOpen(false)
+                          }}
+                          onRename={handleRenameChatSession}
+                          onDelete={handleDeleteChatSession}
+                          onLoadMore={handleLoadMoreSessions}
+                          hasMore={store?.chatSessionCollection?.hasMore ?? false}
+                          isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
+                          streamingSessionIds={streamingTabIds}
+                          completedSessionIds={completedTabIds}
+                        />
+                      </View>
+                    )}
+                  </View>
+                </View>
+              )
+            })()}
 
-              {/* Drag handle to resize chat panel (web only, wide split mode) */}
-              {Platform.OS === 'web' && isWide && !isChatFullscreen && !chatHidden && (
-                <ChatPanelResizeHandle
-                  splitRowRef={splitRowRef}
-                  chatPanelWidth={clampChatWidth(chatPanelWidth)}
-                  minWidth={MIN_CHAT_PANEL_WIDTH}
-                  maxWidth={maxChatPanelWidth}
-                  onResize={setChatPanelWidth}
-                  onResizeEnd={persistChatPanelWidth}
-                  defaultWidth={DEFAULT_CHAT_PANEL_WIDTH}
-                />
-              )}
-
-          {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
-          <View
-            className={cn(
-              'relative flex-1 overflow-hidden',
-              canvasAreaHidden && 'hidden',
-              Platform.OS === 'web' && !canvasAreaHidden && 'min-h-0',
+            {/* Drag handle to resize chat panel (web only, wide split mode) */}
+            {Platform.OS === 'web' && isWide && !isChatFullscreen && !chatHidden && (
+              <ChatPanelResizeHandle
+                splitRowRef={splitRowRef}
+                chatPanelWidth={clampChatWidth(chatPanelWidth)}
+                minWidth={MIN_CHAT_PANEL_WIDTH}
+                maxWidth={maxChatPanelWidth}
+                onResize={setChatPanelWidth}
+                onResizeEnd={persistChatPanelWidth}
+                defaultWidth={DEFAULT_CHAT_PANEL_WIDTH}
+                leftOffset={showChatSessions ? 280 : 0}
+              />
             )}
+
+        {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
+        <View
+          className={cn(
+            'relative flex-1 overflow-hidden',
+            canvasAreaHidden && 'hidden',
+            Platform.OS === 'web' && !canvasAreaHidden && 'min-h-0',
+          )}
+        >
+          <DrawerHost
+            projectId={projectId ?? null}
+            agentUrl={agentUrl ?? null}
+            messages={chatMessages}
+            platformIsWeb={Platform.OS === 'web'}
+            canvasAreaHidden={canvasAreaHidden}
+            isChatFullscreen={isChatFullscreen}
           >
-            <DrawerHost
-              projectId={projectId ?? null}
-              agentUrl={agentUrl ?? null}
-              messages={chatMessages}
-              platformIsWeb={Platform.OS === 'web'}
-              canvasAreaHidden={canvasAreaHidden}
-              isChatFullscreen={isChatFullscreen}
-            >
-            {/* Floating chat button on native narrow canvas — above every canvas sub-tab (z-20 panels) */}
-            {showNativeNarrowChatFab && (
-              <SafeAreaView
-                edges={['bottom']}
-                className="absolute bottom-0 right-0 z-30 pr-4 pb-4"
-                pointerEvents="box-none"
-                style={
-                  narrowCanvasKeyboardInset > 0
-                    ? { marginBottom: narrowCanvasKeyboardInset }
-                    : undefined
-                }
-              >
-                <Pressable
-                  onPress={() => {
-                    setActiveTab('chat')
-                    setPreviewTab('chat-fullscreen')
-                  }}
-                  className="flex-row items-center gap-1.5 rounded-full bg-primary px-4 py-2.5 shadow-lg"
-                >
-                  <MessageSquare size={16} className="text-primary-foreground" />
-                  <Text className="text-sm font-semibold text-primary-foreground">Chat</Text>
-                </Pressable>
-              </SafeAreaView>
-            )}
-
-            {canvasEnabled && previewTab === 'dynamic-app' && (
-              <View className="absolute inset-0">
-                <PanelErrorBoundary panelName="Canvas">
-                  {canvasPanel}
-                </PanelErrorBoundary>
-              </View>
-            )}
-            {previewTab === 'app-preview' && (
-              <View
-                className={cn(
-                  'absolute inset-0 overflow-hidden',
-                  Platform.OS === 'web' && 'z-0',
-                )}
-              >
-                <AppPreviewPanel previewUrl={previewUrl ?? null} agentUrl={agentUrl ?? null} />
-              </View>
-            )}
-            <View
-              className={cn(
-                'absolute inset-0',
-                STANDALONE_PANELS.includes(previewTab)
-                  ? 'z-20 bg-background'
-                  : 'pointer-events-none',
-              )}
-              pointerEvents={
-                STANDALONE_PANELS.includes(previewTab)
-                  ? 'auto'
-                  : 'none'
-              }
-            >
-              <PanelErrorBoundary panelName="IDE">
-                <IDEPanel visible={previewTab === 'ide'} projectId={projectId!} projectName={project.name} agentUrl={agentUrl} />
-              </PanelErrorBoundary>
-              <PanelErrorBoundary panelName="Files">
-                <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
-              </PanelErrorBoundary>
-              <PanelErrorBoundary panelName="Capabilities">
-                <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} techStackId={techStackId} onTechStackChange={handleTechStackChange} selectedModel={selectedModel} onModelChange={handleModelChange} />
-              </PanelErrorBoundary>
-              <PanelErrorBoundary panelName="Channels">
-                <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} workspaceId={project?.workspaceId} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
-              </PanelErrorBoundary>
-              <PanelErrorBoundary panelName="Agents">
-                <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} agentUrl={agentUrl} />
-              </PanelErrorBoundary>
-              <PanelErrorBoundary panelName="Monitor">
-                <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
-              </PanelErrorBoundary>
-              <PanelErrorBoundary panelName="Plans">
-                <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} selectedModel={selectedModel} requestedPlanPath={requestedPlanPath} onBuildPlan={handleBuildPlan} />
-              </PanelErrorBoundary>
-              <PanelErrorBoundary panelName="Checkpoints">
-                <CheckpointsPanel visible={previewTab === 'checkpoints'} projectId={projectId!} />
-              </PanelErrorBoundary>
-            </View>
-            </DrawerHost>
-          </View>
-
-          {/* Floating integrations card */}
-          {showIntegrationsCardUi && (
-            <View
-              className={cn(
-                'absolute z-30',
-                liftIntegrationsAboveComposer ? 'right-3' : 'bottom-4 right-4',
-              )}
+          {/* Floating chat button on native narrow canvas — above every canvas sub-tab (z-20 panels) */}
+          {showNativeNarrowChatFab && (
+            <SafeAreaView
+              edges={['bottom']}
+              className="absolute bottom-0 right-0 z-30 pr-4 pb-4"
+              pointerEvents="box-none"
               style={
-                liftIntegrationsAboveComposer
-                  ? { bottom: insets.bottom + 84 }
+                narrowCanvasKeyboardInset > 0
+                  ? { marginBottom: narrowCanvasKeyboardInset }
                   : undefined
               }
-              pointerEvents="box-none"
             >
-              <IntegrationsCard
-                projectId={projectId!}
-                integrations={integrationsCardData?.integrations}
-                templateName={integrationsCardData?.templateName}
-                pendingToolkits={pendingToolInstalls}
-                onDismiss={() => setIntegrationsCardDismissed(true)}
-              />
-            </View>
+              <Pressable
+                onPress={() => {
+                  setActiveTab('chat')
+                  setPreviewTab('chat-fullscreen')
+                }}
+                className="flex-row items-center gap-1.5 rounded-full bg-primary px-4 py-2.5 shadow-lg"
+              >
+                <MessageSquare size={16} className="text-primary-foreground" />
+                <Text className="text-sm font-semibold text-primary-foreground">Chat</Text>
+              </Pressable>
+            </SafeAreaView>
           )}
 
+          {canvasEnabled && previewTab === 'canvas' && (
+            <View className="absolute inset-0">
+              <PanelErrorBoundary panelName="Canvas">
+                {canvasPanel}
+              </PanelErrorBoundary>
+            </View>
+          )}
+          {previewTab === 'app-preview' && (
+            <View
+              className={cn(
+                'absolute inset-0 overflow-hidden',
+                Platform.OS === 'web' && 'z-0',
+              )}
+            >
+              <AppPreviewPanel previewUrl={previewUrl ?? null} agentUrl={agentUrl ?? null} />
+            </View>
+          )}
+          <View
+            className={cn(
+              'absolute inset-0',
+              STANDALONE_PANELS.includes(previewTab)
+                ? 'z-20 bg-background'
+                : 'pointer-events-none',
+            )}
+            pointerEvents={
+              STANDALONE_PANELS.includes(previewTab)
+                ? 'auto'
+                : 'none'
+            }
+          >
+            <PanelErrorBoundary panelName="IDE">
+              <IDEPanel visible={previewTab === 'ide'} projectId={projectId!} projectName={project.name} agentUrl={agentUrl} />
+            </PanelErrorBoundary>
+            <PanelErrorBoundary panelName="Files">
+              <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
+            </PanelErrorBoundary>
+            <PanelErrorBoundary panelName="Plans">
+              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} selectedModel={selectedModel} requestedPlanPath={requestedPlanPath} onBuildPlan={handleBuildPlan} />
+            </PanelErrorBoundary>
+            <PanelErrorBoundary panelName="Settings">
+              {(() => {
+                // Folders' onChange refreshes the project so workingMode /
+                // trust / folders changes propagate without a full reload.
+                const reloadProject = () => {
+                  if (!projectId) return
+                  void fetch(
+                    `${API_URL}/api/projects/${encodeURIComponent(projectId)}?include=projectFolders`,
+                    { credentials: Platform.OS === 'web' ? 'include' : 'omit' },
+                  )
+                    .then((r) => (r.ok ? r.json() : null))
+                    .then((data) => {
+                      const next = data?.project ?? data
+                      if (next) setProject(next)
+                    })
+                    .catch(() => {})
+                }
+                const workspaceItems: SettingsSectionItem[] = []
+                // Folders is only meaningful for external projects (it lets
+                // the user pick which local directories the agent has
+                // access to). Managed projects don't expose this knob.
+                if (isExternalProject) {
+                  workspaceItems.push({
+                    id: 'folders',
+                    label: 'Folders',
+                    icon: FolderTree,
+                    render: () => (
+                      <PanelErrorBoundary panelName="Folders">
+                        <FoldersPanel
+                          visible
+                          projectId={projectId!}
+                          onChange={reloadProject}
+                        />
+                      </PanelErrorBoundary>
+                    ),
+                  })
+                }
+                // Checkpoints on web lives in the IDE's Source Control
+                // activity-bar entry; native users still reach it from
+                // Settings.
+                if (Platform.OS !== 'web') {
+                  workspaceItems.push({
+                    id: 'checkpoints',
+                    label: 'Checkpoints',
+                    icon: GitCommit,
+                    render: () => (
+                      <PanelErrorBoundary panelName="Checkpoints">
+                        <CheckpointsPanel visible projectId={projectId!} />
+                      </PanelErrorBoundary>
+                    ),
+                  })
+                }
+                const settingsGroups: SettingsSectionGroup[] = []
+                if (workspaceItems.length > 0) {
+                  settingsGroups.push({
+                    id: 'workspace',
+                    label: 'WORKSPACE',
+                    items: workspaceItems,
+                  })
+                }
+                settingsGroups.push(
+                  {
+                    id: 'agent',
+                    label: 'AGENT',
+                    items: [
+                      {
+                        id: 'capabilities-config',
+                        label: 'Configuration',
+                        icon: Sliders,
+                        render: () => (
+                          <PanelErrorBoundary panelName="Configuration">
+                            <CapabilitiesConfigPane
+                              visible
+                              agentUrl={agentUrl}
+                              capabilities={capabilitySettings}
+                              onCapabilityToggle={handleCapabilityToggle}
+                              isPaidPlan={effectiveHasActiveSubscription}
+                              activeMode={activeMode}
+                              onModeChange={handleManualModeChange}
+                              techStackId={techStackId}
+                              onTechStackChange={handleTechStackChange}
+                              selectedModel={selectedModel}
+                              onModelChange={handleModelChange}
+                            />
+                          </PanelErrorBoundary>
+                        ),
+                      },
+                      {
+                        id: 'capabilities-skills',
+                        label: 'Skills',
+                        icon: Sparkles,
+                        render: () => (
+                          <PanelErrorBoundary panelName="Skills">
+                            <CapabilitiesSkillsPane
+                              visible
+                              projectId={projectId!}
+                              agentUrl={agentUrl}
+                            />
+                          </PanelErrorBoundary>
+                        ),
+                      },
+                      {
+                        id: 'capabilities-integrations',
+                        label: 'Integrations',
+                        icon: Plug,
+                        render: () => (
+                          <PanelErrorBoundary panelName="Integrations">
+                            <CapabilitiesIntegrationsPane
+                              visible
+                              projectId={projectId!}
+                              agentUrl={agentUrl}
+                            />
+                          </PanelErrorBoundary>
+                        ),
+                      },
+                    ],
+                  },
+                  {
+                    id: 'connections',
+                    label: 'CONNECTIONS',
+                    items: [
+                      {
+                        id: 'channels',
+                        label: 'Channels',
+                        icon: Radio,
+                        render: () => (
+                          <PanelErrorBoundary panelName="Channels">
+                            <ChannelsPanel
+                              visible
+                              projectId={projectId!}
+                              workspaceId={project?.workspaceId}
+                              agentUrl={agentUrl}
+                              hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true}
+                            />
+                          </PanelErrorBoundary>
+                        ),
+                      },
+                      {
+                        id: 'agents',
+                        label: 'Agents',
+                        icon: Bot,
+                        render: () => (
+                          <PanelErrorBoundary panelName="Agents">
+                            <AgentsPanel
+                              visible
+                              selectedToolId={selectedAgentToolId}
+                              agentUrl={agentUrl}
+                            />
+                          </PanelErrorBoundary>
+                        ),
+                      },
+                    ],
+                  },
+                  {
+                    id: 'monitoring',
+                    label: 'MONITORING',
+                    items: [
+                      {
+                        id: 'monitor-overview',
+                        label: 'Overview',
+                        icon: Activity,
+                        render: () => (
+                          <PanelErrorBoundary panelName="Overview">
+                            <StatusPanel
+                              projectId={projectId!}
+                              agentUrl={agentUrl}
+                              visible
+                              isPaidPlan={effectiveHasActiveSubscription}
+                            />
+                          </PanelErrorBoundary>
+                        ),
+                      },
+                      {
+                        id: 'monitor-analytics',
+                        label: 'Analytics',
+                        icon: BarChart3,
+                        render: () => (
+                          <PanelErrorBoundary panelName="Analytics">
+                            <AnalyticsPanel
+                              projectId={projectId!}
+                              agentUrl={agentUrl}
+                              visible
+                            />
+                          </PanelErrorBoundary>
+                        ),
+                      },
+                      {
+                        id: 'monitor-logs',
+                        label: 'Logs',
+                        icon: FileText,
+                        render: () => (
+                          <PanelErrorBoundary panelName="Logs">
+                            <LogsPanel
+                              projectId={projectId!}
+                              agentUrl={agentUrl}
+                              visible
+                            />
+                          </PanelErrorBoundary>
+                        ),
+                      },
+                    ],
+                  },
+                )
+                return (
+                  <SettingsPanel
+                    visible={previewTab === 'settings'}
+                    groups={settingsGroups}
+                    requestedItem={requestedSettingsItem}
+                  />
+                )
+              })()}
+            </PanelErrorBoundary>
+            <PanelErrorBoundary panelName="ExternalPreview">
+              {previewTab === 'external-preview' && (
+                <ExternalPreviewWebView
+                  projectId={projectId!}
+                  url={externalSavedUrl ?? externalDetectedUrl ?? null}
+                  visible={previewTab === 'external-preview'}
+                  detectedUrl={externalDetectedUrl}
+                  onUrlSubmit={handleSaveExternalPreviewUrl}
+                  isTrusted={projectTrustLevel === 'trusted'}
+                  onTrustRequired={() => setTrustPromptOpen(true)}
+                />
+              )}
+            </PanelErrorBoundary>
           </View>
+          </DrawerHost>
+        </View>
+
+        {/* Workspace trust prompt — first-mount only, dismissible. */}
+        {isExternalProject ? (
+          <TrustPrompt
+            open={trustPromptOpen}
+            projectName={project?.name}
+            folderPath={primaryFolderPath ?? undefined}
+            isSubmitting={trustSubmitting}
+            onDecision={handleTrustDecision}
+            onClose={() => setTrustPromptOpen(false)}
+          />
+        ) : null}
+
+        {/* Floating integrations card */}
+        {showIntegrationsCardUi && (
+          <View
+            className={cn(
+              'absolute z-30',
+              liftIntegrationsAboveComposer ? 'right-3' : 'bottom-4 right-4',
+            )}
+            style={
+              liftIntegrationsAboveComposer
+                ? { bottom: insets.bottom + 84 }
+                : undefined
+            }
+            pointerEvents="box-none"
+          >
+            <IntegrationsCard
+              projectId={projectId!}
+              integrations={integrationsCardData?.integrations}
+              templateName={integrationsCardData?.templateName}
+              pendingToolkits={pendingToolInstalls}
+              onDismiss={() => setIntegrationsCardDismissed(true)}
+            />
+          </View>
+        )}
 
         </View>
-      </EditModeProvider>
-    </CanvasThemeProvider>
+
+      </View>
     </ChatBridgeProvider>
 
       {Platform.OS === 'web' && (
@@ -2131,37 +2490,37 @@ export default observer(function ProjectLayout() {
 })
 
 // ---------------------------------------------------------------------------
-// ShogoAwareChatPanels — wraps `{chatPanels}` and overlays `ShogoChatPanel`
-// on top (absolute inset-0) when the user has Shogo Mode enabled. The
+// EzModeAwareChatPanels — wraps `{chatPanels}` and overlays `EzModeChatPanel`
+// on top (absolute inset-0) when the user has EZ Mode enabled. The
 // underlying `ChatPanel` stack stays mounted beneath so its `ChatBridge`
 // registration (send / setMode / assistant emit) stays live — the
 // translator drives those imperatively.
 // ---------------------------------------------------------------------------
 
-function ShogoAwareChatPanels({ children }: { children: React.ReactNode }) {
-  const { shogoModeActive, shogoPeekActive, setShogoPeekActive } = useChatBridge()
+function EzModeAwareChatPanels({ children }: { children: React.ReactNode }) {
+  const { ezModeActive, ezPeekActive, setEzPeekActive } = useChatBridge()
   const { features } = usePlatformConfig()
-  const showShogo = Platform.OS === 'web' && shogoModeActive && features.shogoMode
-  // "Peek" hides the Shogo overlay without tearing it down, so the voice
+  const showEzMode = Platform.OS === 'web' && ezModeActive && features.ezMode
+  // "Peek" hides the EZ Mode overlay without tearing it down, so the voice
   // session + translator thread keep running while the user interacts
   // with the real ChatPanel underneath.
-  const hideForPeek = showShogo && shogoPeekActive
+  const hideForPeek = showEzMode && ezPeekActive
   return (
     <View className="min-h-0 flex-1 relative">
       <View
         className="absolute inset-0"
-        style={showShogo && !hideForPeek ? { opacity: 0 } : undefined}
-        pointerEvents={showShogo && !hideForPeek ? 'none' : 'auto'}
+        style={showEzMode && !hideForPeek ? { opacity: 0 } : undefined}
+        pointerEvents={showEzMode && !hideForPeek ? 'none' : 'auto'}
       >
         {children}
       </View>
-      {showShogo && (
+      {showEzMode && (
         <View
           className="absolute inset-0 z-10 bg-background"
           style={hideForPeek ? { opacity: 0 } : undefined}
           pointerEvents={hideForPeek ? 'none' : 'auto'}
         >
-          <ShogoChatPanel />
+          <EzModeChatPanel />
         </View>
       )}
       {hideForPeek && (
@@ -2170,13 +2529,13 @@ function ShogoAwareChatPanels({ children }: { children: React.ReactNode }) {
           pointerEvents="box-none"
         >
           <Pressable
-            onPress={() => setShogoPeekActive(false)}
+            onPress={() => setEzPeekActive(false)}
             className="flex-row items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 shadow-lg"
-            accessibilityLabel="Return to Shogo Mode"
+            accessibilityLabel="Return to EZ Mode"
           >
             <Sparkles size={12} className="text-primary-foreground" />
             <Text className="text-[11px] font-semibold text-primary-foreground">
-              Return to Shogo
+              Return to EZ Mode
             </Text>
           </Pressable>
         </View>
@@ -2197,6 +2556,7 @@ function ChatPanelResizeHandle({
   onResize,
   onResizeEnd,
   defaultWidth,
+  leftOffset = 0,
 }: {
   splitRowRef: React.RefObject<View | null>
   chatPanelWidth: number
@@ -2205,6 +2565,8 @@ function ChatPanelResizeHandle({
   onResize: (w: number) => void
   onResizeEnd: (w: number) => void
   defaultWidth: number
+  /** Pixels of fixed-width content (e.g. the chat history sidebar) sitting to the left of the resizable chat panel. */
+  leftOffset?: number
 }) {
   const [dragging, setDragging] = useState(false)
   const [hovered, setHovered] = useState(false)
@@ -2219,7 +2581,10 @@ function ChatPanelResizeHandle({
     const containerRect = container.getBoundingClientRect()
 
     const onPointerMove = (ev: PointerEvent) => {
-      const newWidth = Math.max(minWidth, Math.min(maxWidth, ev.clientX - containerRect.left))
+      const newWidth = Math.max(
+        minWidth,
+        Math.min(maxWidth, ev.clientX - containerRect.left - leftOffset),
+      )
       latestWidthRef.current = newWidth
       onResize(newWidth)
     }
@@ -2237,7 +2602,7 @@ function ChatPanelResizeHandle({
     document.body.style.userSelect = 'none'
     document.addEventListener('pointermove', onPointerMove)
     document.addEventListener('pointerup', onPointerUp)
-  }, [splitRowRef, minWidth, maxWidth, onResize, onResizeEnd])
+  }, [splitRowRef, minWidth, maxWidth, onResize, onResizeEnd, leftOffset])
 
   const handleDoubleClick = useCallback(() => {
     onResizeEnd(defaultWidth)
@@ -2271,72 +2636,7 @@ function ChatPanelResizeHandle({
 }
 
 // ---------------------------------------------------------------------------
-// TopBarBridge — reads EditModeContext and passes values to ProjectTopBar
-// ---------------------------------------------------------------------------
-
-function TopBarBridge({
-  canvasActive,
-  canvasThemeSupported,
-  effectiveSurfaceId,
-  surfaceEntries,
-  ...props
-}: React.ComponentProps<typeof ProjectTopBar> & {
-  canvasActive: boolean
-  canvasThemeSupported: boolean | null
-  effectiveSurfaceId: string | null
-}) {
-  const editMode = useEditModeOptional()
-  const [showAddDialog, setShowAddDialog] = useState(false)
-  const canvasTheme = useCanvasThemeOptional()
-
-  const themedSurfaceEntries = useMemo(() => {
-    if (!surfaceEntries || !canvasTheme) return surfaceEntries
-    return surfaceEntries.map((s) => ({
-      ...s,
-      themeSwatchColor: canvasTheme.getSwatchForSurface(s.id),
-    }))
-  }, [surfaceEntries, canvasTheme])
-
-  const handleDelete = useCallback(() => {
-    if (effectiveSurfaceId && editMode?.selectedComponentId) {
-      editMode.deleteComponent(effectiveSurfaceId, editMode.selectedComponentId)
-    }
-  }, [effectiveSurfaceId, editMode])
-
-  const isEditActive = canvasActive && editMode?.isEditMode
-
-  return (
-    <>
-      <ProjectTopBar
-        {...props}
-        surfaceEntries={themedSurfaceEntries}
-        isEditMode={canvasActive ? editMode?.isEditMode : undefined}
-        onToggleEditMode={canvasActive ? editMode?.toggleEditMode : undefined}
-        showTreePanel={canvasActive ? editMode?.showTreePanel : undefined}
-        onToggleTreePanel={canvasActive ? editMode?.toggleTreePanel : undefined}
-        selectedComponentId={canvasActive ? editMode?.selectedComponentId : undefined}
-        onDeleteComponent={
-          isEditActive && editMode?.selectedComponentId && editMode.selectedComponentId !== 'root'
-            ? handleDelete
-            : undefined
-        }
-        onAddComponent={isEditActive ? () => setShowAddDialog(true) : undefined}
-        canvasThemeSupported={canvasThemeSupported}
-      />
-      {showAddDialog && effectiveSurfaceId && (
-        <AddComponentDialog
-          visible={showAddDialog}
-          onClose={() => setShowAddDialog(false)}
-          surfaceId={effectiveSurfaceId}
-          parentId={editMode?.selectedComponentId || 'root'}
-        />
-      )}
-    </>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Canvas Panel — renders dynamic app surfaces or runtime preview placeholder
+// Canvas Panel — renders the v2 canvas iframe (Vite-built workspace SPA)
 // ---------------------------------------------------------------------------
 
 /** Polls the preview root URL until it stops returning 404.
@@ -2369,40 +2669,20 @@ function usePreviewReadiness(baseUrl: string | null | undefined): string | null 
 }
 
 function CanvasPanel({
-  surface,
-  surfaces,
-  activeSurfaceId,
-  onSurfaceChange,
-  connected,
   agentUrl,
   canvasBaseUrl,
-  onAction,
-  onDataChange,
-  authHeaders,
   onRefresh,
-  fullBleed,
-  canvasMode = 'json',
   iframeRefreshKey = 0,
   onCanvasCapabilities,
   onCanvasError,
 }: {
-  surface: any | null
-  surfaces: Map<string, any>
-  activeSurfaceId: string | null
-  onSurfaceChange: (surfaceId: string) => void
-  connected: boolean
   agentUrl: string | null
   canvasBaseUrl?: string | null
-  onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void
-  onDataChange?: (surfaceId: string, path: string, value: unknown) => void
-  authHeaders?: () => Record<string, string>
   onRefresh?: () => void
   fullBleed?: boolean
-  canvasMode?: 'json' | 'code'
   iframeRefreshKey?: number
   onCanvasCapabilities?: (caps: { supportsTheme: boolean }) => void
   onCanvasError?: (
-    surfaceId: string,
     phase: 'compile' | 'runtime',
     error: string,
     context?: {
@@ -2411,28 +2691,37 @@ function CanvasPanel({
     },
   ) => void
 }) {
-  const editMode = useEditModeOptional()
-  const isEditMode = editMode?.isEditMode ?? false
-  const showTreePanel = editMode?.showTreePanel ?? false
-  const surfaceId = surface?.surfaceId ?? null
-
   // Poll the preview URL's /health endpoint until the DomainMapping propagates.
   // Until ready, treat canvasBaseUrl as null so the loading screen stays visible.
   const readyCanvasBaseUrl = usePreviewReadiness(canvasBaseUrl)
 
+  // Phase-level visibility into what the runtime is doing while we wait
+  // (installing deps, building, starting the API server, …). Drives the
+  // user-facing "what's happening" label below in place of the previous
+  // generic "Connecting to agent runtime…" + misleading "Send a message
+  // in the Chat tab to wake the agent" hint (the runtime already starts
+  // via `runtime/prewarm`; chat sends are not what wakes it).
+  const { phase: previewPhase } = usePreviewPhase(agentUrl)
+
   const CONNECTION_TIMEOUT_MS = 60_000
   const [timedOut, setTimedOut] = useState(false)
   useEffect(() => {
-    if (connected && agentUrl && readyCanvasBaseUrl) {
+    if (agentUrl && readyCanvasBaseUrl) {
       setTimedOut(false)
       return
     }
     setTimedOut(false)
     const timer = setTimeout(() => setTimedOut(true), CONNECTION_TIMEOUT_MS)
     return () => clearTimeout(timer)
-  }, [connected, agentUrl, readyCanvasBaseUrl])
+  }, [agentUrl, readyCanvasBaseUrl])
 
   if (!agentUrl || !readyCanvasBaseUrl) {
+    const phaseLabel =
+      previewPhase && previewPhase !== 'idle'
+        ? PHASE_LABELS[previewPhase] ?? 'Preparing preview...'
+        : !agentUrl
+          ? 'Connecting to agent runtime...'
+          : 'Loading preview...'
     return (
       <View className="flex-1 items-center justify-center px-6">
         {timedOut ? (
@@ -2457,11 +2746,11 @@ function CanvasPanel({
         ) : (
           <>
             <ActivityIndicator size="large" className="mb-4" />
-            <Text className="text-muted-foreground text-center">
-              Connecting to agent runtime...
+            <Text className="text-foreground font-medium text-base mb-1">
+              {phaseLabel}
             </Text>
-            <Text className="text-muted-foreground text-xs text-center mt-2">
-              Send a message in the Chat tab to wake the agent
+            <Text className="text-muted-foreground text-xs text-center">
+              This usually takes 20-40 seconds
             </Text>
           </>
         )}
@@ -2469,79 +2758,15 @@ function CanvasPanel({
     )
   }
 
-  // Canvas v2: render the CanvasWebView (parent owns SSE, bridges via postMessage)
-  if (canvasMode === 'code') {
-    return (
-      <View className="flex-1 overflow-hidden rounded-2xl mx-2 mb-2">
-        <CanvasWebView agentUrl={agentUrl} canvasBaseUrl={readyCanvasBaseUrl} activeSurfaceId={activeSurfaceId} refreshKey={iframeRefreshKey} onCanvasCapabilities={onCanvasCapabilities} onCanvasError={onCanvasError} />
-      </View>
-    )
-  }
-
-  if (!surface) {
-    return (
-      <View className="flex-1">
-        <View className={cn('flex-1', !fullBleed && 'p-2')}>
-          <CanvasThemedContainer noBorder={fullBleed}>
-            <View className="flex-1 items-center justify-center px-6">
-              <View
-                className={cn(
-                  'w-3 h-3 rounded-full mb-3',
-                  connected ? 'bg-emerald-500' : timedOut ? 'bg-destructive' : 'bg-muted',
-                )}
-              />
-              <Text className="text-foreground font-semibold mb-1">
-                {connected
-                  ? 'Connected'
-                  : timedOut
-                    ? 'Connection timed out'
-                    : 'Waiting for connection...'}
-              </Text>
-              {(connected || timedOut) && onRefresh && (
-                <Pressable
-                  onPress={onRefresh}
-                  className="mt-4 flex-row items-center gap-2 rounded-md border border-border px-4 py-2 active:opacity-70"
-                >
-                  <RefreshCw size={14} className="text-muted-foreground" />
-                  <Text className="text-muted-foreground text-sm">{timedOut ? 'Retry' : 'Refresh'}</Text>
-                </Pressable>
-              )}
-            </View>
-          </CanvasThemedContainer>
-        </View>
-      </View>
-    )
-  }
-
   return (
-    <View className="flex-1">
-      <View className="flex-1 flex-row">
-        {isEditMode && showTreePanel && (
-          <ComponentTreePanel surfaceId={surfaceId} components={surface.components} />
-        )}
-        <View className={cn('flex-1', !fullBleed && 'p-2')}>
-          <CanvasThemedContainer noBorder={fullBleed}>
-            <ScrollView
-              className="flex-1"
-              contentContainerClassName={fullBleed ? 'p-0' : 'p-4'}
-              {...(Platform.OS === 'web' ? { dataSet: { thumbnailTarget: '' } } as any : {})}
-            >
-              <CanvasErrorBoundary surfaceTitle={surface?.title}>
-                <DynamicAppRenderer
-                  surface={surface}
-                  agentUrl={agentUrl}
-                  onAction={onAction}
-                  onDataChange={onDataChange}
-                  authHeaders={authHeaders}
-                />
-              </CanvasErrorBoundary>
-            </ScrollView>
-          </CanvasThemedContainer>
-        </View>
-        {isEditMode && (
-          <InspectorPanel surfaceId={surfaceId} components={surface.components} />
-        )}
-      </View>
+    <View className="flex-1 overflow-hidden rounded-2xl mx-2 mb-2">
+      <CanvasWebView
+        agentUrl={agentUrl}
+        canvasBaseUrl={readyCanvasBaseUrl}
+        refreshKey={iframeRefreshKey}
+        onCanvasCapabilities={onCanvasCapabilities}
+        onCanvasError={onCanvasError}
+      />
     </View>
   )
 }
@@ -2560,14 +2785,35 @@ const PHASE_LABELS: Record<string, string> = {
   ready: 'Ready',
 }
 
-function AppPreviewPanel({ previewUrl, agentUrl }: { previewUrl: string | null; agentUrl: string | null }) {
-  const [iframeKey, setIframeKey] = useState(0)
-  const [previewReady, setPreviewReady] = useState(false)
+/**
+ * Polls `${agentUrl}/preview/status` so callers can show the user *what*
+ * the runtime is doing (installing deps, building, starting API, …)
+ * rather than a generic spinner. Returns:
+ *   phase    – PreviewManager phase string ('idle', 'installing', …)
+ *   running  – true once the preview is fully up and the iframe / canvas
+ *              should be loaded
+ *
+ * Polling stops as soon as `running === true` and resumes if the
+ * `agentUrl` changes (e.g. the user navigates to a different project).
+ *
+ * Reused by both the AppPreviewPanel and CanvasPanel so their "waiting"
+ * states stay consistent and the previously misleading "Send a message
+ * in the Chat tab to wake the agent" hint can be replaced with real,
+ * accurate phase labels.
+ */
+function usePreviewPhase(agentUrl: string | null): { phase: string; running: boolean } {
   const [phase, setPhase] = useState<string>('idle')
+  const [running, setRunning] = useState<boolean>(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
-    if (!agentUrl || previewReady) return
+    // Reset on agentUrl change so consumers see a fresh "idle" phase on
+    // navigation instead of a stale `running=true` from the previous
+    // project.
+    setPhase('idle')
+    setRunning(false)
+
+    if (!agentUrl) return
 
     let cancelled = false
     const poll = async () => {
@@ -2581,8 +2827,11 @@ function AppPreviewPanel({ previewUrl, agentUrl }: { previewUrl: string | null; 
           const data = await resp.json()
           if (data.phase) setPhase(data.phase)
           if (data.running) {
-            setPreviewReady(true)
-            setIframeKey(k => k + 1)
+            setRunning(true)
+            if (pollRef.current) {
+              clearInterval(pollRef.current)
+              pollRef.current = null
+            }
           }
         }
       } catch {
@@ -2595,14 +2844,32 @@ function AppPreviewPanel({ previewUrl, agentUrl }: { previewUrl: string | null; 
 
     return () => {
       cancelled = true
-      if (pollRef.current) clearInterval(pollRef.current)
+      if (pollRef.current) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
     }
-  }, [agentUrl, previewReady])
+  }, [agentUrl])
+
+  return { phase, running }
+}
+
+function AppPreviewPanel({ previewUrl, agentUrl }: { previewUrl: string | null; agentUrl: string | null }) {
+  const [iframeKey, setIframeKey] = useState(0)
+  const { phase, running } = usePreviewPhase(agentUrl)
+  // Latches once the preview reports `running`. Manual refresh resets it
+  // so the user can re-trigger the iframe load if Vite/HMR drops.
+  const [previewReady, setPreviewReady] = useState(false)
+  useEffect(() => {
+    if (running && !previewReady) {
+      setPreviewReady(true)
+      setIframeKey(k => k + 1)
+    }
+  }, [running, previewReady])
 
   // Reset ready state when previewUrl changes (new project)
   useEffect(() => {
     setPreviewReady(false)
-    setPhase('idle')
   }, [previewUrl])
 
   if (!previewUrl) {

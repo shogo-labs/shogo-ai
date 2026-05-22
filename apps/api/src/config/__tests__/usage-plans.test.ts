@@ -9,7 +9,9 @@ import {
   PLAN_VOICE_RATE_OVERRIDES,
   SEAT_INCLUDED_USD,
   VOICE_RAW_USD,
+  comparePlanRank,
   getMonthlyIncludedForPlan,
+  normalizePlanId,
 } from '../usage-plans'
 
 describe('constants', () => {
@@ -152,5 +154,67 @@ describe('getMonthlyIncludedForPlan — unknown plan ids', () => {
   it('is case-sensitive on canonical plan ids', () => {
     expect(getMonthlyIncludedForPlan('PRO')).toBe(0)
     expect(getMonthlyIncludedForPlan('Pro')).toBe(0)
+  })
+})
+
+
+describe('normalizePlanId', () => {
+  it('returns null for null / undefined / empty', () => {
+    expect(normalizePlanId(null)).toBeNull()
+    expect(normalizePlanId(undefined)).toBeNull()
+    expect(normalizePlanId('')).toBeNull()
+  })
+
+  it('maps canonical tier ids', () => {
+    expect(normalizePlanId('free')).toBe('free')
+    expect(normalizePlanId('basic')).toBe('basic')
+    expect(normalizePlanId('pro')).toBe('pro')
+    expect(normalizePlanId('business')).toBe('business')
+    expect(normalizePlanId('enterprise')).toBe('enterprise')
+  })
+
+  it('is case-insensitive and trims whitespace', () => {
+    expect(normalizePlanId('  FREE  ')).toBe('free')
+    expect(normalizePlanId('Pro')).toBe('pro')
+    expect(normalizePlanId('BUSINESS')).toBe('business')
+  })
+
+  it('prefix-matches decorated tier ids', () => {
+    expect(normalizePlanId('Free-Forever')).toBe('free')
+    expect(normalizePlanId('basic_monthly')).toBe('basic')
+    expect(normalizePlanId('pro_200')).toBe('pro')
+    expect(normalizePlanId('business-Annual')).toBe('business')
+    expect(normalizePlanId('Enterprise-XL')).toBe('enterprise')
+  })
+
+  it('returns null for unknown tier ids', () => {
+    expect(normalizePlanId('platinum')).toBeNull()
+    expect(normalizePlanId('starter')).toBeNull()
+    expect(normalizePlanId('unknown-plan')).toBeNull()
+  })
+})
+
+describe('comparePlanRank', () => {
+  it('ranks canonical tiers in ascending order', () => {
+    const tiers = ['business', 'free', 'pro', 'enterprise', 'basic']
+    const sorted = [...tiers].sort(comparePlanRank)
+    expect(sorted).toEqual(['free', 'basic', 'pro', 'business', 'enterprise'])
+  })
+
+  it('returns negative / zero / positive correctly', () => {
+    expect(comparePlanRank('free', 'pro')).toBeLessThan(0)
+    expect(comparePlanRank('pro', 'pro')).toBe(0)
+    expect(comparePlanRank('enterprise', 'basic')).toBeGreaterThan(0)
+  })
+
+  it('treats unknown plans as free', () => {
+    expect(comparePlanRank('platinum', 'free')).toBe(0)
+    expect(comparePlanRank('unknown', 'pro')).toBeLessThan(0)
+    expect(comparePlanRank(null, undefined)).toBe(0)
+  })
+
+  it('normalizes decorated ids before comparing', () => {
+    expect(comparePlanRank('Pro-Annual', 'business_monthly')).toBeLessThan(0)
+    expect(comparePlanRank('Enterprise-XL', 'pro_200')).toBeGreaterThan(0)
   })
 })

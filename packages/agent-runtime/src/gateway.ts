@@ -225,8 +225,6 @@ export interface GatewayConfig {
   sdkGuideEnabled?: boolean
   /** Whether canvas tools are enabled (default: true). Automatically set false when switching to app/none mode. */
   canvasEnabled?: boolean
-  /** Canvas rendering mode: 'json' = v1 declarative JSON, 'code' = v2 agent-written React code */
-  canvasMode?: 'json' | 'code'
   /** Prompt profile: 'full' = all sections (default), 'swe' = minimal coding-only profile for SWE evals, 'general' = workspace + tools + skills (no personality/canvas) */
   promptProfile?: 'full' | 'swe' | 'general'
   /** Enable coordinator mode (leader only delegates, never does work directly) */
@@ -317,6 +315,13 @@ export class AgentGateway {
     loopDetected: boolean
     escalated: boolean
     responseEmpty: boolean
+    /**
+     * True when the turn ended via a user-initiated stop (Stop button).
+     * server.ts uses this to tag the trailing `data-turn-complete` frame
+     * with `status: 'aborted'` so project-chat bills the partial usage
+     * instead of treating the EOF as an upstream cut.
+     */
+    wasAborted: boolean
   } | null = null
   /** Optional label for eval tracing — included in log prefix when set */
   private evalLabel: string | null = null
@@ -549,7 +554,6 @@ export class AgentGateway {
       model: { provider: 'anthropic', name: 'claude-haiku-4-5' },
       maxSessionMessages: 30,
       activeMode: 'canvas',
-      canvasMode: 'code',
       allowedModes: ['canvas', 'none'],
       mainSessionIds: ['chat'],
     }
@@ -741,14 +745,12 @@ export class AgentGateway {
     )
 
     // Start LSP for canvas code diagnostics (fire-and-forget — don't block startup)
-    if (this.config.canvasMode === 'code') {
-      this.startLSP().catch(err => {
-        console.warn(`${this.logPrefix} LSP startup failed (non-fatal):`, err.message)
-      })
-    }
+    this.startLSP().catch(err => {
+      console.warn(`${this.logPrefix} LSP startup failed (non-fatal):`, err.message)
+    })
 
     // Start canvas build manager for Vite builds (fire-and-forget)
-    if (this.config.canvasMode === 'code') {
+    {
       // Self-heal: ensure src/main.tsx matches the canonical slim version.
       // Older workspaces baked the iframe bridge (toast / theme / SSE / error
       // forwarding) into main.tsx; that's now served live from
@@ -860,6 +862,19 @@ export class AgentGateway {
         pyrightBin: pyResult?.resolved,
       })
       await this.lspManager.startAll()
+      // Bridge chokidar events into tsserver as
+      // `workspace/didChangeWatchedFiles`. With the bridge in place
+      // tsserver delegates all watching to chokidar (which the agent
+      // runtime already runs) — without it tsserver falls back to
+      // native inotify and burns ~44k watches per pod, saturating the
+      // per-uid kernel quota. The bridge filter inside the LSP manager
+      // restricts to TS-relevant paths; the per-glob filter inside
+      // TSLanguageServer further restricts to paths the server
+      // actually registered.
+      const lspManagerRef = this.lspManager
+      this.canvasFileWatcher.setLspBridge((absPath, kind) => {
+        lspManagerRef.notifyWatchedFileEvent(absPath, kind)
+      })
       console.log(`${this.logPrefix} LSP ready for workspace: ${this.workspaceDir}`)
     } catch (err: any) {
       console.warn(`${this.logPrefix} LSP init failed:`, err.message)
@@ -871,6 +886,10 @@ export class AgentGateway {
     console.log('[AgentGateway] Stopping...')
     this.running = false
 
+    // Detach the bridge BEFORE stopping the LSP manager so a late
+    // chokidar event during teardown doesn't try to write to a stopped
+    // server (which would throw "Language server not running").
+    this.canvasFileWatcher.setLspBridge(null)
     this.lspManager?.stop()
     this.lspManager = null
 
@@ -878,6 +897,17 @@ export class AgentGateway {
     this.sessionPersistence?.close()
     await this.skillServerManager.stop()
     this.canvasBuildManager?.stop()
+    // Without this, the `vite build --watch` child PreviewManager
+    // spawned in `startBuildWatch()` survives the agent-runtime's
+    // `process.exit(0)` in `gracefulShutdown` — it gets reparented to
+    // launchd (PPID 1) and keeps rebuilding on every file change
+    // forever. One orphan per restart cycle compounds quickly: a
+    // single workspace was seen accumulating 20 vite watchers (oldest
+    // ~36h old) before manual cleanup. The PreviewManager handle is
+    // wired in via `attachApiServer()` (see below) and `stop()` is
+    // synchronous + idempotent + safe to call when nothing is
+    // running — same shape as `canvasBuildManager?.stop()` above.
+    this.previewManager?.stop()
     await this.mcpClientManager.stopAll()
 
     this.workspaceGraph = null
@@ -1298,19 +1328,6 @@ export class AgentGateway {
 
   async processWebhookMessage(text: string): Promise<string> {
     return this.agentTurn(text, 'webhook')
-  }
-
-  async processCanvasAction(event: { surfaceId: string; name: string; context?: Record<string, unknown> }): Promise<string> {
-    const { surfaceId, name, context } = event
-    const { _sendToAgent, ...cleanContext } = context ?? {}
-    const contextStr = Object.keys(cleanContext).length > 0
-      ? `\nContext: ${JSON.stringify(cleanContext, null, 2)}`
-      : ''
-    const prompt = [
-      `[Canvas Action] The user clicked "${name}" on surface "${surfaceId}".${contextStr}`,
-      `Process this action and update the canvas accordingly.`,
-    ].join('\n')
-    return this.agentTurn(prompt, 'canvas-action')
   }
 
   private buildSlashContext(sessionId: string): SlashCommandContext {
@@ -2154,8 +2171,7 @@ export class AgentGateway {
       const isRealChatSession = !!sessionId &&
         sessionId !== 'chat' &&
         sessionId !== 'default' &&
-        sessionId !== 'webhook' &&
-        sessionId !== 'canvas-action'
+        sessionId !== 'webhook'
       const extraHeaders: Record<string, string> | undefined = isRealChatSession
         ? { 'x-chat-session-id': sessionId }
         : undefined
@@ -2427,6 +2443,7 @@ export class AgentGateway {
         loopDetected: !!result.loopBreak,
         escalated: false,
         responseEmpty,
+        wasAborted: result.abortReason === 'external',
       }
 
       // UI notifications below may throw if the client disconnected (stop).

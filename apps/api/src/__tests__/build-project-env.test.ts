@@ -162,16 +162,19 @@ describe('buildProjectEnv — proxy URLs', () => {
 // ─── project-derived fields (DB hit) ──────────────────────────────────────
 
 describe('buildProjectEnv — project-derived fields', () => {
-  test('omits WORKSPACE_ID / TEMPLATE_ID / AGENT_NAME when the project row is missing', async () => {
+  test('omits WORKSPACE_ID / AGENT_NAME (and never sets TEMPLATE_ID) when the project row is missing', async () => {
     findUniqueProjectMock.mockImplementation(async () => null)
     const env = await buildProjectEnv('proj-missing')
     expect(env.WORKSPACE_ID).toBeUndefined()
+    // TEMPLATE_ID was removed from the env contract by the marketplace
+    // consolidation (build-project-env.ts:48) — assert it stays unset
+    // on every path.
     expect(env.TEMPLATE_ID).toBeUndefined()
     expect(env.AGENT_NAME).toBeUndefined()
     expect(env.AI_PROXY_TOKEN).toBeUndefined() // proxy token only set on hit
   })
 
-  test('sets WORKSPACE_ID, TEMPLATE_ID, AGENT_NAME when present on the row', async () => {
+  test('sets WORKSPACE_ID and AGENT_NAME when present on the row (TEMPLATE_ID is intentionally not exported)', async () => {
     findUniqueProjectMock.mockImplementation(async () => ({
       workspaceId: 'ws-1',
       templateId: 'tmpl-next',
@@ -181,8 +184,10 @@ describe('buildProjectEnv — project-derived fields', () => {
     }))
     const env = await buildProjectEnv('proj-set')
     expect(env.WORKSPACE_ID).toBe('ws-1')
-    expect(env.TEMPLATE_ID).toBe('tmpl-next')
     expect(env.AGENT_NAME).toBe('My Agent')
+    // Confirm the legacy TEMPLATE_ID env stays unset even when the
+    // project row still has a templateId column.
+    expect(env.TEMPLATE_ID).toBeUndefined()
   })
 
   test('defaults COMPOSIO_USER_SCOPE to "workspace" when scope is null', async () => {
@@ -242,7 +247,11 @@ describe('buildProjectEnv — project-derived fields', () => {
     expect(getAgentTemplateByIdMock).not.toHaveBeenCalled() // settings won, no template lookup
   })
 
-  test('falls through to template.techStack when settings has no techStackId', async () => {
+  test('omits TECH_STACK_ID (and never falls back to template.techStack) when settings has no techStackId', async () => {
+    // Marketplace consolidation removed the template→techStack fallback
+    // (build-project-env.ts:75–84). The env now relies exclusively on
+    // settings.techStackId; assert that no template lookup happens and
+    // TECH_STACK_ID stays unset when settings is empty.
     findUniqueProjectMock.mockImplementation(async () => ({
       workspaceId: 'ws-1',
       templateId: 'tmpl-y',
@@ -250,8 +259,8 @@ describe('buildProjectEnv — project-derived fields', () => {
     }))
     getAgentTemplateByIdMock.mockImplementation(() => ({ techStack: 'next-15' }))
     const env = await buildProjectEnv('proj-ts-template')
-    expect(env.TECH_STACK_ID).toBe('next-15')
-    expect(getAgentTemplateByIdMock).toHaveBeenCalledWith('tmpl-y')
+    expect(env.TECH_STACK_ID).toBeUndefined()
+    expect(getAgentTemplateByIdMock).not.toHaveBeenCalled()
   })
 
   test('omits SHOGO_CLOUD_SYNC_MODE when cloudSyncMode is the default ("s3")', async () => {

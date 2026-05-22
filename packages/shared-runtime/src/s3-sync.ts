@@ -94,14 +94,95 @@ export function tarStderrIsBenign(stderr: string): boolean {
   return lines.every((line) => BENIGN_TAR_STDERR_PATTERNS.some((re) => re.test(line)))
 }
 
+/**
+ * One-shot probe + memoize: is the system `zstd` (or `tar` with zstd
+ * support) usable? Cached for the lifetime of the process so we don't
+ * pay per-spawn overhead on every `uploadDepsIfNeeded`. Result is
+ * conservative — any spawn error surfaces as `false`.
+ */
+let zstdProbed: boolean | null = null
+async function isZstdAvailable(): Promise<boolean> {
+  if (zstdProbed !== null) return zstdProbed
+  const ok = await new Promise<boolean>((resolve) => {
+    const child = spawn('zstd', ['--version'], { stdio: 'ignore' })
+    child.once('error', () => resolve(false))
+    child.once('exit', (code) => resolve(code === 0))
+  })
+  zstdProbed = ok
+  return ok
+}
+
+/**
+ * Create a `.tar.zst` archive via the system `tar` binary, piping
+ * compression through `zstd -T0` for maximum throughput. Uses a
+ * `-T <files-from-fd>` argument list to keep the command line short
+ * even for ~30k node_modules paths.
+ */
+async function createTarZst(
+  outPath: string,
+  cwd: string,
+  filesRelative: string[],
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(
+      'tar',
+      [
+        '--use-compress-program=zstd -T0',
+        '-cf',
+        outPath,
+        '--no-xattrs',
+        '-T', '-',
+        '-C',
+        cwd,
+      ],
+      {
+        stdio: ['pipe', 'ignore', 'pipe'],
+        env: { ...process.env, COPYFILE_DISABLE: '1' },
+      },
+    )
+    let stderr = ''
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
+    child.once('error', reject)
+    child.once('exit', (code) => {
+      if (code === 0) {
+        resolve()
+      } else if (tarStderrIsBenign(stderr)) {
+        console.warn(
+          `[S3Sync] tar --use-compress-program=zstd exited with code ${code} ` +
+          `but only emitted benign metadata warnings; treating create as successful.`,
+        )
+        resolve()
+      } else {
+        reject(new Error(`tar create (zst) exited with code ${code}: ${stderr.trim()}`))
+      }
+    })
+    child.stdin.end(filesRelative.join('\n') + '\n')
+  })
+}
+
 export async function extractTarFastNonBlocking(
   archivePath: string,
   cwd: string,
 ): Promise<{ usedBinary: boolean }> {
-  const result = await new Promise<{ usedBinary: boolean }>((resolve, reject) => {
-    const child = spawn(
-      'tar',
-      [
+  // Compression dispatch by extension. On a typical 133 MB node_modules
+  // archive, zstd decompresses ~3-5× faster than gzip — biggest single
+  // win for cold-start latency. We support both transparently:
+  //   - .tar.zst → `--use-compress-program=unzstd`
+  //   - .tar.gz  → `-z` (legacy and node-tar fallback)
+  // Anything else falls through to gzip behavior to preserve the
+  // historical contract.
+  const isZstd = archivePath.endsWith('.tar.zst') || archivePath.endsWith('.tzst')
+  const tarArgs = isZstd
+    ? [
+        '--use-compress-program=unzstd',
+        '-xf',
+        archivePath,
+        '-C',
+        cwd,
+        '--no-same-owner',
+        '--no-same-permissions',
+      ]
+    : [
         '-xzf',
         archivePath,
         '-C',
@@ -117,7 +198,11 @@ export async function extractTarFastNonBlocking(
         // BSD tar (macOS dev hosts) treats it as a fatal "unknown option".
         // The benign-stderr predicate downstream already accepts those
         // warnings, so we leave them to surface as logged stderr.
-      ],
+      ]
+  const result = await new Promise<{ usedBinary: boolean }>((resolve, reject) => {
+    const child = spawn(
+      'tar',
+      tarArgs,
       {
         stdio: ['ignore', 'ignore', 'pipe'],
         // Prevent BSD `tar` on macOS from writing AppleDouble sidecars (`._*`)
@@ -132,7 +217,18 @@ export async function extractTarFastNonBlocking(
 
     child.once('error', async (err: NodeJS.ErrnoException) => {
       // ENOENT: no `tar` binary available — fall back to node-tar.
+      // node-tar handles gzip natively but NOT zstd; surfacing a clear
+      // error there beats a confusing "unsupported algorithm" deep
+      // inside the streaming gunzip path.
       if (err.code === 'ENOENT') {
+        if (isZstd) {
+          reject(new Error(
+            `extractTarFastNonBlocking: system tar missing and node-tar cannot ` +
+            `decompress zstd archives. Install tar+zstd in the runtime image, ` +
+            `or fall back to a .tar.gz key.`,
+          ))
+          return
+        }
         try {
           await tar.extract({ file: archivePath, cwd, strip: 0 })
           resolve({ usedBinary: false })
@@ -155,15 +251,16 @@ export async function extractTarFastNonBlocking(
       // must surface — a half-extracted workspace is worse than a hard
       // failure because subsequent boot steps silently run against a
       // partial source tree.
+      const flagLabel = isZstd ? 'tar --use-compress-program=unzstd' : 'tar -xzf'
       if (tarStderrIsBenign(stderr)) {
         console.warn(
-          `[S3Sync] tar -xzf exited with code ${code} but only emitted benign ` +
+          `[S3Sync] ${flagLabel} exited with code ${code} but only emitted benign ` +
             `macOS metadata warnings; treating extract as successful. ` +
             `First line: ${stderr.split('\n')[0]?.trim() ?? '(empty)'}`,
         )
         resolve({ usedBinary: true })
       } else {
-        reject(new Error(`tar -xzf exited with code ${code}: ${stderr.trim()}`))
+        reject(new Error(`${flagLabel} exited with code ${code}: ${stderr.trim()}`))
       }
     })
   })
@@ -447,9 +544,30 @@ export class S3Sync {
     return `${this.config.prefix}/project-src.tar.gz`
   }
 
-  /** Deps archive key (content-addressed by lockfile hash) */
-  private getDepsArchiveKey(lockfileHash: string): string {
-    return `${DEPS_CACHE_PREFIX}/${lockfileHash}.tar.gz`
+  /**
+   * Deps archive key (content-addressed by lockfile hash).
+   *
+   * Two extensions supported during the gzip → zstd transition:
+   *   - .tar.zst (preferred, ~3-5× faster decompression)
+   *   - .tar.gz  (legacy, still readable so existing cached archives
+   *              and pods baked before the zstd switch keep working)
+   *
+   * Reads try `.tar.zst` first via `getDepsArchiveKeys`; writes always
+   * produce `.tar.zst` when the system zstd binary is available, else
+   * fall back to gzip.
+   */
+  private getDepsArchiveKey(lockfileHash: string, ext: 'zst' | 'gz' = 'zst'): string {
+    return ext === 'zst'
+      ? `${DEPS_CACHE_PREFIX}/${lockfileHash}.tar.zst`
+      : `${DEPS_CACHE_PREFIX}/${lockfileHash}.tar.gz`
+  }
+
+  /** Both candidate keys, in read-preference order. */
+  private getDepsArchiveKeys(lockfileHash: string): Array<{ key: string; ext: 'zst' | 'gz' }> {
+    return [
+      { key: this.getDepsArchiveKey(lockfileHash, 'zst'), ext: 'zst' },
+      { key: this.getDepsArchiveKey(lockfileHash, 'gz'), ext: 'gz' },
+    ]
   }
 
   /** Per-project pointer to the current deps hash */
@@ -684,24 +802,33 @@ export class S3Sync {
       return
     }
 
-    // Download deps archive
-    const depsKey = this.getDepsArchiveKey(lockfileHash)
-    console.log(`[S3Sync] [restoreDeps] Checking deps archive existence: s3://${this.config.bucket}/${depsKey}`)
-    const existsStart = Date.now()
-    const depsExists = await this.objectExists(depsKey)
-    console.log(`[S3Sync] [restoreDeps] Deps archive exists check: ${depsExists} (${Date.now() - existsStart}ms)`)
+    // Try .tar.zst first (faster), fall back to .tar.gz for archives
+    // produced before the zstd switch landed.
+    const depsCandidates = this.getDepsArchiveKeys(lockfileHash)
+    let resolvedKey: { key: string; ext: 'zst' | 'gz' } | null = null
+    for (const candidate of depsCandidates) {
+      const existsStart = Date.now()
+      const exists = await this.objectExists(candidate.key)
+      console.log(
+        `[S3Sync] [restoreDeps] Deps archive existence check (${candidate.ext}): ${exists} (${Date.now() - existsStart}ms) at s3://${this.config.bucket}/${candidate.key}`,
+      )
+      if (exists) {
+        resolvedKey = candidate
+        break
+      }
+    }
 
-    if (!depsExists) {
+    if (!resolvedKey) {
       console.log(`[S3Sync] [restoreDeps] Deps cache miss (hash: ${lockfileHash}) — will need bun install (total: ${Date.now() - restoreStart}ms)`)
       return
     }
 
-    console.log(`[S3Sync] [restoreDeps] ⚡ Deps cache hit (hash: ${lockfileHash}) — downloading...`)
+    console.log(`[S3Sync] [restoreDeps] ⚡ Deps cache hit (hash: ${lockfileHash}, ${resolvedKey.ext}) — downloading...`)
     const depsStart = Date.now()
 
     const depsResponse = await this.client.send(new GetObjectCommand({
       Bucket: this.config.bucket,
-      Key: depsKey,
+      Key: resolvedKey.key,
     }))
     const s3ResponseMs = Date.now() - depsStart
     console.log(`[S3Sync] [restoreDeps] S3 GetObject response in ${s3ResponseMs}ms (contentLength=${depsResponse.ContentLength ?? 'unknown'})`)
@@ -718,10 +845,12 @@ export class S3Sync {
     console.log(`[S3Sync] [restoreDeps] Downloaded deps archive: ${this.formatBytes(depsData.length)} in ${downloadMs}ms (stream read: ${streamMs}ms)`)
 
     // Extract deps. Uses spawn('tar') so the JS event loop stays free
-    // while gunzip + the ~30k file writes happen in a child process —
-    // critical for keeping `/ready` probes responsive during cold start.
+    // while decompression + the ~30k file writes happen in a child
+    // process — critical for keeping `/ready` probes responsive during
+    // cold start. extractTarFastNonBlocking dispatches gz vs zst by
+    // file extension, so the tempfile name matters.
     const extractStart = Date.now()
-    const tempDeps = join('/tmp', `deps-${lockfileHash}.tar.gz`)
+    const tempDeps = join('/tmp', `deps-${lockfileHash}.tar.${resolvedKey.ext}`)
     console.log(`[S3Sync] [restoreDeps] Extracting deps archive (${this.formatBytes(depsData.length)})...`)
     await writeFile(tempDeps, depsData)
     const writeMs = Date.now() - extractStart
@@ -954,9 +1083,15 @@ export class S3Sync {
       return
     }
 
-    // Check if this exact deps archive already exists in S3
-    const depsKey = this.getDepsArchiveKey(lockfileHash)
-    const depsExist = await this.objectExists(depsKey)
+    // Check if either flavor of this deps archive already exists in S3.
+    // .tar.zst is the new default; .tar.gz remains for legacy archives.
+    let depsExist = false
+    for (const candidate of this.getDepsArchiveKeys(lockfileHash)) {
+      if (await this.objectExists(candidate.key)) {
+        depsExist = true
+        break
+      }
+    }
 
     if (depsExist && !this.depsNeedUpload) {
       // Already cached — just update the pointer
@@ -973,27 +1108,45 @@ export class S3Sync {
       return
     }
 
-    console.log(`[S3Sync] Uploading deps archive (lockfile hash: ${lockfileHash})`)
-    const startTime = Date.now()
-    const tempArchive = join('/tmp', `deps-${lockfileHash}-upload.tar.gz`)
-
     // List only node_modules files
     const nodeModulesFiles = await this.listLocalFiles(nodeModulesDir)
     if (nodeModulesFiles.length === 0) return
 
     console.log(`[S3Sync] Deps archive: ${nodeModulesFiles.length} files`)
 
-    // Create archive of node_modules only
-    await tar.create(
-      {
-        gzip: true,
-        file: tempArchive,
-        cwd: this.config.localDir,
-        portable: true,
-      },
-      // Archive as 'node_modules/...' paths (relative to project dir)
-      nodeModulesFiles.map(f => relative(this.config.localDir, f))
-    )
+    // Probe for the system zstd binary. When present we PREFER writing
+    // `.tar.zst` for ~3-5× faster restore on cold-start; if either the
+    // probe says no, OR the system tar+zstd combo fails to produce a
+    // valid archive (some BSD tars don't honor --use-compress-program),
+    // we fall back to gzip via node-tar so production never silently
+    // skips the deps cache write.
+    const zstdAvailable = await isZstdAvailable()
+    let writeExt: 'zst' | 'gz' = zstdAvailable ? 'zst' : 'gz'
+    let tempArchive = join('/tmp', `deps-${lockfileHash}-upload.tar.${writeExt}`)
+    const startTime = Date.now()
+    const filesRel = nodeModulesFiles.map(f => relative(this.config.localDir, f))
+
+    if (writeExt === 'zst') {
+      try {
+        await createTarZst(tempArchive, this.config.localDir, filesRel)
+      } catch (err: any) {
+        console.warn(`[S3Sync] zstd archive create failed (${err.message}) — falling back to gzip`)
+        writeExt = 'gz'
+        tempArchive = join('/tmp', `deps-${lockfileHash}-upload.tar.gz`)
+        await tar.create(
+          { gzip: true, file: tempArchive, cwd: this.config.localDir, portable: true },
+          filesRel,
+        )
+      }
+    } else {
+      await tar.create(
+        { gzip: true, file: tempArchive, cwd: this.config.localDir, portable: true },
+        filesRel,
+      )
+    }
+
+    const depsKey = this.getDepsArchiveKey(lockfileHash, writeExt)
+    console.log(`[S3Sync] Uploading deps archive (lockfile hash: ${lockfileHash}, format: ${writeExt})`)
 
     const archiveTime = Date.now() - startTime
     const archiveStats = statSync(tempArchive)
@@ -1007,7 +1160,7 @@ export class S3Sync {
       Bucket: this.config.bucket,
       Key: depsKey,
       Body: archiveContent,
-      ContentType: 'application/gzip',
+      ContentType: writeExt === 'zst' ? 'application/zstd' : 'application/gzip',
     }))
 
     const uploadTime = Date.now() - uploadStart

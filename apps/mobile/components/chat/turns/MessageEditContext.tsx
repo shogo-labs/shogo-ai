@@ -22,6 +22,7 @@
 import { createContext, useContext, useMemo, type ReactNode } from "react"
 import type { UIMessage } from "@ai-sdk/react"
 import type { PrecedingCheckpointResult } from "@shogo/shared-app/chat"
+import type { FileAttachment } from "../ChatInput"
 
 /**
  * Options forwarded to `editMessage` / `retryFromMessage` to opt
@@ -54,8 +55,9 @@ export interface MessageEditOptions {
 
 export interface MessageEditContextValue {
   /**
-   * Apply an edited content to a previously sent user message, then
-   * re-run the agent. The implementation MUST:
+   * Apply an edited content (and optionally a new set of file
+   * attachments) to a previously sent user message, then re-run the
+   * agent. The implementation MUST:
    *   1. Truncate the message AND all subsequent ones server-side
    *      (POST /api/chat-messages/:id/truncate-from).
    *   2. (Optional) If `options.revertFiles` is set, roll the
@@ -67,10 +69,21 @@ export interface MessageEditContextValue {
    *   3. Trim the local AI SDK `messages` to slice(0, indexOfEdited).
    *   4. Re-send the edited content via the existing send pipeline
    *      (so it goes through `actions.addMessage` -> server -> stream).
+   *
+   * `newFiles` semantics:
+   *   - `undefined` → "no attachments on the resent message". This
+   *     is what the in-place ChatInput produces when the user
+   *     removed all chips. It is NOT a "leave attachments alone"
+   *     marker — the in-place ChatInput is pre-populated via
+   *     `restoreDraftRequest` with the original files, so a
+   *     no-touch edit round-trips the same array back.
+   *   - `FileAttachment[]` → that exact set of attachments (kept,
+   *     added, or a mix). Order matches the ChatInput chip order.
    */
   editMessage: (
     messageId: string,
     newContent: string,
+    newFiles: FileAttachment[] | undefined,
     options?: MessageEditOptions,
   ) => Promise<void>
 
@@ -123,6 +136,33 @@ export interface MessageEditContextValue {
   getPrecedingCheckpoint: (
     messageId: string,
   ) => Promise<PrecedingCheckpointResult>
+
+  /**
+   * Subset of ChatPanel's bottom-composer state forwarded to the
+   * in-place `ChatInput` that EditableUserMessage mounts when the
+   * user clicks a previously-sent bubble to edit it.
+   *
+   * We forward these instead of `useChat`-style globals so the
+   * edit-mode composer:
+   *   - shares the same model selection (changing the model in
+   *     the bubble persists to the bottom composer, which is the
+   *     same model the resend will use); and
+   *   - honors the same upgrade gate (free users see the upgrade
+   *     prompt when picking a premium model from inside an edit).
+   *
+   * Everything else (queue, interaction mode, quick actions,
+   * dual plan, voice input, draft restore) is intentionally NOT
+   * forwarded — those belong to the bottom composer's lifecycle
+   * (adding a message to the queue from inside an edit-in-progress
+   * historical bubble would be confusing). The in-place ChatInput
+   * runs with sensible inert defaults for them.
+   */
+  composerProps: {
+    selectedModel?: string
+    onModelChange?: (modelId: string) => void
+    isPro: boolean
+    onUpgradeClick?: () => void
+  }
 }
 
 const MessageEditContext = createContext<MessageEditContextValue | null>(null)
@@ -139,6 +179,7 @@ export function MessageEditProvider({
   isStreaming,
   canEditMessage,
   getPrecedingCheckpoint,
+  composerProps,
   children,
 }: MessageEditProviderProps) {
   const value = useMemo<MessageEditContextValue>(
@@ -149,6 +190,7 @@ export function MessageEditProvider({
       isStreaming,
       canEditMessage,
       getPrecedingCheckpoint,
+      composerProps,
     }),
     [
       editMessage,
@@ -157,6 +199,7 @@ export function MessageEditProvider({
       isStreaming,
       canEditMessage,
       getPrecedingCheckpoint,
+      composerProps,
     ],
   )
   return (

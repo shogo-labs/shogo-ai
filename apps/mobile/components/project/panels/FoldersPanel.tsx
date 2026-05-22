@@ -20,12 +20,13 @@
  *     managed project.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from 'react-native'
+import { ActivityIndicator, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
   Folder,
   FolderPlus,
   FolderTree,
+  Globe,
   Star,
   StarOff,
   Trash2,
@@ -71,6 +72,14 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // Preview URL state — separate fetch from project, lives on
+  // Project.settings.externalPreview.savedUrl. We surface both the
+  // saved URL and the most recent detected URL so the user can either
+  // pick the auto-detected one or type their own.
+  const [previewSavedUrl, setPreviewSavedUrl] = useState<string | null>(null)
+  const [previewDetectedUrl, setPreviewDetectedUrl] = useState<string | null>(null)
+  const [previewDraft, setPreviewDraft] = useState<string>('')
+
   // Native picker handle. Only present in Electron. We capture it
   // lazily so the panel works in a regular browser (the buttons are
   // disabled with a hint instead of crashing).
@@ -113,6 +122,97 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
 
   const isExternal = project?.workingMode === 'external'
   const folders = project?.projectFolders ?? []
+
+  // Poll the external-preview state alongside the folder data. Cheap:
+  // one GET every 5 s while the panel is open. Stops on hide.
+  useEffect(() => {
+    if (!visible || !isExternal || !projectId) return
+    let cancelled = false
+    const fetchPreview = async () => {
+      try {
+        const res = await fetch(
+          `${API_URL}/api/projects/${encodeURIComponent(projectId)}/external-preview`,
+          { credentials: Platform.OS === 'web' ? 'include' : 'omit' },
+        )
+        if (!res.ok) return
+        const body = await res.json()
+        if (cancelled) return
+        const saved = typeof body?.savedUrl === 'string' ? body.savedUrl : null
+        const detected = typeof body?.detectedUrl === 'string' ? body.detectedUrl : null
+        setPreviewSavedUrl(saved)
+        setPreviewDetectedUrl(detected)
+        // Seed the draft from saved-or-detected the first time, but
+        // don't overwrite while the user is actively editing.
+        setPreviewDraft((prev) => prev || saved || detected || '')
+      } catch {
+        /* best-effort */
+      }
+    }
+    void fetchPreview()
+    const t = setInterval(fetchPreview, 5000)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [visible, isExternal, projectId])
+
+  const handleSavePreviewUrl = useCallback(
+    async (url: string) => {
+      const trimmed = url.trim()
+      if (!trimmed) return
+      const withProto = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`
+      setBusy('preview-url')
+      try {
+        const res = await fetch(
+          `${API_URL}/api/projects/${encodeURIComponent(projectId)}/external-preview`,
+          {
+            method: 'PUT',
+            credentials: Platform.OS === 'web' ? 'include' : 'omit',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ savedUrl: withProto }),
+          },
+        )
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}))
+          setError(String(body?.error ?? `HTTP ${res.status}`))
+          return
+        }
+        const body = await res.json().catch(() => ({}))
+        if (typeof body?.savedUrl === 'string') {
+          setPreviewSavedUrl(body.savedUrl)
+          setPreviewDraft(body.savedUrl)
+        }
+        onChange?.()
+      } catch (err: any) {
+        setError(err?.message ?? 'Failed to save preview URL')
+      } finally {
+        setBusy(null)
+      }
+    },
+    [projectId, onChange],
+  )
+
+  const handleClearPreviewUrl = useCallback(async () => {
+    setBusy('preview-url')
+    try {
+      const res = await fetch(
+        `${API_URL}/api/projects/${encodeURIComponent(projectId)}/external-preview`,
+        {
+          method: 'DELETE',
+          credentials: Platform.OS === 'web' ? 'include' : 'omit',
+        },
+      )
+      if (res.ok) {
+        setPreviewSavedUrl(null)
+        setPreviewDraft('')
+        onChange?.()
+      }
+    } catch {
+      /* best-effort */
+    } finally {
+      setBusy(null)
+    }
+  }, [projectId, onChange])
 
   const handleAdd = useCallback(async () => {
     if (!desktop?.pickFolders) return
@@ -320,6 +420,73 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
               </Pressable>
             </View>
           ) : null}
+
+          {/* External preview URL — for "I'm running my own dev server"
+              workflows. The "Preview" tab embeds whatever URL is saved
+              here (or the most recent auto-detected one). */}
+          <View className="mx-4 mt-3 rounded-lg border border-border bg-card px-3 py-3 gap-2">
+            <View className="flex-row items-start gap-2">
+              <Globe size={16} className="text-muted-foreground mt-0.5" />
+              <View className="flex-1">
+                <Text className="text-xs font-medium text-foreground">External preview URL</Text>
+                <Text className="text-[11px] text-muted-foreground mt-0.5">
+                  Tell Shogo where your dev server is running. Only local hosts (localhost, 127.0.0.1) are allowed.
+                </Text>
+              </View>
+            </View>
+            <View className="flex-row items-center gap-2">
+              <View className="flex-1 flex-row items-center rounded-md bg-muted px-2 py-1">
+                <TextInput
+                  value={previewDraft}
+                  onChangeText={setPreviewDraft}
+                  placeholder="http://localhost:3000"
+                  placeholderTextColor="rgba(115,115,115,0.7)"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="url"
+                  spellCheck={false}
+                  className="flex-1 text-[11px] text-foreground"
+                  style={{ paddingVertical: 0 } as any}
+                  onSubmitEditing={() => handleSavePreviewUrl(previewDraft)}
+                />
+              </View>
+              <Pressable
+                onPress={() => handleSavePreviewUrl(previewDraft)}
+                disabled={busy === 'preview-url' || !previewDraft.trim()}
+                className={cn(
+                  'rounded-md bg-primary px-2.5 py-1',
+                  (busy === 'preview-url' || !previewDraft.trim()) ? 'opacity-60' : 'active:opacity-80',
+                )}
+              >
+                <Text className="text-[11px] font-medium text-primary-foreground">Save</Text>
+              </Pressable>
+              {previewSavedUrl ? (
+                <Pressable
+                  onPress={handleClearPreviewUrl}
+                  disabled={busy === 'preview-url'}
+                  className="rounded-md px-2 py-1 active:bg-muted"
+                >
+                  <Text className="text-[11px] text-muted-foreground underline">Clear</Text>
+                </Pressable>
+              ) : null}
+            </View>
+            {previewDetectedUrl && previewDetectedUrl !== previewSavedUrl ? (
+              <View className="flex-row items-center gap-2">
+                <Text className="text-[10px] text-muted-foreground flex-1" numberOfLines={1}>
+                  Detected from terminal: <Text className="font-mono text-foreground">{previewDetectedUrl}</Text>
+                </Text>
+                <Pressable
+                  onPress={() => handleSavePreviewUrl(previewDetectedUrl)}
+                  disabled={busy === 'preview-url'}
+                  className="rounded-md bg-emerald-500/10 px-2 py-0.5 active:opacity-80"
+                >
+                  <Text className="text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                    Use this
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null}
+          </View>
 
           {error ? (
             <View className="mx-4 mt-3 rounded-lg bg-destructive/10 px-3 py-2">

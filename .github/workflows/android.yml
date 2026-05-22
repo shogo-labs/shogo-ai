@@ -229,13 +229,76 @@ jobs:
           COMMIT_MSG: ${{ github.event.head_commit.message || format('Manual OTA from {0}', github.sha) }}
           EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
-          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
+          EXPO_PUBLIC_SENTRY_DSN_ANDROID: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_ANDROID }}
+          # Becomes the `release` tag for every Sentry event captured from
+          # this OTA bundle (see apps/mobile/app/_layout.tsx). Without it
+          # everything collapses into the `dev` release and sourcemaps never
+          # match.
+          EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
         run: |
           SUBJECT=$(printf '%s' "$COMMIT_MSG" | head -n1)
           eas update \
             --branch ${{ needs.check-fingerprint.outputs.environment }} \
             --message "$SUBJECT" \
             --non-interactive
+
+      - name: Upload OTA sourcemaps to Sentry (optional, non-fatal)
+        # Re-bundles the Android JS app with `expo export:embed` (same Metro
+        # invocation EAS uses internally) and uploads the bundle + map to
+        # Sentry under the SHA we baked in above. dist=`android` keeps it
+        # disjoint from the iOS upload at the same SHA.
+        #
+        # Non-fatal: a Sentry misconfiguration must not block an OTA roll-out.
+        working-directory: apps/mobile
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: shogo-ai
+          SENTRY_PROJECT: shogo-android
+          SENTRY_LOG_LEVEL: info
+          EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
+          EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
+          EXPO_PUBLIC_SENTRY_DSN_ANDROID: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_ANDROID }}
+          EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
+        run: |
+          set +e
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "::notice title=Sentry sourcemap upload (Android OTA)::SENTRY_AUTH_TOKEN secret not configured — skipping."
+            exit 0
+          fi
+          BUNDLE_DIR="$RUNNER_TEMP/ota-android-bundle"
+          mkdir -p "$BUNDLE_DIR"
+          bunx expo export:embed \
+            --platform android \
+            --dev false \
+            --reset-cache \
+            --bundle-output "$BUNDLE_DIR/index.android.bundle" \
+            --sourcemap-output "$BUNDLE_DIR/index.android.bundle.map" \
+            --assets-dest "$BUNDLE_DIR/assets" \
+            --entry-file apps/mobile/index.js
+          EXPORT_RC=$?
+          if [ "$EXPORT_RC" -ne 0 ]; then
+            echo "::warning title=Sentry sourcemap upload (Android OTA)::expo export:embed exited $EXPORT_RC — skipping upload."
+            exit 0
+          fi
+          SENTRY_CLI="./node_modules/.bin/sentry-cli"
+          [ -x "$SENTRY_CLI" ] || SENTRY_CLI="bunx @sentry/cli"
+          # `--ext bundle --ext map` is required because RN's Android bundle
+          # extension (`.bundle`) isn't part of sentry-cli's default file
+          # filter — without it, inject/upload would silently skip the
+          # bundle and only ship the map (and Sentry would refuse to match).
+          $SENTRY_CLI sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" \
+            --ext bundle --ext map "$BUNDLE_DIR"
+          $SENTRY_CLI sourcemaps upload \
+            --release "$EXPO_PUBLIC_BUILD_HASH" \
+            --dist android \
+            --ext bundle --ext map \
+            --strip-prefix "$GITHUB_WORKSPACE" \
+            "$BUNDLE_DIR"
+          UPLOAD_RC=$?
+          if [ "$UPLOAD_RC" -ne 0 ]; then
+            echo "::warning title=Sentry sourcemap upload (Android OTA)::sentry-cli exited $UPLOAD_RC — release continuing without symbolication."
+          fi
+          exit 0
 
       - name: Summary
         run: |
@@ -245,6 +308,7 @@ jobs:
           echo "- **Branch:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Runtime Version:** ${{ needs.check-fingerprint.outputs.runtime_version }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Sentry release:** \`${{ github.sha }}\` (dist=\`android\`)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Devices running a ${{ needs.check-fingerprint.outputs.environment }} build will receive this update automatically." >> $GITHUB_STEP_SUMMARY
 
@@ -345,7 +409,8 @@ jobs:
           EXPO_UPDATES_CHANNEL: ${{ needs.check-fingerprint.outputs.environment }}
           EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
-          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
+          EXPO_PUBLIC_SENTRY_DSN_ANDROID: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_ANDROID }}
+          EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
 
       - name: Tune Gradle for CI
         working-directory: apps/mobile/android
@@ -422,8 +487,123 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
-          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
+          EXPO_PUBLIC_SENTRY_DSN_ANDROID: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_ANDROID }}
+          # Sentry release tag that gets baked into the JS bundle inside the
+          # AAB. Must match the release we upload sourcemaps for below.
+          EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
+      - name: Upload JS sourcemaps to Sentry (optional, non-fatal)
+        # The Sentry-injected Gradle bundle task is replaced with a no-op
+        # stub above ("Ensure Sentry CLI binary"), so the AAB ships without
+        # debug-id-stamped JS. We re-run Metro post-build to regenerate the
+        # bundle + packager map, compose with the Hermes bytecode map (which
+        # `bundleRelease` already produced), and upload to Sentry.
+        #
+        # Without this, Android stack frames for native release `${SHA}`
+        # arrive as fully-minified `index.android.bundle 1:NNNNN` columns
+        # in events — see Sentry JAVASCRIPT-REACT-K (Worklets initialization
+        # fatal) for an example we couldn't symbolicate without it.
+        #
+        # Non-fatal: same rationale as the iOS dSYM step.
+        working-directory: apps/mobile
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: shogo-ai
+          SENTRY_PROJECT: shogo-android
+          SENTRY_LOG_LEVEL: info
+          EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
+          EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
+          EXPO_PUBLIC_SENTRY_DSN_ANDROID: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_ANDROID }}
+          EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
+        run: |
+          set +e
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "::notice title=Sentry sourcemap upload (Android)::SENTRY_AUTH_TOKEN secret not configured — skipping."
+            {
+              echo "## Sentry sourcemap upload (Android)"
+              echo ""
+              echo "_Skipped — \`SENTRY_AUTH_TOKEN\` secret not configured._"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # 1. Regenerate bundle + Metro packager map (the Gradle build's
+          #    intermediate artifacts get cleaned by gradle on subsequent
+          #    invocations, and the Sentry stub means none of them have
+          #    debug-ids anyway — easier to redo than to scavenge).
+          BUNDLE_DIR="$RUNNER_TEMP/android-bundle"
+          mkdir -p "$BUNDLE_DIR"
+          bunx expo export:embed \
+            --platform android \
+            --dev false \
+            --reset-cache \
+            --bundle-output "$BUNDLE_DIR/index.android.bundle" \
+            --sourcemap-output "$BUNDLE_DIR/index.android.bundle.packager.map" \
+            --assets-dest "$BUNDLE_DIR/assets" \
+            --entry-file apps/mobile/index.js
+          EXPORT_RC=$?
+          if [ "$EXPORT_RC" -ne 0 ]; then
+            echo "::warning title=Sentry sourcemap upload (Android)::expo export:embed exited $EXPORT_RC — skipping upload."
+            {
+              echo "## Sentry sourcemap upload (Android)"
+              echo ""
+              echo "_Skipped — \`expo export:embed\` exited $EXPORT_RC._"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # 2. If Hermes is enabled (the project default for RN 0.81), the
+          #    Gradle build produced an `index.android.bundle.hbc.map` that
+          #    maps Hermes bytecode columns -> packager-map columns. Compose
+          #    it with the packager map from step 1 to get a single
+          #    bytecode-to-source map that Sentry can consume directly.
+          HBC_MAP=$(find android/app/build/generated/sourcemaps -name 'index.android.bundle.hbc.map' | head -1)
+          MAP_TO_UPLOAD="$BUNDLE_DIR/index.android.bundle.map"
+          if [ -n "$HBC_MAP" ] && [ -f "$HBC_MAP" ]; then
+            echo "Composing packager map + Hermes bytecode map: $HBC_MAP"
+            node ./node_modules/react-native/scripts/compose-source-maps.js \
+              "$BUNDLE_DIR/index.android.bundle.packager.map" \
+              "$HBC_MAP" \
+              -o "$MAP_TO_UPLOAD"
+            COMPOSE_RC=$?
+            if [ "$COMPOSE_RC" -ne 0 ]; then
+              echo "::warning title=Sentry sourcemap upload (Android)::compose-source-maps.js exited $COMPOSE_RC; falling back to packager map."
+              cp "$BUNDLE_DIR/index.android.bundle.packager.map" "$MAP_TO_UPLOAD"
+            fi
+          else
+            echo "Hermes hbc.map not found — uploading raw packager map (assumes JSC, not Hermes)."
+            cp "$BUNDLE_DIR/index.android.bundle.packager.map" "$MAP_TO_UPLOAD"
+          fi
+          rm -f "$BUNDLE_DIR/index.android.bundle.packager.map"
+
+          SENTRY_CLI="./node_modules/.bin/sentry-cli"
+          [ -x "$SENTRY_CLI" ] || SENTRY_CLI="bunx @sentry/cli"
+          # See android.yml OTA step for the `--ext bundle` rationale.
+          $SENTRY_CLI sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" \
+            --ext bundle --ext map "$BUNDLE_DIR"
+          $SENTRY_CLI sourcemaps upload \
+            --release "$EXPO_PUBLIC_BUILD_HASH" \
+            --dist android \
+            --ext bundle --ext map \
+            --strip-prefix "$GITHUB_WORKSPACE" \
+            "$BUNDLE_DIR"
+          UPLOAD_RC=$?
+          if [ "$UPLOAD_RC" -eq 0 ]; then
+            {
+              echo "## Sentry sourcemap upload (Android)"
+              echo ""
+              echo "Uploaded JS bundle + composed sourcemap to Sentry (release=\`$EXPO_PUBLIC_BUILD_HASH\`, dist=\`android\`)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=Sentry sourcemap upload (Android)::sentry-cli exited $UPLOAD_RC — release continuing."
+            {
+              echo "## Sentry sourcemap upload (Android)"
+              echo ""
+              echo "_Failed (sentry-cli exit $UPLOAD_RC)._"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 0
 
       - name: Upload AAB artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0

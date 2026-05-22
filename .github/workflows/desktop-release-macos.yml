@@ -17,8 +17,35 @@ env:
   GO_VERSION: '1.22'
 
 jobs:
+  preflight:
+    # Release-blocking sanity checks that have no platform dependencies.
+    # Runs FIRST and gates every downstream job — see the matching
+    # `preflight` job in desktop-release-windows.yml for the
+    # narrative. Identical step set on purpose: a release is only ever
+    # promoted when both platforms' tagged builds succeed, so any drift
+    # in what we check between the two workflows would be a bug.
+    name: Preflight checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Replay desktop SQLite migrations against an empty DB
+        run: bun scripts/check-migrations.ts
+
+      - name: Install dependencies (for prisma migrate diff)
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Check desktop SQLite migrations match schema.local.prisma
+        run: bun run check:desktop-schema-drift
+
   build-web:
     name: Build Expo Web
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -39,7 +66,12 @@ jobs:
           restore-keys: bun-web-
 
       - name: Install dependencies
+        # See desktop-release-windows.yml for why GITHUB_TOKEN is required:
+        # `@vscode/ripgrep` postinstall hits api.github.com unauthenticated
+        # otherwise and gets 403'd on the shared-IP runner pool.
         run: bun install
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build workspace packages
         run: bun run build:packages
@@ -49,6 +81,16 @@ jobs:
         env:
           EXPO_PUBLIC_LOCAL_MODE: 'true'
           EXPO_PUBLIC_API_URL: 'http://localhost:8002'
+          # Pass the desktop Sentry DSN into the renderer build so the
+          # existing `@sentry/react-native` init in apps/mobile/app/_layout.tsx
+          # activates inside the Electron BrowserWindow. The renderer is a
+          # web build (`Platform.OS === 'web'`), so `_layout.tsx` reads
+          # `EXPO_PUBLIC_SENTRY_DSN_WEB`. Renderer events land in the
+          # `shogo-desktop` Sentry project (same as main-process events,
+          # separate from `shogo-ios` / `shogo-android` / `javascript-react`).
+          # Falls back to empty (Sentry self-disables) on forks / branches
+          # without the secret.
+          EXPO_PUBLIC_SENTRY_DSN_WEB: ${{ secrets.SHOGO_DESKTOP_SENTRY_DSN }}
 
       - name: Upload web build
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -58,7 +100,7 @@ jobs:
 
   build-desktop:
     name: Build Desktop (macOS ${{ matrix.arch }})
-    needs: build-web
+    needs: [preflight, build-web]
     strategy:
       fail-fast: false
       matrix:
@@ -219,6 +261,12 @@ jobs:
         # apps/desktop is npm-installed, not a bun workspace member.
         # See apps/desktop/scripts/bundle-main.mjs for details.
         run: npx tsc && npm run bundle:main
+        env:
+          # Baked into dist/main.js via `--define` in bundle-main.mjs
+          # so the packaged app reports main-process crashes without
+          # needing a runtime config file. Empty on forks / branches
+          # without the secret — Sentry self-disables in that case.
+          SHOGO_DESKTOP_SENTRY_DSN: ${{ secrets.SHOGO_DESKTOP_SENTRY_DSN }}
 
       # Desktop notarization (xcrun notarytool) requires a "Developer ID
       # Application" certificate, which is distinct from the "Apple

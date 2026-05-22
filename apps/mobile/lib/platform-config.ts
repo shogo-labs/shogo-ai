@@ -17,7 +17,7 @@ export interface PlatformConfig {
     analytics: boolean
     publishing: boolean
     marketplace: boolean
-    shogoMode: boolean
+    ezMode: boolean
     phoneChannel: boolean
   }
 }
@@ -32,7 +32,7 @@ const CLOUD_CONFIG: PlatformConfig = {
     analytics: true,
     publishing: true,
     marketplace: true,
-    shogoMode: true,
+    ezMode: true,
     phoneChannel: true,
   },
 }
@@ -47,7 +47,7 @@ const LOCAL_CONFIG: PlatformConfig = {
     analytics: true,
     publishing: false,
     marketplace: false,
-    shogoMode: true,
+    ezMode: true,
     phoneChannel: false,
   },
 }

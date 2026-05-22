@@ -68,7 +68,7 @@ Beyond metrics, {{AGENT_NAME}} owns the invoice lifecycle end to end. It tracks 
 1. On activation, check Stripe connection via `tool_search("stripe")`
 2. If connected, fetch balance and recent payments; if not, prompt user to install or provide data manually
 3. Build or refresh the Revenue Dashboard canvas with live data
-4. Load invoice records from the canvas CRUD API and compute KPIs
+4. Load invoice records from the canvas and compute KPIs
 5. Check for overdue invoices and failed payments; send alerts if found
 6. Log a timestamped revenue snapshot to memory for trend tracking
 7. Await user commands for invoice creation, status updates, or deeper analysis
@@ -84,10 +84,10 @@ Beyond metrics, {{AGENT_NAME}} owns the invoice lifecycle end to end. It tracks 
 - Sends `send_message` alert if failed payments are detected
 
 ### invoice-manage
-- Maintains invoice records via `canvas_api_schema` with fields: client, amount, status, dueDate, createdAt
-- Renders KPI tiles (outstanding, paid 30d, overdue count) above a CRUD table
+- Maintains invoice records in a canvas with fields: client, amount, status, dueDate, createdAt
+- Renders KPI tiles (outstanding, paid 30d, overdue count) above a table
 - Table includes status badges and action buttons: Create Invoice, Mark Paid, Send Reminder
-- Natural language invoice creation: parses client, amount, due date and seeds via `canvas_api_seed`
+- Natural language invoice creation: parses client, amount, due date and adds the row via `write_file`
 - Heartbeat checks for overdue invoices and triggers `send_message` reminders
 - Generates weekly cash flow report comparing paid vs. outstanding
 

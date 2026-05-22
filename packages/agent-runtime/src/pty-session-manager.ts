@@ -24,6 +24,7 @@
  */
 
 import { PtySession, type PtySpawnOptions } from './pty-session'
+import { ingestChunk as ingestDetectedUrlChunk, clearDetection as clearDetectedUrl } from './detected-urls'
 
 export interface ManagerOptions {
   workspaceDir: string
@@ -136,6 +137,15 @@ export class PtySessionManager {
     this.sessions.set(id, rec)
     // If the shell exits on its own (`exit` typed by the user), reap.
     session.onExit(() => this.reap(id, 'exited'))
+
+    // Passive URL-detection: tap every chunk and feed the dev-server
+    // regex set in `detected-urls.ts`. This is purely observational; we
+    // never block, transform, or buffer the data path for the WS handler
+    // — `onData` listeners run independently.
+    session.onData(({ bytes }) => {
+      try { ingestDetectedUrlChunk(id, bytes) } catch {}
+    })
+
     return rec
   }
 
@@ -207,6 +217,7 @@ export class PtySessionManager {
     if (!rec) return
     this.sessions.delete(id)
     try { rec.session.dispose() } catch {}
+    try { clearDetectedUrl(id) } catch {}
     for (const cb of this.reapListeners) {
       try { cb(id, reason) } catch {}
     }

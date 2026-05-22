@@ -612,3 +612,51 @@ describe('GET /api/chat-messages/:id/preceding-checkpoint — happy path', () =>
     expect(body.checkpoint?.id).toBe('cp-1')
   })
 })
+
+// =============================================================================
+// Defensive empty-id 400 branches
+//
+// Hono's router doesn't match empty path segments, so the `if (!id)` guard
+// in both handlers can't be reached through normal routing. The defensive
+// behaviour matters anyway because the route was written assuming any caller
+// could land on the handler (defense in depth — same shape as the auth
+// gate). We reach it by stubbing `c.req.param('id')` to '' via a one-off
+// middleware that wraps the request before the router sees it.
+// =============================================================================
+
+function createAppWithEmptyId(auth: AuthContext | null) {
+  const app = new Hono()
+  app.use('*', async (c, next) => {
+    if (auth) c.set('auth', auth)
+    const orig = c.req.param.bind(c.req)
+    ;(c.req as any).param = ((name?: string) => {
+      if (name === 'id') return ''
+      return orig(name as any)
+    })
+    await next()
+  })
+  app.route('/api/chat-messages', createChatMessageEditRoutes())
+  return app
+}
+
+describe('defensive empty-id 400 branches', () => {
+  test('POST /:id/truncate-from returns 400 bad_request when param id is empty', async () => {
+    const app = createAppWithEmptyId({ isAuthenticated: true, userId: 'u1' })
+    const res = await app.request('/api/chat-messages/X/truncate-from', {
+      method: 'POST',
+    })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: { code: string; message: string } }
+    expect(body.error.code).toBe('bad_request')
+    expect(body.error.message).toMatch(/Message id is required/i)
+  })
+
+  test('GET /:id/preceding-checkpoint returns 400 bad_request when param id is empty', async () => {
+    const app = createAppWithEmptyId({ isAuthenticated: true, userId: 'u1' })
+    const res = await app.request('/api/chat-messages/X/preceding-checkpoint')
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: { code: string; message: string } }
+    expect(body.error.code).toBe('bad_request')
+    expect(body.error.message).toMatch(/Message id is required/i)
+  })
+})

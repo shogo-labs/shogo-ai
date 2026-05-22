@@ -1,0 +1,183 @@
+{
+  "title": "Publish Funnel",
+  "description": "Step-by-step counts of the publish pipeline. Each panel queries the [Publish] log lines emitted by apps/api/src/routes/publish.ts (and /publish-related) so we can spot exactly where publishes are dying. Wire to the api service. Imported via SigNoz UI -> Dashboards -> Import JSON, or the SigNoz API (POST /api/v1/dashboards).",
+  "tags": ["publish", "platform"],
+  "layout": [
+    { "i": "build_started",     "x": 0,  "y": 0,  "w": 4, "h": 3 },
+    { "i": "build_completed",   "x": 4,  "y": 0,  "w": 4, "h": 3 },
+    { "i": "download_started",  "x": 8,  "y": 0,  "w": 4, "h": 3 },
+    { "i": "download_completed","x": 0,  "y": 3,  "w": 4, "h": 3 },
+    { "i": "s3_uploaded",       "x": 4,  "y": 3,  "w": 4, "h": 3 },
+    { "i": "service_created",   "x": 8,  "y": 3,  "w": 4, "h": 3 },
+    { "i": "domain_mapped",     "x": 0,  "y": 6,  "w": 4, "h": 3 },
+    { "i": "publish_failed",    "x": 4,  "y": 6,  "w": 4, "h": 3 },
+    { "i": "publish_status_db", "x": 0,  "y": 9,  "w": 12, "h": 5 }
+  ],
+  "widgets": [
+    {
+      "id": "build_started",
+      "title": "Build started",
+      "panelTypes": "value",
+      "query": {
+        "queryType": "builder",
+        "builder": {
+          "queryData": [{
+            "dataSource": "logs",
+            "queryName": "A",
+            "aggregateOperator": "count",
+            "filters": { "op": "AND", "items": [
+              { "key": { "key": "service.name" }, "op": "=", "value": "api" },
+              { "key": { "key": "body" }, "op": "contains", "value": "[Publish] Triggering build" }
+            ] }
+          }]
+        }
+      }
+    },
+    {
+      "id": "build_completed",
+      "title": "Build completed",
+      "panelTypes": "value",
+      "query": {
+        "queryType": "builder",
+        "builder": {
+          "queryData": [{
+            "dataSource": "logs",
+            "queryName": "A",
+            "aggregateOperator": "count",
+            "filters": { "op": "AND", "items": [
+              { "key": { "key": "service.name" }, "op": "=", "value": "api" },
+              { "key": { "key": "body" }, "op": "contains", "value": "[Publish] Build complete" }
+            ] }
+          }]
+        }
+      }
+    },
+    {
+      "id": "download_started",
+      "title": "Download started",
+      "panelTypes": "value",
+      "query": {
+        "queryType": "builder",
+        "builder": {
+          "queryData": [{
+            "dataSource": "logs",
+            "queryName": "A",
+            "aggregateOperator": "count",
+            "filters": { "op": "AND", "items": [
+              { "key": { "key": "service.name" }, "op": "=", "value": "api" },
+              { "key": { "key": "body" }, "op": "contains", "value": "[Publish] Downloading dist files" }
+            ] }
+          }]
+        }
+      }
+    },
+    {
+      "id": "download_completed",
+      "title": "Download completed",
+      "panelTypes": "value",
+      "query": {
+        "queryType": "builder",
+        "builder": {
+          "queryData": [{
+            "dataSource": "logs",
+            "queryName": "A",
+            "aggregateOperator": "count",
+            "filters": { "op": "AND", "items": [
+              { "key": { "key": "service.name" }, "op": "=", "value": "api" },
+              { "key": { "key": "body" }, "op": "contains", "value": "[Publish] Downloaded" }
+            ] }
+          }]
+        }
+      }
+    },
+    {
+      "id": "s3_uploaded",
+      "title": "S3 uploaded",
+      "panelTypes": "value",
+      "query": {
+        "queryType": "builder",
+        "builder": {
+          "queryData": [{
+            "dataSource": "logs",
+            "queryName": "A",
+            "aggregateOperator": "count",
+            "filters": { "op": "AND", "items": [
+              { "key": { "key": "service.name" }, "op": "=", "value": "api" },
+              { "key": { "key": "body" }, "op": "contains", "value": "[Publish] Uploaded" }
+            ] }
+          }]
+        }
+      }
+    },
+    {
+      "id": "service_created",
+      "title": "Published service created",
+      "panelTypes": "value",
+      "query": {
+        "queryType": "builder",
+        "builder": {
+          "queryData": [{
+            "dataSource": "logs",
+            "queryName": "A",
+            "aggregateOperator": "count",
+            "filters": { "op": "AND", "items": [
+              { "key": { "key": "service.name" }, "op": "=", "value": "api" },
+              { "key": { "key": "body" }, "op": "contains", "value": "[Publish] Published service created" }
+            ] }
+          }]
+        }
+      }
+    },
+    {
+      "id": "domain_mapped",
+      "title": "DomainMapping created",
+      "panelTypes": "value",
+      "query": {
+        "queryType": "builder",
+        "builder": {
+          "queryData": [{
+            "dataSource": "logs",
+            "queryName": "A",
+            "aggregateOperator": "count",
+            "filters": { "op": "AND", "items": [
+              { "key": { "key": "service.name" }, "op": "=", "value": "api" },
+              { "key": { "key": "body" }, "op": "contains", "value": "Creating published DomainMapping" }
+            ] }
+          }]
+        }
+      }
+    },
+    {
+      "id": "publish_failed",
+      "title": "Publish failed (any step)",
+      "panelTypes": "value",
+      "query": {
+        "queryType": "builder",
+        "builder": {
+          "queryData": [{
+            "dataSource": "logs",
+            "queryName": "A",
+            "aggregateOperator": "count",
+            "filters": { "op": "AND", "items": [
+              { "key": { "key": "service.name" }, "op": "=", "value": "api" },
+              { "key": { "key": "body" }, "op": "contains", "value": "[Publish]" },
+              { "key": { "key": "body" }, "op": "regex", "value": "(error|failed|timeout)" }
+            ] }
+          }]
+        }
+      }
+    },
+    {
+      "id": "publish_status_db",
+      "title": "Project.publishStatus distribution (last 24h)",
+      "panelTypes": "table",
+      "description": "Reads directly from Postgres via SigNoz's external metrics endpoint (or the platform-metrics collector). Compare 'failed' / 'building' / 'uploading' counts against 'live' to see funnel drop-offs without log-line approximation.",
+      "query": {
+        "queryType": "promql",
+        "promql": [{
+          "query": "sum by (status) (shogo_project_publish_status_count)"
+        }]
+      }
+    }
+  ]
+}

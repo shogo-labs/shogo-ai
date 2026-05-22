@@ -555,7 +555,6 @@ describe('installAgent', () => {
     const out = await svc.installAgent({ listingId: 'lst_1', userId: 'u', workspaceId: 'ws' })
     expect((projects.get(out.projectId) as any).settings).toMatchObject({
       activeMode: 'none',
-      canvasMode: 'code',
       canvasEnabled: false,
     })
   })

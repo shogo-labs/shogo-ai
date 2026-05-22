@@ -168,6 +168,61 @@ describe('RuntimeManager.waitForReady (private)', () => {
       /Vite process for runtime proj-test exited \(code=1\)/,
     )
   })
+
+  test(
+    'accepts TCP-listening as ready when HTTP HEAD keeps timing out',
+    async () => {
+      // Reproduces the Windows production stall where Vite was bound on
+      // 127.0.0.1 (`netstat ... LISTENING` returned a non-self PID) but
+      // every HEAD / probe was aborting at the 3s AbortController
+      // budget because Vite was mid `optimizeDeps` / first
+      // `transformIndexHtml`. The wait used to spin for the full 60s
+      // and surface as `Timeout waiting for runtime ... after 17
+      // attempts (httpAttempts=17, tcpListening=true, lastError=HTTP
+      // probe failed: AbortError(20)...)`. The fix: once the TCP
+      // listener has been up for ≥5s without HTTP returning, accept
+      // it as ready and let `doStart` move on so concurrent start()
+      // /chat callers don't queue behind a slow Vite first-request.
+      ;(rm as unknown as { isPortListening: (p: number) => Promise<boolean> }).isPortListening =
+        async () => true
+      globalThis.fetch = (async () => {
+        // Mimic Vite holding the connection until the per-attempt
+        // AbortController fires. We resolve to an error tagged the same
+        // way Bun's aborted fetch does so the diagnostic log path
+        // exercises identical branches to production.
+        const err = new Error('The operation was aborted.') as Error & { name: string; code?: number }
+        err.name = 'AbortError'
+        err.code = 20
+        throw err
+      }) as typeof fetch
+
+      const startedAt = Date.now()
+      await callWaitForReady(rm, 41234, 60_000)
+      const elapsed = Date.now() - startedAt
+      // Grace period is 5s; with 500ms loop sleeps each iteration is
+      // ~500ms (fetch rejects synchronously in this mock), so we should
+      // accept TCP-ready inside ~6s. 15s gives plenty of headroom for
+      // CI without masking a regression back to the 60s spin.
+      expect(elapsed).toBeGreaterThanOrEqual(5_000)
+      expect(elapsed).toBeLessThan(15_000)
+    },
+    20_000,
+  )
+
+  test('still times out cleanly when neither TCP nor HTTP ever come up', async () => {
+    // Confirms the TCP-grace fallback doesn't accidentally swallow the
+    // real "nothing is on this port" failure mode. If `isPortListening`
+    // never returns true, the wait must still surface a descriptive
+    // timeout with the captured `tcpListening=false` diagnostic.
+    ;(rm as unknown as { isPortListening: (p: number) => Promise<boolean> }).isPortListening =
+      async () => false
+    globalThis.fetch = (async () => {
+      throw new Error('ECONNREFUSED')
+    }) as typeof fetch
+    await expect(callWaitForReady(rm, 41234, 1_500)).rejects.toThrow(
+      /Timeout waiting for runtime proj-test to start on port 41234.*tcpListening=false/s,
+    )
+  })
 })
 
 function callWaitForAgentReady(

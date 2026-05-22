@@ -29,6 +29,7 @@ import * as k8s from '@kubernetes/client-node'
 import * as fs from 'fs'
 import { trace, SpanStatusCode, metrics } from '@opentelemetry/api'
 import * as databaseService from '../services/database.service'
+import { buildAiProxyUrl, buildToolsProxyUrl } from './cloud-urls'
 
 import { RUNTIME_CONFIG } from '@shogo/shared-runtime'
 
@@ -170,6 +171,13 @@ export interface GcStats {
   orphanedDomainMappingsDeleted: number
   lastGcRun: number | null
   lastNamespaceGcRun: number | null
+  /**
+   * Timestamp of the last "deferring publish-in-flight" log emission.
+   * Used to rate-limit those messages to once a minute since the GC
+   * cycle runs frequently and we'd otherwise drown the API logs while
+   * a multi-minute publish pipeline is in flight.
+   */
+  lastPublishLockLogMs?: number
 }
 
 export interface WarmPoolConfig {
@@ -275,7 +283,7 @@ export class WarmPoolController {
   private promotedPods: PromotedPodInfo[] = []
 
   /** Cumulative GC statistics for observability */
-  private gcStats: GcStats = { orphansDeleted: 0, idleEvictions: 0, namespaceServicesDeleted: 0, orphanedDomainMappingsDeleted: 0, lastGcRun: null, lastNamespaceGcRun: null }
+  private gcStats: GcStats = { orphansDeleted: 0, idleEvictions: 0, namespaceServicesDeleted: 0, orphanedDomainMappingsDeleted: 0, lastGcRun: null, lastNamespaceGcRun: null, lastPublishLockLogMs: 0 }
 
   private started = false
 
@@ -1508,6 +1516,11 @@ export class WarmPoolController {
         createdAt: number
         isUnschedulable: boolean
         isActive: boolean
+        // Unix-ms expiry of the publish-in-flight lock (`shogo.io/publish-in-flight`
+        // annotation). Set by apps/api/src/routes/publish.ts so the GC
+        // can defer deletion of a project ksvc whose publish pipeline
+        // is mid-flight. 0 means no lock / lock parsed as invalid.
+        publishInFlightUntil: number
       }[] = []
 
       for (const svc of allServices) {
@@ -1544,7 +1557,18 @@ export class WarmPoolController {
         const isUnschedulable = readyCondition?.reason === 'Unschedulable'
         const isActive = labels[ACTIVE_LABEL_KEY] === 'true'
 
-        candidateServices.push({ name, projectId, replicas, createdAt, isUnschedulable, isActive })
+        // Read the publish-in-flight expiry annotation (set by
+        // apps/api/src/routes/publish.ts). Treat any unparseable
+        // value as 0 (no lock).
+        const annotations = svc.metadata?.annotations || {}
+        const publishInFlightAnno = annotations['shogo.io/publish-in-flight']
+        const publishInFlightUntil = Number(publishInFlightAnno)
+        const publishInFlightUntilSafe = Number.isFinite(publishInFlightUntil) ? publishInFlightUntil : 0
+
+        candidateServices.push({
+          name, projectId, replicas, createdAt, isUnschedulable, isActive,
+          publishInFlightUntil: publishInFlightUntilSafe,
+        })
       }
 
       if (candidateServices.length === 0) return 0
@@ -1581,6 +1605,25 @@ export class WarmPoolController {
                          !(svc.projectId && activeProjectIds.has(svc.projectId))
         const isScaledToZero = svc.replicas === 0
         const isRecentlyCreated = svc.createdAt > 0 && (now - svc.createdAt) < NAMESPACE_GC_CREATION_GRACE_MS
+
+        // Defer ALL deletion branches while a publish is mid-flight on
+        // this ksvc. The 2026-05-20 b11c65dd incident: the publish HTTP
+        // request to /preview/restart hung for 4 min because the runtime
+        // pod was wedged; in the meantime Knative scaled to zero and
+        // this GC happily deleted the entire ksvc + DomainMapping,
+        // guaranteeing the publish would never reach steps 4-5. The
+        // 10-min annotation TTL means a forgotten lock self-heals.
+        if (svc.publishInFlightUntil > now) {
+          // Don't spam logs every cycle; only mention this once a minute.
+          const lastLog = this.gcStats.lastPublishLockLogMs ?? 0
+          if (now - lastLog > 60_000) {
+            console.log(
+              `[WarmPool GC:namespace] Deferring ${svc.name} (publish in flight until ${new Date(svc.publishInFlightUntil).toISOString()})`
+            )
+            this.gcStats.lastPublishLockLogMs = now
+          }
+          continue
+        }
 
         if (isOrphan && !isRecentlyCreated) {
           console.log(
@@ -2109,8 +2152,8 @@ export class WarmPoolController {
       process.env.API_URL ||
       process.env.SHOGO_API_URL ||
       `http://api.${systemNamespace}.svc.cluster.local`
-    env.push({ name: 'AI_PROXY_URL', value: `${apiUrl}/api/ai/v1` })
-    env.push({ name: 'TOOLS_PROXY_URL', value: `${apiUrl}/api/tools` })
+    env.push({ name: 'AI_PROXY_URL', value: buildAiProxyUrl(apiUrl) })
+    env.push({ name: 'TOOLS_PROXY_URL', value: buildToolsProxyUrl(apiUrl) })
 
     // Public API URL for browser-facing contexts (e.g. webchat widget embed snippets)
     if (process.env.SHOGO_PUBLIC_API_URL) {

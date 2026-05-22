@@ -145,33 +145,18 @@ function loadTemplateMeta(templateDir: string): TemplateMeta {
 
 /**
  * Load the project-level UI settings from the template's
- * `.shogo/config.json`. These fields drive the studio canvas:
- *
- *   - `activeMode`  — selects which top tab the studio opens to
- *                    ('canvas' / 'app' / 'none'). Defaults to 'canvas'.
- *   - `canvasMode`  — selects the renderer inside the canvas tab.
- *                    'code' loads the runtime's `dist/index.html` in an
- *                    iframe (used by every first-party template that
- *                    ships a pre-built bundle); 'json' renders the
- *                    surfaces UI from the agent's JSON state.
- *
- * If we omit `canvasMode` from the source project's `Project.settings`,
- * the studio falls back to 'json', which renders the empty surfaces
- * placeholder ("Connected" with no preview). This was the staging
- * incident where every newly installed marketplace template appeared
- * blank — the workspace had `dist/index.html` and the runtime was
- * serving it, but the studio never asked for it.
+ * `.shogo/config.json`. `activeMode` selects which top tab the studio
+ * opens to ('canvas' / 'none'). Defaults to 'canvas'.
  */
 function loadShogoProjectSettings(
   templateDir: string,
-): { activeMode?: string; canvasMode?: string } {
+): { activeMode?: string } {
   const path = join(templateDir, '.shogo', 'config.json')
   if (!existsSync(path)) return {}
   try {
     const raw = JSON.parse(readFileSync(path, 'utf-8'))
-    const out: { activeMode?: string; canvasMode?: string } = {}
+    const out: { activeMode?: string } = {}
     if (typeof raw.activeMode === 'string') out.activeMode = raw.activeMode
-    if (typeof raw.canvasMode === 'string') out.canvasMode = raw.canvasMode
     return out
   } catch {
     return {}
@@ -338,12 +323,11 @@ async function upsertTemplateListing(
   const listingSlug = templateId
   const workspaceDir = join(getWorkspacesRoot(), projectId)
 
-  // The studio reads `activeMode` + `canvasMode` from the project's
-  // settings to decide whether to render the canvas iframe (`code`)
-  // or the surfaces placeholder (`json`). The first-party templates
-  // declare these in `.shogo/config.json`; we lift them into the DB
-  // here so installs inherit them automatically (the install service
-  // copies `srcProject.settings` verbatim onto the fork).
+  // The studio reads `activeMode` from the project's settings to
+  // decide which top tab to open to. The first-party templates declare
+  // this in `.shogo/config.json`; we lift it into the DB here so
+  // installs inherit it automatically (the install service copies
+  // `srcProject.settings` verbatim onto the fork).
   const shogoSettings = loadShogoProjectSettings(templateDir)
   const desiredSettings = {
     techStackId: meta.techStack ?? 'react-app',
@@ -381,11 +365,7 @@ async function upsertTemplateListing(
     // Re-run path: existing source project from a prior migration that
     // ran before we lifted `.shogo/config.json` into the DB. Merge the
     // desired keys into whatever's already there, preserving any other
-    // settings a future migration adds. Without this, every existing
-    // staging/prod source project would be permanently stuck without
-    // `canvasMode`, and every fresh install of those templates would
-    // render the empty surfaces placeholder ("Connected" with no
-    // preview).
+    // settings a future migration adds.
     const merged = {
       ...((existingProject.settings as Record<string, unknown> | null) ?? {}),
       ...desiredSettings,
@@ -733,7 +713,7 @@ export async function runMigration(opts: RunMigrationOptions = {}): Promise<RunM
     `skippedSeedMarker=${backfill.skippedSeedMarker}`,
   )
 
-  log(`backfilling Project.settings (canvasMode/activeMode) on existing installs...`)
+  log(`backfilling Project.settings (activeMode) on existing installs...`)
   const settingsBackfill = await backfillInstallSettings(dryRun)
   log(
     `settings backfill: inspected=${settingsBackfill.inspected} ` +
@@ -753,17 +733,10 @@ interface SettingsBackfillStats {
 }
 
 /**
- * Walk every `MarketplaceInstall` row and copy missing UI-mode keys
- * (`canvasMode`, `activeMode`) from the listing's source project
- * settings down to the installed project's settings. Idempotent: rows
- * that already have both keys are left alone.
- *
- * Why this exists: the migration script's first run on staging/prod
- * created source projects without `canvasMode` (the value lived in
- * `.shogo/config.json`, not in the DB). Every install made before
- * we lifted that field into `Project.settings` rendered the empty
- * surfaces placeholder ("Connected" with no preview) instead of the
- * canvas iframe. This backfill repairs them in place.
+ * Walk every `MarketplaceInstall` row and copy the missing `activeMode`
+ * key from the listing's source project settings down to the installed
+ * project's settings. Idempotent: rows that already have it are left
+ * alone.
  */
 async function backfillInstallSettings(
   dryRun: boolean,
@@ -819,9 +792,8 @@ async function backfillInstallSettings(
       const projSettings =
         (project.settings as Record<string, unknown> | null) ?? {}
 
-      const needsCanvas = projSettings.canvasMode == null
       const needsActive = projSettings.activeMode == null
-      if (!needsCanvas && !needsActive) {
+      if (!needsActive) {
         stats.skippedComplete++
         continue
       }
@@ -852,9 +824,6 @@ async function backfillInstallSettings(
       }
 
       const patch: Record<string, unknown> = {}
-      if (needsCanvas && typeof srcSettings.canvasMode === 'string') {
-        patch.canvasMode = srcSettings.canvasMode
-      }
       if (needsActive && typeof srcSettings.activeMode === 'string') {
         patch.activeMode = srcSettings.activeMode
       }

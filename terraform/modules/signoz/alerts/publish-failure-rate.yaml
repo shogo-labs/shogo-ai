@@ -1,0 +1,71 @@
+# SigNoz alert: publish failure rate
+#
+# Apply via SigNoz UI ("Alert Rules" -> "New Alert Rule" -> Import) or
+# the SigNoz HTTP API (POST /api/v1/rules with this body wrapped in a
+# `data` field).
+#
+# Why: the b11c65dd publish silently failed for 4+ minutes before the
+# user manually retried. We had no signal in the dashboards. This rule
+# pages on-call within 5 minutes of any sustained publish failure rate
+# above 1/min.
+#
+# Tuning notes:
+# - "failed" is the new Project.publishStatus terminal state added in
+#   the Phase 1 commit; pre-Phase-1 logs use the literal "[Publish]"
+#   prefix so we match both forms.
+# - Threshold is per-minute, evaluated over a 5-minute window. A
+#   one-off retry isn't worth a page; sustained failure is.
+
+alert: PublishFailureRateHigh
+ruleType: threshold_rule
+condition:
+  compositeQuery:
+    queryType: builder
+    builderQueries:
+      A:
+        queryName: A
+        dataSource: logs
+        aggregateOperator: rate
+        aggregateAttribute:
+          key: "@timestamp"
+        timeAggregation: rate
+        spaceAggregation: sum
+        filters:
+          op: AND
+          items:
+            - key: { key: "service.name", type: "tag" }
+              op: "="
+              value: "api"
+            - key: { key: "body", type: "" }
+              op: "contains"
+              value: "[Publish]"
+            - key: { key: "body", type: "" }
+              op: "regex"
+              value: "(error|failed|timeout)"
+        expression: A
+        legend: failures
+        disabled: false
+  op: ">"
+  target: 1
+  matchType: "1" # at-least-once-during
+  selectedQuery: A
+evalWindow: "5m0s"
+frequency: "1m0s"
+labels:
+  severity: critical
+  team: platform
+  incident_class: publish
+annotations:
+  summary: "Publish failure rate above 1/min for 5+ minutes"
+  description: |
+    Publish failures are sustained at >1/min. Triage:
+
+    1. `kubectl logs -n shogo-production-system deployment/api -c api | grep '\\[Publish\\]'`
+    2. `SELECT id, "publishStatus", "publishError" FROM projects
+        WHERE "publishStatusAt" > NOW() - INTERVAL '15 minutes'
+          AND "publishStatus" = 'failed';`
+    3. Common codes: build_timeout (runtime pod wedged),
+       download_timeout (runtime pod still wedged), configure_failed
+       (Knative service / DomainMapping creation failed — check OCI quotas).
+
+    Runbook: docs/runbooks/deploy-prod.md ("If a publish hangs").

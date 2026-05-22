@@ -24,16 +24,18 @@ diff --git a/lib/module/StackRouter.js b/lib/module/StackRouter.js
 index c1459d5918190a85b641710aabdcea37934aeeca..624dcf779f6ce5282302258de2957c784da69c2d 100644
 --- a/lib/module/StackRouter.js
 +++ b/lib/module/StackRouter.js
-@@ -78,6 +78,14 @@ export function StackRouter(options) {
+@@ -78,6 +78,16 @@ export function StackRouter(options) {
        routeParamList
      }) {
        const state = partialState;
 +      // Workaround for react-navigation/react-navigation#13011: React 19
 +      // concurrent re-renders can call this with `partialState === undefined`
-+      // (after useNavigationBuilder marks nested route params as consumed).
-+      // Without this guard the next line crashes with
-+      // "Cannot read properties of undefined (reading 'stale' / 'routes')".
-+      if (!state) {
++      // (after useNavigationBuilder marks nested route params as consumed),
++      // and deep-link parsing can occasionally produce a partial state with
++      // a missing `routes` array. Without these guards the next line
++      // crashes with "Cannot read properties of undefined (reading 'stale'
++      // / 'routes' / 'filter')" — see Sentry JAVASCRIPT-REACT-Q.
++      if (!state || !Array.isArray(state.routes)) {
 +        return router.getInitialState({ routeNames, routeParamList });
 +      }
        if (state.stale === false) {
@@ -43,16 +45,18 @@ diff --git a/lib/module/TabRouter.js b/lib/module/TabRouter.js
 index f3b26a991b60cec9729cd4851aa40a8e2e998479..0afd1f6c3387298af36ea7307e01362608772f60 100644
 --- a/lib/module/TabRouter.js
 +++ b/lib/module/TabRouter.js
-@@ -119,6 +119,14 @@ export function TabRouter({
+@@ -119,6 +119,16 @@ export function TabRouter({
        routeParamList
      }) {
        const state = partialState;
 +      // Workaround for react-navigation/react-navigation#13011: React 19
 +      // concurrent re-renders can call this with `partialState === undefined`
-+      // (after useNavigationBuilder marks nested route params as consumed).
-+      // Without this guard the next line crashes with
-+      // "Cannot read properties of undefined (reading 'stale' / 'routes')".
-+      if (!state) {
++      // (after useNavigationBuilder marks nested route params as consumed),
++      // and deep-link parsing can occasionally produce a partial state with
++      // a missing `routes` array. Without these guards the next line
++      // crashes with "Cannot read properties of undefined (reading 'stale'
++      // / 'routes' / 'find')" — see Sentry JAVASCRIPT-REACT-Q.
++      if (!state || !Array.isArray(state.routes)) {
 +        return router.getInitialState({ routeNames, routeParamList });
 +      }
        if (state.stale === false) {

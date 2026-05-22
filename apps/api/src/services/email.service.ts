@@ -48,6 +48,18 @@ export function isEmailConfigured(): boolean {
   return service !== null && service.isConfigured()
 }
 
+/**
+ * @internal Test-only — reset the module-scope singleton so the init
+ * branch can be re-exercised. Lets unit tests cover both the configured
+ * and unconfigured paths in a single bun-test process without forcing a
+ * `?cb=` cache-bust module reload (which pollutes lcov with phantom
+ * line entries for TypeScript-stripped type annotations).
+ */
+export function __resetEmailServiceForTesting(): void {
+  emailService = null
+  initialized = false
+}
+
 // ============================================================================
 // Internal helper — all public functions delegate to this
 // ============================================================================

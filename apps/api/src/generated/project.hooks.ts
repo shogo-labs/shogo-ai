@@ -258,7 +258,6 @@ export const projectHooks: ProjectHooks = {
     if (!input.settings) {
       input.settings = JSON.stringify({
         activeMode: 'none',
-        canvasMode: 'code',
         canvasEnabled: false,
       })
     }

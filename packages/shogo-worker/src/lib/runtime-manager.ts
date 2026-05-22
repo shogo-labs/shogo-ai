@@ -34,6 +34,7 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { resolveRuntime, type ResolvedRuntime } from './runtime-resolver.ts';
@@ -54,12 +55,86 @@ const RUNTIME_IDLE_MS = 15 * 60 * 1000;
 const RESTART_BACKOFF_BASE_MS = 1_000;
 const RESTART_BACKOFF_MAX_MS = 60_000;
 
+/**
+ * Circuit breaker. After this many *consecutive* non-clean exits within
+ * {@link RESTART_FAILURE_WINDOW_MS}, the manager stops respawning and
+ * parks the slot in `'failed'`. Without this cap a project that the OS
+ * keeps OOM-killing (macOS jetsam SIGKILL is the canonical case) burns
+ * forever at ~1/minute, with every cycle re-spawning bun + vite +
+ * tsserver + pyright and (on posix) leaking the children of any
+ * incarnation the manager couldn't kill in its own process group.
+ *
+ * 8 across a 5-minute window means "we tried for at least
+ * (8 * BASE_BACKOFF capped at MAX) = ~7m of escalating backoff before
+ * we gave up", which is long enough to ride out a transient port-bind
+ * race or a one-shot dependency upgrade and short enough that an
+ * operator chasing runaway RSS on their laptop notices the loop
+ * stopping before the next memory-pressure cycle.
+ */
+const MAX_CONSECUTIVE_RESTARTS = 8;
+const RESTART_FAILURE_WINDOW_MS = 5 * 60 * 1000;
+/**
+ * If a runtime stays up at least this long after the /health-gated
+ * `'running'` transition, we treat it as "recovered" and reset the
+ * consecutive-failure counter. This is the contract that lets a
+ * project that crashed twice on cold start (e.g. waiting for the API
+ * port to release) but then ran healthily for ten minutes start over
+ * with a fresh budget the next time it hiccups.
+ */
+const STARTUP_GRACE_MS = 60_000;
+
 /** Health check poll interval while waiting for /health. */
 const HEALTH_POLL_MS = 500;
-/** Total timeout waiting for first /health success after spawn. */
-const HEALTH_BOOT_TIMEOUT_MS = 30_000;
+/**
+ * Absolute ceiling on how long we'll wait for a freshly-spawned
+ * agent-runtime to clear the boot gate (either a 200 /health response
+ * or the TCP-listening + stdout-progress fallback below). Was 30s
+ * before the Windows `--conditions=development` cold-boot
+ * investigation surfaced that Bun routinely takes 30-45s just to JIT
+ * the agent-runtime's TS dep graph (shared-runtime + generators +
+ * tools + hooks + gateway) on a cold workspace, leaving zero budget
+ * for /health to actually respond. 60s gives the slow path room
+ * without giving a truly-hung process a free pass — the progress
+ * detector below catches that case independently.
+ */
+const HEALTH_BOOT_TIMEOUT_MS = 60_000;
+/**
+ * If the child's TCP listener is up AND its stdout has emitted a line
+ * within this window, we accept it as ready even though /health
+ * hasn't returned yet. Models "is the process making forward
+ * progress?" — a Bun runtime mid `optimizeDeps` / LSP-spawn / hook
+ * registration is unresponsive to HTTP but still emits `[LSP-TS]`,
+ * `[preview-manager]`, `[AgentGateway]` etc. log lines as it walks
+ * its boot sequence, so stdout activity is a reliable liveness
+ * signal. A truly-hung child (event-loop wedged, zero log output)
+ * stays silent past this window and falls through to the normal
+ * /health timeout + SIGTERM + restart loop.
+ */
+const STDOUT_PROGRESS_WINDOW_MS = 10_000;
+/**
+ * Per-attempt TCP connect budget for the kernel-level readiness
+ * probe. Connect attempts only need a TCP SYN/SYN-ACK roundtrip on
+ * loopback — anything past ~50ms means the kernel doesn't have the
+ * listener bound yet (the agent-runtime hasn't reached the
+ * Bun.serve() default-export evaluation), so 500ms is comfortably
+ * above the noise floor without prolonging probe iterations.
+ */
+const TCP_CONNECT_TIMEOUT_MS = 500;
 
-export type RuntimeStatus = 'starting' | 'running' | 'restarting' | 'stopping' | 'stopped' | 'error';
+export type RuntimeStatus =
+  | 'starting'
+  | 'running'
+  | 'restarting'
+  | 'stopping'
+  | 'stopped'
+  | 'error'
+  /**
+   * Terminal state: the circuit breaker tripped. The slot stays in the
+   * `runtimes` map (so `status(projectId)` keeps reporting it) but no
+   * more spawns will happen until {@link WorkerRuntimeManager.resetFailure}
+   * is called or the slot is explicitly `stop()`'d.
+   */
+  | 'failed';
 
 export interface RuntimeStatusInfo {
   projectId: string;
@@ -215,9 +290,39 @@ interface InternalRuntime {
   apiServerPort: number;
   status: RuntimeStatus;
   proc: ChildProcess | null;
+  /**
+   * PID of the most recent spawn, retained after `proc` is nulled in
+   * {@link WorkerRuntimeManager.handleExit}. On posix, the runtime is
+   * spawned as a process group leader (`detached: true`), so this is
+   * also the PGID — `process.kill(-pid, ...)` cascades to vite, the
+   * preview-manager's inner API server, tsserver and pyright that the
+   * runtime spawned, which otherwise survive a SIGKILL of the parent
+   * (jetsam OOM) and accumulate as orphans until app restart.
+   */
+  pid: number | null;
   startedAt: number;
+  /**
+   * Wall-clock timestamp of the most recent stdout/stderr line emitted
+   * by `proc`. Read by {@link WorkerRuntimeManager.waitForHealth} as a
+   * "process is making forward progress" signal that lets a slow boot
+   * clear the readiness gate even when /health hasn't responded yet.
+   * See the {@link STDOUT_PROGRESS_WINDOW_MS} doc and the comment block
+   * inside `waitForHealth` for the full rationale (Windows
+   * `--conditions=development` cold-boot pattern where Bun
+   * JIT-compiles the entire TS dep graph on first request and the
+   * 30s HTTP /health budget vanishes before the first response).
+   */
+  lastStdoutAt: number;
   lastUsedAt: number;
   restarts: number;
+  /** Consecutive non-clean exits since the last healthy run. */
+  consecutiveFailures: number;
+  /** Timestamp (Date.now) of the most recent non-clean exit. Used to
+   *  detect "loop within the failure window" for the circuit breaker. */
+  lastFailureAt: number;
+  /** Timer that resets `consecutiveFailures` to 0 once a fresh run has
+   *  survived for {@link STARTUP_GRACE_MS}. */
+  graceTimer: ReturnType<typeof setTimeout> | null;
   restartTimer: ReturnType<typeof setTimeout> | null;
   idleTimer: ReturnType<typeof setTimeout> | null;
   lastError?: string;
@@ -468,6 +573,20 @@ export class WorkerRuntimeManager implements RuntimeResolver {
    */
   async ensureRunning(projectId: string, config: ProjectSpawnConfig): Promise<RuntimeStatusInfo> {
     if (this.stopped) throw new Error('WorkerRuntimeManager is stopped');
+
+    // Refuse circuit-broken slots BEFORE auto-pull so we don't churn
+    // the network/disk on a project we already know we won't spawn.
+    // Surfacing the parked-state message lets the caller (tunnel
+    // proxy, desktop UI) render an actionable error instead of the
+    // generic auto-pull / spawn failure.
+    const failedExisting = this.runtimes.get(projectId);
+    if (failedExisting?.status === 'failed') {
+      throw new Error(
+        `[WorkerRuntimeManager] cannot ensureRunning(${projectId}): ` +
+        `${failedExisting.lastError ?? 'runtime is in failed state'}. ` +
+        `Call resetFailure(${projectId}) or stop(${projectId}) before retrying.`,
+      );
+    }
 
     // Apply auto-pull before any runtime spawn so the runtime's PROJECT_DIR
     // points at a fully-cloned workspace. Idempotent: subsequent calls hit
@@ -761,12 +880,44 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     r.status = 'stopping';
     if (r.restartTimer) { clearTimeout(r.restartTimer); r.restartTimer = null; }
     if (r.idleTimer) { clearTimeout(r.idleTimer); r.idleTimer = null; }
+    if (r.graceTimer) { clearTimeout(r.graceTimer); r.graceTimer = null; }
     if (r.proc) {
+      // Send the requested signal to the whole process group first so
+      // children (vite, preview-manager's API server, LSPs) start their
+      // own graceful shutdown in parallel with the parent.
+      this.killProcessGroup(r, signal);
       try { r.proc.kill(signal); } catch { /* already gone */ }
       await this.waitForExit(r.proc, 5000);
+      // Belt-and-suspenders: if the grace window elapsed without a
+      // clean exit, `waitForExit` already SIGKILL'd the parent — chase
+      // the rest of the group too in case any child ignored SIGTERM.
+      this.killProcessGroup(r, 'SIGKILL');
     }
+    r.pid = null;
     this.releasePort(r.agentPort);
     this.runtimes.delete(projectId);
+  }
+
+  /**
+   * Re-arm a runtime that the circuit breaker parked in `'failed'`.
+   * Drops the slot from the map so the next `ensureRunning(projectId, …)`
+   * call performs a fresh `doStart()` with a zeroed failure budget.
+   *
+   * Intended for the desktop's "reopen project" flow and for operators
+   * who fixed whatever was crashing the runtime (e.g. freed memory,
+   * deleted a corrupted workspace file) and want to retry without
+   * tearing down the whole worker. No-op if the project isn't in
+   * `'failed'`.
+   */
+  resetFailure(projectId: string): boolean {
+    const r = this.runtimes.get(projectId);
+    if (!r || r.status !== 'failed') return false;
+    if (r.restartTimer) { clearTimeout(r.restartTimer); r.restartTimer = null; }
+    if (r.idleTimer) { clearTimeout(r.idleTimer); r.idleTimer = null; }
+    if (r.graceTimer) { clearTimeout(r.graceTimer); r.graceTimer = null; }
+    this.runtimes.delete(projectId);
+    this.log.log(`[WorkerRuntimeManager] resetFailure: ${projectId} cleared, next ensureRunning will respawn`);
+    return true;
   }
 
   async stopAll(signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
@@ -801,9 +952,14 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       apiServerPort: 0,
       status: 'starting',
       proc: null,
+      pid: null,
       startedAt: 0,
+      lastStdoutAt: 0,
       lastUsedAt: Date.now(),
       restarts: 0,
+      consecutiveFailures: 0,
+      lastFailureAt: 0,
+      graceTimer: null,
       restartTimer: null,
       idleTimer: null,
       spawnConfig: config,
@@ -833,16 +989,42 @@ export class WorkerRuntimeManager implements RuntimeResolver {
         `via ${command} ${args.join(' ')} (port=${slot.agentPort}, source=${resolved.source})`,
     );
 
+    // Spawn the runtime as its own process group leader (posix only —
+    // Windows has no equivalent and Node's child_process docs warn that
+    // `detached: true` there gives you a separate console window, not a
+    // PGID). Mirrors what apps/desktop/src/local-server.ts already does
+    // for the outer API server so a single kill at teardown reaches the
+    // bun child + every subprocess it spawned (vite, the inner
+    // preview-manager API server, tsserver, pyright). Without this,
+    // jetsam SIGKILL of the bun parent leaves all of those orphans
+    // alive — they keep their listening sockets, the next respawn
+    // races into EADDRINUSE, and RSS climbs forever (see the storm
+    // pattern in main.log lines 5258–7093 where preview-manager has to
+    // walk the API port and `Force-killed leaked process` 10 times in
+    // a row).
+    const useProcessGroup = process.platform !== 'win32';
     const proc = spawn(command, args, {
       cwd,
       env,
-      detached: false,
+      detached: useProcessGroup,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    if (useProcessGroup) {
+      // The detached child would otherwise keep the parent's event
+      // loop alive even after we've removed it from `runtimes` —
+      // matches the apps/desktop precedent at local-server.ts:412.
+      try { proc.unref(); } catch { /* unref is best-effort */ }
+    }
 
     slot.proc = proc;
+    slot.pid = proc.pid ?? null;
     slot.status = 'starting';
     slot.startedAt = Date.now();
+    // Seed the progress timestamp at spawn so a child that emits its
+    // first line within `STDOUT_PROGRESS_WINDOW_MS` is treated as
+    // "making progress since spawn" without the readiness check having
+    // to special-case the cold-start gap.
+    slot.lastStdoutAt = slot.startedAt;
 
     proc.on('error', (err) => {
       slot.lastError = err?.message ?? String(err);
@@ -854,32 +1036,89 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     });
 
     const prefix = `[runtime:${slot.projectId.slice(0, 8)}]`;
+    // Each output line bumps `lastStdoutAt` — used by waitForHealth as
+    // a forward-progress signal so a long-but-still-booting child
+    // (LSP spawn, optimizeDeps, hook registration) doesn't get
+    // SIGTERM'd mid-boot just because /health hasn't responded yet.
     proc.stdout?.on('data', (data) => {
+      slot.lastStdoutAt = Date.now();
       for (const line of data.toString().trimEnd().split('\n')) {
         if (line) this.log.log(`${prefix} ${line}`);
       }
     });
     proc.stderr?.on('data', (data) => {
+      slot.lastStdoutAt = Date.now();
       for (const line of data.toString().trimEnd().split('\n')) {
         if (line) this.log.error(`${prefix} ${line}`);
       }
     });
 
     try {
-      await this.waitForHealth(slot.agentPort, slot.proc, HEALTH_BOOT_TIMEOUT_MS);
+      await this.waitForHealth(slot, HEALTH_BOOT_TIMEOUT_MS);
       slot.status = 'running';
       slot.lastUsedAt = Date.now();
       this.armIdleTimer(slot);
+      this.armGraceTimer(slot);
       return slot;
     } catch (err: any) {
       slot.status = 'error';
       slot.lastError = err?.message ?? String(err);
-      try { proc.kill('SIGTERM'); } catch { /* nothing */ }
+      // The /health wait timed out (or the spawn itself failed). Tear
+      // down the whole process group rather than just the parent so we
+      // don't leave a half-booted preview-manager + vite running on
+      // the allocated ports.
+      this.killProcessGroup(slot, 'SIGTERM');
+      try { proc.kill('SIGTERM'); } catch { /* already gone */ }
       this.releasePort(slot.agentPort);
       slot.agentPort = 0;
       slot.apiServerPort = 0;
       throw err;
     }
+  }
+
+  /**
+   * Kill every process in `slot.pid`'s process group. Best-effort:
+   * if the group is already gone (everyone exited cleanly), or the
+   * platform doesn't support PGID kills (Windows), this is a no-op.
+   *
+   * Why we use the recorded PID and not `slot.proc.pid`: by the time
+   * {@link handleExit} runs, `proc` has already fired its `'exit'`
+   * event and we've nulled it. The kernel keeps the process group
+   * intact until the *last* member of the group exits, so the PGID
+   * we captured at spawn is still valid for reaping the orphans even
+   * after the group leader is gone.
+   */
+  private killProcessGroup(slot: InternalRuntime, signal: NodeJS.Signals): void {
+    if (process.platform === 'win32') return;
+    if (!slot.pid) return;
+    try {
+      process.kill(-slot.pid, signal);
+    } catch {
+      // ESRCH (no such process group) is the happy path here — it
+      // means every child exited with their parent and the kernel
+      // already reaped the group. EPERM is the only other plausible
+      // case; swallow it because the caller has no recourse anyway.
+    }
+  }
+
+  /**
+   * Arm a timer that resets `consecutiveFailures` once a fresh run has
+   * survived for {@link STARTUP_GRACE_MS}. Re-armed on every successful
+   * /health transition; cleared on any non-clean exit so a crash
+   * inside the grace window counts toward the circuit breaker.
+   */
+  private armGraceTimer(slot: InternalRuntime): void {
+    if (slot.graceTimer) {
+      clearTimeout(slot.graceTimer);
+      slot.graceTimer = null;
+    }
+    slot.graceTimer = setTimeout(() => {
+      slot.graceTimer = null;
+      if (slot.consecutiveFailures > 0) {
+        slot.consecutiveFailures = 0;
+      }
+    }, STARTUP_GRACE_MS);
+    try { slot.graceTimer.unref?.(); } catch { /* unref is best-effort */ }
   }
 
   private buildEnv(slot: InternalRuntime, runtimeBinPath: string): NodeJS.ProcessEnv {
@@ -956,9 +1195,16 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       `[WorkerRuntimeManager] runtime ${slot.projectId} exited (code=${code}, signal=${signal})`,
     );
     slot.proc = null;
+    if (slot.graceTimer) {
+      clearTimeout(slot.graceTimer);
+      slot.graceTimer = null;
+    }
 
     if (slot.status === 'stopping' || this.stopped) {
+      // We initiated the stop; the orphan reap was already done by
+      // stop()/stopAll(). Just clear bookkeeping.
       slot.status = 'stopped';
+      slot.pid = null;
       this.releasePort(slot.agentPort);
       slot.agentPort = 0;
       slot.apiServerPort = 0;
@@ -967,6 +1213,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
 
     if (exitedClean) {
       slot.status = 'stopped';
+      slot.pid = null;
       this.releasePort(slot.agentPort);
       slot.agentPort = 0;
       slot.apiServerPort = 0;
@@ -974,17 +1221,52 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       return;
     }
 
+    // Non-clean exit. Two failure shapes we care about:
+    //   1. Parent died but children (vite, preview-manager API server,
+    //      LSPs) are still alive in the same process group. Without
+    //      reaping, the next doStart() races into EADDRINUSE on the
+    //      same agent port and starts the storm.
+    //   2. Repeated jetsam SIGKILL under memory pressure. Each cycle
+    //      respawns the full child tree and leaks more RSS. The
+    //      circuit breaker below stops that loop.
+    this.killProcessGroup(slot, 'SIGKILL');
+    slot.pid = null;
+
+    const now = Date.now();
+    const withinWindow = now - slot.lastFailureAt <= RESTART_FAILURE_WINDOW_MS;
+    slot.consecutiveFailures = withinWindow ? slot.consecutiveFailures + 1 : 1;
+    slot.lastFailureAt = now;
     slot.restarts += 1;
     slot.lastError = `exited code=${code} signal=${signal}`;
+
+    if (slot.consecutiveFailures >= MAX_CONSECUTIVE_RESTARTS) {
+      slot.status = 'failed';
+      slot.lastError =
+        `Circuit breaker tripped: ${slot.consecutiveFailures} consecutive non-clean exits ` +
+        `within ${Math.round(RESTART_FAILURE_WINDOW_MS / 1000)}s (last: code=${code} signal=${signal}). ` +
+        `Most recent on macOS is jetsam OOM (signal=SIGKILL with code=null); ` +
+        `the previous incarnation's vite/tsserver/preview-manager children were reaped to ` +
+        `prevent further RSS growth. Stop, fix the workspace, and call resetFailure(projectId) ` +
+        `(or stop(projectId)) to allow another spawn attempt.`;
+      this.releasePort(slot.agentPort);
+      slot.agentPort = 0;
+      slot.apiServerPort = 0;
+      if (slot.restartTimer) { clearTimeout(slot.restartTimer); slot.restartTimer = null; }
+      if (slot.idleTimer) { clearTimeout(slot.idleTimer); slot.idleTimer = null; }
+      this.log.error(`[WorkerRuntimeManager] ${slot.lastError}`);
+      return;
+    }
+
     const delay = this.restartBackoffMs(slot.restarts);
     slot.status = 'restarting';
     this.log.warn(
       `[WorkerRuntimeManager] restarting ${slot.projectId} in ${Math.round(delay / 1000)}s ` +
-        `(restart #${slot.restarts})`,
+        `(restart #${slot.restarts}, consecutive failures ${slot.consecutiveFailures}/${MAX_CONSECUTIVE_RESTARTS})`,
     );
     if (slot.restartTimer) clearTimeout(slot.restartTimer);
     slot.restartTimer = setTimeout(() => {
       slot.restartTimer = null;
+      if (slot.status === 'failed' || this.stopped) return;
       slot.startPromise = this.doStart(slot).then((r) => {
         slot.startPromise = null;
         return r;
@@ -994,6 +1276,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
         return slot;
       });
     }, delay);
+    try { slot.restartTimer.unref?.(); } catch { /* unref is best-effort */ }
   }
 
   private restartBackoffMs(restarts: number): number {
@@ -1063,18 +1346,101 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     }
   }
 
-  private async waitForHealth(
-    port: number,
-    proc: ChildProcess,
-    timeoutMs: number,
-  ): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
+  /**
+   * Kernel-level TCP-accept probe. Resolves `true` if a TCP connection
+   * to `127.0.0.1:port` succeeds within {@link TCP_CONNECT_TIMEOUT_MS},
+   * `false` for any failure mode (refused, timed out, host unreachable).
+   *
+   * This is intentionally distinct from {@link isPortListening} (which
+   * fires an HTTP HEAD): we want to know whether `Bun.serve()` has
+   * bound the socket, NOT whether its request handler is responding.
+   * Once the kernel has the listener, the agent-runtime's
+   * `export default { port, fetch }` has been evaluated — which is
+   * sufficient evidence to clear the boot gate even if the event loop
+   * is still busy JIT-compiling the rest of the TS dep graph. Without
+   * this distinction every `--conditions=development` cold boot on
+   * Windows hits the HEALTH_BOOT_TIMEOUT_MS ceiling because /health
+   * is the very last thing the saturated event loop gets to.
+   */
+  private tcpProbe(port: number): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        try {
+          socket.destroy();
+        } catch {
+          /* socket may already be torn down */
+        }
+        resolve(ok);
+      };
+      const socket = createConnection({ host: '127.0.0.1', port });
+      socket.setTimeout(TCP_CONNECT_TIMEOUT_MS);
+      socket.once('connect', () => finish(true));
+      socket.once('error', () => finish(false));
+      socket.once('timeout', () => finish(false));
+    });
+  }
+
+  /**
+   * Wait for a freshly-spawned agent-runtime to clear the boot gate.
+   *
+   * Three independent readiness signals, in priority order:
+   *
+   *   1. **HTTP /health returns 2xx.** Happy path — the runtime is
+   *      fully booted and its event loop is responsive. We return
+   *      immediately and the caller transitions the slot to
+   *      `'running'`.
+   *
+   *   2. **TCP listener bound + recent stdout activity.** The kernel
+   *      has the port (so `Bun.serve()` evaluated its default export)
+   *      AND the child has printed a log line in the last
+   *      {@link STDOUT_PROGRESS_WINDOW_MS}. The process is alive,
+   *      bound, and making forward progress — just slow because Bun
+   *      is JIT-compiling the rest of the TS dep graph (the
+   *      `--conditions=development` cold-boot pattern) and /health
+   *      hasn't gotten a turn on the event loop yet. Accepting this
+   *      as ready unblocks the AgentProxy retry storm that would
+   *      otherwise compound the saturation. Once the child starts
+   *      handling requests for real, /health will respond and the
+   *      AgentProxy retries will succeed independently of this gate.
+   *
+   *   3. **Hard timeout at `timeoutMs`.** Neither HTTP nor the
+   *      TCP-plus-progress fallback has cleared. Throw the
+   *      descriptive "Timeout waiting for agent-runtime /health" so
+   *      the restart-with-backoff loop in `handleExit()` SIGTERMs the
+   *      child and respawns.
+   *
+   * Process-death short-circuit applies throughout: if the child exits
+   * mid-wait (e.g. spawn-time port conflict, missing native binding),
+   * we throw immediately with the exit code/signal rather than spinning
+   * for the full `timeoutMs`.
+   */
+  private async waitForHealth(slot: InternalRuntime, timeoutMs: number): Promise<void> {
+    const port = slot.agentPort;
+    const proc = slot.proc;
+    if (!proc) {
+      throw new Error(`waitForHealth: slot ${slot.projectId} has no spawned process`);
+    }
+    const startedAt = Date.now();
+    const deadline = startedAt + timeoutMs;
+    let lastError: string | null = null;
+    let lastTcpListening = false;
+    let httpAttempts = 0;
+    let tcpAttempts = 0;
+    let iteration = 0;
+
     while (Date.now() < deadline) {
+      iteration++;
       if (proc.exitCode !== null || proc.signalCode != null || proc.killed) {
         throw new Error(
           `agent-runtime exited (code=${proc.exitCode}, signal=${proc.signalCode}) before becoming healthy on port ${port}`,
         );
       }
+
+      // Signal 1: HTTP /health (happy path).
+      httpAttempts++;
       const controller = new AbortController();
       const t = setTimeout(() => controller.abort(), 1500);
       try {
@@ -1083,13 +1449,56 @@ export class WorkerRuntimeManager implements RuntimeResolver {
           signal: controller.signal,
         });
         clearTimeout(t);
-        if (resp.ok) return;
-      } catch {
+        if (resp.ok) {
+          this.log.log(
+            `[WorkerRuntimeManager] /health ready for ${slot.projectId} on port ${port} ` +
+              `(HTTP ${resp.status} after ${Date.now() - startedAt}ms, ${iteration} iter, ${httpAttempts} http)`,
+          );
+          return;
+        }
+        // Non-2xx is recorded but doesn't short-circuit — the runtime
+        // may briefly serve 503 while initializing post-bind, and the
+        // TCP-progress fallback below covers that window too.
+        lastError = `HTTP /health returned ${resp.status}`;
+      } catch (err: any) {
         clearTimeout(t);
+        const name = err?.name ?? 'Error';
+        const code = err?.code ?? err?.cause?.code;
+        lastError = `HTTP /health failed: ${name}${code ? `(${code})` : ''}: ${err?.message ?? err}`;
       }
+
+      // Signal 2: TCP listener bound + recent stdout activity.
+      tcpAttempts++;
+      lastTcpListening = await this.tcpProbe(port);
+      if (lastTcpListening) {
+        const sinceStdoutMs = Date.now() - slot.lastStdoutAt;
+        if (sinceStdoutMs < STDOUT_PROGRESS_WINDOW_MS) {
+          this.log.log(
+            `[WorkerRuntimeManager] TCP-listening + stdout-active for ${slot.projectId} on ` +
+              `port ${port} (last stdout ${sinceStdoutMs}ms ago, ` +
+              `${Date.now() - startedAt}ms since spawn, ${httpAttempts} http, ${tcpAttempts} tcp). ` +
+              `Accepting as ready — /health still warming up but the child is bound and making progress.`,
+          );
+          return;
+        }
+        lastError =
+          `TCP listening but stdout silent for ${sinceStdoutMs}ms ` +
+          `(> ${STDOUT_PROGRESS_WINDOW_MS}ms window); last http: ${lastError ?? 'n/a'}`;
+      }
+
       await new Promise((r) => setTimeout(r, HEALTH_POLL_MS));
     }
-    throw new Error(`Timeout waiting for agent-runtime /health on port ${port}`);
+
+    if (proc.exitCode !== null || proc.signalCode != null || proc.killed) {
+      throw new Error(
+        `agent-runtime exited (code=${proc.exitCode}, signal=${proc.signalCode}) before becoming healthy on port ${port}`,
+      );
+    }
+    throw new Error(
+      `Timeout waiting for agent-runtime /health on port ${port} ` +
+        `after ${iteration} iter (httpAttempts=${httpAttempts}, tcpAttempts=${tcpAttempts}, ` +
+        `tcpListening=${lastTcpListening}, lastError=${lastError ?? 'n/a'})`,
+    );
   }
 
   private async waitForExit(proc: ChildProcess, timeoutMs: number): Promise<void> {

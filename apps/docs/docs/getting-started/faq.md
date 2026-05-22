@@ -56,7 +56,7 @@ Yes, you can attach screenshots or reference images to help the AI understand wh
 
 ### What is the canvas?
 
-The canvas is a visual dashboard that your agent builds to display information. It can show metrics, charts, tables, status indicators, and more. The canvas is not an interactive application — it displays summaries and dashboards.
+The canvas is a visual surface that your agent builds to display information. It can show metrics, charts, tables, status indicators, forms, and more. It's primarily a reporting surface the agent updates on each heartbeat, and it can include interactive controls (buttons, inputs) when the agent decides they're useful.
 
 ## Tools and integrations
 
