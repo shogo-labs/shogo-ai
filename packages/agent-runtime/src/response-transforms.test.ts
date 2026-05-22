@@ -438,3 +438,73 @@ describe('smartTruncateJson', () => {
     expect(parsed.response.data.events.length).toBeLessThan(100)
   })
 })
+
+import { getTransformRegistry, resetTransformRegistry } from './response-transforms'
+
+describe('registerDefaults', () => {
+  test('registers new transforms from defaults list', () => {
+    const reg = new TransformRegistry()
+    reg.registerDefaults([
+      { toolSlug: 'gh-issues', description: 'github', transformFn: '(d) => d', createdAt: 0 },
+    ])
+    expect(reg.has('gh-issues')).toBe(true)
+    expect(reg.get('gh-issues')?.description).toBe('github')
+  })
+
+  test('skips toolSlug already registered (user override wins)', () => {
+    const reg = new TransformRegistry()
+    reg.register('gh-issues', '(d) => d', 'user override')
+    reg.registerDefaults([
+      { toolSlug: 'gh-issues', description: 'should not win', transformFn: '(d) => d', createdAt: 0 },
+    ])
+    expect(reg.get('gh-issues')?.description).toBe('user override')
+  })
+
+  test('warns and continues when a default has a banned token', () => {
+    const reg = new TransformRegistry()
+    const warns: string[] = []
+    const origWarn = console.warn
+    console.warn = (...a: any[]) => warns.push(a.join(' '))
+    try {
+      reg.registerDefaults([
+        { toolSlug: 'bad', description: 'evil', transformFn: '(d) => process.exit(0)', createdAt: 0 },
+        { toolSlug: 'good', description: 'ok', transformFn: '(d) => d', createdAt: 0 },
+      ])
+      expect(warns.some(w => w.includes('Failed to register default'))).toBe(true)
+      expect(reg.has('bad')).toBe(false)
+      expect(reg.has('good')).toBe(true)
+    } finally { console.warn = origWarn }
+  })
+})
+
+describe('getTransformRegistry singleton', () => {
+  afterEach(() => resetTransformRegistry())
+
+  test('returns a TransformRegistry instance', () => {
+    expect(getTransformRegistry()).toBeInstanceOf(TransformRegistry)
+  })
+
+  test('returns the same instance on repeated calls', () => {
+    expect(getTransformRegistry()).toBe(getTransformRegistry())
+  })
+
+  test('resetTransformRegistry clears the singleton', () => {
+    const a = getTransformRegistry()
+    a.register('s', '(d) => d', 't')
+    resetTransformRegistry()
+    const b = getTransformRegistry()
+    expect(b).not.toBe(a)
+    expect(b.has('s')).toBe(false)
+  })
+})
+
+describe('LRUResponseCache re-insert', () => {
+  test('re-inserting same toolSlug updates value (covers filter arrow)', () => {
+    const reg = new TransformRegistry()
+    reg.cacheResponse('A', { v: 1 })
+    reg.cacheResponse('B', { v: 2 })
+    reg.cacheResponse('A', { v: 99 })
+    expect(reg.getCachedResponse('A')).toEqual({ v: 99 })
+    expect(reg.getCachedResponse('B')).toEqual({ v: 2 })
+  })
+})
