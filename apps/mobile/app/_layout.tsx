@@ -29,6 +29,26 @@ Sentry.init({
   release: process.env.EXPO_PUBLIC_BUILD_HASH || 'dev',
   tracesSampleRate: 0.2,
   enabled: !!process.env.EXPO_PUBLIC_SENTRY_DSN,
+  // Drop unhandled promise rejections whose "reason" was a non-Error value
+  // (e.g. `Promise.reject(new Event(...))` from third-party libs, or string
+  // rejections from Stripe / posthog). They show up in Sentry as a single
+  // empty `<unknown>` issue with no stack trace, no breadcrumbs that we
+  // can act on, and just inflate the issue count. If a real bug ever
+  // rejects with a non-Error, we'll still see breadcrumbs / network in
+  // adjacent issues.
+  beforeSend(event, hint) {
+    const reason = hint?.originalException as unknown
+    const isPlainEventReason =
+      typeof reason !== 'undefined' &&
+      reason !== null &&
+      !(reason instanceof Error) &&
+      typeof (reason as { stack?: unknown }).stack !== 'string'
+    const hasUsableStack = !!event.exception?.values?.some(
+      (v) => (v.stacktrace?.frames?.length ?? 0) > 0,
+    )
+    if (isPlainEventReason && !hasUsableStack) return null
+    return event
+  },
 })
 
 const PENDING_TEMPLATE_KEY = 'pending_template_id'

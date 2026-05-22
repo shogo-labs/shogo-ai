@@ -127,19 +127,27 @@ export interface UsageBreakdownData {
 // Formatters
 // =============================================================================
 
-export function formatNumber(n: number): string {
+// Backend responses occasionally omit a numeric field (e.g. partial aggregation
+// during a refresh or a worker that hadn't computed the value yet). Treat any
+// non-finite input as 0 instead of letting `.toFixed` / `.toLocaleString` blow
+// up the entire screen — see Sentry JAVASCRIPT-REACT-V (toFixed of undefined
+// inside UsageSummaryView).
+export function formatNumber(n: number | null | undefined): string {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '0'
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
   return n.toLocaleString()
 }
 
-export function formatDuration(ms: number): string {
+export function formatDuration(ms: number | null | undefined): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) return '—'
   if (ms >= 60_000) return `${(ms / 60_000).toFixed(1)}m`
   if (ms >= 1_000) return `${(ms / 1_000).toFixed(1)}s`
   return `${ms}ms`
 }
 
-export function formatDollarCost(cost: number): string {
+export function formatDollarCost(cost: number | null | undefined): string {
+  if (typeof cost !== 'number' || !Number.isFinite(cost)) return '$0.00'
   if (cost === 0) return '$0.00'
   if (cost < 0.01) return `$${cost.toFixed(4)}`
   return `$${cost.toFixed(2)}`
@@ -329,10 +337,10 @@ export function ChatAnalyticsSection({ data, loading }: { data: ChatAnalyticsDat
   }
 
   const stats = [
-    { label: 'Total Sessions', value: data.totalSessions.toLocaleString() },
-    { label: 'Total Messages', value: data.totalMessages.toLocaleString() },
-    { label: 'Tool Calls', value: data.totalToolCalls.toLocaleString() },
-    { label: 'Avg Msgs/Session', value: data.avgMessagesPerSession.toFixed(1) },
+    { label: 'Total Sessions', value: (data.totalSessions ?? 0).toLocaleString() },
+    { label: 'Total Messages', value: (data.totalMessages ?? 0).toLocaleString() },
+    { label: 'Tool Calls', value: (data.totalToolCalls ?? 0).toLocaleString() },
+    { label: 'Avg Msgs/Session', value: (data.avgMessagesPerSession ?? 0).toFixed(1) },
   ]
 
   return (
@@ -383,23 +391,23 @@ export function UsageSummaryView({ data, isLocalMode }: { data: UsageSummaryData
             <UserIcon size={10} className="text-muted-foreground" />
             <Text className="text-[10px] text-muted-foreground">Users</Text>
           </View>
-          <Text className="text-base font-bold text-foreground">{data.totals.uniqueUsers}</Text>
+          <Text className="text-base font-bold text-foreground">{data.totals?.uniqueUsers ?? 0}</Text>
         </View>
         <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
           <View className="flex-row items-center gap-1 mb-0.5">
             <Cpu size={10} className="text-muted-foreground" />
             <Text className="text-[10px] text-muted-foreground">Models</Text>
           </View>
-          <Text className="text-base font-bold text-foreground">{data.totals.uniqueModels}</Text>
+          <Text className="text-base font-bold text-foreground">{data.totals?.uniqueModels ?? 0}</Text>
         </View>
         <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
           <Text className="text-[10px] text-muted-foreground mb-0.5">Requests</Text>
-          <Text className="text-base font-bold text-foreground">{formatNumber(data.totals.totalRequests)}</Text>
+          <Text className="text-base font-bold text-foreground">{formatNumber(data.totals?.totalRequests)}</Text>
         </View>
         <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
           <Text className="text-[10px] text-muted-foreground mb-0.5">{isLocalMode ? 'Raw $' : 'Billed $'}</Text>
           <Text className="text-base font-bold text-foreground">
-            {formatDollarCost(isLocalMode ? data.totals.totalRawUsd : data.totals.totalBilledUsd)}
+            {formatDollarCost(isLocalMode ? data.totals?.totalRawUsd : data.totals?.totalBilledUsd)}
           </Text>
         </View>
       </View>
@@ -465,7 +473,7 @@ export function UsageSummaryView({ data, isLocalMode }: { data: UsageSummaryData
                 </Text>
               </View>
               <Text className="w-14 text-right text-[10px] font-mono text-foreground">
-                {entry.requestCount.toLocaleString()}
+                {(entry.requestCount ?? 0).toLocaleString()}
               </Text>
               <Text className="w-16 text-right text-[10px] font-mono text-foreground">
                 {formatNumber(entry.totalTokens)}
@@ -942,7 +950,7 @@ export function TemplateEngagementPanel({
             <View className="flex-1">
               <Text className="text-xs font-medium text-foreground" numberOfLines={1}>{t.templateId}</Text>
               <Text className="text-[10px] text-muted-foreground">
-                {t.projects} projects · {t.avgMessages.toFixed(1)} avg msgs · {t.totalToolCalls} tools
+                {t.projects} projects · {(t.avgMessages ?? 0).toFixed(1)} avg msgs · {t.totalToolCalls} tools
               </Text>
             </View>
             <View className="items-end">
