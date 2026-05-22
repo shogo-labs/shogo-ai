@@ -544,8 +544,11 @@
       "linePct": 94.2446,
       "funcPct": 70,
       "phase": 2,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-22T15:00:13.955737Z",
+      "beforeLinePct": 94.24,
+      "afterLinePct": 100.0
     },
     {
       "file": "packages/sdk/src/machines/index.ts",
