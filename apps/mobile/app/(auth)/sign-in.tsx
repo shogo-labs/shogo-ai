@@ -40,6 +40,20 @@ export default function SignInScreen() {
     }
     return '/'
   }
+  /**
+   * Build an absolute Better Auth `callbackURL` (origin + relative `next`)
+   * for OAuth/email-verification round-trips. Without threading `next` into
+   * the OAuth `callbackURL`, post-auth users always land at `/`, silently
+   * dropping the desktop cloud-login bridge's `state` + `userCode` params
+   * and stranding the desktop app on "Waiting for browser…".
+   */
+  const resolveCallbackUrl = (): string => {
+    const path = resolveNext()
+    if (typeof window !== 'undefined' && window.location?.origin) {
+      return `${window.location.origin}${path}`
+    }
+    return path
+  }
 
   const handleSignIn = async (email: string, password: string) => {
     try {
@@ -64,11 +78,21 @@ export default function SignInScreen() {
 
   const handleSignUp = async (name: string, email: string, password: string) => {
     try {
-      const result = await signUp(name, email, password)
+      // Forward `next` through Better Auth's email-verification callback so
+      // a user signing up via the desktop cloud-login bridge still lands
+      // back on /auth/cli-link?state=… after clicking the verification
+      // email. Without this, the post-verify redirect goes to /sign-in
+      // (without `next`) and the device-code state is never approved.
+      const nextPath = resolveNext()
+      const verifyCallback =
+        typeof window !== 'undefined' && window.location?.origin && nextPath !== '/'
+          ? `${window.location.origin}/sign-in?next=${encodeURIComponent(nextPath)}`
+          : undefined
+      const result = await signUp(name, email, password, verifyCallback ? { callbackURL: verifyCallback } : undefined)
       trackSignUp('email')
       sendAttribution('email')
       if (result.requiresVerification) {
-        router.replace({ pathname: '/(auth)/verify-email', params: { email } })
+        router.replace({ pathname: '/(auth)/verify-email', params: { email, next: nextPath !== '/' ? nextPath : undefined } as any })
       } else {
         router.replace(resolveNext() as any)
       }
@@ -77,7 +101,10 @@ export default function SignInScreen() {
 
   const handleGoogleSignIn = () => {
     try { sessionStorage.setItem('oauth_pending', 'google') } catch {}
-    signInWithGoogle()
+    // Pass an absolute callbackURL built from `?next=…` so post-OAuth
+    // users return to e.g. /auth/cli-link?state=… instead of `/`.
+    const callbackURL = resolveCallbackUrl()
+    signInWithGoogle(callbackURL ? { callbackURL } : undefined)
   }
 
   // App Store Guideline 4.8 — Login Services. Apple requires that any iOS

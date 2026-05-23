@@ -10,8 +10,17 @@ import { EmailVerificationScreen } from '@shogo/shared-ui/screens'
 
 export default function VerifyEmailScreen() {
   const router = useRouter()
-  const params = useLocalSearchParams<{ email: string }>()
+  const params = useLocalSearchParams<{ email: string; next?: string }>()
   const email = typeof params.email === 'string' ? params.email : ''
+  // Preserve the `next` redirect target across the verification round-trip
+  // so the desktop cloud-login bridge survives a sign-up + email-verify
+  // flow (otherwise the post-verify "Back to Sign In" button drops the
+  // user on a fresh /sign-in with no `next` and the device-code state
+  // never gets approved).
+  const nextPath =
+    typeof params.next === 'string' && params.next.startsWith('/') && !params.next.startsWith('//')
+      ? params.next
+      : undefined
   const { sendVerificationEmail } = useAuth()
   const { theme } = useTheme()
   const systemColorScheme = useColorScheme()
@@ -24,15 +33,25 @@ export default function VerifyEmailScreen() {
   const handleResend = useCallback(async () => {
     setIsResending(true)
     try {
-      await sendVerificationEmail(email)
+      // If we have a `next`, propagate it into the verification email's
+      // post-verify redirect so the loop closes cleanly.
+      const verifyCallback =
+        typeof window !== 'undefined' && window.location?.origin && nextPath
+          ? `${window.location.origin}/sign-in?next=${encodeURIComponent(nextPath)}`
+          : undefined
+      await sendVerificationEmail(email, verifyCallback)
     } finally {
       setIsResending(false)
     }
-  }, [email, sendVerificationEmail])
+  }, [email, nextPath, sendVerificationEmail])
 
   const handleBackToSignIn = useCallback(() => {
-    router.replace('/(auth)/sign-in')
-  }, [router])
+    if (nextPath) {
+      router.replace({ pathname: '/(auth)/sign-in', params: { next: nextPath } } as any)
+    } else {
+      router.replace('/(auth)/sign-in')
+    }
+  }, [router, nextPath])
 
   return (
     <SafeAreaView className="flex-1 bg-background">
