@@ -47,10 +47,20 @@ export function safeTokenEqual(a: string, b: string): boolean {
  * in hand (e.g. webhook signature verification that decodes base64
  * into bytes before comparing).
  */
+/**
+ * Test-only seam — wraps \`timingSafeEqual\` so the defensive catch
+ * inside \`safeBufferEqual\` can be exercised. \`timingSafeEqual\` never
+ * throws when lengths match under normal usage, making the catch
+ * unreachable without this indirection.
+ */
+export const _cryptoUtilSeamForTests: {
+  timingSafeEqual: (a: Buffer, b: Buffer) => boolean
+} = { timingSafeEqual }
+
 export function safeBufferEqual(a: Buffer, b: Buffer): boolean {
   if (a.length !== b.length) return false
   try {
-    return timingSafeEqual(a, b)
+    return _cryptoUtilSeamForTests.timingSafeEqual(a, b)
   } catch {
     return false
   }

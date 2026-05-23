@@ -8,6 +8,7 @@ import {
   parsePrismaSchema,
   mergeSchemas,
   injectCustomRoutes,
+  _skillMigrationSeamForTests,
 } from '../skill-server-to-root'
 
 const TMP_BASE = join(import.meta.dir, '..', '..', '..', '.test-tmp-skill-migration')
@@ -292,5 +293,129 @@ describe('migrateSkillServerToRoot', () => {
     expect(result.migrated).toBe(true)
     expect(result.databaseCopied).toBe(true)
     expect(existsSync(join(tmpDir, 'prisma', 'dev.db'))).toBe(true)
+  })
+
+  test('renames conflicting model and writes notes section (lines 443-446)', () => {
+    const skillDir = join(tmpDir, '.shogo', 'server')
+    mkdirSync(skillDir, { recursive: true })
+    mkdirSync(join(tmpDir, 'prisma'), { recursive: true })
+    writeFileSync(join(tmpDir, 'prisma', 'schema.prisma'), ROOT_TEMPLATE_SCHEMA, 'utf-8')
+    writeFileSync(join(tmpDir, 'server.tsx'), ROOT_SERVER_TSX, 'utf-8')
+    const skillSchema = 'datasource db { provider = "sqlite" }\n\nmodel User {\n  id    String @id @default(cuid())\n  phone String\n}\n'
+    writeFileSync(join(skillDir, 'schema.prisma'), skillSchema, 'utf-8')
+    const result = migrateSkillServerToRoot(tmpDir)
+    expect(result.migrated).toBe(true)
+    expect(result.renamedModels).toBeDefined()
+    expect(result.renamedModels!.length).toBeGreaterThan(0)
+    expect(result.renamedModels![0].from).toBe('User')
+    const notes = readFileSync(result.notesPath!, 'utf-8')
+    expect(notes).toContain('Renamed conflicting blocks')
+  })
+
+  test('custom routes with non-portable imports are commented out (line 451)', () => {
+    const skillDir = join(tmpDir, '.shogo', 'server')
+    mkdirSync(skillDir, { recursive: true })
+    mkdirSync(join(tmpDir, 'prisma'), { recursive: true })
+    writeFileSync(join(tmpDir, 'prisma', 'schema.prisma'), ROOT_TEMPLATE_SCHEMA, 'utf-8')
+    writeFileSync(join(tmpDir, 'server.tsx'), ROOT_SERVER_TSX, 'utf-8')
+    writeFileSync(join(skillDir, 'schema.prisma'), 'datasource db { provider = "sqlite" }\n', 'utf-8')
+    const sketchyRoutes = "import { Hono } from 'hono'\nimport { prisma } from '../db'\nconst app = new Hono()\napp.get('/data', (c) => c.text('x'))\nexport default app\n"
+    writeFileSync(join(skillDir, 'custom-routes.ts'), sketchyRoutes, 'utf-8')
+    const result = migrateSkillServerToRoot(tmpDir)
+    expect(result.migrated).toBe(true)
+    expect(result.customRoutesMigrated).toBe(true)
+    expect(result.customRoutesNeedReview).toBe(true)
+    const notes = readFileSync(result.notesPath!, 'utf-8')
+    expect(notes).toContain('commented out')
+  })
+
+  test('custom-routes.ts with no real handlers — nothing to port (line 456)', () => {
+    const skillDir = join(tmpDir, '.shogo', 'server')
+    mkdirSync(skillDir, { recursive: true })
+    mkdirSync(join(tmpDir, 'prisma'), { recursive: true })
+    writeFileSync(join(tmpDir, 'prisma', 'schema.prisma'), ROOT_TEMPLATE_SCHEMA, 'utf-8')
+    writeFileSync(join(tmpDir, 'server.tsx'), ROOT_SERVER_TSX, 'utf-8')
+    writeFileSync(join(skillDir, 'schema.prisma'), 'datasource db { provider = "sqlite" }\n', 'utf-8')
+    writeFileSync(join(skillDir, 'custom-routes.ts'), '// no routes here\n', 'utf-8')
+    const result = migrateSkillServerToRoot(tmpDir)
+    expect(result.migrated).toBe(true)
+    expect(result.customRoutesMigrated).toBe(false)
+    const notes = readFileSync(result.notesPath!, 'utf-8')
+    expect(notes).toContain('no real route handlers')
+  })
+
+  test('mergeSchemas throws when _TemplateX already exists in root (line 169)', () => {
+    // Trigger the throw at line 169: skill has model "User", root has both
+    // "User" (different body) AND "_TemplateUser" → rename would collide.
+    const rootSchema = [
+      'datasource db { provider = "sqlite" }',
+      '',
+      'model User {',
+      '  id    String @id',
+      '  email String',
+      '}',
+      '',
+      'model _TemplateUser {',
+      '  id    String @id',
+      '  email String',
+      '}',
+      '',
+    ].join("\n")
+    const skillSchema = [
+      'datasource db { provider = "sqlite" }',
+      '',
+      'model User {',
+      '  id    String @id',
+      '  phone String',
+      '}',
+      '',
+    ].join("\n")
+
+    expect(() => mergeSchemas(rootSchema, skillSchema)).toThrow(
+      /Cannot rename User -> _TemplateUser/,
+    )
+  })
+
+
+
+  test('restore-on-failure: cpSync also fails logs CRITICAL (lines 392-395)', () => {
+    const skillDir = join(tmpDir, '.shogo', 'server')
+    mkdirSync(skillDir, { recursive: true })
+    mkdirSync(join(tmpDir, 'prisma'), { recursive: true })
+    const rootSchema = 'datasource db { provider = "sqlite" }\nmodel User { id String @id }\nmodel _TemplateUser { id String @id }\n'
+    writeFileSync(join(tmpDir, 'prisma', 'schema.prisma'), rootSchema, 'utf-8')
+    const skillSchema = 'datasource db { provider = "sqlite" }\nmodel User { id String @id\n  phone String }\n'
+    writeFileSync(join(skillDir, 'schema.prisma'), skillSchema, 'utf-8')
+    const origCpSync = _skillMigrationSeamForTests.cpSync
+    _skillMigrationSeamForTests.cpSync = () => { throw new Error('cpSync restore failed') }
+    const errors: string[] = []
+    const origCE = console.error
+    console.error = (...a: any[]) => errors.push(a.join(' '))
+    try {
+      const result = migrateSkillServerToRoot(tmpDir)
+      expect(result.migrated).toBe(false)
+      expect(errors.some((e) => e.includes('CRITICAL'))).toBe(true)
+    } finally {
+      _skillMigrationSeamForTests.cpSync = origCpSync
+      console.error = origCE
+    }
+  })
+
+  test('safeIsFile catch (line 411): statSync seam throws on existing path', () => {
+    const skillDir = join(tmpDir, '.shogo', 'server')
+    mkdirSync(skillDir, { recursive: true })
+    mkdirSync(join(tmpDir, 'prisma'), { recursive: true })
+    writeFileSync(join(tmpDir, 'prisma', 'schema.prisma'), 'datasource db { provider = "sqlite" }\n', 'utf-8')
+    writeFileSync(join(skillDir, 'schema.prisma'), 'datasource db { provider = "sqlite" }\n', 'utf-8')
+    writeFileSync(join(skillDir, 'skill.db'), 'db', 'utf-8')
+    const origStat = _skillMigrationSeamForTests.statSync
+    _skillMigrationSeamForTests.statSync = () => { throw new Error('stat failed') }
+    try {
+      const result = migrateSkillServerToRoot(tmpDir)
+      expect(result.migrated).toBe(true)
+      expect(result.databaseCopied).toBe(false)
+    } finally {
+      _skillMigrationSeamForTests.statSync = origStat
+    }
   })
 })

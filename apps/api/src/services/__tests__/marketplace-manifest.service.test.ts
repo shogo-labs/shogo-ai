@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, rmSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -108,6 +108,25 @@ describe('computeWorkspaceManifest', () => {
     // un-walkable dir at the root short-circuits without exploding.
     workspacesDirOverride = '/does/not/exist'
     expect(mm.computeWorkspaceManifest('p1')).toEqual({})
+  })
+
+  it('swallows readdirSync errors mid-walk and continues (covers walkDir catch)', () => {
+    // Set up p1 with a readable file and an unreadable subdirectory.
+    // The top-level readdirSync succeeds, walkDir descends into `blocked/`,
+    // readdirSync of `blocked/` throws EACCES → catch { return } fires
+    // (line 134) and the surviving readable entries are still hashed.
+    makeProject('p1', { 'keep.txt': 'kept' })
+    const blocked = join(tmpRoot, 'p1', 'blocked')
+    mkdirSync(blocked, { recursive: true })
+    writeFileSync(join(blocked, 'hidden.txt'), 'hidden')
+    chmodSync(blocked, 0o000)
+    try {
+      const r = mm.computeWorkspaceManifest('p1')
+      expect(r['keep.txt']).toBe(sha256Hex('kept'))
+      expect(r['blocked/hidden.txt']).toBeUndefined()
+    } finally {
+      chmodSync(blocked, 0o755) // let afterEach rm -rf clean up
+    }
   })
 })
 
@@ -254,6 +273,25 @@ describe('snapshotProjectWorkspace', () => {
     const s = mm.snapshotProjectWorkspace('p1')
     expect(s['big.txt']).toBeUndefined()
     expect(s['small.txt']).toBe('kept')
+  })
+
+  it('swallows readdirSync errors mid-walk in snapshotWalk (covers catch line 291)', () => {
+    // Mirror of the walkDir test above for the snapshot variant: a readable
+    // text file at root + an unreadable subdirectory. snapshotWalk hits
+    // readdirSync(EACCES) for `locked/` → catch { return } at line 291 fires
+    // and the rest of the tree is still snapshotted.
+    makeProject('p1', { 'a.txt': 'visible' })
+    const locked = join(tmpRoot, 'p1', 'locked')
+    mkdirSync(locked, { recursive: true })
+    writeFileSync(join(locked, 'inner.txt'), 'hidden')
+    chmodSync(locked, 0o000)
+    try {
+      const s = mm.snapshotProjectWorkspace('p1')
+      expect(s['a.txt']).toBe('visible')
+      expect(s['locked/inner.txt']).toBeUndefined()
+    } finally {
+      chmodSync(locked, 0o755)
+    }
   })
 
   it('INCLUDES dist/ (snapshot exclusion list differs from manifest)', () => {

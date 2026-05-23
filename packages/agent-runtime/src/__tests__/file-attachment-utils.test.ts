@@ -1,14 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { describe, test, expect } from 'bun:test'
-import { parseFileAttachments, type FilePart } from '../file-attachment-utils'
+import { afterEach, describe, test, expect } from 'bun:test'
+import {
+  _fileAttachmentSeamForTests,
+  extractFilePartsAsText,
+  parseFileAttachments,
+  type FilePart,
+} from '../file-attachment-utils'
 
 function dataUrl(mediaType: string, content: Buffer | string): string {
   const buf = typeof content === 'string' ? Buffer.from(content, 'utf-8') : content
   return `data:${mediaType};base64,${buf.toString('base64')}`
 }
 
+const defaultDecode = _fileAttachmentSeamForTests.decodeBase64Utf8
+
 describe('parseFileAttachments', () => {
+  afterEach(() => {
+    _fileAttachmentSeamForTests.decodeBase64Utf8 = defaultDecode
+  })
+
   test('returns empty result when no file parts present', () => {
     const result = parseFileAttachments([])
     expect(result.images).toEqual([])
@@ -100,5 +111,54 @@ describe('parseFileAttachments', () => {
     const { textContext, images } = parseFileAttachments(parts)
     expect(textContext).toBe('')
     expect(images).toEqual([])
+  })
+})
+
+describe('parseFileAttachments — base64 decode failure (catch arm)', () => {
+  test('emits the "Could not decode" placeholder when the decode helper throws', () => {
+    // Buffer.from(..., 'base64').toString('utf-8') does not throw on invalid
+    // input under Bun/Node — it silently filters — so the catch in
+    // parseFileAttachments is otherwise unreachable. Swap the seam to force
+    // a throw and assert the user-facing fallback section.
+    _fileAttachmentSeamForTests.decodeBase64Utf8 = () => {
+      throw new Error('forced decode failure')
+    }
+    const parts: FilePart[] = [
+      {
+        type: 'file',
+        mediaType: 'text/plain',
+        url: 'data:text/plain;base64,aGVsbG8=', // "hello"
+        name: 'broken.txt',
+        savedPath: 'files/broken.txt',
+      },
+    ]
+    const { textContext, images } = parseFileAttachments(parts)
+    expect(images).toEqual([])
+    expect(textContext).toContain(
+      '[Attached File (broken.txt (text/plain))]: Could not decode file content.',
+    )
+    expect(textContext).toContain('Saved to workspace at `files/broken.txt`')
+    // Restored automatically by the afterEach above.
+    _fileAttachmentSeamForTests.decodeBase64Utf8 = defaultDecode
+  })
+})
+
+describe('extractFilePartsAsText (deprecated re-export)', () => {
+  test('delegates to parseFileAttachments and returns just the textContext', () => {
+    const parts: FilePart[] = [
+      {
+        type: 'file',
+        mediaType: 'text/plain',
+        url: 'data:text/plain;base64,' + Buffer.from('hi from deprecated', 'utf-8').toString('base64'),
+        name: 'note.txt',
+      },
+    ]
+    const text = extractFilePartsAsText(parts)
+    expect(typeof text).toBe('string')
+    expect(text).toContain('hi from deprecated')
+    expect(text).toContain('[Attached File (note.txt (text/plain))]:')
+    // Parity check: extractFilePartsAsText is documented as a thin wrapper
+    // around parseFileAttachments — confirm both produce identical strings.
+    expect(text).toBe(parseFileAttachments(parts).textContext)
   })
 })

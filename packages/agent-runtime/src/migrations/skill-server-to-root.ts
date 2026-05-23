@@ -31,6 +31,16 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, rmSync, statSync } from 'fs'
+
+/**
+ * Test-only seam — wraps cpSync and statSync in paths that are only
+ * reachable when the OS behaves unexpectedly (restore failing after a
+ * migration error; statSync throwing on a path that exists).
+ */
+export const _skillMigrationSeamForTests: {
+  cpSync: typeof cpSync
+  statSync: typeof statSync
+} = { cpSync, statSync }
 import { join } from 'path'
 
 const LOG_PREFIX = 'skill-server-migration'
@@ -386,7 +396,7 @@ export function migrateSkillServerToRoot(workspaceDir: string): MigrationResult 
     if (snapshotCreated) {
       try {
         if (existsSync(skillDir)) rmSync(skillDir, { recursive: true, force: true })
-        cpSync(snapshotPath, skillDir, { recursive: true })
+        _skillMigrationSeamForTests.cpSync(snapshotPath, skillDir, { recursive: true })
         rmSync(snapshotPath, { recursive: true, force: true })
         console.error(`[${LOG_PREFIX}] Workspace restored to pre-migration state`)
       } catch (restoreErr: any) {
@@ -407,7 +417,7 @@ export function migrateSkillServerToRoot(workspaceDir: string): MigrationResult 
 
 function safeIsFile(p: string): boolean {
   try {
-    return statSync(p).isFile()
+    return _skillMigrationSeamForTests.statSync(p).isFile()
   } catch {
     return false
   }

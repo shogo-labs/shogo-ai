@@ -20,7 +20,19 @@ const slugSuffix = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 6);
 // results, making module re-import a no-op in the same process). Same
 // pattern as signozEndpoint() in services/node-metrics.service.ts
 // (wave 2).
+/**
+ * Test-only seam — lets unit tests flip the SQLite vs Postgres branch
+ * without modifying process.env (env mutations can leak between tests).
+ * Production always reads process.env.SHOGO_LOCAL_MODE.
+ */
+export const _marketplaceSeamForTests: { isSqliteOverride: boolean | null } = {
+  isSqliteOverride: null,
+}
+
 function isSqlite(): boolean {
+  if (_marketplaceSeamForTests.isSqliteOverride !== null) {
+    return _marketplaceSeamForTests.isSqliteOverride
+  }
   return process.env.SHOGO_LOCAL_MODE === 'true';
 }
 

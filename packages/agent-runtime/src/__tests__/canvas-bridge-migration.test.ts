@@ -100,6 +100,45 @@ describe('migrateRuntimeTemplate', () => {
       log.mockRestore()
     }
   })
+
+  it('returns no-main-tsx when main.tsx exists as a directory (readFileSync EISDIR catch)', () => {
+    // existsSync(mainTsxPath) returns true for a directory, so the early
+    // existsSync guard at the top of migrateRuntimeTemplate is bypassed.
+    // The subsequent readFileSync(mainTsxPath, 'utf-8') then throws EISDIR,
+    // exercising the second \`} catch { return no-main-tsx }\` arm — the
+    // defensive race guard for "exists at probe time, gone/unreadable on read".
+    mkdirSync(MAIN(), { recursive: true })
+    const r = migrateRuntimeTemplate(dir)
+    expect(r.rewrote).toBe(false)
+    expect(r.reason).toBe('no-main-tsx')
+  })
+
+  it('warns and continues when the version marker write fails (writeFileSync EISDIR catch)', () => {
+    // Force a content rewrite, then make the marker writeFileSync throw by
+    // pre-creating MARK() as a DIRECTORY. dirname(markerPath) === dir, so
+    // mkdirSync(dirname, recursive) is a no-op; writeFileSync(markerPath)
+    // then throws EISDIR and the catch (line 406) logs a console.warn but
+    // does NOT roll back the main.tsx / boundary writes that already landed.
+    writeFileSync(MAIN(), '// drifted main.tsx')
+    mkdirSync(MARK(), { recursive: true })
+    const warn = spyOn(console, 'warn').mockImplementation(() => {})
+    const log  = spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      const r = migrateRuntimeTemplate(dir)
+      expect(r.rewrote).toBe(true)
+      // Reason is 'version-bump' (not 'content-drift') because readFileSync
+      // on MARK()-as-a-directory throws EISDIR → caught by the marker-read
+      // catch, leaving currentVersion=0 < RUNTIME_BRIDGE_VERSION.
+      expect(r.reason).toBe('version-bump')
+      expect(readFileSync(MAIN(), 'utf-8')).toBe(CANONICAL_MAIN_TSX)
+      expect(warn).toHaveBeenCalledTimes(1)
+      const [msg] = warn.mock.calls[0]!
+      expect(String(msg)).toContain('Failed to write marker')
+    } finally {
+      warn.mockRestore()
+      log.mockRestore()
+    }
+  })
 })
 
 describe('canonical strings', () => {

@@ -101,4 +101,27 @@ describe('BlockChunker', () => {
     expect(chunks[0]).toBe('Hello world this is a test.')
     chunker.dispose()
   })
+
+  test('hasFlushed and pending getters reflect chunker state (lines 72-78)', () => {
+    const chunks: string[] = []
+    const chunker = new BlockChunker((c) => chunks.push(c), { minChars: 5, maxChars: 100, idleMs: 10000 })
+
+    // Initially: nothing flushed, empty buffer.
+    expect(chunker.hasFlushed).toBe(false)
+    expect(chunker.pending).toBe('')
+
+    // After a partial push that stays under minChars: still no flush,
+    // buffer holds the queued text.
+    chunker.push('hi')
+    expect(chunker.hasFlushed).toBe(false)
+    expect(chunker.pending).toBe('hi')
+
+    // Force a flush — hasFlushed flips to true and buffer drains.
+    chunker.flush()
+    expect(chunker.hasFlushed).toBe(true)
+    expect(chunker.pending).toBe('')
+    expect(chunks).toEqual(['hi'])
+
+    chunker.dispose()
+  })
 })

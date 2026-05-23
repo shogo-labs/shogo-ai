@@ -14,11 +14,14 @@ import { loadDirTemplates } from './template-loader'
 let productionTemplatesCache: AgentTemplate[] | null = null
 
 function getTemplatesList(): AgentTemplate[] {
-  if (process.env.NODE_ENV === 'production') {
-    if (!productionTemplatesCache) productionTemplatesCache = loadDirTemplates()
-    return productionTemplatesCache
-  }
-  return loadDirTemplates()
+  if (process.env.NODE_ENV !== 'production') return loadDirTemplates()
+  return (productionTemplatesCache ??= loadDirTemplates())
+}
+
+// test-only: clear the module-private production cache so the next
+// getTemplatesList() call in production mode re-enters the assign branch.
+export function __resetProductionTemplatesCacheForTesting(): void {
+  productionTemplatesCache = null
 }
 
 export interface AgentTemplate {

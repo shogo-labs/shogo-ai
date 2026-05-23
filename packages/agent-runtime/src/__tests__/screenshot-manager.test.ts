@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { existsSync, mkdirSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
+  _screenshotMgrSeamForTests,
   runKeyFor,
   resolveRunDir,
   nextScreenshotPath,
@@ -158,5 +159,71 @@ describe('trimOldRuns', () => {
 
   test('returns 0 when the screenshots root does not exist', () => {
     expect(trimOldRuns(workspace, 20)).toBe(0)
+  })
+})
+
+describe('screenshot-manager — defensive catch arms', () => {
+  test('sweepLooseScreenshots returns 0 when workspaceDir readdirSync throws (line 101)', () => {
+    // Pass a workspace path that does not exist → readdirSync throws ENOENT
+    // → catch returns 0 (no sweep performed).
+    const ghost = join(tmpdir(), `ghost-ws-${Date.now()}-${Math.random()}`)
+    expect(sweepLooseScreenshots(ghost)).toBe(0)
+  })
+
+  test('sweepLooseScreenshots skips entries whose statSync throws (line 111)', () => {
+    // Create a broken symlink shaped like a screenshot; statSync follows
+    // the link target → ENOENT → catch → continue. moved stays 0.
+    const broken = join(workspace, 'screenshot-broken.png')
+    symlinkSync('/nonexistent/target.png', broken)
+    expect(sweepLooseScreenshots(workspace)).toBe(0)
+    // The broken symlink itself should still be present (skipped, not moved).
+    expect(existsSync(broken)).toBe(false) // broken symlink reads as non-existent
+  })
+
+  test('sweepLooseScreenshots falls back to Date.now() when statSync(src) throws inside collision branch (line 125)', () => {
+    // statSync(src) at line 123 only throws in narrow races without source
+    // help; the v1 cheatsheet permits the _xForTests seam. Seed a
+    // legitimate collision (legacy/<name> exists) and swap the seam to
+    // always throw → catch fires → dest gets the Date.now()-prefixed form
+    // instead of mtime-prefixed.
+    const root = join(workspace, '.shogo', 'screenshots')
+    mkdirSync(join(root, 'legacy'), { recursive: true })
+    writeFileSync(join(workspace, 'screenshot-y.png'), 'A')
+    writeFileSync(join(root, 'legacy', 'screenshot-y.png'), 'B')
+    const origStat = _screenshotMgrSeamForTests.statSync
+    _screenshotMgrSeamForTests.statSync = () => { throw new Error('forced stat failure') }
+    try {
+      expect(sweepLooseScreenshots(workspace)).toBe(1)
+      const out = readdirSync(join(root, 'legacy'))
+      expect(out.length).toBe(2)
+      // The new file is timestamp-prefixed (Date.now() fallback path).
+      expect(out.some((n) => /^\d+-screenshot-y\.png$/.test(n))).toBe(true)
+    } finally {
+      _screenshotMgrSeamForTests.statSync = origStat
+    }
+  })
+
+    test('trimOldRuns returns 0 when readdirSync(root) throws (line 153)', () => {
+    // existsSync(root)=true but readdirSync throws — chmod root to 000 so
+    // it exists but can't be enumerated.
+    const root = join(workspace, '.shogo', 'screenshots')
+    mkdirSync(root, { recursive: true })
+    chmodSync(root, 0o000)
+    try {
+      expect(trimOldRuns(workspace, 5)).toBe(0)
+    } finally {
+      chmodSync(root, 0o755)
+    }
+  })
+
+  test('trimOldRuns skips entries whose statSync throws (line 165)', () => {
+    // Pre-create a screenshots root with one valid run dir + one broken
+    // symlink. statSync follows the link → ENOENT → catch → continue.
+    // valid run is the only one collected; runs.length=1 ≤ maxRuns=5 →
+    // return 0 (no trimming) but the catch arm was exercised.
+    const root = join(workspace, '.shogo', 'screenshots')
+    mkdirSync(join(root, 'run-real'), { recursive: true })
+    symlinkSync('/nonexistent/run-target', join(root, 'run-broken'))
+    expect(trimOldRuns(workspace, 5)).toBe(0)
   })
 })

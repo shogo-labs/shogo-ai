@@ -9,6 +9,7 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test'
 
 let voiceFindManyImpl: (args: any) => Promise<any[]> = async () => []
+let lockAcquiredImpl: boolean = true
 let voiceUpdateImpl: (args: any) => Promise<any> = async () => ({})
 let consumeUsageImpl: (args: any) => Promise<any> = async () => ({ success: true })
 let resolvePlanIdImpl: (workspaceId: string) => Promise<string> = async () => 'free'
@@ -38,6 +39,16 @@ mock.module('../../services/billing.service', () => ({
 mock.module('../../lib/voice-cost', () => ({
   resolvePlanIdForWorkspace: (w: string) => resolvePlanIdImpl(w),
   calculateVoiceNumberCost: (planId: string, kind: string) => calcCostImpl(planId, kind),
+}))
+
+mock.module('../../lib/global-job-lock', () => ({
+  withGlobalJobLock: async (_name: string, body: () => Promise<any>) => {
+    if (lockAcquiredImpl) {
+      const result = await body()
+      return { acquired: true, result }
+    }
+    return { acquired: false, skipped: true, reason: 'lock_not_acquired' }
+  },
 }))
 
 const { runVoiceMonthlyRebill, startVoiceMonthlyRebillCron } = await import(
@@ -200,5 +211,21 @@ describe('startVoiceMonthlyRebillCron', () => {
       ;(globalThis as any).setTimeout = origSetTimeout
       ;(globalThis as any).setInterval = origSetInterval
     }
+  })
+})
+
+describe('runVoiceMonthlyRebill — lock skipped path (lines 139-147)', () => {
+  beforeEach(() => {
+    lockAcquiredImpl = false
+  })
+
+  it('returns lockSkipped:true when the advisory lock is held by another region', async () => {
+    const result = await runVoiceMonthlyRebill()
+    expect(result.lockSkipped).toBe(true)
+    expect(result.processed).toBe(0)
+    expect(result.debited).toBe(0)
+    expect(result.skipped).toBe(0)
+    expect(result.failed).toBe(0)
+    expect(result.period).toBeTruthy()
   })
 })

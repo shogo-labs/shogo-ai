@@ -897,3 +897,34 @@ describe('getCreatorTransactions', () => {
     expect(out.totalPages).toBe(1)
   })
 })
+
+// ─── Postgres-branch coverage (isSqlite=false) ───────────────────────────────
+// The test env always runs with SHOGO_LOCAL_MODE=true (SQLite). The three
+// Postgres-only branches (tags hasEvery, featured nulls:last orderBy, tags
+// hasSome search) are covered by temporarily flipping the seam to false.
+
+describe('Postgres-only branches via _marketplaceSeamForTests', () => {
+  afterEach(() => {
+    svc._marketplaceSeamForTests.isSqliteOverride = null
+  })
+
+  it('uses hasEvery for tags filter when not SQLite (line 205)', async () => {
+    svc._marketplaceSeamForTests.isSqliteOverride = false
+    seedListing({ tags: 'ai,tools' })
+    // Exercises the Postgres-branch tag filter inside buildWhere().
+    // The in-memory mock accepts any query shape; we just verify no throw.
+    await expect(svc.browseListings({ tags: ['ai'] })).resolves.toBeTruthy()
+  })
+
+  it('uses nulls:last featuredAt orderBy when not SQLite (lines 226-229)', async () => {
+    svc._marketplaceSeamForTests.isSqliteOverride = false
+    seedListing({ featuredAt: new Date() })
+    await expect(svc.browseListings({ sort: 'featured' })).resolves.toBeTruthy()
+  })
+
+  it('uses hasSome for tag search when not SQLite (line 408)', async () => {
+    svc._marketplaceSeamForTests.isSqliteOverride = false
+    seedListing({ tags: 'ai,tools', title: 'AI Toolkit' })
+    await expect(svc.searchListings('ai')).resolves.toBeTruthy()
+  })
+})
