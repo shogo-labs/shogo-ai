@@ -50,6 +50,24 @@ const creatorFollowTable = {
     follows.push(row)
     return row
   },
+  createMany: async (args: any) => {
+    let count = 0
+    for (const data of args.data ?? []) {
+      const existing = follows.find(
+        (f) =>
+          f.followerId === data.followerId && f.creatorId === data.creatorId,
+      )
+      if (existing) {
+        if (args.skipDuplicates) continue
+        const err: any = new Error('Unique constraint failed')
+        err.code = 'P2002'
+        throw err
+      }
+      follows.push({ id: nextId(), createdAt: new Date(), ...data })
+      count++
+    }
+    return { count }
+  },
   findUnique: async (args: any) => {
     if (args.where.followerId_creatorId) {
       const { followerId, creatorId } = args.where.followerId_creatorId

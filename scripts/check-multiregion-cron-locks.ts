@@ -308,6 +308,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'creator-gamification.service.ts:189 creates; non-atomic check-then-create. P2 follow-up.',
   },
   {
+    key: 'CreatorFollow.(creatorId,followerId)',
+    category: 'request_scoped',
+    reason:
+      'creator-follow.service.ts uses createMany({ skipDuplicates: true }) inside a $transaction (INSERT ... ON CONFLICT DO NOTHING) for in-region idempotency. Residual P2: cross-region double-tap during failover still produces two inserts with different PKs but the same (followerId, creatorId). Structural fix is a deterministic id of `${followerId}_${creatorId}` so collisions resolve via PK last_update_wins instead of poisoning the apply worker.',
+  },
+  {
     key: 'MarketplaceListing.projectId',
     category: 'request_scoped',
     reason: 'marketplace.service.ts:270 creates per-project; rare race.',
