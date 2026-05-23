@@ -38,6 +38,7 @@ import {
 import { usePostHogSafe } from '../../contexts/posthog'
 import { useTheme } from '../../contexts/theme'
 import { EVENTS, trackEvent } from '../../lib/analytics'
+import { formatModKey } from '../../lib/keyboard-shortcuts'
 import {
   Popover,
   PopoverBackdrop,
@@ -1338,7 +1339,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
             icon={Search}
             label="Search"
             collapsed={collapsed}
-            shortcut="⌘K"
+            shortcut={formatModKey('k')}
             onPress={handleSearchPress}
           />
           {localMode && (
