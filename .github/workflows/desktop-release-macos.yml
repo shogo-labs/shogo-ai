@@ -485,6 +485,22 @@ jobs:
           path: artifacts/
           pattern: desktop-darwin-*
 
+      - name: Add stable macOS download aliases
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/stable-downloads
+
+          for arch in arm64 x64; do
+            dmg_path=$(find artifacts -type f -name "Shogo-*-${arch}.dmg" -print -quit)
+            if [ -z "$dmg_path" ]; then
+              echo "::error::Could not find macOS ${arch} DMG artifact"
+              exit 1
+            fi
+
+            cp "$dmg_path" "artifacts/stable-downloads/Shogo-${arch}.dmg"
+            echo "Created stable download alias: Shogo-${arch}.dmg -> $dmg_path"
+          done
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
