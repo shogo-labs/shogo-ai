@@ -198,6 +198,18 @@ async function runGitHttpBackend(c: Context, opts: {
     stdio: ['pipe', 'pipe', 'pipe'],
   })
 
+  // Capture the child's exit code into a single eagerly-attached Promise.
+  // Late `.then()` consumers on an already-settled Promise still fire on a
+  // future microtask, which is what we need: for fast pushes the child can
+  // exit *before* downstream code (header-wait, post-receive hook) attaches
+  // its own `child.on('exit')` listener. Node's EventEmitter does NOT replay
+  // `exit`, so those late listeners silently never fire — that's the
+  // SHOG-664 bug (no ProjectCheckpoint row ever gets written; the IDE
+  // Checkpoints tab stays empty).
+  const exitPromise = new Promise<number | null>((resolveExit) => {
+    child.on('exit', (code) => resolveExit(code))
+  })
+
   // Body → stdin (only POST requests carry one).
   if (c.req.method !== 'GET') {
     const reader = c.req.raw.body?.getReader()
@@ -283,7 +295,7 @@ async function runGitHttpBackend(c: Context, opts: {
         resolve()
       }
     }, 5)
-    child.on('exit', (code) => {
+    exitPromise.then((code) => {
       if (!headersResolved) {
         clearInterval(interval)
         // exited before producing headers — surface 502 with stderr.
@@ -311,7 +323,11 @@ async function runGitHttpBackend(c: Context, opts: {
   // hook for receive-pack pushes. We do this outside the streaming
   // pipeline so it doesn't delay the response.
   if (isReceivePack) {
-    child.on('exit', (code) => {
+    // Use the eagerly-captured exitPromise (NOT a fresh `child.on('exit')`
+    // listener) so that fast pushes whose child has already exited still
+    // run the hook. This is SHOG-664: late EventEmitter listeners miss
+    // events that already fired, which silently dropped checkpoint rows.
+    exitPromise.then((code) => {
       if (code === 0) {
         runPostReceiveHook(projectId, workspacePath, userId).catch((err) => {
           console.warn(`[git-http] post-receive hook for ${projectId} failed:`, err?.message ?? err)
