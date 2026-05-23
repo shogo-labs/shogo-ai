@@ -36,8 +36,27 @@ export interface AuthContextValue {
   isAuthenticated: boolean
   error: string | null
   signIn: (email: string, password: string) => Promise<void>
-  signUp: (name: string, email: string, password: string) => Promise<SignUpResult>
-  signInWithGoogle: () => void
+  signUp: (
+    name: string,
+    email: string,
+    password: string,
+    /**
+     * Optional Better Auth `callbackURL` used after the verification email
+     * link is clicked. If a caller (e.g. the desktop cloud-login bridge)
+     * needs the user to land somewhere other than `/sign-in` post-verify,
+     * they can pass an absolute URL here. Defaults to `${origin}/sign-in`.
+     */
+    opts?: { callbackURL?: string },
+  ) => Promise<SignUpResult>
+  /**
+   * Initiate Google OAuth. Optional `callbackURL` overrides the default
+   * post-OAuth landing page (Better Auth bounces the user there once the
+   * provider redirects back with a successful auth code). Used by the
+   * desktop cloud-login bridge to send the user back to
+   * `/auth/cli-link?state=...&userCode=...` so they can finish approving
+   * the device-code flow.
+   */
+  signInWithGoogle: (opts?: { callbackURL?: string }) => void
   /**
    * Sign in with Apple using a native Apple identity token.
    *
@@ -107,14 +126,21 @@ export function AuthProvider({ authClient, children }: AuthProviderProps) {
     }
   }, [authClient])
 
-  const handleSignUp = useCallback(async (name: string, email: string, password: string): Promise<SignUpResult> => {
+  const handleSignUp = useCallback(async (
+    name: string,
+    email: string,
+    password: string,
+    opts?: { callbackURL?: string },
+  ): Promise<SignUpResult> => {
     setIsLoading(true)
     setError(null)
     try {
       const origin = getFrontendOrigin()
+      const callbackURL =
+        opts?.callbackURL ?? (origin ? `${origin}/sign-in` : '/sign-in')
       const { data, error: err } = await authClient.signUp.email({
         name, email, password,
-        callbackURL: origin ? `${origin}/sign-in` : '/sign-in',
+        callbackURL,
       })
       if (err) throw new Error(err.message || 'Sign up failed')
       const hasSession = !!(data as any)?.session || !!(data as any)?.token
@@ -131,10 +157,18 @@ export function AuthProvider({ authClient, children }: AuthProviderProps) {
     }
   }, [authClient])
 
-  const handleSignInWithGoogle = useCallback(async () => {
+  const handleSignInWithGoogle = useCallback(async (opts?: { callbackURL?: string }) => {
     setError(null)
     const origin = getFrontendOrigin()
-    const callbackURL = origin ? `${origin}/` : '/'
+    // Better Auth bounces the user to `callbackURL` after the OAuth
+    // round-trip. If a caller passed one (e.g. the desktop cloud-login
+    // bridge needs the user back at `/auth/cli-link?state=…`), respect
+    // it; otherwise default to the app root. Without this override,
+    // post-OAuth users always land on `/`, which silently strips any
+    // `?next=…` the bridge had threaded through `/sign-in?next=…` —
+    // breaking the desktop "Connect Shogo Cloud" flow because the
+    // device-code state never got approved.
+    const callbackURL = opts?.callbackURL ?? (origin ? `${origin}/` : '/')
     try {
       const result = await (authClient as any).signIn.social({
         provider: 'google',
