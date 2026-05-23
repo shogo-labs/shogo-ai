@@ -15,7 +15,9 @@
  *
  * Fixes in this test:
  *   - virtio-balloon-pci,free-page-reporting=on on QEMU
- *   - memory-backend-ram,discard-data=on
+ *   - memory-backend-ram,prealloc=off (note: `discard-data=on` was tried
+ *     here historically but is rejected by modern QEMU — only valid on
+ *     memory-backend-file/memfd. Reclamation is balloon-driven.)
  *   - guest sysctls (vfs_cache_pressure=500, dirty_ratio=5) + zram
  *   - pool VMs balloon-inflated to `poolMemoryMB` (1.5 GB) on boot,
  *     deflated to `memoryMB` (4 GB) on /pool/assign
