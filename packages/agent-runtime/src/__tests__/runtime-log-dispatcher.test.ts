@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import {
   __resetRuntimeLogDispatcherForTest,
+  clearRuntimeLogsBuffer,
   getRuntimeLogsSnapshot,
   recordBuildEntry,
   recordCanvasErrorEntry,
@@ -170,5 +171,31 @@ describe('subscribeRuntimeLogs', () => {
     unsub()
     recordConsoleEntry('b')
     expect(received).toEqual(['a'])
+  })
+})
+
+describe('clearRuntimeLogsBuffer', () => {
+  test('empties the ring without touching listeners or the seq counter', () => {
+    // Set up: 3 entries in the ring, one active subscriber.
+    const received: number[] = []
+    const unsub = subscribeRuntimeLogs((e) => received.push(e.seq))
+    recordConsoleEntry('a')
+    recordConsoleEntry('b')
+    recordConsoleEntry('c')
+    expect(getRuntimeLogsSnapshot()).toHaveLength(3)
+
+    // Act: clear only the ring.
+    clearRuntimeLogsBuffer()
+    expect(getRuntimeLogsSnapshot()).toHaveLength(0)
+
+    // Listeners survive — a subsequent record still reaches the subscriber,
+    // and seq stays monotonic (NOT reset to 1, which is what
+    // __resetRuntimeLogDispatcherForTest() would do).
+    const before = received.length
+    recordConsoleEntry('d')
+    expect(received.length).toBe(before + 1)
+    expect(received[received.length - 1]).toBe(4)
+
+    unsub()
   })
 })

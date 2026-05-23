@@ -464,6 +464,35 @@ describe('Routes Generator', () => {
 
       expect(code).toContain('export type { WorkspaceHooks } from "./workspace.hooks"')
     })
+
+    describe('toRoutePath pluralization (-es suffix branch)', () => {
+      // Covers the second pluralization arm in toRoutePath():
+      //   names ending in s, x, ch, or sh get '+es' instead of '+s'.
+      // All baseline mocks (Project, Workspace) hit the default '+s' arm, so
+      // line 54 — the `return kebab + 'es'` — was the only residual gap.
+      const idField = { name: 'id', kind: 'scalar' as const, type: 'String', isRequired: true, isList: false, isId: true, isUnique: true, hasDefaultValue: true }
+      const mk = (name: string): PrismaModel => ({ name, dbName: null, fields: [idField] })
+
+      it('appends "es" to a model name ending in "s"', () => {
+        const code = generateRoutesIndex([mk('Class')])
+        expect(code).toContain('app.route("/classes", createClassRoutes())')
+      })
+
+      it('appends "es" to a model name ending in "x"', () => {
+        const code = generateRoutesIndex([mk('Box')])
+        expect(code).toContain('app.route("/boxes", createBoxRoutes())')
+      })
+
+      it('appends "es" to a model name ending in "ch"', () => {
+        const code = generateRoutesIndex([mk('Match')])
+        expect(code).toContain('app.route("/matches", createMatchRoutes())')
+      })
+
+      it('appends "es" to a model name ending in "sh"', () => {
+        const code = generateRoutesIndex([mk('Dish')])
+        expect(code).toContain('app.route("/dishes", createDishRoutes())')
+      })
+    })
   })
 
   describe('generateAdminRoutes', () => {
@@ -502,6 +531,65 @@ describe('Routes Generator', () => {
       expect(result.code).toContain('c.body(JSON.stringify(body, bigIntReplacer), status,')
       // And no raw c.json call sites should leak through.
       expect(result.code).not.toContain('return c.json(')
+    })
+  })
+
+  describe('generateAdminRoutes gap coverage', () => {
+    const ClassModel: PrismaModel = {
+      name: 'Class',
+      dbName: null,
+      fields: [
+        { name: 'id', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: true, isUnique: true, hasDefaultValue: true },
+        { name: 'title', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+      ],
+    }
+
+    const BoxModel: PrismaModel = {
+      name: 'Box',
+      dbName: null,
+      fields: [
+        { name: 'id', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: true, isUnique: true, hasDefaultValue: true },
+      ],
+    }
+
+    const ParentModel: PrismaModel = {
+      name: 'Parent',
+      dbName: null,
+      fields: [
+        { name: 'id', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: true, isUnique: true, hasDefaultValue: true },
+        { name: 'name', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+        { name: 'owner', kind: 'object', type: 'User', isRequired: false, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+        { name: 'children', kind: 'object', type: 'Child', isRequired: false, isList: true, isId: false, isUnique: false, hasDefaultValue: false },
+      ],
+    }
+
+    it('DA:47 — toRoutePath adds -es for model names ending in s/x/ch/sh', () => {
+      const r = generateAdminRoutes([ClassModel, BoxModel])
+      expect(r.code).toContain('router.post("/classes"')
+      expect(r.code).toContain('router.post("/boxes"')
+      expect(r.code).toContain('router.get("/classes"')
+      expect(r.code).toContain('router.get("/boxes"')
+    })
+
+    it('DA:197 — emits empty where clause when model has no searchable string fields', () => {
+      const r = generateAdminRoutes([BoxModel])
+      expect(r.code).toContain('const where: any = {}')
+    })
+
+    it('DA:224-226 — emits _count include in LIST when model has list-type relations', () => {
+      const r = generateAdminRoutes([ParentModel])
+      expect(r.code).toContain('_count: { select: {')
+      expect(r.code).toContain('children: true')
+    })
+
+    it('DA:269-279 — emits hasRelations include in GET when model has any relations', () => {
+      const r = generateAdminRoutes([ParentModel])
+      // single relation included as `true`
+      expect(r.code).toContain('owner: true,')
+      // list relation included with take limit
+      expect(r.code).toContain('children: { take: 50 },')
+      // findUnique with include block, not the no-relations branch
+      expect(r.code).toMatch(/findUnique\({\s*[^}]*where:\s*\{ id \},\s*include:/)
     })
   })
 

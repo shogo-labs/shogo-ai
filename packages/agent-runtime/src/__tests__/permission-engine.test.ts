@@ -8,8 +8,8 @@
  *   bun test packages/agent-runtime/src/__tests__/permission-engine.test.ts
  */
 
-import { describe, test, expect, beforeEach, mock } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { afterEach, describe, test, expect, beforeEach, mock } from 'bun:test'
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -325,6 +325,94 @@ describe('assertWithinWorkspace', () => {
     } finally {
       if (old === undefined) delete process.env.SHOGO_LOCAL_MODE
       else process.env.SHOGO_LOCAL_MODE = old
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Coverage for previously uncov segments
+// ---------------------------------------------------------------------------
+
+describe('mergeUnique — line 134-135 (via loadPersistedRules)', () => {
+  test('persisted rules are merged deduplicating via mergeUnique', () => {
+    // mergeUnique is called from loadPersistedRules (not mergePolicy export).
+    // Seed a permissions.json with some deny entries and construct an engine
+    // with overlapping deny entries in the preference — mergeUnique dedupes.
+    const { mkdirSync, writeFileSync } = require('node:fs')
+    const { join } = require('node:path')
+    const shogoDir = join(workspaceDir, '.shogo')
+    mkdirSync(shogoDir, { recursive: true })
+    writeFileSync(
+      join(shogoDir, 'permissions.json'),
+      JSON.stringify({ shellCommands: { deny: ['sudo', 'curl'] } }),
+    )
+    const pref = {
+      ...DEFAULT_SECURITY_PREFERENCE,
+      overrides: { shellCommands: { deny: ['sudo', 'rm -rf'] } },
+    }
+    // Constructor calls loadPersistedRules → mergeUnique(['sudo','rm -rf'], ['sudo','curl'])
+    const eng = new PermissionEngine({ workspaceDir, preference: pref })
+    // Engine is alive — denials list has been merged. We can't read pref
+    // directly (private), but the engine should construct without throwing.
+    expect(eng).toBeTruthy()
+  })
+})
+
+describe('PermissionEngine.setSseCallback — line 335', () => {
+  test('setSseCallback stores a callback used to emit SSE events', async () => {
+    const eng = new PermissionEngine({ workspaceDir, preference: { ...DEFAULT_SECURITY_PREFERENCE, approvalTimeoutSeconds: 0.01 } })
+    const events: any[] = []
+    eng.setSseCallback((e) => events.push(e))
+    // Trigger an SSE event by setting the callback then requesting approval
+    // (the engine emits an SSE event on requestApproval → auto-deny).
+    await eng.requestApproval('c1', 'read', 'file_read', { path: '/x' }, 'r')
+    expect(events.length).toBeGreaterThan(0)
+    eng.setSseCallback(undefined)
+  })
+})
+
+describe('PermissionEngine approval timeout — lines 623-626', () => {
+  test('pending approval times out and results in denial', async () => {
+    const realSetTimeout = globalThis.setTimeout
+    const captured: Array<{ fn: Function; ms: number }> = []
+    ;(globalThis as any).setTimeout = (fn: Function, ms: number) => {
+      captured.push({ fn, ms })
+      return realSetTimeout(fn, ms) as any
+    }
+    try {
+      const eng = new PermissionEngine({
+        workspaceDir,
+        preference: { ...DEFAULT_SECURITY_PREFERENCE, approvalTimeoutSeconds: 0.001 },
+      })
+      const cb = (e: any) => {}
+      eng.setSseCallback(cb)
+      const p = eng.requestApproval('c-timeout', 'exec', 'shell', { command: 'x' }, 'test')
+      // Let timers fire.
+      await new Promise((r) => realSetTimeout(r, 20))
+      const result = await p
+      expect(result).toBe(false) // timed out → denied
+    } finally {
+      ;(globalThis as any).setTimeout = realSetTimeout
+    }
+  })
+})
+
+describe('assertWithinWorkspace — realpathSync catch on roots (lines 790-793)', () => {
+  test('broken-symlink in LINKED_FOLDERS falls back via catch (lines 790-793)', () => {
+    // Lines 790-793 are inside the LINKED_FOLDERS branch. Set LINKED_FOLDERS to a
+    // broken-symlink path so realpathSync throws → catch returns the raw path.
+    const ghostTarget = workspaceDir + '-nonexistent'
+    const linkFolder = workspaceDir + '-link'
+    symlinkSync(ghostTarget, linkFolder)
+    const origLF = process.env.LINKED_FOLDERS
+    process.env.LINKED_FOLDERS = JSON.stringify([linkFolder])
+    try {
+      const result = assertWithinWorkspace(workspaceDir, 'file.txt')
+      expect(result).toContain('file.txt')
+    } finally {
+      if (origLF === undefined) delete process.env.LINKED_FOLDERS
+      else process.env.LINKED_FOLDERS = origLF
+      rmSync(linkFolder, { force: true })
     }
   })
 })

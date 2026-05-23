@@ -119,14 +119,12 @@ export function formatPrice(amount: number, currency: CurrencyInfo): string {
   const rounded = currency.decimalPlaces === 0
     ? Math.round(amount)
     : Math.round(amount * 100) / 100
-
   const formatted = currency.decimalPlaces === 0
     ? rounded.toLocaleString('en-US')
     : rounded.toLocaleString('en-US', {
         minimumFractionDigits: currency.decimalPlaces,
         maximumFractionDigits: currency.decimalPlaces,
       })
-
   return currency.symbolPosition === 'prefix'
     ? `${currency.symbol}${formatted}`
     : `${formatted} ${currency.symbol}`

@@ -130,6 +130,16 @@ export interface PathCheckResult {
  * back to the nearest existing ancestor; that's the same approach
  * `pathExists`-style helpers use in VS Code's filesystem layer.
  */
+/**
+ * Test-only seam — wraps the inner \`realpathSync(ancestorPath)\` call
+ * inside \`assertAllowedPath\` so the "ancestor also un-realpathable" catch
+ * branch can be exercised without relying on a specific filesystem state.
+ * Production code routes through the real \`realpathSync\` by default.
+ */
+export const _runtimeTrustSeamForTests: {
+  realpathSync: typeof realpathSync
+} = { realpathSync }
+
 export function assertAllowedPath(targetPath: string, mode: PathMode): PathCheckResult {
   if (!targetPath || typeof targetPath !== 'string') {
     return { ok: false, reason: 'invalid_path', message: 'Empty path' }
@@ -172,7 +182,7 @@ export function assertAllowedPath(targetPath: string, mode: PathMode): PathCheck
       cur = next
     }
     try {
-      const realParent = realpathSync(cur)
+      const realParent = _runtimeTrustSeamForTests.realpathSync(cur)
       real = realParent + tail
     } catch {
       real = candidate

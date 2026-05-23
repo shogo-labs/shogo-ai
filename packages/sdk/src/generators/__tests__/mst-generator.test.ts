@@ -220,6 +220,38 @@ describe('MST Collection Generator', () => {
 
     expect(result.code).toContain('export type IWorkspaceCollection = Instance<typeof WorkspaceCollection>')
   })
+
+  it('toRoutePath -es plural arm: model names ending in s/x/ch/sh', () => {
+    // Line 48 — kebab + 'es' arm. Baseline mocks (Workspace, Project) hit
+    // the default + 's'; this drives the +es plural via the route pragma.
+    const cases = [
+      { name: 'Class', plural: 'classes' },
+      { name: 'Box',   plural: 'boxes' },
+      { name: 'Match', plural: 'matches' },
+      { name: 'Dish',  plural: 'dishes' },
+    ]
+    for (const { name, plural } of cases) {
+      const m = { name, dbName: null, fields: [
+        { name: 'id', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: true, isUnique: true, hasDefaultValue: true },
+      ] } as any
+      const r = generateMSTCollection(m)
+      expect(r.code).toContain('const ENDPOINT = "/api/' + plural + '"')
+    }
+  })
+
+  it('generateMSTCollections returns one file per model with an @id (lines 533-535)', () => {
+    // Plural batch generator was unimported in baseline tests. Confirm it
+    // filters by getIdField presence and delegates per-model to
+    // generateMSTCollection.
+    const noIdModel = { name: 'AuditEntry', dbName: null, fields: [
+      { name: 'workspaceId', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+    ] }
+    const files = generateMSTCollections([mockWorkspaceModel as any, noIdModel as any])
+    expect(files).toHaveLength(1)
+    expect(files[0]!.modelName).toBe('Workspace')
+    // Round-trip: same output as the single-model call for the kept model.
+    expect(files[0]!.code).toBe(generateMSTCollection(mockWorkspaceModel as any).code)
+  })
 })
 
 describe('MST Domain Generator', () => {

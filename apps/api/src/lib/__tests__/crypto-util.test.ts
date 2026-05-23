@@ -10,6 +10,7 @@
  */
 import { describe, test, expect } from 'bun:test'
 import {
+  _cryptoUtilSeamForTests,
   safeTokenEqual,
   safeBufferEqual,
   redactSensitiveHeaders,
@@ -139,5 +140,21 @@ describe('redactSensitiveHeaders', () => {
 
   test('ignores undefined input', () => {
     expect(redactSensitiveHeaders(undefined)).toEqual({})
+  })
+})
+
+describe('safeBufferEqual — catch arm', () => {
+  test('returns false when timingSafeEqual throws unexpectedly', () => {
+    const orig = _cryptoUtilSeamForTests.timingSafeEqual
+    _cryptoUtilSeamForTests.timingSafeEqual = () => {
+      throw new Error('unexpected internal error')
+    }
+    try {
+      const a = Buffer.from('secret', 'utf8')
+      const b = Buffer.from('secret', 'utf8')
+      expect(safeBufferEqual(a, b)).toBe(false)
+    } finally {
+      _cryptoUtilSeamForTests.timingSafeEqual = orig
+    }
   })
 })

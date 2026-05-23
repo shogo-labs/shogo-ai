@@ -31,6 +31,12 @@ export const POOL_ASSIGNMENT_MARKER = '.shogo-pool-assignment'
 
 const SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token'
 
+/** @internal Overridable seams for unit-test coverage of K8s-only and dead-code paths. */
+export const _selfAssignSeams = {
+  saTokenPath: SA_TOKEN_PATH,
+  overrideDeriveApiUrl: null as (() => string | null) | null,
+}
+
 export interface SelfAssignConfig {
   projectId: string
   env: Record<string, string>
@@ -44,7 +50,7 @@ export interface SelfAssignConfig {
  * @param workDir - Workspace directory to check for disk-based assignment marker
  */
 export async function checkSelfAssign(apiUrl?: string, workDir?: string): Promise<SelfAssignConfig | null> {
-  const baseUrl = apiUrl || deriveApiUrl()
+  const baseUrl = apiUrl || (_selfAssignSeams.overrideDeriveApiUrl ? _selfAssignSeams.overrideDeriveApiUrl() : deriveApiUrl())
 
   const assignedProject = await discoverAssignedProject(workDir, baseUrl)
   if (!assignedProject) {
@@ -109,8 +115,8 @@ export async function checkSelfAssign(apiUrl?: string, workDir?: string): Promis
 export function readSAToken(): string | null {
   if (process.env.K8S_SA_TOKEN_OVERRIDE) return process.env.K8S_SA_TOKEN_OVERRIDE
   try {
-    if (existsSync(SA_TOKEN_PATH)) {
-      return readFileSync(SA_TOKEN_PATH, 'utf-8').trim()
+    if (existsSync(_selfAssignSeams.saTokenPath)) {
+      return readFileSync(_selfAssignSeams.saTokenPath, 'utf-8').trim()
     }
   } catch {
     // Not running in K8s

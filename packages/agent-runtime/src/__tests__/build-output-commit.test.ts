@@ -415,3 +415,203 @@ describe('cleanupStagingOutput', () => {
     expect(readFileSync(join(TMP, 'dist', 'index.html'), 'utf-8')).toBe('old')
   })
 })
+
+describe('build-output-commit gap coverage', () => {
+  beforeEach(freshWorkspace)
+  afterEach(() => {
+    rmSync(TMP, { recursive: true, force: true })
+    __resetCommitQueuesForTest()
+  })
+
+  function err(code: string, msg = code): NodeJS.ErrnoException {
+    const e = new Error(`${msg}`) as NodeJS.ErrnoException
+    e.code = code
+    return e
+  }
+
+  test('DA:243 — warns and continues when stale dist.prev cannot be removed', () => {
+    seedDir(DEFAULT_STAGING_DIR, { 'index.html': 'new' })
+    seedDir('dist', { 'index.html': 'old' })
+    seedDir('dist.prev', { 'index.html': 'crashed' })
+
+    const restoreFs = __setFsImplForTest({
+      rmSync: (p: any, opts?: any) => {
+        if (String(p).endsWith('dist.prev')) throw err('EACCES', 'locked prev')
+        return realRmSync(p as any, opts)
+      },
+    })
+    const warns: string[] = []
+    const origWarn = console.warn
+    console.warn = (...a: any[]) => warns.push(a.join(' '))
+    const restoreDelays = __setRetryDelaysForTest([])
+    try {
+      const ok = commitBuildOutput(TMP, DEFAULT_STAGING_DIR)
+      expect(ok).toBe(true)
+      expect(warns.some(w => w.includes('could not remove stale'))).toBe(true)
+    } finally {
+      console.warn = origWarn
+      restoreDelays()
+      restoreFs()
+    }
+  })
+
+  test('DA:272-284 — warns and rolls back when staging→dist rename fails after rotation', () => {
+    seedDir(DEFAULT_STAGING_DIR, { 'index.html': 'new' })
+    seedDir('dist', { 'index.html': 'old' })
+
+    let renameCalls = 0
+    const restoreFs = __setFsImplForTest({
+      renameSync: (from: any, to: any) => {
+        renameCalls++
+        const f = String(from), t = String(to)
+        if (f.endsWith('dist.staging') && t.endsWith('/dist')) {
+          throw err('ENOENT', 'staging vanished')
+        }
+        return realRenameSync(f as any, t as any)
+      },
+    })
+    const warns: string[] = []
+    const origWarn = console.warn
+    console.warn = (...a: any[]) => warns.push(a.join(' '))
+    const restoreDelays = __setRetryDelaysForTest([])
+    try {
+      const ok = commitBuildOutput(TMP, DEFAULT_STAGING_DIR)
+      expect(ok).toBe(false)
+      expect(warns.some(w => w.includes('could not move'))).toBe(true)
+      expect(existsSync(join(TMP, 'dist'))).toBe(true)
+      expect(readFileSync(join(TMP, 'dist', 'index.html'), 'utf-8')).toBe('old')
+    } finally {
+      console.warn = origWarn
+      restoreDelays()
+      restoreFs()
+    }
+  })
+
+  test('DA:280-282 — rollback rename failure logs console.error', () => {
+    seedDir(DEFAULT_STAGING_DIR, { 'index.html': 'new' })
+    seedDir('dist', { 'index.html': 'old' })
+
+    const restoreFs = __setFsImplForTest({
+      renameSync: (from: any, to: any) => {
+        const f = String(from), t = String(to)
+        if (f.endsWith('dist.staging') && t.endsWith('/dist')) {
+          throw err('ENOENT', 'staging vanished')
+        }
+        if (f.endsWith('dist.prev') && t.endsWith('/dist')) {
+          throw err('ENOENT', 'prev also broken')
+        }
+        return realRenameSync(f as any, t as any)
+      },
+    })
+    const errs: string[] = []
+    const warns: string[] = []
+    const origErr = console.error
+    const origWarn = console.warn
+    console.error = (...a: any[]) => errs.push(a.join(' '))
+    console.warn = (...a: any[]) => warns.push(a.join(' '))
+    const restoreDelays = __setRetryDelaysForTest([])
+    try {
+      const ok = commitBuildOutput(TMP, DEFAULT_STAGING_DIR)
+      expect(ok).toBe(false)
+      expect(errs.some(e => e.includes('rollback failed'))).toBe(true)
+    } finally {
+      console.error = origErr
+      console.warn = origWarn
+      restoreDelays()
+      restoreFs()
+    }
+  })
+
+  test('DA:309-314 — force-replace path: returns false when promote-after-rmSync throws', () => {
+    seedDir(DEFAULT_STAGING_DIR, { 'index.html': 'new' })
+    seedDir('dist', { 'index.html': 'old' })
+
+    let renameCount = 0
+    const restoreFs = __setFsImplForTest({
+      renameSync: (from: any, to: any) => {
+        renameCount++
+        const f = String(from), t = String(to)
+        if (f.endsWith('/dist') && t.endsWith('dist.prev')) {
+          throw err('EPERM', 'rotation locked')
+        }
+        throw err('EIO', 'promote also blew up')
+      },
+      rmSync: (p: any, opts?: any) => {
+        const s = String(p)
+        if (s.endsWith('/dist') && !s.endsWith('dist.prev')) return
+        return realRmSync(p as any, opts)
+      },
+    })
+    const errs: string[] = []
+    const warns: string[] = []
+    const origErr = console.error
+    const origWarn = console.warn
+    console.error = (...a: any[]) => errs.push(a.join(' '))
+    console.warn = (...a: any[]) => warns.push(a.join(' '))
+    const restoreDelays = __setRetryDelaysForTest([])
+    try {
+      const ok = commitBuildOutput(TMP, DEFAULT_STAGING_DIR)
+      expect(ok).toBe(false)
+      expect(errs.some(e => e.includes('force-replace promote failed'))).toBe(true)
+    } finally {
+      console.error = origErr
+      console.warn = origWarn
+      restoreDelays()
+      restoreFs()
+    }
+  })
+
+  test('DA:321 — warns when post-swap cleanup of dist.prev fails', () => {
+    seedDir(DEFAULT_STAGING_DIR, { 'index.html': 'new' })
+    seedDir('dist', { 'index.html': 'old' })
+
+    let sawPostSwap = false
+    const restoreFs = __setFsImplForTest({
+      rmSync: (p: any, opts?: any) => {
+        const s = String(p)
+        if (sawPostSwap && s.endsWith('dist.prev')) {
+          throw err('EBUSY', 'cleanup blocked')
+        }
+        return realRmSync(p as any, opts)
+      },
+      renameSync: (from: any, to: any) => {
+        const f = String(from), t = String(to)
+        const res = realRenameSync(f as any, t as any)
+        if (f.endsWith('dist.staging') && t.endsWith('/dist')) sawPostSwap = true
+        return res
+      },
+    })
+    const warns: string[] = []
+    const origWarn = console.warn
+    console.warn = (...a: any[]) => warns.push(a.join(' '))
+    const restoreDelays = __setRetryDelaysForTest([])
+    try {
+      const ok = commitBuildOutput(TMP, DEFAULT_STAGING_DIR)
+      expect(ok).toBe(true)
+      expect(warns.some(w => w.includes('could not remove') && w.includes('after swap'))).toBe(true)
+    } finally {
+      console.warn = origWarn
+      restoreDelays()
+      restoreFs()
+    }
+  })
+
+  test('DA:338 — cleanupStagingOutput warns when rmSync throws', () => {
+    seedDir(DEFAULT_STAGING_DIR, { 'index.html': 'partial' })
+    const restoreFs = __setFsImplForTest({
+      rmSync: () => { throw err('EBUSY', 'staging locked') },
+    })
+    const warns: string[] = []
+    const origWarn = console.warn
+    console.warn = (...a: any[]) => warns.push(a.join(' '))
+    const restoreDelays = __setRetryDelaysForTest([])
+    try {
+      expect(() => cleanupStagingOutput(TMP, DEFAULT_STAGING_DIR)).not.toThrow()
+      expect(warns.some(w => w.includes('could not remove staging'))).toBe(true)
+    } finally {
+      console.warn = origWarn
+      restoreDelays()
+      restoreFs()
+    }
+  })
+})

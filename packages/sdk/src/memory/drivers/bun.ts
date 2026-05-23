@@ -32,9 +32,16 @@ export function isBunRuntime(): boolean {
   return typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined'
 }
 
+/**
+ * Indirection seam used solely by the unit test suite — `globalThis.Bun` is a
+ * hard, non-configurable binding under `bun test`, so the `!isBunRuntime()`
+ * branch is otherwise unreachable. Tests swap `.check` to drive the throw
+ * path; production code never mutates this object.
+ */
+export const _bunRuntimeGuardForTests: { check: () => boolean } = { check: isBunRuntime }
+
 export const createBunDriver: CreateSqliteDriver = (dbPath: string): SqliteDriver => {
-  /* c8 ignore next 3 */ // Unreachable under `bun test` — globalThis.Bun is a hard binding.
-  if (!isBunRuntime()) {
+  if (!_bunRuntimeGuardForTests.check()) {
     throw new Error('[@shogo-ai/sdk/memory] bun:sqlite driver requires Bun runtime')
   }
   // `bun:sqlite` is a Bun builtin and cannot be statically imported in Node.
