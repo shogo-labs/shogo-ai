@@ -225,7 +225,13 @@ export class Win32VMManager implements VMManager {
       ...(firmwareDir ? ['-L', firmwareDir] : []),
       '-accel', 'whpx', '-accel', 'tcg',
       '-machine', 'q35,memory-backend=mem0', '-cpu', 'Broadwell-v4',
-      '-object', `memory-backend-ram,id=mem0,size=${config.memoryMB}M,prealloc=off,discard-data=on`,
+      // NOTE: `discard-data=on` is *not* a valid property of `memory-backend-ram` in
+      // modern QEMU (≥ ~9.x rejects it outright; older builds silently ignored it).
+      // It only applies to `memory-backend-file` / `memory-backend-memfd`. Including
+      // it here causes QEMU to exit with `Invalid parameter 'discard-data'` and
+      // breaks VM warm pool boot. Memory reclamation on Windows is handled by
+      // `virtio-balloon-pci,free-page-reporting=on` below.
+      '-object', `memory-backend-ram,id=mem0,size=${config.memoryMB}M,prealloc=off`,
       '-m', `${config.memoryMB}M`,
       '-smp', String(config.cpus),
       '-kernel', path.join(this.vmImageDir, 'vmlinuz'),
