@@ -53,7 +53,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T05:38:53.520722Z",
       "beforeLinePct": 99.1304,
-      "afterLinePct": 100.0,
+      "afterLinePct": 100,
       "note": "Already at 100% under own tests (apps/api/src/__tests__/instance-sizes.test.ts + apps/api/src/config/__tests__/instance-sizes.test.ts). Baseline 99.13% was a merged-shard instrumentation artifact, not a real gap. No new test code added."
     },
     {
@@ -67,7 +67,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T05:44:48.600931Z",
       "beforeLinePct": 99.6364,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/agent-templates.ts",
@@ -80,7 +80,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T05:48:26.798555Z",
       "beforeLinePct": 95.8333,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/fs-tree-walker.ts",
@@ -93,7 +93,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T05:54:23.819554Z",
       "beforeLinePct": 98.4375,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/mcp-catalog.ts",
@@ -106,7 +106,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T05:55:53.536712Z",
       "beforeLinePct": 99.5025,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/runtime-log-dispatcher.ts",
@@ -119,7 +119,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T06:48:48.263875Z",
       "beforeLinePct": 98.75,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/sdk/src/generators/api-client.ts",
@@ -132,7 +132,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T07:53:22.703209Z",
       "beforeLinePct": 99.5652,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/sdk/src/generators/routes-generator.ts",
@@ -145,7 +145,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T07:56:50.671983Z",
       "beforeLinePct": 99.7899,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/sdk/src/memory/drivers/bun.ts",
@@ -158,7 +158,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T08:09:35.862556Z",
       "beforeLinePct": 96.1538,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/config/currencies.ts",
@@ -171,7 +171,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T08:18:54.291001Z",
       "beforeLinePct": 97.0149,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/services/marketplace-manifest.service.ts",
@@ -184,7 +184,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T08:37:38.404089Z",
       "beforeLinePct": 98.8304,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/canvas-bridge-migration.ts",
@@ -197,7 +197,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T08:50:18.225177Z",
       "beforeLinePct": 96.9697,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/rg-resolve.ts",
@@ -210,7 +210,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T09:00:04.115013Z",
       "beforeLinePct": 69.23,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/file-attachment-utils.ts",
@@ -223,7 +223,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T09:54:06.889320Z",
       "beforeLinePct": 94.3396,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/runtime-trust.ts",
@@ -236,7 +236,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T11:03:30.467907Z",
       "beforeLinePct": 97.4576,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/lib/crypto-util.ts",
@@ -249,7 +249,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T11:04:31.763635Z",
       "beforeLinePct": 97.9592,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/lib/resolve-pod-url.ts",
@@ -262,7 +262,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T11:05:24.013954Z",
       "beforeLinePct": 90.3226,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/lib/usage-cost.ts",
@@ -275,7 +275,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T11:06:04.061462Z",
       "beforeLinePct": 94.1176,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/services/marketplace.service.ts",
@@ -288,7 +288,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T11:08:00.764401Z",
       "beforeLinePct": 97.3154,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/sdk/src/generators/mst-collection-generator.ts",
@@ -301,7 +301,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T11:15:04.605089Z",
       "beforeLinePct": 99.16,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/services/marketplace-install.service.ts",
@@ -314,7 +314,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T11:17:55.549509Z",
       "beforeLinePct": 98.5251,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/block-chunker.ts",
@@ -327,7 +327,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T11:18:43.525735Z",
       "beforeLinePct": 92.75,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/screenshot-manager.ts",
@@ -340,7 +340,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T11:20:26.281173Z",
       "beforeLinePct": 95.05,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/lib/analytics-digest-collector.ts",
@@ -353,7 +353,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T11:21:48.094783Z",
       "beforeLinePct": 96.91,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/composio-auto-bind.ts",
@@ -365,8 +365,8 @@
       "status": "done",
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T11:29:08.943152Z",
-      "beforeLinePct": 80.0,
-      "afterLinePct": 100.0
+      "beforeLinePct": 80,
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/lib/cloud-fetcher.ts",
@@ -379,7 +379,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T11:30:57.872088Z",
       "beforeLinePct": 82.76,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/jobs/grant-monthly-refill.ts",
@@ -392,7 +392,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T11:32:25.880723Z",
       "beforeLinePct": 90.91,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/jobs/voice-monthly-rebill.ts",
@@ -405,7 +405,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T11:33:15.338050Z",
       "beforeLinePct": 92.59,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/quiet-hours.ts",
@@ -418,7 +418,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T11:33:39.646807Z",
       "beforeLinePct": 72.73,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/sdk/src/projects/index.ts",
@@ -431,7 +431,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T11:58:38.910093Z",
       "beforeLinePct": 86.57,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/permission-engine.ts",
@@ -444,7 +444,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T12:05:00.168623Z",
       "beforeLinePct": 98.15,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/pty-scrollback.ts",
@@ -457,7 +457,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T12:05:23.976324Z",
       "beforeLinePct": 73.17,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/team-manager.ts",
@@ -470,7 +470,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T12:06:36.702189Z",
       "beforeLinePct": 95.3,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/migrations/skill-server-to-root.ts",
@@ -483,7 +483,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T12:13:16.293828Z",
       "beforeLinePct": 95.89,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/template-loader.ts",
@@ -496,7 +496,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T14:50:51.350071Z",
       "beforeLinePct": 83.33,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/shared-runtime/src/self-assign.ts",
@@ -509,7 +509,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T14:52:26.004540Z",
       "beforeLinePct": 90.08,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/response-transforms.ts",
@@ -522,7 +522,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T14:58:27.340466Z",
       "beforeLinePct": 94.56,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/detected-urls.ts",
@@ -535,7 +535,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T14:59:04.375106Z",
       "beforeLinePct": 83.33,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/sdk/src/generators/admin-routes-generator.ts",
@@ -548,7 +548,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T15:00:13.955737Z",
       "beforeLinePct": 94.24,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/sdk/src/machines/index.ts",
@@ -561,7 +561,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T15:01:25.599226Z",
       "beforeLinePct": 65.22,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/build-output-commit.ts",
@@ -600,7 +600,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T15:24:20.725239Z",
       "beforeLinePct": 88.27,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/sdk/src/memory/engine.ts",
@@ -612,8 +612,8 @@
       "status": "done",
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T15:26:46.160497Z",
-      "beforeLinePct": 93.0,
-      "afterLinePct": 100.0
+      "beforeLinePct": 93,
+      "afterLinePct": 100
     },
     {
       "file": "packages/agent-runtime/src/slash-commands.ts",
@@ -626,7 +626,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T15:29:22.313757Z",
       "beforeLinePct": 83.45,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/sdk/src/errors.ts",
@@ -639,7 +639,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T15:31:19.179674Z",
       "beforeLinePct": 72.22,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "packages/sdk/src/memory/drivers/node.ts",
@@ -652,7 +652,7 @@
       "createdAt": "2026-05-22T05:05:30.108447Z",
       "finishedAt": "2026-05-22T15:32:57.958390Z",
       "beforeLinePct": 16.13,
-      "afterLinePct": 100.0
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/lib/heartbeat-scheduler.ts",
@@ -674,8 +674,11 @@
       "linePct": 88.6719,
       "funcPct": 100,
       "phase": 2,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-24T22:52:43.971Z",
+      "beforeLinePct": 88.6719,
+      "afterLinePct": 100
     },
     {
       "file": "packages/sdk/src/generators/server-generator.ts",
