@@ -395,3 +395,16 @@ describe('CircuitBreaker.snapshot', () => {
     expect(snap[0].projectId).toBe('b')
   })
 })
+
+describe('BaseHeartbeatScheduler.onQuietHoursSkip default (v3 gap-close)', () => {
+  // The base class default `onQuietHoursSkip` is an intentional no-op (empty body).
+  // FakeScheduler overrides it, so we call the base prototype directly to cover it.
+  test('base onQuietHoursSkip is a no-op callable directly without throwing', () => {
+    const agent: DueAgent = { id: 'a', projectId: 'p', heartbeatInterval: 60 }
+    // Directly invoke the base class protected method via prototype — covers the
+    // empty-body default so bun counts the function as called (100% funcs).
+    expect(() => {
+      ;(BaseHeartbeatScheduler.prototype as any).onQuietHoursSkip.call(undefined, agent)
+    }).not.toThrow()
+  })
+})
