@@ -586,3 +586,56 @@ describe('transcribe', () => {
     expect(body!.get('language')).toBe('de')
   })
 })
+
+// ─── transcribeLocal — platform-specific env paths (lines 106, 108-109) ───────
+
+describe('transcribeLocal — platform-specific library path setup', () => {
+  beforeEach(() => {
+    seedSherpaBinary()
+    seedWhisperModel('base.en')
+  })
+
+  it('sets DYLD_LIBRARY_PATH on darwin', async () => {
+    const orig = process.platform
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+    let capturedEnv: NodeJS.ProcessEnv | undefined
+    spawnImpl = ((_cmd: string, _args: string[], opts: any) => {
+      capturedEnv = opts.env
+      const p = new FakeProc()
+      queueMicrotask(() => {
+        p.stdout.emit('data', Buffer.from('{"text":"mac","lang":"en"}'))
+        p.emit('exit', 0)
+      })
+      return p
+    }) as any
+    try {
+      await svc.transcribeLocal('/tmp/in.wav')
+      expect(typeof capturedEnv!.DYLD_LIBRARY_PATH).toBe('string')
+      expect(capturedEnv!.DYLD_LIBRARY_PATH).toContain(sherpaDir)
+    } finally {
+      Object.defineProperty(process, 'platform', { value: orig, configurable: true })
+    }
+  })
+
+  it('sets PATH on win32', async () => {
+    const orig = process.platform
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    let capturedEnv: NodeJS.ProcessEnv | undefined
+    spawnImpl = ((_cmd: string, _args: string[], opts: any) => {
+      capturedEnv = opts.env
+      const p = new FakeProc()
+      queueMicrotask(() => {
+        p.stdout.emit('data', Buffer.from('{"text":"win","lang":"en"}'))
+        p.emit('exit', 0)
+      })
+      return p
+    }) as any
+    try {
+      await svc.transcribeLocal('/tmp/in.wav')
+      expect(typeof capturedEnv!.PATH).toBe('string')
+      expect(capturedEnv!.PATH).toContain(sherpaDir)
+    } finally {
+      Object.defineProperty(process, 'platform', { value: orig, configurable: true })
+    }
+  })
+})

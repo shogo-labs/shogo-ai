@@ -726,8 +726,11 @@
       "linePct": 83.4821,
       "funcPct": 100,
       "phase": 2,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-24T23:04:08.225Z",
+      "beforeLinePct": 83.48,
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/lib/global-job-lock.ts",
