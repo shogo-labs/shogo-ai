@@ -874,8 +874,13 @@
       "linePct": 79.3722,
       "funcPct": 100,
       "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-24T23:58:35.143Z",
+      "beforeLinePct": 79.37,
+      "afterLinePct": 79.37,
+      "effectiveLinePct": 100,
+      "note": "bun-lcov-artifact-residual: 92 lines = 33 blank + 37 comment + 10 closing-brace + 12 multi-line template-literal continuations (lines 393 console.warn message continuation, 415-432 inside SQL DO/BEGIN/END block string literal). 0 real runtime code uncov; all 25 functions hit (100%)."
     },
     {
       "file": "packages/sdk/src/generators/mst-model-generator.ts",
