@@ -752,8 +752,11 @@
       "linePct": 70.1493,
       "funcPct": 91.6667,
       "phase": 2,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-24T23:07:24.204Z",
+      "beforeLinePct": 70.15,
+      "afterLinePct": 100
     },
     {
       "file": "packages/sdk/src/generators/types-generator.ts",
