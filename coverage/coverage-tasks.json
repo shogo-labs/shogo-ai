@@ -765,8 +765,11 @@
       "linePct": 79.9065,
       "funcPct": 62.5,
       "phase": 2,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-24T23:09:54.609Z",
+      "beforeLinePct": 79.91,
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/lib/sync-engine.ts",

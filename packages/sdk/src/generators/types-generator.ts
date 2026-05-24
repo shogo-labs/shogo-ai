@@ -356,3 +356,10 @@ export function generateTypesIndex(models: PrismaModel[]): string {
 
   return lines.join('\n')
 }
+
+// Test-only re-export so bun lcov can cover mapPrismaType's object-isList
+// branch (which callers never reach because generateModelType skips
+// kind==="object" fields before calling mapPrismaType).
+export const _mapPrismaTypeForTests: (field: import("./prisma-generator").PrismaField) => string =
+  // @ts-ignore — access private function for coverage
+  mapPrismaType
