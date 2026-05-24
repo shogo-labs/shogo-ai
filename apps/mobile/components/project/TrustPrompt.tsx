@@ -88,19 +88,19 @@ export function TrustPrompt({
                 Do you trust this folder?
               </Heading>
               {projectName ? (
-                <Text className="text-xs text-typography-500 mt-1">
+                <Text className="text-xs text-typography-600 mt-1">
                   Project: {projectName}
                 </Text>
               ) : null}
             </View>
           </View>
           <ModalCloseButton>
-            <X size={20} className="text-typography-500" />
+            <X size={20} className="text-typography-700" />
           </ModalCloseButton>
         </ModalHeader>
 
         <ModalBody className="px-6 py-5" contentContainerClassName="gap-4">
-          <Text className="text-sm text-typography-600 leading-relaxed">
+          <Text className="text-sm text-typography-800 leading-relaxed">
             Shogo's agent can read, write, and run shell commands inside the
             folder you opened. Trust this folder only if you wrote its code or
             cloned it from a source you trust.
@@ -108,9 +108,9 @@ export function TrustPrompt({
 
           {folderPath ? (
             <View className="rounded-lg bg-background-50 px-3 py-2 border border-outline-100 flex-row items-center gap-2">
-              <FolderTree size={14} className="text-typography-500" />
+              <FolderTree size={14} className="text-typography-700" />
               <Text
-                className="text-xs font-mono text-typography-700 flex-1"
+                className="text-xs font-mono text-typography-900 flex-1"
                 numberOfLines={1}
               >
                 {folderPath}
@@ -123,9 +123,9 @@ export function TrustPrompt({
             <Text className="text-sm font-medium text-typography-900">
               Restricted mode (default)
             </Text>
-            <Text className="text-xs text-typography-500 leading-relaxed">
+            <Text className="text-xs text-typography-700 leading-relaxed">
               The agent can read files and answer questions, but{' '}
-              <Text className="font-medium text-typography-700">
+              <Text className="font-semibold text-typography-900">
                 write_file, edit_file, and shell commands are blocked
               </Text>
               . You can flip this any time from project settings.
@@ -166,7 +166,7 @@ export function TrustPrompt({
             onPress={() => handle('restricted')}
             isDisabled={isSubmitting}
           >
-            <ButtonText className="text-typography-500">
+            <ButtonText className="text-typography-700">
               Browse in restricted mode
             </ButtonText>
           </Button>
