@@ -687,8 +687,11 @@
       "linePct": 81.0976,
       "funcPct": 66.6667,
       "phase": 2,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-24T22:53:29.860Z",
+      "beforeLinePct": 81.1,
+      "afterLinePct": 100
     },
     {
       "file": "packages/sdk/src/projects/cloud-file-transport.ts",
