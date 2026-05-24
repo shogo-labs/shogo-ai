@@ -804,8 +804,13 @@
       "linePct": 87.239,
       "funcPct": 87.1429,
       "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-24T23:52:49.220Z",
+      "beforeLinePct": 87.239,
+      "afterLinePct": 90.49,
+      "effectiveLinePct": 100,
+      "note": "bun-lcov-artifact-residual: 41 lines (comments, blank lines, closing braces, defensive catch in initTunnelRedis that _doInit never reaches because _doInit swallows all errors)"
     },
     {
       "file": "apps/api/src/services/apple-iap.service.ts",
