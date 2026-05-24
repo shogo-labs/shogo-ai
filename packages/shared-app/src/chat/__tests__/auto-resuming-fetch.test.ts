@@ -228,6 +228,87 @@ describe('createAutoResumingFetch', () => {
     expect(text).not.toContain('wrong turn')
   })
 
+  test('onChunk fires for every chunk read off the initial body, including SSE comments', async () => {
+    // Mix of regular SSE `data:` frames and a `:`-prefixed keepalive
+    // comment (what apps/api emits as `: proxy-keep-alive\n\n`). The
+    // wrapper's parser ignores comments for `data-turn-*` book-keeping,
+    // but the chunk MUST still bump the liveness callback.
+    const keepalive = new TextEncoder().encode(': proxy-keep-alive\n\n')
+    const body = streamFrom([
+      keepalive,
+      sseFrame({ type: 'data-turn-start', data: { turnId: TURN_ID, chatSessionId: SESSION_ID, startedAt: 1 } }),
+      keepalive,
+      sseFrame({ type: 'text-delta', delta: 'hi' }),
+      sseFrame({ type: 'data-turn-complete', data: { turnId: TURN_ID, status: 'completed', lastSeq: 2 } }),
+    ])
+    const baseFetch: any = async () => makePostResponse(body)
+
+    const chunkEvents: Array<{ bytes: number; resumed: boolean }> = []
+    const fetcher = createAutoResumingFetch(baseFetch, {
+      logger: SILENT_LOGGER,
+      onChunk: (info) => chunkEvents.push(info),
+    })
+    const r = await fetcher(POST_URL, { method: 'POST' })
+    await readAll(r.body!)
+
+    expect(chunkEvents).toHaveLength(5)
+    // All from the initial POST → resumed=false for every event.
+    expect(chunkEvents.every((e) => e.resumed === false)).toBe(true)
+    // Byte counts match the original encoded chunks.
+    expect(chunkEvents[0].bytes).toBe(keepalive.byteLength)
+    expect(chunkEvents.reduce((sum, e) => sum + e.bytes, 0)).toBeGreaterThan(0)
+  })
+
+  test('onChunk tags chunks delivered via a resumed GET with resumed=true', async () => {
+    const initialBody = streamFrom([
+      sseFrame({ type: 'data-turn-start', data: { turnId: TURN_ID, chatSessionId: SESSION_ID, startedAt: 1 } }),
+      sseFrame({ type: 'data-turn-seq', data: { turnId: TURN_ID, seq: 4 } }),
+    ])
+    const resumeBody = streamFrom([
+      sseFrame({ type: 'text-delta', delta: 'after-resume' }),
+      sseFrame({ type: 'data-turn-complete', data: { turnId: TURN_ID, status: 'completed', lastSeq: 5 } }),
+    ])
+    let n = 0
+    const baseFetch: any = async () => {
+      n++
+      if (n === 1) return makePostResponse(initialBody)
+      return new Response(resumeBody, { status: 200, headers: { 'X-Turn-Id': TURN_ID } })
+    }
+    const chunkEvents: Array<{ bytes: number; resumed: boolean }> = []
+    const fetcher = createAutoResumingFetch(baseFetch, {
+      logger: SILENT_LOGGER,
+      initialBackoffMs: 1,
+      maxBackoffMs: 1,
+      onChunk: (info) => chunkEvents.push(info),
+    })
+    const r = await fetcher(POST_URL, { method: 'POST' })
+    await readAll(r.body!)
+
+    const initialChunks = chunkEvents.filter((e) => !e.resumed)
+    const resumedChunks = chunkEvents.filter((e) => e.resumed)
+    expect(initialChunks.length).toBeGreaterThanOrEqual(2)
+    expect(resumedChunks.length).toBeGreaterThanOrEqual(2)
+  })
+
+  test('a throwing onChunk does not break the body pipeline', async () => {
+    const body = streamFrom([
+      sseFrame({ type: 'data-turn-start', data: { turnId: TURN_ID, chatSessionId: SESSION_ID, startedAt: 1 } }),
+      sseFrame({ type: 'text-delta', delta: 'still arrives' }),
+      sseFrame({ type: 'data-turn-complete', data: { turnId: TURN_ID, status: 'completed', lastSeq: 1 } }),
+    ])
+    const baseFetch: any = async () => makePostResponse(body)
+    const fetcher = createAutoResumingFetch(baseFetch, {
+      logger: SILENT_LOGGER,
+      onChunk: () => {
+        throw new Error('intentional')
+      },
+    })
+    const r = await fetcher(POST_URL, { method: 'POST' })
+    const text = await readAll(r.body!)
+    expect(text).toContain('still arrives')
+    expect(text).toContain('data-turn-complete')
+  })
+
   test('respects maxResumeAttempts', async () => {
     let calls = 0
     const baseFetch: any = async () => {

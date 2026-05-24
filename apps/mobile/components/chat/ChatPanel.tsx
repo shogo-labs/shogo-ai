@@ -28,6 +28,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react"
+import * as Sentry from "@sentry/react-native"
 import {
   Alert,
   View,
@@ -1203,6 +1204,17 @@ export const ChatPanel = observer(function ChatPanel({
 
 
 
+  // Stall watchdog liveness timestamp. Declared up here (before
+  // `useChat`/`useChatTransportConfig`) so the auto-resuming fetch
+  // wrapper's `onChunk` callback and the `useChat({ onData })` callback
+  // can both bump it. See the watchdog effect further down for how it's
+  // consumed (`isChatStalled`) and the `chat-stall-watchdog.ts` history
+  // comment for the underlying production incident.
+  const lastChatProgressAtRef = useRef<number>(Date.now())
+  const bumpChatProgress = useCallback(() => {
+    lastChatProgressAtRef.current = Date.now()
+  }, [])
+
   const transportConfig = useChatTransportConfig({
     apiBaseUrl: API_URL!,
     projectId,
@@ -1211,6 +1223,13 @@ export const ChatPanel = observer(function ChatPanel({
     headers: nativeHeaders,
     fetch: expoFetch,
     chatSessionId: currentSessionId,
+    // Any byte off the wire — including the API's `: proxy-keep-alive`
+    // SSE comments and the runtime's first `data-turn-start` frame —
+    // resets the stall watchdog. Without this, the watchdog only sees
+    // AI-SDK status flips and `messages` updates, which can lag the
+    // POST by tens of seconds on a cold turn (system-prompt build +
+    // Anthropic TTFB).
+    onChunk: bumpChatProgress,
   })
   const chatTransport = useMemo(
     () => (transportConfig ? new DefaultChatTransport(transportConfig) : undefined),
@@ -1279,6 +1298,14 @@ export const ChatPanel = observer(function ChatPanel({
       )
     },
     onData: async (dataPart) => {
+      // Any `data-*` frame (including `data-turn-start`, `data-turn-seq`,
+      // and `data-usage`) is wire-level forward progress. The AI SDK
+      // doesn't flip `status` → `'streaming'` on these — only on the
+      // first `text-delta` — so without this bump the watchdog can
+      // still trip on a long pre-Anthropic warm-up even after we see
+      // bytes. Cheap, safe, and orthogonal to message rendering.
+      bumpChatProgress()
+
       // Handle virtual tool events
       if (dataPart.type === "data-virtual-tool") {
         const event = (dataPart as any).data as VirtualToolEvent
@@ -3510,10 +3537,13 @@ export const ChatPanel = observer(function ChatPanel({
   //
   // Forward-progress signal: any update to `messages` (text-delta, tool
   // events, etc.) timestamps the watchdog. A status entering `submitted`
-  // / `streaming` also counts as fresh progress. When that timestamp
-  // goes stale past the threshold for the current status, we call
-  // `stop()` — the SDK aborts the active response and flips to `ready`.
-  const lastChatProgressAtRef = useRef<number>(Date.now())
+  // / `streaming` also counts as fresh progress. The actual ref is
+  // declared up-component near the transport so the auto-resuming-fetch
+  // `onChunk` callback and `useChat({ onData })` can both bump it on
+  // wire-level activity that doesn't reach `messages` (SSE comments,
+  // `data-*` frames). When that timestamp goes stale past the
+  // threshold for the current status, we call `stop()` — the SDK
+  // aborts the active response and flips to `ready`.
   useEffect(() => {
     lastChatProgressAtRef.current = Date.now()
   }, [messages, status])
@@ -3522,16 +3552,50 @@ export const ChatPanel = observer(function ChatPanel({
     if (!isStreaming) return
     const intervalMs = Math.min(DEFAULT_SUBMITTED_STALL_MS, DEFAULT_STREAMING_STALL_MS, 15_000)
     const timer = setInterval(() => {
+      const now = Date.now()
+      const lastProgressAt = lastChatProgressAtRef.current
       if (
         isChatStalled({
           status,
-          lastProgressAt: lastChatProgressAtRef.current,
-          now: Date.now(),
+          lastProgressAt,
+          now,
         })
       ) {
+        const elapsedMs = now - lastProgressAt
         console.warn(
-          `[ChatPanel] stall watchdog tripped — status=${status} pinned with no progress; calling stop() to recover`
+          `[ChatPanel] stall watchdog tripped — status=${status} pinned for ${elapsedMs}ms with no progress; calling stop() to recover`
         )
+        // Surface in Sentry so this class of bug is visible in the
+        // dashboard instead of having to be reconstructed from kube
+        // logs. `captureMessage` (not `captureException`) because
+        // there is no JS Error here — the AI SDK swallows the
+        // AbortError from `stop()` as normal control flow, which is
+        // exactly why production incidents in this code path have
+        // been invisible historically. Severity is `warning`: the
+        // watchdog *recovered* the wedged turn, so the user is not
+        // blocked, but every trip is still a missed-progress signal
+        // we want to investigate.
+        try {
+          Sentry.captureMessage("chat_stall_watchdog_tripped", {
+            level: "warning",
+            tags: {
+              projectId: projectId ?? "(none)",
+              chatSessionId: currentSessionId ?? "(none)",
+              chatStatus: status,
+            },
+            extra: {
+              elapsedMs,
+              submittedThresholdMs: DEFAULT_SUBMITTED_STALL_MS,
+              streamingThresholdMs: DEFAULT_STREAMING_STALL_MS,
+              lastProgressAt,
+              now,
+            },
+          })
+        } catch (err) {
+          // Sentry init can fail (DSN unset on dev builds, etc.) —
+          // never let it break the recovery path.
+          console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+        }
         try {
           void stop()
         } catch (err) {
@@ -3540,7 +3604,7 @@ export const ChatPanel = observer(function ChatPanel({
       }
     }, intervalMs)
     return () => clearInterval(timer)
-  }, [isStreaming, status, stop])
+  }, [isStreaming, status, stop, projectId, currentSessionId])
 
   // Hydrate the queue for the active session from the per-session cache when
   // the session changes. Previously this effect *cleared* the queue on every

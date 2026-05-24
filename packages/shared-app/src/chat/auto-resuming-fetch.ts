@@ -41,9 +41,23 @@ export interface AutoResumingFetchOptions {
   buildResumeUrl?: (chatPostUrl: string, chatSessionId: string) => string
   /** Optional logger; defaults to console. Pass null to silence. */
   logger?: { warn: (...args: any[]) => void; log: (...args: any[]) => void } | null
+  /**
+   * Wire-level liveness callback. Fired for EVERY chunk the wrapper
+   * reads off the underlying fetch body, including SSE comment lines
+   * (e.g. the API's `: proxy-keep-alive\n\n` heartbeat) that never
+   * surface to the AI SDK as a `data-*` event. Use this to drive a
+   * stall watchdog that needs to distinguish "stream is dead" from
+   * "stream is alive but pre-text-delta".
+   *
+   * Receives the raw chunk byte length so callers can also use it for
+   * lightweight throughput metering. Errors thrown inside the callback
+   * are caught and ignored — this hook is best-effort and must never
+   * break the body pipeline.
+   */
+  onChunk?: (info: { bytes: number; resumed: boolean }) => void
 }
 
-const DEFAULT_OPTIONS: Required<Omit<AutoResumingFetchOptions, 'buildResumeUrl' | 'logger'>> = {
+const DEFAULT_OPTIONS: Required<Omit<AutoResumingFetchOptions, 'buildResumeUrl' | 'logger' | 'onChunk'>> = {
   maxResumeAttempts: 8,
   initialBackoffMs: 500,
   maxBackoffMs: 5_000,
@@ -117,6 +131,7 @@ export function createAutoResumingFetch(
       maxBackoffMs: opts.maxBackoffMs,
       logger,
       turnId,
+      onChunk: options.onChunk,
     })
 
     // Re-construct the Response so the AI SDK reads from our durable body
@@ -140,6 +155,7 @@ interface DurableBodyOpts {
   maxBackoffMs: number
   logger: { warn: (...args: any[]) => void; log: (...args: any[]) => void } | null
   turnId: string
+  onChunk?: (info: { bytes: number; resumed: boolean }) => void
 }
 
 function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
@@ -152,6 +168,7 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
     maxBackoffMs,
     logger,
     turnId,
+    onChunk,
   } = opts
 
   return new ReadableStream<Uint8Array>({
@@ -210,7 +227,10 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
         }
       }
 
-      const pumpBody = async (body: ReadableStream<Uint8Array>): Promise<{ bytes: number }> => {
+      const pumpBody = async (
+        body: ReadableStream<Uint8Array>,
+        resumed: boolean,
+      ): Promise<{ bytes: number }> => {
         const reader = body.getReader()
         let bytes = 0
         try {
@@ -220,6 +240,18 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
             if (!value) continue
             bytes += value.byteLength
             inspectChunk(value)
+            // Wire-level liveness signal — fire BEFORE enqueueing so a
+            // downstream cancel (e.g. user-stop) that throws from
+            // `controller.enqueue()` doesn't swallow the heartbeat for
+            // the chunk we just successfully read. Best-effort; never
+            // let a buggy callback break the body pipeline.
+            if (onChunk) {
+              try {
+                onChunk({ bytes: value.byteLength, resumed })
+              } catch {
+                /* swallow — onChunk is advisory */
+              }
+            }
             try {
               controller.enqueue(value)
             } catch {
@@ -237,7 +269,7 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
       const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
       try {
-        await pumpBody(initialBody)
+        await pumpBody(initialBody, /* resumed */ false)
 
         while (!turnCompleted && !cancelled && resumeAttempts < maxResumeAttempts) {
           resumeAttempts++
@@ -279,7 +311,7 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
           // Only reset the attempt counter if the resume actually
           // delivered bytes — otherwise an endless loop of empty 200s
           // would never surface as "stalled".
-          const { bytes } = await pumpBody(resumeRes.body)
+          const { bytes } = await pumpBody(resumeRes.body, /* resumed */ true)
           if (bytes > 0) resumeAttempts = 0
         }
 
