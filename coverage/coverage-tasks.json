@@ -829,8 +829,13 @@
       "linePct": 84.0263,
       "funcPct": 100,
       "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-24T23:57:10.318Z",
+      "beforeLinePct": 84.03,
+      "afterLinePct": 84.03,
+      "effectiveLinePct": 100,
+      "note": "bun-lcov-artifact-residual: 73 lines = 46 blank + 20 comment + 7 TypeScript interface property declarations (lines 290-291 in PendingConnectionInfo, 679-683 in GitHubUser); 0 real runtime code uncov, all branches hit (FNH/FNF = 38/38 = 100%)"
     },
     {
       "file": "apps/api/src/services/git.service.ts",
