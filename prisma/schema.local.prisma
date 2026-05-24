@@ -508,10 +508,41 @@ model WorkspaceGrant {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  licenseKeys  LicenseKey[]
 
   @@index([workspaceId, expiresAt])
   @@map("workspace_grants")
+}
+
+/// Single-use license keys. Mirrors prisma/schema.prisma LicenseKey. See
+/// that file for full semantics. Only `codeHash` is persisted (sha-256
+/// of canonical plaintext); the plaintext is shown to the recipient at
+/// issuance and never stored.
+model LicenseKey {
+  id                    String    @id @default(uuid())
+  codeHash              String    @unique
+  codePrefix            String
+  batchId               String?
+  planId                String
+  monthlyIncludedUsd    Float     @default(0)
+  freeSeats             Int       @default(0)
+  durationDays          Int?
+  expiresAt             DateTime?
+  redeemedAt            DateTime?
+  redeemedByWorkspaceId String?   @unique
+  redeemedByUserId      String?
+  redeemedGrantId       String?   @unique
+  note                  String?
+  createdByUserId       String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  redeemedGrant WorkspaceGrant? @relation(fields: [redeemedGrantId], references: [id], onDelete: SetNull)
+
+  @@index([batchId])
+  @@index([redeemedAt])
+  @@map("license_keys")
 }
 
 model UsageWallet {

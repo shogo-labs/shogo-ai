@@ -56,6 +56,7 @@ import { openSession, closeSession, hasSession } from './lib/proxy-billing-sessi
 import { teeChatStreamForBilling } from './lib/chat-usage-tracker'
 import { adminRoutes, userAttributionRoute } from './routes/admin'
 import { adminMarketplaceRoutes } from './routes/admin-marketplace'
+import { licenseKeyAdminRoutes, licenseKeyRoutes } from './routes/license-keys'
 import { marketplaceRoutes } from './routes/marketplace'
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { costAnalyticsRoutes } from './routes/cost-analytics'
@@ -6178,6 +6179,10 @@ app.route('/api/admin', createAdminRoutes({
 app.route('/api/admin', adminRoutes())
 
 app.route('/api/admin/marketplace', adminMarketplaceRoutes())
+
+// License key mint/list/revoke (super admin) + workspace redeem (member).
+app.route('/api/admin', licenseKeyAdminRoutes())
+app.route('/api', licenseKeyRoutes())
 
 // User attribution endpoint (authenticated users, not admin-only)
 app.route('/api', userAttributionRoute())

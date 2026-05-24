@@ -374,6 +374,24 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason:
       'cost-analytics.service.ts:1217 find-then-create/update keyed on the composite; admin request path.',
   },
+  {
+    key: 'LicenseKey.codeHash',
+    category: 'random_secret',
+    reason:
+      'sha-256 of a ~119-bit random plaintext minted in license-key.service.ts:mintCode; collision cryptographically impossible.',
+  },
+  {
+    key: 'LicenseKey.redeemedByWorkspaceId',
+    category: 'request_scoped',
+    reason:
+      'Set atomically by the redeem route (`updateMany({ where: { codeHash, redeemedAt: null } })` claim) on a single user request; the unique is a defense-in-depth backstop against double-redeem to the same workspace.',
+  },
+  {
+    key: 'LicenseKey.redeemedGrantId',
+    category: 'request_scoped',
+    reason:
+      'Stamped on the redeeming key immediately after `WorkspaceGrant.create` inside the same redeem request; one-to-one with the grant we just minted.',
+  },
 ]
 
 // ===========================================================================
