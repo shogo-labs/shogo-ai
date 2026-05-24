@@ -713,8 +713,11 @@
       "linePct": 82.7411,
       "funcPct": 96.5517,
       "phase": 2,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-24T23:03:05.623Z",
+      "beforeLinePct": 82.74,
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/services/transcription.service.ts",
