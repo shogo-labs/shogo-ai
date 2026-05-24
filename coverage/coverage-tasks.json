@@ -791,8 +791,11 @@
       "linePct": 65.3595,
       "funcPct": 65.2174,
       "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-24T23:15:53.645Z",
+      "beforeLinePct": 65.3595,
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/lib/tunnel-redis.ts",

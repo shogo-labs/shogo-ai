@@ -233,3 +233,202 @@ describe('PtySession (real /bin/sh)', () => {
     expect(() => session.dispose()).not.toThrow()
   })
 })
+
+// ─── v3 gap-close: defaultShellCmd branches + getter coverage ──────────────
+
+import { _defaultShellCmdForTests } from '../pty-session'
+
+describe('_defaultShellCmdForTests — shell detection branches', () => {
+  const origShell = process.env.SHELL
+  const origPlatform = (process as any).platform
+
+  afterEach(() => {
+    if (origShell === undefined) delete process.env.SHELL
+    else process.env.SHELL = origShell
+    Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true })
+  })
+
+  test('win32: returns powershell', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    const cmd = _defaultShellCmdForTests()
+    expect(cmd[0]).toBe('powershell.exe')
+    expect(cmd).toContain('-NoLogo')
+  })
+
+  test('zsh SHELL: returns shell with -i', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    process.env.SHELL = '/usr/bin/zsh'
+    const cmd = _defaultShellCmdForTests()
+    expect(cmd[0]).toBe('/usr/bin/zsh')
+    expect(cmd).toContain('-i')
+    expect(cmd).toHaveLength(2)
+  })
+
+  test('fish SHELL: returns shell with -i', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    process.env.SHELL = '/usr/bin/fish'
+    const cmd = _defaultShellCmdForTests()
+    expect(cmd[0]).toBe('/usr/bin/fish')
+    expect(cmd).toContain('-i')
+    expect(cmd).toHaveLength(2)
+  })
+
+  test('bash SHELL: returns shell with --norc --noprofile -i', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    process.env.SHELL = '/bin/bash'
+    const cmd = _defaultShellCmdForTests()
+    expect(cmd[0]).toBe('/bin/bash')
+    expect(cmd).toContain('--norc')
+    expect(cmd).toContain('--noprofile')
+  })
+
+  test('unrecognised / unset SHELL: falls back to /bin/bash', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    delete process.env.SHELL
+    const cmd = _defaultShellCmdForTests()
+    expect(cmd[0]).toBe('/bin/bash')
+  })
+})
+
+describe('PtySession getters (v3 gap-close)', () => {
+  if (process.platform === 'win32') {
+    test.skip('skipped on win32', () => {})
+    return
+  }
+
+  let session: PtySession
+
+  beforeEach(async () => {
+    const { join } = await import('path')
+    const { tmpdir } = await import('os')
+    const { mkdtempSync } = await import('fs')
+    const dir = mkdtempSync(join(tmpdir(), 'pty-getter-test-'))
+    session = new PtySession({ cmd: ['/bin/sh', '-i'], cwd: dir, cols: 80, rows: 24 })
+  })
+  afterEach(() => { session.dispose() })
+
+  test('pid returns a number', () => {
+    expect(typeof session.pid).toBe('number')
+    expect(session.pid).toBeGreaterThan(0)
+  })
+
+  test('lastActivity returns a recent timestamp', () => {
+    expect(session.lastActivity).toBeLessThanOrEqual(Date.now())
+    expect(session.lastActivity).toBeGreaterThan(Date.now() - 5000)
+  })
+
+  test('scrollbackSize starts at 0', () => {
+    expect(session.scrollbackSize).toBe(0)
+  })
+
+  test('exitInfo is null before exit', () => {
+    expect(session.exitInfo).toBeNull()
+    expect(session.isExited).toBe(false)
+  })
+})
+
+describe('PtySession error-swallowing in listeners (v3 gap-close)', () => {
+  if (process.platform === 'win32') {
+    test.skip('skipped on win32', () => {})
+    return
+  }
+
+  test('onData throwing listener is swallowed — other listeners still fire', async () => {
+    const { join } = await import('path')
+    const { tmpdir } = await import('os')
+    const { mkdtempSync, rmSync } = await import('fs')
+    const dir = mkdtempSync(join(tmpdir(), 'pty-catch-test-'))
+    const session = new PtySession({ cmd: ['/bin/sh', '-i'], cwd: dir, cols: 80, rows: 24 })
+    try {
+      let goodFired = false
+      const unsub1 = session.onData(() => { throw new Error('listener boom') })
+      const unsub2 = session.onData(() => { goodFired = true })
+      session.write('echo hello\n')
+      await new Promise((r) => setTimeout(r, 500))
+      expect(goodFired).toBe(true)
+      unsub1()
+      unsub2()
+    } finally {
+      session.dispose()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('onExit throwing listener is swallowed — other listeners still fire', async () => {
+    const { join } = await import('path')
+    const { tmpdir } = await import('os')
+    const { mkdtempSync, rmSync } = await import('fs')
+    const dir = mkdtempSync(join(tmpdir(), 'pty-exit-catch-test-'))
+    const session = new PtySession({ cmd: ['/bin/sh', '-i'], cwd: dir, cols: 80, rows: 24 })
+    try {
+      let goodFired = false
+      session.onExit(() => { throw new Error('exit listener boom') })
+      session.onExit(() => { goodFired = true })
+      session.write('exit 0\n')
+      await new Promise((r) => setTimeout(r, 1000))
+      expect(goodFired).toBe(true)
+    } finally {
+      session.dispose()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('PtySession late-onExit and unsubscribe lambdas (v3 gap-close)', () => {
+  if (process.platform === 'win32') {
+    test.skip('skipped on win32', () => {})
+    return
+  }
+
+  test('onExit called after exit fires callback via queueMicrotask and returns no-op unsub', async () => {
+    const { join } = await import('path')
+    const { tmpdir } = await import('os')
+    const { mkdtempSync, rmSync } = await import('fs')
+    const dir = mkdtempSync(join(tmpdir(), 'pty-late-exit-test-'))
+    const session = new PtySession({ cmd: ['/bin/sh', '-i'], cwd: dir, cols: 80, rows: 24 })
+    try {
+      // Wait for exit first
+      await new Promise<void>((resolve) => {
+        session.onExit(() => resolve())
+        session.write('exit 0\n')
+      })
+      await new Promise((r) => setTimeout(r, 50))
+
+      // Now register AFTER exit → fires via queueMicrotask, returns () => {}
+      let lateFired = false
+      const lateUnsub = session.onExit(() => { lateFired = true })
+      await new Promise((r) => queueMicrotask(r as () => void))
+      expect(lateFired).toBe(true)
+
+      // Call the empty unsubscribe — covers the () => {} function body
+      expect(() => lateUnsub()).not.toThrow()
+    } finally {
+      session.dispose()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('onExit unsubscribe called before exit removes the listener', async () => {
+    const { join } = await import('path')
+    const { tmpdir } = await import('os')
+    const { mkdtempSync, rmSync } = await import('fs')
+    const dir = mkdtempSync(join(tmpdir(), 'pty-unsub-exit-test-'))
+    const session = new PtySession({ cmd: ['/bin/sh', '-i'], cwd: dir, cols: 80, rows: 24 })
+    try {
+      let fired = false
+      const unsub = session.onExit(() => { fired = true })
+      // Unsubscribe BEFORE exit — covers the delete lambda at line 240
+      unsub()
+      await new Promise<void>((resolve) => {
+        session.onExit(() => resolve())
+        session.write('exit 0\n')
+      })
+      await new Promise((r) => setTimeout(r, 50))
+      // The unsubscribed listener should NOT have fired
+      expect(fired).toBe(false)
+    } finally {
+      session.dispose()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
