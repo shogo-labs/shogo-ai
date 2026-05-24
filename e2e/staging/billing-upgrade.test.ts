@@ -81,7 +81,7 @@ test.describe("Billing & Upgrade Flow", () => {
     await navigateToBilling(page)
 
     await expect(page.getByText("You're on Free Plan")).toBeVisible()
-    // Free tier: no monthly pool, daily $0.50 resets at UTC midnight.
+    // Free tier: no monthly pool, daily $1 resets at UTC midnight.
     await expect(page.getByText(/\$[\d.]+ of \$[\d.]+/)).toBeVisible()
     await expect(
       page
@@ -169,10 +169,10 @@ test.describe("Billing & Upgrade Flow", () => {
   })
 
   test.skip("post-upgrade: USD usage pool allocated (monthly + daily)", async () => {
-    // Pro tier is $20/month included + $0.50/day daily allowance. The
-    // exact total can drift as plans evolve, so just assert that the
-    // total is > $20 (i.e. monthly pool is present alongside a daily
-    // sliver) and the remaining starts at or near the total.
+    // Pro tier is $20/month included with no daily allowance (the daily
+    // allowance is free-tier only). The exact total can drift as plans
+    // evolve, so just assert that the total is >= $20 and the remaining
+    // starts at or near the total.
     const usage = await readUsageCard(page)
     expect(usage).not.toBeNull()
     expect(usage!.totalUsd).toBeGreaterThanOrEqual(20)

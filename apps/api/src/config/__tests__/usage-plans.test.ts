@@ -3,24 +3,25 @@
 
 import { describe, expect, it } from 'bun:test'
 import {
-  DAILY_INCLUDED_USD,
+  FREE_DAILY_INCLUDED_USD,
   MONTHLY_DAILY_CAP_USD,
   PLAN_INCLUDED_USD,
   PLAN_VOICE_RATE_OVERRIDES,
   SEAT_INCLUDED_USD,
   VOICE_RAW_USD,
   comparePlanRank,
+  getDailyIncludedForPlan,
   getMonthlyIncludedForPlan,
   normalizePlanId,
 } from '../usage-plans'
 
 describe('constants', () => {
-  it('DAILY_INCLUDED_USD is 0.50', () => {
-    expect(DAILY_INCLUDED_USD).toBe(0.5)
+  it('FREE_DAILY_INCLUDED_USD is $1.00', () => {
+    expect(FREE_DAILY_INCLUDED_USD).toBe(1.0)
   })
 
-  it('MONTHLY_DAILY_CAP_USD is 3.00', () => {
-    expect(MONTHLY_DAILY_CAP_USD).toBe(3.0)
+  it('MONTHLY_DAILY_CAP_USD is $5.00', () => {
+    expect(MONTHLY_DAILY_CAP_USD).toBe(5.0)
   })
 
   it('SEAT_INCLUDED_USD covers all five plan tiers', () => {
@@ -191,6 +192,32 @@ describe('normalizePlanId', () => {
     expect(normalizePlanId('platinum')).toBeNull()
     expect(normalizePlanId('starter')).toBeNull()
     expect(normalizePlanId('unknown-plan')).toBeNull()
+  })
+})
+
+describe('getDailyIncludedForPlan', () => {
+  it('returns $1 for the free plan', () => {
+    expect(getDailyIncludedForPlan('free')).toBe(1)
+  })
+
+  it('returns $0 for every paid plan', () => {
+    expect(getDailyIncludedForPlan('basic')).toBe(0)
+    expect(getDailyIncludedForPlan('pro')).toBe(0)
+    expect(getDailyIncludedForPlan('business')).toBe(0)
+    expect(getDailyIncludedForPlan('enterprise')).toBe(0)
+  })
+
+  it('normalizes decorated plan ids before resolving', () => {
+    expect(getDailyIncludedForPlan('Free-Forever')).toBe(1)
+    expect(getDailyIncludedForPlan('pro_200')).toBe(0)
+    expect(getDailyIncludedForPlan('Business-Annual')).toBe(0)
+  })
+
+  it('falls back to the free amount for unknown / missing ids (safety net)', () => {
+    expect(getDailyIncludedForPlan(null)).toBe(1)
+    expect(getDailyIncludedForPlan(undefined)).toBe(1)
+    expect(getDailyIncludedForPlan('')).toBe(1)
+    expect(getDailyIncludedForPlan('platinum')).toBe(1)
   })
 })
 

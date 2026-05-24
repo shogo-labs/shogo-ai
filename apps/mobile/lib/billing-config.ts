@@ -62,7 +62,6 @@ export const PLAN_PRICING: Record<'basic' | 'pro' | 'business', PlanPricing> = {
 
 export const BASIC_FEATURES = [
   '$5 of monthly usage',
-  '$0.50 of daily usage (up to $3/month)',
   'Basic AI model (fast responses)',
   'Unlimited domains',
   'Single user — no seats',
@@ -70,7 +69,6 @@ export const BASIC_FEATURES = [
 
 export const PRO_FEATURES = [
   '$20 of monthly usage per seat',
-  '$0.50 of daily usage (up to $3/month)',
   'All AI models',
   'Auto-billed overage in $100→$500 trust blocks (cap optional)',
   'Unlimited domains',
@@ -101,38 +99,69 @@ export const ENTERPRISE_FEATURES = [
   'Custom design systems',
 ]
 
-/** Daily included USD that refills every day on every plan. */
-export const DAILY_INCLUDED_USD = 0.5
+/**
+ * Daily included USD for the free plan. The daily allowance is a free-tier
+ * only safety net — paid plans rely on their monthly included pool and
+ * receive $0 from `getDailyIncludedForPlan`.
+ */
+export const FREE_DAILY_INCLUDED_USD = 1
 
 /** Monthly cap on dispensed daily USD (free tier). */
-export const MONTHLY_DAILY_CAP_USD = 3.0
+export const MONTHLY_DAILY_CAP_USD = 5
+
+/**
+ * Daily included USD for a given plan. Only the free tier gets a daily
+ * allowance; every paid plan returns 0. Mirrors the backend helper in
+ * `apps/api/src/config/usage-plans.ts`.
+ *
+ * Missing / unrecognized plan ids fall back to the free amount so a
+ * brand-new workspace whose plan hasn't been resolved still shows the
+ * safety-net allowance.
+ */
+export function getDailyIncludedForPlan(planId: string | null | undefined): number {
+  if (!planId) return FREE_DAILY_INCLUDED_USD
+  const normalized = String(planId).toLowerCase().trim()
+  if (normalized.startsWith('free')) return FREE_DAILY_INCLUDED_USD
+  if (
+    normalized.startsWith('basic') ||
+    normalized.startsWith('pro') ||
+    normalized.startsWith('business') ||
+    normalized.startsWith('enterprise')
+  ) {
+    return 0
+  }
+  return FREE_DAILY_INCLUDED_USD
+}
 
 /**
  * Compute the included monthly USD for a (planId, seats) pair.
  *
- * Includes the always-on daily allowance for display purposes.
+ * The free-tier daily allowance is added in for display purposes; paid
+ * plans show only their monthly included pool.
+ *
  * Backwards-compat with legacy tier ids (`pro_200`, `business_1200`) that
  * may still appear on grandfathered subscriptions.
  */
 export function getIncludedUsdForPlan(planId: string | undefined, seats: number = 1): number {
-  if (!planId) return DAILY_INCLUDED_USD
+  const dailyForPlan = getDailyIncludedForPlan(planId)
+  if (!planId) return dailyForPlan
 
   const normalizedId = planId.toLowerCase()
   const safeSeats = Math.max(1, Math.floor(seats || 1))
 
   if (normalizedId in SEAT_INCLUDED_USD) {
     const base = SEAT_INCLUDED_USD[normalizedId as PlanId]
-    if (normalizedId === 'free' || normalizedId === 'basic') return base + DAILY_INCLUDED_USD
-    return base * safeSeats + DAILY_INCLUDED_USD
+    if (normalizedId === 'free' || normalizedId === 'basic') return base + dailyForPlan
+    return base * safeSeats + dailyForPlan
   }
 
   // Legacy tier suffix (e.g. `pro_200`) — interpret as USD at $0.10/credit
   // so grandfathered subscriptions still display reasonable totals while we
   // wait for the migration script to bump them.
   const match = normalizedId.match(/^(free|basic|pro|business|enterprise)_(\d+)$/)
-  if (match) return parseInt(match[2], 10) * 0.1 + DAILY_INCLUDED_USD
+  if (match) return parseInt(match[2], 10) * 0.1 + dailyForPlan
 
-  return DAILY_INCLUDED_USD
+  return dailyForPlan
 }
 
 /**
@@ -152,7 +181,7 @@ export function getIncludedUsdCapacityForDisplay(opts: {
 }): number {
   const { planId, seats, remainingTotal, monthlyIncludedAllocationUsd } = opts
   if (monthlyIncludedAllocationUsd && monthlyIncludedAllocationUsd > 0) {
-    return monthlyIncludedAllocationUsd + DAILY_INCLUDED_USD
+    return monthlyIncludedAllocationUsd + getDailyIncludedForPlan(planId)
   }
 
   const baseline = getIncludedUsdForPlan(planId, seats)

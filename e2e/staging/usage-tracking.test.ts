@@ -19,9 +19,9 @@ import { homeComposerInput, makeTestUser, signUpAndUpgradeToPro } from "./helper
 
 const TEST_USER = makeTestUser("Usage")
 
-// Pro tier base: $20 monthly + $0.50/day (up to $3 of daily → at account
-// creation the wallet sits at monthly + today's daily). The "of" text is
-// the stable anchor — the exact dollar total may drift as plans evolve.
+// Pro tier base: $20 monthly with no daily allowance (the daily allowance
+// is free-tier only — paid plans rely on the monthly pool). The "of" text
+// is the stable anchor; the exact dollar total may drift as plans evolve.
 test.describe("Usage Tracking", () => {
   test.describe.configure({ mode: "serial" })
 

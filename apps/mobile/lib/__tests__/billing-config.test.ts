@@ -14,8 +14,9 @@
 import { describe, test, expect } from 'bun:test'
 
 import {
-  DAILY_INCLUDED_USD,
+  FREE_DAILY_INCLUDED_USD,
   SEAT_INCLUDED_USD,
+  getDailyIncludedForPlan,
   getIncludedUsdCapacityForDisplay,
   getIncludedUsdForPlan,
   formatUsd,
@@ -24,13 +25,13 @@ import {
 } from '../billing-config'
 
 describe('getIncludedUsdCapacityForDisplay', () => {
-  test('uses wallet-locked monthly allocation when set, plus the daily allowance', () => {
+  test('uses wallet-locked monthly allocation when set; paid plans get no daily top-up', () => {
     const total = getIncludedUsdCapacityForDisplay({
       planId: 'business',
       seats: 1,
       monthlyIncludedAllocationUsd: 40,
     })
-    expect(total).toBeCloseTo(40 + DAILY_INCLUDED_USD, 6)
+    expect(total).toBeCloseTo(40, 6)
   })
 
   test('falls back to plan baseline when no wallet allocation is set', () => {
@@ -45,12 +46,12 @@ describe('getIncludedUsdCapacityForDisplay', () => {
     // The historic bug was passing `effectiveBalance.total` (e.g. 40.5) as the
     // seats argument, producing `40.5 * SEAT_INCLUDED_USD.business = $1,620`.
     // With named args, callers must supply seats explicitly and the math is
-    // grounded. The plan baseline includes the always-on daily allowance.
+    // grounded.
     const total = getIncludedUsdCapacityForDisplay({
       planId: 'business',
       seats: 3,
     })
-    expect(total).toBeCloseTo(SEAT_INCLUDED_USD.business * 3 + DAILY_INCLUDED_USD, 6)
+    expect(total).toBeCloseTo(SEAT_INCLUDED_USD.business * 3, 6)
   })
 
   test('raises baseline to match an unusually high remaining balance (legacy wallet)', () => {
@@ -65,12 +66,13 @@ describe('getIncludedUsdCapacityForDisplay', () => {
     expect(total).toBeCloseTo(75, 6)
   })
 
-  test('no plan, no allocation, no remaining → free baseline', () => {
+  test('no plan, no allocation, no remaining → free baseline (includes the daily allowance)', () => {
     const total = getIncludedUsdCapacityForDisplay({
       planId: undefined,
       seats: 1,
     })
     expect(total).toBeCloseTo(getIncludedUsdForPlan(undefined, 1), 6)
+    expect(total).toBeCloseTo(FREE_DAILY_INCLUDED_USD, 6)
   })
 
   test('does not let the legacy "$40.50 / $1,600.50" bug recur (regression)', () => {
@@ -84,56 +86,65 @@ describe('getIncludedUsdCapacityForDisplay', () => {
       remainingTotal: 40.5,
       monthlyIncludedAllocationUsd: 40,
     })
-    expect(total).toBeCloseTo(40 + DAILY_INCLUDED_USD, 6)
+    expect(total).toBeCloseTo(40, 6)
     expect(total).toBeLessThan(50)
   })
 })
 
+describe('getDailyIncludedForPlan', () => {
+  test('returns the free amount only for the free tier', () => {
+    expect(getDailyIncludedForPlan('free')).toBe(FREE_DAILY_INCLUDED_USD)
+    expect(getDailyIncludedForPlan('basic')).toBe(0)
+    expect(getDailyIncludedForPlan('pro')).toBe(0)
+    expect(getDailyIncludedForPlan('business')).toBe(0)
+    expect(getDailyIncludedForPlan('enterprise')).toBe(0)
+  })
+
+  test('treats missing / unknown plans as free (safety net for un-resolved workspaces)', () => {
+    expect(getDailyIncludedForPlan(undefined)).toBe(FREE_DAILY_INCLUDED_USD)
+    expect(getDailyIncludedForPlan(null)).toBe(FREE_DAILY_INCLUDED_USD)
+    expect(getDailyIncludedForPlan('')).toBe(FREE_DAILY_INCLUDED_USD)
+    expect(getDailyIncludedForPlan('platinum')).toBe(FREE_DAILY_INCLUDED_USD)
+  })
+
+  test('normalizes decorated plan ids (e.g. pro_200, Business-Annual)', () => {
+    expect(getDailyIncludedForPlan('Pro')).toBe(0)
+    expect(getDailyIncludedForPlan('pro_200')).toBe(0)
+    expect(getDailyIncludedForPlan('Business-Annual')).toBe(0)
+    expect(getDailyIncludedForPlan('Free-Forever')).toBe(FREE_DAILY_INCLUDED_USD)
+  })
+})
+
 describe('getIncludedUsdForPlan', () => {
-  test('undefined plan returns just the daily allowance', () => {
-    expect(getIncludedUsdForPlan(undefined)).toBeCloseTo(DAILY_INCLUDED_USD, 6)
+  test('undefined plan returns just the (free-tier) daily allowance', () => {
+    expect(getIncludedUsdForPlan(undefined)).toBeCloseTo(FREE_DAILY_INCLUDED_USD, 6)
   })
 
-  test('free / basic are single-user and ignore seats', () => {
-    expect(getIncludedUsdForPlan('free', 5)).toBeCloseTo(0 + DAILY_INCLUDED_USD, 6)
-    expect(getIncludedUsdForPlan('basic', 10)).toBeCloseTo(
-      SEAT_INCLUDED_USD.basic + DAILY_INCLUDED_USD,
-      6,
-    )
+  test('free includes the daily allowance; basic does not (paid plan)', () => {
+    expect(getIncludedUsdForPlan('free', 5)).toBeCloseTo(0 + FREE_DAILY_INCLUDED_USD, 6)
+    expect(getIncludedUsdForPlan('basic', 10)).toBeCloseTo(SEAT_INCLUDED_USD.basic, 6)
   })
 
-  test('pro/business/enterprise scale linearly with seats', () => {
-    expect(getIncludedUsdForPlan('pro', 4)).toBeCloseTo(
-      SEAT_INCLUDED_USD.pro * 4 + DAILY_INCLUDED_USD,
-      6,
-    )
-    expect(getIncludedUsdForPlan('business', 3)).toBeCloseTo(
-      SEAT_INCLUDED_USD.business * 3 + DAILY_INCLUDED_USD,
-      6,
-    )
+  test('pro/business/enterprise scale linearly with seats and get no daily top-up', () => {
+    expect(getIncludedUsdForPlan('pro', 4)).toBeCloseTo(SEAT_INCLUDED_USD.pro * 4, 6)
+    expect(getIncludedUsdForPlan('business', 3)).toBeCloseTo(SEAT_INCLUDED_USD.business * 3, 6)
   })
 
   test('zero/negative seats are clamped to 1', () => {
-    expect(getIncludedUsdForPlan('pro', 0)).toBeCloseTo(
-      SEAT_INCLUDED_USD.pro + DAILY_INCLUDED_USD,
-      6,
-    )
+    expect(getIncludedUsdForPlan('pro', 0)).toBeCloseTo(SEAT_INCLUDED_USD.pro, 6)
   })
 
   test('legacy tier ids (e.g. pro_200) interpret the numeric suffix at $0.10/credit', () => {
-    expect(getIncludedUsdForPlan('pro_200')).toBeCloseTo(20 + DAILY_INCLUDED_USD, 6)
-    expect(getIncludedUsdForPlan('business_1200')).toBeCloseTo(120 + DAILY_INCLUDED_USD, 6)
+    expect(getIncludedUsdForPlan('pro_200')).toBeCloseTo(20, 6)
+    expect(getIncludedUsdForPlan('business_1200')).toBeCloseTo(120, 6)
   })
 
-  test('unknown plan id returns only the daily allowance', () => {
-    expect(getIncludedUsdForPlan('made-up-tier')).toBeCloseTo(DAILY_INCLUDED_USD, 6)
+  test('unknown plan id returns only the daily allowance (treated as free)', () => {
+    expect(getIncludedUsdForPlan('made-up-tier')).toBeCloseTo(FREE_DAILY_INCLUDED_USD, 6)
   })
 
   test('mixed-case plan ids are normalized', () => {
-    expect(getIncludedUsdForPlan('Pro', 2)).toBeCloseTo(
-      SEAT_INCLUDED_USD.pro * 2 + DAILY_INCLUDED_USD,
-      6,
-    )
+    expect(getIncludedUsdForPlan('Pro', 2)).toBeCloseTo(SEAT_INCLUDED_USD.pro * 2, 6)
   })
 })
 

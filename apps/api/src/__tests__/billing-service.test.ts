@@ -147,10 +147,24 @@ const mockPrisma: any = {
 mock.module('../lib/prisma', () => withPrismaExports({ prisma: mockPrisma }))
 
 mock.module('../config/usage-plans', () => ({
-  DAILY_INCLUDED_USD: 1,
+  FREE_DAILY_INCLUDED_USD: 1,
   MONTHLY_DAILY_CAP_USD: 30,
   PLAN_INCLUDED_USD: { free: 0, basic: 5, pro: 20, business: 40 },
   PLAN_RANK: { free: 0, basic: 1, pro: 2, business: 3, enterprise: 4 },
+  getDailyIncludedForPlan: (planId: string | null | undefined) => {
+    if (!planId) return 1
+    const lc = String(planId).toLowerCase().trim()
+    if (lc.startsWith('free')) return 1
+    if (
+      lc.startsWith('basic') ||
+      lc.startsWith('pro') ||
+      lc.startsWith('business') ||
+      lc.startsWith('enterprise')
+    ) {
+      return 0
+    }
+    return 1
+  },
   getMonthlyIncludedForPlan: (plan: string, seats: number) => {
     if (plan === 'basic') return 5
     if (plan === 'pro') return 20 * seats
@@ -793,8 +807,11 @@ describe('consumeUsage', () => {
     })
     expect(res.success).toBe(true)
     const w = walletByWs.get('ws-1')
-    // Grant refill should NOT have applied; monthly stays at original 5
-    expect(w.monthlyIncludedUsd).toBe(5)
+    // Grant refill should NOT have applied (would have set monthly to 9999+);
+    // monthly stays at the original 5 minus the 0.1 charge. The daily
+    // allowance is free-tier only, so the cost falls through to monthly
+    // for a Pro workspace.
+    expect(w.monthlyIncludedUsd).toBeCloseTo(4.9, 6)
   })
 })
 

@@ -43,7 +43,7 @@ const STAGING_PRODUCTS: ProductCopy[] = [
   {
     id: 'prod_UD3oRbXK7sLA8p',
     name: 'Shogo Basic',
-    description: '$5 of monthly AI usage + $0.50/day. All usage billed at raw provider cost plus a flat 20% markup. Single user — no seats. No credits, no unit conversions.',
+    description: '$5 of monthly AI usage. All usage billed at raw provider cost plus a flat 20% markup. Single user — no seats. No credits, no unit conversions.',
     metadata: { plan: 'basic', included_usd: '5', per_seat: 'false', markup: '0.20' },
   },
   {
@@ -79,7 +79,7 @@ const PRODUCTION_PRODUCTS: ProductCopy[] = [
   {
     id: 'prod_UD3pguoX3NJ9Q6',
     name: 'Shogo Basic',
-    description: '$5 of monthly AI usage + $0.50/day. All usage billed at raw provider cost plus a flat 20% markup. Single user — no seats. No credits, no unit conversions.',
+    description: '$5 of monthly AI usage. All usage billed at raw provider cost plus a flat 20% markup. Single user — no seats. No credits, no unit conversions.',
     metadata: { plan: 'basic', included_usd: '5', per_seat: 'false', markup: '0.20' },
   },
   {
