@@ -556,3 +556,112 @@ export default { port, fetch: app.fetch }
     expect(result.hadMarker).toBe(false)
   })
 })
+
+// NOTE: the following tests are appended by v3 coverage campaign to close
+// the remaining gaps (lines 251-272, 453-455, 544-547).
+
+describe('extractCustomRoutes — v3 gap-close', () => {
+  let tmpDir2: string
+
+  beforeEach(() => {
+    tmpDir2 = makeWorkspace()
+  })
+
+  afterEach(() => {
+    rmSync(TMP_ROOT, { recursive: true, force: true })
+  })
+
+  // Lines 251-272: isCommented branch in extractMigratedBlock.
+  test('extracts a commented-out MIGRATED-CUSTOM-ROUTES block and marks needsReview', () => {
+    const commentedMarkerServer = `import { Hono } from 'hono'
+import { createAllRoutes } from './src/generated/routes'
+import { prisma } from './src/lib/db'
+
+const app = new Hono()
+app.route('/api', createAllRoutes(prisma))
+
+// MIGRATED-CUSTOM-ROUTES — from .shogo/server/custom-routes.ts on 2026-04-29
+/* Original custom-routes.ts content (imports were unsafe — needs manual porting)
+import { someService } from '../db'
+
+const routes = new Hono()
+routes.get('/status', (c) => c.json({ ok: true }))
+export default routes
+*/
+`
+    writeFileSync(join(tmpDir2, 'server.tsx'), commentedMarkerServer, 'utf-8')
+    writeFileSync(join(tmpDir2, 'shogo.config.json'), '{}', 'utf-8')
+
+    const result = extractCustomRoutes(tmpDir2)
+
+    expect(result.migrated).toBe(true)
+    expect(result.hadMarker).toBe(true)
+    expect(result.needsReview).toBe(true)
+    expect(existsSync(join(tmpDir2, 'server.tsx'))).toBe(false)
+
+    const customRoutes = readFileSync(join(tmpDir2, 'custom-routes.ts'), 'utf-8')
+    expect(customRoutes).toContain("import { Hono } from 'hono'")
+    expect(customRoutes).toContain('export default app')
+    expect(customRoutes).toContain('MIGRATED-CUSTOM-ROUTES')
+  })
+
+  // Lines 453-455: stock server.tsx + shogo.config.json + NO custom-routes.ts.
+  // stockMatch = false (customRoutesExists=false), falls through to
+  // isStockServerTsx branch and writes DEFAULT_CUSTOM_ROUTES_SCAFFOLD.
+  test('writes default custom-routes scaffold when stock server.tsx has no custom-routes.ts yet', () => {
+    const stockServer = `import { Hono } from 'hono'
+import { serveStatic } from 'hono/bun'
+import { createAllRoutes } from './src/generated/routes'
+import { prisma } from './src/lib/db'
+
+const app = new Hono()
+
+app.get('/health', (c) => c.json({ ok: true }))
+app.route('/api', createAllRoutes(prisma))
+
+app.use('/*', serveStatic({ root: './dist' }))
+app.get('*', serveStatic({ path: './dist/index.html' }))
+
+export default { fetch: app.fetch }
+`
+    writeFileSync(join(tmpDir2, 'server.tsx'), stockServer, 'utf-8')
+    writeFileSync(join(tmpDir2, 'shogo.config.json'), '{}', 'utf-8')
+
+    const result = extractCustomRoutes(tmpDir2)
+
+    expect(result.migrated).toBe(true)
+    expect(result.hadMarker).toBe(false)
+    expect(existsSync(join(tmpDir2, 'server.tsx'))).toBe(false)
+    const customRoutes = readFileSync(join(tmpDir2, 'custom-routes.ts'), 'utf-8')
+    expect(customRoutes).toContain('export default app')
+    expect(customRoutes).toContain('Custom API Routes')
+  })
+
+  // Lines 544-547: the catch block — triggered by blocking mkdirSync
+  // (place a file at .shogo so mkdirSync(.shogo/...) fails ENOTDIR).
+  test('returns error result and leaves workspace unchanged when an FS operation fails', () => {
+    const migratedServer = `import { Hono } from 'hono'
+import { createAllRoutes } from './src/generated/routes'
+import { prisma } from './src/lib/db'
+
+const app = new Hono()
+app.route('/api', createAllRoutes(prisma))
+
+// MIGRATED-CUSTOM-ROUTES — from .shogo/server/custom-routes.ts on 2026-04-29
+const customRoutesApp = new Hono()
+customRoutesApp.get('/hello', (c) => c.text('hi'))
+app.route('/api', customRoutesApp)
+`
+    writeFileSync(join(tmpDir2, 'server.tsx'), migratedServer, 'utf-8')
+    writeFileSync(join(tmpDir2, 'shogo.config.json'), '{}', 'utf-8')
+    // Block mkdirSync: put a file at .shogo so mkdirSync(.shogo/server-tsx-*) fails.
+    writeFileSync(join(tmpDir2, '.shogo'), 'blocker', 'utf-8')
+
+    const result = extractCustomRoutes(tmpDir2)
+
+    expect(result.migrated).toBe(false)
+    expect(typeof result.error).toBe('string')
+    expect(result.error!.length).toBeGreaterThan(0)
+    expect(existsSync(join(tmpDir2, 'server.tsx'))).toBe(true)
+  })
+})
