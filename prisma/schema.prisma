@@ -694,10 +694,65 @@ model WorkspaceGrant {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  licenseKeys  LicenseKey[]
 
   @@index([workspaceId, expiresAt])
   @@map("workspace_grants")
+}
+
+/// Single-use license keys that promote a workspace to a paid plan by
+/// minting a `WorkspaceGrant` on redemption. Issuance and redemption are
+/// decoupled so we can pre-mint batches (e.g. for a launch), revoke or
+/// expire unredeemed keys, and audit who redeemed what.
+///
+/// The plaintext code is shown to the recipient exactly once at issuance
+/// and is never persisted; only `codeHash` (sha-256, hex-encoded) is
+/// stored. `codePrefix` is the first 12 plaintext chars and is fine to
+/// store/display because it doesn't expose enough entropy to brute-force
+/// a redemption.
+///
+/// Single-use is enforced by `redeemedAt` + the `redeemedByWorkspaceId`
+/// / `redeemedGrantId` unique constraints. The redeem path uses
+/// `updateMany({ where: { codeHash, redeemedAt: null } })` so the row
+/// lock serializes concurrent redemptions atomically.
+model LicenseKey {
+  id                    String         @id @default(uuid())
+  /// sha-256 hex of the canonical (uppercased, trimmed) plaintext code.
+  codeHash              String         @unique
+  /// First 12 plaintext chars (e.g. `SHGO-PRO-XXX`). For admin lookup
+  /// and CSV reconciliation only — never enough entropy to redeem.
+  codePrefix            String
+  /// Optional batch identifier, e.g. `hn-launch-2026`.
+  batchId               String?
+  /// Plan the redemption confers via the generated grant. One of
+  /// `basic|pro|business|enterprise` (mirrors `WorkspaceGrant.planId`).
+  planId                String
+  /// Optional extra USD credit stacked into the generated grant.
+  monthlyIncludedUsd    Float          @default(0)
+  /// Optional extra free seats stacked into the generated grant.
+  freeSeats             Int            @default(0)
+  /// Length of the conferred grant in days. `null` = perpetual.
+  durationDays          Int?
+  /// If set, the key itself becomes invalid after this instant even if
+  /// never redeemed. Independent from the grant's own expiry.
+  expiresAt             DateTime?
+  /// Set atomically on the first successful redemption.
+  redeemedAt            DateTime?
+  redeemedByWorkspaceId String?        @unique
+  redeemedByUserId      String?
+  /// `WorkspaceGrant.id` minted by the redemption, for audit + revoke.
+  redeemedGrantId       String?        @unique
+  note                  String?
+  createdByUserId       String?
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+
+  redeemedGrant WorkspaceGrant? @relation(fields: [redeemedGrantId], references: [id], onDelete: SetNull)
+
+  @@index([batchId])
+  @@index([redeemedAt])
+  @@map("license_keys")
 }
 
 // =============================================================================
