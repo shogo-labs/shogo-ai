@@ -39,6 +39,14 @@ export interface ChatTransportOptions {
    * opt out (e.g. for legacy environments without the durable runtime).
    */
   durableResume?: boolean
+  /**
+   * Forwarded to the auto-resuming-fetch wrapper. Fires for every chunk
+   * read off the underlying body, including SSE comment lines like the
+   * API's `: proxy-keep-alive\n\n` heartbeat. Use this to feed a stall
+   * watchdog that needs wire-level liveness rather than AI-SDK status
+   * flips. Ignored when `durableResume` is false (no wrapper exists).
+   */
+  onChunk?: (info: { bytes: number; resumed: boolean }) => void
 }
 
 export interface ChatTransportConfig {
@@ -97,13 +105,14 @@ export function useChatTransportConfig({
   headers,
   chatSessionId,
   durableResume = true,
+  onChunk,
 }: ChatTransportOptions): ChatTransportConfig | undefined {
   return useMemo(() => {
     if (!projectId && !localAgentUrl) return undefined
 
     const baseFetch = customFetch ?? globalThis.fetch
     const fetch = durableResume
-      ? createAutoResumingFetch(baseFetch.bind(globalThis))
+      ? createAutoResumingFetch(baseFetch.bind(globalThis), { onChunk })
       : customFetch
 
     // Compose `headers` so the caller-provided headers (cookies, auth) and
@@ -123,5 +132,5 @@ export function useChatTransportConfig({
       fetch,
       headers: composedHeaders,
     }
-  }, [apiBaseUrl, projectId, localAgentUrl, credentials, customFetch, headers, chatSessionId, durableResume])
+  }, [apiBaseUrl, projectId, localAgentUrl, credentials, customFetch, headers, chatSessionId, durableResume, onChunk])
 }

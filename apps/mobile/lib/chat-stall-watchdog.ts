@@ -41,8 +41,21 @@ export type StalledChatStatus = 'submitted' | 'streaming'
  * `'streaming'` can take a while for a real long turn, so the bar is
  * deliberately high — we only act when the stream is unambiguously
  * dead.
+ *
+ * History: the submitted threshold was 30_000 until 2026-05-23, when a
+ * production incident showed the watchdog tripping on legitimate
+ * cold-start turns. The AI SDK only flips `useChat().status` →
+ * `'streaming'` on the first `text-delta`, not on `data-turn-start` —
+ * so when a project pod has a cold Composio session init (~300ms) +
+ * a large system-prompt build (~18k tokens / 60+ tools) + Anthropic
+ * TTFB on a ≥170k-token request, the gap between POST and first
+ * text-delta routinely exceeds 30s. Raising to 120s gives p99
+ * comfortable headroom; we also (a) reset the progress timestamp on
+ * any wire byte (auto-resuming-fetch `onChunk`) and (b) reset on
+ * every `data-*` callback (`useChat({ onData })`) so the watchdog
+ * tracks actual liveness rather than AI-SDK status flips.
  */
-export const DEFAULT_SUBMITTED_STALL_MS = 30_000
+export const DEFAULT_SUBMITTED_STALL_MS = 120_000
 export const DEFAULT_STREAMING_STALL_MS = 180_000
 
 export interface StallWatchdogState {
