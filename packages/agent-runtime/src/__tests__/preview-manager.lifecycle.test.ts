@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { PreviewManager } from '../preview-manager'
+import { PreviewManager, reapStaleViteWatchers } from '../preview-manager'
 
 let dir: string
 beforeEach(() => {
@@ -479,5 +479,286 @@ describe('PreviewManager._markDepsSettled', () => {
     // Second call is a no-op
     m._markDepsSettled()
     expect(m.depsSettled).toBe(true)
+  })
+})
+
+// --- reapStaleViteWatchers ------------------------------------------------
+//
+// Reaper for orphaned `vite build --watch` processes that prior
+// agent-runtime incarnations stranded with PPID=1. See the function
+// docstring for the leak path this defends against (macOS jetsam,
+// hot-reload, 5s waitForExit vs 30s graceful drain).
+//
+// We exercise the function in isolation (not via startBuildWatch) so
+// we don't need to mock vite-bin discovery, the spawn invocation, or
+// the build-log writer. Every test injects a fixture `listProcesses`
+// and records `killGroup` calls — the production paths
+// (`ps -A`/`Get-CimInstance`, `process.kill(-pgid, …)`/`taskkill`)
+// stay covered by their respective platforms in CI integration.
+
+describe('reapStaleViteWatchers', () => {
+  /**
+   * Build a POSIX `ps` line matching the production argv shape:
+   *   <bun-binary> <workspace>/node_modules/vite/bin/vite.js build --watch --emptyOutDir false
+   * Each line is rendered as `<pid> <pgid> <command>` to mirror
+   * `ps -A -o pid=,pgid=,command=`.
+   */
+  function psLine(pid: number, pgid: number, workspace: string, extraArgs = '--emptyOutDir false') {
+    const bun = '/Applications/Shogo.app/Contents/Resources/bun/bun'
+    return `${pid} ${pgid} ${bun} ${workspace}/node_modules/vite/bin/vite.js build --watch ${extraArgs}`
+  }
+
+  it('returns empty + does not kill anything when ps output is empty', () => {
+    const killed: Array<[number, NodeJS.Signals]> = []
+    const out = reapStaleViteWatchers('/ws/x', {
+      listProcesses: () => '',
+      killGroup: (pgid, sig) => killed.push([pgid, sig]),
+      platform: 'darwin',
+      selfPid: 99999,
+      logger: { log: () => {}, warn: () => {} },
+    })
+    expect(out).toEqual([])
+    expect(killed).toEqual([])
+  })
+
+  it('returns empty + does not kill anything when no rows match the workspace', () => {
+    const killed: Array<[number, NodeJS.Signals]> = []
+    const lines = [
+      '1 1 /sbin/launchd',
+      psLine(2000, 2000, '/ws/some-other-project'),
+      '3000 3000 /Applications/Shogo.app/Contents/Resources/bun/bun /tmp/a/node_modules/vite/bin/vite.js build --foo',
+    ].join('\n')
+    const out = reapStaleViteWatchers('/ws/x', {
+      listProcesses: () => lines,
+      killGroup: (pgid, sig) => killed.push([pgid, sig]),
+      platform: 'darwin',
+      selfPid: 99999,
+      logger: { log: () => {}, warn: () => {} },
+    })
+    expect(out).toEqual([])
+    expect(killed).toEqual([])
+  })
+
+  it('matches only watchers whose argv contains BOTH the workspace vite path AND "build --watch"', () => {
+    const killed: Array<[number, NodeJS.Signals]> = []
+    const ws = '/ws/match-me'
+    const lines = [
+      // Same workspace, but not build --watch — skip
+      `100 100 /bun ${ws}/node_modules/vite/bin/vite.js --port 5173`,
+      // build --watch, but a different workspace — skip
+      psLine(200, 200, '/ws/other'),
+      // Match
+      psLine(300, 300, ws),
+      // Match — different argv but same workspace + watch
+      psLine(400, 400, ws, '--mode dev'),
+    ].join('\n')
+    const out = reapStaleViteWatchers(ws, {
+      listProcesses: () => lines,
+      killGroup: (pgid, sig) => killed.push([pgid, sig]),
+      platform: 'darwin',
+      selfPid: 99999,
+      logger: { log: () => {}, warn: () => {} },
+    })
+    expect(out.map((m) => m.pid).sort()).toEqual([300, 400])
+    expect(killed.sort()).toEqual([[300, 'SIGTERM'], [400, 'SIGTERM']])
+  })
+
+  it('kills the PGID column (not the PID) so rollup workers in the group are reaped too', () => {
+    const killed: Array<[number, NodeJS.Signals]> = []
+    const ws = '/ws/pgid-check'
+    // Vite is spawned `detached: true` so pgid == pid for the
+    // group leader. But the production kill path targets the PGID
+    // specifically — assert we send the PGID number, not the PID.
+    // Use distinct values to make the regression visible if the
+    // implementation ever swaps them.
+    const out = reapStaleViteWatchers(ws, {
+      listProcesses: () => `${999} ${888} /bun ${ws}/node_modules/vite/bin/vite.js build --watch`,
+      killGroup: (pgid, sig) => killed.push([pgid, sig]),
+      platform: 'darwin',
+      selfPid: 11111,
+      logger: { log: () => {}, warn: () => {} },
+    })
+    expect(out).toEqual([{ pid: 999, pgid: 888, command: expect.any(String) as unknown as string }])
+    expect(killed).toEqual([[888, 'SIGTERM']])
+  })
+
+  it('skips the current process even if its argv would otherwise match', () => {
+    const killed: Array<[number, NodeJS.Signals]> = []
+    const ws = '/ws/self-skip'
+    const selfPid = 42424
+    const lines = [
+      psLine(selfPid, selfPid, ws),
+      psLine(100, 100, ws),
+    ].join('\n')
+    const out = reapStaleViteWatchers(ws, {
+      listProcesses: () => lines,
+      killGroup: (pgid, sig) => killed.push([pgid, sig]),
+      platform: 'darwin',
+      selfPid,
+      logger: { log: () => {}, warn: () => {} },
+    })
+    expect(out.map((m) => m.pid)).toEqual([100])
+    expect(killed).toEqual([[100, 'SIGTERM']])
+  })
+
+  it('handles ps lines with multiple spaces in the command path (e.g. "Application Support") without truncation', () => {
+    const killed: Array<[number, NodeJS.Signals]> = []
+    const ws = '/Users/x/Library/Application Support/Shogo/data/workspaces/abc-123'
+    // The bun argv0 has a space (`Application Support`), AND so does
+    // the workspace path. ps emits the command verbatim with embedded
+    // spaces preserved; our parser must reconstruct the full command
+    // string from column 3 onwards, not split-and-take-only-the-third.
+    const cmd = `/Applications/Shogo.app/Contents/Resources/bun/bun ${ws}/node_modules/vite/bin/vite.js build --watch --emptyOutDir false`
+    const out = reapStaleViteWatchers(ws, {
+      listProcesses: () => `12345 12345 ${cmd}\n`,
+      killGroup: (pgid, sig) => killed.push([pgid, sig]),
+      platform: 'darwin',
+      selfPid: 1,
+      logger: { log: () => {}, warn: () => {} },
+    })
+    expect(out).toHaveLength(1)
+    expect(out[0].pgid).toBe(12345)
+    expect(out[0].command).toContain('Application Support')
+    expect(killed).toEqual([[12345, 'SIGTERM']])
+  })
+
+  it('returns [] + logs a warning (does not throw) when listProcesses throws', () => {
+    const killed: Array<[number, NodeJS.Signals]> = []
+    const warns: string[] = []
+    const out = reapStaleViteWatchers('/ws/y', {
+      listProcesses: () => { throw new Error('ps: command not found') },
+      killGroup: (pgid, sig) => killed.push([pgid, sig]),
+      platform: 'darwin',
+      selfPid: 1,
+      logger: { log: () => {}, warn: (m: string) => warns.push(m) },
+    })
+    expect(out).toEqual([])
+    expect(killed).toEqual([])
+    expect(warns.some((m) => m.includes('process table scan failed'))).toBe(true)
+  })
+
+  it('swallows kill errors so one stale group does not block reaping the rest', () => {
+    // Mirrors the ESRCH-after-ps race: the orphan exited between
+    // our `ps` snapshot and our kill. The reaper must continue
+    // to the next match instead of bubbling the error up to
+    // startBuildWatch (which would prevent the new vite spawn).
+    const killCalls: number[] = []
+    const ws = '/ws/kill-errors'
+    const out = reapStaleViteWatchers(ws, {
+      listProcesses: () => [psLine(10, 10, ws), psLine(20, 20, ws), psLine(30, 30, ws)].join('\n'),
+      killGroup: (pgid) => {
+        killCalls.push(pgid)
+        if (pgid === 20) throw new Error('ESRCH')
+      },
+      platform: 'darwin',
+      selfPid: 1,
+      logger: { log: () => {}, warn: () => {} },
+    })
+    // All three are reported as matches even though one kill threw.
+    expect(out.map((m) => m.pgid).sort()).toEqual([10, 20, 30])
+    // All three kill attempts were made (no short-circuit on the error).
+    expect(killCalls.sort()).toEqual([10, 20, 30])
+  })
+
+  it('parses Windows `Get-CimInstance` JSON output (array form)', () => {
+    const killed: Array<[number, NodeJS.Signals]> = []
+    // PowerShell forward-slash-normalizes inconsistently, so the
+    // reaper normalizes both sides; verify a mixed-slash workspace
+    // matches an argv with forward slashes.
+    const ws = 'C:\\Users\\Russell\\AppData\\Roaming\\Shogo\\workspaces\\abc'
+    const json = JSON.stringify([
+      {
+        ProcessId: 5000,
+        ParentProcessId: 1,
+        CommandLine:
+          '"C:/Program Files/Shogo/bun.exe" "C:/Users/Russell/AppData/Roaming/Shogo/workspaces/abc/node_modules/vite/bin/vite.js" build --watch --emptyOutDir false',
+      },
+      {
+        ProcessId: 6000,
+        ParentProcessId: 1,
+        CommandLine: 'C:/Windows/System32/svchost.exe',
+      },
+    ])
+    const out = reapStaleViteWatchers(ws, {
+      listProcesses: () => json,
+      killGroup: (pgid, sig) => killed.push([pgid, sig]),
+      platform: 'win32',
+      selfPid: 1,
+      logger: { log: () => {}, warn: () => {} },
+    })
+    expect(out.map((m) => m.pid)).toEqual([5000])
+    // Windows has no PGID; reaper treats pid==pgid and the production
+    // killGroup wraps `taskkill /T /F /PID <pgid>` to walk the tree.
+    expect(killed).toEqual([[5000, 'SIGTERM']])
+  })
+
+  it('parses Windows JSON output (single-element object form, not wrapped in array)', () => {
+    // PowerShell's `ConvertTo-Json` returns a bare object — NOT a
+    // one-element array — when there's exactly one match. Real bug
+    // we'd hit on a machine with exactly one orphan vite-watch.
+    const killed: Array<[number, NodeJS.Signals]> = []
+    const ws = 'C:/ws/single'
+    const json = JSON.stringify({
+      ProcessId: 7777,
+      ParentProcessId: 1,
+      CommandLine: `bun.exe ${ws}/node_modules/vite/bin/vite.js build --watch`,
+    })
+    const out = reapStaleViteWatchers(ws, {
+      listProcesses: () => json,
+      killGroup: (pgid, sig) => killed.push([pgid, sig]),
+      platform: 'win32',
+      selfPid: 1,
+      logger: { log: () => {}, warn: () => {} },
+    })
+    expect(out.map((m) => m.pid)).toEqual([7777])
+    expect(killed).toEqual([[7777, 'SIGTERM']])
+  })
+
+  it('returns [] when Windows JSON is malformed (defensive parse)', () => {
+    const killed: Array<[number, NodeJS.Signals]> = []
+    const out = reapStaleViteWatchers('C:/ws/x', {
+      listProcesses: () => 'not-json {{',
+      killGroup: (pgid, sig) => killed.push([pgid, sig]),
+      platform: 'win32',
+      selfPid: 1,
+      logger: { log: () => {}, warn: () => {} },
+    })
+    expect(out).toEqual([])
+    expect(killed).toEqual([])
+  })
+
+  it('emits a single summary log line listing the pgids it is reaping', () => {
+    // The log line is the operator's only signal that the reaper
+    // fired — it's how a desktop user finds out "Shogo cleaned up
+    // 3 orphan watchers from a previous session". Keep the format
+    // pinned so log parsers / dashboards stay stable.
+    const logs: string[] = []
+    const ws = '/ws/logs'
+    reapStaleViteWatchers(ws, {
+      listProcesses: () => [psLine(7, 7, ws), psLine(8, 8, ws)].join('\n'),
+      killGroup: () => {},
+      platform: 'darwin',
+      selfPid: 1,
+      logger: { log: (m: string) => logs.push(m), warn: () => {} },
+    })
+    const summary = logs.find((l) => l.includes('reapStaleViteWatchers'))
+    expect(summary).toBeDefined()
+    expect(summary).toContain('found 2 orphan')
+    expect(summary).toContain('pgid(s)=7,8')
+  })
+
+  it('is silent (no log lines) when no orphans are found', () => {
+    // Steady-state guard: the reaper runs on EVERY startBuildWatch
+    // (including normal cold starts), so noisy logging here would
+    // spam every project start with `found 0 orphans` lines.
+    const logs: string[] = []
+    reapStaleViteWatchers('/ws/quiet', {
+      listProcesses: () => '',
+      killGroup: () => {},
+      platform: 'darwin',
+      selfPid: 1,
+      logger: { log: (m: string) => logs.push(m), warn: () => {} },
+    })
+    expect(logs).toEqual([])
   })
 })
