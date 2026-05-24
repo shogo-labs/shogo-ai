@@ -434,3 +434,92 @@ describe('CloudFileTransport', () => {
     })
   })
 })
+
+// ─── getDefaultFs coverage (lines 144-174) ───────────────────────────────────
+
+describe('getDefaultFs (via transport without fs option)', () => {
+  it('throws when process.versions.node is not a string (non-Node environment)', async () => {
+    const origProcess = (globalThis as any).process
+    ;(globalThis as any).process = { versions: {} }
+    try {
+      const transport = new CloudFileTransport({ apiUrl, apiKey, projectId, localDir: '/tmp/test-no-fs', fetchImpl: () => Promise.resolve(new Response('', { status: 500 })) })
+      await expect((transport as any).fs()).rejects.toThrow('no FsAdapter passed')
+    } finally {
+      ;(globalThis as any).process = origProcess
+    }
+  })
+
+  it('loads node:fs/promises adapter in Bun and returns a working FsAdapter', async () => {
+    const os = await import('node:os')
+    const nodePath = await import('node:path')
+    const tmpDir = nodePath.join(os.tmpdir(), `cloud-ft-test-${Date.now()}`)
+    const { fetchImpl, requests } = makeFetch(() =>
+      Response.json({ ok: true, projectId, files: [], source: 's3', generatedAt: new Date().toISOString() }),
+    )
+    const transport = new CloudFileTransport({
+      apiUrl, apiKey, projectId,
+      localDir: tmpDir,
+      fetchImpl,
+      // No fs option — forces getDefaultFs()
+    })
+    // downloadAll() calls this.fs() first, then listManifest(); empty manifest
+    // means no actual file I/O beyond staging dir creation + rename.
+    const stats = await transport.downloadAll()
+    expect(stats.errors).toHaveLength(0)
+    expect(requests[0]?.url).toContain('/workspace/manifest')
+    // Sanity: fs() memoises — second call returns the same instance.
+    const a = await (transport as any).fs()
+    const b = await (transport as any).fs()
+    expect(a).toBe(b)
+  })
+
+  it('exercises all adapter methods via direct calls on the real node:fs adapter', async () => {
+    const os = await import('node:os')
+    const nodePath = await import('node:path')
+    const base = nodePath.join(os.tmpdir(), `cloud-ft-adapter-${Date.now()}`)
+    const transport = new CloudFileTransport({
+      apiUrl, apiKey, projectId, localDir: base,
+      fetchImpl: () => Promise.resolve(new Response('', { status: 500 })),
+    })
+    const adapter = await (transport as any).fs() as import('../cloud-file-transport').FsAdapter
+
+    // mkdir
+    await adapter.mkdir(base, { recursive: true })
+
+    // writeFile
+    const file = `${base}/hello.txt`
+    const data = new TextEncoder().encode('hello')
+    await adapter.writeFile(file, data)
+
+    // readFile
+    const read = await adapter.readFile(file)
+    expect(new TextDecoder().decode(read)).toBe('hello')
+
+    // stat
+    const s = await adapter.stat(file)
+    expect(s.size).toBe(5)
+    expect(s.isDirectory()).toBe(false)
+
+    // readdir
+    const entries = await adapter.readdir(base, { withFileTypes: true })
+    const names = entries.map((e) => e.name)
+    expect(names).toContain('hello.txt')
+    const fileEntry = entries.find((e) => e.name === 'hello.txt')!
+    expect(fileEntry.isFile()).toBe(true)
+    expect(fileEntry.isDirectory()).toBe(false)
+
+    // rename
+    const file2 = `${base}/world.txt`
+    await adapter.rename(file, file2)
+    const s2 = await adapter.stat(file2)
+    expect(s2.size).toBe(5)
+
+    // unlink
+    await adapter.unlink(file2)
+    await expect(adapter.stat(file2)).rejects.toThrow()
+
+    // rm
+    await adapter.rm(base, { recursive: true, force: true })
+    await expect(adapter.stat(base)).rejects.toThrow()
+  })
+})
