@@ -1160,7 +1160,24 @@ app.post('/agent/chat', async (c) => {
 
   // Use the DB chatSessionId as the runtime session key so that different
   // chat sessions within the same project get isolated conversation history.
-  const chatSessionKey = body.chatSessionId || 'chat'
+  //
+  // No fallback: the runtime used to default to the literal string `'chat'`
+  // when the caller omitted the id, but that silently collapsed every
+  // no-id turn into a single shared `SessionManager` slot per pod, leaking
+  // one chat's history into the next. The proxy (`apps/api/src/routes/
+  // project-chat.ts`) already rejects requests without a chat session id;
+  // this guard is the runtime-side belt-and-suspenders for tests, evals,
+  // and any direct callers that bypass the proxy. See the regression test
+  // at `__tests__/chat-session-fallback-leak.test.ts`.
+  const headerChatSessionId = c.req.header('X-Chat-Session-Id')
+  const rawChatSessionKey = (headerChatSessionId ?? body.chatSessionId) as unknown
+  if (typeof rawChatSessionKey !== 'string' || rawChatSessionKey.trim() === '') {
+    return c.json(
+      { error: 'chatSessionId is required — send the X-Chat-Session-Id header or `chatSessionId` in the JSON body' },
+      400
+    )
+  }
+  const chatSessionKey = rawChatSessionKey
 
   // Seed the chat session with prior conversation history from the request.
   // AI SDK clients and eval runners send the full message array each turn;
@@ -1763,7 +1780,18 @@ app.post('/agent/stop', async (c) => {
   if (!agentGateway) return c.json({ error: 'Gateway not ready' }, 503)
 
   const body = await c.req.json().catch(() => ({} as any))
-  const stopSessionKey = body.chatSessionId || 'chat'
+  // Same rule as `/agent/chat` — no implicit `'chat'` fallback. Stopping
+  // the "default" bucket from a no-id caller would have aborted whatever
+  // chat happened to have written into it last; reject up-front instead.
+  const headerStopSessionId = c.req.header('X-Chat-Session-Id')
+  const rawStopSessionKey = (headerStopSessionId ?? body.chatSessionId) as unknown
+  if (typeof rawStopSessionKey !== 'string' || rawStopSessionKey.trim() === '') {
+    return c.json(
+      { error: 'chatSessionId is required — send the X-Chat-Session-Id header or `chatSessionId` in the JSON body' },
+      400
+    )
+  }
+  const stopSessionKey = rawStopSessionKey
   const aborted = agentGateway.abortCurrentTurn(stopSessionKey)
 
   // Also cancel every running subagent spawned via AgentManager. The main turn

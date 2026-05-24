@@ -908,6 +908,29 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const incomingChatSessionId: string | null =
         c.req.header('X-Chat-Session-Id') || parsedBody?.chatSessionId || null
 
+      // chatSessionId is REQUIRED. The runtime keys its in-memory
+      // SessionManager by this id; an absent/empty value used to fall
+      // through to a literal `'chat'` bucket inside the runtime
+      // (server.ts and gateway.ts both had `|| 'chat'`), which silently
+      // glommed every no-id turn from any caller into a single shared
+      // conversation history per project pod. Reject at the edge so the
+      // leak can never reach the runtime, and so the billing session
+      // below is always opened with a real key. Mirrors the same guard
+      // already present on the voice routes.
+      if (!incomingChatSessionId || typeof incomingChatSessionId !== 'string' || incomingChatSessionId.trim() === '') {
+        chatSpan.setStatus({ code: SpanStatusCode.ERROR, message: "chat_session_id_required" })
+        chatSpan.end()
+        return c.json(
+          {
+            error: {
+              code: "chat_session_id_required",
+              message: "chatSessionId is required — send it as the X-Chat-Session-Id header or as `chatSessionId` in the JSON body",
+            },
+          },
+          400
+        )
+      }
+
       // Open a billing session so the AI proxy accumulates tokens across
       // all API calls in the agentic loop instead of charging per-call.
       // The session is closed in trackUsageFromStream after the stream ends.

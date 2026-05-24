@@ -1249,7 +1249,18 @@ export class AgentGateway {
       chatSessionId?: string
     },
   ): Promise<void> {
-    const sessionId = options?.chatSessionId || 'chat'
+    // chatSessionId is REQUIRED. The runtime's HTTP layer enforces this
+    // at the edge, but the gateway is also reachable through in-process
+    // entry points (tests, evals, future internal channels), so guard
+    // here too. Falling back to a literal `'chat'` here used to collapse
+    // every no-id call into a single shared SessionManager bucket per
+    // project pod, leaking conversation history across chats. See the
+    // regression test at
+    // `packages/agent-runtime/src/__tests__/chat-session-fallback-leak.test.ts`.
+    if (!options?.chatSessionId || typeof options.chatSessionId !== 'string' || options.chatSessionId.trim() === '') {
+      throw new Error('processChatMessageStream: chatSessionId is required')
+    }
+    const sessionId = options.chatSessionId
     if (options?.modelOverride) {
       const session = this.sessionManager.getOrCreate(sessionId)
       session.modelOverride = options.modelOverride
