@@ -700,8 +700,11 @@
       "linePct": 91.092,
       "funcPct": 98.3607,
       "phase": 2,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-24T22:56:00.542Z",
+      "beforeLinePct": 91.09,
+      "afterLinePct": 100
     },
     {
       "file": "apps/api/src/lib/base-heartbeat-scheduler.ts",
