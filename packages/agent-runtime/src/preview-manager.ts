@@ -67,6 +67,247 @@ import {
 
 const LOG_PREFIX = 'preview-manager'
 
+/**
+ * Describes one `vite build --watch` process discovered by the stale-watcher
+ * reaper. `pgid` is what we actually kill — the spawn in {@link PreviewManager.startBuildWatch}
+ * uses `detached: true` so every vite-watch is its own process-group leader
+ * (pgid == pid), and a single `process.kill(-pgid, SIGTERM)` cascades to
+ * rollup workers and any other grandchildren in one shot.
+ */
+export interface StaleViteWatcherInfo {
+  pid: number
+  pgid: number
+  command: string
+}
+
+/**
+ * Reap orphaned `vite build --watch` processes from prior agent-runtime
+ * incarnations that targeted this workspace.
+ *
+ * Why this exists: {@link PreviewManager.startBuildWatch} spawns vite as
+ * its own process-group leader (`detached: true`) so the manager's
+ * {@link PreviewManager['killBuildWatchProcessGroup']} can take down vite
+ * + its rollup workers with one signal. The cost is that vite no longer
+ * lives in the agent-runtime's PGID — and any teardown path that
+ * forcibly kills the agent-runtime without going through
+ * `PreviewManager.stop()` leaves vite stranded with `PPID=1`. The known
+ * triggers in practice:
+ *
+ *   - macOS jetsam SIGKILL of the bun parent under memory pressure
+ *     (the WorkerRuntimeManager's `killProcessGroup` only signals the
+ *     agent-runtime's PGID, which doesn't contain vite).
+ *   - `WorkerRuntimeManager.stop()`'s 5s `waitForExit` budget elapsing
+ *     before agent-runtime's 30s `gracefulShutdown` drain completes,
+ *     leading to a SIGKILL race that skips
+ *     `previewManager.stop() -> killBuildWatchProcessGroup`.
+ *   - Hot reload of the bundled agent-runtime during desktop dev.
+ *
+ * Without a reaper these orphans accumulate without bound — every
+ * incarnation adds one — and each one holds ~1-2GB RSS open for
+ * filesystem watchers and rollup native bindings. A single desktop
+ * session observed 15+ orphans totalling 27GB before being noticed.
+ *
+ * The reaper runs at the only point where a new vite-watch is about to
+ * enter this workspace, so any pre-existing match by definition belongs
+ * to a previous incarnation. We match on:
+ *
+ *   - argv contains `<workspaceDir>/node_modules/vite/bin/vite.js` —
+ *     ties the orphan to THIS workspace's vite install, not some
+ *     unrelated project the user is also running.
+ *   - argv contains `build --watch` — the canonical watch-mode argv
+ *     emitted by {@link PreviewManager.startBuildWatch}.
+ *
+ * Best-effort: failure to detect (missing `ps`/`Get-CimInstance`, EPERM
+ * scanning the process table, malformed output) logs a warning and
+ * returns 0 instead of throwing. The worst-case fallout of a missed
+ * reap is exactly one extra leaked watcher — strictly no worse than
+ * not having the reaper at all.
+ *
+ * Exported for unit testing — see
+ * `__tests__/preview-manager.lifecycle.test.ts`.
+ */
+export function reapStaleViteWatchers(
+  workspaceDir: string,
+  opts: {
+    /**
+     * Returns the raw process-table output to parse. Default uses
+     * `ps -A -o pid=,pgid=,command=` on POSIX and PowerShell's
+     * `Get-CimInstance Win32_Process` (JSON) on Windows. Test override
+     * lets the caller feed deterministic fixtures without touching the
+     * real process table.
+     */
+    listProcesses?: () => string
+    /**
+     * Sends `signal` to the given process group leader. Default is
+     * `process.kill(-pgid, signal)` on POSIX and `taskkill /F /T /PID
+     * <pgid>` on Windows. Test override records calls for assertions.
+     */
+    killGroup?: (pgid: number, signal: NodeJS.Signals) => void
+    /** Override `process.pid` for tests. */
+    selfPid?: number
+    /** Override `process.platform` for tests. */
+    platform?: NodeJS.Platform
+    logger?: Pick<Console, 'log' | 'warn'>
+  } = {},
+): StaleViteWatcherInfo[] {
+  const logger = opts.logger ?? console
+  const platform = opts.platform ?? process.platform
+  const selfPid = opts.selfPid ?? process.pid
+  const isWindows = platform === 'win32'
+
+  // The argv substring we use to claim a process as "ours". Tying it to
+  // the workspace's vite binary (rather than just "any bun running
+  // vite.js build --watch") is what keeps the reaper from mis-attributing
+  // an unrelated vite-watch in some other workspace.
+  const viteBinFragment = join(workspaceDir, 'node_modules', 'vite', 'bin', 'vite.js')
+
+  let raw = ''
+  try {
+    raw = opts.listProcesses
+      ? opts.listProcesses()
+      : isWindows
+        ? execSync(
+            'powershell -NoProfile -Command "Get-CimInstance Win32_Process | ' +
+              'Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress"',
+            { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+          )
+        : execSync('ps -A -o pid=,pgid=,command=', {
+            encoding: 'utf-8',
+            stdio: ['pipe', 'pipe', 'pipe'],
+          })
+  } catch (err: any) {
+    logger.warn(
+      `[${LOG_PREFIX}] reapStaleViteWatchers: process table scan failed (${err?.message ?? err}) — ` +
+        `skipping orphan reap (worst case: one extra leaked vite-watch this restart)`,
+    )
+    return []
+  }
+
+  const matches = isWindows
+    ? parseWindowsCimJson(raw, viteBinFragment, selfPid)
+    : parsePosixPs(raw, viteBinFragment, selfPid)
+
+  if (matches.length === 0) return []
+
+  logger.log(
+    `[${LOG_PREFIX}] reapStaleViteWatchers: found ${matches.length} orphan vite-watch ` +
+      `process(es) from prior incarnation(s); reaping pgid(s)=${matches.map((m) => m.pgid).join(',')}`,
+  )
+
+  const killGroup =
+    opts.killGroup ??
+    (isWindows
+      ? (pgid: number) => {
+          try {
+            execSync(`taskkill /F /T /PID ${pgid}`, { stdio: ['pipe', 'pipe', 'pipe'] })
+          } catch {
+            // Already dead / permission denied — best-effort, no log
+            // (we already announced the reap above).
+          }
+        }
+      : (pgid: number, signal: NodeJS.Signals) => {
+          try {
+            process.kill(-pgid, signal)
+          } catch {
+            // ESRCH = group already empty (process exited between our
+            // ps scan and the kill). Happy path.
+          }
+        })
+
+  // SIGTERM each match. We wrap every call in try/catch even though
+  // the default `killGroup` already swallows its own errors — an
+  // injected override (tests; or any future callsite) must not be
+  // able to short-circuit the loop by throwing on one PGID. One
+  // stale group's kill failing should never block reaping the rest.
+  // ESRCH (group exited between our scan and kill) is the common
+  // happy-path throw on POSIX; we don't log it because we already
+  // announced the reap above.
+  for (const m of matches) {
+    try {
+      killGroup(m.pgid, 'SIGTERM')
+    } catch {
+      /* swallow — see comment above */
+    }
+  }
+
+  return matches
+}
+
+/**
+ * Parse `ps -A -o pid=,pgid=,command=` output and select rows that
+ * represent an orphaned vite-watch for {@link workspaceDir}. The leading
+ * `=` in each `-o` selector suppresses the header row so every line is
+ * a tuple — but `ps` still right-pads the numeric columns, so we split
+ * on whitespace and recover the command as the slice from index 2
+ * onward (preserving any spaces inside the path, e.g. macOS's
+ * `Application Support`).
+ */
+function parsePosixPs(
+  output: string,
+  viteBinFragment: string,
+  selfPid: number,
+): StaleViteWatcherInfo[] {
+  const out: StaleViteWatcherInfo[] = []
+  for (const line of output.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    const parts = trimmed.split(/\s+/)
+    if (parts.length < 3) continue
+    const pid = Number(parts[0])
+    const pgid = Number(parts[1])
+    if (!Number.isFinite(pid) || !Number.isFinite(pgid)) continue
+    if (pid === selfPid) continue
+    const command = parts.slice(2).join(' ')
+    if (!command.includes(viteBinFragment)) continue
+    if (!command.includes('build --watch')) continue
+    out.push({ pid, pgid, command })
+  }
+  return out
+}
+
+/**
+ * Parse PowerShell's `Get-CimInstance Win32_Process | ConvertTo-Json`
+ * output. Windows has no PGID concept; we treat each matching ProcessId
+ * as its own "group" because the kill path on Windows is `taskkill /T`,
+ * which walks the process tree from a single PID regardless of how the
+ * tree was originally formed.
+ *
+ * `ConvertTo-Json` collapses a single-element result to an object
+ * instead of a one-element array, so we coerce both shapes.
+ */
+function parseWindowsCimJson(
+  output: string,
+  viteBinFragment: string,
+  selfPid: number,
+): StaleViteWatcherInfo[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(output.trim() || '[]')
+  } catch {
+    return []
+  }
+  const arr = Array.isArray(parsed) ? parsed : [parsed]
+  const out: StaleViteWatcherInfo[] = []
+  // Windows-style separators inside `viteBinFragment` won't match the
+  // CIM CommandLine string on a path that was passed with forward
+  // slashes (or vice versa). Normalize both sides to forward-slash so
+  // a workspace under `C:\Users\...` matches a CommandLine spelled
+  // `C:/Users/...` and the reverse.
+  const needle = viteBinFragment.replace(/\\/g, '/')
+  for (const row of arr as Array<Record<string, unknown>>) {
+    if (!row || typeof row !== 'object') continue
+    const pidRaw = row.ProcessId
+    const cmdRaw = row.CommandLine
+    if (typeof pidRaw !== 'number' || typeof cmdRaw !== 'string') continue
+    if (pidRaw === selfPid) continue
+    const command = cmdRaw.replace(/\\/g, '/')
+    if (!command.includes(needle)) continue
+    if (!command.includes('build --watch')) continue
+    out.push({ pid: pidRaw, pgid: pidRaw, command: cmdRaw })
+  }
+  return out
+}
+
 // The agent runtime serves the built `project/dist/` at the **root** of its own
 // HTTP port (see server.ts `app.get('*', ...)`). So the "preview URL" is literally
 // the runtime's own port — not 5173, not 3001. Those constants historically here
@@ -1757,6 +1998,21 @@ export class PreviewManager {
     }
 
     console.log(`[${LOG_PREFIX}] Starting vite build --watch (no empty)...`)
+
+    // Reap any orphan vite-watch processes from prior agent-runtime
+    // incarnations targeting this same workspace BEFORE we spawn a
+    // fresh one. This is the canonical leak path: the vite child is
+    // spawned `detached: true` (see comment block below) so it lives
+    // in its own PGID — outside the agent-runtime's group — and
+    // survives a SIGKILL of the parent (macOS jetsam OOM, hot
+    // reload, WorkerRuntimeManager's 5s `waitForExit` timeout firing
+    // before agent-runtime's 30s graceful drain completes). Without
+    // this reap, every agent-runtime restart inside a Shogo session
+    // adds one stranded watcher at ~1-2GB RSS; a single session has
+    // been observed accumulating 15+ orphans totalling 27GB before
+    // anyone noticed. See {@link reapStaleViteWatchers} for the full
+    // detection and kill logic.
+    reapStaleViteWatchers(cwd)
 
     // Same node-missing fallback as runViteOneShotBuild — see
     // resolveBinInvocation() for rationale.
