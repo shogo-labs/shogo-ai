@@ -23,11 +23,15 @@ mock.module('../lib/prisma', () => withPrismaExports({
 }))
 
 mock.module('../config/usage-plans', () => ({
-  DAILY_INCLUDED_USD: 1,
+  FREE_DAILY_INCLUDED_USD: 1,
   MONTHLY_DAILY_CAP_USD: 30,
   PLAN_INCLUDED_USD: { free: 0, basic: 5, pro: 20, business: 40 },
   PLAN_RANK: { free: 0, basic: 1, pro: 2, business: 3, enterprise: 4 },
   SEAT_INCLUDED_USD: { free: 0, basic: 5, pro: 20, business: 40, enterprise: 2000 },
+  getDailyIncludedForPlan: (planId: string | null | undefined) => {
+    const lc = (planId ?? 'free').toString().toLowerCase().trim()
+    return lc.startsWith('free') || lc === '' ? 1 : 0
+  },
   getMonthlyIncludedForPlan: () => 0,
   normalizePlanId: (p: string | null | undefined) => (p ?? null),
   comparePlanRank: () => 0,

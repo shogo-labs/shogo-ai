@@ -16,19 +16,19 @@
 
 import { describe, expect, test } from 'bun:test'
 import {
-  DAILY_INCLUDED_USD,
+  FREE_DAILY_INCLUDED_USD,
   MONTHLY_DAILY_CAP_USD,
   SEAT_INCLUDED_USD,
   getMonthlyIncludedForPlan,
 } from '../config/usage-plans'
 
 describe('constants', () => {
-  test('DAILY_INCLUDED_USD is $0.50', () => {
-    expect(DAILY_INCLUDED_USD).toBe(0.5)
+  test('FREE_DAILY_INCLUDED_USD is $1.00', () => {
+    expect(FREE_DAILY_INCLUDED_USD).toBe(1)
   })
 
-  test('MONTHLY_DAILY_CAP_USD is $3.00', () => {
-    expect(MONTHLY_DAILY_CAP_USD).toBe(3)
+  test('MONTHLY_DAILY_CAP_USD is $5.00', () => {
+    expect(MONTHLY_DAILY_CAP_USD).toBe(5)
   })
 
   test('SEAT_INCLUDED_USD has all 5 plan tiers with expected values', () => {

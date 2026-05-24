@@ -15,7 +15,7 @@ Create your first AI agent in Shogo in just a few minutes. This guide walks you 
 3. You'll be taken to your dashboard.
 
 :::tip Free to start
-Shogo's free plan gives you $0.50 of AI usage per day (up to $3 per month) — enough to explore and build your first agent. No credit card required.
+Shogo's free plan gives you $1 of AI usage per day (up to $5 per month) — enough to explore and build your first agent. No credit card required.
 :::
 
 ## Step 2: Create a workspace

@@ -3,22 +3,31 @@
 
 import { describe, expect, test } from 'bun:test'
 import {
-  DAILY_INCLUDED_USD,
+  FREE_DAILY_INCLUDED_USD,
   MONTHLY_DAILY_CAP_USD,
   PLAN_INCLUDED_USD,
   PLAN_VOICE_RATE_OVERRIDES,
   SEAT_INCLUDED_USD,
   VOICE_RAW_USD,
+  getDailyIncludedForPlan,
   getMonthlyIncludedForPlan,
 } from '../config/usage-plans'
 
 describe('module constants', () => {
-  test('DAILY_INCLUDED_USD is $0.50 (documented daily allowance)', () => {
-    expect(DAILY_INCLUDED_USD).toBe(0.5)
+  test('FREE_DAILY_INCLUDED_USD is $1.00 (documented free-tier daily allowance)', () => {
+    expect(FREE_DAILY_INCLUDED_USD).toBe(1.0)
   })
 
-  test('MONTHLY_DAILY_CAP_USD is $3.00 (free-tier monthly cap)', () => {
-    expect(MONTHLY_DAILY_CAP_USD).toBe(3.0)
+  test('MONTHLY_DAILY_CAP_USD is $5.00 (free-tier monthly cap)', () => {
+    expect(MONTHLY_DAILY_CAP_USD).toBe(5.0)
+  })
+
+  test('getDailyIncludedForPlan returns $1 only for the free tier', () => {
+    expect(getDailyIncludedForPlan('free')).toBe(1)
+    expect(getDailyIncludedForPlan('basic')).toBe(0)
+    expect(getDailyIncludedForPlan('pro')).toBe(0)
+    expect(getDailyIncludedForPlan('business')).toBe(0)
+    expect(getDailyIncludedForPlan('enterprise')).toBe(0)
   })
 
   test('SEAT_INCLUDED_USD has the documented ladder', () => {

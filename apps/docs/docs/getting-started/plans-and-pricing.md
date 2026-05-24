@@ -33,14 +33,14 @@ processes a message or runs an action.
 
 ### Free
 
-- $0.50/day of included usage (up to **$3/month**)
+- $1/day of included usage (up to **$5/month**)
 - Create unlimited agents
 - Access to all templates
 - Perfect for exploring Shogo and building your first agents
 
 ### Basic — $8/month
 
-- $5 of monthly usage + $0.50/day
+- $5 of monthly usage
 - Fast (economy) AI model
 - Unlimited domains
 - **Single user — no seats**
@@ -124,5 +124,5 @@ Yes — downgrade at any time. The change takes effect at the start of your
 next billing period.
 
 **Is there a free trial for paid plans?**
-The free plan lets you explore Shogo at no cost ($0.50/day, up to
-$3/month). When you're ready for more, upgrade to Basic, Pro, or Business.
+The free plan lets you explore Shogo at no cost ($1/day, up to
+$5/month). When you're ready for more, upgrade to Basic, Pro, or Business.

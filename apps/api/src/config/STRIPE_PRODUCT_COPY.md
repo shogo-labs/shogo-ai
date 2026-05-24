@@ -15,7 +15,7 @@ flat 20% markup. No credits, no unit conversions.
 ### Shogo Basic — `prod_UD3oRbXK7sLA8p` (staging)
 
 - **Name**: `Shogo Basic`
-- **Description**: `$5 of monthly AI usage + $0.50/day. All usage billed at raw provider cost plus a flat 20% markup. Single user — no seats. No credits, no unit conversions.`
+- **Description**: `$5 of monthly AI usage. All usage billed at raw provider cost plus a flat 20% markup. Single user — no seats. No credits, no unit conversions.`
 - **Metadata**:
   - `plan`: `basic`
   - `included_usd`: `5`

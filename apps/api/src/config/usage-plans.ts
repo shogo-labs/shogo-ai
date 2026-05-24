@@ -16,11 +16,15 @@
  * provider cost plus `MARKUP_MULTIPLIER` (see `usage-cost.ts`).
  */
 
-/** Daily included USD that refills every day on every plan. */
-export const DAILY_INCLUDED_USD = 0.50
+/**
+ * Daily included USD for the free plan. Refills every day on the free
+ * tier only — paid plans (basic, pro, business, enterprise) get their
+ * monthly included pool instead and no daily top-up.
+ */
+export const FREE_DAILY_INCLUDED_USD = 1.00
 
 /** Monthly cap on dispensed daily USD (free tier). */
-export const MONTHLY_DAILY_CAP_USD = 3.00
+export const MONTHLY_DAILY_CAP_USD = 5.00
 
 /**
  * Included USD per *seat* per month. Basic is single-user (always 1 seat).
@@ -35,6 +39,20 @@ export const SEAT_INCLUDED_USD = {
 } as const
 
 export type PlanId = keyof typeof SEAT_INCLUDED_USD
+
+/**
+ * Daily included USD for a given plan. Only the free tier receives a
+ * daily allowance — every paid plan returns 0 so callers can use this
+ * uniformly when allocating wallets or computing remaining balances.
+ *
+ * Unknown / unrecognized plan ids fall back to the free amount so that
+ * brand-new workspaces (whose plan hasn't been resolved yet) still get
+ * the safety-net allowance.
+ */
+export function getDailyIncludedForPlan(planId: string | null | undefined): number {
+  const normalized = normalizePlanId(planId) ?? 'free'
+  return normalized === 'free' ? FREE_DAILY_INCLUDED_USD : 0
+}
 
 /**
  * Compute the monthly included USD for a (plan, seats) tuple.

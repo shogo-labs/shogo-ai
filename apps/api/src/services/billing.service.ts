@@ -18,11 +18,12 @@
 
 import { prisma, SubscriptionStatus, BillingInterval } from '../lib/prisma';
 import {
-  DAILY_INCLUDED_USD,
+  FREE_DAILY_INCLUDED_USD,
   MONTHLY_DAILY_CAP_USD,
   PLAN_INCLUDED_USD,
   PLAN_RANK,
   comparePlanRank,
+  getDailyIncludedForPlan,
   getMonthlyIncludedForPlan,
   normalizePlanId,
 } from '../config/usage-plans';
@@ -153,7 +154,7 @@ export async function allocateFreeWallet(workspaceId: string) {
       workspaceId,
       monthlyIncludedUsd,
       monthlyIncludedAllocationUsd: monthlyIncludedUsd,
-      dailyIncludedUsd: DAILY_INCLUDED_USD,
+      dailyIncludedUsd: FREE_DAILY_INCLUDED_USD,
       anniversaryDay: now.getDate(),
       lastDailyReset: now,
       lastMonthlyReset: now,
@@ -205,7 +206,7 @@ export async function applyGrantMonthlyAllocation(
       workspaceId,
       monthlyIncludedUsd,
       monthlyIncludedAllocationUsd: monthlyIncludedUsd,
-      dailyIncludedUsd: DAILY_INCLUDED_USD,
+      dailyIncludedUsd: getDailyIncludedForPlan(plan),
       anniversaryDay: now.getDate(),
       lastDailyReset: now,
       lastMonthlyReset: now,
@@ -286,7 +287,7 @@ export async function allocateMonthlyIncluded(
       workspaceId,
       monthlyIncludedUsd,
       monthlyIncludedAllocationUsd: monthlyIncludedUsd,
-      dailyIncludedUsd: DAILY_INCLUDED_USD,
+      dailyIncludedUsd: getDailyIncludedForPlan(planId),
       anniversaryDay: now.getDate(),
       lastDailyReset: now,
       lastMonthlyReset: now,
@@ -370,8 +371,13 @@ export async function hasBalance(
 
   let daily = wallet.dailyIncludedUsd;
   if (needsDailyReset) {
+    // The daily allowance only refills for the free tier; paid plans rely
+    // on their monthly included pool. Resolve the effective plan once so
+    // the calculation lines up with `_consumeUsageTransaction`.
+    const plan = await getEffectivePlanId(workspaceId, now);
+    const dailyForPlan = getDailyIncludedForPlan(plan);
     const dispensed = isNewMonth(now, wallet.lastMonthlyReset) ? 0 : wallet.dailyUsedThisMonthUsd;
-    daily = dispensed + DAILY_INCLUDED_USD <= MONTHLY_DAILY_CAP_USD ? DAILY_INCLUDED_USD : 0;
+    daily = dispensed + dailyForPlan <= MONTHLY_DAILY_CAP_USD ? dailyForPlan : 0;
   }
 
   const included = daily + wallet.monthlyIncludedUsd;
@@ -561,9 +567,14 @@ async function _consumeUsageTransaction(
     let dailyIncludedUsd: number;
 
     if (needsDailyReset) {
-      if (dailyUsedThisMonthUsd + DAILY_INCLUDED_USD <= MONTHLY_DAILY_CAP_USD) {
-        dailyIncludedUsd = DAILY_INCLUDED_USD;
-        dailyUsedThisMonthUsd += DAILY_INCLUDED_USD;
+      // The daily allowance is a free-tier safety net; paid plans rely on
+      // their monthly included pool and get 0 from `getDailyIncludedForPlan`.
+      // Resolving the plan only on day boundaries keeps the hot path lean.
+      const dailyPlan = await getEffectivePlanId(workspaceId, now);
+      const dailyForPlan = getDailyIncludedForPlan(dailyPlan);
+      if (dailyUsedThisMonthUsd + dailyForPlan <= MONTHLY_DAILY_CAP_USD) {
+        dailyIncludedUsd = dailyForPlan;
+        dailyUsedThisMonthUsd += dailyForPlan;
       } else {
         dailyIncludedUsd = 0;
       }
@@ -1062,7 +1073,10 @@ export async function setUsageBasedPricing(
     create: {
       workspaceId,
       monthlyIncludedUsd: 0,
-      dailyIncludedUsd: DAILY_INCLUDED_USD,
+      // Overage is a paid-plan feature, so seed with $0 here. The free-tier
+      // daily allowance is applied via `allocateFreeWallet` for free
+      // workspaces (which run that path before they'd hit this one).
+      dailyIncludedUsd: 0,
       overageEnabled: options.overageEnabled,
       overageHardLimitUsd: options.overageHardLimitUsd ?? null,
       anniversaryDay: new Date().getDate(),

@@ -167,7 +167,14 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
     try {
       const lastReset = usageWallet.lastDailyReset ? new Date(usageWallet.lastDailyReset).toDateString() : ''
       const needsReset = lastReset !== new Date().toDateString()
-      const daily = needsReset ? 0.50 : (usageWallet.dailyIncludedUsd ?? 0)
+      // The daily allowance is free-tier only. When the wallet hasn't
+      // reset for today yet, show the optimistic post-reset amount so
+      // the UI matches what `consumeUsage` will dispense — $1 for free,
+      // $0 for paid plans.
+      const planId = (effectivePlan?.planId ?? '').toLowerCase()
+      const isFreeTier = planId === '' || planId.startsWith('free')
+      const optimisticDaily = isFreeTier ? 1 : 0
+      const daily = needsReset ? optimisticDaily : (usageWallet.dailyIncludedUsd ?? 0)
       const monthly = usageWallet.monthlyIncludedUsd ?? 0
       const monthlyAllocation = usageWallet.monthlyIncludedAllocationUsd ?? 0
       const overageAccumulated = usageWallet.overageAccumulatedUsd ?? 0
@@ -183,7 +190,7 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
         total: daily + monthly,
       }
     } catch { return undefined }
-  }, [usageWallet])
+  }, [usageWallet, effectivePlan])
 
   const usageEvents = useMemo(() => {
     if (!workspaceId || !store?.usageEventCollection) return []

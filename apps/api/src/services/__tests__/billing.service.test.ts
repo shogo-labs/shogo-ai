@@ -417,7 +417,7 @@ describe('allocateFreeWallet', () => {
   it('creates a wallet with daily-only allocation', async () => {
     const w = await billing.allocateFreeWallet('w1')
     expect(w.monthlyIncludedUsd).toBe(0)
-    expect(w.dailyIncludedUsd).toBe(0.5)
+    expect(w.dailyIncludedUsd).toBe(1)
     expect(wallets.get('w1')).toBeDefined()
   })
   it('returns existing wallet untouched', async () => {
@@ -561,13 +561,15 @@ describe('hasBalance', () => {
   it('reflects monthly daily cap exhausted (no refill)', async () => {
     // lastMonthlyReset stays in the SAME current month (so the cap counter
     // is not zeroed), but lastDailyReset is yesterday so the daily-reset
-    // branch fires and the cap-check decides daily=0.
+    // branch fires and the cap-check decides daily=0. The free-tier cap
+    // is $5/month and the daily allowance is $1, so dispensing 5 already
+    // tips the next refill over the cap.
     const now = new Date()
     const sameMonth = new Date(now.getUTCFullYear(), now.getUTCMonth(), 1)
     const yesterday = new Date(now.getTime() - 24 * 3600 * 1000)
     wallets.set('w1', freshWallet({
       dailyIncludedUsd: 0, lastDailyReset: yesterday,
-      dailyUsedThisMonthUsd: 3, lastMonthlyReset: sameMonth,
+      dailyUsedThisMonthUsd: 5, lastMonthlyReset: sameMonth,
       monthlyIncludedUsd: 0,
     }))
     expect(await billing.hasBalance('w1', 0.4)).toBe(false)

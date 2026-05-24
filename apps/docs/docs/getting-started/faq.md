@@ -22,7 +22,7 @@ You can build agents that monitor GitHub repos, triage support tickets, research
 
 ### Is Shogo free?
 
-Yes — the free plan includes $0.50 of AI usage per day (up to $3/month). Paid plans are available when you need more (Basic $8/mo, Pro $20/seat/mo, Business $40/seat/mo). See [Plans and Pricing](./plans-and-pricing) for details.
+Yes — the free plan includes $1 of AI usage per day (up to $5/month). Paid plans are available when you need more (Basic $8/mo, Pro $20/seat/mo, Business $40/seat/mo). See [Plans and Pricing](./plans-and-pricing) for details.
 
 ## Building agents
 
