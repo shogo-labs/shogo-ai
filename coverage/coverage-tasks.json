@@ -739,8 +739,11 @@
       "linePct": 38.0952,
       "funcPct": 60,
       "phase": 2,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-24T23:06:15.537Z",
+      "beforeLinePct": 38.1,
+      "afterLinePct": 100
     },
     {
       "file": "packages/sdk/src/memory/server.ts",
