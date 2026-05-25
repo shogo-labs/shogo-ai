@@ -374,6 +374,100 @@ describe('PreviewManager schema watcher', () => {
       m.stopSchemaWatcher()
     }
   })
+
+  // --- Content-hash guard against spurious wakes -------------------------
+  //
+  // On Windows `fs.watch(prismaDir)` fires on attribute-change
+  // notifications too (e.g. another process opening `schema.prisma` for
+  // read), so the watcher must compare the file's actual content
+  // against the last-acted-on hash before triggering a regenerate.
+  // Without the guard, each chat turn re-armed the full kill-server →
+  // `bun run generate` → restart cycle and re-armed itself because the
+  // generator subprocess re-opens the file.
+
+  it('computeSchemaHash returns null when schema.prisma is missing', () => {
+    const m = mk() as any
+    expect(m.computeSchemaHash()).toBeNull()
+  })
+
+  it('computeSchemaHash is stable for identical content and changes when content does', () => {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'p' }))
+    mkdirSync(join(dir, 'prisma'), { recursive: true })
+    const schemaPath = join(dir, 'prisma', 'schema.prisma')
+    writeFileSync(schemaPath, 'datasource db { provider = "sqlite" }\nmodel A { id String @id }\n')
+    const m = mk() as any
+    const h1 = m.computeSchemaHash()
+    expect(h1).not.toBeNull()
+    // Re-write the exact same bytes — hash MUST match (this is the
+    // invariant the watcher's guard relies on).
+    writeFileSync(schemaPath, 'datasource db { provider = "sqlite" }\nmodel A { id String @id }\n')
+    expect(m.computeSchemaHash()).toBe(h1)
+    // Change the content — hash MUST move.
+    writeFileSync(schemaPath, 'datasource db { provider = "sqlite" }\nmodel A { id String @id }\nmodel B { id String @id }\n')
+    expect(m.computeSchemaHash()).not.toBe(h1)
+  })
+
+  it('startSchemaWatcher seeds lastSchemaHash from the on-disk schema', () => {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'p' }))
+    mkdirSync(join(dir, 'prisma'), { recursive: true })
+    const schemaPath = join(dir, 'prisma', 'schema.prisma')
+    writeFileSync(schemaPath, 'datasource db { provider = "sqlite" }\nmodel A { id String @id }\n')
+    const m = mk() as any
+    try {
+      m.startSchemaWatcher()
+      // Must equal whatever computeSchemaHash returns right now — that's
+      // the baseline the watcher callback compares against.
+      expect(m.lastSchemaHash).toBe(m.computeSchemaHash())
+    } finally {
+      m.stopSchemaWatcher()
+    }
+  })
+
+  it('rewriting identical schema.prisma bytes does NOT trigger handleSchemaChange; changing them does', async () => {
+    // Workspace package.json so resolveBundlerCwd() === workspaceDir,
+    // which keeps the watched path and the test write path in lock-step.
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'p' }))
+    mkdirSync(join(dir, 'prisma'), { recursive: true })
+    const schemaPath = join(dir, 'prisma', 'schema.prisma')
+    const original = 'datasource db { provider = "sqlite" }\nmodel A { id String @id }\n'
+    writeFileSync(schemaPath, original)
+
+    const m = mk() as any
+    // Stub the heavy regen path — we only care whether the watcher
+    // calls into it. mockImplementation lets the spy track invocations
+    // without triggering child-process spawns.
+    const handleSpy = spyOn(m, 'handleSchemaChange').mockImplementation(async () => {})
+
+    // Local mirror of the source-side `SCHEMA_DEBOUNCE_MS = 1500`. Kept
+    // inline rather than re-exported because the constant is internal
+    // to the preview-manager and exposing it would widen the public
+    // surface only for this test.
+    const SCHEMA_DEBOUNCE_MS = 1500
+
+    try {
+      m.startSchemaWatcher()
+      expect(m.schemaWatcher).not.toBeNull()
+      const baseline = m.lastSchemaHash
+      expect(baseline).not.toBeNull()
+
+      // Touch the file with identical bytes. fs.watch fires (mtime
+      // moves), but the hash compare must short-circuit before
+      // handleSchemaChange runs.
+      writeFileSync(schemaPath, original)
+      await new Promise((r) => setTimeout(r, SCHEMA_DEBOUNCE_MS + 400))
+      expect(handleSpy).not.toHaveBeenCalled()
+      // Baseline must still match the on-disk content.
+      expect(m.lastSchemaHash).toBe(baseline)
+
+      // Real edit — hash diverges, watcher must dispatch.
+      writeFileSync(schemaPath, original + 'model B { id String @id }\n')
+      await new Promise((r) => setTimeout(r, SCHEMA_DEBOUNCE_MS + 400))
+      expect(handleSpy).toHaveBeenCalled()
+    } finally {
+      handleSpy.mockRestore()
+      m.stopSchemaWatcher()
+    }
+  }, 10_000)
 })
 
 // --- Custom-routes watcher -----------------------------------------------
