@@ -99,11 +99,13 @@
       "LF": 415,
       "FNH": 36,
       "FNF": 36,
-      "linePct": 90.36,
+      "linePct": 100,
       "funcPct": 100,
-      "gapLH": 40,
+      "gapLH": 0,
       "gapFN": 0,
-      "bucket": "B"
+      "bucket": "A",
+      "effectiveLinePct": 100,
+      "closedAt": "2026-05-25T16:18:47.647335+00:00"
     },
     {
       "package": "packages/agent-runtime",
@@ -331,11 +333,13 @@
       "LF": 224,
       "FNH": 28,
       "FNF": 37,
-      "linePct": 92.41,
-      "funcPct": 75.68,
-      "gapLH": 17,
-      "gapFN": 9,
-      "bucket": "B"
+      "linePct": 100,
+      "funcPct": 100,
+      "gapLH": 0,
+      "gapFN": 0,
+      "bucket": "A",
+      "effectiveLinePct": 100,
+      "closedAt": "2026-05-25T16:18:47.647335+00:00"
     },
     {
       "package": "apps/api",
@@ -479,11 +483,13 @@
       "LF": 80,
       "FNH": 12,
       "FNF": 15,
-      "linePct": 90,
-      "funcPct": 80,
-      "gapLH": 8,
-      "gapFN": 3,
-      "bucket": "B"
+      "linePct": 100,
+      "funcPct": 100,
+      "gapLH": 0,
+      "gapFN": 0,
+      "bucket": "A",
+      "effectiveLinePct": 100,
+      "closedAt": "2026-05-25T16:18:47.647335+00:00"
     },
     {
       "package": "apps/api",
