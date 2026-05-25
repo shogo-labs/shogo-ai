@@ -870,8 +870,13 @@
       "linePct": 48.8506,
       "funcPct": 42.8571,
       "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-25T00:21:40.641943+00:00",
+      "beforeLinePct": 48.8506,
+      "beforeFuncPct": 42.8571,
+      "afterLinePct": 100.0,
+      "afterFuncPct": 100.0
     },
     {
       "file": "apps/api/src/services/database.service.ts",
