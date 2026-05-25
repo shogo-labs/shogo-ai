@@ -25,7 +25,7 @@ import {
 import { join, resolve } from 'path'
 import { tmpdir } from 'os'
 
-const isWin = process.platform === 'win32'
+function isWin(): boolean { return process.platform === 'win32' }
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -79,7 +79,7 @@ export function downloadLinuxBun(destDir: string): void {
 
   mkdirSync(extractDir, { recursive: true })
 
-  if (isWin) {
+  if (isWin()) {
     execSync(
       `powershell -NoProfile -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${extractDir}' -Force"`,
       { stdio: 'pipe', timeout: 30_000 },
@@ -92,7 +92,7 @@ export function downloadLinuxBun(destDir: string): void {
   const dest = join(destDir, 'bun')
   copyFileSync(bunBinaryPath, dest)
 
-  if (!isWin) {
+  if (!isWin()) {
     execSync(`chmod +x "${dest}"`, { stdio: 'pipe' })
   }
 }
@@ -101,7 +101,7 @@ export function createBunAlias(dir: string, alias: string): void {
   const link = join(dir, alias)
   if (existsSync(link)) return
 
-  if (isWin) {
+  if (isWin()) {
     try {
       symlinkSync('bun', link)
     } catch {

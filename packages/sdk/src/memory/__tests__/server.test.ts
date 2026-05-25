@@ -225,3 +225,183 @@ describe('createMemoryHandlers', () => {
     })
   })
 })
+
+describe('createMemoryHandlers — v3 gap-close', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'shogo-mem-gapclose-'))
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  function handlers() {
+    const stores = new Map<string, MemoryStore>()
+    const h = createMemoryHandlers(({ userId }) => {
+      if (!stores.has(userId)) stores.set(userId, new MemoryStore({ dir, userId }))
+      return stores.get(userId)!
+    })
+    return { ...h, cleanup() { for (const s of stores.values()) s.close() } }
+  }
+
+  // Line 63: retrieve invalid JSON
+  test('retrieve: 400 on invalid JSON body', async () => {
+    const h = handlers()
+    const res = await h.retrieve(new Request('http://localhost/retrieve', {
+      method: 'POST',
+      body: 'not-json!!!',
+      headers: { 'content-type': 'application/json' },
+    }))
+    expect(res.status).toBe(400)
+    h.cleanup()
+  })
+
+  // Line 74: retrieve missing query
+  test('retrieve: 400 when query is missing', async () => {
+    const h = handlers()
+    const res = await h.retrieve(new Request('http://localhost/retrieve', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: 'alice' }),
+    }))
+    expect(res.status).toBe(400)
+    const body = await res.json() as any
+    expect(body.error).toContain('query')
+    h.cleanup()
+  })
+
+  // Lines 91-92: retrieve store.search throws
+  test('retrieve: 500 when getStore throws', async () => {
+    const h2 = createMemoryHandlers(() => { throw new Error('store exploded') })
+    const res = await h2.retrieve(new Request('http://localhost/retrieve', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: 'u', query: 'q' }),
+    }))
+    expect(res.status).toBe(500)
+  })
+
+  // Line 99: add non-POST
+  test('add: 405 on GET', async () => {
+    const h = handlers()
+    const res = await h.add(new Request('http://localhost/add', { method: 'GET' }))
+    expect(res.status).toBe(405)
+    h.cleanup()
+  })
+
+  // Line 110: add missing user_id
+  test('add: 400 when user_id is missing', async () => {
+    const h = handlers()
+    const res = await h.add(new Request('http://localhost/add', {
+      method: 'POST',
+      body: JSON.stringify({ fact: 'hello' }),
+    }))
+    expect(res.status).toBe(400)
+    const body = await res.json() as any
+    expect(body.error).toContain('user_id')
+    h.cleanup()
+  })
+
+  // Lines 120-121: add store.add throws
+  test('add: 500 when getStore throws', async () => {
+    const h2 = createMemoryHandlers(() => { throw new Error('boom') })
+    const res = await h2.add(new Request('http://localhost/add', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: 'u', fact: 'f' }),
+    }))
+    expect(res.status).toBe(500)
+  })
+
+  // Line 132: ingest invalid JSON
+  test('ingest: 400 on invalid JSON body', async () => {
+    const h = handlers()
+    const res = await h.ingest(new Request('http://localhost/ingest', {
+      method: 'POST',
+      body: '{{bad}}',
+    }))
+    expect(res.status).toBe(400)
+    h.cleanup()
+  })
+
+  // Lines 150-151: ingest getStore throws
+  test('ingest: 500 when getStore throws', async () => {
+    const h2 = createMemoryHandlers(() => { throw new Error('store init fail') })
+    const res = await h2.ingest(new Request('http://localhost/ingest', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: 'u', transcript: 'hello world' }),
+    }))
+    expect(res.status).toBe(500)
+  })
+})
+
+describe('toNodeListener — v3 gap-close', () => {
+  // Lines 167-195: toNodeListener wraps a handler for Node-style http.
+  test('passes request through and writes status + headers + body to nodeRes', async () => {
+    const { toNodeListener } = await import('../server')
+    const handler = async (_req: Request) =>
+      new Response(JSON.stringify({ hi: 1 }), {
+        status: 201,
+        headers: { 'content-type': 'application/json', 'x-custom': 'yes' },
+      })
+
+    const listener = toNodeListener(handler)
+
+    // Minimal fake IncomingMessage
+    const chunks: Buffer[] = [Buffer.from('{"a":1}')]
+    let chunkIdx = 0
+    const nodeReq: any = {
+      method: 'POST',
+      url: '/test',
+      headers: { host: 'localhost' },
+      [Symbol.asyncIterator]: async function* () {
+        for (const c of chunks) yield c
+      },
+    }
+
+    // Minimal fake ServerResponse
+    let statusCode = 0
+    const setHeaders: Record<string, string> = {}
+    let endBuf: Buffer | null = null
+    const nodeRes: any = {
+      set statusCode(v: number) { statusCode = v },
+      get statusCode() { return statusCode },
+      setHeader(k: string, v: string) { setHeaders[k] = v },
+      end(buf: Buffer) { endBuf = buf },
+    }
+
+    listener(nodeReq, nodeRes)
+    await new Promise(r => setTimeout(r, 50))
+
+    expect(statusCode).toBe(201)
+    expect(setHeaders['x-custom']).toBe('yes')
+    expect(endBuf).not.toBeNull()
+    const parsed = JSON.parse(endBuf!.toString())
+    expect(parsed.hi).toBe(1)
+  })
+
+  test('catches async errors from the handler and returns 500', async () => {
+    const { toNodeListener } = await import('../server')
+    const handler = async () => { throw new Error('inner crash') }
+    const listener = toNodeListener(handler)
+
+    let statusCode = 0
+    let endBody = ''
+    const nodeReq: any = {
+      method: 'GET',
+      url: '/',
+      headers: { host: 'localhost' },
+      [Symbol.asyncIterator]: async function* () {},
+    }
+    const nodeRes: any = {
+      set statusCode(v: number) { statusCode = v },
+      get statusCode() { return statusCode },
+      setHeader() {},
+      end(v: any) { endBody = v instanceof Buffer ? v.toString() : String(v) },
+    }
+
+    listener(nodeReq, nodeRes)
+    await new Promise(r => setTimeout(r, 50))
+
+    expect(statusCode).toBe(500)
+    expect(endBody).toContain('inner crash')
+  })
+})

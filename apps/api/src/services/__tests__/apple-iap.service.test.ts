@@ -382,6 +382,17 @@ describe('verifyAndDecodeJws — early-error arms', () => {
     expect(() => iap.verifyAndDecodeJws('notajws')).toThrow(/decode failed/)
   })
 
+  it('throws when SKIP=1 and payload base64-decodes to non-JSON (hits catch arm)', () => {
+    process.env.APPLE_IAP_SKIP_JWS_VERIFY = '1'
+    // parts.length === 3 (passes < 2 guard); parts[1] base64-decodes to
+    // "not json {{{" which JSON.parse rejects → catch swallows → returns null
+    // → verifyAndDecodeJws throws 'payload decode failed'. Covers the catch
+    // arm in decodeJwsPayloadUnverified (L515-516).
+    const badPayload = Buffer.from('not json {{{').toString('base64').replace(/=/g, '')
+    const bogus = `aGVhZGVy.${badPayload}.c2ln`
+    expect(() => iap.verifyAndDecodeJws(bogus)).toThrow(/decode failed/)
+  })
+
   it('throws when parts.length !== 3', () => {
     expect(() => iap.verifyAndDecodeJws('a.b')).toThrow(/3 dot-separated parts/)
     expect(() => iap.verifyAndDecodeJws('a.b.c.d')).toThrow(/3 dot-separated parts/)

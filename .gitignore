@@ -23,6 +23,7 @@ coverage/*
 !coverage/baselines/
 !coverage/baselines/*
 !coverage/coverage-tasks.json
+!coverage/v5-inventory.json
 
 # logs
 logs

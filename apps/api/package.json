@@ -8,7 +8,9 @@
     "dev": "cd ../.. && bun scripts/watch-api.ts",
     "start": "bun --env-file=../../.env.local src/entry.ts",
     "typecheck": "tsc --noEmit",
+    "pretest": "bun scripts/ensure-prisma-generated.ts",
     "test": "bun --no-env-file ../../scripts/run-tests-isolated.ts .",
+    "pretest:coverage": "bun scripts/ensure-prisma-generated.ts",
     "test:coverage": "bun --no-env-file ../../scripts/run-tests-isolated.ts . --coverage",
     "stripe:sync-copy": "bun --env-file=../../.env.local scripts/update-stripe-product-copy.ts",
     "stripe:migrate-tiers": "bun --env-file=../../.env.local scripts/migrate-tier-subscriptions.ts"

@@ -8,7 +8,15 @@
  * IntelliSense) and agent-runtime (read_lints diagnostics).
  */
 
-import { spawn, type Subprocess } from 'bun'
+import { spawn as bunSpawn, type Subprocess } from 'bun'
+
+// Injection point for tests — replaced via `_setSpawnForTesting`. At runtime
+// this is just `bunSpawn` (bun's built-in spawn). The bun-builtin module
+// cannot be intercepted by `mock.module()`, so we expose a setter instead.
+let spawn: typeof bunSpawn = bunSpawn
+export function _setSpawnForTesting(impl: typeof bunSpawn | null): void {
+  spawn = impl ?? bunSpawn
+}
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 
