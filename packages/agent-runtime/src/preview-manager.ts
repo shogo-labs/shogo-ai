@@ -16,6 +16,7 @@
  */
 
 import { spawn, execSync, type ChildProcess } from 'child_process'
+import { createHash } from 'crypto'
 import { join } from 'path'
 import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync, unlinkSync, watch, type FSWatcher } from 'fs'
 import { recordBuildEntry } from './runtime-log-dispatcher'
@@ -610,6 +611,14 @@ export class PreviewManager {
   private metroPort: number | null = null
   private schemaWatcher: FSWatcher | null = null
   private schemaTimer: ReturnType<typeof setTimeout> | null = null
+  // SHA-1 of the last `prisma/schema.prisma` content we acted on. Used by
+  // the watcher to drop spurious wakes (Windows fs.watch fires
+  // FILE_NOTIFY_CHANGE_ATTRIBUTES on read-only opens by `prisma generate`,
+  // `prisma db push`, the gateway's per-turn `getSchemaModels()`, etc. —
+  // none of which actually mutate the file). Without this guard each
+  // wake kicked off a 4 s regen + restart loop that re-armed itself
+  // because the spawned generators reopen the file.
+  private lastSchemaHash: string | null = null
   private customRoutesWatcher: FSWatcher | null = null
   private customRoutesTimer: ReturnType<typeof setTimeout> | null = null
   private apiPhase: ApiServerPhase = 'idle'
@@ -941,6 +950,23 @@ export class PreviewManager {
     }
   }
 
+  /**
+   * SHA-1 hex digest of `prisma/schema.prisma`'s raw bytes. Returns
+   * `null` when the file is missing or unreadable. Used by the schema
+   * watcher to distinguish real edits from spurious `change` events
+   * (NTFS attribute-change notifications fired when other processes
+   * open the file read-only — see `lastSchemaHash` field comment).
+   */
+  private computeSchemaHash(): string | null {
+    const schemaPath = join(this.bundlerCwd, 'prisma', 'schema.prisma')
+    if (!existsSync(schemaPath)) return null
+    try {
+      return createHash('sha1').update(readFileSync(schemaPath)).digest('hex')
+    } catch {
+      return null
+    }
+  }
+
   /** List of model names parsed from root `prisma/schema.prisma`. */
   getSchemaModels(): string[] {
     const schemaPath = join(this.bundlerCwd, 'prisma', 'schema.prisma')
@@ -1209,6 +1235,14 @@ export class PreviewManager {
    * Uses `fs.watch` on the parent directory because `prisma/` may not
    * exist when the watcher first starts (older workspaces, fresh
    * clones). The handler ignores events for unrelated files.
+   *
+   * Guards against spurious events with a content-hash check (see
+   * `lastSchemaHash`): on Windows, NTFS fires FILE_NOTIFY_CHANGE_*
+   * notifications when other processes (the gateway's per-turn
+   * `getSchemaModels()`, `prisma generate` / `prisma db push`
+   * subprocesses kicked off by an earlier regen) merely open the file
+   * for read. Without the hash check each spurious wake re-armed the
+   * full kill-server → generate → restart cycle.
    */
   private startSchemaWatcher(): void {
     const cwd = this.bundlerCwd
@@ -1223,6 +1257,11 @@ export class PreviewManager {
 
     if (this.schemaWatcher) return
 
+    // Seed the baseline so the first post-boot wake compares against
+    // the on-disk state instead of `null` (which would always count as
+    // "changed" and trigger a regen).
+    this.lastSchemaHash = this.computeSchemaHash()
+
     try {
       this.schemaWatcher = watch(prismaDir, (_event, filename) => {
         if (filename !== 'schema.prisma') return
@@ -1234,6 +1273,14 @@ export class PreviewManager {
         if (this.schemaTimer) clearTimeout(this.schemaTimer)
         this.schemaTimer = setTimeout(() => {
           this.schemaTimer = null
+          const hash = this.computeSchemaHash()
+          if (hash !== null && hash === this.lastSchemaHash) {
+            // Spurious wake — file metadata moved but contents didn't.
+            // Don't log on the happy path; this fires every turn on
+            // Windows and would drown out real signal.
+            return
+          }
+          this.lastSchemaHash = hash
           void this.handleSchemaChange()
         }, SCHEMA_DEBOUNCE_MS)
       })
@@ -1259,6 +1306,12 @@ export class PreviewManager {
       console.log(`[${LOG_PREFIX}] schema.prisma changed but has no models yet, skipping...`)
       return
     }
+
+    // Pin the baseline to the bytes we're about to act on. Any further
+    // events that report the same content (Prisma subprocess re-opens,
+    // gateway prompt-context reads) will be filtered by the watcher's
+    // hash compare instead of re-arming the regen loop.
+    this.lastSchemaHash = createHash('sha1').update(content, 'utf-8').digest('hex')
 
     console.log(`[${LOG_PREFIX}] schema.prisma changed, regenerating...`)
     this.regenerating = true
