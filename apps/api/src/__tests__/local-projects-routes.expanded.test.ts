@@ -351,27 +351,50 @@ describe('localProjectsRoutes from folders', () => {
     expect(JSON.stringify(projects.get('existing-project').settings)).toContain('workingMode')
   })
 
-  test('returns errors for missing paths and foreign project metadata', async () => {
+  test('rejects empty paths payload', async () => {
     const missing = await appWithAuth().request('http://api.test/from-folders', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ paths: [] }),
     })
     expect(missing.status).toBe(400)
+  })
 
+  test('rebinds a folder whose project.json references a deleted project', async () => {
+    // Reproduces the "delete project from dashboard, re-open same folder"
+    // scenario: .shogo/project.json still references the old projectId,
+    // but the DB row was hard-deleted. The route used to 409 with
+    // alreadyBoundElsewhere, which surfaced as a silent no-op in the
+    // desktop UI. It now treats the binding as stale and creates a
+    // fresh project, overwriting project.json with the new id.
+    const projectJsonPath = join(rootDir, '.shogo', 'project.json')
     mkdirSync(join(rootDir, '.shogo'), { recursive: true })
-    writeFileSync(join(rootDir, '.shogo', 'project.json'), JSON.stringify({
-      projectId: 'missing-project',
+    writeFileSync(projectJsonPath, JSON.stringify({
+      projectId: 'deleted-project-id',
       createdAt: new Date().toISOString(),
       schemaVersion: 1,
     }))
-    const foreign = await appWithAuth().request('http://api.test/from-folders', {
+
+    const res = await appWithAuth().request('http://api.test/from-folders', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ paths: [rootDir], acceptedGitRoot: false }),
     })
-    expect(foreign.status).toBe(409)
-    expect((await json(foreign)).error).toBe('alreadyBoundElsewhere')
+
+    expect([200, 201]).toContain(res.status)
+    const body = await json(res)
+    expect(body.error).toBeUndefined()
+    expect(body.project?.id).toBeDefined()
+    expect(body.project.id).not.toBe('deleted-project-id')
+    expect(body.rebound).toBeFalsy()
+
+    // project.json on disk was rewritten to point at the new project.
+    const rewritten = JSON.parse(readFileSync(projectJsonPath, 'utf-8'))
+    expect(rewritten.projectId).toBe(body.project.id)
+    expect(rewritten.projectId).not.toBe('deleted-project-id')
+
+    // And the new project is actually stored in the DB.
+    expect(projects.get(body.project.id)).toBeDefined()
   })
 })
 
