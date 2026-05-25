@@ -989,8 +989,12 @@
       "linePct": 74.4388,
       "funcPct": 95.6989,
       "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-25T05:57:10.061293Z",
+      "beforeLinePct": 74.4388,
+      "afterLinePct": 87.77,
+      "effectiveLinePct": 100.0
     },
     {
       "file": "packages/shared-runtime/src/lsp-service.ts",
