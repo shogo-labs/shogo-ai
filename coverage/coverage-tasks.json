@@ -945,8 +945,12 @@
       "linePct": 65.9274,
       "funcPct": 60,
       "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-25T05:48:00.549197Z",
+      "beforeLinePct": 65.9274,
+      "afterLinePct": 100.0,
+      "effectiveLinePct": 100.0
     },
     {
       "file": "packages/agent-runtime/src/sandbox-exec.ts",
