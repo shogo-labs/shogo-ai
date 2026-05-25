@@ -277,3 +277,6 @@ function clampDim(n: number, min: number, max: number, fallback: number): number
   return n
 }
 
+
+/** @internal Test-only re-export so bun lcov can cover defaultShellCmd branches. */
+export const _defaultShellCmdForTests = defaultShellCmd

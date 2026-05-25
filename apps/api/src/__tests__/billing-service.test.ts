@@ -25,11 +25,13 @@ let billingAccountsByWs = new Map<string, any>()
 
 // Hooks let individual tests inject behavior (errors, etc.)
 let walletUpdateHook: ((args: any) => any) | null = null
+let walletCreateHook: ((args: any) => any) | null = null
 let usageEventCreateHook: ((args: any) => any) | null = null
 
 const walletStore = {
   findUnique: async (args: any) => walletByWs.get(args.where.workspaceId) ?? null,
   create: async (args: any) => {
+    if (walletCreateHook) return walletCreateHook(args)
     walletByWs.set(args.data.workspaceId, { ...args.data })
     return walletByWs.get(args.data.workspaceId)
   },
@@ -264,6 +266,7 @@ beforeEach(() => {
   usageEvents = []
   stripeCalls.length = 0
   walletUpdateHook = null
+  walletCreateHook = null
   usageEventCreateHook = null
   stripeSubRetrieveImpl = null
   stripeInvoicesPayImpl = null
@@ -619,6 +622,20 @@ describe('consumeUsage', () => {
     expect(walletByWs.get('ws-1').dailyIncludedUsd).toBeCloseTo(0.5)
     expect(usageEvents).toHaveLength(1)
     expect(usageEvents[0].source).toBe('daily')
+  })
+
+  test('returns "No usage wallet found" when allocation fails and re-find still misses', async () => {
+    // walletByWs starts empty so findUnique returns null. allocateFreeWallet
+    // calls walletStore.create — make that throw so the catch swallows it,
+    // leaving wallet null and falling through to the error return. Covers
+    // the early-return path in _consumeUsageTransaction.
+    walletCreateHook = () => { throw new Error('db offline') }
+    const res = await billing.consumeUsage({
+      workspaceId: 'ws-no-wallet', projectId: null, memberId: 'm-1',
+      actionType: 'chat', billedUsd: 0.1,
+    })
+    expect(res.success).toBe(false)
+    expect(res.error).toMatch(/No usage wallet found/i)
   })
 
   test('falls through to monthly when daily cannot cover', async () => {

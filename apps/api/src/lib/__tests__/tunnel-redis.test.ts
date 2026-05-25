@@ -602,3 +602,126 @@ describe('cross-pod stream relay', () => {
     await new Promise((r) => setTimeout(r, 10))
   })
 })
+
+// ─── Coverage closer — branches not reachable from the other test files ─────
+
+describe('coverage closer: retry strategy', () => {
+  it('publisher retryStrategy gives up after 5 attempts and backs off otherwise', () => {
+    const pubOpts = pub().opts as { retryStrategy: (times: number) => number | null }
+    expect(pubOpts.retryStrategy(6)).toBeNull()
+    expect(pubOpts.retryStrategy(2)).toBe(1000)
+    expect(pubOpts.retryStrategy(10)).toBeNull()
+    expect(pubOpts.retryStrategy(1)).toBe(500)
+  })
+
+  it('subscriber retryStrategy gives up after 5 attempts and backs off otherwise', () => {
+    const subOpts = sub().opts as { retryStrategy: (times: number) => number | null }
+    expect(subOpts.retryStrategy(6)).toBeNull()
+    expect(subOpts.retryStrategy(3)).toBe(1500)
+    expect(subOpts.retryStrategy(20)).toBeNull()
+    // Math.min cap at 3000 once times >= 6 would normally fire but we
+    // exit earlier with null. Cap is exercised by clamping a low value.
+    expect(subOpts.retryStrategy(5)).toBe(2500)
+  })
+})
+
+describe('coverage closer: verifyPodAlive reject branch', () => {
+  it('returns false when the remote pod replies with an error response', async () => {
+    // Pre-snapshot the publish log so we can isolate the probe message
+    pub().publishLog.length = 0
+    const verifyPromise = tr.verifyPodAlive('pod-Z', 2000)
+    // The function publishes a probe to `tunnel:pod:pod-Z:request` immediately.
+    // Grab the relayId from the published message so we can simulate an error reply.
+    // Give one microtick for the .then(publish) chain to land.
+    await new Promise((r) => setTimeout(r, 5))
+    const probePublish = pub().publishLog.find((p) => p.channel === 'tunnel:pod:pod-Z:request')
+    expect(probePublish).toBeDefined()
+    const probeMsg = JSON.parse(probePublish!.message) as { relayId: string }
+    // Now publish an error response back on our own channel — that flows
+    // through handleSubMessage → handleIncomingRelayResponse → pending.reject(),
+    // which the verifyPodAlive setup wired to `resolve(false)`.
+    await pub().publish(
+      `tunnel:pod:${tr.getPodId()}:request`,
+      JSON.stringify({ relayId: probeMsg.relayId, error: 'pod unreachable' }),
+    )
+    const alive = await verifyPromise
+    expect(alive).toBe(false)
+  })
+})
+
+describe('coverage closer: relay timeout paths', () => {
+  it('relayTunnelRequest rejects with "timed out" when no reply arrives', async () => {
+    const origSetTimeout = globalThis.setTimeout
+    const captured: Array<() => void> = []
+    ;(globalThis as any).setTimeout = ((fn: () => void, _ms?: number) => {
+      captured.push(fn)
+      return 42 as unknown as ReturnType<typeof setTimeout>
+    }) as typeof setTimeout
+    let promise: Promise<unknown> | undefined
+    try {
+      promise = tr.relayTunnelRequest('peer-X', 'i-tx', {
+        type: 'request', requestId: 'rqx', method: 'GET', path: '/timeout-test',
+      })
+      // Yield twice so whenReady() resolves and the Promise executor runs,
+      // registering the setTimeout we intend to fire.
+      await Promise.resolve()
+      await Promise.resolve()
+    } finally {
+      ;(globalThis as any).setTimeout = origSetTimeout
+    }
+    expect(captured.length).toBeGreaterThan(0)
+    // Fire the captured timeout callback — exercises lines 558-562
+    for (const fn of captured) fn()
+    await expect(promise!).rejects.toThrow(/timed out/)
+  })
+
+  it('relayTunnelStreamRequest fires stream-error chunk when timeout elapses', async () => {
+    const origSetTimeout = globalThis.setTimeout
+    const captured: Array<() => void> = []
+    ;(globalThis as any).setTimeout = ((fn: () => void, _ms?: number) => {
+      captured.push(fn)
+      return 43 as unknown as ReturnType<typeof setTimeout>
+    }) as typeof setTimeout
+    const chunks: Array<{ type: string; error?: string }> = []
+    try {
+      tr.relayTunnelStreamRequest(
+        'peer-X', 'i-sx',
+        { type: 'request', requestId: 'sxq', method: 'GET', path: '/s' },
+        (c) => chunks.push(c as { type: string; error?: string }),
+      )
+      // Two microticks for whenReady().then to land and call setTimeout.
+      await Promise.resolve()
+      await Promise.resolve()
+    } finally {
+      ;(globalThis as any).setTimeout = origSetTimeout
+    }
+    expect(captured.length).toBeGreaterThan(0)
+    // Fire the captured timeout — exercises lines 595-598
+    for (const fn of captured) fn()
+    expect(chunks.some((c) => c.type === 'stream-error' && /timed out/.test(c.error ?? ''))).toBe(true)
+  })
+})
+
+describe('coverage closer: isTunnelConnectedAnywhere error path', () => {
+  it('returns false when getTunnelOwner rejects (setTimeout throws synchronously)', async () => {
+    const origSetTimeout = globalThis.setTimeout
+    const origWarn = console.warn
+    const warns: unknown[][] = []
+    console.warn = ((...a: unknown[]) => { warns.push(a) }) as typeof console.warn
+    // Make setTimeout throw synchronously — this will cause the Promise
+    // executor in getTunnelOwner's retry path to reject, which rejects
+    // the await, which propagates out of getTunnelOwner and into
+    // isTunnelConnectedAnywhere's catch (lines 687-689).
+    ;(globalThis as any).setTimeout = (() => { throw new Error('setTimeout boom') }) as typeof setTimeout
+    try {
+      // Ensure first read returns null so we reach the retry/setTimeout line.
+      pub().store.delete('tunnel:nonexistent-pod:pod')
+      const result = await tr.isTunnelConnectedAnywhere('nonexistent-pod')
+      expect(result).toBe(false)
+    } finally {
+      ;(globalThis as any).setTimeout = origSetTimeout
+      console.warn = origWarn
+    }
+    expect(warns.some((w) => /isTunnelConnectedAnywhere failed/.test(String(w[0])))).toBe(true)
+  })
+})

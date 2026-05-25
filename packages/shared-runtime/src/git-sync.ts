@@ -62,7 +62,12 @@ const DEFAULT_DEGRADE_AFTER = 3
 const BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000]
 
 /** Hard timeout for any single `git` invocation (ms). */
-const GIT_TIMEOUT_MS = 60_000
+let GIT_TIMEOUT_MS = 60_000
+
+/** Testing-only: override the per-git-command timeout (resets to 60s on null). */
+export function __setGitTimeoutMsForTesting(ms: number | null): void {
+  GIT_TIMEOUT_MS = ms ?? 60_000
+}
 
 /** Optional sink type for `console.warn`-shaped logging. */
 type Logger = Pick<Console, 'log' | 'warn' | 'error'>
