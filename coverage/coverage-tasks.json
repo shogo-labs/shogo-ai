@@ -915,8 +915,14 @@
       "linePct": 58.7121,
       "funcPct": 68.1818,
       "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-25T00:27:33.954983+00:00",
+      "beforeLinePct": 58.7121,
+      "beforeFuncPct": 68.1818,
+      "afterLinePct": 100.0,
+      "afterFuncPct": 89.66,
+      "effectiveLinePct": 100
     },
     {
       "file": "apps/api/src/services/billing.service.ts",
