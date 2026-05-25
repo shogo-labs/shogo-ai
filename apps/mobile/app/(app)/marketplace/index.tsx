@@ -118,7 +118,7 @@ const SORT_SECTION_TITLES: Record<SortMode, string> = {
 }
 
 /** Rail "See all" targets — sort API param may differ from the section label. */
-type BrowseFocus = 'trending' | 'newest'
+type BrowseFocus = 'trending' | 'newest' | 'following'
 
 const BROWSE_FOCUS_META: Record<
   BrowseFocus,
@@ -132,6 +132,11 @@ const BROWSE_FOCUS_META: Record<
   newest: {
     title: 'New & noteworthy',
     subtitle: 'Recently published agents from the community',
+    sort: 'newest',
+  },
+  following: {
+    title: 'From creators you follow',
+    subtitle: 'Latest from the creators you\'re following',
     sort: 'newest',
   },
 }
@@ -197,6 +202,7 @@ export default observer(function MarketplaceHomeScreen() {
   const [topCreators, setTopCreators] = useState<LeaderboardCreator[]>([])
   const [recommended, setRecommended] = useState<ListingFromAPI[]>([])
   const [followingAgents, setFollowingAgents] = useState<ListingFromAPI[]>([])
+  const [followedCreatorIds, setFollowedCreatorIds] = useState<string[]>([])
 
   const [listings, setListings] = useState<ListingFromAPI[]>([])
   const [loading, setLoading] = useState(true)
@@ -256,6 +262,9 @@ export default observer(function MarketplaceHomeScreen() {
         params.set('sort', sortMode)
         if (activeCategory !== 'all') params.set('category', activeCategory)
         if (filterFree) params.set('pricingModel', 'free')
+        if (browseFocus === 'following' && followedCreatorIds.length > 0) {
+          params.set('creatorIds', followedCreatorIds.join(','))
+        }
 
         let url: string
         if (isSearching) {
@@ -282,7 +291,7 @@ export default observer(function MarketplaceHomeScreen() {
         setLoadingMore(false)
       }
     },
-    [http, sortMode, activeCategory, filterFeatured, filterFree, isSearching, debouncedSearchTrimmed],
+    [http, sortMode, activeCategory, filterFeatured, filterFree, isSearching, debouncedSearchTrimmed, browseFocus, followedCreatorIds],
   )
 
   const loadEditorial = useCallback(async () => {
@@ -308,7 +317,7 @@ export default observer(function MarketplaceHomeScreen() {
 
   useEffect(() => {
     loadGrid(1)
-  }, [activeCategory, sortMode, filterFeatured, filterFree, debouncedSearchQuery])
+  }, [activeCategory, sortMode, filterFeatured, filterFree, debouncedSearchQuery, browseFocus])
 
   useEffect(() => {
     setBrowseFocus(null)
@@ -321,17 +330,19 @@ export default observer(function MarketplaceHomeScreen() {
   useEffect(() => {
     if (!user?.id) {
       setFollowingAgents([])
+      setFollowedCreatorIds([])
       return
     }
     ;(async () => {
       try {
         const followingRes = await http.get<{ items: Array<{ id: string }> }>(
-          '/api/marketplace/creators/following?limit=10',
+          '/api/marketplace/creators/following?limit=50',
         )
         const creatorIds = (followingRes.data.items ?? []).map((c) => c.id)
+        setFollowedCreatorIds(creatorIds)
         if (creatorIds.length === 0) return
         const agentRes = await http.get<BrowseResponse>(
-          `/api/marketplace?creatorId=${creatorIds[0]}&sort=popular&limit=8`,
+          `/api/marketplace?creatorIds=${creatorIds.join(',')}&sort=newest&limit=8`,
         )
         setFollowingAgents(agentRes.data.items ?? [])
       } catch {
@@ -522,6 +533,7 @@ export default observer(function MarketplaceHomeScreen() {
             viewMode={viewMode}
             title="From creators you follow"
             subtitle="Latest from the creators you're following"
+            onSeeAll={() => focusBrowse('following')}
             items={followingAgents}
             onPress={handleCardPress}
           />

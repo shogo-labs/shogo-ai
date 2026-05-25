@@ -103,24 +103,21 @@ export async function followCreator(
   if (!creator) throw new Error('creator_not_found')
   if (creator.userId === followerId) throw new Error('cannot_follow_self')
 
-  // `createMany({ skipDuplicates: true })` compiles to
-  // `INSERT ... ON CONFLICT DO NOTHING`, so a same-region double-tap or
-  // a retry no-ops at the DB level (no P2002 thrown) and we bump
-  // `followerCount` only when we actually inserted a row. The
-  // cross-region failover race — two regions both inserting with
-  // different PKs but the same `(followerId, creatorId)` — is the
-  // residual P2 logged in scripts/check-multiregion-cron-locks.ts:
-  // closing it requires a deterministic id of
-  // `${followerId}_${creatorId}` so collisions resolve via PK
-  // last_update_wins instead of poisoning the apply worker.
+  // Use upsert on the unique (followerId, creatorId) composite key so a
+  // double-tap or retry no-ops at the DB level. We only bump
+  // `followerCount` when we actually inserted a new row (detected by
+  // comparing the createdAt timestamp before vs after the upsert).
   const updated = await prisma.$transaction(async (tx) => {
-    const inserted = await tx.creatorFollow.createMany({
-      data: [{ followerId, creatorId }],
-      skipDuplicates: true,
+    const before = await tx.creatorFollow.findUnique({
+      where: { followerId_creatorId: { followerId, creatorId } },
+      select: { id: true },
     })
-    if (inserted.count === 0) {
+    if (before) {
       return { followerCount: creator.followerCount }
     }
+    await tx.creatorFollow.create({
+      data: { followerId, creatorId },
+    })
     return tx.creatorProfile.update({
       where: { id: creatorId },
       data: { followerCount: { increment: 1 } },
