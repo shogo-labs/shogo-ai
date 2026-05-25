@@ -1020,6 +1020,13 @@ export default observer(function ProjectLayout() {
   // panel with the session list. Auto-closes when the user leaves the chat tab.
   const [narrowChatPickerOpen, setNarrowChatPickerOpen] = useState(false)
   const [previewTab, setPreviewTab] = useState('canvas')
+  // Ephemeral "the app needs your attention" override (e.g. the agent called
+  // ask_user). Layered ON TOP of previewTab via effectiveTab below, and never
+  // persisted. Decoupling attention from previewTab is what stops transient
+  // prompts from getting written to AsyncStorage and sticking across reloads
+  // (root cause of the "chat is always fullscreen" bug).
+  const [attentionTab, setAttentionTab] = useState<string | null>(null)
+  const effectiveTab = attentionTab ?? previewTab
 
   // Close the narrow picker as soon as the layout shifts off the chat tab
   // (e.g. user switched to canvas, or the viewport widened into split mode).
@@ -1069,9 +1076,15 @@ export default observer(function ProjectLayout() {
 
   const PERSISTABLE_PREVIEW_TABS = useMemo(() => new Set(['canvas', 'chat-fullscreen', 'app-preview', 'external-preview']), [])
 
+  // Storage key bumped to v2 to heal installs that were stuck in
+  // 'chat-fullscreen' due to the pre-fix attention/preview conflation. Old v1
+  // keys are intentionally orphaned (and best-effort cleared below) — a one-time
+  // reset to the default tab is the correct migration.
+  const PREVIEW_TAB_STORAGE_PREFIX = 'shogo:lastPreviewTab:v2:'
+
   useEffect(() => {
     if (!projectId) return
-    AsyncStorage.getItem(`shogo:lastPreviewTab:${projectId}`).then((saved) => {
+    AsyncStorage.getItem(`${PREVIEW_TAB_STORAGE_PREFIX}${projectId}`).then((saved) => {
       if (!saved) return
       // Legacy values written before the v1 dynamic-app -> canvas tab rename
       // (chore/remove-canvas-v1) get normalized on read so existing users don't
@@ -1079,11 +1092,13 @@ export default observer(function ProjectLayout() {
       const normalized = saved === 'dynamic-app' ? 'canvas' : saved
       setPreviewTab(normalized)
     }).catch(() => {})
+    // Best-effort cleanup of the pre-fix v1 key so it doesn't linger.
+    AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(() => {})
   }, [projectId])
 
   useEffect(() => {
     if (projectId && previewTab && PERSISTABLE_PREVIEW_TABS.has(previewTab)) {
-      AsyncStorage.setItem(`shogo:lastPreviewTab:${projectId}`, previewTab).catch(() => {})
+      AsyncStorage.setItem(`${PREVIEW_TAB_STORAGE_PREFIX}${projectId}`, previewTab).catch(() => {})
     }
   }, [projectId, previewTab, PERSISTABLE_PREVIEW_TABS])
 
@@ -1192,12 +1207,16 @@ export default observer(function ProjectLayout() {
         /* ignore */
       }
     }
+    // Any explicit user navigation cancels an in-flight attention override.
+    setAttentionTab(null)
     setPreviewTab(tabId)
   }, [])
 
   useEffect(() => {
     subagentStreamStore.onRequestTabSwitch((toolId?: string) => {
       setSelectedAgentToolId(toolId ?? null)
+      // Imperative navigation supersedes any in-flight attention override.
+      setAttentionTab(null)
       // Agents lives inside the Settings panel now — open Settings and
       // imperatively focus the Agents section via the nonce-bumped request.
       setPreviewTab('settings')
@@ -1689,10 +1708,13 @@ export default observer(function ProjectLayout() {
       const parts = msg.parts as any[] | undefined
       if (!parts) continue
       for (const p of parts) {
+        // Only react when the tool's args are committed ('input-available').
+        // 'input-streaming' means the model is still emitting partial args —
+        // reacting then yanks the layout before the question even exists.
         if (
           p?.type === 'dynamic-tool' &&
           p?.toolName === 'ask_user' &&
-          (p?.state === 'input-available' || p?.state === 'input-streaming')
+          p?.state === 'input-available'
         ) {
           return p.toolCallId ?? p.id ?? 'pending'
         }
@@ -1704,11 +1726,19 @@ export default observer(function ProjectLayout() {
 
   const lastSwitchedAskUserIdRef = useRef<string | null>(null)
   useEffect(() => {
-    if (!pendingAskUserId) return
+    if (!pendingAskUserId) {
+      // Question resolved (answered / aborted / replaced) — drop the override
+      // so the user returns to whichever tab they had chosen.
+      lastSwitchedAskUserIdRef.current = null
+      setAttentionTab(null)
+      return
+    }
     if (lastSwitchedAskUserIdRef.current === pendingAskUserId) return
     lastSwitchedAskUserIdRef.current = pendingAskUserId
     setActiveTab('chat')
-    setPreviewTab('chat-fullscreen')
+    // Ephemeral attention override — does NOT mutate previewTab and is NOT
+    // persisted, so the user's chosen tab survives the prompt.
+    setAttentionTab('chat-fullscreen')
   }, [pendingAskUserId])
 
   const showIntegrationsCard =
@@ -1891,7 +1921,9 @@ export default observer(function ProjectLayout() {
     // (see settingsGroups below).
   }
 
-  const isChatFullscreen = isWide && previewTab === 'chat-fullscreen'
+  // Read from effectiveTab so transient attention overrides drive the layout
+  // without mutating the persisted previewTab.
+  const isChatFullscreen = isWide && effectiveTab === 'chat-fullscreen'
 
   const chatHidden = isWide ? (isChatFullscreen || chatCollapsed) : activeTab !== 'chat'
   const canvasAreaHidden = (!isWide && activeTab === 'chat') || isChatFullscreen
@@ -1900,7 +1932,7 @@ export default observer(function ProjectLayout() {
     projectName: project.name,
     projectId: projectId!,
     projects: allProjects,
-    activeTab: previewTab,
+    activeTab: effectiveTab,
     hasActiveSubscription: effectiveHasActiveSubscription,
     workspaceName,
     planLabel,
@@ -1937,7 +1969,7 @@ export default observer(function ProjectLayout() {
     onDeleteChat: isChatFullscreen ? handleDeleteChatSession : undefined,
     activeChatSessionId: isChatFullscreen ? chatSessionId : undefined,
     activeChatSessionName: isChatFullscreen ? (chatSessions.find(s => s.id === chatSessionId)?.name ?? null) : undefined,
-    canvasActive: canvasEnabled && previewTab === 'canvas',
+    canvasActive: canvasEnabled && effectiveTab === 'canvas',
     canvasThemeSupported,
     onCanvasRefresh: () => setIframeRefreshKey(k => k + 1),
     onCanvasOpenInNewTab:
@@ -1970,8 +2002,10 @@ export default observer(function ProjectLayout() {
             <ProjectTopBar
               {...topBarSharedProps}
               narrowActiveTab={activeTab}
-              narrowPreviewTab={previewTab}
+              narrowPreviewTab={effectiveTab}
               onNarrowTabChange={(tab: 'chat' | 'canvas') => {
+                // Explicit user navigation — drop any in-flight attention override.
+                setAttentionTab(null)
                 setActiveTab(tab)
                 if (tab === 'canvas') {
                   setPreviewTab('canvas')
@@ -2131,6 +2165,8 @@ export default observer(function ProjectLayout() {
             >
               <Pressable
                 onPress={() => {
+                  // Explicit user navigation — drop any in-flight attention override.
+                  setAttentionTab(null)
                   setActiveTab('chat')
                   setPreviewTab('chat-fullscreen')
                 }}
@@ -2142,14 +2178,14 @@ export default observer(function ProjectLayout() {
             </SafeAreaView>
           )}
 
-          {canvasEnabled && previewTab === 'canvas' && (
+          {canvasEnabled && effectiveTab === 'canvas' && (
             <View className="absolute inset-0">
               <PanelErrorBoundary panelName="Canvas">
                 {canvasPanel}
               </PanelErrorBoundary>
             </View>
           )}
-          {previewTab === 'app-preview' && (
+          {effectiveTab === 'app-preview' && (
             <View
               className={cn(
                 'absolute inset-0 overflow-hidden',
@@ -2162,24 +2198,24 @@ export default observer(function ProjectLayout() {
           <View
             className={cn(
               'absolute inset-0',
-              STANDALONE_PANELS.includes(previewTab)
+              STANDALONE_PANELS.includes(effectiveTab)
                 ? 'z-20 bg-background'
                 : 'pointer-events-none',
             )}
             pointerEvents={
-              STANDALONE_PANELS.includes(previewTab)
+              STANDALONE_PANELS.includes(effectiveTab)
                 ? 'auto'
                 : 'none'
             }
           >
             <PanelErrorBoundary panelName="IDE">
-              <IDEPanel visible={previewTab === 'ide'} projectId={projectId!} projectName={project.name} agentUrl={agentUrl} />
+              <IDEPanel visible={effectiveTab === 'ide'} projectId={projectId!} projectName={project.name} agentUrl={agentUrl} />
             </PanelErrorBoundary>
             <PanelErrorBoundary panelName="Files">
-              <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
+              <FilesBrowserPanel visible={effectiveTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
             </PanelErrorBoundary>
             <PanelErrorBoundary panelName="Plans">
-              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} selectedModel={selectedModel} requestedPlanPath={requestedPlanPath} onBuildPlan={handleBuildPlan} />
+              <PlansPanel visible={effectiveTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} selectedModel={selectedModel} requestedPlanPath={requestedPlanPath} onBuildPlan={handleBuildPlan} />
             </PanelErrorBoundary>
             <PanelErrorBoundary panelName="Settings">
               {(() => {
@@ -2386,7 +2422,7 @@ export default observer(function ProjectLayout() {
                 )
                 return (
                   <SettingsPanel
-                    visible={previewTab === 'settings'}
+                    visible={effectiveTab === 'settings'}
                     groups={settingsGroups}
                     requestedItem={requestedSettingsItem}
                   />
@@ -2394,11 +2430,11 @@ export default observer(function ProjectLayout() {
               })()}
             </PanelErrorBoundary>
             <PanelErrorBoundary panelName="ExternalPreview">
-              {previewTab === 'external-preview' && (
+              {effectiveTab === 'external-preview' && (
                 <ExternalPreviewWebView
                   projectId={projectId!}
                   url={externalSavedUrl ?? externalDetectedUrl ?? null}
-                  visible={previewTab === 'external-preview'}
+                  visible={effectiveTab === 'external-preview'}
                   detectedUrl={externalDetectedUrl}
                   onUrlSubmit={handleSaveExternalPreviewUrl}
                   isTrusted={projectTrustLevel === 'trusted'}
