@@ -117,7 +117,12 @@ export interface ResolveWorkspaceResult {
 
 export interface ListTreeResult {
   ok: boolean
-  tree?: ReturnType<typeof walkFilesTree>
+  /**
+   * The walked tree. `walkFilesTree` is async (post-2026-05-25), so we
+   * unwrap the Promise here — the IPC result carries the resolved value,
+   * not the promise itself.
+   */
+  tree?: Awaited<ReturnType<typeof walkFilesTree>>
   error?: string
 }
 
@@ -169,7 +174,7 @@ export function registerFsIpcHandlers(): void {
 
   ipcMain.handle(
     'fs:listTree',
-    (_event, root: string, subPath?: string): ListTreeResult => {
+    async (_event, root: string, subPath?: string): Promise<ListTreeResult> => {
       const resolvedRoot = resolveManagedWorkspaceRoot(root)
       if (!resolvedRoot) {
         return { ok: false, error: 'Workspace root is not under the managed workspaces directory' }
@@ -185,7 +190,11 @@ export function registerFsIpcHandlers(): void {
       }
       if (!stat.isDirectory()) return { ok: false, error: 'Path is not a directory' }
       try {
-        const tree = walkFilesTree(startDir, resolvedRoot)
+        // Async walker — keeps the Electron main process responsive while
+        // we recurse, and honors the workspace's `.gitignore` so big
+        // ignored dirs (target/, vendor/, Pods/, bazel-out/, etc.) don't
+        // get fully descended on the first paint.
+        const tree = await walkFilesTree(startDir, resolvedRoot)
         return { ok: true, tree }
       } catch (err) {
         return { ok: false, error: (err as Error).message }

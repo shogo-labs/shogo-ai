@@ -2542,7 +2542,7 @@ function resolveWorkspacePath(subPath: string): string | null {
 // and friends only when the user expands them. The same three exclusion sets
 // apply at every depth, so a `node_modules/foo/node_modules` nested dep still
 // comes back as a `lazy: true` entry rather than recursing.
-app.get('/agent/workspace/tree', (c) => {
+app.get('/agent/workspace/tree', async (c) => {
   const subPath = c.req.query('path') ?? ''
   const rootResolved = resolve(WORKSPACE_DIR)
   let startDir = WORKSPACE_DIR
@@ -2555,13 +2555,15 @@ app.get('/agent/workspace/tree', (c) => {
     }
     startDir = resolved
   }
-  const tree = walkFilesTree(
-    startDir,
-    rootResolved,
-    WORKSPACE_TREE_HIDDEN_DIRS,
-    WORKSPACE_TREE_LAZY_DIRS,
-    WORKSPACE_TREE_HIDDEN_FILES,
-  )
+  // The walker defaults to the same policy constants we used to pass
+  // positionally, plus root-level `.gitignore` / `.shogoignore` awareness.
+  // We still pass the constants explicitly so a future fork of the
+  // policy in this server is a one-line change.
+  const tree = await walkFilesTree(startDir, rootResolved, {
+    hiddenDirs: WORKSPACE_TREE_HIDDEN_DIRS,
+    lazyDirs: WORKSPACE_TREE_LAZY_DIRS,
+    hiddenFiles: WORKSPACE_TREE_HIDDEN_FILES,
+  })
   return c.json({ tree })
 })
 
