@@ -26,6 +26,23 @@
 
 import { useState, useEffect, useRef } from 'react'
 
+/**
+ * Lightweight cold-start mark hook. Mirrors the on-disk
+ * `apps/mobile/lib/cold-start-timing.ts` API surface but lives behind
+ * an inline guard so this package (shared with web/desktop) doesn't
+ * have to take a hard dependency on the mobile-only util. Anything
+ * mounted on `globalThis.__shogoColdStart__` gets the mark; everything
+ * else silently no-ops.
+ */
+function csMark(id: string, meta?: Record<string, unknown>): void {
+  try {
+    const g = globalThis as { __shogoColdStart__?: { mark?: (id: string, meta?: Record<string, unknown>) => void } }
+    g.__shogoColdStart__?.mark?.(id, meta)
+  } catch {
+    // never throw from a timing mark
+  }
+}
+
 function rewriteLocalhostUrl(url: string, apiBaseUrl: string): string {
   try {
     const parsed = new URL(url)
@@ -113,11 +130,22 @@ export function useAgentUrl(
     }
 
     const poll = async (): Promise<void> => {
+      const pollStart = (typeof performance !== 'undefined' ? performance.now() : Date.now())
+      const pollAttempt = attempt
+      csMark('useAgentUrl:poll:start', { attempt: pollAttempt, projectId })
       try {
         const res = await doFetch(`${apiBaseUrl}/api/projects/${projectId}/sandbox/url`, {
           credentials: options?.credentials,
           headers: options?.headers?.(),
           signal: controller.signal,
+        })
+
+        const pollEnd = (typeof performance !== 'undefined' ? performance.now() : Date.now())
+        csMark('useAgentUrl:poll:end', {
+          attempt: pollAttempt,
+          projectId,
+          status: res.status,
+          durMs: Math.round(pollEnd - pollStart),
         })
 
         // 503 = warm pool / VM still booting (see /sandbox/url's
@@ -137,6 +165,7 @@ export function useAgentUrl(
         const isReady = data?.ready === true
 
         if (!isReady) {
+          csMark('useAgentUrl:not-ready', { attempt: pollAttempt, status: data?.status })
           // Host runtime is still `'starting'`. Keep URLs hidden so
           // consumers don't hit ECONNREFUSED, and try again shortly.
           if (!controller.signal.aborted) {
@@ -145,6 +174,7 @@ export function useAgentUrl(
           }
           return
         }
+        csMark('useAgentUrl:ready', { attempt: pollAttempt, projectId })
 
         let resolvedAgent = data.agentUrl || data.url || null
         let resolvedPreview = data.url || null

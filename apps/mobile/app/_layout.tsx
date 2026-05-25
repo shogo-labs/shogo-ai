@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
+import { mark as csMark } from '../lib/cold-start-timing'
+csMark('root:layout:module-load')
 import '../polyfills'
+csMark('root:layout:after-polyfills')
 import '../lib/devtools'
 import '../global.css'
+csMark('root:layout:after-global-css')
 import '../lib/icon-interop'
 
 import { useEffect } from 'react'
@@ -93,6 +97,8 @@ function useCaptureTemplateDeepLink() {
 }
 
 function RootLayoutInner() {
+  csMark('root:layout:render')
+  useEffect(() => { csMark('root:layout:mounted') }, [])
   useEffect(() => { captureAttribution() }, [])
   useCaptureTemplateDeepLink()
   const systemColorScheme = useColorScheme()

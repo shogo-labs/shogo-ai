@@ -1,34 +1,42 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Pins {@link WorkerRuntimeManager.waitForHealth} against the three
- * readiness signals it now considers and the diagnostic behavior on
- * timeout. The historical bug this protects against: agent-runtime
- * cold boots on Windows with `bun --conditions=development run
- * packages/agent-runtime/src/server.ts` routinely take 30-45s just
- * to JIT-compile the TS dep graph (shared-runtime + generators +
- * tools + hooks + gateway). The kernel-level TCP listener is up
- * within ~1-2s of spawn (the moment `Bun.serve()` reads its default
- * export), but the event loop is still saturated for tens of seconds
- * after that, so the old HTTP-only /health gate timed out, SIGTERM'd
- * the still-booting child, and the restart-loop chewed through
- * `MAX_CONSECUTIVE_RESTARTS` before giving up — leaving chat stuck
- * with "Connection timed out — The agent runtime could not be
- * reached".
+ * Pins {@link WorkerRuntimeManager.waitForHealth} against the readiness
+ * contract every downstream caller of `status === 'running'` assumes:
+ * the agent runtime can actually serve HTTP, not just "the kernel
+ * accepted a TCP listener on the port". The historical context:
+ *
+ *   - First pass (pre-2026-05): HTTP /health was the only signal. Bun
+ *     on Windows takes 30-45s to JIT the runtime TS dep graph during
+ *     cold boot, and /health was starved on the busy event loop the
+ *     whole time, so the 30s timeout SIGTERM'd the still-booting
+ *     child and the restart loop chewed through `MAX_CONSECUTIVE_RESTARTS`.
+ *   - Second pass: added a TCP-listening + recent stdout fast path
+ *     that returned "ready" as soon as `Bun.serve()` bound the port
+ *     and the child kept emitting log lines. This stopped the SIGTERM
+ *     storm but tricked `/sandbox/url` into reporting ready before
+ *     HTTP actually worked, so the canvas iframe and AgentProxy
+ *     started chasing a black hole and surfaced as "Connection timed
+ *     out — The agent runtime could not be reached".
+ *   - Current pass (2026-05): keep waiting for a real /health 2xx with
+ *     HEALTH_BOOT_TIMEOUT_MS=30 s (now realistic on Windows because
+ *     LSP + IndexEngine were moved out of the critical-path boot
+ *     sequence in agent-runtime). TCP-listening + silent stdout >
+ *     STDOUT_PROGRESS_WINDOW_MS=25 s acts as a *wedge detector* —
+ *     a child that bound the port but stopped producing output for
+ *     25 s is genuinely stuck and the restart loop should recover
+ *     it instead of waiting for the hard timeout.
  *
  * The contracts pinned here:
  *
- *   1. HTTP /health 200 returns immediately — the happy path is
- *      unchanged for healthy runtimes.
- *   2. TCP-listening + recent stdout activity returns successfully
- *      even when /health never responds — handles the cold-boot
- *      saturation case.
+ *   1. HTTP /health 200 returns immediately — the happy path.
+ *   2. /health that never responds (with TCP up + stdout fresh) keeps
+ *      waiting until the timeout, instead of declaring ready early.
  *   3. TCP-listening but stdout silent past STDOUT_PROGRESS_WINDOW_MS
- *      does NOT short-circuit — a truly-wedged process still hits
- *      the hard timeout.
- *   4. Process death (exitCode/signalCode/killed) short-circuits
- *      immediately with the exit info, instead of waiting the full
- *      timeout window.
+ *      throws the "wedged" error so restart-with-backoff fires.
+ *   4. Neither TCP nor HTTP ever come up → clean timeout error.
+ *   5. Process death (exitCode/signalCode/killed) short-circuits
+ *      immediately with the exit info.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { WorkerRuntimeManager } from '../runtime-manager.ts';
@@ -132,63 +140,73 @@ describe('WorkerRuntimeManager.waitForHealth (private)', () => {
   });
 
   it(
-    'accepts TCP-listening + recent stdout activity as ready when /health keeps failing',
+    'keeps waiting for /health even when TCP is up and stdout is fresh',
     async () => {
-      // Reproduces the Windows `--conditions=development` cold-boot:
-      // Bun.serve has bound the port (kernel-level listener up) and
-      // the child is still emitting log lines (LSP-TS init,
-      // preview-manager spawn, vite build), but /health is starved
-      // because the event loop is busy JIT-compiling. The wait
-      // should accept this as ready instead of timing out for 30s
-      // and SIGTERM'ing a still-booting process.
+      // Reproduces the Windows cold-boot saturation pattern: Bun.serve
+      // has bound the port and the child is still emitting log lines
+      // (LSP-TS init, preview-manager spawn, vite build), but /health
+      // never gets event-loop time. The wait must NOT declare the
+      // runtime ready on TCP+stdout alone any more — see the file
+      // docstring for the canvas-iframe "Connection timed out"
+      // regression that fast-path caused. It should keep polling
+      // /health and eventually hit the deadline.
       globalThis.fetch = (async () => {
         throw new Error('ECONNREFUSED');
       }) as typeof fetch;
       stubTcpProbe(mgr, true);
 
       const slot = makeSlot();
-      // Keep stdout "fresh" so the progress window stays open.
+      // Keep stdout "fresh" so the wedge detector stays quiet — we
+      // want to exercise the hard timeout, not the wedge bail-out.
       const bumper = setInterval(() => {
         slot.lastStdoutAt = Date.now();
       }, 200);
 
       const startedAt = Date.now();
       try {
-        await callWaitForHealth(mgr, slot, 30_000);
+        await expect(callWaitForHealth(mgr, slot, 1_500)).rejects.toThrow(
+          /Timeout waiting for agent-runtime \/health on port 41234.*tcpListening=true/s,
+        );
       } finally {
         clearInterval(bumper);
       }
       const elapsed = Date.now() - startedAt;
-      // Should return within the first iteration or two — TCP probe
-      // succeeds + stdout fresh = ready. Hard cap well below the 30s
-      // timeout to catch a regression to the legacy 30s spin.
-      expect(elapsed).toBeLessThan(5_000);
+      // Should have spent close to the full 1.5s window polling
+      // /health, not short-circuited early.
+      expect(elapsed).toBeGreaterThanOrEqual(1_400);
     },
-    15_000,
+    5_000,
   );
 
   it(
-    'does NOT accept TCP-listening alone when stdout is silent past the progress window',
+    'throws "wedged" when TCP is up and stdout is silent past the progress window',
     async () => {
       // The silent-but-bound case mimics a process that bound the
       // port and then wedged (infinite loop in top-level code, native
-      // crash mid-init that didn't propagate to the parent). The
-      // progress window correctly refuses to short-circuit here so
-      // the restart loop has a chance to recover.
+      // crash mid-init that didn't propagate to the parent). Bail
+      // out fast with a "wedged" error so the restart-with-backoff
+      // loop in handleExit() can SIGTERM and respawn, instead of
+      // spinning the full HEALTH_BOOT_TIMEOUT_MS for a process that
+      // will never recover.
       globalThis.fetch = (async () => {
         throw new Error('ECONNREFUSED');
       }) as typeof fetch;
       stubTcpProbe(mgr, true);
 
       const slot = makeSlot({
-        // Pre-age the stdout timestamp so the window is already
-        // closed before the first iteration.
-        lastStdoutAt: Date.now() - 60_000,
+        // Pre-age the stdout timestamp so the wedge detector trips
+        // on the first iteration. Must exceed STDOUT_PROGRESS_WINDOW_MS
+        // (25 s) to fire.
+        lastStdoutAt: Date.now() - 30_000,
       });
 
-      await expect(callWaitForHealth(mgr, slot, 1_200)).rejects.toThrow(
-        /Timeout waiting for agent-runtime \/health on port 41234.*tcpListening=true/s,
+      // Generous outer timeout — the wedge detector should fire
+      // immediately, well before the 30s timeout would.
+      const startedAt = Date.now();
+      await expect(callWaitForHealth(mgr, slot, 30_000)).rejects.toThrow(
+        /agent-runtime wedged on port 41234.*stdout silent for/s,
       );
+      expect(Date.now() - startedAt).toBeLessThan(2_500);
     },
     5_000,
   );

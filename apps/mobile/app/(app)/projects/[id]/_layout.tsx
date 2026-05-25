@@ -131,6 +131,9 @@ import {
 import { Heading } from '@/components/ui/heading'
 import { Text as UIText } from '@/components/ui/text'
 import { Button, ButtonText } from '@/components/ui/button'
+import { mark as csMark, markRuntimeReadyAndFlush } from '../../../../lib/cold-start-timing'
+
+csMark('project:layout:module-load')
 
 type ActiveTab = 'chat' | 'canvas'
 
@@ -236,6 +239,7 @@ function buildCanvasErrorDebugPrompt(args: {
 }
 
 export default observer(function ProjectLayout() {
+  csMark('project:layout:render')
   const params = useLocalSearchParams<{
     id: string
     chatSessionId?: string
@@ -692,6 +696,22 @@ export default observer(function ProjectLayout() {
   const domainsReady = sdkReady && !!store?.projectCollection
 
   useEffect(() => {
+    csMark('project:layout:mounted', { projectId })
+  }, [projectId])
+
+  useEffect(() => {
+    if (sdkReady) csMark('project:sdk-ready')
+  }, [sdkReady])
+
+  useEffect(() => {
+    if (project) csMark('project:loaded', { id: project?.id })
+  }, [project])
+
+  useEffect(() => {
+    if (runtimeReady) markRuntimeReadyAndFlush({ projectId })
+  }, [runtimeReady, projectId])
+
+  useEffect(() => {
     if (!projectId || !domainsReady || !user?.id) return
 
     let cancelled = false
@@ -707,9 +727,12 @@ export default observer(function ProjectLayout() {
     const loadProject = async (attempt = 1): Promise<void> => {
       if (cancelled) return
       setIsLoading(true)
+      csMark('project:load:start', { attempt })
 
       try {
+        csMark('project:load:workspaces:start')
         await store.workspaceCollection.loadAll({ userId: user!.id })
+        csMark('project:load:workspaces:end')
         // Fall back to the first workspace the user belongs to when nothing
         // has been persisted yet — otherwise the project-list preload is
         // silently skipped and the sidebar's Recent stays empty on a fresh
@@ -722,7 +745,9 @@ export default observer(function ProjectLayout() {
             .loadAll(projectFilter)
             .catch((e) => console.error('[ProjectLayout] Failed to preload projects:', e))
         }
+        csMark('project:load:loadById:start')
         const proj = await store.projectCollection.loadById(projectId)
+        csMark('project:load:loadById:end')
 
         if (cancelled) return
 
@@ -2640,8 +2665,22 @@ function ChatPanelResizeHandle({
 // ---------------------------------------------------------------------------
 
 /** Polls the preview root URL until it stops returning 404.
- *  Covers both DomainMapping propagation (ingress 404 / CORS error)
- *  and runtime deployment (old pods serve /canvas/* but not /). */
+ *  Covers both DomainMapping propagation (cloud: ingress 404 / CORS error)
+ *  and Bun event-loop saturation on cold-boot (desktop: TCP accepts but
+ *  the first HTTP request can sit there for many seconds while Bun is
+ *  still JIT-compiling the runtime TS dep graph and spawning LSP-TS /
+ *  pyright).
+ *
+ *  Per-request timeout is intentionally large (15s) because the cold-
+ *  boot first request on Windows + Defender + NTFS routinely takes
+ *  10s+ before the runtime can pipe back its first byte. The previous
+ *  4s ceiling treated every slow first response as a hard failure and
+ *  surfaced as the "Connection timed out — The agent runtime could
+ *  not be reached" toast even though the runtime was about to respond.
+ *
+ *  Override knob: window.__shogoPreviewReadinessTimeoutMs (for tests
+ *  / future tuning without redeploying).
+ */
 function usePreviewReadiness(baseUrl: string | null | undefined): string | null {
   const [ready, setReady] = useState(false)
 
@@ -2650,13 +2689,21 @@ function usePreviewReadiness(baseUrl: string | null | undefined): string | null 
 
     let alive = true
 
+    const overrideMs =
+      typeof window !== 'undefined' &&
+      (window as { __shogoPreviewReadinessTimeoutMs?: number }).__shogoPreviewReadinessTimeoutMs
+    const perRequestTimeoutMs =
+      typeof overrideMs === 'number' && overrideMs > 0 ? overrideMs : 15_000
+    const interIterationDelayMs = 1_000
+    const maxIterations = 60
+
     async function poll() {
-      for (let i = 0; i < 60 && alive; i++) {
+      for (let i = 0; i < maxIterations && alive; i++) {
         try {
-          const res = await fetch(`${baseUrl}/`, { signal: AbortSignal.timeout(4000) })
+          const res = await fetch(`${baseUrl}/`, { signal: AbortSignal.timeout(perRequestTimeoutMs) })
           if (res.status !== 404) { if (alive) setReady(true); return }
-        } catch { /* CORS / network failure — DomainMapping not ready */ }
-        await new Promise(r => setTimeout(r, 1000))
+        } catch { /* CORS / network failure / per-request timeout — keep polling */ }
+        await new Promise(r => setTimeout(r, interIterationDelayMs))
       }
       if (alive) setReady(true)
     }

@@ -392,7 +392,7 @@ export const WorkspaceGrantCollection = types
 // ============================================================================
 
 // Relation fields that expect IDs (safeReference)
-const relationFields = ["workspace"]
+const relationFields = ["workspace","licenseKeys"]
 
 /**
  * Transform API response for MST compatibility:

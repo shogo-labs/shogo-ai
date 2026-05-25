@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { PreviewManager, reapStaleViteWatchers } from '../preview-manager'
+import { previewConsoleLogPath, previewBuildLogPath } from '../runtime-log-paths'
 
 let dir: string
 beforeEach(() => {
@@ -421,49 +422,92 @@ describe('PreviewManager custom-routes watcher', () => {
 // --- clearRuntimeConsoleLog ----------------------------------------------
 
 describe('PreviewManager.clearRuntimeConsoleLog', () => {
-  it('truncates an existing .console.log to empty', () => {
-    const bundler = join(dir, 'project')
-    mkdirSync(bundler, { recursive: true })
-    writeFileSync(join(bundler, 'package.json'), '{}')
-    const logPath = join(bundler, '.console.log')
-    writeFileSync(logPath, 'old content here\n')
+  it('truncates an existing console.log to empty', () => {
+    // clearRuntimeConsoleLog now writes under <workspace>/.shogo/logs/ —
+    // bundlerCwd is irrelevant. ensureRuntimeLogDir runs inside the
+    // helper, so a fresh workspace dir works without explicit mkdir.
+    const logPath = previewConsoleLogPath(dir)
     const m = mk() as any
+    // Pre-seed the file at the new canonical location.
+    m.clearRuntimeConsoleLog() // creates the dir + empties the file
+    writeFileSync(logPath, 'old content here\n')
     m.clearRuntimeConsoleLog()
     expect(readFileSync(logPath, 'utf-8')).toBe('')
   })
 
   it('also calls the optional onConsoleLogReset listener', () => {
-    const bundler = join(dir, 'project')
-    mkdirSync(bundler, { recursive: true })
-    writeFileSync(join(bundler, 'package.json'), '{}')
-    writeFileSync(join(bundler, '.console.log'), 'x')
     let calls = 0
     const m = mk({ onConsoleLogReset: () => { calls++ } }) as any
     m.clearRuntimeConsoleLog()
     expect(calls).toBe(1)
   })
 
-  it('is a no-op (logs a warning) when the bundlerCwd does not exist', () => {
+  it('creates the .shogo/logs/ directory on first call (no ENOENT)', () => {
+    // Fresh workspace with no .shogo/ — clearRuntimeConsoleLog must
+    // mkdir -p before writing; otherwise the first preview start
+    // would throw and we'd lose every log line until the next manual
+    // mkdir.
     const m = mk() as any
-    const warn = console.warn
-    console.warn = () => {}
-    try {
-      expect(() => m.clearRuntimeConsoleLog()).not.toThrow()
-    } finally {
-      console.warn = warn
-    }
+    expect(() => m.clearRuntimeConsoleLog()).not.toThrow()
+    expect(existsSync(previewConsoleLogPath(dir))).toBe(true)
   })
 
   it('still truncates the file even if the listener is undefined', () => {
+    const logPath = previewConsoleLogPath(dir)
+    const m = mk() as any
+    m.clearRuntimeConsoleLog()
+    writeFileSync(logPath, 'before')
+    // No onConsoleLogReset wired
+    m.clearRuntimeConsoleLog()
+    expect(readFileSync(logPath, 'utf-8')).toBe('')
+  })
+})
+
+// --- cleanupLegacyRuntimeLogs --------------------------------------------
+//
+// One-shot orphan cleanup run from `start()`. Pre-2026-05 runtimes wrote
+// `.build.log` / `.console.log` next to `index.html` at the workspace
+// root (or in `<workspace>/project/` for legacy Vite layouts). Leaving
+// them there re-arms the Windows chokidar rebuild-loop the move to
+// `.shogo/logs/` was meant to defeat — so every `start()` deletes them.
+
+describe('PreviewManager.cleanupLegacyRuntimeLogs', () => {
+  it('removes legacy <workspace>/.build.log and .console.log', () => {
+    writeFileSync(join(dir, '.build.log'), 'stale\n')
+    writeFileSync(join(dir, '.console.log'), 'stale\n')
+    const m = mk() as any
+    m.cleanupLegacyRuntimeLogs()
+    expect(existsSync(join(dir, '.build.log'))).toBe(false)
+    expect(existsSync(join(dir, '.console.log'))).toBe(false)
+  })
+
+  it('removes legacy <workspace>/project/.build.log and .console.log (Vite layout)', () => {
     const bundler = join(dir, 'project')
     mkdirSync(bundler, { recursive: true })
     writeFileSync(join(bundler, 'package.json'), '{}')
-    const logPath = join(bundler, '.console.log')
-    writeFileSync(logPath, 'before')
-    // No onConsoleLogReset wired
+    writeFileSync(join(bundler, '.build.log'), 'stale\n')
+    writeFileSync(join(bundler, '.console.log'), 'stale\n')
     const m = mk() as any
-    m.clearRuntimeConsoleLog()
-    expect(readFileSync(logPath, 'utf-8')).toBe('')
+    m.cleanupLegacyRuntimeLogs()
+    expect(existsSync(join(bundler, '.build.log'))).toBe(false)
+    expect(existsSync(join(bundler, '.console.log'))).toBe(false)
+  })
+
+  it('does NOT touch the new canonical files under .shogo/logs/', () => {
+    const newBuild = previewBuildLogPath(dir)
+    const newConsole = previewConsoleLogPath(dir)
+    mkdirSync(join(dir, '.shogo', 'logs'), { recursive: true })
+    writeFileSync(newBuild, 'fresh\n')
+    writeFileSync(newConsole, 'fresh\n')
+    const m = mk() as any
+    m.cleanupLegacyRuntimeLogs()
+    expect(readFileSync(newBuild, 'utf-8')).toBe('fresh\n')
+    expect(readFileSync(newConsole, 'utf-8')).toBe('fresh\n')
+  })
+
+  it('is a no-op (no throw) when nothing legacy exists', () => {
+    const m = mk() as any
+    expect(() => m.cleanupLegacyRuntimeLogs()).not.toThrow()
   })
 })
 

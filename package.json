@@ -19,7 +19,7 @@
     "build:email": "bun run --cwd packages/email build",
     "build:voice": "bun run --cwd packages/voice build",
     "build:cli": "bun run --cwd packages/cli build",
-    "web:dev": "cd apps/mobile && npx expo start --web",
+    "web:dev": "bun run --cwd apps/mobile dev:web",
     "mobile:dev": "bun run --cwd apps/mobile expo start --go",
     "web:build": "cd apps/mobile && npx expo export --platform web",
     "api:dev": "bun scripts/watch-api.ts",

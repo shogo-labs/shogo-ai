@@ -3,19 +3,50 @@
 /**
  * Paths for Vite/API build output and unified runtime console logs.
  *
- * Historically these lived under `<workspace>/project/` because the only
- * supported stack (Vite) seeded its app there. Expo / RN stacks put the
- * package.json at the workspace root instead — so the helpers now resolve
- * the bundler cwd from the workspace root by checking which layout exists,
- * matching `PreviewManager.resolveBundlerCwd()`.
+ * Logs live under `<workspaceRoot>/.shogo/logs/` since 2026-05.
+ * Previously they sat at `<bundlerCwd>/.{build,console}.log` — directly
+ * next to `index.html`, `tsconfig.json`, and the rest of the project
+ * sources. On Windows that was the canonical trigger for a vite-watch
+ * rebuild loop: chokidar's parent-directory `fs.watch` fires on metadata
+ * changes to any sibling of a watched file, every `appendFileSync` to
+ * `.build.log` re-entered Rollup's input graph evaluation, and a single
+ * agent boot would burn a full CPU core forever in 1-module / 0-module
+ * rebuilds. Moving the logs under `.shogo/` puts them inside a directory
+ * that:
+ *
+ *   - `tsconfig.json`'s `watchOptions.excludeDirectories` already lists
+ *     (`**\/.shogo`),
+ *   - the workspace `.gitignore` and `git.service.ts`'s
+ *     `REQUIRED_IGNORE_ENTRIES` already mark as untracked, and
+ *   - lives outside the bundler-cwd → no chokidar parent-dir trigger.
+ *
+ * `BUILD_LOG_FILE` / `CONSOLE_LOG_FILE` / `PREVIEW_SUBDIR` are retained
+ * as named exports for back-compat with callers that still reference the
+ * old constants (notably tests and older sibling packages); new code
+ * should go through `previewBuildLogPath()` / `previewConsoleLogPath()`.
  */
-import { existsSync } from 'fs'
+import { existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 
 /** Legacy Vite layout — used by the `react-app`, `threejs-game`, `phaser-game` stacks. */
 export const PREVIEW_SUBDIR = 'project'
+/**
+ * Legacy log basenames. Kept exported so older tooling/tests can still
+ * import them, but no longer used to derive the active log paths — see
+ * `RUNTIME_LOG_SUBDIR` and the `*_BASENAME` constants below.
+ */
 export const BUILD_LOG_FILE = '.build.log'
 export const CONSOLE_LOG_FILE = '.console.log'
+
+/**
+ * New canonical layout: `<workspaceRoot>/.shogo/logs/{build,console}.log`.
+ * Sits inside `.shogo/` which is already excluded from tsconfig watch,
+ * git, and the per-checkpoint snapshotter — see file docstring for the
+ * vite-watch rebuild-loop history that drove the move.
+ */
+export const RUNTIME_LOG_SUBDIR = join('.shogo', 'logs')
+export const BUILD_LOG_BASENAME = 'build.log'
+export const CONSOLE_LOG_BASENAME = 'console.log'
 
 /**
  * Resolve where the bundler's package.json + log files actually live for
@@ -39,10 +70,35 @@ export function resolveBundlerCwd(workspaceRoot: string): string {
   return legacy
 }
 
+/**
+ * Absolute path of the current runtime build log. Always under
+ * `<workspaceRoot>/.shogo/logs/` regardless of stack — Vite and Expo
+ * workspaces share the same `.shogo/` dir.
+ */
 export function previewBuildLogPath(workspaceRoot: string): string {
-  return join(resolveBundlerCwd(workspaceRoot), BUILD_LOG_FILE)
+  return join(workspaceRoot, RUNTIME_LOG_SUBDIR, BUILD_LOG_BASENAME)
 }
 
+/** Absolute path of the current runtime console log. See `previewBuildLogPath`. */
 export function previewConsoleLogPath(workspaceRoot: string): string {
-  return join(resolveBundlerCwd(workspaceRoot), CONSOLE_LOG_FILE)
+  return join(workspaceRoot, RUNTIME_LOG_SUBDIR, CONSOLE_LOG_BASENAME)
+}
+
+/**
+ * mkdir -p the directory that holds `build.log` / `console.log`. Cheap
+ * and idempotent — callers run it before `appendFileSync` /
+ * `writeFileSync` so the first write to a fresh workspace doesn't ENOENT.
+ *
+ * Best-effort: returns the directory path either way. If the mkdir fails
+ * (permission, racing concurrent writer, parent gone) the caller's
+ * subsequent write will throw the more useful error.
+ */
+export function ensureRuntimeLogDir(workspaceRoot: string): string {
+  const dir = join(workspaceRoot, RUNTIME_LOG_SUBDIR)
+  try {
+    mkdirSync(dir, { recursive: true })
+  } catch {
+    // Swallow — writers protect themselves with their own try/catch.
+  }
+  return dir
 }
