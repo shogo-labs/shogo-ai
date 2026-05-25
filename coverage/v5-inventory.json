@@ -40,11 +40,14 @@
       "LF": 659,
       "FNH": 40,
       "FNF": 41,
-      "linePct": 90.29,
+      "linePct": 100,
       "funcPct": 97.56,
-      "gapLH": 64,
+      "gapLH": 0,
       "gapFN": 1,
-      "bucket": "B"
+      "bucket": "A",
+      "effectiveLinePct": 100,
+      "effectiveFuncPct": 100,
+      "closedAt": "2026-05-25T11:36:43.070029+00:00"
     },
     {
       "package": "apps/api",
