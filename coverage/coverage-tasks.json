@@ -844,8 +844,14 @@
       "linePct": 87.6755,
       "funcPct": 92.5,
       "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-25T00:19:29.944355Z",
+      "beforeLinePct": 87.6755,
+      "beforeFuncPct": 92.5,
+      "afterLinePct": 97.5,
+      "afterFuncPct": 100.0,
+      "effectiveLinePct": 100
     },
     {
       "file": "packages/shared-runtime/src/preview-token.ts",

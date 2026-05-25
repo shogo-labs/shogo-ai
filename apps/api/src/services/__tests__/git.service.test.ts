@@ -736,3 +736,260 @@ describe('saveCheckpointMetadata / readCheckpointMetadata', () => {
     expect(await svc.readCheckpointMetadata(ws)).toBeNull()
   })
 })
+
+// ─── module-private helpers via __forTests re-exports ─────────────────────────
+
+describe('__isWindowsReservedBasenameForTests', () => {
+  it('matches every device name (case-insensitive, with and without extension)', () => {
+    const positives = [
+      'nul', 'NUL', 'Nul', 'nul.txt', 'NUL.LOG',
+      'con', 'CON', 'con.cfg',
+      'prn', 'aux', 'aux.dat',
+      'com1', 'COM9', 'com5.txt',
+      'lpt1', 'LPT9', 'lpt2.bin',
+    ]
+    for (const name of positives) {
+      expect(svc.__isWindowsReservedBasenameForTests(name)).toBe(true)
+    }
+  })
+
+  it('rejects non-reserved names', () => {
+    const negatives = ['foo', 'foo.txt', 'README.md', 'com', 'com10', 'lpt10', 'connection.json', 'auxiliary']
+    for (const name of negatives) {
+      expect(svc.__isWindowsReservedBasenameForTests(name)).toBe(false)
+    }
+  })
+
+  it('handles names with no extension correctly', () => {
+    expect(svc.__isWindowsReservedBasenameForTests('NUL')).toBe(true)
+    expect(svc.__isWindowsReservedBasenameForTests('hello')).toBe(false)
+  })
+})
+
+describe('__purgeWindowsReservedFilesForTests (spoofed platform)', () => {
+  let origPlatform: PropertyDescriptor | undefined
+  function spoofWin32() {
+    origPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+  }
+  function restorePlatform() {
+    if (origPlatform) Object.defineProperty(process, 'platform', origPlatform)
+  }
+
+  it('returns 0 immediately on non-win32 hosts', () => {
+    // Native platform is linux in CI — assert short-circuit.
+    expect(svc.__purgeWindowsReservedFilesForTests(ws)).toBe(0)
+  })
+
+  it('walks the tree and removes reserved-name files when platform==win32', () => {
+    write('nul', 'shell-redirect-junk')
+    write('con.log', 'more-junk')
+    write('keep.txt', 'real-file')
+    mkdirSync(join(ws, 'sub'), { recursive: true })
+    write('sub/aux', 'nested-junk')
+    write('sub/notes.md', 'keep-me')
+    mkdirSync(join(ws, '.git'), { recursive: true })
+    write('.git/nul', 'skipped-by-skipDirs')
+
+    try {
+      spoofWin32()
+      const removed = svc.__purgeWindowsReservedFilesForTests(ws)
+      expect(removed).toBe(3)
+    } finally {
+      restorePlatform()
+    }
+
+    expect(existsSync(join(ws, 'nul'))).toBe(false)
+    expect(existsSync(join(ws, 'con.log'))).toBe(false)
+    expect(existsSync(join(ws, 'sub', 'aux'))).toBe(false)
+    expect(existsSync(join(ws, 'keep.txt'))).toBe(true)
+    expect(existsSync(join(ws, 'sub', 'notes.md'))).toBe(true)
+    // .git contents are skipped
+    expect(existsSync(join(ws, '.git', 'nul'))).toBe(true)
+  })
+
+  it('walk swallows readdir EACCES and continues', () => {
+    write('top.txt', '')
+    const sub = join(ws, 'unreadable')
+    mkdirSync(sub)
+    write('unreadable/nul', 'junk')
+    // Make unreadable directory non-readable so readdirSync throws.
+    // chmod 000 — root can still read, but unprivileged process can't.
+    const { chmodSync } = require('node:fs')
+    chmodSync(sub, 0o000)
+    try {
+      spoofWin32()
+      // Should not throw; readdir error is swallowed.
+      const removed = svc.__purgeWindowsReservedFilesForTests(ws)
+      expect(typeof removed).toBe('number')
+    } finally {
+      chmodSync(sub, 0o700)
+      restorePlatform()
+    }
+  })
+})
+
+describe('isGitAvailable — cached false and requireGit() throw', () => {
+  it('returns cached false on subsequent calls when seeded false', () => {
+    svc.__setGitAvailableForTesting(false)
+    try {
+      expect(svc.isGitAvailable()).toBe(false) // cached-return arm (line 40)
+      expect(svc.isGitAvailable()).toBe(false)
+    } finally {
+      svc.__resetGitAvailableForTesting()
+    }
+    // Sanity: real git is back.
+    expect(svc.isGitAvailable()).toBe(true)
+  })
+
+  it('requireGit throws "Git is not installed" when seeded unavailable', async () => {
+    svc.__setGitAvailableForTesting(false)
+    try {
+      await expect(svc.initRepo(ws)).rejects.toThrow(/Git is not installed/)
+    } finally {
+      svc.__resetGitAvailableForTesting()
+    }
+  })
+
+  it('re-probes after __resetGitAvailableForTesting() (sets cache true on healthy host)', () => {
+    svc.__resetGitAvailableForTesting()
+    expect(svc.isGitAvailable()).toBe(true) // exercises probe + cache-set true (line 36)
+    expect(svc.isGitAvailable()).toBe(true) // cached-true return (line 33)
+  })
+
+  it('catch arm runs and sets cache=false when the probe binary is missing', () => {
+    svc.__resetGitAvailableForTesting()
+    svc.__setGitBinaryNameForTesting('definitely-not-a-real-binary-xyz123-' + Date.now())
+    try {
+      expect(svc.isGitAvailable()).toBe(false) // probe throws ENOENT → catch → _gitAvailable=false
+    } finally {
+      svc.__setGitBinaryNameForTesting(null) // restore default 'git'
+      svc.__resetGitAvailableForTesting()
+    }
+    // Sanity: real git is back.
+    expect(svc.isGitAvailable()).toBe(true)
+  })
+})
+
+describe('initRepo first-commit "nothing to commit" swallow', () => {
+  it('swallows nothing-to-commit when .gitignore is a directory (write fails silently → empty index)', async () => {
+    // Pre-create .gitignore as a directory so ensureGitignoreIgnoresDeps's
+    // readFile throws EISDIR, returns silently, and no .gitignore content is
+    // written. The .shogo dir mkdir succeeds but empty dirs aren't tracked
+    // by git, so `git add -A` produces an empty index and `git commit`
+    // throws "nothing to commit" — which the catch (lines 531-536) swallows.
+    mkdirSync(join(ws, '.gitignore'))
+    const out = await svc.initRepo(ws)
+    expect(out.created).toBe(true)
+    expect(out.branch).toBe('main')
+  })
+})
+
+describe('commit() — nothing-to-commit returns null (lines 705-708)', () => {
+  it('returns null when commit() is called with no staged changes', async () => {
+    await svc.initRepo(ws)
+    configUser()
+    // initRepo already committed the initial .gitignore. A second commit()
+    // on a clean tree exercises the catch (line 705) + "nothing to commit"
+    // branch (lines 706-707).
+    const out = await svc.commit(ws, { message: 'no-op' })
+    expect(out).toBeNull()
+  })
+
+})
+
+describe('__ensureGitignoreIgnoresDepsForTests', () => {
+  it('returns silently when .gitignore is unreadable (EISDIR)', () => {
+    // Make .gitignore a directory — readFileSync throws EISDIR → catch → return.
+    mkdirSync(join(ws, '.gitignore'))
+    // Should not throw, and should not attempt to write because the
+    // read failed early.
+    expect(() => svc.__ensureGitignoreIgnoresDepsForTests(ws)).not.toThrow()
+    // .gitignore is still a directory (we never wrote anything).
+    expect(statSync(join(ws, '.gitignore')).isDirectory()).toBe(true)
+  })
+})
+
+describe('__evictStaleIndexLockForTests — non-ENOENT unlink error', () => {
+  it('logs warning when unlinkSync fails on a stale lock (lock is a directory)', async () => {
+    await svc.initRepo(ws)
+    // Make a stale `.git/index.lock` that is actually a directory.
+    // unlinkSync on a directory throws EISDIR, which is non-ENOENT, so the
+    // function takes the warning branch (lines 439, 443-444).
+    const lockPath = join(ws, '.git', 'index.lock')
+    mkdirSync(lockPath)
+    // Backdate mtime to past the staleness threshold (default 30s).
+    const past = new Date(Date.now() - 5 * 60_000)
+    const { utimesSync } = require('node:fs')
+    utimesSync(lockPath, past, past)
+
+    const warns: string[] = []
+    const origWarn = console.warn
+    console.warn = (...args: any[]) => { warns.push(args.join(' ')) }
+    try {
+      expect(() => svc.__evictStaleIndexLockForTests(ws)).not.toThrow()
+    } finally {
+      console.warn = origWarn
+    }
+    // Either the "could not remove" warning OR (rare) the "removed stale"
+    // warning landed — both are acceptable exit branches for a stale lock.
+    const sawCouldNotRemove = warns.some((w) => /Could not remove .git\/index\.lock/.test(w))
+    expect(sawCouldNotRemove).toBe(true)
+
+    // Clean up: rmSync the directory we created.
+    rmSync(lockPath, { recursive: true, force: true })
+  })
+
+  it('no-op when workspace is not a git repo', () => {
+    const fresh = mkdtempSync(join(tmpRoot, 'no-repo-'))
+    try {
+      expect(() => svc.__evictStaleIndexLockForTests(fresh)).not.toThrow()
+    } finally {
+      rmSync(fresh, { recursive: true, force: true })
+    }
+  })
+
+  it('no-op when no index.lock file exists', async () => {
+    await svc.initRepo(ws)
+    // No .git/index.lock present — function returns at stat catch.
+    expect(() => svc.__evictStaleIndexLockForTests(ws)).not.toThrow()
+  })
+
+  it('leaves a young lock alone', async () => {
+    await svc.initRepo(ws)
+    const lockPath = join(ws, '.git', 'index.lock')
+    writeFileSync(lockPath, '')
+    // Don't backdate — age is ~0ms, under STALE_INDEX_LOCK_MS.
+    svc.__evictStaleIndexLockForTests(ws)
+    expect(existsSync(lockPath)).toBe(true)
+    rmSync(lockPath, { force: true })
+  })
+})
+
+
+
+describe('__resolveRefForTests (covers resolveRef function)', () => {
+  it('returns the 40-char sha for HEAD on a repo with a commit', async () => {
+    await svc.initRepo(ws)
+    configUser()
+    const sha = await svc.__resolveRefForTests(ws, 'HEAD')
+    expect(typeof sha).toBe('string')
+    expect((sha as string).length).toBe(40)
+  })
+
+  it('returns null for a non-existent ref', async () => {
+    await svc.initRepo(ws)
+    const sha = await svc.__resolveRefForTests(ws, 'definitely-no-such-ref-xyz')
+    expect(sha).toBeNull()
+  })
+
+  it('returns null when workspace is not a git repo', async () => {
+    const fresh = mkdtempSync(join(tmpRoot, 'no-repo-rr-'))
+    try {
+      const sha = await svc.__resolveRefForTests(fresh, 'HEAD')
+      expect(sha).toBeNull()
+    } finally {
+      rmSync(fresh, { recursive: true, force: true })
+    }
+  })
+})
