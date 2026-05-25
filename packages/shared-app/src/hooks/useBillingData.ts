@@ -162,6 +162,13 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
     } catch { return undefined }
   }, [workspaceId, store, isLoadingUsageWallet, walletLength])
 
+  // Track mutable wallet fields so downstream memos recompute when the
+  // MobX model is updated in-place (same reference, new property values).
+  const walletUpdatedAt = usageWallet?.updatedAt ?? 0
+  const walletOverageHardLimitUsd = usageWallet?.overageHardLimitUsd
+  const walletOverageEnabled = usageWallet?.overageEnabled
+  const walletOverageAccumulatedUsd = usageWallet?.overageAccumulatedUsd
+
   const effectiveBalance = useMemo<EffectiveBalance | undefined>(() => {
     if (!usageWallet) return undefined
     try {
@@ -190,7 +197,7 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
         total: daily + monthly,
       }
     } catch { return undefined }
-  }, [usageWallet, effectivePlan])
+  }, [usageWallet, effectivePlan, walletUpdatedAt, walletOverageHardLimitUsd, walletOverageEnabled, walletOverageAccumulatedUsd])
 
   const usageEvents = useMemo(() => {
     if (!workspaceId || !store?.usageEventCollection) return []
