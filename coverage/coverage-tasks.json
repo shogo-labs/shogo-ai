@@ -981,8 +981,12 @@
       "linePct": 9.2437,
       "funcPct": 12.5,
       "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-25T07:55:00.000Z",
+      "beforeLinePct": 9.2437,
+      "afterLinePct": 99.5413,
+      "effectiveLinePct": 100.0
     },
     {
       "file": "packages/sdk/src/generators/prisma-generator.ts",
