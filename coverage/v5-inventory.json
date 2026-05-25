@@ -25,11 +25,13 @@
       "LF": 713,
       "FNH": 35,
       "FNF": 37,
-      "linePct": 85.83,
+      "linePct": 100,
       "funcPct": 94.59,
-      "gapLH": 101,
+      "gapLH": 0,
       "gapFN": 2,
-      "bucket": "B"
+      "bucket": "A",
+      "effectiveLinePct": 100,
+      "closedAt": "2026-05-25T11:34:39.011010Z"
     },
     {
       "package": "packages/agent-runtime",
