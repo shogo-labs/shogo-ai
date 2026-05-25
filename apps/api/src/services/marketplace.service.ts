@@ -109,6 +109,12 @@ export interface BrowseListingsOptions {
    * creator profile page.
    */
   creatorId?: string;
+  /**
+   * Restrict results to listings owned by any of the given creators.
+   * Used by the "From creators you follow" feed. Takes precedence over
+   * `creatorId` when both are provided.
+   */
+  creatorIds?: string[];
   /** Optional slug to exclude (e.g. omit the current listing from "Similar agents"). */
   excludeSlug?: string;
 }
@@ -217,7 +223,9 @@ function browseFilters(options: BrowseListingsOptions): Prisma.MarketplaceListin
       where.tags = { hasEvery: options.tags } as any;
     }
   }
-  if (options.creatorId != null && options.creatorId !== '') {
+  if (options.creatorIds != null && options.creatorIds.length > 0) {
+    where.creatorId = { in: options.creatorIds };
+  } else if (options.creatorId != null && options.creatorId !== '') {
     where.creatorId = options.creatorId;
   }
   if (options.excludeSlug != null && options.excludeSlug !== '') {
