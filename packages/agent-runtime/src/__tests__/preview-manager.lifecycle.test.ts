@@ -640,10 +640,17 @@ describe('reapStaleViteWatchers', () => {
    *   <bun-binary> <workspace>/node_modules/vite/bin/vite.js build --watch --emptyOutDir false
    * Each line is rendered as `<pid> <pgid> <command>` to mirror
    * `ps -A -o pid=,pgid=,command=`.
+   *
+   * The vite-bin path is built with `path.join` so the fixture's
+   * separators agree with the source's `viteBinFragment` (also built
+   * via `path.join`) on whichever host is running the test. Without
+   * this, Windows test runs feed forward-slash fixtures into a parser
+   * that's looking for backslash substrings → 0 matches → false reds.
    */
   function psLine(pid: number, pgid: number, workspace: string, extraArgs = '--emptyOutDir false') {
     const bun = '/Applications/Shogo.app/Contents/Resources/bun/bun'
-    return `${pid} ${pgid} ${bun} ${workspace}/node_modules/vite/bin/vite.js build --watch ${extraArgs}`
+    const viteBin = join(workspace, 'node_modules', 'vite', 'bin', 'vite.js')
+    return `${pid} ${pgid} ${bun} ${viteBin} build --watch ${extraArgs}`
   }
 
   it('returns empty + does not kill anything when ps output is empty', () => {
@@ -681,8 +688,10 @@ describe('reapStaleViteWatchers', () => {
     const killed: Array<[number, NodeJS.Signals]> = []
     const ws = '/ws/match-me'
     const lines = [
-      // Same workspace, but not build --watch — skip
-      `100 100 /bun ${ws}/node_modules/vite/bin/vite.js --port 5173`,
+      // Same workspace, but not build --watch — skip. Use path.join
+      // so the workspace fragment matches the OS-native separator the
+      // source's `viteBinFragment` also produces.
+      `100 100 /bun ${join(ws, 'node_modules', 'vite', 'bin', 'vite.js')} --port 5173`,
       // build --watch, but a different workspace — skip
       psLine(200, 200, '/ws/other'),
       // Match
@@ -709,8 +718,9 @@ describe('reapStaleViteWatchers', () => {
     // specifically — assert we send the PGID number, not the PID.
     // Use distinct values to make the regression visible if the
     // implementation ever swaps them.
+    const viteBin = join(ws, 'node_modules', 'vite', 'bin', 'vite.js')
     const out = reapStaleViteWatchers(ws, {
-      listProcesses: () => `${999} ${888} /bun ${ws}/node_modules/vite/bin/vite.js build --watch`,
+      listProcesses: () => `${999} ${888} /bun ${viteBin} build --watch`,
       killGroup: (pgid, sig) => killed.push([pgid, sig]),
       platform: 'darwin',
       selfPid: 11111,
@@ -746,7 +756,7 @@ describe('reapStaleViteWatchers', () => {
     // the workspace path. ps emits the command verbatim with embedded
     // spaces preserved; our parser must reconstruct the full command
     // string from column 3 onwards, not split-and-take-only-the-third.
-    const cmd = `/Applications/Shogo.app/Contents/Resources/bun/bun ${ws}/node_modules/vite/bin/vite.js build --watch --emptyOutDir false`
+    const cmd = `/Applications/Shogo.app/Contents/Resources/bun/bun ${join(ws, 'node_modules', 'vite', 'bin', 'vite.js')} build --watch --emptyOutDir false`
     const out = reapStaleViteWatchers(ws, {
       listProcesses: () => `12345 12345 ${cmd}\n`,
       killGroup: (pgid, sig) => killed.push([pgid, sig]),
