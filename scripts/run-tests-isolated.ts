@@ -128,8 +128,18 @@ function runOneSync(
   delete childEnv.AI_PROXY_URL
   delete childEnv.AI_PROXY_TOKEN
   // `--no-env-file` must come BEFORE `test` (it's a runtime flag, not
-  // a test-runner flag).
-  const procArgs = ['--no-env-file', ...args]
+  // a test-runner flag). `--conditions=development` makes bun honour
+  // the `"development"` export-condition declared by workspace packages
+  // (e.g. `@shogo-ai/sdk`'s `./instrumentation`, `./cli/pkg`, `./macos-junk`
+  // subpath exports map `development -> ./src/...ts`). Without it, bun
+  // resolves the default `import` condition which points at `./dist/*.js`
+  // — files that do not exist on a fresh checkout or after `git clean -fd`
+  // wipes the gitignored `dist/` dir, so transitive `import` chains in
+  // packages/shared-runtime, packages/agent-runtime, etc. fail at module
+  // load with `Cannot find module '@shogo-ai/sdk/...'`. The flag is a
+  // no-op for packages that do not declare a `development` condition
+  // (apps/api, etc.), so we apply it unconditionally.
+  const procArgs = ['--no-env-file', '--conditions=development', ...args]
   const proc = spawnSync('bun', procArgs, {
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -202,7 +212,7 @@ function runOneAsync(
     delete childEnv.DATABASE_URL
     delete childEnv.AI_PROXY_URL
     delete childEnv.AI_PROXY_TOKEN
-    const procArgs = ['--no-env-file', 'test', relFile, ...extraArgs]
+    const procArgs = ['--no-env-file', '--conditions=development', 'test', relFile, ...extraArgs]
     const proc = spawn('bun', procArgs, { env: childEnv, cwd })
 
     let stdout = ''
