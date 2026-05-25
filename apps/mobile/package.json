@@ -6,7 +6,7 @@
   "main": "./index.js",
   "scripts": {
     "dev": "node scripts/copy-monaco-vs.mjs && expo start",
-    "dev:web": "node scripts/copy-monaco-vs.mjs && expo start --web",
+    "dev:web": "node scripts/start-web.mjs",
     "dev:ios": "expo start --ios",
     "dev:android": "expo start --android",
     "build": "node scripts/copy-monaco-vs.mjs && expo export --platform web",

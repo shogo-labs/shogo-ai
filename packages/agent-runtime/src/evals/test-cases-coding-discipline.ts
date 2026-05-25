@@ -86,7 +86,12 @@ function neverUsedExecCat(r: EvalResult): boolean {
     .filter(t => t.name === 'exec')
     .some(t => {
       const cmd = String((t.input as any).command ?? '').toLowerCase()
-      return /\bcat\s+/.test(cmd) && !cmd.includes('.build.log')
+      // `cat .shogo/logs/build.log` (the canonical path post-2026-05) and
+      // the historical `cat .build.log` form are both exempt — the
+      // agent prompt explicitly tells callers to tail the build log
+      // this way, so we don't want to flag the discipline regression
+      // for the exact action we instructed.
+      return /\bcat\s+/.test(cmd) && !cmd.includes('build.log')
     })
 }
 

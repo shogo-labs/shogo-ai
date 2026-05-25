@@ -14,6 +14,13 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { PreviewManager, emitBuildLine, resolveApiServerEnv } from '../preview-manager'
+import { flushAllLogWrites, __resetLogWriterForTest } from '../runtime-log-writer'
+import {
+  previewBuildLogPath,
+  ensureRuntimeLogDir,
+  RUNTIME_LOG_SUBDIR,
+  BUILD_LOG_BASENAME,
+} from '../runtime-log-paths'
 import {
   __resetRuntimeLogDispatcherForTest,
   getRuntimeLogsSnapshot,
@@ -37,7 +44,13 @@ function setupProjectDir(hasPrebuiltDist = false) {
 
 describe('PreviewManager', () => {
   beforeEach(() => setupProjectDir())
-  afterEach(() => rmSync(TEST_DIR, { recursive: true, force: true }))
+  afterEach(async () => {
+    // Drain any pending async log writes scheduled via runtime-log-writer
+    // before tearing down the fixture directory — otherwise Windows hits
+    // EBUSY because the .shogo/logs/build.log handle is still open.
+    await flushAllLogWrites()
+    rmSync(TEST_DIR, { recursive: true, force: true })
+  })
 
   test('getStatus before start: running=false, urls null', () => {
     const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080 })
@@ -669,23 +682,34 @@ export default { port: Number(process.env.PORT) || 3001, fetch: app.fetch }
   // The Output tab and Monitor consume the typed RuntimeLogEntry stream.
   // Every call site in preview-manager.ts that previously called appendFileSync
   // directly now goes through `emitBuildLine` so the stream stays in sync with
-  // `.build.log`. These tests pin that contract.
+  // `.shogo/logs/build.log`. These tests pin that contract.
 
   describe('emitBuildLine', () => {
     let buildLogPath: string
 
     beforeEach(() => {
       __resetRuntimeLogDispatcherForTest()
-      buildLogPath = join(TEST_DIR, '.build.log')
-      // Ensure parent dir exists; setupProjectDir already does this.
+      __resetLogWriterForTest()
+      // Use the canonical resolver so the test fixture mirrors what
+      // `startBuildWatch` actually passes in production. `ensureRuntimeLogDir`
+      // is the mkdir-p helper that real callers run before the first
+      // append — without it the first emitBuildLine would ENOENT.
+      ensureRuntimeLogDir(TEST_DIR)
+      buildLogPath = previewBuildLogPath(TEST_DIR)
     })
 
     afterEach(() => {
       __resetRuntimeLogDispatcherForTest()
+      __resetLogWriterForTest()
     })
 
-    test('appends to .build.log AND dispatches through recordBuildEntry', () => {
+    test('appends to build.log AND dispatches through recordBuildEntry', async () => {
       emitBuildLine(buildLogPath, '[stdout]', 'compiled successfully', 'stdout')
+      // emitBuildLine batches the disk write asynchronously via
+      // runtime-log-writer (previously synchronous appendFileSync — moved
+      // off the hot path in 2026-05 to unblock the Windows cold-boot event
+      // loop). Drain pending writes before reading the file.
+      await flushAllLogWrites(buildLogPath)
       const onDisk = readFileSync(buildLogPath, 'utf-8')
       expect(onDisk).toContain('[stdout] compiled successfully')
 
@@ -693,6 +717,14 @@ export default { port: Number(process.env.PORT) || 3001, fetch: app.fetch }
       expect(entries).toHaveLength(1)
       expect(entries[0]!.source).toBe('build')
       expect(entries[0]!.text).toBe('[stdout] compiled successfully')
+    })
+
+    test('resolves under <workspace>/.shogo/logs/ (the canonical layout)', () => {
+      // Pin the path contract so a future "let's put logs back in the
+      // bundler cwd" refactor fails loudly — the chokidar rebuild-loop
+      // diagnosed in May 2026 was directly caused by logs sitting next
+      // to `index.html`.
+      expect(buildLogPath).toBe(join(TEST_DIR, RUNTIME_LOG_SUBDIR, BUILD_LOG_BASENAME))
     })
 
     test('stderr stream → level=error so the unseen-error red dot turns on', () => {
@@ -715,17 +747,22 @@ export default { port: Number(process.env.PORT) || 3001, fetch: app.fetch }
       expect(() => readFileSync(buildLogPath, 'utf-8')).toThrow()
     })
 
-    test('disk failure does NOT block in-memory dispatch', () => {
+    test('disk failure does NOT block in-memory dispatch', async () => {
       // Point at an unwritable path: a directory we can never create
-      // (parent doesn't exist). appendFileSync will throw; emitBuildLine
-      // must swallow it and still dispatch.
-      const badPath = join(TEST_DIR, 'no-such-dir', 'nested', '.build.log')
+      // (mkdir -p of the grandparent would race; we rely on the writer
+      // swallowing the error). emitBuildLine must surface synchronously
+      // (it batches the write to a later tick) and still dispatch through
+      // the in-memory ring.
+      const badPath = join(TEST_DIR, 'no-such-dir', 'nested', 'build.log')
       expect(() =>
         emitBuildLine(badPath, '[stdout]', 'still dispatched', 'stdout'),
       ).not.toThrow()
       const entries = getRuntimeLogsSnapshot()
       expect(entries).toHaveLength(1)
       expect(entries[0]!.text).toBe('[stdout] still dispatched')
+      // The async write may fail in the background — flushing should
+      // resolve cleanly because runtime-log-writer swallows write errors.
+      await expect(flushAllLogWrites(badPath)).resolves.toBeUndefined()
     })
 
     test('detects ERROR-class words on stdout and tags as error', () => {

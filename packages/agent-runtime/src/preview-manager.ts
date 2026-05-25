@@ -17,8 +17,9 @@
 
 import { spawn, execSync, type ChildProcess } from 'child_process'
 import { join } from 'path'
-import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync, watch, type FSWatcher } from 'fs'
+import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync, unlinkSync, watch, type FSWatcher } from 'fs'
 import { recordBuildEntry } from './runtime-log-dispatcher'
+import { scheduleLogWrite } from './runtime-log-writer'
 import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
 import {
   commitBuildOutputAsync,
@@ -27,10 +28,14 @@ import {
 } from './build-output-commit'
 
 /**
- * Append a line to the on-disk `.build.log` *and* dispatch it through
- * the runtime-log dispatcher so the Output tab and Monitor pull from
- * the same source. `stream === 'stderr'` upgrades the level to `'error'`
- * so the unseen-error red dot turns on for build failures.
+ * Append a line to the on-disk runtime build log *and* dispatch it
+ * through the runtime-log dispatcher so the Output tab and Monitor pull
+ * from the same source. `stream === 'stderr'` upgrades the level to
+ * `'error'` so the unseen-error red dot turns on for build failures.
+ *
+ * The build log lives at `<workspace>/.shogo/logs/build.log` (see
+ * `runtime-log-paths.ts`); callers must `ensureRuntimeLogDir()` before
+ * the first append so the directory exists.
  *
  * Exported for unit testing — see `__tests__/preview-manager.test.ts`.
  */
@@ -41,17 +46,21 @@ export function emitBuildLine(
   stream: 'stdout' | 'stderr' = 'stdout',
 ): void {
   if (!line) return
-  try {
-    appendFileSync(buildLogPath, `${prefix} ${line}\n`)
-  } catch {
-    // Disk failures shouldn't drop the in-memory dispatch — the Output
-    // tab is still a useful surface even if the on-disk log is unwritable.
-  }
+  // Async batched write — see `runtime-log-writer.ts` for rationale.
+  // On Windows the previous `appendFileSync` here did a mkdir + open + write +
+  // close PER LINE; with Defender that's 5–30ms per write, which during a
+  // vite-watch initial build (thousands of lines) saturated the event loop
+  // and made the agent-runtime's /health endpoint unreachable.
+  scheduleLogWrite(buildLogPath, `${prefix} ${line}\n`)
   recordBuildEntry(`${prefix} ${line}`, stream === 'stderr' ? 'error' : 'info')
 }
 import { createServer } from 'net'
 import { pkg, resolveBinInvocation } from '@shogo/shared-runtime'
-import { BUILD_LOG_FILE, CONSOLE_LOG_FILE } from './runtime-log-paths'
+import {
+  previewBuildLogPath,
+  previewConsoleLogPath,
+  ensureRuntimeLogDir,
+} from './runtime-log-paths'
 import {
   loadTechStackMeta,
   computePackageJsonHash,
@@ -334,7 +343,7 @@ export interface PreviewManagerConfig {
    * URL when unset (local dev).
    */
   publicUrl?: string
-  /** Clear agent `consoleLogs` buffer when `.console.log` is reset (preview start). */
+  /** Clear agent `consoleLogs` buffer when `.shogo/logs/console.log` is reset (preview start). */
   onConsoleLogReset?: () => void
   /**
    * Forward a single line of Metro/Expo bundler output to the runtime's
@@ -343,7 +352,7 @@ export interface PreviewManagerConfig {
    * this just routes Metro lines to the same place without going over
    * HTTP, so the studio's "Server" tab shows them live.
    *
-   * If unset, Metro output only lands in `.build.log` on disk.
+   * If unset, Metro output only lands in `.shogo/logs/build.log` on disk.
    */
   onLogLine?: (line: string, stream: 'stdout' | 'stderr') => void
   /**
@@ -758,8 +767,8 @@ export class PreviewManager {
 
   /**
    * Best-effort log forwarding — never throws, never blocks. Called from
-   * the Metro/Expo stdout+stderr pumps so `.build.log` and the runtime's
-   * live console buffer stay in sync.
+   * the Metro/Expo stdout+stderr pumps so `.shogo/logs/build.log` and the
+   * runtime's live console buffer stay in sync.
    */
   private forwardLogLine(line: string, stream: 'stdout' | 'stderr'): void {
     if (!this.onLogLine || !line) return
@@ -1333,6 +1342,17 @@ export class PreviewManager {
       return { mode: 'already-running', port: this.runtimePort, timings: {} }
     }
 
+    // One-shot migration: delete the legacy `<workspace>/.build.log` and
+    // `.console.log` (and their per-bundler-cwd siblings) if they're
+    // hanging around from a pre-2026-05 runtime. The new canonical
+    // location is `<workspace>/.shogo/logs/{build,console}.log`. Leaving
+    // the old files in place is actively harmful on Windows: they sit
+    // next to `index.html` and `vite.config.ts`, so every leftover write
+    // (if anything else still appends) would re-arm the chokidar
+    // rebuild-loop the move was meant to defeat. Cheap, idempotent, no
+    // log noise on the happy path.
+    this.cleanupLegacyRuntimeLogs()
+
     // Fresh preview session — align console buffer with an empty on-disk log (matches build refresh UX).
     this.clearRuntimeConsoleLog()
 
@@ -1886,13 +1906,44 @@ export class PreviewManager {
     }
   }
 
-  /** Truncate project `.console.log` and clear the server's in-memory buffer (if wired). */
+  /**
+   * Best-effort deletion of legacy `.build.log` / `.console.log` left at
+   * the workspace root or bundler cwd by pre-2026-05 runtimes. Called
+   * once per `start()`. Errors are swallowed — the new canonical
+   * location (`<workspace>/.shogo/logs/`) doesn't depend on the old
+   * files being gone, this is purely defensive against the chokidar
+   * rebuild-loop trigger they used to provide.
+   */
+  private cleanupLegacyRuntimeLogs(): void {
+    const candidates = new Set<string>([
+      join(this.workspaceDir, '.build.log'),
+      join(this.workspaceDir, '.console.log'),
+      // Vite stacks historically wrote both files into
+      // `<workspace>/project/`; cover both layouts so the cleanup is
+      // single-pass regardless of which path resolveBundlerCwd picks.
+      join(this.bundlerCwd, '.build.log'),
+      join(this.bundlerCwd, '.console.log'),
+    ])
+    for (const path of candidates) {
+      if (!existsSync(path)) continue
+      try {
+        unlinkSync(path)
+      } catch {
+        // File handle still held by a leaked watcher / antivirus scan /
+        // permission glitch — not worth surfacing. The new logs go to
+        // `.shogo/logs/` regardless.
+      }
+    }
+  }
+
+  /** Truncate runtime `console.log` and clear the server's in-memory buffer (if wired). */
   private clearRuntimeConsoleLog(): void {
-    const consolePath = join(this.bundlerCwd, CONSOLE_LOG_FILE)
+    ensureRuntimeLogDir(this.workspaceDir)
+    const consolePath = previewConsoleLogPath(this.workspaceDir)
     try {
       writeFileSync(consolePath, '', 'utf-8')
     } catch (err: any) {
-      console.warn(`[${LOG_PREFIX}] Could not truncate ${CONSOLE_LOG_FILE}:`, err.message)
+      console.warn(`[${LOG_PREFIX}] Could not truncate ${consolePath}:`, err.message)
     }
     this.onConsoleLogReset?.()
   }
@@ -1970,7 +2021,8 @@ export class PreviewManager {
 
   private async startBuildWatch(): Promise<void> {
     const cwd = this.bundlerCwd
-    const buildLogPath = join(cwd, BUILD_LOG_FILE)
+    ensureRuntimeLogDir(this.workspaceDir)
+    const buildLogPath = previewBuildLogPath(this.workspaceDir)
 
     // On Windows the bun/npm-installed shim at `.bin/vite` is a POSIX shell
     // script that `child_process.spawn` cannot execute directly — it has to
@@ -2193,7 +2245,8 @@ export class PreviewManager {
       }
     }
 
-    const buildLogPath = join(cwd, BUILD_LOG_FILE)
+    ensureRuntimeLogDir(this.workspaceDir)
+    const buildLogPath = previewBuildLogPath(this.workspaceDir)
     console.log(`[${LOG_PREFIX}] Starting API server on port ${this.apiPort}...`)
     this.apiPhase = 'starting'
 
@@ -2596,10 +2649,12 @@ export class PreviewManager {
     }
     const isWindows = process.platform === 'win32'
 
-    // Build log lives next to the bundler cwd. For Vite stacks that's the
-    // legacy `<workspace>/project/` subdir; for Expo stacks it's the
-    // workspace root. `resolveBundlerCwd()` is the single source of truth.
-    const buildLogPath = join(cwd, BUILD_LOG_FILE)
+    // Build log always lives at `<workspace>/.shogo/logs/build.log` —
+    // outside the bundler cwd, so Rollup's chokidar parent-dir watcher
+    // never re-triggers on a build-log append. See `runtime-log-paths.ts`
+    // file docstring for the rebuild-loop history.
+    ensureRuntimeLogDir(this.workspaceDir)
+    const buildLogPath = previewBuildLogPath(this.workspaceDir)
     if (!existsSync(cwd)) mkdirSync(cwd, { recursive: true })
     // A leftover staging dir from a prior crashed build would confuse
     // expo export (it expects a clean output dir or none). Drop it
@@ -2676,7 +2731,7 @@ export class PreviewManager {
         console.error(
           `[${LOG_PREFIX}] expo export exited 0 but ${DEFAULT_STAGING_DIR}/index.html ` +
             `is missing — refusing to swap. Previous build (if any) stays live. ` +
-            `Inspect ${BUILD_LOG_FILE} for the real error.`,
+            `Inspect ${buildLogPath} for the real error.`,
         )
         cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
       } else {
@@ -2745,9 +2800,12 @@ export class PreviewManager {
     }
     this.metroNgrokAvailable = true
 
-    // See note in runExpoExportWeb — for Metro stacks the build log lives
-    // alongside the bundler cwd, not the legacy `project/` subdir.
-    const buildLogPath = join(cwd, BUILD_LOG_FILE)
+    // Build log lives at `<workspace>/.shogo/logs/build.log` for every
+    // stack (Vite, Expo web export, Metro tunnel). See
+    // `runtime-log-paths.ts` file docstring for the rebuild-loop history
+    // that motivated moving out of the bundler cwd.
+    ensureRuntimeLogDir(this.workspaceDir)
+    const buildLogPath = previewBuildLogPath(this.workspaceDir)
     if (!existsSync(cwd)) mkdirSync(cwd, { recursive: true })
 
     // Probe upward from 8081 because the Studio dev server squats on the

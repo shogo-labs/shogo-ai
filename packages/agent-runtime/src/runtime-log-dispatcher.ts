@@ -81,9 +81,10 @@ export function recordConsoleEntry(
 }
 
 /**
- * `PreviewManager` emits these for every `.build.log` write — install,
- * generate-prisma, db-push, build, start-api. Exit-code != 0 callers
- * pass `level: 'error'` so the Output tab can highlight failures.
+ * `PreviewManager` emits these for every `.shogo/logs/build.log`
+ * write — install, generate-prisma, db-push, build, start-api.
+ * Exit-code != 0 callers pass `level: 'error'` so the Output tab can
+ * highlight failures.
  */
 export function recordBuildEntry(
   text: string,

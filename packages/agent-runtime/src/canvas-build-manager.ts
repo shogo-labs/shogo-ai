@@ -23,7 +23,7 @@
  *     `renameSync(dist, dist.prev)` — fails because of the vite-watch
  *     handles. Force-replace deletes `dist/` out from under vite-watch
  *     (whose internal rollup chokidar then emits an `ENOENT … mkdir
- *     dist/assets/` chain that's visible in `.build.log`).
+ *     dist/assets/` chain that's visible in `.shogo/logs/build.log`).
  *   - Subsequent `renameSync(dist.canvas.staging, dist)` then fails
  *     EPERM because vite-watch's rollup watcher noticed `dist/`
  *     disappear and immediately recreated it with new open handles

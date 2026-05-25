@@ -1827,11 +1827,12 @@ app.post('/agent/subagents/:instanceId/stop', async (c) => {
 // ---------------------------------------------------------------------------
 
 import { PreviewManager } from './preview-manager'
-import { previewConsoleLogPath } from './runtime-log-paths'
+import { previewConsoleLogPath, ensureRuntimeLogDir } from './runtime-log-paths'
+import { scheduleLogWrite, flushAllLogWrites } from './runtime-log-writer'
 
 let previewManager: PreviewManager | null = null
 
-/** In-memory mirror of `project/.console.log` for `/console-log` + SSE (same lines as on disk). */
+/** In-memory mirror of `.shogo/logs/console.log` for `/console-log` + SSE (same lines as on disk). */
 let consoleLogsRuntimeBuffer: string[] | null = null
 
 function appendRuntimeConsoleLogLine(line: string): void {
@@ -1842,11 +1843,12 @@ function appendRuntimeConsoleLogLine(line: string): void {
   }
   buf.push(line)
   if (buf.length > 1000) buf.splice(0, 500)
-  try {
-    appendFileSync(previewConsoleLogPath(WORKSPACE_DIR), `${line}\n`, 'utf-8')
-  } catch {
-    // `project/` may not exist yet; buffer still holds the line for the UI.
-  }
+  // Async batched write — runtime-log-writer handles mkdir on first call
+  // and queues subsequent lines so this never blocks the event loop.
+  // Previously this did mkdirSync + appendFileSync per line, which on
+  // Windows with Defender added 5–30ms of sync I/O per console.log and
+  // made /health unresponsive during boot.
+  scheduleLogWrite(previewConsoleLogPath(WORKSPACE_DIR), `${line}\n`)
 }
 
 function clearRuntimeConsoleLogBuffer(): void {
@@ -3310,7 +3312,7 @@ app.post('/agent/import', async (c) => {
   return c.json({ ok: true, imported: written.length, files: written })
 })
 
-// Console log for forwarding — mirrored to project/.console.log on disk (see runtime-log-paths.ts).
+// Console log for forwarding — mirrored to .shogo/logs/console.log on disk (see runtime-log-paths.ts).
 const logStreamListeners = new Set<(line: string) => void>()
 
 app.post('/console-log/append', async (c) => {
@@ -4095,9 +4097,18 @@ async function initializeEssentials(): Promise<void> {
     if (!status.running) {
       const where = hasLegacyPkg ? 'project/' : 'workspace root'
       logTiming(`Detected app project (${where}) — auto-starting preview`)
-      pm.start().catch((err: any) => {
-        console.error('[agent-runtime] Auto-start preview failed:', err.message)
-      })
+      // Defer preview start by one event-loop tick so the runtime can
+      // return from `initialize()` and let Bun.serve start handling
+      // /health requests before we begin the heavier preview-manager
+      // background setup (vite watch, project API server). Without this
+      // yield, on Windows the preview-manager's sync work (npm bin
+      // resolution, server.tsx drift check, etc.) piles onto the same
+      // microtask as `initialize().then(...)` and starves /health.
+      setTimeout(() => {
+        pm.start().catch((err: any) => {
+          console.error('[agent-runtime] Auto-start preview failed:', err.message)
+        })
+      }, 0)
     }
   } else if (externalAutoPreviewBlocked && (hasLegacyPkg || hasRootPkg)) {
     logTiming('External project with runtimeEnabled=false — skipping auto-preview-start')
@@ -4340,6 +4351,18 @@ export default {
   port: PORT,
   fetch: async (req: Request, server: any) => {
     const url = new URL(req.url)
+    // Hot-path bypass for /health: respond directly without going through
+    // Hono's router. On Windows we observed a ~7s freeze during Bun's
+    // first-request JIT compilation of the route tree, which made
+    // RuntimeManager's /health probe time out repeatedly even though
+    // Bun.serve() had already bound the port. This early return skips
+    // that path for the smallest possible response.
+    if (url.pathname === '/health' && req.method === 'GET') {
+      return new Response(
+        JSON.stringify({ status: 'ok', projectId: process.env.PROJECT_ID, runtimeType: 'unified', poolMode: false, uptime: 0, fast: true }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }
     const upgrade = req.headers.get('upgrade')?.toLowerCase()
     const wsMatch = upgrade === 'websocket' ? WS_PATH_RE.exec(url.pathname) : null
     if (wsMatch) {

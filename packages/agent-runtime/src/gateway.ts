@@ -85,9 +85,9 @@ import { CommandRegistry } from './command-registry'
 import { TeamManager } from './team-manager'
 import { isInQuietHours } from './quiet-hours'
 import {
-  PREVIEW_SUBDIR,
-  BUILD_LOG_FILE,
-  CONSOLE_LOG_FILE,
+  RUNTIME_LOG_SUBDIR,
+  BUILD_LOG_BASENAME,
+  CONSOLE_LOG_BASENAME,
   previewBuildLogPath,
   previewConsoleLogPath,
 } from './runtime-log-paths'
@@ -744,10 +744,20 @@ export class AgentGateway {
       })
     )
 
-    // Start LSP for canvas code diagnostics (fire-and-forget — don't block startup)
-    this.startLSP().catch(err => {
-      console.warn(`${this.logPrefix} LSP startup failed (non-fatal):`, err.message)
-    })
+    // Start LSP for canvas code diagnostics — deferred by 2s after gateway
+    // start so the agent-runtime's /health endpoint is responsive first.
+    // On Windows the typescript-language-server spawn + initialise handshake
+    // alone keeps the event loop busy for ~5 s of subprocess setup and
+    // JSON-RPC parsing; running it eagerly during gateway.start() pushed
+    // the first responsive /health past the RuntimeManager's 30 s budget.
+    // LSP is only needed once the user begins editing — the 2 s delay is
+    // invisible in practice. Tunable via `SHOGO_LSP_START_DELAY_MS`.
+    const lspDelayMs = parseInt(process.env.SHOGO_LSP_START_DELAY_MS ?? '2000', 10)
+    setTimeout(() => {
+      this.startLSP().catch(err => {
+        console.warn(`${this.logPrefix} LSP startup failed (non-fatal):`, err.message)
+      })
+    }, Math.max(0, lspDelayMs))
 
     // Start canvas build manager for Vite builds (fire-and-forget)
     {
@@ -796,7 +806,21 @@ export class AgentGateway {
       })
     }
 
-    // Pre-warm unified index engine for workspace-wide search (fire-and-forget)
+    // Pre-warm unified index engine for workspace-wide search — deferred
+    // by 3 s after gateway start. The initial workspace scan + tree-sitter
+    // grammar preload uses sync fs walks (readdirSync + statSync per file)
+    // and sqlite writes, which on Windows held the event loop long enough
+    // to make /health unresponsive during cold boot. The index is only
+    // needed for /workspace-search and graph queries — neither is on the
+    // critical path of opening a project. Tunable via
+    // `SHOGO_INDEX_START_DELAY_MS`.
+    const indexDelayMs = parseInt(process.env.SHOGO_INDEX_START_DELAY_MS ?? '3000', 10)
+    setTimeout(() => this.initIndexEngine(), Math.max(0, indexDelayMs))
+    console.log('[AgentGateway] Started successfully')
+    this.emitLog('Agent gateway started')
+  }
+
+  private initIndexEngine(): void {
     try {
       const { IndexEngine, createDefaultConfig } = require('./index-engine')
       const engine = new IndexEngine(createDefaultConfig(this.workspaceDir))
@@ -842,9 +866,6 @@ export class AgentGateway {
     } catch (err: any) {
       console.warn(`${this.logPrefix} Index engine pre-warm failed (non-fatal):`, err.message)
     }
-
-    console.log('[AgentGateway] Started successfully')
-    this.emitLog('Agent gateway started')
   }
 
   private async startLSP(): Promise<void> {
@@ -3029,8 +3050,9 @@ export class AgentGateway {
   }
 
   /**
-   * Last lines of `project/.build.log` and `project/.console.log` (Vite/API preview + runtime console).
-   * Used only when canvas mode is active; returns null if both files are missing or empty.
+   * Last lines of `.shogo/logs/build.log` and `.shogo/logs/console.log`
+   * (Vite/API preview + runtime console). Used only when canvas mode is
+   * active; returns null if both files are missing or empty.
    */
   private buildRuntimeLogsContext(): string | null {
     const LINE_LIMIT = 30
@@ -3066,8 +3088,8 @@ export class AgentGateway {
       return null
     }
 
-    const buildLogRelative = `${PREVIEW_SUBDIR}/${BUILD_LOG_FILE}`
-    const consoleLogRelative = `${PREVIEW_SUBDIR}/${CONSOLE_LOG_FILE}`
+    const buildLogRelative = `${RUNTIME_LOG_SUBDIR.replace(/\\/g, '/')}/${BUILD_LOG_BASENAME}`
+    const consoleLogRelative = `${RUNTIME_LOG_SUBDIR.replace(/\\/g, '/')}/${CONSOLE_LOG_BASENAME}`
     const buildLogAbsolute = buildPath
     const consoleLogAbsolute = consolePath
 
@@ -3075,16 +3097,16 @@ export class AgentGateway {
       '## Runtime Logs (auto-injected, last ~30 lines each)',
       '',
       [
-        'These tails are refreshed every turn. Both logs live under the **`project/`** app template directory (same folder as `package.json` for the preview).',
+        'These tails are refreshed every turn. Both logs live under the workspace\'s **`.shogo/logs/`** directory (the `.shogo/` tree is excluded from the bundler\'s file watcher so writes here never trigger a rebuild loop).',
         `**Build:** \`${buildLogRelative}\` — full path \`${buildLogAbsolute}\`.`,
         `**Console:** \`${consoleLogRelative}\` — full path \`${consoleLogAbsolute}\`.`,
-        'Use `read_file` with paths relative to the workspace root (e.g. `read_file({ path: \'project/.build.log\' })` and `read_file({ path: \'project/.console.log\' })`).',
+        `Use \`read_file\` with paths relative to the workspace root (e.g. \`read_file({ path: '${buildLogRelative}' })\` and \`read_file({ path: '${consoleLogRelative}' })\`).`,
         'Shell `exec` depends on cwd — prefer absolute paths or `cd` into the workspace first.',
         'The console file is cleared when the preview **starts** or **restarts** (fresh build session).',
       ].join(' '),
       '',
       `### Build log (\`${buildLogRelative}\`)`,
-      `On disk: \`${buildLogAbsolute}\`. Written by the preview pipeline (Vite dev server + template API stdout/stderr). Lines use prefixes such as \`[stdout]\`, \`[stderr]\`, \`[api-stdout]\`. If the last lines show an error, fix it before claiming work is done.`,
+      `On disk: \`${buildLogAbsolute}\`. Written by the preview pipeline (Vite/Expo bundler + template API stdout/stderr). Lines use prefixes such as \`[stdout]\`, \`[stderr]\`, \`[api-stdout]\`. If the last lines show an error, fix it before claiming work is done.`,
       '',
       '```',
       buildTail || '(empty)',
@@ -3092,7 +3114,7 @@ export class AgentGateway {
       '',
       `### Console log (\`${consoleLogRelative}\`)`,
       [
-        `On disk: \`${consoleLogAbsolute}\`. Lines include forwarded preview/Vite output and gateway lifecycle events (\`emitLog\`) — same lines the user sees in the mobile app "Logs" tab.`,
+        `On disk: \`${consoleLogAbsolute}\`. Lines include forwarded preview/bundler output and gateway lifecycle events (\`emitLog\`) — same lines the user sees in the mobile app "Logs" tab.`,
       ].join(' '),
       '',
       '```',

@@ -30,8 +30,12 @@ import { AppHeader } from '../../components/layout/AppHeader'
 import { RecordingIndicator } from '../../components/meetings/RecordingIndicator'
 import { VMDownloadBanner } from '../../components/VMDownloadBanner'
 import { useNotificationClickRouter } from '../../lib/notifications/useNotificationClickRouter'
+import { mark as csMark } from '../../lib/cold-start-timing'
+
+csMark('app:layout:module-load')
 
 export default function AppLayout() {
+  csMark('app:layout:render')
   const { isAuthenticated, isLoading, user } = useAuth()
   const { localMode } = usePlatformConfig()
   const router = useRouter()
@@ -62,6 +66,10 @@ export default function AppLayout() {
       router.replace(localMode ? '/' : '/(auth)/sign-in')
     }
   }, [isAuthenticated, isLoading, localMode, router])
+
+  useEffect(() => {
+    if (!isLoading) csMark('app:layout:auth-resolved', { isAuthenticated })
+  }, [isLoading, isAuthenticated])
 
   useEffect(() => {
     if (!isAuthenticated || !user) return
