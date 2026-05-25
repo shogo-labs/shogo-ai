@@ -69,11 +69,13 @@
       "LF": 437,
       "FNH": 31,
       "FNF": 34,
-      "linePct": 89.24,
-      "funcPct": 91.18,
-      "gapLH": 47,
-      "gapFN": 3,
-      "bucket": "B"
+      "linePct": 100,
+      "funcPct": 100,
+      "gapLH": 0,
+      "gapFN": 0,
+      "bucket": "A",
+      "effectiveLinePct": 100,
+      "closedAt": "2026-05-25T15:59:06.654498+00:00"
     },
     {
       "package": "apps/api",
@@ -286,11 +288,13 @@
       "LF": 366,
       "FNH": 11,
       "FNF": 11,
-      "linePct": 94.81,
+      "linePct": 100,
       "funcPct": 100,
-      "gapLH": 19,
+      "gapLH": 0,
       "gapFN": 0,
-      "bucket": "B"
+      "bucket": "A",
+      "effectiveLinePct": 100,
+      "closedAt": "2026-05-25T15:59:06.654498+00:00"
     },
     {
       "package": "packages/agent-runtime",
@@ -1074,10 +1078,12 @@
       "FNH": 13,
       "FNF": 14,
       "linePct": 100,
-      "funcPct": 92.86,
+      "funcPct": 100,
       "gapLH": 0,
-      "gapFN": 1,
-      "bucket": "B"
+      "gapFN": 0,
+      "bucket": "A",
+      "effectiveLinePct": 100,
+      "closedAt": "2026-05-25T15:59:06.654498+00:00"
     },
     {
       "package": "packages/agent-runtime",
@@ -1087,10 +1093,12 @@
       "FNH": 16,
       "FNF": 19,
       "linePct": 100,
-      "funcPct": 84.21,
+      "funcPct": 100,
       "gapLH": 0,
-      "gapFN": 3,
-      "bucket": "B"
+      "gapFN": 0,
+      "bucket": "A",
+      "effectiveLinePct": 100,
+      "closedAt": "2026-05-25T15:59:06.654498+00:00"
     },
     {
       "package": "packages/agent-runtime",
@@ -1100,10 +1108,12 @@
       "FNH": 6,
       "FNF": 8,
       "linePct": 100,
-      "funcPct": 75,
+      "funcPct": 100,
       "gapLH": 0,
-      "gapFN": 2,
-      "bucket": "B"
+      "gapFN": 0,
+      "bucket": "A",
+      "effectiveLinePct": 100,
+      "closedAt": "2026-05-25T15:59:06.654498+00:00"
     },
     {
       "package": "packages/sdk",
@@ -1113,10 +1123,12 @@
       "FNH": 8,
       "FNF": 10,
       "linePct": 100,
-      "funcPct": 80,
+      "funcPct": 100,
       "gapLH": 0,
-      "gapFN": 2,
-      "bucket": "B"
+      "gapFN": 0,
+      "bucket": "A",
+      "effectiveLinePct": 100,
+      "closedAt": "2026-05-25T15:59:06.654498+00:00"
     },
     {
       "package": "packages/agent-runtime",
