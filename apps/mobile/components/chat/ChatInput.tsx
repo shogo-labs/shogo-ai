@@ -82,6 +82,7 @@ export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6"
 export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
 
 import { EnvironmentPicker } from "./EnvironmentPicker"
+import { useIsDesktop } from "../../lib/use-is-desktop"
 
 const MODEL_GROUPS = getModelsByProvider().map((g) => ({
   label: g.label,
@@ -274,6 +275,7 @@ function ChatInputImpl({
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
   const effectiveIsPro = features.billing ? isPro : true
+  const isDesktop = useIsDesktop()
 
   const bridge = useChatBridgeOptional()
   const ezAvailable = Platform.OS === "web" && features.ezMode && !!bridge
@@ -1275,8 +1277,10 @@ function ChatInputImpl({
               </Popover>
             )}
 
-            {/* Environment selector — pick Cloud or a paired machine */}
-            <EnvironmentPicker disabled={disabled} />
+            {/* Environment selector — pick Cloud or a paired machine.
+                Hidden on Shogo Desktop: the desktop app IS the local environment,
+                so pairing/tunneling to it is redundant. Mobile + Web unchanged. */}
+            {!isDesktop && <EnvironmentPicker disabled={disabled} />}
 
             {/* Model selector */}
             <Popover

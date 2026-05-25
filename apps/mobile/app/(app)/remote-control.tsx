@@ -42,6 +42,7 @@ import {
   ModalCloseButton,
 } from '@/components/ui/modal'
 import { useActiveInstance } from '../../contexts/active-instance'
+import { isDesktopApp } from '../../lib/use-is-desktop'
 import { useInstancePicker, type Instance } from '@shogo/shared-app/hooks'
 import { API_URL } from '../../lib/api'
 import { authClient } from '../../lib/auth-client'
@@ -96,6 +97,14 @@ shogo worker start --worker-dir ~/code/myrepo`
 export default observer(function RemoteControlPage() {
   const router = useRouter()
   const workspace = useActiveWorkspace()
+
+  // Shogo Desktop: Remote Control is intentionally hidden. If a user lands
+  // here via a deep-link / back-stack / external URL, bounce to home. Mobile
+  // and Web fall through to the normal page.
+  useEffect(() => {
+    if (isDesktopApp()) router.replace('/')
+  }, [router])
+  if (isDesktopApp()) return null
   const { instance: activeInstance, setInstance, clearInstance } = useActiveInstance()
   const [addOpen, setAddOpen] = useState(false)
   const [renameTarget, setRenameTarget] = useState<Instance | null>(null)

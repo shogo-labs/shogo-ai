@@ -66,6 +66,7 @@ import {
 import { FileViewerModal } from "./FileViewerModal"
 import { PastedTextChip } from "./PastedTextChip"
 import { EnvironmentPicker } from "./EnvironmentPicker"
+import { useIsDesktop } from "../../lib/use-is-desktop"
 import {
   useTypingPlaceholder,
   AGENT_PLACEHOLDER_PREFIX,
@@ -189,6 +190,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
   ) {
     const { features } = usePlatformConfig()
     const effectiveIsPro = features.billing ? isPro : true
+    const isDesktop = useIsDesktop()
 
     const [internalValue, setInternalValue] = useState("")
     const [inputHeight, setInputHeight] = useState(MIN_INPUT_HEIGHT)
@@ -800,8 +802,10 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 </WebTooltip>
               )}
 
-              {/* Environment selector — pick Cloud or a paired machine */}
-              <EnvironmentPicker disabled={disabled || isLoading} />
+              {/* Environment selector — pick Cloud or a paired machine.
+                  Hidden on Shogo Desktop: the desktop app IS the local environment.
+                  Mobile + Web unchanged. */}
+              {!isDesktop && <EnvironmentPicker disabled={disabled || isLoading} />}
 
               {/* Model selector */}
               <Popover

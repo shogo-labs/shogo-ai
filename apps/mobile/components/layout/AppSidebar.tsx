@@ -82,6 +82,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { Avatar } from '@shogo/shared-ui/primitives'
 import { CommandPalette, useCommandPalette } from './CommandPalette'
 import { InstancePicker } from './InstancePicker'
+import { useIsDesktop } from '../../lib/use-is-desktop'
 import { useActiveInstance } from '../../contexts/active-instance'
 import { ShogoLogoMark } from '../branding/ShogoLogoMark'
 import { useAuth } from '../../contexts/auth'
@@ -1034,6 +1035,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const insets = useSafeAreaInsets()
   const isWide = width >= 768
   const { features, localMode } = usePlatformConfig()
+  const isDesktop = useIsDesktop()
 
   const { user, signOut } = useAuth()
   const posthog = usePostHogSafe()
@@ -1427,14 +1429,19 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                 onNavPress={onNavPress}
               />
             )}
-            <NavItem
-              icon={Monitor}
-              label="Remote Control"
-              href="/(app)/remote-control"
-              active={isRouteActive(pathname, '/(app)/remote-control')}
-              collapsed={collapsed}
-              onNavPress={onNavPress}
-            />
+            {/* Remote Control hidden on Shogo Desktop — the desktop app IS the
+                local environment, so pairing it to itself is redundant.
+                Mobile + Web continue to expose this entry unchanged. */}
+            {!isDesktop && (
+              <NavItem
+                icon={Monitor}
+                label="Remote Control"
+                href="/(app)/remote-control"
+                active={isRouteActive(pathname, '/(app)/remote-control')}
+                collapsed={collapsed}
+                onNavPress={onNavPress}
+              />
+            )}
             {!localMode && (
               <NavItem
                 icon={Key}
