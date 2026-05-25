@@ -864,8 +864,12 @@
       "linePct": 11.236,
       "funcPct": 33.3333,
       "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-25T06:41:39Z",
+      "beforeLinePct": 11.236,
+      "afterLinePct": 100.0,
+      "effectiveLinePct": 100.0
     },
     {
       "file": "packages/agent-runtime/src/sqlite-session-persistence.ts",
