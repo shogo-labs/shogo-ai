@@ -1051,8 +1051,12 @@
       "linePct": 15.7083,
       "funcPct": 25,
       "phase": 3,
-      "status": "pending",
-      "createdAt": "2026-05-22T05:05:30.108447Z"
+      "status": "done",
+      "createdAt": "2026-05-22T05:05:30.108447Z",
+      "finishedAt": "2026-05-25T08:50:00.000Z",
+      "beforeLinePct": 15.7083,
+      "afterLinePct": 100.0,
+      "effectiveLinePct": 100.0
     }
   ]
 }
