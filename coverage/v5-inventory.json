@@ -82,11 +82,13 @@
       "LF": 449,
       "FNH": 43,
       "FNF": 48,
-      "linePct": 90.87,
-      "funcPct": 89.58,
-      "gapLH": 41,
-      "gapFN": 5,
-      "bucket": "B"
+      "linePct": 100,
+      "funcPct": 100,
+      "gapLH": 0,
+      "gapFN": 0,
+      "bucket": "A",
+      "effectiveLinePct": 100,
+      "closedAt": "2026-05-25T11:40:35.615348+00:00"
     },
     {
       "package": "apps/api",
@@ -108,11 +110,13 @@
       "LF": 267,
       "FNH": 36,
       "FNF": 36,
-      "linePct": 86.52,
+      "linePct": 100,
       "funcPct": 100,
-      "gapLH": 36,
+      "gapLH": 0,
       "gapFN": 0,
-      "bucket": "B"
+      "bucket": "A",
+      "effectiveLinePct": 100,
+      "closedAt": "2026-05-25T11:40:35.615348+00:00"
     },
     {
       "package": "apps/api",
@@ -199,11 +203,13 @@
       "LF": 244,
       "FNH": 16,
       "FNF": 16,
-      "linePct": 90.98,
+      "linePct": 100,
       "funcPct": 100,
-      "gapLH": 22,
+      "gapLH": 0,
       "gapFN": 0,
-      "bucket": "B"
+      "bucket": "A",
+      "effectiveLinePct": 100,
+      "closedAt": "2026-05-25T11:40:35.615348+00:00"
     },
     {
       "package": "packages/sdk",
@@ -212,11 +218,13 @@
       "LF": 150,
       "FNH": 21,
       "FNF": 21,
-      "linePct": 85.33,
+      "linePct": 100,
       "funcPct": 100,
-      "gapLH": 22,
+      "gapLH": 0,
       "gapFN": 0,
-      "bucket": "B"
+      "bucket": "A",
+      "effectiveLinePct": 100,
+      "closedAt": "2026-05-25T11:40:35.615348+00:00"
     },
     {
       "package": "apps/desktop",
