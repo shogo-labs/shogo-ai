@@ -1059,14 +1059,14 @@
       "effectiveLinePct": 100.0
     }
   ],
-  "lastUpdated": "2026-05-26T11:00:00Z",
+  "lastUpdated": "2026-05-26T13:15:18Z",
   "aggregate": {
-    "backendLinePct": 81.38,
-    "backendFuncPct": 80.59,
+    "backendLinePct": 82.99,
+    "backendFuncPct": 80.79,
     "frontendLinePct": 67.82,
     "backendLines": {
-      "hit": 61840,
-      "total": 75988
+      "hit": 63369,
+      "total": 76360
     },
     "frontendLines": {
       "hit": 529,
@@ -1082,6 +1082,15 @@
     ],
     "frontendPackages": [
       "packages/shared-app"
-    ]
+    ],
+    "backendFuncs": {
+      "hit": 4925,
+      "total": 6096
+    },
+    "frontendFuncPct": 79.63,
+    "frontendFuncs": {
+      "hit": 43,
+      "total": 54
+    }
   }
 }
