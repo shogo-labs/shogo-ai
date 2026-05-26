@@ -88,6 +88,7 @@ import {
   StatusPanel,
   AnalyticsPanel,
   LogsPanel,
+  AuthDatabasePanel,
   type SettingsSectionGroup,
   type SettingsSectionItem,
 } from '../../../../components/project/panels'
@@ -109,6 +110,7 @@ import {
   Activity,
   BarChart3,
   FileText,
+  ShieldCheck,
 } from 'lucide-react-native'
 import {
   useToast,
@@ -2439,6 +2441,22 @@ export default observer(function ProjectLayout() {
                               agentUrl={agentUrl}
                               visible
                             />
+                          </PanelErrorBoundary>
+                        ),
+                      },
+                    ],
+                  },
+                  {
+                    id: 'data',
+                    label: 'DATA',
+                    items: [
+                      {
+                        id: 'auth-database',
+                        label: 'Auth & Database',
+                        icon: ShieldCheck,
+                        render: () => (
+                          <PanelErrorBoundary panelName="Auth & Database">
+                            <AuthDatabasePanel projectId={projectId!} visible />
                           </PanelErrorBoundary>
                         ),
                       },

@@ -20,6 +20,7 @@ export type ShogoErrorCode =
   | 'AUTH_USER_NOT_FOUND'
   | 'AUTH_SESSION_EXPIRED'
   | 'AUTH_INVALID_TOKEN'
+  | 'AUTH_PROJECT_NOT_ALLOWED'
   // Database-specific
   | 'DB_ENTITY_NOT_FOUND'
   | 'DB_QUERY_ERROR'
@@ -127,6 +128,20 @@ export class AuthError extends ShogoError {
     return new AuthError(
       'Invalid or expired token',
       'AUTH_INVALID_TOKEN'
+    )
+  }
+
+  /**
+   * Returned when the platform Better Auth allowlist hook denies a
+   * sign-in / sign-up because the email is not on this project's
+   * allowlist (see `ProjectAuthConfig` and the Studio Settings ->
+   * Auth & Database panel).
+   */
+  static projectNotAllowed(message?: string, details?: unknown): AuthError {
+    return new AuthError(
+      message ?? "This project's owner has restricted who can sign in.",
+      'AUTH_PROJECT_NOT_ALLOWED',
+      details,
     )
   }
 }

@@ -36,6 +36,18 @@ export interface HttpClientConfig {
 
   /** Function to get auth cookies for native apps (e.g. from expo-secure-store). When set, credentials is forced to 'omit'. */
   getAuthCookie?: () => string | null
+
+  /**
+   * Shogo project id for this client. When set, every auth request
+   * (`/sign-in/*`, `/sign-up/*`, `/sign-out`, etc. — anything routed
+   * through `authRequest()`) is tagged with `X-Shogo-Project-Id`, which
+   * the platform Better Auth before-hook uses to enforce the
+   * project's per-project sign-in allowlist (`ProjectAuthConfig`).
+   * Pod-deployed apps pick this up automatically from
+   * `process.env.PROJECT_ID` via the generated SDK client; local-dev
+   * consumers can pass it explicitly via `createClient({ projectId })`.
+   */
+  projectId?: string
 }
 
 /**
@@ -55,6 +67,7 @@ export class HttpClient {
   private mcpInitPromise: Promise<void> | null = null
   private credentials: RequestCredentials
   private getAuthCookie: (() => string | null) | null
+  private projectId: string | null
 
   /** Request deduplication window in milliseconds */
   private dedupWindowMs: number
@@ -75,6 +88,7 @@ export class HttpClient {
     this.dedupWindowMs = config.dedupWindowMs ?? 100
     this.getAuthCookie = config.getAuthCookie ?? null
     this.credentials = this.getAuthCookie ? 'omit' : (config.credentials ?? 'same-origin')
+    this.projectId = config.projectId ?? null
   }
 
   /**
@@ -325,13 +339,27 @@ export class HttpClient {
   }
 
   /**
-   * Make auth request
+   * Make auth request. When the client was constructed with a
+   * `projectId`, every auth request carries `X-Shogo-Project-Id` so the
+   * Shogo platform's Better Auth before-hook can enforce the project's
+   * sign-in allowlist (`ProjectAuthConfig`). Caller-supplied headers
+   * win — pass `{ headers: { 'x-shogo-project-id': '' } }` to opt out.
    */
   async authRequest<T = unknown>(
     endpoint: string,
     options: RequestOptions = {}
   ): Promise<ShogoResponse<T>> {
-    return this.request<T>(this.getAuthUrl(endpoint), options)
+    if (!this.projectId) {
+      return this.request<T>(this.getAuthUrl(endpoint), options)
+    }
+    const merged: RequestOptions = {
+      ...options,
+      headers: {
+        'X-Shogo-Project-Id': this.projectId,
+        ...(options.headers ?? {}),
+      },
+    }
+    return this.request<T>(this.getAuthUrl(endpoint), merged)
   }
 
   // ==========================================================================

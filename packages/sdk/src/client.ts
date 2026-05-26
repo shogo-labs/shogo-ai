@@ -154,11 +154,15 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
     // Get or create storage adapter
     const storage: StorageAdapter = config.storage ?? getDefaultStorageAdapter()
 
-    // Create HTTP client
+    // Create HTTP client. `projectId` is forwarded so every auth
+    // request (`shogo.auth.signIn` etc.) includes `X-Shogo-Project-Id`
+    // for the platform's per-project sign-in allowlist enforcement
+    // (apps/api/src/auth.ts -> projectAuthPlugin).
     this._http = new HttpClient({
       baseUrl: config.apiUrl,
       mcpPath: '/mcp',
       authPath: config.auth?.authPath ?? '/api/auth',
+      projectId: config.projectId,
     })
 
     // Create auth module

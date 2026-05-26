@@ -44,6 +44,7 @@ model User {
   creatorFollows       CreatorFollow[]      @relation("UserFollows")
   affiliate            Affiliate?
   affiliateAttribution AffiliateAttribution?
+  projectAuthSignIns   ProjectAuthSignIn[]
 
   @@map("users")
 }
@@ -211,6 +212,8 @@ model Project {
   agentEvalSets          AgentEvalSet[]
   projectFolders         ProjectFolder[]
   preferredInstance      Instance?               @relation("ProjectPreferredInstance", fields: [preferredInstanceId], references: [id], onDelete: SetNull)
+  authConfig             ProjectAuthConfig?
+  authSignIns            ProjectAuthSignIn[]
 
   @@index([workspaceId])
   @@index([folderId])
@@ -232,6 +235,42 @@ model ProjectFolder {
 
   @@index([projectId])
   @@map("project_folders")
+}
+
+/// Per-project sign-in allowlist. See prisma/schema.prisma for the
+/// canonical comment. SQLite has no native String[] so the two list
+/// columns are stored as JSON-encoded TEXT (`["alice@x.com",...]`).
+model ProjectAuthConfig {
+  id                       String   @id @default(uuid())
+  projectId                String   @unique
+  mode                     String   @default("anyone")
+  allowedEmails            String   @default("[]")
+  allowedDomains           String   @default("[]")
+  requireEmailVerification Boolean  @default(false)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("project_auth_configs")
+}
+
+/// Tracks (project, user) sign-ins via Shogo SDK auth. See
+/// prisma/schema.prisma for the canonical comment.
+model ProjectAuthSignIn {
+  id            String   @id @default(uuid())
+  projectId     String
+  userId        String
+  firstSignInAt DateTime @default(now())
+  lastSignInAt  DateTime @default(now())
+  signInCount   Int      @default(1)
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([projectId, lastSignInAt(sort: Desc)])
+  @@map("project_auth_sign_ins")
 }
 
 model AgentConfig {
