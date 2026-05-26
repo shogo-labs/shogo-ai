@@ -725,8 +725,15 @@ export function adminRoutes(): Hono {
 
 export function userAttributionRoute(): Hono {
   const router = new Hono()
-  router.use('*', authMiddleware)
-  router.use('*', requireAuth)
+  // IMPORTANT: scope to /users/me/* — not '*'. Hono mounts this router at
+  // /api in server.ts via app.route('/api', userAttributionRoute()), and a
+  // '*' middleware on a sub-router becomes part of the parent's middleware
+  // chain for every /api/* path. That poisoned unrelated routers mounted
+  // at the same prefix (e.g. /api/affiliates/lookup was rejected with 401
+  // even though its publicPrefixes bypass returned next()). See
+  // /tmp/test-attribution-pollution.ts for the minimal repro.
+  router.use('/users/me/*', authMiddleware)
+  router.use('/users/me/*', requireAuth)
 
   router.post('/users/me/attribution', async (c) => {
     try {

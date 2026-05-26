@@ -150,8 +150,14 @@ const redeemSchema = z.object({
 
 export function licenseKeyRoutes(): Hono {
   const router = new Hono()
-  router.use('*', authMiddleware)
-  router.use('*', requireAuth)
+  // IMPORTANT: scope to /workspaces/:workspaceId/redeem-license, not '*'.
+  // This router is mounted at /api in server.ts; a '*' middleware would
+  // become part of the /api/* chain for every request, blocking
+  // unauthenticated public endpoints (e.g. /api/affiliates/lookup) that
+  // are mounted at /api *after* this router. See the matching fix in
+  // userAttributionRoute (admin.ts) for context.
+  router.use('/workspaces/:workspaceId/redeem-license', authMiddleware)
+  router.use('/workspaces/:workspaceId/redeem-license', requireAuth)
 
   // POST /api/workspaces/:workspaceId/redeem-license
   router.post('/workspaces/:workspaceId/redeem-license', async (c) => {
