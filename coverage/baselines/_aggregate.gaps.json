@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-05-26T18:00:00Z",
-  "note": "Backend: 81.4% (pre-sprint) \u2192 82.8% (sprint commits: code-extractor +697, workspace-defaults +157, stream-buffer +166, token-refresh +6, postgres-backup +2, diagnostics +25). Methodology: baseline 61840/75988 + precise per-file deltas.",
+  "generatedAt": "2026-05-26T11:29:21Z",
+  "note": "Backend: 81.4% (pre-sprint) \u2192 82.9% (sprint commits: code-extractor +697, workspace-defaults +157, stream-buffer +166, token-refresh +6, postgres-backup +2, diagnostics +25, server-framework +35 (\u22121 dead), pkg.ts +369 (new file)). Methodology: baseline 61840/75988 + precise per-file deltas.",
   "aggregate": {
     "lines": {
-      "total": 75984,
-      "hit": 62893,
-      "pct": 82.77
+      "total": 76352,
+      "hit": 63297,
+      "pct": 82.9
     },
     "functions": {
       "total": 6083,
@@ -241,5 +241,21 @@
       "linePct": 79.6
     }
   ],
-  "method": "sum(LH)/sum(LF) per backend package (apps/api, agent-runtime, sdk, shared-runtime, model-catalog=100%). Comment-stripped. NOT cross-package union."
+  "method": "sum(LH)/sum(LF) per backend package (apps/api, agent-runtime, sdk, shared-runtime, model-catalog=100%). Comment-stripped. NOT cross-package union.",
+  "sprintCommits": [
+    {
+      "sha": "18cd12f",
+      "file": "server-framework.ts",
+      "delta_lh": 35,
+      "delta_lf": -1,
+      "note": "90.77%\u2192100% lines"
+    },
+    {
+      "sha": "40d6fe1",
+      "file": "pkg.ts",
+      "delta_lh": 369,
+      "delta_lf": 369,
+      "note": "0%\u2192100% lines (new file)"
+    }
+  ]
 }
