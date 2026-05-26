@@ -24,6 +24,7 @@ import * as appleIap from './services/apple-iap.service'
 import * as instanceService from './services/instance.service'
 import * as storageService from './services/storage.service'
 import * as nodeMetricsService from './services/node-metrics.service'
+import * as affiliateService from './services/affiliate.service'
 import { INSTANCE_SIZES, INSTANCE_SIZE_ORDER, getInstanceDisplayPrice, type InstanceSizeName } from './config/instance-sizes'
 import {
   sendPlanUpgradedEmail, sendPaymentReceiptEmail, sendPaymentFailedEmail,
@@ -57,6 +58,7 @@ import { teeChatStreamForBilling } from './lib/chat-usage-tracker'
 import { adminRoutes, userAttributionRoute } from './routes/admin'
 import { adminMarketplaceRoutes } from './routes/admin-marketplace'
 import { licenseKeyAdminRoutes, licenseKeyRoutes } from './routes/license-keys'
+import { affiliateRoutes } from './routes/affiliates'
 import { marketplaceRoutes } from './routes/marketplace'
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { costAnalyticsRoutes } from './routes/cost-analytics'
@@ -5046,11 +5048,54 @@ const stripe = process.env.STRIPE_SECRET_KEY
   ? new Stripe(process.env.STRIPE_SECRET_KEY)
   : null
 
+/**
+ * Look up the affiliate attribution for `userId` and, if present,
+ * return a partial Stripe Checkout session payload that tags both the
+ * Customer (`customer_creation: 'always'` + metadata) and the
+ * subscription (`subscription_data.metadata.affiliateId`). Defense in
+ * depth — the subscription metadata survives even if the Customer
+ * record is later mutated.
+ *
+ * Source is hard-coded to `web_stripe` here; the iOS IAP path writes
+ * `source: 'ios_iap'` from apple-iap.service and that's what
+ * affiliateService.recordCommissionsForInvoice short-circuits on.
+ *
+ * Returns `{}` (an empty spread) when:
+ *   - the affiliate feature flag is off, OR
+ *   - the user has no AffiliateAttribution row
+ */
+async function affiliateCheckoutOverrides(
+  userId: string | null | undefined,
+): Promise<{
+  customer_creation?: 'always'
+  subscription_data?: { metadata: Record<string, string> }
+  metadata?: Record<string, string>
+}> {
+  if (process.env.SHOGO_AFFILIATES_NATIVE !== 'true') return {}
+  if (!userId) return {}
+  try {
+    const attribution = await prisma.affiliateAttribution.findUnique({ where: { userId } })
+    if (!attribution) return {}
+    const tag = { affiliateId: attribution.affiliateId, source: 'web_stripe' }
+    return {
+      customer_creation: 'always',
+      subscription_data: { metadata: tag },
+      metadata: tag,
+    }
+  } catch (err) {
+    console.error('[Affiliate] checkout tag lookup failed', err)
+    return {}
+  }
+}
+
 app.post('/api/billing/checkout', async (c) => {
   try {
     if (!stripe) {
       return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
     }
+
+    const authCtx = c.get('auth') as any
+    const userId = authCtx?.userId as string | undefined
 
     const body = await c.req.json()
     const { workspaceId, planId, seats: rawSeats, billingInterval, userEmail, referralId, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
@@ -5089,14 +5134,23 @@ app.post('/api/billing/checkout', async (c) => {
     const cancelUrl = clientCancelUrl
       || `${frontendUrl}/?workspace=${workspaceId}&checkout=canceled`
 
+    const affiliateOverrides = await affiliateCheckoutOverrides(userId)
+    const sessionMetadata = { ...metadata, ...(affiliateOverrides.metadata ?? {}) }
+
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       line_items: [{ price: priceId, quantity: seats }],
       success_url: successUrl,
       cancel_url: cancelUrl,
-      metadata,
+      metadata: sessionMetadata,
       ...(userEmail && { customer_email: userEmail }),
+      // `referralId` was the Rewardful query parameter. Kept for one
+      // release so in-flight mobile clients don't 500; ignored server-side
+      // when the native affiliate flag is on (affiliateCheckoutOverrides
+      // is authoritative).
       ...(referralId && { client_reference_id: referralId }),
+      ...(affiliateOverrides.customer_creation && { customer_creation: affiliateOverrides.customer_creation }),
+      ...(affiliateOverrides.subscription_data && { subscription_data: affiliateOverrides.subscription_data }),
     })
 
     return c.json({ sessionId: session.id, url: session.url }, 200)
@@ -5230,14 +5284,19 @@ app.post('/api/billing/workspace-checkout', async (c) => {
       ? clientCancelUrl.replace('{WORKSPACE_ID}', newWorkspaceId)
       : `${frontendUrl}/?workspace=${newWorkspaceId}&checkout=canceled`
 
+    const affiliateOverrides = await affiliateCheckoutOverrides(userId)
+    const sessionMetadata = { ...metadata, ...(affiliateOverrides.metadata ?? {}) }
+
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       line_items: [{ price: priceId, quantity: seats }],
       success_url: successUrl,
       cancel_url: cancelUrl,
-      metadata,
+      metadata: sessionMetadata,
       ...(userEmail && { customer_email: userEmail }),
       ...(referralId && { client_reference_id: referralId }),
+      ...(affiliateOverrides.customer_creation && { customer_creation: affiliateOverrides.customer_creation }),
+      ...(affiliateOverrides.subscription_data && { subscription_data: affiliateOverrides.subscription_data }),
     })
 
     return c.json({ sessionId: session.id, url: session.url, workspaceId: newWorkspaceId }, 200)
@@ -5616,13 +5675,19 @@ app.post('/api/billing/instance-checkout', async (c) => {
     const cancelUrl = clientCancelUrl
       || `${frontendUrl}/?workspace=${workspaceId}&instance_checkout=canceled`
 
+    const userIdForAffiliate = (c.get('auth') as any)?.userId as string | undefined
+    const affiliateOverrides = await affiliateCheckoutOverrides(userIdForAffiliate)
+    const sessionMetadata = { ...metadata, ...(affiliateOverrides.metadata ?? {}) }
+
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: successUrl,
       cancel_url: cancelUrl,
-      metadata,
+      metadata: sessionMetadata,
       ...(userEmail && { customer_email: userEmail }),
+      ...(affiliateOverrides.customer_creation && { customer_creation: affiliateOverrides.customer_creation }),
+      ...(affiliateOverrides.subscription_data && { subscription_data: affiliateOverrides.subscription_data }),
     })
 
     return c.json({ sessionId: session.id, url: session.url }, 200)
@@ -6009,6 +6074,41 @@ app.post('/api/webhooks/stripe', async (c) => {
             console.error('[Webhook] payment-receipt lookup failed:', err.message)
           }
         }
+        // Native MLM affiliate commissions. Best-effort: errors are
+        // logged but swallowed so we still 200 the webhook (Stripe
+        // would otherwise retry, but the reconciliation cron picks
+        // missed invoices up the next day). Service is idempotent on
+        // the (invoice, affiliate, level) unique key so duplicate
+        // webhook deliveries can't double-pay.
+        try {
+          await affiliateService.recordCommissionsForInvoice(invoice as any, stripe!)
+        } catch (err: any) {
+          console.error('[Webhook] affiliate commission failed:', err?.message ?? err)
+        }
+        break
+      }
+      case 'charge.refunded':
+      case 'charge.dispute.created': {
+        // Affiliate clawback path. `pending`/`approved` commissions
+        // become `refunded` and the affiliate's pendingPayoutCents
+        // decrements. `paid` commissions become `clawed_back` and the
+        // negative balance nets out on the next payout batch (the
+        // platform can't pull money back from a connected account).
+        const obj = event.data.object as any
+        const chargeId =
+          event.type === 'charge.refunded'
+            ? (obj.id as string)
+            : (typeof obj.charge === 'string' ? obj.charge : obj.charge?.id)
+        if (chargeId) {
+          try {
+            await affiliateService.handleClawback(
+              chargeId,
+              event.type === 'charge.refunded' ? 'refund' : 'dispute',
+            )
+          } catch (err: any) {
+            console.error('[Webhook] affiliate clawback failed:', err?.message ?? err)
+          }
+        }
         break
       }
       case 'invoice.payment_failed': {
@@ -6186,6 +6286,11 @@ app.route('/api', licenseKeyRoutes())
 
 // User attribution endpoint (authenticated users, not admin-only)
 app.route('/api', userAttributionRoute())
+
+// Native MLM affiliate program routes (enroll, dashboard summary,
+// commissions/payouts, downline, internal click tracking, public lookup).
+// Each handler short-circuits on the SHOGO_AFFILIATES_NATIVE flag.
+app.route('/api', affiliateRoutes())
 
 // Scoped analytics routes handle their own auth (workspace/project membership checks)
 app.route('/api', scopedAnalyticsRoutes())
@@ -7155,6 +7260,36 @@ if (isKubernetes()) {
     } catch (err: any) {
       console.error(
         '[GrantRefill] failed to schedule grant refill (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
+}
+
+// Affiliate / MLM program crons — all three are no-ops when
+// SHOGO_AFFILIATES_NATIVE is unset, so this block is safe to schedule
+// unconditionally even in stacks that don't run the affiliate rollout.
+// Each cron wraps its body in withGlobalJobLock so only one region
+// processes per tick — same multiregion safety contract as the other
+// globally-aggregating crons above.
+{
+  ;(async () => {
+    try {
+      const { startApproveEligibleCommissionsCron } = await import(
+        './jobs/approve-eligible-commissions'
+      )
+      const { startAffiliatePayoutsCron } = await import(
+        './jobs/run-affiliate-payouts'
+      )
+      const { startAffiliateInvoiceReconciliationCron } = await import(
+        './jobs/affiliate-invoice-reconciliation'
+      )
+      startApproveEligibleCommissionsCron()
+      startAffiliatePayoutsCron()
+      startAffiliateInvoiceReconciliationCron()
+    } catch (err: any) {
+      console.error(
+        '[Affiliate] failed to schedule cron jobs (non-fatal):',
         err?.message ?? err,
       )
     }

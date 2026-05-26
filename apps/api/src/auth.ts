@@ -18,6 +18,7 @@ import { betterAuth } from "better-auth"
 import { expo } from "@better-auth/expo"
 import { createPersonalWorkspace } from "./services/workspace.service"
 import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail } from "./services/email.service"
+import { resolveAttributionForUser } from "./services/affiliate.service"
 import { prisma } from "./lib/prisma"
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
@@ -25,6 +26,24 @@ const LOAD_TEST_SECRET = process.env.LOAD_TEST_SECRET
 
 function isLoadTestBypass(request: Request): boolean {
   return !!(LOAD_TEST_SECRET && request?.headers?.get?.('x-load-test-key') === LOAD_TEST_SECRET)
+}
+
+/**
+ * Parse a single cookie value from a raw `Cookie:` header. Used by the
+ * better-auth `user.create.after` hook to extract affiliate-attribution
+ * cookies (`__shogo_ref` + `__shogo_ref_visitor`) without pulling in a
+ * cookie-jar dependency.
+ */
+export function parseCookieHeader(header: string, name: string): string | null {
+  if (!header) return null
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=')
+    if (eq < 0) continue
+    const k = part.slice(0, eq).trim()
+    if (k !== name) continue
+    return decodeURIComponent(part.slice(eq + 1).trim())
+  }
+  return null
 }
 
 function getSqliteDbPath(): string {
@@ -337,7 +356,34 @@ export const auth = betterAuth({
          *
          * Errors are logged but do not block user creation (graceful degradation).
          */
-        after: async (user) => {
+        after: async (user, ctx?: any) => {
+          // Affiliate attribution — best-effort, swallow errors.
+          //
+          // The Cloudflare /r/:code Pages Function sets two first-party
+          // cookies on the marketing site: `__shogo_ref_visitor` (a
+          // UUID) and `__shogo_ref` (the affiliate code). They tag
+          // along on the signup POST because the better-auth cookie
+          // policy is SameSite=Lax (and the marketing site issues
+          // them as first-party). We read both and call into the
+          // affiliate service, which does the self-referral and
+          // expiry checks. Feature-flag-gated so dev/test stacks
+          // without the native rollout don't pay the DB roundtrip.
+          if (process.env.SHOGO_AFFILIATES_NATIVE === 'true') {
+            try {
+              const cookieHeader =
+                ctx?.request?.headers?.get?.('cookie') ||
+                ctx?.headers?.get?.('cookie') ||
+                ''
+              const visitorId = parseCookieHeader(cookieHeader, '__shogo_ref_visitor')
+              const code = parseCookieHeader(cookieHeader, '__shogo_ref')
+              if (visitorId) {
+                await resolveAttributionForUser(user.id, visitorId, code ?? null)
+              }
+            } catch (err) {
+              console.error('[Affiliate] attribution on signup failed', err)
+            }
+          }
+
           // In local/desktop mode, every user is a super_admin
           if (isLocalMode) {
             try {
