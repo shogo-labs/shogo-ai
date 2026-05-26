@@ -224,3 +224,7 @@ vendor/agent-native
 apps/api/coverage/
 *.tmp
 *.info
+
+# Per-package coverage build outputs (committed snapshot lives in coverage/baselines/)
+packages/*/coverage/
+apps/*/coverage/
