@@ -184,6 +184,13 @@ spec:
                   key: secret-key
             - name: PUBLISH_NAMESPACE
               value: "shogo-production-system"
+            # OCI Object Storage bucket the *.shogo.one Cloudflare Worker
+            # reads from (terraform/modules/publish-hosting-oci). MUST
+            # match `shogo-published-apps-${var.environment}` for the env
+            # this overlay deploys. publish.ts asserts this is set in
+            # K8s mode — see the post-2026-05-26 comment there.
+            - name: PUBLISH_BUCKET
+              value: "shogo-published-apps-production"
             - name: PUBLISH_DOMAIN
               value: "shogo.one"
             - name: BETTER_AUTH_URL

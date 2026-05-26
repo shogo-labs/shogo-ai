@@ -25,8 +25,17 @@ import * as checkpointService from "../services/checkpoint.service"
 // Workspaces directory for checkpoint creation
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(import.meta.dir, '../../../../workspaces')
 
-// S3 configuration (CloudFront removed -- published apps route through Kourier ALB)
-const PUBLISH_BUCKET = process.env.PUBLISH_BUCKET || "shogo-published-apps-staging"
+// S3 configuration. `PUBLISH_BUCKET` must be set explicitly in every K8s
+// overlay (k8s/overlays/{staging,production-*}/api-service.yaml) — the
+// fallback below is a deliberately wrong-looking local-dev value so a
+// missing overlay value can't silently route prod uploads to the staging
+// bucket. That happened on 2026-05-26: prod api ksvc had no
+// PUBLISH_BUCKET, the old default `shogo-published-apps-staging` won,
+// and every prod publish wrote to the staging bucket while the
+// Cloudflare Worker for *.shogo.one was reading from
+// `shogo-published-apps-production` — every published app served
+// `ObjectNotFound`. uploadToS3() now also asserts at call time.
+const PUBLISH_BUCKET = process.env.PUBLISH_BUCKET || "shogo-published-apps-LOCAL-DEV"
 const PUBLISH_DOMAIN = process.env.PUBLISH_DOMAIN || "shogo.one"
 const AWS_REGION = process.env.S3_REGION || process.env.AWS_REGION || "us-east-1"
 
@@ -271,6 +280,21 @@ async function downloadDistFiles(projectId: string): Promise<Map<string, Buffer>
  * Upload files to S3 bucket under the subdomain prefix
  */
 async function uploadToS3(subdomain: string, files: Map<string, Buffer>): Promise<void> {
+  // Hard-fail in K8s mode if the overlay forgot to set PUBLISH_BUCKET
+  // — silently uploading to the LOCAL-DEV fallback would land prod
+  // content in a non-existent bucket (or worse, the wrong env's bucket
+  // if the name happened to collide). See the long comment on
+  // PUBLISH_BUCKET above for the 2026-05-26 incident.
+  if (isKubernetes() && !process.env.PUBLISH_BUCKET) {
+    throw new Error(
+      "PUBLISH_BUCKET env var is not set. The api ksvc overlay must set " +
+      "this explicitly to the OCI Object Storage bucket the *.shogo.one " +
+      "Cloudflare Worker reads from " +
+      "(`shogo-published-apps-${environment}` per " +
+      "terraform/modules/publish-hosting-oci). Refusing to upload " +
+      "without it.",
+    )
+  }
   console.log(`[Publish] Uploading ${files.size} files to S3 bucket ${PUBLISH_BUCKET}/${subdomain}/`)
   
   for (const [filePath, content] of files) {
