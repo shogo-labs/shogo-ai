@@ -13,6 +13,8 @@ const store = {
   warmPoolThrow: null as null | Error,
   prismaProject: null as null | { id: string },
   prismaProjectThrow: null as null | Error,
+  prismaProjectFindUnique: null as any,
+  prismaProjectFindUniqueThrow: null as null | Error,
   agentConfigUpdate: { count: 1 },
   agentConfigUpdateThrow: null as null | Error,
   agentConfigFind: null as any,
@@ -61,6 +63,10 @@ mock.module('../../lib/prisma', () => ({
         if (store.prismaProjectThrow) throw store.prismaProjectThrow
         return store.prismaProject
       },
+      findUnique: async () => {
+        if (store.prismaProjectFindUniqueThrow) throw store.prismaProjectFindUniqueThrow
+        return store.prismaProjectFindUnique
+      },
     },
     agentConfig: {
       updateMany: async () => {
@@ -103,6 +109,8 @@ beforeEach(() => {
   store.warmPoolThrow = null
   store.prismaProject = { id: 'proj-99' }
   store.prismaProjectThrow = null
+  store.prismaProjectFindUnique = null
+  store.prismaProjectFindUniqueThrow = null
   store.agentConfigUpdateThrow = null
   store.agentConfigFind = { projectId: 'proj-1', heartbeatEnabled: true, heartbeatInterval: 300 }
   store.agentConfigFindThrow = null
@@ -612,6 +620,137 @@ describe('wave-4A-c remaining gaps', () => {
     const res = await app.request('/validate-runtime-token', {
       method: 'POST', headers: { ...SA, ...JSON_H }, body: JSON.stringify({ token: 't' }),
     })
+    expect(res.status).toBe(500)
+  })
+})
+
+// ─── GET /projects/:projectId/trust ─────────────────────────────────────────
+//
+// Authoritative trust read used by the runtime's TrustResolver.
+// Bug fixed: trust used to be a spawn-time env snapshot; this endpoint
+// is the live source the resolver fetches from at every chat turn (and
+// on demand via POST /internal/refresh-trust).
+describe('GET /projects/:projectId/trust', () => {
+  test('400 when projectId path param is empty', async () => {
+    // Hono won't even match the route with an empty :projectId, but
+    // verify we don't 500 on weird inputs that resolve to ''.
+    const res = await app.request('/projects//trust', { headers: { ...SA } })
+    expect([400, 404]).toContain(res.status)
+  })
+
+  test('401 when no auth headers', async () => {
+    const res = await app.request('/projects/p1/trust')
+    expect(res.status).toBe(401)
+  })
+
+  test('403 when SA token is invalid and not local mode', async () => {
+    store.podIdentity = null
+    const res = await app.request('/projects/p1/trust', { headers: { ...SA } })
+    expect(res.status).toBe(401)
+  })
+
+  test('404 when project does not exist', async () => {
+    store.prismaProjectFindUnique = null
+    const res = await app.request('/projects/missing/trust', { headers: { ...SA } })
+    expect(res.status).toBe(404)
+  })
+
+  test('200 returns trusted/external with folder ordering (primary first, then by lastOpenedAt desc)', async () => {
+    store.prismaProjectFindUnique = {
+      trustLevel: 'trusted',
+      workingMode: 'external',
+      projectFolders: [
+        { path: '/work/older', isPrimary: false, lastOpenedAt: new Date('2026-01-01') },
+        { path: '/work/primary', isPrimary: true, lastOpenedAt: new Date('2025-01-01') },
+        { path: '/work/newer', isPrimary: false, lastOpenedAt: new Date('2026-05-01') },
+      ],
+    }
+    const res = await app.request('/projects/p1/trust', { headers: { ...SA } })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      trustLevel: 'trusted',
+      workingMode: 'external',
+      linkedFolders: ['/work/primary', '/work/newer', '/work/older'],
+    })
+  })
+
+  test('200 normalizes unknown trustLevel/workingMode to safe defaults', async () => {
+    // The runtime expects strict 'trusted'|'restricted' and 'managed'|'external'.
+    // Anything else from the DB must collapse to the safe default
+    // (trusted unless explicitly restricted; managed unless explicitly external)
+    // so the resolver never sees ambiguous values.
+    store.prismaProjectFindUnique = {
+      trustLevel: 'something-weird',
+      workingMode: null,
+      projectFolders: [],
+    }
+    const res = await app.request('/projects/p1/trust', { headers: { ...SA } })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      trustLevel: 'trusted',
+      workingMode: 'managed',
+      linkedFolders: [],
+    })
+  })
+
+  test('200 maps restricted/managed combo correctly', async () => {
+    store.prismaProjectFindUnique = {
+      trustLevel: 'restricted',
+      workingMode: 'managed',
+      projectFolders: [],
+    }
+    const res = await app.request('/projects/p1/trust', { headers: { ...SA } })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      trustLevel: 'restricted',
+      workingMode: 'managed',
+      linkedFolders: [],
+    })
+  })
+
+  test('200 handles folders with null lastOpenedAt (treats as oldest)', async () => {
+    store.prismaProjectFindUnique = {
+      trustLevel: 'trusted',
+      workingMode: 'external',
+      projectFolders: [
+        { path: '/never-opened', isPrimary: false, lastOpenedAt: null },
+        { path: '/opened', isPrimary: false, lastOpenedAt: new Date('2026-05-01') },
+      ],
+    }
+    const res = await app.request('/projects/p1/trust', { headers: { ...SA } })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { linkedFolders: string[] }
+    expect(body.linkedFolders).toEqual(['/opened', '/never-opened'])
+  })
+
+  test('200 with runtime token in local mode', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    store.podIdentity = null
+    store.runtimeVerify = { ok: true, projectId: 'p-local' }
+    store.prismaProjectFindUnique = {
+      trustLevel: 'trusted',
+      workingMode: 'external',
+      projectFolders: [],
+    }
+    const res = await app.request('/projects/p-local/trust', {
+      headers: { 'x-runtime-token': 'rt' },
+    })
+    expect(res.status).toBe(200)
+  })
+
+  test('401 when runtime token belongs to a different project (local mode)', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    store.podIdentity = null
+    store.runtimeVerify = { ok: true, projectId: 'someone-else' }
+    const res = await app.request('/projects/mine/trust', {
+      headers: { 'x-runtime-token': 'rt' },
+    })
+    expect(res.status).toBe(401)
+  })
+
+  test('500 when prisma throws', async () => {
+    store.prismaProjectFindUniqueThrow = new Error('db down')
+    const res = await app.request('/projects/p1/trust', { headers: { ...SA } })
     expect(res.status).toBe(500)
   })
 })

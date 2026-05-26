@@ -70,6 +70,8 @@ import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } fr
 import { WorkspaceLSPManager, resolveBin } from '@shogo/shared-runtime'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { deriveApiUrl, getInternalHeaders, postCostMetric } from './internal-api'
+import { getRuntimeTrust } from './runtime-trust'
+import { refreshTrust } from './trust-resolver'
 import type { FilePart } from './file-attachment-utils'
 import { parseFileAttachments } from './file-attachment-utils'
 import {
@@ -1466,6 +1468,14 @@ export class AgentGateway {
       this.skillServerManager.start().catch(() => {})
     }
 
+    // Per-turn trust refresh. Reconciles the runtime's view of
+    // `trustLevel` with the DB at the boundary of every chat turn so
+    // a user clicking "Trust folder" between messages is reflected in
+    // both the system prompt and `assertAllowedPath()` checks of the
+    // tool calls that follow. Best-effort: on transient failure the
+    // resolver keeps its last-known value rather than flapping.
+    await refreshTrust()
+
     let systemPrompt = this.loadBootstrapContext(sessionId)
 
     console.log(`[Gateway][_agentTurnInner] building system prompt — interactionMode: ${interactionMode}, sessionId: ${sessionId}`)
@@ -2717,22 +2727,16 @@ export class AgentGateway {
     // 0. External (VS Code-style) project context. When the user has
     // opened folders from their machine (workingMode='external'), tell
     // the agent which roots are in scope and whether the workspace is
-    // trusted. This sits in the stable zone because trust + folder set
-    // only flip via explicit user action (POST /trust, POST /primary),
-    // which already causes a session refresh. Keeps the agent from
-    // hallucinating absolute paths outside the allowed roots.
-    if (process.env.WORKING_MODE === 'external') {
-      const linkedFolders: string[] = (() => {
-        try {
-          const raw = process.env.LINKED_FOLDERS
-          if (!raw) return []
-          const parsed = JSON.parse(raw)
-          return Array.isArray(parsed) ? parsed.filter((p) => typeof p === 'string') : []
-        } catch {
-          return []
-        }
-      })()
-      const trustLevel = process.env.TRUST_LEVEL === 'restricted' ? 'restricted' : 'trusted'
+    // trusted. Reads from the live trust-resolver (refreshed once per
+    // turn in `_agentTurnInner` just before this runs) — NOT from the
+    // legacy TRUST_LEVEL env var, which was a spawn-time snapshot that
+    // never reflected user trust toggles. The folder set is genuinely
+    // immutable for a runtime instance, so we still take it from the
+    // same resolver snapshot.
+    const runtimeTrust = getRuntimeTrust()
+    if (runtimeTrust.workingMode === 'external') {
+      const linkedFolders = runtimeTrust.linkedFolders
+      const trustLevel = runtimeTrust.trustLevel
       const lines = [
         '## Project Mode: External (VS Code-style)',
         '',
