@@ -97,6 +97,23 @@ function editQueued(
   }
 }
 
+// Mirrors the promote-to-front step inside `handleSendQueuedMessageNow` in
+// ChatPanel.tsx. The handler then either calls handleStop() (streaming) or
+// processMessageQueue() (idle) — that orchestration is integration territory;
+// this helper pins the pure queue-mutation contract so the front-of-queue
+// drain path stays load-bearing.
+function promoteQueuedToFront(
+  queue: QueuedMessage[],
+  id: string
+): QueuedMessage[] {
+  const index = queue.findIndex((m) => m.id === id)
+  if (index === -1) return queue
+  if (index === 0) return queue
+  const target = queue[index]
+  const without = queue.filter((m) => m.id !== id)
+  return [target, ...without]
+}
+
 // -- Display helpers (mirror queue row in ChatInput.tsx) --
 
 interface QueueRowDisplay {
@@ -283,6 +300,46 @@ describe('editQueued', () => {
     const { queue: nextQueue, draft } = editQueued(queue, 'q1', 99)
     expect(nextQueue).toEqual([])
     expect(draft).toEqual({ nonce: 99, content: '', files: [file] })
+  })
+})
+
+describe('promoteQueuedToFront', () => {
+  const base: QueuedMessage[] = [
+    { id: 'q1', content: 'first' },
+    { id: 'q2', content: 'second' },
+    { id: 'q3', content: 'third' },
+  ]
+
+  test('moves a middle item to position 0 and preserves the relative order of the rest', () => {
+    expect(promoteQueuedToFront(base, 'q2').map((m) => m.id)).toEqual([
+      'q2',
+      'q1',
+      'q3',
+    ])
+  })
+
+  test('moves the last item to position 0', () => {
+    expect(promoteQueuedToFront(base, 'q3').map((m) => m.id)).toEqual([
+      'q3',
+      'q1',
+      'q2',
+    ])
+  })
+
+  test('returns the same reference when the id is already at position 0', () => {
+    // Reference equality matters: the no-op short-circuit lets React skip a
+    // setMessageQueue commit, which in turn means the falling-edge drain
+    // effect won't re-fire on an idle promote.
+    expect(promoteQueuedToFront(base, 'q1')).toBe(base)
+  })
+
+  test('returns the same reference for unknown ids', () => {
+    expect(promoteQueuedToFront(base, 'missing')).toBe(base)
+  })
+
+  test('single-item queue is returned unchanged', () => {
+    const queue: QueuedMessage[] = [{ id: 'only', content: 'hi' }]
+    expect(promoteQueuedToFront(queue, 'only')).toBe(queue)
   })
 })
 

@@ -3676,6 +3676,35 @@ export const ChatPanel = observer(function ChatPanel({
     []
   )
 
+  // "Send now" — interrupt the current streaming turn and immediately drain
+  // the chosen queued message. Implemented as "promote to front + stop" so we
+  // re-use the existing falling-edge drain effect (see `processMessageQueue`
+  // hookup ~line 3514) rather than introducing a parallel send-by-id path.
+  // When no turn is streaming we drain directly: cached queues restored on
+  // session switch can sit idle since the falling-edge effect only fires on
+  // streaming->ready transitions.
+  const handleSendQueuedMessageNow = useCallback(
+    (messageId: string) => {
+      let promoted = false
+      setMessageQueue((queue) => {
+        const idx = queue.findIndex((m) => m.id === messageId)
+        if (idx === -1) return queue
+        promoted = true
+        if (idx === 0) return queue
+        const target = queue[idx]
+        const without = queue.filter((m) => m.id !== messageId)
+        return [target, ...without]
+      })
+      if (!promoted) return
+      if (isStreaming) {
+        handleStop()
+      } else {
+        void processMessageQueue()
+      }
+    },
+    [isStreaming, handleStop, processMessageQueue]
+  )
+
   // Handle message submission
   const handleSendMessage = useCallback(
     async (content: string, files?: FileAttachment[], perMsgModel?: string) => {
@@ -4712,6 +4741,7 @@ export const ChatPanel = observer(function ChatPanel({
               onRemoveQueuedMessage={handleRemoveQueuedMessage}
               onReorderQueuedMessage={handleReorderQueuedMessage}
               onEditQueuedMessage={handleEditQueuedMessage}
+              onSendQueuedMessageNow={handleSendQueuedMessageNow}
               interactionMode={interactionMode}
               onInteractionModeChange={handleInteractionModeChange}
               dualPlan={dualPlan}

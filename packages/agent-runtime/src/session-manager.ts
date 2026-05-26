@@ -469,6 +469,30 @@ export class SessionManager {
     }))
   }
 
+  /**
+   * Get full detail for a single session, including the actual compacted
+   * summary text (not just a boolean). Returns null if the session does
+   * not exist in memory.
+   */
+  getDetail(id: string): (Omit<SessionStats, 'compactedSummary'> & {
+    compactedSummary: string | null
+    lastActivityAt: number
+  }) | null {
+    const s = this.sessions.get(id)
+    if (!s) return null
+    return {
+      id: s.id,
+      messageCount: s.messages.length,
+      estimatedTokens: this.estimateTokens(s),
+      compactedSummary: s.compactedSummary,
+      compactionCount: s.compactionCount,
+      totalMessages: s.totalMessages,
+      idleSeconds: Math.floor((Date.now() - s.lastActivityAt) / 1000),
+      createdAt: new Date(s.createdAt).toISOString(),
+      lastActivityAt: s.lastActivityAt,
+    }
+  }
+
   /** Get total session count */
   get sessionCount(): number {
     return this.sessions.size

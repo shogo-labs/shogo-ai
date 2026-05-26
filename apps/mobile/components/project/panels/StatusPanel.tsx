@@ -19,6 +19,7 @@ import {
   Lock,
   Wrench,
   ExternalLink,
+  ChevronDown,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Switch } from '@/components/ui/switch'
@@ -105,6 +106,18 @@ interface SessionInfo {
   compactedSummary: boolean
   compactionCount: number
   idleSeconds: number
+}
+
+interface SessionSummaryDetail {
+  id: string
+  messageCount: number
+  estimatedTokens: number
+  compactedSummary: string | null
+  compactionCount: number
+  totalMessages: number
+  idleSeconds: number
+  createdAt: string
+  lastActivityAt: number
 }
 
 interface MemoryInfo {
@@ -198,7 +211,58 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
   const [hbError, setHbError] = useState<string | null>(null)
   const [contextMarkdown, setContextMarkdown] = useState<string | null>(null)
   const [isLoadingContext, setIsLoadingContext] = useState(false)
+  const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null)
+  const [sessionSummaries, setSessionSummaries] = useState<
+    Record<string, { loading: boolean; error: string | null; data: SessionSummaryDetail | null }>
+  >({})
   const router = useRouter()
+
+  const fetchSessionSummary = useCallback(async (sessionId: string) => {
+    if (!agentUrl) return
+    setSessionSummaries((prev) => ({
+      ...prev,
+      [sessionId]: { loading: true, error: null, data: prev[sessionId]?.data ?? null },
+    }))
+    try {
+      const res = await agentFetch(
+        `${agentUrl}/agent/sessions/${encodeURIComponent(sessionId)}/summary`,
+      )
+      if (!res.ok) {
+        const msg =
+          res.status === 404
+            ? 'Session not found on runtime'
+            : `Failed to load summary (HTTP ${res.status})`
+        setSessionSummaries((prev) => ({
+          ...prev,
+          [sessionId]: { loading: false, error: msg, data: null },
+        }))
+        return
+      }
+      const data = (await res.json()) as SessionSummaryDetail
+      setSessionSummaries((prev) => ({
+        ...prev,
+        [sessionId]: { loading: false, error: null, data },
+      }))
+    } catch (err: any) {
+      setSessionSummaries((prev) => ({
+        ...prev,
+        [sessionId]: {
+          loading: false,
+          error: err?.message || 'Failed to load summary',
+          data: null,
+        },
+      }))
+    }
+  }, [agentUrl])
+
+  const toggleSessionExpanded = useCallback((sessionId: string) => {
+    setExpandedSessionId((current) => {
+      if (current === sessionId) return null
+      // Fire-and-forget; the row will render its own loading state.
+      fetchSessionSummary(sessionId)
+      return sessionId
+    })
+  }, [fetchSessionSummary])
 
   const fetchHeartbeatConfig = useCallback(async () => {
     try {
@@ -470,36 +534,133 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
                 <EmptyRow text="No active sessions" />
               ) : (
                 <View className="gap-1.5">
-                  {status.sessions.map((session) => (
-                    <View
-                      key={session.id}
-                      className="flex-row items-center gap-3 px-3 py-2 rounded-md bg-muted/40"
-                    >
-                      <Zap size={14} className="text-amber-500" />
-                      <View className="flex-1">
-                        <Text
-                          className="text-sm font-medium font-mono text-foreground"
-                          numberOfLines={1}
-                        >
-                          {session.id}
-                        </Text>
-                        <Text className="text-xs text-muted-foreground">
-                          {session.messageCount} msgs · ~
-                          {(session.estimatedTokens / 1000).toFixed(1)}k tokens
-                        </Text>
-                      </View>
-                      <View className="items-end">
-                        {session.compactedSummary && (
-                          <Text className="text-[10px] text-primary">
-                            Compacted x{session.compactionCount}
-                          </Text>
+                  {status.sessions.map((session) => {
+                    const isExpandable = session.compactedSummary
+                    const isExpanded = expandedSessionId === session.id
+                    const detail = sessionSummaries[session.id]
+                    const row = (
+                      <View
+                        className={cn(
+                          'flex-row items-center gap-3 px-3 py-2 bg-muted/40',
+                          isExpanded ? 'rounded-t-md' : 'rounded-md',
                         )}
-                        <Text className="text-[10px] text-muted-foreground">
-                          Idle {formatUptime(session.idleSeconds)}
-                        </Text>
+                      >
+                        <Zap size={14} className="text-amber-500" />
+                        <View className="flex-1">
+                          <Text
+                            className="text-sm font-medium font-mono text-foreground"
+                            numberOfLines={1}
+                          >
+                            {session.id}
+                          </Text>
+                          <Text className="text-xs text-muted-foreground">
+                            {session.messageCount} msgs · ~
+                            {(session.estimatedTokens / 1000).toFixed(1)}k tokens
+                          </Text>
+                        </View>
+                        <View className="items-end">
+                          {session.compactedSummary && (
+                            <View className="flex-row items-center gap-1">
+                              <Text className="text-[10px] text-primary">
+                                Compacted x{session.compactionCount}
+                              </Text>
+                              <ChevronDown
+                                size={10}
+                                className={cn(
+                                  'text-primary',
+                                  isExpanded && 'rotate-180',
+                                )}
+                              />
+                            </View>
+                          )}
+                          <Text className="text-[10px] text-muted-foreground">
+                            Idle {formatUptime(session.idleSeconds)}
+                          </Text>
+                        </View>
                       </View>
-                    </View>
-                  ))}
+                    )
+
+                    return (
+                      <View key={session.id}>
+                        {isExpandable ? (
+                          <Pressable
+                            onPress={() => toggleSessionExpanded(session.id)}
+                            accessibilityRole="button"
+                            accessibilityLabel={
+                              isExpanded
+                                ? `Hide compacted summary for ${session.id}`
+                                : `Show compacted summary for ${session.id}`
+                            }
+                            accessibilityState={{ expanded: isExpanded }}
+                          >
+                            {row}
+                          </Pressable>
+                        ) : (
+                          row
+                        )}
+                        {isExpanded && (
+                          <View className="px-3 py-3 gap-3 bg-muted/20 rounded-b-md border-t border-border">
+                            <View className="flex-row flex-wrap gap-x-4 gap-y-1">
+                              <Text className="text-[10px] text-muted-foreground">
+                                Compactions
+                                <Text className="text-foreground"> x{session.compactionCount}</Text>
+                              </Text>
+                              <Text className="text-[10px] text-muted-foreground">
+                                Messages
+                                <Text className="text-foreground"> {session.messageCount}</Text>
+                              </Text>
+                              <Text className="text-[10px] text-muted-foreground">
+                                Est. tokens
+                                <Text className="text-foreground">
+                                  {' '}~{(session.estimatedTokens / 1000).toFixed(1)}k
+                                </Text>
+                              </Text>
+                              <Text className="text-[10px] text-muted-foreground">
+                                Idle
+                                <Text className="text-foreground">
+                                  {' '}{formatUptime(session.idleSeconds)}
+                                </Text>
+                              </Text>
+                              {detail?.data?.lastActivityAt != null && (
+                                <Text className="text-[10px] text-muted-foreground">
+                                  Last activity
+                                  <Text className="text-foreground">
+                                    {' '}{timeAgo(new Date(detail.data.lastActivityAt).toISOString())}
+                                  </Text>
+                                </Text>
+                              )}
+                            </View>
+
+                            {detail?.loading && !detail.data ? (
+                              <View className="py-3 items-center">
+                                <ActivityIndicator size="small" />
+                              </View>
+                            ) : detail?.error ? (
+                              <View className="flex-row items-center gap-2">
+                                <Text className="text-xs text-destructive flex-1">
+                                  {detail.error}
+                                </Text>
+                                <Pressable
+                                  onPress={() => fetchSessionSummary(session.id)}
+                                  accessibilityRole="button"
+                                  accessibilityLabel="Retry loading summary"
+                                  className="px-2 py-1 rounded-md bg-muted active:bg-accent"
+                                >
+                                  <Text className="text-[10px] text-foreground">Retry</Text>
+                                </Pressable>
+                              </View>
+                            ) : detail?.data?.compactedSummary ? (
+                              <MarkdownText>{detail.data.compactedSummary}</MarkdownText>
+                            ) : detail?.data ? (
+                              <Text className="text-xs text-muted-foreground italic">
+                                No compacted summary yet — this session hasn't been compacted.
+                              </Text>
+                            ) : null}
+                          </View>
+                        )}
+                      </View>
+                    )
+                  })}
                   <View className="flex-row items-center justify-between px-3 py-1.5">
                     <Text className="text-xs text-muted-foreground">
                       {localMode ? 'Total estimated tokens' : 'Tokens used'}

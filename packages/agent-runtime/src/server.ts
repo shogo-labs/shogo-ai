@@ -852,6 +852,18 @@ app.get('/agent/status', (c) => {
   return c.json(status)
 })
 
+// Return the current compacted-conversation summary for a single session,
+// plus the metadata the StatusPanel needs to render its expanded view.
+// Sessions live in memory on this pod; if the id has been evicted (TTL)
+// or never existed, this returns 404.
+app.get('/agent/sessions/:sessionId/summary', (c) => {
+  const sm = agentGateway?.getSessionManager()
+  if (!sm) return c.json({ error: 'Agent gateway not running' }, 503)
+  const detail = sm.getDetail(c.req.param('sessionId'))
+  if (!detail) return c.json({ error: 'session not found' }, 404)
+  return c.json(detail)
+})
+
 // Read agent config
 app.get('/agent/config', (c) => {
   const configPath = join(WORKSPACE_DIR, 'config.json')
