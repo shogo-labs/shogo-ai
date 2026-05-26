@@ -22,12 +22,14 @@ interface SpawnInvocation {
 }
 
 const spawnInvocations: SpawnInvocation[] = [];
-type SpawnHandler = (
-  inv: SpawnInvocation,
-) => { stdout?: string; stderr?: string; exitCode?: number; runError?: Error };
+type SpawnResult = { stdout?: string; stderr?: string; exitCode?: number; runError?: Error; hang?: boolean };
+type SpawnHandler = (inv: SpawnInvocation) => SpawnResult;
 let spawnHandler: SpawnHandler = () => ({ exitCode: 0 });
 
-function makeFakeChild(result: { stdout?: string; stderr?: string; exitCode?: number; runError?: Error }) {
+let execFileHandler: (cmd: string, args: string[]) => { error?: Error; stdout?: string } =
+  () => ({ stdout: 'git version 2.40.0' });
+
+function makeFakeChild(result: SpawnResult) {
   const child = new EventEmitter() as any;
   child.stdout = new EventEmitter();
   child.stdout.setEncoding = () => {};
@@ -38,6 +40,7 @@ function makeFakeChild(result: { stdout?: string; stderr?: string; exitCode?: nu
   child.signalCode = null;
   // Emit chunks + close asynchronously so callers' on() handlers register first.
   setTimeout(() => {
+    if (result.hang) return; // never emit close — used for timeout tests
     if (result.runError) {
       child.emit('error', result.runError);
       return;
@@ -60,9 +63,12 @@ mock.module('node:child_process', () => ({
   execFile: (cmd: string, args: string[], opts: any, cb: any) => {
     const inv: SpawnInvocation = { cmd, args };
     spawnInvocations.push(inv);
-    // probe for `git --version`
     const callback = typeof opts === 'function' ? opts : cb;
-    setTimeout(() => callback?.(null, 'git version 2.40.0', ''), 1);
+    const r = execFileHandler(cmd, args);
+    setTimeout(() => {
+      if (r.error) callback?.(r.error, '', '');
+      else callback?.(null, r.stdout ?? '', '');
+    }, 1);
   },
 }));
 
@@ -72,6 +78,7 @@ const { buildGitUrl, cloneProject, commitAndPush, gitIsAvailable, isGitRepo, git
 beforeEach(() => {
   spawnInvocations.length = 0;
   spawnHandler = () => ({ exitCode: 0 });
+  execFileHandler = () => ({ stdout: 'git version 2.40.0' });
 });
 
 describe('buildGitUrl', () => {
@@ -256,3 +263,120 @@ describe('isGitRepo', () => {
     }
   });
 });
+
+// ─── Additional coverage tests ──────────────────────────────────────────────
+
+describe('gitIsAvailable (failure path)', () => {
+  it('returns false when git --version fails (L46)', async () => {
+    execFileHandler = () => ({ error: new Error('git not found in PATH') });
+    const ok = await gitIsAvailable(true); // force=true bypasses cache
+    expect(ok).toBe(false);
+    // Restore the cache to true for subsequent tests (idempotent re-probe)
+    execFileHandler = () => ({ stdout: 'git version 2.40.0' });
+    await gitIsAvailable(true);
+  });
+});
+
+describe('runGit (timeout + error paths)', () => {
+  it('rejects when the timer fires before the child closes (L127-128)', async () => {
+    const { runGit } = await import('../git-cloner.ts');
+    spawnHandler = () => ({ hang: true });
+    await expect(
+      runGit(['fetch'], { timeoutMs: 30 }),
+    ).rejects.toThrow(/timed out after 30ms/);
+  });
+
+  it('rejects when the child emits an error event (L132-133)', async () => {
+    const { runGit } = await import('../git-cloner.ts');
+    spawnHandler = () => ({ runError: new Error('spawn ENOENT') });
+    await expect(
+      runGit(['status'], { timeoutMs: 5000 }),
+    ).rejects.toThrow(/spawn ENOENT/);
+  });
+});
+
+describe('gitFetchUnshallow', () => {
+  it('runs git fetch --unshallow when .git/shallow exists (L270-276)', async () => {
+    const { gitFetchUnshallow } = await import('../git-cloner.ts');
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'unshallow-'));
+    try {
+      mkdirSync(join(dir, '.git'));
+      writeFileSync(join(dir, '.git', 'shallow'), 'deadbeef\n');
+      await gitFetchUnshallow({
+        apiUrl: 'https://api.shogo.ai',
+        apiKey: 'shogo_sk_test',
+        projectId: 'p_demo',
+        localDir: dir,
+      });
+      const fetchInv = spawnInvocations.find((i) => i.args.includes('--unshallow'));
+      expect(fetchInv).toBeDefined();
+      expect(fetchInv!.args.some((a) => a.startsWith('http.extraHeader='))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('no-ops when .git/shallow is missing (repo already complete)', async () => {
+    const { gitFetchUnshallow } = await import('../git-cloner.ts');
+    const { mkdtempSync, mkdirSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'unshallow-'));
+    try {
+      mkdirSync(join(dir, '.git'));
+      await gitFetchUnshallow({
+        apiUrl: 'https://api.shogo.ai',
+        apiKey: 'shogo_sk_test',
+        projectId: 'p_demo',
+        localDir: dir,
+      });
+      expect(spawnInvocations.length).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('commitAndPush (author env vars)', () => {
+  it('sets GIT_AUTHOR_EMAIL + GIT_COMMITTER_EMAIL when authorEmail is provided (L315-316)', async () => {
+    spawnHandler = (inv) => {
+      if (inv.args[0] === 'diff') return { exitCode: 1 };
+      if (inv.args[0] === 'rev-parse') return { stdout: 'shaaaaaa\n' };
+      return { exitCode: 0 };
+    };
+    await commitAndPush({
+      apiUrl: 'https://api.shogo.ai',
+      apiKey: 'k',
+      projectId: 'p',
+      localDir: '/tmp/never',
+      message: 'feat: x',
+      authorEmail: 'dev@shogo.ai',
+    });
+    const addInv = spawnInvocations.find((i) => i.args[0] === 'add')!;
+    expect(addInv.env?.GIT_AUTHOR_EMAIL).toBe('dev@shogo.ai');
+    expect(addInv.env?.GIT_COMMITTER_EMAIL).toBe('dev@shogo.ai');
+  });
+
+  it('sets GIT_AUTHOR_NAME + GIT_COMMITTER_NAME when authorName is provided (L319-320)', async () => {
+    spawnHandler = (inv) => {
+      if (inv.args[0] === 'diff') return { exitCode: 1 };
+      if (inv.args[0] === 'rev-parse') return { stdout: 'shaaaaaa\n' };
+      return { exitCode: 0 };
+    };
+    await commitAndPush({
+      apiUrl: 'https://api.shogo.ai',
+      apiKey: 'k',
+      projectId: 'p',
+      localDir: '/tmp/never',
+      message: 'feat: x',
+      authorName: 'Shogo Bot',
+    });
+    const addInv = spawnInvocations.find((i) => i.args[0] === 'add')!;
+    expect(addInv.env?.GIT_AUTHOR_NAME).toBe('Shogo Bot');
+    expect(addInv.env?.GIT_COMMITTER_NAME).toBe('Shogo Bot');
+  });
+});
+
