@@ -24,6 +24,10 @@ import crypto from 'crypto'
 import { startLocalServer, stopLocalServer, getApiUrl, getApiPort } from './local-server'
 import { getWebDir, getBunPath, getDbPath } from './paths'
 import {
+  routeShogoRequest,
+  verifyWebBundleIntegrity as verifyWebBundleIntegrityPure,
+} from './web-bundle'
+import {
   DatabaseRecoveryError,
   backupDatabase,
   repairFailedMigrations,
@@ -1000,19 +1004,40 @@ function loadProductionWeb(): void {
 function registerProtocol(): void {
   protocol.handle('shogo', (request) => {
     const webDir = getWebDir()
-    let urlPath = new URL(request.url).pathname
+    const urlPath = new URL(request.url).pathname
 
-    if (urlPath.startsWith('/')) {
-      urlPath = urlPath.substring(1)
+    const decision = routeShogoRequest(urlPath, webDir, (p) => {
+      try {
+        return fs.statSync(p).isFile()
+      } catch {
+        return false
+      }
+    })
+
+    switch (decision.kind) {
+      case 'file':
+        return net.fetch(`file://${decision.absolutePath}`)
+      case 'spa-fallback':
+        return net.fetch(`file://${decision.absolutePath}`)
+      case 'not-found':
+        console.warn(`[Desktop] shogo:// 404 for missing static asset: /${decision.urlPath}`)
+        return new Response(`Not Found: /${decision.urlPath}`, {
+          status: 404,
+          headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        })
     }
+  })
+}
 
-    const filePath = path.join(webDir, urlPath)
-    if (urlPath && fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-      return net.fetch(`file://${filePath}`)
+/** Thin Electron-side wrapper around the pure check in `web-bundle.ts`. */
+function verifyWebBundleIntegrity(): { ok: true } | { ok: false; missing: string[] } {
+  return verifyWebBundleIntegrityPure(getWebDir(), (p) => {
+    try {
+      const st = fs.statSync(p)
+      return { exists: true, isFile: st.isFile(), size: st.size }
+    } catch {
+      return { exists: false, isFile: false, size: 0 }
     }
-
-    const indexPath = path.join(webDir, 'index.html')
-    return net.fetch(`file://${indexPath}`)
   })
 }
 
@@ -1170,6 +1195,42 @@ app.whenReady().then(async () => {
   console.log(`[Desktop] Starting in ${isCloudMode ? 'cloud' : 'local'} mode`)
 
   registerProtocol()
+
+  // Integrity-check the on-disk web bundle BEFORE we open a window pointed
+  // at it. The build-time sync (`apps/desktop/scripts/sync-web.mjs`) is
+  // the primary guard against shipping an incomplete `resources/web/`; this
+  // is the belt-and-suspenders runtime guard for installs that bypassed it
+  // (older releases, partial copies, disk corruption). Without it a missing
+  // `vs/loader.js` would surface as an opaque "IDE editor stuck on Loading…"
+  // — see `registerProtocol()` above and `BUILD.md` for the full history.
+  // In dev mode the renderer is served by `expo start --web` over HTTP, so
+  // `resources/web/` is irrelevant and the check is skipped.
+  if (!IS_DEV && !isCloudMode) {
+    const integrity = verifyWebBundleIntegrity()
+    if (!integrity.ok) {
+      writeLogSync(
+        'FATAL',
+        '[Desktop] resources/web/ is missing required assets:',
+        integrity.missing,
+      )
+      try {
+        dialog.showErrorBox(
+          'Shogo install is incomplete',
+          'The Shogo app bundle is missing required web assets and will now exit.\n\n' +
+            `Missing files (relative to resources/web/):\n  - ${integrity.missing.join('\n  - ')}\n\n` +
+            'This usually means the package was built without running ' +
+            '`apps/desktop/scripts/sync-web.mjs`. Reinstall the app from a ' +
+            'fresh download, or rebuild from source per apps/desktop/BUILD.md.\n\n' +
+            `Logs: ${logFile}`,
+        )
+      } catch {
+        // Headless / no-display fallback — we've already FATAL-logged above.
+      }
+      app.quit()
+      return
+    }
+  }
+
   registerIpcHandlers()
   registerRecordingIpcHandlers()
   // Local-mode filesystem fast-path: lets the IDE renderer skip the HTTP
