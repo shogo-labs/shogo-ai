@@ -293,6 +293,124 @@ describe('walkFilesTree (gitignore awareness)', () => {
   })
 })
 
+describe('walkFilesTree (eagerDepth — lazy-past-depth UX cap)', () => {
+  // The 2026-05-25 HIGH-priority fix: walker descends eagerly only up to
+  // `eagerDepth`. Beyond that, directories are returned as lazy:true
+  // stubs and the IDE fetches them on demand. Keeps first paint cheap on
+  // big repos without changing the response contract — `node_modules`,
+  // `.gitignore`d dirs, and now anything past `eagerDepth` all flow
+  // through the same `lazy: true` branch the IDE already handles.
+
+  test('eagerDepth:1 returns root dir contents but marks its subdir contents lazy', async () => {
+    // Layout (depths measured from the dir passed to walkFilesTree):
+    //   /file-0.txt           ← root file (depth-0 of walkInner)
+    //   /deep/                ← root dir, walked → recurse to depth 1
+    //     /deep/file-1.txt    ← visible (file)
+    //     /deep/deeper/       ← at depth 1 → LAZY via eagerDepth=1
+    //       /deep/deeper/f    ← never walked
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-eager-1-'))
+    try {
+      mkdirSync(join(root, 'deep', 'deeper'), { recursive: true })
+      writeFileSync(join(root, 'file-0.txt'), 'a')
+      writeFileSync(join(root, 'deep', 'file-1.txt'), 'b')
+      writeFileSync(join(root, 'deep', 'deeper', 'file-2.txt'), 'c')
+
+      const tree = await walkFilesTree(root, root, { eagerDepth: 1 })
+      const names = tree.map((n) => n.name).sort()
+      expect(names).toEqual(['deep', 'file-0.txt'])
+      const deep = tree.find((n) => n.name === 'deep')
+      expect(deep?.lazy).toBeUndefined()
+      const deepChildren = (deep?.children ?? []).map((n) => n.name).sort()
+      expect(deepChildren).toEqual(['deeper', 'file-1.txt'])
+      const deeper = deep?.children?.find((n) => n.name === 'deeper')
+      expect(deeper?.lazy).toBe(true)
+      expect(deeper?.children).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('lazy-by-eagerDepth dirs can be expanded by re-invoking rooted at them', async () => {
+    // The IDE click-to-expand contract: renderer sends a second request
+    // rooted at the lazy dir → its own eagerDepth:1 walk → contents
+    // visible, sub-subdirs lazy again. Same code path the existing
+    // node_modules expansion uses.
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-expand-'))
+    try {
+      mkdirSync(join(root, 'a', 'b', 'c'), { recursive: true })
+      writeFileSync(join(root, 'a', 'b', 'leaf.txt'), 'ok')
+      writeFileSync(join(root, 'a', 'b', 'c', 'deep.txt'), 'ok')
+
+      const top = await walkFilesTree(root, root, { eagerDepth: 1 })
+      const a = top.find((n) => n.name === 'a')
+      const b = a?.children?.find((n) => n.name === 'b')
+      expect(b?.lazy).toBe(true)
+      expect(b?.children).toBeUndefined()
+
+      const expanded = await walkFilesTree(join(root, 'a', 'b'), root, {
+        eagerDepth: 1,
+      })
+      const names = expanded.map((n) => n.name).sort()
+      expect(names).toEqual(['c', 'leaf.txt'])
+      const c = expanded.find((n) => n.name === 'c')
+      expect(c?.lazy).toBeUndefined()
+      expect(c?.children?.map((n) => n.name)).toEqual(['deep.txt'])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('eagerDepth defaults to Infinity (greedy walk) when omitted', async () => {
+    // Regression check: existing callers that don't pass eagerDepth must
+    // see the pre-2026-05-25 deep-walk behavior. Only the two opt-in
+    // callsites (server.ts and fs-ipc.ts) get depth-1.
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-greedy-'))
+    try {
+      mkdirSync(join(root, 'a', 'b', 'c'), { recursive: true })
+      writeFileSync(join(root, 'a', 'b', 'c', 'leaf.txt'), 'ok')
+      const tree = await walkFilesTree(root, root)
+      const a = tree.find((n) => n.name === 'a')
+      const b = a?.children?.find((n) => n.name === 'b')
+      const c = b?.children?.find((n) => n.name === 'c')
+      const leaf = c?.children?.find((n) => n.name === 'leaf.txt')
+      expect(leaf?.type).toBe('file')
+      expect(a?.lazy).toBeUndefined()
+      expect(b?.lazy).toBeUndefined()
+      expect(c?.lazy).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('LAZY_DIRS + gitignore + eagerDepth OR together — any one is enough', async () => {
+    // Three independent lazy paths, one tree. Confirms the HIGH fix
+    // slots in alongside the CRITICAL ones rather than replacing — any
+    // single condition is sufficient to make a dir lazy.
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-or-'))
+    try {
+      writeFileSync(join(root, '.gitignore'), 'ignored/\n')
+      mkdirSync(join(root, 'node_modules'), { recursive: true })     // LAZY_DIRS
+      mkdirSync(join(root, 'ignored', 'subdir'), { recursive: true })// gitignored
+      mkdirSync(join(root, 'plain', 'depth1'), { recursive: true })  // eagerDepth
+      writeFileSync(join(root, 'node_modules', 'x.js'), 'x')
+      writeFileSync(join(root, 'ignored', 'y.js'), 'y')
+      writeFileSync(join(root, 'plain', 'z.js'), 'z')
+
+      const tree = await walkFilesTree(root, root, { eagerDepth: 1 })
+      const nm = tree.find((n) => n.name === 'node_modules')
+      const ign = tree.find((n) => n.name === 'ignored')
+      const plain = tree.find((n) => n.name === 'plain')
+      expect(nm?.lazy).toBe(true)         // via LAZY_DIRS
+      expect(ign?.lazy).toBe(true)        // via .gitignore
+      expect(plain?.lazy).toBeUndefined() // depth 0, walked
+      const depth1 = plain?.children?.find((n) => n.name === 'depth1')
+      expect(depth1?.lazy).toBe(true)     // via eagerDepth=1
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('walkFilesTree (defensive caps)', () => {
   // The caps exist to keep a runaway tree (symlink cycle, mis-mounted
   // FUSE, multi-million-file repo) from hanging the UI. They're

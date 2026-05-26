@@ -53,6 +53,12 @@ declare module '@shogo/agent-runtime/src/fs-tree-walker' {
     hiddenFiles?: ReadonlySet<string>;
     /** Parse root `.gitignore` / `.shogoignore`. Default: true. */
     respectGitignore?: boolean;
+    /**
+     * Maximum depth (from `dir`) walked eagerly. Directories deeper than
+     * this are returned as `lazy: true`. Default: Infinity (greedy).
+     * The HTTP + IPC handlers in this repo opt into `eagerDepth: 1`.
+     */
+    eagerDepth?: number;
     /** Hard cap on total entries returned. Default: 50 000. */
     maxEntries?: number;
     /** Hard cap on directory depth below rootDir. Default: 24. */
