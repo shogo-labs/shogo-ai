@@ -28,6 +28,10 @@
 
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
+import {
+  getLocalPortObserver,
+  type AttributedPort,
+} from '../lib/port-observer/local-port-observer'
 
 interface ExternalPreviewSettings {
   savedUrl?: string | null
@@ -129,6 +133,23 @@ async function fetchDetected(projectId: string): Promise<DetectedPayload | null>
   }
 }
 
+/**
+ * Ask the LocalPortObserver for HTTP listeners attributable to this
+ * project. Failures here must never blow up the route — the observer's
+ * job is to surface info opportunistically, not to be a hard dependency.
+ */
+async function fetchAttributedPorts(projectId: string): Promise<AttributedPort[]> {
+  try {
+    return await getLocalPortObserver().attributedPorts(projectId)
+  } catch (err) {
+    console.debug(
+      `[ExternalPreview] LocalPortObserver failed for ${projectId}:`,
+      (err as Error)?.message,
+    )
+    return []
+  }
+}
+
 export function externalPreviewRoutes() {
   const router = new Hono()
 
@@ -144,14 +165,37 @@ export function externalPreviewRoutes() {
     if (!project) return c.json({ error: 'project_not_found' }, 404)
 
     const savedUrl = readSavedUrl(project.settings)
-    const detected = await fetchDetected(projectId)
+
+    // Two independent sources feed `detectedUrl`:
+    //
+    //   1. The PTY-derived stream from agent-runtime. Only fires for
+    //      managed projects whose runtime is hot AND whose dev server
+    //      was launched inside the runtime's terminal.
+    //
+    //   2. The OS-level LocalPortObserver. Picks up any HTTP listener
+    //      whose owning process has its cwd inside one of the project's
+    //      linked folders — covers external-folder projects, servers
+    //      started in Cursor / iTerm, docker-compose, anything.
+    //
+    // We run both in parallel and prefer the observer when present,
+    // because it carries liveness (a port that disappeared from the
+    // scan is gone from the result), whereas the PTY buffer can hold
+    // stale URLs after a crashed server.
+    const [detected, attributedPorts] = await Promise.all([
+      fetchDetected(projectId),
+      fetchAttributedPorts(projectId),
+    ])
+
+    const observerUrl = attributedPorts[0]?.url ?? null
+    const ptyUrl = detected?.mostRecent?.url ?? null
 
     return c.json({
       projectId,
       workingMode: project.workingMode ?? 'managed',
       savedUrl,
-      detectedUrl: detected?.mostRecent?.url ?? null,
+      detectedUrl: observerUrl ?? ptyUrl,
       detections: detected?.detections ?? [],
+      attributedPorts,
     })
   })
 
