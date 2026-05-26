@@ -54,6 +54,7 @@ import {
   ChevronUp,
   Trash2,
   Pencil,
+  SendHorizontal,
   Bot,
   ClipboardList,
   MessageCircleQuestion,
@@ -204,6 +205,7 @@ export interface ChatInputProps {
   onRemoveQueuedMessage?: (messageId: string) => void
   onReorderQueuedMessage?: (messageId: string, direction: "up" | "down") => void
   onEditQueuedMessage?: (messageId: string) => void
+  onSendQueuedMessageNow?: (messageId: string) => void
   interactionMode?: InteractionMode
   onInteractionModeChange?: (mode: InteractionMode) => void
   dualPlan?: boolean
@@ -260,6 +262,7 @@ function ChatInputImpl({
   onRemoveQueuedMessage,
   onReorderQueuedMessage,
   onEditQueuedMessage,
+  onSendQueuedMessageNow,
   interactionMode: controlledInteractionMode,
   onInteractionModeChange,
   dualPlan = false,
@@ -819,7 +822,19 @@ function ChatInputImpl({
                   ? trimmedContent
                   : attachmentLabel || "Empty message"
                 const isHovered = hoveredQueuedId === msg.id
-                const showActions = Platform.OS !== "web" || isHovered
+                // On web we keep the action group mounted at all times
+                // and toggle visibility via opacity. Conditionally
+                // unmounting (the previous approach) caused the icons
+                // to disappear the instant the cursor crossed from the
+                // row body onto an inner Pressable: the parent row's
+                // `onHoverOut` mis-fires on that child-enter transition
+                // (RN Web's Pressable hover detection isn't strictly
+                // mouseenter/leave-equivalent across nested Pressables),
+                // which collapses the conditional, the cursor then
+                // hovers nothing-of-interest, and the row never reasserts
+                // hover. Always-rendered + opacity sidesteps that
+                // entirely. Native still always-visible, same as before.
+                const showActionsOnWeb = isHovered
                 return (
                   <Pressable
                     key={msg.id}
@@ -865,8 +880,14 @@ function ChatInputImpl({
                         </View>
                       )}
                     </View>
-                    {showActions && (
-                      <View className="flex-row items-center gap-0.5">
+                    <View
+                      className={cn(
+                        "flex-row items-center gap-0.5",
+                        Platform.OS === "web" &&
+                          !showActionsOnWeb &&
+                          "opacity-0 pointer-events-none",
+                      )}
+                    >
                       {onReorderQueuedMessage && queuedMessages.length > 1 && (
                         <>
                           {index > 0 && (
@@ -897,6 +918,18 @@ function ChatInputImpl({
                           )}
                         </>
                       )}
+                      {onSendQueuedMessageNow && (
+                        <Pressable
+                          accessibilityLabel="Send queued message now"
+                          onPress={() => onSendQueuedMessageNow(msg.id)}
+                          className="h-6 w-6 items-center justify-center"
+                        >
+                          <SendHorizontal
+                            className="h-3 w-3 text-muted-foreground"
+                            size={12}
+                          />
+                        </Pressable>
+                      )}
                       {onEditQueuedMessage && (
                         <Pressable
                           accessibilityLabel="Edit queued message"
@@ -921,8 +954,7 @@ function ChatInputImpl({
                           />
                         </Pressable>
                       )}
-                      </View>
-                    )}
+                    </View>
                   </Pressable>
                 )
               })}
