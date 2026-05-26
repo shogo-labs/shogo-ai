@@ -138,35 +138,60 @@ resource "cloudflare_worker_script" "subdomain_router" {
   # Worker runtime treats the content as a legacy service-worker script
   # and rejects the file with "Uncaught SyntaxError: Unexpected token
   # 'export'" at deploy time.
-  module  = true
+  module = true
+  # The OCI PAR `access_uri` returned by the provider ends in `/o/`
+  # (verified via OCI CLI on the live PAR; matches OCI docs). The
+  # original implementation built `originUrl = par_base_url + path`
+  # where `path` was `/${subdomain}/index.html`, producing
+  # `…/o//credits-usage-dashboard/index.html` — a literal double
+  # slash. OCI then parses the object name as everything after `/o/`,
+  # i.e. `/credits-usage-dashboard/index.html` (with leading slash),
+  # which does not match the actual stored key
+  # `credits-usage-dashboard/index.html`. Result: 100% of requests
+  # 404'd and the SPA fallback (also broken the same way) returned
+  # the OCI ObjectNotFound JSON wrapped in HTTP 200, masking the
+  # failure as a "successful but bogus" response. Fix here:
+  #   1. Trim trailing slashes from the PAR base before concatenating.
+  #   2. Always normalise the request path to start with exactly one `/`.
+  #   3. If the SPA fallback itself 404s, return the upstream status
+  #      instead of pretending it was 200, so debugging surfaces the
+  #      real problem next time.
   content = <<-JS
+    const ORIGIN_BASE = '${local.par_base_url}'.replace(/\/+$/, '');
+
+    function buildOriginUrl(subdomain, requestPath) {
+      // Ensure path starts with exactly one '/' (no leading-slash
+      // duplication, no missing slash if the URL is malformed).
+      const cleanPath =
+        requestPath === '' || requestPath === '/'
+          ? '/' + subdomain + '/index.html'
+          : '/' + subdomain + (requestPath.startsWith('/') ? '' : '/') + requestPath;
+      return ORIGIN_BASE + cleanPath;
+    }
+
     export default {
       async fetch(request) {
         const url = new URL(request.url);
-        const host = url.hostname;
-        const subdomain = host.split('.')[0];
+        const subdomain = url.hostname.split('.')[0];
 
-        // Rewrite path: /index.html → /subdomain/index.html
-        let path = url.pathname;
-        if (path === '/' || path === '') {
-          path = '/' + subdomain + '/index.html';
-        } else {
-          path = '/' + subdomain + path;
-        }
-
-        // Fetch from OCI Object Storage via pre-authenticated request
-        const originUrl = '${local.par_base_url}' + path;
-
+        const originUrl = buildOriginUrl(subdomain, url.pathname);
         const response = await fetch(originUrl, {
-          headers: {
-            'User-Agent': 'Cloudflare-Worker',
-          },
+          headers: { 'User-Agent': 'Cloudflare-Worker' },
         });
 
         if (response.status === 404 || response.status === 403) {
-          // SPA fallback: serve index.html for client-side routing
-          const fallbackUrl = '${local.par_base_url}/' + subdomain + '/index.html';
+          // SPA client-side routing fallback.
+          const fallbackUrl = buildOriginUrl(subdomain, '/');
           const fallback = await fetch(fallbackUrl);
+          // Surface fallback failures honestly (don't pretend 200
+          // when the index.html itself is missing — that's how the
+          // 2026-05-26 publish bug stayed undiagnosed for hours).
+          if (!fallback.ok) {
+            return new Response(fallback.body, {
+              status: fallback.status,
+              headers: fallback.headers,
+            });
+          }
           return new Response(fallback.body, {
             status: 200,
             headers: fallback.headers,
