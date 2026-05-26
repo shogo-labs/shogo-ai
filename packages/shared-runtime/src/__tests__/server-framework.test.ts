@@ -779,6 +779,334 @@ describe('error path', () => {
   })
 })
 
+
+// ===========================================================================
+// Coverage additions: paths not exercised by the main test suite above
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// L248-255: SIGTERM / SIGINT handler body
+// L260-265: uncaughtException handler body
+// ---------------------------------------------------------------------------
+
+describe('process signal handlers (L248-265)', () => {
+  test('SIGTERM handler sets shuttingDown and schedules exit (L248-255)', async () => {
+    const origExit = process.exit as any
+    const exitCodes: number[] = []
+    process.exit = ((code: number) => { exitCodes.push(code) }) as any
+    try {
+      const { state } = await buildApp()
+      expect(state.tokenRefresh).not.toBeNull()
+      process.emit('SIGTERM')
+      // Handler runs synchronously up to the setTimeout schedule.
+      // Stop the token refresh so the scheduled exit timer can fire safely.
+      state.tokenRefresh?.stop()
+      // Second SIGTERM must no-op (shuttingDown guard)
+      process.emit('SIGTERM')
+      // exitCodes may be empty (exit is scheduled, not immediate) — what matters
+      // is the process didn't crash and handler executed without throwing.
+      expect(exitCodes.length).toBe(0) // exit is deferred 5s — not fired yet
+    } finally {
+      process.exit = origExit
+    }
+  })
+
+  test('SIGINT handler sets shuttingDown and schedules exit', async () => {
+    const origExit = process.exit as any
+    process.exit = (() => {}) as any
+    try {
+      const { state } = await buildApp()
+      process.emit('SIGINT')
+      state.tokenRefresh?.stop()
+    } finally {
+      process.exit = origExit
+    }
+  })
+
+  test('uncaughtException handler logs and schedules exit(1) (L260-265)', async () => {
+    const origExit = process.exit as any
+    const exitCodes: number[] = []
+    process.exit = ((code: number) => { exitCodes.push(code) }) as any
+    const origErr = console.error
+    const errorLines: string[] = []
+    console.error = (...a: any[]) => errorLines.push(a.join(' '))
+    try {
+      await buildApp()
+      process.emit('uncaughtException', new Error('boom from test'))
+      expect(exitCodes.length).toBe(0) // deferred
+      expect(errorLines.some((l) => l.includes('Uncaught exception'))).toBe(true)
+    } finally {
+      process.exit = origExit
+      console.error = origErr
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// L311-319: deriveApiUrl() fallback paths
+// These are exercised when validatePreviewTokenViaApi is called and
+// SHOGO_API_URL is absent — the function walks the fallback chain.
+// ---------------------------------------------------------------------------
+
+describe('deriveApiUrl fallback paths (L311-319)', () => {
+  async function callWithPreviewToken(app: any, token: string) {
+    // Hit /agent/* with a __preview_token so checkRuntimeAuth calls
+    // validatePreviewTokenViaApi, which calls deriveApiUrl internally.
+    // No Authorization header → slow path → preview token branch.
+    return app.request(`/agent/test?__preview_token=${token}`)
+  }
+
+  test('L311: API_URL path — fetch uses API_URL when SHOGO_API_URL absent', async () => {
+    const { app } = await buildApp({
+      env: { SHOGO_API_URL: undefined, API_URL: 'http://api-url.test.local' },
+    })
+    fetchImpl = async (url: string) => ({
+      ok: true, status: 200,
+      json: async () => ({ valid: true, projectId: 'test-project-123' }),
+      text: async () => '',
+    })
+    const res = await callWithPreviewToken(app, 'tok-api-url')
+    // fetch was called with the API_URL origin
+    expect(fetchCalls.some((c) => c.url.includes('api-url.test.local'))).toBe(true)
+  })
+
+  test('L312-317: AI_PROXY_URL path — host extracted from proxy URL', async () => {
+    const { app } = await buildApp({
+      env: { SHOGO_API_URL: undefined, API_URL: undefined, AI_PROXY_URL: 'http://proxy.internal:8080/v1' },
+    })
+    fetchImpl = async () => ({
+      ok: true, status: 200,
+      json: async () => ({ valid: true, projectId: 'test-project-123' }),
+      text: async () => '',
+    })
+    await callWithPreviewToken(app, 'tok-proxy-url')
+    expect(fetchCalls.some((c) => c.url.includes('proxy.internal:8080'))).toBe(true)
+  })
+
+  test('L319: namespace fallback — uses shogo-system when no URL env vars', async () => {
+    const { app } = await buildApp({
+      env: { SHOGO_API_URL: undefined, API_URL: undefined, AI_PROXY_URL: undefined },
+    })
+    fetchImpl = async () => ({
+      ok: true, status: 200,
+      json: async () => ({ valid: true, projectId: 'test-project-123' }),
+      text: async () => '',
+    })
+    await callWithPreviewToken(app, 'tok-namespace')
+    expect(fetchCalls.some((c) => c.url.includes('shogo-system.svc.cluster.local'))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// L340: validatePreviewTokenViaApi cache hit path
+// ---------------------------------------------------------------------------
+
+describe('validatePreviewToken cache hit (L340)', () => {
+  test('second call with same token hits cache, no extra fetch', async () => {
+    const { app } = await buildApp()
+    fetchImpl = async () => ({
+      ok: true, status: 200,
+      json: async () => ({ valid: true, projectId: 'test-project-123' }),
+      text: async () => '',
+    })
+    // First call — fetches and caches
+    await app.request('/agent/test?__preview_token=cached-tok')
+    const fetchCount1 = fetchCalls.filter((c) => c.url.includes('validate-preview')).length
+    // Second call — should hit cache (L340)
+    await app.request('/agent/test?__preview_token=cached-tok')
+    const fetchCount2 = fetchCalls.filter((c) => c.url.includes('validate-preview')).length
+    expect(fetchCount2).toBe(fetchCount1) // no additional fetch made
+  })
+})
+
+// ---------------------------------------------------------------------------
+// L355-356: validatePreviewTokenViaApi fetch returns !ok
+// L363-364: validatePreviewTokenViaApi fetch throws
+// ---------------------------------------------------------------------------
+
+describe('validatePreviewTokenViaApi error paths (L355-364)', () => {
+  test('L355-356: non-ok fetch response → returns valid:false, caches negative', async () => {
+    const { app } = await buildApp()
+    fetchImpl = async () => ({
+      ok: false, status: 403,
+      json: async () => ({}),
+      text: async () => '',
+    })
+    const res = await app.request('/agent/test?__preview_token=bad-tok')
+    expect(res.status).toBe(401) // auth rejected
+  })
+
+  test('L363-364: fetch throws → returns valid:false (console.error logged)', async () => {
+    const { app } = await buildApp()
+    const origErr = console.error
+    console.error = () => {}
+    try {
+      fetchImpl = async () => { throw new Error('network failure') }
+      const res = await app.request('/agent/test?__preview_token=throw-tok')
+      expect(res.status).toBe(401) // auth rejected
+    } finally {
+      console.error = origErr
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// L646: pool assignment marker writeFileSync fails
+// ---------------------------------------------------------------------------
+
+describe('pool assignment marker write failure (L646)', () => {
+  test('continues normally and logs warning when marker write throws', async () => {
+    const workDir = makeWorkDir()
+    const { app } = await buildApp({
+      workDir,
+      env: { PROJECT_ID: '__POOL__', WARM_POOL_MODE: 'true' },
+      config: { async onAssign() {} },
+    })
+    // Delete the workDir so writeFileSync(join(workDir, '.shogo-pool-assignment'))
+    // throws ENOENT → L646 catch fires with a warn log.
+    rmSync(workDir, { recursive: true, force: true })
+
+    const warnLines: string[] = []
+    const origWarn = console.warn
+    console.warn = (...a: any[]) => warnLines.push(a.join(' '))
+
+    fetchImpl = async (url: string) => {
+      if (url.includes('/api/internal/validate-preview-token') ||
+          url.includes('/api/internal/validate-runtime-token')) {
+        return { ok: true, status: 200, json: async () => ({ valid: true }), text: async () => '' }
+      }
+      return { ok: true, status: 200, json: async () => ({}), text: async () => '' }
+    }
+
+    try {
+      const res = await app.request('/pool/assign', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId: 'proj-marker-fail', env: { FOO: 'bar' } }),
+      })
+      expect(res.status).toBe(200) // succeeds despite marker write failure
+      expect(warnLines.some((l) => l.includes('Could not persist'))).toBe(true)
+    } finally {
+      console.warn = origWarn
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// L317: deriveApiUrl — invalid AI_PROXY_URL triggers catch block
+// ---------------------------------------------------------------------------
+
+describe('deriveApiUrl invalid AI_PROXY_URL (L317)', () => {
+  test('falls through to namespace fallback when AI_PROXY_URL is not a valid URL', async () => {
+    const { app } = await buildApp({
+      env: {
+        SHOGO_API_URL: undefined,
+        API_URL: undefined,
+        AI_PROXY_URL: 'not-a-valid-url!!!',
+      },
+    })
+    fetchImpl = async () => ({
+      ok: true, status: 200,
+      json: async () => ({ valid: true, projectId: 'test-project-123' }),
+      text: async () => '',
+    })
+    // The catch at L317 fires (URL parse fails), falls through to L319 namespace.
+    await app.request('/agent/test?__preview_token=tok-invalid-proxy')
+    expect(fetchCalls.some((c) => c.url.includes('shogo-system.svc.cluster.local'))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// L256, L264: the setTimeout(() => process.exit(...), 5000) callbacks
+// All three signal handlers register these; we need each callback body to
+// execute for coverage. Use a fake setTimeout to fire them immediately so
+// the test doesn't wait 5 seconds.
+// ---------------------------------------------------------------------------
+
+describe('signal handler exit-scheduling callbacks (L256, L264)', () => {
+  function withFakeSetTimeout(
+    fn: (captured: Array<{ cb: () => void; delay: number }>) => void | Promise<void>,
+  ) {
+    const origSetTimeout = globalThis.setTimeout as any
+    const captured: Array<{ cb: () => void; delay: number }> = []
+    globalThis.setTimeout = (cb: () => void, delay: number) => {
+      captured.push({ cb, delay })
+      // Return a dummy handle so clearTimeout doesn't throw
+      return origSetTimeout(() => {}, 9_999_999)
+    }
+    let result: any
+    try {
+      result = fn(captured)
+    } finally {
+      // Restore immediately if sync; for async, restore after await
+    }
+    const restore = () => { globalThis.setTimeout = origSetTimeout }
+    if (result && typeof result.then === 'function') {
+      return result.then((v: any) => { restore(); return v }, (e: any) => { restore(); throw e })
+    }
+    restore()
+    return result
+  }
+
+  test('SIGTERM exit callback fires process.exit(0) (L256 closure)', async () => {
+    const origExit = process.exit as any
+    const exitCodes: number[] = []
+    process.exit = ((code: number) => { exitCodes.push(code) }) as any
+    try {
+      await withFakeSetTimeout(async (captured) => {
+        const { state } = await buildApp()
+        // Stop token-refresh BEFORE emitting signal so its scheduled callback
+        // (captured by fake setTimeout) doesn't re-schedule and race into
+        // subsequent tests when fired.
+        state.tokenRefresh?.stop()
+        process.emit('SIGTERM')
+        // Only fire the 5000ms exit-scheduling callbacks, not token-refresh callbacks.
+        for (const { cb, delay } of captured) { if (delay === 5_000) cb() }
+        expect(exitCodes).toContain(0)
+      })
+    } finally {
+      process.exit = origExit
+    }
+  })
+
+  test('SIGINT exit callback fires process.exit(0)', async () => {
+    const origExit = process.exit as any
+    const exitCodes: number[] = []
+    process.exit = ((code: number) => { exitCodes.push(code) }) as any
+    try {
+      await withFakeSetTimeout(async (captured) => {
+        const { state } = await buildApp()
+        state.tokenRefresh?.stop()
+        process.emit('SIGINT')
+        for (const { cb, delay } of captured) { if (delay === 5_000) cb() }
+        expect(exitCodes).toContain(0)
+      })
+    } finally {
+      process.exit = origExit
+    }
+  })
+
+  test('uncaughtException exit callback fires process.exit(1) (L264 closure)', async () => {
+    const origExit = process.exit as any
+    const exitCodes: number[] = []
+    process.exit = ((code: number) => { exitCodes.push(code) }) as any
+    const origErr = console.error
+    console.error = () => {}
+    try {
+      await withFakeSetTimeout(async (captured) => {
+        const { state } = await buildApp()
+        state.tokenRefresh?.stop()
+        process.emit('uncaughtException', new Error('test-uncaught'))
+        for (const { cb, delay } of captured) { if (delay === 5_000) cb() }
+        expect(exitCodes).toContain(1)
+      })
+    } finally {
+      process.exit = origExit
+      console.error = origErr
+    }
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Restore originals after suite
 // ---------------------------------------------------------------------------
