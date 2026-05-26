@@ -83,6 +83,36 @@ export const INSTANCE_KIND = {
   cli_worker: 'cli_worker',
 } as const
 
+export const AFFILIATE_STATUS = {
+  active: 'active',
+  suspended: 'suspended',
+  banned: 'banned',
+} as const
+
+export const COMMISSION_STATUS = {
+  pending: 'pending',
+  approved: 'approved',
+  paid: 'paid',
+  refunded: 'refunded',
+  clawed_back: 'clawed_back',
+  void: 'void',
+} as const
+
+export const PAYOUT_BATCH_STATUS = {
+  pending: 'pending',
+  sent: 'sent',
+  paid: 'paid',
+  failed: 'failed',
+} as const
+
+export const PAYOUT_STATUS = {
+  not_setup: 'not_setup',
+  pending_verification: 'pending_verification',
+  verified: 'verified',
+  requires_update: 'requires_update',
+  disabled: 'disabled',
+} as const
+
 export interface PrismaMockOptions {
   prisma: any
   /** Override any of the named exports below if a test needs custom values. */
@@ -93,6 +123,10 @@ export interface PrismaMockOptions {
   PricingModel?: typeof PRICING_MODEL | Record<string, string>
   InstanceStatus?: typeof INSTANCE_STATUS | Record<string, string>
   InstanceKind?: typeof INSTANCE_KIND | Record<string, string>
+  AffiliateStatus?: typeof AFFILIATE_STATUS | Record<string, string>
+  CommissionStatus?: typeof COMMISSION_STATUS | Record<string, string>
+  PayoutBatchStatus?: typeof PAYOUT_BATCH_STATUS | Record<string, string>
+  PayoutStatus?: typeof PAYOUT_STATUS | Record<string, string>
 }
 
 /**
@@ -110,5 +144,9 @@ export function withPrismaExports(opts: PrismaMockOptions) {
     PricingModel: opts.PricingModel ?? PRICING_MODEL,
     InstanceStatus: opts.InstanceStatus ?? INSTANCE_STATUS,
     InstanceKind: opts.InstanceKind ?? INSTANCE_KIND,
+    AffiliateStatus: opts.AffiliateStatus ?? AFFILIATE_STATUS,
+    CommissionStatus: opts.CommissionStatus ?? COMMISSION_STATUS,
+    PayoutBatchStatus: opts.PayoutBatchStatus ?? PAYOUT_BATCH_STATUS,
+    PayoutStatus: opts.PayoutStatus ?? PAYOUT_STATUS,
   }
 }

@@ -108,6 +108,104 @@ export async function createCustomAccount(
   return account.id;
 }
 
+/**
+ * Create a Stripe Custom Connect account for an Affiliate (MLM program).
+ *
+ * Affiliates and CreatorProfiles deliberately get separate Connect
+ * accounts: tax categorization and 1099 issuance differ between
+ * marketplace-sales recipients and referral commission recipients,
+ * so we keep them on separate Stripe accounts to keep reporting clean.
+ *
+ * Returns either the existing onboarding URL or the persisted account id.
+ * The route layer converts the bare id into a Stripe AccountLink URL.
+ */
+export async function createCustomAccountForAffiliate(
+  affiliateId: string,
+): Promise<string> {
+  const affiliate = await prisma.affiliate.findUnique({
+    where: { id: affiliateId },
+    include: { user: { select: { email: true } } },
+  });
+  if (!affiliate) throw new Error('Affiliate not found');
+  if (affiliate.stripeCustomAccountId) return affiliate.stripeCustomAccountId;
+
+  const email = (affiliate as any).user?.email ?? `affiliate+${affiliateId}@shogo.local`;
+
+  if (!isStripeConfigured()) {
+    const mockId = `acct_mock_aff_${affiliateId.slice(0, 12)}`;
+    await prisma.affiliate.update({
+      where: { id: affiliateId },
+      data: { stripeCustomAccountId: mockId },
+    });
+    return mockId;
+  }
+
+  const stripe = getStripe();
+  const account = await stripe.accounts.create({
+    type: 'custom',
+    country: 'US',
+    email,
+    capabilities: {
+      transfers: { requested: true },
+    },
+    settings: {
+      payouts: { schedule: { interval: 'manual' } },
+    },
+    metadata: { affiliateId, kind: 'affiliate' },
+  });
+
+  await prisma.affiliate.update({
+    where: { id: affiliateId },
+    data: { stripeCustomAccountId: account.id },
+  });
+
+  return account.id;
+}
+
+/** Affiliate equivalent of submitPayoutDetails — writes back to Affiliate. */
+export async function submitPayoutDetailsForAffiliate(
+  affiliateId: string,
+  details: PayoutDetails,
+): Promise<{ payoutStatus: PayoutStatus }> {
+  const affiliate = await prisma.affiliate.findUnique({ where: { id: affiliateId } });
+  if (!affiliate?.stripeCustomAccountId) {
+    throw new Error('Affiliate has no Stripe Connect account');
+  }
+  if (!isStripeConfigured()) {
+    await prisma.affiliate.update({
+      where: { id: affiliateId },
+      data: { payoutStatus: 'pending_verification' as any },
+    });
+    return { payoutStatus: 'pending_verification' as any };
+  }
+
+  const stripe = getStripe();
+  const individual: Stripe.AccountUpdateParams.Individual = {
+    first_name: details.firstName,
+    last_name: details.lastName,
+    email: details.email,
+    dob: { day: details.dob.day, month: details.dob.month, year: details.dob.year },
+    address: {
+      line1: details.address.line1,
+      city: details.address.city,
+      state: details.address.state,
+      postal_code: details.address.postal_code,
+      country: details.address.country,
+    },
+  };
+  if (details.ssnLast4) individual.ssn_last_4 = details.ssnLast4;
+
+  const params: Stripe.AccountUpdateParams = { individual };
+  if (details.bankAccountToken) params.external_account = details.bankAccountToken;
+
+  await stripe.accounts.update(affiliate.stripeCustomAccountId, params);
+  await prisma.affiliate.update({
+    where: { id: affiliateId },
+    data: { payoutStatus: 'pending_verification' as any },
+  });
+  return { payoutStatus: 'pending_verification' as any };
+}
+
 export async function submitPayoutDetails(
   creatorProfileId: string,
   details: PayoutDetails,
