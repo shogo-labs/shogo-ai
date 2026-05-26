@@ -3762,20 +3762,15 @@ export { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runti
 // next page load — no template re-seed, no per-project rebuild.
 // =============================================================================
 
-const CANVAS_BRIDGE_URL = '/agent/canvas/bridge.js'
-const CANVAS_BRIDGE_SCRIPT_TAG = `<script src="${CANVAS_BRIDGE_URL}" defer></script>`
-const CANVAS_BRIDGE_PATH = join(__dirname, '..', 'static', 'canvas-bridge.js')
-
-function loadCanvasBridgeSource(): string {
-  try {
-    return readFileSync(CANVAS_BRIDGE_PATH, 'utf-8')
-  } catch (err) {
-    console.warn(`[canvas-bridge] Failed to load ${CANVAS_BRIDGE_PATH}:`, (err as Error).message)
-    // Empty IIFE keeps the route honest (returns 200 with valid JS) even when
-    // the bridge file is missing — the canvas just won't show update toasts.
-    return '/* canvas-bridge.js missing */ (function () {})();\n'
-  }
-}
+// Loader helpers extracted to `./canvas-bridge.ts` so they're unit-testable
+// without booting the full server (config, AI proxy, etc.). See that module
+// for the full contract and the bug-history comment.
+import {
+  CANVAS_BRIDGE_PATH,
+  CANVAS_BRIDGE_SCRIPT_TAG,
+  CANVAS_BRIDGE_URL,
+  loadCanvasBridgeSource,
+} from './canvas-bridge'
 
 const CANVAS_BRIDGE_SOURCE = loadCanvasBridgeSource()
 
