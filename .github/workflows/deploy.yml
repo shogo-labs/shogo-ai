@@ -1402,6 +1402,36 @@ jobs:
           fi
           echo "✓ logical_replicator has SELECT on every public table on US"
 
+      # Install / re-affirm the `_prisma_migrations` REPLICA-trigger that
+      # discards replicated changes. Without it, a `_prisma_migrations` row
+      # from a peer region with `finished_at IS NULL` (because the apply
+      # worker is stuck mid-transaction) makes Prisma here bail with
+      # P3009, blocking every future deploy on this cluster — the
+      # 2026-05-26 incident pattern. Idempotent. See
+      # k8s/cnpg/logical-replication/skip-replicated-migrations.sql.
+      - name: Install _prisma_migrations REPLICA-trigger
+        run: |
+          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo \
+            < k8s/cnpg/logical-replication/skip-replicated-migrations.sql \
+            || { echo "::error::skip-replicated-migrations.sql failed on US"; exit 1; }
+
+      - name: Verify _prisma_migrations REPLICA-trigger
+        run: |
+          set -euo pipefail
+          STATE=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo -tAc "
+              SELECT tgenabled
+              FROM pg_trigger
+              WHERE tgrelid='_prisma_migrations'::regclass
+                AND tgname='skip_replicated_migrations_trg';
+            ")
+          if [ "$STATE" != "R" ]; then
+            echo "::error::skip_replicated_migrations_trg on US is in state '$STATE', expected 'R' (replica-only)"
+            exit 1
+          fi
+          echo "✓ skip_replicated_migrations_trg is REPLICA-mode on US"
+
       - name: Refresh logical replication subscriptions
         run: |
           for SUB in sub_from_eu sub_from_india; do
@@ -1603,6 +1633,15 @@ jobs:
 
       - name: Run Prisma migrations
         if: needs.detect-changes.outputs.api_changed == 'true'
+        # Failure here is fatal. Until 2026-05-26 this used
+        # `|| echo "::warning::..."` and EU/India migration P3009s
+        # silently passed the deploy while the api ksvcs crashlooped on
+        # stale revisions. The 2026-05-26 incident was caused by exactly
+        # this swallowed error: a replicated `_prisma_migrations` row from
+        # US poisoned EU/India's local Prisma state and `migrate deploy`
+        # bailed with P3009 — a fatal exit code that the workflow ignored.
+        # The publication-side fix is in `skip-replicated-migrations.sql`,
+        # but the deploy must also stop pretending failures are warnings.
         run: |
           DB_URL=$(kubectl get secret postgres-credentials -n ${{ env.NS_SYSTEM }} -o jsonpath='{.data.DATABASE_URL}' | base64 -d)
           kubectl run prisma-migrate-eu --rm -i --restart=Never \
@@ -1611,7 +1650,7 @@ jobs:
             --env="DATABASE_URL=${DB_URL}" \
             --env="SKIP_MIGRATIONS=false" \
             --command -- sh -c "cd /app && bunx prisma migrate deploy" \
-            --timeout=120s || echo "::warning::EU migration completed with warnings"
+            --timeout=120s
 
       - name: Verify configured node pool matches running nodes
         run: |
@@ -1684,6 +1723,30 @@ jobs:
             exit 1
           fi
           echo "✓ logical_replicator has SELECT on every public table on EU"
+
+      # See deploy-us for full rationale (2026-05-26 incident).
+      - name: Install _prisma_migrations REPLICA-trigger
+        run: |
+          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo \
+            < k8s/cnpg/logical-replication/skip-replicated-migrations.sql \
+            || { echo "::error::skip-replicated-migrations.sql failed on EU"; exit 1; }
+
+      - name: Verify _prisma_migrations REPLICA-trigger
+        run: |
+          set -euo pipefail
+          STATE=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo -tAc "
+              SELECT tgenabled
+              FROM pg_trigger
+              WHERE tgrelid='_prisma_migrations'::regclass
+                AND tgname='skip_replicated_migrations_trg';
+            ")
+          if [ "$STATE" != "R" ]; then
+            echo "::error::skip_replicated_migrations_trg on EU is in state '$STATE', expected 'R'"
+            exit 1
+          fi
+          echo "✓ skip_replicated_migrations_trg is REPLICA-mode on EU"
 
       - name: Refresh logical replication subscriptions
         run: |
@@ -2011,6 +2074,7 @@ jobs:
       - name: Run Prisma migrations
         if: needs.detect-changes.outputs.api_changed == 'true'
         run: |
+          # Failure here is fatal — see the matching note in deploy-eu.
           DB_URL=$(kubectl get secret postgres-credentials -n ${{ env.NS_SYSTEM }} -o jsonpath='{.data.DATABASE_URL}' | base64 -d)
           kubectl run prisma-migrate-india --rm -i --restart=Never \
             --namespace=${{ env.NS_SYSTEM }} \
@@ -2018,7 +2082,7 @@ jobs:
             --env="DATABASE_URL=${DB_URL}" \
             --env="SKIP_MIGRATIONS=false" \
             --command -- sh -c "cd /app && bunx prisma migrate deploy" \
-            --timeout=120s || echo "::warning::India migration completed with warnings"
+            --timeout=120s
 
       - name: Verify configured node pool matches running nodes
         run: |
@@ -2088,6 +2152,30 @@ jobs:
             exit 1
           fi
           echo "✓ logical_replicator has SELECT on every public table on India"
+
+      # See deploy-us for full rationale (2026-05-26 incident).
+      - name: Install _prisma_migrations REPLICA-trigger
+        run: |
+          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo \
+            < k8s/cnpg/logical-replication/skip-replicated-migrations.sql \
+            || { echo "::error::skip-replicated-migrations.sql failed on India"; exit 1; }
+
+      - name: Verify _prisma_migrations REPLICA-trigger
+        run: |
+          set -euo pipefail
+          STATE=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo -tAc "
+              SELECT tgenabled
+              FROM pg_trigger
+              WHERE tgrelid='_prisma_migrations'::regclass
+                AND tgname='skip_replicated_migrations_trg';
+            ")
+          if [ "$STATE" != "R" ]; then
+            echo "::error::skip_replicated_migrations_trg on India is in state '$STATE', expected 'R'"
+            exit 1
+          fi
+          echo "✓ skip_replicated_migrations_trg is REPLICA-mode on India"
 
       - name: Refresh logical replication subscriptions
         run: |

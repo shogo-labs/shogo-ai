@@ -183,16 +183,59 @@ kubectl --context oke-india apply -f k8s/cnpg/production-india/sub-from-us.yaml
 kubectl --context oke-india apply -f k8s/cnpg/production-india/sub-from-eu.yaml
 ```
 
-### Step 9: Enable PG 18 Conflict Resolution
+### Step 9: Conflict handling
 
-After subscriptions are created and initial sync completes, enable `INSERT_EXISTS_ACTION`:
+PostgreSQL 18.3 mainline does **not** ship automatic per-row conflict
+resolution for logical replication on the subscriber side. The
+`INSERT_EXISTS_ACTION = last_update_wins` parameter that prior versions
+of this runbook recommended does not exist (`ALTER SUBSCRIPTION ... SET
+(insert_exists_action = ...)` returns `unrecognized subscription
+parameter`). When a `conflict=insert_exists`, `update_origin_differs`,
+or `update_exists` row arrives, the apply worker logs `ERROR` and
+exits — Postgres restarts it ~3s later, it hits the same row, exits,
+repeat. This crash-loop pins the slot and stalls every later
+transaction in the WAL behind it (incident 2026-05-26 saw 3 GB of
+backlog accumulate this way over 15 hours). The choices are:
+
+1. **Resolve the underlying duplicate** (preferred when feasible —
+   delete the older/wrong row on the subscriber so the apply succeeds),
+   or
+2. **Skip the offending transaction** with the LSN reported in the
+   error message:
+
+   ```sql
+   -- LSN comes from the "finished at <X/Y>" suffix in the apply
+   -- worker's ERROR log line.
+   ALTER SUBSCRIPTION <sub> SKIP (lsn = '<X/Y>');
+   ```
+
+   Each `SKIP` advances the apply worker past exactly one transaction
+   and discards every change in it. For tables like `storage_usage`
+   where both regions independently write the same workspace ID, this
+   is the documented unblock path.
+
+A fast skip-loop using the most recent LSN from `pg_log` is in the
+2026-05-26 incident notes; do not extract it into a tool until the
+underlying `storage_usage`-style multi-master conflicts are addressed
+at the application layer (mark those tables region-local so they don't
+ride logical replication at all).
+
+`disable_on_error = true` flips the apply worker from "crash-restart
+loop" to "stop on first error and stay disabled until an operator
+runs `ALTER SUBSCRIPTION ... ENABLE`". This is the correct default for
+production: a stopped subscription is loud (the
+`replication-monitor` CronJob alerts on it), a crash-looping one is
+silent. Apply once per subscription:
 
 ```bash
-for ctx in oke-us oke-eu oke-india; do
+for ctx in oke-production-us oke-production-eu oke-production-india; do
+  PRIMARY=$(kubectl --context "$ctx" get pods -n shogo-production-system \
+    -l "cnpg.io/cluster=platform-pg,cnpg.io/instanceRole=primary" \
+    -o jsonpath='{.items[0].metadata.name}')
   for sub in sub_from_us sub_from_eu sub_from_india; do
-    kubectl --context $ctx exec -n shogo-production-system platform-pg-1 -c postgres -- psql -U postgres -d shogo -c "
-      ALTER SUBSCRIPTION $sub SET (INSERT_EXISTS_ACTION = last_update_wins);
-    " 2>/dev/null || true
+    kubectl --context "$ctx" exec -n shogo-production-system "$PRIMARY" \
+      -c postgres -- psql -U postgres -d shogo -c \
+      "ALTER SUBSCRIPTION $sub SET (disable_on_error = true);" 2>/dev/null || true
   done
 done
 ```
@@ -326,11 +369,41 @@ What still has to happen:
 1. `prisma migrate deploy` runs in every region (handled automatically by
    the deploy workflow — US via the API pod entrypoint, EU/India via
    `kubectl run prisma-migrate-*` jobs in `.github/workflows/deploy.yml`).
+   These migrations must succeed in **every** region before any region's API
+   ksvc rolls forward; the deploy workflow now treats EU/India migration
+   failure as a hard error (was a silent `::warning::` until incident
+   2026-05-26).
 2. Each subscriber must `ALTER SUBSCRIPTION <name> REFRESH PUBLICATION`
    once after the publisher has applied the migration, so the new table is
    added to its subscription's table set. The deploy workflow does this
    automatically at the end of each region's deploy job
    (`Refresh logical replication subscriptions`).
+
+### Why migrations cannot be skipped on subscribers
+
+Replicating `_prisma_migrations` would let one region's migration row leak
+to a peer that hasn't applied the DDL locally yet. Two failure modes
+follow:
+
+1. The publisher's seed-DML for the new table (e.g.
+   `INSERT INTO affiliate_commission_tiers VALUES ...`) reaches the
+   subscriber, finds the table missing locally, and crash-loops the apply
+   worker — pinning the slot and stalling every other write in WAL behind
+   it.
+2. Even without seed-DML, the subscriber's own `prisma migrate deploy`
+   sees a `_prisma_migrations` row with `finished_at` filled in (replicated
+   from the publisher's UPDATE) and **skips applying the DDL locally**.
+   The subscriber is then silently a schema behind, with a "successful"
+   tracking row covering it up.
+
+The fix in `k8s/cnpg/logical-replication/skip-replicated-migrations.sql`
+installs a `BEFORE INSERT/UPDATE/DELETE` trigger on `_prisma_migrations`
+in `ENABLE REPLICA TRIGGER` mode. It returns NULL — discarding any change
+that arrives via the apply worker — while leaving local
+`prisma migrate deploy` writes untouched. Each region's
+`_prisma_migrations` then reflects only that region's own migration
+history, which is what Prisma assumes. Applied on every deploy alongside
+`grants.sql`.
 
 If a region's deploy fails between migration and refresh, or two regions'
 parallel deploys race so a refresh runs before the peer's migration, the
