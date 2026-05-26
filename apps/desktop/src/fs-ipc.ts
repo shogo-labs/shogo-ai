@@ -172,9 +172,28 @@ export function registerFsIpcHandlers(): void {
     },
   )
 
+  // Per-sender supersede tracking for `fs:listTree`. When the renderer
+  // sends a second `listTree` while the first is still walking, we abort
+  // the first walk so we don't waste fs handles + event-loop budget on
+  // a result the renderer will discard. Common triggers:
+  //
+  //   - User clicks a chevron during a slow cold open (re-invokes with
+  //     a `subPath` while the root walk is still going).
+  //   - User picks a different workspace while the previous one is
+  //     mid-walk (resolveWorkspace → listTree on the new root).
+  //   - DevTools reload — renderer re-mounts and re-issues the initial
+  //     `listTree(undefined)` while the old request is still pending.
+  //
+  // Keyed by `sender.id` (the WebContents id) so multiple windows can
+  // walk in parallel; only walks from the *same* window supersede each
+  // other. The walker's existing `AbortSignal` support (CRITICAL #1) is
+  // what makes this near-free — the walker bails on its next `withinBudget`
+  // check, no extra teardown logic needed.
+  const inflightListTree = new Map<number, AbortController>()
+
   ipcMain.handle(
     'fs:listTree',
-    async (_event, root: string, subPath?: string): Promise<ListTreeResult> => {
+    async (event, root: string, subPath?: string): Promise<ListTreeResult> => {
       const resolvedRoot = resolveManagedWorkspaceRoot(root)
       if (!resolvedRoot) {
         return { ok: false, error: 'Workspace root is not under the managed workspaces directory' }
@@ -189,6 +208,17 @@ export function registerFsIpcHandlers(): void {
         return { ok: false, error: (err as Error).message }
       }
       if (!stat.isDirectory()) return { ok: false, error: 'Path is not a directory' }
+
+      // Supersede any in-flight walk from this same sender. The aborted
+      // walk's handler will return `{ ok: false, error: 'AbortError' }`
+      // — the renderer's `desktopFs` client treats supersede-aborts the
+      // same as a network cancel and quietly discards.
+      const senderId = event.sender.id
+      const prior = inflightListTree.get(senderId)
+      if (prior) prior.abort()
+      const controller = new AbortController()
+      inflightListTree.set(senderId, controller)
+
       try {
         // Async walker — keeps the Electron main process responsive while
         // we recurse, and honors the workspace's `.gitignore` so big
@@ -202,10 +232,17 @@ export function registerFsIpcHandlers(): void {
         // the same depth-1 limit, so drilling is uniformly fast.
         const tree = await walkFilesTree(startDir, resolvedRoot, {
           eagerDepth: 1,
+          signal: controller.signal,
         })
         return { ok: true, tree }
       } catch (err) {
         return { ok: false, error: (err as Error).message }
+      } finally {
+        // Only clear if WE are still the registered controller — a
+        // later supersede may have replaced us before we returned.
+        if (inflightListTree.get(senderId) === controller) {
+          inflightListTree.delete(senderId)
+        }
       }
     },
   )
