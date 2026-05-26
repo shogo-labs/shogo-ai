@@ -186,6 +186,15 @@ resource "null_resource" "knative_config" {
     scale_to_zero_grace_period = var.scale_to_zero_grace_period
     enable_pvc_support         = var.enable_pvc_support
     drain_timeout              = "30s"
+    # Bump this whenever the inline kubectl patches below change. The
+    # other triggers are typed inputs that don't move with patch-string
+    # edits, which is why earlier additions to the config-features patch
+    # (pvc / pv-write etc.) silently failed to re-apply on already-
+    # provisioned clusters and left production drifting. Form is
+    # `<YYYY-MM-DD>-<short-reason>`; only the value matters, not the
+    # shape. See the post-2026-05-26 incident note in
+    # docs/runbooks/deploy-prod.md for context.
+    feature_flags_revision = "2026-05-26-init-containers"
   }
 
   provisioner "local-exec" {
@@ -207,11 +216,17 @@ resource "null_resource" "knative_config" {
 
       # Enable PVC support and scheduling feature flags
       # See: https://knative.dev/docs/serving/configuration/feature-flags/
+      #
+      # `kubernetes.podspec-init-containers` is required by the publish
+      # flow's nginx + S3-sync pod (apps/api/src/lib/knative-project-
+      # manager.ts createPublishedService). Without it, every Studio
+      # Publish 400s at admission with `pod spec support for init-
+      # containers is off, but found 1 init containers`.
       %{if var.enable_pvc_support}
       kubectl patch configmap/config-features \
         --namespace knative-serving \
         --type merge \
-        --patch '{"data":{"kubernetes.podspec-persistent-volume-claim":"enabled","kubernetes.podspec-persistent-volume-write":"enabled","kubernetes.podspec-securitycontext":"enabled","kubernetes.podspec-affinity":"enabled","kubernetes.podspec-fieldref":"enabled"}}'
+        --patch '{"data":{"kubernetes.podspec-persistent-volume-claim":"enabled","kubernetes.podspec-persistent-volume-write":"enabled","kubernetes.podspec-securitycontext":"enabled","kubernetes.podspec-affinity":"enabled","kubernetes.podspec-fieldref":"enabled","kubernetes.podspec-init-containers":"enabled"}}'
       %{endif}
 
       # Enable HTTPS on Kourier (port 8443) using the kourier-tls secret.
