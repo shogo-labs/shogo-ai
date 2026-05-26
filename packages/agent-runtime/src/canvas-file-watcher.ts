@@ -27,8 +27,8 @@
  */
 
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
-import { statSync } from 'node:fs'
-import { relative, resolve as resolvePath } from 'node:path'
+import { statSync, promises as fsp } from 'node:fs'
+import { relative, resolve as resolvePath, join as joinPath } from 'node:path'
 
 // Files whose changes should trigger a rebuild. Covers both Vite layouts
 // (src/, vite.config.ts, postcss.config.js) and Metro/Expo layouts
@@ -123,7 +123,20 @@ function shouldIgnore(relativePath: string): boolean {
  * `.git`, `dist*`, `.next`, `.turbo`, `.cache`) so nested instances
  * (e.g. `templates/foo/node_modules/`) are excluded too.
  */
-function buildIgnoreGlobs(workspaceDir: string): string[] {
+function buildIgnoreGlobs(
+  workspaceDir: string,
+  /**
+   * Extra directory basenames pulled out of the workspace's `.gitignore` /
+   * `.shogoignore` at watcher startup (see `loadSimpleIgnoredDirsFromGitignore`).
+   * Treated the same as a `NESTED_PREFIXES` entry — emitted at both the
+   * workspace-root anchor AND as a `**\/<name>/` wildcard — because the
+   * typical user .gitignore entries (`target/`, `vendor/`, `Pods/`,
+   * `bazel-out/`, `__pycache__/`, `.venv/`, `coverage/`, `.idea/`,
+   * `.vscode/`) can legitimately appear at any depth in a polyglot
+   * monorepo.
+   */
+  gitignoredDirs: readonly string[] = [],
+): string[] {
   const NESTED_PREFIXES = new Set([
     'node_modules',
     '.git',
@@ -145,7 +158,97 @@ function buildIgnoreGlobs(workspaceDir: string): string[] {
       globs.push(`**/${p}/**`)
     }
   }
+  // Same glob shape as the NESTED_PREFIXES path so chokidar can
+  // short-circuit recursion (predicate-form `ignored` does NOT short-
+  // circuit — see the JSDoc on this function). De-dupe against the
+  // hard-coded list so a user `.gitignore` line for `node_modules` is a
+  // no-op rather than emitting two identical globs.
+  const alreadyCovered = new Set(IGNORED_PATH_PREFIXES)
+  for (const name of gitignoredDirs) {
+    if (alreadyCovered.has(name)) continue
+    globs.push(`${workspaceDir}/${name}`)
+    globs.push(`${workspaceDir}/${name}/**`)
+    globs.push(`**/${name}`)
+    globs.push(`**/${name}/**`)
+  }
   return globs
+}
+
+/**
+ * Sister to `fs-tree-walker.ts:loadIgnoreMatcher` — that one returns a
+ * full `ignore` matcher (predicate-based), which is the right shape for
+ * the recursive walker but the WRONG shape for chokidar (predicate-form
+ * `ignored` doesn't short-circuit traversal — see `buildIgnoreGlobs`).
+ *
+ * Here we want a list of directory *basenames* we can convert to chokidar
+ * globs that DO short-circuit. So we parse `.gitignore` / `.shogoignore`
+ * by hand and keep only the patterns that are unambiguous bare-directory
+ * matches. The 90% case the user actually cares about — `target/`,
+ * `vendor/`, `Pods/`, `bazel-out/`, `coverage/`, `__pycache__/`, `.venv/`,
+ * `.idea/`, `.vscode/`, etc. — all parse cleanly under these rules:
+ *
+ *   - skip empty + comment lines
+ *   - skip negations (`!foo`) — keeping them un-ignored is the whole
+ *     point of the negation; we'd rather over-watch than mis-suppress
+ *   - skip patterns containing `*`, `?`, or `[` — chokidar can match
+ *     these via globs but the conversion isn't trivial (especially
+ *     `**` semantics differ between gitignore and micromatch). File-
+ *     level wildcards aren't watch-quota problems anyway.
+ *   - skip path-anchored patterns (`/foo`, `foo/bar`) — they're rare in
+ *     project root .gitignore files and converting them to globs that
+ *     short-circuit cleanly requires duplicating gitignore's anchoring
+ *     rules; not worth the complexity for the marginal coverage.
+ *
+ * Everything else (with optional trailing `/`) is treated as a bare
+ * directory name and fed into `buildIgnoreGlobs`. The walker's full
+ * `ignore`-lib matcher in `fs-tree-walker.ts` still handles the complex
+ * patterns at request time, so the IDE tree stays accurate; this is
+ * purely about not setting up inotify watches we'll never need.
+ *
+ * Read errors swallow silently (file absent / unreadable) — symmetric
+ * with `loadIgnoreMatcher`'s behavior.
+ */
+async function loadSimpleIgnoredDirsFromGitignore(
+  workspaceDir: string,
+): Promise<string[]> {
+  const files = ['.gitignore', '.shogoignore']
+  const dirs = new Set<string>()
+  for (const file of files) {
+    let content: string
+    try {
+      content = await fsp.readFile(joinPath(workspaceDir, file), 'utf8')
+    } catch {
+      continue
+    }
+    for (const rawLine of content.split('\n')) {
+      const line = rawLine.trim()
+      if (!line || line.startsWith('#')) continue
+      if (line.startsWith('!')) continue
+      if (line.includes('*') || line.includes('?') || line.includes('[')) continue
+      const trimmed = line.endsWith('/') ? line.slice(0, -1) : line
+      if (!trimmed) continue
+      // Path-anchored (root-anchored `/foo` or nested `foo/bar`): skip.
+      // A pattern with a slash anywhere other than as a trailing dir
+      // marker is path-shape, not a bare name.
+      if (trimmed.includes('/')) continue
+      dirs.add(trimmed)
+    }
+  }
+  return [...dirs]
+}
+
+/**
+ * Internal helpers — exported only so the test suite can exercise the
+ * `.gitignore` → chokidar-glob pipeline without standing up a real
+ * chokidar instance + a real workspace + a synthetic fs-event stream
+ * (chokidar's own readiness window makes that approach flaky on CI).
+ *
+ * @internal — not part of the package's public API. Do not import from
+ *             outside `packages/agent-runtime/src/__tests__/`.
+ */
+export const __testInternals = {
+  buildIgnoreGlobs,
+  loadSimpleIgnoredDirsFromGitignore,
 }
 
 export type CanvasEvent =
@@ -188,16 +291,36 @@ export class CanvasFileWatcher {
 
   constructor(workspaceDir: string) {
     this.workspaceDir = resolvePath(workspaceDir)
-    this.startChokidar()
+    // Fire-and-forget: the watcher boots on the next tick after we've
+    // loaded `.gitignore` / `.shogoignore`. The startup gap (≤ ~5 ms on
+    // a typical workspace, dominated by the two `fsp.readFile` calls) is
+    // shorter than chokidar's own internal `ready` window, so callers
+    // adding subscribers immediately after construction don't miss
+    // anything they wouldn't already have missed.
+    void this.startChokidar()
   }
 
   /**
    * Start a chokidar watcher on the workspace root. Best-effort: if chokidar
    * fails to start (unusual, usually permission issues), we silently fall
    * back to the explicit gateway-tools path and log to stderr.
+   *
+   * Async because we read the workspace's `.gitignore` + `.shogoignore`
+   * up front and feed the user-declared ignored-dir basenames into the
+   * chokidar `ignored` globs — same recursion-short-circuiting trick as
+   * the hard-coded `IGNORED_PATH_PREFIXES` list, just sourced from the
+   * project instead of the watcher. This is the runtime/preview-watcher
+   * complement to the .gitignore awareness we already added to the
+   * `walkFilesTree` walker (commit 3de4aac9 on
+   * feat/open-folder-functionality-enhancement). Without it, a Rust
+   * workspace's `target/`, an iOS project's `Pods/`, a Python venv's
+   * `.venv/` — anything the user .gitignored but the watcher didn't
+   * know about — would keep accumulating inotify watches and
+   * re-triggering rebuilds on every build artefact.
    */
-  private startChokidar(): void {
+  private async startChokidar(): Promise<void> {
     try {
+      const gitignoredDirs = await loadSimpleIgnoredDirsFromGitignore(this.workspaceDir)
       // Glob form (NOT predicate form) — see `buildIgnoreGlobs` for why
       // this matters for inotify quota. The per-event `shouldIgnore`
       // call in `handleChokidarFileEvent` below is kept as a defensive
@@ -213,7 +336,7 @@ export class CanvasFileWatcher {
           stabilityThreshold: 60,
           pollInterval: 20,
         },
-        ignored: buildIgnoreGlobs(this.workspaceDir),
+        ignored: buildIgnoreGlobs(this.workspaceDir, gitignoredDirs),
       })
 
       this.chokidar.on('add', (absPath) => this.handleChokidarFileEvent('add', absPath))
