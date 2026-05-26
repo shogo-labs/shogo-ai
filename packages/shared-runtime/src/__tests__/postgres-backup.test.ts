@@ -150,6 +150,30 @@ mock.module('child_process', () => ({
 }))
 
 // ---------------------------------------------------------------------------
+// fs/promises partial mock: lets tests force unlink() to throw so the
+// .catch(() => {}) swallow-callbacks in postgres-backup.ts are entered.
+// Uses require('node:fs/promises') inside the factory to avoid a circular
+// import that would hang the test process.
+// ---------------------------------------------------------------------------
+
+let _unlinkShouldThrow = false
+
+mock.module('fs/promises', () => {
+  // require('node:fs/promises') bypasses this mock (different specifier).
+  const real: typeof import('fs/promises') = require('node:fs/promises')
+  return {
+    writeFile: (p: string, ...a: any[]) => real.writeFile(p, ...a),
+    readFile:  (p: string, ...a: any[]) => real.readFile(p, ...a),
+    mkdir:     (p: string, ...a: any[]) => real.mkdir(p, ...a),
+    stat:      (p: string, ...a: any[]) => real.stat(p, ...a),
+    unlink: (p: string) => _unlinkShouldThrow
+      ? Promise.reject(Object.assign(new Error(`ENOENT: no such file or directory, unlink '${p}'`), { code: 'ENOENT' }))
+      : real.unlink(p),
+    existsSync: (p: string) => require('fs').existsSync(p),
+  }
+})
+
+// ---------------------------------------------------------------------------
 // Module imports happen after the mocks above are installed.
 // ---------------------------------------------------------------------------
 
@@ -690,5 +714,149 @@ describe('initializePostgresBackup', () => {
     if (intListeners.length > 0) {
       process.off('SIGINT', intListeners[intListeners.length - 1] as any)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Coverage additions: inline callbacks previously uncovered
+//   L272  startPeriodicBackup() — the setInterval async callback body
+//   L396  initializePostgresBackup() — the shutdownHandler async body
+// ---------------------------------------------------------------------------
+
+describe('setInterval callback in startPeriodicBackup fires (L272)', () => {
+  test('timer callback executes createBackup at least once', async () => {
+    execHandler = (cmd) => {
+      if (cmd.startsWith('pg_isready')) return ''
+      if (cmd.startsWith('pg_dump')) {
+        // Write a non-empty dump file so createBackup proceeds to S3 upload.
+        const { writeFileSync } = require('fs')
+        writeFileSync('/tmp/pg_backup_proj-A.sql.gz', Buffer.from('pgdata'))
+        return ''
+      }
+      return ''
+    }
+
+    const b = mkBackup({ backupInterval: 80 }) // 80ms — fires well within 400ms wait
+    b.startPeriodicBackup()
+    try {
+      await new Promise((r) => setTimeout(r, 400))
+      // At least one pg_isready call confirms the callback ran.
+      expect(execCalls.some((c) => c.cmd.startsWith('pg_isready'))).toBe(true)
+    } finally {
+      b.stopPeriodicBackup()
+    }
+  })
+})
+
+describe('shutdownHandler in initializePostgresBackup fires (L396)', () => {
+  test('SIGTERM invokes backup.shutdown() via registered handler', async () => {
+    process.env.S3_WORKSPACES_BUCKET = 'bucket'
+    process.env.PROJECT_ID = 'proj-sigterm'
+    process.env.POSTGRES_BACKUP_INTERVAL = '0'
+
+    execHandler = (cmd) => {
+      if (cmd.startsWith('pg_isready')) return ''
+      // pg_isready inside createBackup during shutdown — let it succeed so
+      // shutdown() runs fully and the isShuttingDown flag is set.
+      if (cmd.startsWith('pg_dump')) {
+        const { writeFileSync } = require('fs')
+        writeFileSync('/tmp/pg_backup_proj-sigterm.sql.gz', Buffer.from('x'))
+        return ''
+      }
+      return ''
+    }
+
+    const beforeTerm = process.listenerCount('SIGTERM')
+    const beforeInt  = process.listenerCount('SIGINT')
+
+    const result = await initializePostgresBackup()
+    expect(result).toBeInstanceOf(PostgresBackup)
+
+    // Emit SIGTERM — Bun/Node calls listeners synchronously, does NOT kill
+    // the process when listeners are registered.
+    process.emit('SIGTERM')
+    // Give the async shutdown handler a tick to run.
+    await new Promise((r) => setTimeout(r, 80))
+
+    // createBackup was called by shutdown() — pg_isready ran.
+    expect(execCalls.some((c) => c.cmd.startsWith('pg_isready'))).toBe(true)
+
+    // Clean up signal handlers so they don't leak.
+    while (process.listenerCount('SIGTERM') > beforeTerm) {
+      const ls = process.listeners('SIGTERM') as any[]
+      process.off('SIGTERM', ls[ls.length - 1])
+    }
+    while (process.listenerCount('SIGINT') > beforeInt) {
+      const ls = process.listeners('SIGINT') as any[]
+      process.off('SIGINT', ls[ls.length - 1])
+    }
+  })
+})
+
+
+// ---------------------------------------------------------------------------
+// Coverage: .catch(() => {}) swallow-callbacks (L184, L233, L250, L256)
+// Each fires only when fs.unlink throws. We use the mock.module above to
+// toggle that behaviour per test.
+// ---------------------------------------------------------------------------
+
+describe('.catch(() => {}) swallow-callback coverage', () => {
+  afterEach(() => { _unlinkShouldThrow = false })
+
+  test('L184 restoreFromDump cleanup — unlink throws, swallow fires', async () => {
+    // Pass a non-existent path: execSync stubs succeed, then the post-restore
+    // unlink fires on a missing file. With _unlinkShouldThrow the mock throws.
+    const b = mkBackup()
+    execHandler = () => ''
+    _unlinkShouldThrow = true
+    await b.restoreFromDump('/never-written-L184.sql.gz') // must NOT throw
+  })
+
+  test('L233 createBackup empty-dump cleanup — unlink throws, swallow fires', async () => {
+    // pg_dump writes an empty file → stat.size === 0 → empty-dump branch →
+    // unlink at L233. With mock throwing, catch(() => {}) fires.
+    const b = mkBackup()
+    execHandler = (cmd) => {
+      if (cmd.startsWith('pg_isready')) return ''
+      if (cmd.startsWith('pg_dump')) {
+        const { writeFileSync } = require('fs')
+        writeFileSync('/tmp/pg_backup_proj-A.sql.gz', Buffer.alloc(0))
+        return ''
+      }
+      return ''
+    }
+    _unlinkShouldThrow = true
+    await b.createBackup() // must NOT throw
+  })
+
+  test('L250 createBackup success cleanup — unlink throws, swallow fires', async () => {
+    // Full happy path: pg_dump writes data, S3 upload succeeds, then unlink
+    // at L250 throws → catch(() => {}) fires.
+    const b = mkBackup({ projectId: 'proj-L250' })
+    execHandler = (cmd) => {
+      if (cmd.startsWith('pg_isready')) return ''
+      if (cmd.startsWith('pg_dump')) {
+        const { writeFileSync } = require('fs')
+        writeFileSync('/tmp/pg_backup_proj-L250.sql.gz', Buffer.from('data'))
+        return ''
+      }
+      return ''
+    }
+    _unlinkShouldThrow = true
+    const result = await b.createBackup()
+    expect(result).toBe(true)
+  })
+
+  test('L256 createBackup failure cleanup — pg_dump throws, unlink on missing file fires swallow', async () => {
+    // pg_dump throws → outer catch runs → unlink on the never-written dump
+    // file throws ENOENT → swallow catch at L256 fires.
+    const b = mkBackup({ projectId: 'proj-L256' })
+    execHandler = (cmd) => {
+      if (cmd.startsWith('pg_isready')) return ''
+      throw new Error('pg_dump failed')
+    }
+    // File was never written → real unlink throws ENOENT without needing the flag.
+    const result = await b.createBackup()
+    expect(result).toBe(false)
   })
 })

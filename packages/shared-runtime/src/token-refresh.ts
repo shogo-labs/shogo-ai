@@ -205,11 +205,11 @@ export function startTokenRefreshLoop(options: TokenRefreshOptions): TokenRefres
         return null
       }
 
+      // deriveApiUrl()'s fallback chain ends at the in-cluster ClusterIP
+      // (`http://api.${SYSTEM_NAMESPACE||shogo-system}.svc.cluster.local`),
+      // so it never returns null. The previous `if (!apiUrl)` defensive
+      // check was dead — removed in coverage cleanup.
       const apiUrl = deriveApiUrl()
-      if (!apiUrl) {
-        console.warn(`[${prefix}] cannot derive API URL; skipping refresh`)
-        return null
-      }
 
       const saToken = readSAToken()
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }

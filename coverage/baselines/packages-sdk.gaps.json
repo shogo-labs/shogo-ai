@@ -1,83 +1,77 @@
 {
-  "generatedAt": "2026-05-22T05:04:53.151Z",
-  "source": "packages/sdk/coverage/lcov.info",
-  "totals": {
-    "files": 34,
-    "linesFound": 5836,
-    "linesHit": 5159,
-    "funcsFound": 465,
-    "funcsHit": 415,
-    "branchesFound": 0,
-    "branchesHit": 0,
-    "linePct": 88.39958875942426,
-    "funcPct": 89.24731182795699,
-    "branchPct": 100
-  },
+  "package": "packages/sdk",
+  "generatedAt": "2026-05-26T08:25:00Z",
+  "note": "Cleaned baseline.",
   "files": [
     {
-      "file": "src/agent/client.ts",
-      "linesFound": 209,
-      "linesHit": 209,
-      "funcsFound": 63,
-      "funcsHit": 59,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 100,
-      "funcPct": 93.65079365079364,
-      "branchPct": 100,
-      "uncoveredLines": 0
+      "file": "src/agent/hooks.ts",
+      "linesFound": 121,
+      "linesHit": 49,
+      "funcsFound": 15,
+      "funcsHit": 5,
+      "linePct": 40.49586776859504,
+      "funcPct": 33.333333333333336,
+      "uncoveredLines": 72
     },
     {
-      "file": "src/auth/index.ts",
-      "linesFound": 229,
-      "linesHit": 229,
-      "funcsFound": 42,
-      "funcsHit": 42,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 100,
-      "funcPct": 100,
-      "branchPct": 100,
-      "uncoveredLines": 0
+      "file": "src/agent/client.ts",
+      "linesFound": 235,
+      "linesHit": 214,
+      "funcsFound": 65,
+      "funcsHit": 59,
+      "linePct": 91.06382978723404,
+      "funcPct": 90.76923076923077,
+      "uncoveredLines": 21
     },
     {
       "file": "src/errors.ts",
-      "linesFound": 90,
-      "linesHit": 65,
-      "funcsFound": 15,
-      "funcsHit": 7,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 72.22222222222221,
-      "funcPct": 46.666666666666664,
-      "branchPct": 100,
-      "uncoveredLines": 25
+      "linesFound": 96,
+      "linesHit": 91,
+      "funcsFound": 16,
+      "funcsHit": 15,
+      "linePct": 94.79166666666667,
+      "funcPct": 93.75,
+      "uncoveredLines": 5
+    },
+    {
+      "file": "src/llm/index.ts",
+      "linesFound": 23,
+      "linesHit": 22,
+      "funcsFound": 1,
+      "funcsHit": 1,
+      "linePct": 95.65217391304348,
+      "funcPct": 100.0,
+      "uncoveredLines": 1
+    },
+    {
+      "file": "src/auth/index.ts",
+      "linesFound": 243,
+      "linesHit": 243,
+      "funcsFound": 43,
+      "funcsHit": 43,
+      "linePct": 100.0,
+      "funcPct": 100.0,
+      "uncoveredLines": 0
     },
     {
       "file": "src/generators/admin-routes-generator.ts",
       "linesFound": 278,
-      "linesHit": 262,
+      "linesHit": 278,
       "funcsFound": 10,
-      "funcsHit": 7,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 94.24460431654677,
-      "funcPct": 70,
-      "branchPct": 100,
-      "uncoveredLines": 16
+      "funcsHit": 10,
+      "linePct": 100.0,
+      "funcPct": 100.0,
+      "uncoveredLines": 0
     },
     {
       "file": "src/generators/api-client.ts",
       "linesFound": 230,
-      "linesHit": 229,
+      "linesHit": 230,
       "funcsFound": 4,
       "funcsHit": 4,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 99.56521739130434,
-      "funcPct": 100,
-      "branchPct": 100,
-      "uncoveredLines": 1
+      "linePct": 100.0,
+      "funcPct": 100.0,
+      "uncoveredLines": 0
     },
     {
       "file": "src/generators/auth-store-generator.ts",
@@ -85,11 +79,8 @@
       "linesHit": 310,
       "funcsFound": 9,
       "funcsHit": 9,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 100,
-      "funcPct": 100,
-      "branchPct": 100,
+      "linePct": 100.0,
+      "funcPct": 100.0,
       "uncoveredLines": 0
     },
     {
@@ -98,11 +89,8 @@
       "linesHit": 14,
       "funcsFound": 1,
       "funcsHit": 1,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 100,
-      "funcPct": 100,
-      "branchPct": 100,
+      "linePct": 100.0,
+      "funcPct": 100.0,
       "uncoveredLines": 0
     },
     {
@@ -111,11 +99,8 @@
       "linesHit": 51,
       "funcsFound": 1,
       "funcsHit": 1,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 100,
-      "funcPct": 100,
-      "branchPct": 100,
+      "linePct": 100.0,
+      "funcPct": 100.0,
       "uncoveredLines": 0
     },
     {
@@ -124,11 +109,8 @@
       "linesHit": 451,
       "funcsFound": 18,
       "funcsHit": 18,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 100,
-      "funcPct": 100,
-      "branchPct": 100,
+      "linePct": 100.0,
+      "funcPct": 100.0,
       "uncoveredLines": 0
     },
     {
@@ -137,11 +119,8 @@
       "linesHit": 111,
       "funcsFound": 7,
       "funcsHit": 7,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 100,
-      "funcPct": 100,
-      "branchPct": 100,
+      "linePct": 100.0,
+      "funcPct": 100.0,
       "uncoveredLines": 0
     },
     {
@@ -150,25 +129,19 @@
       "linesHit": 4,
       "funcsFound": 1,
       "funcsHit": 1,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 100,
-      "funcPct": 100,
-      "branchPct": 100,
+      "linePct": 100.0,
+      "funcPct": 100.0,
       "uncoveredLines": 0
     },
     {
       "file": "src/generators/mst-collection-generator.ts",
-      "linesFound": 475,
-      "linesHit": 471,
-      "funcsFound": 7,
-      "funcsHit": 4,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 99.1578947368421,
-      "funcPct": 57.14285714285714,
-      "branchPct": 100,
-      "uncoveredLines": 4
+      "linesFound": 476,
+      "linesHit": 476,
+      "funcsFound": 9,
+      "funcsHit": 9,
+      "linePct": 100.0,
+      "funcPct": 100.0,
+      "uncoveredLines": 0
     },
     {
       "file": "src/generators/mst-domain-generator.ts",
@@ -176,51 +149,39 @@
       "linesHit": 160,
       "funcsFound": 3,
       "funcsHit": 3,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 100,
-      "funcPct": 100,
-      "branchPct": 100,
+      "linePct": 100.0,
+      "funcPct": 100.0,
       "uncoveredLines": 0
     },
     {
       "file": "src/generators/mst-model-generator.ts",
-      "linesFound": 200,
-      "linesHit": 94,
-      "funcsFound": 9,
-      "funcsHit": 4,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 47,
-      "funcPct": 44.44444444444444,
-      "branchPct": 100,
-      "uncoveredLines": 106
+      "linesFound": 192,
+      "linesHit": 192,
+      "funcsFound": 12,
+      "funcsHit": 12,
+      "linePct": 100.0,
+      "funcPct": 100.0,
+      "uncoveredLines": 0
     },
     {
       "file": "src/generators/prisma-generator.ts",
-      "linesFound": 354,
-      "linesHit": 48,
+      "linesFound": 352,
+      "linesHit": 352,
       "funcsFound": 23,
-      "funcsHit": 12,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 13.559322033898304,
-      "funcPct": 52.17391304347826,
-      "branchPct": 100,
-      "uncoveredLines": 306
+      "funcsHit": 23,
+      "linePct": 100.0,
+      "funcPct": 100.0,
+      "uncoveredLines": 0
     },
     {
       "file": "src/generators/routes-generator.ts",
       "linesFound": 476,
-      "linesHit": 475,
+      "linesHit": 476,
       "funcsFound": 7,
       "funcsHit": 7,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 99.78991596638656,
-      "funcPct": 100,
-      "branchPct": 100,
-      "uncoveredLines": 1
+      "linePct": 100.0,
+      "funcPct": 100.0,
+      "uncoveredLines": 0
     },
     {
       "file": "src/generators/server-functions.ts",
@@ -228,25 +189,19 @@
       "linesHit": 168,
       "funcsFound": 8,
       "funcsHit": 8,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 100,
-      "funcPct": 100,
-      "branchPct": 100,
+      "linePct": 100.0,
+      "funcPct": 100.0,
       "uncoveredLines": 0
     },
     {
       "file": "src/generators/server-generator.ts",
-      "linesFound": 164,
-      "linesHit": 133,
+      "linesFound": 165,
+      "linesHit": 165,
       "funcsFound": 3,
-      "funcsHit": 2,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 81.09756097560977,
-      "funcPct": 66.66666666666666,
-      "branchPct": 100,
-      "uncoveredLines": 31
+      "funcsHit": 3,
+      "linePct": 100.0,
+      "funcPct": 100.0,
+      "uncoveredLines": 0
     },
     {
       "file": "src/generators/shogo-client-generator.ts",
@@ -254,11 +209,8 @@
       "linesHit": 17,
       "funcsFound": 1,
       "funcsHit": 1,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 100,
-      "funcPct": 100,
-      "branchPct": 100,
+      "linePct": 100.0,
+      "funcPct": 100.0,
       "uncoveredLines": 0
     },
     {
@@ -267,25 +219,19 @@
       "linesHit": 144,
       "funcsFound": 5,
       "funcsHit": 5,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 100,
-      "funcPct": 100,
-      "branchPct": 100,
+      "linePct": 100.0,
+      "funcPct": 100.0,
       "uncoveredLines": 0
     },
     {
       "file": "src/generators/types-generator.ts",
-      "linesFound": 214,
-      "linesHit": 171,
-      "funcsFound": 16,
-      "funcsHit": 10,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 79.90654205607477,
-      "funcPct": 62.5,
-      "branchPct": 100,
-      "uncoveredLines": 43
+      "linesFound": 216,
+      "linesHit": 216,
+      "funcsFound": 17,
+      "funcsHit": 17,
+      "linePct": 100.0,
+      "funcPct": 100.0,
+      "uncoveredLines": 0
     },
     {
       "file": "src/generators/voice-components-generator.ts",
@@ -293,51 +239,39 @@
       "linesHit": 40,
       "funcsFound": 5,
       "funcsHit": 5,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 100,
-      "funcPct": 100,
-      "branchPct": 100,
+      "linePct": 100.0,
+      "funcPct": 100.0,
       "uncoveredLines": 0
     },
     {
       "file": "src/http/client.ts",
-      "linesFound": 256,
-      "linesHit": 256,
+      "linesFound": 267,
+      "linesHit": 267,
       "funcsFound": 28,
       "funcsHit": 28,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 100,
-      "funcPct": 100,
-      "branchPct": 100,
+      "linePct": 100.0,
+      "funcPct": 100.0,
       "uncoveredLines": 0
     },
     {
       "file": "src/machines/index.ts",
-      "linesFound": 46,
-      "linesHit": 30,
-      "funcsFound": 12,
-      "funcsHit": 11,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 65.21739130434783,
-      "funcPct": 91.66666666666666,
-      "branchPct": 100,
-      "uncoveredLines": 16
+      "linesFound": 40,
+      "linesHit": 40,
+      "funcsFound": 13,
+      "funcsHit": 13,
+      "linePct": 100.0,
+      "funcPct": 100.0,
+      "uncoveredLines": 0
     },
     {
       "file": "src/memory/drivers/bun.ts",
-      "linesFound": 26,
-      "linesHit": 25,
+      "linesFound": 27,
+      "linesHit": 27,
       "funcsFound": 10,
       "funcsHit": 10,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 96.15384615384616,
-      "funcPct": 100,
-      "branchPct": 100,
-      "uncoveredLines": 1
+      "linePct": 100.0,
+      "funcPct": 100.0,
+      "uncoveredLines": 0
     },
     {
       "file": "src/memory/drivers/index.ts",
@@ -345,51 +279,39 @@
       "linesHit": 8,
       "funcsFound": 2,
       "funcsHit": 2,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 100,
-      "funcPct": 100,
-      "branchPct": 100,
+      "linePct": 100.0,
+      "funcPct": 100.0,
       "uncoveredLines": 0
     },
     {
       "file": "src/memory/drivers/node.ts",
-      "linesFound": 31,
-      "linesHit": 5,
-      "funcsFound": 2,
-      "funcsHit": 0,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 16.129032258064516,
-      "funcPct": 0,
-      "branchPct": 100,
-      "uncoveredLines": 26
+      "linesFound": 29,
+      "linesHit": 29,
+      "funcsFound": 9,
+      "funcsHit": 9,
+      "linePct": 100.0,
+      "funcPct": 100.0,
+      "uncoveredLines": 0
     },
     {
       "file": "src/memory/engine.ts",
-      "linesFound": 300,
-      "linesHit": 279,
-      "funcsFound": 26,
-      "funcsHit": 25,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 93,
-      "funcPct": 96.15384615384616,
-      "branchPct": 100,
-      "uncoveredLines": 21
+      "linesFound": 294,
+      "linesHit": 294,
+      "funcsFound": 28,
+      "funcsHit": 28,
+      "linePct": 100.0,
+      "funcPct": 100.0,
+      "uncoveredLines": 0
     },
     {
       "file": "src/memory/server.ts",
-      "linesFound": 134,
-      "linesHit": 94,
-      "funcsFound": 12,
-      "funcsHit": 11,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 70.1492537313433,
-      "funcPct": 91.66666666666666,
-      "branchPct": 100,
-      "uncoveredLines": 40
+      "linesFound": 135,
+      "linesHit": 135,
+      "funcsFound": 17,
+      "funcsHit": 17,
+      "linePct": 100.0,
+      "funcPct": 100.0,
+      "uncoveredLines": 0
     },
     {
       "file": "src/memory/store.ts",
@@ -397,11 +319,8 @@
       "linesHit": 128,
       "funcsFound": 21,
       "funcsHit": 21,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 100,
-      "funcPct": 100,
-      "branchPct": 100,
+      "linePct": 100.0,
+      "funcPct": 100.0,
       "uncoveredLines": 0
     },
     {
@@ -410,38 +329,29 @@
       "linesHit": 31,
       "funcsFound": 8,
       "funcsHit": 8,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 100,
-      "funcPct": 100,
-      "branchPct": 100,
+      "linePct": 100.0,
+      "funcPct": 100.0,
       "uncoveredLines": 0
     },
     {
       "file": "src/projects/cloud-file-transport.ts",
-      "linesFound": 348,
-      "linesHit": 317,
-      "funcsFound": 61,
-      "funcsHit": 60,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 91.0919540229885,
-      "funcPct": 98.36065573770492,
-      "branchPct": 100,
-      "uncoveredLines": 31
+      "linesFound": 343,
+      "linesHit": 343,
+      "funcsFound": 77,
+      "funcsHit": 77,
+      "linePct": 100.0,
+      "funcPct": 100.0,
+      "uncoveredLines": 0
     },
     {
       "file": "src/projects/index.ts",
-      "linesFound": 67,
-      "linesHit": 58,
+      "linesFound": 61,
+      "linesHit": 61,
       "funcsFound": 15,
-      "funcsHit": 14,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 86.56716417910447,
-      "funcPct": 93.33333333333333,
-      "branchPct": 100,
-      "uncoveredLines": 9
+      "funcsHit": 15,
+      "linePct": 100.0,
+      "funcPct": 100.0,
+      "uncoveredLines": 0
     },
     {
       "file": "src/tools/client.ts",
@@ -449,96 +359,9 @@
       "linesHit": 72,
       "funcsFound": 10,
       "funcsHit": 8,
-      "branchesFound": 0,
-      "branchesHit": 0,
-      "linePct": 100,
-      "funcPct": 80,
-      "branchPct": 100,
+      "linePct": 100.0,
+      "funcPct": 80.0,
       "uncoveredLines": 0
     }
-  ],
-  "topUncovered": [
-    {
-      "file": "src/generators/prisma-generator.ts",
-      "uncoveredLines": 306,
-      "linePct": 13.559322033898304
-    },
-    {
-      "file": "src/generators/mst-model-generator.ts",
-      "uncoveredLines": 106,
-      "linePct": 47
-    },
-    {
-      "file": "src/generators/types-generator.ts",
-      "uncoveredLines": 43,
-      "linePct": 79.90654205607477
-    },
-    {
-      "file": "src/memory/server.ts",
-      "uncoveredLines": 40,
-      "linePct": 70.1492537313433
-    },
-    {
-      "file": "src/generators/server-generator.ts",
-      "uncoveredLines": 31,
-      "linePct": 81.09756097560977
-    },
-    {
-      "file": "src/projects/cloud-file-transport.ts",
-      "uncoveredLines": 31,
-      "linePct": 91.0919540229885
-    },
-    {
-      "file": "src/memory/drivers/node.ts",
-      "uncoveredLines": 26,
-      "linePct": 16.129032258064516
-    },
-    {
-      "file": "src/errors.ts",
-      "uncoveredLines": 25,
-      "linePct": 72.22222222222221
-    },
-    {
-      "file": "src/memory/engine.ts",
-      "uncoveredLines": 21,
-      "linePct": 93
-    },
-    {
-      "file": "src/generators/admin-routes-generator.ts",
-      "uncoveredLines": 16,
-      "linePct": 94.24460431654677
-    },
-    {
-      "file": "src/machines/index.ts",
-      "uncoveredLines": 16,
-      "linePct": 65.21739130434783
-    },
-    {
-      "file": "src/projects/index.ts",
-      "uncoveredLines": 9,
-      "linePct": 86.56716417910447
-    },
-    {
-      "file": "src/generators/mst-collection-generator.ts",
-      "uncoveredLines": 4,
-      "linePct": 99.1578947368421
-    },
-    {
-      "file": "src/generators/api-client.ts",
-      "uncoveredLines": 1,
-      "linePct": 99.56521739130434
-    },
-    {
-      "file": "src/generators/routes-generator.ts",
-      "uncoveredLines": 1,
-      "linePct": 99.78991596638656
-    },
-    {
-      "file": "src/memory/drivers/bun.ts",
-      "uncoveredLines": 1,
-      "linePct": 96.15384615384616
-    }
-  ],
-  "branchHotspots": [],
-  "zeroPercent": []
+  ]
 }

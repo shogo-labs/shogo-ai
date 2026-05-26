@@ -288,4 +288,99 @@ describe('startTokenRefreshLoop', () => {
       handle.stop()
     }
   })
+
+  // -------------------------------------------------------------------------
+  // Coverage additions: previously-uncovered paths in token-refresh.ts
+  //   L210-211  doRefresh() - deriveApiUrl() returns null
+  //   L234-235  doRefresh() - response body missing env / non-object env
+  //   L161      computeNextDelay() - JWT-exp-driven early refresh return
+  //   L179      schedule()        - setTimeout callback actually fires
+  // -------------------------------------------------------------------------
+
+  test('returns null when response body is missing the env object', async () => {
+    let warned = ''
+    const origWarn = console.warn
+    console.warn = (...a: unknown[]) => { warned += a.join(' ') + '\n' }
+
+    globalThis.fetch = mock(async () =>
+      new Response(JSON.stringify({ projectId: 'p1' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    ) as any
+
+    const handle = startTokenRefreshLoop({
+      getProjectId: () => 'p1',
+      intervalMs: 10_000,
+      jitterMs: 0,
+      logPrefix: 'missing-env',
+    })
+    try {
+      const env = await handle.refreshNow()
+      expect(env).toBeNull()
+      expect(warned).toContain('missing env')
+    } finally {
+      handle.stop()
+      console.warn = origWarn
+    }
+  })
+
+  test('returns null when env field is not an object (e.g. a string)', async () => {
+    const origWarn = console.warn
+    console.warn = () => {}
+    globalThis.fetch = mock(async () =>
+      new Response(JSON.stringify({ projectId: 'p1', env: 'not-an-object' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    ) as any
+    const handle = startTokenRefreshLoop({
+      getProjectId: () => 'p1',
+      intervalMs: 10_000,
+      jitterMs: 0,
+      logPrefix: 'env-string',
+    })
+    try {
+      expect(await handle.refreshNow()).toBeNull()
+    } finally {
+      handle.stop()
+      console.warn = origWarn
+    }
+  })
+
+  test('JWT-exp-driven early refresh: computeNextDelay picks expDriven; setTimeout fires', async () => {
+    // Token expires ~3000ms from now. With refreshBeforeExpMs=2000, expDriven
+    // is ~1000ms. intervalMs is 60s, so baseDelay=60s - computeNextDelay()
+    // returns ~1000ms (L161), and the setTimeout callback (L179) fires on its
+    // own. The 3s margin tolerates slow test-setup before computeNextDelay runs.
+    const expSec = Math.floor((Date.now() + 3000) / 1000)
+    process.env.AI_PROXY_TOKEN = makeJwt({ exp: expSec })
+
+    let fetchCount = 0
+    globalThis.fetch = mock(async () => {
+      fetchCount += 1
+      return new Response(
+        JSON.stringify({
+          projectId: 'p1',
+          env: { AI_PROXY_TOKEN: makeJwt({ exp: expSec + 3600 }) },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }) as any
+
+    const handle = startTokenRefreshLoop({
+      getProjectId: () => 'p1',
+      intervalMs: 60_000,
+      jitterMs: 0,
+      refreshBeforeExpMs: 2_000,
+      logPrefix: 'exp-driven',
+    })
+    try {
+      // ~1000ms exp-driven delay + fetch microtasks - wait generously.
+      await new Promise((r) => setTimeout(r, 1600))
+      expect(fetchCount).toBeGreaterThanOrEqual(1)
+    } finally {
+      handle.stop()
+    }
+  })
 })
