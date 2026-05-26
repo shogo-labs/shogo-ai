@@ -8,6 +8,7 @@
  */
 
 import { sendInvitationEmail, sendProjectInviteEmail, sendInviteAcceptedEmail } from "../services/email.service"
+import { getFrontendUrl } from "../lib/cloud-urls"
 
 /**
  * Result from a hook that can modify or reject the operation
@@ -274,7 +275,7 @@ export const invitationHooks: InvitationHooks = {
     const resourceName = project?.name || workspace?.name
     if (!resourceName) return
 
-    const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
+    const baseUrl = getFrontendUrl()
     const acceptUrl = `${baseUrl}/invitations/${invitation.id}/accept`
 
     const inviterName = inviter?.name || inviter?.email || 'A team member'
@@ -321,7 +322,7 @@ export const invitationHooks: InvitationHooks = {
       const resourceName = project?.name || workspace?.name
       if (!resourceName) return
 
-      const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
+      const baseUrl = getFrontendUrl()
       sendInviteAcceptedEmail({
         to: inviter.email,
         inviteeName: invitee?.name || record.email,
