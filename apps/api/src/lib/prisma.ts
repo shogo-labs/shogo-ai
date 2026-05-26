@@ -24,6 +24,8 @@ const ARRAY_FIELDS = new Set([
   'schemas', 'affectedPackages', 'applicablePatterns', 'acceptanceCriteria',
   'given', 'then', 'completedTasks', 'failedTasks', 'tags', 'supportedConfig',
   'screenshotUrls',
+  // ProjectAuthConfig allowlist fields
+  'allowedEmails', 'allowedDomains',
 ])
 
 // Fields that are Json? in PostgreSQL but stored as String? in SQLite.

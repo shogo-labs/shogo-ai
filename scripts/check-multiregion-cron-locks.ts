@@ -373,6 +373,18 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason: 'voice.ts:1238 / :231 upsert on projectId from user requests.',
   },
   {
+    key: 'ProjectAuthConfig.projectId',
+    category: 'single_tenant_upsert',
+    reason:
+      'project-auth-config.service.ts upserts on projectId from a Studio PUT request (one project owner saving allowlist settings).',
+  },
+  {
+    key: 'ProjectAuthSignIn.(projectId,userId)',
+    category: 'request_scoped',
+    reason:
+      'project-auth-config.service.ts:recordSignIn writes from the better-auth after-hook on sign-in/sign-up — single user request per signin; cross-region duplicate sign-in is a narrow failover race, recordSignIn catches P2002 by upserting on the unique pair.',
+  },
+  {
     key: 'VoiceCallMeter.conversationId',
     category: 'request_scoped',
     reason:

@@ -37,6 +37,7 @@ import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
 import { projectChatRoutes } from './routes/project-chat'
 import { projectAdminRoutes } from './routes/project-admin'
+import { projectAuthConfigRoutes } from './routes/project-auth-config'
 import { ProjectPtyRegistry } from '@shogo/agent-runtime/src/pty-project-registry'
 import { createPtyWsHandlers, type WsData as PtyWsData } from '@shogo/agent-runtime/src/pty-ws-handler'
 import { diagnosticsRoutes } from '@shogo/shared-runtime'
@@ -3980,6 +3981,9 @@ app.route('/api', gitHttpRouter)
 // Mount GitHub routes
 const githubRouter = githubRoutes({ workspacesDir: workspacesDirResolved })
 app.route('/api', githubRouter)
+
+// Mount project auth-config routes (Studio Settings -> Auth & Database).
+app.route('/api', projectAuthConfigRoutes())
 
 // =============================================================================
 // Project Chat Proxy Routes (pod-per-project architecture)

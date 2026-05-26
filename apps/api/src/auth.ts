@@ -14,11 +14,13 @@
  * - Database hooks for auto-creating personal workspace on signup
  */
 
-import { betterAuth } from "better-auth"
+import { betterAuth, type BetterAuthPlugin } from "better-auth"
+import { APIError, createAuthMiddleware } from "better-auth/api"
 import { expo } from "@better-auth/expo"
 import { createPersonalWorkspace } from "./services/workspace.service"
 import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail } from "./services/email.service"
 import { resolveAttributionForUser } from "./services/affiliate.service"
+import { evaluateAllowlist, recordSignIn } from "./services/project-auth-config.service"
 import { prisma } from "./lib/prisma"
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
@@ -103,6 +105,99 @@ const getAllowedOrigins = (): string[] => {
   return [`http://localhost:${VITE_PORT}`]
 }
 
+
+/**
+ * Better Auth plugin that enforces per-project sign-in allowlists for
+ * SDK-driven auth. The Shogo SDK forwards `X-Shogo-Project-Id` on
+ * `/sign-up/email` and `/sign-in/email` (see
+ * `packages/sdk/src/http/client.ts`). When that header is present, we:
+ *
+ *   - Before-hook: load the project's `ProjectAuthConfig` and reject
+ *     with a 403 / `project_auth_not_allowed` if the email is not
+ *     allowed under the project's mode (`workspace` or `custom`).
+ *
+ *   - After-hook: stamp a `ProjectAuthSignIn` row on success so the
+ *     project's owner can see the user list under Studio Settings ->
+ *     Auth & Database.
+ *
+ * Requests without the header pass through unchanged — this preserves
+ * the existing platform-Studio sign-in flow for users browsing
+ * `studio.shogo.ai` directly.
+ */
+const PROJECT_ID_HEADER = "x-shogo-project-id"
+const PROJECT_AUTH_ALLOWLIST_PATHS: readonly string[] = [
+  "/sign-up/email",
+  "/sign-in/email",
+]
+
+function projectAuthHeader(ctx: any): string | null {
+  const fromHeaders = ctx?.headers?.get?.(PROJECT_ID_HEADER) as string | null | undefined
+  if (fromHeaders) return fromHeaders
+  return ctx?.request?.headers?.get?.(PROJECT_ID_HEADER) ?? null
+}
+
+const projectAuthPlugin: BetterAuthPlugin = {
+  id: "shogo-project-auth-allowlist",
+  hooks: {
+    before: [
+      {
+        matcher(ctx) {
+          return PROJECT_AUTH_ALLOWLIST_PATHS.some((p) => ctx.path === p)
+        },
+        handler: createAuthMiddleware(async (ctx) => {
+          const projectId = projectAuthHeader(ctx)
+          if (!projectId) return
+
+          const email = (ctx.body as { email?: unknown })?.email
+          if (typeof email !== "string" || !email) {
+            // Let Better Auth's own validation produce the canonical
+            // error for missing/invalid email — we only block when
+            // the allowlist explicitly disallows.
+            return
+          }
+
+          const verdict = await evaluateAllowlist(projectId, email)
+          if (verdict.allowed) return
+
+          const message =
+            verdict.reason === "workspace_not_member"
+              ? "This project is restricted to workspace members. Ask the project owner to invite you."
+              : verdict.reason === "custom_not_listed"
+                ? "This email is not on the project's allowlist. Ask the project owner to add you."
+                : "Not allowed to sign in to this project."
+          throw new APIError("FORBIDDEN", {
+            code: "project_auth_not_allowed",
+            message,
+            reason: verdict.reason ?? "denied",
+            projectId,
+          })
+        }),
+      },
+    ],
+    after: [
+      {
+        matcher(ctx) {
+          return PROJECT_AUTH_ALLOWLIST_PATHS.some((p) => ctx.path === p)
+        },
+        handler: createAuthMiddleware(async (ctx) => {
+          const projectId = projectAuthHeader(ctx)
+          if (!projectId) return
+
+          const newSession = (ctx.context as { newSession?: { user?: { id?: string } } })
+            ?.newSession
+          const userId = newSession?.user?.id
+          if (!userId) return
+
+          try {
+            await recordSignIn(projectId, userId)
+          } catch (err) {
+            console.error("[shogo-project-auth] recordSignIn failed", err)
+          }
+        }),
+      },
+    ],
+  },
+}
 
 export const auth = betterAuth({
   // Base URL for OAuth callbacks - must match Google's authorized redirect URIs
@@ -283,7 +378,7 @@ export const auth = betterAuth({
     return origins
   },
 
-  plugins: [expo()],
+  plugins: [expo(), projectAuthPlugin],
 
   rateLimit: {
     window: 60,

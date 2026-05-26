@@ -50,6 +50,7 @@ model User {
   creatorFollows       CreatorFollow[]      @relation("UserFollows")
   affiliate            Affiliate?
   affiliateAttribution AffiliateAttribution?
+  projectAuthSignIns   ProjectAuthSignIn[]
 
   @@map("users")
 }
@@ -257,6 +258,8 @@ model Project {
   agents                 ProjectAgent[]
   projectFolders         ProjectFolder[]
   preferredInstance      Instance?               @relation("ProjectPreferredInstance", fields: [preferredInstanceId], references: [id], onDelete: SetNull)
+  authConfig             ProjectAuthConfig?
+  authSignIns            ProjectAuthSignIn[]
 
   @@index([workspaceId])
   @@index([folderId])
@@ -280,6 +283,56 @@ model ProjectFolder {
 
   @@index([projectId])
   @@map("project_folders")
+}
+
+/// Per-project sign-in allowlist for users authenticating via the Shogo
+/// SDK (`shogo.auth` -> platform `/api/auth/*`). When the SDK forwards
+/// `X-Shogo-Project-Id` on `/sign-in/*` and `/sign-up/email`, the Better
+/// Auth before-hook in apps/api/src/auth.ts loads this config and either
+/// allows the request or rejects with 403 `project_auth_not_allowed`.
+///
+/// Modes:
+///   - `anyone`    — no project-level restriction (SDK allowlist disabled).
+///   - `workspace` — only existing Member rows on the project's workspace
+///                   (or holders of an active Invitation for it) may sign
+///                   in. New sign-ups without an invite are rejected.
+///   - `custom`    — allow if the email is in `allowedEmails` OR the
+///                   email's domain (lowercased, no `@`) is in
+///                   `allowedDomains`.
+model ProjectAuthConfig {
+  id                       String   @id @default(uuid())
+  projectId                String   @unique
+  mode                     String   @default("anyone") // "anyone" | "workspace" | "custom"
+  allowedEmails            String[] @default([]) // exact-match, lowercased
+  allowedDomains           String[] @default([]) // e.g. "acme.com", lowercased, no `@`
+  requireEmailVerification Boolean  @default(false)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("project_auth_configs")
+}
+
+/// Tracks every (project, user) pair that has signed in to a project via
+/// the Shogo SDK auth path (header `X-Shogo-Project-Id`). Inserted on
+/// first sign-in / sign-up by the Better Auth before-hook in
+/// apps/api/src/auth.ts and updated on each subsequent sign-in. Powers
+/// the Users panel under Studio Settings -> Auth & Database.
+model ProjectAuthSignIn {
+  id           String   @id @default(uuid())
+  projectId    String
+  userId       String
+  firstSignInAt DateTime @default(now())
+  lastSignInAt  DateTime @default(now())
+  signInCount   Int      @default(1)
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([projectId, lastSignInAt(sort: Desc)])
+  @@map("project_auth_sign_ins")
 }
 
 model AgentConfig {

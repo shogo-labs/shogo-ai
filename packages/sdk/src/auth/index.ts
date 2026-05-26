@@ -6,7 +6,7 @@
  * Handles authentication flows, token management, and auth state.
  */
 
-import { AuthError } from '../errors.js'
+import { AuthError, ShogoError } from '../errors.js'
 import type { HttpClient } from '../http/client.js'
 import type {
   StorageAdapter,
@@ -23,6 +23,29 @@ import type {
 
 const STORAGE_KEY_TOKENS = 'auth_tokens'
 const STORAGE_KEY_USER = 'auth_user'
+
+/**
+ * Detect a per-project allowlist denial response and convert it into
+ * a typed `AuthError.projectNotAllowed()`. The platform Better Auth
+ * before-hook (apps/api/src/auth.ts -> projectAuthPlugin) throws an
+ * `APIError("FORBIDDEN", { code: "project_auth_not_allowed", ... })`,
+ * which the HTTP client parses into a `ShogoError` with status 403
+ * and the original payload preserved on `details`.
+ */
+function maybeProjectNotAllowed(error: unknown): AuthError | null {
+  if (!(error instanceof ShogoError)) return null
+  if (error.status !== 403) return null
+  const details = error.details as
+    | { code?: unknown; message?: unknown; reason?: unknown }
+    | null
+    | undefined
+  if (!details || typeof details !== 'object') return null
+  if (details.code !== 'project_auth_not_allowed') return null
+  return AuthError.projectNotAllowed(
+    typeof details.message === 'string' ? details.message : undefined,
+    details,
+  )
+}
 
 export class ShogoAuth {
   private httpClient: HttpClient
@@ -279,6 +302,8 @@ export class ShogoAuth {
     } catch (error) {
       this.updateState({ isLoading: false })
 
+      const projectDenied = maybeProjectNotAllowed(error)
+      if (projectDenied) throw projectDenied
       if (error instanceof AuthError) {
         throw error
       }
@@ -327,6 +352,8 @@ export class ShogoAuth {
     } catch (error) {
       this.updateState({ isLoading: false })
 
+      const projectDenied = maybeProjectNotAllowed(error)
+      if (projectDenied) throw projectDenied
       if (error instanceof AuthError) {
         throw error
       }
