@@ -48,6 +48,14 @@ const poolAssignedCounter = meter.createCounter('warm_pool.assignments', {
 const poolColdStartCounter = meter.createCounter('warm_pool.cold_starts', {
   description: 'Times a pod was requested but no warm pod was available',
 })
+const poolColdClaimCounter = meter.createCounter('warm_pool.cold_claims', {
+  description:
+    'Times a warm pod was claimed but assign() crossed the cold-claim threshold (typically because Knative had scaled the pod to zero so the assignment POST sat in the activator queue during cold start). Labelled by `reason` (`scaled_to_zero` | `slow_assign`).',
+})
+const poolKeepAliveCounter = meter.createCounter('warm_pool.keep_alive_pings', {
+  description:
+    'Keep-alive HTTP pings sent to warm-pool ksvcs to refresh their scale-to-zero retention timer. Labelled by `outcome` (`ok` | `error`).',
+})
 const poolBrokenDetectedCounter = meter.createCounter('warm_pool.broken_detected', {
   description: 'Warm pool services detected as broken (image pull, scheduling, or revision failure)',
 })
@@ -74,6 +82,41 @@ const WARM_POOL_MAX_AGE_MS = parseInt(
 )
 
 const WARM_POOL_MIN_PODS = parseInt(process.env.WARM_POOL_MIN_PODS || '2', 10)
+
+// Keep-alive ping interval: how often we hit `/health` on each warm-pool
+// ksvc to reset Knative's `scale-to-zero-pod-retention-period` timer.
+// Must be comfortably shorter than the retention period set in the
+// ksvc template (currently 1800s) — otherwise a low-traffic prod region
+// silently scale-to-zeros its entire pool and the next /pool/assign POST
+// sits in the activator queue for ~22s while the pod cold-starts (the
+// 2026-05-26 prod-us incident root cause). 20 min gives us 10 min of
+// headroom against the 30 min retention.
+const WARM_POOL_KEEP_ALIVE_INTERVAL_MS = parseInt(
+  process.env.WARM_POOL_KEEP_ALIVE_INTERVAL_MS || String(20 * 60 * 1000),
+  10
+)
+// Per-pod timeout for the keep-alive `/health` GET. We allow plenty of
+// headroom (60s) because the first ping after a scale-to-zero IS itself
+// a cold start that we have to ride out — `bun install` of the warm-pool
+// template takes ~7s before the queue-proxy will even deliver the
+// request, plus image-pull on a freshly-evicted node.
+const WARM_POOL_KEEP_ALIVE_TIMEOUT_MS = parseInt(
+  process.env.WARM_POOL_KEEP_ALIVE_TIMEOUT_MS || '60000',
+  10
+)
+// Disable keep-alive in tests / scenarios where the cluster genuinely
+// shouldn't see synthetic traffic on its warm pool.
+const WARM_POOL_KEEP_ALIVE_ENABLED = process.env.WARM_POOL_KEEP_ALIVE_ENABLED !== 'false'
+
+// `warm_pool.cold_claims` fires when `assign.duration_ms` exceeds this
+// threshold. The signal we care about is "the pod wasn't actually warm
+// when we handed it out" — most healthy assigns land in 1–3s, so 5s
+// is a comfortable margin above the noise floor without missing
+// scale-to-zero cold starts (which typically pin around 20–25s).
+const COLD_CLAIM_THRESHOLD_MS = parseInt(
+  process.env.WARM_POOL_COLD_CLAIM_THRESHOLD_MS || '5000',
+  10
+)
 
 // Promoted pod GC: clean up orphaned/idle promoted pods
 const PROMOTED_POD_GC_ENABLED = process.env.PROMOTED_POD_GC_ENABLED !== 'false'
@@ -123,7 +166,37 @@ export interface WarmPodInfo {
   serviceName: string
   url: string
   createdAt: number
+  /**
+   * The Knative service's `Ready` condition is True. This stays True
+   * even when the underlying pod has been scaled to zero — Knative
+   * considers the service operational because the activator can wake
+   * it back up on demand.
+   */
   ready: boolean
+  /**
+   * Whether the ksvc currently has at least one actually-running pod
+   * (`status.actualReplicas > 0`). When `false`, the ksvc has been
+   * scaled to zero by Knative (idle past `scale-to-zero-pod-retention-
+   * period`) and claiming it triggers a ~20s cold start while the
+   * activator buffers the `/pool/assign` POST. claim() prefers `hot`
+   * pods first and falls back to scaled-to-zero pods only when nothing
+   * truly hot is available — better than minting a brand-new ksvc.
+   *
+   * Optional for backwards compatibility with test fixtures and
+   * pre-existing in-memory records: `undefined` is treated as "not
+   * known to be hot" — equivalent to `false` for claim()/assign()
+   * decisions, but classified as `slow_assign` rather than
+   * `scaled_to_zero` for the cold-claim metric since we can't be
+   * sure why the pod was slow.
+   */
+  hot?: boolean
+  /**
+   * Unix-ms of the last successful keep-alive `/health` ping (or the
+   * ksvc creation timestamp if the pod has never been pinged). Used by
+   * `keepAliveWarmPods()` to space out pings at
+   * `WARM_POOL_KEEP_ALIVE_INTERVAL_MS` per pod.
+   */
+  lastKeepAliveAt?: number
   assignedAt?: number
   nodeName?: string
 }
@@ -471,6 +544,16 @@ export class WarmPoolController {
     // Discover existing warm pool services from Kubernetes
     await this.discoverExistingPods()
 
+    // Keep-alive ping any warm pods that are due. Fire-and-forget — a
+    // slow ping (e.g. cold-starting from zero takes ~25s) MUST NOT
+    // block the reconcile loop, otherwise we delay broken-pod detection
+    // and pool replenishment behind a network-bound side task. The
+    // method itself handles concurrency, error swallowing, and per-pod
+    // bookkeeping.
+    this.keepAliveWarmPods().catch((err) => {
+      console.error('[WarmPool] Keep-alive sweep failed (non-fatal):', err?.message ?? err)
+    })
+
     // Clean up stale pods (older than maxPodAgeMs).
     // Limit to 1 deletion per cycle so replacements are created
     // before all warm pods are gone (prevents empty-pool cold starts).
@@ -650,21 +733,31 @@ export class WarmPoolController {
    * multiple users arrive simultaneously (e.g. dry runs).
    */
   claim(): WarmPodInfo | null {
-    // Collect all ready pods, then pick one at random to avoid deterministic
-    // collisions when multiple API pods independently claim from the same pool.
-    const readyPods: { id: string; pod: WarmPodInfo }[] = []
+    // Partition ready pods into HOT (replicas > 0) and SCALED-TO-ZERO.
+    // Both can be claimed, but a hot claim is ~instant while a scaled-
+    // to-zero claim spends ~20s in the activator queue while Knative
+    // boots the pod from scratch. Prefer hot pods so the user gets a
+    // genuinely warm experience whenever the pool has any hot capacity.
+    // Within each tier, pick randomly to avoid deterministic collisions
+    // across API replicas.
+    const hotPods: { id: string; pod: WarmPodInfo }[] = []
+    const coldReadyPods: { id: string; pod: WarmPodInfo }[] = []
     for (const [id, pod] of this.available) {
       if (!pod.ready) continue
-      readyPods.push({ id, pod })
+      if (pod.hot) hotPods.push({ id, pod })
+      else coldReadyPods.push({ id, pod })
     }
 
-    if (readyPods.length === 0) {
+    const candidates = hotPods.length > 0 ? hotPods : coldReadyPods
+    const willColdStart = hotPods.length === 0 && coldReadyPods.length > 0
+
+    if (candidates.length === 0) {
       poolColdStartCounter.add(1)
       console.warn(`[WarmPool] COLD START: no warm pod available — user will experience delay`)
       return null
     }
 
-    const pick = readyPods[Math.floor(Math.random() * readyPods.length)]
+    const pick = candidates[Math.floor(Math.random() * candidates.length)]
     const oldest = pick.pod
     const oldestId = pick.id
 
@@ -676,9 +769,15 @@ export class WarmPoolController {
       const utilization = 1 - remaining / target
 
       poolAssignedCounter.add(1)
-      console.log(
-        `[WarmPool] Claimed warm pod ${oldest.serviceName} (remaining: ${remaining}/${target}, utilization: ${Math.round(utilization * 100)}%)`
-      )
+      if (willColdStart) {
+        console.warn(
+          `[WarmPool] Claimed SCALED-TO-ZERO pod ${oldest.serviceName} — no hot pods available, user will eat ~20s cold start. Pool will replenish.`
+        )
+      } else {
+        console.log(
+          `[WarmPool] Claimed warm pod ${oldest.serviceName} (remaining: ${remaining}/${target}, utilization: ${Math.round(utilization * 100)}%, hot: ${hotPods.length - 1}, cold-ready: ${coldReadyPods.length})`
+        )
+      }
 
       // Burst detection: if pool is more than 50% depleted, schedule
       // an immediate reconcile (debounced to 500ms so concurrent claims
@@ -866,7 +965,29 @@ export class WarmPoolController {
         this.claimedServiceNames.delete(pod.serviceName)
         const duration = Date.now() - startTime
         span.setAttribute('assign.duration_ms', duration)
+        span.setAttribute('pod.hot_at_claim', pod.hot === true)
         span.setStatus({ code: SpanStatusCode.OK })
+
+        // Surface cold-claim events as an explicit metric so the
+        // prod-vs-staging regression that prompted this code (2026-05-26
+        // prod-us: every warm pod scaled-to-zero so users ate a 24s
+        // cold start on every assignment) is visible without a user
+        // report. Distinguish the two failure shapes by `reason`:
+        //   - scaled_to_zero: we knew at claim() time the pod had no
+        //     running replicas — claim() already logged a warning, this
+        //     just makes it queryable in SigNoz.
+        //   - slow_assign: the pod looked hot at claim() but the POST
+        //     still crossed the threshold, e.g. due to readiness probe
+        //     races on a brand-new pod or transient kourier slowness.
+        if (duration > COLD_CLAIM_THRESHOLD_MS) {
+          const reason = pod.hot === false ? 'scaled_to_zero' : 'slow_assign'
+          poolColdClaimCounter.add(1, { reason })
+          span.setAttribute('cold_claim.reason', reason)
+          console.warn(
+            `[WarmPool] COLD CLAIM: ${pod.serviceName} → ${projectId} took ${duration}ms (>${COLD_CLAIM_THRESHOLD_MS}ms, reason: ${reason})`
+          )
+        }
+
         console.log(
           `[WarmPool] Assigned ${pod.serviceName} to project ${projectId} in ${duration}ms`
         )
@@ -1769,6 +1890,98 @@ export class WarmPoolController {
   }
 
   /**
+   * Keep-alive: GET `/health` on every available warm pod whose last
+   * ping is older than `WARM_POOL_KEEP_ALIVE_INTERVAL_MS`.
+   *
+   * Why this exists: warm-pool ksvcs are configured with
+   * `min-scale: 0` + `scale-to-zero-pod-retention-period: 1800s`. In
+   * a high-traffic region (staging during e2e runs), churn keeps the
+   * pool genuinely hot. In a low-traffic region (prod-us during the
+   * 2026-05-26 incident), warm ksvcs sit idle past the 30 min
+   * retention window, Knative scales them to zero, and the next
+   * `/pool/assign` POST gets buffered by the activator for ~22s while
+   * the pod cold-starts (image pull + bun install of the workspace
+   * template + server bring-up). The warm-pool controller had no idea
+   * because `ksvc.status.Ready` stays True even at zero replicas.
+   *
+   * A synthetic GET counts as "traffic" to Knative and resets the
+   * retention timer. As long as `WARM_POOL_KEEP_ALIVE_INTERVAL_MS` is
+   * meaningfully shorter than the retention period, the pool stays
+   * genuinely hot regardless of organic traffic shape.
+   *
+   * Safety properties:
+   *   - Skips pods in `claimedServiceNames` (mid-assignment race) and
+   *     anything not in `this.available` (promoted/assigned pods get
+   *     their own traffic).
+   *   - Runs concurrently across pods so one slow pod can't block the
+   *     others.
+   *   - All errors are logged and swallowed — a transient ping failure
+   *     should never crash the reconcile loop. The pod will be re-tried
+   *     at the next interval; persistently broken pods are caught and
+   *     replaced by `discoverExistingPods` via the pod-level broken
+   *     detector / Ready=False sweep.
+   *   - On success, marks the pod `hot=true` immediately so the next
+   *     `claim()` doesn't have to wait for discovery to observe the
+   *     scale-up.
+   */
+  private async keepAliveWarmPods(): Promise<void> {
+    if (!this.started) return
+    if (!WARM_POOL_KEEP_ALIVE_ENABLED) return
+    const now = Date.now()
+    const due: WarmPodInfo[] = []
+    for (const pod of this.available.values()) {
+      if (this.claimedServiceNames.has(pod.serviceName)) continue
+      const last = pod.lastKeepAliveAt ?? pod.createdAt
+      if (now - last >= WARM_POOL_KEEP_ALIVE_INTERVAL_MS) due.push(pod)
+    }
+    if (due.length === 0) return
+
+    const coldPings = due.filter((p) => !p.hot).length
+    console.log(
+      `[WarmPool] Keep-alive: pinging ${due.length} warm pod${due.length === 1 ? '' : 's'} to refresh scale-to-zero retention (${coldPings} currently scaled to zero)`
+    )
+
+    await Promise.allSettled(
+      due.map(async (pod) => {
+        const t0 = Date.now()
+        try {
+          const res = await fetch(`${pod.url}/health`, {
+            method: 'GET',
+            signal: AbortSignal.timeout(WARM_POOL_KEEP_ALIVE_TIMEOUT_MS),
+          })
+          if (res.ok) {
+            pod.lastKeepAliveAt = Date.now()
+            // A successful ping means Knative either delivered the
+            // request to an already-running pod (hot) or just finished
+            // cold-starting one to handle it. Either way the ksvc now
+            // has actualReplicas > 0 — reflect that in-memory so the
+            // very next claim() can prefer this pod without waiting
+            // for the 30s discovery cycle.
+            const wasHot = pod.hot
+            pod.hot = true
+            poolKeepAliveCounter.add(1, { outcome: 'ok' })
+            if (!wasHot) {
+              console.log(
+                `[WarmPool] Keep-alive woke ${pod.serviceName} from scale-to-zero in ${Date.now() - t0}ms — now hot`
+              )
+            }
+          } else {
+            poolKeepAliveCounter.add(1, { outcome: 'error' })
+            console.warn(
+              `[WarmPool] Keep-alive ${pod.serviceName} → HTTP ${res.status} (${Date.now() - t0}ms)`
+            )
+          }
+        } catch (err: any) {
+          poolKeepAliveCounter.add(1, { outcome: 'error' })
+          console.warn(
+            `[WarmPool] Keep-alive ${pod.serviceName} failed in ${Date.now() - t0}ms: ${err?.message ?? err}`
+          )
+        }
+      })
+    )
+  }
+
+  /**
    * Build the environment variables needed for assigning a project to a warm pod.
    * Delegates to the shared utility used by both K8s and VM warm pools.
    */
@@ -1910,6 +2123,18 @@ export class WarmPoolController {
         const readyCondition = conditions.find((c: any) => c.type === 'Ready')
         const ready = readyCondition?.status === 'True'
 
+        // Distinguish "Knative says Ready" from "there is actually a pod
+        // running right now". `actualReplicas` reflects the latter — when
+        // it's 0 the ksvc has been scaled to zero by Knative's idle
+        // retention timer. We still consider the pod claimable (the
+        // activator will cold-start it), but `claim()` prefers `hot`
+        // pods first so users don't eat a cold start when an
+        // already-running warm pod is available. This is the fix for the
+        // 2026-05-26 prod-us incident where the warm-pool controller
+        // happily handed out a ksvc whose pod had been zero for 28 min.
+        const actualReplicas = (service.status as any)?.actualReplicas ?? 0
+        const hot = ready && actualReplicas > 0
+
         // POD-LEVEL broken detection. Image-pull/create errors are never
         // transient and are NOT reflected in the Knative service's Ready
         // condition once it's been Ready=True at least once. We catch these
@@ -1961,6 +2186,7 @@ export class WarmPoolController {
         const existing = this.available.get(id)
         if (existing) {
           existing.ready = ready
+          existing.hot = hot
           if (nodeForService) existing.nodeName = nodeForService
           continue
         }
@@ -1971,6 +2197,13 @@ export class WarmPoolController {
           url,
           createdAt,
           ready,
+          hot,
+          // Anchor the first keep-alive at the ksvc's creation timestamp
+          // so an API restart that re-discovers an already-existing pool
+          // immediately schedules a ping for any ksvc older than the
+          // keep-alive interval (rather than starting a fresh 20-min
+          // grace period that would let it scale to zero in the gap).
+          lastKeepAliveAt: createdAt,
           nodeName: nodeForService,
         })
       }
@@ -2002,10 +2235,16 @@ export class WarmPoolController {
       }
 
       const readyCount = [...this.available.values()].filter(p => p.ready).length
+      const hotCount = [...this.available.values()].filter(p => p.hot).length
+      // Breaker resets on `Ready=True` observation: that proves image-
+      // pullability and schedulability, which is the failure mode the
+      // breaker guards. A scaled-to-zero (Ready but not Hot) ksvc is
+      // still proof of past success and is a valid breaker reset signal.
       this.resetBreakerIfHealthy(readyCount > 0)
       if (this.available.size > 0) {
+        const coldCount = readyCount - hotCount
         console.log(
-          `[WarmPool] Discovered ${this.available.size} warm pods (${readyCount} ready, ${this.available.size - readyCount} starting), ${newPromotedPods.length} promoted`
+          `[WarmPool] Discovered ${this.available.size} warm pods (${hotCount} hot, ${coldCount} scaled-to-zero, ${this.available.size - readyCount} starting), ${newPromotedPods.length} promoted`
         )
       }
     } catch (err: any) {
@@ -2410,12 +2649,15 @@ export class WarmPoolController {
     }
 
     const url = `http://${serviceName}.${this.namespace}.svc.cluster.local`
+    const now = Date.now()
     return {
       id: serviceName,
       serviceName,
       url,
-      createdAt: Date.now(),
+      createdAt: now,
       ready: false, // will be updated by discovery on next reconcile
+      hot: false, // ditto — will flip true once discovery sees actualReplicas > 0
+      lastKeepAliveAt: now, // fresh ksvc — no need to ping for KEEP_ALIVE_INTERVAL_MS
     }
   }
 
