@@ -718,7 +718,7 @@ describe('POST /projects/:projectId/chat — error branches', () => {
     fetchResponses = [() => new Response('RUNTIME_AUTH_SECRET not configured', { status: 401 })]
     const app = buildApp()
     const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
-      method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', body: JSON.stringify({ chatSessionId: 'c-1' }), headers: { 'Content-Type': 'application/json' },
     }))
     expect(res.status).toBe(503)
     const body = await res.json() as any
@@ -755,7 +755,7 @@ describe('POST /projects/:projectId/chat — error branches', () => {
     }]
     const app = buildApp()
     const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
-      method: 'POST', body: JSON.stringify({}),
+      method: 'POST', body: JSON.stringify({ chatSessionId: 'c-1' }),
       headers: { 'Content-Type': 'application/json' },
     }))
     expect(res.status).toBe(200)
@@ -778,7 +778,7 @@ describe('POST /projects/:projectId/chat — error branches', () => {
     }]
     const app = buildApp()
     const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
-      method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', body: JSON.stringify({ chatSessionId: 'c-1' }), headers: { 'Content-Type': 'application/json' },
     }))
     expect(res.status).toBe(200)
     await res.text()
@@ -791,7 +791,7 @@ describe('POST /projects/:projectId/chat — error branches', () => {
     fetchResponses = [() => Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))]
     const app = buildApp()
     const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
-      method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', body: JSON.stringify({ chatSessionId: 'c-1' }), headers: { 'Content-Type': 'application/json' },
       signal: ctrl.signal,
     }))
     expect(res.status).toBe(499)

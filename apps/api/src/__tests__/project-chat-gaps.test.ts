@@ -214,7 +214,7 @@ describe('member.findFirst throws (L896)', () => {
       })
     const app = buildApp()
     // billingUserId in body triggers the member lookup
-    const res = await app.fetch(makeChatReq({ body: JSON.stringify({ userId: 'u-1' }) }))
+    const res = await app.fetch(makeChatReq({ body: JSON.stringify({ userId: 'u-1', chatSessionId: 'c-1' }) }))
     expect(res.status).toBe(200)
     await res.text()
   })
@@ -297,7 +297,7 @@ describe('waitForRuntimeReady starting→running (L700, L731–732)', () => {
         headers: { 'Content-Type': 'text/event-stream' },
       })
     const app = buildApp(startingRm)
-    const res = await app.fetch(makeChatReq())
+    const res = await app.fetch(makeChatReq({ body: JSON.stringify({ chatSessionId: 'c-1' }) }))
     expect(res.status).toBe(200)
     await res.text()
   })

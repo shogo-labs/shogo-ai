@@ -9,6 +9,34 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test'
+
+// Intercept unbuilt SDK subpath exports before @shogo/shared-runtime loads them.
+// Bun hoists top-level mock.module() calls before all import statements.
+mock.module('@shogo-ai/sdk/ai-proxy', () => ({ createAiProxy: () => ({}) }))
+mock.module('@shogo-ai/sdk/ai-client', () => ({ sendMessage: async () => ({}) }))
+mock.module('@shogo-ai/sdk/model-catalog', () => ({
+  getModelTier: () => 'standard',
+  resolveModelId: (id: string) => id,
+  MODEL_CATALOG: {},
+  getModelEntry: () => undefined,
+  MODEL_DOLLAR_COSTS: {} as Record<string, any>,
+  calculateDollarCost: () => 0,
+  getModelBillingModel: (id: string) => id,
+  resolveAgentModeDefault: (mode: string) => mode,
+}))
+mock.module('@shogo/shared-runtime', () => ({
+  RUNTIME_CONFIG: {
+    apiPort: 4000,
+    runtimePort: 5000,
+    portRangeStart: 5100,
+    portRangeEnd: 5200,
+    image: () => 'shogo-runtime:test',
+    workDir: '/app/workspace',
+    extraEnv: {},
+    componentLabel: 'runtime',
+    containerName: 'runtime',
+  },
+}))
 import { WarmPoolController, type WarmPodInfo, type RuntimeType } from '../warm-pool-controller'
 import * as k8s from '@kubernetes/client-node'
 
@@ -33,6 +61,37 @@ mock.module('@kubernetes/client-node', () => ({
   CustomObjectsApi: class {},
   CoreV1Api: class {},
 }))
+// Mock @shogo/shared-runtime to prevent its source files from loading
+// unbuilt @shogo-ai/sdk subpath exports (ai-proxy, ai-client, chat-message, etc.)
+mock.module('@shogo/shared-runtime', () => ({
+  RUNTIME_CONFIG: {
+    apiPort: 4000,
+    runtimePort: 5000,
+    portRangeStart: 5100,
+    portRangeEnd: 5200,
+    image: () => 'shogo-runtime:test',
+    workDir: '/app/workspace',
+    extraEnv: {},
+    componentLabel: 'runtime',
+    containerName: 'runtime',
+  },
+}))
+
+mock.module('@shogo/model-catalog', () => ({
+  getModelTier: () => 'standard',
+  resolveModelId: (id: string) => id,
+  MODEL_CATALOG: {},
+  getModelEntry: () => undefined,
+  MODEL_DOLLAR_COSTS: {} as Record<string, any>,
+  calculateDollarCost: () => 0,
+  getModelBillingModel: (id: string) => id,
+  resolveAgentModeDefault: (mode: string) => mode,
+  getAgentModeOverrides: () => ({}),
+  getMaxOutputTokens: (_id?: string) => 4096,
+  MODEL_ALIASES: {} as Record<string, any>,
+}))
+
+
 
 // Mock fetch for pool assignment calls
 const mockFetch = mock((url: string, options?: any) => {
@@ -75,6 +134,13 @@ mock.module('../prisma', () => ({
 // Mock AI proxy token generation
 mock.module('../ai-proxy-token', () => ({
   generateProxyToken: mock(() => Promise.resolve('test-proxy-token')),
+}))
+
+// Mock runtime-token so buildProjectEnv does not need env signing secrets
+mock.module('../runtime-token', () => ({
+  deriveRuntimeToken: (_projectId: string) => 'test-runtime-secret',
+  deriveWebhookToken: (_projectId: string) => 'test-webhook-token',
+  verifyRuntimeToken: (_token: string, _projectId: string) => true,
 }))
 
 // Mock the mergePatchKnativeService from knative-project-manager
@@ -123,6 +189,7 @@ describe('WarmPoolController', () => {
     process.env.WARM_POOL_ENABLED = 'true'
     process.env.PROJECT_NAMESPACE = 'test-namespace'
     process.env.S3_WORKSPACES_BUCKET = 'test-bucket'
+    process.env.S3_REGION = 'us-east-1'
 
     controller = new WarmPoolController({
       poolSize: 3,

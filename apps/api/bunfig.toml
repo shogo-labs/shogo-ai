@@ -15,6 +15,8 @@
 # fire spuriously for files where the test happens to mock most of the
 # source, even when overall coverage is healthy.
 [test]
+conditions = ["development"]
+preload = ["./src/__tests__/preload-sdk-mocks.ts"]
 coverageReporter = ["text", "lcov"]
 coverageDir = "coverage"
 coverageSkipTestFiles = true

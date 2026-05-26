@@ -7,6 +7,7 @@
 # Threshold is intentionally NOT set per-package — see the note in
 # apps/api/bunfig.toml.
 [test]
+conditions = ["development"]
 coverageReporter = ["text", "lcov"]
 coverageDir = "coverage"
 coverageSkipTestFiles = true
