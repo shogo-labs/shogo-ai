@@ -85,6 +85,54 @@ function prewarmRuntimeBackground(projectId: string, hint: string): void {
     })
 }
 
+/**
+ * Fire-and-forget: tell the running agent-runtime to re-read `trustLevel`
+ * from Postgres NOW (don't wait for the next chat turn's per-turn refresh).
+ *
+ * Used by `POST /:id/trust` so a user clicking "Trust folder" mid-stream
+ * unblocks the in-flight tool calls instead of staying restricted until
+ * the next message. No-op if the runtime isn't currently running.
+ *
+ * Auth: shared WEBHOOK_TOKEN derived from the project id — same secret
+ * the runtime accepts on `/agent/hooks/*`. The runtime port comes from
+ * `runtimeManager.status(projectId).agentPort`.
+ */
+function pingRuntimeRefreshTrust(projectId: string): void {
+  ;(async () => {
+    try {
+      const { getRuntimeManager } = await import('../lib/runtime/manager')
+      const { deriveWebhookToken } = await import('../lib/runtime-token')
+      const manager = getRuntimeManager()
+      const runtime = manager.status(projectId)
+      const agentPort = (runtime as { agentPort?: number } | null)?.agentPort
+      if (!agentPort) {
+        // Runtime not running (yet). Boot will pick up the new value
+        // via initial refreshTrust(); per-turn refresh handles the
+        // rest. Nothing to ping.
+        return
+      }
+      const token = deriveWebhookToken(projectId)
+      const res = await fetch(`http://127.0.0.1:${agentPort}/internal/refresh-trust`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        signal: AbortSignal.timeout(3_000),
+      })
+      if (!res.ok) {
+        console.warn(
+          `[local-projects] /internal/refresh-trust returned HTTP ${res.status} for ${projectId}`,
+        )
+      }
+    } catch (err: any) {
+      console.warn(
+        `[local-projects] /internal/refresh-trust ping failed for ${projectId}: ${err?.message ?? err}`,
+      )
+    }
+  })()
+}
+
 // =============================================================================
 // Constants
 // =============================================================================
@@ -809,9 +857,16 @@ export function localProjectsRoutes(): Hono {
 
   /**
    * POST /:id/trust { trusted: boolean } — flip the project's
-   * `trustLevel`. The agent-runtime reads this on every chat turn
-   * (via the same /project info path it uses for templateId), so
-   * write/exec tools narrow/widen in-flight.
+   * `trustLevel`. Postgres is the single source of truth; the running
+   * agent-runtime re-resolves this value at the start of every chat
+   * turn AND when we ping its `/internal/refresh-trust` IPC below.
+   * Mid-stream tool calls that follow the ping see the new value too.
+   *
+   * Historical bug (fixed 2026-05): the runtime used to read trust
+   * from a spawn-time `TRUST_LEVEL` env snapshot that was never
+   * refreshed, so clicking "Trust folder" updated Postgres but the
+   * live agent kept reporting `restricted_mode_*`. The resolver +
+   * this ping are the fix from the root.
    */
   router.post('/:id/trust', async (c) => {
     const auth = c.get('auth' as never) as { userId?: string } | undefined
@@ -831,6 +886,7 @@ export function localProjectsRoutes(): Hono {
       data: { trustLevel: body.trusted ? 'trusted' : 'restricted' },
       include: { projectFolders: true },
     })
+    pingRuntimeRefreshTrust(projectId)
     return c.json({ project })
   })
 

@@ -491,4 +491,69 @@ app.post('/agent-eval-results', async (c) => {
   }
 })
 
+/**
+ * GET /api/internal/projects/:projectId/trust
+ *
+ * Authoritative read of a project's trust + folder configuration.
+ * Called by the agent-runtime at the start of every chat turn (and on
+ * demand via /internal/refresh-trust IPC) so it never relies on the
+ * spawn-time `TRUST_LEVEL` env snapshot — which can't be updated for
+ * a running process and was the root cause of the
+ * "Trust folder still shows restricted" bug.
+ *
+ * Returns the same shape the runtime's TrustResolver consumes:
+ *   { trustLevel, workingMode, linkedFolders }
+ *
+ * Auth: K8s SA token (cluster) OR `x-runtime-token` (local desktop),
+ * both already used by sibling /internal endpoints.
+ */
+app.get('/projects/:projectId/trust', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+
+  if (!(await validateAuth(c, projectId))) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+
+  try {
+    const { prisma } = await import('../lib/prisma')
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: {
+        trustLevel: true,
+        workingMode: true,
+        projectFolders: {
+          select: { path: true, isPrimary: true, lastOpenedAt: true },
+        },
+      },
+    })
+    if (!project) {
+      return c.json({ error: 'Project not found' }, 404)
+    }
+
+    // Same ordering the runtime spawn path uses (manager.ts): primary
+    // folder first, then the rest by most-recently-opened. Keeping the
+    // contract identical means the resolver and the spawn env agree on
+    // "what is the primary workspace dir".
+    const folders = [...project.projectFolders]
+      .sort((a, b) => {
+        if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1
+        const at = a.lastOpenedAt?.getTime() ?? 0
+        const bt = b.lastOpenedAt?.getTime() ?? 0
+        return bt - at
+      })
+      .map((f) => f.path)
+
+    const trustLevel: 'trusted' | 'restricted' =
+      project.trustLevel === 'restricted' ? 'restricted' : 'trusted'
+    const workingMode: 'managed' | 'external' =
+      project.workingMode === 'external' ? 'external' : 'managed'
+
+    return c.json({ trustLevel, workingMode, linkedFolders: folders })
+  } catch (err: any) {
+    console.error(`[Internal] trust read for ${projectId} failed:`, err.message)
+    return c.json({ error: 'Failed to read project trust' }, 500)
+  }
+})
+
 export default app

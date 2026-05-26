@@ -1302,7 +1302,14 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           ...(projectInfo.workingMode === 'external'
             ? {
                 LINKED_FOLDERS: JSON.stringify((projectInfo.folders ?? []).map((f) => f.path)),
-                TRUST_LEVEL: projectInfo.trustLevel ?? 'restricted',
+                // NB: TRUST_LEVEL is deliberately NOT in the spawn env.
+                // Env vars are immutable for a running process — baking
+                // trust in at spawn was the root cause of the
+                // "Trust folder still restricted" bug. The runtime now
+                // resolves trust live from
+                // `GET /api/internal/projects/:id/trust` via
+                // `trust-resolver.ts` (boot + every chat turn + on-demand
+                // IPC from POST /:id/trust → /internal/refresh-trust).
                 RUNTIME_ENABLED: projectInfo.runtimeEnabled ? 'true' : 'false',
               }
             : {}),

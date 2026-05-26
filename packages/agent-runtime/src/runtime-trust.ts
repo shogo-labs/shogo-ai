@@ -12,13 +12,19 @@
  *                                   WORKSPACE_DIR (TODO: future).
  *   - index-engine                → scope embeddings to allowed roots.
  *
- * Design notes:
- *   - We do NOT re-import from server.ts because that file's
- *     side-effecting imports (Hono app, tracing, OTEL) would create a
- *     cycle. server.ts publishes the resolved config onto `globalThis`
- *     so any consumer in the same process gets the same view.
- *   - In tests that don't boot the full server, `getRuntimeTrust()`
- *     falls back to env-only resolution so unit tests stay hermetic.
+ * Architecture (post-2026-05 root-cause fix):
+ *   - `trustLevel` is a **live** value resolved from the API by
+ *     `trust-resolver.ts`. The runtime stopped trusting the
+ *     spawn-time `TRUST_LEVEL` env var because env vars are immutable
+ *     for a running Node process — that's why clicking "Trust folder"
+ *     used to leave the agent stuck on `restricted`.
+ *   - The directory layout (`workspaceDir`, `workingMode`,
+ *     `linkedFolders`) is genuinely immutable for a runtime instance
+ *     (changing primary folder / linked folders requires a restart),
+ *     so server.ts seeds those once via `initTrustResolver(...)` and
+ *     the resolver holds them for the lifetime of the process.
+ *   - In unit tests that don't boot server.ts, `getRuntimeTrust()`
+ *     falls back to env-only resolution so tests stay hermetic.
  *   - Path checks use `realpathSync` to defeat symlink escapes:
  *     `/Users/jane/repo/secret` symlinked to `/etc/passwd` would
  *     otherwise read as if it were under the allowed root.
@@ -27,8 +33,14 @@
 import { existsSync, realpathSync } from 'fs'
 import { resolve, sep } from 'path'
 
-export type WorkingMode = 'managed' | 'external'
-export type TrustLevel = 'trusted' | 'restricted'
+import {
+  getResolvedTrust,
+  isTrustResolverInitialized,
+  type TrustLevel,
+  type WorkingMode,
+} from './trust-resolver'
+
+export type { WorkingMode, TrustLevel } from './trust-resolver'
 
 export interface RuntimeTrust {
   workingMode: WorkingMode
@@ -40,35 +52,40 @@ export interface RuntimeTrust {
 }
 
 /**
- * Resolve the runtime's current trust + allowed-roots policy. Prefers
- * the live config published by server.ts; falls back to env on a fresh
- * process (used in tests / one-off scripts).
+ * Resolve the runtime's current trust + allowed-roots policy.
+ *
+ * Production path: reads from `trust-resolver` which holds the most
+ * recent value the runtime fetched from the API (refreshed at boot,
+ * at the start of every chat turn, and on demand via
+ * /internal/refresh-trust).
+ *
+ * Test / one-shot path: when the resolver hasn't been initialized
+ * (no server.ts boot), falls back to env vars so unit tests stay
+ * hermetic.
  */
 export function getRuntimeTrust(): RuntimeTrust {
-  const fromGlobal = (globalThis as any).__SHOGO_AGENT_RUNTIME_CONFIG__ as
-    | Partial<RuntimeTrust>
-    | undefined
-  if (
-    fromGlobal &&
-    typeof fromGlobal.workspaceDir === 'string' &&
-    Array.isArray(fromGlobal.linkedFolders)
-  ) {
-    return {
-      workingMode: fromGlobal.workingMode === 'external' ? 'external' : 'managed',
-      trustLevel: fromGlobal.trustLevel === 'restricted' ? 'restricted' : 'trusted',
-      workspaceDir: fromGlobal.workspaceDir,
-      linkedFolders: fromGlobal.linkedFolders.filter(
-        (p): p is string => typeof p === 'string' && p.length > 0,
-      ),
-    }
+  if (isTrustResolverInitialized()) {
+    return getResolvedTrust()
   }
-  // Env-only fallback (tests, one-shot scripts).
+  const resolved = getResolvedTrust()
+  if (resolved.workspaceDir) {
+    // Resolver was seeded by initTrustResolver() but the first
+    // refresh() hasn't landed yet (or is failing). Trust whatever
+    // safe default the resolver picked at init time — fail-closed
+    // for external, fail-open for managed.
+    return resolved
+  }
+
+  // Env-only fallback (tests, one-shot scripts, evals).
   const workspaceDir =
     process.env.WORKSPACE_DIR ||
     process.env.AGENT_DIR ||
     process.env.PROJECT_DIR ||
     '/app/workspace'
   const workingMode: WorkingMode = process.env.WORKING_MODE === 'external' ? 'external' : 'managed'
+  // NB: TRUST_LEVEL env is no longer authoritative in production
+  // (that was the bug). We still honor it in the env-only fallback so
+  // unit tests can pin a trust level without booting the resolver.
   const trustLevel: TrustLevel =
     process.env.TRUST_LEVEL === 'restricted'
       ? 'restricted'
