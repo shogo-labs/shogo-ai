@@ -1,77 +1,17 @@
 {
   "package": "apps/api",
-  "generatedAt": "2026-05-26T08:35:00Z",
-  "note": "Cleaned baseline. NOTE: 3 test files crashed (project-chat-gaps, project-chat.expanded, warm-pool-controller) \u2014 their files contribute zero coverage in this snapshot. Fixing them will boost numbers significantly.",
+  "generatedAt": "2026-05-26T10:30:00Z",
+  "note": "Cleaned baseline after fixing 5 broken test files (+178 tests). Comment-stripped via coverage-strip-comments.ts.",
   "files": [
-    {
-      "file": "packages/shared-runtime/src/lsp-service.ts",
-      "linesFound": 939,
-      "linesHit": 83,
-      "funcsFound": 65,
-      "funcsHit": 0,
-      "linePct": 8.839190628328009,
-      "funcPct": 0.0,
-      "uncoveredLines": 856
-    },
-    {
-      "file": "packages/shared-runtime/src/s3-sync.ts",
-      "linesFound": 1005,
-      "linesHit": 260,
-      "funcsFound": 56,
-      "funcsHit": 18,
-      "linePct": 25.870646766169155,
-      "funcPct": 32.142857142857146,
-      "uncoveredLines": 745
-    },
-    {
-      "file": "packages/shogo-worker/src/lib/runtime-manager.ts",
-      "linesFound": 795,
-      "linesHit": 60,
-      "funcsFound": 40,
-      "funcsHit": 2,
-      "linePct": 7.547169811320755,
-      "funcPct": 5.0,
-      "uncoveredLines": 735
-    },
-    {
-      "file": "apps/api/src/lib/runtime/manager.ts",
-      "linesFound": 1206,
-      "linesHit": 773,
-      "funcsFound": 53,
-      "funcsHit": 24,
-      "linePct": 64.09618573797678,
-      "funcPct": 45.283018867924525,
-      "uncoveredLines": 433
-    },
-    {
-      "file": "packages/sdk/src/projects/cloud-file-transport.ts",
-      "linesFound": 438,
-      "linesHit": 6,
-      "funcsFound": 20,
-      "funcsHit": 0,
-      "linePct": 1.36986301369863,
-      "funcPct": 0.0,
-      "uncoveredLines": 432
-    },
     {
       "file": "packages/voice/src/telephony.ts",
       "linesFound": 433,
       "linesHit": 26,
       "funcsFound": 28,
       "funcsHit": 0,
-      "linePct": 6.0046189376443415,
+      "linePct": 6.0,
       "funcPct": 0.0,
       "uncoveredLines": 407
-    },
-    {
-      "file": "packages/shared-runtime/src/server-framework.ts",
-      "linesFound": 409,
-      "linesHit": 10,
-      "funcsFound": 1,
-      "funcsHit": 0,
-      "linePct": 2.444987775061125,
-      "funcPct": 0.0,
-      "uncoveredLines": 399
     },
     {
       "file": "apps/api/src/routes/local-projects.ts",
@@ -79,8 +19,8 @@
       "linesHit": 153,
       "funcsFound": 26,
       "funcsHit": 10,
-      "linePct": 27.818181818181817,
-      "funcPct": 38.46153846153846,
+      "linePct": 27.82,
+      "funcPct": 38.46,
       "uncoveredLines": 397
     },
     {
@@ -89,19 +29,9 @@
       "linesHit": 92,
       "funcsFound": 22,
       "funcsHit": 9,
-      "linePct": 21.004566210045663,
-      "funcPct": 40.90909090909091,
+      "linePct": 21.0,
+      "funcPct": 40.91,
       "uncoveredLines": 346
-    },
-    {
-      "file": "packages/cli/src/pkg.ts",
-      "linesFound": 382,
-      "linesHit": 37,
-      "funcsFound": 24,
-      "funcsHit": 0,
-      "linePct": 9.68586387434555,
-      "funcPct": 0.0,
-      "uncoveredLines": 345
     },
     {
       "file": "apps/api/src/routes/voice.ts",
@@ -109,19 +39,9 @@
       "linesHit": 1188,
       "funcsFound": 40,
       "funcsHit": 25,
-      "linePct": 77.90163934426229,
+      "linePct": 77.9,
       "funcPct": 62.5,
       "uncoveredLines": 337
-    },
-    {
-      "file": "packages/shared-runtime/src/diagnostics.ts",
-      "linesFound": 347,
-      "linesHit": 16,
-      "funcsFound": 15,
-      "funcsHit": 0,
-      "linePct": 4.610951008645533,
-      "funcPct": 0.0,
-      "uncoveredLines": 331
     },
     {
       "file": "packages/voice/src/elevenlabs.ts",
@@ -129,7 +49,7 @@
       "linesHit": 38,
       "funcsFound": 13,
       "funcsHit": 0,
-      "linePct": 10.734463276836157,
+      "linePct": 10.73,
       "funcPct": 0.0,
       "uncoveredLines": 316
     },
@@ -139,8 +59,8 @@
       "linesHit": 628,
       "funcsFound": 31,
       "funcsHit": 20,
-      "linePct": 67.23768736616702,
-      "funcPct": 64.51612903225806,
+      "linePct": 67.24,
+      "funcPct": 64.52,
       "uncoveredLines": 306
     },
     {
@@ -149,39 +69,9 @@
       "linesHit": 1028,
       "funcsFound": 93,
       "funcsHit": 89,
-      "linePct": 77.81983345950037,
-      "funcPct": 95.6989247311828,
+      "linePct": 77.82,
+      "funcPct": 95.7,
       "uncoveredLines": 293
-    },
-    {
-      "file": "apps/api/src/routes/ai-proxy.ts",
-      "linesFound": 2337,
-      "linesHit": 2053,
-      "funcsFound": 137,
-      "funcsHit": 128,
-      "linePct": 87.84766795036371,
-      "funcPct": 93.43065693430657,
-      "uncoveredLines": 284
-    },
-    {
-      "file": "packages/sdk/src/http/client.ts",
-      "linesFound": 282,
-      "linesHit": 13,
-      "funcsFound": 21,
-      "funcsHit": 0,
-      "linePct": 4.609929078014185,
-      "funcPct": 0.0,
-      "uncoveredLines": 269
-    },
-    {
-      "file": "packages/sdk/src/auth/index.ts",
-      "linesFound": 276,
-      "linesHit": 14,
-      "funcsFound": 27,
-      "funcsHit": 0,
-      "linePct": 5.072463768115942,
-      "funcPct": 0.0,
-      "uncoveredLines": 262
     },
     {
       "file": "packages/sdk/src/agent/client.ts",
@@ -189,7 +79,7 @@
       "linesHit": 10,
       "funcsFound": 36,
       "funcsHit": 0,
-      "linePct": 3.7037037037037037,
+      "linePct": 3.7,
       "funcPct": 0.0,
       "uncoveredLines": 260
     },
@@ -199,8 +89,8 @@
       "linesHit": 361,
       "funcsFound": 48,
       "funcsHit": 32,
-      "linePct": 58.98692810457516,
-      "funcPct": 66.66666666666667,
+      "linePct": 58.99,
+      "funcPct": 66.67,
       "uncoveredLines": 251
     },
     {
@@ -209,8 +99,8 @@
       "linesHit": 923,
       "funcsFound": 82,
       "funcsHit": 40,
-      "linePct": 79.91341991341992,
-      "funcPct": 48.78048780487805,
+      "linePct": 79.91,
+      "funcPct": 48.78,
       "uncoveredLines": 232
     },
     {
@@ -219,29 +109,9 @@
       "linesHit": 1150,
       "funcsFound": 77,
       "funcsHit": 64,
-      "linePct": 83.57558139534883,
-      "funcPct": 83.11688311688312,
+      "linePct": 83.58,
+      "funcPct": 83.12,
       "uncoveredLines": 226
-    },
-    {
-      "file": "packages/core/src/stream-buffer.ts",
-      "linesFound": 233,
-      "linesHit": 7,
-      "funcsFound": 14,
-      "funcsHit": 0,
-      "linePct": 3.004291845493562,
-      "funcPct": 0.0,
-      "uncoveredLines": 226
-    },
-    {
-      "file": "packages/shared-runtime/src/postgres-backup.ts",
-      "linesFound": 229,
-      "linesHit": 15,
-      "funcsFound": 14,
-      "funcsHit": 0,
-      "linePct": 6.550218340611353,
-      "funcPct": 0.0,
-      "uncoveredLines": 214
     },
     {
       "file": "apps/api/src/services/project-auth-config.service.ts",
@@ -249,29 +119,9 @@
       "linesHit": 10,
       "funcsFound": 9,
       "funcsHit": 0,
-      "linePct": 4.672897196261682,
+      "linePct": 4.67,
       "funcPct": 0.0,
       "uncoveredLines": 204
-    },
-    {
-      "file": "packages/shared-runtime/src/git-sync.ts",
-      "linesFound": 213,
-      "linesHit": 14,
-      "funcsFound": 13,
-      "funcsHit": 0,
-      "linePct": 6.572769953051643,
-      "funcPct": 0.0,
-      "uncoveredLines": 199
-    },
-    {
-      "file": "packages/sdk/src/stores/optimistic-store.ts",
-      "linesFound": 209,
-      "linesHit": 14,
-      "funcsFound": 17,
-      "funcsHit": 0,
-      "linePct": 6.698564593301436,
-      "funcPct": 0.0,
-      "uncoveredLines": 195
     },
     {
       "file": "packages/voice/src/mock-telephony.ts",
@@ -279,49 +129,19 @@
       "linesHit": 3,
       "funcsFound": 8,
       "funcsHit": 0,
-      "linePct": 1.7241379310344827,
+      "linePct": 1.72,
       "funcPct": 0.0,
       "uncoveredLines": 171
     },
     {
       "file": "apps/api/src/auth.ts",
-      "linesFound": 347,
-      "linesHit": 177,
+      "linesFound": 348,
+      "linesHit": 187,
       "funcsFound": 26,
       "funcsHit": 5,
-      "linePct": 51.00864553314121,
-      "funcPct": 19.23076923076923,
-      "uncoveredLines": 170
-    },
-    {
-      "file": "packages/sdk/src/persistence/APIPersistence.ts",
-      "linesFound": 175,
-      "linesHit": 10,
-      "funcsFound": 14,
-      "funcsHit": 0,
-      "linePct": 5.714285714285714,
-      "funcPct": 0.0,
-      "uncoveredLines": 165
-    },
-    {
-      "file": "apps/api/src/routes/project-chat.ts",
-      "linesFound": 1112,
-      "linesHit": 947,
-      "funcsFound": 61,
-      "funcsHit": 47,
-      "linePct": 85.16187050359713,
-      "funcPct": 77.04918032786885,
-      "uncoveredLines": 165
-    },
-    {
-      "file": "packages/shogo-worker/src/lib/cloud-sync-watcher.ts",
-      "linesFound": 156,
-      "linesHit": 15,
-      "funcsFound": 10,
-      "funcsHit": 0,
-      "linePct": 9.615384615384615,
-      "funcPct": 0.0,
-      "uncoveredLines": 141
+      "linePct": 53.74,
+      "funcPct": 19.23,
+      "uncoveredLines": 161
     },
     {
       "file": "packages/voice/src/twilio.ts",
@@ -329,7 +149,7 @@
       "linesHit": 4,
       "funcsFound": 8,
       "funcsHit": 0,
-      "linePct": 2.7777777777777777,
+      "linePct": 2.78,
       "funcPct": 0.0,
       "uncoveredLines": 140
     },
@@ -339,19 +159,19 @@
       "linesHit": 603,
       "funcsFound": 25,
       "funcsHit": 23,
-      "linePct": 81.59675236806495,
+      "linePct": 81.6,
       "funcPct": 92.0,
       "uncoveredLines": 136
     },
     {
-      "file": "packages/sdk/src/platform/index.ts",
-      "linesFound": 137,
-      "linesHit": 2,
-      "funcsFound": 25,
-      "funcsHit": 0,
-      "linePct": 1.4598540145985401,
-      "funcPct": 0.0,
-      "uncoveredLines": 135
+      "file": "apps/api/src/routes/project-chat.ts",
+      "linesFound": 1112,
+      "linesHit": 981,
+      "funcsFound": 61,
+      "funcsHit": 47,
+      "linePct": 88.22,
+      "funcPct": 77.05,
+      "uncoveredLines": 131
     },
     {
       "file": "apps/api/src/services/cost-analytics.service.ts",
@@ -359,19 +179,9 @@
       "linesHit": 1078,
       "funcsFound": 95,
       "funcsHit": 95,
-      "linePct": 89.53488372093024,
+      "linePct": 89.53,
       "funcPct": 100.0,
       "uncoveredLines": 126
-    },
-    {
-      "file": "packages/shared-runtime/src/token-refresh.ts",
-      "linesFound": 131,
-      "linesHit": 7,
-      "funcsFound": 2,
-      "funcsHit": 0,
-      "linePct": 5.343511450381679,
-      "funcPct": 0.0,
-      "uncoveredLines": 124
     },
     {
       "file": "packages/sdk/src/agent/hooks.ts",
@@ -379,29 +189,9 @@
       "linesHit": 6,
       "funcsFound": 5,
       "funcsHit": 0,
-      "linePct": 4.838709677419355,
+      "linePct": 4.84,
       "funcPct": 0.0,
       "uncoveredLines": 118
-    },
-    {
-      "file": "packages/shogo-worker/src/lib/git-cloner.ts",
-      "linesFound": 128,
-      "linesHit": 13,
-      "funcsFound": 8,
-      "funcsHit": 0,
-      "linePct": 10.15625,
-      "funcPct": 0.0,
-      "uncoveredLines": 115
-    },
-    {
-      "file": "packages/shared-runtime/src/self-assign.ts",
-      "linesFound": 125,
-      "linesHit": 11,
-      "funcsFound": 6,
-      "funcsHit": 0,
-      "linePct": 8.8,
-      "funcPct": 0.0,
-      "uncoveredLines": 114
     },
     {
       "file": "apps/api/src/lib/warm-pool-controller.ts",
@@ -409,19 +199,9 @@
       "linesHit": 1475,
       "funcsFound": 123,
       "funcsHit": 87,
-      "linePct": 92.94265910522999,
-      "funcPct": 70.73170731707317,
+      "linePct": 92.94,
+      "funcPct": 70.73,
       "uncoveredLines": 112
-    },
-    {
-      "file": "packages/sdk/src/client.ts",
-      "linesFound": 121,
-      "linesHit": 17,
-      "funcsFound": 6,
-      "funcsHit": 0,
-      "linePct": 14.049586776859504,
-      "funcPct": 0.0,
-      "uncoveredLines": 104
     },
     {
       "file": "packages/email/src/providers/smtp.ts",
@@ -429,7 +209,7 @@
       "linesHit": 10,
       "funcsFound": 9,
       "funcsHit": 0,
-      "linePct": 9.090909090909092,
+      "linePct": 9.09,
       "funcPct": 0.0,
       "uncoveredLines": 100
     },
@@ -439,7 +219,7 @@
       "linesHit": 9,
       "funcsFound": 8,
       "funcsHit": 0,
-      "linePct": 8.910891089108912,
+      "linePct": 8.91,
       "funcPct": 0.0,
       "uncoveredLines": 92
     },
@@ -449,49 +229,19 @@
       "linesHit": 57,
       "funcsFound": 11,
       "funcsHit": 1,
-      "linePct": 38.775510204081634,
-      "funcPct": 9.090909090909092,
+      "linePct": 38.78,
+      "funcPct": 9.09,
       "uncoveredLines": 90
-    },
-    {
-      "file": "packages/core/src/instrumentation.ts",
-      "linesFound": 96,
-      "linesHit": 9,
-      "funcsFound": 3,
-      "funcsHit": 0,
-      "linePct": 9.375,
-      "funcPct": 0.0,
-      "uncoveredLines": 87
     },
     {
       "file": "apps/api/src/lib/prisma.ts",
       "linesFound": 123,
-      "linesHit": 41,
+      "linesHit": 40,
       "funcsFound": 6,
       "funcsHit": 2,
-      "linePct": 33.333333333333336,
-      "funcPct": 33.333333333333336,
-      "uncoveredLines": 82
-    },
-    {
-      "file": "packages/shared-runtime/src/preview-token.ts",
-      "linesFound": 83,
-      "linesHit": 4,
-      "funcsFound": 5,
-      "funcsHit": 0,
-      "linePct": 4.819277108433735,
-      "funcPct": 0.0,
-      "uncoveredLines": 79
-    },
-    {
-      "file": "packages/sdk/src/errors.ts",
-      "linesFound": 96,
-      "linesHit": 22,
-      "funcsFound": 16,
-      "funcsHit": 0,
-      "linePct": 22.916666666666668,
-      "funcPct": 0.0,
-      "uncoveredLines": 74
+      "linePct": 32.52,
+      "funcPct": 33.33,
+      "uncoveredLines": 83
     },
     {
       "file": "apps/api/src/services/stripe-connect.service.ts",
@@ -499,29 +249,9 @@
       "linesHit": 281,
       "funcsFound": 26,
       "funcsHit": 24,
-      "linePct": 79.60339943342777,
-      "funcPct": 92.3076923076923,
+      "linePct": 79.6,
+      "funcPct": 92.31,
       "uncoveredLines": 72
-    },
-    {
-      "file": "packages/sdk/src/storage/adapter.ts",
-      "linesFound": 100,
-      "linesHit": 30,
-      "funcsFound": 23,
-      "funcsHit": 0,
-      "linePct": 30.0,
-      "funcPct": 0.0,
-      "uncoveredLines": 70
-    },
-    {
-      "file": "packages/agent/src/ai-client.ts",
-      "linesFound": 75,
-      "linesHit": 6,
-      "funcsFound": 4,
-      "funcsHit": 0,
-      "linePct": 8.0,
-      "funcPct": 0.0,
-      "uncoveredLines": 69
     },
     {
       "file": "packages/email/src/server.ts",
@@ -539,19 +269,9 @@
       "linesHit": 58,
       "funcsFound": 10,
       "funcsHit": 0,
-      "linePct": 47.93388429752066,
+      "linePct": 47.93,
       "funcPct": 0.0,
       "uncoveredLines": 63
-    },
-    {
-      "file": "packages/sdk/src/projects/index.ts",
-      "linesFound": 67,
-      "linesHit": 6,
-      "funcsFound": 10,
-      "funcsHit": 0,
-      "linePct": 8.955223880597014,
-      "funcPct": 0.0,
-      "uncoveredLines": 61
     },
     {
       "file": "apps/api/src/routes/affiliates.ts",
@@ -559,8 +279,8 @@
       "linesHit": 204,
       "funcsFound": 24,
       "funcsHit": 22,
-      "linePct": 76.98113207547169,
-      "funcPct": 91.66666666666667,
+      "linePct": 76.98,
+      "funcPct": 91.67,
       "uncoveredLines": 61
     },
     {
@@ -569,7 +289,7 @@
       "linesHit": 139,
       "funcsFound": 17,
       "funcsHit": 17,
-      "linePct": 69.84924623115577,
+      "linePct": 69.85,
       "funcPct": 100.0,
       "uncoveredLines": 60
     },
@@ -579,29 +299,9 @@
       "linesHit": 870,
       "funcsFound": 73,
       "funcsHit": 62,
-      "linePct": 93.64908503767492,
-      "funcPct": 84.93150684931507,
+      "linePct": 93.65,
+      "funcPct": 84.93,
       "uncoveredLines": 59
-    },
-    {
-      "file": "packages/agent/src/model-catalog/helpers.ts",
-      "linesFound": 104,
-      "linesHit": 53,
-      "funcsFound": 14,
-      "funcsHit": 4,
-      "linePct": 50.96153846153846,
-      "funcPct": 28.571428571428573,
-      "uncoveredLines": 51
-    },
-    {
-      "file": "packages/shogo-worker/src/lib/runtime-resolver.ts",
-      "linesFound": 55,
-      "linesHit": 4,
-      "funcsFound": 6,
-      "funcsHit": 0,
-      "linePct": 7.2727272727272725,
-      "funcPct": 0.0,
-      "uncoveredLines": 51
     },
     {
       "file": "apps/api/src/services/creator-follow.service.ts",
@@ -609,29 +309,9 @@
       "linesHit": 122,
       "funcsFound": 19,
       "funcsHit": 18,
-      "linePct": 71.34502923976608,
-      "funcPct": 94.73684210526316,
+      "linePct": 71.35,
+      "funcPct": 94.74,
       "uncoveredLines": 49
-    },
-    {
-      "file": "packages/sdk/src/react/DomainProvider.tsx",
-      "linesFound": 53,
-      "linesHit": 6,
-      "funcsFound": 5,
-      "funcsHit": 0,
-      "linePct": 11.320754716981131,
-      "funcPct": 0.0,
-      "uncoveredLines": 47
-    },
-    {
-      "file": "packages/sdk/src/machines/index.ts",
-      "linesFound": 46,
-      "linesHit": 2,
-      "funcsFound": 7,
-      "funcsHit": 0,
-      "linePct": 4.3478260869565215,
-      "funcPct": 0.0,
-      "uncoveredLines": 44
     },
     {
       "file": "apps/api/src/services/git.service.ts",
@@ -639,19 +319,9 @@
       "linesHit": 624,
       "funcsFound": 43,
       "funcsHit": 43,
-      "linePct": 93.69369369369369,
+      "linePct": 93.69,
       "funcPct": 100.0,
       "uncoveredLines": 42
-    },
-    {
-      "file": "packages/core/src/logger.ts",
-      "linesFound": 48,
-      "linesHit": 9,
-      "funcsFound": 3,
-      "funcsHit": 0,
-      "linePct": 18.75,
-      "funcPct": 0.0,
-      "uncoveredLines": 39
     },
     {
       "file": "apps/api/src/services/billing.service.ts",
@@ -659,7 +329,7 @@
       "linesHit": 651,
       "funcsFound": 50,
       "funcsHit": 49,
-      "linePct": 94.62209302325581,
+      "linePct": 94.62,
       "funcPct": 98.0,
       "uncoveredLines": 37
     },
@@ -669,8 +339,8 @@
       "linesHit": 546,
       "funcsFound": 61,
       "funcsHit": 60,
-      "linePct": 93.97590361445783,
-      "funcPct": 98.36065573770492,
+      "linePct": 93.98,
+      "funcPct": 98.36,
       "uncoveredLines": 35
     },
     {
@@ -679,8 +349,8 @@
       "linesHit": 264,
       "funcsFound": 34,
       "funcsHit": 27,
-      "linePct": 88.59060402684564,
-      "funcPct": 79.41176470588235,
+      "linePct": 88.59,
+      "funcPct": 79.41,
       "uncoveredLines": 34
     },
     {
@@ -689,8 +359,8 @@
       "linesHit": 422,
       "funcsFound": 56,
       "funcsHit": 45,
-      "linePct": 92.95154185022027,
-      "funcPct": 80.35714285714286,
+      "linePct": 92.95,
+      "funcPct": 80.36,
       "uncoveredLines": 32
     },
     {
@@ -699,29 +369,9 @@
       "linesHit": 6,
       "funcsFound": 4,
       "funcsHit": 0,
-      "linePct": 16.666666666666668,
+      "linePct": 16.67,
       "funcPct": 0.0,
       "uncoveredLines": 30
-    },
-    {
-      "file": "packages/agent/src/ai-proxy.ts",
-      "linesFound": 30,
-      "linesHit": 0,
-      "funcsFound": 1,
-      "funcsHit": 0,
-      "linePct": 0.0,
-      "funcPct": 0.0,
-      "uncoveredLines": 30
-    },
-    {
-      "file": "packages/shared-runtime/src/runtime-types.ts",
-      "linesFound": 42,
-      "linesHit": 16,
-      "funcsFound": 2,
-      "funcsHit": 1,
-      "linePct": 38.095238095238095,
-      "funcPct": 50.0,
-      "uncoveredLines": 26
     },
     {
       "file": "apps/api/src/jobs/affiliate-invoice-reconciliation.ts",
@@ -729,8 +379,8 @@
       "linesHit": 57,
       "funcsFound": 6,
       "funcsHit": 4,
-      "linePct": 69.51219512195122,
-      "funcPct": 66.66666666666667,
+      "linePct": 69.51,
+      "funcPct": 66.67,
       "uncoveredLines": 25
     },
     {
@@ -739,7 +389,7 @@
       "linesHit": 124,
       "funcsFound": 13,
       "funcsHit": 13,
-      "linePct": 84.93150684931507,
+      "linePct": 84.93,
       "funcPct": 100.0,
       "uncoveredLines": 22
     },
@@ -749,7 +399,7 @@
       "linesHit": 354,
       "funcsFound": 25,
       "funcsHit": 25,
-      "linePct": 94.14893617021276,
+      "linePct": 94.15,
       "funcPct": 100.0,
       "uncoveredLines": 22
     },
@@ -759,7 +409,7 @@
       "linesHit": 124,
       "funcsFound": 12,
       "funcsHit": 12,
-      "linePct": 85.51724137931035,
+      "linePct": 85.52,
       "funcPct": 100.0,
       "uncoveredLines": 21
     },
@@ -769,17 +419,7 @@
       "linesHit": 6,
       "funcsFound": 1,
       "funcsHit": 0,
-      "linePct": 23.076923076923077,
-      "funcPct": 0.0,
-      "uncoveredLines": 20
-    },
-    {
-      "file": "packages/sdk/src/llm/index.ts",
-      "linesFound": 22,
-      "linesHit": 2,
-      "funcsFound": 1,
-      "funcsHit": 0,
-      "linePct": 9.090909090909092,
+      "linePct": 23.08,
       "funcPct": 0.0,
       "uncoveredLines": 20
     },
@@ -789,8 +429,8 @@
       "linesHit": 543,
       "funcsFound": 37,
       "funcsHit": 33,
-      "linePct": 96.79144385026738,
-      "funcPct": 89.1891891891892,
+      "linePct": 96.79,
+      "funcPct": 89.19,
       "uncoveredLines": 18
     },
     {
@@ -809,7 +449,7 @@
       "linesHit": 283,
       "funcsFound": 42,
       "funcsHit": 42,
-      "linePct": 94.96644295302013,
+      "linePct": 94.97,
       "funcPct": 100.0,
       "uncoveredLines": 15
     },
@@ -819,7 +459,7 @@
       "linesHit": 16,
       "funcsFound": 4,
       "funcsHit": 3,
-      "linePct": 51.61290322580645,
+      "linePct": 51.61,
       "funcPct": 75.0,
       "uncoveredLines": 15
     },
@@ -829,7 +469,7 @@
       "linesHit": 16,
       "funcsFound": 4,
       "funcsHit": 3,
-      "linePct": 51.61290322580645,
+      "linePct": 51.61,
       "funcPct": 75.0,
       "uncoveredLines": 15
     },
@@ -839,8 +479,8 @@
       "linesHit": 390,
       "funcsFound": 70,
       "funcsHit": 66,
-      "linePct": 96.7741935483871,
-      "funcPct": 94.28571428571429,
+      "linePct": 96.77,
+      "funcPct": 94.29,
       "uncoveredLines": 13
     },
     {
@@ -849,7 +489,7 @@
       "linesHit": 194,
       "funcsFound": 23,
       "funcsHit": 23,
-      "linePct": 93.71980676328502,
+      "linePct": 93.72,
       "funcPct": 100.0,
       "uncoveredLines": 13
     },
@@ -859,18 +499,8 @@
       "linesHit": 80,
       "funcsFound": 15,
       "funcsHit": 14,
-      "linePct": 86.02150537634408,
-      "funcPct": 93.33333333333333,
-      "uncoveredLines": 13
-    },
-    {
-      "file": "apps/api/src/services/marketplace-install.service.ts",
-      "linesFound": 352,
-      "linesHit": 339,
-      "funcsFound": 24,
-      "funcsHit": 22,
-      "linePct": 96.30681818181819,
-      "funcPct": 91.66666666666667,
+      "linePct": 86.02,
+      "funcPct": 93.33,
       "uncoveredLines": 13
     },
     {
@@ -879,7 +509,7 @@
       "linesHit": 105,
       "funcsFound": 8,
       "funcsHit": 8,
-      "linePct": 89.74358974358974,
+      "linePct": 89.74,
       "funcPct": 100.0,
       "uncoveredLines": 12
     },
@@ -889,7 +519,7 @@
       "linesHit": 409,
       "funcsFound": 36,
       "funcsHit": 36,
-      "linePct": 97.14964370546318,
+      "linePct": 97.15,
       "funcPct": 100.0,
       "uncoveredLines": 12
     },
@@ -899,7 +529,7 @@
       "linesHit": 267,
       "funcsFound": 20,
       "funcsHit": 20,
-      "linePct": 96.0431654676259,
+      "linePct": 96.04,
       "funcPct": 100.0,
       "uncoveredLines": 11
     },
@@ -914,22 +544,12 @@
       "uncoveredLines": 11
     },
     {
-      "file": "packages/core/src/chat-message.ts",
-      "linesFound": 12,
-      "linesHit": 1,
-      "funcsFound": 2,
-      "funcsHit": 0,
-      "linePct": 8.333333333333334,
-      "funcPct": 0.0,
-      "uncoveredLines": 11
-    },
-    {
       "file": "apps/api/src/routes/license-keys.ts",
       "linesFound": 175,
       "linesHit": 165,
       "funcsFound": 13,
       "funcsHit": 13,
-      "linePct": 94.28571428571429,
+      "linePct": 94.29,
       "funcPct": 100.0,
       "uncoveredLines": 10
     },
@@ -939,7 +559,7 @@
       "linesHit": 169,
       "funcsFound": 13,
       "funcsHit": 13,
-      "linePct": 94.41340782122904,
+      "linePct": 94.41,
       "funcPct": 100.0,
       "uncoveredLines": 10
     },
@@ -949,8 +569,8 @@
       "linesHit": 113,
       "funcsFound": 11,
       "funcsHit": 8,
-      "linePct": 91.869918699187,
-      "funcPct": 72.72727272727273,
+      "linePct": 91.87,
+      "funcPct": 72.73,
       "uncoveredLines": 10
     },
     {
@@ -959,18 +579,8 @@
       "linesHit": 347,
       "funcsFound": 11,
       "funcsHit": 11,
-      "linePct": 97.19887955182072,
+      "linePct": 97.2,
       "funcPct": 100.0,
-      "uncoveredLines": 10
-    },
-    {
-      "file": "packages/shared-runtime/src/diagnostics-build-buffer.ts",
-      "linesFound": 13,
-      "linesHit": 3,
-      "funcsFound": 4,
-      "funcsHit": 0,
-      "linePct": 23.076923076923077,
-      "funcPct": 0.0,
       "uncoveredLines": 10
     },
     {
@@ -979,18 +589,8 @@
       "linesHit": 161,
       "funcsFound": 15,
       "funcsHit": 15,
-      "linePct": 94.70588235294117,
+      "linePct": 94.71,
       "funcPct": 100.0,
-      "uncoveredLines": 9
-    },
-    {
-      "file": "apps/api/src/services/marketplace-snapshot-storage.service.ts",
-      "linesFound": 284,
-      "linesHit": 275,
-      "funcsFound": 42,
-      "funcsHit": 39,
-      "linePct": 96.83098591549296,
-      "funcPct": 92.85714285714286,
       "uncoveredLines": 9
     },
     {
@@ -999,7 +599,7 @@
       "linesHit": 133,
       "funcsFound": 15,
       "funcsHit": 15,
-      "linePct": 93.66197183098592,
+      "linePct": 93.66,
       "funcPct": 100.0,
       "uncoveredLines": 9
     },
@@ -1009,7 +609,7 @@
       "linesHit": 310,
       "funcsFound": 24,
       "funcsHit": 21,
-      "linePct": 97.48427672955975,
+      "linePct": 97.48,
       "funcPct": 87.5,
       "uncoveredLines": 8
     },
@@ -1019,7 +619,7 @@
       "linesHit": 88,
       "funcsFound": 2,
       "funcsHit": 2,
-      "linePct": 91.66666666666667,
+      "linePct": 91.67,
       "funcPct": 100.0,
       "uncoveredLines": 8
     },
@@ -1029,19 +629,9 @@
       "linesHit": 94,
       "funcsFound": 10,
       "funcsHit": 10,
-      "linePct": 92.15686274509804,
+      "linePct": 92.16,
       "funcPct": 100.0,
       "uncoveredLines": 8
-    },
-    {
-      "file": "packages/shogo-worker/src/lib/paths.ts",
-      "linesFound": 25,
-      "linesHit": 18,
-      "funcsFound": 4,
-      "funcsHit": 0,
-      "linePct": 72.0,
-      "funcPct": 0.0,
-      "uncoveredLines": 7
     },
     {
       "file": "apps/api/src/routes/chat.ts",
@@ -1049,7 +639,7 @@
       "linesHit": 245,
       "funcsFound": 8,
       "funcsHit": 7,
-      "linePct": 97.22222222222223,
+      "linePct": 97.22,
       "funcPct": 87.5,
       "uncoveredLines": 7
     },
@@ -1059,7 +649,7 @@
       "linesHit": 172,
       "funcsFound": 4,
       "funcsHit": 4,
-      "linePct": 96.08938547486034,
+      "linePct": 96.09,
       "funcPct": 100.0,
       "uncoveredLines": 7
     },
@@ -1069,7 +659,7 @@
       "linesHit": 384,
       "funcsFound": 38,
       "funcsHit": 38,
-      "linePct": 98.20971867007673,
+      "linePct": 98.21,
       "funcPct": 100.0,
       "uncoveredLines": 7
     },
@@ -1079,7 +669,7 @@
       "linesHit": 163,
       "funcsFound": 29,
       "funcsHit": 29,
-      "linePct": 96.44970414201184,
+      "linePct": 96.45,
       "funcPct": 100.0,
       "uncoveredLines": 6
     },
@@ -1089,7 +679,7 @@
       "linesHit": 222,
       "funcsFound": 16,
       "funcsHit": 16,
-      "linePct": 97.36842105263158,
+      "linePct": 97.37,
       "funcPct": 100.0,
       "uncoveredLines": 6
     },
@@ -1099,7 +689,7 @@
       "linesHit": 187,
       "funcsFound": 20,
       "funcsHit": 20,
-      "linePct": 96.89119170984456,
+      "linePct": 96.89,
       "funcPct": 100.0,
       "uncoveredLines": 6
     },
@@ -1109,7 +699,7 @@
       "linesHit": 29,
       "funcsFound": 1,
       "funcsHit": 1,
-      "linePct": 85.29411764705883,
+      "linePct": 85.29,
       "funcPct": 100.0,
       "uncoveredLines": 5
     },
@@ -1119,7 +709,7 @@
       "linesHit": 36,
       "funcsFound": 4,
       "funcsHit": 4,
-      "linePct": 87.8048780487805,
+      "linePct": 87.8,
       "funcPct": 100.0,
       "uncoveredLines": 5
     },
@@ -1129,7 +719,7 @@
       "linesHit": 93,
       "funcsFound": 1,
       "funcsHit": 0,
-      "linePct": 94.89795918367346,
+      "linePct": 94.9,
       "funcPct": 0.0,
       "uncoveredLines": 5
     },
@@ -1139,8 +729,8 @@
       "linesHit": 408,
       "funcsFound": 48,
       "funcsHit": 43,
-      "linePct": 98.78934624697337,
-      "funcPct": 89.58333333333333,
+      "linePct": 98.79,
+      "funcPct": 89.58,
       "uncoveredLines": 5
     },
     {
@@ -1149,7 +739,7 @@
       "linesHit": 122,
       "funcsFound": 36,
       "funcsHit": 27,
-      "linePct": 96.82539682539682,
+      "linePct": 96.83,
       "funcPct": 75.0,
       "uncoveredLines": 4
     },
@@ -1159,7 +749,7 @@
       "linesHit": 392,
       "funcsFound": 47,
       "funcsHit": 47,
-      "linePct": 98.98989898989899,
+      "linePct": 98.99,
       "funcPct": 100.0,
       "uncoveredLines": 4
     },
@@ -1169,7 +759,7 @@
       "linesHit": 59,
       "funcsFound": 11,
       "funcsHit": 11,
-      "linePct": 95.16129032258064,
+      "linePct": 95.16,
       "funcPct": 100.0,
       "uncoveredLines": 3
     },
@@ -1179,7 +769,7 @@
       "linesHit": 50,
       "funcsFound": 7,
       "funcsHit": 7,
-      "linePct": 94.33962264150944,
+      "linePct": 94.34,
       "funcPct": 100.0,
       "uncoveredLines": 3
     },
@@ -1189,7 +779,7 @@
       "linesHit": 315,
       "funcsFound": 15,
       "funcsHit": 15,
-      "linePct": 99.05660377358491,
+      "linePct": 99.06,
       "funcPct": 100.0,
       "uncoveredLines": 3
     },
@@ -1199,17 +789,7 @@
       "linesHit": 59,
       "funcsFound": 5,
       "funcsHit": 5,
-      "linePct": 95.16129032258064,
-      "funcPct": 100.0,
-      "uncoveredLines": 3
-    },
-    {
-      "file": "apps/api/src/lib/cloud-key-wipe.ts",
-      "linesFound": 46,
-      "linesHit": 43,
-      "funcsFound": 7,
-      "funcsHit": 7,
-      "linePct": 93.47826086956522,
+      "linePct": 95.16,
       "funcPct": 100.0,
       "uncoveredLines": 3
     },
@@ -1219,8 +799,18 @@
       "linesHit": 479,
       "funcsFound": 29,
       "funcsHit": 27,
-      "linePct": 99.37759336099585,
-      "funcPct": 93.10344827586206,
+      "linePct": 99.38,
+      "funcPct": 93.1,
+      "uncoveredLines": 3
+    },
+    {
+      "file": "apps/api/src/lib/cloud-key-wipe.ts",
+      "linesFound": 46,
+      "linesHit": 43,
+      "funcsFound": 7,
+      "funcsHit": 7,
+      "linePct": 93.48,
+      "funcPct": 100.0,
       "uncoveredLines": 3
     },
     {
@@ -1229,18 +819,18 @@
       "linesHit": 181,
       "funcsFound": 19,
       "funcsHit": 19,
-      "linePct": 98.3695652173913,
+      "linePct": 98.37,
       "funcPct": 100.0,
       "uncoveredLines": 3
     },
     {
-      "file": "apps/api/src/services/marketplace-manifest.service.ts",
-      "linesFound": 174,
-      "linesHit": 171,
-      "funcsFound": 12,
-      "funcsHit": 12,
-      "linePct": 98.27586206896552,
-      "funcPct": 100.0,
+      "file": "apps/api/src/services/marketplace-snapshot-storage.service.ts",
+      "linesFound": 278,
+      "linesHit": 275,
+      "funcsFound": 42,
+      "funcsHit": 39,
+      "linePct": 98.92,
+      "funcPct": 92.86,
       "uncoveredLines": 3
     },
     {
@@ -1249,8 +839,8 @@
       "linesHit": 495,
       "funcsFound": 61,
       "funcsHit": 55,
-      "linePct": 99.39759036144578,
-      "funcPct": 90.1639344262295,
+      "linePct": 99.4,
+      "funcPct": 90.16,
       "uncoveredLines": 3
     },
     {
@@ -1259,7 +849,7 @@
       "linesHit": 66,
       "funcsFound": 5,
       "funcsHit": 5,
-      "linePct": 97.05882352941177,
+      "linePct": 97.06,
       "funcPct": 100.0,
       "uncoveredLines": 2
     },
@@ -1269,38 +859,8 @@
       "linesHit": 45,
       "funcsFound": 5,
       "funcsHit": 5,
-      "linePct": 95.74468085106383,
+      "linePct": 95.74,
       "funcPct": 100.0,
-      "uncoveredLines": 2
-    },
-    {
-      "file": "packages/agent/src/model-catalog/aliases.ts",
-      "linesFound": 29,
-      "linesHit": 27,
-      "funcsFound": 3,
-      "funcsHit": 1,
-      "linePct": 93.10344827586206,
-      "funcPct": 33.333333333333336,
-      "uncoveredLines": 2
-    },
-    {
-      "file": "packages/core/src/macos-junk.ts",
-      "linesFound": 21,
-      "linesHit": 19,
-      "funcsFound": 2,
-      "funcsHit": 1,
-      "linePct": 90.47619047619048,
-      "funcPct": 50.0,
-      "uncoveredLines": 2
-    },
-    {
-      "file": "packages/core/src/tech-stack-registry.ts",
-      "linesFound": 22,
-      "linesHit": 20,
-      "funcsFound": 4,
-      "funcsHit": 2,
-      "linePct": 90.9090909090909,
-      "funcPct": 50.0,
       "uncoveredLines": 2
     },
     {
@@ -1309,18 +869,8 @@
       "linesHit": 196,
       "funcsFound": 13,
       "funcsHit": 13,
-      "linePct": 98.98989898989899,
+      "linePct": 98.99,
       "funcPct": 100.0,
-      "uncoveredLines": 2
-    },
-    {
-      "file": "packages/sdk/src/attachments/data-url.ts",
-      "linesFound": 2,
-      "linesHit": 0,
-      "funcsFound": 1,
-      "funcsHit": 0,
-      "linePct": 0.0,
-      "funcPct": 0.0,
       "uncoveredLines": 2
     },
     {
@@ -1329,7 +879,7 @@
       "linesHit": 196,
       "funcsFound": 36,
       "funcsHit": 36,
-      "linePct": 98.98989898989899,
+      "linePct": 98.99,
       "funcPct": 100.0,
       "uncoveredLines": 2
     },
@@ -1339,8 +889,8 @@
       "linesHit": 240,
       "funcsFound": 22,
       "funcsHit": 21,
-      "linePct": 99.17355371900827,
-      "funcPct": 95.45454545454545,
+      "linePct": 99.17,
+      "funcPct": 95.45,
       "uncoveredLines": 2
     },
     {
@@ -1349,7 +899,7 @@
       "linesHit": 36,
       "funcsFound": 5,
       "funcsHit": 5,
-      "linePct": 97.29729729729729,
+      "linePct": 97.3,
       "funcPct": 100.0,
       "uncoveredLines": 1
     },
@@ -1359,7 +909,7 @@
       "linesHit": 60,
       "funcsFound": 4,
       "funcsHit": 4,
-      "linePct": 98.36065573770492,
+      "linePct": 98.36,
       "funcPct": 100.0,
       "uncoveredLines": 1
     },
@@ -1369,7 +919,7 @@
       "linesHit": 62,
       "funcsFound": 6,
       "funcsHit": 6,
-      "linePct": 98.41269841269842,
+      "linePct": 98.41,
       "funcPct": 100.0,
       "uncoveredLines": 1
     },
@@ -1379,7 +929,7 @@
       "linesHit": 137,
       "funcsFound": 17,
       "funcsHit": 17,
-      "linePct": 99.27536231884058,
+      "linePct": 99.28,
       "funcPct": 100.0,
       "uncoveredLines": 1
     },
@@ -1389,7 +939,7 @@
       "linesHit": 102,
       "funcsFound": 9,
       "funcsHit": 9,
-      "linePct": 99.02912621359224,
+      "linePct": 99.03,
       "funcPct": 100.0,
       "uncoveredLines": 1
     },
@@ -1399,7 +949,7 @@
       "linesHit": 61,
       "funcsFound": 10,
       "funcsHit": 10,
-      "linePct": 98.38709677419355,
+      "linePct": 98.39,
       "funcPct": 100.0,
       "uncoveredLines": 1
     },
@@ -1409,7 +959,7 @@
       "linesHit": 114,
       "funcsFound": 6,
       "funcsHit": 6,
-      "linePct": 99.1304347826087,
+      "linePct": 99.13,
       "funcPct": 100.0,
       "uncoveredLines": 1
     },
@@ -1480,7 +1030,7 @@
       "funcsFound": 6,
       "funcsHit": 4,
       "linePct": 100.0,
-      "funcPct": 66.66666666666667,
+      "funcPct": 66.67,
       "uncoveredLines": 0
     },
     {
@@ -1504,301 +1054,11 @@
       "uncoveredLines": 0
     },
     {
-      "file": "packages/agent/src/model-catalog/index.ts",
-      "linesFound": 3,
-      "linesHit": 3,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/agent/src/model-catalog/models.ts",
-      "linesFound": 240,
-      "linesHit": 240,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/sdk/src/ai-client.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/sdk/src/ai-proxy.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/sdk/src/chat-message.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/sdk/src/cli/pkg.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/sdk/src/instrumentation.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/sdk/src/logger.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/sdk/src/macos-junk.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/sdk/src/stream-buffer.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/sdk/src/tech-stack-registry.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/shared-runtime/src/ai-client.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/shared-runtime/src/ai-proxy.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/shared-runtime/src/chat-message.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/shared-runtime/src/index.ts",
-      "linesFound": 19,
-      "linesHit": 19,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/shared-runtime/src/instrumentation.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/shared-runtime/src/logger.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/shared-runtime/src/macos-junk.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/shared-runtime/src/platform-pkg.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/shared-runtime/src/stream-buffer.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/shared-runtime/src/tech-stack-registry.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "apps/api/src/lib/runtime/index.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
       "file": "apps/api/src/lib/usage-cost.ts",
       "linesFound": 68,
       "linesHit": 68,
       "funcsFound": 5,
       "funcsHit": 5,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/model-catalog/src/index.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/sdk/src/index.ts",
-      "linesFound": 14,
-      "linesHit": 14,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/sdk/src/model-catalog/index.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/sdk/src/persistence/index.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/sdk/src/react/index.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/sdk/src/stores/index.ts",
-      "linesFound": 1,
-      "linesHit": 1,
-      "funcsFound": 1,
-      "funcsHit": 1,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "packages/voice/src/index.ts",
-      "linesFound": 6,
-      "linesHit": 6,
-      "funcsFound": 1,
-      "funcsHit": 1,
       "linePct": 100.0,
       "funcPct": 100.0,
       "uncoveredLines": 0
@@ -1824,6 +1084,16 @@
       "uncoveredLines": 0
     },
     {
+      "file": "packages/voice/src/index.ts",
+      "linesFound": 6,
+      "linesHit": 6,
+      "funcsFound": 1,
+      "funcsHit": 1,
+      "linePct": 100.0,
+      "funcPct": 100.0,
+      "uncoveredLines": 0
+    },
+    {
       "file": "apps/api/src/routes/checkpoints.ts",
       "linesFound": 220,
       "linesHit": 220,
@@ -1840,7 +1110,7 @@
       "funcsFound": 19,
       "funcsHit": 15,
       "linePct": 100.0,
-      "funcPct": 78.94736842105263,
+      "funcPct": 78.95,
       "uncoveredLines": 0
     },
     {
@@ -1930,7 +1200,7 @@
       "funcsFound": 11,
       "funcsHit": 9,
       "linePct": 100.0,
-      "funcPct": 81.81818181818181,
+      "funcPct": 81.82,
       "uncoveredLines": 0
     },
     {
@@ -2010,7 +1280,27 @@
       "funcsFound": 14,
       "funcsHit": 13,
       "linePct": 100.0,
-      "funcPct": 92.85714285714286,
+      "funcPct": 92.86,
+      "uncoveredLines": 0
+    },
+    {
+      "file": "apps/api/src/services/marketplace-install.service.ts",
+      "linesFound": 339,
+      "linesHit": 339,
+      "funcsFound": 24,
+      "funcsHit": 22,
+      "linePct": 100.0,
+      "funcPct": 91.67,
+      "uncoveredLines": 0
+    },
+    {
+      "file": "apps/api/src/types/progress.ts",
+      "linesFound": 6,
+      "linesHit": 6,
+      "funcsFound": 1,
+      "funcsHit": 1,
+      "linePct": 100.0,
+      "funcPct": 100.0,
       "uncoveredLines": 0
     },
     {
@@ -2029,16 +1319,6 @@
       "linesHit": 103,
       "funcsFound": 8,
       "funcsHit": 8,
-      "linePct": 100.0,
-      "funcPct": 100.0,
-      "uncoveredLines": 0
-    },
-    {
-      "file": "apps/api/src/types/progress.ts",
-      "linesFound": 6,
-      "linesHit": 6,
-      "funcsFound": 1,
-      "funcsHit": 1,
       "linePct": 100.0,
       "funcPct": 100.0,
       "uncoveredLines": 0
@@ -2070,7 +1350,7 @@
       "funcsFound": 9,
       "funcsHit": 8,
       "linePct": 100.0,
-      "funcPct": 88.88888888888889,
+      "funcPct": 88.89,
       "uncoveredLines": 0
     },
     {
@@ -2080,7 +1360,7 @@
       "funcsFound": 14,
       "funcsHit": 13,
       "linePct": 100.0,
-      "funcPct": 92.85714285714286,
+      "funcPct": 92.86,
       "uncoveredLines": 0
     },
     {
@@ -2210,7 +1490,7 @@
       "funcsFound": 3,
       "funcsHit": 2,
       "linePct": 100.0,
-      "funcPct": 66.66666666666667,
+      "funcPct": 66.67,
       "uncoveredLines": 0
     },
     {
@@ -2249,6 +1529,16 @@
       "linesHit": 2,
       "funcsFound": 1,
       "funcsHit": 1,
+      "linePct": 100.0,
+      "funcPct": 100.0,
+      "uncoveredLines": 0
+    },
+    {
+      "file": "apps/api/src/services/marketplace-manifest.service.ts",
+      "linesFound": 171,
+      "linesHit": 171,
+      "funcsFound": 12,
+      "funcsHit": 12,
       "linePct": 100.0,
       "funcPct": 100.0,
       "uncoveredLines": 0
