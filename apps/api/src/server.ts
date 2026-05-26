@@ -556,6 +556,9 @@ app.use(
       '/api/affiliates/lookup',
       '/api/affiliates/click',
     ]
+    if (path.startsWith('/api/affiliates/')) {
+      console.log('[affiliate-debug]', { path, url: c.req.url, matches: publicPrefixes.some((p) => path.startsWith(p)) })
+    }
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
     if (isAllowedUnauthWebchatProxyPath(path)) return next()
     // Heartbeat sync is called by the runtime with x-runtime-token auth
