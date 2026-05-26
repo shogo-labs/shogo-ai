@@ -6,9 +6,18 @@
 # are picked up automatically — no edit to this YAML is required when the
 # schema grows.
 #
-# `_prisma_migrations` is technically published too but is never written by
-# application traffic and is filtered/ignored on the subscriber side. Do not
-# revert to a hand-listed `objects[].table` set: the CI guard
+# `_prisma_migrations` is also published (CNPG's Publication CR doesn't
+# expose row filters, and `ALTER PUBLICATION ... DROP TABLE` doesn't work
+# against `FOR TABLES IN SCHEMA` publications). Replicating it would corrupt
+# Prisma's per-database tracking — incident 2026-05-26 — so each subscriber
+# installs a `BEFORE INSERT/UPDATE/DELETE` trigger on `_prisma_migrations`
+# in `ENABLE REPLICA TRIGGER` mode that returns NULL, silently discarding
+# any replicated change while leaving local `prisma migrate deploy` writes
+# untouched. The trigger is installed by
+# `k8s/cnpg/logical-replication/skip-replicated-migrations.sql`, applied on
+# every deploy via `.github/workflows/deploy.yml`.
+#
+# Do not revert to a hand-listed `objects[].table` set: the CI guard
 # (`bun run check:publication`) will reject any PR that does, and the
 # replication-monitor CronJob warns on drift in production.
 #
