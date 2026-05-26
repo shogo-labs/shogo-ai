@@ -39,7 +39,49 @@ import type { Dispatch, SetStateAction } from "react";
 import type { EditorGroup, OpenFile } from "./types";
 import type { WorkspaceService } from "./workspace/types";
 import { isImagePath } from "./ImagePreview";
+import {
+  isAudioPath,
+  isFontPath,
+  isPdfPath,
+  isVideoPath,
+} from "./MediaPreview";
 import { upsertModelFromContent } from "./monaco/workspaceModels";
+
+/** Extensions that are binary on disk but have no dedicated preview — we
+ *  must still keep the SSE/poll path from reading them as utf-8 text,
+ *  because the agent-runtime's `/agent/workspace/files/*` endpoint decodes
+ *  every GET as utf-8, which turns each invalid byte into U+FFFD. A
+ *  subsequent autosave PUT would write those replacement chars back and
+ *  bloat the on-disk file (~2x size, broken bytes). Keep this list in
+ *  sync with Workbench.BINARY_EXTENSIONS + SQLITE_EXTENSIONS. */
+const NON_TEXT_EXTENSIONS = new Set([
+  // Archives
+  "zip", "gz", "tar", "tgz", "bz2", "xz", "7z", "rar", "zst", "lz4",
+  // Native / packed
+  "exe", "dll", "so", "dylib", "bin", "class", "jar", "wasm",
+  // Databases
+  "db", "sqlite", "sqlite3",
+  // Misc binary
+  "pack", "idx", "psd", "ai", "sketch", "fig", "blend", "obj", "fbx",
+  "pyc", "pyo", "pyd",
+]);
+
+/** True when `path` should NOT be round-tripped through the text readFile
+ *  API. Covers everything with a dedicated preview (image/video/audio/pdf/
+ *  font) plus generic binary extensions. */
+function isBinaryPath(path: string): boolean {
+  if (
+    isImagePath(path) ||
+    isVideoPath(path) ||
+    isAudioPath(path) ||
+    isPdfPath(path) ||
+    isFontPath(path)
+  ) {
+    return true;
+  }
+  const ext = path.toLowerCase().split(".").pop() ?? "";
+  return NON_TEXT_EXTENSIONS.has(ext);
+}
 
 const AGENT_ROOT_ID = "agent";
 const fileId = (rootId: string, path: string) => `${rootId}::${path}`;
@@ -281,15 +323,17 @@ export function useLiveAgentEdits({
     const openAgentFiles = new Set<string>();
     for (const g of groupsRef.current) {
       for (const f of g.files) {
-        // Skip image tabs — their content is a blob: URL, not text, and
-        // running readFile() on them would clobber the URL with the raw
-        // bytes interpreted as a string (which breaks <img src>).
+        // Skip image / video / audio / pdf / font / generic-binary tabs —
+        // their content is either a blob: URL (preview tabs) or simply not
+        // text, and running readFile() on them would corrupt the buffer
+        // (binary → utf-8 decode produces U+FFFD replacement chars). For
+        // preview tabs that would also clobber the blob: URL.
         if (
           f.rootId === AGENT_ROOT_ID &&
           !f.loading &&
           !f.error &&
           f.language !== "image" &&
-          !isImagePath(f.path)
+          !isBinaryPath(f.path)
         ) {
           openAgentFiles.add(f.path);
         }
@@ -335,9 +379,16 @@ export function useLiveAgentEdits({
 
       if (evt.type !== "file.changed") return;
       const { path, mtime } = evt;
-      // file.changed on an image doesn't round-trip through readFile — the
-      // image viewer owns a blob: URL that we mustn't replace with text.
-      if (isImagePath(path)) return;
+      // file.changed on binary files (images / videos / audio / pdfs /
+      // fonts / archives / sqlite / wasm / executables) must NOT round-trip
+      // through the text readFile API. The agent-runtime's GET
+      // `/agent/workspace/files/*` decodes bytes as utf-8 — for binary
+      // files this produces U+FFFD replacement chars, and if the IDE's
+      // autosave fires (debounced 1s after Monaco's onChange flips
+      // dirty=true on the corrupted setValue), the PUT writes those
+      // replacement chars back as utf-8, permanently bloating the file
+      // on disk. Bail out before readFile runs.
+      if (isBinaryPath(path)) return;
 
       void (async () => {
         const svc = serviceRef.current;
@@ -415,7 +466,7 @@ export function useLiveAgentEdits({
         active.error ||
         active.dirty ||
         active.language === "image" ||
-        isImagePath(active.path)
+        isBinaryPath(active.path)
       ) {
         return;
       }

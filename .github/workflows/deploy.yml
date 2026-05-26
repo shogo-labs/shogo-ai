@@ -644,6 +644,10 @@ jobs:
           if [ -n "${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_WEBHOOK_SECRET="${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}"); fi
           if [ -n "${{ secrets.TWILIO_ACCOUNT_SID }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_ACCOUNT_SID="${{ secrets.TWILIO_ACCOUNT_SID }}"); fi
           if [ -n "${{ secrets.TWILIO_AUTH_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_AUTH_TOKEN="${{ secrets.TWILIO_AUTH_TOKEN }}"); fi
+          # Shared secret with shogo-website/functions/r/[code].ts for
+          # the affiliate click-tracking internal call. See
+          # docs/affiliate-mlm-rollout.md.
+          if [ -n "${{ secrets.SHOGO_INTERNAL_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SHOGO_INTERNAL_SECRET="${{ secrets.SHOGO_INTERNAL_SECRET }}"); fi
 
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \
@@ -1049,6 +1053,10 @@ jobs:
           if [ -n "${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_WEBHOOK_SECRET="${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}"); fi
           if [ -n "${{ secrets.TWILIO_ACCOUNT_SID }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_ACCOUNT_SID="${{ secrets.TWILIO_ACCOUNT_SID }}"); fi
           if [ -n "${{ secrets.TWILIO_AUTH_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_AUTH_TOKEN="${{ secrets.TWILIO_AUTH_TOKEN }}"); fi
+          # Shared secret with shogo-website/functions/r/[code].ts for
+          # the affiliate click-tracking internal call. See
+          # docs/affiliate-mlm-rollout.md.
+          if [ -n "${{ secrets.SHOGO_INTERNAL_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SHOGO_INTERNAL_SECRET="${{ secrets.SHOGO_INTERNAL_SECRET }}"); fi
 
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \
@@ -1487,6 +1495,10 @@ jobs:
           if [ -n "${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_WEBHOOK_SECRET="${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}"); fi
           if [ -n "${{ secrets.TWILIO_ACCOUNT_SID }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_ACCOUNT_SID="${{ secrets.TWILIO_ACCOUNT_SID }}"); fi
           if [ -n "${{ secrets.TWILIO_AUTH_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_AUTH_TOKEN="${{ secrets.TWILIO_AUTH_TOKEN }}"); fi
+          # Shared secret with shogo-website/functions/r/[code].ts for
+          # the affiliate click-tracking internal call. See
+          # docs/affiliate-mlm-rollout.md.
+          if [ -n "${{ secrets.SHOGO_INTERNAL_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SHOGO_INTERNAL_SECRET="${{ secrets.SHOGO_INTERNAL_SECRET }}"); fi
 
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \
@@ -1890,6 +1902,10 @@ jobs:
           if [ -n "${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_WEBHOOK_SECRET="${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}"); fi
           if [ -n "${{ secrets.TWILIO_ACCOUNT_SID }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_ACCOUNT_SID="${{ secrets.TWILIO_ACCOUNT_SID }}"); fi
           if [ -n "${{ secrets.TWILIO_AUTH_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_AUTH_TOKEN="${{ secrets.TWILIO_AUTH_TOKEN }}"); fi
+          # Shared secret with shogo-website/functions/r/[code].ts for
+          # the affiliate click-tracking internal call. See
+          # docs/affiliate-mlm-rollout.md.
+          if [ -n "${{ secrets.SHOGO_INTERNAL_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SHOGO_INTERNAL_SECRET="${{ secrets.SHOGO_INTERNAL_SECRET }}"); fi
 
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \

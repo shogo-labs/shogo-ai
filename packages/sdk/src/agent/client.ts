@@ -211,15 +211,61 @@ export class AgentClient {
       const text = await res.text().catch(() => res.statusText)
       throw new Error(`Agent readFile ${res.status}: ${text}`)
     }
-    const data = (await res.json()) as { content: string }
+    const data = (await res.json()) as {
+      content?: string
+      contentBase64?: string
+      encoding?: 'utf-8' | 'base64'
+    }
+    // The runtime serves binary files (mp4, zip, sqlite, …) as
+    // `{ contentBase64, encoding: 'base64' }` to avoid silently corrupting
+    // them through utf-8 round-tripping. `readFile()` is the text-only
+    // entry point; callers asking for binary content must switch to
+    // `readFileBlob()` (or `readFileBytes()`) instead.
+    if (data.encoding === 'base64' || typeof data.contentBase64 === 'string') {
+      throw new Error(
+        `Agent readFile: '${path}' is a binary file — use readFileBlob() or readFileBytes() instead`,
+      )
+    }
     return data.content ?? ''
   }
 
+  /** Fetch a workspace file's raw bytes. Works for both text and binary
+   *  paths and never round-trips through utf-8, so it's the safe call
+   *  to use from any code that might encounter non-text content. */
+  async readFileBytes(path: string): Promise<Uint8Array> {
+    const blob = await this.readFileBlob(path)
+    return new Uint8Array(await blob.arrayBuffer())
+  }
+
+  /** Write a text file (utf-8 string). For binary files (mp4, zip, …)
+   *  use `writeFileBytes()` instead — the runtime refuses utf-8 string
+   *  writes against binary extensions to avoid corruption. */
   async writeFile(path: string, content: string): Promise<void> {
     await this.fetchJson(`/agent/workspace/files/${this.encodePath(path)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content }),
+    })
+  }
+
+  /** Write raw bytes to a workspace file. Wire format is base64 over
+   *  JSON; the agent-runtime decodes server-side and writes the original
+   *  bytes verbatim. Use this for any non-text content. */
+  async writeFileBytes(path: string, bytes: Uint8Array | ArrayBuffer): Promise<void> {
+    const buf =
+      bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+    let binary = ''
+    for (let i = 0; i < buf.length; i++) {
+      binary += String.fromCharCode(buf[i])
+    }
+    const contentBase64 =
+      typeof btoa === 'function'
+        ? btoa(binary)
+        : Buffer.from(buf).toString('base64')
+    await this.fetchJson(`/agent/workspace/files/${this.encodePath(path)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contentBase64 }),
     })
   }
 
