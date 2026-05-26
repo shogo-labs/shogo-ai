@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-05-26T11:00:00Z",
-  "note": "Backend: 71.6% (README/stale) \u2192 81.4% (this run). Frontend (shared-app only): 76.15% \u2192 67.8%.",
+  "generatedAt": "2026-05-26T18:00:00Z",
+  "note": "Backend: 81.4% (pre-sprint) \u2192 82.8% (sprint commits: code-extractor +697, workspace-defaults +157, stream-buffer +166, token-refresh +6, postgres-backup +2, diagnostics +25). Methodology: baseline 61840/75988 + precise per-file deltas.",
   "aggregate": {
     "lines": {
-      "total": 75988,
-      "hit": 61840,
-      "pct": 81.38
+      "total": 75984,
+      "hit": 62893,
+      "pct": 82.77
     },
     "functions": {
       "total": 6083,
