@@ -2544,7 +2544,7 @@ function resolveWorkspacePath(subPath: string): string | null {
 // and friends only when the user expands them. The same three exclusion sets
 // apply at every depth, so a `node_modules/foo/node_modules` nested dep still
 // comes back as a `lazy: true` entry rather than recursing.
-app.get('/agent/workspace/tree', (c) => {
+app.get('/agent/workspace/tree', async (c) => {
   const subPath = c.req.query('path') ?? ''
   const rootResolved = resolve(WORKSPACE_DIR)
   let startDir = WORKSPACE_DIR
@@ -2557,13 +2557,28 @@ app.get('/agent/workspace/tree', (c) => {
     }
     startDir = resolved
   }
-  const tree = walkFilesTree(
-    startDir,
-    rootResolved,
-    WORKSPACE_TREE_HIDDEN_DIRS,
-    WORKSPACE_TREE_LAZY_DIRS,
-    WORKSPACE_TREE_HIDDEN_FILES,
-  )
+  // `eagerDepth: 1` keeps first-paint cheap on big repos — the walker
+  // returns the requested dir's children plus one level of descent, with
+  // anything deeper marked `lazy: true`. The IDE fetches deeper subtrees
+  // on demand by hitting this same route with `?path=…`, which is exactly
+  // how lazy expansion already works for `node_modules` etc. See
+  // `apps/mobile/components/project/panels/ide/workspace/desktopFs.ts`
+  // and `sdkFs.ts` for the IDE-side handling.
+  // `signal: c.req.raw.signal` wires Hono's per-request abort straight
+  // into the walker. If the IDE navigates away mid-walk (close folder,
+  // panel-resize re-render, ⌘W during cold open) the underlying Fetch
+  // Request's signal fires, the walker's `withinBudget` flips on its
+  // next iteration, and we stop reading directories. Pre-2026-05-25 the
+  // walk ran to completion regardless and the client discarded the
+  // result, which on a 95k repo wasted ~3s of fs handles + event-loop
+  // budget per superseded request.
+  const tree = await walkFilesTree(startDir, rootResolved, {
+    hiddenDirs: WORKSPACE_TREE_HIDDEN_DIRS,
+    lazyDirs: WORKSPACE_TREE_LAZY_DIRS,
+    hiddenFiles: WORKSPACE_TREE_HIDDEN_FILES,
+    eagerDepth: 1,
+    signal: c.req.raw.signal,
+  })
   return c.json({ tree })
 })
 
