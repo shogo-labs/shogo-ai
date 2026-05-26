@@ -27,11 +27,43 @@ import * as Sentry from '@sentry/react-native'
 //   web (mobile) -> javascript-react (set by apps/mobile/Dockerfile via deploy.yml)
 //   web (desktop renderer) -> shogo-desktop (set by desktop-release-*.yml,
 //                              sourced from SHOGO_DESKTOP_SENTRY_DSN)
-const sentryDsn = Platform.select({
+const rawSentryDsn = Platform.select({
   ios: process.env.EXPO_PUBLIC_SENTRY_DSN_IOS,
   android: process.env.EXPO_PUBLIC_SENTRY_DSN_ANDROID,
   default: process.env.EXPO_PUBLIC_SENTRY_DSN_WEB,
 })
+
+// Metro inlines `process.env.EXPO_PUBLIC_*` at bundle time, so whatever value
+// lives in the CI secret (or a developer's shell) is frozen into the JS for
+// the lifetime of that build. If the secret is ever a placeholder like `-`,
+// `disabled`, or stray whitespace, the React-Native Sentry SDK rejects it at
+// init time with `Invalid Sentry Dsn` and lands in an unhealthy state for the
+// rest of the session. Accept only values that parse as the DSN shape
+// `@sentry/*` actually expects (`https://<publicKey>@<host>/<projectId>`);
+// everything else is treated as "Sentry disabled".
+function isValidSentryDsn(value: string | undefined): value is string {
+  if (!value) return false
+  try {
+    const u = new URL(value)
+    return (
+      (u.protocol === 'https:' || u.protocol === 'http:') &&
+      !!u.hostname &&
+      !!u.username &&
+      u.pathname !== '' &&
+      u.pathname !== '/'
+    )
+  } catch {
+    return false
+  }
+}
+
+const sentryDsn = isValidSentryDsn(rawSentryDsn) ? rawSentryDsn : undefined
+
+if (rawSentryDsn && !sentryDsn && __DEV__) {
+  console.warn(
+    `[sentry] Ignoring malformed DSN (${JSON.stringify(rawSentryDsn)}); Sentry disabled.`,
+  )
+}
 import { GluestackUIProvider } from '@/components/ui/gluestack-ui-provider'
 import { AuthProvider } from '../contexts/auth'
 import { ActiveInstanceProvider } from '../contexts/active-instance'
