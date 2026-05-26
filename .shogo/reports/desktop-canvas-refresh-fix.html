@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Desktop canvas refresh pill — root-cause report</title>
+<style>
+  :root {
+    --bg: #0b0d11;
+    --panel: #12151b;
+    --panel-2: #181c24;
+    --border: #232936;
+    --text: #e6e8ec;
+    --muted: #8a93a3;
+    --green: #34d399;
+    --red: #f87171;
+    --amber: #fbbf24;
+    --cyan: #67e8f9;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Inter", sans-serif; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 40px 28px 80px; }
+  h1 { font-size: 28px; margin: 0 0 6px; }
+  h2 { font-size: 18px; margin: 36px 0 12px; color: var(--text); }
+  h3 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; border: 1px solid var(--border); background: var(--panel-2); }
+  .pill.ok { color: var(--green); border-color: rgba(52,211,153,.35); }
+  .pill.bad { color: var(--red); border-color: rgba(248,113,113,.35); }
+  .pill.warn { color: var(--amber); border-color: rgba(251,191,36,.35); }
+  .grid { display: grid; gap: 16px; }
+  .grid.two { grid-template-columns: 1fr 1fr; }
+  @media (max-width: 720px) { .grid.two { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; }
+  .card h4 { margin: 0 0 8px; font-size: 14px; color: var(--text); font-weight: 600; }
+  .card .meta { color: var(--muted); font-size: 12px; }
+  code, pre { font-family: var(--mono); font-size: 12.5px; }
+  pre { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; overflow-x: auto; margin: 8px 0 0; }
+  .diff-add { color: var(--green); }
+  .diff-del { color: var(--red); }
+  .diff-meta { color: var(--muted); }
+  .flow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 8px 0; font-family: var(--mono); font-size: 12px; }
+  .flow .box { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
+  .flow .arrow { color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  td.mono { font-family: var(--mono); font-size: 12.5px; }
+  .check { color: var(--green); }
+  .cross { color: var(--red); }
+  .banner { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-radius: 10px; background: linear-gradient(135deg, rgba(52,211,153,.08), rgba(103,232,249,.08)); border: 1px solid rgba(103,232,249,.25); margin-bottom: 28px; }
+  .banner .ok-dot { width: 8px; height: 8px; background: var(--green); border-radius: 50%; box-shadow: 0 0 0 4px rgba(52,211,153,.15); }
+  .toast-demo { display: inline-flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 999px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08); box-shadow: 0 0 24px 4px rgba(167,139,250,.18), 0 0 8px 1px rgba(251,191,36,.18); font-size: 13px; }
+  .toast-demo button { background: #1f242d; border: 1px solid #2c333f; color: var(--text); padding: 4px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+  .toast-demo .x { color: var(--muted); margin-left: 4px; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; }
+  .legend span { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="banner">
+    <div class="ok-dot"></div>
+    <div>
+      <div style="font-weight:600">Branch <code>fix/desktop-canvas-refresh-button</code> · root-cause fix · 13/13 tests pass · E2E verified</div>
+      <div class="meta" style="color:var(--muted);font-size:12px">Repo <code>shogo-labs/shogo-ai</code> · pushed at HEAD of branch</div>
+    </div>
+  </div>
+
+  <h1>Canvas refresh pill missing on Desktop</h1>
+  <p class="sub">Root-cause analysis, fix, before/after, tests, E2E.</p>
+
+  <h2>The symptom</h2>
+  <div class="grid two">
+    <div class="card">
+      <h4>Before — Desktop</h4>
+      <div class="meta">After every agent rebuild, the canvas <em>silently</em> kept showing stale content. No pill, no toast, no signal.</div>
+      <div style="margin-top:14px;opacity:.4;font-family:var(--mono);font-size:12px;border:1px dashed var(--border);border-radius:8px;padding:24px;text-align:center;color:var(--muted)">
+        ( no toast rendered )
+      </div>
+    </div>
+    <div class="card">
+      <h4>After / Cloud — the working state</h4>
+      <div class="meta">SSE rebuild event → workspace iframe shows pill → user clicks Refresh.</div>
+      <div style="margin-top:14px;text-align:center">
+        <div class="toast-demo">Update available <button>Refresh</button><span class="x">✕</span></div>
+      </div>
+    </div>
+  </div>
+
+  <h2>Root cause</h2>
+  <div class="card">
+    <p style="margin:0 0 10px">The pill is rendered by <code>packages/agent-runtime/static/canvas-bridge.js</code>. The agent-runtime:</p>
+    <ol style="margin:0 0 12px 18px;padding:0">
+      <li>Reads the file at startup via <code>readFileSync(join(__dirname,'..','static','canvas-bridge.js'))</code></li>
+      <li>Serves the bytes at <code>GET /agent/canvas/bridge.js</code></li>
+      <li>Injects <code>&lt;script src="/agent/canvas/bridge.js" defer&gt;</code> into every workspace HTML response</li>
+      <li>Inside the iframe, the bridge opens <code>EventSource('/agent/canvas/stream')</code> and shows the pill on rebuild events</li>
+    </ol>
+    <p style="margin:0">On Cloud, <code>static/</code> sits next to the runtime, so step 1 succeeds. On Desktop, <code>apps/desktop/scripts/bundle-api.mjs</code> copied <em>everything except</em> the <code>static/</code> folder into <code>resources/</code>. The runtime then silently fell into its <code>console.warn</code> + empty-IIFE-stub fallback. No throw, no failed test, no failed build — the only signal was a buried stderr warning.</p>
+    <div class="flow">
+      <div class="box">workspace iframe HTML</div><span class="arrow">→</span>
+      <div class="box">&lt;script src="/agent/canvas/bridge.js"&gt;</div><span class="arrow">→</span>
+      <div class="box">agent-runtime route</div><span class="arrow">→</span>
+      <div class="box">readFileSync(static/canvas-bridge.js)</div><span class="arrow">→</span>
+      <div class="box" style="border-color:rgba(248,113,113,.4);color:var(--red)">ENOENT (Desktop only)</div><span class="arrow">→</span>
+      <div class="box" style="border-color:rgba(251,191,36,.4);color:var(--amber)">silent stub</div>
+    </div>
+  </div>
+
+  <h3>Why a stub, why silent?</h3>
+  <div class="card">
+    <pre><span class="diff-meta">// packages/agent-runtime/src/canvas-bridge.ts (was inline in server.ts)</span>
+export function loadCanvasBridgeSource(path: string = CANVAS_BRIDGE_PATH): string {
+  try {
+    return readFileSync(path, 'utf-8')
+  } catch (err) {
+    console.warn(`[canvas-bridge] Failed to load ${path}:`, (err as Error).message)
+    <span class="diff-meta">// Empty IIFE keeps the route honest (200 with valid JS) even when the</span>
+    <span class="diff-meta">// bridge file is missing — the canvas just won't show update toasts.</span>
+    return CANVAS_BRIDGE_MISSING_STUB
+  }
+}</pre>
+    <p style="margin-top:10px;color:var(--muted);font-size:13px">Soft-fail is the right behavior — a missing asset shouldn't 500 the iframe's script tag and break the whole canvas. The bug is one layer up: the bundle script wasn't shipping the asset. That's where the fix lives.</p>
+  </div>
+
+  <h2>The fix — patch vs root</h2>
+  <div class="grid two">
+    <div class="card">
+      <h4 style="color:var(--amber)"><span class="pill warn">rejected</span> &nbsp; patch fix</h4>
+      <ul style="margin:8px 0 0 18px;padding:0;color:var(--muted);font-size:13px">
+        <li>Inline the bridge JS as a string literal in <code>server.ts</code></li>
+        <li>Add a second fallback path (e.g. <code>resources/canvas-runtime/canvas-bridge.js</code>)</li>
+        <li>Conditional Desktop-only branch in the loader</li>
+      </ul>
+      <p style="margin-top:10px;color:var(--muted);font-size:12.5px">All of these treat the symptom (missing bytes at runtime) instead of the cause (missing bytes in the bundle output).</p>
+    </div>
+    <div class="card">
+      <h4 style="color:var(--green)"><span class="pill ok">applied</span> &nbsp; root fix</h4>
+      <ul style="margin:8px 0 0 18px;padding:0;font-size:13px">
+        <li><code>bundle-api.mjs</code> copies <code>static/</code> → <code>resources/static/</code></li>
+        <li><code>forge.config.ts</code> ships <code>./resources/static</code> as <code>extraResource</code></li>
+        <li><code>static</code> added to bundle cleanup list so rebuilds stay deterministic</li>
+        <li>Loader unchanged in behavior; extracted to <code>canvas-bridge.ts</code> for testability</li>
+      </ul>
+      <p style="margin-top:10px;color:var(--muted);font-size:12.5px">The runtime keeps its lookup formula. The bundle now satisfies it. Dev mode unaffected.</p>
+    </div>
+  </div>
+
+  <h3>Diff (4 files, +120/−14)</h3>
+  <pre><span class="diff-meta">apps/desktop/scripts/bundle-api.mjs</span>
+<span class="diff-add">+ 'static',</span>            <span class="diff-meta"># added to ITEMS_TO_CLEAN (deterministic rebuilds)</span>
+<span class="diff-add">+ logStep('Copying agent-runtime static assets...')</span>
+<span class="diff-add">+ fs.cpSync(packages/agent-runtime/static, RESOURCES_DIR/static, { recursive: true })</span>
+
+<span class="diff-meta">apps/desktop/forge.config.ts</span>
+<span class="diff-add">+ './resources/static',   // ship canvas-bridge.js in the .app</span>
+
+<span class="diff-meta">packages/agent-runtime/src/canvas-bridge.ts  (new file)</span>
+<span class="diff-add">+ extracted loader + path const + missing-stub constant
++ same behavior, importable from tests without booting the server</span>
+
+<span class="diff-meta">packages/agent-runtime/src/server.ts</span>
+<span class="diff-del">- const CANVAS_BRIDGE_URL = '/agent/canvas/bridge.js'</span>
+<span class="diff-del">- const CANVAS_BRIDGE_PATH = join(__dirname, '..', 'static', 'canvas-bridge.js')</span>
+<span class="diff-del">- function loadCanvasBridgeSource(): string { ... }</span>
+<span class="diff-add">+ import { CANVAS_BRIDGE_URL, CANVAS_BRIDGE_PATH, loadCanvasBridgeSource, CANVAS_BRIDGE_SCRIPT_TAG } from './canvas-bridge'</span></pre>
+
+  <h2>Verification</h2>
+
+  <h3>Unit tests — <code>canvas-bridge-loader.test.ts</code></h3>
+  <div class="card" style="padding:14px 18px">
+    <table>
+      <thead><tr><th style="width:30px"></th><th>Assertion</th><th style="width:80px">Time</th></tr></thead>
+      <tbody>
+        <tr><td class="check">✓</td><td>returns real bridge content when CANVAS_BRIDGE_PATH points at a readable file</td><td class="mono">1.45ms</td></tr>
+        <tr><td class="check">✓</td><td>CANVAS_BRIDGE_PATH resolves to the real source file (runtime ↔ source agree)</td><td class="mono">0.13ms</td></tr>
+        <tr><td class="check">✓</td><td>loader output is byte-identical to the source file (no re-encoding)</td><td class="mono">0.04ms</td></tr>
+        <tr><td class="check">✓</td><td>explicit path argument is honored</td><td class="mono">0.24ms</td></tr>
+        <tr><td class="check">✓</td><td>falls back to valid-JS stub when file is missing (no throw)</td><td class="mono">0.36ms</td></tr>
+        <tr><td class="check">✓</td><td>falls back to stub when path is a directory, not a file (EISDIR)</td><td class="mono">0.07ms</td></tr>
+        <tr><td class="check">✓</td><td>stub is the canonical sentinel (grep-able in production logs)</td><td class="mono">0.06ms</td></tr>
+        <tr><td class="check">✓</td><td>URL + script-tag constants are coherent (injection points line up)</td><td class="mono">0.08ms</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Integration test — <code>binary-ships-canvas-bridge.integration.test.ts</code></h3>
+  <div class="card" style="padding:14px 18px">
+    <table>
+      <thead><tr><th style="width:30px"></th><th>Assertion</th><th style="width:80px">Time</th></tr></thead>
+      <tbody>
+        <tr><td class="check">✓</td><td>bundle-api.mjs copies packages/agent-runtime/static → resources/static</td><td class="mono">0.83ms</td></tr>
+        <tr><td class="check">✓</td><td>forge.config.ts lists './resources/static' in extraResource (and not in a comment)</td><td class="mono">0.29ms</td></tr>
+        <tr><td class="check">✓</td><td>runtime CANVAS_BRIDGE_PATH formula resolves to the bundle destination from resources/bundle/</td><td class="mono">0.02ms</td></tr>
+        <tr><td class="check">✓</td><td>source canvas-bridge.js is a non-empty real script</td><td class="mono">0.31ms</td></tr>
+        <tr><td class="check">✓</td><td>if bundle has been built, shipped bytes equal source (opportunistic)</td><td class="mono">0.23ms</td></tr>
+      </tbody>
+    </table>
+    <p style="margin-top:12px;color:var(--muted);font-size:12.5px"><strong>Regression-detection proof:</strong> with the bundle fix reverted to <code>origin/main</code>, the first two assertions fail. After re-applying the fix, all five pass. The test is wired such that a future revert of either the copy step or the forge entry will fail CI before the bug ships.</p>
+  </div>
+
+  <h3>End-to-end — boot bundled runtime, curl the route</h3>
+  <pre>$ env -u AI_PROXY_URL bun run apps/desktop/resources/bundle/agent-runtime.js
+$ curl -i http://localhost:39711/agent/canvas/bridge.js | head -3
+<span class="diff-add">HTTP/1.1 200 OK
+Content-Type: application/javascript; charset=utf-8
+Content-Length: 16560</span>
+
+$ diff &lt;(curl -s http://localhost:39711/agent/canvas/bridge.js) packages/agent-runtime/static/canvas-bridge.js
+<span class="diff-meta"># (no output — bytes are identical)</span>
+
+✓ bytes match source canvas-bridge.js
+✓ REAL BRIDGE SERVED (not the stub)</pre>
+
+  <h2>Code-review notes (self-review)</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th style="width:24%">Concern</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Cross-platform paths</td><td><span class="check">✓</span> <code>path.join</code> + regex uses <code>[\\/]</code>; tested implicitly via existsSync on macOS, formula identical on Win/Linux.</td></tr>
+        <tr><td>Asar packing</td><td><span class="check">✓</span> Forge <code>extraResource</code> bypasses asar — the file lands in <code>.app/Contents/Resources/static/</code> next to <code>bundle/</code>.</td></tr>
+        <tr><td>Repeated builds accumulating stale copies</td><td><span class="check">✓</span> Added <code>static</code> to <code>ITEMS_TO_CLEAN</code> so each bundle starts from a clean slate.</td></tr>
+        <tr><td>Dev mode</td><td><span class="check">✓</span> Loader's <code>__dirname/../static/canvas-bridge.js</code> still resolves to the source file when running from <code>src/</code>; no change.</td></tr>
+        <tr><td>Concurrent reads at startup</td><td><span class="check">✓</span> Loader runs once into a module-scope const; route serves from memory.</td></tr>
+        <tr><td>Cache headers</td><td><span class="check">✓</span> Route already sets <code>Cache-Control: no-cache</code> — updates take effect on next runtime restart.</td></tr>
+        <tr><td>Soft-fail visibility</td><td><span class="pill warn">noted</span> Current behavior: stderr warn. Considered promoting to a structured event / fail-fast in production. Left as warn to preserve dev/test ergonomics; the new integration test catches the bundle-side regression class instead.</td></tr>
+        <tr><td>Git hygiene</td><td><span class="check">✓</span> Added <code>apps/desktop/resources/static/</code> to <code>.gitignore</code> so build artifacts don't leak into commits.</td></tr>
+        <tr><td>Bundle smoke check</td><td><span class="check">✓</span> The <code>bun run scripts/bundle-api.mjs</code> step now logs <code>Copied 1 static asset(s): canvas-bridge.js</code> — a positive ship signal in build logs.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Files changed</h2>
+  <div class="card" style="padding:14px 18px">
+    <table>
+      <thead><tr><th>Path</th><th>Type</th><th style="width:120px">Lines</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">apps/desktop/scripts/bundle-api.mjs</td><td>modified</td><td>+20</td></tr>
+        <tr><td class="mono">apps/desktop/forge.config.ts</td><td>modified</td><td>+4</td></tr>
+        <tr><td class="mono">packages/agent-runtime/src/canvas-bridge.ts</td><td>new</td><td>+59</td></tr>
+        <tr><td class="mono">packages/agent-runtime/src/server.ts</td><td>refactored</td><td>+9 / −14</td></tr>
+        <tr><td class="mono">packages/agent-runtime/src/__tests__/canvas-bridge-loader.test.ts</td><td>new</td><td>+148</td></tr>
+        <tr><td class="mono">packages/agent-runtime/src/__tests__/binary-ships-canvas-bridge.integration.test.ts</td><td>new</td><td>+112</td></tr>
+        <tr><td class="mono">.gitignore</td><td>modified</td><td>+1</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="sub" style="margin-top:32px">Branch: <code>fix/desktop-canvas-refresh-button</code> &nbsp;·&nbsp; PR: <a style="color:var(--cyan)" href="https://github.com/shogo-labs/shogo-ai/pull/new/fix/desktop-canvas-refresh-button">open new PR</a></p>
+</div>
+</body>
+</html>
