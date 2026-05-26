@@ -19,6 +19,7 @@ import { Hono } from "hono"
 import { resolve } from "path"
 import { S3Client, PutObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } from "@aws-sdk/client-s3"
 import { prisma } from "../lib/prisma"
+import { deriveRuntimeToken } from "../lib/runtime-token"
 import * as checkpointService from "../services/checkpoint.service"
 
 // Workspaces directory for checkpoint creation
@@ -241,7 +242,13 @@ async function downloadDistFiles(projectId: string): Promise<Map<string, Buffer>
 
   console.log(`[Publish] Downloading dist files from ${podUrl}`)
 
-  const response = await fetch(`${podUrl}/api/dist-files`, {
+  // Endpoint lives under the runtime-owned `/agent/*` namespace (auth-gated
+  // via `x-runtime-token`). The previous `/api/dist-files` placement was
+  // shadowed by the runtime's `app.all('/api/*')` user-app proxy, so every
+  // publish before this fix either got a bare 404 (proxy's no-port branch)
+  // or the user app's SPA fallback HTML (which then failed JSON parsing).
+  const response = await fetch(`${podUrl}/agent/dist-files`, {
+    headers: { 'x-runtime-token': deriveRuntimeToken(projectId) },
     signal: AbortSignal.timeout(PUBLISH_DOWNLOAD_TIMEOUT_MS),
   })
 

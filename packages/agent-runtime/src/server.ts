@@ -3698,8 +3698,19 @@ function getDistDir(): string {
 
 // Recursively collect every file under `dist/` as `{ path, content (base64) }`.
 // Consumed by apps/api/src/routes/publish.ts -> downloadDistFiles() to upload
-// the build output to the published-apps S3 bucket. Must be registered BEFORE
-// the `app.get('*')` catch-all below — that handler explicitly 404s `/api/*`.
+// the build output to the published-apps S3 bucket.
+//
+// Lives under `/agent/*`, NOT `/api/*`. The `/api/*` namespace is owned by
+// the user app's sidecar Hono server (see code-agent-prompt.ts) and the
+// runtime mounts `app.all('/api/*', ...)` higher up to proxy every `/api/*`
+// request to it. The original placement at `/api/dist-files` (commit
+// 2f9b326d) was registered after that proxy and shadowed from day one —
+// every publish hit either the proxy's `if (!port) return c.notFound()`
+// branch (404) or got the user app's SPA fallback (200 + index.html, which
+// the publisher then failed to JSON-parse). `/agent/*` is the
+// runtime-owned namespace, is auth-gated by `authPrefixes` so callers must
+// send `x-runtime-token`, and is in the SPA catch-all skip-list — so this
+// endpoint is no longer reachable as a userland route.
 const PUBLISH_DIST_MAX_FILE_SIZE = 50 * 1024 * 1024
 
 function collectPublishDistFiles(dir: string, baseDir: string): Array<{ path: string; content: string }> {
@@ -3727,7 +3738,7 @@ function collectPublishDistFiles(dir: string, baseDir: string): Array<{ path: st
   return out
 }
 
-app.get('/api/dist-files', (c) => {
+app.get('/agent/dist-files', (c) => {
   const distDir = getDistDir()
   if (!existsSync(distDir)) {
     return c.json(
