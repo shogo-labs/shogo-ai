@@ -43,27 +43,41 @@ rm -rf apps/desktop/resources/bun
 node apps/desktop/scripts/download-bun.mjs
 ```
 
-### 3. Export the Expo web build
+### 3. Build the web bundle and sync it into desktop resources
 
-Builds the React Native web frontend with local-mode flags. The Monaco IDE
-editor is self-hosted (its AMD loader can't be fetched from a CDN under the
-packaged renderer's CSP — see `apps/mobile/scripts/copy-monaco-vs.mjs`), so
-mirror `node_modules/monaco-editor/min/vs` into the public dir before exporting.
-`npm run build` does this automatically; if you invoke `expo export` directly,
-run the copy step yourself:
+The Monaco IDE editor self-hosts its AMD loader (the CDN load is blocked
+under the packaged renderer's CSP — see `apps/mobile/scripts/copy-monaco-vs.mjs`),
+so the desktop bundle has a hard dependency on a complete
+`resources/web/vs/` tree. `scripts/sync-web.mjs` orchestrates this end-to-end:
 
 ```bash
-cd apps/mobile
-node scripts/copy-monaco-vs.mjs
-EXPO_PUBLIC_LOCAL_MODE=true EXPO_PUBLIC_API_URL=http://localhost:39100 npx expo export --platform web
+cd apps/desktop
+bun run sync:web
 cd ../..
 ```
 
-Then copy it into desktop resources:
+What it does:
+
+1. Runs `bun run build` in `apps/mobile/` (which itself chains
+   `copy-monaco-vs.mjs` before `expo export --platform web`).
+2. Wipes `apps/desktop/resources/web/` so leftovers from a previous build
+   can never mask a regression.
+3. Copies the fresh `apps/mobile/dist/` over verbatim.
+4. **Asserts** that `index.html`, `vs/loader.js`, `vs/editor/editor.main.js`,
+   `_expo/`, and `assets/` all exist with non-zero size. Fails the build
+   if anything is missing.
+
+This step is also wired in as the `prepackage` / `premake` lifecycle hook
+in `apps/desktop/package.json`, so `bun run package` and `bun run make`
+invoke it automatically — there is no longer a way to electron-forge a
+desktop bundle without a fresh, integrity-checked `resources/web/`.
+
+For iterating on desktop-only changes (no mobile source edits), reuse
+the existing `apps/mobile/dist/`:
 
 ```bash
-rm -rf apps/desktop/resources/web
-cp -R apps/mobile/dist apps/desktop/resources/web
+cd apps/desktop
+SKIP_MOBILE_BUILD=1 bun run sync:web
 ```
 
 ### 4. Bundle the API server
@@ -104,12 +118,14 @@ The unsigned `.app` bundle is at `apps/desktop/out/Shogo-darwin-arm64/Shogo.app`
 ```bash
 source .env.local \
   && rm -rf apps/desktop/resources/bun && node apps/desktop/scripts/download-bun.mjs \
-  && (cd apps/mobile && node scripts/copy-monaco-vs.mjs && EXPO_PUBLIC_LOCAL_MODE=true EXPO_PUBLIC_API_URL=http://localhost:39100 npx expo export --platform web) \
-  && rm -rf apps/desktop/resources/web && cp -R apps/mobile/dist apps/desktop/resources/web \
   && rm -rf apps/desktop/resources/{node_modules,bundle,canvas-runtime,templates,runtime-template} \
   && node apps/desktop/scripts/bundle-api.mjs \
   && (cd apps/desktop && npx tsc --noEmit false --outDir dist && bun run make)
 ```
+
+`bun run make` invokes `electron-forge make`, which has `premake` set to
+`scripts/sync-web.mjs` — so the mobile web build + `resources/web/` sync +
+integrity check all happen automatically before packaging.
 
 ## Installing the Built App
 

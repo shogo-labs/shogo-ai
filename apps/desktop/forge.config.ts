@@ -6,9 +6,28 @@ import fs from 'fs'
 const hasIcon = fs.existsSync('./resources/icon.icns') || fs.existsSync('./resources/icon.ico')
 const hasInstallGif = fs.existsSync('./resources/install-splash.gif')
 
-const extraResourceCandidates = [
-  './resources/bun',
+// Two tiers of resources:
+//
+//  - REQUIRED resources must exist or the build is broken by definition.
+//    `./resources/web` is the killer example — without it the packaged
+//    renderer has no HTML/JS/Monaco bundle and you ship an app that
+//    opens to a permanent "Loading…" spinner. Until this branch the
+//    config silently `.filter()`-dropped missing entries from the
+//    candidates list, which is exactly how the IDE-editor-not-loading
+//    bug shipped invisibly.
+//
+//  - OPTIONAL resources are platform-specific or feature-flagged
+//    (VM disk images, sherpa onnx blobs, sysaudio bundles, etc.) and
+//    silently dropping them is correct.
+const REQUIRED_RESOURCES = [
   './resources/web',
+  './resources/bun',
+  './resources/package.json',
+  './prisma',
+  './prisma.config.js',
+]
+
+const OPTIONAL_RESOURCES = [
   './resources/bundle',
   './resources/vm-bundle',
   './resources/node_modules',
@@ -25,15 +44,27 @@ const extraResourceCandidates = [
   './resources/sherpa-onnx',
   './resources/shogo-sysaudio',
   './resources/seed.db',
-  './resources/package.json',
-  './prisma',
-  './prisma.config.js',
 ]
 
-// VM disk images (./resources/vm) are Linux-only and not usable on Windows.
-// Exclude them on win32 to keep the Squirrel installer under NuGet's size limits.
+// VM disk images are Linux-only and not usable on Windows. Exclude them
+// on win32 to keep the Squirrel installer under NuGet's size limits.
 const isWin32 = process.platform === 'win32'
-const extraResource = extraResourceCandidates
+
+const missingRequired = REQUIRED_RESOURCES.filter((p) => !fs.existsSync(p))
+if (missingRequired.length > 0) {
+  // Fail loud at config-load time. Bypassing `bun run package` /
+  // `bun run make` (which run `scripts/sync-web.mjs` via lifecycle hooks)
+  // and calling electron-forge directly used to silently produce a
+  // broken package. Now it can't.
+  console.error('[forge.config] ERROR: required resources are missing:')
+  for (const p of missingRequired) console.error(`  - ${p}`)
+  console.error('')
+  console.error('  Run `bun run sync:web` from apps/desktop/ to populate resources/web/,')
+  console.error('  or `bun run package` / `bun run make` which invoke it automatically.')
+  process.exit(1)
+}
+
+const extraResource = [...REQUIRED_RESOURCES, ...OPTIONAL_RESOURCES]
   .filter((p) => !(isWin32 && p === './resources/vm'))
   .filter((p) => fs.existsSync(p))
 
