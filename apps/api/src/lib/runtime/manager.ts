@@ -482,11 +482,24 @@ export class RuntimeManager implements IRuntimeManager {
 
   /**
    * Build the URL for a project runtime.
+   *
+   * For local dev (`domainSuffix === 'localhost'`) we hardcode the loopback
+   * IPv4 literal `127.0.0.1` rather than the hostname `localhost`. Windows
+   * resolves `localhost` to `::1` (IPv6) first in most default DNS
+   * configurations, but `Bun.serve` in agent-runtime defaults to
+   * `hostname: "0.0.0.0"` (IPv4-only) — so a hostname-based fetch hangs
+   * for the full ~75 s OS TCP-connect timeout against the dead IPv6
+   * address before Bun's fetch finally reports "The operation timed out."
+   * This bit `apps/api`'s chat proxy: WorkerRuntimeManager already uses
+   * `127.0.0.1` internally for its /health probe and `proxyUrl()`
+   * (see `packages/shogo-worker/src/lib/runtime-manager.ts`), so this
+   * keeps the two layers consistent. Hosted/k8s paths are unaffected —
+   * they go through the `${projectId}.${domainSuffix}` branch below.
    */
   private buildUrl(projectId: string, port: number): string {
     const { domainSuffix } = this.config
     if (domainSuffix === 'localhost') {
-      return `http://localhost:${port}`
+      return `http://127.0.0.1:${port}`
     }
     return `http://${projectId}.${domainSuffix}`
   }

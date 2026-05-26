@@ -151,11 +151,15 @@ describe('RuntimeManager private port helpers', () => {
     await expect(rm.allocatePortAsync()).rejects.toThrow(/Cannot allocate port after/)
   })
 
-  test('buildUrl uses localhost ports or project subdomains based on config', () => {
+  test('buildUrl uses 127.0.0.1 loopback for localhost dev, project subdomain otherwise', () => {
     const remote = managerPrivate()
     expect(remote.buildUrl('proj-1', 37123)).toBe('http://proj-1.apps.example')
 
+    // Local dev uses the IPv4 loopback literal `127.0.0.1` rather than the
+    // hostname `localhost` to avoid the Windows IPv6-first DNS resolution
+    // hanging against Bun.serve's IPv4-only default bind. See the comment
+    // on `RuntimeManager.buildUrl` for the full motivation.
     const local = new RuntimeManager({ domainSuffix: 'localhost' }) as any
-    expect(local.buildUrl('proj-1', 37123)).toBe('http://localhost:37123')
+    expect(local.buildUrl('proj-1', 37123)).toBe('http://127.0.0.1:37123')
   })
 })
