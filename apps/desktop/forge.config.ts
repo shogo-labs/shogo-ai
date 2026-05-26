@@ -15,6 +15,10 @@ const extraResourceCandidates = [
   './resources/templates',
   './resources/runtime-template',
   './resources/canvas-runtime',
+  // agent-runtime static assets (canvas-bridge.js served at /agent/canvas/bridge.js).
+  // Without this, the workspace iframe never installs the SSE listener and the
+  // "Update available — Refresh" toast never shows on Desktop.
+  './resources/static',
   './resources/tree-sitter-wasm',
   './resources/vm',
   './resources/vm-helper',

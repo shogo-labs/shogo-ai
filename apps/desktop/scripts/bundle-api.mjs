@@ -47,6 +47,7 @@ const ITEMS_TO_CLEAN = [
   'templates',
   'runtime-template',
   'canvas-runtime',
+  'static',
   'tree-sitter-wasm',
   'scripts',
   'mcp-packages',
@@ -355,6 +356,25 @@ function main() {
         console.warn('  ⚠ MCP package preinstall failed (non-fatal — runtime will fall back to npx):', err.message)
       }
     }
+  }
+
+  // --- Copy agent-runtime static assets (canvas-bridge.js, etc.) ---
+  // The bundled agent-runtime resolves these via
+  //   join(__dirname, '..', 'static', 'canvas-bridge.js')
+  // which lands at resources/static/canvas-bridge.js. Without this copy the
+  // runtime falls back to an empty IIFE stub and the workspace iframe never
+  // shows the "Update available — Refresh" toast (the SSE listener never
+  // gets installed). This is what makes Cloud show the pill while Desktop
+  // doesn't.
+  logStep('Copying agent-runtime static assets...')
+  const agentRuntimeStaticSource = path.join(REPO_ROOT, 'packages', 'agent-runtime', 'static')
+  const agentRuntimeStaticDest = path.join(RESOURCES_DIR, 'static')
+  if (fs.existsSync(agentRuntimeStaticSource)) {
+    fs.cpSync(agentRuntimeStaticSource, agentRuntimeStaticDest, { recursive: true })
+    const files = fs.readdirSync(agentRuntimeStaticDest).filter((f) => fs.statSync(path.join(agentRuntimeStaticDest, f)).isFile())
+    console.log(`  ✓ Copied ${files.length} static asset(s): ${files.join(', ')}`)
+  } else {
+    console.warn('  ⚠ agent-runtime/static not found at', agentRuntimeStaticSource)
   }
 
   // --- Copy canvas-runtime type definitions (used by LSP for canvas code linting) ---
