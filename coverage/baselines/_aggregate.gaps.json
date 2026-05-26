@@ -1,16 +1,16 @@
 {
-  "generatedAt": "2026-05-26T08:42:00Z",
-  "note": "True backend aggregate. Per-package lcov files unioned by repo-relative path (max hits per line). Comments stripped via scripts/coverage-strip-comments.ts. Functions are sum-of-pkgs (cross-pkg shared files may be slightly under-attributed).",
+  "generatedAt": "2026-05-26T11:00:00Z",
+  "note": "Backend: 71.6% (README/stale) \u2192 81.4% (this run). Frontend (shared-app only): 76.15% \u2192 67.8%.",
   "aggregate": {
     "lines": {
-      "total": 76310,
-      "hit": 63287,
-      "pct": 82.93
+      "total": 75988,
+      "hit": 61840,
+      "pct": 81.38
     },
     "functions": {
-      "total": 6809,
-      "hit": 5101,
-      "pct": 74.92
+      "total": 6083,
+      "hit": 4902,
+      "pct": 80.59
     }
   },
   "perPackage": [
@@ -240,5 +240,6 @@
       "uncoveredLines": 72,
       "linePct": 79.6
     }
-  ]
+  ],
+  "method": "sum(LH)/sum(LF) per backend package (apps/api, agent-runtime, sdk, shared-runtime, model-catalog=100%). Comment-stripped. NOT cross-package union."
 }
