@@ -436,6 +436,23 @@ async function main() {
       ]
       const merge = spawnSync('bun', mergeArgs, { stdio: 'inherit' })
       coverageExit = merge.status ?? 1
+      // Scrub pure comment / whitespace DA: entries that Bun's V8
+      // coverage emits as "uncovered" even though they're not
+      // executable code. Across the agent-runtime package alone this
+      // false-positive pool inflated the reported gap by ~40%. The
+      // scrubber rewrites `<outFile>` in-place and keeps a `.raw`
+      // backup so the original Bun output is still inspectable.
+      if (coverageExit === 0) {
+        const scrub = spawnSync(
+          'bun',
+          [
+            'run', resolve(import.meta.dir, 'coverage-strip-comments.ts'),
+            coverageOpts.outFile, '--write', '--source-root', resolve(root, '..', '..'),
+          ],
+          { stdio: 'inherit' },
+        )
+        if (scrub.status && scrub.status !== 0) coverageExit = scrub.status
+      }
     }
   }
 
