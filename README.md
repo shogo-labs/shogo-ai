@@ -1,10 +1,10 @@
 # [Shogo AI](https://shogo.ai)
 
 <!-- coverage-badge:backend -->
-[![Backend coverage](https://img.shields.io/badge/backend%20coverage-82.9%25-yellowgreen)](./coverage/lcov.info)
+[![Backend coverage](https://img.shields.io/badge/backend%20coverage-83.0%25-yellow)](./coverage/lcov.info)
 <!-- /coverage-badge:backend -->
 <!-- coverage-badge:frontend -->
-[![Frontend coverage](https://img.shields.io/badge/frontend%20coverage-76.15%25-yellowgreen)](./coverage/frontend-lcov.info)
+[![Frontend coverage](https://img.shields.io/badge/frontend%20coverage-67.82%25-orange)](./coverage/frontend-lcov.info)
 <!-- /coverage-badge:frontend -->
 
 AI-first agent builder for chat-driven apps, persistent agents, and dynamic
