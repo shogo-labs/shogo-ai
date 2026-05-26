@@ -1,6 +1,22 @@
 # CronJob that checks logical replication health across all subscriptions
-# every 5 minutes. Logs warnings for disabled subscriptions, high conflict
-# counts, inactive replication slots, and replication lag > 10s.
+# every 5 minutes.
+#
+# The job exits non-zero when something is broken so the CronJob shows up
+# as failed in K8s and the alerting hooks (kube-state-metrics
+# `kube_job_status_failed`) fire. Until 2026-05-26 it only printed
+# "WARNING:" / "CRITICAL:" lines and exited 0, so the 2026-05-26 incident
+# (3 GB of WAL backlog and 6 hour-old apply errors) ran for 15 hours
+# without paging anyone. The thresholds below are tuned to surface that
+# kind of incident within one polling interval.
+#
+# Conditions that fail the job:
+#   - any subscription with pid IS NULL (apply worker not streaming)
+#   - any subscription with apply_error_count > 0 (PG 18 conflict log)
+#   - any inactive logical replication slot
+#   - any logical slot with > 100 MB WAL lag (down from 1 GB)
+#   - any table in `public` (other than `_prisma%`) missing from the
+#     publication
+#   - any subscription that trails the local publication by 1+ tables
 #
 # Deploy once per region. The job connects to the local CNPG cluster.
 apiVersion: batch/v1
@@ -49,6 +65,8 @@ spec:
                 - |
                   echo "=== Replication Monitor — $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 
+                  EXIT_RC=0
+
                   echo "--- Subscription Status ---"
                   psql -X -t -A -F'|' -c "
                     SELECT subname,
@@ -68,7 +86,8 @@ spec:
                   ")
 
                   if [ "$STOPPED" -gt 0 ]; then
-                    echo "WARNING: $STOPPED subscription(s) not streaming!"
+                    echo "CRITICAL: $STOPPED subscription(s) not streaming!"
+                    EXIT_RC=1
                   fi
 
                   echo "--- Conflict Stats (PG 18) ---"
@@ -80,6 +99,33 @@ spec:
                     WHERE subname LIKE 'sub_from_%'
                     ORDER BY subname;
                   " 2>/dev/null || echo "(pg_stat_subscription_stats not available)"
+
+                  # An apply error pins the slot and stalls every later
+                  # transaction in the WAL behind the bad one. Operators
+                  # need a page within the polling interval, not 15 hours
+                  # later (incident 2026-05-26).
+                  APPLY_ERRORS=$(psql -X -t -A -c "
+                    SELECT count(*)
+                    FROM pg_stat_subscription_stats
+                    WHERE subname LIKE 'sub_from_%'
+                      AND apply_error_count > 0;
+                  " 2>/dev/null || echo "0")
+
+                  if [ "$APPLY_ERRORS" -gt 0 ]; then
+                    echo "CRITICAL: $APPLY_ERRORS subscription(s) have apply_error_count > 0!"
+                    psql -X -t -A -F'|' -c "
+                      SELECT subname, apply_error_count, sync_error_count
+                      FROM pg_stat_subscription_stats
+                      WHERE subname LIKE 'sub_from_%'
+                        AND (apply_error_count > 0 OR sync_error_count > 0)
+                      ORDER BY subname;
+                    " 2>/dev/null || true
+                    echo "Check the publisher's pg log for the LSN, then:"
+                    echo "  ALTER SUBSCRIPTION <sub> SKIP (lsn = '<X/Y>');"
+                    echo "or fix the underlying duplicate row. See"
+                    echo "k8s/cnpg/logical-replication/RUNBOOK.md step 9."
+                    EXIT_RC=1
+                  fi
 
                   echo "--- Replication Slots ---"
                   psql -X -t -A -F'|' -c "
@@ -98,18 +144,33 @@ spec:
                   ")
 
                   if [ "$INACTIVE_SLOTS" -gt 0 ]; then
-                    echo "WARNING: $INACTIVE_SLOTS inactive logical replication slot(s)!"
+                    echo "CRITICAL: $INACTIVE_SLOTS inactive logical replication slot(s)!"
+                    EXIT_RC=1
                   fi
 
+                  # 100 MB threshold (was 1 GB). The 2026-05-26 incident
+                  # accumulated 3 GB of backlog over 15 hours; at 100 MB
+                  # the first 5-minute polling interval after a stuck
+                  # apply worker will already trigger a page.
                   WAL_BLOAT=$(psql -X -t -A -c "
                     SELECT count(*)
                     FROM pg_replication_slots
                     WHERE slot_type = 'logical'
-                      AND pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) > 1073741824;
+                      AND pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) > 104857600;
                   ")
 
                   if [ "$WAL_BLOAT" -gt 0 ]; then
-                    echo "CRITICAL: $WAL_BLOAT slot(s) with > 1GB WAL lag!"
+                    echo "CRITICAL: $WAL_BLOAT slot(s) with > 100MB WAL lag!"
+                    psql -X -t -A -F'|' -c "
+                      SELECT slot_name,
+                             active,
+                             pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS wal_lag
+                      FROM pg_replication_slots
+                      WHERE slot_type = 'logical'
+                        AND pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) > 104857600
+                      ORDER BY slot_name;
+                    "
+                    EXIT_RC=1
                   fi
 
                   echo "--- Publication Completeness ---"
@@ -131,7 +192,7 @@ spec:
                   ")
 
                   if [ "$UNPUBLISHED" -gt 0 ]; then
-                    echo "WARNING: $UNPUBLISHED table(s) missing from publication!"
+                    echo "CRITICAL: $UNPUBLISHED table(s) missing from publication!"
                     psql -X -t -A -c "
                       SELECT t.tablename
                       FROM pg_tables t
@@ -144,6 +205,7 @@ spec:
                         AND pt.tablename IS NULL
                       ORDER BY t.tablename;
                     "
+                    EXIT_RC=1
                   fi
 
                   echo "--- Subscription Refresh Staleness ---"
@@ -173,12 +235,31 @@ spec:
                   ")
 
                   if [ -n "$STALE_SUBS" ]; then
-                    echo "WARNING: subscription(s) trail the local publication by 1+ tables."
+                    echo "CRITICAL: subscription(s) trail the local publication by 1+ tables."
                     echo "Run: ALTER SUBSCRIPTION <subname> REFRESH PUBLICATION;"
                     echo "$STALE_SUBS"
+                    EXIT_RC=1
                   fi
 
-                  echo "=== Monitor complete ==="
+                  # `_prisma_migrations` REPLICA-trigger contract
+                  # (skip-replicated-migrations.sql). A missing or
+                  # mis-enabled trigger means the next migration
+                  # row from a peer region poisons local Prisma state.
+                  TRIGGER_OK=$(psql -X -t -A -c "
+                    SELECT count(*)
+                    FROM pg_trigger
+                    WHERE tgrelid = '_prisma_migrations'::regclass
+                      AND tgname = 'skip_replicated_migrations_trg'
+                      AND tgenabled = 'R';
+                  " 2>/dev/null || echo "0")
+                  if [ "$TRIGGER_OK" != "1" ]; then
+                    echo "CRITICAL: skip_replicated_migrations_trg missing or not in REPLICA mode."
+                    echo "Reapply k8s/cnpg/logical-replication/skip-replicated-migrations.sql."
+                    EXIT_RC=1
+                  fi
+
+                  echo "=== Monitor complete (exit=$EXIT_RC) ==="
+                  exit "$EXIT_RC"
               resources:
                 requests:
                   memory: "64Mi"
