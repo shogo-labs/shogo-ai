@@ -6,10 +6,11 @@
  *
  * Background: `gateway-tools.ts` gates every `exec`, `write_file`, and
  * `edit_file` call behind `assertAllowedPath()` (introduced with the
- * external-folder + Workspace Trust feature). That helper consults the
- * GLOBAL trust config — `globalThis.__SHOGO_AGENT_RUNTIME_CONFIG__` set
- * at server boot, falling back to the `WORKSPACE_DIR` / `AGENT_DIR` /
- * `PROJECT_DIR` env vars.
+ * external-folder + Workspace Trust feature). After the 2026-05
+ * root-cause fix, `assertAllowedPath()` consults the live
+ * `trust-resolver` cell (seeded at boot and refreshed per chat turn),
+ * falling back to the `WORKSPACE_DIR` / `AGENT_DIR` / `PROJECT_DIR`
+ * env vars in tests that don't boot the resolver.
  *
  * Unit tests typically build a local `ToolContext` with their own tmp
  * `workspaceDir` (e.g. `/tmp/test-gateway-tools`) but never propagate it
@@ -59,29 +60,44 @@ export interface TrustWorkspaceOpts {
 }
 
 /**
- * Mirror `workspaceDir` (and any `linkedFolders`) into the global
- * runtime-trust config so `assertAllowedPath()` accepts paths under
- * those roots. Idempotent — call from `beforeEach` on every test that
- * creates a fresh workspace.
+ * Mirror `workspaceDir` (and any `linkedFolders`) into the live trust
+ * resolver so `assertAllowedPath()` accepts paths under those roots.
+ * Idempotent — call from `beforeEach` on every test that creates a
+ * fresh workspace.
+ *
+ * Also writes the legacy `globalThis.__SHOGO_AGENT_RUNTIME_CONFIG__`
+ * field for any out-of-tree consumer that still reads it; the resolver
+ * is authoritative.
  */
 export function trustWorkspaceForTests(
   workspaceDir: string,
   opts: TrustWorkspaceOpts = {},
 ): void {
-  ;(globalThis as any).__SHOGO_AGENT_RUNTIME_CONFIG__ = {
+  // Lazy import to avoid pulling the resolver into modules that import
+  // this helper but never call its functions.
+  const { __setTrustForTests } = require('../../trust-resolver') as typeof import('../../trust-resolver')
+  __setTrustForTests({
     workingMode: opts.workingMode ?? 'managed',
     trustLevel: opts.trustLevel ?? 'trusted',
+    workspaceDir,
+    linkedFolders: opts.linkedFolders ?? [],
+    initialized: true,
+  })
+  ;(globalThis as any).__SHOGO_AGENT_RUNTIME_CONFIG__ = {
+    workingMode: opts.workingMode ?? 'managed',
     workspaceDir,
     linkedFolders: opts.linkedFolders ?? [],
   }
 }
 
 /**
- * Reset both the global config and every env var the env-fallback
- * consults. Call from `afterAll` (and `afterEach` for tests that
- * mutate the workspace mid-suite).
+ * Reset the resolver, the legacy global, AND every env var the
+ * env-fallback consults. Call from `afterAll` (and `afterEach` for
+ * tests that mutate the workspace mid-suite).
  */
 export function clearTrustForTests(): void {
+  const { __resetTrustForTests } = require('../../trust-resolver') as typeof import('../../trust-resolver')
+  __resetTrustForTests()
   delete (globalThis as any).__SHOGO_AGENT_RUNTIME_CONFIG__
   delete process.env.WORKSPACE_DIR
   delete process.env.AGENT_DIR

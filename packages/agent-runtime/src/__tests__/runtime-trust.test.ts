@@ -24,10 +24,14 @@ import { tmpdir } from 'os'
 import { join, sep } from 'path'
 
 import { _runtimeTrustSeamForTests, assertAllowedPath, getAllowedRoots, getRuntimeTrust } from '../runtime-trust'
+import { __resetTrustForTests, __setTrustForTests } from '../trust-resolver'
 
-// helper: clear both env + global state between cases so each test runs
-// in a known-good context (server.ts isn't booted in unit tests).
+// helper: clear env, resolver, AND the legacy global between cases so
+// each test runs in a known-good context (server.ts isn't booted in
+// unit tests, so `getRuntimeTrust()` should fall through to the env
+// branch unless a test explicitly seeds the resolver).
 function clearTrustState(): void {
+  __resetTrustForTests()
   delete (globalThis as any).__SHOGO_AGENT_RUNTIME_CONFIG__
   delete process.env.WORKSPACE_DIR
   delete process.env.AGENT_DIR
@@ -64,12 +68,13 @@ describe('runtime-trust', () => {
     trustLevel?: 'trusted' | 'restricted'
     linkedFolders?: string[]
   }): void {
-    ;(globalThis as any).__SHOGO_AGENT_RUNTIME_CONFIG__ = {
+    __setTrustForTests({
       workingMode: opts.workingMode ?? 'external',
       trustLevel: opts.trustLevel ?? 'restricted',
       workspaceDir,
       linkedFolders: opts.linkedFolders ?? [],
-    }
+      initialized: true,
+    })
   }
 
   test('env fallback: external + no TRUST_LEVEL defaults to restricted', () => {
@@ -92,6 +97,60 @@ describe('runtime-trust', () => {
     process.env.WORKING_MODE = 'external'
     process.env.LINKED_FOLDERS = JSON.stringify([linkedDir])
     const t = getRuntimeTrust()
+    expect(t.linkedFolders).toEqual([linkedDir])
+  })
+
+  test('env fallback: malformed LINKED_FOLDERS JSON does not throw, falls to empty', () => {
+    process.env.WORKSPACE_DIR = workspaceDir
+    process.env.WORKING_MODE = 'external'
+    process.env.LINKED_FOLDERS = '{ this is not json'
+    const t = getRuntimeTrust()
+    expect(t.linkedFolders).toEqual([])
+  })
+
+  test('env fallback: explicit TRUST_LEVEL=trusted overrides external default', () => {
+    // This is the test-only env path — production no longer reads
+    // TRUST_LEVEL from env, but unit tests pin trust via env when they
+    // don't want to seed the resolver.
+    process.env.WORKSPACE_DIR = workspaceDir
+    process.env.WORKING_MODE = 'external'
+    process.env.TRUST_LEVEL = 'trusted'
+    expect(getRuntimeTrust().trustLevel).toBe('trusted')
+  })
+
+  test('resolver seeded but uninitialized: returns resolver values (fail-closed for external)', () => {
+    // Mirrors the production cold-start moment between
+    // initTrustResolver() and the first refreshTrust() landing.
+    // The resolver seam exposes a fail-closed default; getRuntimeTrust
+    // must surface it instead of falling through to env.
+    __setTrustForTests({
+      workingMode: 'external',
+      trustLevel: 'restricted', // fail-closed pre-refresh
+      workspaceDir,
+      linkedFolders: [],
+      initialized: false,
+    })
+    const t = getRuntimeTrust()
+    expect(t.workspaceDir).toBe(workspaceDir)
+    expect(t.trustLevel).toBe('restricted')
+  })
+
+  test('resolver initialized=true is authoritative over env vars', () => {
+    // Even if a test sets a conflicting env, the resolver wins once
+    // initialized — this is the production guarantee that env can't
+    // override a live refresh result.
+    process.env.WORKSPACE_DIR = '/different/from/resolver'
+    process.env.TRUST_LEVEL = 'restricted'
+    __setTrustForTests({
+      workingMode: 'external',
+      trustLevel: 'trusted',
+      workspaceDir,
+      linkedFolders: [linkedDir],
+      initialized: true,
+    })
+    const t = getRuntimeTrust()
+    expect(t.workspaceDir).toBe(workspaceDir)
+    expect(t.trustLevel).toBe('trusted')
     expect(t.linkedFolders).toEqual([linkedDir])
   })
 
@@ -199,12 +258,13 @@ describe('runtime-trust', () => {
   })
 
   test('no allowed roots configured: REJECTED', () => {
-    ;(globalThis as any).__SHOGO_AGENT_RUNTIME_CONFIG__ = {
+    __setTrustForTests({
       workingMode: 'external',
       trustLevel: 'restricted',
       workspaceDir: '',
       linkedFolders: [],
-    }
+      initialized: true,
+    })
     const r = assertAllowedPath(join(workspaceDir, 'inside.txt'), 'read')
     expect(r.ok).toBe(false)
     expect(r.reason).toBe('outside_allowed_roots')
@@ -222,12 +282,13 @@ describe('runtime-trust', () => {
       // real realpathSync for roots; we need to set the root to the same
       // candidate prefix so it still matches).
       const ghostRoot = '/nonexistent/ghost2'
-      ;(globalThis as any).__SHOGO_AGENT_RUNTIME_CONFIG__ = {
+      __setTrustForTests({
         workingMode: 'managed',
         trustLevel: 'trusted',
         workspaceDir: ghostRoot,
         linkedFolders: [],
-      }
+        initialized: true,
+      })
       const r = assertAllowedPath(ghostRoot + '/file.txt', 'read')
       // real falls back to candidate (ghostRoot/file.txt); root also fell
       // back via its own catch to resolve(ghostRoot). Both agree, so ok=true.
@@ -244,12 +305,13 @@ describe('runtime-trust', () => {
     // Set a non-existent linked folder as the only root and assert the check
     // still succeeds for a path under it (it will match via the resolved form).
     const ghostRoot = '/nonexistent/ghost/root'
-    ;(globalThis as any).__SHOGO_AGENT_RUNTIME_CONFIG__ = {
+    __setTrustForTests({
       workingMode: 'external',
       trustLevel: 'trusted',
       workspaceDir: ghostRoot,
       linkedFolders: [],
-    }
+      initialized: true,
+    })
     // The target path also doesn't exist, so we exercise BOTH catch branches
     // (line 149 for the root + line 177 for the ancestor walk).
     const target = ghostRoot + '/subdir/newfile.txt'

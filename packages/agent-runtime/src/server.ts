@@ -67,6 +67,7 @@ import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { createPtyWsHandlers, type WsData } from './pty-ws-handler'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
+import { initTrustResolver, refreshTrust } from './trust-resolver'
 import { userMessage } from './pi-adapter'
 import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
@@ -98,7 +99,7 @@ const PORT = parseInt(process.env.PORT || '8080', 10)
  * External (VS Code-style) project mode. When set to `'external'`, the
  * agent-runtime treats `WORKSPACE_DIR` as the user's primary linked
  * folder, skips template seeding / auto-install, and obeys the trust
- * level encoded in `TRUST_LEVEL`.
+ * level resolved live from the API by `trust-resolver.ts`.
  *
  * `LINKED_FOLDERS` is a JSON-encoded `string[]` of every host folder
  * the user has explicitly opened on this project — the union of these
@@ -109,25 +110,9 @@ const WORKING_MODE: 'managed' | 'external' =
   process.env.WORKING_MODE === 'external' ? 'external' : 'managed'
 
 /**
- * VS Code-style Workspace Trust gate. `restricted` blocks all write
- * and exec tools until the user explicitly trusts the folder via
- * POST /api/local/projects/:id/trust. Defaults to `restricted` for
- * external projects (defense in depth — the API mutation also sets it)
- * and `trusted` for managed projects (they live in our sandbox).
- */
-const TRUST_LEVEL: 'trusted' | 'restricted' =
-  process.env.TRUST_LEVEL === 'restricted'
-    ? 'restricted'
-    : process.env.TRUST_LEVEL === 'trusted'
-      ? 'trusted'
-      : WORKING_MODE === 'external'
-        ? 'restricted'
-        : 'trusted'
-
-/**
  * The list of host folders the agent is allowed to read/write inside,
- * in addition to `WORKSPACE_DIR`. Parsed once at boot; gateway-tools
- * imports this via `getAllowedRoots()` from agent-runtime-config.ts.
+ * in addition to `WORKSPACE_DIR`. Parsed once at boot — folder set is
+ * immutable for a runtime instance (changing it requires a restart).
  */
 const LINKED_FOLDERS: string[] = (() => {
   const raw = process.env.LINKED_FOLDERS
@@ -142,10 +127,34 @@ const LINKED_FOLDERS: string[] = (() => {
   }
 })()
 
-// Export for sibling modules (gateway-tools, watchers, indexer).
+// Seed the live trust resolver with the immutable directory layout
+// (workspaceDir, workingMode, linkedFolders). The initial trustLevel
+// defaults to fail-closed for external projects; it will be reconciled
+// with the DB by `refreshTrust()` below (fire-and-forget at boot,
+// awaited at the start of every chat turn, refetched on demand via
+// POST /internal/refresh-trust). See trust-resolver.ts for the
+// architectural rationale — this replaces the old `TRUST_LEVEL` env
+// snapshot that couldn't be updated for a running process and was the
+// root cause of the "Trust folder still restricted" bug.
+initTrustResolver({
+  projectId: process.env.PROJECT_ID ?? null,
+  workspaceDir: WORKSPACE_DIR,
+  workingMode: WORKING_MODE,
+  linkedFolders: LINKED_FOLDERS,
+})
+refreshTrust().catch(() => {
+  // Best-effort at boot; per-turn refresh in gateway.ts is the
+  // authoritative gate, so a boot-time miss self-heals on the first
+  // user message.
+})
+
+// Legacy global, kept for any out-of-tree consumer that may still read
+// it. The directory triplet is authoritative here; trustLevel is NOT
+// — that comes from the resolver. Removing the field entirely would
+// be a soft-breaking change; instead we publish the immutable bits and
+// stop advertising a stale trustLevel.
 ;(globalThis as any).__SHOGO_AGENT_RUNTIME_CONFIG__ = {
   workingMode: WORKING_MODE,
-  trustLevel: TRUST_LEVEL,
   linkedFolders: LINKED_FOLDERS,
   workspaceDir: WORKSPACE_DIR,
 }
@@ -174,7 +183,7 @@ function checkWorkspaceDirSanity(): void {
   if (WORKING_MODE === 'external') {
     console.log(
       `[agent-runtime] External (folder-linked) project: WORKSPACE_DIR='${WORKSPACE_DIR}' ` +
-        `(trustLevel=${TRUST_LEVEL}, linkedFolders=${LINKED_FOLDERS.length})`,
+        `(trust resolved from API; linkedFolders=${LINKED_FOLDERS.length})`,
     )
     return
   }
@@ -2127,6 +2136,27 @@ function verifyWebhookAuth(c: any): boolean {
   const token = c.req.header('x-webhook-token') || ''
   return auth === `Bearer ${WEBHOOK_TOKEN}` || token === WEBHOOK_TOKEN
 }
+
+/**
+ * POST /internal/refresh-trust
+ *
+ * Fired by the API after writing a new `trustLevel` to Postgres (see
+ * `apps/api/src/routes/local-projects.ts` POST /:id/trust). Tells the
+ * runtime "go re-read trust from the DB now" instead of waiting for
+ * the next chat turn's per-turn refresh. Without this, a user who
+ * clicks "Trust folder" mid-stream would still hit `restricted_mode_*`
+ * on the in-flight tool calls.
+ *
+ * Auth: shared WEBHOOK_TOKEN — the same secret the API ↔ runtime
+ * webhook channel already uses (`/agent/hooks/*`).
+ */
+app.post('/internal/refresh-trust', async (c) => {
+  if (!verifyWebhookAuth(c)) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+  await refreshTrust()
+  return c.json({ ok: true })
+})
 
 app.post('/agent/hooks/wake', async (c) => {
   if (!verifyWebhookAuth(c)) {
