@@ -78,8 +78,8 @@ describe('fs-tree-walker policy constants', () => {
 })
 
 describe('walkFilesTree (default policy)', () => {
-  test('emits visible dotfiles + configs at the workspace root', () => {
-    const tree = walkFilesTree(ROOT, ROOT)
+  test('emits visible dotfiles + configs at the workspace root', async () => {
+    const tree = await walkFilesTree(ROOT, ROOT)
     const names = tree.map((n) => n.name).sort()
     expect(names).toContain('package.json')
     expect(names).toContain('AGENTS.md')
@@ -88,16 +88,16 @@ describe('walkFilesTree (default policy)', () => {
     expect(names).toContain('.shogo')
   })
 
-  test('hard-hides .git / .svn and OS junk files', () => {
-    const tree = walkFilesTree(ROOT, ROOT)
+  test('hard-hides .git / .svn and OS junk files', async () => {
+    const tree = await walkFilesTree(ROOT, ROOT)
     const names = tree.map((n) => n.name)
     expect(names).not.toContain('.git')
     expect(names).not.toContain('.svn')
     expect(names).not.toContain('.DS_Store')
   })
 
-  test('emits node_modules / dist as lazy entries with no children', () => {
-    const tree = walkFilesTree(ROOT, ROOT)
+  test('emits node_modules / dist as lazy entries with no children', async () => {
+    const tree = await walkFilesTree(ROOT, ROOT)
     const nm = tree.find((n) => n.name === 'node_modules')
     expect(nm).toBeDefined()
     expect(nm?.type).toBe('directory')
@@ -109,8 +109,8 @@ describe('walkFilesTree (default policy)', () => {
     expect(dist?.children).toBeUndefined()
   })
 
-  test('recurses into non-lazy subdirs and lazy-stops at nested lazy dirs', () => {
-    const tree = walkFilesTree(ROOT, ROOT)
+  test('recurses into non-lazy subdirs and lazy-stops at nested lazy dirs', async () => {
+    const tree = await walkFilesTree(ROOT, ROOT)
     const src = tree.find((n) => n.name === 'src')
     expect(src?.type).toBe('directory')
     expect(src?.children).toBeDefined()
@@ -123,16 +123,16 @@ describe('walkFilesTree (default policy)', () => {
     expect(nestedNm?.children).toBeUndefined()
   })
 
-  test('paths are workspace-relative + POSIX-separated', () => {
-    const tree = walkFilesTree(ROOT, ROOT)
+  test('paths are workspace-relative + POSIX-separated', async () => {
+    const tree = await walkFilesTree(ROOT, ROOT)
     const src = tree.find((n) => n.name === 'src')
     const index = src?.children?.find((n) => n.name === 'index.ts')
     expect(index?.path).toBe('src/index.ts')
     expect(index?.path?.includes('\\')).toBe(false)
   })
 
-  test('files carry size + modified, directories carry modified', () => {
-    const tree = walkFilesTree(ROOT, ROOT)
+  test('files carry size + modified, directories carry modified', async () => {
+    const tree = await walkFilesTree(ROOT, ROOT)
     const pkg = tree.find((n) => n.name === 'package.json')
     expect(pkg?.type).toBe('file')
     expect(typeof pkg?.size).toBe('number')
@@ -144,34 +144,54 @@ describe('walkFilesTree (default policy)', () => {
     expect(typeof shogo?.modified).toBe('number')
   })
 
-  test('?path= equivalent: starting from a lazy dir yields its real children', () => {
+  test('?path= equivalent: starting from a lazy dir yields its real children', async () => {
     // Same call shape both the HTTP route and the Electron IPC use when the
-    // user expands `node_modules` in the tree.
-    const subtree = walkFilesTree(join(ROOT, 'node_modules'), ROOT)
+    // user expands `node_modules` in the tree. Disable gitignore here
+    // because the fixture's root `.gitignore` lists `node_modules` — with
+    // the default (respectGitignore=true) we'd see lazy stubs all the way
+    // down, which is the correct first-paint behavior but not what this
+    // test is checking. The test is about lazy-dir expansion semantics.
+    const subtree = await walkFilesTree(join(ROOT, 'node_modules'), ROOT, {
+      respectGitignore: false,
+    })
     const names = subtree.map((n) => n.name).sort()
     expect(names).toEqual(['lodash'])
 
     // Going one level deeper — node_modules/lodash — should expose the
     // package.json + src/ that we wrote.
-    const lodash = walkFilesTree(join(ROOT, 'node_modules', 'lodash'), ROOT)
+    const lodash = await walkFilesTree(join(ROOT, 'node_modules', 'lodash'), ROOT, {
+      respectGitignore: false,
+    })
     const lodashNames = lodash.map((n) => n.name).sort()
     expect(lodashNames).toEqual(['package.json', 'src'])
   })
 
-  test('returns [] for a non-existent starting directory', () => {
-    const out = walkFilesTree(join(ROOT, 'does-not-exist'), ROOT)
+  test('returns [] for a non-existent starting directory', async () => {
+    const out = await walkFilesTree(join(ROOT, 'does-not-exist'), ROOT)
     expect(out).toEqual([])
   })
 })
 
 describe('walkFilesTree (custom policy sets)', () => {
-  test('respects caller-supplied overrides', () => {
+  test('respects caller-supplied overrides', async () => {
     // Promote `dist` from lazy to hidden, demote `node_modules` to fully
     // walked. Exercises the parameter wiring that lets the desktop bundle
     // (or a future cloud variant) tweak policy without forking the walker.
+    //
+    // `respectGitignore: false` because the fixture writes a root
+    // `.gitignore` containing `node_modules` — the walker would otherwise
+    // (correctly) keep node_modules lazy via the gitignore path even
+    // though the caller asked for fully-walked. This test is about the
+    // policy-override wiring, not gitignore behavior; gitignore has its
+    // own dedicated test below.
     const hiddenDirs = new Set([...WORKSPACE_TREE_HIDDEN_DIRS, 'dist'])
     const lazyDirs = new Set<string>() // none lazy
-    const out = walkFilesTree(ROOT, ROOT, hiddenDirs, lazyDirs, WORKSPACE_TREE_HIDDEN_FILES)
+    const out = await walkFilesTree(ROOT, ROOT, {
+      hiddenDirs,
+      lazyDirs,
+      hiddenFiles: WORKSPACE_TREE_HIDDEN_FILES,
+      respectGitignore: false,
+    })
     const names = out.map((n) => n.name)
     expect(names).not.toContain('dist')
     const nm = out.find((n) => n.name === 'node_modules')
@@ -181,9 +201,274 @@ describe('walkFilesTree (custom policy sets)', () => {
   })
 })
 
+describe('walkFilesTree (gitignore awareness)', () => {
+  // These tests prove the 2026-05-25 critical fix: the walker honors
+  // `.gitignore` at the workspace root, so a polyglot monorepo with
+  // target/, vendor/, Pods/, bazel-out/, etc. isn't fully descended on
+  // the first paint.
+  test('directories matched by root .gitignore become lazy:true', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-gitignore-'))
+    try {
+      writeFileSync(join(root, '.gitignore'), 'target/\nvendor/\nbazel-out/\n')
+      mkdirSync(join(root, 'target', 'classes'), { recursive: true })
+      writeFileSync(join(root, 'target', 'classes', 'A.class'), 'binary')
+      mkdirSync(join(root, 'vendor', 'github.com'), { recursive: true })
+      writeFileSync(join(root, 'vendor', 'github.com', 'pkg.go'), 'package x')
+      mkdirSync(join(root, 'src'), { recursive: true })
+      writeFileSync(join(root, 'src', 'index.ts'), 'export {}')
 
-describe('walkFilesTree (statSync failures)', () => {
-  test('skips entries whose statSync() throws (broken symlink) instead of bubbling', () => {
+      const tree = await walkFilesTree(root, root)
+      const target = tree.find((n) => n.name === 'target')
+      expect(target?.type).toBe('directory')
+      expect(target?.lazy).toBe(true)
+      expect(target?.children).toBeUndefined()
+      const vendor = tree.find((n) => n.name === 'vendor')
+      expect(vendor?.lazy).toBe(true)
+      expect(vendor?.children).toBeUndefined()
+      // Non-ignored dirs are walked normally.
+      const src = tree.find((n) => n.name === 'src')
+      expect(src?.children).toBeDefined()
+      expect(src?.children?.map((n) => n.name)).toContain('index.ts')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('files matched by root .gitignore are hidden', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-gitignore-files-'))
+    try {
+      writeFileSync(join(root, '.gitignore'), '*.log\n.env.local\n')
+      writeFileSync(join(root, 'app.log'), 'log line')
+      writeFileSync(join(root, '.env.local'), 'SECRET=x')
+      writeFileSync(join(root, 'README.md'), '# project')
+
+      const tree = await walkFilesTree(root, root)
+      const names = tree.map((n) => n.name)
+      expect(names).not.toContain('app.log')
+      expect(names).not.toContain('.env.local')
+      expect(names).toContain('README.md')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('.shogoignore is layered on top of .gitignore', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-shogoignore-'))
+    try {
+      writeFileSync(join(root, '.gitignore'), '*.log\n')
+      writeFileSync(join(root, '.shogoignore'), 'private/\n')
+      writeFileSync(join(root, 'app.log'), 'log')
+      mkdirSync(join(root, 'private'), { recursive: true })
+      writeFileSync(join(root, 'private', 'secrets.json'), '{}')
+      writeFileSync(join(root, 'public.md'), 'ok')
+
+      const tree = await walkFilesTree(root, root)
+      const names = tree.map((n) => n.name)
+      expect(names).not.toContain('app.log')           // from .gitignore
+      const priv = tree.find((n) => n.name === 'private')
+      expect(priv?.lazy).toBe(true)                    // from .shogoignore
+      expect(names).toContain('public.md')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('respectGitignore:false disables both files', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-disabled-'))
+    try {
+      writeFileSync(join(root, '.gitignore'), '*.log\nsecret/\n')
+      writeFileSync(join(root, 'app.log'), 'log')
+      mkdirSync(join(root, 'secret'), { recursive: true })
+      writeFileSync(join(root, 'secret', 'file.txt'), 'x')
+
+      const tree = await walkFilesTree(root, root, { respectGitignore: false })
+      const names = tree.map((n) => n.name).sort()
+      expect(names).toContain('app.log')
+      const secret = tree.find((n) => n.name === 'secret')
+      expect(secret?.children).toBeDefined() // walked, not lazy
+      expect(secret?.children?.map((n) => n.name)).toContain('file.txt')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('walkFilesTree (eagerDepth — lazy-past-depth UX cap)', () => {
+  // The 2026-05-25 HIGH-priority fix: walker descends eagerly only up to
+  // `eagerDepth`. Beyond that, directories are returned as lazy:true
+  // stubs and the IDE fetches them on demand. Keeps first paint cheap on
+  // big repos without changing the response contract — `node_modules`,
+  // `.gitignore`d dirs, and now anything past `eagerDepth` all flow
+  // through the same `lazy: true` branch the IDE already handles.
+
+  test('eagerDepth:1 returns root dir contents but marks its subdir contents lazy', async () => {
+    // Layout (depths measured from the dir passed to walkFilesTree):
+    //   /file-0.txt           ← root file (depth-0 of walkInner)
+    //   /deep/                ← root dir, walked → recurse to depth 1
+    //     /deep/file-1.txt    ← visible (file)
+    //     /deep/deeper/       ← at depth 1 → LAZY via eagerDepth=1
+    //       /deep/deeper/f    ← never walked
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-eager-1-'))
+    try {
+      mkdirSync(join(root, 'deep', 'deeper'), { recursive: true })
+      writeFileSync(join(root, 'file-0.txt'), 'a')
+      writeFileSync(join(root, 'deep', 'file-1.txt'), 'b')
+      writeFileSync(join(root, 'deep', 'deeper', 'file-2.txt'), 'c')
+
+      const tree = await walkFilesTree(root, root, { eagerDepth: 1 })
+      const names = tree.map((n) => n.name).sort()
+      expect(names).toEqual(['deep', 'file-0.txt'])
+      const deep = tree.find((n) => n.name === 'deep')
+      expect(deep?.lazy).toBeUndefined()
+      const deepChildren = (deep?.children ?? []).map((n) => n.name).sort()
+      expect(deepChildren).toEqual(['deeper', 'file-1.txt'])
+      const deeper = deep?.children?.find((n) => n.name === 'deeper')
+      expect(deeper?.lazy).toBe(true)
+      expect(deeper?.children).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('lazy-by-eagerDepth dirs can be expanded by re-invoking rooted at them', async () => {
+    // The IDE click-to-expand contract: renderer sends a second request
+    // rooted at the lazy dir → its own eagerDepth:1 walk → contents
+    // visible, sub-subdirs lazy again. Same code path the existing
+    // node_modules expansion uses.
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-expand-'))
+    try {
+      mkdirSync(join(root, 'a', 'b', 'c'), { recursive: true })
+      writeFileSync(join(root, 'a', 'b', 'leaf.txt'), 'ok')
+      writeFileSync(join(root, 'a', 'b', 'c', 'deep.txt'), 'ok')
+
+      const top = await walkFilesTree(root, root, { eagerDepth: 1 })
+      const a = top.find((n) => n.name === 'a')
+      const b = a?.children?.find((n) => n.name === 'b')
+      expect(b?.lazy).toBe(true)
+      expect(b?.children).toBeUndefined()
+
+      const expanded = await walkFilesTree(join(root, 'a', 'b'), root, {
+        eagerDepth: 1,
+      })
+      const names = expanded.map((n) => n.name).sort()
+      expect(names).toEqual(['c', 'leaf.txt'])
+      const c = expanded.find((n) => n.name === 'c')
+      expect(c?.lazy).toBeUndefined()
+      expect(c?.children?.map((n) => n.name)).toEqual(['deep.txt'])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('eagerDepth defaults to Infinity (greedy walk) when omitted', async () => {
+    // Regression check: existing callers that don't pass eagerDepth must
+    // see the pre-2026-05-25 deep-walk behavior. Only the two opt-in
+    // callsites (server.ts and fs-ipc.ts) get depth-1.
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-greedy-'))
+    try {
+      mkdirSync(join(root, 'a', 'b', 'c'), { recursive: true })
+      writeFileSync(join(root, 'a', 'b', 'c', 'leaf.txt'), 'ok')
+      const tree = await walkFilesTree(root, root)
+      const a = tree.find((n) => n.name === 'a')
+      const b = a?.children?.find((n) => n.name === 'b')
+      const c = b?.children?.find((n) => n.name === 'c')
+      const leaf = c?.children?.find((n) => n.name === 'leaf.txt')
+      expect(leaf?.type).toBe('file')
+      expect(a?.lazy).toBeUndefined()
+      expect(b?.lazy).toBeUndefined()
+      expect(c?.lazy).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('LAZY_DIRS + gitignore + eagerDepth OR together — any one is enough', async () => {
+    // Three independent lazy paths, one tree. Confirms the HIGH fix
+    // slots in alongside the CRITICAL ones rather than replacing — any
+    // single condition is sufficient to make a dir lazy.
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-or-'))
+    try {
+      writeFileSync(join(root, '.gitignore'), 'ignored/\n')
+      mkdirSync(join(root, 'node_modules'), { recursive: true })     // LAZY_DIRS
+      mkdirSync(join(root, 'ignored', 'subdir'), { recursive: true })// gitignored
+      mkdirSync(join(root, 'plain', 'depth1'), { recursive: true })  // eagerDepth
+      writeFileSync(join(root, 'node_modules', 'x.js'), 'x')
+      writeFileSync(join(root, 'ignored', 'y.js'), 'y')
+      writeFileSync(join(root, 'plain', 'z.js'), 'z')
+
+      const tree = await walkFilesTree(root, root, { eagerDepth: 1 })
+      const nm = tree.find((n) => n.name === 'node_modules')
+      const ign = tree.find((n) => n.name === 'ignored')
+      const plain = tree.find((n) => n.name === 'plain')
+      expect(nm?.lazy).toBe(true)         // via LAZY_DIRS
+      expect(ign?.lazy).toBe(true)        // via .gitignore
+      expect(plain?.lazy).toBeUndefined() // depth 0, walked
+      const depth1 = plain?.children?.find((n) => n.name === 'depth1')
+      expect(depth1?.lazy).toBe(true)     // via eagerDepth=1
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('walkFilesTree (defensive caps)', () => {
+  // The caps exist to keep a runaway tree (symlink cycle, mis-mounted
+  // FUSE, multi-million-file repo) from hanging the UI. They're
+  // intentionally silent — partial results come back with lazy stubs
+  // for the uncrossed parts so the user can still navigate.
+  test('maxEntries caps the total entries returned', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-cap-'))
+    try {
+      for (let i = 0; i < 50; i++) {
+        writeFileSync(join(root, `file-${i}.txt`), 'x')
+      }
+      const tree = await walkFilesTree(root, root, { maxEntries: 10 })
+      expect(tree.length).toBeLessThanOrEqual(10)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('maxDepth caps recursion', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-depth-'))
+    try {
+      mkdirSync(join(root, 'a', 'b', 'c', 'd'), { recursive: true })
+      writeFileSync(join(root, 'a', 'b', 'c', 'd', 'leaf.txt'), 'x')
+      // maxDepth: 1 means we walk the root + one level of children but
+      // don't recurse further. `a/` should appear as a directory but its
+      // children array should be empty (depth cap hit before descending).
+      const tree = await walkFilesTree(root, root, { maxDepth: 1 })
+      const a = tree.find((n) => n.name === 'a')
+      expect(a?.type).toBe('directory')
+      // a/b is present (depth 1) but a/b/c is not (depth 2 > maxDepth 1).
+      const b = a?.children?.find((n) => n.name === 'b')
+      expect(b?.children).toEqual([])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('aborted AbortSignal stops the walk', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-abort-'))
+    try {
+      for (let i = 0; i < 200; i++) {
+        writeFileSync(join(root, `file-${i}.txt`), 'x')
+      }
+      const controller = new AbortController()
+      controller.abort()
+      const tree = await walkFilesTree(root, root, { signal: controller.signal })
+      // First entry might sneak through before the budget check (the check
+      // runs at top of each iteration) — what matters is that the walk
+      // didn't process all 200 entries.
+      expect(tree.length).toBeLessThan(200)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('walkFilesTree (fs error tolerance)', () => {
+  test('skips entries whose stat() throws (broken symlink) instead of bubbling', async () => {
     // Set up a freshly isolated root so the broken symlink is the ONLY
     // entry — that way an assertion-shaped "missing the file" check
     // proves the catch-and-continue branch actually fired.
@@ -192,11 +477,11 @@ describe('walkFilesTree (statSync failures)', () => {
       // Mix one regular file in so we can confirm the walker continued
       // past the broken symlink rather than aborting.
       writeFileSync(join(brokenRoot, 'survivor.txt'), 'ok')
-      // Point a symlink at a path that does not exist. statSync() will
+      // Point a symlink at a path that does not exist. fs.stat() will
       // throw ENOENT for this; the walker's try/catch must swallow it.
       symlinkSync(join(brokenRoot, '__does_not_exist__'), join(brokenRoot, 'broken-link'))
 
-      const out = walkFilesTree(brokenRoot, brokenRoot)
+      const out = await walkFilesTree(brokenRoot, brokenRoot)
       const names = out.map((n) => n.name).sort()
       // The broken symlink is dropped, the survivor stays — and the call
       // did not throw, which is the whole point of the catch.

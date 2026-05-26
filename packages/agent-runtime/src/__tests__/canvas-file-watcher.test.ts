@@ -251,3 +251,132 @@ describe('getInstance', () => {
     expect(a).toBe(b)
   })
 })
+
+// ---------------------------------------------------------------------------
+// .gitignore-aware chokidar ignore globs (MEDIUM #6 fix, 2026-05-26)
+// ---------------------------------------------------------------------------
+//
+// CanvasFileWatcher pre-2026-05-26 used a hard-coded `IGNORED_PATH_PREFIXES`
+// list (node_modules, .git, dist, .next, …) — enough to keep the worst
+// offenders from blowing past `fs.inotify.max_user_watches`, but oblivious
+// to project-specific `.gitignore` entries. A Rust workspace's `target/`,
+// an iOS project's `Pods/`, a Python `.venv/`, or anything else the user
+// already declared "I don't care about this" would still consume watches
+// and re-trigger rebuilds on every build-artefact write.
+//
+// The fix parses `.gitignore` + `.shogoignore` at watcher startup and
+// passes simple directory basenames into `buildIgnoreGlobs` — the same
+// recursion-short-circuiting glob path the hardcoded prefixes already use.
+// These tests pin down the parsing rules and the OR-with-existing-globs
+// behavior so a future refactor can't silently regress the inotify quota.
+
+import { writeFileSync } from 'fs'
+import { __testInternals } from '../canvas-file-watcher'
+
+const { buildIgnoreGlobs, loadSimpleIgnoredDirsFromGitignore } = __testInternals
+
+describe('loadSimpleIgnoredDirsFromGitignore (gitignore parser)', () => {
+  test('returns [] when no ignore files exist', async () => {
+    const dirs = await loadSimpleIgnoredDirsFromGitignore(tmpDir)
+    expect(dirs).toEqual([])
+  })
+
+  test('parses bare directory names with and without trailing slash', async () => {
+    writeFileSync(join(tmpDir, '.gitignore'), [
+      'target/',          // trailing slash
+      'vendor',           // bare name
+      '__pycache__/',
+      '.venv',
+    ].join('\n'))
+    const dirs = await loadSimpleIgnoredDirsFromGitignore(tmpDir)
+    expect(dirs.sort()).toEqual(['.venv', '__pycache__', 'target', 'vendor'])
+  })
+
+  test('skips empty lines, comments, and negations', async () => {
+    writeFileSync(join(tmpDir, '.gitignore'), [
+      '',
+      '# this is a comment',
+      'target/',
+      '',
+      '# vendor is a peer dep',
+      '!keep-this/',     // negation — do NOT add to ignore set
+      'Pods/',
+    ].join('\n'))
+    const dirs = await loadSimpleIgnoredDirsFromGitignore(tmpDir)
+    expect(dirs.sort()).toEqual(['Pods', 'target'])
+    expect(dirs).not.toContain('keep-this')
+  })
+
+  test('skips wildcards and path-anchored patterns (delegated to the walker matcher)', async () => {
+    writeFileSync(join(tmpDir, '.gitignore'), [
+      'target/',           // ✓ simple dir — kept
+      '*.log',             // ✗ wildcard — skipped (file pattern, not a watch-quota issue)
+      'foo/bar/',          // ✗ path-anchored — skipped
+      '/root-only',        // ✗ root-anchored — skipped
+      'build[12]/',        // ✗ character class — skipped
+      'tmp?/',             // ✗ single-char wildcard — skipped
+      'coverage/',         // ✓ simple dir — kept
+    ].join('\n'))
+    const dirs = await loadSimpleIgnoredDirsFromGitignore(tmpDir)
+    expect(dirs.sort()).toEqual(['coverage', 'target'])
+  })
+
+  test('merges .gitignore + .shogoignore and dedupes', async () => {
+    writeFileSync(join(tmpDir, '.gitignore'), 'target/\nvendor/\n')
+    writeFileSync(join(tmpDir, '.shogoignore'), 'vendor/\nPods/\n')
+    const dirs = await loadSimpleIgnoredDirsFromGitignore(tmpDir)
+    expect(dirs.sort()).toEqual(['Pods', 'target', 'vendor'])
+  })
+
+  test('absent .gitignore is silently skipped (only .shogoignore present)', async () => {
+    writeFileSync(join(tmpDir, '.shogoignore'), 'experimental/\n')
+    const dirs = await loadSimpleIgnoredDirsFromGitignore(tmpDir)
+    expect(dirs).toEqual(['experimental'])
+  })
+})
+
+describe('buildIgnoreGlobs (.gitignore feed → chokidar globs)', () => {
+  test('emits 4-globs-per-dir for each gitignored basename (root-anchored + **/-nested)', () => {
+    const globs = buildIgnoreGlobs(tmpDir, ['target'])
+    // The two root-anchored shapes plus the two **/-anchored shapes.
+    // **/-anchored is critical: in a polyglot monorepo `target/` can
+    // live at any depth (e.g. `packages/rust-bindings/target/`).
+    expect(globs).toContain(`${tmpDir}/target`)
+    expect(globs).toContain(`${tmpDir}/target/**`)
+    expect(globs).toContain('**/target')
+    expect(globs).toContain('**/target/**')
+  })
+
+  test('de-dupes against the hard-coded IGNORED_PATH_PREFIXES list', () => {
+    // `node_modules` is already in IGNORED_PATH_PREFIXES with the same
+    // 4-glob shape — adding it again from .gitignore would double-emit
+    // and bloat the anymatch list with no behavioral change. The fix
+    // must skip already-covered names.
+    const withDup = buildIgnoreGlobs(tmpDir, ['node_modules'])
+    const baseline = buildIgnoreGlobs(tmpDir, [])
+    expect(withDup.length).toBe(baseline.length)
+  })
+
+  test('empty gitignoredDirs param leaves the baseline globs untouched (backwards compat)', () => {
+    // CanvasFileWatcher used to call `buildIgnoreGlobs(workspaceDir)`
+    // with no second arg. The default `[]` must produce the exact
+    // same shape so anyone still on the old call-form is unaffected.
+    const explicit = buildIgnoreGlobs(tmpDir, [])
+    const implicit = buildIgnoreGlobs(tmpDir)
+    expect(explicit).toEqual(implicit)
+    // And the baseline contains every hard-coded prefix, root-anchored.
+    expect(explicit).toContain(`${tmpDir}/node_modules`)
+    expect(explicit).toContain(`${tmpDir}/.git`)
+    expect(explicit).toContain('**/node_modules')
+  })
+
+  test('multiple gitignored dirs each get the 4-glob expansion', () => {
+    const globs = buildIgnoreGlobs(tmpDir, ['target', 'vendor', 'Pods'])
+    for (const name of ['target', 'vendor', 'Pods']) {
+      expect(globs).toContain(`${tmpDir}/${name}`)
+      expect(globs).toContain(`${tmpDir}/${name}/**`)
+      expect(globs).toContain(`**/${name}`)
+      expect(globs).toContain(`**/${name}/**`)
+    }
+  })
+})
