@@ -206,6 +206,14 @@ export function CodeEditor({
           autoFindInSelection: "multiline",
           seedSearchStringFromSelection: "selection",
         },
+        // Suppress Monaco's "detected unusual line terminators" modal.
+        // Default is `"prompt"`, which pops a confirmation dialog whenever
+        // an opened file contains U+2028 / U+2029 — common in agent-written,
+        // minified, or copy-pasted content and consistently jarring. `"off"`
+        // keeps the bytes intact (no silent buffer mutation, unlike `"auto"`)
+        // and just hides the dialog, matching VS Code's
+        // `"editor.unusualLineTerminators": "off"` setting.
+        unusualLineTerminators: "off",
       }}
     />
   );

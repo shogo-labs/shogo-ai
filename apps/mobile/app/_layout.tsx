@@ -3,6 +3,7 @@
 import { mark as csMark } from '../lib/cold-start-timing'
 csMark('root:layout:module-load')
 import '../polyfills'
+import '../lib/monaco-cancellation-silencer'
 csMark('root:layout:after-polyfills')
 import '../lib/devtools'
 import '../global.css'
