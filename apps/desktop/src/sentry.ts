@@ -38,6 +38,28 @@ function resolveDsn(): string {
   return process.env.SHOGO_DESKTOP_SENTRY_DSN || ''
 }
 
+// Mirror of the web/mobile-side check in `apps/mobile/app/_layout.tsx`. The
+// bundler `--define` step in `scripts/bundle-main.mjs` substitutes
+// `__SHOGO_DESKTOP_SENTRY_DSN__` as a raw string, so a placeholder value like
+// `-` would otherwise reach `Sentry.init` and trigger `Invalid Sentry Dsn` at
+// renderer/main-process boot. Only forward values that match the actual DSN
+// shape (`https://<publicKey>@<host>/<projectId>`).
+function isValidSentryDsn(value: string): boolean {
+  if (!value) return false
+  try {
+    const u = new URL(value)
+    return (
+      (u.protocol === 'https:' || u.protocol === 'http:') &&
+      !!u.hostname &&
+      !!u.username &&
+      u.pathname !== '' &&
+      u.pathname !== '/'
+    )
+  } catch {
+    return false
+  }
+}
+
 /**
  * Initialise Sentry for the Electron main process. Safe to call before
  * `app.whenReady()` — `@sentry/electron` is designed to be the first
@@ -52,7 +74,14 @@ function resolveDsn(): string {
 export function initSentry(): void {
   if (initialized) return
   const dsn = resolveDsn()
-  if (!dsn) return
+  if (!isValidSentryDsn(dsn)) {
+    if (dsn && !app.isPackaged) {
+      console.warn(
+        `[sentry] Ignoring malformed desktop DSN (${JSON.stringify(dsn)}); Sentry disabled.`,
+      )
+    }
+    return
+  }
 
   Sentry.init({
     dsn,
