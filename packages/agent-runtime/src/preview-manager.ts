@@ -606,6 +606,25 @@ export class PreviewManager {
   private onBuildComplete?: () => void
   private buildWatchProcess: ChildProcess | null = null
   private apiServerProcess: ChildProcess | null = null
+  /**
+   * True once the spawned `server.tsx` process has been observed to bind
+   * its port (either the in-process `/health` poll returned 2xx OR the
+   * best-effort "process up, /health silent" fallback fired in
+   * `startApiServer`). Distinct from `apiPhase === 'healthy'` because
+   * phase advances synchronously while `apiListening` only flips once
+   * we have positive evidence that fetch() will reach the server.
+   *
+   * Gates the public `apiServerPort` getter so the `/api/*` proxy in
+   * `server.ts` doesn't race the spawn → bind gap: previously
+   * `apiServerProcess` was assigned the moment `spawn()` returned,
+   * which meant `apiServerPort` reported a port before Bun.serve had
+   * actually listened. The SPA's first fetch then landed in that gap
+   * and the proxy returned a hard 502.
+   *
+   * Reset to `false` on every exit / kill / restart so a crashed
+   * server doesn't keep advertising a listening port.
+   */
+  private apiListening = false
   private metroProcess: ChildProcess | null = null
   private metroUrl: string | null = null
   private metroPort: number | null = null
@@ -874,8 +893,25 @@ export class PreviewManager {
     return this.buildWatchProcess !== null && !this.buildWatchProcess.killed
   }
 
+  /**
+   * Port the project's API sidecar (`server.tsx`) is currently
+   * listening on, or `null` if it isn't accepting connections.
+   *
+   * Returns the port only when (a) a process has been spawned and (b)
+   * we have positive evidence (`apiListening`) that the process has
+   * actually bound the port. Returning the port the moment `spawn()`
+   * resolved — the pre-2026-05-25 behaviour — created a window where
+   * `/api/*` proxy callers would attempt to fetch a port Bun.serve
+   * hadn't bound yet and got ECONNREFUSED → hard 502.
+   *
+   * The `/api/*` proxy in `server.ts` pairs this with a short polling
+   * grace window when `apiServerPhase ∈ {starting,restarting,
+   * generating}` so transient `null` here doesn't immediately error
+   * out the SPA's first fetch on a fresh project.
+   */
   get apiServerPort(): number | null {
-    return this.apiServerProcess && !this.apiServerProcess.killed ? this.apiPort : null
+    if (!this.apiServerProcess || this.apiServerProcess.killed) return null
+    return this.apiListening ? this.apiPort : null
   }
 
   /**
@@ -1337,6 +1373,11 @@ export class PreviewManager {
     // so the exit handler doesn't trigger crash recovery. Callers that
     // want to relax that (none currently) can flip the flag back after.
     this.intentionalStop = true
+    // Stop publishing a listening port immediately — `restartApiServerOnly()`
+    // and `sync()` await us before respawning, and we don't want any
+    // /api/* request that lands in that gap to be told "still healthy
+    // on port X" when X is about to be torn down.
+    this.apiListening = false
     if (this.crashRestartTimer) {
       clearTimeout(this.crashRestartTimer)
       this.crashRestartTimer = null
@@ -1845,6 +1886,7 @@ export class PreviewManager {
       this.apiServerProcess.kill('SIGTERM')
       this.apiServerProcess = null
     }
+    this.apiListening = false
     if (this.buildWatchProcess) {
       console.log(`[${LOG_PREFIX}] Stopping Vite build watch...`)
       this.killBuildWatchProcessGroup(this.buildWatchProcess)
@@ -2302,6 +2344,10 @@ export class PreviewManager {
     const buildLogPath = previewBuildLogPath(this.workspaceDir)
     console.log(`[${LOG_PREFIX}] Starting API server on port ${this.apiPort}...`)
     this.apiPhase = 'starting'
+    // We're about to spawn a brand-new process; the previous one (if any)
+    // is no longer authoritative for "is the port bound?". Re-flip on
+    // successful health check below.
+    this.apiListening = false
 
     // Make sure the port is actually free before we spawn — a previous
     // run may have leaked a process or had its EADDRINUSE handler skip
@@ -2344,7 +2390,14 @@ export class PreviewManager {
 
     proc.on('exit', (code, signal) => {
       console.log(`[${LOG_PREFIX}] API server exited (code=${code}, signal=${signal})`)
-      if (this.apiServerProcess === proc) this.apiServerProcess = null
+      if (this.apiServerProcess === proc) {
+        this.apiServerProcess = null
+        // Stop advertising a listening port the moment the owning
+        // process is gone — without this the `/api/*` proxy would
+        // keep fetching against a dead socket between the exit and
+        // the next `startApiServer()` flipping the flag back on.
+        this.apiListening = false
+      }
 
       // Don't downgrade an `idle`/`stopped` phase set by `stop()`, and
       // don't trigger crash recovery when the exit was intentional
@@ -2379,6 +2432,12 @@ export class PreviewManager {
 
     if (healthy) {
       this.apiPhase = 'healthy'
+      // First positive evidence the spawned process has bound the
+      // port — unlock the public `apiServerPort` getter so the
+      // `/api/*` proxy in server.ts will start forwarding traffic
+      // (its short startup grace window in `app.all('/api/*')` is
+      // waiting on exactly this flag).
+      this.apiListening = true
       // A fresh, healthy process clears the crash budget so a long-
       // running server that crashes once tomorrow doesn't run out of
       // retries because of yesterday's bad start.
@@ -2388,7 +2447,10 @@ export class PreviewManager {
       // Process is up but /health never responded — treat as best-effort
       // running. The caller can still proxy to it (if templates omit
       // /health entirely, prior behaviour was the same fixed-delay return).
+      // Flip `apiListening` here too so a template that intentionally
+      // skips /health doesn't permanently 503 every /api/* request.
       this.apiPhase = 'healthy'
+      this.apiListening = true
       this.crashCount = 0
       console.warn(`[${LOG_PREFIX}] API server started but /health never returned 2xx — proceeding anyway`)
     }
