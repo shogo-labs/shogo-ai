@@ -6,6 +6,7 @@ import { Pressable, Text, Alert } from 'react-native'
 import { UserPlus, UserCheck } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import { useDomainHttp } from '../../contexts/domain'
+import { useToast, Toast, ToastTitle, ToastDescription } from '../ui/toast'
 
 interface FollowCreatorButtonProps {
   creatorId: string
@@ -24,9 +25,27 @@ export function FollowCreatorButton({
 }: FollowCreatorButtonProps) {
   const { user } = useAuth()
   const http = useDomainHttp()
+  const toast = useToast()
   const [following, setFollowing] = useState(initialFollowing)
   const [count, setCount] = useState(followerCount)
   const [loading, setLoading] = useState(false)
+
+  const showErrorToast = useCallback(
+    (action: 'follow' | 'unfollow', message: string) => {
+      const title = action === 'follow' ? "Couldn't follow" : "Couldn't unfollow"
+      toast.show({
+        placement: 'top',
+        duration: 5000,
+        render: ({ id: toastId }: { id: string }) => (
+          <Toast nativeID={toastId} variant="outline" action="error">
+            <ToastTitle>{title}</ToastTitle>
+            <ToastDescription>{message}</ToastDescription>
+          </Toast>
+        ),
+      })
+    },
+    [toast],
+  )
 
   const handlePress = useCallback(async () => {
     if (!user?.id) {
@@ -53,14 +72,20 @@ export function FollowCreatorButton({
       setCount(serverCount)
       setFollowing(!wasFollowing)
       onToggle?.(!wasFollowing, serverCount)
-    } catch {
-      // Revert on failure
+    } catch (error: unknown) {
       setFollowing(wasFollowing)
       setCount(prevCount)
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : wasFollowing
+            ? 'Failed to unfollow. Please try again.'
+            : 'Failed to follow. Please try again.'
+      showErrorToast(wasFollowing ? 'unfollow' : 'follow', message)
     } finally {
       setLoading(false)
     }
-  }, [user?.id, following, count, creatorId, http, onToggle])
+  }, [user?.id, following, count, creatorId, http, onToggle, showErrorToast])
 
   const isSmall = size === 'sm'
   const iconSize = isSmall ? 12 : 14
