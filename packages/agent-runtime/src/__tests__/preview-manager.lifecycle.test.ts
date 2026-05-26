@@ -137,9 +137,14 @@ describe('PreviewManager.resolveDevServer (via getStatus)', () => {
 describe('PreviewManager.isApiHealthy', () => {
   // isApiHealthy short-circuits with `false` when apiServerPort is null
   // (no running process). To exercise the fetch branch we splice in a
-  // fake "running" apiServerProcess.
+  // fake "running" apiServerProcess AND set `apiListening = true` —
+  // post-2026-05-25, `apiServerPort` requires positive evidence that
+  // the spawned process has bound its port (see PreviewManager
+  // `apiListening` field) so a fake process alone is no longer enough
+  // to flip the getter to non-null.
   const withProc = (m: PreviewManager) => {
     ;(m as any).apiServerProcess = { killed: false, kill: () => {} }
+    ;(m as any).apiListening = true
     return m
   }
 
