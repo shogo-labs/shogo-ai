@@ -196,6 +196,31 @@ mock.module('../lib/runtime/build-project-env', () => ({
   },
 }))
 
+mock.module('@shogo/model-catalog', () => ({
+  getModelTier: (_modelId: string) => 'standard',
+  resolveModelId: (mode: string) => mode || 'claude-haiku-4-5',
+  MODEL_CATALOG: {},
+  getModelEntry: (_id: string) => null,
+  MODEL_DOLLAR_COSTS: {} as Record<string, any>,
+  calculateDollarCost: () => 0,
+  getModelBillingModel: (id: string) => id,
+  resolveAgentModeDefault: (mode: string) => mode,
+}))
+
+mock.module('@shogo/shared-runtime', () => ({
+  RUNTIME_CONFIG: {
+    apiPort: 4000,
+    runtimePort: 5000,
+    portRangeStart: 5100,
+    portRangeEnd: 5200,
+    image: () => 'shogo-runtime:test',
+    workDir: '/app/workspace',
+    extraEnv: {},
+    componentLabel: 'runtime',
+    containerName: 'runtime',
+  },
+}))
+
 const { WarmPoolController, getWarmPoolController, startWarmPool, WarmPodGoneError } = await import('../lib/warm-pool-controller')
 
 // =============================================================================

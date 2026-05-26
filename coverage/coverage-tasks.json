@@ -1058,5 +1058,39 @@
       "afterLinePct": 100.0,
       "effectiveLinePct": 100.0
     }
-  ]
+  ],
+  "lastUpdated": "2026-05-26T13:15:18Z",
+  "aggregate": {
+    "backendLinePct": 82.99,
+    "backendFuncPct": 80.79,
+    "frontendLinePct": 67.82,
+    "backendLines": {
+      "hit": 63369,
+      "total": 76360
+    },
+    "frontendLines": {
+      "hit": 529,
+      "total": 780
+    },
+    "method": "sum(linesHit)/sum(linesFound) per package, comment-stripped via scripts/coverage-strip-comments.ts",
+    "packages": [
+      "apps/api",
+      "packages/agent-runtime",
+      "packages/sdk",
+      "packages/shared-runtime",
+      "packages/model-catalog"
+    ],
+    "frontendPackages": [
+      "packages/shared-app"
+    ],
+    "backendFuncs": {
+      "hit": 4925,
+      "total": 6096
+    },
+    "frontendFuncPct": 79.63,
+    "frontendFuncs": {
+      "hit": 43,
+      "total": 54
+    }
+  }
 }

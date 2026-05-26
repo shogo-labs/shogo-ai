@@ -1,0 +1,282 @@
+{
+  "generatedAt": "2026-05-26T13:15:18Z",
+  "note": "Backend: 82.9% \u2192 83.0% (sprint commit since previous bump: 8c6fcd2 agent/hooks.ts 38.58% \u2192 100% lines, +72 line hits, +8 line totals, +23 func hits, +13 func totals). Frontend: 76.15% \u2192 67.82% (first proper measurement on this branch \u2014 the 76.15% was a stale carry-over from before packages/shared-app had a working test runner; freshly computed via the same lcov+comment-strip methodology as backend).",
+  "aggregate": {
+    "lines": {
+      "total": 76360,
+      "hit": 63369,
+      "pct": 82.99
+    },
+    "functions": {
+      "total": 6096,
+      "hit": 4925,
+      "pct": 80.79
+    }
+  },
+  "perPackage": [
+    {
+      "package": "apps/api",
+      "funcsHit": 2690,
+      "funcsFound": 3687,
+      "funcPct": 72.96
+    },
+    {
+      "package": "agent-runtime",
+      "funcsHit": 1533,
+      "funcsFound": 2160,
+      "funcPct": 70.97
+    },
+    {
+      "package": "sdk",
+      "funcsHit": 526,
+      "funcsFound": 535,
+      "funcPct": 98.32
+    },
+    {
+      "package": "shared-runtime",
+      "funcsHit": 375,
+      "funcsFound": 440,
+      "funcPct": 85.23
+    }
+  ],
+  "topGaps": [
+    {
+      "file": "packages/agent-runtime/src/gateway-tools.ts",
+      "uncoveredLines": 1875,
+      "linePct": 61.76
+    },
+    {
+      "file": "packages/shogo-worker/src/lib/runtime-manager.ts",
+      "uncoveredLines": 735,
+      "linePct": 7.55
+    },
+    {
+      "file": "packages/agent-runtime/src/gateway.ts",
+      "uncoveredLines": 516,
+      "linePct": 81.38
+    },
+    {
+      "file": "packages/agent-runtime/src/preview-manager.ts",
+      "uncoveredLines": 449,
+      "linePct": 70.81
+    },
+    {
+      "file": "apps/api/src/lib/runtime/manager.ts",
+      "uncoveredLines": 433,
+      "linePct": 64.1
+    },
+    {
+      "file": "packages/voice/src/telephony.ts",
+      "uncoveredLines": 407,
+      "linePct": 6.0
+    },
+    {
+      "file": "apps/api/src/routes/local-projects.ts",
+      "uncoveredLines": 397,
+      "linePct": 27.82
+    },
+    {
+      "file": "packages/voice/src/server.ts",
+      "uncoveredLines": 346,
+      "linePct": 21.0
+    },
+    {
+      "file": "apps/api/src/routes/voice.ts",
+      "uncoveredLines": 337,
+      "linePct": 77.9
+    },
+    {
+      "file": "packages/voice/src/elevenlabs.ts",
+      "uncoveredLines": 316,
+      "linePct": 10.73
+    },
+    {
+      "file": "apps/api/src/routes/project-export-import.ts",
+      "uncoveredLines": 306,
+      "linePct": 67.24
+    },
+    {
+      "file": "apps/api/src/services/analytics.service.ts",
+      "uncoveredLines": 293,
+      "linePct": 77.82
+    },
+    {
+      "file": "apps/api/src/routes/ai-proxy.ts",
+      "uncoveredLines": 284,
+      "linePct": 87.85
+    },
+    {
+      "file": "apps/api/src/routes/meetings.ts",
+      "uncoveredLines": 251,
+      "linePct": 58.99
+    },
+    {
+      "file": "apps/api/src/routes/instances.ts",
+      "uncoveredLines": 232,
+      "linePct": 79.91
+    },
+    {
+      "file": "apps/api/src/lib/knative-project-manager.ts",
+      "uncoveredLines": 226,
+      "linePct": 83.58
+    },
+    {
+      "file": "apps/api/src/services/project-auth-config.service.ts",
+      "uncoveredLines": 204,
+      "linePct": 4.67
+    },
+    {
+      "file": "packages/sdk/src/stores/optimistic-store.ts",
+      "uncoveredLines": 195,
+      "linePct": 6.7
+    },
+    {
+      "file": "packages/voice/src/mock-telephony.ts",
+      "uncoveredLines": 171,
+      "linePct": 1.72
+    },
+    {
+      "file": "apps/api/src/auth.ts",
+      "uncoveredLines": 170,
+      "linePct": 51.01
+    },
+    {
+      "file": "packages/cli/src/pkg.ts",
+      "uncoveredLines": 170,
+      "linePct": 55.5
+    },
+    {
+      "file": "packages/sdk/src/persistence/APIPersistence.ts",
+      "uncoveredLines": 165,
+      "linePct": 5.71
+    },
+    {
+      "file": "apps/api/src/routes/project-chat.ts",
+      "uncoveredLines": 165,
+      "linePct": 85.16
+    },
+    {
+      "file": "packages/agent-runtime/src/index-engine.ts",
+      "uncoveredLines": 147,
+      "linePct": 74.07
+    },
+    {
+      "file": "packages/shogo-worker/src/lib/cloud-sync-watcher.ts",
+      "uncoveredLines": 141,
+      "linePct": 9.62
+    },
+    {
+      "file": "packages/voice/src/twilio.ts",
+      "uncoveredLines": 140,
+      "linePct": 2.78
+    },
+    {
+      "file": "apps/api/src/routes/security.ts",
+      "uncoveredLines": 136,
+      "linePct": 81.6
+    },
+    {
+      "file": "packages/sdk/src/platform/index.ts",
+      "uncoveredLines": 135,
+      "linePct": 1.46
+    },
+    {
+      "file": "apps/api/src/services/cost-analytics.service.ts",
+      "uncoveredLines": 126,
+      "linePct": 89.53
+    },
+    {
+      "file": "packages/shogo-worker/src/lib/git-cloner.ts",
+      "uncoveredLines": 115,
+      "linePct": 10.16
+    },
+    {
+      "file": "apps/api/src/lib/warm-pool-controller.ts",
+      "uncoveredLines": 112,
+      "linePct": 92.94
+    },
+    {
+      "file": "packages/agent/src/agent-loop.ts",
+      "uncoveredLines": 107,
+      "linePct": 72.21
+    },
+    {
+      "file": "packages/sdk/src/client.ts",
+      "uncoveredLines": 104,
+      "linePct": 14.05
+    },
+    {
+      "file": "packages/email/src/providers/smtp.ts",
+      "uncoveredLines": 100,
+      "linePct": 9.09
+    },
+    {
+      "file": "packages/sdk/src/projects/cloud-file-transport.ts",
+      "uncoveredLines": 95,
+      "linePct": 78.31
+    },
+    {
+      "file": "packages/email/src/providers/ses.ts",
+      "uncoveredLines": 92,
+      "linePct": 8.91
+    },
+    {
+      "file": "packages/voice/src/audioTags.ts",
+      "uncoveredLines": 90,
+      "linePct": 38.78
+    },
+    {
+      "file": "apps/api/src/lib/prisma.ts",
+      "uncoveredLines": 82,
+      "linePct": 33.33
+    },
+    {
+      "file": "packages/sdk/src/agent/hooks.ts",
+      "uncoveredLines": 76,
+      "linePct": 39.2
+    },
+    {
+      "file": "apps/api/src/services/stripe-connect.service.ts",
+      "uncoveredLines": 72,
+      "linePct": 79.6
+    }
+  ],
+  "method": "sum(LH)/sum(LF) per backend package (apps/api, agent-runtime, sdk, shared-runtime, model-catalog=100%). Comment-stripped. NOT cross-package union.",
+  "sprintCommits": [
+    {
+      "sha": "18cd12f",
+      "file": "server-framework.ts",
+      "delta_lh": 35,
+      "delta_lf": -1,
+      "note": "90.77%\u2192100% lines"
+    },
+    {
+      "sha": "40d6fe1",
+      "file": "pkg.ts",
+      "delta_lh": 369,
+      "delta_lf": 369,
+      "note": "0%\u2192100% lines (new file)"
+    },
+    {
+      "sha": "8c6fcd2",
+      "file": "packages/sdk/src/agent/hooks.ts",
+      "delta_lh": 72,
+      "delta_lf": 8,
+      "note": "38.58% \u2192 100.00% lines (+wired React hook testing under bun:test)"
+    }
+  ],
+  "frontend": {
+    "package": "packages/shared-app",
+    "lines": {
+      "total": 780,
+      "hit": 529,
+      "pct": 67.82
+    },
+    "functions": {
+      "total": 54,
+      "hit": 43,
+      "pct": 79.63
+    },
+    "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
+  }
+}

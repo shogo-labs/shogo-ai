@@ -202,10 +202,6 @@ export class WorkerTunnel {
       this.pollTimer = null;
     }
     this.cleanupWs();
-    if (this.ws) {
-      try { this.ws.close(1000, 'Tunnel stopped'); } catch { /* already closed */ }
-      this.ws = null;
-    }
     this.log.log('[WorkerTunnel] Tunnel stopped');
   }
 

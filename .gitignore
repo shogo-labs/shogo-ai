@@ -228,3 +228,7 @@ apps/api/coverage/
 
 # Shogo — IDE-mode local state (safe to ignore)
 .shogo/local/
+
+# Per-package coverage build outputs (committed snapshot lives in coverage/baselines/)
+packages/*/coverage/
+apps/*/coverage/
