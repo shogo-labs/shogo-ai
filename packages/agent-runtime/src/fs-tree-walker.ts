@@ -136,6 +136,26 @@ export interface WalkFilesTreeOptions {
    * everything, or for "show ignored files" toggles in the UI.
    */
   respectGitignore?: boolean
+  /**
+   * Maximum depth (measured from the `dir` passed into `walkFilesTree`)
+   * the walker descends eagerly. Directories *deeper* than this are
+   * returned as `lazy: true` with no children — the IDE then fetches
+   * them on demand by re-invoking the walker rooted at the expanded
+   * directory.
+   *
+   * Default: `Infinity` (greedy walk, subject only to the other
+   * defensive caps). Set to a small number — `1` is the VS Code
+   * first-paint default, `2` is a friendlier middle ground for a
+   * permanently-visible side panel — to keep first paints cheap on big
+   * repos. The HTTP route and Electron IPC in this repo opt into
+   * `eagerDepth: 1` (see `server.ts:GET /agent/workspace/tree` and
+   * `apps/desktop/src/fs-ipc.ts:fs:listTree`).
+   *
+   * Independent of `maxDepth`: this is a UX control ("show lazy stubs
+   * past this depth"), `maxDepth` is the safety net ("never recurse
+   * past this depth at all").
+   */
+  eagerDepth?: number
   /** Hard cap on total entries (files + dirs) returned. Default: 50 000. */
   maxEntries?: number
   /** Hard cap on directory depth below `rootDir`. Default: 24. */
@@ -152,6 +172,7 @@ interface WalkState {
   lazyDirs: ReadonlySet<string>
   hiddenFiles: ReadonlySet<string>
   ig: Ignore | null
+  eagerDepth: number
   maxEntries: number
   maxDepth: number
   deadline: number
@@ -247,7 +268,21 @@ async function walkInner(
       : false
     if (isDir) {
       if (state.hiddenDirs.has(entry.name)) continue
-      if (state.lazyDirs.has(entry.name) || isGitignored) {
+      // Four ways a directory becomes a lazy stub:
+      //   1. Member of LAZY_DIRS (built-artifact dirs)
+      //   2. Matched by .gitignore / .shogoignore
+      //   3. We're at or past `eagerDepth` — the UX cap that keeps first
+      //      paints cheap on big repos. The IDE re-invokes the walker
+      //      rooted at the expanded dir when the user clicks the chevron,
+      //      which fetches the next level the same way.
+      //   4. (implicit) `maxDepth` exceeded — handled at the top of the
+      //      next recursion call; we keep the dir visible by emitting
+      //      `lazy: true` here so the user can still try to expand it.
+      if (
+        state.lazyDirs.has(entry.name) ||
+        isGitignored ||
+        depth >= state.eagerDepth
+      ) {
         // Visible in the tree but children not walked. Callers fetch
         // children on demand by re-invoking the walker rooted here.
         results.push({
@@ -306,6 +341,7 @@ export async function walkFilesTree(
     lazyDirs: options.lazyDirs ?? WORKSPACE_TREE_LAZY_DIRS,
     hiddenFiles: options.hiddenFiles ?? WORKSPACE_TREE_HIDDEN_FILES,
     ig: respectGitignore ? await loadIgnoreMatcher(rootDir) : null,
+    eagerDepth: options.eagerDepth ?? Number.POSITIVE_INFINITY,
     maxEntries: options.maxEntries ?? DEFAULT_MAX_ENTRIES,
     maxDepth: options.maxDepth ?? DEFAULT_MAX_DEPTH,
     deadline: Date.now() + (options.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS),

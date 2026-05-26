@@ -2555,14 +2555,18 @@ app.get('/agent/workspace/tree', async (c) => {
     }
     startDir = resolved
   }
-  // The walker defaults to the same policy constants we used to pass
-  // positionally, plus root-level `.gitignore` / `.shogoignore` awareness.
-  // We still pass the constants explicitly so a future fork of the
-  // policy in this server is a one-line change.
+  // `eagerDepth: 1` keeps first-paint cheap on big repos — the walker
+  // returns the requested dir's children plus one level of descent, with
+  // anything deeper marked `lazy: true`. The IDE fetches deeper subtrees
+  // on demand by hitting this same route with `?path=…`, which is exactly
+  // how lazy expansion already works for `node_modules` etc. See
+  // `apps/mobile/components/project/panels/ide/workspace/desktopFs.ts`
+  // and `sdkFs.ts` for the IDE-side handling.
   const tree = await walkFilesTree(startDir, rootResolved, {
     hiddenDirs: WORKSPACE_TREE_HIDDEN_DIRS,
     lazyDirs: WORKSPACE_TREE_LAZY_DIRS,
     hiddenFiles: WORKSPACE_TREE_HIDDEN_FILES,
+    eagerDepth: 1,
   })
   return c.json({ tree })
 })

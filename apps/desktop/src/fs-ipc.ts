@@ -194,7 +194,15 @@ export function registerFsIpcHandlers(): void {
         // we recurse, and honors the workspace's `.gitignore` so big
         // ignored dirs (target/, vendor/, Pods/, bazel-out/, etc.) don't
         // get fully descended on the first paint.
-        const tree = await walkFilesTree(startDir, resolvedRoot)
+        //
+        // `eagerDepth: 1` is the same "root + 1 level" first-paint mode
+        // used by the HTTP route in `server.ts`. The IDE re-invokes this
+        // IPC with `subPath` set when the user clicks the chevron on a
+        // lazy directory — `desktopFs.listTree(path)` → here, walked at
+        // the same depth-1 limit, so drilling is uniformly fast.
+        const tree = await walkFilesTree(startDir, resolvedRoot, {
+          eagerDepth: 1,
+        })
         return { ok: true, tree }
       } catch (err) {
         return { ok: false, error: (err as Error).message }
