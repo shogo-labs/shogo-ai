@@ -261,7 +261,7 @@ export default function App() {
     </div>
   )
 }`,
-      'project/.build.log': 'vite v6.0.0 building...\n✓ 42 modules transformed.\n✓ built in 1.2s\n',
+      '.shogo/logs/build.log': 'vite v6.0.0 building...\n✓ 42 modules transformed.\n✓ built in 1.2s\n',
     },
     validationCriteria: [
       {
@@ -280,10 +280,10 @@ export default function App() {
       },
       {
         id: 'checks-build-log',
-        description: 'Agent checks .build.log after editing (exec with tail or cat)',
+        description: 'Agent checks build.log after editing (exec with tail or cat)',
         points: 4,
         phase: 'execution',
-        validate: (r) => usedExecWith(r, '.build.log') || usedTool(r, 'read_file') && r.toolCalls.some(
+        validate: (r) => usedExecWith(r, 'build.log') || usedTool(r, 'read_file') && r.toolCalls.some(
           t => t.name === 'read_file' && String((t.input as any)?.path || '').includes('build.log'),
         ),
       },
@@ -294,7 +294,7 @@ export default function App() {
   // ----- Build error diagnosis -----
   {
     id: 'code-agent-v2-build-error-diagnosis',
-    name: 'App agent diagnoses build error from .build.log',
+    name: 'App agent diagnoses build error from .shogo/logs/build.log',
     category: 'code-agent',
     level: 3,
     initialMode: 'app',
@@ -311,7 +311,7 @@ export default function App() {
     </div>
   )
 }`,
-      'project/.build.log': `vite v6.0.0 building...
+      '.shogo/logs/build.log': `vite v6.0.0 building...
 src/App.tsx(8,8): error TS2304: Cannot find name 'Bagde'. Did you mean 'Badge'?
 ✗ Build failed in 0.8s
 `,
@@ -319,10 +319,10 @@ src/App.tsx(8,8): error TS2304: Cannot find name 'Bagde'. Did you mean 'Badge'?
     validationCriteria: [
       {
         id: 'reads-build-log',
-        description: 'Agent reads .build.log to understand the error',
+        description: 'Agent reads build.log to understand the error',
         points: 3,
         phase: 'execution',
-        validate: (r) => usedExecWith(r, '.build.log') || r.toolCalls.some(
+        validate: (r) => usedExecWith(r, 'build.log') || r.toolCalls.some(
           t => t.name === 'read_file' && String((t.input as any)?.path || '').includes('build.log'),
         ),
       },
@@ -446,7 +446,7 @@ model Todo {
   createdAt DateTime @default(now())
 }`,
       'project/src/generated/types.tsx': '// Auto-generated — do not edit\nexport interface Todo { id: number; title: string; completed: boolean; createdAt: string }',
-      'project/.build.log': '✓ built in 1.0s\n',
+      '.shogo/logs/build.log': '✓ built in 1.0s\n',
     },
     validationCriteria: [
       {
@@ -544,7 +544,7 @@ export default function App() {
   )
 }`,
       'project/package.json': '{ "name": "my-app", "dependencies": { "react": "^19.0.0" } }',
-      'project/.build.log': '✓ built in 1.0s\n',
+      '.shogo/logs/build.log': '✓ built in 1.0s\n',
     },
     validationCriteria: [
       {
@@ -608,7 +608,7 @@ export default function App() {
     </div>
   )
 }`,
-      'project/.build.log': '✓ built in 1.0s\n',
+      '.shogo/logs/build.log': '✓ built in 1.0s\n',
     },
     validationCriteria: [
       {

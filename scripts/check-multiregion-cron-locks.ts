@@ -307,6 +307,38 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason:
       'creator-gamification.service.ts:189 creates; non-atomic check-then-create. P2 follow-up.',
   },
+  // --- Native MLM affiliate program -----------------------------------------
+  {
+    key: 'Affiliate.userId',
+    category: 'request_scoped',
+    reason:
+      'affiliate.service.ts:enrollAffiliate is an opt-in user action with an idempotency early-return on findUnique({userId}); residual cross-region race during failover is P2 (caller surfaces existing row).',
+  },
+  {
+    key: 'Affiliate.code',
+    category: 'request_scoped',
+    reason:
+      'Caller-chosen slug at opt-in (or derived with random-suffix retry on collision); race window narrow because enrollment is an explicit user action surfaced by the mobile dashboard.',
+  },
+  {
+    key: 'AffiliateAttribution.userId',
+    category: 'request_scoped',
+    reason:
+      'Written exactly once by the better-auth user.create.after hook (single-region per signup) inside resolveAttributionForUser, which catches P2002 and returns the existing row.',
+  },
+  {
+    key: 'AffiliateCommission.(affiliateId,level,stripeInvoiceId)',
+    category: 'cron_locked',
+    reason:
+      'Written by recordCommissionsForInvoice from invoice.payment_succeeded webhook AND by runAffiliateInvoiceReconciliation cron. Both go through the same create-with-catch on P2002 path so duplicate webhook delivery or cross-region reconciliation never doubles commissions; the cron itself is lock-wrapped via affiliate-invoice-reconciliation.',
+    writer: 'affiliate-invoice-reconciliation',
+  },
+  {
+    key: 'AffiliateCommissionTier.level',
+    category: 'single_tenant_upsert',
+    reason:
+      'Seeded by the affiliate_system migration (INSERT ON CONFLICT DO NOTHING); runtime mutations only via a future super-admin route, single ingest per change.',
+  },
   {
     key: 'CreatorFollow.(creatorId,followerId)',
     category: 'request_scoped',
@@ -339,6 +371,18 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     key: 'VoiceProjectConfig.projectId',
     category: 'single_tenant_upsert',
     reason: 'voice.ts:1238 / :231 upsert on projectId from user requests.',
+  },
+  {
+    key: 'ProjectAuthConfig.projectId',
+    category: 'single_tenant_upsert',
+    reason:
+      'project-auth-config.service.ts upserts on projectId from a Studio PUT request (one project owner saving allowlist settings).',
+  },
+  {
+    key: 'ProjectAuthSignIn.(projectId,userId)',
+    category: 'request_scoped',
+    reason:
+      'project-auth-config.service.ts:recordSignIn writes from the better-auth after-hook on sign-in/sign-up — single user request per signin; cross-region duplicate sign-in is a narrow failover race, recordSignIn catches P2002 by upserting on the unique pair.',
   },
   {
     key: 'VoiceCallMeter.conversationId',

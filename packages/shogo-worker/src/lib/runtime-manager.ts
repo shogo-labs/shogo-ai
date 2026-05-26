@@ -87,30 +87,50 @@ const STARTUP_GRACE_MS = 60_000;
 const HEALTH_POLL_MS = 500;
 /**
  * Absolute ceiling on how long we'll wait for a freshly-spawned
- * agent-runtime to clear the boot gate (either a 200 /health response
- * or the TCP-listening + stdout-progress fallback below). Was 30s
- * before the Windows `--conditions=development` cold-boot
- * investigation surfaced that Bun routinely takes 30-45s just to JIT
- * the agent-runtime's TS dep graph (shared-runtime + generators +
- * tools + hooks + gateway) on a cold workspace, leaving zero budget
- * for /health to actually respond. 60s gives the slow path room
- * without giving a truly-hung process a free pass — the progress
- * detector below catches that case independently.
+ * agent-runtime to respond 2xx on /health. After the 2026-05 fix
+ * (`runtime-log-writer` async batched writes, deferred LSP +
+ * IndexEngine start, /health fast-path in the outer fetch handler),
+ * a Windows cold boot is ~8-12 s; macOS/Linux are ~3-5 s. 30 s gives
+ * a comfortable margin without hiding real hangs.
+ *
+ * Why we don't short-circuit on TCP-listening + stdout activity any
+ * more (the historical fast path that bypassed /health entirely):
+ * declaring "ready" while the event loop is saturated tricks the UI
+ * into starting to load the preview iframe and the API server into
+ * starting the agent-proxy, both of which then hit their own (much
+ * shorter) timeouts and surface as the "Connection timed out — The
+ * agent runtime could not be reached" toast and "[AgentProxy] PATCH
+ * /agent/config timeout" retries. Waiting for a real 2xx is slower
+ * but the resulting `'running'` status actually means "responsive to
+ * HTTP", which is what every caller of `status === 'running'` already
+ * assumes. The progress logger keeps devs informed during the slow
+ * path so the wait isn't a silent black-box.
  */
-const HEALTH_BOOT_TIMEOUT_MS = 60_000;
+const HEALTH_BOOT_TIMEOUT_MS = 30_000;
 /**
- * If the child's TCP listener is up AND its stdout has emitted a line
- * within this window, we accept it as ready even though /health
- * hasn't returned yet. Models "is the process making forward
- * progress?" — a Bun runtime mid `optimizeDeps` / LSP-spawn / hook
- * registration is unresponsive to HTTP but still emits `[LSP-TS]`,
- * `[preview-manager]`, `[AgentGateway]` etc. log lines as it walks
- * its boot sequence, so stdout activity is a reliable liveness
- * signal. A truly-hung child (event-loop wedged, zero log output)
- * stays silent past this window and falls through to the normal
- * /health timeout + SIGTERM + restart loop.
+ * If `STDOUT_PROGRESS_WINDOW_MS` elapses without any new stdout AND
+ * TCP-listening is true AND /health still hasn't responded, the
+ * child is considered wedged and the wait short-circuits with the
+ * "stdout silent" error so the restart loop has a chance to recover.
+ * Note: this is the ONLY purpose of the window now — it does not
+ * declare the runtime ready on its own. See HEALTH_BOOT_TIMEOUT_MS.
+ *
+ * Sized at 25 s — short of the 30 s HEALTH_BOOT_TIMEOUT_MS so a
+ * wedged child surfaces with the more informative "stdout silent for
+ * Xms" message instead of the generic timeout. After the 2026-05
+ * cold-boot investigation we deferred LSP startup + IndexEngine
+ * pre-warm out of the critical path and got Windows cold boot down
+ * to ~8-12 s (with macOS at ~3-5 s), so a 25 s silent window is now
+ * a real anomaly worth respawning for.
  */
-const STDOUT_PROGRESS_WINDOW_MS = 10_000;
+const STDOUT_PROGRESS_WINDOW_MS = 25_000;
+/**
+ * Log a "still waiting for /health" progress line at most this
+ * often, so operators / devs watching `[dev:all]` see something
+ * happening during the slow Windows cold-boot path instead of a
+ * silent 30-90s gap.
+ */
+const HEALTH_PROGRESS_LOG_MS = 5_000;
 /**
  * Per-attempt TCP connect budget for the kernel-level readiness
  * probe. Connect attempts only need a TCP SYN/SYN-ACK roundtrip on
@@ -1384,38 +1404,51 @@ export class WorkerRuntimeManager implements RuntimeResolver {
   }
 
   /**
-   * Wait for a freshly-spawned agent-runtime to clear the boot gate.
+   * Wait for a freshly-spawned agent-runtime to be HTTP-responsive on
+   * /health. This is the gate that drives the slot's `'starting'` →
+   * `'running'` transition; every consumer of `status === 'running'`
+   * (`/sandbox/url`, AgentProxy, the iframe preview readiness probe)
+   * assumes the runtime can actually serve requests, so this gate
+   * must mean exactly that — not "the kernel accepted a TCP listener
+   * on the port".
    *
-   * Three independent readiness signals, in priority order:
+   * Loop semantics:
    *
-   *   1. **HTTP /health returns 2xx.** Happy path — the runtime is
-   *      fully booted and its event loop is responsive. We return
-   *      immediately and the caller transitions the slot to
-   *      `'running'`.
+   *   1. **HTTP /health 2xx → return.** Happy path; the event loop
+   *      is responsive and the slot can transition to `'running'`.
    *
-   *   2. **TCP listener bound + recent stdout activity.** The kernel
-   *      has the port (so `Bun.serve()` evaluated its default export)
-   *      AND the child has printed a log line in the last
-   *      {@link STDOUT_PROGRESS_WINDOW_MS}. The process is alive,
-   *      bound, and making forward progress — just slow because Bun
-   *      is JIT-compiling the rest of the TS dep graph (the
-   *      `--conditions=development` cold-boot pattern) and /health
-   *      hasn't gotten a turn on the event loop yet. Accepting this
-   *      as ready unblocks the AgentProxy retry storm that would
-   *      otherwise compound the saturation. Once the child starts
-   *      handling requests for real, /health will respond and the
-   *      AgentProxy retries will succeed independently of this gate.
+   *   2. **Child exits → throw.** Same as before — surface the
+   *      exit code/signal so restart-with-backoff can recover from
+   *      crashes-during-boot without burning the full timeout.
    *
-   *   3. **Hard timeout at `timeoutMs`.** Neither HTTP nor the
-   *      TCP-plus-progress fallback has cleared. Throw the
-   *      descriptive "Timeout waiting for agent-runtime /health" so
-   *      the restart-with-backoff loop in `handleExit()` SIGTERMs the
-   *      child and respawns.
+   *   3. **TCP listening + stdout silent > {@link STDOUT_PROGRESS_WINDOW_MS}
+   *      → throw.** TCP up but no log lines for 30s is "wedged":
+   *      Bun is past `Bun.serve()` (so the kernel has the port) but
+   *      something inside the runtime spun the event loop to death
+   *      (infinite loop, deadlock). Bail so the restart loop can
+   *      SIGTERM and respawn instead of spinning the full timeoutMs.
    *
-   * Process-death short-circuit applies throughout: if the child exits
-   * mid-wait (e.g. spawn-time port conflict, missing native binding),
-   * we throw immediately with the exit code/signal rather than spinning
-   * for the full `timeoutMs`.
+   *   4. **`timeoutMs` elapsed → throw.** Final ceiling. After the
+   *      2026-05 fix that deferred LSP + IndexEngine out of the
+   *      critical-path boot sequence in agent-runtime, a healthy
+   *      Windows cold boot is ~8-12 s; the 30 s budget gives a
+   *      comfortable margin without hiding real hangs.
+   *
+   * Progress logging: every {@link HEALTH_PROGRESS_LOG_MS} we emit a
+   * single line summarizing where the wait stands so the dev/operator
+   * watching `[dev:all]` sees something happen during the slow path
+   * instead of staring at a silent terminal for a minute.
+   *
+   * What changed vs the pre-2026-05 fast path: that revision returned
+   * as soon as TCP-listening + recent stdout was true, treating "the
+   * child is making progress" as ready. In practice the child was
+   * still saturated for tens of seconds after that point, so the UI
+   * would start its preview iframe load and the API server its agent
+   * proxy, both of which then hit their own (4-15s) timeouts and
+   * surfaced as the "Connection timed out — The agent runtime could
+   * not be reached" toast plus "[AgentProxy] timeout, retrying" log
+   * spam. The new gate trades 20-60s of additional boot wait for a
+   * `'running'` signal the rest of the stack can actually trust.
    */
   private async waitForHealth(slot: InternalRuntime, timeoutMs: number): Promise<void> {
     const port = slot.agentPort;
@@ -1427,9 +1460,11 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     const deadline = startedAt + timeoutMs;
     let lastError: string | null = null;
     let lastTcpListening = false;
+    let lastTcpAt = 0;
     let httpAttempts = 0;
     let tcpAttempts = 0;
     let iteration = 0;
+    let lastProgressLogAt = startedAt;
 
     while (Date.now() < deadline) {
       iteration++;
@@ -1439,7 +1474,9 @@ export class WorkerRuntimeManager implements RuntimeResolver {
         );
       }
 
-      // Signal 1: HTTP /health (happy path).
+      // Primary signal: HTTP /health. This is the only signal that
+      // declares the runtime ready — TCP-listening alone is not enough
+      // (see class docstring above for the rationale).
       httpAttempts++;
       const controller = new AbortController();
       const t = setTimeout(() => controller.abort(), 1500);
@@ -1457,8 +1494,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
           return;
         }
         // Non-2xx is recorded but doesn't short-circuit — the runtime
-        // may briefly serve 503 while initializing post-bind, and the
-        // TCP-progress fallback below covers that window too.
+        // may briefly serve 503 while initializing post-bind.
         lastError = `HTTP /health returned ${resp.status}`;
       } catch (err: any) {
         clearTimeout(t);
@@ -1467,23 +1503,37 @@ export class WorkerRuntimeManager implements RuntimeResolver {
         lastError = `HTTP /health failed: ${name}${code ? `(${code})` : ''}: ${err?.message ?? err}`;
       }
 
-      // Signal 2: TCP listener bound + recent stdout activity.
+      // Secondary signal: TCP listener + stdout activity. Now used ONLY
+      // as a wedge detector — if TCP is up but stdout has been silent
+      // for the progress window, abandon the wait so the restart loop
+      // can recover. Never declares the runtime ready on its own.
       tcpAttempts++;
       lastTcpListening = await this.tcpProbe(port);
       if (lastTcpListening) {
+        lastTcpAt = Date.now();
         const sinceStdoutMs = Date.now() - slot.lastStdoutAt;
-        if (sinceStdoutMs < STDOUT_PROGRESS_WINDOW_MS) {
-          this.log.log(
-            `[WorkerRuntimeManager] TCP-listening + stdout-active for ${slot.projectId} on ` +
-              `port ${port} (last stdout ${sinceStdoutMs}ms ago, ` +
-              `${Date.now() - startedAt}ms since spawn, ${httpAttempts} http, ${tcpAttempts} tcp). ` +
-              `Accepting as ready — /health still warming up but the child is bound and making progress.`,
+        if (sinceStdoutMs >= STDOUT_PROGRESS_WINDOW_MS) {
+          throw new Error(
+            `agent-runtime wedged on port ${port}: TCP listening but stdout silent for ` +
+              `${sinceStdoutMs}ms (> ${STDOUT_PROGRESS_WINDOW_MS}ms window); ` +
+              `${httpAttempts} /health attempts, last error: ${lastError ?? 'n/a'}`,
           );
-          return;
         }
-        lastError =
-          `TCP listening but stdout silent for ${sinceStdoutMs}ms ` +
-          `(> ${STDOUT_PROGRESS_WINDOW_MS}ms window); last http: ${lastError ?? 'n/a'}`;
+      }
+
+      const now = Date.now();
+      if (now - lastProgressLogAt >= HEALTH_PROGRESS_LOG_MS) {
+        const elapsedMs = now - startedAt;
+        const sinceStdoutMs = now - slot.lastStdoutAt;
+        const sinceTcpMs = lastTcpAt > 0 ? now - lastTcpAt : null;
+        this.log.log(
+          `[WorkerRuntimeManager] still waiting for /health on ${slot.projectId} ` +
+            `port ${port} (${(elapsedMs / 1000).toFixed(1)}s elapsed, ` +
+            `tcpListening=${lastTcpListening}${sinceTcpMs != null ? `(${sinceTcpMs}ms ago)` : ''}, ` +
+            `lastStdout=${sinceStdoutMs}ms ago, ${httpAttempts} http, ${tcpAttempts} tcp, ` +
+            `lastError=${lastError ?? 'n/a'})`,
+        );
+        lastProgressLogAt = now;
       }
 
       await new Promise((r) => setTimeout(r, HEALTH_POLL_MS));

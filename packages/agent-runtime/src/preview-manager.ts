@@ -16,9 +16,11 @@
  */
 
 import { spawn, execSync, type ChildProcess } from 'child_process'
+import { createHash } from 'crypto'
 import { join } from 'path'
-import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync, watch, type FSWatcher } from 'fs'
+import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync, unlinkSync, watch, type FSWatcher } from 'fs'
 import { recordBuildEntry } from './runtime-log-dispatcher'
+import { scheduleLogWrite } from './runtime-log-writer'
 import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
 import {
   commitBuildOutputAsync,
@@ -27,10 +29,14 @@ import {
 } from './build-output-commit'
 
 /**
- * Append a line to the on-disk `.build.log` *and* dispatch it through
- * the runtime-log dispatcher so the Output tab and Monitor pull from
- * the same source. `stream === 'stderr'` upgrades the level to `'error'`
- * so the unseen-error red dot turns on for build failures.
+ * Append a line to the on-disk runtime build log *and* dispatch it
+ * through the runtime-log dispatcher so the Output tab and Monitor pull
+ * from the same source. `stream === 'stderr'` upgrades the level to
+ * `'error'` so the unseen-error red dot turns on for build failures.
+ *
+ * The build log lives at `<workspace>/.shogo/logs/build.log` (see
+ * `runtime-log-paths.ts`); callers must `ensureRuntimeLogDir()` before
+ * the first append so the directory exists.
  *
  * Exported for unit testing — see `__tests__/preview-manager.test.ts`.
  */
@@ -41,17 +47,21 @@ export function emitBuildLine(
   stream: 'stdout' | 'stderr' = 'stdout',
 ): void {
   if (!line) return
-  try {
-    appendFileSync(buildLogPath, `${prefix} ${line}\n`)
-  } catch {
-    // Disk failures shouldn't drop the in-memory dispatch — the Output
-    // tab is still a useful surface even if the on-disk log is unwritable.
-  }
+  // Async batched write — see `runtime-log-writer.ts` for rationale.
+  // On Windows the previous `appendFileSync` here did a mkdir + open + write +
+  // close PER LINE; with Defender that's 5–30ms per write, which during a
+  // vite-watch initial build (thousands of lines) saturated the event loop
+  // and made the agent-runtime's /health endpoint unreachable.
+  scheduleLogWrite(buildLogPath, `${prefix} ${line}\n`)
   recordBuildEntry(`${prefix} ${line}`, stream === 'stderr' ? 'error' : 'info')
 }
 import { createServer } from 'net'
 import { pkg, resolveBinInvocation } from '@shogo/shared-runtime'
-import { BUILD_LOG_FILE, CONSOLE_LOG_FILE } from './runtime-log-paths'
+import {
+  previewBuildLogPath,
+  previewConsoleLogPath,
+  ensureRuntimeLogDir,
+} from './runtime-log-paths'
 import {
   loadTechStackMeta,
   computePackageJsonHash,
@@ -334,7 +344,7 @@ export interface PreviewManagerConfig {
    * URL when unset (local dev).
    */
   publicUrl?: string
-  /** Clear agent `consoleLogs` buffer when `.console.log` is reset (preview start). */
+  /** Clear agent `consoleLogs` buffer when `.shogo/logs/console.log` is reset (preview start). */
   onConsoleLogReset?: () => void
   /**
    * Forward a single line of Metro/Expo bundler output to the runtime's
@@ -343,7 +353,7 @@ export interface PreviewManagerConfig {
    * this just routes Metro lines to the same place without going over
    * HTTP, so the studio's "Server" tab shows them live.
    *
-   * If unset, Metro output only lands in `.build.log` on disk.
+   * If unset, Metro output only lands in `.shogo/logs/build.log` on disk.
    */
   onLogLine?: (line: string, stream: 'stdout' | 'stderr') => void
   /**
@@ -596,11 +606,38 @@ export class PreviewManager {
   private onBuildComplete?: () => void
   private buildWatchProcess: ChildProcess | null = null
   private apiServerProcess: ChildProcess | null = null
+  /**
+   * True once the spawned `server.tsx` process has been observed to bind
+   * its port (either the in-process `/health` poll returned 2xx OR the
+   * best-effort "process up, /health silent" fallback fired in
+   * `startApiServer`). Distinct from `apiPhase === 'healthy'` because
+   * phase advances synchronously while `apiListening` only flips once
+   * we have positive evidence that fetch() will reach the server.
+   *
+   * Gates the public `apiServerPort` getter so the `/api/*` proxy in
+   * `server.ts` doesn't race the spawn → bind gap: previously
+   * `apiServerProcess` was assigned the moment `spawn()` returned,
+   * which meant `apiServerPort` reported a port before Bun.serve had
+   * actually listened. The SPA's first fetch then landed in that gap
+   * and the proxy returned a hard 502.
+   *
+   * Reset to `false` on every exit / kill / restart so a crashed
+   * server doesn't keep advertising a listening port.
+   */
+  private apiListening = false
   private metroProcess: ChildProcess | null = null
   private metroUrl: string | null = null
   private metroPort: number | null = null
   private schemaWatcher: FSWatcher | null = null
   private schemaTimer: ReturnType<typeof setTimeout> | null = null
+  // SHA-1 of the last `prisma/schema.prisma` content we acted on. Used by
+  // the watcher to drop spurious wakes (Windows fs.watch fires
+  // FILE_NOTIFY_CHANGE_ATTRIBUTES on read-only opens by `prisma generate`,
+  // `prisma db push`, the gateway's per-turn `getSchemaModels()`, etc. —
+  // none of which actually mutate the file). Without this guard each
+  // wake kicked off a 4 s regen + restart loop that re-armed itself
+  // because the spawned generators reopen the file.
+  private lastSchemaHash: string | null = null
   private customRoutesWatcher: FSWatcher | null = null
   private customRoutesTimer: ReturnType<typeof setTimeout> | null = null
   private apiPhase: ApiServerPhase = 'idle'
@@ -758,8 +795,8 @@ export class PreviewManager {
 
   /**
    * Best-effort log forwarding — never throws, never blocks. Called from
-   * the Metro/Expo stdout+stderr pumps so `.build.log` and the runtime's
-   * live console buffer stay in sync.
+   * the Metro/Expo stdout+stderr pumps so `.shogo/logs/build.log` and the
+   * runtime's live console buffer stay in sync.
    */
   private forwardLogLine(line: string, stream: 'stdout' | 'stderr'): void {
     if (!this.onLogLine || !line) return
@@ -856,8 +893,25 @@ export class PreviewManager {
     return this.buildWatchProcess !== null && !this.buildWatchProcess.killed
   }
 
+  /**
+   * Port the project's API sidecar (`server.tsx`) is currently
+   * listening on, or `null` if it isn't accepting connections.
+   *
+   * Returns the port only when (a) a process has been spawned and (b)
+   * we have positive evidence (`apiListening`) that the process has
+   * actually bound the port. Returning the port the moment `spawn()`
+   * resolved — the pre-2026-05-25 behaviour — created a window where
+   * `/api/*` proxy callers would attempt to fetch a port Bun.serve
+   * hadn't bound yet and got ECONNREFUSED → hard 502.
+   *
+   * The `/api/*` proxy in `server.ts` pairs this with a short polling
+   * grace window when `apiServerPhase ∈ {starting,restarting,
+   * generating}` so transient `null` here doesn't immediately error
+   * out the SPA's first fetch on a fresh project.
+   */
   get apiServerPort(): number | null {
-    return this.apiServerProcess && !this.apiServerProcess.killed ? this.apiPort : null
+    if (!this.apiServerProcess || this.apiServerProcess.killed) return null
+    return this.apiListening ? this.apiPort : null
   }
 
   /**
@@ -929,6 +983,23 @@ export class PreviewManager {
       return paths
     } catch {
       return []
+    }
+  }
+
+  /**
+   * SHA-1 hex digest of `prisma/schema.prisma`'s raw bytes. Returns
+   * `null` when the file is missing or unreadable. Used by the schema
+   * watcher to distinguish real edits from spurious `change` events
+   * (NTFS attribute-change notifications fired when other processes
+   * open the file read-only — see `lastSchemaHash` field comment).
+   */
+  private computeSchemaHash(): string | null {
+    const schemaPath = join(this.bundlerCwd, 'prisma', 'schema.prisma')
+    if (!existsSync(schemaPath)) return null
+    try {
+      return createHash('sha1').update(readFileSync(schemaPath)).digest('hex')
+    } catch {
+      return null
     }
   }
 
@@ -1200,6 +1271,14 @@ export class PreviewManager {
    * Uses `fs.watch` on the parent directory because `prisma/` may not
    * exist when the watcher first starts (older workspaces, fresh
    * clones). The handler ignores events for unrelated files.
+   *
+   * Guards against spurious events with a content-hash check (see
+   * `lastSchemaHash`): on Windows, NTFS fires FILE_NOTIFY_CHANGE_*
+   * notifications when other processes (the gateway's per-turn
+   * `getSchemaModels()`, `prisma generate` / `prisma db push`
+   * subprocesses kicked off by an earlier regen) merely open the file
+   * for read. Without the hash check each spurious wake re-armed the
+   * full kill-server → generate → restart cycle.
    */
   private startSchemaWatcher(): void {
     const cwd = this.bundlerCwd
@@ -1214,6 +1293,11 @@ export class PreviewManager {
 
     if (this.schemaWatcher) return
 
+    // Seed the baseline so the first post-boot wake compares against
+    // the on-disk state instead of `null` (which would always count as
+    // "changed" and trigger a regen).
+    this.lastSchemaHash = this.computeSchemaHash()
+
     try {
       this.schemaWatcher = watch(prismaDir, (_event, filename) => {
         if (filename !== 'schema.prisma') return
@@ -1225,6 +1309,14 @@ export class PreviewManager {
         if (this.schemaTimer) clearTimeout(this.schemaTimer)
         this.schemaTimer = setTimeout(() => {
           this.schemaTimer = null
+          const hash = this.computeSchemaHash()
+          if (hash !== null && hash === this.lastSchemaHash) {
+            // Spurious wake — file metadata moved but contents didn't.
+            // Don't log on the happy path; this fires every turn on
+            // Windows and would drown out real signal.
+            return
+          }
+          this.lastSchemaHash = hash
           void this.handleSchemaChange()
         }, SCHEMA_DEBOUNCE_MS)
       })
@@ -1251,6 +1343,12 @@ export class PreviewManager {
       return
     }
 
+    // Pin the baseline to the bytes we're about to act on. Any further
+    // events that report the same content (Prisma subprocess re-opens,
+    // gateway prompt-context reads) will be filtered by the watcher's
+    // hash compare instead of re-arming the regen loop.
+    this.lastSchemaHash = createHash('sha1').update(content, 'utf-8').digest('hex')
+
     console.log(`[${LOG_PREFIX}] schema.prisma changed, regenerating...`)
     this.regenerating = true
     this.pendingSchemaChange = false
@@ -1275,6 +1373,11 @@ export class PreviewManager {
     // so the exit handler doesn't trigger crash recovery. Callers that
     // want to relax that (none currently) can flip the flag back after.
     this.intentionalStop = true
+    // Stop publishing a listening port immediately — `restartApiServerOnly()`
+    // and `sync()` await us before respawning, and we don't want any
+    // /api/* request that lands in that gap to be told "still healthy
+    // on port X" when X is about to be torn down.
+    this.apiListening = false
     if (this.crashRestartTimer) {
       clearTimeout(this.crashRestartTimer)
       this.crashRestartTimer = null
@@ -1332,6 +1435,17 @@ export class PreviewManager {
     if (this.started) {
       return { mode: 'already-running', port: this.runtimePort, timings: {} }
     }
+
+    // One-shot migration: delete the legacy `<workspace>/.build.log` and
+    // `.console.log` (and their per-bundler-cwd siblings) if they're
+    // hanging around from a pre-2026-05 runtime. The new canonical
+    // location is `<workspace>/.shogo/logs/{build,console}.log`. Leaving
+    // the old files in place is actively harmful on Windows: they sit
+    // next to `index.html` and `vite.config.ts`, so every leftover write
+    // (if anything else still appends) would re-arm the chokidar
+    // rebuild-loop the move was meant to defeat. Cheap, idempotent, no
+    // log noise on the happy path.
+    this.cleanupLegacyRuntimeLogs()
 
     // Fresh preview session — align console buffer with an empty on-disk log (matches build refresh UX).
     this.clearRuntimeConsoleLog()
@@ -1772,6 +1886,7 @@ export class PreviewManager {
       this.apiServerProcess.kill('SIGTERM')
       this.apiServerProcess = null
     }
+    this.apiListening = false
     if (this.buildWatchProcess) {
       console.log(`[${LOG_PREFIX}] Stopping Vite build watch...`)
       this.killBuildWatchProcessGroup(this.buildWatchProcess)
@@ -1886,13 +2001,44 @@ export class PreviewManager {
     }
   }
 
-  /** Truncate project `.console.log` and clear the server's in-memory buffer (if wired). */
+  /**
+   * Best-effort deletion of legacy `.build.log` / `.console.log` left at
+   * the workspace root or bundler cwd by pre-2026-05 runtimes. Called
+   * once per `start()`. Errors are swallowed — the new canonical
+   * location (`<workspace>/.shogo/logs/`) doesn't depend on the old
+   * files being gone, this is purely defensive against the chokidar
+   * rebuild-loop trigger they used to provide.
+   */
+  private cleanupLegacyRuntimeLogs(): void {
+    const candidates = new Set<string>([
+      join(this.workspaceDir, '.build.log'),
+      join(this.workspaceDir, '.console.log'),
+      // Vite stacks historically wrote both files into
+      // `<workspace>/project/`; cover both layouts so the cleanup is
+      // single-pass regardless of which path resolveBundlerCwd picks.
+      join(this.bundlerCwd, '.build.log'),
+      join(this.bundlerCwd, '.console.log'),
+    ])
+    for (const path of candidates) {
+      if (!existsSync(path)) continue
+      try {
+        unlinkSync(path)
+      } catch {
+        // File handle still held by a leaked watcher / antivirus scan /
+        // permission glitch — not worth surfacing. The new logs go to
+        // `.shogo/logs/` regardless.
+      }
+    }
+  }
+
+  /** Truncate runtime `console.log` and clear the server's in-memory buffer (if wired). */
   private clearRuntimeConsoleLog(): void {
-    const consolePath = join(this.bundlerCwd, CONSOLE_LOG_FILE)
+    ensureRuntimeLogDir(this.workspaceDir)
+    const consolePath = previewConsoleLogPath(this.workspaceDir)
     try {
       writeFileSync(consolePath, '', 'utf-8')
     } catch (err: any) {
-      console.warn(`[${LOG_PREFIX}] Could not truncate ${CONSOLE_LOG_FILE}:`, err.message)
+      console.warn(`[${LOG_PREFIX}] Could not truncate ${consolePath}:`, err.message)
     }
     this.onConsoleLogReset?.()
   }
@@ -1970,7 +2116,8 @@ export class PreviewManager {
 
   private async startBuildWatch(): Promise<void> {
     const cwd = this.bundlerCwd
-    const buildLogPath = join(cwd, BUILD_LOG_FILE)
+    ensureRuntimeLogDir(this.workspaceDir)
+    const buildLogPath = previewBuildLogPath(this.workspaceDir)
 
     // On Windows the bun/npm-installed shim at `.bin/vite` is a POSIX shell
     // script that `child_process.spawn` cannot execute directly — it has to
@@ -2193,9 +2340,14 @@ export class PreviewManager {
       }
     }
 
-    const buildLogPath = join(cwd, BUILD_LOG_FILE)
+    ensureRuntimeLogDir(this.workspaceDir)
+    const buildLogPath = previewBuildLogPath(this.workspaceDir)
     console.log(`[${LOG_PREFIX}] Starting API server on port ${this.apiPort}...`)
     this.apiPhase = 'starting'
+    // We're about to spawn a brand-new process; the previous one (if any)
+    // is no longer authoritative for "is the port bound?". Re-flip on
+    // successful health check below.
+    this.apiListening = false
 
     // Make sure the port is actually free before we spawn — a previous
     // run may have leaked a process or had its EADDRINUSE handler skip
@@ -2238,7 +2390,14 @@ export class PreviewManager {
 
     proc.on('exit', (code, signal) => {
       console.log(`[${LOG_PREFIX}] API server exited (code=${code}, signal=${signal})`)
-      if (this.apiServerProcess === proc) this.apiServerProcess = null
+      if (this.apiServerProcess === proc) {
+        this.apiServerProcess = null
+        // Stop advertising a listening port the moment the owning
+        // process is gone — without this the `/api/*` proxy would
+        // keep fetching against a dead socket between the exit and
+        // the next `startApiServer()` flipping the flag back on.
+        this.apiListening = false
+      }
 
       // Don't downgrade an `idle`/`stopped` phase set by `stop()`, and
       // don't trigger crash recovery when the exit was intentional
@@ -2273,6 +2432,12 @@ export class PreviewManager {
 
     if (healthy) {
       this.apiPhase = 'healthy'
+      // First positive evidence the spawned process has bound the
+      // port — unlock the public `apiServerPort` getter so the
+      // `/api/*` proxy in server.ts will start forwarding traffic
+      // (its short startup grace window in `app.all('/api/*')` is
+      // waiting on exactly this flag).
+      this.apiListening = true
       // A fresh, healthy process clears the crash budget so a long-
       // running server that crashes once tomorrow doesn't run out of
       // retries because of yesterday's bad start.
@@ -2282,7 +2447,10 @@ export class PreviewManager {
       // Process is up but /health never responded — treat as best-effort
       // running. The caller can still proxy to it (if templates omit
       // /health entirely, prior behaviour was the same fixed-delay return).
+      // Flip `apiListening` here too so a template that intentionally
+      // skips /health doesn't permanently 503 every /api/* request.
       this.apiPhase = 'healthy'
+      this.apiListening = true
       this.crashCount = 0
       console.warn(`[${LOG_PREFIX}] API server started but /health never returned 2xx — proceeding anyway`)
     }
@@ -2596,10 +2764,12 @@ export class PreviewManager {
     }
     const isWindows = process.platform === 'win32'
 
-    // Build log lives next to the bundler cwd. For Vite stacks that's the
-    // legacy `<workspace>/project/` subdir; for Expo stacks it's the
-    // workspace root. `resolveBundlerCwd()` is the single source of truth.
-    const buildLogPath = join(cwd, BUILD_LOG_FILE)
+    // Build log always lives at `<workspace>/.shogo/logs/build.log` —
+    // outside the bundler cwd, so Rollup's chokidar parent-dir watcher
+    // never re-triggers on a build-log append. See `runtime-log-paths.ts`
+    // file docstring for the rebuild-loop history.
+    ensureRuntimeLogDir(this.workspaceDir)
+    const buildLogPath = previewBuildLogPath(this.workspaceDir)
     if (!existsSync(cwd)) mkdirSync(cwd, { recursive: true })
     // A leftover staging dir from a prior crashed build would confuse
     // expo export (it expects a clean output dir or none). Drop it
@@ -2676,7 +2846,7 @@ export class PreviewManager {
         console.error(
           `[${LOG_PREFIX}] expo export exited 0 but ${DEFAULT_STAGING_DIR}/index.html ` +
             `is missing — refusing to swap. Previous build (if any) stays live. ` +
-            `Inspect ${BUILD_LOG_FILE} for the real error.`,
+            `Inspect ${buildLogPath} for the real error.`,
         )
         cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
       } else {
@@ -2745,9 +2915,12 @@ export class PreviewManager {
     }
     this.metroNgrokAvailable = true
 
-    // See note in runExpoExportWeb — for Metro stacks the build log lives
-    // alongside the bundler cwd, not the legacy `project/` subdir.
-    const buildLogPath = join(cwd, BUILD_LOG_FILE)
+    // Build log lives at `<workspace>/.shogo/logs/build.log` for every
+    // stack (Vite, Expo web export, Metro tunnel). See
+    // `runtime-log-paths.ts` file docstring for the rebuild-loop history
+    // that motivated moving out of the bundler cwd.
+    ensureRuntimeLogDir(this.workspaceDir)
+    const buildLogPath = previewBuildLogPath(this.workspaceDir)
     if (!existsSync(cwd)) mkdirSync(cwd, { recursive: true })
 
     // Probe upward from 8081 because the Studio dev server squats on the

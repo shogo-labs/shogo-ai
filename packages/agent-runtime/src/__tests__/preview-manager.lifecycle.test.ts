@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { PreviewManager, reapStaleViteWatchers } from '../preview-manager'
+import { previewConsoleLogPath, previewBuildLogPath } from '../runtime-log-paths'
 
 let dir: string
 beforeEach(() => {
@@ -136,9 +137,14 @@ describe('PreviewManager.resolveDevServer (via getStatus)', () => {
 describe('PreviewManager.isApiHealthy', () => {
   // isApiHealthy short-circuits with `false` when apiServerPort is null
   // (no running process). To exercise the fetch branch we splice in a
-  // fake "running" apiServerProcess.
+  // fake "running" apiServerProcess AND set `apiListening = true` —
+  // post-2026-05-25, `apiServerPort` requires positive evidence that
+  // the spawned process has bound its port (see PreviewManager
+  // `apiListening` field) so a fake process alone is no longer enough
+  // to flip the getter to non-null.
   const withProc = (m: PreviewManager) => {
     ;(m as any).apiServerProcess = { killed: false, kill: () => {} }
+    ;(m as any).apiListening = true
     return m
   }
 
@@ -373,6 +379,100 @@ describe('PreviewManager schema watcher', () => {
       m.stopSchemaWatcher()
     }
   })
+
+  // --- Content-hash guard against spurious wakes -------------------------
+  //
+  // On Windows `fs.watch(prismaDir)` fires on attribute-change
+  // notifications too (e.g. another process opening `schema.prisma` for
+  // read), so the watcher must compare the file's actual content
+  // against the last-acted-on hash before triggering a regenerate.
+  // Without the guard, each chat turn re-armed the full kill-server →
+  // `bun run generate` → restart cycle and re-armed itself because the
+  // generator subprocess re-opens the file.
+
+  it('computeSchemaHash returns null when schema.prisma is missing', () => {
+    const m = mk() as any
+    expect(m.computeSchemaHash()).toBeNull()
+  })
+
+  it('computeSchemaHash is stable for identical content and changes when content does', () => {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'p' }))
+    mkdirSync(join(dir, 'prisma'), { recursive: true })
+    const schemaPath = join(dir, 'prisma', 'schema.prisma')
+    writeFileSync(schemaPath, 'datasource db { provider = "sqlite" }\nmodel A { id String @id }\n')
+    const m = mk() as any
+    const h1 = m.computeSchemaHash()
+    expect(h1).not.toBeNull()
+    // Re-write the exact same bytes — hash MUST match (this is the
+    // invariant the watcher's guard relies on).
+    writeFileSync(schemaPath, 'datasource db { provider = "sqlite" }\nmodel A { id String @id }\n')
+    expect(m.computeSchemaHash()).toBe(h1)
+    // Change the content — hash MUST move.
+    writeFileSync(schemaPath, 'datasource db { provider = "sqlite" }\nmodel A { id String @id }\nmodel B { id String @id }\n')
+    expect(m.computeSchemaHash()).not.toBe(h1)
+  })
+
+  it('startSchemaWatcher seeds lastSchemaHash from the on-disk schema', () => {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'p' }))
+    mkdirSync(join(dir, 'prisma'), { recursive: true })
+    const schemaPath = join(dir, 'prisma', 'schema.prisma')
+    writeFileSync(schemaPath, 'datasource db { provider = "sqlite" }\nmodel A { id String @id }\n')
+    const m = mk() as any
+    try {
+      m.startSchemaWatcher()
+      // Must equal whatever computeSchemaHash returns right now — that's
+      // the baseline the watcher callback compares against.
+      expect(m.lastSchemaHash).toBe(m.computeSchemaHash())
+    } finally {
+      m.stopSchemaWatcher()
+    }
+  })
+
+  it('rewriting identical schema.prisma bytes does NOT trigger handleSchemaChange; changing them does', async () => {
+    // Workspace package.json so resolveBundlerCwd() === workspaceDir,
+    // which keeps the watched path and the test write path in lock-step.
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'p' }))
+    mkdirSync(join(dir, 'prisma'), { recursive: true })
+    const schemaPath = join(dir, 'prisma', 'schema.prisma')
+    const original = 'datasource db { provider = "sqlite" }\nmodel A { id String @id }\n'
+    writeFileSync(schemaPath, original)
+
+    const m = mk() as any
+    // Stub the heavy regen path — we only care whether the watcher
+    // calls into it. mockImplementation lets the spy track invocations
+    // without triggering child-process spawns.
+    const handleSpy = spyOn(m, 'handleSchemaChange').mockImplementation(async () => {})
+
+    // Local mirror of the source-side `SCHEMA_DEBOUNCE_MS = 1500`. Kept
+    // inline rather than re-exported because the constant is internal
+    // to the preview-manager and exposing it would widen the public
+    // surface only for this test.
+    const SCHEMA_DEBOUNCE_MS = 1500
+
+    try {
+      m.startSchemaWatcher()
+      expect(m.schemaWatcher).not.toBeNull()
+      const baseline = m.lastSchemaHash
+      expect(baseline).not.toBeNull()
+
+      // Touch the file with identical bytes. fs.watch fires (mtime
+      // moves), but the hash compare must short-circuit before
+      // handleSchemaChange runs.
+      writeFileSync(schemaPath, original)
+      await new Promise((r) => setTimeout(r, SCHEMA_DEBOUNCE_MS + 400))
+      expect(handleSpy).not.toHaveBeenCalled()
+      // Baseline must still match the on-disk content.
+      expect(m.lastSchemaHash).toBe(baseline)
+
+      // Real edit — hash diverges, watcher must dispatch.
+      writeFileSync(schemaPath, original + 'model B { id String @id }\n')
+      await new Promise((r) => setTimeout(r, SCHEMA_DEBOUNCE_MS + 400))
+      expect(handleSpy).toHaveBeenCalled()
+    } finally {
+      handleSpy.mockRestore()
+      m.stopSchemaWatcher()
+    }
+  }, 10_000)
 })
 
 // --- Custom-routes watcher -----------------------------------------------
@@ -421,49 +521,92 @@ describe('PreviewManager custom-routes watcher', () => {
 // --- clearRuntimeConsoleLog ----------------------------------------------
 
 describe('PreviewManager.clearRuntimeConsoleLog', () => {
-  it('truncates an existing .console.log to empty', () => {
-    const bundler = join(dir, 'project')
-    mkdirSync(bundler, { recursive: true })
-    writeFileSync(join(bundler, 'package.json'), '{}')
-    const logPath = join(bundler, '.console.log')
-    writeFileSync(logPath, 'old content here\n')
+  it('truncates an existing console.log to empty', () => {
+    // clearRuntimeConsoleLog now writes under <workspace>/.shogo/logs/ —
+    // bundlerCwd is irrelevant. ensureRuntimeLogDir runs inside the
+    // helper, so a fresh workspace dir works without explicit mkdir.
+    const logPath = previewConsoleLogPath(dir)
     const m = mk() as any
+    // Pre-seed the file at the new canonical location.
+    m.clearRuntimeConsoleLog() // creates the dir + empties the file
+    writeFileSync(logPath, 'old content here\n')
     m.clearRuntimeConsoleLog()
     expect(readFileSync(logPath, 'utf-8')).toBe('')
   })
 
   it('also calls the optional onConsoleLogReset listener', () => {
-    const bundler = join(dir, 'project')
-    mkdirSync(bundler, { recursive: true })
-    writeFileSync(join(bundler, 'package.json'), '{}')
-    writeFileSync(join(bundler, '.console.log'), 'x')
     let calls = 0
     const m = mk({ onConsoleLogReset: () => { calls++ } }) as any
     m.clearRuntimeConsoleLog()
     expect(calls).toBe(1)
   })
 
-  it('is a no-op (logs a warning) when the bundlerCwd does not exist', () => {
+  it('creates the .shogo/logs/ directory on first call (no ENOENT)', () => {
+    // Fresh workspace with no .shogo/ — clearRuntimeConsoleLog must
+    // mkdir -p before writing; otherwise the first preview start
+    // would throw and we'd lose every log line until the next manual
+    // mkdir.
     const m = mk() as any
-    const warn = console.warn
-    console.warn = () => {}
-    try {
-      expect(() => m.clearRuntimeConsoleLog()).not.toThrow()
-    } finally {
-      console.warn = warn
-    }
+    expect(() => m.clearRuntimeConsoleLog()).not.toThrow()
+    expect(existsSync(previewConsoleLogPath(dir))).toBe(true)
   })
 
   it('still truncates the file even if the listener is undefined', () => {
+    const logPath = previewConsoleLogPath(dir)
+    const m = mk() as any
+    m.clearRuntimeConsoleLog()
+    writeFileSync(logPath, 'before')
+    // No onConsoleLogReset wired
+    m.clearRuntimeConsoleLog()
+    expect(readFileSync(logPath, 'utf-8')).toBe('')
+  })
+})
+
+// --- cleanupLegacyRuntimeLogs --------------------------------------------
+//
+// One-shot orphan cleanup run from `start()`. Pre-2026-05 runtimes wrote
+// `.build.log` / `.console.log` next to `index.html` at the workspace
+// root (or in `<workspace>/project/` for legacy Vite layouts). Leaving
+// them there re-arms the Windows chokidar rebuild-loop the move to
+// `.shogo/logs/` was meant to defeat — so every `start()` deletes them.
+
+describe('PreviewManager.cleanupLegacyRuntimeLogs', () => {
+  it('removes legacy <workspace>/.build.log and .console.log', () => {
+    writeFileSync(join(dir, '.build.log'), 'stale\n')
+    writeFileSync(join(dir, '.console.log'), 'stale\n')
+    const m = mk() as any
+    m.cleanupLegacyRuntimeLogs()
+    expect(existsSync(join(dir, '.build.log'))).toBe(false)
+    expect(existsSync(join(dir, '.console.log'))).toBe(false)
+  })
+
+  it('removes legacy <workspace>/project/.build.log and .console.log (Vite layout)', () => {
     const bundler = join(dir, 'project')
     mkdirSync(bundler, { recursive: true })
     writeFileSync(join(bundler, 'package.json'), '{}')
-    const logPath = join(bundler, '.console.log')
-    writeFileSync(logPath, 'before')
-    // No onConsoleLogReset wired
+    writeFileSync(join(bundler, '.build.log'), 'stale\n')
+    writeFileSync(join(bundler, '.console.log'), 'stale\n')
     const m = mk() as any
-    m.clearRuntimeConsoleLog()
-    expect(readFileSync(logPath, 'utf-8')).toBe('')
+    m.cleanupLegacyRuntimeLogs()
+    expect(existsSync(join(bundler, '.build.log'))).toBe(false)
+    expect(existsSync(join(bundler, '.console.log'))).toBe(false)
+  })
+
+  it('does NOT touch the new canonical files under .shogo/logs/', () => {
+    const newBuild = previewBuildLogPath(dir)
+    const newConsole = previewConsoleLogPath(dir)
+    mkdirSync(join(dir, '.shogo', 'logs'), { recursive: true })
+    writeFileSync(newBuild, 'fresh\n')
+    writeFileSync(newConsole, 'fresh\n')
+    const m = mk() as any
+    m.cleanupLegacyRuntimeLogs()
+    expect(readFileSync(newBuild, 'utf-8')).toBe('fresh\n')
+    expect(readFileSync(newConsole, 'utf-8')).toBe('fresh\n')
+  })
+
+  it('is a no-op (no throw) when nothing legacy exists', () => {
+    const m = mk() as any
+    expect(() => m.cleanupLegacyRuntimeLogs()).not.toThrow()
   })
 })
 
@@ -502,10 +645,17 @@ describe('reapStaleViteWatchers', () => {
    *   <bun-binary> <workspace>/node_modules/vite/bin/vite.js build --watch --emptyOutDir false
    * Each line is rendered as `<pid> <pgid> <command>` to mirror
    * `ps -A -o pid=,pgid=,command=`.
+   *
+   * The vite-bin path is built with `path.join` so the fixture's
+   * separators agree with the source's `viteBinFragment` (also built
+   * via `path.join`) on whichever host is running the test. Without
+   * this, Windows test runs feed forward-slash fixtures into a parser
+   * that's looking for backslash substrings → 0 matches → false reds.
    */
   function psLine(pid: number, pgid: number, workspace: string, extraArgs = '--emptyOutDir false') {
     const bun = '/Applications/Shogo.app/Contents/Resources/bun/bun'
-    return `${pid} ${pgid} ${bun} ${workspace}/node_modules/vite/bin/vite.js build --watch ${extraArgs}`
+    const viteBin = join(workspace, 'node_modules', 'vite', 'bin', 'vite.js')
+    return `${pid} ${pgid} ${bun} ${viteBin} build --watch ${extraArgs}`
   }
 
   it('returns empty + does not kill anything when ps output is empty', () => {
@@ -543,8 +693,10 @@ describe('reapStaleViteWatchers', () => {
     const killed: Array<[number, NodeJS.Signals]> = []
     const ws = '/ws/match-me'
     const lines = [
-      // Same workspace, but not build --watch — skip
-      `100 100 /bun ${ws}/node_modules/vite/bin/vite.js --port 5173`,
+      // Same workspace, but not build --watch — skip. Use path.join
+      // so the workspace fragment matches the OS-native separator the
+      // source's `viteBinFragment` also produces.
+      `100 100 /bun ${join(ws, 'node_modules', 'vite', 'bin', 'vite.js')} --port 5173`,
       // build --watch, but a different workspace — skip
       psLine(200, 200, '/ws/other'),
       // Match
@@ -571,8 +723,9 @@ describe('reapStaleViteWatchers', () => {
     // specifically — assert we send the PGID number, not the PID.
     // Use distinct values to make the regression visible if the
     // implementation ever swaps them.
+    const viteBin = join(ws, 'node_modules', 'vite', 'bin', 'vite.js')
     const out = reapStaleViteWatchers(ws, {
-      listProcesses: () => `${999} ${888} /bun ${ws}/node_modules/vite/bin/vite.js build --watch`,
+      listProcesses: () => `${999} ${888} /bun ${viteBin} build --watch`,
       killGroup: (pgid, sig) => killed.push([pgid, sig]),
       platform: 'darwin',
       selfPid: 11111,
@@ -608,7 +761,7 @@ describe('reapStaleViteWatchers', () => {
     // the workspace path. ps emits the command verbatim with embedded
     // spaces preserved; our parser must reconstruct the full command
     // string from column 3 onwards, not split-and-take-only-the-third.
-    const cmd = `/Applications/Shogo.app/Contents/Resources/bun/bun ${ws}/node_modules/vite/bin/vite.js build --watch --emptyOutDir false`
+    const cmd = `/Applications/Shogo.app/Contents/Resources/bun/bun ${join(ws, 'node_modules', 'vite', 'bin', 'vite.js')} build --watch --emptyOutDir false`
     const out = reapStaleViteWatchers(ws, {
       listProcesses: () => `12345 12345 ${cmd}\n`,
       killGroup: (pgid, sig) => killed.push([pgid, sig]),

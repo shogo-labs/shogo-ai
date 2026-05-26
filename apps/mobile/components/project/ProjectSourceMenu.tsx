@@ -29,6 +29,7 @@
  */
 import React, { useCallback, useState } from 'react'
 import { Pressable, Text, View } from 'react-native'
+import { useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
   Popover,
@@ -74,6 +75,7 @@ export function ProjectSourceMenu({
   onSelectBlank,
   onProjectOpened,
 }: ProjectSourceMenuProps) {
+  const router = useRouter()
   const [open, setOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
 
@@ -104,9 +106,13 @@ export function ProjectSourceMenu({
   const handleImportCompleted = useCallback(
     (project: { id: string; name: string }) => {
       setImportOpen(false)
-      onProjectOpened?.(project)
+      if (onProjectOpened) {
+        onProjectOpened(project)
+      } else {
+        router.push({ pathname: '/(app)/projects/[id]', params: { id: project.id } } as any)
+      }
     },
-    [onProjectOpened],
+    [onProjectOpened, router],
   )
 
   const trigger = (triggerProps: any) =>

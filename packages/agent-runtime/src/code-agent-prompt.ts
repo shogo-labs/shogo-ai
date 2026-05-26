@@ -121,7 +121,7 @@ For detailed code review (risk scoring, test gap analysis, execution flow tracin
 
 ### Verify the endpoints you build
 
-A green \`.build.log\` proves the file compiled, not that the endpoint works. Any time you add or change an endpoint that does dynamic work — auth lookups, integration calls, DB joins, request-time computation — you MUST hit it and inspect the response shape before declaring the feature done.
+A green \`.shogo/logs/build.log\` proves the file compiled, not that the endpoint works. Any time you add or change an endpoint that does dynamic work — auth lookups, integration calls, DB joins, request-time computation — you MUST hit it and inspect the response shape before declaring the feature done.
 
 Two-step check:
 
@@ -272,18 +272,18 @@ Follow this sequence for EVERY code change:
 1. **Explore first** — Use \`search\`, \`read_file\`, and \`exec\` to understand the project structure before touching anything.
 2. **Read before edit** — You MUST use \`read_file\` on a file before editing it.
 3. **Make targeted changes** — Prefer \`edit_file\` over \`write_file\` for existing files.
-4. **Verify build** — After changes, run: \`exec({ command: 'tail -5 .build.log' })\`
+4. **Verify build** — After changes, run: \`exec({ command: 'tail -5 .shogo/logs/build.log' })\`
    - Look for "built in" → success
    - Look for "error" or "failed" → build broken, must fix before continuing
 5. **Fix errors** — If the build failed:
-   a. Read the full log: \`exec({ command: 'cat .build.log' })\`
+   a. Read the full log: \`exec({ command: 'cat .shogo/logs/build.log' })\`
    b. Diagnose from the ACTUAL error output — do NOT guess
    c. Fix the source file, wait 2-3 seconds for automatic rebuild
-   d. Re-verify: \`exec({ command: 'tail -5 .build.log' })\`
+   d. Re-verify: \`exec({ command: 'tail -5 .shogo/logs/build.log' })\`
 6. **Never say "done" until the build is confirmed clean.**
 
 ### Build Failure Recovery
-- ALWAYS read \`.build.log\` first — it has the complete error context
+- ALWAYS read \`.shogo/logs/build.log\` first — it has the complete error context
 - For TypeScript errors, run \`exec({ command: 'bun x tsc --noEmit' })\` for full diagnostics
 - Do NOT guess at fixes — always read the actual error output first
 
@@ -294,7 +294,7 @@ When modifying data models:
 2. Validate: \`exec({ command: 'bun x prisma validate' })\`
 3. Generate everything: \`exec({ command: 'bun x shogo generate' })\`
 4. Wait 2-3 seconds for the rebuild, then update UI components
-5. Verify build: \`exec({ command: 'tail -5 .build.log' })\`
+5. Verify build: \`exec({ command: 'tail -5 .shogo/logs/build.log' })\`
 
 **Rules:**
 - NEVER directly edit files in \`src/generated/\` or \`server.tsx\`

@@ -24,6 +24,7 @@ import { promisify } from 'util';
 const execAsync = promisify(exec);
 
 let _gitAvailable: boolean | null = null;
+let _gitBinaryNameForProbe = 'git';
 
 /**
  * Check whether the `git` binary is available on the host.
@@ -32,7 +33,7 @@ let _gitAvailable: boolean | null = null;
 export function isGitAvailable(): boolean {
   if (_gitAvailable !== null) return _gitAvailable;
   try {
-    execFileSync('git', ['--version'], { stdio: 'pipe' });
+    execFileSync(_gitBinaryNameForProbe, ['--version'], { stdio: 'pipe' });
     _gitAvailable = true;
   } catch {
     _gitAvailable = false;
@@ -529,8 +530,11 @@ export async function initRepo(
   try {
     execFileSync('git', ['commit', '-m', 'Initial commit'], { cwd: workspacePath, stdio: 'pipe' });
   } catch (err: any) {
-    // No files to commit is OK
-    if (!err.message?.includes('nothing to commit')) {
+    // No files to commit is OK. With stdio:'pipe' the message goes to
+    // err.stdout (and err.output[1]) rather than err.message, so we have
+    // to inspect the combined output text.
+    const combined = String(err?.message ?? '') + String(err?.stdout ?? '') + String(err?.stderr ?? '');
+    if (!combined.includes('nothing to commit')) {
       throw err;
     }
   }
@@ -703,7 +707,10 @@ export async function commit(
   try {
     execFileSync('git', commitArgs, { cwd: workspacePath, stdio: 'pipe' });
   } catch (err: any) {
-    if (err.message?.includes('nothing to commit')) {
+    // git emits "nothing to commit" on stdout (captured to err.stdout via
+    // stdio:'pipe'), not in err.message. Inspect the combined output.
+    const combined = String(err?.message ?? '') + String(err?.stdout ?? '') + String(err?.stderr ?? '');
+    if (combined.includes('nothing to commit')) {
       return null;
     }
     throw err;
@@ -1188,3 +1195,29 @@ export async function readCheckpointMetadata(
     return null;
   }
 }
+
+// =============================================================================
+// Testing-only helpers — DO NOT use in production code.
+// =============================================================================
+
+/** Reset the cached `isGitAvailable` probe so the next call re-probes. */
+export function __resetGitAvailableForTesting(): void {
+  _gitAvailable = null;
+}
+
+/** Seed the cached `isGitAvailable` value directly (skips the probe). */
+export function __setGitAvailableForTesting(value: boolean | null): void {
+  _gitAvailable = value;
+}
+
+/** Override the binary name used by isGitAvailable's probe (for forcing the catch). */
+export function __setGitBinaryNameForTesting(name: string | null): void {
+  _gitBinaryNameForProbe = name ?? 'git';
+}
+
+/** Re-exports of module-private helpers for unit testing. */
+export const __isWindowsReservedBasenameForTests = isWindowsReservedBasename;
+export const __purgeWindowsReservedFilesForTests = purgeWindowsReservedFiles;
+export const __ensureGitignoreIgnoresDepsForTests = ensureGitignoreIgnoresDeps;
+export const __evictStaleIndexLockForTests = evictStaleIndexLock;
+export const __resolveRefForTests = resolveRef;

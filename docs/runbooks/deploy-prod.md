@@ -69,11 +69,20 @@ the same dashboards.
    kubectl get events -n shogo-production-workspaces --sort-by='.lastTimestamp'
    ```
 
-5. The `/api/dist-files` endpoint added in commit `2f9b326d` requires
-   the new image to be in the warm pool before publish can complete.
-   Until the roll finishes, `POST /api/projects/:id/publish` returns
-   a `download_failed` 404 — this is the expected pre-fix-rollout
-   state.
+5. The publish-flow dist-files endpoint lives at `/agent/dist-files` on
+   the runtime pod and is required before publish can complete. Until
+   the roll finishes, `POST /api/projects/:id/publish` returns a
+   `download_failed` 404 — this is the expected pre-fix-rollout state.
+
+   Historical note: commit `2f9b326d` originally added this at
+   `/api/dist-files`, where it was silently shadowed by the runtime's
+   `app.all('/api/*')` user-app proxy and never actually served. Every
+   publish from `2f9b326d` until the namespace move would either 404
+   (proxy's no-port branch) or return the user app's SPA fallback
+   (200 + `index.html`, which the publisher then failed to JSON-parse).
+   If you're investigating a publish failure in that window, the
+   surface 404 is genuine — but the underlying cause was the proxy
+   shadow, not a missing rollout.
 
 ## Post-roll verification
 

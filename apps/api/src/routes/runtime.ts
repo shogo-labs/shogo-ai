@@ -218,10 +218,19 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
    */
   router.get("/projects/:projectId/sandbox/url", async (c) => {
     const projectId = c.req.param("projectId")
+    const handlerStart = Date.now()
+    const log = (phase: string, extra?: Record<string, unknown>) => {
+      console.log(
+        `[sandbox/url:${projectId.slice(0, 8)}] ${phase} ` +
+          `(+${Date.now() - handlerStart}ms${extra ? ' ' + JSON.stringify(extra) : ''})`,
+      )
+    }
+    log('start')
 
     try {
-      // Validate project exists in database
+      const t0 = Date.now()
       const project = await validateProject(projectId)
+      log('validateProject', { ms: Date.now() - t0 })
       if (!project) {
         return c.json(
           { error: { code: "project_not_found", message: "Project not found" } },
@@ -241,12 +250,16 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
       // would mis-render if VM and host disagreed on workspace state.
       let res
       try {
+        const t1 = Date.now()
         const { resolveProjectPodUrl } = await import("../lib/resolve-pod-url")
+        log('imported resolve-pod-url', { ms: Date.now() - t1 })
+        const t2 = Date.now()
         res = await resolveProjectPodUrl(projectId, {
           logTag: 'Runtime',
           onVMPermanentlyDisabled: 'throw',
           runtimeManager,
         })
+        log('resolveProjectPodUrl', { ms: Date.now() - t2, mode: res?.mode, status: (res as any)?.runtime?.status })
       } catch (vmErr: any) {
         if (process.env.SHOGO_VM_ISOLATION === 'true') {
           console.error('[Runtime] VM pool unavailable for sandbox/url:', vmErr.message)
@@ -266,6 +279,7 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
         const canvasBaseUrl = res.runtime.agentPort
           ? `http://localhost:${res.runtime.agentPort}`
           : res.runtime.url
+        log('done', { ready: isReady, status: res.runtime.status })
         return c.json({
           url: res.runtime.url,
           directUrl: res.runtime.url,
@@ -281,6 +295,7 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
       // K8s and VM modes both expose the runtime at `res.url`
       // directly — same URL serves preview, direct, and canvas.
       const modeLabel = res.mode === 'vm' ? 'VM' : 'K8s'
+      log('done', { ready: true, mode: modeLabel })
       return c.json({
         url: res.url,
         directUrl: res.url,

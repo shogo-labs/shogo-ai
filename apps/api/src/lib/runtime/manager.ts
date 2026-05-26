@@ -7,7 +7,7 @@
  * Uses child_process.spawn with random port allocation in range 37100-37900.
  */
 
-import { spawn, execSync, type ChildProcess } from 'child_process'
+import { execSync, type ChildProcess } from 'child_process'
 import { existsSync, cpSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, rmSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
@@ -128,19 +128,21 @@ export class RuntimeManager implements IRuntimeManager {
       // use the source bundle / TS entry directly without depending on
       // a prebuilt agent-runtime binary on disk.
       //
-      // `--conditions=development` activates the `"development"` export
-      // condition declared by each `@shogo-ai/*` workspace package, so
-      // the agent-runtime resolves `@shogo-ai/sdk/model-catalog`,
-      // `@shogo-ai/cli/pkg`, etc. to their in-tree `src/*.ts` files
-      // instead of the `dist/` build (which isn't produced until
-      // `bun run build:packages`). Without this, a fresh clone crashes
-      // the child runtime on first spawn with `Cannot find module
-      // '@shogo-ai/sdk/model-catalog'`. Mirrors the same flag used by
-      // `scripts/watch-api.ts` and `scripts/dev-all.ts` for the
-      // top-level API + route-generation entry points.
+      // The agent-runtime imports several `@shogo-ai/sdk` subpaths
+      // (`microcompact`, `pi-adapter`, `prefix-fingerprint`,
+      // `model-router`, `hooks`, `voice`, `tool-orchestration`) whose
+      // `exports` map in `packages/sdk/package.json` routes Bun's
+      // default `import` condition to `dist/*.js`. We therefore
+      // require `packages/sdk/dist/` to be built before the API spawns
+      // its first agent — `scripts/dev-all.ts` builds it up front and
+      // `bun run build:packages` is the manual equivalent. The other
+      // workspace packages the agent-runtime pulls in
+      // (`@shogo/shared-runtime`, `@shogo/model-catalog`) declare
+      // `"main": "src/index.ts"` with no `exports` map and resolve to
+      // source unconditionally, so no build is needed for those.
       spawnCommand: (entry: string) => ({
         command: pkg.bunBinary,
-        args: ['--conditions=development', 'run', entry],
+        args: ['run', entry],
       }),
       // Bypass the worker's binary-resolution chain (which expects a
       // compiled `agent-runtime` under ~/.shogo/runtime/) and point at
@@ -480,11 +482,24 @@ export class RuntimeManager implements IRuntimeManager {
 
   /**
    * Build the URL for a project runtime.
+   *
+   * For local dev (`domainSuffix === 'localhost'`) we hardcode the loopback
+   * IPv4 literal `127.0.0.1` rather than the hostname `localhost`. Windows
+   * resolves `localhost` to `::1` (IPv6) first in most default DNS
+   * configurations, but `Bun.serve` in agent-runtime defaults to
+   * `hostname: "0.0.0.0"` (IPv4-only) — so a hostname-based fetch hangs
+   * for the full ~75 s OS TCP-connect timeout against the dead IPv6
+   * address before Bun's fetch finally reports "The operation timed out."
+   * This bit `apps/api`'s chat proxy: WorkerRuntimeManager already uses
+   * `127.0.0.1` internally for its /health probe and `proxyUrl()`
+   * (see `packages/shogo-worker/src/lib/runtime-manager.ts`), so this
+   * keeps the two layers consistent. Hosted/k8s paths are unaffected —
+   * they go through the `${projectId}.${domainSuffix}` branch below.
    */
   private buildUrl(projectId: string, port: number): string {
     const { domainSuffix } = this.config
     if (domainSuffix === 'localhost') {
-      return `http://localhost:${port}`
+      return `http://127.0.0.1:${port}`
     }
     return `http://${projectId}.${domainSuffix}`
   }
@@ -705,6 +720,13 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       primaryPath: string
     },
   ): Promise<string> {
+    const ensureStart = Date.now()
+    const log = (name: string, extra?: Record<string, unknown>) => {
+      console.log(
+        `[RuntimeManager:ensureProjectDirectory:${projectId.slice(0, 8)}] ${name} ` +
+          `(+${Date.now() - ensureStart}ms${extra ? ' ' + JSON.stringify(extra) : ''})`,
+      )
+    }
     // External (VS Code-style) projects: the user picked a folder on
     // their machine and that folder IS the project directory. We never
     // create `workspaces/<projectId>`, never seed a bundled template,
@@ -727,6 +749,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       // it eagerly so PreviewManager doesn't race on first start.
       const distDir = join(shogoDir, 'local', 'dist')
       if (!existsSync(distDir)) mkdirSync(distDir, { recursive: true })
+      log('done:external', { primary })
       return primary
     }
 
@@ -793,11 +816,12 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       // Template resolution order: bundled > workspace > inline
       if (existsSync(BUNDLED_TEMPLATE_DIR) && existsSync(join(BUNDLED_TEMPLATE_DIR, 'package.json'))) {
         console.log(`[RuntimeManager] Copying bundled template from ${BUNDLED_TEMPLATE_DIR}`)
+        const tCopy = Date.now()
         cpSync(BUNDLED_TEMPLATE_DIR, projectDir, {
           recursive: true,
           filter: copyFilter,
         })
-        console.log(`[RuntimeManager] Copied bundled template to ${projectDir}`)
+        log('template-copy:bundled', { ms: Date.now() - tCopy })
       } else if (existsSync(workspaceTemplateDir)) {
         console.log(`[RuntimeManager] Copying workspace template from ${workspaceTemplateDir}`)
         cpSync(workspaceTemplateDir, projectDir, {
@@ -845,6 +869,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     // the sole install owner, so the sentinel correctly tracks install
     // completeness there.
     if (stackHandlesOwnSeed) {
+      log('done:stack-handles-own-seed', { techStackId, projectDir })
       return projectDir
     }
 
@@ -864,13 +889,17 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       const nodeModulesDir = join(projectDir, 'node_modules')
       if (existsSync(nodeModulesDir)) {
         console.log(`[RuntimeManager] Removing incomplete node_modules for ${projectId}`)
+        const tRm = Date.now()
         rmSync(nodeModulesDir, { recursive: true, force: true })
+        log('rm-node_modules', { ms: Date.now() - tRm })
       }
 
       const cmdName = pkg.isWindows ? 'npm.cmd' : pkg.bunBinary
       console.log(`[RuntimeManager] Installing dependencies for ${projectId} (${cmdName})...`)
+      const tInstall = Date.now()
       try {
         await pkg.installAsync(projectDir)
+        log('pkg.installAsync', { ms: Date.now() - tInstall, cmd: cmdName })
 
         // Write sentinel so we know install completed successfully
         writeFileSync(installSentinel, new Date().toISOString())
@@ -885,6 +914,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       }
     }
 
+    log('done', { projectDir })
     return projectDir
   }
 
@@ -1068,7 +1098,17 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   }
 
   private async doStart(projectId: string): Promise<IProjectRuntime> {
+    const startedAtMs = Date.now()
+    const phase = (name: string, extra?: Record<string, unknown>) => {
+      console.log(
+        `[RuntimeManager:doStart:${projectId.slice(0, 8)}] ${name} ` +
+          `(+${Date.now() - startedAtMs}ms${extra ? ' ' + JSON.stringify(extra) : ''})`,
+      )
+    }
+    phase('begin')
+    const t0 = Date.now()
     const projectInfo = await this.getProjectInfo(projectId)
+    phase('getProjectInfo', { ms: Date.now() - t0, techStackId: projectInfo.techStackId, workingMode: projectInfo.workingMode })
 
     // External (VS Code-style) projects: the project directory is the
     // primary linked folder, not workspaces/<projectId>. ensureProjectDirectory
@@ -1096,14 +1136,18 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     // React+Vite template copy and let the agent-runtime's seedTechStack do
     // the right thing. Without this, an expo-three project ends up with a
     // Frankenstein workspace (Vite package.json + Expo `app/`/`metro.config.js`).
+    const t1 = Date.now()
     const projectDir = await this.ensureProjectDirectory(
       projectId,
       projectInfo.techStackId,
       isExternal ? { primaryPath: externalPrimary! } : undefined,
     )
+    phase('ensureProjectDirectory', { ms: Date.now() - t1, projectDir })
 
     // Allocate ports (async to check for stale processes)
+    const t2 = Date.now()
     const port = await this.allocatePortAsync()
+    phase('allocatePort', { ms: Date.now() - t2, port })
     const agentPort = port + AGENT_PORT_OFFSET
     const url = this.buildUrl(projectId, port)
     const startedAt = Date.now()
@@ -1122,22 +1166,6 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     this.runtimes.set(projectId, runtime)
 
     try {
-      // Build Vite environment - override DATABASE_URL with projects database if available
-      // This ensures project runtimes connect to the isolated projects database, not the platform database
-      const viteEnv: Record<string, string> = {
-        ...process.env as Record<string, string>,
-        PROJECT_ID: projectId,
-        VITE_PROJECT_ID: projectId,
-        VITE_PORT: String(port),
-        PORT: String(port),
-      }
-      
-      // Override DATABASE_URL with PROJECTS_DATABASE_URL to isolate project data
-      if (process.env.PROJECTS_DATABASE_URL) {
-        viteEnv.DATABASE_URL = process.env.PROJECTS_DATABASE_URL
-        console.log(`[RuntimeManager] Vite using projects database: ${process.env.PROJECTS_DATABASE_URL.replace(/:[^:@]+@/, ':***@')}`)
-      }
-
       // Detect Expo / RN projects. For these we skip the Vite spawn
       // entirely — the agent-runtime PreviewManager (started below) owns
       // Metro and `expo export -p web`. Running Vite alongside Metro
@@ -1189,8 +1217,6 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         return false
       })()
 
-      let proc: ReturnType<typeof spawn> | null = null
-
       if (isExternal && projectInfo.runtimeEnabled === false) {
         // VS Code-style external project with the live preview toggle
         // off. We deliberately don't spawn Vite or Metro — running a
@@ -1207,9 +1233,6 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           `[RuntimeManager] Detected Expo project ${projectId} — skipping Vite. ` +
           `agent-runtime PreviewManager will run Metro + expo export -p web.`,
         )
-        // Hold the project port even though we don't spawn Vite, so the
-        // existing /preview proxy keeps routing to the agent port. The
-        // agent-runtime serves dist/ at runtimePort.
       } else if (!looksLikeViteProject) {
         console.log(
           `[RuntimeManager] Project ${projectId} has no Vite entry ` +
@@ -1218,72 +1241,33 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           `later writes one.`,
         )
       } else {
-        // Run Vite dev server
-        // Resolve vite binary directly from node_modules to avoid Windows .bin/ issue
-        // (Bun on Windows may not create .bin/ shims, causing "command not found: vite")
-        const viteBin = join(projectDir, 'node_modules', 'vite', 'bin', 'vite.js')
-        const devArgs = existsSync(viteBin)
-          ? [viteBin, '--port', String(port), '--host', '0.0.0.0']
-          : ['run', 'dev', '--port', String(port), '--host', '0.0.0.0']
-        proc = spawn(pkg.bunBinary, devArgs, {
-          cwd: projectDir,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          detached: false,
-          env: viteEnv,
-        })
-      }
-
-      if (proc) {
-        runtime.process = proc
-
-        proc.on('error', (err) => {
-          console.error(`[RuntimeManager] Vite process error for ${projectId}:`, err)
-          runtime.status = 'error'
-        })
-
-        proc.on('exit', (code, signal) => {
-          console.log(`[RuntimeManager] Vite process exited for ${projectId}: code=${code}, signal=${signal}`)
-          if (runtime.status !== 'stopping' && runtime.status !== 'stopped') {
-            runtime.status = 'stopped'
-          }
-          this.releasePort(port)
-        })
-
-        proc.stdout?.on('data', (data) => {
-          const output = data.toString()
-          // Note: we intentionally DO NOT log a "Vite ready" line here even
-          // when stdout contains `Local:` or `ready in`. Vite prints both of
-          // those tokens *before* its HTTP server is reliably accepting
-          // connections — the previous stdout-sniff log misled debugging by
-          // claiming "ready" while `waitForReady()` was still failing every
-          // probe. The authoritative "ready" log now lives in `waitForReady`
-          // and only fires after a real HEAD response.
-          // Forward Vite output to the agent server's console log for the Server tab
-          for (const line of output.split('\n')) {
-            if (line.trim()) {
-              fetch(`http://localhost:${agentPort}/console-log/append`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ line: line.trim(), stream: 'stdout' }),
-              }).catch(() => {}) // Ignore if agent isn't ready yet
-            }
-          }
-        })
-
-        proc.stderr?.on('data', (data) => {
-          const output = data.toString()
-          console.error(`[RuntimeManager] Vite stderr for ${projectId}:`, output)
-          // Forward Vite stderr to the agent server's console log for the Server tab
-          for (const line of output.split('\n')) {
-            if (line.trim()) {
-              fetch(`http://localhost:${agentPort}/console-log/append`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ line: line.trim(), stream: 'stderr' }),
-              }).catch(() => {}) // Ignore if agent isn't ready yet
-            }
-          }
-        })
+        // Host-side Vite dev server is intentionally NOT spawned.
+        //
+        // The agent-runtime's PreviewManager owns the build pipeline
+        // (`vite build --watch`) and the agent-runtime's HTTP server
+        // (`packages/agent-runtime/src/server.ts`'s catch-all at the
+        // bottom of the route table) statically serves the resulting
+        // `<workspaceDir>/dist/` on the agent port. `/api/*` is proxied
+        // from there to the colocated `server.tsx` sidecar.
+        //
+        // Why no host Vite anymore: running both a host dev server AND
+        // PreviewManager's `vite build --watch` against the same
+        // workspace doubled the file-watcher / Defender / Rollup load
+        // and, on Windows specifically, raced on `dist/` rewrites (see
+        // canvas-build-manager.ts's file docstring for the EPERM
+        // history). The cloud path has always been "agent-runtime
+        // serves dist/" — collapsing the local path onto that same
+        // model removes the divergence entirely.
+        //
+        // Trade-off: no HMR on local. Saves are full Rollup rebuilds
+        // (~1-3s on Windows) followed by an iframe reload toast wired
+        // through `PreviewManager.onBuildComplete` →
+        // `CanvasFileWatcher.broadcastReload`.
+        console.log(
+          `[RuntimeManager] Vite project ${projectId} — host-side dev server ` +
+          `disabled; agent-runtime PreviewManager owns vite build --watch and ` +
+          `serves dist/ on the agent port.`,
+        )
       }
 
       // Spawn unified runtime server for local development.
@@ -1330,13 +1314,18 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           // double-bind. PreviewManager still reads API_SERVER_PORT
           // (preferred) and the SKILL_SERVER_PORT alias the worker
           // sets the same value to.
-          // Single source of truth for "where is the running app?".
-          // The agent-runtime injects this into its system prompt so QA /
-          // browser-use subagents navigate to the right URL instead of
-          // hallucinating one from `vite.config.ts` (where the template
-          // hardcodes 5173, but the actual port is whatever RuntimeManager
-          // allocated here).
-          PUBLIC_PREVIEW_URL: url,
+          //
+          // PUBLIC_PREVIEW_URL is intentionally unset on local. The
+          // agent-runtime now serves dist/ on its own PORT (because the
+          // host-side Vite dev server was retired in favour of
+          // PreviewManager's `vite build --watch`), so
+          // `gateway.ts#buildPreviewUrlContext` falls back to
+          // `localhost:${PORT}` — which is the correct preview URL.
+          // Setting PUBLIC_PREVIEW_URL here would point at the
+          // formerly-bound Vite port (now unbound), feeding
+          // browser_qa subagents a dead URL. Cloud sets this var via
+          // its own pathway (Knative subdomain), so cloud behaviour is
+          // unchanged.
           SCHEMAS_PATH: join(this.config.workspacesDir || join(PROJECT_ROOT, 'workspaces'), '..', '.schemas'),
           NODE_ENV: 'development',
         }
@@ -1461,7 +1450,10 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           extraEnv: runtimeEnv,
         }
 
+        const tAgent = Date.now()
+        phase('agentManager.ensureRunning:begin')
         const agentStatus = await this.agentManager.ensureRunning(projectId, spawnConfig)
+        phase('agentManager.ensureRunning:end', { ms: Date.now() - tAgent, status: agentStatus?.status, agentPort: agentStatus?.agentPort })
         this.agentManagedProjects.add(projectId)
 
         // Reflect the worker-allocated agent port back onto the
@@ -1474,51 +1466,50 @@ export class ShogoErrorBoundary extends Component<Props, State> {
               (agentStatus.lastError ? `, error=${agentStatus.lastError}` : '') + ')'
           )
         }
+
+        // Repoint the preview URL at the agent-runtime's actual port.
+        //
+        // `runtime.url` was provisionally built from the (held-but-now-
+        // unbound) Vite `port` slot at the top of startRuntime, when we
+        // still spawned a host Vite dev server here. Since the
+        // agent-runtime now serves dist/ on its own worker-allocated
+        // port, the iframe — and the `/api/projects/:id/preview/*`
+        // redirect at apps/api/src/server.ts that dispatches off
+        // `runtime.url` — both have to point there instead. We update
+        // the URL after `ensureRunning` because the worker's port pool
+        // is independent of this manager's `port` slot and the real
+        // value isn't known until the spawn settles.
+        runtime.url = this.buildUrl(projectId, agentStatus.agentPort)
       } else {
         console.warn(`[RuntimeManager] Runtime server not found at ${runtimeServerPath}, skipping startup`)
       }
 
-      // Wait for Vite dev server if it was started and is still alive —
-      // best-effort. If the process already exited (e.g. vite binary
-      // missing during dep install) or the readiness probe itself times
-      // out / errors, the agent server alone is still sufficient for
-      // chat (file tools, agent endpoints, runtime APIs). Tearing the
-      // whole runtime down on a Vite hiccup used to SIGTERM a healthy
-      // agent gateway too — see the SIGTERM cascade we hit on Windows
-      // when the workspace's bun install raced Vite's listen(). The
-      // preview iframe will retry against Vite independently.
-      if (runtime.process && !runtime.process.killed && runtime.process.exitCode === null) {
-        try {
-          await this.waitForReady(projectId, port, 60000, runtime.process)
-        } catch (viteErr: any) {
-          console.warn(
-            `[RuntimeManager] Vite readiness probe failed for ${projectId}: ${viteErr?.message ?? viteErr}. ` +
-              `Continuing — agent server is healthy and chat will work; preview will retry independently.`,
-          )
-        }
-      } else if (runtime.process) {
-        console.warn(`[RuntimeManager] Vite process already exited for ${projectId} (code=${runtime.process.exitCode}), skipping waitForReady`)
-      }
-
-      // No explicit agent-readiness wait: WorkerRuntimeManager.ensureRunning()
-      // already polled /health to completion before resolving above.
-      // The legacy `waitForAgentReady` (and its stale-projectId guard)
-      // is preserved on this class for any AGPL-internal caller that
-      // still wants to invoke it directly, but it's no longer part of
-      // the start path.
+      // No explicit readiness wait here: WorkerRuntimeManager.ensureRunning()
+      // already polled /health to completion before resolving above, and
+      // with the host-side Vite spawn retired there's no separate child
+      // process to probe. PreviewManager's `vite build --watch` runs
+      // inside the agent-runtime and produces dist/ asynchronously —
+      // until the first build lands, the catch-all at
+      // packages/agent-runtime/src/server.ts serves a self-refreshing
+      // "Building..." placeholder so the iframe degrades gracefully.
+      // `runtime.process` stays null on the happy path and the kept
+      // legacy helpers (`waitForReady`, vite-process cleanup in stop()
+      // and getHealth's vite-alive branch) all gate on it, so they're
+      // permanently inert in this code path but still exercised by the
+      // tests in runtime-manager-wait-for-ready.test.ts and
+      // runtime-manager-lifecycle.test.ts via direct private-method
+      // construction.
 
       runtime.status = 'running'
       this.startHealthCheck(projectId)
+      phase('done', { totalMs: Date.now() - startedAtMs })
 
       return this.toPublicRuntime(runtime)
     } catch (err) {
       runtime.status = 'error'
       this.releasePort(port)
-      if (runtime.process) {
-        runtime.process.kill('SIGTERM')
-      }
-      // Tear down the agent-runtime via the embedded worker manager.
-      // It owns the ChildProcess and the per-project port reservation.
+      // No host-side child process to kill — agent-runtime cleanup
+      // below owns its own ChildProcess.
       if (this.agentManagedProjects.has(projectId)) {
         this.agentManagedProjects.delete(projectId)
         await this.agentManager.stop(projectId).catch((stopErr: any) => {

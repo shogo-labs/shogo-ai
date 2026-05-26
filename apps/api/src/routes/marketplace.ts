@@ -45,34 +45,40 @@ function parseTags(v: string | undefined): string[] | undefined {
   return tags.length > 0 ? tags : undefined
 }
 
+function parseCreatorIds(v: string | undefined): string[] | undefined {
+  if (v == null || v === '') return undefined
+  const ids = v.split(',').map((s) => s.trim()).filter(Boolean)
+  return ids.length > 0 ? ids : undefined
+}
+
 export function marketplaceRoutes() {
   const app = new Hono()
 
-  // ── Local mode: forward every marketplace request to Shogo Cloud ──────────
+  // ── Local mode: serve reads from the local DB, proxy writes to Cloud ─────
   //
-  // In local/desktop mode (`SHOGO_LOCAL_MODE=true`) the marketplace is a
-  // cloud-only product — there's no point running the schema, Stripe Connect
-  // mock, or gamification stats against the local SQLite DB. Instead we
-  // reverse-proxy `/api/marketplace/*` to `${SHOGO_CLOUD_URL}` (default
-  // `https://studio.shogo.ai`).
+  // In local/desktop mode (`SHOGO_LOCAL_MODE=true`) the boot migration
+  // populates the local SQLite DB with marketplace listings (first-party
+  // templates + any seed data). All GET/read endpoints are served directly
+  // from the local DB so devs can browse, view listing detail, read
+  // reviews, etc. without needing cloud connectivity.
   //
-  // Auth flow:
-  //   - If `SHOGO_API_KEY` is set (populated by the cloud-login flow in
-  //     local-auth.ts / `PUT /api/local/shogo-key`), attach it as the
-  //     bearer token so creator/install/checkout endpoints succeed.
-  //   - Otherwise forward anonymously: cloud serves public reads (browse,
-  //     featured, search, listing detail, leaderboard, public creator
-  //     profile, reviews list) without auth. For endpoints that DO require
-  //     auth, cloud returns 401 — we translate that to
-  //     `503 { code: 'cloud_signin_required' }` so the client can prompt the
-  //     user to sign in.
+  // Write-path endpoints that need Stripe / cloud auth (install with
+  // payment, payout, etc.) are still proxied to Shogo Cloud when
+  // `SHOGO_API_KEY` is set. Without a key, those endpoints return
+  // `503 { code: 'cloud_signin_required' }`.
   //
-  // Mirrors the same pattern used by ai-proxy.ts and tools-proxy.ts.
+  // Follow endpoints are always local (Cloud doesn't have them yet).
   app.use('*', async (c, next) => {
     if (process.env.SHOGO_LOCAL_MODE !== 'true') return next()
 
-    // Handle follow endpoints locally — Cloud doesn't have them yet.
     const path = c.req.path
+    const method = c.req.method
+
+    // All GET requests are served from the local DB — the boot migration
+    // seeds listings, creator profiles, versions, etc. into SQLite.
+    if (method === 'GET') return next()
+
+    // Follow / creator profile endpoints are always local.
     if (
       path.endsWith('/follow') ||
       path.endsWith('/following') ||
@@ -81,41 +87,47 @@ export function marketplaceRoutes() {
       return next()
     }
 
+    // Free installs can be processed locally (no Stripe needed).
+    // The install service handles workspace forking from local data.
+    if (path.endsWith('/install') && method === 'POST') {
+      return next()
+    }
+
+    // Review submission works locally.
+    if (path.endsWith('/reviews') && method === 'POST') {
+      return next()
+    }
+
+    // Update applies work locally (workspace snapshot extraction).
+    if (path.endsWith('/update') && method === 'POST') {
+      return next()
+    }
+
+    // Everything else (paid checkout, Stripe payout, etc.) → proxy to Cloud.
     const cloudKey = process.env.SHOGO_API_KEY
+    if (!cloudKey) {
+      return c.json(
+        { error: 'Sign in to Shogo Cloud to use this marketplace feature.', code: 'cloud_signin_required' },
+        503,
+      )
+    }
+
     const fullUrl = `${getShogoCloudUrl()}${c.req.path}${new URL(c.req.url).search}`
-
-    // For creator profile and listing detail, enrich the Cloud response
-    // with local follow data after proxying.
-    const creatorProfileMatch = path.match(/\/creators\/([^/]+)$/)
-    // Listing detail: /api/marketplace/<slug> — must have a slug segment
-    // that isn't a known sub-route prefix.
-    const slugSegment = !creatorProfileMatch && path.match(/\/api\/marketplace\/([a-z0-9][a-z0-9-]+)$/)
-    const listingDetailMatch = slugSegment && c.req.method === 'GET'
-      && !['search', 'featured', 'creators', 'creator', 'my-installs', 'installs'].includes(slugSegment[1])
-    const needsFollowEnrich = (creatorProfileMatch || listingDetailMatch) && c.req.method === 'GET'
-
-    const url = fullUrl
-
     const headers = new Headers()
     c.req.raw.headers.forEach((value, key) => {
       const lower = key.toLowerCase()
       if (shouldSkipForwardedHeader(lower)) return
-      // Strip the local-mode Authorization (browser cookies / shogo_sk_*
-      // values that are only valid against the local API). Cloud only
-      // accepts a cloud-issued SHOGO_API_KEY.
       if (lower === 'authorization') return
       headers.set(key, value)
     })
-    if (cloudKey) {
-      headers.set('Authorization', `Bearer ${cloudKey}`)
-    }
+    headers.set('Authorization', `Bearer ${cloudKey}`)
 
     let upstream: Response
     try {
-      upstream = await fetch(url, {
-        method: c.req.method,
+      upstream = await fetch(fullUrl, {
+        method,
         headers,
-        body: ['GET', 'HEAD'].includes(c.req.method) ? undefined : c.req.raw.body,
+        body: ['GET', 'HEAD'].includes(method) ? undefined : c.req.raw.body,
         // @ts-expect-error duplex required for streaming bodies in Node fetch
         duplex: 'half',
       })
@@ -128,44 +140,11 @@ export function marketplaceRoutes() {
       )
     }
 
-    // Translate cloud 401 → 503 cloud_signin_required when no cloud key was
-    // attached. Public endpoints don't 401 anonymously, so this only fires
-    // on creator/install/payout/review-write paths.
-    if (upstream.status === 401 && !cloudKey) {
+    if (upstream.status === 401) {
       return c.json(
         { error: 'Sign in to Shogo Cloud to use the marketplace.', code: 'cloud_signin_required' },
         503,
       )
-    }
-
-    // Enrich creator profile / listing detail with local follow state
-    if (needsFollowEnrich && upstream.status === 200) {
-      try {
-        const body = await upstream.json()
-        const authCtx = c.get('auth') as AuthContext | undefined
-        const userId = authCtx?.isAuthenticated ? authCtx.userId : undefined
-
-        if (creatorProfileMatch) {
-          const creatorId = creatorProfileMatch[1]
-          const followerCount = await creatorFollowService.getFollowersCount(creatorId)
-          const isFollowing = userId
-            ? await creatorFollowService.isFollowing(userId, creatorId)
-            : false
-          return c.json({ ...body, followerCount, isFollowing })
-        }
-        if (listingDetailMatch && body.listing?.creatorId) {
-          const creatorId = body.listing.creatorId
-          const isFollowingCreator = userId
-            ? await creatorFollowService.isFollowing(userId, creatorId)
-            : false
-          return c.json({ listing: { ...body.listing, isFollowingCreator } })
-        }
-        // Body was consumed but enrichment didn't apply — return parsed JSON
-        return c.json(body)
-      } catch {
-        // JSON parse failed — body may already be consumed, return error
-        return c.json({ error: 'Failed to process response' }, 502)
-      }
     }
 
     const responseHeaders = new Headers()
@@ -189,6 +168,7 @@ export function marketplaceRoutes() {
       const page = parseIntParam(c.req.query('page') ?? undefined, 1)
       const limit = parseIntParam(c.req.query('limit') ?? undefined, 20)
       const creatorId = c.req.query('creatorId') || undefined
+      const creatorIds = parseCreatorIds(c.req.query('creatorIds') ?? undefined)
       const excludeSlug = c.req.query('excludeSlug') || undefined
       const result = await marketplaceService.browseListings({
         category,
@@ -198,6 +178,7 @@ export function marketplaceRoutes() {
         page,
         limit,
         creatorId,
+        creatorIds,
         excludeSlug,
       })
       return c.json(result)

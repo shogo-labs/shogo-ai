@@ -39,15 +39,18 @@ model User {
   updatedAt           DateTime @updatedAt
 
   // Relations
-  sessions          Session[]
-  accounts          Account[]
-  members           Member[]
-  notifications     Notification[]
-  starredProjects   StarredProject[]
-  signupAttribution SignupAttribution?
-  apiKeys           ApiKey[]
-  creatorProfile    CreatorProfile?
-  creatorFollows    CreatorFollow[]   @relation("UserFollows")
+  sessions             Session[]
+  accounts             Account[]
+  members              Member[]
+  notifications        Notification[]
+  starredProjects      StarredProject[]
+  signupAttribution    SignupAttribution?
+  apiKeys              ApiKey[]
+  creatorProfile       CreatorProfile?
+  creatorFollows       CreatorFollow[]      @relation("UserFollows")
+  affiliate            Affiliate?
+  affiliateAttribution AffiliateAttribution?
+  projectAuthSignIns   ProjectAuthSignIn[]
 
   @@map("users")
 }
@@ -255,6 +258,8 @@ model Project {
   agents                 ProjectAgent[]
   projectFolders         ProjectFolder[]
   preferredInstance      Instance?               @relation("ProjectPreferredInstance", fields: [preferredInstanceId], references: [id], onDelete: SetNull)
+  authConfig             ProjectAuthConfig?
+  authSignIns            ProjectAuthSignIn[]
 
   @@index([workspaceId])
   @@index([folderId])
@@ -278,6 +283,56 @@ model ProjectFolder {
 
   @@index([projectId])
   @@map("project_folders")
+}
+
+/// Per-project sign-in allowlist for users authenticating via the Shogo
+/// SDK (`shogo.auth` -> platform `/api/auth/*`). When the SDK forwards
+/// `X-Shogo-Project-Id` on `/sign-in/*` and `/sign-up/email`, the Better
+/// Auth before-hook in apps/api/src/auth.ts loads this config and either
+/// allows the request or rejects with 403 `project_auth_not_allowed`.
+///
+/// Modes:
+///   - `anyone`    — no project-level restriction (SDK allowlist disabled).
+///   - `workspace` — only existing Member rows on the project's workspace
+///                   (or holders of an active Invitation for it) may sign
+///                   in. New sign-ups without an invite are rejected.
+///   - `custom`    — allow if the email is in `allowedEmails` OR the
+///                   email's domain (lowercased, no `@`) is in
+///                   `allowedDomains`.
+model ProjectAuthConfig {
+  id                       String   @id @default(uuid())
+  projectId                String   @unique
+  mode                     String   @default("anyone") // "anyone" | "workspace" | "custom"
+  allowedEmails            String[] @default([]) // exact-match, lowercased
+  allowedDomains           String[] @default([]) // e.g. "acme.com", lowercased, no `@`
+  requireEmailVerification Boolean  @default(false)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("project_auth_configs")
+}
+
+/// Tracks every (project, user) pair that has signed in to a project via
+/// the Shogo SDK auth path (header `X-Shogo-Project-Id`). Inserted on
+/// first sign-in / sign-up by the Better Auth before-hook in
+/// apps/api/src/auth.ts and updated on each subsequent sign-in. Powers
+/// the Users panel under Studio Settings -> Auth & Database.
+model ProjectAuthSignIn {
+  id           String   @id @default(uuid())
+  projectId    String
+  userId       String
+  firstSignInAt DateTime @default(now())
+  lastSignInAt  DateTime @default(now())
+  signInCount   Int      @default(1)
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([projectId, lastSignInAt(sort: Desc)])
+  @@map("project_auth_sign_ins")
 }
 
 model AgentConfig {
@@ -2372,4 +2427,227 @@ model ModelExperiment {
   @@index([status])
   @@index([workspaceId, agentType, status])
   @@map("model_experiments")
+}
+
+// =============================================================================
+// AFFILIATE / MLM PROGRAM
+// =============================================================================
+// Native replacement for Rewardful. Opt-in affiliate program with a
+// configurable multi-level upline (default depth 3) where each level's
+// commission rate and recurring-window are data rows in
+// `AffiliateCommissionTier`. Click → cookie → signup attribution →
+// per-invoice commission walk → Stripe Connect payout.
+//
+// See apps/api/src/services/affiliate.service.ts for the full lifecycle.
+// iOS-IAP customers are intentionally excluded from commission earning
+// (attribution is still recorded). Overage trust blocks are excluded
+// from commission basis — we pay on plan revenue, not infra passthrough.
+
+enum AffiliateStatus {
+  active
+  suspended
+  banned
+}
+
+enum CommissionStatus {
+  pending
+  approved
+  paid
+  refunded
+  clawed_back
+  void
+}
+
+enum PayoutBatchStatus {
+  pending
+  sent
+  paid
+  failed
+}
+
+/// One per user who has opted into the affiliate program. The self-relation
+/// (`parent` / `children`) builds the upline tree. `depth` is denormalized
+/// (root = 1) so payout-time tree walks stay fast without recursive joins
+/// on every commission write. `code` is the public referral slug used in
+/// `https://shogo.ai/r/<code>` links.
+///
+/// Payouts piggy-back on a Stripe Connect Custom account (same shape as
+/// CreatorProfile.stripeCustomAccountId, but a separate account because
+/// commissions are taxed differently from marketplace royalties and
+/// Stripe doesn't let one Custom account hold both safely).
+model Affiliate {
+  id                    String          @id @default(cuid())
+  userId                String          @unique
+  code                  String          @unique
+  parentAffiliateId     String?
+  /// 1 = top of tree (no parent). Denormalized for fast upline walks.
+  depth                 Int             @default(1)
+  status                AffiliateStatus @default(active)
+  stripeCustomAccountId String?
+  payoutStatus          PayoutStatus    @default(not_setup)
+  payoutDetailsSubmittedAt DateTime?
+  /// Sum of all `paid` commission amounts ever, in cents. Audit-only.
+  totalEarningsCents    Int             @default(0)
+  /// Sum of `pending` + `approved` commissions in cents, kept in sync by
+  /// the service. Used by the mobile dashboard without recomputing.
+  pendingPayoutCents    Int             @default(0)
+  /// Sum of `paid` commissions in cents. Differs from totalEarnings only
+  /// when clawbacks adjust the running total.
+  totalPaidOutCents     Int             @default(0)
+  /// Set when the user accepted the affiliate terms during enroll.
+  termsAcceptedAt       DateTime?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  user         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent       Affiliate?             @relation("AffiliateUpline", fields: [parentAffiliateId], references: [id], onDelete: SetNull)
+  children     Affiliate[]            @relation("AffiliateUpline")
+  clicks       AffiliateClick[]
+  attributions AffiliateAttribution[]
+  commissions  AffiliateCommission[]
+  payouts      AffiliatePayout[]
+
+  @@index([parentAffiliateId])
+  @@index([status])
+  @@map("affiliates")
+}
+
+/// Raw click events. Inserted by the Cloudflare Pages Function at
+/// `/r/:code` via an internal API call. `visitorId` is the value of the
+/// `__shogo_ref_visitor` first-party cookie set on the same response.
+/// `ipHash` is sha-256 of the raw IP (never the raw IP itself) so we can
+/// fraud-check without retaining PII for longer than the cookie window.
+model AffiliateClick {
+  id          String   @id @default(cuid())
+  affiliateId String
+  visitorId   String
+  landingPage String?
+  utmSource   String?
+  utmMedium   String?
+  utmCampaign String?
+  referrer    String?
+  ipHash      String?
+  userAgent   String?
+  country     String?
+  createdAt   DateTime @default(now())
+  /// `createdAt + SHOGO_AFFILIATE_COOKIE_DAYS`. Attribution lookup
+  /// ignores clicks past this instant.
+  expiresAt   DateTime
+
+  affiliate    Affiliate              @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  attributions AffiliateAttribution[]
+
+  @@index([visitorId, createdAt])
+  @@index([affiliateId, createdAt])
+  @@index([expiresAt])
+  @@map("affiliate_clicks")
+}
+
+/// Locks the lifetime affiliate relationship for a user. Last-click
+/// attribution: written by `affiliateService.resolveAttributionForUser`
+/// from the `databaseHooks.user.create.after` better-auth hook. Once
+/// set, the `userId` unique constraint guarantees it never moves —
+/// downstream commissions always pay this affiliate (subject to each
+/// tier's `durationDays` window).
+model AffiliateAttribution {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  affiliateId  String
+  visitorId    String?
+  clickId      String?
+  attributedAt DateTime @default(now())
+
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  affiliate Affiliate       @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  click     AffiliateClick? @relation(fields: [clickId], references: [id], onDelete: SetNull)
+
+  @@index([affiliateId])
+  @@map("affiliate_attributions")
+}
+
+/// One row per (invoice, affiliate, level). The unique constraint on
+/// `(stripeInvoiceId, affiliateId, level)` is the idempotency key
+/// guarding against Stripe webhook replay — `recordCommissionsForInvoice`
+/// uses upsert so re-delivery never doubles commissions.
+///
+/// `basisCents` is the invoice subtotal eligible for commission (excludes
+/// overage trust blocks and Stripe tax). `rateBps` is the tier's rate in
+/// basis points (2000 = 20.00%). `amountCents` is the cent-rounded
+/// product. `level` is 1-indexed (1 = direct referrer, 2 = grandparent…).
+///
+/// Lifecycle: pending → approved (after `eligibleAt` past refund hold) →
+/// paid (after `runAffiliatePayouts` batches it into an `AffiliatePayout`).
+/// On `charge.refunded` / `charge.dispute.created`, pending/approved rows
+/// flip to `refunded`; paid rows flip to `clawed_back` and are netted
+/// against the next payout batch.
+model AffiliateCommission {
+  id                  String           @id @default(cuid())
+  affiliateId         String
+  referredUserId      String
+  referredWorkspaceId String?
+  stripeInvoiceId     String?
+  stripeChargeId      String?
+  /// 1 = direct (L1), 2 = parent (L2), 3 = grandparent (L3)…
+  level               Int
+  basisCents          Int
+  rateBps             Int
+  amountCents         Int
+  status              CommissionStatus @default(pending)
+  /// `createdAt + SHOGO_AFFILIATE_REFUND_HOLD_DAYS`. The nightly
+  /// `approveEligibleCommissions` job flips rows whose `eligibleAt <= now`
+  /// from pending to approved.
+  eligibleAt          DateTime
+  payoutId            String?
+  createdAt           DateTime         @default(now())
+
+  affiliate Affiliate        @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  payout    AffiliatePayout? @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+
+  @@unique([stripeInvoiceId, affiliateId, level])
+  @@index([affiliateId, status])
+  @@index([eligibleAt, status])
+  @@index([stripeChargeId])
+  @@map("affiliate_commissions")
+}
+
+/// One row per Stripe payout batch sent to an affiliate's Connect
+/// account. `stripeTransferId` is the platform→Connect transfer;
+/// `stripePayoutId` is the Connect→bank payout. Both Stripe calls use
+/// `idempotencyKey = payout.id` so replays never double-pay.
+model AffiliatePayout {
+  id               String            @id @default(cuid())
+  affiliateId      String
+  amountCents      Int
+  stripePayoutId   String?
+  stripeTransferId String?
+  status           PayoutBatchStatus @default(pending)
+  periodStart      DateTime
+  periodEnd        DateTime
+  paidAt           DateTime?
+  failureReason    String?
+  createdAt        DateTime          @default(now())
+
+  affiliate   Affiliate             @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  commissions AffiliateCommission[]
+
+  @@index([affiliateId, createdAt])
+  @@index([status])
+  @@map("affiliate_payouts")
+}
+
+/// Per-level commission configuration. The number of rows defines the
+/// max upline depth (default 3) — adding a row enables L4 commissions
+/// across the system. `rateBps` is in basis points (2000 = 20.00%).
+/// `durationDays` caps the recurring window per level (null = forever);
+/// default 365 matches Rewardful's 12-month policy.
+model AffiliateCommissionTier {
+  id           String  @id @default(cuid())
+  level        Int     @unique
+  rateBps      Int
+  durationDays Int?
+  /// Optional display label for the admin UI (e.g. "Direct referral",
+  /// "L2 upline"). Free-form; ignored by the commission engine.
+  label        String?
+
+  @@map("affiliate_commission_tiers")
 }

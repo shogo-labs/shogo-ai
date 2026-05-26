@@ -1827,11 +1827,12 @@ app.post('/agent/subagents/:instanceId/stop', async (c) => {
 // ---------------------------------------------------------------------------
 
 import { PreviewManager } from './preview-manager'
-import { previewConsoleLogPath } from './runtime-log-paths'
+import { previewConsoleLogPath, ensureRuntimeLogDir } from './runtime-log-paths'
+import { scheduleLogWrite, flushAllLogWrites } from './runtime-log-writer'
 
 let previewManager: PreviewManager | null = null
 
-/** In-memory mirror of `project/.console.log` for `/console-log` + SSE (same lines as on disk). */
+/** In-memory mirror of `.shogo/logs/console.log` for `/console-log` + SSE (same lines as on disk). */
 let consoleLogsRuntimeBuffer: string[] | null = null
 
 function appendRuntimeConsoleLogLine(line: string): void {
@@ -1842,11 +1843,12 @@ function appendRuntimeConsoleLogLine(line: string): void {
   }
   buf.push(line)
   if (buf.length > 1000) buf.splice(0, 500)
-  try {
-    appendFileSync(previewConsoleLogPath(WORKSPACE_DIR), `${line}\n`, 'utf-8')
-  } catch {
-    // `project/` may not exist yet; buffer still holds the line for the UI.
-  }
+  // Async batched write — runtime-log-writer handles mkdir on first call
+  // and queues subsequent lines so this never blocks the event loop.
+  // Previously this did mkdirSync + appendFileSync per line, which on
+  // Windows with Defender added 5–30ms of sync I/O per console.log and
+  // made /health unresponsive during boot.
+  scheduleLogWrite(previewConsoleLogPath(WORKSPACE_DIR), `${line}\n`)
 }
 
 function clearRuntimeConsoleLogBuffer(): void {
@@ -2571,27 +2573,94 @@ app.get('/agent/workspace/tree', async (c) => {
   return c.json({ tree })
 })
 
-// Read a file from the workspace
+/** Extensions whose on-disk bytes are NOT valid utf-8 text. Reading these
+ *  with `readFileSync(..., 'utf-8')` silently replaces every invalid byte
+ *  with U+FFFD; writing the resulting string back with `writeFileSync(...,
+ *  'utf-8')` then encodes each U+FFFD as 3 bytes (`EF BF BD`), bloating
+ *  the file ~2× and destroying the original bytes.
+ *
+ *  Two real-world triggers we've seen do this round-trip:
+ *    1. Frontend `useLiveAgentEdits` reacted to chokidar's `file.changed`
+ *       event for an `.mp4`, called `service.readFile()`, the result
+ *       autosaved 1 s later back through PUT. The MP4 came back at 2x
+ *       size with ~65k replacement chars per file.
+ *    2. Any external HTTP client (CLI, integration, eval harness) using
+ *       the documented `{ content }` shape against a binary path.
+ *
+ *  Keep in sync with `apps/mobile/.../useLiveAgentEdits.ts`
+ *  NON_TEXT_EXTENSIONS / isBinaryPath() — both layers carry the guard
+ *  so neither is a single point of failure. */
+const BINARY_FILE_EXTENSIONS = new Set([
+  // Images
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif', 'apng',
+  'heic', 'heif', 'tiff', 'tif', 'jxl', 'cur',
+  // Archives
+  'zip', 'gz', 'tar', 'tgz', 'bz2', 'xz', '7z', 'rar', 'zst', 'lz4',
+  // Audio / video / docs
+  'mp3', 'mp4', 'm4a', 'm4v', 'mov', 'avi', 'mkv', 'webm', 'wav', 'flac',
+  'ogg', 'oga', 'ogv', 'aac', 'opus', 'pdf',
+  // Fonts
+  'woff', 'woff2', 'ttf', 'otf', 'eot',
+  // Native / packed
+  'exe', 'dll', 'so', 'dylib', 'bin', 'class', 'jar', 'wasm',
+  // Databases
+  'db', 'sqlite', 'sqlite3',
+  // Misc binary
+  'pack', 'idx', 'psd', 'ai', 'sketch', 'fig', 'blend', 'obj', 'fbx',
+  'pyc', 'pyo', 'pyd',
+])
+
+function isBinaryFilePath(p: string): boolean {
+  const dot = p.lastIndexOf('.')
+  if (dot < 0) return false
+  return BINARY_FILE_EXTENSIONS.has(p.slice(dot + 1).toLowerCase())
+}
+
+// Read a file from the workspace. Text files come back as `content`
+// (utf-8 string); binary files come back as `contentBase64` (base64-
+// encoded raw bytes) — see BINARY_FILE_EXTENSIONS above. Callers must
+// branch on the `encoding` field; the SDK's `readFile()` does this for
+// you and throws if asked to text-read a binary file.
 app.get('/agent/workspace/files/*', (c) => {
   const subPath = c.req.path.replace('/agent/workspace/files/', '')
   if (!subPath) return c.json({ error: 'Path required' }, 400)
 
   const resolved = resolveWorkspacePath(subPath)
   if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
+
+  let target = resolved
   if (!existsSync(resolved)) {
     const fallback = resolveFilesPath(subPath)
-    if (fallback && existsSync(fallback)) {
-      const content = readFileSync(fallback, 'utf-8')
-      return c.json({ path: subPath, content, bytes: content.length })
+    if (!fallback || !existsSync(fallback)) {
+      return c.json({ error: 'File not found' }, 404)
     }
-    return c.json({ error: 'File not found' }, 404)
+    target = fallback
   }
 
-  const content = readFileSync(resolved, 'utf-8')
-  return c.json({ path: subPath, content, bytes: content.length })
+  if (isBinaryFilePath(target)) {
+    const buf = readFileSync(target)
+    return c.json({
+      path: subPath,
+      contentBase64: buf.toString('base64'),
+      encoding: 'base64',
+      bytes: buf.length,
+    })
+  }
+
+  const content = readFileSync(target, 'utf-8')
+  return c.json({ path: subPath, content, encoding: 'utf-8', bytes: content.length })
 })
 
-// Write/create a file in the workspace
+// Write/create a file in the workspace. Accepts either:
+//   { content: "<utf-8 string>" }                — text files
+//   { contentBase64: "<base64-encoded bytes>" } — binary files
+//
+// To prevent the read-as-utf-8 / write-as-utf-8 corruption round-trip
+// that previously bloated `.mp4` / `.zip` / etc. by ~2×, this endpoint
+// refuses to accept utf-8 `content` for any path whose extension is in
+// BINARY_FILE_EXTENSIONS — callers MUST send `contentBase64` for those.
+// The SDK's `writeFile()` covers this seamlessly for SDK users; raw
+// HTTP callers get a 400 with an explicit error.
 app.put('/agent/workspace/files/*', async (c) => {
   const subPath = c.req.path.replace('/agent/workspace/files/', '')
   if (!subPath) return c.json({ error: 'Path required' }, 400)
@@ -2599,12 +2668,51 @@ app.put('/agent/workspace/files/*', async (c) => {
   const resolved = resolveWorkspacePath(subPath)
   if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
 
-  const { content } = await c.req.json()
+  const body = (await c.req.json()) as { content?: unknown; contentBase64?: unknown }
   const dir = dirname(resolved)
   mkdirSync(dir, { recursive: true })
-  writeFileSync(resolved, content, 'utf-8')
 
-  return c.json({ ok: true, path: subPath, bytes: content.length })
+  if (typeof body.contentBase64 === 'string') {
+    let buf: Buffer
+    try {
+      buf = Buffer.from(body.contentBase64, 'base64')
+    } catch {
+      return c.json({ error: 'Invalid base64 in contentBase64' }, 400)
+    }
+    writeFileSync(resolved, buf)
+    return c.json({
+      ok: true,
+      path: subPath,
+      bytes: buf.length,
+      encoding: 'base64',
+    })
+  }
+
+  if (typeof body.content !== 'string') {
+    return c.json(
+      { error: 'Missing content (utf-8 string) or contentBase64' },
+      400,
+    )
+  }
+
+  if (isBinaryFilePath(resolved)) {
+    return c.json(
+      {
+        error:
+          'Refusing to write a binary file path with utf-8 string content — use contentBase64 to avoid corruption',
+        path: subPath,
+      },
+      400,
+    )
+  }
+
+  writeFileSync(resolved, body.content, 'utf-8')
+  return c.json({
+    ok: true,
+    path: subPath,
+    bytes: body.content.length,
+    encoding: 'utf-8',
+  })
 })
 
 // Delete a file from the workspace
@@ -3316,7 +3424,7 @@ app.post('/agent/import', async (c) => {
   return c.json({ ok: true, imported: written.length, files: written })
 })
 
-// Console log for forwarding — mirrored to project/.console.log on disk (see runtime-log-paths.ts).
+// Console log for forwarding — mirrored to .shogo/logs/console.log on disk (see runtime-log-paths.ts).
 const logStreamListeners = new Set<(line: string) => void>()
 
 app.post('/console-log/append', async (c) => {
@@ -3452,9 +3560,59 @@ app.post('/agent/runtime-checks', async (c) => {
 // existing workspaces.
 // =============================================================================
 
+// Total time the proxy will wait for the project API server to come up
+// before returning 503 to the SPA. Sized for "cold-start without a hot
+// API server": the in-process health-check loop runs for up to
+// HEALTH_CHECK_RETRIES * HEALTH_CHECK_INTERVAL_MS (~5s) on a fresh
+// spawn, but most workspaces bind in well under 1s. 3s gives a healthy
+// 2× margin for the common case without holding the browser hostage
+// when `server.tsx` is genuinely broken — the SPA can render its
+// "starting up" state from the 503 + phase payload instead.
+const API_PROXY_STARTUP_WAIT_MS = 3000
+const API_PROXY_POLL_INTERVAL_MS = 100
+
+// Phases in which the proxy waits briefly for `apiServerPort` to
+// transition from null → bound. Outside this set (`idle`, `healthy`,
+// `crashed`, `stopped`) waiting wouldn't change the answer.
+const API_PROXY_STARTUP_PHASES: ReadonlySet<string> = new Set([
+  'starting', 'restarting', 'generating',
+])
+
 app.all('/api/*', async (c) => {
-  const port = getPreviewManager().apiServerPort
-  if (!port) return c.notFound()
+  const pm = getPreviewManager()
+
+  // Short grace window for the spawn → bind gap. Without it, the SPA's
+  // first `/api/*` fetch on a fresh project lands during cold-start (or
+  // a custom-routes hot restart) and immediately gets a hard 5xx,
+  // leaving the user staring at a blank preview until they manually
+  // refresh. `apiServerPort` returning null + phase ∈ {starting,
+  // restarting, generating} is exactly the "API is coming, just not
+  // here yet" signal we need to soak briefly. Polling is cheap (every
+  // 100 ms, total budget 3 s) and short-circuits the moment the port
+  // becomes available.
+  let port = pm.apiServerPort
+  if (port == null && API_PROXY_STARTUP_PHASES.has(pm.apiServerPhase)) {
+    const deadline = Date.now() + API_PROXY_STARTUP_WAIT_MS
+    while (port == null && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, API_PROXY_POLL_INTERVAL_MS))
+      if (!API_PROXY_STARTUP_PHASES.has(pm.apiServerPhase)) break
+      port = pm.apiServerPort
+    }
+  }
+
+  if (port == null) {
+    // Surface the phase to the SPA so it can distinguish "API is still
+    // booting, retry in a moment" (starting/restarting/generating) from
+    // "API has crashed beyond recovery" (crashed) from "no API server
+    // configured for this project" (idle/stopped). 503 is correct in
+    // every non-bound case — the previous `c.notFound()` falsely
+    // implied the route didn't exist when in fact we just couldn't
+    // proxy yet.
+    return c.json(
+      { error: 'API server not ready', phase: pm.apiServerPhase },
+      503,
+    )
+  }
 
   const url = new URL(c.req.url)
   const target = `http://127.0.0.1:${port}${url.pathname}${url.search}`
@@ -3473,7 +3631,7 @@ app.all('/api/*', async (c) => {
     })
   } catch (err: any) {
     console.error(`[api-proxy] Failed to proxy ${c.req.method} ${url.pathname}:`, err.message)
-    return c.json({ error: 'API server not responding' }, 502)
+    return c.json({ error: 'API server not responding', phase: pm.apiServerPhase }, 502)
   }
 })
 
@@ -3702,8 +3860,19 @@ function getDistDir(): string {
 
 // Recursively collect every file under `dist/` as `{ path, content (base64) }`.
 // Consumed by apps/api/src/routes/publish.ts -> downloadDistFiles() to upload
-// the build output to the published-apps S3 bucket. Must be registered BEFORE
-// the `app.get('*')` catch-all below — that handler explicitly 404s `/api/*`.
+// the build output to the published-apps S3 bucket.
+//
+// Lives under `/agent/*`, NOT `/api/*`. The `/api/*` namespace is owned by
+// the user app's sidecar Hono server (see code-agent-prompt.ts) and the
+// runtime mounts `app.all('/api/*', ...)` higher up to proxy every `/api/*`
+// request to it. The original placement at `/api/dist-files` (commit
+// 2f9b326d) was registered after that proxy and shadowed from day one —
+// every publish hit either the proxy's `if (!port) return c.notFound()`
+// branch (404) or got the user app's SPA fallback (200 + index.html, which
+// the publisher then failed to JSON-parse). `/agent/*` is the
+// runtime-owned namespace, is auth-gated by `authPrefixes` so callers must
+// send `x-runtime-token`, and is in the SPA catch-all skip-list — so this
+// endpoint is no longer reachable as a userland route.
 const PUBLISH_DIST_MAX_FILE_SIZE = 50 * 1024 * 1024
 
 function collectPublishDistFiles(dir: string, baseDir: string): Array<{ path: string; content: string }> {
@@ -3731,7 +3900,7 @@ function collectPublishDistFiles(dir: string, baseDir: string): Array<{ path: st
   return out
 }
 
-app.get('/api/dist-files', (c) => {
+app.get('/agent/dist-files', (c) => {
   const distDir = getDistDir()
   if (!existsSync(distDir)) {
     return c.json(
@@ -4101,9 +4270,18 @@ async function initializeEssentials(): Promise<void> {
     if (!status.running) {
       const where = hasLegacyPkg ? 'project/' : 'workspace root'
       logTiming(`Detected app project (${where}) — auto-starting preview`)
-      pm.start().catch((err: any) => {
-        console.error('[agent-runtime] Auto-start preview failed:', err.message)
-      })
+      // Defer preview start by one event-loop tick so the runtime can
+      // return from `initialize()` and let Bun.serve start handling
+      // /health requests before we begin the heavier preview-manager
+      // background setup (vite watch, project API server). Without this
+      // yield, on Windows the preview-manager's sync work (npm bin
+      // resolution, server.tsx drift check, etc.) piles onto the same
+      // microtask as `initialize().then(...)` and starves /health.
+      setTimeout(() => {
+        pm.start().catch((err: any) => {
+          console.error('[agent-runtime] Auto-start preview failed:', err.message)
+        })
+      }, 0)
     }
   } else if (externalAutoPreviewBlocked && (hasLegacyPkg || hasRootPkg)) {
     logTiming('External project with runtimeEnabled=false — skipping auto-preview-start')
@@ -4346,6 +4524,18 @@ export default {
   port: PORT,
   fetch: async (req: Request, server: any) => {
     const url = new URL(req.url)
+    // Hot-path bypass for /health: respond directly without going through
+    // Hono's router. On Windows we observed a ~7s freeze during Bun's
+    // first-request JIT compilation of the route tree, which made
+    // RuntimeManager's /health probe time out repeatedly even though
+    // Bun.serve() had already bound the port. This early return skips
+    // that path for the smallest possible response.
+    if (url.pathname === '/health' && req.method === 'GET') {
+      return new Response(
+        JSON.stringify({ status: 'ok', projectId: process.env.PROJECT_ID, runtimeType: 'unified', poolMode: false, uptime: 0, fast: true }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }
     const upgrade = req.headers.get('upgrade')?.toLowerCase()
     const wsMatch = upgrade === 'websocket' ? WS_PATH_RE.exec(url.pathname) : null
     if (wsMatch) {

@@ -33,15 +33,18 @@ model User {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
-  sessions          Session[]
-  accounts          Account[]
-  members           Member[]
-  notifications     Notification[]
-  starredProjects   StarredProject[]
-  apiKeys           ApiKey[]
-  creatorProfile    CreatorProfile?
-  signupAttribution SignupAttribution?
-  creatorFollows    CreatorFollow[]   @relation("UserFollows")
+  sessions             Session[]
+  accounts             Account[]
+  members              Member[]
+  notifications        Notification[]
+  starredProjects      StarredProject[]
+  apiKeys              ApiKey[]
+  creatorProfile       CreatorProfile?
+  signupAttribution    SignupAttribution?
+  creatorFollows       CreatorFollow[]      @relation("UserFollows")
+  affiliate            Affiliate?
+  affiliateAttribution AffiliateAttribution?
+  projectAuthSignIns   ProjectAuthSignIn[]
 
   @@map("users")
 }
@@ -209,6 +212,8 @@ model Project {
   agentEvalSets          AgentEvalSet[]
   projectFolders         ProjectFolder[]
   preferredInstance      Instance?               @relation("ProjectPreferredInstance", fields: [preferredInstanceId], references: [id], onDelete: SetNull)
+  authConfig             ProjectAuthConfig?
+  authSignIns            ProjectAuthSignIn[]
 
   @@index([workspaceId])
   @@index([folderId])
@@ -230,6 +235,42 @@ model ProjectFolder {
 
   @@index([projectId])
   @@map("project_folders")
+}
+
+/// Per-project sign-in allowlist. See prisma/schema.prisma for the
+/// canonical comment. SQLite has no native String[] so the two list
+/// columns are stored as JSON-encoded TEXT (`["alice@x.com",...]`).
+model ProjectAuthConfig {
+  id                       String   @id @default(uuid())
+  projectId                String   @unique
+  mode                     String   @default("anyone")
+  allowedEmails            String   @default("[]")
+  allowedDomains           String   @default("[]")
+  requireEmailVerification Boolean  @default(false)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("project_auth_configs")
+}
+
+/// Tracks (project, user) sign-ins via Shogo SDK auth. See
+/// prisma/schema.prisma for the canonical comment.
+model ProjectAuthSignIn {
+  id            String   @id @default(uuid())
+  projectId     String
+  userId        String
+  firstSignInAt DateTime @default(now())
+  lastSignInAt  DateTime @default(now())
+  signInCount   Int      @default(1)
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([projectId, lastSignInAt(sort: Desc)])
+  @@map("project_auth_sign_ins")
 }
 
 model AgentConfig {
@@ -1810,4 +1851,135 @@ model ModelExperiment {
   @@index([status])
   @@index([workspaceId, agentType, status])
   @@map("model_experiments")
+}
+
+// =============================================================================
+// AFFILIATE / MLM PROGRAM (SQLite mirror — see prisma/schema.prisma for docs)
+// =============================================================================
+
+model Affiliate {
+  id                       String    @id @default(cuid())
+  userId                   String    @unique
+  code                     String    @unique
+  parentAffiliateId        String?
+  depth                    Int       @default(1)
+  status                   String    @default("active")
+  stripeCustomAccountId    String?
+  payoutStatus             String    @default("not_setup")
+  payoutDetailsSubmittedAt DateTime?
+  totalEarningsCents       Int       @default(0)
+  pendingPayoutCents       Int       @default(0)
+  totalPaidOutCents        Int       @default(0)
+  termsAcceptedAt          DateTime?
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+
+  user         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent       Affiliate?             @relation("AffiliateUpline", fields: [parentAffiliateId], references: [id], onDelete: SetNull)
+  children     Affiliate[]            @relation("AffiliateUpline")
+  clicks       AffiliateClick[]
+  attributions AffiliateAttribution[]
+  commissions  AffiliateCommission[]
+  payouts      AffiliatePayout[]
+
+  @@index([parentAffiliateId])
+  @@index([status])
+  @@map("affiliates")
+}
+
+model AffiliateClick {
+  id          String   @id @default(cuid())
+  affiliateId String
+  visitorId   String
+  landingPage String?
+  utmSource   String?
+  utmMedium   String?
+  utmCampaign String?
+  referrer    String?
+  ipHash      String?
+  userAgent   String?
+  country     String?
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+
+  affiliate    Affiliate              @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  attributions AffiliateAttribution[]
+
+  @@index([visitorId, createdAt])
+  @@index([affiliateId, createdAt])
+  @@index([expiresAt])
+  @@map("affiliate_clicks")
+}
+
+model AffiliateAttribution {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  affiliateId  String
+  visitorId    String?
+  clickId      String?
+  attributedAt DateTime @default(now())
+
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  affiliate Affiliate       @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  click     AffiliateClick? @relation(fields: [clickId], references: [id], onDelete: SetNull)
+
+  @@index([affiliateId])
+  @@map("affiliate_attributions")
+}
+
+model AffiliateCommission {
+  id                  String   @id @default(cuid())
+  affiliateId         String
+  referredUserId      String
+  referredWorkspaceId String?
+  stripeInvoiceId     String?
+  stripeChargeId      String?
+  level               Int
+  basisCents          Int
+  rateBps             Int
+  amountCents         Int
+  status              String   @default("pending")
+  eligibleAt          DateTime
+  payoutId            String?
+  createdAt           DateTime @default(now())
+
+  affiliate Affiliate        @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  payout    AffiliatePayout? @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+
+  @@unique([stripeInvoiceId, affiliateId, level])
+  @@index([affiliateId, status])
+  @@index([eligibleAt, status])
+  @@index([stripeChargeId])
+  @@map("affiliate_commissions")
+}
+
+model AffiliatePayout {
+  id               String    @id @default(cuid())
+  affiliateId      String
+  amountCents      Int
+  stripePayoutId   String?
+  stripeTransferId String?
+  status           String    @default("pending")
+  periodStart      DateTime
+  periodEnd        DateTime
+  paidAt           DateTime?
+  failureReason    String?
+  createdAt        DateTime  @default(now())
+
+  affiliate   Affiliate             @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  commissions AffiliateCommission[]
+
+  @@index([affiliateId, createdAt])
+  @@index([status])
+  @@map("affiliate_payouts")
+}
+
+model AffiliateCommissionTier {
+  id           String  @id @default(cuid())
+  level        Int     @unique
+  rateBps      Int
+  durationDays Int?
+  label        String?
+
+  @@map("affiliate_commission_tiers")
 }
