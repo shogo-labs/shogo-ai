@@ -24,7 +24,7 @@
  * for the VM / K8s paths and any future caller that returns `ready:false`.
  */
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 
 /**
  * Lightweight cold-start mark hook. Mirrors the on-disk
@@ -72,8 +72,16 @@ function nextRetryDelayMs(attempt: number): number {
  * longer than expected, here's the error / continue anyway" UI instead
  * of the blank loading spinner that left mobile users on TestFlight
  * v1.0.8 stranded on "Starting your project…" with no recovery option.
+ *
+ * 45s is the empirical p95 for cold VM warm-pool / host RuntimeManager
+ * spin-up (Vite + agent-runtime + first compile). Anything below 30s
+ * trips on legitimately slow-but-healthy starts and surfaces the
+ * recovery card to users whose runtime is, in fact, about to come up
+ * — see screenshot in PR #(fix/ios-sentry-launch-crash) where the card
+ * appeared on a normal cold start and the runtime became ready ~5s
+ * later.
  */
-const STALL_THRESHOLD_MS = 30_000
+const STALL_THRESHOLD_MS = 45_000
 
 export function useAgentUrl(
   apiBaseUrl: string,
@@ -94,7 +102,16 @@ export function useAgentUrl(
   // Local-agent-url short-circuit always counts as ready (the caller has
   // pinned an explicit URL, so there's no runtime to wait on).
   const [ready, setReady] = useState<boolean>(Boolean(options?.localAgentUrl))
+  // Bumping this nonce restarts the polling effect, giving callers a
+  // manual "retry now" path from a stalled-recovery UI without having
+  // to navigate away and back.
+  const [retryNonce, setRetryNonce] = useState<number>(0)
   const abortRef = useRef<AbortController | null>(null)
+
+  const retry = useCallback(() => {
+    abortRef.current?.abort()
+    setRetryNonce((n) => n + 1)
+  }, [])
 
   useEffect(() => {
     if (options?.localAgentUrl) {
@@ -256,7 +273,7 @@ export function useAgentUrl(
     void poll()
 
     return cleanup
-  }, [apiBaseUrl, projectId, options?.localAgentUrl, options?.credentials])
+  }, [apiBaseUrl, projectId, options?.localAgentUrl, options?.credentials, retryNonce])
 
-  return { agentUrl, previewUrl, canvasBaseUrl, ready, error, stalled, lastStatus }
+  return { agentUrl, previewUrl, canvasBaseUrl, ready, error, stalled, lastStatus, retry }
 }
