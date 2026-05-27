@@ -72,6 +72,18 @@ mock.module('@aws-sdk/client-s3', () => ({
   },
 }))
 
+// The real `getPreviewUrl` is a pure string-formatter that always returns
+// a URL, so the "no_url" branch in routes/thumbnail.ts (which only fires
+// if the import OR call throws) can't be exercised without a mock. Make
+// it throw so the test can assert the 400 no_url contract.
+let previewUrlThrows = false
+mock.module('../../lib/knative-project-manager', () => ({
+  getPreviewUrl: (projectId: string) => {
+    if (previewUrlThrows) throw new Error('preview url unavailable')
+    return `https://preview--${projectId}.dev.example.com/`
+  },
+}))
+
 const { thumbnailRoutes } = await import('../thumbnail')
 
 let logSpy: any
@@ -86,6 +98,7 @@ beforeEach(() => {
   s3.presignedUrl = 'https://artifacts.example.com/thumbnails/p.png?sig=abc'
   s3.sendCalls = []
   s3.sendThrow = null
+  previewUrlThrows = false
   logSpy = mock(() => {})
   errorSpy = mock(() => {})
   console.log = logSpy as any
@@ -278,9 +291,10 @@ describe('POST /projects/:id/thumbnail/capture (Playwright)', () => {
 
   it('returns 400 (no_url) when no body URL, no publishedSubdomain, and no preview-URL', async () => {
     ps.project = { id: 'p-1', publishedSubdomain: null, type: 'agent' }
-    // The dynamic import of knative-project-manager will fail in the test
-    // runtime (it pulls in @kubernetes/client-node, not mocked here), and
-    // the route catches and returns 400 no_url.
+    // Simulate the preview URL being unavailable so the route's no_url
+    // branch fires (the real `getPreviewUrl` is a pure formatter that
+    // never returns null, so we must throw to reach 400).
+    previewUrlThrows = true
     const res = await makeApp().fetch(captureReq())
     expect(res.status).toBe(400)
     const body = await res.json()
