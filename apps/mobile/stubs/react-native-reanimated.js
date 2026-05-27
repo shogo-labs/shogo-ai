@@ -159,18 +159,38 @@ const Easing = {
 
 const ReduceMotion = { System: 'system', Always: 'always', Never: 'never' }
 
-// NOTE — Hooks like `useSharedValue` / `useAnimatedStyle` are intentionally
-// OMITTED from the export list (and excluded from `module.exports` below).
+function useAnimatedStyle(factory) {
+  try { return typeof factory === 'function' ? factory() || {} : {} }
+  catch (_) { return {} }
+}
+
+function useAnimatedProps(factory) {
+  try { return typeof factory === 'function' ? factory() || {} : {} }
+  catch (_) { return {} }
+}
+
+function useDerivedValue(factory) {
+  try { return noopMutable(typeof factory === 'function' ? factory() : undefined) }
+  catch (_) { return noopMutable(undefined) }
+}
+
+function useAnimatedReaction() {}
+function useAnimatedScrollHandler() { return function () {} }
+function useAnimatedGestureHandler() { return function () {} }
+function useAnimatedRef() { return { current: null } }
+
+// NOTE — `useSharedValue` is intentionally OMITTED from the export list.
 // Several libraries in the dep tree (notably `react-native-gesture-handler`
-// in `reanimatedWrapper.js`) probe for Reanimated using
+// in `reanimatedWrapper.js`) probe for "real Reanimated" using
 //
 //     if (!Reanimated?.useSharedValue) Reanimated = undefined
 //
 // and switch to a pure-JS fallback path when the hook is missing. We want
 // that fallback: it routes gestures through the JS bridge instead of the
-// (non-existent) worklets runtime, and behaves correctly without the
-// native binding. Adding `useSharedValue` to the stub would have those
-// libraries try to coordinate gesture state via reanimated and crash.
+// (non-existent) worklets runtime. Other hooks, especially
+// `useAnimatedStyle`, are still exported because NativeWind's
+// css-interop requires them for `animate-*` classes such as the loading
+// spinner in CompactChatInput.
 
 const View = require('react-native').View
 const ScrollView = require('react-native').ScrollView
@@ -225,9 +245,15 @@ module.exports = {
   runOnJS,
   Easing,
   ReduceMotion,
-  // Hooks intentionally omitted — see comment above the (removed)
-  // `useSharedValue` definition. Libraries that probe for these
-  // names fall back to non-Reanimated code paths.
+  // Hooks: intentionally omit `useSharedValue`, but keep the JS-only
+  // hooks css-interop destructures for animate/transition classes.
+  useAnimatedStyle,
+  useAnimatedProps,
+  useDerivedValue,
+  useAnimatedReaction,
+  useAnimatedScrollHandler,
+  useAnimatedGestureHandler,
+  useAnimatedRef,
   // Animated components
   createAnimatedComponent,
   View,

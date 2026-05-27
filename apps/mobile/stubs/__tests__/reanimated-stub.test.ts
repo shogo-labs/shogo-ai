@@ -95,6 +95,15 @@ describe('react-native-reanimated stub', () => {
     expect((Reanimated as any).useSharedValue).toBeUndefined()
   })
 
+  test('exports JS-only animated hooks required by css-interop', () => {
+    // NativeWind's react-native-css-interop calls `useAnimatedStyle` when
+    // rendering animate/transition classes such as `animate-spin`.
+    expect(typeof (Reanimated as any).useAnimatedStyle).toBe('function')
+    expect((Reanimated as any).useAnimatedStyle(() => ({ opacity: 0.5 }))).toEqual({ opacity: 0.5 })
+    expect(typeof (Reanimated as any).useAnimatedProps).toBe('function')
+    expect(typeof (Reanimated as any).useDerivedValue).toBe('function')
+  })
+
   test('introspection helpers return safe negative values', () => {
     expect((Reanimated as any).isReanimated3()).toBe(false)
     expect((Reanimated as any).isConfigured()).toBe(false)
