@@ -3,14 +3,14 @@
   "note": "Aggregate after Wave B opening (commit ec4d383): backend lines 83.99%. Pinned 4-pkg + 7 fresh.",
   "aggregate": {
     "lines": {
-      "total": 81653,
-      "hit": 68647,
-      "pct": 84.07
+      "total": 81618,
+      "hit": 68828,
+      "pct": 84.33
     },
     "functions": {
       "total": 6662,
-      "hit": 5475,
-      "pct": 82.18
+      "hit": 5487,
+      "pct": 82.36
     }
   },
   "perPackage": [
@@ -411,6 +411,12 @@
       "file": "packages/voice/src/server.ts",
       "delta": "Wave B Day 2: server.ts 85.5% \u2192 100% lines (whole voice package at 100%)",
       "aggregateImpact": "+64 lines hit, +27 found (denominator restored as new branches were instrumented)"
+    },
+    {
+      "commit": "985a4ef",
+      "file": "packages/agent-runtime/src/gateway.ts",
+      "delta": "Wave B Day 3: gateway.ts 71.9% \u2192 79.34% lines (27 tests across getter chain, channel mgmt, mock lifecycle, getStatus pipeline)",
+      "aggregateImpact": "+181 lines hit, -35 lines found (denom compaction), +12 funcs"
     }
   ],
   "frontend": {
@@ -427,7 +433,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-27T12:30:29Z",
+  "lastUpdated": "2026-05-27T12:39:16Z",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
