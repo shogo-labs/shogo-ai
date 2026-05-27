@@ -1,13 +1,18 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { Hono } from 'hono'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET || 'test-secret-v4'
 
-const FAKE_HOME = '/tmp/v4-B-home'
-mkdirSync(FAKE_HOME, { recursive: true })
+// macOS hard-links /tmp -> /private/tmp, so `realpathSync('/tmp/x')` returns
+// `/private/tmp/x`. The `/fs/browse` route validates the realpath'd target
+// against `os.homedir()` (a literal string compare), which would fail unless
+// FAKE_HOME *is* the realpath'd form. Canonicalise it at startup so both
+// sides of the isUnderHome() check line up on macOS and Linux alike.
+mkdirSync('/tmp/v4-B-home', { recursive: true })
+const FAKE_HOME = realpathSync('/tmp/v4-B-home')
 
 const realOs = await import('os')
 mock.module('os', () => ({

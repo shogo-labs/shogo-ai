@@ -17,10 +17,20 @@ function hasLocalSqliteSchema(): boolean {
   try {
     const db = new Database('shogo.db', { readonly: true })
     try {
-      const row = db.query(
+      const workspacesRow = db.query(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workspaces'",
       ).get()
-      return !!row
+      if (!workspacesRow) return false
+      // Verify the schema is up to date. An older `shogo.db` left over
+      // from a checkout that predates the publish-status columns will
+      // pass the workspaces check but blow up the first time the test
+      // runs `prisma.project.create()` with a P2022 ColumnNotFound.
+      // Skip cleanly in that case instead of failing.
+      const projectsColumns = db
+        .query("PRAGMA table_info('projects')")
+        .all() as Array<{ name: string }>
+      if (!projectsColumns.some((c) => c.name === 'publishStatus')) return false
+      return true
     } finally {
       db.close()
     }
