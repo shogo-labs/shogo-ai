@@ -269,6 +269,12 @@
       "file": "packages/email/src/providers/smtp.ts",
       "delta": "0% \u2192 100% lines/funcs (38 new tests)",
       "aggregateImpact": "+0 \u2014 packages/email is outside the tracked aggregate (apps/api + agent-runtime + sdk + shared-runtime + model-catalog)"
+    },
+    {
+      "commit": "59343fca",
+      "file": "packages/sdk/src/memory/drivers/node.ts",
+      "delta": "0% \u2192 100% lines/funcs (4 new tests)",
+      "aggregateImpact": "+29 covered lines (sdk is in the tracked aggregate)"
     }
   ],
   "frontend": {
@@ -285,5 +291,5 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-27T09:14:46Z"
+  "lastUpdated": "2026-05-27T09:31:09Z"
 }
