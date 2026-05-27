@@ -127,6 +127,37 @@ function runOneSync(
   // explanation. Drop both for test processes.
   delete childEnv.AI_PROXY_URL
   delete childEnv.AI_PROXY_TOKEN
+  // The Shogo agent runtime sandbox itself is a real K8s pod. Drop its
+  // production-pod env vars so tests that read process.env at load time
+  // (BetterAuth secret validation, AI_PROXY_SECRET enforcement, K8s
+  // service discovery, S3 bucket fallbacks, workspace marker scans) see
+  // a clean test environment instead of the pod's production values.
+  childEnv.NODE_ENV = 'test'
+  // The pod sandbox has HOME=/app which is read-only. Route tests that
+  // create fixtures under $HOME fail with EACCES. Override HOME to a
+  // writable tmpdir for the test child only.
+  const tmpHome = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'shogo-test-home-'))
+  childEnv.HOME = tmpHome
+  delete childEnv.RUNTIME_AUTH_SECRET
+  delete childEnv.PROJECT_ID
+  delete childEnv.WORKSPACE_DIR
+  delete childEnv.WORKSPACE_ID
+  delete childEnv.WORKSPACE_PATH
+  delete childEnv.ASSIGNED_PROJECT
+  delete childEnv.KNATIVE_SERVICE_NAME
+  delete childEnv.SHOGO_API_URL
+  delete childEnv.SHOGO_PUBLIC_API_URL
+  delete childEnv.API_URL
+  delete childEnv.S3_REGION
+  delete childEnv.S3_ACCESS_KEY_ID
+  delete childEnv.S3_SECRET_ACCESS_KEY
+  delete childEnv.S3_WORKSPACES_BUCKET
+  delete childEnv.S3_ENDPOINT
+  delete childEnv.S3_SYNC_INTERVAL
+  delete childEnv.S3_WATCH_ENABLED
+  for (const k of Object.keys(childEnv)) {
+    if (k.startsWith('KUBERNETES_')) delete childEnv[k]
+  }
   // `--no-env-file` must come BEFORE `test` (it's a runtime flag, not
   // a test-runner flag). `--conditions=development` makes bun honour
   // the `"development"` export-condition declared by workspace packages
@@ -212,6 +243,34 @@ function runOneAsync(
     delete childEnv.DATABASE_URL
     delete childEnv.AI_PROXY_URL
     delete childEnv.AI_PROXY_TOKEN
+    // The Shogo agent runtime sandbox itself is a real K8s pod. Drop its
+    // production-pod env vars so tests that read process.env at load time
+    // (BetterAuth secret validation, AI_PROXY_SECRET enforcement, K8s
+    // service discovery, S3 bucket fallbacks, workspace marker scans) see
+    // a clean test environment instead of the pod's production values.
+    childEnv.NODE_ENV = 'test'
+    const tmpHomeAsync = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'shogo-test-home-'))
+    childEnv.HOME = tmpHomeAsync
+    delete childEnv.RUNTIME_AUTH_SECRET
+    delete childEnv.PROJECT_ID
+    delete childEnv.WORKSPACE_DIR
+    delete childEnv.WORKSPACE_ID
+    delete childEnv.WORKSPACE_PATH
+    delete childEnv.ASSIGNED_PROJECT
+    delete childEnv.KNATIVE_SERVICE_NAME
+    delete childEnv.SHOGO_API_URL
+    delete childEnv.SHOGO_PUBLIC_API_URL
+    delete childEnv.API_URL
+    delete childEnv.S3_REGION
+    delete childEnv.S3_ACCESS_KEY_ID
+    delete childEnv.S3_SECRET_ACCESS_KEY
+    delete childEnv.S3_WORKSPACES_BUCKET
+    delete childEnv.S3_ENDPOINT
+    delete childEnv.S3_SYNC_INTERVAL
+    delete childEnv.S3_WATCH_ENABLED
+    for (const k of Object.keys(childEnv)) {
+      if (k.startsWith('KUBERNETES_')) delete childEnv[k]
+    }
     const procArgs = ['--no-env-file', '--conditions=development', 'test', relFile, ...extraArgs]
     const proc = spawn('bun', procArgs, { env: childEnv, cwd })
 
