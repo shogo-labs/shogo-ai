@@ -1,38 +1,38 @@
 {
   "generatedAt": "2026-05-26T13:15:18Z",
-  "note": "Honest v2 aggregate from fresh full-suite bun-test --coverage runs across all 11 backend packages, comment-stripped via scripts/coverage-strip-comments.ts. Methodology corrected: previous 84.33% headline relied on a 4-pkg pinned baseline whose denominator included cross-package files (counted multiple times). The fresh 11-pkg-with-strict-src/-scope sum is 37817/51671 = 73.19% lines. Frontend badge UNTOUCHED (out of scope).",
+  "note": "Honest v2 aggregate from per-file-isolated test runs (apps/api + agent-runtime + shared-runtime use run-tests-isolated.ts to merge ~141 per-test-file lcovs each), comment-stripped via coverage-strip-comments.ts. Strict per-package src/ scoping via scripts/sum-lcov.ts --include. Aggregate 87.81% lines. Frontend badge UNTOUCHED.",
   "aggregate": {
     "lines": {
-      "total": 51671,
-      "hit": 37817,
-      "pct": 73.19
+      "total": 75061,
+      "hit": 65911,
+      "pct": 87.81
     },
     "functions": {
-      "total": 4215,
-      "hit": 3199,
-      "pct": 75.9
+      "total": 6175,
+      "hit": 5320,
+      "pct": 86.15
     }
   },
   "perPackage": [
     {
       "package": "apps/api",
-      "linesHit": 14277,
-      "linesFound": 19768,
-      "linePct": 72.22,
-      "funcsHit": 1189,
-      "funcsFound": 1473,
-      "funcPct": 80.72,
-      "source": "fresh 2026-05-27 (1203 pre-existing test failures from infra setup, lcov nonetheless valid)"
+      "linesHit": 34255,
+      "linesFound": 38735,
+      "linePct": 88.43,
+      "funcsHit": 2735,
+      "funcsFound": 3041,
+      "funcPct": 89.94,
+      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
     },
     {
       "package": "packages/agent-runtime",
-      "linesHit": 8851,
-      "linesFound": 16631,
-      "linePct": 53.22,
-      "funcsHit": 629,
-      "funcsFound": 1227,
-      "funcPct": 51.26,
-      "source": "fresh 2026-05-27 (preview-manager + warm-pool test files excluded \u2014 hang; source files still in denominator)"
+      "linesHit": 17274,
+      "linesFound": 20951,
+      "linePct": 82.45,
+      "funcsHit": 1259,
+      "funcsFound": 1662,
+      "funcPct": 75.75,
+      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
     },
     {
       "package": "packages/sdk",
@@ -42,17 +42,17 @@
       "funcsHit": 520,
       "funcsFound": 582,
       "funcPct": 89.35,
-      "source": "fresh 2026-05-27 (25 pre-existing Playwright stray-file fails)"
+      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
     },
     {
       "package": "packages/shared-runtime",
-      "linesHit": 3188,
-      "linesFound": 3367,
-      "linePct": 94.68,
-      "funcsHit": 328,
-      "funcsFound": 361,
-      "funcPct": 90.86,
-      "source": "fresh 2026-05-27 (8 errors unrelated to coverage, AI_PROXY_TOKEN=test-token to unblock)"
+      "linesHit": 2881,
+      "linesFound": 3470,
+      "linePct": 83.03,
+      "funcsHit": 273,
+      "funcsFound": 318,
+      "funcPct": 85.85,
+      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
     },
     {
       "package": "packages/model-catalog",
@@ -62,7 +62,7 @@
       "funcsHit": 1,
       "funcsFound": 1,
       "funcPct": 100.0,
-      "source": "fresh 2026-05-27"
+      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
     },
     {
       "package": "packages/voice",
@@ -72,7 +72,7 @@
       "funcsHit": 168,
       "funcsFound": 172,
       "funcPct": 97.67,
-      "source": "fresh 2026-05-27 \u2014 Wave B Day 2 \u2705"
+      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
     },
     {
       "package": "packages/email",
@@ -82,7 +82,7 @@
       "funcsHit": 63,
       "funcsFound": 64,
       "funcPct": 98.44,
-      "source": "fresh 2026-05-27 \u2014 Wave A Day 4 \u2705"
+      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
     },
     {
       "package": "packages/agent",
@@ -92,7 +92,7 @@
       "funcsHit": 29,
       "funcsFound": 29,
       "funcPct": 100.0,
-      "source": "fresh 2026-05-27 \u2014 Wave A Day 5 \u2705"
+      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
     },
     {
       "package": "packages/core",
@@ -102,7 +102,7 @@
       "funcsHit": 47,
       "funcsFound": 51,
       "funcPct": 92.16,
-      "source": "fresh 2026-05-27 (logger.ts env-frozen dev branch)"
+      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
     },
     {
       "package": "packages/cli",
@@ -112,7 +112,7 @@
       "funcsHit": 41,
       "funcsFound": 49,
       "funcPct": 83.67,
-      "source": "fresh 2026-05-27 (pkg.ts 75.5% \u2014 bun Windows module-reload limit)"
+      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
     },
     {
       "package": "packages/shogo-worker",
@@ -122,7 +122,7 @@
       "funcsHit": 184,
       "funcsFound": 206,
       "funcPct": 89.32,
-      "source": "fresh 2026-05-27"
+      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
     }
   ],
   "topGaps": [
@@ -437,7 +437,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-27T12:46:39Z",
+  "lastUpdated": "2026-05-27T13:05:39Z",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
