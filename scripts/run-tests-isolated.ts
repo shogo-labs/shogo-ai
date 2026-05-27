@@ -31,7 +31,7 @@ import { spawn, spawnSync } from 'child_process'
 import { cpus } from 'os'
 
 const TEST_FILE_RE = /\.(test|spec)\.(ts|tsx|js|jsx)$/
-const SKIP_DIR_RE = /(?:^|\/)(?:node_modules|dist|build|generated|\.next|coverage)(?:\/|$)/
+const SKIP_DIR_RE = /(?:^|\/)(?:node_modules|dist|build|generated|\.next|coverage|integration)(?:\/|$)/
 
 function slugify(rel: string): string {
   return rel.replace(/[/\\]/g, '__').replace(/\.(test|spec)\.[^.]+$/, '')
