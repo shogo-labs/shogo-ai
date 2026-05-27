@@ -28,6 +28,7 @@ describe('Self-Assign', () => {
     delete process.env.API_URL
     delete process.env.AI_PROXY_URL
     delete process.env.KNATIVE_SERVICE_NAME
+    delete process.env.WORKSPACE_DIR
     process.env.SYSTEM_NAMESPACE = 'test-system'
   })
 
@@ -203,8 +204,11 @@ describe('Self-Assign whoami fallback', () => {
     process.env.KNATIVE_SERVICE_NAME = 'warm-pool-no-token'
     delete process.env.K8S_SA_TOKEN_OVERRIDE
 
-    const { discoverAssignedProject } = await import('../self-assign')
+    const { discoverAssignedProject, _selfAssignSeams } = await import('../self-assign')
+    const prevPath = _selfAssignSeams.saTokenPath
+    _selfAssignSeams.saTokenPath = '/dev/null/nonexistent-sa-token-path'
     const result = await discoverAssignedProject(undefined, 'http://api.test.local')
+    _selfAssignSeams.saTokenPath = prevPath
     expect(result).toBeNull()
     expect(mockFetch).not.toHaveBeenCalled()
   })

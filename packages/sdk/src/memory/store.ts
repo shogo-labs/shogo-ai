@@ -207,6 +207,10 @@ export class MemoryStore {
     }
 
     this.rewriteMemoryMd(bullets)
+    // The atomic rename inside rewriteMemoryMd can leave mtime unchanged
+    // when the prior write landed in the same millisecond (overlay / tmpfs).
+    // Invalidate the meta entry so reindex() definitely re-processes the file.
+    this.getEngine().invalidateMeta('MEMORY.md')
     this.getEngine().reindex()
     return { bullets: bullets.length, previous, unchanged: false }
   }
