@@ -7,7 +7,13 @@
     "packages/agent-runtime",
     "packages/sdk",
     "packages/shared-runtime",
-    "packages/model-catalog (when lcov stabilizes)"
+    "packages/model-catalog",
+    "packages/voice",
+    "packages/email",
+    "packages/agent",
+    "packages/core",
+    "packages/cli",
+    "packages/shogo-worker"
   ],
   "total": 76,
   "perPackageTotals": {
@@ -1059,38 +1065,17 @@
       "effectiveLinePct": 100.0
     }
   ],
-  "lastUpdated": "2026-05-27T09:14:46Z",
+  "lastUpdated": "2026-05-27T11:00:00Z",
   "aggregate": {
-    "backendLinePct": 82.99,
-    "backendFuncPct": 80.79,
-    "frontendLinePct": 67.82,
-    "backendLines": {
-      "hit": 63369,
-      "total": 76360
+    "lines": {
+      "total": 80866,
+      "hit": 67689,
+      "pct": 83.71
     },
-    "frontendLines": {
-      "hit": 529,
-      "total": 780
-    },
-    "method": "sum(linesHit)/sum(linesFound) per package, comment-stripped via scripts/coverage-strip-comments.ts",
-    "packages": [
-      "apps/api",
-      "packages/agent-runtime",
-      "packages/sdk",
-      "packages/shared-runtime",
-      "packages/model-catalog"
-    ],
-    "frontendPackages": [
-      "packages/shared-app"
-    ],
-    "backendFuncs": {
-      "hit": 4925,
-      "total": 6096
-    },
-    "frontendFuncPct": 79.63,
-    "frontendFuncs": {
-      "hit": 43,
-      "total": 54
+    "functions": {
+      "total": 6580,
+      "hit": 5383,
+      "pct": 81.81
     }
   }
 }
