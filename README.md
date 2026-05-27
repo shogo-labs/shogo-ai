@@ -1,7 +1,7 @@
 # [Shogo AI](https://shogo.ai)
 
 <!-- coverage-badge:backend -->
-[![Backend coverage](https://img.shields.io/badge/backend%20coverage-83.9%25-yellow)](./coverage/lcov.info)
+[![Backend coverage](https://img.shields.io/badge/backend%20coverage-83.99%25-yellow)](./coverage/lcov.info)
 <!-- /coverage-badge:backend -->
 <!-- coverage-badge:frontend -->
 [![Frontend coverage](https://img.shields.io/badge/frontend%20coverage-67.82%25-orange)](./coverage/frontend-lcov.info)
