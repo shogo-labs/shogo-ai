@@ -107,7 +107,14 @@ function createFakeClient(url: string): FakePtyClient {
 mock.module(
   require.resolve('../terminal/pty-factory'),
   () => ({
-    createPtyClient: (url: string) => createFakeClient(url),
+    // Phase 2: createPtyClient is now async (Promise<PtyClientLike>) so it
+    // can lazy-import the desktop transport. Accepts a bare URL string or
+    // `{ url, sessionId, forceWs }`.
+    createPtyClient: async (args: string | { url?: string; sessionId?: string }) => {
+      const url = typeof args === 'string' ? args : (args.url ?? '')
+      return createFakeClient(url)
+    },
+    chooseTransport: () => 'ws' as const,
   }),
 )
 
