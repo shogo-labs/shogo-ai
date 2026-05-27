@@ -424,6 +424,16 @@ export async function createSubscriptionCheckout(params: {
   return session.url;
 }
 
+export async function cancelMarketplaceSubscription(
+  stripeSubscriptionId: string,
+): Promise<void> {
+  if (!isStripeConfigured()) return;
+  const stripe = getStripe();
+  await stripe.subscriptions.update(stripeSubscriptionId, {
+    cancel_at_period_end: true,
+  });
+}
+
 export async function triggerPayout(
   creatorProfileId: string,
   amountInCents?: number,
