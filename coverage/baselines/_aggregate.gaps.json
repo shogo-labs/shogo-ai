@@ -4,25 +4,25 @@
   "aggregate": {
     "lines": {
       "total": 75061,
-      "hit": 66447,
-      "pct": 88.52
+      "hit": 66934,
+      "pct": 89.17
     },
     "functions": {
       "total": 6175,
-      "hit": 5367,
-      "pct": 86.91
+      "hit": 5405,
+      "pct": 87.53
     }
   },
   "perPackage": [
     {
       "package": "apps/api",
-      "linesHit": 34791,
+      "linesHit": 35278,
       "linesFound": 38735,
-      "linePct": 89.82,
-      "funcsHit": 2782,
+      "linePct": 91.08,
+      "funcsHit": 2820,
       "funcsFound": 3041,
-      "funcPct": 91.48,
-      "source": "fresh 2026-05-27 + Wave B Day 5 batch (creator-follow + tech-stacks + project-auth-config)"
+      "funcPct": 92.73,
+      "source": "fresh 2026-05-27 + Wave B Day 6 batch (api-keys + checkpoints)"
     },
     {
       "package": "packages/agent-runtime",
@@ -439,6 +439,12 @@
       "file": "apps/api batch (creator-follow.service + tech-stacks + project-auth-config)",
       "delta": "Wave B Day 5: 3 files to 100% (+228 lines, +21 funcs); deleted 4 defensive guards",
       "aggregateImpact": "+228 lines hit, +0 found, +21 funcs hit, +0 funcs found"
+    },
+    {
+      "commit": "cd4cf6c",
+      "file": "apps/api batch (api-keys + checkpoints)",
+      "delta": "Wave B Day 6: 2 route files to 100% L + F (+487 lines, +38 funcs)",
+      "aggregateImpact": "+487 lines hit, +0 found, +38 funcs hit, +0 funcs found"
     }
   ],
   "frontend": {
@@ -455,7 +461,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-27T14:31:02Z",
+  "lastUpdated": "2026-05-27T14:36:42Z",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
