@@ -316,7 +316,9 @@ describe('AgentGateway error recovery', () => {
       write: (chunk: any) => { writtenChunks.push(chunk) },
     }
 
-    await gateway.processChatMessageStream('Hello', mockWriter as any, {})
+    await gateway.processChatMessageStream('Hello', mockWriter as any, {
+      chatSessionId: 'error-recovery-zero-output',
+    })
 
     const errorChunk = writtenChunks.find((c) => c.type === 'error')
     expect(errorChunk).toBeDefined()
@@ -331,9 +333,12 @@ describe('AgentGateway error recovery', () => {
     await gateway.start()
 
     const mockWriter = { write: (_chunk: any) => {} }
-    await gateway.processChatMessageStream('Hello', mockWriter as any, {})
+    const sessionId = 'error-recovery-persists-user'
+    await gateway.processChatMessageStream('Hello', mockWriter as any, {
+      chatSessionId: sessionId,
+    })
 
-    const session = gateway.getSessionManager().get('chat')
+    const session = gateway.getSessionManager().get(sessionId)
     expect(session).toBeDefined()
     expect(session!.messages.length).toBeGreaterThan(0)
 
