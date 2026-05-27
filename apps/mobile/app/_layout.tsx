@@ -82,22 +82,6 @@ Sentry.init({
   release: process.env.EXPO_PUBLIC_BUILD_HASH || 'dev',
   tracesSampleRate: 0.2,
   enabled: !!sentryDsn,
-  // sentry-cocoa 8.5x (bundled with @sentry/react-native@7.11.0) has an open
-  // race in `_SentryDispatchQueueWrapperInternal`: its UIViewController
-  // tracker can enqueue a cleanup block holding a stale controller pointer.
-  // On iPadOS 26 cold launch this matches App Review's EXC_BAD_ACCESS at 0x10
-  // crashes. Tracking upstream: getsentry/sentry-cocoa#7815. The React Native
-  // fix ships in @sentry/react-native@8.7.0+, but that bump is too broad for
-  // the App Store hotfix.
-  //
-  // Until we can land that bump in a separate PR, switch off every native
-  // auto-instrumentation that funnels through the racy dispatch wrapper.
-  // Crash + JS error capture still works (those go through the unaffected
-  // SentryHub event pipeline); we only lose UIViewController/native-frames
-  // performance spans, which we weren't actually using yet.
-  enableAutoPerformanceTracing: false,
-  enableNativeFramesTracking: false,
-  enableUserInteractionTracing: false,
   // Drop unhandled promise rejections whose "reason" was a non-Error value
   // (e.g. `Promise.reject(new Event(...))` from third-party libs, or string
   // rejections from Stripe / posthog). They show up in Sentry as a single
