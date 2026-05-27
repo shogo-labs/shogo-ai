@@ -19,6 +19,8 @@ export interface ChatSessionType {
   cachedMessageCount: number
   contextUsageTokens: number
   contextWindowTokens: number
+  isPinned: boolean
+  isArchived: boolean
   createdAt: Date
   updatedAt: Date
   lastActiveAt: Date
@@ -34,6 +36,8 @@ export interface ChatSessionCreateInput {
   cachedMessageCount?: number
   contextUsageTokens?: number
   contextWindowTokens?: number
+  isPinned?: boolean
+  isArchived?: boolean
   lastActiveAt?: Date
 }
 
@@ -47,5 +51,7 @@ export interface ChatSessionUpdateInput {
   cachedMessageCount?: number
   contextUsageTokens?: number
   contextWindowTokens?: number
+  isPinned?: boolean
+  isArchived?: boolean
   lastActiveAt?: Date
 }
