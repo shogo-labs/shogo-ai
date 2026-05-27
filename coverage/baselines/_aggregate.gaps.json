@@ -4,25 +4,25 @@
   "aggregate": {
     "lines": {
       "total": 75061,
-      "hit": 65911,
-      "pct": 87.81
+      "hit": 66219,
+      "pct": 88.22
     },
     "functions": {
       "total": 6175,
-      "hit": 5320,
-      "pct": 86.15
+      "hit": 5346,
+      "pct": 86.57
     }
   },
   "perPackage": [
     {
       "package": "apps/api",
-      "linesHit": 34255,
+      "linesHit": 34563,
       "linesFound": 38735,
-      "linePct": 88.43,
-      "funcsHit": 2735,
+      "linePct": 89.23,
+      "funcsHit": 2761,
       "funcsFound": 3041,
-      "funcPct": 89.94,
-      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
+      "funcPct": 90.79,
+      "source": "fresh 2026-05-27 via run-tests-isolated + 2 new test files (project-auth-config, external-preview-extras)"
     },
     {
       "package": "packages/agent-runtime",
@@ -421,6 +421,18 @@
       "file": "packages/agent-runtime/src/gateway.ts",
       "delta": "Wave B Day 3: gateway.ts 71.9% \u2192 79.34% lines (27 tests across getter chain, channel mgmt, mock lifecycle, getStatus pipeline)",
       "aggregateImpact": "+181 lines hit, -35 lines found (denom compaction), +12 funcs"
+    },
+    {
+      "commit": "61ff5f6",
+      "file": "apps/api/src/services/project-auth-config.service.ts",
+      "delta": "Wave B Day 4: 4.67% \u2192 100% lines (41 tests, full Prisma mock)",
+      "aggregateImpact": "+204 lines hit, +0 found"
+    },
+    {
+      "commit": "076d4a6",
+      "file": "apps/api/src/routes/external-preview.ts",
+      "delta": "Wave B Day 4: 32.24% \u2192 99.35% lines (33 tests, runtime+observer+fetch mocks)",
+      "aggregateImpact": "+104 lines hit, +0 found"
     }
   ],
   "frontend": {
@@ -437,7 +449,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-27T13:05:39Z",
+  "lastUpdated": "2026-05-27T14:14:02Z",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
