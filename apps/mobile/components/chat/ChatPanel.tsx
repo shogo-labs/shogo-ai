@@ -1887,7 +1887,7 @@ export const ChatPanel = observer(function ChatPanel({
 
       }
     },
-    onFinish: async ({ message }) => {
+    onFinish: async ({ message, isAbort }: { message: any; isAbort?: boolean }) => {
       const contentLength = (message as any).content?.length ?? message.parts?.length ?? 0
 
       // Push a `turn-end` event to the EZ Mode bridge so the translator
@@ -1919,7 +1919,13 @@ export const ChatPanel = observer(function ChatPanel({
       const hasToolCallsInMessage = message.parts?.some(
         (p: any) => p.type === "tool-invocation" || p.type === "tool-result"
       )
-      if (userInitiatedStopRef.current) {
+      // `isAbort` comes straight from the AI SDK (see ai/dist/index.mjs
+      // `AbstractChat#makeRequest` finally block) and is set whenever the
+      // active response's AbortController fires — covers user-initiated
+      // Stop, the stall watchdog, panel unmount, and any future caller of
+      // `stop()` without us having to instrument each path. The ref is
+      // kept as a belt-and-braces fallback.
+      if (isAbort || userInitiatedStopRef.current) {
         userInitiatedStopRef.current = false
         setEmptyResponseError(null)
       } else if (!hasTextContent && !hasToolCallsInMessage && contentLength === 0) {
@@ -2411,6 +2417,10 @@ export const ChatPanel = observer(function ChatPanel({
 
   const handleStop = useCallback(() => {
     userInitiatedStopRef.current = true
+    // Clear any pre-existing empty-response banner immediately so that a
+    // stale banner from an earlier turn dismisses the moment the user taps
+    // Stop — they shouldn't have to send a new message to get rid of it.
+    setEmptyResponseError(null)
     setStoppedMessages([...messagesRef.current])
     stop()
 
