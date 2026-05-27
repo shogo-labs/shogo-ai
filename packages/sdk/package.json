@@ -175,6 +175,12 @@
       "import": "./dist/macos-junk.js",
       "require": "./dist/macos-junk.cjs"
     },
+    "./file-types": {
+      "types": "./dist/file-types.d.ts",
+      "development": "./src/file-types.ts",
+      "import": "./dist/file-types.js",
+      "require": "./dist/file-types.cjs"
+    },
     "./tech-stack-registry": {
       "types": "./dist/tech-stack-registry.d.ts",
       "development": "./src/tech-stack-registry.ts",

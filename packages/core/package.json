@@ -50,6 +50,12 @@
       "development": "./src/tech-stack-registry.ts",
       "import": "./dist/tech-stack-registry.js",
       "require": "./dist/tech-stack-registry.cjs"
+    },
+    "./file-types": {
+      "types": "./dist/file-types.d.ts",
+      "development": "./src/file-types.ts",
+      "import": "./dist/file-types.js",
+      "require": "./dist/file-types.cjs"
     }
   },
   "files": [

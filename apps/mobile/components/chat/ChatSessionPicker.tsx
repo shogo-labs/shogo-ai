@@ -19,9 +19,11 @@ import {
   TextInput,
   FlatList,
   ActivityIndicator,
+  useColorScheme,
   type ListRenderItemInfo,
 } from "react-native"
 import AsyncStorage from "@react-native-async-storage/async-storage"
+import { LinearGradient } from "expo-linear-gradient"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
   Popover,
@@ -419,6 +421,13 @@ export function ChatSessionSidebar({
   completedSessionIds,
   projectId,
 }: ChatSessionPickerProps) {
+  // Selected-row highlight uses a horizontal gradient that fades the primary
+  // tint out toward the right edge — matches the sidebar wrapper's right-
+  // edge fade so the selection stripe doesn't terminate in a hard line. The
+  // primary token differs between themes (light: rgb(226,121,39), dark:
+  // rgb(240,144,80) — see global.css), so we resolve the rgb here once.
+  const colorScheme = useColorScheme()
+  const primaryRgb = colorScheme === 'dark' ? '240,144,80' : '226,121,39'
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState("")
   const [internalSearchOpen, setInternalSearchOpen] = useState(false)
@@ -625,10 +634,22 @@ export function ChatSessionSidebar({
       <Pressable
         onPress={() => handleSessionSelect(session.id)}
         className={cn(
-          "group px-2 py-1 hover:bg-muted",
-          isCurrent && "bg-primary/10"
+          "group relative px-2 py-1 hover:bg-muted",
         )}
       >
+        {isCurrent && (
+          // Selection highlight, faded toward the right so it lines up
+          // visually with the sidebar's own right-edge fade. Rendered first
+          // so siblings (text + icons) stack on top; pointerEvents="none"
+          // keeps row taps reaching the parent Pressable.
+          <LinearGradient
+            colors={[`rgba(${primaryRgb},0.10)`, `rgba(${primaryRgb},0)`]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            pointerEvents="none"
+            style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0 }}
+          />
+        )}
         {isEditing ? (
           <View className="flex-row items-center gap-2">
             <TextInput

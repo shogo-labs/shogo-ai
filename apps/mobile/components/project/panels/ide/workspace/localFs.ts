@@ -1,3 +1,5 @@
+import { BINARY_FILE_EXTENSIONS } from "@shogo-ai/sdk/file-types";
+
 import type {
   SearchOptions,
   SearchResponse,
@@ -95,28 +97,10 @@ function langOf(name: string) {
   return LANG[extOf(name)] ?? "plaintext";
 }
 
-/** Extensions known to be binary — used as a fast reject before falling
- *  back to a content sniff. Keep this in sync with Workbench.BINARY_EXTENSIONS
- *  for the user-facing block list. */
-const BINARY_EXT = new Set([
-  // Images (handled by ImagePreview, not by readFile)
-  "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif", "apng",
-  "heic", "heif", "tiff", "tif", "jxl", "cur",
-  // Archives
-  "zip", "gz", "tar", "tgz", "bz2", "xz", "7z", "rar", "zst", "lz4",
-  // Audio / video / docs (handled by media previews)
-  "mp3", "mp4", "m4a", "m4v", "mov", "avi", "mkv", "webm", "wav", "flac",
-  "ogg", "oga", "ogv", "aac", "opus", "pdf",
-  // Fonts
-  "woff", "woff2", "ttf", "otf", "eot",
-  // Native / packed
-  "exe", "dll", "so", "dylib", "bin", "class", "jar", "wasm",
-  // Databases (handled by SqlitePreview)
-  "db", "sqlite", "sqlite3",
-  // Misc binary
-  "pack", "idx", "psd", "ai", "sketch", "fig", "blend", "obj", "fbx",
-  "pyc", "pyo", "pyd",
-]);
+/** Canonical binary-extension set lives in `@shogo-ai/core/file-types`
+ *  (imported above). Used here as a fast reject before falling back to
+ *  a content sniff for unknown extensions. */
+const BINARY_EXT = BINARY_FILE_EXTENSIONS;
 
 /** Classify a filename as text / binary by name alone.
  *  - `true`  : known text (extension allow-list, dotfiles, conventional
