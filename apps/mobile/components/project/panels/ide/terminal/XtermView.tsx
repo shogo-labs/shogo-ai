@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * XtermView — React wrapper for an XtermSession.
+ * XtermView — React wrapper that mounts an xterm.js-backed terminal
+ * against a `PtyClientLike`.
  *
- * Mounts an xterm.js terminal into a div, observes container resizes
- * (FitAddon recompute), and shows a small "reconnecting…" overlay when
- * the underlying PtyClient is not in the `open` state.
+ *   keystrokes / paste     → ptyClient.send()
+ *   FitAddon resize        → ptyClient.resize()
+ *   incoming bytes         → term.write()
  *
  * Web-only. The IDE shell is React Native Web (Platform.OS === 'web' on
  * mobile), and xterm.js requires a real DOM. We render `null` on native
  * builds so this file stays import-safe.
  *
- * The PtyClient is owned by the parent (Terminal.tsx); we just borrow it
- * for the lifetime of this component. Unmount disposes the XtermSession
- * but NOT the PtyClient — the parent decides whether the underlying
- * shell session should outlive the React tree (for tab-detach / refresh
- * resilience).
+ * On Electron we hand off to `@shogo/desktop-terminal`'s
+ * `ShogoTerminalSurface`, which is an xterm.js wrapper tuned for the
+ * desktop runtime. The PtyClient is owned by the parent (Terminal.tsx);
+ * we just borrow it for the lifetime of this component.
  */
 
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
@@ -32,15 +32,10 @@ interface XtermViewProps {
   fontFamily?: string
   /** Auto-focus the terminal on mount + when becoming visible. */
   autoFocus?: boolean
+  /** Reserved for future use; currently unused on the desktop surface. */
   projectId?: string | null
 }
 
-/**
- * Imperative handle the parent (Terminal.tsx) uses to drive the xterm.js
- * widget without owning the xterm `Terminal` instance directly. Lets the
- * "Clear" button blank the buffer and the "stop" / focus flows refocus
- * the cursor without leaking xterm internals up through props.
- */
 export interface XtermViewHandle {
   /** Blank the xterm buffer + scrollback. Does not affect the PTY shell. */
   clear: () => void
@@ -50,14 +45,10 @@ export interface XtermViewHandle {
   refit: () => void
 }
 
-export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function XtermView({
-  client,
-  hidden = false,
-  fontSize,
-  fontFamily,
-  autoFocus = true,
-  projectId,
-}, ref) {
+export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function XtermView(
+  { client, hidden = false, fontSize, fontFamily, autoFocus = true },
+  ref,
+) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const sessionRef = useRef<XtermSession | null>(null)
   const desktopHandleRef = useRef<XtermViewHandle | null>(null)
@@ -74,8 +65,8 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     return () => { cancelled = true }
   }, [])
 
-  // Mount the xterm session once, dispose on unmount. The PtyClient is
-  // owned by the parent and must NOT be disposed here.
+  // Mount the WS-backed xterm session once, dispose on unmount. The
+  // PtyClient is owned by the parent and must NOT be disposed here.
   useEffect(() => {
     if (Platform.OS !== 'web') return
     if (isDesktopRuntime()) return
@@ -99,7 +90,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client])
 
-  // Refit on container size changes.
+  // Refit on container size changes (web path; desktop surface owns its own RO).
   useEffect(() => {
     if (Platform.OS !== 'web') return
     if (isDesktopRuntime()) return
@@ -109,7 +100,6 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     const ro = new ResizeObserver(() => session?.fit())
     ro.observe(container)
     return () => ro.disconnect()
-    // Re-bind when the session pointer flips on remount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client])
 
@@ -120,7 +110,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     return () => unsub()
   }, [client])
 
-  // Refocus when the tab becomes visible again.
+  // Refocus when the tab becomes visible again (web path).
   useEffect(() => {
     if (Platform.OS !== 'web') return
     if (isDesktopRuntime()) return
@@ -148,7 +138,6 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         fontSize={fontSize}
         fontFamily={fontFamily}
         autoFocus={autoFocus}
-        projectId={projectId}
       />
     )
   }
@@ -170,21 +159,20 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         // panel edges).
         style={{ width: '100%', height: '100%', padding: '4px 6px' }}
       />
-      {state !== 'open' && state !== 'idle' && (
-        <ConnectionOverlay state={state} />
-      )}
+      {state !== 'open' && state !== 'idle' && <ConnectionOverlay state={state} />}
     </div>
   )
 })
 
 function ConnectionOverlay({ state }: { state: PtyClientState }): React.ReactElement {
-  const label = state === 'connecting'
-    ? 'Reconnecting…'
-    : state === 'closed'
-      ? 'Disconnected'
-      : state === 'disposed'
-        ? 'Closed'
-        : ''
+  const label =
+    state === 'connecting'
+      ? 'Reconnecting…'
+      : state === 'closed'
+        ? 'Disconnected'
+        : state === 'disposed'
+          ? 'Closed'
+          : ''
   return (
     <div
       style={{

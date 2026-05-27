@@ -27,19 +27,15 @@ import type {
 import type { SpawnOptions as HostSpawnOptions } from '../pty-host/protocol'
 
 const CH = {
-  spawn:  'shogo:terminal:spawn',
-  write:  'shogo:terminal:write',
+  spawn: 'shogo:terminal:spawn',
+  write: 'shogo:terminal:write',
   resize: 'shogo:terminal:resize',
   signal: 'shogo:terminal:signal',
-  kill:   'shogo:terminal:kill',
-  list:   'shogo:terminal:list',
+  kill: 'shogo:terminal:kill',
+  list: 'shogo:terminal:list',
   attach: 'shogo:terminal:attach',
   detach: 'shogo:terminal:detach',
-  listSnapshots: 'shogo:terminal:snapshots:list',
-  restoreSession: 'shogo:terminal:snapshots:restore',
-  discardSnapshot: 'shogo:terminal:snapshots:discard',
-  restartHost: 'shogo:terminal:host:restart',
-  event:  'shogo:terminal:event',
+  event: 'shogo:terminal:event',
 } as const
 
 function defaultShell(): string {
@@ -68,15 +64,13 @@ function normalizeSpawnOptions(opts: RendererSpawnOptions): HostSpawnOptions {
     env: {
       ...process.env as Record<string, string>,
       PATH: fallbackPath,
+      TERM: 'xterm-256color',
       TERM_PROGRAM: 'shogo',
-      SHOGO_TERMINAL: '1',
+      COLORTERM: 'truecolor',
       ...(opts.env ?? {}),
     },
     cols: opts.cols,
     rows: opts.rows,
-    restoreId: opts.restoreId,
-    workspaceHash: opts.workspaceHash ?? opts.projectId ?? 'default',
-    profileId: opts.profileId,
   }
 }
 
@@ -89,7 +83,7 @@ export function registerTerminalIpcHandlers(): void {
   const host = getPtyHostClient()
 
   // Fan host events out to every BrowserWindow so the renderer can
-  // observe session:exit / session:reap / host:ready / host:log.
+  // observe session:exit / host:ready / host:log.
   host.on('event', (ev: ControlEvent) => {
     for (const win of BrowserWindow.getAllWindows()) {
       try { win.webContents.send(CH.event, ev) } catch { /* renderer gone */ }
@@ -123,19 +117,6 @@ export function registerTerminalIpcHandlers(): void {
   ipcMain.handle(CH.detach, async (_e, id: string, channelId: string): Promise<void> => {
     await host.detach(id, channelId)
   })
-  ipcMain.handle(CH.listSnapshots, async (_e, workspaceHash: string) => {
-    return host.listSnapshots(workspaceHash)
-  })
-  ipcMain.handle(CH.restoreSession, async (_e, workspaceHash: string, snapshotId: string) => {
-    const session = await host.restoreSession(workspaceHash, snapshotId)
-    return { newSessionId: session.id, session }
-  })
-  ipcMain.handle(CH.discardSnapshot, async (_e, workspaceHash: string, snapshotId: string) => {
-    await host.discardSnapshot(workspaceHash, snapshotId)
-  })
-  ipcMain.handle(CH.restartHost, async () => {
-    await host.restart()
-  })
 }
 
 /**
@@ -152,11 +133,6 @@ export async function disposeTerminalIpc(): Promise<void> {
   ipcMain.removeHandler(CH.list)
   ipcMain.removeHandler(CH.attach)
   ipcMain.removeHandler(CH.detach)
-  ipcMain.removeHandler(CH.listSnapshots)
-  ipcMain.removeHandler(CH.restoreSession)
-  ipcMain.removeHandler(CH.discardSnapshot)
-  ipcMain.removeHandler(CH.restartHost)
-  try { await getPtyHostClient().flushSnapshots() } catch {}
   await disposePtyHostClient()
 }
 

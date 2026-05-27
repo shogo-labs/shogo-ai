@@ -18,7 +18,7 @@ import { API_URL } from "./api"
 // Mirror of the server-side types so the mobile app doesn't pull from
 // shared-runtime (which is server-only). Keep these in sync with
 // `packages/shared-runtime/src/diagnostics.ts`.
-export type DiagnosticSource = "ts" | "eslint" | "build" | "terminal"
+export type DiagnosticSource = "ts" | "eslint" | "build"
 export type DiagnosticSeverity = "error" | "warning" | "info" | "hint"
 
 export interface Diagnostic {
