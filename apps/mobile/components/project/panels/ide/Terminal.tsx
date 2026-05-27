@@ -14,7 +14,12 @@ import {
 import { API_URL } from "../../../../lib/api";
 import { agentFetch } from "../../../../lib/agent-fetch";
 import { readTerminalError } from "./terminal/error-reader";
-import { createPtyClient, type PtyClientLike } from "./terminal/pty-factory";
+import {
+  createPtyClient,
+  createPtyClientSession,
+  isDesktopRuntime,
+  type PtyClientLike,
+} from "./terminal/pty-factory";
 import { XtermView, type XtermViewHandle } from "./terminal/XtermView";
 import {
   addSession as addSessionToList,
@@ -176,20 +181,34 @@ export function Terminal({
       if (!projectId) return;
       try {
         const initial = estimateGridSize(panelRef.current);
-        const res = await agentFetch(
-          `${apiBase}/api/projects/${projectId}/terminal/sessions`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ cols: initial.cols, rows: initial.rows }),
-          },
-        );
-        if (!res.ok) {
-          throw await readTerminalError(res, `HTTP ${res.status}`);
+        let data: CreateSessionResponse;
+        let client: PtyClientLike;
+        if (isDesktopRuntime()) {
+          const provisioned = await createPtyClientSession({
+            spawn: {
+              projectId,
+              cols: initial.cols,
+              rows: initial.rows,
+            },
+          });
+          data = provisioned.session;
+          client = provisioned.client;
+        } else {
+          const res = await agentFetch(
+            `${apiBase}/api/projects/${projectId}/terminal/sessions`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ cols: initial.cols, rows: initial.rows }),
+            },
+          );
+          if (!res.ok) {
+            throw await readTerminalError(res, `HTTP ${res.status}`);
+          }
+          data = (await res.json()) as CreateSessionResponse;
+          const wsUrl = `${wsBaseFromApi(apiBase)}/api/projects/${projectId}/terminal/sessions/${data.id}/ws`;
+          client = await createPtyClient({ url: wsUrl, sessionId: data.id });
         }
-        const data = (await res.json()) as CreateSessionResponse;
-        const wsUrl = `${wsBaseFromApi(apiBase)}/api/projects/${projectId}/terminal/sessions/${data.id}/ws`;
-        const client = createPtyClient(wsUrl);
         // Listeners attached *before* connect() so we don't miss the
         // first DATA / state transitions delivered synchronously by the
         // browser's WebSocket.
@@ -244,7 +263,7 @@ export function Terminal({
     (s: Session) => {
       try { s.client?.dispose() } catch {}
       xtermRefs.current.delete(s.id);
-      if (projectId && s.ptySessionId) {
+      if (projectId && s.ptySessionId && !isDesktopRuntime()) {
         // Fire-and-forget; don't await in the React close path.
         void agentFetch(
           `${apiBase}/api/projects/${projectId}/terminal/sessions/${s.ptySessionId}`,
@@ -531,6 +550,7 @@ export function Terminal({
                 client={s.client}
                 hidden={!isActive}
                 autoFocus={isActive && visible}
+                projectId={projectId}
               />
             </div>
           );

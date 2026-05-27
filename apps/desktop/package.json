@@ -8,8 +8,8 @@
   "license": "MIT",
   "main": "dist/main.js",
   "scripts": {
-    "dev": "tsc && npm run bundle:main && electron .",
-    "build": "tsc && npm run bundle:main",
+    "dev": "tsc && npm run bundle:main && npm run bundle:pty-host && electron .",
+    "build": "tsc && npm run bundle:main && npm run bundle:pty-host",
     "bundle:main": "node scripts/bundle-main.mjs",
     "start": "electron .",
     "sync:web": "node scripts/sync-web.mjs",
@@ -28,7 +28,8 @@
     "test:vm-pool-reentrancy": "bun test-vm-pool-reentrancy.ts",
     "test:vm-pool-host-cap": "RUN_VM_E2E=1 bun test-vm-pool-host-cap.ts",
     "test:vm-pool-idle-memory": "RUN_VM_E2E=1 bun test-vm-pool-idle-memory.ts",
-    "test:db-recovery": "bun test-db-recovery.ts"
+    "test:db-recovery": "bun test-db-recovery.ts",
+    "bundle:pty-host": "node scripts/bundle-pty-host.mjs"
   },
   "//comment": "Note: apps/desktop is installed via `npm install` (not the bun workspace) — see local package-lock.json. Workspace TS deps like @shogo-ai/worker are NOT a node_modules entry here; they're resolved via tsconfig `paths` for type-checking and inlined into dist/main.js by `scripts/bundle-main.mjs` (which runs `bun build` from the repo root where workspace symlinks DO exist).",
   "dependencies": {
@@ -37,7 +38,10 @@
     "fflate": "^0.8.2",
     "multicast-dns": "^7.2.5",
     "node-ical": "^0.26.0",
-    "ps-list": "^9.0.0"
+    "ps-list": "^9.0.0",
+    "node-pty": "^1.0.0",
+    "xterm-headless": "^5.3.0",
+    "@shogo/pty-core": "file:../../packages/pty-core"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.6.0",

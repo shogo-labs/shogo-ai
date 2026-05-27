@@ -21,7 +21,7 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { Platform } from 'react-native'
 import { XtermSession } from './xterm-session'
-import type { PtyClientLike } from './pty-factory'
+import { isDesktopRuntime, type PtyClientLike } from './pty-factory'
 import type { PtyClientState } from './pty-client'
 
 interface XtermViewProps {
@@ -32,6 +32,7 @@ interface XtermViewProps {
   fontFamily?: string
   /** Auto-focus the terminal on mount + when becoming visible. */
   autoFocus?: boolean
+  projectId?: string | null
 }
 
 /**
@@ -55,15 +56,29 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   fontSize,
   fontFamily,
   autoFocus = true,
+  projectId,
 }, ref) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const sessionRef = useRef<XtermSession | null>(null)
+  const desktopHandleRef = useRef<XtermViewHandle | null>(null)
+  const [DesktopSurface, setDesktopSurface] = useState<React.ComponentType<any> | null>(null)
   const [state, setState] = useState<PtyClientState>(client.state)
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    if (!isDesktopRuntime()) return
+    let cancelled = false
+    void import('@shogo/desktop-terminal').then((m) => {
+      if (!cancelled) setDesktopSurface(() => m.ShogoTerminalSurface as React.ComponentType<any>)
+    })
+    return () => { cancelled = true }
+  }, [])
 
   // Mount the xterm session once, dispose on unmount. The PtyClient is
   // owned by the parent and must NOT be disposed here.
   useEffect(() => {
     if (Platform.OS !== 'web') return
+    if (isDesktopRuntime()) return
     const container = containerRef.current
     if (!container) return
     const session = new XtermSession(client, { fontSize, fontFamily })
@@ -87,6 +102,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   // Refit on container size changes.
   useEffect(() => {
     if (Platform.OS !== 'web') return
+    if (isDesktopRuntime()) return
     const container = containerRef.current
     const session = sessionRef.current
     if (!container) return
@@ -107,20 +123,35 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   // Refocus when the tab becomes visible again.
   useEffect(() => {
     if (Platform.OS !== 'web') return
+    if (isDesktopRuntime()) return
     if (!hidden && autoFocus) sessionRef.current?.focus()
   }, [hidden, autoFocus])
 
   useImperativeHandle(
     ref,
     () => ({
-      clear: () => sessionRef.current?.clear(),
-      focus: () => sessionRef.current?.focus(),
-      refit: () => sessionRef.current?.fit(),
+      clear: () => desktopHandleRef.current?.clear() ?? sessionRef.current?.clear(),
+      focus: () => desktopHandleRef.current?.focus() ?? sessionRef.current?.focus(),
+      refit: () => desktopHandleRef.current?.refit() ?? sessionRef.current?.fit(),
     }),
     [],
   )
 
   if (Platform.OS !== 'web') return null
+
+  if (isDesktopRuntime() && DesktopSurface) {
+    return (
+      <DesktopSurface
+        ref={desktopHandleRef}
+        client={client}
+        hidden={hidden}
+        fontSize={fontSize}
+        fontFamily={fontFamily}
+        autoFocus={autoFocus}
+        projectId={projectId}
+      />
+    )
+  }
 
   return (
     <div

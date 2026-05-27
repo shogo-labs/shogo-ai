@@ -1,5 +1,6 @@
 import { RotateCcw } from "lucide-react-native";
 import { DEFAULT_SETTINGS, type EditorSettings } from "./types";
+import { TerminalSettingsPane } from "./terminal-settings";
 
 export function SettingsPane({
   settings,
@@ -107,6 +108,8 @@ export function SettingsPane({
             onChange={(v) => set("formatOnSave", v)}
           />
         </Section>
+
+        <TerminalSettingsPane />
 
         <div className="mt-4 rounded border border-[color:var(--ide-border)] bg-[color:var(--ide-panel)] p-2 text-[10px] text-[color:var(--ide-muted)]">
           Settings are stored in{" "}
