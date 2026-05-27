@@ -24,6 +24,11 @@
 
 import type { PtyClientLike } from './pty-factory'
 import { DARK_PLUS_THEME, TERMINAL_DEFAULTS } from './xterm-theme'
+// xterm.js relies on this stylesheet to (a) size the row container and (b)
+// clip-hide the input proxy `<textarea>`. Without it, the textarea renders
+// unstyled at 0,0 and the rows have no height — the panel looks blank
+// except for a stray white input box. Side-effect import only.
+import '@xterm/xterm/css/xterm.css'
 
 // We import the runtime types lazily; these `type`-only imports cost nothing
 // at runtime. Web-only — xterm.js bundles a Canvas/WebGL renderer.

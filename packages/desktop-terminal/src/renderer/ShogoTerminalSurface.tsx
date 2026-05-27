@@ -14,6 +14,11 @@ import { QuickFixManager } from './quick-fix'
 import { CmdKController, CmdKPopover, type LlmClient } from './cmd-k-popover'
 import { getDesktopBridge } from './desktop-features'
 import { MatcherEngine } from './problem-matchers'
+// xterm.js depends on this stylesheet to size the row container and
+// clip-hide the input proxy `<textarea>`. Missing it = blank panel with a
+// stray white input box. Side-effect import (bundled by the consumer's
+// web bundler).
+import '@xterm/xterm/css/xterm.css'
 
 export interface SurfacePtyClient {
   readonly state: 'idle' | 'connecting' | 'open' | 'closed' | 'disposed'
