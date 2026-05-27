@@ -256,8 +256,8 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
-    "test": "NODE_ENV=development bun --no-env-file test src/",
-    "test:coverage": "NODE_ENV=development bun --no-env-file test src/ --coverage",
+    "test": "NODE_ENV=development bun --no-env-file test src/ --path-ignore-patterns '**/hooks-coverage.test.tsx' && NODE_ENV=development bun --no-env-file test src/agent/__tests__/hooks-coverage.test.tsx",
+    "test:coverage": "NODE_ENV=development bun --no-env-file test src/ --path-ignore-patterns '**/hooks-coverage.test.tsx' --coverage && NODE_ENV=development bun --no-env-file test src/agent/__tests__/hooks-coverage.test.tsx --coverage",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "verify:license-isolation": "node scripts/verify-license-isolation.mjs"
