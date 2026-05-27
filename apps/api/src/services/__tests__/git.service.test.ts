@@ -10,6 +10,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -216,9 +217,12 @@ describe('initRepo — evicts a stale .git/index.lock', () => {
     await svc.initRepo(ws)
     const lockPath = join(ws, '.git', 'index.lock')
     writeFileSync(lockPath, '')
-    // Backdate the lock file by 10 seconds
+    // Backdate the lock file by 10 seconds. `touch -d @<epoch>` is a
+    // GNU-only flag — BSD `touch` (macOS) rejects it with "out of range
+    // or illegal time specification". `utimesSync` is portable and
+    // takes seconds-since-epoch directly.
     const oldTime = (Date.now() - 10_000) / 1000
-    execFileSync('touch', ['-d', `@${oldTime}`, lockPath])
+    utimesSync(lockPath, oldTime, oldTime)
 
     const warns: string[] = []
     const orig = console.warn

@@ -74,17 +74,14 @@ mock.module('@shogo-ai/sdk/ai-client', () => ({
   createAiClient: (_opts?: any) => ({}),
 }))
 
-mock.module('@shogo-ai/sdk/model-catalog', () => ({
-  getModelTier: (_modelId?: string) => 'standard',
-  resolveModelId: (mode?: string) => mode || 'claude-haiku-4-5',
-  MODEL_CATALOG: {},
-  getModelEntry: (_id?: string) => null,
-  MODEL_DOLLAR_COSTS: {} as Record<string, any>,
-  calculateDollarCost: () => 0,
-  getModelBillingModel: (id?: string) => id || '',
-  resolveAgentModeDefault: (mode?: string) => mode || '',
-  getAgentModeOverrides: () => ({}),
-}))
+// `@shogo-ai/sdk/model-catalog` and `@shogo/model-catalog` are NOT mocked
+// here: apps/api's bunfig.toml ships `conditions = ["development"]`, so
+// Bun resolves both to the source `.ts` files (verified with
+// `bun --no-env-file -e "import {...} from '@shogo/model-catalog'"`).
+// Stubbing them out with empty MODEL_DOLLAR_COSTS / resolveModelId broke
+// usage-cost.test.ts and proxy-billing-session.test.ts which legitimately
+// exercise the real catalog (and chat-usage-tracker.test.ts which only
+// needed a non-empty cost row to not crash inside closeSession).
 
 mock.module('@shogo-ai/sdk/stream-buffer', () => {
   class StreamBufferWriter { write() {} close() {} }
@@ -127,21 +124,21 @@ mock.module('@shogo-ai/sdk/cli/pkg', () => ({
   resolveBinInvocation: (cmd: string) => cmd,
 }))
 
-// Intercept workspace package re-export shims that Bun doesn't hoist in static-import context
-mock.module('@shogo/model-catalog', () => ({
-  getModelTier: (_modelId?: string) => 'standard',
-  resolveModelId: (mode?: string) => mode || 'claude-haiku-4-5',
-  MODEL_CATALOG: {},
-  getModelEntry: (_id?: string) => null,
-  MODEL_DOLLAR_COSTS: {} as Record<string, any>,
-  calculateDollarCost: () => 0,
-  getModelBillingModel: (id?: string) => id || '',
-  resolveAgentModeDefault: (mode?: string) => mode || '',
-  getAgentModeOverrides: () => ({}),
-  getMaxOutputTokens: (_id?: string) => 4096,
-  MODEL_ALIASES: {} as Record<string, any>,
-}))
-
+// Intercept workspace package re-export shims that Bun doesn't hoist in
+// static-import context. Keep the symbol union in sync with `import { ... }
+// from '@shogo/model-catalog'` across apps/api/src/** — Bun resolves every
+// named import at module load, so a missing symbol here turns into a
+// "SyntaxError: Export named 'X' not found" the moment a sibling test
+// imports a route that touches it (e.g. ai-proxy.ts pulls in
+// IMAGE_MODEL_CATALOG / AGENT_MODE_DEFAULTS).
+// `@shogo/shared-runtime` is imported in many apps/api code paths
+// (manager.ts, server.ts, project-export-import.ts, marketplace-install,
+// instance-sizes, …). Most tests don't touch shared-runtime behaviour at
+// all, but Bun fully resolves every named import at module load — so
+// every missing symbol here turns into a "SyntaxError: Export named 'X'
+// not found" the moment a sibling import pulls in a file that touches it.
+// Keep this object in sync with the union of `import { ... } from
+// '@shogo/shared-runtime'` across apps/api/src/**.
 mock.module('@shogo/shared-runtime', () => ({
   RUNTIME_CONFIG: {
     apiPort: 4000,
@@ -154,4 +151,39 @@ mock.module('@shogo/shared-runtime', () => ({
     componentLabel: 'runtime',
     containerName: 'runtime',
   },
+  pkg: {
+    version: '0.0.0',
+    name: '@shogo/shared-runtime',
+    isWindows: false,
+    bunBinary: 'bun',
+    // runtime/manager.ts:ensureProjectDirectory calls pkg.installAsync
+    // for projects without a pre-seeded template; mirror the real
+    // installer's contract of "node_modules exists after success" so
+    // the writeFileSync(installSentinel) on the next line doesn't ENOENT.
+    installAsync: async (dir: string, _opts?: any) => {
+      const { mkdirSync } = await import('node:fs')
+      const { join } = await import('node:path')
+      try { mkdirSync(join(dir, 'node_modules'), { recursive: true }) } catch {}
+    },
+  },
+  isMobileTechStack: (stack?: any) =>
+    stack === 'expo-app' || stack === 'expo-three' || stack === 'react-native',
+  // Keep this in sync with `seedsOwnTemplate: true` entries in
+  // packages/core/src/tech-stack-registry.ts. runtime-manager-directory.test.ts
+  // relies on `python-data` returning true to exercise the empty-workspace
+  // skip-install branch in `ensureProjectDirectory`.
+  stackSeedsItself: (stack?: any) =>
+    stack === 'expo-app' ||
+    stack === 'expo-three' ||
+    stack === 'react-native' ||
+    stack === 'python-data' ||
+    stack === 'unity-game' ||
+    stack === 'none',
+  diagnosticsRoutes: () => ({}),
+  createS3SyncForProject: (_projectId?: string, _opts?: any) => ({
+    syncProjectArchive: async () => ({ ok: true }),
+    downloadProjectArchive: async () => null,
+    listProjectArchives: async () => [],
+  }),
+  isMacOSJunkName: (_name: string) => false,
 }))
