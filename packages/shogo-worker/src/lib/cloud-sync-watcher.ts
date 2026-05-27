@@ -19,7 +19,7 @@
 
 import { watch, type FSWatcher, statSync } from 'node:fs';
 import { relative, sep, posix } from 'node:path';
-import type { CloudFileTransport } from '@shogo-ai/sdk';
+import type { CloudFileTransport } from '@shogo-ai/sdk/cloud-file-transport';
 import { commitAndPush } from './git-cloner.ts';
 
 const DEBOUNCE_MS = 1500;

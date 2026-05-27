@@ -49,6 +49,12 @@
       "import": "./dist/generators/index.js",
       "require": "./dist/generators/index.cjs"
     },
+    "./cloud-file-transport": {
+      "types": "./dist/projects/cloud-file-transport.d.ts",
+      "development": "./src/projects/cloud-file-transport.ts",
+      "import": "./dist/projects/cloud-file-transport.js",
+      "require": "./dist/projects/cloud-file-transport.cjs"
+    },
     "./tools": {
       "types": "./dist/tools/index.d.ts",
       "development": "./src/tools/index.ts",
