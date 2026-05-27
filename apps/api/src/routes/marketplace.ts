@@ -103,6 +103,11 @@ export function marketplaceRoutes() {
       return next()
     }
 
+    // Uninstall works locally (cancel DB record + remove workspace files).
+    if (path.includes('/installs/') && method === 'DELETE') {
+      return next()
+    }
+
     // Everything else (paid checkout, Stripe payout, etc.) → proxy to Cloud.
     const cloudKey = process.env.SHOGO_API_KEY
     if (!cloudKey) {
@@ -425,6 +430,25 @@ export function marketplaceRoutes() {
     } catch (err) {
       console.error('[marketplace] applyUpdate', err)
       return c.json({ error: 'Failed to apply update' }, 500)
+    }
+  })
+
+  app.delete('/installs/:installId', requireMarketplaceFeature, async (c) => {
+    const authCtx = c.get('auth') as AuthContext | undefined
+    if (!authCtx?.isAuthenticated || !authCtx.userId) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    try {
+      const installId = c.req.param('installId')
+      await installService.uninstallAgent({ installId, userId: authCtx.userId })
+      return c.json({ ok: true })
+    } catch (err: any) {
+      const msg = err?.message || ''
+      if (msg === 'install_not_found') return c.json({ error: msg }, 404)
+      if (msg === 'install_access_denied') return c.json({ error: msg }, 403)
+      if (msg === 'install_not_active') return c.json({ error: msg }, 409)
+      console.error('[marketplace] uninstallAgent', err)
+      return c.json({ error: 'Failed to uninstall agent' }, 500)
     }
   })
 

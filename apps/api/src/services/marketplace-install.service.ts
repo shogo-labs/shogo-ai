@@ -528,9 +528,64 @@ export async function applyUpdate(
   }
 }
 
+export async function uninstallAgent(params: {
+  installId: string
+  userId: string
+}): Promise<void> {
+  const { installId, userId } = params
+
+  const install = await prisma.marketplaceInstall.findUnique({
+    where: { id: installId },
+    include: {
+      listing: { select: { id: true, creatorId: true } },
+    },
+  })
+
+  if (!install) {
+    throw new Error('install_not_found')
+  }
+  if (install.userId !== userId) {
+    throw new Error('install_access_denied')
+  }
+  if (install.status !== 'active') {
+    throw new Error('install_not_active')
+  }
+
+  if (install.stripeSubscriptionId) {
+    const { cancelMarketplaceSubscription } = await import('./stripe-connect.service')
+    await cancelMarketplaceSubscription(install.stripeSubscriptionId)
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.marketplaceInstall.update({
+      where: { id: installId },
+      data: { status: 'cancelled' },
+    })
+    await tx.marketplaceListing.update({
+      where: { id: install.listing.id },
+      data: { installCount: { decrement: 1 } },
+    })
+  })
+
+  if (install.projectId) {
+    const projectDir = join(getWorkspacesDir(), install.projectId)
+    if (existsSync(projectDir)) {
+      rmSync(projectDir, { recursive: true, force: true })
+    }
+
+    await prisma.project.update({
+      where: { id: install.projectId },
+      data: { status: 'archived' },
+    })
+  }
+
+  const { recalculateCreatorStats } = await import('./creator-gamification.service')
+  await recalculateCreatorStats(install.listing.creatorId)
+}
+
 export async function getInstallsForUser(userId: string) {
   return prisma.marketplaceInstall.findMany({
-    where: { userId },
+    where: { userId, status: 'active' },
     include: {
       listing: {
         select: {
