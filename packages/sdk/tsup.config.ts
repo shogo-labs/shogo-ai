@@ -26,6 +26,12 @@ export default defineConfig({
     'src/voice/route/audio-tags.ts',
     'src/cli/deploy.ts',
     'src/cli/pkg.ts',
+    // Narrow entry consumed by `packages/shogo-worker` (MIT). Keeping it
+    // as its own entry lets the worker import `@shogo-ai/sdk/cloud-file-transport`
+    // without dragging in the `src/index.ts` barrel (which transitively
+    // touches `@shogo-ai/voice` and other heavy deps that aren't always
+    // present in CI / minimal install envs).
+    'src/projects/cloud-file-transport.ts',
     // Back-compat shims for symbols that moved to @shogo-ai/{core,agent}.
     // Each compiles to a tiny re-export chunk; the actual implementation
     // lives in the published per-package dist.

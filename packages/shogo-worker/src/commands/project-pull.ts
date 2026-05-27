@@ -17,7 +17,7 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import pc from 'picocolors';
-import { CloudFileTransport, type ProgressEvent, type SyncStats } from '@shogo-ai/sdk';
+import { CloudFileTransport, type ProgressEvent, type SyncStats } from '@shogo-ai/sdk/cloud-file-transport';
 import { resolveConfig } from '../lib/config.ts';
 import { ensureProjectsDir, projectDirFor } from '../lib/paths.ts';
 import { CloudSyncWatcher } from '../lib/cloud-sync-watcher.ts';

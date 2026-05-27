@@ -39,7 +39,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { resolveRuntime, type ResolvedRuntime } from './runtime-resolver.ts';
 import type { ResolveRejection, RuntimeResolver } from './tunnel.ts';
-import { CloudFileTransport } from '@shogo-ai/sdk';
+import { CloudFileTransport } from '@shogo-ai/sdk/cloud-file-transport';
 import { CloudSyncWatcher } from './cloud-sync-watcher.ts';
 import { cloneProject, gitIsAvailable, isGitRepo } from './git-cloner.ts';
 
