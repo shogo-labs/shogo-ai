@@ -4,25 +4,25 @@
   "aggregate": {
     "lines": {
       "total": 75061,
-      "hit": 66219,
-      "pct": 88.22
+      "hit": 66447,
+      "pct": 88.52
     },
     "functions": {
       "total": 6175,
-      "hit": 5346,
-      "pct": 86.57
+      "hit": 5367,
+      "pct": 86.91
     }
   },
   "perPackage": [
     {
       "package": "apps/api",
-      "linesHit": 34563,
+      "linesHit": 34791,
       "linesFound": 38735,
-      "linePct": 89.23,
-      "funcsHit": 2761,
+      "linePct": 89.82,
+      "funcsHit": 2782,
       "funcsFound": 3041,
-      "funcPct": 90.79,
-      "source": "fresh 2026-05-27 via run-tests-isolated + 2 new test files (project-auth-config, external-preview-extras)"
+      "funcPct": 91.48,
+      "source": "fresh 2026-05-27 + Wave B Day 5 batch (creator-follow + tech-stacks + project-auth-config)"
     },
     {
       "package": "packages/agent-runtime",
@@ -433,6 +433,12 @@
       "file": "apps/api/src/routes/external-preview.ts",
       "delta": "Wave B Day 4: 32.24% \u2192 99.35% lines (33 tests, runtime+observer+fetch mocks)",
       "aggregateImpact": "+104 lines hit, +0 found"
+    },
+    {
+      "commit": "a63e337",
+      "file": "apps/api batch (creator-follow.service + tech-stacks + project-auth-config)",
+      "delta": "Wave B Day 5: 3 files to 100% (+228 lines, +21 funcs); deleted 4 defensive guards",
+      "aggregateImpact": "+228 lines hit, +0 found, +21 funcs hit, +0 funcs found"
     }
   ],
   "frontend": {
@@ -449,7 +455,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-27T14:14:02Z",
+  "lastUpdated": "2026-05-27T14:31:02Z",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
