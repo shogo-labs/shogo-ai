@@ -31,13 +31,14 @@
   ],
   "scripts": {
     "start": "bun src/cli.ts",
+    "test": "bun --no-env-file --conditions=development test src/",
     "typecheck": "tsc --noEmit",
     "build": "bun run build:js",
     "build:js": "bun build --target=node --format=esm --minify --external bun --external @shogo-ai/sdk --external commander --external picocolors --outdir dist src/cli.ts && mv dist/cli.js dist/cli.mjs",
     "build:bin:darwin-arm64": "bun build --compile --minify --target=bun-darwin-arm64 src/cli.ts --outfile dist/shogo-darwin-arm64",
-    "build:bin:darwin-x64":   "bun build --compile --minify --target=bun-darwin-x64   src/cli.ts --outfile dist/shogo-darwin-x64",
-    "build:bin:linux-x64":    "bun build --compile --minify --target=bun-linux-x64    src/cli.ts --outfile dist/shogo-linux-x64",
-    "build:bin:linux-arm64":  "bun build --compile --minify --target=bun-linux-arm64  src/cli.ts --outfile dist/shogo-linux-arm64",
+    "build:bin:darwin-x64": "bun build --compile --minify --target=bun-darwin-x64   src/cli.ts --outfile dist/shogo-darwin-x64",
+    "build:bin:linux-x64": "bun build --compile --minify --target=bun-linux-x64    src/cli.ts --outfile dist/shogo-linux-x64",
+    "build:bin:linux-arm64": "bun build --compile --minify --target=bun-linux-arm64  src/cli.ts --outfile dist/shogo-linux-arm64",
     "build:bin:all": "bun run build:bin:darwin-arm64 && bun run build:bin:darwin-x64 && bun run build:bin:linux-x64 && bun run build:bin:linux-arm64",
     "prepublishOnly": "bun run typecheck"
   },
