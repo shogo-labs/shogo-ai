@@ -33,7 +33,6 @@ export {
 export type {
   SpawnOptions,
   SessionInfo,
-  SnapshotSummary,
   ControlEvent,
 } from "./desktop-protocol";
 export {
@@ -43,18 +42,3 @@ export {
   DESKTOP_ROWS_MIN,
   DESKTOP_ROWS_MAX,
 } from "./desktop-protocol";
-
-export {
-  OscDecoder,
-  decodeOscOneShot,
-} from "./osc-decoder";
-export type {
-  OscDecoderOptions,
-  OscDecodeResult,
-  OscEvent,
-  Osc633Event,
-  Osc633Letter,
-  Osc133Event,
-  OscUnknownEvent,
-  OscOverflowEvent,
-} from "./osc-decoder";

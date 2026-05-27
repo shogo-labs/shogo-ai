@@ -60,21 +60,9 @@ mkdirSync(OUT_DIR, { recursive: true })
 // EXTERNALS — node-pty is a native module (carries a .node binary). Must
 // be resolved by Electron's Node loader at runtime, not bundled into a
 // string literal. Same reason `electron` itself stays external.
-const EXTERNALS = ['node-pty', 'electron', 'xterm-headless']
+const EXTERNALS = ['node-pty', 'electron']
 
 ensurePtyCoreSymlink()
-
-// Regenerate the embedded shell-integration scripts from the source .sh /
-// .zsh / .fish / .ps1 files so the bundle picks up any edits made to the
-// scripts since the last commit. Idempotent.
-{
-  const gen = path.join(__dirname, 'generate-shell-integration-embeds.mjs')
-  const r = spawnSync('bun', [gen], { cwd: DESKTOP_DIR, stdio: 'inherit', shell: false })
-  if (r.error || r.status !== 0) {
-    console.error('[bundle-pty-host] generate-shell-integration-embeds failed')
-    process.exit(r.status ?? 1)
-  }
-}
 
 const args = [
   'build',

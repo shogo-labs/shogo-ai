@@ -41,7 +41,6 @@
     "node-ical": "^0.26.0",
     "ps-list": "^9.0.0",
     "node-pty": "^1.0.0",
-    "xterm-headless": "^5.3.0",
     "@shogo/pty-core": "file:../../packages/pty-core"
   },
   "devDependencies": {

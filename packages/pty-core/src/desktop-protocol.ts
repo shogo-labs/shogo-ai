@@ -22,15 +22,12 @@ export interface SpawnOptions {
    * managed workspace path. The pty-host always receives a normalized cwd.
    */
   projectId?: string
-  workspaceHash?: string
-  profileId?: string
   shell?: string
   args?: string[]
   cwd?: string
   env?: Record<string, string>
   cols: number
   rows: number
-  restoreId?: string
 }
 
 export interface SessionInfo {
@@ -44,30 +41,15 @@ export interface SessionInfo {
   lastSeq: number
 }
 
-export interface SnapshotSummary {
-  id: string
-  workspaceHash: string
-  cwd: string
-  shell: string
-  profileId?: string
-  writtenAt: number
-  ringBytes: number
-}
-
 export type ControlEvent =
   | { kind: 'session:exit'; id: string; code: number | null; signal: string | null; reason: string }
-  | { kind: 'session:reap'; id: string; reason: 'idle' | 'detach-grace' | 'max-age' | 'shutdown' }
   | { kind: 'host:ready'; version: string }
-  | { kind: 'host:beat'; t: number }
-  | { kind: 'host:unresponsive'; lastBeatAt: number }
   | { kind: 'host:log'; level: 'info' | 'warn' | 'error'; message: string }
 
 /** Reasons that should stop the renderer's reconnect loop. */
 export const DESKTOP_TERMINAL_CLOSE_REASONS: ReadonlyArray<string> = [
   'pty:exited',
   'pty:killed',
-  'pty:max-age',
-  'pty:idle',
   'pty:shutdown',
   'no-session',
 ]
