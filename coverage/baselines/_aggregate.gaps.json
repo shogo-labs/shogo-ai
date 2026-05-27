@@ -263,6 +263,12 @@
       "delta_lh": 72,
       "delta_lf": 8,
       "note": "38.58% \u2192 100.00% lines (+wired React hook testing under bun:test)"
+    },
+    {
+      "commit": "d5ef5554",
+      "file": "packages/email/src/providers/smtp.ts",
+      "delta": "0% \u2192 100% lines/funcs (38 new tests)",
+      "aggregateImpact": "+0 \u2014 packages/email is outside the tracked aggregate (apps/api + agent-runtime + sdk + shared-runtime + model-catalog)"
     }
   ],
   "frontend": {
@@ -278,5 +284,6 @@
       "pct": 79.63
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
-  }
+  },
+  "lastUpdated": "2026-05-27T09:14:46Z"
 }
