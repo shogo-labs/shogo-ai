@@ -1,42 +1,124 @@
 {
   "generatedAt": "2026-05-26T13:15:18Z",
-  "note": "Backend: 82.9% \u2192 83.0% (sprint commit since previous bump: 8c6fcd2 agent/hooks.ts 38.58% \u2192 100% lines, +72 line hits, +8 line totals, +23 func hits, +13 func totals). Frontend: 76.15% \u2192 67.82% (first proper measurement on this branch \u2014 the 76.15% was a stale carry-over from before packages/shared-app had a working test runner; freshly computed via the same lcov+comment-strip methodology as backend).",
+  "note": "Backend: 83.0% \u2192 83.71% (v2 EXPANDED aggregate now includes all 11 backend packages: apps/api, packages/agent-runtime, packages/sdk, packages/shared-runtime, packages/model-catalog, packages/voice, packages/email, packages/agent, packages/core, packages/cli, packages/shogo-worker). 4-pkg baseline pinned at 63369/76360 lines + sprint deltas (+110 hit / -15 found, 4 commits since 2026-05-26: sdk node.ts, sdk client.ts, shared-runtime s3-sync.ts, shared-runtime lsp-service.ts) + 7 new packages fresh totals (+4210/+4521 lines).",
   "aggregate": {
     "lines": {
-      "total": 76360,
-      "hit": 63369,
-      "pct": 82.99
+      "total": 80866,
+      "hit": 67689,
+      "pct": 83.71
     },
     "functions": {
-      "total": 6096,
-      "hit": 4925,
-      "pct": 80.79
+      "total": 6580,
+      "hit": 5383,
+      "pct": 81.81
     }
   },
   "perPackage": [
     {
       "package": "apps/api",
+      "linesHit": null,
+      "linesFound": null,
       "funcsHit": 2690,
       "funcsFound": 3687,
-      "funcPct": 72.96
+      "funcPct": 72.96,
+      "source": "pinned to 2026-05-26 baseline"
     },
     {
-      "package": "agent-runtime",
+      "package": "packages/agent-runtime",
+      "linesHit": null,
+      "linesFound": null,
       "funcsHit": 1533,
       "funcsFound": 2160,
-      "funcPct": 70.97
+      "funcPct": 70.97,
+      "source": "pinned to 2026-05-26 baseline"
     },
     {
-      "package": "sdk",
-      "funcsHit": 526,
-      "funcsFound": 535,
-      "funcPct": 98.32
+      "package": "packages/sdk",
+      "linesHit": null,
+      "linesFound": null,
+      "funcsHit": 537,
+      "funcsFound": 540,
+      "funcPct": 99.44,
+      "source": "baseline + sprint deltas (node.ts, client.ts)"
     },
     {
-      "package": "shared-runtime",
-      "funcsHit": 375,
+      "package": "packages/shared-runtime",
+      "linesHit": null,
+      "linesFound": null,
+      "funcsHit": 388,
       "funcsFound": 440,
-      "funcPct": 85.23
+      "funcPct": 88.18,
+      "source": "baseline + sprint deltas (s3-sync, lsp-service)"
+    },
+    {
+      "package": "packages/model-catalog",
+      "linesHit": 1,
+      "linesFound": 1,
+      "linePct": 100.0,
+      "funcsHit": 1,
+      "funcsFound": 1,
+      "funcPct": 100.0,
+      "source": "fresh 2026-05-27"
+    },
+    {
+      "package": "packages/voice",
+      "linesHit": 1551,
+      "linesFound": 1693,
+      "linePct": 91.61,
+      "funcsHit": 149,
+      "funcsFound": 163,
+      "funcPct": 91.41,
+      "source": "fresh 2026-05-27"
+    },
+    {
+      "package": "packages/email",
+      "linesHit": 248,
+      "linesFound": 248,
+      "linePct": 100.0,
+      "funcsHit": 26,
+      "funcsFound": 27,
+      "funcPct": 96.3,
+      "source": "fresh 2026-05-27"
+    },
+    {
+      "package": "packages/agent",
+      "linesHit": 29,
+      "linesFound": 29,
+      "linePct": 100.0,
+      "funcsHit": 3,
+      "funcsFound": 3,
+      "funcPct": 100.0,
+      "source": "fresh 2026-05-27 (limited file scope \u2014 only files loaded by tests)"
+    },
+    {
+      "package": "packages/core",
+      "linesHit": 217,
+      "linesFound": 217,
+      "linePct": 100.0,
+      "funcsHit": 30,
+      "funcsFound": 30,
+      "funcPct": 100.0,
+      "source": "fresh 2026-05-27"
+    },
+    {
+      "package": "packages/cli",
+      "linesHit": 479,
+      "linesFound": 608,
+      "linePct": 78.78,
+      "funcsHit": 41,
+      "funcsFound": 49,
+      "funcPct": 83.67,
+      "source": "fresh 2026-05-27"
+    },
+    {
+      "package": "packages/shogo-worker",
+      "linesHit": 1685,
+      "linesFound": 1725,
+      "linePct": 97.68,
+      "funcsHit": 184,
+      "funcsFound": 206,
+      "funcPct": 89.32,
+      "source": "fresh 2026-05-27 (1 pre-existing failing test in gitIsAvailable, not blocking lcov)"
     }
   ],
   "topGaps": [
@@ -293,6 +375,12 @@
       "file": "packages/shared-runtime/src/lsp-service.ts",
       "delta": "80.26% \u2192 99.78% lines (48 new tests, e2e LSP protocol driver)",
       "aggregateImpact": "+260+ covered lines"
+    },
+    {
+      "commit": "README-sync-2026-05-27",
+      "file": "README.md backend badge",
+      "delta": "83.0% \u2192 83.71% (v2 expanded aggregate, 11 packages)",
+      "aggregateImpact": "methodology change: expanded denominator from 4 to 11 packages"
     }
   ],
   "frontend": {
@@ -309,5 +397,18 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-27T10:50:24Z"
+  "lastUpdated": "2026-05-27T10:57:45Z",
+  "scope": [
+    "apps/api",
+    "packages/agent-runtime",
+    "packages/sdk",
+    "packages/shared-runtime",
+    "packages/model-catalog",
+    "packages/voice",
+    "packages/email",
+    "packages/agent",
+    "packages/core",
+    "packages/cli",
+    "packages/shogo-worker"
+  ]
 }
