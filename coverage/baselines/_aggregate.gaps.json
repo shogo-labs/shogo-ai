@@ -4,24 +4,24 @@
   "aggregate": {
     "lines": {
       "total": 75174,
-      "hit": 66713,
-      "pct": 88.74
+      "hit": 66750,
+      "pct": 88.79
     },
     "functions": {
       "total": 6178,
-      "hit": 5320,
-      "pct": 86.11
+      "hit": 5322,
+      "pct": 86.14
     }
   },
   "perPackage": [
     {
       "package": "apps/api",
-      "linesHit": 34749,
+      "linesHit": 34786,
       "linesFound": 38772,
-      "linePct": 89.62,
-      "funcsHit": 2679,
+      "linePct": 89.72,
+      "funcsHit": 2681,
       "funcsFound": 3001,
-      "funcPct": 89.27,
+      "funcPct": 89.34,
       "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
     },
     {
@@ -457,6 +457,18 @@
       "file": "coverage/baselines/_aggregate.gaps.json + README backend badge",
       "delta": "Full re-measure: aggregate 88.74% L / 86.11% F across all 11 backend packages",
       "aggregateImpact": "linesHit=66713/75174, funcsHit=5320/6178"
+    },
+    {
+      "sha": "4600412",
+      "date": "2026-05-27",
+      "files": [
+        "apps/api/src/services/billing.service.ts"
+      ],
+      "note": "consumeUsage transactional branches: 91.27% -> 97.09% lines, 94% -> 98% funcs (13 new tests, 89 pass / 0 fail)",
+      "aggregateImpact": {
+        "linesHit": 37,
+        "functionsHit": 2
+      }
     }
   ],
   "frontend": {
@@ -473,7 +485,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-27T14:50:24Z",
+  "lastUpdated": "2026-05-27",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
