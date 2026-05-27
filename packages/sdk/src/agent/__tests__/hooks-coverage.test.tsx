@@ -6,6 +6,19 @@
  * Renders each hook with @testing-library/react under happy-dom and a
  * mocked AgentClient module. Covers all 5 hook bodies + the useClient
  * ref-init helper.
+ *
+ * IMPORTANT: This file MUST be run in its own `bun test` process. The
+ * `mock.module('../client.js', ...)` call below registers a FakeAgentClient
+ * that intentionally implements only the ~8 methods this test exercises
+ * — Bun's module mocks are process-global with no per-file restore, so
+ * if this runs in the same process as `client.test.ts` (which imports the
+ * real AgentClient and calls ~30 methods), every method missing from
+ * FakeAgentClient throws "is not a function" and 50/52 client tests fail.
+ *
+ * `packages/sdk/package.json` enforces the isolation by splitting `test`
+ * into two passes (`bun test src/ --path-ignore-patterns '**\/hooks-coverage.test.tsx'`
+ * then this file alone). Don't merge them back without first making the
+ * mock per-file-scoped, or move hooks to dependency injection.
  */
 import './happy-dom-setup.ts';
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
