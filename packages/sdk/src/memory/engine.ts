@@ -73,6 +73,17 @@ export class MemorySearchEngine {
    * Index all memory files that have changed since last index.
    * Called automatically before search, or can be called after writes.
    */
+  /**
+   * Force the next reindex() to re-process this file regardless of its mtime.
+   * Used by MemoryStore right after it rewrites MEMORY.md, so the FTS index
+   * picks up the new content even when the write lands inside the same
+   * millisecond as the previous write (atomic-rename mtime equality bug
+   * surfaced on overlay / tmpfs filesystems).
+   */
+  invalidateMeta(relativePath: string): void {
+    this.db.prepare('DELETE FROM memory_meta WHERE file = ?').run(relativePath)
+  }
+
   reindex(): void {
     const files = this.getMemoryFiles()
     const staleFiles: string[] = []

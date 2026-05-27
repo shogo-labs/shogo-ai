@@ -13,7 +13,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { createClient } from '../../client'
-import { DirectTelephonyClient, HostedTelephonyClient } from '../telephony'
+import { DirectTelephonyClient, HostedTelephonyClient } from '@shogo-ai/voice'
 
 function baseConfig() {
   return {
@@ -23,6 +23,27 @@ function baseConfig() {
 }
 
 describe('createClient() voice-mode resolution', () => {
+  const ENV_VARS_TO_CLEAR = ['RUNTIME_AUTH_SECRET', 'SHOGO_API_KEY', 'SHOGO_PROJECT_ID']
+  let savedEnv: Record<string, string | undefined> = {}
+  const beforeEachFn = () => {
+    savedEnv = {}
+    for (const k of ENV_VARS_TO_CLEAR) {
+      savedEnv[k] = process.env[k]
+      delete process.env[k]
+    }
+  }
+  const afterEachFn = () => {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+  }
+  // bun:test imports
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const { beforeEach, afterEach } = require('bun:test') as typeof import('bun:test')
+  beforeEach(beforeEachFn)
+  afterEach(afterEachFn)
+
   test('hosted when shogoApiKey + projectId supplied', () => {
     const client = createClient({
       ...baseConfig(),

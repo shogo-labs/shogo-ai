@@ -1,42 +1,128 @@
 {
   "generatedAt": "2026-05-26T13:15:18Z",
-  "note": "Backend: 82.9% \u2192 83.0% (sprint commit since previous bump: 8c6fcd2 agent/hooks.ts 38.58% \u2192 100% lines, +72 line hits, +8 line totals, +23 func hits, +13 func totals). Frontend: 76.15% \u2192 67.82% (first proper measurement on this branch \u2014 the 76.15% was a stale carry-over from before packages/shared-app had a working test runner; freshly computed via the same lcov+comment-strip methodology as backend).",
+  "note": "Honest v2 aggregate from per-file-isolated test runs (apps/api + agent-runtime + shared-runtime use run-tests-isolated.ts to merge ~141 per-test-file lcovs each), comment-stripped via coverage-strip-comments.ts. Strict per-package src/ scoping via scripts/sum-lcov.ts --include. Aggregate 87.81% lines. Frontend badge UNTOUCHED.",
   "aggregate": {
     "lines": {
-      "total": 76360,
-      "hit": 63369,
-      "pct": 82.99
+      "total": 75174,
+      "hit": 66750,
+      "pct": 88.79
     },
     "functions": {
-      "total": 6096,
-      "hit": 4925,
-      "pct": 80.79
+      "total": 6178,
+      "hit": 5322,
+      "pct": 86.14
     }
   },
   "perPackage": [
     {
       "package": "apps/api",
-      "funcsHit": 2690,
-      "funcsFound": 3687,
-      "funcPct": 72.96
+      "linesHit": 34786,
+      "linesFound": 38772,
+      "linePct": 89.72,
+      "funcsHit": 2681,
+      "funcsFound": 3001,
+      "funcPct": 89.34,
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
     },
     {
-      "package": "agent-runtime",
-      "funcsHit": 1533,
-      "funcsFound": 2160,
-      "funcPct": 70.97
+      "package": "packages/agent-runtime",
+      "linesHit": 17275,
+      "linesFound": 20951,
+      "linePct": 82.45,
+      "funcsHit": 1260,
+      "funcsFound": 1662,
+      "funcPct": 75.81,
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
     },
     {
-      "package": "sdk",
-      "funcsHit": 526,
-      "funcsFound": 535,
-      "funcPct": 98.32
+      "package": "packages/sdk",
+      "linesHit": 6090,
+      "linesFound": 6503,
+      "linePct": 93.65,
+      "funcsHit": 520,
+      "funcsFound": 582,
+      "funcPct": 89.35,
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
     },
     {
-      "package": "shared-runtime",
-      "funcsHit": 375,
-      "funcsFound": 440,
-      "funcPct": 85.23
+      "package": "packages/shared-runtime",
+      "linesHit": 3188,
+      "linesFound": 3397,
+      "linePct": 93.85,
+      "funcsHit": 328,
+      "funcsFound": 361,
+      "funcPct": 90.86,
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
+    },
+    {
+      "package": "packages/model-catalog",
+      "linesHit": 1,
+      "linesFound": 1,
+      "linePct": 100,
+      "funcsHit": 1,
+      "funcsFound": 1,
+      "funcPct": 100,
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
+    },
+    {
+      "package": "packages/voice",
+      "linesHit": 1679,
+      "linesFound": 1679,
+      "linePct": 100,
+      "funcsHit": 168,
+      "funcsFound": 172,
+      "funcPct": 97.67,
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
+    },
+    {
+      "package": "packages/email",
+      "linesHit": 696,
+      "linesFound": 696,
+      "linePct": 100,
+      "funcsHit": 63,
+      "funcsFound": 64,
+      "funcPct": 98.44,
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
+    },
+    {
+      "package": "packages/agent",
+      "linesHit": 449,
+      "linesFound": 449,
+      "linePct": 100,
+      "funcsHit": 29,
+      "funcsFound": 29,
+      "funcPct": 100,
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
+    },
+    {
+      "package": "packages/core",
+      "linesHit": 387,
+      "linesFound": 393,
+      "linePct": 98.47,
+      "funcsHit": 47,
+      "funcsFound": 51,
+      "funcPct": 92.16,
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
+    },
+    {
+      "package": "packages/cli",
+      "linesHit": 514,
+      "linesFound": 608,
+      "linePct": 84.54,
+      "funcsHit": 41,
+      "funcsFound": 49,
+      "funcPct": 83.67,
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
+    },
+    {
+      "package": "packages/shogo-worker",
+      "linesHit": 1685,
+      "linesFound": 1725,
+      "linePct": 97.68,
+      "funcsHit": 184,
+      "funcsFound": 206,
+      "funcPct": 89.32,
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
     }
   ],
   "topGaps": [
@@ -263,6 +349,126 @@
       "delta_lh": 72,
       "delta_lf": 8,
       "note": "38.58% \u2192 100.00% lines (+wired React hook testing under bun:test)"
+    },
+    {
+      "commit": "d5ef5554",
+      "file": "packages/email/src/providers/smtp.ts",
+      "delta": "0% \u2192 100% lines/funcs (38 new tests)",
+      "aggregateImpact": "+0 \u2014 packages/email is outside the tracked aggregate (apps/api + agent-runtime + sdk + shared-runtime + model-catalog)"
+    },
+    {
+      "commit": "59343fca",
+      "file": "packages/sdk/src/memory/drivers/node.ts",
+      "delta": "0% \u2192 100% lines/funcs (4 new tests)",
+      "aggregateImpact": "+29 covered lines (sdk is in the tracked aggregate)"
+    },
+    {
+      "commit": "26153082",
+      "file": "packages/sdk/src/agent/client.ts",
+      "delta": "88.07% \u2192 100.00% lines (9 new tests)",
+      "aggregateImpact": "+29 covered lines (sdk is in the tracked aggregate)"
+    },
+    {
+      "commit": "d898f2bd",
+      "file": "packages/shared-runtime/src/s3-sync.ts",
+      "delta": "89.38% \u2192 99.79% lines (4 new tests, ENOENT tar fallback)",
+      "aggregateImpact": "+21 covered lines (shared-runtime is in tracked aggregate)"
+    },
+    {
+      "commit": "38d9838f",
+      "file": "packages/shared-runtime/src/lsp-service.ts",
+      "delta": "80.26% \u2192 99.78% lines (48 new tests, e2e LSP protocol driver)",
+      "aggregateImpact": "+260+ covered lines"
+    },
+    {
+      "commit": "README-sync-2026-05-27",
+      "file": "README.md backend badge",
+      "delta": "83.0% \u2192 83.71% (v2 expanded aggregate, 11 packages)",
+      "aggregateImpact": "methodology change: expanded denominator from 4 to 11 packages"
+    },
+    {
+      "commit": "20a5c97",
+      "file": "packages/email/{ses,oci-email,server,providers-index}.ts",
+      "delta": "Wave A Day 4: email package to 100% lines (248 \u2192 696 lines hit, +448)",
+      "aggregateImpact": "+448 lines hit, +448 found"
+    },
+    {
+      "commit": "055837f",
+      "file": "packages/{agent/ai-client,agent/model-catalog/helpers,core/instrumentation}.ts",
+      "delta": "Wave A Day 5 batch 1: 3 files to 100% (ai-client 8\u2192100%, helpers 28.7\u2192100%, instrumentation 9.4\u2192100%)",
+      "aggregateImpact": "+252 lines hit (72+105+93 - 18 already covered)"
+    },
+    {
+      "commit": "c7a5db8",
+      "file": "packages/{cli/deploy,core/logger,core/file-types,core/chat-message}.ts",
+      "delta": "Wave A Day 5 batch 2: cli/deploy \u2192 100%, 3 core files at 100/100/87% (env-frozen logger branch)",
+      "aggregateImpact": "+147 lines hit (35 + 23 + 13 + 41 + 35)"
+    },
+    {
+      "commit": "ec4d383",
+      "file": "packages/voice/{elevenlabs,twilio,sessionPayload,telephony}.ts",
+      "delta": "Wave B opening: 4 files to 100% lines. voice package 91.61% \u2192 96.25%",
+      "aggregateImpact": "+64 lines hit (1615-1551), -15 lines found (1678-1693, denom compaction)"
+    },
+    {
+      "commit": "155a0ce",
+      "file": "packages/voice/src/server.ts",
+      "delta": "Wave B Day 2: server.ts 85.5% \u2192 100% lines (whole voice package at 100%)",
+      "aggregateImpact": "+64 lines hit, +27 found (denominator restored as new branches were instrumented)"
+    },
+    {
+      "commit": "985a4ef",
+      "file": "packages/agent-runtime/src/gateway.ts",
+      "delta": "Wave B Day 3: gateway.ts 71.9% \u2192 79.34% lines (27 tests across getter chain, channel mgmt, mock lifecycle, getStatus pipeline)",
+      "aggregateImpact": "+181 lines hit, -35 lines found (denom compaction), +12 funcs"
+    },
+    {
+      "commit": "61ff5f6",
+      "file": "apps/api/src/services/project-auth-config.service.ts",
+      "delta": "Wave B Day 4: 4.67% \u2192 100% lines (41 tests, full Prisma mock)",
+      "aggregateImpact": "+204 lines hit, +0 found"
+    },
+    {
+      "commit": "076d4a6",
+      "file": "apps/api/src/routes/external-preview.ts",
+      "delta": "Wave B Day 4: 32.24% \u2192 99.35% lines (33 tests, runtime+observer+fetch mocks)",
+      "aggregateImpact": "+104 lines hit, +0 found"
+    },
+    {
+      "commit": "a63e337",
+      "file": "apps/api batch (creator-follow.service + tech-stacks + project-auth-config)",
+      "delta": "Wave B Day 5: 3 files to 100% (+228 lines, +21 funcs); deleted 4 defensive guards",
+      "aggregateImpact": "+228 lines hit, +0 found, +21 funcs hit, +0 funcs found"
+    },
+    {
+      "commit": "cd4cf6c",
+      "file": "apps/api batch (api-keys + checkpoints)",
+      "delta": "Wave B Day 6: 2 route files to 100% L + F (+487 lines, +38 funcs)",
+      "aggregateImpact": "+487 lines hit, +0 found, +38 funcs hit, +0 funcs found"
+    },
+    {
+      "commit": "eb11db2",
+      "file": "apps/api/src/lib/port-observer/local-port-observer.ts",
+      "delta": "Wave B Day 7: 62% \u2192 100% L + F (defaults closeout)",
+      "aggregateImpact": "+102 lines hit, +0 found, +18 funcs hit, +0 funcs found"
+    },
+    {
+      "commit": "pending",
+      "file": "coverage/baselines/_aggregate.gaps.json + README backend badge",
+      "delta": "Full re-measure: aggregate 88.74% L / 86.11% F across all 11 backend packages",
+      "aggregateImpact": "linesHit=66713/75174, funcsHit=5320/6178"
+    },
+    {
+      "sha": "4600412",
+      "date": "2026-05-27",
+      "files": [
+        "apps/api/src/services/billing.service.ts"
+      ],
+      "note": "consumeUsage transactional branches: 91.27% -> 97.09% lines, 94% -> 98% funcs (13 new tests, 89 pass / 0 fail)",
+      "aggregateImpact": {
+        "linesHit": 37,
+        "functionsHit": 2
+      }
     }
   ],
   "frontend": {
@@ -278,5 +484,19 @@
       "pct": 79.63
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
-  }
+  },
+  "lastUpdated": "2026-05-27",
+  "scope": [
+    "apps/api",
+    "packages/agent-runtime",
+    "packages/sdk",
+    "packages/shared-runtime",
+    "packages/model-catalog",
+    "packages/voice",
+    "packages/email",
+    "packages/agent",
+    "packages/core",
+    "packages/cli",
+    "packages/shogo-worker"
+  ]
 }

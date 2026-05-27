@@ -364,6 +364,37 @@ describe('AgentClient — subscribeToWorkspace', () => {
     }
   })
 
+  test('cleanup swallows close() errors (es.close() throws)', () => {
+    const c = new AgentClient({ baseUrl: 'http://x.test' })
+    const dispose = c.subscribeToWorkspace(() => {})
+    const es = esInstances[0]!
+    // Make close() throw so the inline `try { es?.close() } catch {}` swallow runs.
+    es.close = (() => { throw new Error('close boom') }) as () => void
+    expect(() => dispose()).not.toThrow()
+  })
+
+  test('reconnect path swallows close() errors during onerror', async () => {
+    const originalSetTimeout = globalThis.setTimeout
+    ;(globalThis as Record<string, unknown>).setTimeout = ((fn: () => void, _delay: number) => {
+      // Don't auto-invoke fn — just return a fake handle so backoff math runs.
+      void fn
+      return 1 as unknown as ReturnType<typeof setTimeout>
+    }) as unknown as typeof setTimeout
+    try {
+      const c = new AgentClient({ baseUrl: 'http://x.test' })
+      const errors: unknown[] = []
+      const dispose = c.subscribeToWorkspace(() => {}, { onError: (e) => errors.push(e) })
+      const es = esInstances[0]!
+      es.close = (() => { throw new Error('close boom inside onerror') }) as () => void
+      expect(() => es.emitError()).not.toThrow()
+      // onError should still have been notified despite the close() swallow.
+      expect(errors).toHaveLength(1)
+      dispose()
+    } finally {
+      ;(globalThis as Record<string, unknown>).setTimeout = originalSetTimeout
+    }
+  })
+
   test('successful event resets backoff', async () => {
     const originalSetTimeout = globalThis.setTimeout
     const scheduled: Array<{ delay: number; fn: () => void }> = []
@@ -521,6 +552,76 @@ describe('AgentClient — workspace files', () => {
     const blob = await c.readFileBlob('a.png')
     expect(blob.size).toBe(3)
   })
+
+  test('readFile rejects binary files served with encoding=base64', async () => {
+    const f = makeFetch(() =>
+      jsonResponse({ encoding: 'base64', contentBase64: 'aGk=' }),
+    )
+    const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
+    await expect(c.readFile('img.png')).rejects.toThrow(
+      /Agent readFile: 'img.png' is a binary file — use readFileBlob/,
+    )
+  })
+
+  test('readFile rejects binary files when only contentBase64 is set', async () => {
+    const f = makeFetch(() => jsonResponse({ contentBase64: 'aGVsbG8=' }))
+    const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
+    await expect(c.readFile('blob.bin')).rejects.toThrow(
+      /is a binary file/,
+    )
+  })
+
+  test('readFile returns content for plain text payloads (text branch)', async () => {
+    const f = makeFetch(() => jsonResponse({ content: 'plain text body', encoding: 'utf-8' }))
+    const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
+    expect(await c.readFile('a.ts')).toBe('plain text body')
+  })
+
+  test('readFileBytes returns Uint8Array of the underlying blob bytes', async () => {
+    const f = makeFetch(() => new Response(new Uint8Array([7, 8, 9, 10]), { status: 200 }))
+    const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
+    const bytes = await c.readFileBytes('a.bin')
+    expect(bytes).toBeInstanceOf(Uint8Array)
+    expect(Array.from(bytes)).toEqual([7, 8, 9, 10])
+  })
+
+  test('writeFileBytes from Uint8Array base64-encodes the payload and PUTs JSON', async () => {
+    const calls: Call[] = []
+    const f = makeFetch(() => emptyOk(), calls)
+    const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
+    await c.writeFileBytes('a.bin', new Uint8Array([72, 105])) // "Hi"
+    expect(calls[0]!.url).toBe('http://x.test/agent/workspace/files/a.bin')
+    expect(calls[0]!.init!.method).toBe('PUT')
+    const body = JSON.parse(calls[0]!.init!.body as string)
+    expect(body).toEqual({ contentBase64: 'SGk=' })
+  })
+
+  test('writeFileBytes accepts ArrayBuffer and base64-encodes it', async () => {
+    const calls: Call[] = []
+    const f = makeFetch(() => emptyOk(), calls)
+    const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
+    const ab = new Uint8Array([1, 2, 3]).buffer
+    await c.writeFileBytes('a.bin', ab)
+    const body = JSON.parse(calls[0]!.init!.body as string)
+    expect(body).toEqual({ contentBase64: 'AQID' })
+  })
+
+  test('writeFileBytes falls back to Buffer.from when btoa is unavailable', async () => {
+    const calls: Call[] = []
+    const f = makeFetch(() => emptyOk(), calls)
+    const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
+    const originalBtoa = globalThis.btoa
+    // Pretend we're in a runtime without btoa
+    delete (globalThis as { btoa?: unknown }).btoa
+    try {
+      await c.writeFileBytes('a.bin', new Uint8Array([72, 105]))
+      const body = JSON.parse(calls[0]!.init!.body as string)
+      expect(body).toEqual({ contentBase64: 'SGk=' })
+    } finally {
+      ;(globalThis as { btoa: typeof originalBtoa }).btoa = originalBtoa
+    }
+  })
+
 
   test('mkdirWorkspace posts the path', async () => {
     const calls: Call[] = []

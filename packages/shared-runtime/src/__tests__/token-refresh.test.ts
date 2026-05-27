@@ -220,12 +220,16 @@ describe('startTokenRefreshLoop', () => {
   })
 
   test('omits Authorization header when no ServiceAccount token is mounted (outside-pod case)', async () => {
-    // The module reads the K8s SA token from a hardcoded path inside
-    // `readSAToken()`. Without restructuring `readSAToken` to be injectable,
-    // we can only exercise the negative path here: outside a pod, the file
-    // doesn't exist, so readSAToken returns null and no Authorization
-    // header is attached. Positive-case coverage (header IS set when token
-    // IS present) is tracked as a follow-up — see issue #535.
+    // The module reads the K8s SA token from a path exposed via the
+    // `_selfAssignSeams.saTokenPath` test seam. Point it at a path that
+    // cannot exist so readSAToken() returns null even when the test
+    // sandbox itself happens to be a real K8s pod with a SA token mounted.
+    const { _selfAssignSeams } = await import('../self-assign')
+    const prevPath = _selfAssignSeams.saTokenPath
+    _selfAssignSeams.saTokenPath = '/dev/null/nonexistent-sa-token-path'
+    const prevOverride = process.env.K8S_SA_TOKEN_OVERRIDE
+    delete process.env.K8S_SA_TOKEN_OVERRIDE
+
     let observedHeaders: Record<string, string> = {}
     globalThis.fetch = mock(async (_url: string, init: any) => {
       observedHeaders = init?.headers ?? {}
@@ -243,6 +247,9 @@ describe('startTokenRefreshLoop', () => {
       expect(observedHeaders['Authorization']).toBeUndefined()
     } finally {
       handle.stop()
+      _selfAssignSeams.saTokenPath = prevPath
+      if (prevOverride === undefined) delete process.env.K8S_SA_TOKEN_OVERRIDE
+      else process.env.K8S_SA_TOKEN_OVERRIDE = prevOverride
     }
   })
 
