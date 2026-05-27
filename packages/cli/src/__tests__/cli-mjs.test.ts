@@ -23,7 +23,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 
-const CLI_PATH = resolve(import.meta.dir, '..', '..', '..', 'bin', 'cli.mjs')
+const CLI_PATH = resolve(import.meta.dir, '..', '..', '..', 'sdk', 'bin', 'cli.mjs')
 
 describe('bin/cli.mjs — path-with-spaces regression', () => {
   test('source uses execFileSync (not bare execSync template) for the generate script', () => {
