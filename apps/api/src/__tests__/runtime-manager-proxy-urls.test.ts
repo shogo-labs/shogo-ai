@@ -66,4 +66,44 @@ describe('TOOLS_PROXY_URL / AI_PROXY_URL convention', () => {
       expect(src).not.toMatch(/TOOLS_PROXY_URL.*['"]\s*[^'"]*\/api['"]/)
     }
   })
+
+  // ─────────────────────────────────────────────────────────────────
+  // SHOGO_API_URL pin — root-cause regression guard for "Trust folder
+  // still restricted" (post-#670 follow-up).
+  //
+  // The embedded WorkerRuntimeManager defaults SHOGO_API_URL to the
+  // Shogo Cloud URL (right for outbound LLM / Composio proxying, WRONG
+  // for the runtime's own control-plane callbacks). Every manager that
+  // composes runtime env MUST pin SHOGO_API_URL to the local API base
+  // before handing off, otherwise trust resolution, heartbeat reports,
+  // and subagent overrides silently fail in desktop mode.
+  // ─────────────────────────────────────────────────────────────────
+  test('desktop RuntimeManager pins SHOGO_API_URL to the local apiBase', () => {
+    const src = readSource(MANAGER_PATH)
+    // The exact assignment we expect — same `apiBase` the AI proxy URL
+    // is built from, so the two can't drift to different hosts.
+    expect(src).toMatch(/runtimeEnv\.SHOGO_API_URL\s*=\s*apiBase/)
+  })
+
+  test('cloud spawn-env builder pins SHOGO_API_URL to its local apiBase', () => {
+    // Parallel pin on the K8s pod / warm-pool path so the desktop and
+    // cloud pinning live side-by-side in the same regression file.
+    const src = readSource(
+      join(import.meta.dir, '..', 'lib', 'runtime', 'build-project-env.ts'),
+    )
+    expect(src).toMatch(/env\.SHOGO_API_URL\s*=\s*apiBase/)
+  })
+
+  test('no manager hands the cloud URL straight to SHOGO_API_URL', () => {
+    // Catches the original-shape regression: `SHOGO_API_URL: cfg.cloudUrl`
+    // or any literal assignment of the studio.shogo.ai host. The worker
+    // is allowed to default to `cfg.cloudUrl` (that's a sane fallback for
+    // a bare worker call), but every manager that composes env here in
+    // apps/api MUST override it.
+    for (const path of [MANAGER_PATH, KNATIVE_PATH, WARM_POOL_PATH]) {
+      const src = readSource(path)
+      expect(src).not.toMatch(/SHOGO_API_URL\s*[:=]\s*cfg\.cloudUrl/)
+      expect(src).not.toMatch(/SHOGO_API_URL\s*[:=]\s*['"]https:\/\/studio\.shogo/)
+    }
+  })
 })
