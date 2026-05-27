@@ -1,54 +1,58 @@
 {
   "generatedAt": "2026-05-26T13:15:18Z",
-  "note": "Aggregate after Wave B opening (commit ec4d383): backend lines 83.99%. Pinned 4-pkg + 7 fresh.",
+  "note": "Honest v2 aggregate from fresh full-suite bun-test --coverage runs across all 11 backend packages, comment-stripped via scripts/coverage-strip-comments.ts. Methodology corrected: previous 84.33% headline relied on a 4-pkg pinned baseline whose denominator included cross-package files (counted multiple times). The fresh 11-pkg-with-strict-src/-scope sum is 37817/51671 = 73.19% lines. Frontend badge UNTOUCHED (out of scope).",
   "aggregate": {
     "lines": {
-      "total": 81618,
-      "hit": 68828,
-      "pct": 84.33
+      "total": 51671,
+      "hit": 37817,
+      "pct": 73.19
     },
     "functions": {
-      "total": 6662,
-      "hit": 5487,
-      "pct": 82.36
+      "total": 4215,
+      "hit": 3199,
+      "pct": 75.9
     }
   },
   "perPackage": [
     {
       "package": "apps/api",
-      "linesHit": null,
-      "linesFound": null,
-      "funcsHit": 2690,
-      "funcsFound": 3687,
-      "funcPct": 72.96,
-      "source": "pinned to 2026-05-26 baseline"
+      "linesHit": 14277,
+      "linesFound": 19768,
+      "linePct": 72.22,
+      "funcsHit": 1189,
+      "funcsFound": 1473,
+      "funcPct": 80.72,
+      "source": "fresh 2026-05-27 (1203 pre-existing test failures from infra setup, lcov nonetheless valid)"
     },
     {
       "package": "packages/agent-runtime",
-      "linesHit": null,
-      "linesFound": null,
-      "funcsHit": 1533,
-      "funcsFound": 2160,
-      "funcPct": 70.97,
-      "source": "pinned to 2026-05-26 baseline"
+      "linesHit": 8851,
+      "linesFound": 16631,
+      "linePct": 53.22,
+      "funcsHit": 629,
+      "funcsFound": 1227,
+      "funcPct": 51.26,
+      "source": "fresh 2026-05-27 (preview-manager + warm-pool test files excluded \u2014 hang; source files still in denominator)"
     },
     {
       "package": "packages/sdk",
-      "linesHit": null,
-      "linesFound": null,
-      "funcsHit": 537,
-      "funcsFound": 540,
-      "funcPct": 99.44,
-      "source": "baseline + sprint deltas (node.ts, client.ts)"
+      "linesHit": 6090,
+      "linesFound": 6367,
+      "linePct": 95.65,
+      "funcsHit": 520,
+      "funcsFound": 582,
+      "funcPct": 89.35,
+      "source": "fresh 2026-05-27 (25 pre-existing Playwright stray-file fails)"
     },
     {
       "package": "packages/shared-runtime",
-      "linesHit": null,
-      "linesFound": null,
-      "funcsHit": 388,
-      "funcsFound": 440,
-      "funcPct": 88.18,
-      "source": "baseline + sprint deltas (s3-sync, lsp-service)"
+      "linesHit": 3188,
+      "linesFound": 3367,
+      "linePct": 94.68,
+      "funcsHit": 328,
+      "funcsFound": 361,
+      "funcPct": 90.86,
+      "source": "fresh 2026-05-27 (8 errors unrelated to coverage, AI_PROXY_TOKEN=test-token to unblock)"
     },
     {
       "package": "packages/model-catalog",
@@ -65,10 +69,10 @@
       "linesHit": 1679,
       "linesFound": 1679,
       "linePct": 100.0,
-      "funcsHit": 163,
-      "funcsFound": 163,
-      "funcPct": 100.0,
-      "source": "fresh 2026-05-27 (Wave B Day 2 \u2014 whole voice package at 100% lines)"
+      "funcsHit": 168,
+      "funcsFound": 172,
+      "funcPct": 97.67,
+      "source": "fresh 2026-05-27 \u2014 Wave B Day 2 \u2705"
     },
     {
       "package": "packages/email",
@@ -78,47 +82,47 @@
       "funcsHit": 63,
       "funcsFound": 64,
       "funcPct": 98.44,
-      "source": "fresh 2026-05-27 (whole package 100% lines)"
+      "source": "fresh 2026-05-27 \u2014 Wave A Day 4 \u2705"
     },
     {
       "package": "packages/agent",
-      "linesHit": 206,
-      "linesFound": 206,
+      "linesHit": 449,
+      "linesFound": 449,
       "linePct": 100.0,
       "funcsHit": 29,
       "funcsFound": 29,
       "funcPct": 100.0,
-      "source": "fresh 2026-05-27 (3 files instrumented: index, ai-client, model-catalog/helpers)"
+      "source": "fresh 2026-05-27 \u2014 Wave A Day 5 \u2705"
     },
     {
       "package": "packages/core",
       "linesHit": 387,
       "linesFound": 393,
       "linePct": 98.47,
-      "funcsHit": 45,
-      "funcsFound": 49,
-      "funcPct": 91.84,
-      "source": "fresh 2026-05-27 (7 files; logger.ts 87.23% \u2014 env-frozen dev branch)"
+      "funcsHit": 47,
+      "funcsFound": 51,
+      "funcPct": 92.16,
+      "source": "fresh 2026-05-27 (logger.ts env-frozen dev branch)"
     },
     {
       "package": "packages/cli",
       "linesHit": 514,
-      "linesFound": 608,
-      "linePct": 84.54,
+      "linesFound": 596,
+      "linePct": 86.24,
       "funcsHit": 41,
       "funcsFound": 49,
       "funcPct": 83.67,
-      "source": "fresh 2026-05-27 (deploy.ts 100%; pkg.ts 75.5% \u2014 bun-coverage Windows module-reload limitation)"
+      "source": "fresh 2026-05-27 (pkg.ts 75.5% \u2014 bun Windows module-reload limit)"
     },
     {
       "package": "packages/shogo-worker",
       "linesHit": 1685,
-      "linesFound": 1725,
-      "linePct": 97.68,
+      "linesFound": 1724,
+      "linePct": 97.74,
       "funcsHit": 184,
       "funcsFound": 206,
       "funcPct": 89.32,
-      "source": "fresh 2026-05-27 (1 pre-existing failing test in gitIsAvailable, not blocking lcov)"
+      "source": "fresh 2026-05-27"
     }
   ],
   "topGaps": [
@@ -433,7 +437,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-27T12:39:16Z",
+  "lastUpdated": "2026-05-27T12:46:39Z",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
