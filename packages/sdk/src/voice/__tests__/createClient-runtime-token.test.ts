@@ -16,7 +16,7 @@ import {
   DirectTelephonyClient,
   HostedRuntimeTokenClient,
   HostedTelephonyClient,
-} from '../telephony'
+} from '@shogo-ai/voice'
 
 const ORIGINAL_RUNTIME = process.env.RUNTIME_AUTH_SECRET
 
