@@ -138,6 +138,7 @@ describe('Fix 1: addMessages persists to session when uiWriter throws', () => {
   })
 
   test('session contains turn messages even when writer throws after text-end', async () => {
+    const SESSION_ID = 'fix1-persist-on-writer-throw'
     const mockStream = createMockStreamFn([
       buildTextResponse('Here is my response about quantum computing.'),
     ])
@@ -148,9 +149,11 @@ describe('Fix 1: addMessages persists to session when uiWriter throws', () => {
 
     const { writer } = createThrowingWriter('text-end')
 
-    await gateway.processChatMessageStream('Explain quantum computing', writer as any, {})
+    await gateway.processChatMessageStream('Explain quantum computing', writer as any, {
+      chatSessionId: SESSION_ID,
+    })
 
-    const session = gateway.getSessionManager().get('chat')
+    const session = gateway.getSessionManager().get(SESSION_ID)
     expect(session).toBeDefined()
     expect(session!.messages.length).toBeGreaterThan(0)
 
@@ -161,6 +164,7 @@ describe('Fix 1: addMessages persists to session when uiWriter throws', () => {
   })
 
   test('"continue" sees interrupted turn context when writer fails mid-stream', async () => {
+    const SESSION_ID = 'fix1-continue-after-writer-fail'
     const mockStreamPhase1 = createMockStreamFn([
       buildTextResponse('Quantum computing uses qubits which...'),
     ])
@@ -170,7 +174,9 @@ describe('Fix 1: addMessages persists to session when uiWriter throws', () => {
     await gateway.start()
 
     const { writer: throwingWriter } = createThrowingWriter('text-end')
-    await gateway.processChatMessageStream('Explain quantum computing', throwingWriter as any, {})
+    await gateway.processChatMessageStream('Explain quantum computing', throwingWriter as any, {
+      chatSessionId: SESSION_ID,
+    })
 
     let messagesSentToLLM: Message[][] = []
     const mockStreamPhase2 = createMockStreamFn(
@@ -180,7 +186,9 @@ describe('Fix 1: addMessages persists to session when uiWriter throws', () => {
     gateway.setStreamFn(mockStreamPhase2)
 
     const { writer: normalWriter } = createCollectingWriter()
-    await gateway.processChatMessageStream('continue', normalWriter as any, {})
+    await gateway.processChatMessageStream('continue', normalWriter as any, {
+      chatSessionId: SESSION_ID,
+    })
 
     expect(messagesSentToLLM).toHaveLength(1)
     const history = messagesSentToLLM[0]
@@ -211,6 +219,7 @@ describe('Fix 2: abortCurrentTurn cancels running turn', () => {
   })
 
   test('abortCurrentTurn returns true for an in-flight turn', async () => {
+    const SESSION_ID = 'fix2-abort-returns-true'
     const mockStream = createDelayedStreamFn(
       [buildTextResponse('This response takes a while...')],
       500,
@@ -221,21 +230,24 @@ describe('Fix 2: abortCurrentTurn cancels running turn', () => {
     await gateway.start()
 
     const { writer } = createCollectingWriter()
-    const turnPromise = gateway.processChatMessageStream('Hello', writer as any, {})
+    const turnPromise = gateway.processChatMessageStream('Hello', writer as any, {
+      chatSessionId: SESSION_ID,
+    })
 
     await new Promise((r) => setTimeout(r, 50))
-    const aborted = gateway.abortCurrentTurn('chat')
+    const aborted = gateway.abortCurrentTurn(SESSION_ID)
     expect(aborted).toBe(true)
 
     await turnPromise
 
-    const session = gateway.getSessionManager().get('chat')
+    const session = gateway.getSessionManager().get(SESSION_ID)
     expect(session).toBeDefined()
     const hasUser = session!.messages.some((m) => m.role === 'user')
     expect(hasUser).toBe(true)
   })
 
   test('abort + continue preserves context (full scenario)', async () => {
+    const SESSION_ID = 'fix2-abort-continue'
     const mockStreamSlow = createDelayedStreamFn(
       [buildTextResponse('Slow partial response content...')],
       500,
@@ -246,10 +258,12 @@ describe('Fix 2: abortCurrentTurn cancels running turn', () => {
     await gateway.start()
 
     const { writer: writer1 } = createCollectingWriter()
-    const turn1 = gateway.processChatMessageStream('Write something complex', writer1 as any, {})
+    const turn1 = gateway.processChatMessageStream('Write something complex', writer1 as any, {
+      chatSessionId: SESSION_ID,
+    })
 
     await new Promise((r) => setTimeout(r, 50))
-    gateway.abortCurrentTurn('chat')
+    gateway.abortCurrentTurn(SESSION_ID)
     await turn1
 
     let messagesSentToLLM: Message[][] = []
@@ -260,7 +274,9 @@ describe('Fix 2: abortCurrentTurn cancels running turn', () => {
     gateway.setStreamFn(mockStreamFast)
 
     const { writer: writer2 } = createCollectingWriter()
-    await gateway.processChatMessageStream('continue', writer2 as any, {})
+    await gateway.processChatMessageStream('continue', writer2 as any, {
+      chatSessionId: SESSION_ID,
+    })
 
     expect(messagesSentToLLM).toHaveLength(1)
     const history = messagesSentToLLM[0]
@@ -320,11 +336,16 @@ describe('Fix 3: concurrent turn waits for previous turn', () => {
     gateway.setStreamFn(mockStream)
     await gateway.start()
 
+    const SESSION_ID = 'fix3-concurrent-shares-history'
     const { writer: w1 } = createCollectingWriter()
     const { writer: w2 } = createCollectingWriter()
 
-    const turn1 = gateway.processChatMessageStream('First message', w1 as any, {})
-    const turn2 = gateway.processChatMessageStream('continue', w2 as any, {})
+    const turn1 = gateway.processChatMessageStream('First message', w1 as any, {
+      chatSessionId: SESSION_ID,
+    })
+    const turn2 = gateway.processChatMessageStream('continue', w2 as any, {
+      chatSessionId: SESSION_ID,
+    })
 
     await Promise.all([turn1, turn2])
 

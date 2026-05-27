@@ -4577,8 +4577,15 @@ export default {
     // Bun.serve() had already bound the port. This early return skips
     // that path for the smallest possible response.
     if (url.pathname === '/health' && req.method === 'GET') {
+      // The slow path (createRuntimeApp's /health in shared-runtime) reports
+      // `poolMode: IS_POOL_MODE && !state.poolAssigned`. The fast path needs
+      // to match that contract or the warm-pool tests + RuntimeManager
+      // probes can't distinguish an unassigned pool pod from an assigned
+      // project pod. Both checks are sync reads of in-process state, so
+      // they're safe in the hot path.
+      const poolMode = state.isPoolMode && !state.poolAssigned
       return new Response(
-        JSON.stringify({ status: 'ok', projectId: process.env.PROJECT_ID, runtimeType: 'unified', poolMode: false, uptime: 0, fast: true }),
+        JSON.stringify({ status: 'ok', projectId: process.env.PROJECT_ID, runtimeType: 'unified', poolMode, uptime: 0, fast: true }),
         { status: 200, headers: { 'content-type': 'application/json' } },
       )
     }

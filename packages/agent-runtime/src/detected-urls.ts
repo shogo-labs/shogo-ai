@@ -72,8 +72,17 @@ export interface DetectedUrl {
   sessionId: string
   /** Millisecond epoch when detection fired. */
   detectedAt: number
+  /**
+   * Monotonic per-process sequence used as a tiebreaker when two detections
+   * land in the same `Date.now()` millisecond — without it the sort in
+   * `listAllDetections` is stable-equal and the "newest first" contract
+   * collapses to insertion order, which back-to-back dev-server starts
+   * (and the corresponding test) trip routinely.
+   */
+  seq: number
 }
 
+let detectionSeq = 0
 const detectedBySession = new Map<string, DetectedUrl>()
 let lastAnyDetection: DetectedUrl | null = null
 const listeners = new Set<(d: DetectedUrl) => void>()
@@ -142,6 +151,7 @@ export function ingestChunk(sessionId: string, bytes: Uint8Array | string): Dete
       url,
       sessionId,
       detectedAt: Date.now(),
+      seq: ++detectionSeq,
     }
     detectedBySession.set(sessionId, detection)
     lastAnyDetection = detection
@@ -170,7 +180,9 @@ export function getMostRecentDetection(): DetectedUrl | null {
 }
 
 export function listAllDetections(): DetectedUrl[] {
-  return [...detectedBySession.values()].sort((a, b) => b.detectedAt - a.detectedAt)
+  return [...detectedBySession.values()].sort(
+    (a, b) => b.detectedAt - a.detectedAt || b.seq - a.seq,
+  )
 }
 
 export function clearDetection(sessionId: string): void {
@@ -192,5 +204,6 @@ export function _resetForTests(): void {
   detectedBySession.clear()
   tailBuffer.clear()
   lastAnyDetection = null
+  detectionSeq = 0
   listeners.clear()
 }
