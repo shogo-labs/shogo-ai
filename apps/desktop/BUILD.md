@@ -67,10 +67,14 @@ What it does:
    `_expo/`, and `assets/` all exist with non-zero size. Fails the build
    if anything is missing.
 
-This step is also wired in as the `prepackage` / `premake` lifecycle hook
-in `apps/desktop/package.json`, so `bun run package` and `bun run make`
-invoke it automatically — there is no longer a way to electron-forge a
-desktop bundle without a fresh, integrity-checked `resources/web/`.
+This step is also wired in as the `prePackage` hook in
+`apps/desktop/forge.config.ts`, so `bun run package`, `bun run make`,
+AND `npx electron-forge package` / `make` all invoke it automatically —
+there is no longer a way to electron-forge a desktop bundle without a
+fresh, integrity-checked `resources/web/`. (Previously the wiring lived
+in npm's `prepackage` lifecycle hook, which only fired for `npm run`
+— `npx electron-forge` bypassed it and silently shipped a Monaco-less
+bundle in v1.8.12 / v1.8.13.)
 
 For iterating on desktop-only changes (no mobile source edits), reuse
 the existing `apps/mobile/dist/`:

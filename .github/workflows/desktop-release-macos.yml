@@ -235,10 +235,17 @@ jobs:
       - name: Generate Prisma clients (PG + SQLite)
         run: bun run db:generate:all
 
-      - name: Copy web build into resources
-        run: |
-          mkdir -p apps/desktop/resources/web
-          cp -r apps/mobile/dist/* apps/desktop/resources/web/
+      # resources/web/ is materialised by `apps/desktop/scripts/sync-web.mjs`,
+      # invoked automatically by the `prePackage` hook in
+      # `apps/desktop/forge.config.ts`. We set SKIP_MOBILE_BUILD=1 in the
+      # packaging step below so the hook reuses the apps/mobile/dist/
+      # artifact we just downloaded instead of rebuilding it.
+      #
+      # The previous design (manual `cp -r apps/mobile/dist/* …`) shipped
+      # a Monaco-less bundle in v1.8.12 / v1.8.13 because `bun run web:build`
+      # at the root skipped `copy-monaco-vs.mjs`. sync-web.mjs now drives
+      # both the mirror AND the post-copy integrity check (vs/loader.js +
+      # vs/editor/editor.main.js are required and non-truncated).
 
       - name: Bundle API server into resources
         run: node apps/desktop/scripts/bundle-api.mjs
@@ -345,9 +352,17 @@ jobs:
 
       - name: Package Electron app
         working-directory: apps/desktop
+        # SKIP_MOBILE_BUILD=1 tells the forge `prePackage` hook (which
+        # runs `scripts/sync-web.mjs`) to reuse apps/mobile/dist/ from
+        # the build-web artifact instead of running `bun run build` in
+        # apps/mobile again. The mirror+verify step still runs and will
+        # fail loudly if vs/loader.js or vs/editor/editor.main.js is
+        # missing — see apps/desktop/forge.config.ts and
+        # apps/desktop/scripts/sync-web.mjs.
         run: npx electron-forge package --arch=${{ matrix.arch }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SKIP_MOBILE_BUILD: '1'
 
       - name: Codesign app bundle
         if: env.SIGNING_KEYCHAIN != ''

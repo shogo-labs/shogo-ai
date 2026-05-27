@@ -3,24 +3,38 @@
 import type { ForgeConfig } from '@electron-forge/cli'
 import fs from 'fs'
 
+// `runSyncWeb` lives in a sibling .mjs module (loaded via dynamic
+// `import()` inside the `prePackage` hook below) so that:
+//
+//   - test-forge-config.ts can import + exercise it without triggering
+//     this file's top-level REQUIRED_RESOURCES check, which legitimately
+//     `process.exit(1)`s a build that hasn't run the download-bun /
+//     copy-package.json CI steps yet.
+//
+//   - We don't pay the cost of static `require('./scripts/run-sync-web.mjs')`
+//     from a CJS-compiled file (this tsconfig is `module: commonjs`),
+//     which would fail with ERR_REQUIRE_ESM on older Node versions.
+//     Dynamic import is ESM-aware on every Node ≥14.
+
 const hasIcon = fs.existsSync('./resources/icon.icns') || fs.existsSync('./resources/icon.ico')
 const hasInstallGif = fs.existsSync('./resources/install-splash.gif')
 
 // Two tiers of resources:
 //
 //  - REQUIRED resources must exist or the build is broken by definition.
-//    `./resources/web` is the killer example — without it the packaged
-//    renderer has no HTML/JS/Monaco bundle and you ship an app that
-//    opens to a permanent "Loading…" spinner. Until this branch the
-//    config silently `.filter()`-dropped missing entries from the
-//    candidates list, which is exactly how the IDE-editor-not-loading
-//    bug shipped invisibly.
+//    Until this branch `./resources/web` lived here too, but a missing
+//    `vs/loader.js` slipped past the check (the directory exists; only
+//    its Monaco subtree was missing). It's now populated *and verified*
+//    by `sync-web.mjs`, wired in below as a `prePackage` hook so it
+//    fires whether forge is invoked via `npm run package` or via
+//    `npx electron-forge package` — the npm `prepackage` lifecycle
+//    hook only fires for the former, which is exactly how v1.8.12
+//    shipped without the Monaco bundle.
 //
 //  - OPTIONAL resources are platform-specific or feature-flagged
 //    (VM disk images, sherpa onnx blobs, sysaudio bundles, etc.) and
 //    silently dropping them is correct.
 const REQUIRED_RESOURCES = [
-  './resources/web',
   './resources/bun',
   './resources/package.json',
   './prisma',
@@ -52,21 +66,41 @@ const isWin32 = process.platform === 'win32'
 
 const missingRequired = REQUIRED_RESOURCES.filter((p) => !fs.existsSync(p))
 if (missingRequired.length > 0) {
-  // Fail loud at config-load time. Bypassing `bun run package` /
-  // `bun run make` (which run `scripts/sync-web.mjs` via lifecycle hooks)
-  // and calling electron-forge directly used to silently produce a
-  // broken package. Now it can't.
+  // Fail loud at config-load time. These resources are produced by
+  // explicit build steps (downloading bun, generating the prisma client,
+  // copying package.json, etc.) — if any of them is missing the upstream
+  // pipeline is broken and the package would just ship corrupted.
+  // ./resources/web is NOT in this list because it's owned by the
+  // prePackage hook below; see runSyncWeb() and the comment on
+  // `extraResource`.
   console.error('[forge.config] ERROR: required resources are missing:')
   for (const p of missingRequired) console.error(`  - ${p}`)
   console.error('')
-  console.error('  Run `bun run sync:web` from apps/desktop/ to populate resources/web/,')
-  console.error('  or `bun run package` / `bun run make` which invoke it automatically.')
+  console.error('  These are produced by explicit build steps (see apps/desktop/BUILD.md).')
+  console.error('  Run `bun run package` / `bun run make` to drive the full pipeline.')
   process.exit(1)
 }
 
-const extraResource = [...REQUIRED_RESOURCES, ...OPTIONAL_RESOURCES]
-  .filter((p) => !(isWin32 && p === './resources/vm'))
-  .filter((p) => fs.existsSync(p))
+
+// `./resources/web` is materialised + verified by the `prePackage`
+// hook below (sync-web.mjs). We list it unconditionally — `existsSync`
+// runs at config-load time, which is BEFORE prePackage gets a chance
+// to populate the directory. If it's still missing when electron-
+// packager actually runs, packager will fail loudly, which is exactly
+// what we want.
+//
+// The other REQUIRED_RESOURCES entries are populated by separate CI
+// steps (or by the developer ahead of `bun run package`); their
+// existence IS verified at config-load time by the check above.
+//
+// OPTIONAL_RESOURCES legitimately may be absent on some platforms
+// (vm/ is Linux-only inside the bundle, sherpa-onnx/ is opt-in, etc.)
+// so they're still filtered with `existsSync`.
+const extraResource = [
+  './resources/web',
+  ...REQUIRED_RESOURCES,
+  ...OPTIONAL_RESOURCES.filter((p) => fs.existsSync(p)),
+].filter((p) => !(isWin32 && p === './resources/vm'))
 
 const config: ForgeConfig = {
   packagerConfig: {
@@ -136,6 +170,23 @@ const config: ForgeConfig = {
       },
     },
   ],
+  hooks: {
+    // Populate + verify resources/web BEFORE electron-packager copies
+    // extraResource into the .app. This is the single point of control
+    // for "the renderer bundle is correct on disk": it runs whether
+    // forge is invoked via `npm run package` or `npx electron-forge
+    // package`. The previous design lived in npm's `prepackage`
+    // lifecycle hook, which only fires for `npm run` — `npx electron-
+    // forge package` bypassed it and silently shipped a Monaco-less
+    // bundle (v1.8.12 / v1.8.13 desktop release).
+    prePackage: async () => {
+      // Dynamic import (not top-level) so the ESM .mjs module is
+      // loaded by Node's ESM resolver, not via CJS `require()` which
+      // hits ERR_REQUIRE_ESM on Node < 22.
+      const { runSyncWeb } = await import('./scripts/run-sync-web.mjs')
+      runSyncWeb()
+    },
+  },
 }
 
 export default config

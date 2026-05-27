@@ -24,7 +24,7 @@
  * for the VM / K8s paths and any future caller that returns `ready:false`.
  */
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 
 /**
  * Lightweight cold-start mark hook. Mirrors the on-disk
@@ -65,6 +65,24 @@ function nextRetryDelayMs(attempt: number): number {
   return RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)]!
 }
 
+/**
+ * Soft-stall threshold (ms). Polling continues past this — the runtime
+ * really does take >30s to spin up on a cold project sometimes — but
+ * consumers can read `stalled === true` to surface a "this is taking
+ * longer than expected, here's the error / continue anyway" UI instead
+ * of the blank loading spinner that left mobile users on TestFlight
+ * v1.0.8 stranded on "Starting your project…" with no recovery option.
+ *
+ * 45s is the empirical p95 for cold VM warm-pool / host RuntimeManager
+ * spin-up (Vite + agent-runtime + first compile). Anything below 30s
+ * trips on legitimately slow-but-healthy starts and surfaces the
+ * recovery card to users whose runtime is, in fact, about to come up
+ * — see screenshot in PR #(fix/ios-sentry-launch-crash) where the card
+ * appeared on a normal cold start and the runtime became ready ~5s
+ * later.
+ */
+const STALL_THRESHOLD_MS = 45_000
+
 export function useAgentUrl(
   apiBaseUrl: string,
   projectId: string | undefined,
@@ -79,10 +97,21 @@ export function useAgentUrl(
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [canvasBaseUrl, setCanvasBaseUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [stalled, setStalled] = useState<boolean>(false)
+  const [lastStatus, setLastStatus] = useState<string | null>(null)
   // Local-agent-url short-circuit always counts as ready (the caller has
   // pinned an explicit URL, so there's no runtime to wait on).
   const [ready, setReady] = useState<boolean>(Boolean(options?.localAgentUrl))
+  // Bumping this nonce restarts the polling effect, giving callers a
+  // manual "retry now" path from a stalled-recovery UI without having
+  // to navigate away and back.
+  const [retryNonce, setRetryNonce] = useState<number>(0)
   const abortRef = useRef<AbortController | null>(null)
+
+  const retry = useCallback(() => {
+    abortRef.current?.abort()
+    setRetryNonce((n) => n + 1)
+  }, [])
 
   useEffect(() => {
     if (options?.localAgentUrl) {
@@ -108,14 +137,28 @@ export function useAgentUrl(
     setPreviewUrl(null)
     setCanvasBaseUrl(null)
     setError(null)
+    setStalled(false)
+    setLastStatus(null)
 
     let retryTimer: ReturnType<typeof setTimeout> | null = null
+    let stallTimer: ReturnType<typeof setTimeout> | null = null
     let attempt = 0
+
+    stallTimer = setTimeout(() => {
+      if (!controller.signal.aborted) {
+        setStalled(true)
+        csMark('useAgentUrl:stalled', { projectId, attempts: attempt })
+      }
+    }, STALL_THRESHOLD_MS)
 
     const cleanup = () => {
       if (retryTimer) {
         clearTimeout(retryTimer)
         retryTimer = null
+      }
+      if (stallTimer) {
+        clearTimeout(stallTimer)
+        stallTimer = null
       }
       controller.abort()
     }
@@ -154,12 +197,24 @@ export function useAgentUrl(
         if (res.status === 503) {
           if (!controller.signal.aborted) {
             setError(null)
+            setLastStatus('warming')
             scheduleRetry()
           }
           return
         }
 
-        if (!res.ok) throw new Error(`Failed to get sandbox URL (HTTP ${res.status})`)
+        if (!res.ok) {
+          // Authoritative failure (401 expired auth, 403 not-a-member,
+          // 404 project deleted, 5xx server). Surface the status so the
+          // UI can show "Open on web / sign in again" instead of an
+          // infinite spinner.
+          if (!controller.signal.aborted) {
+            setError(`Failed to get sandbox URL (HTTP ${res.status})`)
+            setLastStatus(`http_${res.status}`)
+          }
+          if (res.status >= 500) scheduleRetry()
+          return
+        }
 
         const data = await res.json()
         const isReady = data?.ready === true
@@ -170,6 +225,7 @@ export function useAgentUrl(
           // consumers don't hit ECONNREFUSED, and try again shortly.
           if (!controller.signal.aborted) {
             setError(null)
+            setLastStatus(typeof data?.status === 'string' ? data.status : 'pending')
             scheduleRetry()
           }
           return
@@ -195,7 +251,13 @@ export function useAgentUrl(
           setPreviewUrl(resolvedPreview)
           setCanvasBaseUrl(resolvedCanvas)
           setReady(true)
+          setStalled(false)
+          setLastStatus('ready')
           setError(null)
+          if (stallTimer) {
+            clearTimeout(stallTimer)
+            stallTimer = null
+          }
         }
       } catch (err: any) {
         if (err?.name === 'AbortError') return
@@ -211,7 +273,7 @@ export function useAgentUrl(
     void poll()
 
     return cleanup
-  }, [apiBaseUrl, projectId, options?.localAgentUrl, options?.credentials])
+  }, [apiBaseUrl, projectId, options?.localAgentUrl, options?.credentials, retryNonce])
 
-  return { agentUrl, previewUrl, canvasBaseUrl, ready, error }
+  return { agentUrl, previewUrl, canvasBaseUrl, ready, error, stalled, lastStatus, retry }
 }
