@@ -2522,7 +2522,7 @@ export default observer(function ProjectLayout() {
                 <ExternalPreviewWebView
                   projectId={projectId!}
                   url={externalSavedUrl ?? externalDetectedUrl ?? null}
-                  visible={effectiveTab === 'external-preview'}
+                  visible={effectiveTab === 'external-preview' && !trustPromptOpen}
                   detectedUrl={externalDetectedUrl}
                   onUrlSubmit={handleSaveExternalPreviewUrl}
                   isTrusted={projectTrustLevel === 'trusted'}
