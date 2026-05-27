@@ -1,8 +1,31 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { createVoiceHandlers, type VoiceHandlersConfig } from '../server'
 import type { Companion, CompanionStore, VoiceUser } from '../types'
+
+const ENV_TO_CLEAR = [
+  'RUNTIME_AUTH_SECRET',
+  'PROJECT_ID',
+  'SHOGO_API_URL',
+  'SHOGO_API_KEY',
+  'AI_PROXY_URL',
+  'AI_PROXY_TOKEN',
+] as const
+let savedEnv: Record<string, string | undefined> = {}
+beforeEach(() => {
+  savedEnv = {}
+  for (const k of ENV_TO_CLEAR) {
+    savedEnv[k] = process.env[k]
+    delete process.env[k]
+  }
+})
+afterEach(() => {
+  for (const [k, v] of Object.entries(savedEnv)) {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+})
 
 function makeCompanionStore(initial?: Companion): CompanionStore & { record: Companion | null } {
   const store = {
