@@ -55,6 +55,7 @@ describe('react-native-reanimated stub', () => {
 
   test('makeMutable returns a mutable value object', () => {
     const sv = (Reanimated as any).makeMutable(7)
+    expect(sv._isReanimatedSharedValue).toBe(true)
     expect(sv.value).toBe(7)
     sv.value = 12
     expect(sv.value).toBe(12)
@@ -102,6 +103,23 @@ describe('react-native-reanimated stub', () => {
     expect((Reanimated as any).useAnimatedStyle(() => ({ opacity: 0.5 }))).toEqual({ opacity: 0.5 })
     expect(typeof (Reanimated as any).useAnimatedProps).toBe('function')
     expect(typeof (Reanimated as any).useDerivedValue).toBe('function')
+  })
+
+  test('normalizes animated transform angles for react-native-svg', () => {
+    const sv = (Reanimated as any).makeMutable(180)
+    const style = (Reanimated as any).useAnimatedStyle(() => ({
+      transform: [
+        { rotate: 360 },
+        { rotateZ: sv },
+        { scale: 1 },
+      ],
+    }))
+
+    expect(style.transform).toEqual([
+      { rotate: '360deg' },
+      { rotateZ: '180deg' },
+      { scale: 1 },
+    ])
   })
 
   test('introspection helpers return safe negative values', () => {

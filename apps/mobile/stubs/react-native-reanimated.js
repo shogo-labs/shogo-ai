@@ -47,6 +47,7 @@
 
 function noopMutable(value) {
   return {
+    _isReanimatedSharedValue: true,
     value,
     get: function () { return this.value },
     set: function (v) { this.value = v },
@@ -159,13 +160,43 @@ const Easing = {
 
 const ReduceMotion = { System: 'system', Always: 'always', Never: 'never' }
 
+function unwrapMaybeMutable(value) {
+  if (value && typeof value === 'object' && value._isReanimatedSharedValue && 'value' in value) {
+    return value.value
+  }
+  return value
+}
+
+function normalizeAnimatedStyle(value) {
+  value = unwrapMaybeMutable(value)
+  if (!value || typeof value !== 'object') return value
+  if (Array.isArray(value)) return value.map(normalizeAnimatedStyle)
+
+  const output = {}
+  for (const [key, raw] of Object.entries(value)) {
+    let next = normalizeAnimatedStyle(raw)
+    if (
+      (key === 'rotate' || key === 'rotateZ' || key === 'rotateX' || key === 'rotateY' || key === 'skewX' || key === 'skewY') &&
+      typeof next === 'number'
+    ) {
+      // react-native-svg's transform extractor expects angle values to be
+      // strings with units (`deg`/`rad`). CSS animations from NativeWind
+      // reach this shim as numbers, so normalize them before Svg/Path
+      // calls `angle.endsWith(...)`.
+      next = `${next}deg`
+    }
+    output[key] = next
+  }
+  return output
+}
+
 function useAnimatedStyle(factory) {
-  try { return typeof factory === 'function' ? factory() || {} : {} }
+  try { return normalizeAnimatedStyle(typeof factory === 'function' ? factory() || {} : {}) }
   catch (_) { return {} }
 }
 
 function useAnimatedProps(factory) {
-  try { return typeof factory === 'function' ? factory() || {} : {} }
+  try { return normalizeAnimatedStyle(typeof factory === 'function' ? factory() || {} : {}) }
   catch (_) { return {} }
 }
 
