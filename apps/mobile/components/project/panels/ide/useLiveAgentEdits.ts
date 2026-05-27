@@ -38,50 +38,16 @@ import type { Dispatch, SetStateAction } from "react";
 
 import type { EditorGroup, OpenFile } from "./types";
 import type { WorkspaceService } from "./workspace/types";
-import { isImagePath } from "./ImagePreview";
-import {
-  isAudioPath,
-  isFontPath,
-  isPdfPath,
-  isVideoPath,
-} from "./MediaPreview";
 import { upsertModelFromContent } from "./monaco/workspaceModels";
-
-/** Extensions that are binary on disk but have no dedicated preview — we
- *  must still keep the SSE/poll path from reading them as utf-8 text,
- *  because the agent-runtime's `/agent/workspace/files/*` endpoint decodes
- *  every GET as utf-8, which turns each invalid byte into U+FFFD. A
- *  subsequent autosave PUT would write those replacement chars back and
- *  bloat the on-disk file (~2x size, broken bytes). Keep this list in
- *  sync with Workbench.BINARY_EXTENSIONS + SQLITE_EXTENSIONS. */
-const NON_TEXT_EXTENSIONS = new Set([
-  // Archives
-  "zip", "gz", "tar", "tgz", "bz2", "xz", "7z", "rar", "zst", "lz4",
-  // Native / packed
-  "exe", "dll", "so", "dylib", "bin", "class", "jar", "wasm",
-  // Databases
-  "db", "sqlite", "sqlite3",
-  // Misc binary
-  "pack", "idx", "psd", "ai", "sketch", "fig", "blend", "obj", "fbx",
-  "pyc", "pyo", "pyd",
-]);
+import { isBinaryFilePath } from "@shogo-ai/sdk/file-types";
 
 /** True when `path` should NOT be round-tripped through the text readFile
- *  API. Covers everything with a dedicated preview (image/video/audio/pdf/
- *  font) plus generic binary extensions. */
-function isBinaryPath(path: string): boolean {
-  if (
-    isImagePath(path) ||
-    isVideoPath(path) ||
-    isAudioPath(path) ||
-    isPdfPath(path) ||
-    isFontPath(path)
-  ) {
-    return true;
-  }
-  const ext = path.toLowerCase().split(".").pop() ?? "";
-  return NON_TEXT_EXTENSIONS.has(ext);
-}
+ *  API — reading it as utf-8 produces U+FFFD replacement chars and a
+ *  subsequent autosave PUT would write those back, permanently bloating
+ *  the on-disk file (~2x size, broken bytes). Canonical predicate lives
+ *  in `@shogo-ai/core/file-types`; one source of truth across runtime,
+ *  Workbench, live-edit sync, and the local FS layer. */
+const isBinaryPath = isBinaryFilePath;
 
 const AGENT_ROOT_ID = "agent";
 const fileId = (rootId: string, path: string) => `${rootId}::${path}`;

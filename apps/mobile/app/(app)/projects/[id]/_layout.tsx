@@ -27,11 +27,13 @@ import {
   BackHandler,
   Keyboard,
   Alert,
+  useColorScheme,
 } from 'react-native'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useLocalSearchParams, useRouter, Stack } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { LinearGradient } from 'expo-linear-gradient'
 import {
   useSDKDomain,
   useSDKReady,
@@ -1037,6 +1039,14 @@ export default observer(function ProjectLayout() {
     }
   }, [store, projectId])
 
+  // Drives the sidebar right-edge fade colour below; in dark mode the
+  // sidebar reads slightly darker than the chat panel and we lift it with a
+  // tiny white overlay, in light mode it reads slightly lighter-grey vs.
+  // pure-white and we need a full-strength white at the very edge to make
+  // the seam disappear.
+  const colorScheme = useColorScheme()
+  const isDark = colorScheme === 'dark'
+
   // Chat panel visibility
   const [chatCollapsed, setChatCollapsed] = useState(false)
   const [showChatSessions, setShowChatSessions] = useState(false)
@@ -1064,14 +1074,25 @@ export default observer(function ProjectLayout() {
     }
   }, [narrowChatPickerOpen, isWide, activeTab])
 
+  // Tracks which project is mid-hydration so we don't fire the read twice in
+  // StrictMode / under remounts. Distinct from `showChatSessionsHydratedRef`,
+  // which only flips AFTER the stored value has been applied — that gating is
+  // what keeps the persister effect below from clobbering the saved preference
+  // with the default `false` before the read resolves.
+  const showChatSessionsLoadingRef = useRef<string | null>(null)
+
   useEffect(() => {
     if (!projectId) return
     if (showChatSessionsHydratedRef.current === projectId) return
-    showChatSessionsHydratedRef.current = projectId
+    if (showChatSessionsLoadingRef.current === projectId) return
+    showChatSessionsLoadingRef.current = projectId
     AsyncStorage.getItem(`shogo:showChatHistory:${projectId}`).then((raw) => {
       if (raw === '1') setShowChatSessions(true)
       else if (raw === '0') setShowChatSessions(false)
-    }).catch(() => {})
+      showChatSessionsHydratedRef.current = projectId
+    }).catch(() => {
+      showChatSessionsHydratedRef.current = projectId
+    })
   }, [projectId])
 
   useEffect(() => {
@@ -1440,13 +1461,28 @@ export default observer(function ProjectLayout() {
     loadNames()
   }, [showChatSessions, store, projectId])
 
-  // Read name/inferredName from each session so MobX observer tracks those
-  // fields. The .all getter is reference-stable for field-only updates (no
-  // map-structure change), so useMemo wouldn't recompute without this.
-  let _sessionNameKey = ''
+  // Touch every field the memo below projects so MobX's observer tracks them.
+  // The .all getter is reference-stable for field-only updates (no map-
+  // structure change), so without folding the values into a dep key the memo
+  // would never recompute when a single session's name / pin / archive /
+  // activity timestamp changed — leaving the sidebar stale until the next
+  // structural mutation forced a re-render (the "I have to refresh to see my
+  // pin" bug).
+  let _sessionFieldsKey = ''
   if (store?.chatSessionCollection) {
     for (const s of store.chatSessionCollection.all as any[]) {
-      if (s.contextId === projectId) _sessionNameKey += s.name + '\0' + s.inferredName + '\n'
+      if (s.contextId !== projectId) continue
+      _sessionFieldsKey +=
+        s.name +
+        '\0' +
+        s.inferredName +
+        '\0' +
+        (s.isPinned ? '1' : '0') +
+        '\0' +
+        (s.isArchived ? '1' : '0') +
+        '\0' +
+        (s.lastActiveAt || s.updatedAt || s.createdAt || 0) +
+        '\n'
     }
   }
 
@@ -1474,7 +1510,7 @@ export default observer(function ProjectLayout() {
       return []
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store?.chatSessionCollection?.all, sessionNames, projectId, _sessionNameKey])
+  }, [store?.chatSessionCollection?.all, sessionNames, projectId, _sessionFieldsKey])
 
   const handleCreateNewSession = useCallback(async () => {
     try {
@@ -1962,18 +1998,6 @@ export default observer(function ProjectLayout() {
     </>
   )
 
-  const canvasPanel = canvasEnabled ? (
-    <CanvasPanel
-      agentUrl={agentUrl}
-      canvasBaseUrl={canvasBaseUrl}
-      onRefresh={reconnect}
-      fullBleed={!isWide}
-      iframeRefreshKey={iframeRefreshKey}
-      onCanvasCapabilities={handleCanvasCapabilities}
-      onCanvasError={handleCanvasError}
-    />
-  ) : null
-
   const hiddenTabs: string[] = ['app-preview'] // APP_MODE_DISABLED: always hide app-preview
   if (activeMode !== 'canvas') hiddenTabs.push('canvas')
   // Hide the external-only tabs on managed projects so the top-bar
@@ -1993,6 +2017,26 @@ export default observer(function ProjectLayout() {
 
   const chatHidden = isWide ? (isChatFullscreen || chatCollapsed) : activeTab !== 'chat'
   const canvasAreaHidden = (!isWide && activeTab === 'chat') || isChatFullscreen
+
+  // Defined after `chatHidden` so it can drive the canvas's `fullBleed`
+  // prop — see comment on `fullBleed` for why the iframe's left margin
+  // is gated on whether the chat panel sits alongside it.
+  const canvasPanel = canvasEnabled ? (
+    <CanvasPanel
+      agentUrl={agentUrl}
+      canvasBaseUrl={canvasBaseUrl}
+      onRefresh={reconnect}
+      // True whenever the canvas owns the entire viewport (chat fullscreen
+      // / collapsed in wide split, or narrow with the canvas tab active).
+      // Drives the canvas's own left margin: when the chat panel is
+      // alongside, the iframe flushes against its right edge; when solo,
+      // it gets the same 8px gutter as its other sides.
+      fullBleed={chatHidden}
+      iframeRefreshKey={iframeRefreshKey}
+      onCanvasCapabilities={handleCanvasCapabilities}
+      onCanvasError={handleCanvasError}
+    />
+  ) : null
 
   const topBarSharedProps = {
     projectName: project.name,
@@ -2088,12 +2132,23 @@ export default observer(function ProjectLayout() {
             />
           )}
 
-          {/* Content — chat panel stays mounted across layout/tab changes */}
-          <View className={cn('flex-1', isWide && 'flex-row')} ref={splitRowRef}>
+          {/* Content — chat panel stays mounted across layout/tab changes.
+              `overflow-hidden` keeps the chat column's slide-out (negative
+              marginLeft when collapsed) clipped to this row instead of
+              poking past the workspace's left edge. */}
+          <View className={cn('flex-1 overflow-hidden', isWide && 'flex-row')} ref={splitRowRef}>
             {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
             {/* Sidebar is shown always in fullscreen and toggleable in wide-split via showChatSessions. */}
             {(() => {
               const showSidebar = isChatFullscreen || (isWide && showChatSessions)
+              // The sidebar wrapper stays mounted whenever the chat column
+              // is in a layout where it COULD be shown (wide-split or
+              // fullscreen). That lets the CSS width transition below have
+              // both a before- and after-value to animate between when the
+              // user toggles `showChatSessions`; conditional rendering
+              // (`{showSidebar && …}`) would mount/unmount the View on each
+              // toggle and the transition would never get a starting frame.
+              const sidebarMounted = isChatFullscreen || isWide
               return (
                 <View
                   className={cn(
@@ -2101,18 +2156,71 @@ export default observer(function ProjectLayout() {
                     isChatFullscreen
                       ? 'flex-1 flex-row'
                       : isWide
-                        ? cn('shrink-0 bg-background z-10', showSidebar ? 'flex-row' : 'flex-col')
+                        // Always flex-row in wide-split so the always-
+                        // mounted sidebar (width 0 when closed) sits to
+                        // the left of the chat content during animations.
+                        // Snapping to flex-col mid-close would re-stack
+                        // the kids vertically and break the slide.
+                        ? 'shrink-0 bg-background z-10 flex-row'
                         : 'relative flex-1 flex-col',
-                    !isChatFullscreen && chatHidden && 'hidden',
+                    // Narrow-mode tab switches still use display:none —
+                    // those are categorical (chat tab vs. canvas tab)
+                    // and don't benefit from a slide. The wide-split
+                    // collapse case below uses an animated marginLeft
+                    // instead so the panel can transition.
+                    !isChatFullscreen && !isWide && chatHidden && 'hidden',
                   )}
                   style={
-                    !isChatFullscreen && isWide && !chatHidden
-                      ? { width: clampChatWidth(chatPanelWidth) + (showSidebar ? 280 : 0) }
+                    !isChatFullscreen && isWide
+                      ? {
+                          // Width stays at the full panel size even when
+                          // collapsed, so the inner chat content doesn't
+                          // reflow during the slide — the negative
+                          // marginLeft below tucks the column off-screen
+                          // and the parent row's overflow-hidden clips it.
+                          width: clampChatWidth(chatPanelWidth) + (showSidebar ? 280 : 0),
+                          // Slide-out: a marginLeft equal to -width makes
+                          // the column's flex contribution net zero (the
+                          // negative margin cancels the positive width),
+                          // so the canvas's flex-1 expands to fill the
+                          // freed space as the slide progresses. Slide-in
+                          // is the reverse: marginLeft animates back to 0.
+                          marginLeft: chatHidden
+                            ? -(clampChatWidth(chatPanelWidth) + (showSidebar ? 280 : 0))
+                            : 0,
+                          // Web-only: smooth the wrapper's resize +
+                          // collapse so width (sidebar toggle) and
+                          // margin-left (chat collapse) animate together
+                          // in lock-step with the sidebar's own width
+                          // transition below. RN native ignores these
+                          // style props (no regression there).
+                          transitionProperty: 'width, margin-left',
+                          transitionDuration: '220ms',
+                          transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
+                        } as any
                       : undefined
                   }
                 >
-                  {showSidebar && (
-                    <View className="w-[200px] bg-muted/50 dark:bg-black/30 border-r border-border">
+                  {sidebarMounted && (
+                    // `overflow-hidden` clips the always-mounted inner
+                    // 200px content box so the sidebar can collapse to
+                    // width 0 without distorting its children, AND keeps
+                    // the absolutely-positioned inset shadow gradients
+                    // pinned inside the sidebar's rectangle.
+                    <View
+                      className="bg-muted/50 dark:bg-black/30 relative overflow-hidden"
+                      style={{
+                        width: showSidebar ? 200 : 0,
+                        transitionProperty: 'width',
+                        transitionDuration: '220ms',
+                        transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
+                      } as any}
+                    >
+                      {/* Inner content stays at fixed 200px so the
+                          ChatSessionSidebar's FlatList doesn't re-layout
+                          mid-animation; the parent's `overflow-hidden`
+                          clips it to whatever width is currently visible. */}
+                      <View style={{ width: 200, height: '100%' }}>
                       <ChatSessionSidebar
                         sessions={chatSessions}
                         currentSessionId={chatSessionId ?? undefined}
@@ -2135,9 +2243,67 @@ export default observer(function ProjectLayout() {
                         completedSessionIds={completedTabIds}
                         projectId={projectId ?? undefined}
                       />
+                      </View>
+                      {/* Inset right-edge shadow — sidebar reads as the
+                          recessed surface and the chat column as elevated
+                          above it. Dark at the seam, fading to transparent
+                          inward, so the boundary feels like a soft drop
+                          shadow cast by the chat panel onto the sidebar.
+                          Theme-aware opacity: dark mode needs ~5× the
+                          alpha to register the same perceived depth,
+                          because black-on-`rgb(13)` darkens far less per
+                          unit alpha than black-on-`rgb(250)`. */}
+                      <LinearGradient
+                        colors={
+                          isDark
+                            ? ["rgba(0,0,0,0)", "rgba(0,0,0,0.4)"]
+                            : ["rgba(0,0,0,0)", "rgba(0,0,0,0.08)"]
+                        }
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 0 }}
+                        pointerEvents="none"
+                        style={{
+                          position: 'absolute',
+                          top: 0,
+                          bottom: 0,
+                          right: 0,
+                          width: 12,
+                        }}
+                      />
+                      {/* Inset top-edge shadow — same idea rotated 90°,
+                          casting from the topbar down onto the sidebar's
+                          recessed surface. */}
+                      <LinearGradient
+                        colors={
+                          isDark
+                            ? ["rgba(0,0,0,0.4)", "rgba(0,0,0,0)"]
+                            : ["rgba(0,0,0,0.08)", "rgba(0,0,0,0)"]
+                        }
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 0, y: 1 }}
+                        pointerEvents="none"
+                        style={{
+                          position: 'absolute',
+                          top: 0,
+                          left: 0,
+                          right: 0,
+                          height: 12,
+                        }}
+                      />
                     </View>
                   )}
-                  <View className="flex-1 min-h-0 relative">
+                  {/* Chat content column. The recessed-under-canvas styling
+                      (rounded top-right + inset shadow) only makes sense
+                      in wide split mode where the canvas actually sits to
+                      the right; in fullscreen / narrow modes the chat
+                      panel owns the full width and there's nothing to
+                      indent under. */}
+                  <View
+                    className={cn(
+                      "flex-1 min-h-0 relative",
+                      isWide && !isChatFullscreen && "rounded-tr-2xl overflow-hidden",
+                    )}
+                  >
                     <View
                       className="absolute inset-0"
                       style={showEmptyChatState || narrowChatPickerOpen ? { opacity: 0 } : undefined}
@@ -2188,24 +2354,61 @@ export default observer(function ProjectLayout() {
                         />
                       </View>
                     )}
+                    {isWide && !isChatFullscreen && (
+                      <>
+                        {/* Inset right-edge shadow — chat panel reads as
+                            recessed under the canvas/preview column to the
+                            right. Same alpha + width as the sidebar's
+                            inset shadow so the two recessed columns share
+                            a consistent depth. */}
+                        <LinearGradient
+                          colors={
+                            isDark
+                              ? ["rgba(0,0,0,0)", "rgba(0,0,0,0.4)"]
+                              : ["rgba(0,0,0,0)", "rgba(0,0,0,0.08)"]
+                          }
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 0 }}
+                          pointerEvents="none"
+                          style={{ position: 'absolute', top: 0, bottom: 0, right: 0, width: 12 }}
+                        />
+                        {/* Inset top-edge shadow — topbar above casts onto
+                            the recessed chat surface, completing the
+                            "tucked under" feel that lines up with the
+                            sidebar's top fade. */}
+                        <LinearGradient
+                          colors={
+                            isDark
+                              ? ["rgba(0,0,0,0.4)", "rgba(0,0,0,0)"]
+                              : ["rgba(0,0,0,0.08)", "rgba(0,0,0,0)"]
+                          }
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 0, y: 1 }}
+                          pointerEvents="none"
+                          style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 12 }}
+                        />
+                      </>
+                    )}
+                    {/* Drag handle to resize chat panel — sits inside the
+                        chat content column, just to the left of the inner
+                        scrollbar (web only, wide split mode). */}
+                    {Platform.OS === 'web' && isWide && !isChatFullscreen && !chatHidden && (
+                      <ChatPanelResizeHandle
+                        splitRowRef={splitRowRef}
+                        chatPanelWidth={clampChatWidth(chatPanelWidth)}
+                        minWidth={MIN_CHAT_PANEL_WIDTH}
+                        maxWidth={maxChatPanelWidth}
+                        onResize={setChatPanelWidth}
+                        onResizeEnd={persistChatPanelWidth}
+                        defaultWidth={DEFAULT_CHAT_PANEL_WIDTH}
+                        leftOffset={showChatSessions ? 280 : 0}
+                        rightOffset={12}
+                      />
+                    )}
                   </View>
                 </View>
               )
             })()}
-
-            {/* Drag handle to resize chat panel (web only, wide split mode) */}
-            {Platform.OS === 'web' && isWide && !isChatFullscreen && !chatHidden && (
-              <ChatPanelResizeHandle
-                splitRowRef={splitRowRef}
-                chatPanelWidth={clampChatWidth(chatPanelWidth)}
-                minWidth={MIN_CHAT_PANEL_WIDTH}
-                maxWidth={maxChatPanelWidth}
-                onResize={setChatPanelWidth}
-                onResizeEnd={persistChatPanelWidth}
-                defaultWidth={DEFAULT_CHAT_PANEL_WIDTH}
-                leftOffset={showChatSessions ? 280 : 0}
-              />
-            )}
 
         {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
         <View
@@ -2681,6 +2884,8 @@ function ChatPanelResizeHandle({
   onResizeEnd,
   defaultWidth,
   leftOffset = 0,
+  rightOffset = 0,
+  hitWidth = 20,
 }: {
   splitRowRef: React.RefObject<View | null>
   chatPanelWidth: number
@@ -2691,6 +2896,14 @@ function ChatPanelResizeHandle({
   defaultWidth: number
   /** Pixels of fixed-width content (e.g. the chat history sidebar) sitting to the left of the resizable chat panel. */
   leftOffset?: number
+  /** Pixels from the chat panel's right edge where the *visible* bar is drawn.
+   *  The grabbable hit zone always extends all the way to the right edge so
+   *  the (thin) scrollbar area is also a valid drag target. */
+  rightOffset?: number
+  /** Total width of the (transparent) grab zone, measured from the chat
+   *  panel's right edge. Should be larger than `rightOffset` so the bar
+   *  itself is comfortably inside the hit area. */
+  hitWidth?: number
 }) {
   const [dragging, setDragging] = useState(false)
   const [hovered, setHovered] = useState(false)
@@ -2704,10 +2917,29 @@ function ChatPanelResizeHandle({
     if (!container) return
     const containerRect = container.getBoundingClientRect()
 
+    // Distance from the cursor at pointerdown to the chat panel's right
+    // edge. We hold this constant during the drag so that grabbing the
+    // handle off-center doesn't snap the panel to the cursor position
+    // (the handle is now inset from the right edge by `rightOffset`, so
+    // the cursor is meaningfully to the left of the actual edge).
+    const currentRightEdgeX = containerRect.left + leftOffset + chatPanelWidth
+    const grabDx = currentRightEdgeX - e.clientX
+
+    // Transparent fixed overlay over the whole viewport. Without this,
+    // any iframe under the cursor (canvas / preview) swallows the
+    // pointermove events and the resize freezes the moment the cursor
+    // crosses into the iframe. The overlay's high z-index keeps it on
+    // top of every iframe; pointer-events stays default ("auto") so
+    // pointermove fires on `document` as expected.
+    const overlay = document.createElement('div')
+    overlay.style.cssText =
+      'position:fixed;inset:0;z-index:2147483647;cursor:col-resize;background:transparent;'
+    document.body.appendChild(overlay)
+
     const onPointerMove = (ev: PointerEvent) => {
       const newWidth = Math.max(
         minWidth,
-        Math.min(maxWidth, ev.clientX - containerRect.left - leftOffset),
+        Math.min(maxWidth, ev.clientX + grabDx - containerRect.left - leftOffset),
       )
       latestWidthRef.current = newWidth
       onResize(newWidth)
@@ -2718,6 +2950,7 @@ function ChatPanelResizeHandle({
       document.removeEventListener('pointerup', onPointerUp)
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
+      overlay.remove()
       setDragging(false)
       onResizeEnd(latestWidthRef.current)
     }
@@ -2726,7 +2959,7 @@ function ChatPanelResizeHandle({
     document.body.style.userSelect = 'none'
     document.addEventListener('pointermove', onPointerMove)
     document.addEventListener('pointerup', onPointerUp)
-  }, [splitRowRef, minWidth, maxWidth, onResize, onResizeEnd, leftOffset])
+  }, [splitRowRef, minWidth, maxWidth, onResize, onResizeEnd, leftOffset, chatPanelWidth])
 
   const handleDoubleClick = useCallback(() => {
     onResizeEnd(defaultWidth)
@@ -2741,19 +2974,22 @@ function ChatPanelResizeHandle({
       onDoubleClick={handleDoubleClick}
       onPointerEnter={() => setHovered(true)}
       onPointerLeave={() => setHovered(false)}
-      className="shrink-0 items-center justify-center"
       style={{
-        width: 5,
+        position: 'absolute',
+        top: 0,
+        bottom: 0,
+        right: 0,
+        width: hitWidth,
         cursor: 'col-resize' as any,
-        zIndex: 20,
+        zIndex: 21,
       }}
     >
       <View
         className={cn(
-          'h-full transition-all duration-150',
+          'absolute top-0 bottom-0 transition-all duration-150',
           active ? 'bg-primary/40' : 'bg-transparent',
         )}
-        style={{ width: active ? 3 : 1 }}
+        style={{ right: rightOffset, width: active ? 3 : 1 }}
       />
     </View>
   )
@@ -2818,6 +3054,7 @@ function CanvasPanel({
   agentUrl,
   canvasBaseUrl,
   onRefresh,
+  fullBleed = false,
   iframeRefreshKey = 0,
   onCanvasCapabilities,
   onCanvasError,
@@ -2905,7 +3142,18 @@ function CanvasPanel({
   }
 
   return (
-    <View className="flex-1 overflow-hidden rounded-2xl mx-2 mb-2">
+    <View
+      className={cn(
+        // The chat panel column on the left has a `rounded-tr-2xl` cut-out
+        // and inset shadow so the canvas reads as elevated against it; in
+        // that layout the iframe flushes flush against the chat panel's
+        // right edge (no left gutter). When the canvas is solo (`fullBleed`
+        // — chat fullscreen, chat collapsed, or narrow canvas tab) there's
+        // no chat seam to align with, so we restore the symmetric 8px gap.
+        'flex-1 overflow-hidden rounded-2xl mr-2 mb-2',
+        fullBleed && 'ml-2',
+      )}
+    >
       <CanvasWebView
         agentUrl={agentUrl}
         canvasBaseUrl={readyCanvasBaseUrl}

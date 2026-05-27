@@ -297,7 +297,9 @@ function ChatInputImpl({
   const [isProcessingFiles, setIsProcessingFiles] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
   const [queueExpanded, setQueueExpanded] = useState(true)
-  const [hoveredQueuedId, setHoveredQueuedId] = useState<string | null>(null)
+  // Row hover & action-icon visibility are now CSS-driven (Tailwind `group` /
+  // `group-hover:`) rather than React-state driven — see the comment above
+  // the row Pressable below for why.
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [interactionModeOpen, setInteractionModeOpen] = useState(false)
   const [attachSheetOpen, setAttachSheetOpen] = useState(false)
@@ -821,32 +823,31 @@ function ChatInputImpl({
                 const primaryText = trimmedContent
                   ? trimmedContent
                   : attachmentLabel || "Empty message"
-                const isHovered = hoveredQueuedId === msg.id
-                // On web we keep the action group mounted at all times
-                // and toggle visibility via opacity. Conditionally
-                // unmounting (the previous approach) caused the icons
-                // to disappear the instant the cursor crossed from the
-                // row body onto an inner Pressable: the parent row's
-                // `onHoverOut` mis-fires on that child-enter transition
-                // (RN Web's Pressable hover detection isn't strictly
-                // mouseenter/leave-equivalent across nested Pressables),
-                // which collapses the conditional, the cursor then
-                // hovers nothing-of-interest, and the row never reasserts
-                // hover. Always-rendered + opacity sidesteps that
-                // entirely. Native still always-visible, same as before.
-                const showActionsOnWeb = isHovered
                 return (
+                  // CSS `group` + `hover:` / `group-hover:` (instead of a
+                  // React `hoveredQueuedId` state) for both row background
+                  // and action-icon visibility. The earlier state-driven
+                  // approach flickered when the cursor crossed from the
+                  // row body onto a nested action Pressable: RN-Web fires
+                  // the row's `onHoverOut` on that child-enter transition,
+                  // which collapsed `isHovered` to false — fading the
+                  // actions to opacity-0 *and* dropping the row's hover
+                  // bg — then the row re-asserted hover a frame later and
+                  // the cycle repeated. CSS `:hover` doesn't suffer this:
+                  // it stays true as long as the cursor is over the
+                  // element or any descendant, so the row bg + action
+                  // group remain stable while the pointer is on a button.
+                  // Native has no hover, so `group-hover:` simply never
+                  // activates — the explicit `Platform.OS === "web"` gate
+                  // on the opacity classes keeps the actions always
+                  // visible there, matching the prior behavior.
                   <Pressable
                     key={msg.id}
                     onPress={() => onEditQueuedMessage?.(msg.id)}
-                    onHoverIn={() => setHoveredQueuedId(msg.id)}
-                    onHoverOut={() =>
-                      setHoveredQueuedId((prev) => (prev === msg.id ? null : prev))
-                    }
                     accessibilityLabel="Queued message"
                     className={cn(
-                      "flex-row items-center gap-2 px-2 py-1.5 border-b border-border/40 last:border-b-0",
-                      isHovered && Platform.OS === "web" && "bg-muted/40"
+                      "group flex-row items-center gap-2 px-2 py-1.5 border-b border-border/40 last:border-b-0",
+                      Platform.OS === "web" && "hover:bg-muted/40"
                     )}
                   >
                     <View className="h-3 w-3 rounded-full border border-muted-foreground/30 flex-shrink-0" />
@@ -883,37 +884,89 @@ function ChatInputImpl({
                     <View
                       className={cn(
                         "flex-row items-center gap-0.5",
+                        // Fade in on row hover via CSS group-hover so
+                        // crossing onto a child button doesn't tear the
+                        // visibility state down. Native always shows them
+                        // (no hover concept), same as before.
                         Platform.OS === "web" &&
-                          !showActionsOnWeb &&
-                          "opacity-0 pointer-events-none",
+                          "opacity-0 group-hover:opacity-100",
                       )}
                     >
+                      {/*
+                        Each action button uses Pressable's children-as-
+                        function API to read `{ hovered, pressed }` from
+                        RN-Web directly, rather than relying on NativeWind
+                        `hover:` / `group-hover:` variants. The variants
+                        don't reliably produce visible styling on these
+                        nested Pressables in our setup (the row hover
+                        works, but per-button hover never landed any
+                        background or icon-color swap on the user's
+                        screen — see chat thread). State-from-children is
+                        the documented Pressable API and gives us a
+                        boolean we can fan out to both the wrapper bg and
+                        the lucide icon's text color in one place. Native
+                        platforms have no hover concept; `hovered` is
+                        simply undefined there, so the icons read as the
+                        default muted-foreground, matching prior behavior.
+                      */}
                       {onReorderQueuedMessage && queuedMessages.length > 1 && (
                         <>
                           {index > 0 && (
                             <Pressable
                               accessibilityLabel="Move queued message up"
-                              onPress={() => onReorderQueuedMessage(msg.id, "up")}
-                              className="h-6 w-6 items-center justify-center"
+                              onPress={(e) => {
+                                if (e?.stopPropagation) e.stopPropagation()
+                                onReorderQueuedMessage(msg.id, "up")
+                              }}
                             >
-                              <ChevronUp
-                                className="h-3 w-3 text-muted-foreground"
-                                size={12}
-                              />
+                              {(state: any) => {
+                                const active = state.hovered || state.pressed
+                                return (
+                                  <View
+                                    className={cn(
+                                      "h-6 w-6 items-center justify-center rounded",
+                                      active && "bg-muted-foreground/25",
+                                    )}
+                                  >
+                                    <ChevronUp
+                                      className={cn(
+                                        "h-3 w-3",
+                                        active ? "text-foreground" : "text-muted-foreground",
+                                      )}
+                                      size={12}
+                                    />
+                                  </View>
+                                )
+                              }}
                             </Pressable>
                           )}
                           {index < queuedMessages.length - 1 && (
                             <Pressable
                               accessibilityLabel="Move queued message down"
-                              onPress={() =>
+                              onPress={(e) => {
+                                if (e?.stopPropagation) e.stopPropagation()
                                 onReorderQueuedMessage(msg.id, "down")
-                              }
-                              className="h-6 w-6 items-center justify-center"
+                              }}
                             >
-                              <ChevronDown
-                                className="h-3 w-3 text-muted-foreground"
-                                size={12}
-                              />
+                              {(state: any) => {
+                                const active = state.hovered || state.pressed
+                                return (
+                                  <View
+                                    className={cn(
+                                      "h-6 w-6 items-center justify-center rounded",
+                                      active && "bg-muted-foreground/25",
+                                    )}
+                                  >
+                                    <ChevronDown
+                                      className={cn(
+                                        "h-3 w-3",
+                                        active ? "text-foreground" : "text-muted-foreground",
+                                      )}
+                                      size={12}
+                                    />
+                                  </View>
+                                )
+                              }}
                             </Pressable>
                           )}
                         </>
@@ -921,37 +974,88 @@ function ChatInputImpl({
                       {onSendQueuedMessageNow && (
                         <Pressable
                           accessibilityLabel="Send queued message now"
-                          onPress={() => onSendQueuedMessageNow(msg.id)}
-                          className="h-6 w-6 items-center justify-center"
+                          onPress={(e) => {
+                            if (e?.stopPropagation) e.stopPropagation()
+                            onSendQueuedMessageNow(msg.id)
+                          }}
                         >
-                          <SendHorizontal
-                            className="h-3 w-3 text-muted-foreground"
-                            size={12}
-                          />
+                          {(state: any) => {
+                            const active = state.hovered || state.pressed
+                            return (
+                              <View
+                                className={cn(
+                                  "h-6 w-6 items-center justify-center rounded",
+                                  active && "bg-muted-foreground/25",
+                                )}
+                              >
+                                <SendHorizontal
+                                  className={cn(
+                                    "h-3 w-3",
+                                    active ? "text-foreground" : "text-muted-foreground",
+                                  )}
+                                  size={12}
+                                />
+                              </View>
+                            )
+                          }}
                         </Pressable>
                       )}
                       {onEditQueuedMessage && (
                         <Pressable
                           accessibilityLabel="Edit queued message"
-                          onPress={() => onEditQueuedMessage(msg.id)}
-                          className="h-6 w-6 items-center justify-center"
+                          onPress={(e) => {
+                            if (e?.stopPropagation) e.stopPropagation()
+                            onEditQueuedMessage(msg.id)
+                          }}
                         >
-                          <Pencil
-                            className="h-3 w-3 text-muted-foreground"
-                            size={12}
-                          />
+                          {(state: any) => {
+                            const active = state.hovered || state.pressed
+                            return (
+                              <View
+                                className={cn(
+                                  "h-6 w-6 items-center justify-center rounded",
+                                  active && "bg-muted-foreground/25",
+                                )}
+                              >
+                                <Pencil
+                                  className={cn(
+                                    "h-3 w-3",
+                                    active ? "text-foreground" : "text-muted-foreground",
+                                  )}
+                                  size={12}
+                                />
+                              </View>
+                            )
+                          }}
                         </Pressable>
                       )}
                       {onRemoveQueuedMessage && (
                         <Pressable
                           accessibilityLabel="Delete queued message"
-                          onPress={() => onRemoveQueuedMessage(msg.id)}
-                          className="h-6 w-6 items-center justify-center"
+                          onPress={(e) => {
+                            if (e?.stopPropagation) e.stopPropagation()
+                            onRemoveQueuedMessage(msg.id)
+                          }}
                         >
-                          <Trash2
-                            className="h-3 w-3 text-muted-foreground"
-                            size={12}
-                          />
+                          {(state: any) => {
+                            const active = state.hovered || state.pressed
+                            return (
+                              <View
+                                className={cn(
+                                  "h-6 w-6 items-center justify-center rounded",
+                                  active && "bg-destructive/20",
+                                )}
+                              >
+                                <Trash2
+                                  className={cn(
+                                    "h-3 w-3",
+                                    active ? "text-destructive" : "text-muted-foreground",
+                                  )}
+                                  size={12}
+                                />
+                              </View>
+                            )
+                          }}
                         </Pressable>
                       )}
                     </View>

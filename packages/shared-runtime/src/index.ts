@@ -141,6 +141,11 @@ export {
 } from './macos-junk'
 
 export {
+  BINARY_FILE_EXTENSIONS,
+  isBinaryFilePath,
+} from './file-types'
+
+export {
   recordBuildError,
   getBuildErrors,
   clearBuildErrors,

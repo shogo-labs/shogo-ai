@@ -11,6 +11,7 @@ export default defineConfig({
     'src/chat-message.ts',
     'src/macos-junk.ts',
     'src/tech-stack-registry.ts',
+    'src/file-types.ts',
   ],
   format: ['cjs', 'esm'],
   dts: true,

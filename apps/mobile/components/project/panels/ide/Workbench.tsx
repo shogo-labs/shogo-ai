@@ -43,6 +43,7 @@ import { setupLspProviders } from "./monaco/lspProviders";
 import { setupLspDocumentSync } from "./monaco/lspDocumentSync";
 import { matchesShortcut, type Command } from "./commands";
 import { useTheme } from "../../../../contexts/theme";
+import { isBinaryFilePath } from "@shogo-ai/sdk/file-types";
 import {
   RefreshCw,
   History,
@@ -56,16 +57,6 @@ import {
 
 let groupSeq = 1;
 const newGroupId = () => `g${groupSeq++}`;
-/** Binary files we refuse to open at all — we have no viewer for them and
- *  Monaco can't render them as text. Anything with a dedicated preview
- *  (images, pdf, audio, video, fonts, sqlite) is handled by the
- *  previewLanguageFor() switch below and is intentionally NOT in this set. */
-const BINARY_EXTENSIONS = new Set([
-  "zip","gz","tar","tgz","bz2","xz","7z","rar","zst","lz4",
-  "exe","dll","so","dylib","bin","class","jar","wasm",
-  "pack","idx","psd","ai","sketch","fig","blend","obj","fbx",
-  "pyc","pyo","pyd",
-]);
 
 /** SQLite database files are binary, but we render them in a read-only
  *  SQLite preview (tables + sample rows) instead of refusing to open. */
@@ -603,9 +594,12 @@ export function Workbench({
   const openFileInGroup = useCallback(
     async (node: TreeNode, groupIdx: number) => {
       if (node.kind !== "file") return;
-      const ext = node.name.toLowerCase().split(".").pop() ?? "";
       const previewLang = previewLanguageFor(node.path);
-      if (!previewLang && BINARY_EXTENSIONS.has(ext)) {
+      // Binary files without a dedicated preview can't be rendered by
+      // Monaco — refuse to open. Files like .png/.pdf/.mp4/.sqlite ARE
+      // binary but `previewLang` is non-null so we let them through to
+      // the preview viewer below.
+      if (!previewLang && isBinaryFilePath(node.path)) {
         showToast(`Cannot open binary file: ${node.name}`, 2500);
         return;
       }

@@ -1215,6 +1215,13 @@ export const ChatPanel = observer(function ChatPanel({
     lastChatProgressAtRef.current = Date.now()
   }, [])
 
+  // Flipped synchronously in `handleStop` so `onFinish` (which fires after
+  // `stop()` finalises the in-flight assistant message) can distinguish a
+  // user-initiated abort from a real "agent returned nothing" condition.
+  // Without this we raise a scary "context corruption" banner every time
+  // the user taps Stop before the model produced any text or tool calls.
+  const userInitiatedStopRef = useRef(false)
+
   const transportConfig = useChatTransportConfig({
     apiBaseUrl: API_URL!,
     projectId,
@@ -1912,9 +1919,12 @@ export const ChatPanel = observer(function ChatPanel({
       const hasToolCallsInMessage = message.parts?.some(
         (p: any) => p.type === "tool-invocation" || p.type === "tool-result"
       )
-      if (!hasTextContent && !hasToolCallsInMessage && contentLength === 0) {
+      if (userInitiatedStopRef.current) {
+        userInitiatedStopRef.current = false
+        setEmptyResponseError(null)
+      } else if (!hasTextContent && !hasToolCallsInMessage && contentLength === 0) {
         console.warn("[ChatPanel] Agent returned empty response — possible context corruption")
-        setEmptyResponseError("The agent returned an empty response. Try starting a new chat session.")
+        setEmptyResponseError("The agent returned no content.")
       } else {
         setEmptyResponseError(null)
       }
@@ -2208,6 +2218,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   const [emptyResponseError, setEmptyResponseError] = useState<string | null>(null)
   const [errorBannerExpanded, setErrorBannerExpanded] = useState(false)
+  const [errorDismissed, setErrorDismissed] = useState(false)
   const [tunnelReconnecting, setTunnelReconnecting] = useState(false)
 
   const isRemoteInstance = !!localAgentUrl
@@ -2224,6 +2235,9 @@ export const ChatPanel = observer(function ChatPanel({
   )
   useEffect(() => {
     setErrorBannerExpanded(false)
+    // A new error message after a dismissal should re-surface the banner —
+    // otherwise tapping X once would permanently mute future errors.
+    setErrorDismissed(false)
   }, [errorBannerText])
 
   useEffect(() => {
@@ -2265,7 +2279,7 @@ export const ChatPanel = observer(function ChatPanel({
   }, [isTunnelError, localAgentUrl])
 
   const errorBannerNeedsReadMore =
-    errorBannerText.split(/\n/).length > 4 || errorBannerText.length > 220
+    errorBannerText.split(/\n/).length > 2 || errorBannerText.length > 140
 
   const [pendingInitialMessage, setPendingInitialMessage] = useState<string | null>(null)
   const [optimisticUserInput, setOptimisticUserInput] = useState<OptimisticUserInput | null>(null)
@@ -2396,6 +2410,7 @@ export const ChatPanel = observer(function ChatPanel({
   }, [isStreaming])
 
   const handleStop = useCallback(() => {
+    userInitiatedStopRef.current = true
     setStoppedMessages([...messagesRef.current])
     stop()
 
@@ -3307,6 +3322,8 @@ export const ChatPanel = observer(function ChatPanel({
       }
       setStoppedMessages(null)
       setEmptyResponseError(null)
+      setErrorDismissed(false)
+      userInitiatedStopRef.current = false
 
       const fileArray = files || []
 
@@ -4624,32 +4641,32 @@ export const ChatPanel = observer(function ChatPanel({
           )}
 
           {/* Error Alert — cap long messages so the sidebar layout stays usable */}
-          {(error || emptyResponseError) && (
+          {(error || emptyResponseError) && !errorDismissed && (
             <View className="px-4 pb-2 max-w-3xl w-full self-center">
-              <View className={`flex-row items-start gap-2 rounded-lg border p-3 ${
+              <View className={`flex-row items-start gap-1.5 rounded-md border px-3 py-2 ${
                 isTunnelError
                   ? 'border-orange-400/50 bg-orange-50 dark:bg-orange-950/30'
                   : 'border-destructive/50 bg-destructive/10'
               }`}>
-                <AlertCircle className={`h-4 w-4 shrink-0 mt-0.5 ${
+                <AlertCircle className={`h-3.5 w-3.5 shrink-0 mt-0.5 ${
                   isTunnelError ? 'text-orange-600 dark:text-orange-400' : 'text-destructive'
-                }`} size={16} />
-                <View className="flex-1 min-w-0 flex-row items-start justify-between gap-2">
+                }`} size={14} />
+                <View className="flex-1 min-w-0 flex-row items-start justify-between gap-1.5">
                   <View className="flex-1 min-w-0 pr-1">
                     {errorBannerExpanded ? (
                       <ScrollView
                         nestedScrollEnabled
-                        className="max-h-48"
+                        className="max-h-40"
                         showsVerticalScrollIndicator
                       >
-                        <Text className={`text-sm ${isTunnelError ? 'text-orange-700 dark:text-orange-300' : 'text-destructive'}`} selectable>
+                        <Text className={`text-xs ${isTunnelError ? 'text-orange-700 dark:text-orange-300' : 'text-destructive'}`} selectable>
                           {errorBannerText}
                         </Text>
                       </ScrollView>
                     ) : (
                       <Text
-                        className={`text-sm ${isTunnelError ? 'text-orange-700 dark:text-orange-300' : 'text-destructive'}`}
-                        numberOfLines={4}
+                        className={`text-xs ${isTunnelError ? 'text-orange-700 dark:text-orange-300' : 'text-destructive'}`}
+                        numberOfLines={2}
                         selectable
                       >
                         {errorBannerText}
@@ -4658,24 +4675,24 @@ export const ChatPanel = observer(function ChatPanel({
                     {errorBannerNeedsReadMore && (
                       <Pressable
                         onPress={() => setErrorBannerExpanded((e) => !e)}
-                        className="mt-1.5 self-start py-0.5"
+                        className="mt-1 self-start py-0.5"
                         role="button"
                         accessibilityLabel={
                           errorBannerExpanded ? 'Show less error detail' : 'Read full error message'
                         }
                       >
-                        <Text className={`text-xs font-semibold ${isTunnelError ? 'text-orange-700 dark:text-orange-300' : 'text-destructive'}`}>
+                        <Text className={`text-[11px] font-semibold ${isTunnelError ? 'text-orange-700 dark:text-orange-300' : 'text-destructive'}`}>
                           {errorBannerExpanded ? 'Show less' : 'Read more'}
                         </Text>
                       </Pressable>
                     )}
                   </View>
                   {tunnelReconnecting ? (
-                    <View className="shrink-0 rounded-md border border-orange-400/30 px-2 py-1.5 self-start">
-                      <Text className="text-sm text-orange-600 dark:text-orange-400 font-medium">Reconnecting…</Text>
+                    <View className="shrink-0 rounded-md border border-orange-400/30 px-2 py-1 self-start">
+                      <Text className="text-xs text-orange-600 dark:text-orange-400 font-medium">Reconnecting…</Text>
                     </View>
                   ) : (
-                    <View className="shrink-0 flex-row gap-1.5 self-start">
+                    <View className="shrink-0 flex-row items-center gap-1 self-start">
                       {isTunnelError && (
                         <Pressable
                           onPress={() => {
@@ -4687,22 +4704,34 @@ export const ChatPanel = observer(function ChatPanel({
                           }}
                           accessibilityRole="button"
                           accessibilityLabel="Continue this conversation in the cloud sandbox"
-                          className="rounded-md border border-orange-400/30 px-2 py-1.5"
+                          className="rounded-md border border-orange-400/30 px-2 py-1"
                         >
-                          <Text className="text-sm font-medium text-orange-700 dark:text-orange-300">Continue in cloud</Text>
+                          <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">Continue in cloud</Text>
                         </Pressable>
                       )}
                       <Pressable
                         onPress={handleRetry}
-                        className={`rounded-md border px-1 py-1.5 ${
+                        className={`rounded-md border px-2 py-1 ${
                           isTunnelError
                             ? 'border-orange-400/30'
                             : 'border-destructive/30'
                         }`}
                       >
-                        <Text className={`text-sm font-medium ${
+                        <Text className={`text-xs font-medium ${
                           isTunnelError ? 'text-orange-600 dark:text-orange-400' : 'text-destructive'
                         }`}>{isTunnelError ? 'Reconnect' : 'Retry'}</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => {
+                          setEmptyResponseError(null)
+                          setErrorDismissed(true)
+                        }}
+                        accessibilityRole="button"
+                        accessibilityLabel="Dismiss error"
+                        hitSlop={8}
+                        className="rounded-md p-1"
+                      >
+                        <X size={14} className={isTunnelError ? 'text-orange-600 dark:text-orange-400' : 'text-destructive'} />
                       </Pressable>
                     </View>
                   )}

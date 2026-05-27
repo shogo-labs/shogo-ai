@@ -38,6 +38,7 @@ import {
   configureAIProxy,
   StreamBufferStore,
   isMacOSJunkName,
+  isBinaryFilePath,
   GitWorkspaceSync,
   createGitSyncFromEnv,
   resolveCloudSyncMode,
@@ -2624,54 +2625,18 @@ app.get('/agent/workspace/tree', async (c) => {
   return c.json({ tree })
 })
 
-/** Extensions whose on-disk bytes are NOT valid utf-8 text. Reading these
- *  with `readFileSync(..., 'utf-8')` silently replaces every invalid byte
- *  with U+FFFD; writing the resulting string back with `writeFileSync(...,
- *  'utf-8')` then encodes each U+FFFD as 3 bytes (`EF BF BD`), bloating
- *  the file ~2× and destroying the original bytes.
- *
- *  Two real-world triggers we've seen do this round-trip:
- *    1. Frontend `useLiveAgentEdits` reacted to chokidar's `file.changed`
- *       event for an `.mp4`, called `service.readFile()`, the result
- *       autosaved 1 s later back through PUT. The MP4 came back at 2x
- *       size with ~65k replacement chars per file.
- *    2. Any external HTTP client (CLI, integration, eval harness) using
- *       the documented `{ content }` shape against a binary path.
- *
- *  Keep in sync with `apps/mobile/.../useLiveAgentEdits.ts`
- *  NON_TEXT_EXTENSIONS / isBinaryPath() — both layers carry the guard
- *  so neither is a single point of failure. */
-const BINARY_FILE_EXTENSIONS = new Set([
-  // Images
-  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif', 'apng',
-  'heic', 'heif', 'tiff', 'tif', 'jxl', 'cur',
-  // Archives
-  'zip', 'gz', 'tar', 'tgz', 'bz2', 'xz', '7z', 'rar', 'zst', 'lz4',
-  // Audio / video / docs
-  'mp3', 'mp4', 'm4a', 'm4v', 'mov', 'avi', 'mkv', 'webm', 'wav', 'flac',
-  'ogg', 'oga', 'ogv', 'aac', 'opus', 'pdf',
-  // Fonts
-  'woff', 'woff2', 'ttf', 'otf', 'eot',
-  // Native / packed
-  'exe', 'dll', 'so', 'dylib', 'bin', 'class', 'jar', 'wasm',
-  // Databases
-  'db', 'sqlite', 'sqlite3',
-  // Misc binary
-  'pack', 'idx', 'psd', 'ai', 'sketch', 'fig', 'blend', 'obj', 'fbx',
-  'pyc', 'pyo', 'pyd',
-])
-
-function isBinaryFilePath(p: string): boolean {
-  const dot = p.lastIndexOf('.')
-  if (dot < 0) return false
-  return BINARY_FILE_EXTENSIONS.has(p.slice(dot + 1).toLowerCase())
-}
+// `isBinaryFilePath` / `BINARY_FILE_EXTENSIONS` are the canonical "should
+// this file be wire-encoded as base64?" predicate, imported above from
+// `@shogo/shared-runtime` (which re-exports `@shogo-ai/core/file-types`).
+// One source of truth across agent-runtime, IDE Workbench, live-edit
+// sync, and the local FS layer.
 
 // Read a file from the workspace. Text files come back as `content`
 // (utf-8 string); binary files come back as `contentBase64` (base64-
-// encoded raw bytes) — see BINARY_FILE_EXTENSIONS above. Callers must
-// branch on the `encoding` field; the SDK's `readFile()` does this for
-// you and throws if asked to text-read a binary file.
+// encoded raw bytes) — see `isBinaryFilePath` (canonical extension list
+// in `@shogo-ai/core/file-types`). Callers must branch on the `encoding`
+// field; the SDK's `readFile()` does this for you and throws if asked to
+// text-read a binary file.
 app.get('/agent/workspace/files/*', (c) => {
   const subPath = c.req.path.replace('/agent/workspace/files/', '')
   if (!subPath) return c.json({ error: 'Path required' }, 400)
@@ -2708,10 +2673,11 @@ app.get('/agent/workspace/files/*', (c) => {
 //
 // To prevent the read-as-utf-8 / write-as-utf-8 corruption round-trip
 // that previously bloated `.mp4` / `.zip` / etc. by ~2×, this endpoint
-// refuses to accept utf-8 `content` for any path whose extension is in
-// BINARY_FILE_EXTENSIONS — callers MUST send `contentBase64` for those.
-// The SDK's `writeFile()` covers this seamlessly for SDK users; raw
-// HTTP callers get a 400 with an explicit error.
+// refuses to accept utf-8 `content` for any path that `isBinaryFilePath`
+// flags (see `@shogo-ai/core/file-types` for the canonical extension
+// list) — callers MUST send `contentBase64` for those. The SDK's
+// `writeFile()` covers this seamlessly for SDK users; raw HTTP callers
+// get a 400 with an explicit error.
 app.put('/agent/workspace/files/*', async (c) => {
   const subPath = c.req.path.replace('/agent/workspace/files/', '')
   if (!subPath) return c.json({ error: 'Path required' }, 400)
