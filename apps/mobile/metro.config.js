@@ -74,6 +74,87 @@ for (const pkg of SINGLETON_PACKAGES) {
   } catch {}
 }
 
+// =====================================================================
+// Reanimated / Worklets stub aliases (App Review hotfix — May 2026)
+// =====================================================================
+// The iOS Podfile (and Android autolinking) deliberately omit
+// `react-native-reanimated` and `react-native-worklets`:
+//
+//     // apps/mobile/package.json
+//     "expo": { "autolinking": { "exclude": [
+//        "react-native-reanimated", "react-native-worklets"
+//     ] } }
+//
+// + `app.json` has `newArchEnabled: false`, which Reanimated 4 / Worklets
+// require. The native binding does not ship in the production binary.
+//
+// However NativeWind ⇒ `react-native-css-interop@0.2.x` issues an
+// unconditional `require('react-native-reanimated')` whenever any styled
+// component carries a `transition-*` / `animate-*` / `duration-*` class
+// (hundreds of components do — chat composer, billing cards, project
+// shell, etc.). Without a real module to resolve to, the destructured
+// top-level statement
+//
+//     const { makeMutable, withTiming, … } = require('react-native-reanimated')
+//
+// resolved to `undefined` inside the Hermes/iOS bundle and the renderer
+// crashed with `TypeError: Cannot read property 'makeMutable' of
+// undefined`. This is exactly the App Store / TestFlight crash users
+// reported on build 1.0.8 (run id 26500877669).
+//
+// Aliasing both packages to JS-only no-op shims in `./stubs/` keeps the
+// `require()` resolvable, returns safe no-op exports for every entry
+// point css-interop / gesture-handler / screens probe at runtime, and
+// — critically — adds no native dependency. Animations become instant
+// (acceptable for non-essential UI flair), nothing crashes, and we keep
+// the binary footprint and architecture posture we shipped with.
+//
+// If/when we want real Reanimated, the fix is bigger than removing this
+// alias: flip `newArchEnabled` to true, install both packages as direct
+// deps of apps/mobile, drop them from `autolinking.exclude`, regenerate
+// the Podfile/manifest, and run the full RN-newarch migration. Until
+// then, this alias is the canonical path.
+const REANIMATED_STUB = path.resolve(__dirname, 'stubs/react-native-reanimated.js')
+const WORKLETS_STUB = path.resolve(__dirname, 'stubs/react-native-worklets.js')
+const EXPO_MODULES_CORE_JS_LOGGER_STUB = path.resolve(
+  __dirname,
+  'stubs/expo-modules-core-native-js-logger.js',
+)
+
+function resolveStubFor(context, moduleName) {
+  if (moduleName === 'react-native-reanimated') return REANIMATED_STUB
+  if (moduleName === 'react-native-worklets') return WORKLETS_STUB
+  // Subpath imports like `react-native-reanimated/lib/...` — fall through
+  // to the stub for parity, since we want every reanimated re-export to
+  // hit the same noop surface.
+  if (moduleName.startsWith('react-native-reanimated/')) return REANIMATED_STUB
+  if (moduleName.startsWith('react-native-worklets/')) {
+    // Two carve-outs to leave intact:
+    //
+    // 1. `react-native-worklets/plugin` — the Babel transform; pulled in
+    //    from `babel.config.js` via Node's `require()` at *build* time.
+    //    Metro never sees it, but for completeness don't stub it either.
+    // 2. `react-native-worklets/__generatedWorklets/<hash>.js` — factory
+    //    files the Babel plugin emits to disk inside the worklets package
+    //    when it autoworkletizes a function. If we redirected these to
+    //    the stub, the generated `default(...)` factory call would land
+    //    on a plain object and throw. Letting them resolve normally is
+    //    safe because each generated factory only imports JS-side helpers
+    //    from `react-native-worklets`, which themselves go through this
+    //    alias and end up at the stub.
+    if (moduleName === 'react-native-worklets/plugin') return null
+    if (moduleName.startsWith('react-native-worklets/__generatedWorklets/')) return null
+    return WORKLETS_STUB
+  }
+  if (
+    moduleName === './NativeJSLogger' &&
+    context?.originModulePath?.includes(`${path.sep}expo-modules-core${path.sep}src${path.sep}sweet${path.sep}`)
+  ) {
+    return EXPO_MODULES_CORE_JS_LOGGER_STUB
+  }
+  return null
+}
+
 // Shogo source files use `.js` extensions in their relative imports
 // (e.g. `import './foo.js'` from a `.ts` file) — that's the standard
 // TypeScript NodeNext pattern so the emitted `dist/*.js` references
@@ -119,6 +200,12 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
       moduleName,
       platform,
     )
+  }
+  // Redirect Reanimated / Worklets requires to JS-only stubs since the
+  // native pods aren't part of this build (see banner above).
+  const stub = resolveStubFor(context, moduleName)
+  if (stub) {
+    return { type: 'sourceFile', filePath: stub }
   }
   const sdkSrcMatch = resolveSdkSourceJsAsTs(context, moduleName, platform)
   if (sdkSrcMatch) return sdkSrcMatch
