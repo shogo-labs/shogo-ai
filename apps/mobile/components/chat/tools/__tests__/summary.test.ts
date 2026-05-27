@@ -72,6 +72,78 @@ describe("getToolSummary — built-in tools", () => {
   })
 })
 
+describe("getToolSummary — exec_wait", () => {
+  test("default (no timeout_ms) uses the 30s runtime default", () => {
+    expect(getToolSummary("exec_wait", { run_id: "abc" })).toEqual({
+      verb: "Waiting for",
+      target: "30 seconds",
+    })
+  })
+
+  test("timeout_ms under a minute renders as seconds", () => {
+    expect(getToolSummary("exec_wait", { run_id: "abc", timeout_ms: 5000 })).toEqual({
+      verb: "Waiting for",
+      target: "5 seconds",
+    })
+  })
+
+  test("singular second when timeout_ms is 1000", () => {
+    expect(getToolSummary("exec_wait", { run_id: "abc", timeout_ms: 1000 })).toEqual({
+      verb: "Waiting for",
+      target: "1 second",
+    })
+  })
+
+  test("60000 ms renders as 1 minute (singular)", () => {
+    expect(getToolSummary("exec_wait", { run_id: "abc", timeout_ms: 60_000 })).toEqual({
+      verb: "Waiting for",
+      target: "1 minute",
+    })
+  })
+
+  test("multi-minute durations render as minutes", () => {
+    expect(getToolSummary("exec_wait", { run_id: "abc", timeout_ms: 180_000 })).toEqual({
+      verb: "Waiting for",
+      target: "3 minutes",
+    })
+  })
+
+  test("3_600_000 ms renders as 1 hour (singular)", () => {
+    expect(getToolSummary("exec_wait", { run_id: "abc", timeout_ms: 3_600_000 })).toEqual({
+      verb: "Waiting for",
+      target: "1 hour",
+    })
+  })
+
+  test("multi-hour durations render as hours", () => {
+    expect(getToolSummary("exec_wait", { run_id: "abc", timeout_ms: 7_200_000 })).toEqual({
+      verb: "Waiting for",
+      target: "2 hours",
+    })
+  })
+
+  test("verb flips to past tense once the wait resolves (success)", () => {
+    expect(getToolSummary("exec_wait", { run_id: "abc" }, "success")).toEqual({
+      verb: "Waited for",
+      target: "30 seconds",
+    })
+  })
+
+  test("verb flips to past tense on error too", () => {
+    expect(getToolSummary("exec_wait", { run_id: "abc", timeout_ms: 5000 }, "error")).toEqual({
+      verb: "Waited for",
+      target: "5 seconds",
+    })
+  })
+
+  test("streaming state keeps present-tense verb", () => {
+    expect(getToolSummary("exec_wait", { run_id: "abc" }, "streaming")).toEqual({
+      verb: "Waiting for",
+      target: "30 seconds",
+    })
+  })
+})
+
 describe("getToolSummary — Bash/exec dispatch", () => {
   test("Bash with command defers to parseShellCommand", () => {
     expect(getToolSummary("Bash", { command: "cat /a/b/package.json" })).toEqual({
@@ -231,6 +303,101 @@ describe("parseShellCommand — redirections", () => {
     expect(parseShellCommand("python3 foo.py 2>&1")).toEqual({
       verb: "Run",
       target: "foo.py",
+    })
+  })
+})
+
+describe("parseShellCommand — sleep", () => {
+  test("bare numeric arg defaults to seconds", () => {
+    expect(parseShellCommand("sleep 5")).toEqual({
+      verb: "Waiting for",
+      target: "5 seconds",
+    })
+  })
+
+  test("singular second renders without 's'", () => {
+    expect(parseShellCommand("sleep 1")).toEqual({
+      verb: "Waiting for",
+      target: "1 second",
+    })
+  })
+
+  test("m suffix renders as minutes", () => {
+    expect(parseShellCommand("sleep 2m")).toEqual({
+      verb: "Waiting for",
+      target: "2 minutes",
+    })
+  })
+
+  test("h suffix renders as hours", () => {
+    expect(parseShellCommand("sleep 1h")).toEqual({
+      verb: "Waiting for",
+      target: "1 hour",
+    })
+  })
+
+  test("d suffix collapses into hours via formatDuration", () => {
+    expect(parseShellCommand("sleep 1d")).toEqual({
+      verb: "Waiting for",
+      target: "24 hours",
+    })
+  })
+
+  test("decimal seconds round to nearest second", () => {
+    expect(parseShellCommand("sleep 2.7")).toEqual({
+      verb: "Waiting for",
+      target: "3 seconds",
+    })
+  })
+
+  test("multiple intervals are summed (POSIX)", () => {
+    expect(parseShellCommand("sleep 1 30s 1m")).toEqual({
+      verb: "Waiting for",
+      target: "2 minutes",
+    })
+  })
+
+  test("sleep without args falls back to Run sleep", () => {
+    expect(parseShellCommand("sleep")).toEqual({ verb: "Run", target: "sleep" })
+  })
+
+  test("sleep with unparseable arg falls back to Run sleep", () => {
+    expect(parseShellCommand("sleep forever")).toEqual({ verb: "Run", target: "sleep" })
+  })
+
+  test("state='success' flips verb to past tense", () => {
+    expect(parseShellCommand("sleep 5", "success")).toEqual({
+      verb: "Waited for",
+      target: "5 seconds",
+    })
+  })
+
+  test("state='error' also flips verb to past tense", () => {
+    expect(parseShellCommand("sleep 1m", "error")).toEqual({
+      verb: "Waited for",
+      target: "1 minute",
+    })
+  })
+
+  test("state='streaming' keeps present-tense verb", () => {
+    expect(parseShellCommand("sleep 5", "streaming")).toEqual({
+      verb: "Waiting for",
+      target: "5 seconds",
+    })
+  })
+
+  test("past-tense flip cascades through &&-joined chain", () => {
+    expect(parseShellCommand("sleep 5 && sleep 10", "success")).toEqual({
+      verb: "Waited for",
+      target: "5 seconds",
+      rest: [{ verb: "Waited for", target: "10 seconds", sep: "&&" }],
+    })
+  })
+
+  test("getToolSummary exec branch threads state through to sleep", () => {
+    expect(getToolSummary("exec", { command: "sleep 5" }, "success")).toEqual({
+      verb: "Waited for",
+      target: "5 seconds",
     })
   })
 })

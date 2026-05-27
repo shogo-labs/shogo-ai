@@ -109,7 +109,7 @@ function ExecWidgetImpl({
   }
 
   const command = (tool.args?.command as string) || ""
-  const summary = parseShellCommand(command)
+  const summary = parseShellCommand(command, tool.state)
   const { stdout, stderr, exitCode, durationMs } = extractExecOutput(tool)
   const hasOutput = stdout || stderr
   const output = [stdout, stderr].filter(Boolean).join("\n")
