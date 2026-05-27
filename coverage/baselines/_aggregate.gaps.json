@@ -3,14 +3,14 @@
   "note": "Aggregate after Wave B opening (commit ec4d383): backend lines 83.99%. Pinned 4-pkg + 7 fresh.",
   "aggregate": {
     "lines": {
-      "total": 81652,
-      "hit": 68583,
-      "pct": 83.99
+      "total": 81653,
+      "hit": 68647,
+      "pct": 84.07
     },
     "functions": {
       "total": 6662,
-      "hit": 5470,
-      "pct": 82.11
+      "hit": 5475,
+      "pct": 82.18
     }
   },
   "perPackage": [
@@ -62,13 +62,13 @@
     },
     {
       "package": "packages/voice",
-      "linesHit": 1615,
-      "linesFound": 1678,
-      "linePct": 96.25,
-      "funcsHit": 158,
+      "linesHit": 1679,
+      "linesFound": 1679,
+      "linePct": 100.0,
+      "funcsHit": 163,
       "funcsFound": 163,
-      "funcPct": 96.93,
-      "source": "fresh 2026-05-27 (Wave B opening \u2014 4 files to 100%; server.ts 85.5% remains)"
+      "funcPct": 100.0,
+      "source": "fresh 2026-05-27 (Wave B Day 2 \u2014 whole voice package at 100% lines)"
     },
     {
       "package": "packages/email",
@@ -405,6 +405,12 @@
       "file": "packages/voice/{elevenlabs,twilio,sessionPayload,telephony}.ts",
       "delta": "Wave B opening: 4 files to 100% lines. voice package 91.61% \u2192 96.25%",
       "aggregateImpact": "+64 lines hit (1615-1551), -15 lines found (1678-1693, denom compaction)"
+    },
+    {
+      "commit": "155a0ce",
+      "file": "packages/voice/src/server.ts",
+      "delta": "Wave B Day 2: server.ts 85.5% \u2192 100% lines (whole voice package at 100%)",
+      "aggregateImpact": "+64 lines hit, +27 found (denominator restored as new branches were instrumented)"
     }
   ],
   "frontend": {
@@ -421,7 +427,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-27T12:22:33Z",
+  "lastUpdated": "2026-05-27T12:30:29Z",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
