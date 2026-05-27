@@ -1,16 +1,16 @@
 {
   "generatedAt": "2026-05-26T13:15:18Z",
-  "note": "Backend: 83.0% \u2192 83.71% (v2 EXPANDED aggregate now includes all 11 backend packages: apps/api, packages/agent-runtime, packages/sdk, packages/shared-runtime, packages/model-catalog, packages/voice, packages/email, packages/agent, packages/core, packages/cli, packages/shogo-worker). 4-pkg baseline pinned at 63369/76360 lines + sprint deltas (+110 hit / -15 found, 4 commits since 2026-05-26: sdk node.ts, sdk client.ts, shared-runtime s3-sync.ts, shared-runtime lsp-service.ts) + 7 new packages fresh totals (+4210/+4521 lines).",
+  "note": "Aggregate after Wave A Day 4+5 (commits 20a5c97, 055837f, c7a5db8): backend lines 83.9% (was 83.71%). 4-pkg pinned baseline + 7 fresh packages, package-scoped lcov sums. Wave A complete.",
   "aggregate": {
     "lines": {
-      "total": 80866,
-      "hit": 67689,
-      "pct": 83.71
+      "total": 81667,
+      "hit": 68519,
+      "pct": 83.9
     },
     "functions": {
-      "total": 6580,
-      "hit": 5383,
-      "pct": 81.81
+      "total": 6662,
+      "hit": 5461,
+      "pct": 81.97
     }
   },
   "perPackage": [
@@ -72,43 +72,43 @@
     },
     {
       "package": "packages/email",
-      "linesHit": 248,
-      "linesFound": 248,
+      "linesHit": 696,
+      "linesFound": 696,
       "linePct": 100.0,
-      "funcsHit": 26,
-      "funcsFound": 27,
-      "funcPct": 96.3,
-      "source": "fresh 2026-05-27"
+      "funcsHit": 63,
+      "funcsFound": 64,
+      "funcPct": 98.44,
+      "source": "fresh 2026-05-27 (whole package 100% lines)"
     },
     {
       "package": "packages/agent",
-      "linesHit": 29,
-      "linesFound": 29,
+      "linesHit": 206,
+      "linesFound": 206,
       "linePct": 100.0,
-      "funcsHit": 3,
-      "funcsFound": 3,
+      "funcsHit": 29,
+      "funcsFound": 29,
       "funcPct": 100.0,
-      "source": "fresh 2026-05-27 (limited file scope \u2014 only files loaded by tests)"
+      "source": "fresh 2026-05-27 (3 files instrumented: index, ai-client, model-catalog/helpers)"
     },
     {
       "package": "packages/core",
-      "linesHit": 217,
-      "linesFound": 217,
-      "linePct": 100.0,
-      "funcsHit": 30,
-      "funcsFound": 30,
-      "funcPct": 100.0,
-      "source": "fresh 2026-05-27"
+      "linesHit": 387,
+      "linesFound": 393,
+      "linePct": 98.47,
+      "funcsHit": 45,
+      "funcsFound": 49,
+      "funcPct": 91.84,
+      "source": "fresh 2026-05-27 (7 files; logger.ts 87.23% \u2014 env-frozen dev branch)"
     },
     {
       "package": "packages/cli",
-      "linesHit": 479,
+      "linesHit": 514,
       "linesFound": 608,
-      "linePct": 78.78,
+      "linePct": 84.54,
       "funcsHit": 41,
       "funcsFound": 49,
       "funcPct": 83.67,
-      "source": "fresh 2026-05-27"
+      "source": "fresh 2026-05-27 (deploy.ts 100%; pkg.ts 75.5% \u2014 bun-coverage Windows module-reload limitation)"
     },
     {
       "package": "packages/shogo-worker",
@@ -381,6 +381,24 @@
       "file": "README.md backend badge",
       "delta": "83.0% \u2192 83.71% (v2 expanded aggregate, 11 packages)",
       "aggregateImpact": "methodology change: expanded denominator from 4 to 11 packages"
+    },
+    {
+      "commit": "20a5c97",
+      "file": "packages/email/{ses,oci-email,server,providers-index}.ts",
+      "delta": "Wave A Day 4: email package to 100% lines (248 \u2192 696 lines hit, +448)",
+      "aggregateImpact": "+448 lines hit, +448 found"
+    },
+    {
+      "commit": "055837f",
+      "file": "packages/{agent/ai-client,agent/model-catalog/helpers,core/instrumentation}.ts",
+      "delta": "Wave A Day 5 batch 1: 3 files to 100% (ai-client 8\u2192100%, helpers 28.7\u2192100%, instrumentation 9.4\u2192100%)",
+      "aggregateImpact": "+252 lines hit (72+105+93 - 18 already covered)"
+    },
+    {
+      "commit": "c7a5db8",
+      "file": "packages/{cli/deploy,core/logger,core/file-types,core/chat-message}.ts",
+      "delta": "Wave A Day 5 batch 2: cli/deploy \u2192 100%, 3 core files at 100/100/87% (env-frozen logger branch)",
+      "aggregateImpact": "+147 lines hit (35 + 23 + 13 + 41 + 35)"
     }
   ],
   "frontend": {
@@ -397,7 +415,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-27T10:57:45Z",
+  "lastUpdated": "2026-05-27T12:15:34Z",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
