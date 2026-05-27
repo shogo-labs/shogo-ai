@@ -53,6 +53,7 @@ import { useAuth } from '../../../../contexts/auth'
 import { useDomainHttp } from '../../../../contexts/domain'
 import { authClient } from '../../../../lib/auth-client'
 import { API_URL, api } from '../../../../lib/api'
+import { openWebAppSession } from '../../../../lib/openWebAppSession'
 import { workspaceProjectFilter } from '../../../../lib/project-load'
 import { getActiveWorkspaceId } from '../../../../lib/workspace-store'
 import { usePlatformConfig } from '../../../../lib/platform-config'
@@ -612,6 +613,9 @@ export default observer(function ProjectLayout() {
     previewUrl,
     canvasBaseUrl,
     ready: runtimeReady,
+    error: runtimeError,
+    stalled: runtimeStalled,
+    lastStatus: runtimeLastStatus,
   } = useAgentUrl(API_URL!, projectId, {
     credentials: Platform.OS === 'web' ? 'include' : 'omit',
     headers: nativeHeaders,
@@ -1907,14 +1911,57 @@ export default observer(function ProjectLayout() {
   // surfaces for the host/VM/K8s paths).
   if (isLoading || !project || (!remoteProjectAgentBaseUrl && !runtimeReady)) {
     const stillBootingRuntime = !isLoading && project && !remoteProjectAgentBaseUrl && !runtimeReady
+    // After ~30s of polling, or on a 4xx/5xx response, surface what's
+    // happening and offer the user a way out — going back, opening on
+    // web, or retrying — instead of leaving them on an infinite
+    // "Starting your project…" spinner like the v1.0.8 TestFlight build
+    // (where the project runtime endpoint kept returning ready:false
+    // after the worklets stub crash + cold ASC subscription state).
+    const showStalledRecovery = stillBootingRuntime && (runtimeStalled || !!runtimeError)
     return (
       <>
         <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
-        <View className="flex-1 bg-background items-center justify-center">
-          <ActivityIndicator size="large" />
-          <Text className="text-muted-foreground mt-3 text-sm">
-            {stillBootingRuntime ? 'Starting your project…' : 'Loading project...'}
-          </Text>
+        <View className="flex-1 bg-background items-center justify-center px-6">
+          {!showStalledRecovery && (
+            <>
+              <ActivityIndicator size="large" />
+              <Text className="text-muted-foreground mt-3 text-sm">
+                {stillBootingRuntime ? 'Starting your project…' : 'Loading project...'}
+              </Text>
+            </>
+          )}
+          {showStalledRecovery && (
+            <View className="w-full max-w-sm gap-3 items-center">
+              <Text className="text-foreground text-base font-semibold text-center">
+                This is taking longer than expected
+              </Text>
+              <Text className="text-muted-foreground text-sm text-center">
+                {runtimeError
+                  ? `We couldn't reach your project's runtime${runtimeLastStatus ? ` (${runtimeLastStatus})` : ''}. Check your connection or open this project on the web.`
+                  : 'Your project runtime is still warming up. You can keep waiting or open it on the web.'}
+              </Text>
+              <View className="flex-row gap-2 mt-2">
+                <Pressable
+                  onPress={() => (router.canGoBack() ? router.back() : router.replace('/(app)'))}
+                  className="px-4 py-2 rounded-md border border-border active:bg-muted"
+                  accessibilityLabel="Go back to projects list"
+                >
+                  <Text className="text-foreground text-sm font-medium">Go back</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    void openWebAppSession(`/projects/${projectId}`).catch((err) =>
+                      console.warn('[ProjectLayout] open-on-web failed:', err),
+                    )
+                  }}
+                  className="px-4 py-2 rounded-md bg-primary active:bg-primary/80"
+                  accessibilityLabel="Open this project on the web"
+                >
+                  <Text className="text-primary-foreground text-sm font-medium">Open on web</Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
         </View>
       </>
     )
