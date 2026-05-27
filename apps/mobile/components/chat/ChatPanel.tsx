@@ -3388,6 +3388,21 @@ export const ChatPanel = observer(function ChatPanel({
         })
         .catch((err) => console.warn("[ChatPanel] Failed to persist user message:", err))
 
+      // Optimistically bump the chat session's lastActiveAt so the
+      // history sidebar re-buckets this chat into "Today" immediately
+      // instead of waiting for a session-list refetch. The server-side
+      // chatMessageHooks.afterCreate hook performs the canonical
+      // update; this MST mutation just keeps the local view in sync.
+      try {
+        const sessionInstance =
+          studioChat.chatSessionCollection.get(currentSessionId) as
+            | { update?: (changes: Record<string, unknown>) => void }
+            | undefined
+        sessionInstance?.update?.({ lastActiveAt: Date.now() })
+      } catch (err) {
+        console.warn("[ChatPanel] Failed to bump local session lastActiveAt:", err)
+      }
+
       const messagePayload: {
         text: string
         files?: Array<{ type: "file"; mediaType: string; url: string; name?: string }>

@@ -868,6 +868,7 @@ export default observer(function ProjectLayout() {
 
   const handleCloseTab = useCallback((tabId: string) => {
     streamingChangeHandlersRef.current.delete(tabId)
+    prevStreamingByTabRef.current.delete(tabId)
     setStreamingTabIds((prev) => {
       if (!prev.has(tabId)) return prev
       const next = new Set(prev)
@@ -1139,7 +1140,17 @@ export default observer(function ProjectLayout() {
   useEffect(() => {
     activeChatTabIdRef.current = chatSessionId
   }, [chatSessionId])
+  // Per-tab cache of the last `isStreaming` value we received from each
+  // ChatPanel. On panel mount the effect that publishes streaming state
+  // fires once with `false` (the initial AI SDK status before any turn
+  // runs); without this guard, every restored tab on a page refresh
+  // would be treated as "stream just finished in the background" and
+  // get the new-activity dot. We only flag a tab as completed when we
+  // observe a real true -> false transition.
+  const prevStreamingByTabRef = useRef<Map<string, boolean>>(new Map())
   const handleTabStreamingChange = useCallback((tabId: string, isStreaming: boolean) => {
+    const wasStreaming = prevStreamingByTabRef.current.get(tabId) === true
+    prevStreamingByTabRef.current.set(tabId, isStreaming)
     setStreamingTabIds((prev) => {
       const has = prev.has(tabId)
       if (isStreaming && has) return prev
@@ -1156,6 +1167,10 @@ export default observer(function ProjectLayout() {
         next.delete(tabId)
         return next
       }
+      // Only a real true -> false transition counts as "stream finished".
+      // Ignore the initial-mount false and any redundant false events so
+      // refresh doesn't paint a dot on every restored tab.
+      if (!wasStreaming) return prev
       // Stream finished: only flag the tab when the user isn't looking at it.
       if (tabId === activeChatTabIdRef.current) return prev
       if (prev.has(tabId)) return prev
@@ -1451,6 +1466,8 @@ export default observer(function ProjectLayout() {
                 `Chat · ${new Date(s.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`,
           messageCount: -1,
           updatedAt: s.lastActiveAt || s.updatedAt || s.createdAt || Date.now(),
+          isPinned: !!s.isPinned,
+          isArchived: !!s.isArchived,
         }))
         .sort((a: ChatSession, b: ChatSession) => b.updatedAt - a.updatedAt)
     } catch {
@@ -1610,6 +1627,28 @@ export default observer(function ProjectLayout() {
         setSessionNames((prev) => ({ ...prev, [sessionId]: newName }))
       } catch (err) {
         console.error('[ProjectLayout] Failed to rename chat session:', err)
+      }
+    },
+    [actions],
+  )
+
+  const handleTogglePinChatSession = useCallback(
+    async (sessionId: string, next: boolean) => {
+      try {
+        await actions.updateChatSession(sessionId, { isPinned: next })
+      } catch (err) {
+        console.error('[ProjectLayout] Failed to toggle pin on chat session:', err)
+      }
+    },
+    [actions],
+  )
+
+  const handleToggleArchiveChatSession = useCallback(
+    async (sessionId: string, next: boolean) => {
+      try {
+        await actions.updateChatSession(sessionId, { isArchived: next })
+      } catch (err) {
+        console.error('[ProjectLayout] Failed to toggle archive on chat session:', err)
       }
     },
     [actions],
@@ -2084,6 +2123,8 @@ export default observer(function ProjectLayout() {
                         onCreate={handleCreateNewSession}
                         onRename={handleRenameChatSession}
                         onDelete={handleDeleteChatSession}
+                        onTogglePin={handleTogglePinChatSession}
+                        onToggleArchive={handleToggleArchiveChatSession}
                         onLoadMore={handleLoadMoreSessions}
                         hasMore={store?.chatSessionCollection?.hasMore ?? false}
                         isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
@@ -2092,6 +2133,7 @@ export default observer(function ProjectLayout() {
                         onSearchClose={() => setSidebarSearchOpen(false)}
                         streamingSessionIds={streamingTabIds}
                         completedSessionIds={completedTabIds}
+                        projectId={projectId ?? undefined}
                       />
                     </View>
                   )}
@@ -2135,11 +2177,14 @@ export default observer(function ProjectLayout() {
                           }}
                           onRename={handleRenameChatSession}
                           onDelete={handleDeleteChatSession}
+                          onTogglePin={handleTogglePinChatSession}
+                          onToggleArchive={handleToggleArchiveChatSession}
                           onLoadMore={handleLoadMoreSessions}
                           hasMore={store?.chatSessionCollection?.hasMore ?? false}
                           isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
                           streamingSessionIds={streamingTabIds}
                           completedSessionIds={completedTabIds}
+                          projectId={projectId ?? undefined}
                         />
                       </View>
                     )}

@@ -583,9 +583,21 @@ export async function trackUsageFromStream(
           `[ProjectChat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallCount} tool calls${partialTag}) for session ${chatSessionId}`
         )
 
+        const now = new Date()
+        // Bump the session's lastActiveAt so the chat history sidebar
+        // buckets reflect the most recent message rather than the
+        // session's creation time. The user-message path goes through
+        // the chatMessageHooks afterCreate hook; this stream path
+        // bypasses that hook (it persists assistant messages directly),
+        // so we mirror the bump here.
+        prisma.chatSession.update({
+          where: { id: chatSessionId },
+          data: { lastActiveAt: now, updatedAt: now },
+        }).catch(() => {})
+
         prisma.project.update({
           where: { id: project.id },
-          data: { lastMessageAt: new Date() },
+          data: { lastMessageAt: now },
         }).catch(() => {})
       }
     } catch (err) {

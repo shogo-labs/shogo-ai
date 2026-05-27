@@ -11,7 +11,7 @@
  * Rename uses a text input inline approach.
  */
 
-import { useState, useMemo, useCallback, useRef } from "react"
+import { useState, useMemo, useCallback, useEffect, useRef } from "react"
 import {
   View,
   Text,
@@ -21,6 +21,7 @@ import {
   ActivityIndicator,
   type ListRenderItemInfo,
 } from "react-native"
+import AsyncStorage from "@react-native-async-storage/async-storage"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
   Popover,
@@ -37,6 +38,7 @@ import {
 } from "@/components/ui/modal"
 import {
   ChevronDown,
+  ChevronRight,
   MessageSquare,
   Plus,
   Pencil,
@@ -45,6 +47,10 @@ import {
   Search,
   Loader2,
   Trash2,
+  Pin,
+  PinOff,
+  Archive,
+  ArchiveRestore,
 } from "lucide-react-native"
 
 export interface ChatSession {
@@ -52,6 +58,8 @@ export interface ChatSession {
   name: string
   messageCount: number
   updatedAt: number
+  isPinned?: boolean
+  isArchived?: boolean
 }
 
 export const mockChatSessions: ChatSession[] = [
@@ -86,6 +94,17 @@ export interface ChatSessionPickerProps {
    * been viewed by the user. Renders a static theme-colored dot.
    */
   completedSessionIds?: Set<string>
+  /** Toggle the pinned-to-top flag for a session. */
+  onTogglePin?: (sessionId: string, next: boolean) => void
+  /** Toggle the archived flag for a session. */
+  onToggleArchive?: (sessionId: string, next: boolean) => void
+  /**
+   * Project id used to scope the persisted Archived-section
+   * expand/collapse state in AsyncStorage. When omitted the section
+   * still works in-memory but its open/closed state won't survive a
+   * reload.
+   */
+  projectId?: string
 }
 
 export function formatRelativeTime(timestamp: number): string {
@@ -332,6 +351,55 @@ export function ChatSessionPicker({
  * Always-visible sidebar variant of the session picker.
  * Renders the full session list inline (no popover) to fill its container.
  */
+/** AsyncStorage key prefix for the per-project "Archived" section
+ * expand/collapse state. Defaults to collapsed when no entry exists. */
+const ARCHIVED_EXPANDED_STORAGE_PREFIX = "shogo:chatArchivedExpanded:"
+
+/** A section header rendered inline in the same FlatList as the chat
+ * rows. Headers stay non-pressable except for `Archived`, which toggles
+ * `archivedExpanded`. */
+type SidebarHeaderRow = {
+  kind: "header"
+  id: string
+  label: string
+  count?: number
+  collapsible?: boolean
+  expanded?: boolean
+  onPress?: () => void
+}
+
+type SidebarSessionRow = {
+  kind: "session"
+  id: string
+  session: ChatSession
+}
+
+type SidebarRow = SidebarHeaderRow | SidebarSessionRow
+
+/** Returns the start-of-day for a given timestamp in the local
+ * timezone. Used to decide whether a chat falls into the Today or
+ * Yesterday bucket. */
+function startOfDay(ts: number): number {
+  const d = new Date(ts)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+/** Bucket label for a non-pinned, non-archived chat based on its last
+ * activity timestamp. Buckets snap to local-day boundaries for Today
+ * and Yesterday and to fixed millisecond windows past that so the
+ * dividers don't shift mid-session. */
+function bucketLabelFor(ts: number, now: number): "Today" | "Yesterday" | "Last 7 days" | "Last 30 days" | "Older" {
+  const todayStart = startOfDay(now)
+  const yesterdayStart = todayStart - 24 * 60 * 60 * 1000
+  if (ts >= todayStart) return "Today"
+  if (ts >= yesterdayStart) return "Yesterday"
+  const diff = now - ts
+  if (diff < 7 * 24 * 60 * 60 * 1000) return "Last 7 days"
+  if (diff < 30 * 24 * 60 * 60 * 1000) return "Last 30 days"
+  return "Older"
+}
+
 export function ChatSessionSidebar({
   sessions,
   currentSessionId,
@@ -339,6 +407,8 @@ export function ChatSessionSidebar({
   onCreate,
   onRename,
   onDelete,
+  onTogglePin,
+  onToggleArchive,
   onLoadMore,
   hasMore,
   isLoadingMore,
@@ -347,6 +417,7 @@ export function ChatSessionSidebar({
   onSearchClose,
   streamingSessionIds,
   completedSessionIds,
+  projectId,
 }: ChatSessionPickerProps) {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState("")
@@ -379,6 +450,40 @@ export function ChatSessionSidebar({
   }
   const [searchQuery, setSearchQuery] = useState("")
 
+  // Archived section expand/collapse, persisted per-project so refresh
+  // doesn't surprise users with their archive contents popping open.
+  // Defaults to collapsed.
+  const [archivedExpanded, setArchivedExpanded] = useState(false)
+  const archivedHydratedRef = useRef(false)
+  useEffect(() => {
+    if (!projectId) {
+      archivedHydratedRef.current = true
+      return
+    }
+    let cancelled = false
+    AsyncStorage.getItem(`${ARCHIVED_EXPANDED_STORAGE_PREFIX}${projectId}`)
+      .then((raw) => {
+        if (cancelled) return
+        archivedHydratedRef.current = true
+        if (raw === "1") setArchivedExpanded(true)
+      })
+      .catch(() => {
+        archivedHydratedRef.current = true
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [projectId])
+  useEffect(() => {
+    // Skip the initial mount write before hydration so we don't clobber
+    // a stored `1` with our default `false`.
+    if (!projectId || !archivedHydratedRef.current) return
+    AsyncStorage.setItem(
+      `${ARCHIVED_EXPANDED_STORAGE_PREFIX}${projectId}`,
+      archivedExpanded ? "1" : "0",
+    ).catch(() => {})
+  }, [projectId, archivedExpanded])
+
   const sortedSessions = useMemo(() => {
     return [...sessions].sort((a, b) => b.updatedAt - a.updatedAt)
   }, [sessions])
@@ -390,6 +495,68 @@ export function ChatSessionSidebar({
       session.name.toLowerCase().includes(query)
     )
   }, [sortedSessions, searchQuery])
+
+  // Build the flat row list with section dividers interleaved. We use a
+  // single FlatList of mixed rows (instead of SectionList) so the
+  // existing `onEndReached` pagination keeps working unchanged.
+  //
+  // `now` is captured once per render; bucket boundaries snap to local
+  // midnight so they don't shift while the user is interacting with
+  // the list.
+  const sidebarRows = useMemo<SidebarRow[]>(() => {
+    const now = Date.now()
+    const pinned: ChatSession[] = []
+    const archived: ChatSession[] = []
+    const bucketed: Record<"Today" | "Yesterday" | "Last 7 days" | "Last 30 days" | "Older", ChatSession[]> = {
+      Today: [],
+      Yesterday: [],
+      "Last 7 days": [],
+      "Last 30 days": [],
+      Older: [],
+    }
+    for (const s of sortedSessions) {
+      if (s.isArchived) {
+        archived.push(s)
+        continue
+      }
+      if (s.isPinned) {
+        pinned.push(s)
+        continue
+      }
+      bucketed[bucketLabelFor(s.updatedAt, now)].push(s)
+    }
+
+    const rows: SidebarRow[] = []
+    const pushSection = (label: string, items: ChatSession[]) => {
+      if (items.length === 0) return
+      rows.push({ kind: "header", id: `__hdr:${label}`, label })
+      for (const s of items) rows.push({ kind: "session", id: s.id, session: s })
+    }
+
+    pushSection("Pinned", pinned)
+    pushSection("Today", bucketed.Today)
+    pushSection("Yesterday", bucketed.Yesterday)
+    pushSection("Last 7 days", bucketed["Last 7 days"])
+    pushSection("Last 30 days", bucketed["Last 30 days"])
+    pushSection("Older", bucketed.Older)
+
+    if (archived.length > 0) {
+      rows.push({
+        kind: "header",
+        id: "__hdr:Archived",
+        label: "Archived",
+        count: archived.length,
+        collapsible: true,
+        expanded: archivedExpanded,
+        onPress: () => setArchivedExpanded((v) => !v),
+      })
+      if (archivedExpanded) {
+        for (const s of archived) rows.push({ kind: "session", id: s.id, session: s })
+      }
+    }
+
+    return rows
+  }, [sortedSessions, archivedExpanded])
 
   const handleSessionSelect = (sessionId: string) => {
     if (editingSessionId === sessionId) return
@@ -425,7 +592,40 @@ export function ChatSessionSidebar({
     }
   }, [hasMore, isLoadingMore, onLoadMore])
 
-  const renderSession = ({ item: session }: ListRenderItemInfo<ChatSession>) => {
+  const renderRow = ({ item }: ListRenderItemInfo<SidebarRow>) => {
+    if (item.kind === "header") {
+      const headerInner = (
+        <View className="flex-row items-center gap-1 px-2 pt-3 pb-1">
+          {item.collapsible ? (
+            item.expanded ? (
+              <ChevronDown size={10} className="text-muted-foreground shrink-0" />
+            ) : (
+              <ChevronRight size={10} className="text-muted-foreground shrink-0" />
+            )
+          ) : null}
+          <Text className="text-[10px] uppercase tracking-wide text-muted-foreground flex-1">
+            {item.label}
+          </Text>
+          {typeof item.count === "number" && (
+            <Text className="text-[10px] text-muted-foreground shrink-0">{item.count}</Text>
+          )}
+        </View>
+      )
+      if (item.collapsible && item.onPress) {
+        return (
+          <Pressable
+            onPress={item.onPress}
+            accessibilityLabel={`${item.expanded ? "Collapse" : "Expand"} ${item.label}`}
+            className="hover:bg-muted"
+          >
+            {headerInner}
+          </Pressable>
+        )
+      }
+      return headerInner
+    }
+
+    const session = item.session
     const isEditing = editingSessionId === session.id
     const isCurrent = session.id === currentSessionId
     const isHovered = hoveredSessionId === session.id
@@ -475,16 +675,49 @@ export function ChatSessionSidebar({
                   className="h-1.5 w-1.5 rounded-full bg-primary shrink-0"
                   accessibilityLabel="Chat has new activity"
                 />
+              ) : session.isPinned ? (
+                <Pin size={10} className="text-muted-foreground shrink-0" />
               ) : null}
               <Text className="text-xs text-foreground flex-1" numberOfLines={1}>
                 {session.name}
               </Text>
+              {onTogglePin && isHovered && (
+                <Pressable
+                  onPress={() => onTogglePin(session.id, !session.isPinned)}
+                  onHoverIn={() => setRowHover(session.id)}
+                  onHoverOut={() => scheduleClearRowHover(session.id)}
+                  className="p-1 shrink-0"
+                  accessibilityLabel={session.isPinned ? `Unpin ${session.name}` : `Pin ${session.name}`}
+                >
+                  {session.isPinned ? (
+                    <PinOff className="h-2 w-2 text-gray-400" size={6} />
+                  ) : (
+                    <Pin className="h-2 w-2 text-gray-400" size={6} />
+                  )}
+                </Pressable>
+              )}
+              {onToggleArchive && isHovered && (
+                <Pressable
+                  onPress={() => onToggleArchive(session.id, !session.isArchived)}
+                  onHoverIn={() => setRowHover(session.id)}
+                  onHoverOut={() => scheduleClearRowHover(session.id)}
+                  className="p-1 shrink-0"
+                  accessibilityLabel={session.isArchived ? `Unarchive ${session.name}` : `Archive ${session.name}`}
+                >
+                  {session.isArchived ? (
+                    <ArchiveRestore className="h-2 w-2 text-gray-400" size={6} />
+                  ) : (
+                    <Archive className="h-2 w-2 text-gray-400" size={6} />
+                  )}
+                </Pressable>
+              )}
               {onRename && isHovered && (
                 <Pressable
                   onPress={() => handleStartEdit(session)}
                   onHoverIn={() => setRowHover(session.id)}
                   onHoverOut={() => scheduleClearRowHover(session.id)}
                   className="p-1 shrink-0"
+                  accessibilityLabel={`Rename ${session.name}`}
                 >
                   <Pencil className="h-2 w-2 text-gray-400" size={6} />
                 </Pressable>
@@ -556,8 +789,8 @@ export function ChatSessionSidebar({
       )}
 
       <FlatList
-        data={sortedSessions}
-        renderItem={renderSession}
+        data={sidebarRows}
+        renderItem={renderRow}
         keyExtractor={(item) => item.id}
         className="flex-1"
         onEndReached={handleEndReached}

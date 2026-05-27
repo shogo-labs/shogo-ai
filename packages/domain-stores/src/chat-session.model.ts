@@ -29,6 +29,8 @@ export const ChatSessionModel = types
     cachedMessageCount: types.optional(types.number, 0),
     contextUsageTokens: types.optional(types.number, 0),
     contextWindowTokens: types.optional(types.number, 0),
+    isPinned: types.optional(types.boolean, false),
+    isArchived: types.optional(types.boolean, false),
     createdAt: types.optional(types.number, 0),
     updatedAt: types.optional(types.number, 0),
     lastActiveAt: types.optional(types.number, 0),

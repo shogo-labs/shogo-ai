@@ -260,13 +260,17 @@ export const chatMessageHooks: ChatMessageHooks = {
   },
 
   /**
-   * Update session updatedAt and project lastMessageAt when message is created
+   * Update session lastActiveAt/updatedAt and project lastMessageAt when
+   * message is created. `lastActiveAt` is what the chat history sidebar
+   * uses to bucket sessions into Today / Yesterday / Last 7 days / etc.,
+   * so bumping it here keeps those dividers reflecting the most recent
+   * message rather than the session's creation time.
    */
   afterCreate: async (message, ctx) => {
     const now = new Date()
     await ctx.prisma.chatSession.update({
       where: { id: message.sessionId },
-      data: { updatedAt: now },
+      data: { lastActiveAt: now, updatedAt: now },
     })
 
     const session = await ctx.prisma.chatSession.findUnique({

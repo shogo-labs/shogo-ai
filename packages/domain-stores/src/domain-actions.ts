@@ -337,7 +337,7 @@ export function createDomainActions(store: IDomainStore) {
      */
     updateChatSession: async (
       sessionId: string,
-      changes: { name?: string; inferredName?: string }
+      changes: { name?: string; inferredName?: string; isPinned?: boolean; isArchived?: boolean }
     ) => {
       return store.chatSessionCollection.update(sessionId, changes)
     },
