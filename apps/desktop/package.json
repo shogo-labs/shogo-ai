@@ -8,6 +8,7 @@
   "license": "MIT",
   "main": "dist/main.js",
   "scripts": {
+    "postinstall": "node scripts/fix-node-pty-perms.mjs",
     "dev": "tsc && npm run bundle:main && npm run bundle:pty-host && electron .",
     "build": "tsc && npm run bundle:main && npm run bundle:pty-host",
     "bundle:main": "node scripts/bundle-main.mjs",
