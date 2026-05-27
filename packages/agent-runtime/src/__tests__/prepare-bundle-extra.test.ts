@@ -581,9 +581,19 @@ describe('prepareVMBundle', () => {
       }
       if (cmd.startsWith('bun add') && cwd) {
         fsState.set(`${cwd}/node_modules`, { type: 'dir' })
-        fsState.set(`${cwd}/node_modules/@prisma`, { type: 'dir' })
-        fsState.set(`${cwd}/node_modules/@prisma/internals`, { type: 'dir' })
-        fsState.set(`${cwd}/node_modules/typescript-language-server`, { type: 'dir' })
+        // Mirror the real bun-add: only create the markers for packages the
+        // command actually installs. The old blanket-create masked the
+        // typescript-language-server install step — prepare-bundle.ts skips
+        // the install when the marker is already present, so the prisma
+        // `bun add` (which used to seed the ts-lsp marker too) made the
+        // ts-lsp install path unreachable from the test.
+        if (cmd.includes('prisma')) {
+          fsState.set(`${cwd}/node_modules/@prisma`, { type: 'dir' })
+          fsState.set(`${cwd}/node_modules/@prisma/internals`, { type: 'dir' })
+        }
+        if (cmd.includes('typescript-language-server')) {
+          fsState.set(`${cwd}/node_modules/typescript-language-server`, { type: 'dir' })
+        }
       }
       if (cmd.startsWith('bun build') && cwd) {
         const outflagIdx = cmd.indexOf('--outfile')
