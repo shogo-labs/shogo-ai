@@ -9,7 +9,7 @@
 import { describe, test, expect, mock, beforeEach, afterEach, beforeAll, afterAll } from 'bun:test'
 import {
   mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync,
-  readdirSync, symlinkSync,
+  readdirSync, realpathSync, symlinkSync,
 } from 'node:fs'
 import { tmpdir, platform as osPlatform } from 'node:os'
 import { join } from 'node:path'
@@ -335,7 +335,11 @@ describe('getRuntimeTemplatePath / seedRuntimeTemplate', () => {
     const tplDir = makeTmp()
     writeFileSync(join(tplDir, 'package.json'), '{"name":"runtime-template"}')
     process.env.RUNTIME_TEMPLATE_DIR = tplDir
-    expect(wd.getRuntimeTemplatePath()).toBe(tplDir)
+    // getRuntimeTemplatePath canonicalises via realpathSync so cpSync()
+    // doesn't choke on a symlink-to-directory. On macOS /var/folders/...
+    // resolves to /private/var/folders/..., so compare against the
+    // canonical form rather than the raw mkdtempSync output.
+    expect(wd.getRuntimeTemplatePath()).toBe(realpathSync(tplDir))
   })
 
   test('seedRuntimeTemplate returns false when package.json already exists', () => {
@@ -344,12 +348,14 @@ describe('getRuntimeTemplatePath / seedRuntimeTemplate', () => {
     expect(wd.seedRuntimeTemplate(dir)).toBe(false)
   })
 
-  test('seedRuntimeTemplate handles missing env-override gracefully (falls through to other candidates)', () => {
+  test('seedRuntimeTemplate handles missing env-override gracefully (no template available)', () => {
     const dir = makeTmp()
     process.env.RUNTIME_TEMPLATE_DIR = join(tmpdir(), 'definitely-nonexistent-' + Date.now())
-    // Source tree has bundled runtime-template; env override is just first candidate.
-    // We assert the call does not throw — the result depends on the host env.
+    // Explicit env override is exclusive — when the pointed-at dir doesn't
+    // exist getRuntimeTemplatePath returns null and seedRuntimeTemplate is
+    // a no-op (returns false). It must not throw.
     expect(() => wd.seedRuntimeTemplate(dir)).not.toThrow()
+    expect(wd.seedRuntimeTemplate(dir)).toBe(false)
   })
 
   test('seedRuntimeTemplate copies template, excluding node_modules and .shogo and src/generated', () => {

@@ -25,6 +25,7 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } fr
 import { mkdirSync, writeFileSync, rmSync, existsSync, statSync } from 'fs'
 import { join } from 'path'
 
+import { flushAllLogWrites } from '../runtime-log-writer'
 import {
   PreviewManager,
   emitBuildLine,
@@ -277,10 +278,14 @@ describe('emitBuildLine extra branches', () => {
     expect(existsSync(buildLog)).toBe(false)
   })
 
-  test('writes a line with prefix + newline to the build-log file', () => {
+  test('writes a line with prefix + newline to the build-log file', async () => {
     const buildLog = join(TEST_ROOT, 'el-write.log')
     if (existsSync(buildLog)) rmSync(buildLog)
     emitBuildLine(buildLog, '[stdout]', 'hello', 'stdout')
+    // emitBuildLine now delegates to runtime-log-writer.scheduleLogWrite,
+    // which batches via setImmediate to keep /health responsive on Windows
+    // — see runtime-log-writer.ts header. Drain before asserting.
+    await flushAllLogWrites(buildLog)
     expect(existsSync(buildLog)).toBe(true)
     const stat = statSync(buildLog)
     expect(stat.size).toBeGreaterThan(0)
@@ -300,11 +305,12 @@ describe('emitBuildLine extra branches', () => {
     expect(() => emitBuildLine(buildLog, '[stderr]', 'compile error', 'stderr')).not.toThrow()
   })
 
-  test('default stream argument is stdout', () => {
+  test('default stream argument is stdout', async () => {
     const buildLog = join(TEST_ROOT, 'el-default.log')
     if (existsSync(buildLog)) rmSync(buildLog)
     // @ts-expect-error — exercising the default-argument path
     emitBuildLine(buildLog, '[stdout]', 'using default stream')
+    await flushAllLogWrites(buildLog)
     expect(existsSync(buildLog)).toBe(true)
   })
 })

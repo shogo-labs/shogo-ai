@@ -466,6 +466,18 @@ const RUNTIME_TEMPLATE_SKIP = new Set([
  */
 export function getRuntimeTemplatePath(): string | null {
   const envOverride = process.env.RUNTIME_TEMPLATE_DIR
+  // When the operator explicitly points us at a template dir, treat that
+  // choice as exclusive — falling through to the bundled candidates if
+  // their dir doesn't yet exist would silently mask a misconfiguration
+  // (and tests using a sentinel non-existent path to mean "no template
+  // available here" would unexpectedly pick up the repo's checked-in
+  // templates/runtime-template/ instead).
+  if (envOverride !== undefined) {
+    if (existsSync(join(envOverride, 'package.json'))) {
+      try { return realpathSync(envOverride) } catch { return envOverride }
+    }
+    return null
+  }
   let execAdjacent: string | null = null
   try {
     if (process.execPath) {
@@ -473,7 +485,6 @@ export function getRuntimeTemplatePath(): string | null {
     }
   } catch { /* execPath unavailable (e.g. test stub) */ }
   const candidates = [
-    ...(envOverride ? [envOverride] : []),
     ...(execAdjacent ? [execAdjacent] : []),
     join(__dirname, '..', '..', '..', 'templates', 'runtime-template'),
     join(__dirname, 'templates', 'runtime-template'),
