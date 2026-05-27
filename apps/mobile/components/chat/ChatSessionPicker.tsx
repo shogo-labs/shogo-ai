@@ -421,24 +421,6 @@ export function ChatSessionSidebar({
 }: ChatSessionPickerProps) {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState("")
-  const [hoveredSessionId, setHoveredSessionId] = useState<string | null>(null)
-  // Deferred clear so moving the cursor from the row onto a nested icon Pressable
-  // (which fires the row's onHoverOut) doesn't briefly hide the icons.
-  const clearHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const setRowHover = (id: string) => {
-    if (clearHoverTimerRef.current) {
-      clearTimeout(clearHoverTimerRef.current)
-      clearHoverTimerRef.current = null
-    }
-    setHoveredSessionId(id)
-  }
-  const scheduleClearRowHover = (id: string) => {
-    if (clearHoverTimerRef.current) clearTimeout(clearHoverTimerRef.current)
-    clearHoverTimerRef.current = setTimeout(() => {
-      clearHoverTimerRef.current = null
-      setHoveredSessionId((prev) => (prev === id ? null : prev))
-    }, 0)
-  }
   const [internalSearchOpen, setInternalSearchOpen] = useState(false)
   const searchOpen = externalSearchOpen ?? internalSearchOpen
   const setSearchOpen = (open: boolean) => {
@@ -628,7 +610,6 @@ export function ChatSessionSidebar({
     const session = item.session
     const isEditing = editingSessionId === session.id
     const isCurrent = session.id === currentSessionId
-    const isHovered = hoveredSessionId === session.id
     const isStreaming = streamingSessionIds?.has(session.id) ?? false
     // The "new activity" dot is only meaningful for non-current sessions; opening
     // the row clears it (parent layout handles the clearing on currentSessionId change).
@@ -636,12 +617,15 @@ export function ChatSessionSidebar({
       !isCurrent && !isStreaming && (completedSessionIds?.has(session.id) ?? false)
 
     return (
+      // `group` lets the action icons below show/hide purely via CSS
+      // `group-hover:`. Driving icon visibility from React hover state caused
+      // the icons to disappear the moment the cursor crossed onto one of them
+      // (RN-Web fires the row's onHoverOut on entry into a nested Pressable,
+      // racing with the icon's onHoverIn). CSS group-hover has no such race.
       <Pressable
         onPress={() => handleSessionSelect(session.id)}
-        onHoverIn={() => setRowHover(session.id)}
-        onHoverOut={() => scheduleClearRowHover(session.id)}
         className={cn(
-          "px-2 py-1 hover:bg-muted",
+          "group px-2 py-1 hover:bg-muted",
           isCurrent && "bg-primary/10"
         )}
       >
@@ -681,58 +665,58 @@ export function ChatSessionSidebar({
               <Text className="text-xs text-foreground flex-1" numberOfLines={1}>
                 {session.name}
               </Text>
-              {onTogglePin && isHovered && (
-                <Pressable
-                  onPress={() => onTogglePin(session.id, !session.isPinned)}
-                  onHoverIn={() => setRowHover(session.id)}
-                  onHoverOut={() => scheduleClearRowHover(session.id)}
-                  className="p-1 shrink-0"
-                  accessibilityLabel={session.isPinned ? `Unpin ${session.name}` : `Pin ${session.name}`}
-                >
-                  {session.isPinned ? (
-                    <PinOff className="h-2 w-2 text-gray-400" size={6} />
-                  ) : (
-                    <Pin className="h-2 w-2 text-gray-400" size={6} />
-                  )}
-                </Pressable>
-              )}
-              {onToggleArchive && isHovered && (
-                <Pressable
-                  onPress={() => onToggleArchive(session.id, !session.isArchived)}
-                  onHoverIn={() => setRowHover(session.id)}
-                  onHoverOut={() => scheduleClearRowHover(session.id)}
-                  className="p-1 shrink-0"
-                  accessibilityLabel={session.isArchived ? `Unarchive ${session.name}` : `Archive ${session.name}`}
-                >
-                  {session.isArchived ? (
-                    <ArchiveRestore className="h-2 w-2 text-gray-400" size={6} />
-                  ) : (
-                    <Archive className="h-2 w-2 text-gray-400" size={6} />
-                  )}
-                </Pressable>
-              )}
-              {onRename && isHovered && (
-                <Pressable
-                  onPress={() => handleStartEdit(session)}
-                  onHoverIn={() => setRowHover(session.id)}
-                  onHoverOut={() => scheduleClearRowHover(session.id)}
-                  className="p-1 shrink-0"
-                  accessibilityLabel={`Rename ${session.name}`}
-                >
-                  <Pencil className="h-2 w-2 text-gray-400" size={6} />
-                </Pressable>
-              )}
-              {onDelete && isHovered && (
-                <Pressable
-                  onPress={() => onDelete(session.id)}
-                  onHoverIn={() => setRowHover(session.id)}
-                  onHoverOut={() => scheduleClearRowHover(session.id)}
-                  className="p-1 shrink-0"
-                  accessibilityLabel={`Delete ${session.name}`}
-                >
-                  <Trash2 className="h-2 w-2 text-gray-400" size={6} />
-                </Pressable>
-              )}
+              {/*
+                Action icons are always mounted; their visibility is purely
+                CSS-driven via the parent row's `group` + `group-hover:flex`.
+                This keeps them in the DOM continuously so hovering between
+                them never tears down the cursor's hover target.
+              */}
+              <View className="hidden group-hover:flex flex-row items-center gap-1 shrink-0">
+                {onTogglePin && (
+                  <Pressable
+                    onPress={() => onTogglePin(session.id, !session.isPinned)}
+                    className="p-1 shrink-0"
+                    accessibilityLabel={session.isPinned ? `Unpin ${session.name}` : `Pin ${session.name}`}
+                  >
+                    {session.isPinned ? (
+                      <PinOff className="h-2 w-2 text-gray-400" size={6} />
+                    ) : (
+                      <Pin className="h-2 w-2 text-gray-400" size={6} />
+                    )}
+                  </Pressable>
+                )}
+                {onToggleArchive && (
+                  <Pressable
+                    onPress={() => onToggleArchive(session.id, !session.isArchived)}
+                    className="p-1 shrink-0"
+                    accessibilityLabel={session.isArchived ? `Unarchive ${session.name}` : `Archive ${session.name}`}
+                  >
+                    {session.isArchived ? (
+                      <ArchiveRestore className="h-2 w-2 text-gray-400" size={6} />
+                    ) : (
+                      <Archive className="h-2 w-2 text-gray-400" size={6} />
+                    )}
+                  </Pressable>
+                )}
+                {onRename && (
+                  <Pressable
+                    onPress={() => handleStartEdit(session)}
+                    className="p-1 shrink-0"
+                    accessibilityLabel={`Rename ${session.name}`}
+                  >
+                    <Pencil className="h-2 w-2 text-gray-400" size={6} />
+                  </Pressable>
+                )}
+                {onDelete && (
+                  <Pressable
+                    onPress={() => onDelete(session.id)}
+                    className="p-1 shrink-0"
+                    accessibilityLabel={`Delete ${session.name}`}
+                  >
+                    <Trash2 className="h-2 w-2 text-gray-400" size={6} />
+                  </Pressable>
+                )}
+              </View>
             </View>
             {session.messageCount >= 0 && (
               <Text className="text-xs text-gray-400 mt-0.5">
