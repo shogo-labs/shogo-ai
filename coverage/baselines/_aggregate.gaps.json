@@ -281,6 +281,18 @@
       "file": "packages/sdk/src/agent/client.ts",
       "delta": "88.07% \u2192 100.00% lines (9 new tests)",
       "aggregateImpact": "+29 covered lines (sdk is in the tracked aggregate)"
+    },
+    {
+      "commit": "d898f2bd",
+      "file": "packages/shared-runtime/src/s3-sync.ts",
+      "delta": "89.38% \u2192 99.79% lines (4 new tests, ENOENT tar fallback)",
+      "aggregateImpact": "+21 covered lines (shared-runtime is in tracked aggregate)"
+    },
+    {
+      "commit": "38d9838f",
+      "file": "packages/shared-runtime/src/lsp-service.ts",
+      "delta": "80.26% \u2192 99.78% lines (48 new tests, e2e LSP protocol driver)",
+      "aggregateImpact": "+260+ covered lines"
     }
   ],
   "frontend": {
@@ -297,5 +309,5 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-27T09:35:48Z"
+  "lastUpdated": "2026-05-27T10:50:24Z"
 }
