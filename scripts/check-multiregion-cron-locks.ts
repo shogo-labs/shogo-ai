@@ -589,7 +589,12 @@ function enumerateCronEntries(): CronEntry[] {
       ) {
         entries.push({
           fn: node.name.text,
-          file: relative(REPO_ROOT, file),
+          // Normalise to forward slashes so the equality check against
+          // the INTENTIONALLY_REGIONAL allowlist (which is hand-written
+          // with POSIX paths) passes on Windows, where `relative()`
+          // emits `apps\api\...` and would otherwise compare unequal
+          // to `apps/api/...`.
+          file: relative(REPO_ROOT, file).replace(/\\/g, '/'),
           line:
             sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1,
           node,
@@ -617,7 +622,7 @@ function enumerateCronEntries(): CronEntry[] {
       ) {
         entries.push({
           fn: extra.fn,
-          file: relative(REPO_ROOT, extra.file),
+          file: relative(REPO_ROOT, extra.file).replace(/\\/g, '/'),
           line:
             sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1,
           node,
