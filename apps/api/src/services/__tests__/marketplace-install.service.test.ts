@@ -18,6 +18,7 @@ type Listing = {
   installModel: string
   installCount: number
   projectId: string
+  creatorId: string
   project?: any
 }
 type Install = {
@@ -82,6 +83,11 @@ mock.module('../../lib/prisma', () => ({
         deletedProjects.push(where.id)
         db.projects.delete(where.id)
         return {}
+      },
+      update: async ({ where, data }: any) => {
+        const p = db.projects.get(where.id)
+        if (p) Object.assign(p, data)
+        return p ?? {}
       },
     },
     marketplaceListingVersion: {
@@ -175,11 +181,17 @@ mock.module('../../lib/prisma', () => ({
             db.installs.set(row.id, row)
             return row
           },
+          update: async ({ where, data }: any) => {
+            const i = db.installs.get(where.id)!
+            Object.assign(i, data)
+            return i
+          },
         },
         marketplaceListing: {
           update: async ({ where, data }: any) => {
             const L = db.listings.get(where.id)!
             if (data.installCount?.increment) L.installCount += data.installCount.increment
+            if (data.installCount?.decrement) L.installCount -= data.installCount.decrement
             return L
           },
         },
@@ -211,6 +223,22 @@ mock.module('@shogo/shared-runtime', () => ({
     s3SyncFactoryMock ? s3SyncFactoryMock(projectDir, projectId) : null,
 }))
 
+let cancelledSubscriptions: string[] = []
+
+mock.module('../stripe-connect.service', () => ({
+  cancelMarketplaceSubscription: async (subId: string) => {
+    cancelledSubscriptions.push(subId)
+  },
+}))
+
+let recalculatedCreators: string[] = []
+
+mock.module('../creator-gamification.service', () => ({
+  recalculateCreatorStats: async (creatorId: string) => {
+    recalculatedCreators.push(creatorId)
+  },
+}))
+
 const svc = await import('../marketplace-install.service')
 
 // ─── fs fixtures ─────────────────────────────────────────────────────────────
@@ -236,6 +264,8 @@ beforeEach(() => {
   db.versions.length = 0
   db.agentConfigs.length = 0
   deletedProjects.length = 0
+  cancelledSubscriptions.length = 0
+  recalculatedCreators.length = 0
   workspaceAccessGranted = true
   snapshotExtractMock = null
   computeManifestMock = () => ({})
@@ -281,6 +311,7 @@ function seedListing(overrides: Partial<Listing> & { id?: string } = {}): Listin
     installModel: 'managed',
     installCount: 0,
     projectId: projId,
+    creatorId: overrides.creatorId ?? 'creator_1',
     project: { ...proj, agentConfig: { heartbeatInterval: 1800 } },
     ...overrides,
   }
@@ -1079,5 +1110,68 @@ describe('getInstallsForListing', () => {
     expect(out.page).toBe(2)
     expect(out.limit).toBe(3)
     expect(out.installs).toHaveLength(3)
+  })
+})
+
+// ─── uninstallAgent ───────────────────────────────────────────────────────────
+
+describe('uninstallAgent', () => {
+  it('marks install as cancelled and decrements installCount', async () => {
+    const L = seedListing()
+    L.installCount = 5
+    const inst = seedInstall({ listingId: L.id, userId: 'user_1', projectId: 'proj_x' })
+    makeWorkspaceDir('proj_x', { 'main.ts': 'hello' })
+
+    await svc.uninstallAgent({ installId: inst.id, userId: 'user_1' })
+
+    expect(inst.status).toBe('cancelled')
+    expect(L.installCount).toBe(4)
+    expect(recalculatedCreators).toContain('creator_1')
+  })
+
+  it('removes workspace directory on disk', async () => {
+    const L = seedListing()
+    const inst = seedInstall({ listingId: L.id, userId: 'user_1', projectId: 'proj_disk' })
+    const dir = makeWorkspaceDir('proj_disk', { 'a.txt': 'x' })
+
+    await svc.uninstallAgent({ installId: inst.id, userId: 'user_1' })
+
+    expect(existsSync(dir)).toBe(false)
+  })
+
+  it('cancels Stripe subscription when present', async () => {
+    const L = seedListing()
+    const inst = seedInstall({ listingId: L.id, userId: 'user_1', projectId: 'proj_sub' })
+    ;(inst as any).stripeSubscriptionId = 'sub_test_123'
+    makeWorkspaceDir('proj_sub')
+
+    await svc.uninstallAgent({ installId: inst.id, userId: 'user_1' })
+
+    expect(cancelledSubscriptions).toContain('sub_test_123')
+  })
+
+  it('throws install_not_found for nonexistent install', async () => {
+    await expect(
+      svc.uninstallAgent({ installId: 'nonexistent', userId: 'user_1' }),
+    ).rejects.toThrow('install_not_found')
+  })
+
+  it('throws install_access_denied when userId does not match', async () => {
+    const L = seedListing()
+    const inst = seedInstall({ listingId: L.id, userId: 'user_1', projectId: 'proj_y' })
+
+    await expect(
+      svc.uninstallAgent({ installId: inst.id, userId: 'user_other' }),
+    ).rejects.toThrow('install_access_denied')
+  })
+
+  it('throws install_not_active for already cancelled installs', async () => {
+    const L = seedListing()
+    const inst = seedInstall({ listingId: L.id, userId: 'user_1', projectId: 'proj_z' })
+    inst.status = 'cancelled'
+
+    await expect(
+      svc.uninstallAgent({ installId: inst.id, userId: 'user_1' }),
+    ).rejects.toThrow('install_not_active')
   })
 })
