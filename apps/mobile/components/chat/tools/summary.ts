@@ -11,7 +11,7 @@
  * Pure module — no React / RN imports. Safe to unit-test directly.
  */
 
-import { getToolKeyArg } from "./types"
+import { getToolKeyArg, type ToolExecutionState } from "./types"
 
 export type RestSep = "&&" | "||" | ";"
 
@@ -45,6 +45,54 @@ function basename(path: string): string {
 function truncate(value: string, max = TARGET_MAX): string {
   if (value.length <= max) return value
   return value.slice(0, max - 1) + "…"
+}
+
+/**
+ * Parse a `sleep` argument like `5`, `5s`, `2m`, `1h`, `0.5h`, `1d`
+ * into milliseconds. Returns null when the argument doesn't look like
+ * a recognised duration so the caller can fall back to the generic
+ * "Run sleep" label instead of inventing a duration.
+ */
+function parseSleepArg(arg: string | undefined): number | null {
+  if (!arg) return null
+  const match = arg.match(/^(\d+(?:\.\d+)?)([smhd]?)$/i)
+  if (!match) return null
+  const n = parseFloat(match[1])
+  if (!isFinite(n)) return null
+  const unit = (match[2] || "s").toLowerCase()
+  const mult: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }
+  return n * mult[unit]
+}
+
+/**
+ * Mutate a `ToolSummary` (and any chained `rest` entries) in place so
+ * "Waiting for" becomes "Waited for". Used by the `exec` / `Bash` branch
+ * of `getToolSummary` to apply past-tense once a `sleep …` resolves.
+ */
+function flipWaitingVerb(summary: ToolSummary): void {
+  if (summary.verb === "Waiting for") summary.verb = "Waited for"
+  if (summary.rest) {
+    for (const entry of summary.rest) flipWaitingVerb(entry)
+  }
+}
+
+/**
+ * Format a millisecond duration as a coarse human-readable string for
+ * the `exec_wait` row: "30 seconds", "2 minutes", "1 hour", etc.
+ * Rounds to the largest reasonable unit (sec/min/hr) so the chat row
+ * stays short.
+ */
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000))
+  if (totalSeconds < 60) {
+    return `${totalSeconds} second${totalSeconds === 1 ? "" : "s"}`
+  }
+  const totalMinutes = Math.round(totalSeconds / 60)
+  if (totalMinutes < 60) {
+    return `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`
+  }
+  const totalHours = Math.round(totalMinutes / 60)
+  return `${totalHours} hour${totalHours === 1 ? "" : "s"}`
 }
 
 function dequote(value: string): string {
@@ -318,7 +366,10 @@ function splitSegmentsWithSep(command: string): SegmentWithSep[] {
  *                                 -> { verb:"Run", target:"test", rest:[{verb:"Run", target:"lint"}] }
  *   "cd foo"                      -> { verb:"cd", target:"foo" }          (only segment, keep it)
  */
-export function parseShellCommand(command: string): ToolSummary {
+export function parseShellCommand(
+  command: string,
+  state?: ToolExecutionState,
+): ToolSummary {
   const segments = splitSegmentsWithSep(command)
   if (segments.length === 0) return { verb: "Run" }
 
@@ -345,6 +396,12 @@ export function parseShellCommand(command: string): ToolSummary {
     rest.push(entry)
   }
   if (rest.length > 0) primary.rest = rest
+
+  // Once the exec resolves, flip any "Waiting for …" verbs (emitted by
+  // the `sleep` branch in `parseSingleSegment`) to "Waited for …" so the
+  // row reads naturally in both `ExecWidget` and the inline `Bash/exec`
+  // dispatch in `getToolSummary`.
+  if (state && state !== "streaming") flipWaitingVerb(primary)
 
   return primary
 }
@@ -414,6 +471,22 @@ function parseSingleSegment(segment: string): ToolSummary {
       const target = args.length > 0 ? dequote(args.join(" ")) : undefined
       return { verb: "echo", target: target ? truncate(target, 30) : undefined }
     }
+    case "sleep": {
+      // Sum every numeric-with-optional-unit arg ("sleep 1 2.5s 1m" is
+      // legal POSIX and means 3.5 min total). If none parse, fall back
+      // to a plain "Run sleep" so we don't fabricate a duration.
+      let totalMs = 0
+      let matched = 0
+      for (const tok of rest) {
+        const parsed = parseSleepArg(dequote(tok))
+        if (parsed !== null) {
+          totalMs += parsed
+          matched++
+        }
+      }
+      if (matched === 0) return { verb: "Run", target: "sleep" }
+      return { verb: "Waiting for", target: formatDuration(totalMs) }
+    }
     case "curl":
     case "wget": {
       const url = firstNonFlagArg(rest, 0)
@@ -466,10 +539,15 @@ function parseSingleSegment(segment: string): ToolSummary {
  * Map a tool call (toolName + args) to a short human-readable summary.
  * Only handles the "minimal-variant" allow-list; callers are expected to
  * route MCP / bespoke tools elsewhere.
+ *
+ * The optional `state` lets verb tense reflect completion — e.g.
+ * `exec_wait` shows "Waiting for 30 seconds" while streaming and flips
+ * to "Waited for 30 seconds" once the wait resolves.
  */
 export function getToolSummary(
   toolName: string,
   args?: Record<string, unknown>,
+  state?: ToolExecutionState,
 ): ToolSummary {
   const a = args ?? {}
 
@@ -512,8 +590,16 @@ export function getToolSummary(
     case "Bash":
     case "exec": {
       const command = a.command as string | undefined
-      if (command) return parseShellCommand(command)
-      return { verb: "Run" }
+      if (!command) return { verb: "Run" }
+      // `sleep …` in the command flips "Waiting for …" -> "Waited for …"
+      // once the exec resolves; `parseShellCommand` handles that via the
+      // optional `state` arg.
+      return parseShellCommand(command, state)
+    }
+    case "exec_wait": {
+      const ms = typeof a.timeout_ms === "number" ? a.timeout_ms : 30_000
+      const verb = state && state !== "streaming" ? "Waited for" : "Waiting for"
+      return { verb, target: formatDuration(ms) }
     }
     default: {
       // Last-resort fallback — keep the raw tool name as the verb and use

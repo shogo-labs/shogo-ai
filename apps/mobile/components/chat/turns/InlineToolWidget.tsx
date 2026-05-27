@@ -116,7 +116,7 @@ function InlineToolWidgetImpl({
 
   const chatContext = useChatContextSafe()
   const isMinimal = variant === "minimal"
-  const summary = isMinimal ? getToolSummary(tool.toolName, tool.args) : null
+  const summary = isMinimal ? getToolSummary(tool.toolName, tool.args, tool.state) : null
   const displayName = isMinimal ? summary!.verb : formatToolName(tool.toolName)
   const keyArg = isMinimal ? summary!.target ?? null : getToolKeyArg(tool.toolName, tool.args)
   const isAuthErr = detectAuthError(tool)

@@ -191,6 +191,7 @@ const MINIMAL_TOOL_NAMES = new Set([
   "Glob", "glob",
   "WebSearch", "WebFetch",
   "Delete",
+  "exec_wait",
 ])
 const MIN_GROUP_SIZE = 2
 
