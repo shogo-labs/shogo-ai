@@ -23,7 +23,9 @@ let cur = {lh:0,lf:0,fh:0,fn:0}
 for (const line of text.split('\n')) {
   if (line.startsWith('SF:')) {
     const sf = line.slice(3).trim()
-    const abs = resolve(lcovDir, "..", sf)
+    const sfRoot = resolve(lcovDir, "..", sf)
+    const sfRepoRoot = resolve(process.cwd(), sf)
+    const abs = sf.startsWith("apps/") || sf.startsWith("packages/") ? sfRepoRoot : sfRoot
     curFile = abs
     const inIncl = incAbs.length === 0 || incAbs.some(r => abs === r || abs.startsWith(r + '/'))
     const inExcl = excAbs.some(r => abs === r || abs.startsWith(r + '/'))

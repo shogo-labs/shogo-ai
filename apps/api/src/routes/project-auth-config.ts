@@ -31,9 +31,6 @@ export function projectAuthConfigRoutes() {
    */
   router.get('/projects/:projectId/auth-config', async (c) => {
     const projectId = c.req.param('projectId')
-    if (!projectId) {
-      return c.json({ error: { code: 'bad_request', message: 'Project ID is required' } }, 400)
-    }
     const config = await getConfig(projectId)
     return c.json({ config })
   })
@@ -46,9 +43,6 @@ export function projectAuthConfigRoutes() {
    */
   router.put('/projects/:projectId/auth-config', async (c) => {
     const projectId = c.req.param('projectId')
-    if (!projectId) {
-      return c.json({ error: { code: 'bad_request', message: 'Project ID is required' } }, 400)
-    }
 
     let body: unknown
     try {
@@ -82,9 +76,6 @@ export function projectAuthConfigRoutes() {
    */
   router.get('/projects/:projectId/auth-users', async (c) => {
     const projectId = c.req.param('projectId')
-    if (!projectId) {
-      return c.json({ error: { code: 'bad_request', message: 'Project ID is required' } }, 400)
-    }
     const cursor = c.req.query('cursor') ?? undefined
     const queryStr = c.req.query('q') ?? undefined
     const rawLimit = c.req.query('limit')
@@ -107,9 +98,6 @@ export function projectAuthConfigRoutes() {
   router.delete('/projects/:projectId/auth-users/:userId', async (c) => {
     const projectId = c.req.param('projectId')
     const userId = c.req.param('userId')
-    if (!projectId || !userId) {
-      return c.json({ error: { code: 'bad_request', message: 'Missing path params' } }, 400)
-    }
     await revokeUser(projectId, userId)
     return c.json({ ok: true })
   })
