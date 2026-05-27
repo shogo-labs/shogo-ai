@@ -1,7 +1,7 @@
 {
   "name": "@shogo-ai/cli",
   "version": "1.6.0",
-  "description": "Shogo CLI helpers — deploy/manifest validation and packager for Shogo agents.",
+  "description": "Shogo CLI helpers \u2014 deploy/manifest validation and packager for Shogo agents.",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.cjs",
@@ -38,7 +38,7 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
-    "test": "bun --no-env-file test src/"
+    "test": "bun --no-env-file --conditions=development test src/"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

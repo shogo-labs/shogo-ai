@@ -1,7 +1,7 @@
 {
   "name": "@shogo-ai/voice",
   "version": "1.6.0",
-  "description": "Shogo Voice — ElevenLabs/Twilio voice agent infrastructure with React + React Native UI primitives.",
+  "description": "Shogo Voice \u2014 ElevenLabs/Twilio voice agent infrastructure with React + React Native UI primitives.",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.cjs",
@@ -74,7 +74,7 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
-    "test": "bun --no-env-file test src/"
+    "test": "bun --no-env-file --conditions=development test src/"
   },
   "peerDependencies": {
     "@ai-sdk/react": ">=3.0.0",
@@ -88,15 +88,33 @@
     "expo-three": ">=8.0.0"
   },
   "peerDependenciesMeta": {
-    "@ai-sdk/react": { "optional": true },
-    "@elevenlabs/react": { "optional": true },
-    "@elevenlabs/react-native": { "optional": true },
-    "ai": { "optional": true },
-    "react": { "optional": true },
-    "react-native": { "optional": true },
-    "three": { "optional": true },
-    "expo-gl": { "optional": true },
-    "expo-three": { "optional": true }
+    "@ai-sdk/react": {
+      "optional": true
+    },
+    "@elevenlabs/react": {
+      "optional": true
+    },
+    "@elevenlabs/react-native": {
+      "optional": true
+    },
+    "ai": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-native": {
+      "optional": true
+    },
+    "three": {
+      "optional": true
+    },
+    "expo-gl": {
+      "optional": true
+    },
+    "expo-three": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@ai-sdk/react": "^3.0.99",

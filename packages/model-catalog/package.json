@@ -7,7 +7,7 @@
   "main": "src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "bun --no-env-file test",
+    "test": "bun --no-env-file --conditions=development test",
     "test:coverage": "bun --no-env-file test --coverage"
   },
   "dependencies": {
