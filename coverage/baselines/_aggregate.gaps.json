@@ -3,96 +3,96 @@
   "note": "Honest v2 aggregate from per-file-isolated test runs (apps/api + agent-runtime + shared-runtime use run-tests-isolated.ts to merge ~141 per-test-file lcovs each), comment-stripped via coverage-strip-comments.ts. Strict per-package src/ scoping via scripts/sum-lcov.ts --include. Aggregate 87.81% lines. Frontend badge UNTOUCHED.",
   "aggregate": {
     "lines": {
-      "total": 75061,
-      "hit": 67036,
-      "pct": 89.31
+      "total": 75174,
+      "hit": 66713,
+      "pct": 88.74
     },
     "functions": {
-      "total": 6175,
-      "hit": 5423,
-      "pct": 87.82
+      "total": 6178,
+      "hit": 5320,
+      "pct": 86.11
     }
   },
   "perPackage": [
     {
       "package": "apps/api",
-      "linesHit": 35380,
-      "linesFound": 38735,
-      "linePct": 91.34,
-      "funcsHit": 2838,
-      "funcsFound": 3041,
-      "funcPct": 93.32,
-      "source": "fresh 2026-05-27 + Wave B Day 7 (local-port-observer defaults)"
+      "linesHit": 34749,
+      "linesFound": 38772,
+      "linePct": 89.62,
+      "funcsHit": 2679,
+      "funcsFound": 3001,
+      "funcPct": 89.27,
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
     },
     {
       "package": "packages/agent-runtime",
-      "linesHit": 17274,
+      "linesHit": 17275,
       "linesFound": 20951,
       "linePct": 82.45,
-      "funcsHit": 1259,
+      "funcsHit": 1260,
       "funcsFound": 1662,
-      "funcPct": 75.75,
-      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
+      "funcPct": 75.81,
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
     },
     {
       "package": "packages/sdk",
       "linesHit": 6090,
-      "linesFound": 6367,
-      "linePct": 95.65,
+      "linesFound": 6503,
+      "linePct": 93.65,
       "funcsHit": 520,
       "funcsFound": 582,
       "funcPct": 89.35,
-      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
     },
     {
       "package": "packages/shared-runtime",
-      "linesHit": 2881,
-      "linesFound": 3470,
-      "linePct": 83.03,
-      "funcsHit": 273,
-      "funcsFound": 318,
-      "funcPct": 85.85,
-      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
+      "linesHit": 3188,
+      "linesFound": 3397,
+      "linePct": 93.85,
+      "funcsHit": 328,
+      "funcsFound": 361,
+      "funcPct": 90.86,
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
     },
     {
       "package": "packages/model-catalog",
       "linesHit": 1,
       "linesFound": 1,
-      "linePct": 100.0,
+      "linePct": 100,
       "funcsHit": 1,
       "funcsFound": 1,
-      "funcPct": 100.0,
-      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
+      "funcPct": 100,
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
     },
     {
       "package": "packages/voice",
       "linesHit": 1679,
       "linesFound": 1679,
-      "linePct": 100.0,
+      "linePct": 100,
       "funcsHit": 168,
       "funcsFound": 172,
       "funcPct": 97.67,
-      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
     },
     {
       "package": "packages/email",
       "linesHit": 696,
       "linesFound": 696,
-      "linePct": 100.0,
+      "linePct": 100,
       "funcsHit": 63,
       "funcsFound": 64,
       "funcPct": 98.44,
-      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
     },
     {
       "package": "packages/agent",
       "linesHit": 449,
       "linesFound": 449,
-      "linePct": 100.0,
+      "linePct": 100,
       "funcsHit": 29,
       "funcsFound": 29,
-      "funcPct": 100.0,
-      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
+      "funcPct": 100,
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
     },
     {
       "package": "packages/core",
@@ -102,27 +102,27 @@
       "funcsHit": 47,
       "funcsFound": 51,
       "funcPct": 92.16,
-      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
     },
     {
       "package": "packages/cli",
       "linesHit": 514,
-      "linesFound": 596,
-      "linePct": 86.24,
+      "linesFound": 608,
+      "linePct": 84.54,
       "funcsHit": 41,
       "funcsFound": 49,
       "funcPct": 83.67,
-      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
     },
     {
       "package": "packages/shogo-worker",
       "linesHit": 1685,
-      "linesFound": 1724,
-      "linePct": 97.74,
+      "linesFound": 1725,
+      "linePct": 97.68,
       "funcsHit": 184,
       "funcsFound": 206,
       "funcPct": 89.32,
-      "source": "fresh 2026-05-27 via run-tests-isolated.ts (per-file lcov merge + strip-comments)"
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
     }
   ],
   "topGaps": [
@@ -451,6 +451,12 @@
       "file": "apps/api/src/lib/port-observer/local-port-observer.ts",
       "delta": "Wave B Day 7: 62% \u2192 100% L + F (defaults closeout)",
       "aggregateImpact": "+102 lines hit, +0 found, +18 funcs hit, +0 funcs found"
+    },
+    {
+      "commit": "pending",
+      "file": "coverage/baselines/_aggregate.gaps.json + README backend badge",
+      "delta": "Full re-measure: aggregate 88.74% L / 86.11% F across all 11 backend packages",
+      "aggregateImpact": "linesHit=66713/75174, funcsHit=5320/6178"
     }
   ],
   "frontend": {
@@ -467,7 +473,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-27T14:42:52Z",
+  "lastUpdated": "2026-05-27T14:50:24Z",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
