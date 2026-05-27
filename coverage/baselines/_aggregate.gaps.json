@@ -4,25 +4,25 @@
   "aggregate": {
     "lines": {
       "total": 75061,
-      "hit": 66934,
-      "pct": 89.17
+      "hit": 67036,
+      "pct": 89.31
     },
     "functions": {
       "total": 6175,
-      "hit": 5405,
-      "pct": 87.53
+      "hit": 5423,
+      "pct": 87.82
     }
   },
   "perPackage": [
     {
       "package": "apps/api",
-      "linesHit": 35278,
+      "linesHit": 35380,
       "linesFound": 38735,
-      "linePct": 91.08,
-      "funcsHit": 2820,
+      "linePct": 91.34,
+      "funcsHit": 2838,
       "funcsFound": 3041,
-      "funcPct": 92.73,
-      "source": "fresh 2026-05-27 + Wave B Day 6 batch (api-keys + checkpoints)"
+      "funcPct": 93.32,
+      "source": "fresh 2026-05-27 + Wave B Day 7 (local-port-observer defaults)"
     },
     {
       "package": "packages/agent-runtime",
@@ -445,6 +445,12 @@
       "file": "apps/api batch (api-keys + checkpoints)",
       "delta": "Wave B Day 6: 2 route files to 100% L + F (+487 lines, +38 funcs)",
       "aggregateImpact": "+487 lines hit, +0 found, +38 funcs hit, +0 funcs found"
+    },
+    {
+      "commit": "eb11db2",
+      "file": "apps/api/src/lib/port-observer/local-port-observer.ts",
+      "delta": "Wave B Day 7: 62% \u2192 100% L + F (defaults closeout)",
+      "aggregateImpact": "+102 lines hit, +0 found, +18 funcs hit, +0 funcs found"
     }
   ],
   "frontend": {
@@ -461,7 +467,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-27T14:36:42Z",
+  "lastUpdated": "2026-05-27T14:42:52Z",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
