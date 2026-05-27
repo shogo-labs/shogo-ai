@@ -646,7 +646,7 @@ export const AssistantContent = memo(
   }
 
   return (
-    <View className={cn("gap-y-2", className)}>
+    <View className={cn("gap-y-1", className)}>
       {groupedParts.map((part, index) => {
         if (part.type === "reasoning") {
           return (
