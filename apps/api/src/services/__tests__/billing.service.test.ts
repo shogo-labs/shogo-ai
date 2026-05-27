@@ -944,3 +944,276 @@ describe('setUsageBasedPricing', () => {
     expect(wallets.get('w1')?.overageHardLimitUsd).toBeNull()
   })
 })
+
+// ============================================================================
+// Coverage gap-closers — consumeUsage transactional branches
+// Targets uncovered lines: 257, 400-404, 443-459, 461, 472, 477-483, 532-540,
+// 556-563, 573-579, 640-647.
+// ============================================================================
+
+describe('nextOverageBlockUsd — outer-guard fallback (L257)', () => {
+  it('returns OVERAGE_BLOCK_MAX_USD when remainder exceeds every block size up to the 10_000 iteration cap', () => {
+    expect(billing.nextOverageBlockUsd(Number.MAX_SAFE_INTEGER)).toBe(500)
+  })
+})
+
+describe('consumeUsage — FK retry (L398-404, isFkConstraintError branches)', () => {
+  it('retries on usage_events_projectId_fkey P2003 then succeeds', async () => {
+    wallets.set('w1', freshWallet({ dailyIncludedUsd: 1, monthlyIncludedUsd: 0 }))
+    let calls = 0
+    usageEventCreateImpl = (data) => {
+      calls += 1
+      if (calls === 1) {
+        const err: any = new Error('FK constraint')
+        err.code = 'P2003'
+        err.meta = { field_name: 'usage_events_projectId_fkey' }
+        throw err
+      }
+      const ev: UsageEvent = {
+        id: `ue_${usageEvents.length + 1}`,
+        workspaceId: data.workspaceId,
+        projectId: data.projectId ?? null,
+        memberId: data.memberId,
+        actionType: data.actionType,
+        rawUsd: data.rawUsd ?? null,
+        billedUsd: data.billedUsd,
+        source: data.source,
+        balanceBefore: data.balanceBefore,
+        balanceAfter: data.balanceAfter,
+        actionMetadata: data.actionMetadata ?? null,
+        createdAt: new Date(),
+      }
+      usageEvents.push(ev)
+      return ev
+    }
+    const realSetTimeout = setTimeout
+    ;(globalThis as any).setTimeout = (cb: any) => realSetTimeout(cb, 0)
+    try {
+      const r = await billing.consumeUsage({
+        workspaceId: 'w1', projectId: 'proj-1', memberId: 'u1',
+        actionType: 'x', billedUsd: 0.1,
+      })
+      expect(r.success).toBe(true)
+      expect(calls).toBe(2)
+    } finally {
+      ;(globalThis as any).setTimeout = realSetTimeout
+    }
+  })
+
+  it('re-throws non-FK errors immediately', async () => {
+    wallets.set('w1', freshWallet({ dailyIncludedUsd: 1, monthlyIncludedUsd: 0 }))
+    usageEventCreateImpl = () => { throw new Error('connection reset') }
+    await expect(
+      billing.consumeUsage({
+        workspaceId: 'w1', projectId: 'proj-1', memberId: 'u1',
+        actionType: 'x', billedUsd: 0.1,
+      }),
+    ).rejects.toThrow(/connection reset/)
+  })
+
+  it('re-throws FK errors after exhausting retry attempts', async () => {
+    wallets.set('w1', freshWallet({ dailyIncludedUsd: 1, monthlyIncludedUsd: 0 }))
+    usageEventCreateImpl = () => {
+      const err: any = new Error('FK constraint')
+      err.code = 'P2003'
+      err.meta = { field_name: 'usage_events_projectId_fkey' }
+      throw err
+    }
+    const realSetTimeout = setTimeout
+    ;(globalThis as any).setTimeout = (cb: any) => realSetTimeout(cb, 0)
+    try {
+      await expect(
+        billing.consumeUsage({
+          workspaceId: 'w1', projectId: 'proj-1', memberId: 'u1',
+          actionType: 'x', billedUsd: 0.1,
+        }),
+      ).rejects.toThrow(/FK constraint/)
+    } finally {
+      ;(globalThis as any).setTimeout = realSetTimeout
+    }
+  })
+
+  it('does NOT retry FK errors when projectId is null', async () => {
+    wallets.set('w1', freshWallet({ dailyIncludedUsd: 1, monthlyIncludedUsd: 0 }))
+    let calls = 0
+    usageEventCreateImpl = () => {
+      calls += 1
+      const err: any = new Error('FK constraint')
+      err.code = 'P2003'
+      err.meta = { field_name: 'usage_events_projectId_fkey' }
+      throw err
+    }
+    await expect(
+      billing.consumeUsage({
+        workspaceId: 'w1', projectId: null, memberId: 'u1',
+        actionType: 'x', billedUsd: 0.1,
+      }),
+    ).rejects.toThrow()
+    expect(calls).toBe(1)
+  })
+
+  it('isFkConstraintError returns false for P2002 (different code)', async () => {
+    wallets.set('w1', freshWallet({ dailyIncludedUsd: 1, monthlyIncludedUsd: 0 }))
+    usageEventCreateImpl = () => {
+      const err: any = new Error('unique violation')
+      err.code = 'P2002'
+      err.meta = { field_name: 'usage_events_projectId_fkey' }
+      throw err
+    }
+    await expect(
+      billing.consumeUsage({
+        workspaceId: 'w1', projectId: 'p1', memberId: 'u1',
+        actionType: 'x', billedUsd: 0.1,
+      }),
+    ).rejects.toThrow(/unique violation/)
+  })
+
+  it('isFkConstraintError returns false for P2003 with wrong field_name', async () => {
+    wallets.set('w1', freshWallet({ dailyIncludedUsd: 1, monthlyIncludedUsd: 0 }))
+    usageEventCreateImpl = () => {
+      const err: any = new Error('FK other')
+      err.code = 'P2003'
+      err.meta = { field_name: 'usage_events_memberId_fkey' }
+      throw err
+    }
+    await expect(
+      billing.consumeUsage({
+        workspaceId: 'w1', projectId: 'p1', memberId: 'u1',
+        actionType: 'x', billedUsd: 0.1,
+      }),
+    ).rejects.toThrow(/FK other/)
+  })
+
+  it('isFkConstraintError returns false for non-object errors', async () => {
+    wallets.set('w1', freshWallet({ dailyIncludedUsd: 1, monthlyIncludedUsd: 0 }))
+    usageEventCreateImpl = () => { throw 'just a string' }
+    await expect(
+      billing.consumeUsage({
+        workspaceId: 'w1', projectId: 'p1', memberId: 'u1',
+        actionType: 'x', billedUsd: 0.1,
+      }),
+    ).rejects.toBe('just a string')
+  })
+})
+
+describe('consumeUsage — wallet allocation fallback (L532-540)', () => {
+  it('returns failure when allocateFreeWallet throws and wallet stays missing', async () => {
+    const origCreate = prismaApi.usageWallet.create
+    prismaApi.usageWallet.create = async () => { throw new Error('allocate explosion') }
+    try {
+      const r = await billing.consumeUsage({
+        workspaceId: 'w1', projectId: null, memberId: 'u1',
+        actionType: 'x', billedUsd: 0.1,
+      })
+      expect(r.success).toBe(false)
+      expect(r.error).toMatch(/No usage wallet found/)
+    } finally {
+      prismaApi.usageWallet.create = origCreate
+    }
+  })
+
+  it('allocates a wallet on the fly when none pre-exists', async () => {
+    const r = await billing.consumeUsage({
+      workspaceId: 'w1', projectId: null, memberId: 'u1',
+      actionType: 'x', billedUsd: 0.1,
+    })
+    expect(r.success).toBe(true)
+    expect(wallets.get('w1')).toBeDefined()
+  })
+})
+
+describe('consumeUsage — daily reset branches (L573-583)', () => {
+  it('refills daily allowance on a new calendar day when monthly cap not exceeded', async () => {
+    const yesterday = new Date()
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1)
+    wallets.set('w1', freshWallet({
+      dailyIncludedUsd: 0,
+      monthlyIncludedUsd: 0,
+      dailyUsedThisMonthUsd: 0,
+      lastDailyReset: yesterday,
+    }))
+    const r = await billing.consumeUsage({
+      workspaceId: 'w1', projectId: null, memberId: 'u1',
+      actionType: 'x', billedUsd: 0.1,
+    })
+    expect(r.success).toBe(true)
+    expect(r.source).toBe('daily')
+    const w = wallets.get('w1')!
+    expect(w.dailyIncludedUsd).toBeCloseTo(0.9, 5)
+    expect(w.dailyUsedThisMonthUsd).toBe(1)
+    expect(+w.lastDailyReset).toBeGreaterThan(+yesterday)
+  })
+
+  it('zeros daily allowance on reset when monthly cap would be exceeded', async () => {
+    const yesterday = new Date()
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1)
+    wallets.set('w1', freshWallet({
+      dailyIncludedUsd: 0,
+      monthlyIncludedUsd: 10,
+      dailyUsedThisMonthUsd: 4.5,
+      lastDailyReset: yesterday,
+    }))
+    const r = await billing.consumeUsage({
+      workspaceId: 'w1', projectId: null, memberId: 'u1',
+      actionType: 'x', billedUsd: 0.5,
+    })
+    expect(r.success).toBe(true)
+    expect(r.source).toBe('monthly')
+    expect(wallets.get('w1')?.dailyIncludedUsd).toBe(0)
+    expect(wallets.get('w1')?.dailyUsedThisMonthUsd).toBe(4.5)
+  })
+})
+
+describe('consumeUsage — monthly reset + free-tier refill (L556-572, 640-647)', () => {
+  it('refills monthlyIncludedUsd for free workspaces on month rollover', async () => {
+    const lastMonth = new Date()
+    lastMonth.setUTCMonth(lastMonth.getUTCMonth() - 1)
+    grants.set('w1', [{
+      id: 'g1', workspaceId: 'w1', freeSeats: 0,
+      monthlyIncludedUsd: 50, planId: null,
+      startsAt: new Date('2024-01-01'), expiresAt: null,
+    }])
+    wallets.set('w1', freshWallet({
+      dailyIncludedUsd: 0,
+      monthlyIncludedUsd: 0,
+      overageAccumulatedUsd: 25,
+      lastMonthlyReset: lastMonth,
+    }))
+    const r = await billing.consumeUsage({
+      workspaceId: 'w1', projectId: null, memberId: 'u1',
+      actionType: 'x', billedUsd: 5,
+    })
+    expect(r.success).toBe(true)
+    expect(r.source).toBe('monthly')
+    const w = wallets.get('w1')!
+    expect(w.monthlyIncludedUsd).toBeCloseTo(45, 5)
+    expect(w.monthlyIncludedAllocationUsd).toBe(50)
+    expect(w.overageBilledUsd).toBe(0)
+    expect(w.overageAccumulatedUsd).toBe(0)
+    expect(+w.lastMonthlyReset).toBeGreaterThan(+lastMonth)
+  })
+
+  it('does NOT refill for paid subscribers on month rollover', async () => {
+    const lastMonth = new Date()
+    lastMonth.setUTCMonth(lastMonth.getUTCMonth() - 1)
+    subs.set('w1', [{
+      id: 's1', workspaceId: 'w1', stripeSubscriptionId: 'sub_1', stripeCustomerId: 'cus_1',
+      planId: 'pro', seats: 1, status: 'active', billingInterval: 'monthly',
+      currentPeriodStart: lastMonth, currentPeriodEnd: lastMonth, cancelAtPeriodEnd: false,
+      createdAt: lastMonth,
+    }])
+    wallets.set('w1', freshWallet({
+      dailyIncludedUsd: 0,
+      monthlyIncludedUsd: 100,
+      lastMonthlyReset: lastMonth,
+    }))
+    const r = await billing.consumeUsage({
+      workspaceId: 'w1', projectId: null, memberId: 'u1',
+      actionType: 'x', billedUsd: 5,
+    })
+    expect(r.success).toBe(true)
+    const w = wallets.get('w1')!
+    expect(w.monthlyIncludedUsd).toBe(95)
+    expect(w.monthlyIncludedAllocationUsd).toBe(20)
+  })
+})
