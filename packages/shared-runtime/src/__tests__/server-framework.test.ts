@@ -872,7 +872,16 @@ describe('deriveApiUrl fallback paths (L311-319)', () => {
 
   test('L312-317: AI_PROXY_URL path — host extracted from proxy URL', async () => {
     const { app } = await buildApp({
-      env: { SHOGO_API_URL: undefined, API_URL: undefined, AI_PROXY_URL: 'http://proxy.internal:8080/v1' },
+      // AI_PROXY_TOKEN must accompany AI_PROXY_URL — configureAIProxy()
+      // throws "no proxy token is available" otherwise, and the
+      // catch in createRuntimeApp does process.exit(1), killing the
+      // whole test process (file would report 0/0/0 → CI red).
+      env: {
+        SHOGO_API_URL: undefined,
+        API_URL: undefined,
+        AI_PROXY_URL: 'http://proxy.internal:8080/v1',
+        AI_PROXY_TOKEN: 'test-proxy-token',
+      },
     })
     fetchImpl = async () => ({
       ok: true, status: 200,
@@ -999,10 +1008,14 @@ describe('pool assignment marker write failure (L646)', () => {
 describe('deriveApiUrl invalid AI_PROXY_URL (L317)', () => {
   test('falls through to namespace fallback when AI_PROXY_URL is not a valid URL', async () => {
     const { app } = await buildApp({
+      // See note above: AI_PROXY_URL without AI_PROXY_TOKEN trips
+      // configureAIProxy → FATAL → process.exit(1) and the whole
+      // test file silently FAILs with 0 pass / 0 fail.
       env: {
         SHOGO_API_URL: undefined,
         API_URL: undefined,
         AI_PROXY_URL: 'not-a-valid-url!!!',
+        AI_PROXY_TOKEN: 'test-proxy-token',
       },
     })
     fetchImpl = async () => ({
