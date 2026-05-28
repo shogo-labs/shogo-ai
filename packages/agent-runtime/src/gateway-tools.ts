@@ -1223,31 +1223,17 @@ function fuzzyFindInContent(content: string, needle: string): { index: number; m
     if (unescIdx !== -1) return { index: unescIdx, match: unescaped }
   }
 
-  // 3. Try normalizing line endings (\r\n vs \n)
-  const normalizedNeedle = needle.replace(/\r\n/g, '\n')
-  const normalizedContent = content.replace(/\r\n/g, '\n')
-  const normIdx = normalizedContent.indexOf(normalizedNeedle)
-  if (normIdx !== -1) {
-    const lines = needle.split('\n')
-    let rebuilt = ''
-    let pos = normIdx
-    for (let i = 0; i < lines.length; i++) {
-      const lineLen = lines[i].length
-      rebuilt += content.substring(pos, pos + lineLen)
-      pos += lineLen
-      if (i < lines.length - 1) {
-        if (content[pos] === '\r' && content[pos + 1] === '\n') { rebuilt += '\r\n'; pos += 2 }
-        else if (content[pos] === '\n') { rebuilt += '\n'; pos += 1 }
-      }
-    }
-    if (content.includes(rebuilt)) return { index: content.indexOf(rebuilt), match: rebuilt }
-    return { index: normIdx, match: normalizedNeedle }
-  }
+  // NOTE: A previous "step 3" did CRLF<->LF normalization here, but both
+  // `content` and `needle` arrive pre-normalized to the same target line
+  // ending from the caller (see edit_file: readFileWithMetadata then
+  // normalizeLineEndings on old_string at gateway-tools.ts L1388-1393).
+  // The IF branch was provably dead. Removed per coverage policy (no
+  // // istanbul ignore allowed on this branch).
 
-  // 4. Try stripping trailing whitespace per line
+  // 3. Try stripping trailing whitespace per line
   const stripTrailing = (s: string) => s.split('\n').map(l => l.trimEnd()).join('\n')
-  const strippedNeedle = stripTrailing(normalizedNeedle)
-  const strippedContent = stripTrailing(normalizedContent)
+  const strippedNeedle = stripTrailing(needle)
+  const strippedContent = stripTrailing(content)
   const stripIdx = strippedContent.indexOf(strippedNeedle)
   if (stripIdx !== -1) {
     const contentLines = content.split('\n')
