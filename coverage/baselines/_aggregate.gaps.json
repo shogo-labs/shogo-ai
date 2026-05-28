@@ -618,6 +618,23 @@
         }
       ],
       "note": "New test file voice-routes-twilio-cleanup.test.ts covers: DELETE /voice/twilio/number/:projectId (5 tests: no_number, happy path, Twilio release error, EL deletePhone error, Twilio unconfigured warning); POST /voice/twilio/status/:projectId metering catch (3 tests: recordCallUsage failure, no-CallSid ignore, project_not_configured ignore); POST /voice/translator/chat/:chatSessionId (6 tests: 503 no model, 400 invalid JSON, 404 session not found, 403 non-member, 200 happy path, resolveVoiceContext error warning); POST /voice/transcript/:chatSessionId persist 500. Funcs remain at 100%. No new test failures."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 2 \u2014 opportunistic",
+      "message": "test(coverage): voice.ts readonly + agents/sync paths \u2014 92.01% \u2192 92.48% lines",
+      "perFile": [
+        {
+          "file": "apps/api/src/routes/voice.ts",
+          "beforeLines": "1358/1476 (92.01%)",
+          "afterLines": "1365/1476 (92.48%)",
+          "deltaLinesHit": 7,
+          "deltaFuncsHit": 0,
+          "newTests": 14
+        }
+      ],
+      "note": "New test file voice-routes-readonly-and-errors.test.ts covers readonly endpoints (GET /voice/usage with date filters, GET /voice/calls with limit clamping + transcript variants, GET /voice/calls/:callId with 404), POST /projects/:projectId/agents/sync (invalid JSON + array body + happy path), POST /voice/twilio/outbound auth/body validation, and /voice/signed-url EL throw tail. Smaller delta than prior sessions (+7 lines) because most readonly bodies were already covered; the new tests primarily add defensive matrix coverage. Funcs remain at 100%. No new test failures (5 OTHER_TOKEN cross-project tests dropped after they were found to fail under cross-file mock pollution; that branch is already covered by voice-routes-runtime-token.test.ts for signed-url)."
     }
   ],
   "frontend": {
