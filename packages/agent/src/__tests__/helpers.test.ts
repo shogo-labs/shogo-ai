@@ -16,6 +16,7 @@ import {
   calculateDollarCost,
   getAvailableModels,
   getModelsByProvider,
+  getSubagentOrchestrationReliability,
   MODEL_DOLLAR_COSTS,
 } from '../model-catalog/helpers.js'
 import { AUTO_MODEL_ID, MODEL_CATALOG, IMAGE_MODEL_CATALOG } from '../model-catalog/models.js'
@@ -243,5 +244,41 @@ describe('getModelsByProvider', () => {
     const labels = groups.map(g => g.label)
     expect(labels.some(l => l === 'Anthropic' || l === 'OpenAI')).toBe(true)
     expect(groups.every(g => g.models.length > 0)).toBe(true)
+  })
+})
+
+describe('getSubagentOrchestrationReliability', () => {
+  it('returns the catalog value for current frontier models', () => {
+    expect(getSubagentOrchestrationReliability('claude-opus-4-7')).toBe('reliable')
+    expect(getSubagentOrchestrationReliability('claude-sonnet-4-6')).toBe('reliable')
+    expect(getSubagentOrchestrationReliability('claude-haiku-4-5-20251001')).toBe('reliable')
+    expect(getSubagentOrchestrationReliability('gpt-5.5')).toBe('reliable')
+    expect(getSubagentOrchestrationReliability('gpt-5-mini')).toBe('reliable')
+    expect(getSubagentOrchestrationReliability('gpt-5.4-mini')).toBe('reliable')
+  })
+
+  it("flags nano as flaky based on the subagent smoke eval", () => {
+    expect(getSubagentOrchestrationReliability('gpt-5.4-nano')).toBe('flaky')
+  })
+
+  it('returns "unknown" for OpenRouter (dynamic) models', () => {
+    expect(getSubagentOrchestrationReliability('openrouter:xai/mimo-v2.5')).toBe('unknown')
+    expect(getSubagentOrchestrationReliability('openrouter:anthropic/claude-sonnet-4-6')).toBe('unknown')
+  })
+
+  it('returns "unknown" for unrated catalog entries and unknown model ids', () => {
+    expect(getSubagentOrchestrationReliability('totally-made-up-model')).toBe('unknown')
+    expect(getSubagentOrchestrationReliability('')).toBe('unknown')
+    expect(getSubagentOrchestrationReliability(AUTO_MODEL_ID)).toBe('unknown')
+  })
+
+  it('resolves aliases before reading capabilities', () => {
+    const aliasFor = Object.entries(MODEL_ALIASES).find(([, target]) => {
+      const entry = MODEL_CATALOG[target as keyof typeof MODEL_CATALOG] as { capabilities?: { subagentOrchestration?: string } } | undefined
+      return entry?.capabilities?.subagentOrchestration === 'reliable'
+    })
+    if (!aliasFor) return
+    const [aliasId] = aliasFor
+    expect(getSubagentOrchestrationReliability(aliasId)).toBe('reliable')
   })
 })

@@ -231,6 +231,21 @@ describe('Routes Generator', () => {
 
         expect(result!.code).toContain('return sendJson(c, { ok: true, data: item }, 201)')
       })
+
+      it('should pass picked.data to Prisma create (not raw body)', () => {
+        // pickWritableFields(body) is the safety net that prevents
+        // relation-as-scalar bugs and unknown-key passthrough — the create
+        // route MUST pipe through it instead of forwarding `body` raw.
+        const result = generateModelRoutes(mockProjectModel)
+
+        expect(result!.code).toContain('const picked = pickWritableFields(body)')
+        expect(result!.code).toContain('if (!picked.ok) {')
+        expect(result!.code).toContain('return sendJson(c, { error: picked.error }, 400)')
+        expect(result!.code).toContain('prisma.project.create({')
+        expect(result!.code).toContain('data: picked.data,')
+        // Must NOT forward the raw body — that would re-introduce the bug.
+        expect(result!.code).not.toContain('prisma.project.create({\n        data: body,')
+      })
     })
 
     describe('UPDATE route', () => {
@@ -253,6 +268,14 @@ describe('Routes Generator', () => {
 
         expect(result!.code).toContain('if (hooks.afterUpdate) {')
         expect(result!.code).toContain('await hooks.afterUpdate(item, ctx)')
+      })
+
+      it('should pass picked.data to Prisma update (not raw body)', () => {
+        const result = generateModelRoutes(mockProjectModel)
+
+        expect(result!.code).toContain('prisma.project.update({')
+        // Both the where clause and the (filtered) data block:
+        expect(result!.code).toMatch(/prisma\.project\.update\(\{[\s\S]*?where: \{ id \},[\s\S]*?data: picked\.data,/)
       })
     })
 
@@ -600,6 +623,184 @@ describe('Routes Generator', () => {
       expect(result!.code).toContain('const bigIntReplacer = (_key: string, value: unknown) =>')
       expect(result!.code).toContain('function sendJson(c: any, body: unknown, status: number = 200) {')
       expect(result!.code).not.toContain('return c.json(')
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // pickWritableFields: the runtime payload-safety helper embedded in every
+  // generated route file. We assert both the code-gen shape (allowlist arrays
+  // and helper definition) and the runtime semantics (by evaluating the helper
+  // in isolation against representative bodies).
+  // ---------------------------------------------------------------------------
+  describe('pickWritableFields', () => {
+    // A model with one of every relevant flavor: id-with-default,
+    // required scalar, optional scalar, scalar with default, FK scalar
+    // (relationFromFields), to-many relation, and to-one relation.
+    const HireModel: PrismaModel = {
+      name: 'Hire',
+      dbName: null,
+      fields: [
+        { name: 'id', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: true, isUnique: true, hasDefaultValue: true },
+        { name: 'name', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+        { name: 'role', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+        { name: 'createdAt', kind: 'scalar', type: 'DateTime', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: true },
+        { name: 'departmentId', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+        { name: 'department', kind: 'object', type: 'Department', isRequired: false, isList: false, isId: false, isUnique: false, hasDefaultValue: false, relationName: 'DepartmentToHire', relationFromFields: ['departmentId'] },
+        { name: 'scorecards', kind: 'object', type: 'InterviewScorecard', isRequired: false, isList: true, isId: false, isUnique: false, hasDefaultValue: false, relationName: 'HireToInterviewScorecard' },
+      ],
+    }
+
+    // A model whose id has no default — the client must provide it on create,
+    // so the id field MUST be in the writable allowlist.
+    const ManualIdModel: PrismaModel = {
+      name: 'Country',
+      dbName: null,
+      fields: [
+        { name: 'code', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: true, isUnique: true, hasDefaultValue: false },
+        { name: 'name', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+      ],
+    }
+
+    it('emits an allowlist of scalar/enum field names (id with default excluded)', () => {
+      const result = generateModelRoutes(HireModel)
+      // `id` has a default → should not appear in the writable scalar list.
+      expect(result!.code).toContain('const WRITABLE_SCALAR_FIELDS = ["name", "role", "createdAt", "departmentId"] as const')
+    })
+
+    it('includes id in the writable list when it has no default', () => {
+      const result = generateModelRoutes(ManualIdModel)
+      expect(result!.code).toContain('const WRITABLE_SCALAR_FIELDS = ["code", "name"] as const')
+    })
+
+    it('emits an allowlist of relation field names (object kind only)', () => {
+      const result = generateModelRoutes(HireModel)
+      expect(result!.code).toContain('const RELATION_FIELDS = ["department", "scorecards"] as const')
+    })
+
+    it('emits empty allowlists as `[] as const` for models without relations', () => {
+      // mockWorkspaceModel has only id + name, no relations.
+      const result = generateModelRoutes(mockWorkspaceModel)
+      expect(result!.code).toContain('const RELATION_FIELDS = [] as const')
+    })
+
+    // ---- Runtime semantics ---------------------------------------------------
+    // Extract `pickWritableFields` from the generated source and evaluate it
+    // in a sandbox so we can assert behavior against real bodies. The function
+    // is dependency-free (only references its own constants) so this is safe.
+
+    function extractPickWritableFields(source: string): (body: unknown) => any {
+      const matchHelper = source.match(/function pickWritableFields\(body: any\): WriteBodyResult \{[\s\S]*?\n\}/)
+      if (!matchHelper) throw new Error('pickWritableFields not found in generated source')
+      const matchScalars = source.match(/const WRITABLE_SCALAR_FIELDS = (\[[^\]]*\] as const)/)
+      const matchRelations = source.match(/const RELATION_FIELDS = (\[[^\]]*\] as const)/)
+      if (!matchScalars || !matchRelations) throw new Error('field allowlists not found in generated source')
+
+      // Strip the few TS annotations we know the helper uses so plain JS eval
+      // works. Order matters: strip `: any` LAST so `: any[]` doesn't get
+      // mangled (it isn't used today, but defensive).
+      const helperJs = matchHelper[0]
+        .replace(/: WriteBodyResult/g, '')
+        .replace(/: Record<string, unknown>/g, '')
+        .replace(/\(body: any\)/g, '(body)')
+      const scalarsJs = matchScalars[1].replace(' as const', '')
+      const relationsJs = matchRelations[1].replace(' as const', '')
+
+      const factory = new Function(
+        `const WRITABLE_SCALAR_FIELDS = ${scalarsJs};
+         const RELATION_FIELDS = ${relationsJs};
+         ${helperJs}
+         return pickWritableFields;`,
+      )
+      return factory()
+    }
+
+    it('runtime: returns 400 on non-object bodies', () => {
+      const pick = extractPickWritableFields(generateModelRoutes(HireModel)!.code)
+      expect(pick(null)).toMatchObject({ ok: false, error: { code: 'invalid_body' } })
+      expect(pick('hello')).toMatchObject({ ok: false, error: { code: 'invalid_body' } })
+      expect(pick([1, 2, 3])).toMatchObject({ ok: false, error: { code: 'invalid_body' } })
+    })
+
+    it('runtime: passes scalar fields through unchanged', () => {
+      const pick = extractPickWritableFields(generateModelRoutes(HireModel)!.code)
+      const r = pick({ name: 'Alice', role: 'Eng', departmentId: 'dept-1' })
+      expect(r).toEqual({ ok: true, data: { name: 'Alice', role: 'Eng', departmentId: 'dept-1' } })
+    })
+
+    it('runtime: drops id-with-default and unknown keys silently', () => {
+      const pick = extractPickWritableFields(generateModelRoutes(HireModel)!.code)
+      const r = pick({ id: 'forged', name: 'Alice', __injected: 'evil', extraField: 42 })
+      expect(r).toEqual({ ok: true, data: { name: 'Alice' } })
+    })
+
+    it('runtime: rejects relation-as-scalar (the original MiMo bug)', () => {
+      const pick = extractPickWritableFields(generateModelRoutes(HireModel)!.code)
+      // `scorecards: 1` was the exact shape that crashed Prisma in the
+      // MiMo eval run: "Argument scorecards: ... provided Int."
+      const r = pick({ name: 'Alice', role: 'Eng', departmentId: 'd', scorecards: 1 })
+      expect(r).toMatchObject({
+        ok: false,
+        error: {
+          code: 'invalid_relation_shape',
+        },
+      })
+      expect(r.error.message).toContain('"scorecards"')
+      expect(r.error.message).toContain('connect')
+    })
+
+    it('runtime: rejects relation-as-array-of-scalars', () => {
+      const pick = extractPickWritableFields(generateModelRoutes(HireModel)!.code)
+      const r = pick({ name: 'Alice', role: 'Eng', departmentId: 'd', scorecards: [1, 2] })
+      expect(r).toMatchObject({ ok: false, error: { code: 'invalid_relation_shape' } })
+    })
+
+    it('runtime: accepts relation-as-{connect}', () => {
+      const pick = extractPickWritableFields(generateModelRoutes(HireModel)!.code)
+      const r = pick({
+        name: 'Alice',
+        role: 'Eng',
+        departmentId: 'd',
+        scorecards: { connect: [{ id: 's1' }, { id: 's2' }] },
+      })
+      expect(r).toEqual({
+        ok: true,
+        data: {
+          name: 'Alice',
+          role: 'Eng',
+          departmentId: 'd',
+          scorecards: { connect: [{ id: 's1' }, { id: 's2' }] },
+        },
+      })
+    })
+
+    it('runtime: accepts relation-as-{create}', () => {
+      const pick = extractPickWritableFields(generateModelRoutes(HireModel)!.code)
+      const r = pick({
+        name: 'Alice',
+        role: 'Eng',
+        departmentId: 'd',
+        department: { create: { name: 'Engineering' } },
+      })
+      expect(r.ok).toBe(true)
+      expect(r.data.department).toEqual({ create: { name: 'Engineering' } })
+    })
+
+    it('runtime: skips relation when value is undefined or null', () => {
+      const pick = extractPickWritableFields(generateModelRoutes(HireModel)!.code)
+      const r1 = pick({ name: 'Alice', role: 'Eng', departmentId: 'd', scorecards: undefined })
+      expect(r1).toEqual({ ok: true, data: { name: 'Alice', role: 'Eng', departmentId: 'd' } })
+      const r2 = pick({ name: 'Alice', role: 'Eng', departmentId: 'd', scorecards: null })
+      expect(r2).toEqual({ ok: true, data: { name: 'Alice', role: 'Eng', departmentId: 'd' } })
+    })
+
+    it('runtime: relation FK scalar is still writable (departmentId on Hire)', () => {
+      // The scalar `departmentId` is the FK that backs the `department`
+      // relation. Clients that don't want to use Prisma's nested-write
+      // shape can still set it directly — that path is what most simple
+      // generated UIs will use.
+      const pick = extractPickWritableFields(generateModelRoutes(HireModel)!.code)
+      const r = pick({ name: 'Alice', role: 'Eng', departmentId: 'dept-42' })
+      expect(r).toEqual({ ok: true, data: { name: 'Alice', role: 'Eng', departmentId: 'dept-42' } })
     })
   })
 })

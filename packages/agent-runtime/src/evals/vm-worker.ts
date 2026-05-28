@@ -39,6 +39,16 @@ export interface VMWorkerConfig {
    *  the isolated overlay disk. Files written to the host dir are visible
    *  inside the VM immediately. */
   mount?: boolean
+  /** Base host port for the in-VM API/skill server forward
+   *  (host:`skillBasePort + id` → guest:4100). Defaults to 4100 to match
+   *  the historical single-run behavior. Override (e.g. 4200) when
+   *  running two `run-eval.ts` invocations in parallel so they don't
+   *  collide on QEMU host port forwards. */
+  skillBasePort?: number
+  /** Custom directory for QEMU overlay qcow2 files. Defaults to a shared
+   *  tmpdir(). Override when running two parallel invocations so each
+   *  has its own pool of overlay files. */
+  overlayDir?: string
 }
 
 interface VMHandle {
@@ -157,7 +167,7 @@ export async function startVMWorker(
 
   const manager = createVMManager()
   const vmImageDir = config.vmImageDir || getVMImageDir()
-  const overlayDir = resolve(tmpdir(), 'shogo-vm-eval-overlays')
+  const overlayDir = config.overlayDir || resolve(tmpdir(), 'shogo-vm-eval-overlays')
   mkdirSync(overlayDir, { recursive: true })
   const overlayPath = join(overlayDir, `${name}.qcow2`)
 
@@ -167,7 +177,7 @@ export async function startVMWorker(
 
   const bundleFiles = ensureVMBundle()
 
-  const skillHostPort = 4100 + id
+  const skillHostPort = (config.skillBasePort ?? 4100) + id
 
   const vmEnv: Record<string, string> = {
     PROJECT_ID: name,

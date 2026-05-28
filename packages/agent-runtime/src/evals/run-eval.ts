@@ -48,7 +48,8 @@ import { type K8sWorkerConfig, startK8sWorker, stopK8sWorkerSync, stopK8sWorker,
 loadEnvFromDisk(REPO_ROOT)
 
 import { runEval } from './runner'
-import { calculateDollarCost } from '@shogo/model-catalog'
+import { calculateDollarCost, isOpenRouterModel } from '@shogo/model-catalog'
+import { getOpenRouterPricing, type PerTokenPricing } from './openrouter-pricing'
 import { resetWorkspaceDefaults, seedLSPConfig, seedRuntimeTemplate, seedSkillServer } from '../workspace-defaults'
 import { COMPLEX_EVALS } from './test-cases-complex'
 import { MEMORY_EVALS } from './test-cases-memory'
@@ -82,6 +83,7 @@ import { SKILL_SERVER_ADVANCED_EVALS } from './test-cases-skill-server-advanced'
 import { SUBAGENT_CODE_EVALS } from './test-cases-subagent-code'
 import { SUBAGENT_AB_EVALS } from './test-cases-subagent-ab'
 import { subagentEvals as SUBAGENT_EVALS } from './test-cases-subagent'
+import { SUBAGENT_SMOKE_EVALS } from './test-cases-subagent-smoke'
 import { BUSINESS_USER_EVALS } from './test-cases-business-user'
 import { STARTUP_CTO_EVALS } from './test-cases-startup-cto'
 import { FREELANCER_EVALS } from './test-cases-freelancer'
@@ -96,7 +98,7 @@ import { KNOWLEDGE_GRAPH_EVALS } from './test-cases-knowledge-graph'
 import { TOKEN_BUDGET_EVALS } from './test-cases-token-budget'
 import { PLAN_EVALS } from './test-cases-plans'
 import { buildMockPayload } from './tool-mocks'
-import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary, ResourceSummary, RuntimeCheckResults } from './types'
+import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary, ResourceSummary, RuntimeCheckResults, ToolCallRecord } from './types'
 import { runRuntimeChecks } from './runtime-checks'
 import { DockerStatsCollector, formatMillicores } from './docker-stats-collector'
 
@@ -192,14 +194,24 @@ async function postAgentEvalResult(body: {
   }
 }
 
-const BASE_PORT = 6400
+// Base ports + container/VM prefix can be shifted via env vars so two
+// `run-eval.ts` invocations can run in parallel against the same
+// machine without colliding on port pools, tmp overlay files, or
+// container/VM names. Default values match the historical single-run
+// behavior. Used by parallel haiku/agentic eval chains.
+const BASE_PORT = parseInt(process.env.EVAL_BASE_PORT || '6400', 10)
 // Host-side base port for direct access to the in-container API server.
 // Each worker reserves SKILL_SERVER_BASE_PORT + worker.id on the host,
 // which Docker forwards to the container's API server. The constant name
 // is kept for compat with eval workers that still exec `/agent/skill-server/*`
 // callbacks; runtime-checks accepts both `apiServerPort` and the legacy
 // `skillServerPort` alias.
-const SKILL_SERVER_BASE_PORT = 4100
+const SKILL_SERVER_BASE_PORT = parseInt(process.env.EVAL_SKILL_BASE_PORT || '4100', 10)
+// Container / VM name prefix. Distinct prefixes prevent overlay file
+// collisions (`/tmp/shogo-vm-eval-overlays/<prefix>-<id>.qcow2`) and
+// docker container name clashes.
+const EVAL_CONTAINER_PREFIX = process.env.EVAL_CONTAINER_PREFIX || 'eval-worker'
+const EVAL_VM_PREFIX = process.env.EVAL_VM_PREFIX || 'eval-vm'
 // In-container port the project's API server (`server.tsx`) listens on.
 // PreviewManager resolves its bind port from `API_SERVER_PORT` /
 // `SKILL_SERVER_PORT` per-instance (see preview-manager.ts::
@@ -246,6 +258,7 @@ function getEvals(track: string): AgentEval[] {
     case 'coding-discipline': return CODING_DISCIPLINE_EVALS
     case 'skill-server-advanced': return SKILL_SERVER_ADVANCED_EVALS
     case 'subagent': return SUBAGENT_EVALS
+    case 'subagent-smoke': return SUBAGENT_SMOKE_EVALS
     case 'subagent-code': return SUBAGENT_CODE_EVALS
     case 'subagent-ab': return SUBAGENT_AB_EVALS
     case 'business-user': return BUSINESS_USER_EVALS
@@ -265,7 +278,7 @@ function getEvals(track: string): AgentEval[] {
     case 'agentic': return [...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS]
     case 'all': return [...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, workspace-parity, complex, memory, personality, multiturn, mcp-discovery, unified-connect, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, subagent, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, knowledge-graph, token-budget, plan, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, agentic, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, workspace-parity, complex, memory, personality, multiturn, mcp-discovery, unified-connect, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, subagent, subagent-smoke, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, knowledge-graph, token-budget, plan, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, agentic, all`)
       process.exit(1)
   }
 }
@@ -617,7 +630,16 @@ async function runEvalOnWorker(
   index: number,
   total: number,
   runTimestamp: string,
-  opts?: { skipCleanup?: boolean; runDir?: string },
+  opts?: {
+    skipCleanup?: boolean
+    runDir?: string
+    /**
+     * Tool calls accumulated by previous phases of the same pipeline.
+     * Threaded into `runEval` so intention-phase criteria can see the
+     * pipeline's cumulative work, not just this phase's.
+     */
+    pipelineToolCalls?: ToolCallRecord[]
+  },
 ): Promise<EvalResult> {
   // Force GC between evals to prevent memory pressure crashes in Bun
   try { Bun.gc(true) } catch {}
@@ -788,6 +810,7 @@ async function runEvalOnWorker(
       verbose: verboseFlag,
       workspaceDir: worker.dir,
       agentMode: agentModeArg,
+      pipelineToolCalls: opts?.pipelineToolCalls,
     })
 
     const resourceMetrics = statsCollector?.stop() ?? null
@@ -1091,7 +1114,7 @@ async function main() {
     const image = process.env.RUNTIME_IMAGE || DEFAULT_RUNTIME_IMAGE
     const namespace = process.env.SYSTEM_NAMESPACE || 'shogo-staging-system'
     k8sWorkerConfig = {
-      containerPrefix: 'eval-worker',
+      containerPrefix: EVAL_CONTAINER_PREFIX,
       baseHostPort: BASE_PORT,
       model: modelArg,
       verbose: verboseFlag,
@@ -1105,15 +1128,20 @@ async function main() {
     }
   } else if (vmFlag) {
     vmWorkerConfig = {
-      containerPrefix: 'eval-vm',
+      containerPrefix: EVAL_VM_PREFIX,
       baseHostPort: BASE_PORT,
       model: modelArg,
       verbose: verboseFlag,
       mount: mountFlag,
+      // When the user shifts SKILL_BASE_PORT for parallel runs, also use a
+      // matching dedicated overlay subdir so two invocations don't fight
+      // over the same `<prefix>-<id>.qcow2` filenames.
+      skillBasePort: SKILL_SERVER_BASE_PORT,
+      overlayDir: process.env.EVAL_OVERLAY_DIR,
     }
   } else if (localFlag) {
     localWorkerConfig = {
-      containerPrefix: 'eval-worker',
+      containerPrefix: EVAL_CONTAINER_PREFIX,
       baseHostPort: BASE_PORT,
       skillServerBasePort: SKILL_SERVER_BASE_PORT,
       model: modelArg,
@@ -1125,7 +1153,7 @@ async function main() {
     writeDockerEnvFile()
     dockerWorkerConfig = evalWorkerConfig({
       image,
-      containerPrefix: 'eval-worker',
+      containerPrefix: EVAL_CONTAINER_PREFIX,
       baseHostPort: BASE_PORT,
       extraPortMappings: [{ hostBase: SKILL_SERVER_BASE_PORT, container: CONTAINER_SKILL_PORT }],
       model: modelArg,
@@ -1272,7 +1300,12 @@ async function main() {
     }
   }
 
-  async function runAndRecord(worker: DockerWorker, ev: AgentEval, skipCleanup: boolean) {
+  async function runAndRecord(
+    worker: DockerWorker,
+    ev: AgentEval,
+    skipCleanup: boolean,
+    pipelineToolCalls?: ToolCallRecord[],
+  ) {
     const idx = globalEvalIndex++
     workerStatus[worker.id] = {
       ...workerStatus[worker.id],
@@ -1283,7 +1316,11 @@ async function main() {
     }
     await reportProgress()
     await ensureWorkerHealthy(worker)
-    const result = await runEvalOnWorker(worker, ev, idx, evals.length, runTimestamp, { skipCleanup, runDir })
+    const result = await runEvalOnWorker(worker, ev, idx, evals.length, runTimestamp, {
+      skipCleanup,
+      runDir,
+      pipelineToolCalls,
+    })
     results.push(result)
     workerStatus[worker.id].evalsCompleted++
     let logContent: string | undefined
@@ -1326,11 +1363,30 @@ async function main() {
           await runAndRecord(worker, item.eval, false)
         } else {
           console.log(`[Worker ${worker.id}] Pipeline "${item.name}" — ${item.phases.length} phases`)
+          // Accumulate tool calls across phases so intention-phase
+          // criteria on phase N can see what phases 1..N-1 already did
+          // (the workspace is shared, so checks like
+          // `usedTool('write_file', 'src/App.tsx')` should match work
+          // done earlier in the pipeline). Execution-phase criteria
+          // still see only the current phase's calls — see
+          // `runner.ts::runEval`'s intentionEvalBase swap.
+          const pipelineCumulative: ToolCallRecord[] = []
           for (let p = 0; p < item.phases.length; p++) {
             workerStatus[worker.id].pipeline = item.name
             workerStatus[worker.id].pipelinePhase = p + 1
             workerStatus[worker.id].pipelineTotal = item.phases.length
-            await runAndRecord(worker, item.phases[p], p > 0)
+            const phaseResult = await runAndRecord(
+              worker,
+              item.phases[p],
+              p > 0,
+              p > 0 ? [...pipelineCumulative] : undefined,
+            )
+            if (phaseResult) {
+              // Append THIS phase's raw toolCalls only — `phaseResult.toolCalls`
+              // is already this-phase-only (the cumulative array we threaded in
+              // is consumed inside runEval and folded into `pipelineToolCalls`).
+              pipelineCumulative.push(...phaseResult.toolCalls)
+            }
           }
           console.log(`[Worker ${worker.id}] Pipeline "${item.name}" complete`)
         }
@@ -1368,7 +1424,26 @@ async function main() {
   const totalOutput = results.reduce((s, r) => s + r.metrics.tokens.output, 0)
   const totalCacheRead = results.reduce((s, r) => s + r.metrics.tokens.cacheRead, 0)
   const totalCacheWrite = results.reduce((s, r) => s + r.metrics.tokens.cacheWrite, 0)
-  const pricing = PRICING[modelArg]
+  // Resolve per-token pricing in priority order:
+  //   1. Static `PRICING` table (haiku/sonnet/opus/etc — exact alias match)
+  //   2. OpenRouter live catalog when modelArg is `openrouter:*`
+  //   3. `calculateDollarCost` fallback (uses billing-bucket from the
+  //      static catalog, defaults to Sonnet rate for unknowns — this
+  //      was the source of the inflated MiMo cost figures before we
+  //      added the OpenRouter path).
+  let pricing: PerTokenPricing | undefined = PRICING[modelArg]
+  let pricingSource: 'static' | 'openrouter' | 'fallback' = pricing ? 'static' : 'fallback'
+  if (!pricing && isOpenRouterModel(modelArg)) {
+    try {
+      const orPricing = await getOpenRouterPricing(modelArg)
+      if (orPricing) {
+        pricing = orPricing
+        pricingSource = 'openrouter'
+      }
+    } catch (err: any) {
+      console.warn(`  [pricing] OpenRouter pricing fetch failed: ${err?.message || err} — falling back to catalog rate`)
+    }
+  }
   const totalCost = pricing
     ? totalInput * pricing.input +
       totalOutput * pricing.output +
@@ -1489,7 +1564,12 @@ async function main() {
   console.log(`    Cache read:       ${totalCacheRead.toLocaleString()} (${cacheHitRate}% hit rate)`)
   console.log(`    Cache write:      ${totalCacheWrite.toLocaleString()}`)
   console.log(`  Output tokens:      ${totalOutput.toLocaleString()}`)
-  console.log(`  Total cost:         $${totalCost.toFixed(4)}`)
+  const pricingSourceLabel = pricingSource === 'openrouter'
+    ? ' (live OpenRouter prices)'
+    : pricingSource === 'fallback'
+    ? ' (Sonnet-rate fallback — no exact pricing entry for this model)'
+    : ''
+  console.log(`  Total cost:         $${totalCost.toFixed(4)}${pricingSourceLabel}`)
   console.log(`  Cost/eval:          $${(totalCost / results.length).toFixed(4)}`)
   console.log(`  Duration:           ${totalTime.toFixed(1)}s`)
   console.log('')
@@ -1550,6 +1630,7 @@ async function main() {
       totalOutputTokens: totalOutput,
       totalCost,
       costPerEval: totalCost / results.length,
+      pricingSource,
     },
     ...(resourceSummary ? { resources: resourceSummary } : {}),
   }

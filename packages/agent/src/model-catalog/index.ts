@@ -30,6 +30,8 @@ export {
   type ModelGeneration,
   type BillingModel,
   type AgentMode,
+  type ModelCapabilities,
+  type CapabilityReliability,
 } from './models'
 
 export {
@@ -58,5 +60,7 @@ export {
   stripOpenRouterPrefix,
   MODEL_DOLLAR_COSTS,
   calculateDollarCost,
+  getSubagentOrchestrationReliability,
   type AvailableModelFilter,
+  type CapabilityRating,
 } from './helpers'

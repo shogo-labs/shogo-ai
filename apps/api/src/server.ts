@@ -977,9 +977,19 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
           name?: string
           description?: string
           context_length?: number
-          pricing?: { prompt?: string; completion?: string }
+          pricing?: {
+            prompt?: string
+            completion?: string
+            input_cache_read?: string
+            input_cache_write?: string
+          }
         }>
       }
+      // Normalize pricing strings ("0.00000014") to numbers and surface
+      // the cache fields that the eval cost calculator and admin UI
+      // both rely on. Missing fields stay `undefined` rather than 0 so
+      // callers can distinguish "free" from "unknown".
+      const num = (v?: string) => (v && Number.isFinite(Number(v)) ? Number(v) : undefined)
       const models = (data.data || []).map((m) => ({
         id: m.id,
         name: m.name || m.id,
@@ -987,8 +997,10 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
         contextLength: m.context_length,
         pricing: m.pricing
           ? {
-              prompt: m.pricing.prompt ? Number(m.pricing.prompt) : undefined,
-              completion: m.pricing.completion ? Number(m.pricing.completion) : undefined,
+              prompt: num(m.pricing.prompt),
+              completion: num(m.pricing.completion),
+              cacheRead: num(m.pricing.input_cache_read),
+              cacheWrite: num(m.pricing.input_cache_write),
             }
           : undefined,
       }))
@@ -4910,6 +4922,24 @@ interface VisibleOpenRouterModelStored {
   displayName: string
   contextLength?: number
   tier?: 'economy' | 'standard' | 'premium'
+  /**
+   * Per-token rates in USD captured from OpenRouter's `/api/v1/models`
+   * at the time the admin added the model. Stored alongside the entry
+   * so:
+   *   - the admin UI can show real $/M-token figures next to each model,
+   *   - the eval cost calculator can report real (not Sonnet-fallback)
+   *     dollar costs without hitting OpenRouter at every run,
+   *   - usage analytics can compute spend without re-fetching upstream.
+   *
+   * Fields are optional individually because OpenRouter doesn't return
+   * cache pricing for every model. Missing → 0 in cost calc.
+   */
+  pricing?: {
+    promptPerToken?: number
+    completionPerToken?: number
+    cacheReadPerToken?: number
+    cacheWritePerToken?: number
+  }
 }
 
 interface VisibleModelsConfigStored {
@@ -4922,6 +4952,27 @@ const DEFAULT_VISIBLE_MODELS: VisibleModelsConfigStored = {
   openrouterModels: [],
 }
 
+function sanitizeOpenRouterPricing(raw: any): VisibleOpenRouterModelStored['pricing'] | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const out: NonNullable<VisibleOpenRouterModelStored['pricing']> = {}
+  for (const key of ['promptPerToken', 'completionPerToken', 'cacheReadPerToken', 'cacheWritePerToken'] as const) {
+    const v = raw[key]
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) out[key] = v
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+function sanitizeOpenRouterEntry(m: any): VisibleOpenRouterModelStored | null {
+  if (!m || typeof m.id !== 'string' || typeof m.displayName !== 'string') return null
+  return {
+    id: m.id,
+    displayName: m.displayName,
+    contextLength: typeof m.contextLength === 'number' ? m.contextLength : undefined,
+    tier: m.tier === 'economy' || m.tier === 'standard' || m.tier === 'premium' ? m.tier : undefined,
+    pricing: sanitizeOpenRouterPricing(m.pricing),
+  }
+}
+
 function parseVisibleModelsValue(raw: string | null | undefined): VisibleModelsConfigStored {
   if (!raw) return { ...DEFAULT_VISIBLE_MODELS }
   try {
@@ -4931,13 +4982,8 @@ function parseVisibleModelsValue(raw: string | null | undefined): VisibleModelsC
       : parsed?.catalogIds === null ? null : null
     const openrouterModels = Array.isArray(parsed?.openrouterModels)
       ? parsed.openrouterModels
-          .filter((m: any) => m && typeof m.id === 'string' && typeof m.displayName === 'string')
-          .map((m: any): VisibleOpenRouterModelStored => ({
-            id: m.id,
-            displayName: m.displayName,
-            contextLength: typeof m.contextLength === 'number' ? m.contextLength : undefined,
-            tier: m.tier === 'economy' || m.tier === 'standard' || m.tier === 'premium' ? m.tier : undefined,
-          }))
+          .map(sanitizeOpenRouterEntry)
+          .filter((m: VisibleOpenRouterModelStored | null): m is VisibleOpenRouterModelStored => m !== null)
       : []
     return { catalogIds, openrouterModels }
   } catch {
@@ -4979,13 +5025,8 @@ app.put('/api/admin/settings/visible-models', async (c) => {
         : null,
       openrouterModels: Array.isArray(body?.openrouterModels)
         ? body.openrouterModels
-            .filter((m: any) => m && typeof m.id === 'string' && typeof m.displayName === 'string')
-            .map((m: any): VisibleOpenRouterModelStored => ({
-              id: m.id,
-              displayName: m.displayName,
-              contextLength: typeof m.contextLength === 'number' ? m.contextLength : undefined,
-              tier: m.tier === 'economy' || m.tier === 'standard' || m.tier === 'premium' ? m.tier : undefined,
-            }))
+            .map(sanitizeOpenRouterEntry)
+            .filter((m: VisibleOpenRouterModelStored | null): m is VisibleOpenRouterModelStored => m !== null)
         : [],
     }
 

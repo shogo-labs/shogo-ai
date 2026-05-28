@@ -40,7 +40,13 @@ import {
   type VisibleModelsConfig,
   type VisibleOpenRouterModel,
 } from '@shogo-ai/sdk'
-import { getModelsByProvider, AGENT_MODE_DEFAULTS, OPENROUTER_MODEL_PREFIX, type ModelEntry } from '@shogo/model-catalog'
+import {
+  getModelsByProvider,
+  AGENT_MODE_DEFAULTS,
+  OPENROUTER_MODEL_PREFIX,
+  getSubagentOrchestrationReliability,
+  type ModelEntry,
+} from '@shogo/model-catalog'
 import { createHttpClient } from '../../lib/api'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { invalidateVisibleModelsCache } from '../../lib/visible-models'
@@ -1090,7 +1096,23 @@ interface OpenRouterCatalogEntry {
   name: string
   description?: string
   contextLength?: number
-  pricing?: { prompt?: number; completion?: number }
+  /** Per-token USD rates straight from OpenRouter. `cacheRead` /
+   *  `cacheWrite` only present for models that surface cache pricing. */
+  pricing?: {
+    prompt?: number
+    completion?: number
+    cacheRead?: number
+    cacheWrite?: number
+  }
+}
+
+/** Format a per-token rate as `$X.YZ/M` (per million tokens). */
+function fmtPerMillion(perToken?: number): string | null {
+  if (typeof perToken !== 'number' || !Number.isFinite(perToken) || perToken <= 0) return null
+  const perMillion = perToken * 1_000_000
+  if (perMillion < 0.01) return `$${perMillion.toFixed(4)}/M`
+  if (perMillion < 1) return `$${perMillion.toFixed(2)}/M`
+  return `$${perMillion.toFixed(2)}/M`
 }
 
 function VisibleModelsCard({
@@ -1179,10 +1201,21 @@ function VisibleModelsCard({
     const id = `${OPENROUTER_MODEL_PREFIX}${entry.id}`
     setConfig((prev) => {
       if (prev.openrouterModels.some((m) => m.id === id)) return prev
+      // Snapshot pricing at allowlist time so the eval cost calculator and
+      // any UI billing surface have authoritative numbers without re-fetching.
+      const pricing: VisibleOpenRouterModel['pricing'] = entry.pricing
+        ? {
+            promptPerToken: entry.pricing.prompt,
+            completionPerToken: entry.pricing.completion,
+            cacheReadPerToken: entry.pricing.cacheRead,
+            cacheWritePerToken: entry.pricing.cacheWrite,
+          }
+        : undefined
       const next: VisibleOpenRouterModel = {
         id,
         displayName: entry.name,
         contextLength: entry.contextLength,
+        pricing,
       }
       return { ...prev, openrouterModels: [...prev.openrouterModels, next] }
     })
@@ -1275,29 +1308,43 @@ function VisibleModelsCard({
               </Text>
               {group.models.map((m) => {
                 const checked = showAllCatalog || allowedCatalogSet.has(m.id)
+                const subagentReliability = getSubagentOrchestrationReliability(m.id)
+                const subagentWarning = subagentReliability === 'flaky' || subagentReliability === 'unsupported'
                 return (
                   <Pressable
                     key={m.id}
                     onPress={() => !showAllCatalog && toggleCatalogModel(m.id)}
                     disabled={showAllCatalog}
                     className={cn(
-                      'flex-row items-center justify-between px-3 py-2 rounded-lg border',
+                      'px-3 py-2 rounded-lg border',
                       checked && !showAllCatalog ? 'border-primary/50 bg-primary/5' : 'border-border bg-background',
                       showAllCatalog && 'opacity-60',
                     )}
                   >
-                    <View className="flex-row items-center gap-2 flex-1">
-                      <View
-                        className={cn(
-                          'w-4 h-4 rounded border items-center justify-center',
-                          checked ? 'border-primary bg-primary' : 'border-border',
-                        )}
-                      >
-                        {checked && <Check size={11} color="#fff" />}
+                    <View className="flex-row items-center justify-between">
+                      <View className="flex-row items-center gap-2 flex-1">
+                        <View
+                          className={cn(
+                            'w-4 h-4 rounded border items-center justify-center',
+                            checked ? 'border-primary bg-primary' : 'border-border',
+                          )}
+                        >
+                          {checked && <Check size={11} color="#fff" />}
+                        </View>
+                        <Text className="text-sm text-foreground">{m.displayName}</Text>
                       </View>
-                      <Text className="text-sm text-foreground">{m.displayName}</Text>
+                      <Text className="text-[11px] text-muted-foreground capitalize">{m.tier}</Text>
                     </View>
-                    <Text className="text-[11px] text-muted-foreground capitalize">{m.tier}</Text>
+                    {subagentWarning && (
+                      <View className="flex-row items-center gap-1.5 mt-1.5 ml-6">
+                        <AlertTriangle size={11} className="text-amber-500" />
+                        <Text className="text-[11px] text-amber-600 flex-1">
+                          {subagentReliability === 'unsupported'
+                            ? 'Does not orchestrate subagents — multi-agent canvas builds will not work.'
+                            : 'Subagent orchestration is flaky on this model — verify before relying on multi-agent flows.'}
+                        </Text>
+                      </View>
+                    )}
                   </Pressable>
                 )
               })}
@@ -1338,25 +1385,41 @@ function VisibleModelsCard({
             </View>
           )}
 
+          {hasOpenRouterKey && (
+            <View className="flex-row items-start gap-2 p-3 rounded-lg bg-muted/40">
+              <AlertTriangle size={14} className="text-amber-500 mt-0.5" />
+              <Text className="text-[11px] text-muted-foreground flex-1">
+                OpenRouter models are unrated for subagent orchestration. Smaller models often skip
+                <Text className="font-mono"> agent_result</Text> after spawning children, which stalls
+                multi-agent canvas builds. Verify with the subagent-smoke eval before relying on it.
+              </Text>
+            </View>
+          )}
+
           {config.openrouterModels.length > 0 && (
             <View className="gap-1.5">
-              {config.openrouterModels.map((m) => (
-                <View
-                  key={m.id}
-                  className="flex-row items-center justify-between px-3 py-2 rounded-lg border border-border bg-background"
-                >
-                  <View className="flex-1">
-                    <Text className="text-sm text-foreground">{m.displayName}</Text>
-                    <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
-                      {m.id}
-                      {m.contextLength ? ` · ${(m.contextLength / 1000).toFixed(0)}k ctx` : ''}
-                    </Text>
+              {config.openrouterModels.map((m) => {
+                const inPrice = fmtPerMillion(m.pricing?.promptPerToken)
+                const outPrice = fmtPerMillion(m.pricing?.completionPerToken)
+                return (
+                  <View
+                    key={m.id}
+                    className="flex-row items-center justify-between px-3 py-2 rounded-lg border border-border bg-background"
+                  >
+                    <View className="flex-1">
+                      <Text className="text-sm text-foreground">{m.displayName}</Text>
+                      <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
+                        {m.id}
+                        {m.contextLength ? ` · ${(m.contextLength / 1000).toFixed(0)}k ctx` : ''}
+                        {inPrice && outPrice ? ` · in ${inPrice} · out ${outPrice}` : ''}
+                      </Text>
+                    </View>
+                    <Pressable onPress={() => removeOpenRouterModel(m.id)} className="p-1.5">
+                      <X size={14} className="text-muted-foreground" />
+                    </Pressable>
                   </View>
-                  <Pressable onPress={() => removeOpenRouterModel(m.id)} className="p-1.5">
-                    <X size={14} className="text-muted-foreground" />
-                  </Pressable>
-                </View>
-              ))}
+                )
+              })}
             </View>
           )}
 
@@ -1384,22 +1447,27 @@ function VisibleModelsCard({
                 </Text>
               )}
               <ScrollView style={{ maxHeight: 240 }} nestedScrollEnabled>
-                {orFiltered.map((m) => (
-                  <Pressable
-                    key={m.id}
-                    onPress={() => addOpenRouterModel(m)}
-                    className="flex-row items-start justify-between px-2 py-2 rounded active:bg-muted"
-                  >
-                    <View className="flex-1">
-                      <Text className="text-sm text-foreground">{m.name}</Text>
-                      <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
-                        {m.id}
-                        {m.contextLength ? ` · ${(m.contextLength / 1000).toFixed(0)}k ctx` : ''}
-                      </Text>
-                    </View>
-                    <Plus size={14} className="text-muted-foreground" />
-                  </Pressable>
-                ))}
+                {orFiltered.map((m) => {
+                  const inPrice = fmtPerMillion(m.pricing?.prompt)
+                  const outPrice = fmtPerMillion(m.pricing?.completion)
+                  return (
+                    <Pressable
+                      key={m.id}
+                      onPress={() => addOpenRouterModel(m)}
+                      className="flex-row items-start justify-between px-2 py-2 rounded active:bg-muted"
+                    >
+                      <View className="flex-1">
+                        <Text className="text-sm text-foreground">{m.name}</Text>
+                        <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
+                          {m.id}
+                          {m.contextLength ? ` · ${(m.contextLength / 1000).toFixed(0)}k ctx` : ''}
+                          {inPrice && outPrice ? ` · in ${inPrice} · out ${outPrice}` : ''}
+                        </Text>
+                      </View>
+                      <Plus size={14} className="text-muted-foreground" />
+                    </Pressable>
+                  )
+                })}
               </ScrollView>
             </View>
           )}

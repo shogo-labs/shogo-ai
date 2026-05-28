@@ -83,6 +83,15 @@ interface ModelInfo {
    * customizes the model in a way our generic test body doesn't satisfy.
    */
   isTemplateSentinel: boolean
+  /**
+   * True when the model has at least one required foreign-key scalar
+   * (a scalar that backs a `@relation(fields: [...])`). The synthetic
+   * test body can't construct a valid FK value (no matching parent row
+   * exists), so attempting POST would always fail with a confusing
+   * Prisma constraint error. We GET-list these models but skip the
+   * create probe.
+   */
+  requiresForeignKey: boolean
 }
 
 /**
@@ -110,7 +119,8 @@ function isSeededUserBody(name: string, body: string): boolean {
   return true
 }
 
-function parseModels(schemaPath: string): ModelInfo[] {
+// Exported for tests. Production callers use `runRuntimeChecks`.
+export function parseModels(schemaPath: string): ModelInfo[] {
   if (!existsSync(schemaPath)) return []
   const content = readFileSync(schemaPath, 'utf-8')
   const models: ModelInfo[] = []
@@ -118,6 +128,24 @@ function parseModels(schemaPath: string): ModelInfo[] {
   for (const m of modelBlocks) {
     const name = m[1]
     const body = m[2]
+
+    // First pass: collect the names of scalar fields that back relations, e.g.
+    //   department Department @relation(fields: [departmentId], references: [id])
+    //   departmentId String
+    // The `departmentId` scalar is a foreign key. Posting it as
+    // `"eval-test-departmentId"` causes a Prisma FK-constraint failure
+    // (no matching parent row), which used to surface as a confusing
+    // "POST /api/hires: ..." error in eval logs even though the route
+    // itself is fine. We strip these from the synthetic-body field set.
+    const fkScalarNames = new Set<string>()
+    for (const m2 of body.matchAll(/@relation\([^)]*fields:\s*\[([^\]]+)\]/g)) {
+      for (const raw of m2[1].split(',')) {
+        const fk = raw.trim()
+        if (fk) fkScalarNames.add(fk)
+      }
+    }
+
+    let requiresForeignKey = false
     const requiredFields: { name: string; type: string }[] = []
     for (const line of body.split('\n')) {
       const trimmed = line.trim()
@@ -127,14 +155,24 @@ function parseModels(schemaPath: string): ModelInfo[] {
       const [, fieldName, fieldType, optional, rest] = fieldMatch
       if (optional) continue
       if (rest.includes('@id') || rest.includes('@default') || rest.includes('@updatedAt') || rest.includes('@relation')) continue
+      if (fkScalarNames.has(fieldName)) {
+        requiresForeignKey = true
+        continue
+      }
       requiredFields.push({ name: fieldName, type: fieldType })
     }
-    models.push({ name, requiredFields, isTemplateSentinel: isSeededUserBody(name, body) })
+    models.push({
+      name,
+      requiredFields,
+      isTemplateSentinel: isSeededUserBody(name, body),
+      requiresForeignKey,
+    })
   }
   return models
 }
 
-function buildTestBody(model: ModelInfo): Record<string, unknown> {
+// Exported for tests. Production callers use `runRuntimeChecks`.
+export function buildTestBody(model: ModelInfo): Record<string, unknown> {
   const body: Record<string, unknown> = {}
   for (const field of model.requiredFields) {
     switch (field.type) {
@@ -543,10 +581,13 @@ export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<Runti
       }
       if (verbose) console.log(`  [${LOG_PREFIX}] GET /api/${routePath}: ${listOk ? 'OK' : 'FAIL'}`)
 
-      // POST (create) + round-trip GET
+      // POST (create) + round-trip GET. Skipped for models that require a
+      // foreign-key scalar — the synthetic body can't construct a valid FK
+      // value, and Prisma would always reject it with a constraint error
+      // that's not actionable as a route-correctness signal.
       let createOk = false
       let roundTripOk = false
-      if (model && serverHealthy) {
+      if (model && serverHealthy && !model.requiresForeignKey) {
         const testBody = buildTestBody(model)
         const createRes = await postJson(endpoint, testBody)
         createOk = createRes.ok && createRes.data?.ok === true && createRes.data?.data != null
@@ -564,6 +605,8 @@ export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<Runti
         }
 
         if (createOk) canCreateRecord = true
+      } else if (model?.requiresForeignKey && verbose) {
+        console.log(`  [${LOG_PREFIX}] POST /api/${routePath}: skipped (requires foreign key)`)
       }
 
       modelResults.push({

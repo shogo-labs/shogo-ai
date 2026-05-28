@@ -494,6 +494,14 @@ export async function configureWorkerForTask(
   if (opts.mocks) {
     if (opts.verbose) console.log(`      [setup] Installing tool mocks...`)
     try {
+      // Belt-and-suspenders isolation between evals: explicitly DELETE any
+      // mocks the previous eval installed before POSTing this eval's. The
+      // POST handler already calls `setToolMocks` which clears internally
+      // (see gateway.ts:setToolMocks), but going through the documented
+      // DELETE/POST sequence makes the contract obvious in audit logs and
+      // protects against future POST-handler refactors that might silently
+      // change semantics back to merge.
+      await fetch(`${base}/agent/tool-mocks`, { method: 'DELETE' })
       await fetch(`${base}/agent/tool-mocks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

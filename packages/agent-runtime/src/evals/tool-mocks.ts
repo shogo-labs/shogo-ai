@@ -3560,6 +3560,32 @@ const BUSINESS_USER_WEB = BUSINESS_USER_MOCKS.web as {
 /** Business-user baseline plus web fixtures for parallel caterer comparisons. */
 export const EVENT_PLANNER_MOCKS: ToolMockMap = {
   ...BUSINESS_USER_MOCKS,
+  // Override the calendar fixture: Sofia (Stellar Events) shouldn't see
+  // Pixel & Co.'s sprint reviews. Same bucket-E issue as NONPROFIT_MOCKS.
+  GOOGLECALENDAR_FIND_EVENTS: {
+    type: 'static',
+    description: 'Find events on Google Calendar.',
+    hidden: true,
+    response: {
+      events: [
+        { id: 'evt-ep-1', summary: 'Catering tasting — Savory Bites', start: '2026-05-02T11:00:00', end: '2026-05-02T12:30:00', attendees: ['sofia@stellarevents.com', 'tasting@savorybites.com'] },
+        { id: 'evt-ep-2', summary: 'Venue walkthrough — Riverside Hall', start: '2026-05-04T15:00:00', end: '2026-05-04T16:00:00', attendees: ['sofia@stellarevents.com', 'venues@riversidehall.com'] },
+        { id: 'evt-ep-3', summary: 'Client review — Reyes wedding (May 15)', start: '2026-05-06T10:00:00', end: '2026-05-06T11:00:00', attendees: ['sofia@stellarevents.com', 'reyes-family@example.com'] },
+      ],
+    },
+  },
+  GITHUB_LIST_REPOS: {
+    type: 'static',
+    description: 'List repositories.',
+    hidden: true,
+    response: { repos: [] },
+  },
+  GITHUB_GET_REPO: {
+    type: 'static',
+    description: 'Get repository details.',
+    hidden: true,
+    response: { error: { code: 'not_found', message: 'No such repository.' } },
+  },
   web: {
     type: 'pattern',
     patterns: [
@@ -3711,6 +3737,39 @@ export const CONTENT_CREATOR_MOCKS: ToolMockMap = {
 /** Business-user baseline plus city research fixtures for expansion evals. */
 export const NONPROFIT_MOCKS: ToolMockMap = {
   ...BUSINESS_USER_MOCKS,
+  // Override the calendar fixture so BrightPath's calendar doesn't return
+  // Pixel & Co. agency events. Without this, an eval exercising the
+  // nonprofit's calendar gets {Acme Corp Sprint Review, Luxe Candles
+  // lead call} which is nonsensical for an after-school nonprofit. See
+  // bucket-E in the MiMo eval failure analysis.
+  GOOGLECALENDAR_FIND_EVENTS: {
+    type: 'static',
+    description: 'Find events on Google Calendar.',
+    hidden: true,
+    response: {
+      events: [
+        { id: 'evt-npo-1', summary: 'Site coordinator weekly check-in', start: '2026-04-02T09:00:00', end: '2026-04-02T09:45:00', attendees: ['amara@brightpath.org', 'sites@brightpath.org'] },
+        { id: 'evt-npo-2', summary: 'Q2 grant deadline — TEA innovation grant', start: '2026-04-15T17:00:00', end: '2026-04-15T17:30:00', attendees: ['amara@brightpath.org', 'grants@brightpath.org'] },
+        { id: 'evt-npo-3', summary: 'Volunteer orientation — Spring cohort', start: '2026-04-08T18:00:00', end: '2026-04-08T19:30:00', attendees: ['amara@brightpath.org', 'volunteers@brightpath.org'] },
+      ],
+    },
+  },
+  // Hide the agency-flavored GitHub fixtures from the nonprofit track —
+  // BrightPath is unlikely to be checking on `acme-ecommerce` repos.
+  // Override with empty-but-valid responses so a stray agent call still
+  // returns a clean structure rather than Pixel & Co. data.
+  GITHUB_LIST_REPOS: {
+    type: 'static',
+    description: 'List repositories.',
+    hidden: true,
+    response: { repos: [] },
+  },
+  GITHUB_GET_REPO: {
+    type: 'static',
+    description: 'Get repository details.',
+    hidden: true,
+    response: { error: { code: 'not_found', message: 'No such repository.' } },
+  },
   web: {
     type: 'pattern',
     patterns: [
