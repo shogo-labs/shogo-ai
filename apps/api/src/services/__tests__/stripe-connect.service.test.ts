@@ -12,6 +12,14 @@ type Profile = {
 }
 const profiles = new Map<string, Profile>()
 
+type Affiliate = {
+  id: string
+  stripeCustomAccountId: string | null
+  payoutStatus?: string
+  user?: { email: string } | null
+}
+const affiliates = new Map<string, Affiliate>()
+
 mock.module('../../lib/prisma', () => ({
   prisma: {
     creatorProfile: {
@@ -27,6 +35,15 @@ mock.module('../../lib/prisma', () => ({
         if (!p) throw new Error('not found')
         Object.assign(p, data)
         return p
+      },
+    },
+    affiliate: {
+      findUnique: async ({ where }: any) => affiliates.get(where.id) ?? null,
+      update: async ({ where, data }: any) => {
+        const a = affiliates.get(where.id)
+        if (!a) throw new Error('not found')
+        Object.assign(a, data)
+        return a
       },
     },
   },
@@ -88,6 +105,12 @@ class FakeStripe {
       return nextPayout
     },
   }
+  subscriptions = {
+    update: async (id: string, args: any) => {
+      stripeCalls.push({ method: 'subscriptions.update', args: [id, args] })
+      return { id, ...args }
+    },
+  }
 }
 
 mock.module('stripe', () => ({ default: FakeStripe }))
@@ -96,6 +119,7 @@ const sc = await import('../stripe-connect.service')
 
 beforeEach(() => {
   profiles.clear()
+  affiliates.clear()
   stripeCalls.length = 0
   nextAccountCreate = { id: 'acct_created' }
   nextAccountRetrieve = {}
@@ -500,5 +524,124 @@ describe('Stripe configuration', () => {
     } finally {
       sc.__resetStripeInstanceForTesting()
     }
+  })
+})
+
+// ─── createCustomAccountForAffiliate / submitPayoutDetailsForAffiliate ───────
+// Mirrors the creatorProfile pair but writes to the Affiliate table.
+
+describe('createCustomAccountForAffiliate', () => {
+  it('throws when affiliate is missing', async () => {
+    await expect(sc.createCustomAccountForAffiliate('nope')).rejects.toThrow(/Affiliate not found/)
+  })
+
+  it('returns the existing stripeCustomAccountId when set (no Stripe call)', async () => {
+    affiliates.set('a1', { id: 'a1', stripeCustomAccountId: 'acct_existing', user: { email: 'x@y.io' } })
+    expect(await sc.createCustomAccountForAffiliate('a1')).toBe('acct_existing')
+    expect(stripeCalls).toHaveLength(0)
+  })
+
+  it('mock branch: writes a deterministic mock acct id when Stripe is not configured', async () => {
+    delete (process.env as any).STRIPE_SECRET_KEY
+    affiliates.set('a2', { id: 'a2', stripeCustomAccountId: null, user: { email: 'x@y.io' } })
+    const id = await sc.createCustomAccountForAffiliate('a2')
+    expect(id).toMatch(/^acct_mock_aff_/)
+    expect(affiliates.get('a2')!.stripeCustomAccountId).toBe(id)
+    expect(stripeCalls).toHaveLength(0)
+  })
+
+  it('live branch: creates a Stripe account, persists id, returns it', async () => {
+    affiliates.set('a3', { id: 'a3', stripeCustomAccountId: null, user: { email: 'ada@x.io' } })
+    nextAccountCreate = { id: 'acct_live_aff' }
+    const id = await sc.createCustomAccountForAffiliate('a3')
+    expect(id).toBe('acct_live_aff')
+    expect(affiliates.get('a3')!.stripeCustomAccountId).toBe('acct_live_aff')
+    expect(stripeCalls).toHaveLength(1)
+    const call = stripeCalls[0]!
+    expect(call.method).toBe('accounts.create')
+    expect(call.args[0]).toMatchObject({
+      type: 'custom',
+      country: 'US',
+      email: 'ada@x.io',
+      metadata: { affiliateId: 'a3', kind: 'affiliate' },
+    })
+    expect(call.args[0].capabilities.transfers.requested).toBe(true)
+    expect(call.args[0].settings.payouts.schedule.interval).toBe('manual')
+  })
+
+  it('live branch: falls back to synthetic email when user has no email', async () => {
+    affiliates.set('a4', { id: 'a4', stripeCustomAccountId: null, user: null })
+    nextAccountCreate = { id: 'acct_no_email' }
+    await sc.createCustomAccountForAffiliate('a4')
+    expect(stripeCalls[0]!.args[0].email).toBe('affiliate+a4@shogo.local')
+  })
+})
+
+describe('submitPayoutDetailsForAffiliate', () => {
+  it('throws when affiliate has no Stripe account', async () => {
+    affiliates.set('a5', { id: 'a5', stripeCustomAccountId: null })
+    await expect(sc.submitPayoutDetailsForAffiliate('a5', baseDetails))
+      .rejects.toThrow(/no Stripe Connect account/)
+  })
+
+  it('also throws when affiliate is missing entirely', async () => {
+    await expect(sc.submitPayoutDetailsForAffiliate('nope', baseDetails))
+      .rejects.toThrow(/no Stripe Connect account/)
+  })
+
+  it('mock branch: flips status to pending_verification without calling Stripe', async () => {
+    delete (process.env as any).STRIPE_SECRET_KEY
+    affiliates.set('a6', { id: 'a6', stripeCustomAccountId: 'acct_aff_mock' })
+    const res = await sc.submitPayoutDetailsForAffiliate('a6', baseDetails)
+    expect(res.payoutStatus).toBe('pending_verification')
+    expect(affiliates.get('a6')!.payoutStatus).toBe('pending_verification')
+    expect(stripeCalls).toHaveLength(0)
+  })
+
+  it('live branch: forwards individual fields + optional ssn_last_4 + external_account', async () => {
+    affiliates.set('a7', { id: 'a7', stripeCustomAccountId: 'acct_aff_live' })
+    const res = await sc.submitPayoutDetailsForAffiliate('a7', {
+      ...baseDetails,
+      ssnLast4: '1234',
+      bankAccountToken: 'btok_1',
+    })
+    expect(res.payoutStatus).toBe('pending_verification')
+    const call = stripeCalls.find((c) => c.method === 'accounts.update')!
+    expect(call.args[0]).toBe('acct_aff_live')
+    const params = call.args[1]
+    expect(params.individual).toMatchObject({
+      first_name: 'Ada',
+      last_name: 'Lovelace',
+      email: 'ada@x.io',
+      ssn_last_4: '1234',
+    })
+    expect(params.individual.address).toMatchObject({ line1: '1 St', country: 'GB' })
+    expect(params.external_account).toBe('btok_1')
+  })
+
+  it('live branch: omits ssn_last_4 and external_account when not provided', async () => {
+    affiliates.set('a8', { id: 'a8', stripeCustomAccountId: 'acct_aff_min' })
+    await sc.submitPayoutDetailsForAffiliate('a8', baseDetails)
+    const call = stripeCalls.find((c) => c.method === 'accounts.update')!
+    const params = call.args[1]
+    expect(params.individual.ssn_last_4).toBeUndefined()
+    expect(params.external_account).toBeUndefined()
+  })
+})
+
+describe('cancelMarketplaceSubscription', () => {
+  it('returns silently when Stripe is not configured', async () => {
+    delete (process.env as any).STRIPE_SECRET_KEY
+    await sc.cancelMarketplaceSubscription('sub_xxx')
+    expect(stripeCalls).toHaveLength(0)
+  })
+
+  it('forwards cancel_at_period_end=true when Stripe is configured', async () => {
+    await sc.cancelMarketplaceSubscription('sub_yyy')
+    expect(stripeCalls).toHaveLength(1)
+    expect(stripeCalls[0]).toMatchObject({
+      method: 'subscriptions.update',
+      args: ['sub_yyy', { cancel_at_period_end: true }],
+    })
   })
 })
