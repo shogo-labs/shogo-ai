@@ -1340,6 +1340,25 @@
         "dd9052f4"
       ],
       "note": "Delta-from-baseline sync: 8 sprintCommits applied since 445ac3fa (last README sync at 82.18%). +873 lines hit, -50 lines found (knative-project-manager.ts dead-code removal at 1f46dfab), +21 funcs hit, -3 funcs found. Per-package updates: apps/api +298L hit / -50L found / +7F hit / -3F found; packages/agent-runtime +575L hit / +14F hit. Other 9 packages unchanged since last sync. Frontend badge not touched (out of scope for this branch)."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 2 ad-hoc - instances.ts tunnel relay + heartbeat",
+      "message": "test(coverage): apps/api instances.ts - 65.79%->70.34% lines, 81.09%->86.31% funcs (+75 hit, +19 tests)",
+      "perFile": [
+        {
+          "file": "apps/api/src/routes/instances.ts",
+          "beforeLines": "~1080/1642 65.79%",
+          "afterLines": "~1155/1642 70.34%",
+          "beforeFuncs": "81.09%",
+          "afterFuncs": "86.31%",
+          "deltaLinesHit": 75,
+          "deltaFuncsPct": "+5.22",
+          "newTests": 19
+        }
+      ],
+      "note": "New file instances-tunnel-relay.test.ts (19 tests, 0 fail, 303ms) targeting cross-pod redis-relay branches not covered by the 8 existing instances-*.test.ts files. (A) sendTunnelRequest L496-543 - 8 tests: local conn happy (pendingRequests resolve), no owner pod throws offline, owner is self pod evicts + throws, owner pod dead (verifyPodAlive=false) evicts + throws, relay returns null throws Empty relay response, relay throws Cross-pod relay timed out evicts + rethrows, relay throws unrelated error does NOT evict + rethrows, happy cross-pod relay resolves. (B) sendTunnelStreamRequest L581-617 - 7 tests: local conn sets streamHandler + cancel cleanup, no owner pod stream-error, owner self pod evict + stream-error, owner pod dead evict + stream-error, happy relay wires cancel handle, cancel before relay resolves emits no chunk, getTunnelOwner throws produces stream-error with message. (C) startTunnelHeartbeat/stopTunnelHeartbeat L1594-1616 - 4 tests: stop-without-start safe, double-start idempotent guard, start/stop/start cycle, ws.send throws -> tunnel removed + unregisterTunnelOwnership called (drives the broken-socket cleanup path). Mock harness: tunnel-redis fully stubbed via tunable let-bindings (getTunnelOwnerResult, verifyPodAliveResult, relayResponseResult, relayThrows, evictCalls[], podId). Reuses _testing.tunnels Map export to seed in-memory tunnel connections with stub ws.send. Combined w/ 8 existing instances-*.test.ts files: src/routes/instances.ts | 70.34% lines | 86.31% funcs. Combined run: 130 pass / 0 fail / 12.6s. No new failures introduced."
     }
   ],
   "frontend": {
