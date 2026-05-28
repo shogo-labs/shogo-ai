@@ -651,6 +651,21 @@
         "lines": "73560/89571 (82.12%)",
         "functions": "5776/7208 (80.13%)"
       }
+    },
+    {
+      "sha": "NO-OP",
+      "date": "2026-05-28",
+      "wave": "Sync (re-verification)",
+      "message": "docs(coverage): re-measure verifies 82.12% \u2014 no code changes since last Sync",
+      "aggregateBefore": {
+        "lines": "73560/89571 (82.12%)",
+        "functions": "5776/7208 (80.13%)"
+      },
+      "aggregateAfter": {
+        "lines": "73560/89571 (82.12%)",
+        "functions": "5776/7208 (80.13%)"
+      },
+      "note": "Second Sync within the same session. Fresh `bun --conditions=development test --coverage` across all 11 backend packages produced identical totals to the 2026-05-28T10:40:37.355974+00:00 sync (06807c3a). No commits to working tree since fa457189; expected no delta. README badge unchanged at 82.12% yellow. Frontend badge UNTOUCHED."
     }
   ],
   "frontend": {
@@ -667,7 +682,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-28T10:40:37.355974+00:00",
+  "lastUpdated": "2026-05-28T10:54:06.602814+00:00",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
