@@ -1043,6 +1043,31 @@
         }
       ],
       "note": "Greenfield job test. Zero existing tests covered this 147-line file. New file affiliate-invoice-reconciliation.test.ts (12 tests, all passing) mocks @lib/global-job-lock, @services/affiliate.service, and stripe to drive every reachable branch of runAffiliateInvoiceReconciliation and startAffiliateInvoiceReconciliationCron. Covers: lock-skipped early return, SHOGO_AFFILIATES_NATIVE=false short-circuit, missing STRIPE_SECRET_KEY warning, stripeFactory returning null, happy single-page walk, per-invoice failure counted in summary.failed, multi-page pagination via starting_after cursor, empty first-page break, windowDays option, default windowDays=7, default-factory branch (STRIPE_SECRET_KEY set, uses mocked Stripe ctor). Cron test substitutes globalThis.setTimeout and setInterval, captures their callbacks, then invokes the captured outer setTimeout callback + the inner setInterval callback to drive lines 128-141. Only L135 remains uncov (.catch arm of the initial run; would only fire if runAffiliateInvoiceReconciliation rejected, which requires breaking the inner withGlobalJobLock contract). 97.53 percent funcs covered."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 2 ad-hoc - greenfield jobs batch",
+      "message": "test(coverage): approve-eligible-commissions.ts + run-affiliate-payouts.ts - zero prior tests to 100/100",
+      "perFile": [
+        {
+          "file": "apps/api/src/jobs/approve-eligible-commissions.ts",
+          "beforeLines": "~3/67",
+          "afterLines": "67/67 (100%)",
+          "deltaLinesHit": 64,
+          "deltaFuncsHit": 4,
+          "newTests": 6
+        },
+        {
+          "file": "apps/api/src/jobs/run-affiliate-payouts.ts",
+          "beforeLines": "~3/62",
+          "afterLines": "62/62 (100%)",
+          "deltaLinesHit": 59,
+          "deltaFuncsHit": 4,
+          "newTests": 6
+        }
+      ],
+      "note": "Greenfield jobs batch. Two cron-runner files (67 + 62 lines) both had ZERO dedicated test files - only module-load constants counted. New file affiliate-jobs.test.ts (12 tests, all passing) mocks @lib/global-job-lock and @services/affiliate.service to drive every reachable branch: flag-disabled short-circuit, lock-not-acquired skip, happy path with service result, opts.now=undefined default-branch. Timer wiring tests substitute globalThis.setTimeout + setInterval, capture both fns, then invoke the outer setTimeout callback (kicks off initial run + schedules interval) AND the captured setInterval callback (covers periodic-run body + .catch arm via approveThrows/payoutsThrows flag set to make the service mock throw, asserting console.error was called >=2 times). Both files at 100% lines / 100% funcs. +~123 hit lines combined. Same batched-greenfield pattern as 60943a16 (affiliate-invoice-reconciliation) - third greenfield haul of the day."
     }
   ],
   "frontend": {
