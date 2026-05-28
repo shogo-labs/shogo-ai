@@ -364,6 +364,34 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SKIP_MOBILE_BUILD: '1'
 
+      - name: Verify packager produced Shogo.app
+        # electron-forge has been observed to exit 0 from
+        # `package --arch=arm64` while silently producing no `out/`
+        # directory (see v1.8.15 macOS arm64 leg — the packager
+        # printed "Copying files / Preparing native dependencies /
+        # Finalizing package" within ~30 ms and returned without
+        # writing anything). When that happens the next step
+        # (Codesign) is where the failure surfaces, with a confusing
+        # `find: out: No such file or directory` and no pointer to
+        # the actual culprit. This assertion fails IN this step so
+        # the bad job is identified as a packager problem and a
+        # `gh run rerun --failed` actually re-runs the right step.
+        working-directory: apps/desktop
+        run: |
+          set -euo pipefail
+          EXPECTED="out/Shogo-darwin-${{ matrix.arch }}/Shogo.app"
+          if [ ! -d "$EXPECTED" ]; then
+            echo "::error::electron-forge package exited 0 but $EXPECTED does not exist."
+            echo "out/ contents:"
+            ls -la out/ 2>&1 || echo "  (out/ does not exist)"
+            if [ -d out ]; then
+              echo "out/* contents (one level deeper):"
+              ls -la out/*/ 2>&1 || true
+            fi
+            exit 1
+          fi
+          echo "Packager produced: $EXPECTED"
+
       - name: Codesign app bundle
         if: env.SIGNING_KEYCHAIN != ''
         working-directory: apps/desktop
