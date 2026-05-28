@@ -3,96 +3,97 @@
   "note": "Honest v2 aggregate from per-file-isolated test runs (apps/api + agent-runtime + shared-runtime use run-tests-isolated.ts to merge ~141 per-test-file lcovs each), comment-stripped via coverage-strip-comments.ts. Strict per-package src/ scoping via scripts/sum-lcov.ts --include. Aggregate 87.81% lines. Frontend badge UNTOUCHED.",
   "aggregate": {
     "lines": {
-      "total": 75174,
-      "hit": 67691,
-      "pct": 90.05
+      "total": 89571,
+      "hit": 73560,
+      "pct": 82.12
     },
     "functions": {
-      "total": 6178,
-      "hit": 5381,
-      "pct": 87.1
+      "total": 7208,
+      "hit": 5776,
+      "pct": 80.13
     }
   },
   "perPackage": [
     {
       "package": "apps/api",
-      "linesHit": 34786,
-      "linesFound": 38772,
-      "linePct": 89.72,
-      "funcsHit": 2681,
-      "funcsFound": 3001,
-      "funcPct": 89.34,
-      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
+      "linesHit": 36506,
+      "linesFound": 44768,
+      "linePct": 81.54,
+      "funcsHit": 2767,
+      "funcsFound": 3405,
+      "funcPct": 81.26,
+      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
     },
     {
       "package": "packages/agent-runtime",
-      "linesHit": 18216,
-      "linesFound": 20951,
-      "linePct": 86.95,
-      "funcsHit": 1296,
-      "funcsFound": 1662,
-      "funcPct": 77.98,
-      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
+      "linesHit": 21720,
+      "linesFound": 28614,
+      "linePct": 75.91,
+      "funcsHit": 1541,
+      "funcsFound": 2213,
+      "funcPct": 69.63,
+      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
     },
     {
       "package": "packages/sdk",
-      "linesHit": 6090,
-      "linesFound": 6503,
-      "linePct": 93.65,
-      "funcsHit": 520,
-      "funcsFound": 582,
-      "funcPct": 89.35,
-      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
+      "linesHit": 5931,
+      "linesFound": 6009,
+      "linePct": 98.7,
+      "funcsHit": 508,
+      "funcsFound": 525,
+      "funcPct": 96.76,
+      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
     },
     {
       "package": "packages/shared-runtime",
-      "linesHit": 3188,
-      "linesFound": 3397,
-      "linePct": 93.85,
-      "funcsHit": 328,
-      "funcsFound": 361,
-      "funcPct": 90.86,
-      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
+      "linesHit": 3815,
+      "linesFound": 4283,
+      "linePct": 89.07,
+      "funcsHit": 389,
+      "funcsFound": 444,
+      "funcPct": 87.61,
+      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
     },
     {
       "package": "packages/model-catalog",
-      "linesHit": 1,
-      "linesFound": 1,
-      "linePct": 100,
-      "funcsHit": 1,
-      "funcsFound": 1,
-      "funcPct": 100,
-      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
+      "linesHit": 0,
+      "linesFound": 0,
+      "linePct": 0,
+      "funcsHit": 0,
+      "funcsFound": 0,
+      "funcPct": 0,
+      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages",
+      "note": "TEST INFRA BROKEN \u2014 Cannot find module @shogo-ai/sdk/model-catalog from packages/model-catalog/src/index.ts. lcov.info emits empty. Tracked separately; excluded from aggregate this round."
     },
     {
       "package": "packages/voice",
       "linesHit": 1679,
       "linesFound": 1679,
-      "linePct": 100,
+      "linePct": 100.0,
       "funcsHit": 168,
       "funcsFound": 172,
       "funcPct": 97.67,
-      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
+      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
     },
     {
       "package": "packages/email",
       "linesHit": 696,
       "linesFound": 696,
-      "linePct": 100,
+      "linePct": 100.0,
       "funcsHit": 63,
       "funcsFound": 64,
       "funcPct": 98.44,
-      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
+      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
     },
     {
       "package": "packages/agent",
       "linesHit": 449,
       "linesFound": 449,
-      "linePct": 100,
+      "linePct": 100.0,
       "funcsHit": 29,
       "funcsFound": 29,
-      "funcPct": 100,
-      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
+      "funcPct": 100.0,
+      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
     },
     {
       "package": "packages/core",
@@ -102,27 +103,27 @@
       "funcsHit": 47,
       "funcsFound": 51,
       "funcPct": 92.16,
-      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
+      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
     },
     {
       "package": "packages/cli",
       "linesHit": 514,
-      "linesFound": 608,
-      "linePct": 84.54,
+      "linesFound": 596,
+      "linePct": 86.24,
       "funcsHit": 41,
       "funcsFound": 49,
       "funcPct": 83.67,
-      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
+      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
     },
     {
       "package": "packages/shogo-worker",
-      "linesHit": 1685,
-      "linesFound": 1725,
-      "linePct": 97.68,
-      "funcsHit": 184,
-      "funcsFound": 206,
-      "funcPct": 89.32,
-      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
+      "linesHit": 1863,
+      "linesFound": 2084,
+      "linePct": 89.4,
+      "funcsHit": 223,
+      "funcsFound": 256,
+      "funcPct": 87.11,
+      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
     }
   ],
   "topGaps": [
@@ -635,6 +636,21 @@
         }
       ],
       "note": "New test file voice-routes-readonly-and-errors.test.ts covers readonly endpoints (GET /voice/usage with date filters, GET /voice/calls with limit clamping + transcript variants, GET /voice/calls/:callId with 404), POST /projects/:projectId/agents/sync (invalid JSON + array body + happy path), POST /voice/twilio/outbound auth/body validation, and /voice/signed-url EL throw tail. Smaller delta than prior sessions (+7 lines) because most readonly bodies were already covered; the new tests primarily add defensive matrix coverage. Funcs remain at 100%. No new test failures (5 OTHER_TOKEN cross-project tests dropped after they were found to fail under cross-file mock pollution; that branch is already covered by voice-routes-runtime-token.test.ts for signed-url)."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Sync (baseline correction)",
+      "message": "docs(coverage): bump README backend \u2192 82.12% (expanded v3 aggregate, full re-measure)",
+      "note": "Full re-measure across all 11 backend packages. Previous baseline (66713/75174 = 88.74% from 2026-05-27) drifted vs current code: instrumented denominator grew from 75174 \u2192 89571 (+14397 lines), primarily from apps/api (+5996 LF) and agent-runtime (+7663 LF) which now exercise more transitively-imported modules through the new test files added in Wave 1 + Wave 2 sessions. The 82.12% is the honest current number; the prior 88.74% was correct for its smaller denominator but stale against the now-larger instrumented surface. packages/model-catalog is excluded because its test cannot resolve @shogo-ai/sdk/model-catalog \u2014 pre-existing infra bug, tracked separately.",
+      "aggregateBefore": {
+        "lines": "66713/75174 (88.74%)",
+        "functions": "5300/6155 (86.11%)"
+      },
+      "aggregateAfter": {
+        "lines": "73560/89571 (82.12%)",
+        "functions": "5776/7208 (80.13%)"
+      }
     }
   ],
   "frontend": {
@@ -651,7 +667,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-28T08:17:17.618088+00:00",
+  "lastUpdated": "2026-05-28T10:40:37.355974+00:00",
   "scope": [
     "apps/api",
     "packages/agent-runtime",

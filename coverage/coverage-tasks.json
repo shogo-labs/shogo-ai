@@ -19,27 +19,43 @@
   "perPackageTotals": {
     "apps/api": {
       "lines": "13627/14723",
-      "linePct": 92.56,
+      "linePct": 81.54,
       "funcs": "1226/1272",
-      "funcPct": 96.38
+      "funcPct": 81.26,
+      "linesHit": 36506,
+      "linesFound": 44768,
+      "funcsHit": 2767,
+      "funcsFound": 3405
     },
     "packages/agent-runtime": {
       "lines": "5122/7240",
-      "linePct": 70.75,
+      "linePct": 75.91,
       "funcs": "419/548",
-      "funcPct": 76.46
+      "funcPct": 69.63,
+      "linesHit": 21720,
+      "linesFound": 28614,
+      "funcsHit": 1541,
+      "funcsFound": 2213
     },
     "packages/sdk": {
       "lines": "5159/5836",
-      "linePct": 88.4,
+      "linePct": 98.7,
       "funcs": "415/465",
-      "funcPct": 89.25
+      "funcPct": 96.76,
+      "linesHit": 5931,
+      "linesFound": 6009,
+      "funcsHit": 508,
+      "funcsFound": 525
     },
     "packages/shared-runtime": {
       "lines": "870/1549",
-      "linePct": 56.17,
+      "linePct": 89.07,
       "funcs": "91/117",
-      "funcPct": 77.78
+      "funcPct": 87.61,
+      "linesHit": 3815,
+      "linesFound": 4283,
+      "funcsHit": 389,
+      "funcsFound": 444
     }
   },
   "phaseBreakdown": {
@@ -1065,17 +1081,17 @@
       "effectiveLinePct": 100.0
     }
   ],
-  "lastUpdated": "2026-05-27T14:50:24Z",
+  "lastUpdated": "2026-05-28T10:40:49Z",
   "aggregate": {
     "lines": {
-      "total": 75174,
-      "hit": 66713,
-      "pct": 88.74
+      "total": 89571,
+      "hit": 73560,
+      "pct": 82.12
     },
     "functions": {
-      "total": 6178,
-      "hit": 5320,
-      "pct": 86.11
+      "total": 7208,
+      "hit": 5776,
+      "pct": 80.13
     }
   }
 }
