@@ -3,9 +3,9 @@
   "note": "Honest v2 aggregate from per-file-isolated test runs (apps/api + agent-runtime + shared-runtime use run-tests-isolated.ts to merge ~141 per-test-file lcovs each), comment-stripped via coverage-strip-comments.ts. Strict per-package src/ scoping via scripts/sum-lcov.ts --include. Aggregate 87.81% lines. Frontend badge UNTOUCHED.",
   "aggregate": {
     "lines": {
-      "hit": 68930,
-      "total": 75957,
-      "pct": 90.75
+      "hit": 69032,
+      "total": 75878,
+      "pct": 90.98
     },
     "functions": {
       "hit": 5395,
@@ -26,13 +26,13 @@
     },
     {
       "package": "packages/agent-runtime",
-      "linesHit": 19015,
-      "linesFound": 21354,
-      "linePct": 89.05,
+      "linesHit": 19085,
+      "linesFound": 21275,
+      "linePct": 89.71,
       "funcsHit": 1288,
       "funcsFound": 1699,
       "funcPct": 75.81,
-      "source": "fresh 2026-05-28 sync (third this session)"
+      "source": "fresh 2026-05-28 sync (fourth this session) \u2014 precise-delta from sprintCommits"
     },
     {
       "package": "packages/sdk",
@@ -46,13 +46,13 @@
     },
     {
       "package": "packages/shared-runtime",
-      "linesHit": 3353,
+      "linesHit": 3385,
       "linesFound": 3470,
-      "linePct": 96.63,
+      "linePct": 97.55,
       "funcsHit": 345,
       "funcsFound": 367,
       "funcPct": 94.01,
-      "source": "fresh 2026-05-28 sync (third this session)"
+      "source": "fresh 2026-05-28 sync (fourth this session) \u2014 precise-delta from sprintCommits"
     },
     {
       "package": "packages/model-catalog",
@@ -909,7 +909,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-28T19:30:00Z",
+  "lastUpdated": "2026-05-28T14:58:36Z",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
