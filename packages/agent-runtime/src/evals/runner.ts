@@ -54,17 +54,34 @@ export interface ParsedAgentResponse {
 /**
  * Send a single turn to the agent via POST /agent/chat and parse the SSE
  * stream response (AI SDK UI Message Stream format).
+ *
+ * Timeout policy:
+ * - Each fetch attempt is bounded by `config.timeoutMs` (per-attempt budget).
+ * - On a *self-imposed* timeout we do NOT retry — the agent loop on the
+ *   server is still iterating and another `POST /agent/chat` would queue
+ *   behind it. We instead fire `POST /agent/stop` so the in-VM agent stops
+ *   burning tokens, then return a synthetic empty response so the rest of
+ *   the eval (scoring + workspace runtime checks) still runs against
+ *   whatever the agent produced before the cap.
+ * - We retry only on *transient* network/server errors (HTTP 5xx, 429,
+ *   ECONNRESET, …) and only `MAX_TRANSIENT_RETRIES` times. The previous
+ *   8-retry policy let a single misbehaving turn consume up to
+ *   8 × timeoutMs (= 40 min at the default), dominating wall time.
  */
 export async function sendTurn(
   messages: Array<{ role: string; parts: Array<{ type: string; text: string }> }>,
   config: EvalRunnerConfig,
 ): Promise<ParsedAgentResponse> {
-  const MAX_RETRIES = 8
+  const MAX_TRANSIENT_RETRIES = 3
   const RETRY_DELAY = 3_000
 
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 1; attempt <= MAX_TRANSIENT_RETRIES; attempt++) {
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), config.timeoutMs)
+    let timedOut = false
+    const timeout = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, config.timeoutMs)
 
     try {
       // The runtime rejects requests with a missing/empty chatSessionId
@@ -94,7 +111,7 @@ export async function sendTurn(
         clearTimeout(timeout)
         const errBody = await res.text().catch(() => '(no body)')
         if (config.verbose) console.log(`      [sendTurn] HTTP ${res.status}: ${errBody.slice(0, 200)}`)
-        if ((res.status >= 500 || res.status === 429) && attempt < MAX_RETRIES) {
+        if ((res.status >= 500 || res.status === 429) && attempt < MAX_TRANSIENT_RETRIES) {
           const delay = res.status === 503 ? 5_000 : RETRY_DELAY * attempt
           await Bun.sleep(delay)
           continue
@@ -108,7 +125,17 @@ export async function sendTurn(
       return result
     } catch (err: any) {
       clearTimeout(timeout)
-      if (attempt < MAX_RETRIES && isRetryable(err)) {
+      if (timedOut) {
+        // Self-imposed timeout: stop the in-VM agent loop (best-effort)
+        // and return whatever was streamed before the cap. Retrying the
+        // same fetch would just queue behind the still-running turn.
+        if (config.verbose) {
+          console.log(`      [sendTurn] Hit ${config.timeoutMs}ms cap; stopping agent and returning partial.`)
+        }
+        await stopAgentTurn(config).catch(() => {})
+        return emptyResponse(`[ERROR: turn exceeded ${config.timeoutMs}ms cap]`)
+      }
+      if (attempt < MAX_TRANSIENT_RETRIES && isRetryable(err)) {
         await Bun.sleep(RETRY_DELAY * attempt)
         continue
       }
@@ -120,8 +147,50 @@ export async function sendTurn(
 
 function isRetryable(err: any): boolean {
   const msg = String(err?.message || '').toLowerCase()
-  return ['rate_limit', 'overloaded', '529', '503', '502', 'econnreset', 'timeout', 'aborted']
+  // 'timeout' / 'aborted' intentionally omitted — those are handled
+  // explicitly above via the `timedOut` flag (we never retry self-imposed
+  // timeouts because the agent is still running on the server).
+  return ['rate_limit', 'overloaded', '529', '503', '502', 'econnreset']
     .some(k => msg.includes(k))
+}
+
+/**
+ * Best-effort cancel of the agent's in-flight turn. Mirrors
+ * `apps/api/src/routes/project-chat.ts`'s "Stop" path which posts to
+ * `/agent/stop` so the gateway flips its `turnAbort` signal and tools
+ * stop iterating. Failing here is fine — the worker itself will be
+ * recycled at end of suite anyway.
+ */
+async function stopAgentTurn(config: EvalRunnerConfig): Promise<void> {
+  const stopUrl = config.agentEndpoint.replace(/\/agent\/chat\/?$/, '/agent/stop')
+  if (stopUrl === config.agentEndpoint) return // unrecognized endpoint shape
+  const ctl = new AbortController()
+  const t = setTimeout(() => ctl.abort(), 5_000)
+  try {
+    await fetch(stopUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Chat-Session-Id': 'chat',
+      },
+      body: JSON.stringify({ chatSessionId: 'chat' }),
+      signal: ctl.signal,
+    })
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+function emptyResponse(text: string): ParsedAgentResponse {
+  return {
+    text,
+    toolCalls: [],
+    stepCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  }
 }
 
 /**
