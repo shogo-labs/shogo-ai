@@ -878,7 +878,7 @@
       "note": "First strike on Wave 1 Day 5 target (gateway.ts, 408 uncov). New file gateway-index-engine.test.ts (6 tests, all passing) covers (1) initIndexEngine L851-905: prewarm:false constructs engine+graph without scanning; prewarm:true triggers reindexBackground + buildGraph + flow detect via setTimeout. (2) onCostMetric agentManager callback L673-693: no WORKSPACE_ID env returns early; with WORKSPACE_ID set the postCostMetric path executes through. Fires the callback by directly calling am.emitCostMetric on the private agentManager. (3) sessionManager.summarize callback L705-717: stores the summarize fn, branch through user/assistant/toolResult/non-text message extraction (network call rejects later; only the synchronous extraction branch is asserted). Cumulative: gateway.ts 85.31 to 86.36 percent (+29 hit lines, +1.05pp). Wave 1 Day 1-4 (gateway-tools.ts) is now done at 92.35%; Wave 1 Day 5 (gateway.ts) starts here with +29 lines on session 1."
     },
     {
-      "sha": "PENDING",
+      "sha": "65651131",
       "date": "2026-05-28",
       "wave": "Wave 1 Day 6-7 prep / s3-sync side-quest",
       "message": "test(coverage): s3-sync.ts extractTarFastNonBlocking exit-code branches \u2014 +~32 lines",
