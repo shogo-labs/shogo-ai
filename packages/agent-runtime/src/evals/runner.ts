@@ -27,6 +27,18 @@ export interface EvalRunnerConfig {
   workspaceDir: string
   agentMode?: string
   interactionMode?: 'agent' | 'plan' | 'ask'
+  /**
+   * Tool calls accumulated by every previously-completed phase of the
+   * pipeline this eval belongs to. Set by `runEvalOnWorker` when running
+   * pipeline phase 2+; absent for standalone evals and pipeline phase 1.
+   *
+   * The runner unions this with the current phase's tool calls and uses
+   * the result for intention-phase criteria, so checks like
+   * `usedTool('write_file', 'src/App.tsx')` pass on phase 5 even if the
+   * file was actually written in phase 2 — the workspace state IS
+   * cumulative across phases, and intention criteria should match.
+   */
+  pipelineToolCalls?: ToolCallRecord[]
 }
 
 const DEFAULT_CONFIG: EvalRunnerConfig = {
@@ -575,6 +587,15 @@ export async function runEval(
     timing: { totalMs: durationMs },
   }
 
+  // Cumulative pipeline tool calls. For pipeline phase 1 (or standalone)
+  // `cfg.pipelineToolCalls` is undefined, so this is just `toolCalls`. For
+  // phase 2+ this folds in everything the same pipeline did before, so
+  // intention-phase criteria correctly see the work that earlier phases
+  // did in the SAME workspace. See `EvalRunnerConfig.pipelineToolCalls`.
+  const pipelineCumulativeToolCalls = cfg.pipelineToolCalls && cfg.pipelineToolCalls.length > 0
+    ? [...cfg.pipelineToolCalls, ...toolCalls]
+    : undefined
+
   // Score criteria
   const evalBase: EvalResult = {
     eval: eval_,
@@ -586,6 +607,7 @@ export async function runEval(
     toolCalls,
     finalTurnToolCalls,
     perTurnToolCalls,
+    pipelineToolCalls: pipelineCumulativeToolCalls,
     criteriaResults: [],
     triggeredAntiPatterns: [],
     timing: { startTime, endTime, durationMs },
@@ -594,6 +616,16 @@ export async function runEval(
     workspaceDir: cfg.workspaceDir,
     promptBreakdown,
   }
+
+  // For intention criteria we transparently swap `toolCalls` to the
+  // cumulative pipeline view so existing helpers (`usedTool`,
+  // `usedToolAnywhere`, `toolCallsJson`, etc.) report what the pipeline
+  // collectively did, not just what *this phase* did. Execution criteria
+  // continue to see only the current phase's calls because they're
+  // testing this turn's behavior, not the pipeline's cumulative state.
+  const intentionEvalBase: EvalResult = pipelineCumulativeToolCalls
+    ? { ...evalBase, toolCalls: pipelineCumulativeToolCalls }
+    : evalBase
 
   let totalScore = 0
   let intentionScore = 0
@@ -604,11 +636,12 @@ export async function runEval(
 
   for (const criterion of eval_.validationCriteria) {
     try {
-      const passed = criterion.validate(evalBase)
+      const phase = criterion.phase || 'intention'
+      const baseForCriterion = phase === 'intention' ? intentionEvalBase : evalBase
+      const passed = criterion.validate(baseForCriterion)
       const points = passed ? criterion.points : 0
       totalScore += points
 
-      const phase = criterion.phase || 'intention'
       if (phase === 'intention') { intentionScore += points; intentionMax += criterion.points }
       else { executionScore += points; executionMax += criterion.points }
 

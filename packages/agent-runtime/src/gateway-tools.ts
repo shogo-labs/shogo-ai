@@ -914,6 +914,14 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
 
       const base: Record<string, unknown> = { ok: true, path: filePath, bytes: content.length }
       appendImpactHint(ctx, filePath, base)
+      // Canvas-API contract hint: surfaced eagerly on every write so the
+      // agent doesn't have to wait for an eval / runtime check to learn
+      // that a fresh `fetch('/api/X')` references a non-existent route.
+      // Use the final file content (post-append for append=true).
+      const finalContentForLint = append
+        ? (existsSync(resolved) ? readFileSync(resolved, 'utf-8') : content)
+        : content
+      appendCanvasApiContractHint(ctx, filePath, finalContentForLint, base)
       const quickActionsResult = maybeValidateQuickActions(filePath, resolved, base)
       if (quickActionsResult) return textResult(quickActionsResult)
       const schemaResult = await maybeSchemaSync(ctx, filePath, resolved, base)
@@ -927,15 +935,112 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
  * return an enriched result.  Otherwise returns null (caller uses default).
  */
 /**
- * Scan canvas/src files for fetch('/api/...') calls that don't match any
- * active server route. Returns per-file orphaned route info.
+ * Static fetch-path regex shared between the workspace-wide scanner
+ * (`findOrphanedFetches`) and the per-file content scanner
+ * (`findOrphanedFetchesInContent`). Matches:
+ *   - `fetch('/api/leads')`            (relative)
+ *   - `fetch("http://localhost:3001/api/leads")` (absolute, dev only)
+ * Capture group 1 is the **first** path segment after `/api/`. We exclude
+ * `$` from the character class so a template-literal interpolation like
+ * `` fetch(`/api/${id}`) `` doesn't get mis-parsed as the literal segment
+ * `${id}`. Dynamic paths are deliberately treated as "always valid" —
+ * static analysis can't tell what `${id}` resolves to, so flagging them
+ * would be a false positive.
  */
+const CANVAS_API_FETCH_PATTERN = /fetch\(\s*[`"'](?:https?:\/\/localhost:\d+)?\/api\/([^`"'/\s?$]+)/g
+
+/**
+ * Scan one file's content for static `/api/<seg>` fetches that don't
+ * match any active server route. Used by the write-time canvas-API
+ * contract hint in `createWriteFileTool` / `commitEdit` so the agent
+ * sees the warning *the moment they introduce the bad fetch*, instead of
+ * having to wait for the next eval / runtime check.
+ */
+function findOrphanedFetchesInContent(content: string, activeRoutes: string[]): string[] {
+  // String.prototype.matchAll() takes a snapshot of the regex source/flags
+  // and uses its own iterator state, so it's safe to call against the
+  // shared `CANVAS_API_FETCH_PATTERN` constant even across concurrent
+  // tool calls.
+  const routeSet = new Set(activeRoutes.map(r => r.toLowerCase()))
+  const orphaned = new Set<string>()
+  for (const m of content.matchAll(CANVAS_API_FETCH_PATTERN)) {
+    if (!routeSet.has(m[1].toLowerCase())) {
+      orphaned.add(`/api/${m[1]}`)
+    }
+  }
+  return [...orphaned]
+}
+
+/**
+ * Path filter: should this file be checked for canvas-API contract
+ * violations? Only `.ts(x)` / `.js(x)` files inside `src/` or `canvas/`
+ * (not the generated CRUD output, which by definition matches the routes
+ * it generates).
+ */
+function shouldLintCanvasApiContract(filePath: string): boolean {
+  if (!/\.(tsx?|jsx?)$/.test(filePath)) return false
+  const normalized = filePath.replace(/\\/g, '/')
+  if (normalized.startsWith('src/generated/') || normalized.includes('/src/generated/')) return false
+  return normalized.startsWith('src/') || normalized.startsWith('canvas/') ||
+    normalized.includes('/src/') || normalized.includes('/canvas/')
+}
+
+/**
+ * Side-effecting helper: when the just-written/edited file fetches
+ * `/api/<seg>` for a segment with no matching backend route, append a
+ * `canvasApiContract` field to the tool result so the agent is reminded
+ * to either add a Prisma model (auto-CRUD) or a custom Hono route.
+ *
+ * No-ops when:
+ *   - The path isn't lint-eligible (see `shouldLintCanvasApiContract`).
+ *   - There's no skill server (so we have no route list to compare to).
+ *   - All fetches resolve to known routes.
+ *
+ * This complements the workspace-wide scan that runs after schema syncs
+ * (`maybeSchemaSync`) — that catches drift across the project, while
+ * this catches the specific fetch the agent just wrote.
+ */
+function appendCanvasApiContractHint(
+  ctx: ToolContext,
+  filePath: string,
+  content: string,
+  base: Record<string, unknown>,
+): void {
+  if (!ctx.skillServerManager) return
+  if (!shouldLintCanvasApiContract(filePath)) return
+  // Cheap pre-check using includes() so we don't pay for the regex / route
+  // lookup on every tool call (the vast majority of writes won't have
+  // any /api/ fetches at all).
+  if (!content.includes('/api/')) return
+
+  let activeRoutes: string[] = []
+  try {
+    activeRoutes = ctx.skillServerManager.getActiveRoutes()
+  } catch { return }
+
+  const orphaned = findOrphanedFetchesInContent(content, activeRoutes)
+  if (orphaned.length === 0) return
+
+  base.canvasApiContract = {
+    orphanedFetches: orphaned,
+    activeRoutes: activeRoutes.map(r => `/api/${r}`),
+    warning:
+      `This file fetches ${orphaned.length} route(s) that don't exist on the server: ${orphaned.join(', ')}. ` +
+      `Either add a matching Prisma model in prisma/schema.prisma (which gives you /api/{model-plural} CRUD ` +
+      `automatically after \`shogo generate\`), or register a custom Hono route in server.tsx (e.g. ` +
+      `\`app.get('${orphaned[0]}', async (c) => ...)\`). Otherwise the fetch will return a 404 at runtime.`,
+  }
+}
+
 function findOrphanedFetches(
   workspaceDir: string,
   activeRoutes: string[],
 ): { route: string; file: string }[] {
   const routeSet = new Set(activeRoutes.map(r => r.toLowerCase()))
-  const fetchPattern = /fetch\(\s*[`"'](?:https?:\/\/localhost:\d+)?\/api\/([^`"'/\s?]+)/g
+  // Each call site needs its own RegExp instance because the global flag
+  // makes the regex stateful (`lastIndex`) — sharing the constant across
+  // concurrent scans would skip matches.
+  const fetchPattern = new RegExp(CANVAS_API_FETCH_PATTERN.source, 'g')
   const orphaned: { route: string; file: string }[] = []
 
   const scanDir = (dir: string) => {
@@ -1480,6 +1585,9 @@ async function commitEdit(
   const base: Record<string, any> = { ok: true, path: filePath, replacements, patch }
   if (note) base.note = note
   appendImpactHint(ctx, filePath, base)
+  // Mirror the write_file canvas-API contract hint so edits that
+  // introduce a new `fetch('/api/X')` get the same eager warning.
+  appendCanvasApiContractHint(ctx, filePath, updated, base)
   const quickActionsResult = maybeValidateQuickActions(filePath, resolved, base)
   if (quickActionsResult) return textResult(quickActionsResult)
   const schemaResult = await maybeSchemaSync(ctx, filePath, resolved, base)
@@ -3075,7 +3183,9 @@ function createChannelListTool(ctx: ToolContext): AgentTool {
 function createSearchIntegrationsTool(ctx: ToolContext): AgentTool {
   return {
     name: 'search_integrations',
-    description: 'Search for integrations by keyword. Returns managed OAuth integrations (Google, Slack, GitHub, etc.), bundled skills, and MCP protocol servers in one tagged list. Each result has a `source` tag (managed | skill | mcp). Pass `source` to filter to one backend.',
+    description:
+      'Search for integrations by keyword. Returns managed OAuth integrations (Google, Slack, GitHub, etc.), bundled skills, and MCP protocol servers in one tagged list. Each result has a `source` tag (managed | skill | mcp). Pass `source` to filter to one backend.\n\n' +
+      'When results are empty: do NOT give up after one query. Retry with a different keyword first — try the integration\'s common name ("google calendar"), the underlying capability ("calendar", "events", "scheduling"), or a sibling provider ("gcal", "outlook"). Only conclude an integration does not exist after at least 2 different searches return empty.',
     label: 'Search Integrations',
     parameters: Type.Object({
       query: Type.String({ description: 'Search query describing the capability you need (e.g. "google calendar", "postgres database", "seo audit", "github ops", "slack mentions")' }),
@@ -3445,7 +3555,9 @@ async function connectViaMcp(
 function createConnectTool(ctx: ToolContext): AgentTool {
   return {
     name: 'connect',
-    description: 'Install (connect) an integration so its tools become available. Auto-routes by name: tries Composio managed OAuth first (Google, Slack, GitHub, etc. — no credentials needed), falls back to MCP catalog (postgres, filesystem, etc.), then to a remote URL if provided. Use `source: "mcp"` to skip Composio. Use `skill:<name>` to install a bundled skill. Pair with search_integrations to discover names.',
+    description:
+      'Install (connect) an integration so its tools become available. Auto-routes by name: tries Composio managed OAuth first (Google, Slack, GitHub, etc. — no credentials needed), falls back to MCP catalog (postgres, filesystem, etc.), then to a remote URL if provided. Use `source: "mcp"` to skip Composio. Use `skill:<name>` to install a bundled skill. Pair with search_integrations to discover names.\n\n' +
+      'When to call connect vs. when not to: only call connect when the user has asked for an ACTION you can\'t perform without that integration (send a calendar invite, post to Slack, query a Postgres database, etc.). Do NOT call connect when the user is asking to "show", "list", "compare", "describe", or "preview" data you can already produce with `web`, `read_file`, or in-context information — installing an integration the user did not ask for forces them through an OAuth dance for no reason and is one of the most disliked agent behaviors. If you\'re unsure whether the user wants the action or just an explanation, ask one clarifying question via `ask_user` before calling connect.',
     label: 'Connect Integration',
     parameters: Type.Object({
       name: Type.String({ description: 'Integration name. Examples: "googlecalendar", "gmail", "slack" (managed); "postgres", "filesystem" (mcp catalog); "skill:github-ops" (bundled skill); any custom name when providing url.' }),

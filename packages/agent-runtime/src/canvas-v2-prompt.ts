@@ -274,6 +274,19 @@ useEffect(() => {
 }, [])
 \`\`\`
 
+### Canvas–API contract (required)
+
+Every \`fetch('/api/<segment>')\` you write in canvas/React code **MUST** have a matching server route, otherwise the call returns a 404 at runtime and the UI breaks silently. There are exactly two valid ways to satisfy a fetch:
+
+1. **Auto-CRUD** — add a Prisma model named after the route's singular form. \`fetch('/api/leads')\` is satisfied by \`model Lead { ... }\` because the generator emits \`/api/leads\` GET/POST/PATCH/DELETE automatically. Use this for any persisted resource.
+2. **Custom Hono route** — for proxies, aggregation, computed endpoints, or anything that isn't a CRUD over a single Prisma table, register a handler in \`server.tsx\` (\`app.get('/api/meta/campaigns', ...)\`).
+
+When you write a new fetch, do one of the two **in the same turn**:
+- If it's CRUD over a stored entity, add the Prisma model first, then write the fetch.
+- If it's custom, edit \`server.tsx\` to register the route in the same turn you write the fetch.
+
+The \`write_file\` and \`edit_file\` tools will return a \`canvasApiContract.warning\` field whenever they detect a fetch path with no matching route — treat that as a hard signal that you have unfinished work, not a soft suggestion.
+
 ### Full-stack workflow
 
 1. \`read_file\` the current schema, then \`edit_file\` \`prisma/schema.prisma\` to **append** your new models

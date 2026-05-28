@@ -202,6 +202,15 @@ export interface VisibleOpenRouterModel {
   displayName: string
   contextLength?: number
   tier?: 'economy' | 'standard' | 'premium'
+  /** Per-token rates in USD captured from OpenRouter at allowlist time.
+   *  Lets the UI show real $/M-token figures and the eval cost calc
+   *  report actual (not Sonnet-fallback) dollar costs. */
+  pricing?: {
+    promptPerToken?: number
+    completionPerToken?: number
+    cacheReadPerToken?: number
+    cacheWritePerToken?: number
+  }
 }
 
 /** Admin-curated allowlist of models that surface in the user picker.
@@ -483,7 +492,17 @@ export class PlatformApi {
       name: string
       description?: string
       contextLength?: number
-      pricing?: { prompt?: number; completion?: number }
+      /** Per-token rates in USD. `cacheRead` / `cacheWrite` are populated
+       *  for models that surface cache pricing on OpenRouter (currently
+       *  Anthropic-on-OpenRouter and a few others). Missing fields stay
+       *  undefined rather than 0 so callers can distinguish "free" from
+       *  "unknown" — billing-side code should treat undefined as 0. */
+      pricing?: {
+        prompt?: number
+        completion?: number
+        cacheRead?: number
+        cacheWrite?: number
+      }
     }>
     error?: string
   }> {
@@ -494,7 +513,7 @@ export class PlatformApi {
         name: string
         description?: string
         contextLength?: number
-        pricing?: { prompt?: number; completion?: number }
+        pricing?: { prompt?: number; completion?: number; cacheRead?: number; cacheWrite?: number }
       }>
       error?: string
     }>('/api/local/openrouter/models')

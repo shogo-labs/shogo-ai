@@ -14,6 +14,7 @@ import {
   type AgentMode,
   type BillingModel,
   type Provider,
+  type CapabilityReliability,
 } from './models'
 import { MODEL_ALIASES, resolveAgentModeDefault } from './aliases'
 
@@ -217,6 +218,33 @@ export function calculateDollarCost(
     (cachedInputTokens * costs.cachedInputPerMillion / 1_000_000) +
     (outputTokens * costs.outputPerMillion / 1_000_000)
   )
+}
+
+// ---------------------------------------------------------------------------
+// Capability reliability
+// ---------------------------------------------------------------------------
+
+/** Result of a capability lookup, with `unknown` for unrated entries. */
+export type CapabilityRating = CapabilityReliability | 'unknown'
+
+/**
+ * Reliability rating for a model on the subagent-orchestration
+ * capability (`agent_spawn` / `agent_create` / `agent_result`).
+ *
+ * - Static catalog hit with a `capabilities.subagentOrchestration` value
+ *   returns that value verbatim.
+ * - Catalog hit without an explicit value returns `'unknown'`.
+ * - OpenRouter (dynamic) and unknown model IDs always return `'unknown'`
+ *   — we have no internal eval data to vouch for them.
+ *
+ * Admin UI uses this to inline a "verify before relying on multi-agent
+ * flows" warning beside flagged or unknown models.
+ */
+export function getSubagentOrchestrationReliability(id: string): CapabilityRating {
+  if (!id || id === AUTO_MODEL_ID) return 'unknown'
+  if (isOpenRouterModel(id)) return 'unknown'
+  const entry = getModelEntry(id)
+  return entry?.capabilities?.subagentOrchestration ?? 'unknown'
 }
 
 // ---------------------------------------------------------------------------

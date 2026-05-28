@@ -28,6 +28,33 @@ export type ModelGeneration = 'current' | 'legacy'
 export type BillingModel = 'gpt-5.4-nano' | 'haiku' | 'gpt-5.4-mini' | 'sonnet' | 'opus'
 export type AgentMode = 'basic' | 'advanced'
 
+/**
+ * Empirical reliability of a model on a specific agent capability.
+ *
+ * - `reliable`: passes the relevant smoke eval consistently in CI.
+ * - `flaky`: passes sometimes; admins should verify with their own
+ *   workload before relying on it for the capability.
+ * - `unsupported`: known to not work for this capability (e.g. tool
+ *   calling absent, subagent tools never invoked).
+ *
+ * Models without a `capabilities` entry are simply unrated — the admin
+ * UI treats unrated as "unknown, verify before relying on it".
+ */
+export type CapabilityReliability = 'reliable' | 'flaky' | 'unsupported'
+
+export interface ModelCapabilities {
+  /**
+   * How reliably the model orchestrates subagents (`agent_spawn`,
+   * `agent_create`, `agent_result`). Multi-agent flows like canvas
+   * builds rely on the supervisor model spawning specialized children
+   * and awaiting their results; small / older models often emit
+   * `agent_spawn` calls without ever waiting on `agent_result`, leaving
+   * the pipeline stuck. See the MiMo eval bucket-D analysis for the
+   * specific failure mode.
+   */
+  subagentOrchestration?: CapabilityReliability
+}
+
 export interface ModelEntry {
   id: string
   provider: Provider
@@ -39,6 +66,12 @@ export interface ModelEntry {
   generation: ModelGeneration
   billingModel: BillingModel
   maxOutputTokens: number
+  /**
+   * Optional capability ratings — see `ModelCapabilities`. Absent for
+   * unrated catalog entries and for dynamically-added OpenRouter
+   * models (those don't go through this static catalog at all).
+   */
+  capabilities?: ModelCapabilities
 }
 
 export interface ImageModelEntry {
@@ -65,6 +98,7 @@ export const MODEL_CATALOG = {
     generation: 'current',
     billingModel: 'opus',
     maxOutputTokens: 128_000,
+    capabilities: { subagentOrchestration: 'reliable' },
   },
   'claude-sonnet-4-6': {
     id: 'claude-sonnet-4-6',
@@ -77,6 +111,7 @@ export const MODEL_CATALOG = {
     generation: 'current',
     billingModel: 'sonnet',
     maxOutputTokens: 64_000,
+    capabilities: { subagentOrchestration: 'reliable' },
   },
   'claude-haiku-4-5-20251001': {
     id: 'claude-haiku-4-5-20251001',
@@ -89,6 +124,7 @@ export const MODEL_CATALOG = {
     generation: 'current',
     billingModel: 'haiku',
     maxOutputTokens: 64_000,
+    capabilities: { subagentOrchestration: 'reliable' },
   },
 
   // Anthropic — legacy
@@ -201,6 +237,7 @@ export const MODEL_CATALOG = {
     generation: 'current',
     billingModel: 'opus',
     maxOutputTokens: 128_000,
+    capabilities: { subagentOrchestration: 'reliable' },
   },
   'gpt-5.4-mini': {
     id: 'gpt-5.4-mini',
@@ -213,6 +250,7 @@ export const MODEL_CATALOG = {
     generation: 'current',
     billingModel: 'gpt-5.4-mini',
     maxOutputTokens: 128_000,
+    capabilities: { subagentOrchestration: 'reliable' },
   },
   'gpt-5-mini': {
     id: 'gpt-5-mini',
@@ -225,6 +263,7 @@ export const MODEL_CATALOG = {
     generation: 'current',
     billingModel: 'sonnet',
     maxOutputTokens: 128_000,
+    capabilities: { subagentOrchestration: 'reliable' },
   },
   'gpt-5.4-nano': {
     id: 'gpt-5.4-nano',
@@ -237,6 +276,10 @@ export const MODEL_CATALOG = {
     generation: 'current',
     billingModel: 'gpt-5.4-nano',
     maxOutputTokens: 128_000,
+    // Nano routinely fails the subagent-smoke eval (skips agent_result).
+    // Flag as flaky so admins see a warning before allowlisting it for
+    // workflows that fan out to children.
+    capabilities: { subagentOrchestration: 'flaky' },
   },
   // OpenAI — legacy
   'gpt-4.1': {

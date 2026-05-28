@@ -210,6 +210,22 @@ export interface EvalResult {
   finalTurnToolCalls: ToolCallRecord[]
   /** Tool calls grouped by turn index for per-turn inspection. */
   perTurnToolCalls: ToolCallRecord[][]
+  /**
+   * For pipeline phases, the union of `toolCalls` across every previously-
+   * completed phase of the same pipeline plus the current phase's calls.
+   *
+   * Set automatically by the runner when a pipeline phase is run; absent
+   * for standalone evals. Intention-phase criteria (`phase: 'intention'`
+   * or unspecified) are validated against an `EvalResult` whose
+   * `toolCalls` field has already been swapped to this cumulative array,
+   * so existing helpers like `usedTool` / `usedToolAnywhere` work
+   * transparently across phases. Execution-phase criteria still see
+   * only the current phase's calls.
+   *
+   * Exposed on the result so eval logs / debugging tools can distinguish
+   * per-phase from cumulative state.
+   */
+  pipelineToolCalls?: ToolCallRecord[]
   criteriaResults: CriterionResult[]
   triggeredAntiPatterns: string[]
   timing: {
@@ -307,4 +323,13 @@ export interface CostSummary {
   totalOutputTokens: number
   totalCost: number
   costPerEval: number
+  /**
+   * How `totalCost` was computed:
+   *   - `static`: PRICING table hit (haiku/sonnet/opus/etc).
+   *   - `openrouter`: live per-token rates from OpenRouter `/models`.
+   *   - `fallback`: model wasn't in either; cost calc used the catalog
+   *     billing-bucket fallback (defaults to Sonnet rate). Cost is a
+   *     ballpark estimate, not actual billing.
+   */
+  pricingSource?: 'static' | 'openrouter' | 'fallback'
 }

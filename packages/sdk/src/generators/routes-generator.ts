@@ -7,7 +7,7 @@
  */
 
 import type { PrismaModel, PrismaField } from './prisma-generator'
-import { toCamelCase, getIdField } from './prisma-generator'
+import { toCamelCase, getIdField, getScalarFields, getRelationFields } from './prisma-generator'
 import { GENERATED_FILE_LICENSE_HEADER } from './generated-file-license-header'
 
 // ============================================================================
@@ -63,6 +63,29 @@ function toFileName(name: string): string {
   return name.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()
 }
 
+/**
+ * Scalar/enum fields the client is allowed to set on create/update.
+ *
+ * Excludes the id field when it has a server-generated default (uuid, cuid,
+ * autoincrement) — those are managed by the database. An id without a
+ * default (e.g. `id String @id`) is still writable so callers can provide
+ * an explicit primary key.
+ */
+function getWritableScalarFields(model: PrismaModel): PrismaField[] {
+  return getScalarFields(model).filter(f => !(f.isId && f.hasDefaultValue))
+}
+
+/**
+ * Render an array of strings as a TS string-literal array literal (`as const`).
+ * Used to emit a compile-time-fixed allowlist of field names into the generated
+ * route file.
+ */
+function tsStringArrayLiteral(names: readonly string[]): string {
+  if (names.length === 0) return '[] as const'
+  const inner = names.map(n => `"${n}"`).join(', ')
+  return `[${inner}] as const`
+}
+
 // ============================================================================
 // Route Generator (Per-Model)
 // ============================================================================
@@ -83,6 +106,21 @@ export function generateModelRoutes(
   const modelLower = toCamelCase(modelName)
   const ext = config.fileExtension || 'tsx'
   const fileName = `${toFileName(modelName)}.routes.${ext}`
+
+  // Compute the field allowlists that drive `pickWritableFields` in the
+  // generated file. These prevent two real failure modes that previously
+  // crashed `prisma.X.create({ data: rawBody })`:
+  //
+  //   1. Relation-as-scalar bug. If a client posts `{ scorecards: 1 }` for a
+  //      `scorecards: InterviewScorecard[]` relation, Prisma rejects with a
+  //      cryptic "Expected ScorecardCreateNestedManyWithoutXInput, provided
+  //      Int". We catch this at the route layer and return a 400 with a
+  //      message that names the offending field.
+  //   2. Unknown-key passthrough. `data: body` would forward arbitrary keys
+  //      the schema doesn't expose. Prisma fails on those, but the error
+  //      message is hard to debug. We just drop unknown keys.
+  const writableScalarFieldNames = getWritableScalarFields(model).map(f => f.name)
+  const relationFieldNames = getRelationFields(model).map(f => f.name)
 
   const lines: string[] = [
     GENERATED_FILE_LICENSE_HEADER,
@@ -154,6 +192,51 @@ export function generateModelRoutes(
     '    tunnelAuthenticated: !!auth?.tunnelAuthenticated,',
     '    prisma: getPrisma(),',
     '  }',
+    '}',
+    '',
+    '// Field allowlists derived from the Prisma schema at code-gen time. Used',
+    '// by `pickWritableFields` to keep the create/update payload Prisma-safe.',
+    `const WRITABLE_SCALAR_FIELDS = ${tsStringArrayLiteral(writableScalarFieldNames)}`,
+    `const RELATION_FIELDS = ${tsStringArrayLiteral(relationFieldNames)}`,
+    '',
+    'type WriteBodyResult =',
+    '  | { ok: true; data: Record<string, unknown> }',
+    '  | { ok: false; error: { code: string; message: string } }',
+    '',
+    '/**',
+    ' * Build a Prisma-safe `data` payload from the request body:',
+    ' * - Scalar/enum fields are passed through (only fields the schema declares).',
+    " * - Relation fields must use Prisma's nested-write shape (an object like",
+    ' *   `{ connect: { id: ... } }` or `{ create: { ... } }`), not a raw scalar',
+    ' *   or array. The common bug `{ scorecards: 1 }` would otherwise crash with',
+    ' *   "Argument `scorecards`: Invalid value provided. Expected',
+    ' *    XCreateNestedManyWithoutYInput, provided Int." We surface it as a 400.',
+    " * - Unknown keys are silently dropped to prevent injection of fields the",
+    ' *   schema does not expose.',
+    ' */',
+    'function pickWritableFields(body: any): WriteBodyResult {',
+    '  if (body == null || typeof body !== "object" || Array.isArray(body)) {',
+    '    return { ok: false, error: { code: "invalid_body", message: "Request body must be a JSON object." } }',
+    '  }',
+    '  const data: Record<string, unknown> = {}',
+    '  for (const key of WRITABLE_SCALAR_FIELDS) {',
+    '    if (body[key] !== undefined) data[key] = body[key]',
+    '  }',
+    '  for (const key of RELATION_FIELDS) {',
+    '    const value = body[key]',
+    '    if (value === undefined || value === null) continue',
+    '    if (typeof value !== "object" || Array.isArray(value)) {',
+    '      return {',
+    '        ok: false,',
+    '        error: {',
+    '          code: "invalid_relation_shape",',
+    `          message: \`Field "\${key}" is a relation. Provide it as { connect: { id: ... } } or { create: { ... } }, not a scalar/array.\`,`,
+    '        },',
+    '      }',
+    '    }',
+    '    data[key] = value',
+    '  }',
+    '  return { ok: true, data }',
     '}',
     '',
     '/**',
@@ -274,8 +357,15 @@ export function generateModelRoutes(
   lines.push('        }')
   lines.push('      }')
   lines.push('')
+  lines.push('      // Filter the body to schema-known scalars + relation-shaped relations.')
+  lines.push('      // Prevents accidental relation-as-scalar errors and unknown-key Prisma crashes.')
+  lines.push('      const picked = pickWritableFields(body)')
+  lines.push('      if (!picked.ok) {')
+  lines.push('        return sendJson(c, { error: picked.error }, 400)')
+  lines.push('      }')
+  lines.push('')
   lines.push(`      const item = await prisma.${modelLower}.create({`)
-  lines.push('        data: body,')
+  lines.push('        data: picked.data,')
   lines.push('      })')
   lines.push('')
   lines.push('      // Apply afterCreate hook')
@@ -311,9 +401,15 @@ export function generateModelRoutes(
   lines.push('        }')
   lines.push('      }')
   lines.push('')
+  lines.push('      // Same allowlist filter as on create — see pickWritableFields above.')
+  lines.push('      const picked = pickWritableFields(body)')
+  lines.push('      if (!picked.ok) {')
+  lines.push('        return sendJson(c, { error: picked.error }, 400)')
+  lines.push('      }')
+  lines.push('')
   lines.push(`      const item = await prisma.${modelLower}.update({`)
   lines.push('        where: { id },')
-  lines.push('        data: body,')
+  lines.push('        data: picked.data,')
   lines.push('      })')
   lines.push('')
   lines.push('      // Apply afterUpdate hook')
