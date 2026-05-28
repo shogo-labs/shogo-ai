@@ -47,7 +47,10 @@ function baseInput(over: Partial<SpawnOptionsLike> = {}): SpawnOptionsLike {
     shell: '/bin/bash',
     args: [],
     cwd: '/tmp',
-    env: { HOME: '/home/u', PATH: '/usr/bin' },
+    // Tests cover the *applied* code paths, so they all opt in. The
+    // top-level default (set by applyShellIntegration) is now opt-in
+    // pending Phase 6 hardening of the OSC 633 scripts.
+    env: { HOME: '/home/u', PATH: '/usr/bin', SHOGO_ENABLE_SHELL_INTEGRATION: '1' },
     cols: 80,
     rows: 24,
     ...over,
@@ -85,6 +88,25 @@ describe('applyShellIntegration — opt-outs', () => {
     expect(plan.status).toBe('disabled-by-env')
     expect(plan.artifacts).toEqual([])
     // spawn passes through unmodified
+    expect(plan.spawn.args).toEqual([])
+    expect(plan.spawn.env.SHOGO_TERMINAL).toBeUndefined()
+    expect(readdirSync(TMP_ROOT)).toEqual([])
+  })
+
+  it('returns status=disabled-by-default when neither opt-in nor opt-out is set (Phase 6 hardening guard)', () => {
+    const plan = applyShellIntegration(
+      // Note: env has neither SHOGO_ENABLE_SHELL_INTEGRATION nor SHOGO_DISABLE_*
+      {
+        shell: '/bin/bash', args: [], cwd: '/tmp',
+        env: { HOME: '/home/u', PATH: '/usr/bin' },
+        cols: 80, rows: 24,
+      },
+      { tmpRoot: TMP_ROOT },
+    )
+    expect(plan.status).toBe('disabled-by-default')
+    expect(plan.artifacts).toEqual([])
+    // Spawn passes through unmodified — exactly what we need for the
+    // terminal to print a real prompt and accept input.
     expect(plan.spawn.args).toEqual([])
     expect(plan.spawn.env.SHOGO_TERMINAL).toBeUndefined()
     expect(readdirSync(TMP_ROOT)).toEqual([])
@@ -159,7 +181,7 @@ describe('applyShellIntegration — bash', () => {
 describe('applyShellIntegration — zsh', () => {
   it('writes ALL 5 dotfiles to a temp ZDOTDIR', () => {
     const plan = applyShellIntegration(
-      baseInput({ shell: '/bin/zsh', env: { HOME: '/h', ZDOTDIR: '/h/zdot' } }),
+      baseInput({ shell: '/bin/zsh', env: { HOME: '/h', ZDOTDIR: '/h/zdot', SHOGO_ENABLE_SHELL_INTEGRATION: '1' } }),
       { tmpRoot: TMP_ROOT },
     )
     expect(plan.status).toBe('applied')
@@ -174,7 +196,7 @@ describe('applyShellIntegration — zsh', () => {
 
   it('falls back to HOME when user has no ZDOTDIR', () => {
     const plan = applyShellIntegration(
-      baseInput({ shell: '/bin/zsh', env: { HOME: '/h' } }),
+      baseInput({ shell: '/bin/zsh', env: { HOME: '/h', SHOGO_ENABLE_SHELL_INTEGRATION: '1' } }),
       { tmpRoot: TMP_ROOT },
     )
     expect(plan.spawn.env._SHOGO_ORIG_ZDOTDIR).toBe('/h')
@@ -204,6 +226,49 @@ describe('applyShellIntegration — zsh', () => {
     // Uses %{...%} prompt-width-safe wrapper
     expect(zshrc).toContain('%{')
   })
+
+  // Regression: .zshenv used to redirect ZDOTDIR back to the user's HOME
+  // before zsh sourced our .zshrc, so our hooks NEVER installed and the
+  // terminal showed an empty grid with no OSC marks. Bare `ZDOTDIR=` lines
+  // are banned in .zshenv. Parameter expansions like ${ZDOTDIR:-$HOME} are
+  // fine (they don't assign).
+  it('.zshenv must NOT mutate ZDOTDIR (else our .zshrc is skipped)', () => {
+    const plan = applyShellIntegration(baseInput({ shell: '/bin/zsh' }), { tmpRoot: TMP_ROOT })
+    const zshenv = readFileSync(join(plan.spawn.env.ZDOTDIR!, '.zshenv'), 'utf8')
+    const codeOnly = zshenv.replace(/^\s*#.*$/gm, '')
+    const badAssignments = codeOnly.match(/^\s*(export\s+)?ZDOTDIR=/gm)
+    expect(badAssignments).toBeNull()
+  })
+
+  // Regression: PS1 wrap used to PREPEND the OSC 633 ;B (prompt-end) mark,
+  // putting it BEFORE the user's prompt characters. OSC 633 contract is
+  // A …user prompt… B, so B goes at the END of PS1.
+  it('.zshrc PS1 wrap APPENDS the prompt-end OSC mark (not prepend)', () => {
+    const plan = applyShellIntegration(baseInput({ shell: '/bin/zsh' }), { tmpRoot: TMP_ROOT })
+    const zshrc = readFileSync(join(plan.spawn.env.ZDOTDIR!, '.zshrc'), 'utf8')
+    const wrap = zshrc.match(/^\s*PS1=.*$/m)?.[0]
+    expect(wrap).toBeDefined()
+    const ps1Idx = wrap!.indexOf('${PS1}')
+    const endIdx = wrap!.indexOf('__shogo_prompt_end')
+    expect(ps1Idx).toBeGreaterThan(-1)
+    expect(endIdx).toBeGreaterThan(ps1Idx)
+  })
+
+  // Same regression for bash — same OSC contract, same prepend bug.
+  // The PS1 wrap lives in the integration script (shogo-bash-integration.sh)
+  // that the wrapper rcfile sources, NOT in the wrapper rcfile itself.
+  it('bash.sh PS1 wrap APPENDS the prompt-end OSC mark (not prepend)', () => {
+    const plan = applyShellIntegration(baseInput({ shell: '/bin/bash' }), { tmpRoot: TMP_ROOT })
+    const wrapperRc = plan.spawn.args[1]!
+    const intPath = join(wrapperRc, '..', 'shogo-bash-integration.sh')
+    const rcfile = readFileSync(intPath, 'utf8')
+    const wrap = rcfile.match(/^\s*PS1=.*$/m)?.[0]
+    expect(wrap).toBeDefined()
+    const ps1Idx = wrap!.indexOf('${PS1}')
+    const endIdx = wrap!.indexOf('__shogo_prompt_end')
+    expect(ps1Idx).toBeGreaterThan(-1)
+    expect(endIdx).toBeGreaterThan(ps1Idx)
+  })
 })
 
 // ─── fish ───────────────────────────────────────────────────────────────
@@ -222,7 +287,7 @@ describe('applyShellIntegration — fish', () => {
 
   it('emits a passthrough conf.d entry sourcing the user\'s config.fish', () => {
     const plan = applyShellIntegration(
-      baseInput({ shell: '/usr/bin/fish', env: { HOME: '/h', XDG_CONFIG_HOME: '/h/.config-custom' } }),
+      baseInput({ shell: '/usr/bin/fish', env: { HOME: '/h', XDG_CONFIG_HOME: '/h/.config-custom', SHOGO_ENABLE_SHELL_INTEGRATION: '1' } }),
       { tmpRoot: TMP_ROOT },
     )
     const through = plan.artifacts.find((p) => p.endsWith('00-shogo-passthrough.fish'))!

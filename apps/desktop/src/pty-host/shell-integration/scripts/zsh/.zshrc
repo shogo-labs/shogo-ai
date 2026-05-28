@@ -41,10 +41,11 @@ __shogo_precmd_hook() {
 add-zsh-hook preexec __shogo_preexec_hook
 add-zsh-hook precmd  __shogo_precmd_hook
 
-# Wrap the user's PS1 so we emit the prompt-end mark immediately before
-# the user's prompt starts drawing characters. Use %{...%} so zsh
-# doesn't count the OSC bytes toward prompt width.
-PS1="%{$(__shogo_prompt_end)%}${PS1}"
+# Wrap the user's PS1 so we emit the prompt-end (B) mark IMMEDIATELY AFTER
+# the user's prompt characters finish drawing. The OSC 633 contract is
+# A …user prompt… B, so B goes at the END of PS1. The %{...%} wrapper
+# tells zsh those bytes are zero-width so prompt alignment stays correct.
+PS1="${PS1}%{$(__shogo_prompt_end)%}"
 
 # Initial Cwd + A so the tracker has an anchor for the very first prompt.
 __shogo_cwd

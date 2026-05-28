@@ -64,11 +64,12 @@ else
     fi
 fi
 
-# Inject the prompt-end mark right before PS1 is rendered. We wrap PS1
-# instead of replacing it so the user's colours, git status, etc. all
-# render unmodified between B (prompt end) and the next A (prompt start).
+# Append the prompt-end (B) mark to PS1 so it fires AFTER the user's
+# prompt characters draw. OSC 633 contract is A …user prompt… B. The
+# \[…\] wrapper tells readline those bytes are zero-width so prompt
+# alignment stays correct.
 __shogo_PS1_orig="$PS1"
-PS1="\[$(__shogo_prompt_end)\]${PS1}"
+PS1="${PS1}\[$(__shogo_prompt_end)\]"
 
 # First-time announce: emit a Cwd and an initial prompt-start so the
 # tracker has an anchor before the very first command runs.

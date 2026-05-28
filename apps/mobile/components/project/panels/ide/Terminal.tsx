@@ -29,6 +29,8 @@ import {
   patchSession as patchSessionInList,
   type Session,
 } from "./terminal/session-reducer";
+import { TerminalHeader } from "./terminal/TerminalHeader";
+import { useShellName } from "./terminal/useShellName";
 
 /**
  * The IDE "Terminal" — a real PTY-backed shell, one per tab.
@@ -663,20 +665,16 @@ function SessionTabs({
             </div>
           );
         })}
-        <button
-          type="button"
-          onClick={onAdd}
-          title="New Terminal  (⌘⇧`)"
-          aria-label="New Terminal"
-          className="flex shrink-0 items-center gap-1 px-2 py-[6px] text-[11px] text-[#858585] hover:bg-[#2a2a2a] hover:text-white"
-        >
-          <Plus size={12} />
-        </button>
+        {/* Phase 3 chrome parity: the inline `+` (New Terminal) is gone from the
+            tab strip. The new TerminalHeader on the right edge of this row owns
+            "New Terminal" and "Launch Profile" affordances now, matching VS Code.
+            The ▾ chevron below is kept because it opens the presets dropdown — a
+            different feature that Phase 3 deliberately leaves alone. */}
         <button
           type="button"
           onClick={() => setMenuOpen((v) => !v)}
-          title="Terminal actions & presets"
-          aria-label="Terminal actions"
+          title="Preset commands"
+          aria-label="Preset commands"
           aria-expanded={menuOpen}
           aria-haspopup="menu"
           className="flex shrink-0 items-center gap-1 px-1 py-[6px] text-[#858585] hover:bg-[#2a2a2a] hover:text-white"
@@ -684,28 +682,17 @@ function SessionTabs({
           <ChevronDown size={12} />
         </button>
       </div>
-      <div className="flex items-center gap-1">
-        {running && (
-          <button
-            type="button"
-            onClick={onStop}
-            title="Send SIGINT (Ctrl+C)"
-            aria-label="Stop running command"
-            className="flex items-center gap-1 rounded px-2 py-[2px] text-[11px] text-[#f48771] hover:bg-[#ffffff1a]"
-          >
-            <Square size={10} /> Stop
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={onClear}
-          disabled={clearDisabled}
-          title="Clear output"
-          aria-label="Clear output"
-          className="flex items-center gap-1 rounded px-2 py-[2px] text-[11px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white disabled:opacity-40"
-        >
-          <Trash2 size={10} /> Clear
-        </button>
+      <div className="flex items-center gap-1 pr-1">
+        <PhasedTerminalHeader
+          activeId={activeId}
+          onNew={onAdd}
+          onSplit={onAdd /* Phase 9 wires real splits; for now ⌘\ behaves as 'new tab' */}
+          onKillActive={() => onClose(activeId)}
+          running={running}
+          onStop={onStop}
+          onClear={onClear}
+          clearDisabled={clearDisabled}
+        />
       </div>
       {menuOpen && (
         <>
@@ -918,5 +905,46 @@ function ConfirmDangerous({
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Phase 3 wrapper that lifts `useShellName` into the tab-strip's render context
+ * and forwards the action callbacks to `TerminalHeader`. Kept inline (rather
+ * than as a separate file) because it's purely glue — the real header lives in
+ * `./terminal/TerminalHeader.tsx` and the shell-name source of truth in
+ * `./terminal/useShellName.ts`.
+ *
+ * Why a wrapper at all: `useShellName` is a hook, so we can't call it from
+ * the tab-strip's props builder. The wrapper component gives us a render
+ * context that can hold hook state.
+ */
+function PhasedTerminalHeader(props: {
+  activeId: string;
+  onNew: () => void;
+  onSplit: () => void;
+  onKillActive: () => void;
+  running: boolean;
+  onStop: () => void;
+  onClear: () => void;
+  clearDisabled: boolean;
+}) {
+  const { shellName, setShellName } = useShellName(props.activeId);
+  return (
+    <TerminalHeader
+      shellName={shellName}
+      onPickProfile={setShellName}
+      onNew={props.onNew}
+      onSplit={props.onSplit}
+      onKill={props.onKillActive}
+      running={props.running}
+      onStop={props.onStop}
+      onClear={props.onClear}
+      clearDisabled={props.clearDisabled}
+      onFind={() => window.dispatchEvent(new CustomEvent('shogo:terminal:find'))}
+      onRename={() => window.dispatchEvent(new CustomEvent('shogo:terminal:rename'))}
+      onConfigure={() => window.dispatchEvent(new CustomEvent('shogo:terminal:configure'))}
+      onRunRecent={() => window.dispatchEvent(new CustomEvent('shogo:terminal:run-recent'))}
+    />
   );
 }
