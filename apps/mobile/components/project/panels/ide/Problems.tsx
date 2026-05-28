@@ -18,7 +18,7 @@
  * plumbing required.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertCircle, AlertTriangle, ChevronDown, ChevronRight, Info, Lightbulb, RefreshCw,
 } from "lucide-react-native"
@@ -32,16 +32,6 @@ import {
 
 const POLL_INTERVAL_MS = 6_000
 
-const VS_CODE_PROBLEMS_STYLES = {
-  root: { backgroundColor: "#1e1e1e", color: "#cccccc" } satisfies CSSProperties,
-  header: { borderBottomColor: "#3c3c3c" } satisfies CSSProperties,
-  note: { backgroundColor: "#252526", borderBottomColor: "#3c3c3c", color: "#cccccc" } satisfies CSSProperties,
-  noteSource: { color: "#9d9d9d" } satisfies CSSProperties,
-  fileName: { color: "#cccccc" } satisfies CSSProperties,
-  dirname: { color: "#9d9d9d" } satisfies CSSProperties,
-  diagnostic: { color: "#cccccc" } satisfies CSSProperties,
-  meta: { color: "#9d9d9d" } satisfies CSSProperties,
-}
 
 export interface ProblemsProps {
   projectId: string | null | undefined
@@ -226,12 +216,10 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
   return (
     <div
       className="flex h-full flex-col bg-[#1e1e1e] text-[#cccccc]"
-      style={VS_CODE_PROBLEMS_STYLES.root}
       aria-label="Problems"
     >
       {/* Header */}
-      <div className="flex min-h-[36px] items-center justify-between border-b border-[#3c3c3c] px-3 py-1.5"
-        style={VS_CODE_PROBLEMS_STYLES.header}>
+      <div className="flex min-h-[36px] items-center justify-between border-b border-[#3c3c3c] px-3 py-1.5">
         <div className="flex items-center gap-3 text-[11px]" aria-live="polite">
           {result ? (
             hasZero ? (
@@ -288,12 +276,11 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
       {result?.notes && result.notes.length > 0 && (
         <div
           className="border-b border-[#3c3c3c] bg-[#252526] px-3 py-1 text-[10px] text-[#cccccc]"
-          style={VS_CODE_PROBLEMS_STYLES.note}
           role="status"
         >
           {result.notes.map(n => (
             <div key={n.source}>
-              <span className="uppercase tracking-wide text-[#9d9d9d]" style={VS_CODE_PROBLEMS_STYLES.noteSource}>{n.source}</span>: {n.message}
+              <span className="uppercase tracking-wide text-[#9d9d9d]">{n.source}</span>: {n.message}
             </div>
           ))}
         </div>
@@ -349,8 +336,8 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
                       ? <ChevronRight size={14} color="#858585" aria-hidden />
                       : <ChevronDown size={14} color="#858585" aria-hidden />
                     }
-                    <span className="truncate text-[#cccccc]" style={VS_CODE_PROBLEMS_STYLES.fileName}>{basenameOf(g.file)}</span>
-                    <span className="ml-1 truncate text-[10px] text-[#858585]" style={VS_CODE_PROBLEMS_STYLES.dirname}>
+                    <span className="truncate text-[#cccccc]">{basenameOf(g.file)}</span>
+                    <span className="ml-1 truncate text-[10px] text-[#858585]">
                       {dirnameOf(g.file)}
                     </span>
                     <span className="ml-auto flex items-center gap-2 text-[10px] text-[#858585]">
@@ -388,11 +375,11 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
                             className="flex min-h-[32px] w-full items-start gap-2 px-6 py-1 text-left hover:bg-[#2a2d2e] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#0e639c] disabled:cursor-default disabled:hover:bg-transparent"
                           >
                             <span className="mt-0.5 flex-shrink-0">{severityIcon(d.severity)}</span>
-                            <span className="flex-1 truncate text-[#cccccc]" style={VS_CODE_PROBLEMS_STYLES.diagnostic}>{d.message}</span>
+                            <span className="flex-1 truncate text-[#cccccc]">{d.message}</span>
                             {d.code && (
-                              <span className="flex-shrink-0 text-[10px] text-[#858585]" style={VS_CODE_PROBLEMS_STYLES.meta}>{d.code}</span>
+                              <span className="flex-shrink-0 text-[10px] text-[#858585]">{d.code}</span>
                             )}
-                            <span className="flex-shrink-0 text-[10px] tabular-nums text-[#858585]" style={VS_CODE_PROBLEMS_STYLES.meta}>
+                            <span className="flex-shrink-0 text-[10px] tabular-nums text-[#858585]">
                               [{d.source}] {d.line}:{d.column}
                             </span>
                           </button>
