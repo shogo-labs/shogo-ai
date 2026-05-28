@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { ChevronDown, X } from "lucide-react-native";
+import * as React from "react";
 import { Terminal } from "./Terminal";
 import { Problems } from "./Problems";
 import { OutputTab } from "./OutputTab";
+import { DebugConsole } from "./DebugConsole";
+import { Ports } from "./Ports";
+import { PanelTabStrip } from "./PanelTabStrip";
 import {
-  BOTTOM_PANEL_TABS,
   ideBottomPanelStore,
   useBottomPanelState,
   type BottomPanelTab,
 } from "../../../../lib/ide-bottom-panel-store";
+import { useGlobalShortcuts } from "../../../../hooks/useGlobalShortcuts";
 
 /**
  * VS Code-style bottom panel. Hosts Terminal / Problems / Output.
@@ -53,7 +56,7 @@ export function BottomPanel({
     projectId ? (s.unseenErrorsByProject[projectId] ?? 0) : 0,
   );
 
-  const handleSelect = (next: BottomPanelTab): void => {
+  const handleSelect = React.useCallback((next: BottomPanelTab): void => {
     ideBottomPanelStore.setActiveTab(next);
     // Opening the Output tab clears the per-project red dot — we treat
     // "tab visible" as "errors acknowledged" so users don't have to
@@ -61,73 +64,71 @@ export function BottomPanel({
     if (next === "Output" && projectId) {
       ideBottomPanelStore.markAllSeen(projectId);
     }
+  }, [projectId]);
+
+  /**
+   * Phase 11 — VS Code global shortcuts. Bound at the panel level (not
+   * Workbench) so the keys keep working when the panel is closed too;
+   * the caller decides whether to also auto-open. We don't bind a
+   * default for Ports (matches VS Code 1.95).
+   */
+  useGlobalShortcuts(
+    React.useMemo(() => ([
+      { id: "panel.problems",     key: "m", mod: true, shift: true, run: () => handleSelect("Problems") },
+      { id: "panel.output",       key: "u", mod: true, shift: true, run: () => handleSelect("Output") },
+      { id: "panel.debugConsole", key: "y", mod: true, shift: true, run: () => handleSelect("Debug Console") },
+      { id: "panel.terminal",     key: "`", mod: true,              run: () => handleSelect("Terminal") },
+    ]), [handleSelect]),
+  );
+
+  // Per-tab pane wiring. Kept as a small inline table so the JSX below
+  // stays a clean map over `BOTTOM_PANEL_TABS` — no per-tab special
+  // cases creep into the layout layer.
+  const renderPane = (t: BottomPanelTab): React.ReactNode => {
+    const visible = tab === t;
+    switch (t) {
+      case "Terminal":
+        return (
+          <Terminal
+            projectId={projectId}
+            visible={visible}
+            newSessionNonce={newSessionNonce}
+            onRequestClose={onClose}
+          />
+        );
+      case "Problems":
+        return (
+          <Problems
+            projectId={projectId}
+            visible={visible}
+            onReveal={onReveal}
+          />
+        );
+      case "Output":
+        return (
+          <OutputTab
+            projectId={projectId}
+            agentUrl={agentUrl}
+            messages={messages}
+            visible={visible}
+          />
+        );
+      case "Debug Console":
+        return <DebugConsole visible={visible} />;
+      case "Ports":
+        return <Ports visible={visible} />;
+    }
   };
 
   return (
     <div className="relative flex h-full flex-col bg-[#1e1e1e]">
-      <div className="flex items-center justify-between border-b border-[#2a2a2a] pr-2">
-        <div role="tablist" aria-label="Bottom panel tabs" className="flex">
-          {BOTTOM_PANEL_TABS.map((t) => {
-            const selected = tab === t;
-            const showBadge = t === "Output" && unseenForThisProject > 0;
-            return (
-              <button
-                key={t}
-                type="button"
-                role="tab"
-                id={`bottompanel-tab-${t}`}
-                aria-selected={selected}
-                aria-controls={`bottompanel-tabpanel-${t}`}
-                aria-label={
-                  showBadge
-                    ? `${t} (${unseenForThisProject} unseen ${
-                        unseenForThisProject === 1 ? "error" : "errors"
-                      })`
-                    : t
-                }
-                tabIndex={selected ? 0 : -1}
-                onClick={() => handleSelect(t)}
-                className={`relative px-3 py-2 text-[11px] font-semibold uppercase tracking-wider transition-colors ${
-                  selected
-                    ? "text-white border-b-2 border-white"
-                    : "text-[#858585] hover:text-white"
-                }`}
-              >
-                <span className="inline-flex items-center gap-1.5">
-                  {t}
-                  {showBadge && (
-                    <span
-                      data-testid={`tab-badge-${t}`}
-                      aria-hidden="true"
-                      className="inline-block h-1.5 w-1.5 rounded-full bg-red-500"
-                    />
-                  )}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={onClose}
-            title="Hide panel  (⌘J)"
-            aria-label="Hide panel"
-            className="flex items-center gap-1 rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
-          >
-            <ChevronDown size={14} />
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            title="Close panel"
-            aria-label="Close panel"
-            className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      </div>
+      <PanelTabStrip
+        activeTab={tab}
+        onSelect={handleSelect}
+        badges={{ Output: unseenForThisProject }}
+        onHide={onClose}
+        onClose={onClose}
+      />
       {/*
         * No `overflow-hidden` here on purpose: the Terminal's kebab/preset
         * menu lives inside a child and opens *upward* with `absolute
@@ -136,47 +137,18 @@ export function BottomPanel({
         * `overflow-auto`, so we don't need this layer to clip.
         */}
       <div className="relative flex-1 min-h-0">
-        <div
-          role="tabpanel"
-          id="bottompanel-tabpanel-Terminal"
-          aria-label="Terminal panel"
-          hidden={tab !== "Terminal"}
-          className={`absolute inset-0 ${tab === "Terminal" ? "" : "hidden"}`}
-        >
-          <Terminal
-            projectId={projectId}
-            visible={tab === "Terminal"}
-            newSessionNonce={newSessionNonce}
-            onRequestClose={onClose}
-          />
-        </div>
-        <div
-          role="tabpanel"
-          id="bottompanel-tabpanel-Problems"
-          aria-label="Problems panel"
-          hidden={tab !== "Problems"}
-          className={`absolute inset-0 ${tab === "Problems" ? "" : "hidden"}`}
-        >
-          <Problems
-            projectId={projectId}
-            visible={tab === "Problems"}
-            onReveal={onReveal}
-          />
-        </div>
-        <div
-          role="tabpanel"
-          id="bottompanel-tabpanel-Output"
-          aria-label="Output panel"
-          hidden={tab !== "Output"}
-          className={`absolute inset-0 ${tab === "Output" ? "" : "hidden"}`}
-        >
-          <OutputTab
-            projectId={projectId}
-            agentUrl={agentUrl}
-            messages={messages}
-            visible={tab === "Output"}
-          />
-        </div>
+        {(["Problems", "Output", "Debug Console", "Terminal", "Ports"] as const).map((t) => (
+          <div
+            key={t}
+            role="tabpanel"
+            id={`bottompanel-tabpanel-${t}`}
+            aria-label={`${t} panel`}
+            hidden={tab !== t}
+            className={`absolute inset-0 ${tab === t ? "" : "hidden"}`}
+          >
+            {renderPane(t)}
+          </div>
+        ))}
       </div>
     </div>
   );

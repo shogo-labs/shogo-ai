@@ -22,10 +22,7 @@
 
 import {
   decodeServerFrame,
-  encodeClientData,
   encodeClientAck,
-  encodeClientResize,
-  encodeClientSignal,
   ServerFrameType,
   type ServerFrame,
   DESKTOP_TERMINAL_CLOSE_REASONS,
@@ -74,7 +71,7 @@ type ExitListener = (info: { code: number | null; signal: string | null }) => vo
 type TruncListener = () => void
 type ErrorListener = (e: Error) => void
 
-const TEXT_ENC = new TextEncoder()
+const TEXT_DEC = new TextDecoder()
 
 function transferableBuffer(frame: Uint8Array): ArrayBuffer {
   return frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength) as ArrayBuffer
@@ -242,24 +239,29 @@ export class DesktopPtyClient {
   }
 
   send(bytes: Uint8Array | string): void {
-    if (this._state !== 'open' || !this.port) return
-    const payload = typeof bytes === 'string' ? TEXT_ENC.encode(bytes) : bytes
-    const frame = encodeClientData(payload)
-    this.port.postMessage(transferableBuffer(frame))
+    if (this._state !== 'open') return
+    const text = typeof bytes === 'string' ? bytes : TEXT_DEC.decode(bytes)
+    // Use the control-plane write path for input. It is the same reliable
+    // IPC route used by preset commands and avoids the Electron MessagePort
+    // edge where outbound DATA frames can be accepted but never delivered to
+    // the utility-process side. Output still streams over the data port.
+    void this.bridge.write(this.sessionId, text).catch((err) => {
+      this.emitError(err instanceof Error ? err : new Error(String(err)))
+    })
   }
 
   resize(cols: number, rows: number): void {
-    if (this._state !== 'open' || !this.port) return
+    if (this._state !== 'open') return
     if (!Number.isInteger(cols) || !Number.isInteger(rows)) return
     if (cols < 1 || rows < 1 || cols > 0xffff || rows > 0xffff) return
-    const frame = encodeClientResize(cols, rows)
-    this.port.postMessage(transferableBuffer(frame))
+    void this.bridge.resize(this.sessionId, cols, rows).catch(() => { /* best-effort */ })
   }
 
   signal(sig: 'INT' | 'TERM' | 'KILL'): void {
-    if (this._state !== 'open' || !this.port) return
-    const frame = encodeClientSignal(sig)
-    this.port.postMessage(transferableBuffer(frame))
+    if (this._state !== 'open') return
+    void this.bridge.signal(this.sessionId, sig).catch((err) => {
+      this.emitError(err instanceof Error ? err : new Error(String(err)))
+    })
   }
 
   dispose(): void {

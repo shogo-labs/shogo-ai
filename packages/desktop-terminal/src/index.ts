@@ -163,6 +163,16 @@ export type {
 } from './renderer/splits-layout'
 
 export {
+  SplitsHost,
+  leafIdAtIndex,
+  leafInDirection,
+} from './renderer/splits-host'
+export type {
+  SplitsHostProps,
+  SplitsController,
+} from './renderer/splits-host'
+
+export {
   DEFAULT_RESOLVER,
   MemoryKeyValueStore,
   ProfilesStore,
@@ -365,3 +375,28 @@ export type {
   ProblemMatcher,
   TerminalDiagnostic,
 } from './renderer/problem-matchers'
+
+export {
+  SnapshotStore,
+  InMemorySnapshotStorage,
+  captureScrollback,
+  restoreScrollback,
+} from './renderer/persistence/snapshot-store'
+export type {
+  Snapshot,
+  SnapshotStorage,
+  SnapshotStoreOptions,
+} from './renderer/persistence/snapshot-store'
+
+export {
+  DARK_PLUS_THEME,
+  LIGHT_PLUS_THEME,
+  useShogoTheme,
+  resolveShogoTheme,
+} from './renderer/use-shogo-theme'
+export type {
+  ThemeSource,
+  XtermThemeColors,
+  UseShogoThemeOptions,
+  UseShogoThemeResult,
+} from './renderer/use-shogo-theme'

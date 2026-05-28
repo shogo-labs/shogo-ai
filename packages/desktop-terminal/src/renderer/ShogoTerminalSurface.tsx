@@ -15,6 +15,10 @@ import { CmdKController, CmdKPopover, type LlmClient } from './cmd-k-popover'
 import { getDesktopBridge } from './desktop-features'
 import { MatcherEngine } from './problem-matchers'
 import { TerminalContextMenu, buildVsCodeMenuGroups } from './context-menu'
+import { ApprovalStore, workspaceHashOf, type ApprovalDecision } from './approval-store'
+import { buildDebugContext, serialiseDebugContext, type DebugContext } from './debug-with-ai'
+import { useShogoTheme, type ThemeSource, type XtermThemeColors } from './use-shogo-theme'
+import { SnapshotStore, captureScrollback, restoreScrollback } from './persistence/snapshot-store'
 // xterm.js depends on this stylesheet to size the row container and
 // clip-hide the input proxy `<textarea>`. Missing it = blank panel with a
 // stray white input box. Side-effect import (bundled by the consumer's
@@ -64,6 +68,31 @@ export interface ShogoTerminalSurfaceProps {
   contextColors?: ReadonlyArray<{ label: string; hex: string }>
   /** Icon list for the "Change Icon" submenu (defaults to empty). */
   contextIcons?: ReadonlyArray<{ label: string; id: string }>
+  /**
+   * Phase 10 — terminal persistence.
+   *
+   * When both `sessionId` AND `snapshotStore` are provided, the surface
+   * will look up a saved snapshot on mount (scrollback, cwd, last
+   * command label), restore it into xterm *before* attaching the PTY,
+   * and then persist the live scrollback to the store on every command
+   * boundary + on unmount.
+   *
+   * Either prop on its own is a no-op — persistence is strictly opt-in
+   * at the host layer.
+   */
+  sessionId?: string
+  snapshotStore?: SnapshotStore
+  /**
+   * Phase 10 — theme sync. When provided, the surface drives its xterm
+   * theme off this source AND subscribes to live changes (e.g. an
+   * Electron `nativeTheme` listener) so flipping system dark/light
+   * propagates without a reload.
+   *
+   * Defaults to `prefers-color-scheme` via `useShogoTheme`.
+   */
+  themeSource?: ThemeSource
+  /** Hard override — when set, ignores themeSource and uses this verbatim. */
+  themeOverride?: XtermThemeColors
 }
 
 const DEFAULT_CONTEXT_COLORS = [
@@ -77,27 +106,19 @@ const DEFAULT_CONTEXT_COLORS = [
   { label: 'Magenta', hex: '#bc3fbc' },
 ] as const
 
-const DARK_PLUS_THEME = {
-  background: '#1e1e1e',
-  foreground: '#cccccc',
-  cursor: '#ffffff',
-  selectionBackground: '#264f78',
-  black: '#000000',
-  red: '#cd3131',
-  green: '#0dbc79',
-  yellow: '#e5e510',
-  blue: '#2472c8',
-  magenta: '#bc3fbc',
-  cyan: '#11a8cd',
-  white: '#e5e5e5',
-  brightBlack: '#666666',
-  brightRed: '#f14c4c',
-  brightGreen: '#23d18b',
-  brightYellow: '#f5f543',
-  brightBlue: '#3b8eea',
-  brightMagenta: '#d670d6',
-  brightCyan: '#29b8db',
-  brightWhite: '#e5e5e5',
+// DARK_PLUS_THEME used to live here as a frozen constant — moved into
+// use-shogo-theme.ts so the canonical VS Code palettes (Dark+ and the
+// new Light+ added in Phase 10) live in one place and stay in sync with
+// the theme hook's defaults.
+
+/**
+ * Escape a literal command string for safe use as an `ApprovalStore`
+ * regex pattern when the user clicks "Always allow / deny". The store
+ * compiles patterns with `new RegExp(pattern)` so any unescaped meta
+ * character would either fail to match or silently broaden the rule.
+ */
+function escapeForRegex(s: string): string {
+  return `^${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`
 }
 
 const noopLlm: LlmClient = {
@@ -125,9 +146,20 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
     onChangeIcon,
     contextColors = DEFAULT_CONTEXT_COLORS,
     contextIcons,
+    sessionId,
+    snapshotStore,
+    themeSource,
+    themeOverride,
   }, ref) {
     const hostRef = React.useRef<HTMLDivElement | null>(null)
     const termRef = React.useRef<XTerminal | null>(null)
+    /**
+     * Phase 10 — live theme. When `themeOverride` is set we honor it
+     * verbatim; otherwise the hook drives the palette and re-renders
+     * the surface on system dark/light toggles (~50ms in Chromium).
+     */
+    const { theme: hookedTheme } = useShogoTheme({ source: themeSource })
+    const theme = themeOverride ?? hookedTheme
     const fitRef = React.useRef<XFitAddon | null>(null)
     const trackerRef = React.useRef(new Osc633Tracker())
     const [tracker] = React.useState(() => trackerRef.current)
@@ -143,6 +175,58 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
     const matcherRef = React.useRef(new MatcherEngine())
     const commandOutputRef = React.useRef(new Map<number, string[]>())
     const activeCommandRef = React.useRef<number | null>(null)
+
+    /**
+     * Phase 8 — ApprovalStore singleton.
+     *
+     * Keyed by the project ID (when host supplies one) so each workspace
+     * gets its own allow/deny rule table that survives reloads. Falls
+     * back to a stable "default" hash for the unscoped case.
+     *
+     * Seeded with the SAFE_DEFAULTS + DESTRUCTIVE_DENIES baked into the
+     * approval-store module so that `rm -rf /`, `curl … | sh`, etc., are
+     * gated before the user has had a chance to configure anything.
+     */
+    const [approvalStore] = React.useState(() => new ApprovalStore({
+      workspaceHash: workspaceHashOf(projectId ?? 'default'),
+    }))
+    const [approvalAsk, setApprovalAsk] = React.useState<{ decision: ApprovalDecision; onResolve(ok: boolean, remember: boolean): void } | null>(null)
+    const [debugPanel, setDebugPanel] = React.useState<DebugContext | null>(null)
+
+    /**
+     * runWithApproval — single chokepoint for every "run a command on
+     * behalf of the user" call site (⌘K Tab/Enter, gutter Re-run, Quick
+     * Fix run-action). Routes through ApprovalStore:
+     *   • verdict 'allow' → fire-and-forget client.send
+     *   • verdict 'deny'  → log + drop (rule explains why)
+     *   • verdict 'ask'   → render modal, resume on user click
+     */
+    const runWithApprovalRef = React.useRef<(command: string) => void>(() => undefined)
+    runWithApprovalRef.current = (command: string) => {
+      const cmd = command.trim()
+      if (!cmd) return
+      const decision = approvalStore.evaluate(cmd)
+      if (decision.verdict === 'allow') {
+        client.send(`${cmd}\r`)
+        return
+      }
+      if (decision.verdict === 'deny') {
+        // eslint-disable-next-line no-console
+        console.warn('[shogo-term] command denied by approval rule:', decision.rule?.pattern, '→', cmd)
+        return
+      }
+      setApprovalAsk({
+        decision,
+        onResolve(ok, remember) {
+          setApprovalAsk(null)
+          if (remember) {
+            approvalStore.addRule(ok ? 'allow' : 'deny', escapeForRegex(cmd), 'user choice')
+          }
+          if (ok) client.send(`${cmd}\r`)
+        },
+      })
+    }
+
     const [cmdK] = React.useState(() => new CmdKController({
       llm: llm ?? (() => {
         try { return getDesktopBridge().llm ?? noopLlm } catch { return noopLlm }
@@ -153,7 +237,11 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         os: platformName(),
         recentCommands: tracker.snapshot().commands.slice(-5).map((c) => c.commandLine).filter(Boolean),
       }),
-      onSubmit: (command) => client.send(`${command}\r`),
+      // Phase 8: route every ⌘K submission through the approval gate so
+      // destructive AI-suggested commands surface a confirm dialog before
+      // they hit the PTY. Indirection via ref keeps this stable across
+      // controller construction without re-binding.
+      onSubmit: (command) => runWithApprovalRef.current(command),
     }))
 
     React.useEffect(() => {
@@ -194,7 +282,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           fontFamily,
           fontSize,
           scrollback: 10_000,
-          theme: DARK_PLUS_THEME,
+          theme,
           allowProposedApi: true,
         })
         const fit = new fitMod.FitAddon()
@@ -207,6 +295,29 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         fit.fit()
         termRef.current = term
         fitRef.current = fit
+
+        // Phase 10 — restore scrollback from a prior snapshot (if both
+        // `sessionId` and `snapshotStore` are configured). Must happen
+        // before any client.onData listener can write live bytes, so
+        // restored rows always scroll *above* whatever the new PTY
+        // prints first.
+        if (sessionId && snapshotStore) {
+          try {
+            const snap = snapshotStore.load(sessionId)
+            if (snap) {
+              restoreScrollback(term, snap)
+              // eslint-disable-next-line no-console
+              console.info(
+                '[shogo-term] restored snapshot — %d rows from %s',
+                snap.lines.length,
+                new Date(snap.savedAt).toISOString(),
+              )
+            }
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn('[shogo-term] snapshot restore failed:', e)
+          }
+        }
 
         const decoder = new OscDecoder()
         const batcher = new WriteBatcher({ sink: term.write.bind(term) })
@@ -234,8 +345,11 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
             },
           },
           onSuggestion(ev) {
+            // Phase 8: gate Quick-Fix run-actions through the approval
+            // store. Insert-only suggestions still flow straight to the
+            // PTY (they're typed at the prompt, not executed).
             if (ev.suggestion.action.kind === 'run') {
-              client.send(`${ev.suggestion.action.payload}\r`)
+              runWithApprovalRef.current(ev.suggestion.action.payload)
             }
           },
         })
@@ -252,6 +366,38 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         })
 
         setSearchController(new SearchController({ addon: search }))
+
+        // Phase 10 — debounced snapshot saver. Captures on every
+        // command boundary (a natural quiescent point) and on unmount.
+        // Debounced via a 500ms trailing timer so a burst of commands
+        // doesn't hammer SQLite.
+        const persistEnabled = !!(sessionId && snapshotStore)
+        let saveTimer: ReturnType<typeof setTimeout> | null = null
+        const flushSnapshot = () => {
+          if (!persistEnabled) return
+          if (saveTimer != null) { clearTimeout(saveTimer); saveTimer = null }
+          try {
+            const snap = tracker.snapshot()
+            const activeCmd = activeCommandRef.current != null
+              ? snap.commands.find((c) => c.id === activeCommandRef.current)?.commandLine ?? null
+              : null
+            snapshotStore!.save({
+              sessionId: sessionId!,
+              cwd: snap.cwd ?? null,
+              activeCommand: activeCmd,
+              lines: captureScrollback(term, 5000),
+            })
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn('[shogo-term] snapshot save failed:', e)
+          }
+        }
+        const scheduleSnapshotSave = () => {
+          if (!persistEnabled) return
+          if (saveTimer != null) clearTimeout(saveTimer)
+          saveTimer = setTimeout(flushSnapshot, 500)
+        }
+
         const offTracker = tracker.on((ev) => {
           if (ev.kind === 'command-started') {
             activeCommandRef.current = ev.command.id
@@ -261,6 +407,9 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
             const output = commandOutputRef.current.get(ev.command.id)?.join('') ?? ''
             activeCommandRef.current = null
             void publishTerminalDiagnostics(projectId, apiBase, ev.command.id, ev.command.exitCode, output, matcherRef.current)
+            // Persistence: every finished command is a good time to
+            // checkpoint scrollback + cwd to the snapshot store.
+            scheduleSnapshotSave()
           }
         })
         term.onData((data) => {
@@ -321,6 +470,9 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         if (autoFocus && !hidden) term.focus()
 
         cleanup = () => {
+          // Phase 10: flush one last snapshot before tearing down the
+          // terminal — captures any post-last-command typing/output.
+          flushSnapshot()
           offData(); offExit(); offTrunc(); offError()
           offTracker()
           ro.disconnect()
@@ -340,11 +492,29 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         disposed = true
         cleanup()
       }
-    }, [client, autoFocus, hidden, fontFamily, fontSize, enableGpu, tracker])
+    }, [client, fontFamily, fontSize, enableGpu, tracker])
 
     React.useEffect(() => {
       if (!hidden && autoFocus) termRef.current?.focus()
     }, [hidden, autoFocus])
+
+    /**
+     * Phase 10 — push live theme changes into xterm. We don't recreate
+     * the terminal on theme flip; `options.theme = …` is enough and
+     * xterm repaints on the next frame. Skip the first render (when
+     * the terminal hasn't mounted yet) since the initial `theme` was
+     * already passed to the constructor.
+     */
+    React.useEffect(() => {
+      const term = termRef.current
+      if (!term) return
+      try {
+        term.options.theme = theme
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[shogo-term] theme update failed:', e)
+      }
+    }, [theme])
 
     React.useEffect(() => {
       const onKey = (ev: KeyboardEvent) => {
@@ -489,7 +659,10 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
               {
                 label: 'Re-run command',
                 disabled: !cmdMenu.command.commandLine,
-                onSelect: () => client.send(`${cmdMenu.command.commandLine}\r`),
+                // Phase 8: gate Re-run through the approval store so a
+                // remembered "deny" rule (e.g. `rm -rf …`) actually
+                // blocks the second attempt, not just the first.
+                onSelect: () => runWithApprovalRef.current(cmdMenu.command.commandLine),
               },
               {
                 label: 'Copy command',
@@ -515,18 +688,67 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
                 },
               },
               {
-                label: 'How does this command work?',
-                // Phase 8 owns the full AI flow (Debug-with-AI side panel).
-                // For now we just open the ⌘K palette so the user can
-                // paraphrase if they want — keeps the menu item present
-                // and discoverable.
+                // Phase 8: real Debug-with-AI flow. Bundle the failing
+                // command + its tail output + cwd + exit code into a
+                // DebugContext and open the side panel. The panel shows
+                // a markdown report and offers an "Apply Fix" action
+                // that re-routes through runWithApproval.
+                label: cmdMenu.command.exitCode && cmdMenu.command.exitCode !== 0
+                  ? 'Debug with AI'
+                  : 'Explain this command',
                 disabled: !cmdMenu.command.commandLine,
-                onSelect: () => cmdK.open(),
+                onSelect: () => {
+                  const term = termRef.current
+                  if (!term) return
+                  // BufferReader contract (see debug-with-ai.ts):
+                  // readRows(startLine, endLine) returns the inclusive
+                  // range of rendered terminal rows. We reuse the same
+                  // base-offset translation as the Copy-Output handler.
+                  const ctx = buildDebugContext({
+                    command: cmdMenu.command,
+                    shell: null,
+                    tailRows: 200,
+                    buffer: {
+                      readRows(startLine: number, endLine: number) {
+                        const base = term.buffer.active.baseY
+                        const out: string[] = []
+                        for (let line = startLine; line <= endLine; line += 1) {
+                          out.push(term.buffer.active.getLine(line - base)?.translateToString(true) ?? '')
+                        }
+                        return out
+                      },
+                    },
+                  })
+                  setDebugPanel(ctx)
+                },
               },
             ]],
             x: cmdMenu.x,
             y: cmdMenu.y,
             onDismiss: () => setCmdMenu(null),
+          })
+        : null,
+      // Phase 8: approval modal — only mounted while a verdict='ask'
+      // decision is pending. Standalone (no portal) so it composes with
+      // the existing positioning context.
+      approvalAsk
+        ? React.createElement(ApprovalAskModal, { ask: approvalAsk })
+        : null,
+      // Phase 8: Debug-with-AI side panel — shows the serialised
+      // DebugContext markdown report. "Apply Fix" routes through the
+      // approval gate. Close dismisses without sending anything.
+      debugPanel
+        ? React.createElement(DebugWithAiPanel, {
+            context: debugPanel,
+            onClose: () => setDebugPanel(null),
+            onApply: (fix: string) => {
+              setDebugPanel(null)
+              runWithApprovalRef.current(fix)
+            },
+            onAskMore: () => {
+              setDebugPanel(null)
+              cmdK.open()
+            },
           })
         : null,
       React.createElement(StickyScroll as React.ComponentType<any>, {
@@ -740,4 +962,208 @@ function SearchBox(props: {
     React.createElement('button', { type: 'button', onClick: props.onNext, title: 'Next Match (F3)' }, '↓'),
     React.createElement('button', { type: 'button', onClick: props.onClose, 'aria-label': 'Close search', title: 'Close (Escape)' }, '×'),
   )
+}
+
+/**
+ * Phase 8 — approval confirm modal. Renders for verdict='ask' decisions.
+ *
+ * Four buttons:
+ *   • Allow once     — run, don't remember
+ *   • Always allow   — run, persist allow rule
+ *   • Deny once      — drop, don't remember
+ *   • Always deny    — drop, persist deny rule
+ *
+ * Esc dismisses (equivalent to Deny once).
+ */
+function ApprovalAskModal(props: {
+  ask: { decision: ApprovalDecision; onResolve(ok: boolean, remember: boolean): void }
+}): React.ReactElement {
+  const { ask } = props
+  React.useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') { ev.preventDefault(); ask.onResolve(false, false) }
+      if (ev.key === 'Enter') { ev.preventDefault(); ask.onResolve(true, false) }
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [ask])
+
+  const btn = (label: string, primary: boolean, onClick: () => void) =>
+    React.createElement('button', {
+      type: 'button',
+      onClick,
+      style: {
+        padding: '4px 12px',
+        borderRadius: 4,
+        border: '1px solid #3c3c3c',
+        background: primary ? '#0e639c' : '#2d2d2d',
+        color: '#ffffff',
+        font: 'inherit',
+        cursor: 'pointer',
+      },
+    }, label)
+
+  return React.createElement('div', {
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-label': 'Confirm command',
+    'data-testid': 'shogo-approval-ask',
+    style: {
+      position: 'fixed',
+      inset: 0,
+      zIndex: 60,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      background: 'rgba(0,0,0,0.45)',
+      font: '13px system-ui, -apple-system, sans-serif',
+      color: '#cccccc',
+    },
+  },
+    React.createElement('div', {
+      style: {
+        minWidth: 420,
+        maxWidth: 560,
+        background: '#252526',
+        border: '1px solid #3c3c3c',
+        borderRadius: 8,
+        padding: 16,
+        boxShadow: '0 12px 32px rgba(0,0,0,0.55)',
+      },
+    },
+      React.createElement('div', { style: { fontWeight: 600, marginBottom: 8 } },
+        'Run this command?'),
+      React.createElement('pre', {
+        'data-testid': 'shogo-approval-ask-command',
+        style: {
+          background: '#1e1e1e',
+          border: '1px solid #3c3c3c',
+          borderRadius: 4,
+          padding: '6px 10px',
+          margin: '0 0 12px',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-all',
+          font: '12px ui-monospace, "SF Mono", monospace',
+          color: '#dcdcaa',
+        },
+      }, ask.decision.command),
+      React.createElement('div', {
+        style: { display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' },
+      },
+        btn('Deny once',    false, () => ask.onResolve(false, false)),
+        btn('Always deny',  false, () => ask.onResolve(false, true)),
+        btn('Always allow', false, () => ask.onResolve(true, true)),
+        btn('Allow once',   true,  () => ask.onResolve(true, false)),
+      ),
+    ),
+  )
+}
+
+/**
+ * Phase 8 — Debug-with-AI side panel.
+ *
+ * Renders the serialised `DebugContext` markdown as plain text (we don't
+ * pull a markdown lib into this package — apps/desktop can swap this for
+ * a fancier renderer later). Offers three actions: copy report to the
+ * clipboard, ask the ⌘K palette for follow-up, close.
+ */
+function DebugWithAiPanel(props: {
+  context: DebugContext
+  onClose(): void
+  onApply(fix: string): void
+  onAskMore(): void
+}): React.ReactElement {
+  const md = React.useMemo(() => serialiseDebugContext(props.context), [props.context])
+
+  React.useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') { ev.preventDefault(); props.onClose() }
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [props])
+
+  return React.createElement('aside', {
+    role: 'complementary',
+    'aria-label': 'Debug with AI',
+    'data-testid': 'shogo-debug-with-ai',
+    style: {
+      position: 'absolute',
+      top: 0,
+      right: 0,
+      bottom: 0,
+      width: 380,
+      zIndex: 30,
+      background: '#252526',
+      borderLeft: '1px solid #3c3c3c',
+      color: '#cccccc',
+      font: '12px system-ui, -apple-system, sans-serif',
+      display: 'flex',
+      flexDirection: 'column',
+    },
+  },
+    React.createElement('header', {
+      style: {
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '8px 12px', borderBottom: '1px solid #3c3c3c', fontWeight: 600,
+      },
+    },
+      React.createElement('span', null,
+        props.context.exitCode != null && props.context.exitCode !== 0
+          ? `Debug failed command (exit ${props.context.exitCode})`
+          : 'Explain command'),
+      React.createElement('button', {
+        type: 'button',
+        onClick: props.onClose,
+        'aria-label': 'Close debug panel',
+        style: { background: 'transparent', color: '#cccccc', border: 'none', fontSize: 18, cursor: 'pointer' },
+      }, '×'),
+    ),
+    React.createElement('pre', {
+      'data-testid': 'shogo-debug-with-ai-body',
+      style: {
+        flex: 1, margin: 0, padding: 12, overflow: 'auto',
+        font: '12px ui-monospace, "SF Mono", monospace',
+        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+      },
+    }, md),
+    React.createElement('footer', {
+      style: {
+        padding: 8, borderTop: '1px solid #3c3c3c',
+        display: 'flex', gap: 6, justifyContent: 'flex-end',
+      },
+    },
+      React.createElement('button', {
+        type: 'button',
+        onClick: () => {
+          try { navigator.clipboard?.writeText(md).catch(() => undefined) } catch { /* */ }
+        },
+        style: btnStyle(false),
+      }, 'Copy report'),
+      React.createElement('button', {
+        type: 'button',
+        onClick: props.onAskMore,
+        style: btnStyle(false),
+      }, 'Ask ⌘K…'),
+      props.context.commandLine
+        ? React.createElement('button', {
+            type: 'button',
+            onClick: () => props.onApply(props.context.commandLine),
+            style: btnStyle(true),
+          }, 'Re-run')
+        : null,
+    ),
+  )
+}
+
+function btnStyle(primary: boolean): React.CSSProperties {
+  return {
+    padding: '3px 10px',
+    borderRadius: 3,
+    border: '1px solid #3c3c3c',
+    background: primary ? '#0e639c' : 'transparent',
+    color: '#ffffff',
+    font: 'inherit',
+    cursor: 'pointer',
+  }
 }

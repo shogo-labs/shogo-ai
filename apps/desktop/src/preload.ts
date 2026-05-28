@@ -352,6 +352,11 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
 import { exposeShogoDesktopTerminalBridge } from './preload-terminal'
 exposeShogoDesktopTerminalBridge()
 
+// Exposes window.shogoDesktopPorts — Phase 12 Ports tab bridge. Lives in its
+// own module so the contextBridge surface stays separable per feature.
+import { exposeShogoDesktopPortsBridge } from './preload-ports'
+exposeShogoDesktopPortsBridge()
+
 if (process.env.SHOGO_E2E === '1' || process.env.PLAYWRIGHT_E2E === '1') {
   contextBridge.exposeInMainWorld('shogoTesting', {
     openTerminal() {
