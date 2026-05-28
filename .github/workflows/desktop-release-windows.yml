@@ -238,7 +238,15 @@ jobs:
         # get inlined; tsc on its own can't resolve them because
         # apps/desktop is npm-installed, not a bun workspace member.
         # See apps/desktop/scripts/bundle-main.mjs for details.
-        run: npx tsc && npm run bundle:main
+        #
+        # `bundle:pty-host` is the matching step for the PTY utility
+        # process. pty-host-client.ts forks `dist/pty-host.js` at the
+        # flat dist root (not dist/pty-host/pty-host.js where tsc would
+        # put it), AND inlines `@shogo/pty-core` which tsc cannot
+        # resolve. Without this step, the packaged desktop terminal
+        # fails at runtime with MODULE_NOT_FOUND on first spawn.
+        # See apps/desktop/scripts/bundle-pty-host.mjs for details.
+        run: npx tsc && npm run bundle:main && npm run bundle:pty-host
         env:
           # Baked into dist/main.js via `--define` in bundle-main.mjs
           # so the packaged app reports main-process crashes without
