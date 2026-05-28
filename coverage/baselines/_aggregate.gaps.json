@@ -653,7 +653,7 @@
       }
     },
     {
-      "sha": "NO-OP",
+      "sha": "286573c9",
       "date": "2026-05-28",
       "wave": "Sync (re-verification)",
       "message": "docs(coverage): re-measure verifies 82.12% \u2014 no code changes since last Sync",
