@@ -25,6 +25,18 @@ import { join } from 'path'
 
 mock.module('../lib/prisma', () => ({ prisma: {} }))
 
+// Sandbox safety: $HOME is /app (read-only) inside the runtime pod.
+// Point os.homedir() at a writable scratch dir UNDER os.tmpdir() so
+// (a) mkdtempSync(join(HOME, ...)) can actually write, (b) isUnderHome()
+// in the route accepts those paths, and (c) the "outside HOME" fixtures
+// below (which write to a sibling under os.tmpdir() via mkdtempSync) are
+// still genuinely outside the patched HOME. Per-file isolation under
+// run-tests-isolated.ts keeps this scoped.
+import { mkdirSync as _mkdirSyncForHome } from 'node:fs'
+const _fakeHome = join(os.tmpdir(), 'shogo-fake-home-' + Date.now() + '-' + Math.random().toString(36).slice(2))
+_mkdirSyncForHome(_fakeHome, { recursive: true })
+;(os as { homedir: () => string }).homedir = () => _fakeHome
+
 const { localProjectsRoutes } = await import('../routes/local-projects')
 
 const HOME = os.homedir()

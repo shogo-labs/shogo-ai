@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
+
+// Sandbox safety: ai-proxy-token module FATALs in production-NODE_ENV
+// when no signing secret is set. Set AI_PROXY_SECRET BEFORE the dynamic
+// imports below so the token signer initialises cleanly.
+process.env.AI_PROXY_SECRET = process.env.AI_PROXY_SECRET || 'test-secret-ai-proxy-do-not-use-in-prod'
+process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET || 'test-better-auth-secret'
+
 /**
  * AI Proxy Integration Tests
  *
