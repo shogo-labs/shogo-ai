@@ -75,9 +75,9 @@ export async function buildProjectEnv(
       // Tech stack is sourced exclusively from project.settings.techStackId
       // now that templateId is gone. Marketplace installs (the only flow
       // that creates new projects) populate this field directly from the
-      // listing's source project at install time. Workspaces that pre-date
-      // the consolidation already had it copied across by the
-      // migrate-templates-to-marketplace script.
+      // listing's source project at install time. Pre-existing workspaces
+      // already had it copied across by the one-shot templates→marketplace
+      // migration that ran before this seed path was removed.
       const techStackFromSettings = settings?.techStackId as string | undefined
       if (techStackFromSettings) {
         env.TECH_STACK_ID = techStackFromSettings

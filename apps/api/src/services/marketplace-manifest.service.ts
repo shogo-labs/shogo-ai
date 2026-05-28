@@ -47,11 +47,10 @@ import { getWorkspacesDir } from './marketplace-install.service'
  * canvas's first-paint preview. Stripping it leaves the install on
  * "Connected" with a blank iframe until Vite cold-starts (which can
  * take 10s+ on a fresh container, and never if the template doesn't
- * declare Vite as a dep). See `materializeSourceWorkspace` in
- * `apps/api/scripts/migrate-templates-to-marketplace.ts` for the
- * other side of this contract: the migration script actively writes
- * each template's `dist/` into the source workspace, so excluding it
- * at snapshot time was throwing away effort the migration spent.
+ * declare Vite as a dep). Source workspaces for first-party listings
+ * already have `dist/` baked in from when they were originally
+ * published, so capturing it here keeps the first-paint preview
+ * intact on every fork install.
  *
  * `node_modules` stays excluded everywhere — too big to ship in a
  * snapshot and the runtime reinstalls anyway.
