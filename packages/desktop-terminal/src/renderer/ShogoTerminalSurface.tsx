@@ -54,6 +54,8 @@ export interface ShogoTerminalSurfaceProps {
   llm?: LlmClient
   projectId?: string | null
   apiBase?: string
+  /** Emits shell cwd changes from OSC 633 so host chrome can show location. */
+  onCwdChange?(cwd: string): void
   /**
    * Optional callbacks for context-menu items that need parent state.
    * Items without a callback render as enabled rows that no-op; pass
@@ -139,6 +141,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
     llm,
     projectId,
     apiBase,
+    onCwdChange,
     onRename,
     onConfigure,
     onSplit,
@@ -403,6 +406,9 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
             activeCommandRef.current = ev.command.id
             commandOutputRef.current.set(ev.command.id, [])
           }
+          if (ev.kind === 'cwd-changed') {
+            onCwdChange?.(ev.cwd)
+          }
           if (ev.kind === 'command-finished') {
             const output = commandOutputRef.current.get(ev.command.id)?.join('') ?? ''
             activeCommandRef.current = null
@@ -492,7 +498,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         disposed = true
         cleanup()
       }
-    }, [client, fontFamily, fontSize, enableGpu, tracker])
+    }, [client, fontFamily, fontSize, enableGpu, tracker, onCwdChange])
 
     React.useEffect(() => {
       if (!hidden && autoFocus) termRef.current?.focus()

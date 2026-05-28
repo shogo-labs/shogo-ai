@@ -28,6 +28,8 @@ export interface Session {
   /** WebSocket wrapper. Constructed once we have `ptySessionId`. */
   client: PtyClientLike | null
   status: SessionStatus
+  /** Current working directory shown in the terminal chrome. */
+  cwd: string | null
   /** Surfaced when status === 'error' (REST 4xx/5xx, WS dead, etc.). */
   errorMessage: string | null
   /**
@@ -53,6 +55,7 @@ export function makeSession(): Session {
     ptySessionId: null,
     client: null,
     status: 'creating',
+    cwd: null,
     errorMessage: null,
     exit: null,
   }
