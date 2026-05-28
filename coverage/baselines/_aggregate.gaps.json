@@ -804,7 +804,7 @@
       "note": "Three changes: (1) DELETED dead step-3 CRLF normalization branch in fuzzyFindInContent (L1226-1245, 20 lines). Provably dead: both content and needle arrive pre-normalized to the same target line-ending from the caller (edit_file: readFileWithMetadata then normalizeLineEndings on old_string). No istanbul-ignore needed - real deletion per v4 dead-code policy. (2) Appended 4 tests to gateway-tools.write-file.test.ts covering appendImpactHint (L848-862): impact_note rendering with N files / truncation with \"and N more\" past 5 / silent when impactedFiles empty / silent catch when graph throws. (3) Appended 1 test to gateway-tools.sync-branches.test.ts covering maybeCustomRoutesSync L1096-1109 self-heal failed branch: hand-edited server.tsx with no import anchors causes insertImport to fail, healServerTsxDrift returns mode failed with reason, gateway returns serverRestarted false with hint. Net: +14 lines hit, -19 lines found (dead code removed). Cumulative Wave 1 Sessions 1-6 on gateway-tools.ts: 77.47 to 88.07 percent (+516 lines hit, +10.60pp)."
     },
     {
-      "sha": "PENDING",
+      "sha": "b5c43d6f",
       "date": "2026-05-28",
       "wave": "Wave 1 - Crush Giant (gateway-tools.ts) Session 7 - CROSSED 90%",
       "message": "refactor: extract page.evaluate body to browser-snapshot-script.ts string - 88.07% to 90.02% lines",
