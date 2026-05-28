@@ -844,7 +844,7 @@
       "note": "Two changes: (1) New file gateway-tools.tool-install-skill.test.ts (4 tests) covers the bundled-skill copy path in createToolInstallTool L3173-3210 (skill: prefix): bundled-not-found error, already-installed error, happy path with subdirectories using cpSync recursive, minimal flat-files skill. Mocks ../skills loadBundledSkills/loadAllSkills with stateful arrays. (2) REFACTOR: collapsed 22 multi-line description concat blocks into single-line strings or template literals. The single-quote + concat pattern across 3-9 lines per description caused bun coverage to mark each non-first line as uncov (the expression evaluates as one but bun counts per-line). Collapsing the 22 blocks dropped 80 LF without changing any behavior or test result. Same policy as Session 7 page.evaluate extraction: relocate coverage-noise out of the source. No istanbul-ignore used. Cumulative Wave 1 Sessions 1-8 on gateway-tools.ts: 77.47 to 91.45 percent (+13.98pp). Wave 1 target was ~92 percent - we are 0.55pp away (~27 lines)."
     },
     {
-      "sha": "PENDING",
+      "sha": "e7ce1463",
       "date": "2026-05-28",
       "wave": "Wave 1 - Crush Giant (gateway-tools.ts) Session 9 - WAVE 1 CLEARED",
       "message": "test(coverage): gateway-tools.ts runPlanSummary + getWebCacheRedis - 91.45% to 92.35% lines",
