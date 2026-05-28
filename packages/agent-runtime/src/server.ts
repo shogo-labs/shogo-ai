@@ -4550,8 +4550,15 @@ export default {
       // project pod. Both checks are sync reads of in-process state, so
       // they're safe in the hot path.
       const poolMode = state.isPoolMode && !state.poolAssigned
+      // Mirror just enough of the slow-path `gateway` shape that the eval
+      // worker readiness checks (vm-worker / docker-worker / k8s-worker)
+      // can detect a started gateway. We deliberately do NOT call
+      // agentGateway.getStatus() here — that walks the memory dir and
+      // would re-introduce the Windows JIT freeze this fast path exists
+      // to avoid. A plain field read is safe.
+      const gatewayRunning = agentGateway?.running === true
       return new Response(
-        JSON.stringify({ status: 'ok', projectId: process.env.PROJECT_ID, runtimeType: 'unified', poolMode, uptime: 0, fast: true }),
+        JSON.stringify({ status: 'ok', projectId: process.env.PROJECT_ID, runtimeType: 'unified', poolMode, uptime: 0, fast: true, gateway: { running: gatewayRunning } }),
         { status: 200, headers: { 'content-type': 'application/json' } },
       )
     }

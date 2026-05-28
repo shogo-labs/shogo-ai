@@ -215,7 +215,16 @@ export function migrateFromLegacySkills(workspaceDir: string): void {
   const shogoDir = join(workspaceDir, '.shogo', 'skills')
 
   if (!existsSync(legacyDir)) return
-  if (existsSync(shogoDir)) return
+  // Migrate when `.shogo/skills/` is missing OR present-but-empty. Workspace
+  // defaults pre-create the directory, which used to skip migration entirely
+  // and leave evals/tools that seed `skills/<name>.md` orphaned (Loaded 0
+  // skills). An existing non-empty `.shogo/skills/` is treated as the source
+  // of truth and we keep the legacy files where they are.
+  if (existsSync(shogoDir)) {
+    let shogoEntries: string[] = []
+    try { shogoEntries = readdirSync(shogoDir) } catch {}
+    if (shogoEntries.length > 0) return
+  }
 
   let files: string[]
   try {

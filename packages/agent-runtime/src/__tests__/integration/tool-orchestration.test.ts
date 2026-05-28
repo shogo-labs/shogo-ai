@@ -18,7 +18,7 @@ import {
   isConcurrencySafe,
   CONCURRENT_SAFE_TOOLS,
   wrapToolsWithOrchestration,
-} from '../tool-orchestration'
+} from '../../tool-orchestration'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { Type } from '@sinclair/typebox'
 
