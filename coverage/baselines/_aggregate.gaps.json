@@ -1179,6 +1179,23 @@
         }
       ],
       "note": "Greenfield expansion of response-transforms-v5.test.ts (which had only 1 vestigial test). New file response-transforms-full.test.ts (53 tests, all passing standalone) drives every exported symbol of response-transforms.ts to ~100% lines (96.30% in Bun text reporter, 0 DA:N,0 entries in standalone lcov). Coverage by block: (1) smartTruncateJson - 8 tests covering input-already-fits, strip-large-strings (body/description/content/text/message/html/etc), binary-search array-truncation, truncatedFields in _meta when stripping happened too, last-resort raw truncation when no array to slice + no fields to strip, findLargestArray nested-object descent, root-level array via wrapper, deep-cycle depth-bound (>10). (2) validateTransformSource - 17 tests, one per banned token (require/import/process/Bun/fetch/eval/Function/globalThis/__dirname/__filename/XMLHttpRequest/WebSocket/Worker/SharedArrayBuffer/Atomics/Proxy/Reflect) + 1 clean-source. (3) compileTransform & execute - 7 tests covering execute happy-path, execute fallthrough when no transform, execute rethrow + console.warn capture, executeInline happy, executeInline rejects banned tokens, VM-sandbox blocks process, VM has JSON/Math/Array/Date in scope. (4) TransformRegistry CRUD - 4 tests (get/has/remove/list). (5) LRUResponseCache - 3 tests (roundtrip, evict-oldest-at-cap-5, re-set-existing-key-moves-to-end). (6) registerDefaults - 3 tests (happy, does-not-overwrite-user, catches-per-default-compile-errors). (7) Disk persistence - 8 tests using mkdtempSync tmpdir (persist + load round-trip, creates dir if missing via mkdirSync recursive, no-op on absent dir, skip-incomplete-files, catches-malformed-json, skip-banned-tokens, removeFromDisk-deletes, removeFromDisk-noops-on-absent). (8) Singleton - 2 tests (stable instance, reset replaces). Mock harness: tmpdir() + mkdtempSync per-test for disk paths, console.log/console.warn silenced via origLog/origWarn restore in afterEach. No new failures. Whole agent-runtime test suite is known to hang past 240s due to preview-manager/warm-pool integration tests - that pre-existing condition is unchanged by this commit."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 1 ad-hoc - agent-runtime skills.ts deprecated loader + matchSkill regex + searchSkills",
+      "message": "test(coverage): packages/agent-runtime skills.ts - 77.7%->93.10% lines, 96.95% funcs",
+      "perFile": [
+        {
+          "file": "packages/agent-runtime/src/skills.ts",
+          "beforeLines": "209/269 ~77.7%",
+          "afterLines": "~250/269 ~93.10%",
+          "deltaLinesHit": 41,
+          "deltaFuncsHit": 5,
+          "newTests": 27
+        }
+      ],
+      "note": "Closes 2 of the 3 remaining gap blocks in skills.ts: L437-L487 (51-line deprecated loadSkills) + L414-L420 (matchSkill regex-trigger branch) + L281-L324 (searchSkills scoring) + L251-L265 (loadBundledSkills). Combined run with claude-skill-compat.test.ts + skill-registry.test.ts to mirror full-suite measurement. New file skills-deprecated-and-match.test.ts (27 tests, all passing) drives: (1) loadSkills (deprecated) - 9 tests: absent-dir [], empty-dir [], dir-format SKILL.md happy, flat .md happy with tools array, missing name/trigger skipped with warning, duplicate name across formats (dir wins), per-file catch keeps the rest, non-.md ignored, dir without SKILL.md silently skipped. (2) matchSkill regex - 7 tests: /pattern/ matches, case-insensitive, invalid regex silently skipped, multi-regex |-separated first-match-wins, mixed plain+regex triggers, skill-without-trigger guard, first-list-skill wins. (3) searchSkills - 9 tests: short query [], no-score-match [], exact-name 25pts, trigger-substring 20pts, per-word content-1pt, dedupe-by-name across installed+bundled (installed wins), limit cap, results-sorted-by-score-desc, no-trigger-defensive. (4) loadBundledSkills - 2 tests: returns array (real dir or []), respects existingSkillNames filter. Mock harness: mkdtempSync(tmpdir()) per disk test, console.warn/error silenced. Remaining uncov 7 lines are L115/151-152/237/349/483/493 - all small per-frontmatter-key fallback branches inside parseFrontmatter and 2 unreachable defensive guards in dirname()/loadAllClaudeCodeSkills that need real .claude/skills/ on disk - to be addressed separately if needed. Standalone-file run: 27 pass / 0 fail."
     }
   ],
   "frontend": {
