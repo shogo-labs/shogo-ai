@@ -57,6 +57,13 @@ export interface SnapshotSummary {
 export type ControlEvent =
   | { kind: 'session:exit'; id: string; code: number | null; signal: string | null; reason: string }
   | { kind: 'session:reap'; id: string; reason: 'idle' | 'detach-grace' | 'max-age' | 'shutdown' }
+  // Live PTY output, delivered over the reliable control plane (parentPort ->
+  // main -> webContents.send). The `dataB64` field is base64 so the payload
+  // stays a plain JSON string; the binary MessageChannelMain data port is
+  // NOT reliably entangled between a utilityProcess and a renderer, so output
+  // (like input, which already uses control-plane `write`) rides this channel.
+  | { kind: 'session:data'; id: string; seq: number; dataB64: string }
+  | { kind: 'session:trunc'; id: string }
   | { kind: 'host:ready'; version: string }
   | { kind: 'host:beat'; t: number }
   | { kind: 'host:unresponsive'; lastBeatAt: number }
