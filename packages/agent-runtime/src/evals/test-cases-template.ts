@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Template Eval Track
@@ -96,8 +96,8 @@ export const TEMPLATE_EVALS: AgentEval[] = [
     input: 'The "GitHub Ops" template has been installed. Can you describe what\'s been set up and walk me through how to customize it or connect my own tools?',
     workspaceFiles: {
       ...getTemplateFiles('devops-hub'),
-      '.shogo/skills/github-ops/SKILL.md': '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos via Composio\ntrigger: "check github|repo status|ci status"\ntools: [tool_search, tool_install, write_file, edit_file, send_message]\n---\n# GitHub Ops\nCheck GitHub repos and build a triage dashboard.',
-      '.shogo/skills/pr-review/SKILL.md': '---\nname: pr-review\nversion: 2.0.0\ndescription: Review pull requests\ntrigger: "review pr|code review"\ntools: [tool_search, tool_install, write_file, edit_file]\n---\n# PR Review\nFetch diff, analyze, post feedback.',
+      '.shogo/skills/github-ops/SKILL.md': '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos via Composio\ntrigger: "check github|repo status|ci status"\ntools: [search_integrations, connect, write_file, edit_file, send_message]\n---\n# GitHub Ops\nCheck GitHub repos and build a triage dashboard.',
+      '.shogo/skills/pr-review/SKILL.md': '---\nname: pr-review\nversion: 2.0.0\ndescription: Review pull requests\ntrigger: "review pr|code review"\ntools: [search_integrations, connect, write_file, edit_file]\n---\n# PR Review\nFetch diff, analyze, post feedback.',
     },
     maxScore: 100,
     validationCriteria: [
@@ -210,16 +210,16 @@ export const TEMPLATE_EVALS: AgentEval[] = [
     input: 'Check the status of my repos — are there any open PRs or CI failures?',
     workspaceFiles: {
       ...getTemplateFiles('devops-hub'),
-      '.shogo/skills/github-ops/SKILL.md': '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos via Composio\ntrigger: "check github|repo status|ci status|pr review|open prs|pull requests"\ntools: [tool_search, tool_install, write_file, edit_file, send_message]\n---\n# GitHub Ops\n1. Search for GitHub integration (tool_search). If not installed: tool_install({ name: "github" })\n2. Fetch open PRs and issues\n3. Build or update dashboard\n4. Alert on stale PRs',
+      '.shogo/skills/github-ops/SKILL.md': '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos via Composio\ntrigger: "check github|repo status|ci status|pr review|open prs|pull requests"\ntools: [search_integrations, connect, write_file, edit_file, send_message]\n---\n# GitHub Ops\n1. Search for GitHub integration (search_integrations). If not installed: connect({ name: "github" })\n2. Fetch open PRs and issues\n3. Build or update dashboard\n4. Alert on stale PRs',
     },
     maxScore: 100,
     validationCriteria: [
       {
         id: 'checked-tools',
-        description: 'Agent searched for integrations (tool_search)',
+        description: 'Agent searched for integrations (search_integrations)',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
       },
       {
         id: 'tried-install-github',
@@ -227,8 +227,8 @@ export const TEMPLATE_EVALS: AgentEval[] = [
         points: 30,
         phase: 'execution',
         validate: (r) => {
-          if (usedToolAnywhere(r, 'tool_install')) {
-            const call = r.toolCalls.find(t => t.name === 'tool_install')
+          if (usedToolAnywhere(r, 'connect')) {
+            const call = r.toolCalls.find(t => t.name === 'connect')
             return JSON.stringify(call?.input).toLowerCase().includes('github')
           }
           return false
@@ -264,16 +264,16 @@ export const TEMPLATE_EVALS: AgentEval[] = [
     workspaceFiles: {
       ...getTemplateFiles('operations-monitor'),
       '.shogo/skills/health-check/SKILL.md': '---\nname: health-check\nversion: 2.0.0\ndescription: Check service health endpoints\ntrigger: "health check|service status|is it up"\ntools: [web, write_file, edit_file, send_message]\n---\n# Health Check\n1. Check health endpoints\n2. Build status page\n3. Alert on failures',
-      '.shogo/skills/incident-triage/SKILL.md': '---\nname: incident-triage\nversion: 2.0.0\ndescription: Investigate production incidents\ntrigger: "incident|something broke|production issue|outage|error spike"\ntools: [tool_search, tool_install, web, write_file, edit_file, send_message]\n---\n# Incident Triage\n1. Check Sentry, GitHub, Datadog\n2. Correlate timing\n3. Build incident timeline',
+      '.shogo/skills/incident-triage/SKILL.md': '---\nname: incident-triage\nversion: 2.0.0\ndescription: Investigate production incidents\ntrigger: "incident|something broke|production issue|outage|error spike"\ntools: [search_integrations, connect, web, write_file, edit_file, send_message]\n---\n# Incident Triage\n1. Check Sentry, GitHub, Datadog\n2. Correlate timing\n3. Build incident timeline',
     },
     maxScore: 100,
     validationCriteria: [
       {
         id: 'investigates',
-        description: 'Agent actively investigates (uses web or tool_search)',
+        description: 'Agent actively investigates (uses web or search_integrations)',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'web') || usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedTool(r, 'web') || usedToolAnywhere(r, 'search_integrations'),
       },
       {
         id: 'uses-canvas',
@@ -365,7 +365,7 @@ export const TEMPLATE_EVALS: AgentEval[] = [
     input: 'The "Support Desk" template has been installed. Can you describe what\'s been set up and walk me through how to customize it or connect my own tools?',
     workspaceFiles: {
       ...getTemplateFiles('support-ops'),
-      '.shogo/skills/ticket-triage/SKILL.md': '---\nname: ticket-triage\nversion: 2.0.0\ndescription: Triage support tickets\ntrigger: "triage tickets|support tickets"\ntools: [tool_search, tool_install, write_file, edit_file]\n---\n# Ticket Triage\nPull and triage support tickets.',
+      '.shogo/skills/ticket-triage/SKILL.md': '---\nname: ticket-triage\nversion: 2.0.0\ndescription: Triage support tickets\ntrigger: "triage tickets|support tickets"\ntools: [search_integrations, connect, write_file, edit_file]\n---\n# Ticket Triage\nPull and triage support tickets.',
       '.shogo/skills/escalation-alert/SKILL.md': '---\nname: escalation-alert\nversion: 2.0.0\ndescription: Escalate urgent issues\ntrigger: "escalate|urgent|p0"\ntools: [send_message, write_file, edit_file]\n---\n# Escalation Alert\nEscalate critical issues to team.',
     },
     maxScore: 100,

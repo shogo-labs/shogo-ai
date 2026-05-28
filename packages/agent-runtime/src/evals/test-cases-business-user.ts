@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Business User Mega Eval — "Pixel & Co."
@@ -792,11 +792,11 @@ const PHASE_4: AgentEval = {
     // Turn 1: GitHub
     {
       id: 'searched-github',
-      description: 'Searched for GitHub integration (tool_search or mcp_search)',
+      description: 'Searched for GitHub integration via search_integrations',
       points: 5,
       phase: 'intention',
       validate: (r) => {
-        const searched = usedToolAnywhere(r, 'tool_search') || usedToolAnywhere(r, 'mcp_search')
+        const searched = usedToolAnywhere(r, 'search_integrations')
         const mentioned = toolCallsJson(r).includes('github')
         return searched && mentioned
       },
@@ -807,7 +807,7 @@ const PHASE_4: AgentEval = {
       points: 5,
       phase: 'execution',
       validate: (r) =>
-        usedToolAnywhere(r, 'tool_install') || usedToolAnywhere(r, 'mcp_install'),
+        usedToolAnywhere(r, 'connect'),
     },
     // Turn 2: Calendar
     {
@@ -826,7 +826,7 @@ const PHASE_4: AgentEval = {
       points: 4,
       phase: 'execution',
       validate: (r) => {
-        const installCount = toolCallCount(r, 'tool_install') + toolCallCount(r, 'mcp_install')
+        const installCount = toolCallCount(r, 'connect') + toolCallCount(r, 'connect')
         return installCount >= 2
       },
     },

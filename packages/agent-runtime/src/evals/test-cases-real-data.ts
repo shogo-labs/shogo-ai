@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Real-Data Preference Eval Test Cases
@@ -51,17 +51,17 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'searched-for-github',
-        description: 'Used tool_search to find a GitHub integration',
+        description: 'Used search_integrations to find a GitHub integration',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
       },
       {
         id: 'installed-integration',
-        description: 'Used tool_install to connect the integration',
+        description: 'Used connect to connect the integration',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'fetched-real-issues',
@@ -194,17 +194,17 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'searched-for-sheets',
-        description: 'Used tool_search to find Google Sheets integration',
+        description: 'Used search_integrations to find Google Sheets integration',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
       },
       {
         id: 'installed-composio',
-        description: 'Used tool_install to connect Composio',
+        description: 'Used connect to connect Composio',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'fetched-sheet-data',
@@ -350,7 +350,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Did NOT search for MCP integrations (user explicitly asked for fake data)',
         points: 20,
         phase: 'execution',
-        validate: (r) => neverUsedTool(r, 'tool_search') && !delegatedTo(r, 'integration'),
+        validate: (r) => neverUsedTool(r, 'search_integrations') && !delegatedTo(r, 'integration'),
       },
       {
         id: 'built-ui',
@@ -399,17 +399,17 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'searched-for-integration',
-        description: 'Used tool_search to find GitHub integration (triggered by "my GitHub issues")',
+        description: 'Used search_integrations to find GitHub integration (triggered by "my GitHub issues")',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
       },
       {
         id: 'installed-integration',
-        description: 'Used tool_install to connect the integration',
+        description: 'Used connect to connect the integration',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'fetched-real-data',

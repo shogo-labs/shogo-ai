@@ -299,7 +299,7 @@ describe('hasFileModifyingTools', () => {
     expect(hasFileModifyingTools(m)).toBe(false)
   })
   test('FILE_MODIFYING_TOOLS contains key destructive tools', () => {
-    for (const t of ['write_file', 'edit_file', 'delete_file', 'exec', 'generate_image', 'tool_install', 'mcp_install']) {
+    for (const t of ['write_file', 'edit_file', 'delete_file', 'exec', 'generate_image', 'connect', 'tool_install', 'mcp_install']) {
       expect(FILE_MODIFYING_TOOLS.has(t)).toBe(true)
     }
   })

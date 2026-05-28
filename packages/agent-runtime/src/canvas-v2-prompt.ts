@@ -369,11 +369,11 @@ function deleteItem(id: string) {
 
 ### Integration Tools (Meta Ads, Google Calendar, Slack, etc.)
 
-When the user has installed integrations via \`tool_install\`, you can call them directly from React code using the tools SDK. This is the preferred approach for building apps around third-party integrations.
+When the user has installed integrations via \`connect\`, you can call them directly from React code using the tools SDK. This is the preferred approach for building apps around third-party integrations.
 
 **Step 1:** Install the integration (agent tool call):
 \`\`\`
-tool_install({ name: "meta_ads" })
+connect({ name: "meta_ads" })
 \`\`\`
 
 **Step 2:** Use the \`useTools\` hook in your React code:
@@ -407,7 +407,7 @@ const result = await tools.execute('GMAIL_SEND_EMAIL', { to: 'user@example.com',
 \`\`\`
 
 **Key points:**
-- Tools must be installed first via \`tool_install({ name: "<toolkit>" })\` before the app can call them
+- Tools must be installed first via \`connect({ name: "<toolkit>" })\` before the app can call them
 - Tool names are uppercase slugs like \`METAADS_GET_INSIGHTS\`, \`GMAIL_SEND_EMAIL\`, \`GOOGLECALENDAR_CREATE_EVENT\`
 - \`execute()\` returns \`{ ok: boolean, data?: string, error?: string }\` — parse \`data\` as JSON when the tool returns structured data
 - \`useTools()\` auto-discovers installed tools — use \`tools\` array to show available actions in the UI

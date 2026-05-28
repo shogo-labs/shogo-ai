@@ -45,6 +45,10 @@ export const TOOL_CATEGORIES: readonly ToolCategory[] = [
     label: 'Discovery',
     color: 'amber',
     tools: [
+      'search_integrations',
+      'connect',
+      'disconnect',
+      // Legacy names retained so historical chat turns render with the same badge
       'tool_search',
       'tool_install',
       'tool_uninstall',

@@ -1,17 +1,17 @@
----
+﻿---
 name: email-monitor
 version: 1.0.0
 description: Monitor Gmail for emails from specific senders and extract key information for alerting
 trigger: "check email|new emails|email alert|email from|monitor inbox|email monitor"
-tools: [tool_search, tool_install, memory_read, write_file, send_message]
+tools: [search_integrations, connect, memory_read, write_file, send_message]
 ---
 
 # Email Monitor
 
 When triggered, check Gmail for emails matching configured sender rules:
 
-1. **Connect** — Check if Gmail integration is installed via `tool_search`. If not:
-   - `tool_install({ name: "gmail" })` to connect via Composio OAuth
+1. **Connect** — Check if Gmail integration is installed via `search_integrations`. If not:
+   - `connect({ name: "gmail" })` to connect via Composio OAuth
 2. **Load rules** — Read sender rules from memory (key: `email_alert_rules`)
    - Each rule has: sender pattern (domain or address), priority, target Slack channel
    - If no rules exist, ask the user which senders to monitor

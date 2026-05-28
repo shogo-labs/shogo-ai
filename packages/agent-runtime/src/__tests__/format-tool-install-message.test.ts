@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Pins the agent-direct usage block + SDK footer that `tool_install`
+ * Pins the agent-direct usage block + SDK footer that `connect`
  * appends to its success message. The wording matters: a regression in
  * any of these strings re-creates the failure mode where the agent
  * routes integration calls through `skill` or `agent_spawn({type: "integration"})`

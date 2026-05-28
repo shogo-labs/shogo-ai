@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Nonprofit track mega eval — Amara (BrightPath)
@@ -478,7 +478,7 @@ const PHASE_1: AgentEval = {
       description: 'Installed calendar-related tool or MCP',
       points: 4,
       phase: 'execution',
-      validate: (r) => usedToolAnywhere(r, 'tool_install') || usedToolAnywhere(r, 'mcp_install'),
+      validate: (r) => usedToolAnywhere(r, 'connect'),
     },
     {
       id: 'heartbeat-configured',

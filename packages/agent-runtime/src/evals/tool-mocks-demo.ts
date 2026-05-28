@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Demo-only tool-mock fixtures.
@@ -30,7 +30,7 @@ import type { ToolMockMap, ToolMockSpec } from './tool-mocks'
 // ---------------------------------------------------------------------------
 
 /**
- * `tool_search` mock that always returns "every requested toolkit is
+ * `search_integrations` mock that always returns "every requested toolkit is
  * already installed". Lets the agent skip the OAuth dance and proceed
  * straight to using whatever tool it asked for.
  */
@@ -59,7 +59,7 @@ function installedToolkit(
 }
 
 /**
- * `tool_install` mock that pretends the install succeeded and reports
+ * `connect` mock that pretends the install succeeded and reports
  * a list of newly-available tool names.
  */
 function installedToolkitTools(
@@ -324,11 +324,11 @@ export const DEMO_GIFT_MOCKS: ToolMockMap = {
 // SEMrush call.
 
 export const DEMO_SEO_MOCKS: ToolMockMap = {
-  tool_search: installedToolkit(
+  search_integrations: installedToolkit(
     'ahrefs',
     'Ahrefs — keyword rank tracking, backlinks, site audit',
   ),
-  tool_install: installedToolkitTools('ahrefs', [
+  connect: installedToolkitTools('ahrefs', [
     'AHREFS_GET_RANKINGS',
     'AHREFS_GET_BACKLINKS',
     'AHREFS_LIST_KEYWORDS',
@@ -374,7 +374,7 @@ export const DEMO_SEO_MOCKS: ToolMockMap = {
 // more visually consistent than the agent's own inline mock.
 
 export const DEMO_META_ADS_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     paramKeys: ['query', 'limit'],
     patterns: [
@@ -385,7 +385,7 @@ export const DEMO_META_ADS_MOCKS: ToolMockMap = {
     ],
     default: { results: [], message: 'No integrations found.' },
   },
-  tool_install: installedToolkitTools('metaads', [
+  connect: installedToolkitTools('metaads', [
     'METAADS_LIST_AD_ACCOUNTS',
     'METAADS_LIST_CAMPAIGNS',
     'METAADS_LIST_AD_SETS',
@@ -541,7 +541,7 @@ const ALL_BDR_LEADS = expandLeads()
 export const DEMO_BDR_MOCKS: ToolMockMap = {
   // Tool discovery — agent searches "gmail" then "apollo" / "clearbit"
   // for lead enrichment. Both come back installed.
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     paramKeys: ['query', 'limit'],
     patterns: [
@@ -572,7 +572,7 @@ export const DEMO_BDR_MOCKS: ToolMockMap = {
     ],
     default: { results: [], message: 'No integrations found.' },
   },
-  tool_install: {
+  connect: {
     type: 'pattern',
     paramKeys: ['name'],
     patterns: [
@@ -664,7 +664,7 @@ export const DEMO_BDR_MOCKS: ToolMockMap = {
 // hot-lead alerts) so it never trips an OAuth wall.
 
 export const DEMO_COLDCALL_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     paramKeys: ['query', 'limit'],
     patterns: [
@@ -675,7 +675,7 @@ export const DEMO_COLDCALL_MOCKS: ToolMockMap = {
     ],
     default: { results: [], message: 'No integrations found.' },
   },
-  tool_install: installedToolkitTools('calendly', ['CALENDLY_LIST_EVENT_TYPES', 'CALENDLY_GET_BOOKING_LINK']),
+  connect: installedToolkitTools('calendly', ['CALENDLY_LIST_EVENT_TYPES', 'CALENDLY_GET_BOOKING_LINK']),
   CALENDLY_GET_BOOKING_LINK: {
     type: 'static',
     description: 'Get a Calendly booking link for the user.',
@@ -709,7 +709,7 @@ export const DEMO_COLDCALL_MOCKS: ToolMockMap = {
 // + Linear so nothing real is created.
 
 export const DEMO_SUPPORT_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     paramKeys: ['query', 'limit'],
     patterns: [
@@ -720,7 +720,7 @@ export const DEMO_SUPPORT_MOCKS: ToolMockMap = {
     ],
     default: { results: [], message: 'No integrations found.' },
   },
-  tool_install: {
+  connect: {
     type: 'pattern',
     paramKeys: ['name'],
     patterns: [

@@ -102,7 +102,7 @@ describe("decideMessagesPropagation — streaming text tokens", () => {
         type: "tool-invocation",
         toolInvocation: {
           toolCallId: "tc1",
-          toolName: "tool_install",
+          toolName: "connect",
           state: "call",
         },
       },
@@ -112,7 +112,7 @@ describe("decideMessagesPropagation — streaming text tokens", () => {
         type: "tool-invocation",
         toolInvocation: {
           toolCallId: "tc1",
-          toolName: "tool_install",
+          toolName: "connect",
           state: "result",
           result: { authStatus: "needs_auth", integration: "github" },
         },

@@ -1,17 +1,17 @@
----
+﻿---
 name: cold-call
 version: 1.0.0
 description: Place outbound cold calls via Twilio + ElevenLabs, qualify prospects, stream live transcripts, and book demos
 trigger: "cold call|call the|dial|outbound call|book a demo|qualify"
-tools: [tool_search, tool_install, voice_call, voice_stream, memory_read, memory_write, send_message]
+tools: [search_integrations, connect, voice_call, voice_stream, memory_read, memory_write, send_message]
 ---
 
 # Cold Call Workflow
 
 When triggered, run an outbound cold-call session:
 
-1. **Verify setup** — Check Twilio and ElevenLabs via `tool_search`. If missing:
-   - `tool_install({ name: "twilio" })` and `tool_install({ name: "elevenlabs" })`
+1. **Verify setup** — Check Twilio and ElevenLabs via `search_integrations`. If missing:
+   - `connect({ name: "twilio" })` and `connect({ name: "elevenlabs" })`
    - Confirm a verified caller ID and ElevenLabs voice id are saved in memory
    - If any of the above is missing, render a setup checklist on canvas and stop
 2. **Build canvas** — Use `write_file` to create a Call Queue canvas:

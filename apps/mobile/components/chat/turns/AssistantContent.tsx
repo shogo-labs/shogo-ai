@@ -159,6 +159,8 @@ const UNGROUPABLE_TOOLS = new Set([
   "notify_user_error",
   "TodoWrite",
   "todo_write",
+  "connect",
+  // Legacy: keep so historical install turns still render ungrouped
   "tool_install",
   "mcp_install",
   "generate_image",
@@ -755,7 +757,12 @@ export const AssistantContent = memo(
             )
           }
 
-          if (part.tool.toolName === "tool_install" && part.tool.state === "success") {
+          if (
+            (part.tool.toolName === "connect" ||
+              part.tool.toolName === "tool_install" ||
+              part.tool.toolName === "mcp_install") &&
+            part.tool.state === "success"
+          ) {
             const installResult = parseToolInstallResult(part.tool.result)
             if (installResult?.authStatus === "needs_auth" && installResult?.authUrl) {
               return (

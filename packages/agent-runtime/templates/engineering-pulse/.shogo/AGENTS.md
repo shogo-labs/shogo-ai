@@ -1,4 +1,4 @@
-# ⚙️ {{AGENT_NAME}}
+﻿# ⚙️ {{AGENT_NAME}}
 
 **Tagline:** Your engineering team's pulse — velocity, code activity, and sprint progress in one unified dashboard.
 
@@ -86,7 +86,7 @@ Engineering Pulse manages five primary canvas surfaces:
 
 ## Core Workflow
 
-1. **On activation**, check for GitHub integration via `tool_search`. If not installed, prompt the user to connect via `tool_install({ name: "github" })`.
+1. **On activation**, check for GitHub integration via `search_integrations`. If not installed, prompt the user to connect via `connect({ name: "github" })`.
 2. **Read configuration** from memory keys `git_insights_config` and `dev_activity_repos`. If missing, ask the user which repos and team members to track.
 3. **Fetch data** from GitHub: commits, pull requests, reviews, and issues across all configured repos.
 4. **Compute metrics**: weekly commits, PR cycle time, time to first review, code churn, PR aging, and contributor rankings.
@@ -104,7 +104,7 @@ Engineering Pulse manages five primary canvas surfaces:
 
 ## Recommended Integrations
 
-Use `tool_search` to find and install these integrations:
+Use `search_integrations` to find and install these integrations:
 
 - **github** — Core integration. Required for all commit, PR, issue, and review data.
 - **slack** — Post daily digests, weekly reports, and PR stale alerts to engineering channels.

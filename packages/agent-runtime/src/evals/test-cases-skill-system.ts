@@ -1,14 +1,14 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Skill System Eval Test Cases
  *
- * Tests the skill system integration with the unified tool_search / tool_install
+ * Tests the skill system integration with the unified search_integrations / connect
  * interface, and skill CRUD via existing file tools.
  *
  * Covers:
- * - Skill discovery via tool_search (skills alongside managed integrations)
- * - Skill installation via tool_install with "skill:" prefix
+ * - Skill discovery via search_integrations (skills alongside managed integrations)
+ * - Skill installation via connect with "skill:" prefix
  * - Skill creation via write_file with correct frontmatter
  * - Skill editing via read_file + write_file
  * - Skill deletion via delete_file
@@ -54,10 +54,10 @@ export const SKILL_SYSTEM_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-tool-search',
-        description: 'Used tool_search to discover capabilities',
+        description: 'Used search_integrations to discover capabilities',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
       },
       {
         id: 'searched-github',
@@ -84,7 +84,7 @@ export const SKILL_SYSTEM_EVALS: AgentEval[] = [
         description: 'Did NOT install anything in the final turn — user said just show options',
         points: 20,
         phase: 'execution',
-        validate: (r) => didNotUseToolInFinalTurn(r, 'tool_install'),
+        validate: (r) => didNotUseToolInFinalTurn(r, 'connect'),
       },
       {
         id: 'response-mentions-results',
@@ -109,12 +109,12 @@ export const SKILL_SYSTEM_EVALS: AgentEval[] = [
   },
 
   // =========================================================================
-  // Case 2: Install a bundled skill via tool_install
+  // Case 2: Install a bundled skill via connect
   // Level 2 | Agent installs a skill using the "skill:" prefix
   // =========================================================================
   {
     id: 'skill-install-bundled',
-    name: 'Skill System: Install bundled skill via tool_install',
+    name: 'Skill System: Install bundled skill via connect',
     category: 'skill',
     level: 2,
     input: 'Install the GitHub ops skill so I can track my repos.',
@@ -123,17 +123,17 @@ export const SKILL_SYSTEM_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-tool-install',
-        description: 'Used tool_install to install the skill',
+        description: 'Used connect to install the skill',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'install-with-skill-prefix',
-        description: 'tool_install called with skill: prefix',
+        description: 'connect called with skill: prefix',
         points: 25,
         phase: 'execution',
-        validate: (r) => toolCallArgsContain(r, 'tool_install', 'skill:'),
+        validate: (r) => toolCallArgsContain(r, 'connect', 'skill:'),
       },
       {
         id: 'read-skill-after-install',
@@ -159,7 +159,7 @@ export const SKILL_SYSTEM_EVALS: AgentEval[] = [
       },
     ],
     antiPatterns: [
-      'Agent tried to write the skill file manually instead of using tool_install',
+      'Agent tried to write the skill file manually instead of using connect',
     ],
   },
 
@@ -384,7 +384,7 @@ Facilitate daily standup updates:
     level: 4,
     conversationHistory: [
       { role: 'user', content: 'I want to run health checks on my web services to make sure they\'re all up.' },
-      { role: 'assistant', content: 'I used `tool_search` and found a **health-check** skill in the skill library. It runs health checks on web services and APIs — checking endpoints, recording status codes and response times, building a dashboard, and alerting on failures.\n\nTo install it, I\'d run `tool_install({ name: "skill:health-check" })`, then read the skill file to follow its instructions. Want me to go ahead?' },
+      { role: 'assistant', content: 'I used `search_integrations` and found a **health-check** skill in the skill library. It runs health checks on web services and APIs — checking endpoints, recording status codes and response times, building a dashboard, and alerting on failures.\n\nTo install it, I\'d run `connect({ name: "skill:health-check" })`, then read the skill file to follow its instructions. Want me to go ahead?' },
     ],
     input: 'Yes, install it and run a check on https://api.example.com and https://www.example.com.',
     maxScore: 100,
@@ -392,10 +392,10 @@ Facilitate daily standup updates:
     validationCriteria: [
       {
         id: 'installed-skill',
-        description: 'Installed the skill via tool_install with skill: prefix',
+        description: 'Installed the skill via connect with skill: prefix',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install') && toolCallArgsContain(r, 'tool_install', 'skill:'),
+        validate: (r) => usedToolAnywhere(r, 'connect') && toolCallArgsContain(r, 'connect', 'skill:'),
       },
       {
         id: 'read-skill-instructions',

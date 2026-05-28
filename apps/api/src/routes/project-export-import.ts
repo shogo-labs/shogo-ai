@@ -1251,7 +1251,7 @@ export function projectExportImportRoutes() {
     const zipped = zipSync(zipContents, { level: 6 })
 
     const safeName = project.name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60)
-    const filename = `${safeName}.shogo-project`
+    const filename = `${safeName}.shogo`
 
     const body = zipped.buffer.slice(zipped.byteOffset, zipped.byteOffset + zipped.byteLength) as ArrayBuffer
     return new Response(body, {

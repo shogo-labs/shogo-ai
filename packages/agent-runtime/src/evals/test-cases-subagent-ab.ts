@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Sub-Agent Building Eval Test Cases
@@ -62,14 +62,14 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
         description: 'Agent installed the Jira integration',
         points: 5,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install') && toolCallsJson(r).includes('jira'),
+        validate: (r) => usedToolAnywhere(r, 'connect') && toolCallsJson(r).includes('jira'),
       },
       {
         id: 'installed-github',
         description: 'Agent installed the GitHub integration',
         points: 5,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install') && toolCallsJson(r).includes('github'),
+        validate: (r) => usedToolAnywhere(r, 'connect') && toolCallsJson(r).includes('github'),
       },
       {
         id: 'queried-jira',
@@ -144,7 +144,7 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
         description: 'Agent installed GitHub integration',
         points: 4,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install') && toolCallsJson(r).includes('github'),
+        validate: (r) => usedToolAnywhere(r, 'connect') && toolCallsJson(r).includes('github'),
       },
       {
         id: 'queried-prs',
@@ -212,7 +212,7 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
         description: 'Agent installed Jira integration',
         points: 4,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install') && toolCallsJson(r).includes('jira'),
+        validate: (r) => usedToolAnywhere(r, 'connect') && toolCallsJson(r).includes('jira'),
       },
       {
         id: 'queried-sprint',
@@ -336,7 +336,7 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
         phase: 'intention',
         validate: (r) => {
           const json = toolCallsJson(r)
-          return usedToolAnywhere(r, 'tool_install') && json.includes('jira') && json.includes('github')
+          return usedToolAnywhere(r, 'connect') && json.includes('jira') && json.includes('github')
         },
       },
       {

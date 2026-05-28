@@ -200,7 +200,7 @@ describe('runSubagent — includeInstalledTools and browser rebuild', () => {
   it('appends dynamic (non-core) tools when includeInstalledTools=true', async () => {
     const allTools = [
       { name: 'read_file', execute: async () => ({}) },
-      { name: 'tool_search', execute: async () => ({}) },
+      { name: 'search_integrations', execute: async () => ({}) },
       { name: 'JIRA_LIST_BOARDS', execute: async () => ({}) },
       { name: 'GMAIL_SEND_EMAIL', execute: async () => ({}) },
     ] as any[]
@@ -208,7 +208,7 @@ describe('runSubagent — includeInstalledTools and browser rebuild', () => {
       name: 'integration',
       description: 'd',
       systemPrompt: 's',
-      toolNames: ['read_file', 'tool_search'],
+      toolNames: ['read_file', 'search_integrations'],
       includeInstalledTools: true,
     } as any
     await runSubagent(cfg, 'p', makeCtx(), allTools)
@@ -216,7 +216,7 @@ describe('runSubagent — includeInstalledTools and browser rebuild', () => {
     expect(names).toContain('JIRA_LIST_BOARDS')
     expect(names).toContain('GMAIL_SEND_EMAIL')
     expect(names).toContain('read_file')
-    expect(names).toContain('tool_search')
+    expect(names).toContain('search_integrations')
   })
 
   it('rebuilds the browser tool against the subCtx', async () => {
