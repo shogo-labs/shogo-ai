@@ -975,6 +975,23 @@
         "runtime-manager-v4.test.ts (abort -> 28 pass)"
       ],
       "note": "Five-pattern sandbox-fix sweep across apps/api: (1) BETTER_AUTH_SECRET + AI_PROXY_SECRET set at top of test (above the dynamic import) so ai-proxy-token + better-auth context-create no longer FATAL with isProduction. (2) os.homedir() monkey-patched to a fresh mkdir-ed subdir under os.tmpdir() in local-fs-browse so isUnderHome() validates and mkdtempSync(HOME, ...) does not EACCES on /app. (3) spawnSync added to the existing child_process module mocks in runtime-manager-ports + runtime-manager-v4 (needed since shogo-worker added a RuntimeExecutor.executeAsync code path that statically imports it). No source files under src/ were modified - only test scaffolding to make the existing assertions executable. 27 previously-failing tests now pass. Knative still has 1 real assertion mismatch (shogo-system vs shogo-staging-system namespace expectation) unrelated to env scaffolding - left as a separate fix."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 2 ad-hoc - greenfield service test",
+      "message": "test(coverage): project-auth-config.service.ts - 4.74% to 100% lines (zero prior tests, +295 hit lines)",
+      "perFile": [
+        {
+          "file": "apps/api/src/services/project-auth-config.service.ts",
+          "beforeLines": "~18/378 (4.74%)",
+          "afterLines": "378/378 (100.00%)",
+          "deltaLinesHit": 295,
+          "deltaFuncsHit": 9,
+          "newTests": 37
+        }
+      ],
+      "note": "Greenfield service test. project-auth-config.service.ts had ZERO test files and was 4.74% covered in the gaps baseline (only the module-load top-level constants). New file apps/api/src/__tests__/project-auth-config.service.test.ts (37 tests, all passing) drives every exported function via an in-memory prisma double with 8 tables (authConfigs/signIns/projects/users/members/invitations/sessions). Covers: getConfig (no-row default, stored verbatim, invalid-mode coercion, non-array allowedEmails coercion), upsertConfig (all 6 happy paths + 10 validation errors including ProjectAuthConfigError shape verification + dedupe/lowercase for emails and domains + @-prefix stripping for domains + update-preserves-prior), evaluateAllowlist (anyone / custom-email-hit / custom-domain-hit / custom-miss / workspace-no-project / workspace-member-hit / workspace-no-membership / pending-invitation-hit / expired-invitation-miss / malformed-email), recordSignIn (first vs increment), listUsers (empty / full / pagination / limit-clamp / case-insensitive query filter / member+allowlist flag math), revokeUser (delete signin + sessions, scoping to user id, idempotency). 100% lines / 100% funcs after one session."
     }
   ],
   "frontend": {
