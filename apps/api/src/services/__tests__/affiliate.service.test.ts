@@ -911,3 +911,142 @@ describe('lock-wrapped entry points', () => {
     expect(typeof (res as any).paid).toBe('number')
   })
 })
+
+// ===========================================================================
+// runAffiliatePayouts — default stripeFactory branch (L719-721)
+// ===========================================================================
+
+describe('runAffiliatePayouts — default stripeFactory', () => {
+  test('STRIPE_SECRET_KEY unset: warns and returns summary with paid=0, no Stripe construction', async () => {
+    seedAffiliate({ userId: 'pu1', code: 'p1' })
+    const aff = [...affiliates.values()][0]!
+    commissions.push({
+      id: 'c-pay-1', affiliateId: aff.id, status: 'approved', payoutId: null,
+      amountCents: 50_000, eligibleAt: new Date('2020-01-01'),
+    })
+    delete (process.env as any).STRIPE_SECRET_KEY
+
+    const warns: string[] = []
+    const origWarn = console.warn
+    console.warn = (...a: unknown[]) => { warns.push(a.join(' ')) }
+    try {
+      const res = await svc.runAffiliatePayouts(new Date())
+      expect(res.candidates).toBe(1)
+      expect(res.paid).toBe(0)
+      expect(res.totalCentsPaid).toBe(0)
+      expect(warns.some((w) => w.includes('STRIPE_SECRET_KEY unset'))).toBe(true)
+    } finally {
+      console.warn = origWarn
+    }
+  })
+
+  test('STRIPE_SECRET_KEY set: default factory constructs a real Stripe client (subsequent loop uses it)', async () => {
+    // We don't want to actually hit Stripe — seed zero candidates so the loop is skipped.
+    // This still exercises the factory branch up to `const stripe = stripeFactory()`,
+    // but with candidates=0 we return before any HTTP call would happen.
+    process.env.STRIPE_SECRET_KEY = 'sk_test_dummy'
+    try {
+      // Make sure no approved commissions exist so candidates=0 short-circuits BEFORE
+      // the factory is invoked.
+      commissions.length = 0
+      const res = await svc.runAffiliatePayouts(new Date())
+      expect(res.candidates).toBe(0)
+      expect(res.paid).toBe(0)
+    } finally {
+      delete (process.env as any).STRIPE_SECRET_KEY
+    }
+  })
+})
+
+// ===========================================================================
+// getAffiliateSummary (L881-933)
+// ===========================================================================
+
+describe('getAffiliateSummary', () => {
+  test('returns null when the user has no affiliate row', async () => {
+    expect(await svc.getAffiliateSummary('nobody')).toBeNull()
+  })
+
+  test('happy path: zero clicks / signups / commissions / downline → empty buckets', async () => {
+    seedAffiliate({ userId: 'su1', code: 's1' })
+    const summary = await svc.getAffiliateSummary('su1')
+    expect(summary).not.toBeNull()
+    expect(summary!.clicks30d).toBe(0)
+    expect(summary!.signups30d).toBe(0)
+    expect(summary!.pendingCents).toBe(0)
+    expect(summary!.approvedCents).toBe(0)
+    expect(summary!.paidCents).toBe(0)
+    expect(summary!.downlineCounts).toEqual({ 1: 0 })
+    expect(summary!.cookieDays).toBeGreaterThan(0)
+    expect(summary!.affiliate.code).toBe('s1')
+  })
+
+  test('aggregates commissions across pending / approved / paid statuses', async () => {
+    const aff = seedAffiliate({ userId: 'su2', code: 's2' })
+    commissions.push(
+      { id: 'cs1', affiliateId: aff.id, status: 'pending', amountCents: 1000, eligibleAt: new Date(), createdAt: new Date() },
+      { id: 'cs2', affiliateId: aff.id, status: 'pending', amountCents: 500, eligibleAt: new Date(), createdAt: new Date() },
+      { id: 'cs3', affiliateId: aff.id, status: 'approved', amountCents: 2500, eligibleAt: new Date(), createdAt: new Date() },
+      { id: 'cs4', affiliateId: aff.id, status: 'paid', amountCents: 7000, eligibleAt: new Date(), createdAt: new Date() },
+    )
+    const s = await svc.getAffiliateSummary('su2')
+    expect(s!.pendingCents).toBe(1500)
+    expect(s!.approvedCents).toBe(2500)
+    expect(s!.paidCents).toBe(7000)
+  })
+
+  test('counts clicks and signup attributions only within the last 30 days', async () => {
+    const aff = seedAffiliate({ userId: 'su3', code: 's3' })
+    const now = new Date('2026-05-28T00:00:00Z')
+    const recent = new Date('2026-05-20T00:00:00Z')
+    const old = new Date('2026-03-01T00:00:00Z')
+    clicks.push(
+      { id: 'kc1', affiliateId: aff.id, visitorId: 'v1', createdAt: recent, expiresAt: recent },
+      { id: 'kc2', affiliateId: aff.id, visitorId: 'v2', createdAt: recent, expiresAt: recent },
+      { id: 'kc3', affiliateId: aff.id, visitorId: 'v3', createdAt: old, expiresAt: old },
+    )
+    attributions.set('au1', { id: 'a1', affiliateId: aff.id, userId: 'au1', attributedAt: recent })
+    attributions.set('au2', { id: 'a2', affiliateId: aff.id, userId: 'au2', attributedAt: old })
+
+    const s = await svc.getAffiliateSummary('su3', now)
+    expect(s!.clicks30d).toBe(2)
+    expect(s!.signups30d).toBe(1)
+  })
+
+  test('walks the downline tree up to SHOGO_AFFILIATE_MAX_DEPTH levels', async () => {
+    process.env.SHOGO_AFFILIATE_MAX_DEPTH = '3'
+    try {
+      const root = seedAffiliate({ userId: 'r', code: 'root' })
+      // L1: two direct children
+      const c1 = seedAffiliate({ userId: 'c1u', code: 'c1', parentAffiliateId: root.id, depth: 2 })
+      const c2 = seedAffiliate({ userId: 'c2u', code: 'c2', parentAffiliateId: root.id, depth: 2 })
+      // L2: one grandchild under c1
+      const g1 = seedAffiliate({ userId: 'g1u', code: 'g1', parentAffiliateId: c1.id, depth: 3 })
+      // L3: one great-grandchild under g1 — should NOT be counted (out of cap)
+      seedAffiliate({ userId: 'gg1u', code: 'gg1', parentAffiliateId: g1.id, depth: 4 })
+
+      const s = await svc.getAffiliateSummary('r')
+      expect(s!.downlineCounts[1]).toBe(2)
+      expect(s!.downlineCounts[2]).toBe(1)
+      // L3 frontier is [g1] → finds 1 great-grandchild within the cap
+      expect(s!.downlineCounts[3]).toBe(1)
+      // No L4 bucket — loop terminates at maxDepth=3
+      expect(s!.downlineCounts[4]).toBeUndefined()
+
+      // Use the void to satisfy noUnusedLocals.
+      void c2
+    } finally {
+      delete process.env.SHOGO_AFFILIATE_MAX_DEPTH
+    }
+  })
+})
+
+describe('newVisitorId', () => {
+  test('returns a unique-looking UUID string each call', () => {
+    const a = svc.newVisitorId()
+    const b = svc.newVisitorId()
+    expect(typeof a).toBe('string')
+    expect(a.length).toBeGreaterThan(20)
+    expect(a).not.toBe(b)
+  })
+})

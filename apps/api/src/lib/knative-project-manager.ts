@@ -967,57 +967,6 @@ export class KnativeProjectManager {
     // This method is kept for backwards compatibility and cleanup of legacy PVCs
     console.log(`[KnativeProjectManager] No PVC creation needed for ${projectId} (using emptyDir + S3)`)
   }
-
-  /**
-   * Create a PVC if it doesn't already exist.
-   */
-  private async createPVCIfNotExists(
-    coreApi: k8s.CoreV1Api,
-    options: {
-      name: string
-      projectId: string
-      component: string
-      storageClass: string
-      size: string
-      accessMode?: string  // ReadWriteOnce (EBS) or ReadWriteMany (EFS)
-    }
-  ): Promise<void> {
-    const { name, projectId, component, storageClass, size, accessMode = "ReadWriteOnce" } = options
-    const pvcStartTime = Date.now()
-
-    try {
-      await coreApi.readNamespacedPersistentVolumeClaim({ name, namespace: this.namespace })
-      console.log(`[KnativeProjectManager] PVC ${name} already exists (check: ${Date.now() - pvcStartTime}ms)`)
-      return
-    } catch (error: any) {
-      if (error?.code !== 404 && error?.response?.statusCode !== 404) throw error
-    }
-
-    const pvc: k8s.V1PersistentVolumeClaim = {
-      apiVersion: "v1",
-      kind: "PersistentVolumeClaim",
-      metadata: {
-        name,
-        namespace: this.namespace,
-        labels: {
-          "app.kubernetes.io/part-of": "shogo",
-          "shogo.io/project": projectId,
-          "shogo.io/component": component,
-        },
-      },
-      spec: {
-        accessModes: [accessMode],
-        storageClassName: storageClass,
-        resources: {
-          requests: { storage: size },
-        },
-      },
-    }
-
-    await coreApi.createNamespacedPersistentVolumeClaim({ namespace: this.namespace, body: pvc })
-    console.log(`[KnativeProjectManager] Created PVC: ${name} with ${accessMode} (${Date.now() - pvcStartTime}ms)`)
-  }
-
   /**
    * Build the Knative Service spec for a project.
    * Includes PostgreSQL sidecar container for per-project database.

@@ -304,6 +304,29 @@ describe('maybeCustomRoutesSync — drift heal branches via write_file(custom-ro
     expect((r as any).apiServer.patched).toBeUndefined()
   })
 
+  test('drift detected, hand-edited server.tsx with no import anchors → failed branch with hint', async () => {
+    writeShogoConfig({ customRoutesPath: './custom-routes' })
+    // Hand-edited (no auto-gen marker) AND no top-level imports → insertImport
+    // can't find an anchor → healServerTsxDrift returns mode: 'failed'.
+    writeFileSync(
+      join(TEST_DIR, 'server.tsx'),
+      `// I wrote this myself\nconst app = { route: () => {} }\nexport default app\n`,
+    )
+    let restartCalls = 0
+    const ssm = fakeSkillServerManager({
+      restartApiServerOnly: async () => { restartCalls++ },
+    })
+    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const r = await runWrite(ctx, 'custom-routes.ts', 'export default {} as any\n')
+    const api = (r as any).apiServer
+    expect(api.serverRestarted).toBe(false)
+    expect(String(api.error)).toContain('self-heal failed')
+    expect(String(api.error)).toContain('could not locate a place to insert')
+    expect(String(api.hint)).toContain("import customRoutes from")
+    expect(String(api.hint)).toContain("app.route(")
+    expect(restartCalls).toBe(0)
+  })
+
   test('custom-routes.tsx (with x) extension also triggers the sync path', async () => {
     const ssm = fakeSkillServerManager()
     const ctx = makeCtx({ skillServerManager: ssm as any })

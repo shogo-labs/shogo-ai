@@ -16,32 +16,107 @@
     "packages/shogo-worker"
   ],
   "total": 76,
-  "perPackageTotals": {
-    "apps/api": {
-      "lines": "13627/14723",
-      "linePct": 92.56,
-      "funcs": "1226/1272",
-      "funcPct": 96.38
+  "perPackageTotals": [
+    {
+      "package": "apps/api",
+      "linesHit": 36751,
+      "linesFound": 44771,
+      "linePct": 82.09,
+      "funcsHit": 2783,
+      "funcsFound": 3418,
+      "funcPct": 81.42
     },
-    "packages/agent-runtime": {
-      "lines": "5122/7240",
-      "linePct": 70.75,
-      "funcs": "419/548",
-      "funcPct": 76.46
+    {
+      "package": "packages/agent-runtime",
+      "linesHit": 22312,
+      "linesFound": 28412,
+      "linePct": 78.53,
+      "funcsHit": 1542,
+      "funcsFound": 2214,
+      "funcPct": 69.65
     },
-    "packages/sdk": {
-      "lines": "5159/5836",
-      "linePct": 88.4,
-      "funcs": "415/465",
-      "funcPct": 89.25
+    {
+      "package": "packages/sdk",
+      "linesHit": 6469,
+      "linesFound": 7717,
+      "linePct": 83.83,
+      "funcsHit": 598,
+      "funcsFound": 683,
+      "funcPct": 87.55
     },
-    "packages/shared-runtime": {
-      "lines": "870/1549",
-      "linePct": 56.17,
-      "funcs": "91/117",
-      "funcPct": 77.78
+    {
+      "package": "packages/shared-runtime",
+      "linesHit": 3658,
+      "linesFound": 4188,
+      "linePct": 87.34,
+      "funcsHit": 377,
+      "funcsFound": 439,
+      "funcPct": 85.88
+    },
+    {
+      "package": "packages/model-catalog",
+      "linesHit": 331,
+      "linesFound": 378,
+      "linePct": 87.57,
+      "funcsHit": 13,
+      "funcsFound": 21,
+      "funcPct": 61.9
+    },
+    {
+      "package": "packages/voice",
+      "linesHit": 1679,
+      "linesFound": 1679,
+      "linePct": 100.0,
+      "funcsHit": 168,
+      "funcsFound": 172,
+      "funcPct": 97.67
+    },
+    {
+      "package": "packages/email",
+      "linesHit": 696,
+      "linesFound": 696,
+      "linePct": 100.0,
+      "funcsHit": 63,
+      "funcsFound": 64,
+      "funcPct": 98.44
+    },
+    {
+      "package": "packages/agent",
+      "linesHit": 449,
+      "linesFound": 449,
+      "linePct": 100.0,
+      "funcsHit": 29,
+      "funcsFound": 29,
+      "funcPct": 100.0
+    },
+    {
+      "package": "packages/core",
+      "linesHit": 387,
+      "linesFound": 393,
+      "linePct": 98.47,
+      "funcsHit": 47,
+      "funcsFound": 51,
+      "funcPct": 92.16
+    },
+    {
+      "package": "packages/cli",
+      "linesHit": 514,
+      "linesFound": 608,
+      "linePct": 84.54,
+      "funcsHit": 41,
+      "funcsFound": 49,
+      "funcPct": 83.67
+    },
+    {
+      "package": "packages/shogo-worker",
+      "linesHit": 1863,
+      "linesFound": 2107,
+      "linePct": 88.42,
+      "funcsHit": 223,
+      "funcsFound": 256,
+      "funcPct": 87.11
     }
-  },
+  ],
   "phaseBreakdown": {
     "1": 30,
     "2": 27,
@@ -1065,17 +1140,17 @@
       "effectiveLinePct": 100.0
     }
   ],
-  "lastUpdated": "2026-05-27T14:50:24Z",
+  "lastUpdated": "2026-05-28T18:42:14Z",
   "aggregate": {
     "lines": {
-      "total": 75174,
-      "hit": 66713,
-      "pct": 88.74
+      "hit": 75982,
+      "total": 91348,
+      "pct": 83.18
     },
     "functions": {
-      "total": 6178,
-      "hit": 5320,
-      "pct": 86.11
+      "hit": 5905,
+      "total": 7393,
+      "pct": 79.87
     }
   }
 }
