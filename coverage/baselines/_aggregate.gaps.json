@@ -859,6 +859,23 @@
         }
       ],
       "note": "Two new test files + one tiny source refactor that finally clear Wave 1 Day 1-4 92 percent target. (1) gateway-tools.plan-summary.test.ts - 6 tests for runPlanSummary IIFE (data-plan-summary-start emission, summarizePlan call with parentModel arg, upsertSummarySection writeback, data-plan-summary completion event, dualPlan gating, no-meaningful-change skip, summarizePlan throw -> data-plan-summary-error event, plan file removed mid-flight gracefully handled). Mocks ../plan-translation. (2) gateway-tools.web-cache.test.ts - 3 tests for getWebCacheRedis (env unset no-op no Redis constructed, env set Redis singleton with error+end listeners attached, end event flips failure flag and short-circuits subsequent calls). Mocks ioredis with FakeRedis class. (3) MICRO-REFACTOR: WEB_CACHE_REDIS_URL was a module-init const that env-changes after import could never reach. Moved to a call-time process.env read inside getWebCacheRedis + webCacheKey. Production behavior unchanged (env doesn t change after process start) but the function is now testable. Cumulative Wave 1 Sessions 1-9 on gateway-tools.ts: 77.47 to 92.35 percent (+14.88pp). WAVE 1 DAY 1-4 FINISH LINE CLEARED."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 1 Day 5 - gateway.ts",
+      "message": "test(coverage): gateway.ts initIndexEngine + onCostMetric + summarizeFn - 85.31% to 86.36% lines",
+      "perFile": [
+        {
+          "file": "packages/agent-runtime/src/gateway.ts",
+          "beforeLines": "2370/2778 (85.31%)",
+          "afterLines": "2399/2778 (86.36%)",
+          "deltaLinesHit": 29,
+          "deltaFuncsHit": 0,
+          "newTests": 6
+        }
+      ],
+      "note": "First strike on Wave 1 Day 5 target (gateway.ts, 408 uncov). New file gateway-index-engine.test.ts (6 tests, all passing) covers (1) initIndexEngine L851-905: prewarm:false constructs engine+graph without scanning; prewarm:true triggers reindexBackground + buildGraph + flow detect via setTimeout. (2) onCostMetric agentManager callback L673-693: no WORKSPACE_ID env returns early; with WORKSPACE_ID set the postCostMetric path executes through. Fires the callback by directly calling am.emitCostMetric on the private agentManager. (3) sessionManager.summarize callback L705-717: stores the summarize fn, branch through user/assistant/toolResult/non-text message extraction (network call rejects later; only the synchronous extraction branch is asserted). Cumulative: gateway.ts 85.31 to 86.36 percent (+29 hit lines, +1.05pp). Wave 1 Day 1-4 (gateway-tools.ts) is now done at 92.35%; Wave 1 Day 5 (gateway.ts) starts here with +29 lines on session 1."
     }
   ],
   "frontend": {
