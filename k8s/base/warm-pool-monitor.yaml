@@ -1,0 +1,173 @@
+# =============================================================================
+# Warm-Pool Monitor CronJob
+# =============================================================================
+# Continuous health check for the agent-runtime warm pool, paired with the
+# deploy-time gate in `.github/scripts/check-warm-pool-health.sh`.
+#
+# The deploy-time gate catches "your new deploy broke the warm pool".
+# This CronJob catches "the warm pool broke at runtime" — image deleted
+# from OCIR, controller crashlooping, RUNTIME_IMAGE quietly mutated by a
+# stray kubectl, etc. — and pages within ~5 minutes via the existing
+# `kube_state_metrics` -> `kube_job_status_failed` alerting hook.
+#
+# Failure conditions (any => exit 1, K8s job fails, page fires):
+#   * api ksvc has any env value containing "bootstrap"
+#       — kustomize overlay placeholder leaked through, deploy regression.
+#         This was the entire 2026-05-27 incident root cause.
+#   * any warm-pool pod is in ImagePullBackOff / ErrImagePull /
+#     CrashLoopBackOff at sample time
+#       — same incident class, runtime variant.
+#   * warm-pool ksvcs exist but 0 are Ready
+#       — controller alive but every pod broken.
+#
+# Modeled after k8s/cnpg/logical-replication/replication-monitor.yaml
+# (deliberately the same structure/operator-experience).
+#
+# Deployed once per region by the matching `Deploy Warm-Pool Monitor`
+# step in .github/workflows/deploy.yml, which sed-substitutes the
+# `shogo-staging-system` / `shogo-staging-workspaces` placeholders to
+# the real per-region namespaces.
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: warm-pool-monitor
+  namespace: shogo-staging-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: warm-pool-monitor
+---
+# Read-only across the system + workspaces namespaces. We use a
+# ClusterRole because the monitor reads from two namespaces (api ksvc
+# in -system, warm-pool ksvc + pods in -workspaces) and a single
+# ClusterRoleBinding is simpler than two namespaced bindings.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: shogo-warm-pool-monitor
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: warm-pool-monitor
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["services", "revisions"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: shogo-warm-pool-monitor
+subjects:
+  - kind: ServiceAccount
+    name: warm-pool-monitor
+    namespace: shogo-staging-system
+roleRef:
+  kind: ClusterRole
+  name: shogo-warm-pool-monitor
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: warm-pool-monitor
+  namespace: shogo-staging-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: warm-pool-monitor
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 120
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: warm-pool-monitor
+          containers:
+            - name: monitor
+              # alpine/k8s ships kubectl + jq + a posix shell in a small
+              # multi-arch image. Pinned to a specific patch so a
+              # registry-side mutation can't change behavior under us.
+              image: alpine/k8s:1.31.5
+              env:
+                - name: API_NS
+                  value: shogo-staging-system
+                - name: WP_NS
+                  value: shogo-staging-workspaces
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  echo "=== Warm-Pool Monitor — $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+                  EXIT_RC=0
+
+                  # 1) Bootstrap placeholder leak on api ksvc.
+                  # Mirrors the guardrail in
+                  # `.github/scripts/sync-api-env.sh`: a 'bootstrap'
+                  # substring on any api env value indicates the
+                  # kustomize overlay placeholder survived past the
+                  # Sync API environment variables step. RUNTIME_IMAGE
+                  # is the obvious case; we check every env value for
+                  # cheap defense-in-depth.
+                  echo "--- api ksvc env audit ---"
+                  BAD_ENVS=$(kubectl get ksvc api -n "$API_NS" -o json | jq -r '
+                    .spec.template.spec.containers[0].env // []
+                    | map(select((.value? // "") | type == "string" and contains("bootstrap")))
+                    | map("\(.name)=\(.value)")
+                    | join("; ")
+                  ')
+                  if [ -n "$BAD_ENVS" ]; then
+                    echo "CRITICAL: api ksvc has placeholder env value(s): $BAD_ENVS"
+                    EXIT_RC=1
+                  fi
+
+                  # 2) Warm-pool pods stuck on image pull or crashlooping.
+                  echo "--- warm-pool pod health ---"
+                  BROKEN=$(kubectl get pods -n "$WP_NS" -o json | jq -r '
+                    [.items[]
+                      | select(.metadata.labels["serving.knative.dev/service"] // "" | startswith("warm-pool-"))
+                      | (
+                          ((.status.containerStatuses // []) + (.status.initContainerStatuses // []))
+                          | map(.state.waiting.reason? // "")
+                          | map(select(. == "ImagePullBackOff" or . == "ErrImagePull" or . == "CrashLoopBackOff"))
+                        ) as $bad
+                      | select(($bad | length) > 0)
+                      | "\(.metadata.name) [\($bad | join(\",\"))]"
+                    ] | join("; ")
+                  ')
+                  if [ -n "$BROKEN" ]; then
+                    echo "CRITICAL: warm-pool pods stuck: $BROKEN"
+                    EXIT_RC=1
+                  fi
+
+                  # 3) Warm-pool readiness.
+                  # Zero ksvcs is OK (post-incident wipe, fresh
+                  # bootstrap); zero ready out of N existing is not.
+                  echo "--- warm-pool ksvc readiness ---"
+                  KSVC_JSON=$(kubectl get ksvc -n "$WP_NS" -l "shogo.io/warm-pool=true" -o json)
+                  TOTAL=$(echo "$KSVC_JSON" | jq '.items | length')
+                  READY=$(echo "$KSVC_JSON" | jq '
+                    [.items[] | select(.status.conditions[]? | select(.type == "Ready" and .status == "True"))] | length
+                  ')
+                  echo "  total=$TOTAL  ready=$READY"
+                  if [ "$TOTAL" -gt 0 ] && [ "$READY" -eq 0 ]; then
+                    echo "CRITICAL: $TOTAL warm-pool ksvcs but 0 are Ready"
+                    EXIT_RC=1
+                  fi
+
+                  echo "=== Monitor complete (exit=$EXIT_RC) ==="
+                  exit "$EXIT_RC"
+              resources:
+                requests:
+                  memory: "64Mi"
+                  cpu: "50m"
+                limits:
+                  memory: "128Mi"
+                  cpu: "100m"
