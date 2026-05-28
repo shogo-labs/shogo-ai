@@ -666,6 +666,23 @@
         "functions": "5776/7208 (80.13%)"
       },
       "note": "Second Sync within the same session. Fresh `bun --conditions=development test --coverage` across all 11 backend packages produced identical totals to the 2026-05-28T10:40:37.355974+00:00 sync (06807c3a). No commits to working tree since fa457189; expected no delta. README badge unchanged at 82.12% yellow. Frontend badge UNTOUCHED."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 2 \u2014 opportunistic",
+      "message": "test(coverage): voice.ts debit + error tails \u2014 92.48% \u2192 94.38% lines",
+      "perFile": [
+        {
+          "file": "apps/api/src/routes/voice.ts",
+          "beforeLines": "1365/1476 (92.48%)",
+          "afterLines": "1393/1476 (94.38%)",
+          "deltaLinesHit": 28,
+          "deltaFuncsHit": 0,
+          "newTests": 8
+        }
+      ],
+      "note": "New test file voice-routes-debit-and-error-tails.test.ts covers: provision-number setup debit failure console (L1205-1208) and monthly debit failure console (L1231-1234) using a counter-based consumeUsage mock; translator/chat outer catch with streamText throwing (L741-748); /voice/signed-url shared-agent getSignedUrl catch (L580-584); /voice/signed-url?projectId=... projectSignedUrlHandler catch (L299-310) + happy path + 404 when agent not found; /voice/transcript create branch (L435-443) when body has no id. Funcs remain at 100%. No new test failures."
     }
   ],
   "frontend": {
