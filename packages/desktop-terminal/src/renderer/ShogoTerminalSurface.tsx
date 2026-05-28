@@ -427,25 +427,10 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
             scheduleSnapshotSave()
           }
         })
-        term.onData((data) => {
-          // eslint-disable-next-line no-console
-          console.debug('[shogo-term] keystroke →', data.length, 'bytes')
-          client.send(data)
-        })
+        term.onData((data) => client.send(data))
         term.onResize(({ cols, rows }) => client.resize(cols, rows))
 
-        // eslint-disable-next-line no-console
-        console.info('[shogo-term] surface mounted — listeners attached, state =', client.state)
-        let firstDataLogged = false
         const offData = client.onData((bytes) => {
-          if (!firstDataLogged) {
-            firstDataLogged = true
-            const preview = Array.from(bytes.slice(0, 32))
-              .map((b) => (b < 32 || b > 126 ? `\\x${b.toString(16).padStart(2, '0')}` : String.fromCharCode(b)))
-              .join('')
-            // eslint-disable-next-line no-console
-            console.info('[shogo-term] first PTY bytes arrived ✓ — size:', bytes.byteLength, ', preview:', preview)
-          }
           let decoded
           try {
             decoded = decoder.feed(bytes)
@@ -459,13 +444,6 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           const activeCommand = activeCommandRef.current
           if (activeCommand !== null && decoded.passthrough.byteLength > 0) {
             commandOutputRef.current.get(activeCommand)?.push(new TextDecoder().decode(decoded.passthrough))
-          }
-          if (decoded.passthrough.byteLength === 0 && bytes.byteLength > 0) {
-            // eslint-disable-next-line no-console
-            console.warn(
-              '[shogo-term] decoder consumed', bytes.byteLength,
-              'bytes with 0 passthrough — events:', decoded.events.length,
-            )
           }
           batcher.write(decoded.passthrough)
         })

@@ -160,9 +160,6 @@ export class DesktopPtyClient {
    * (re)attach so a re-spawned shell starts at the correct dimensions. */
   private lastCols = 0
   private lastRows = 0
-  /** Bound for `port.removeEventListener`. */
-  /** Counter so we log only the first ~3 messages to avoid console spam. */
-  private portMsgCount = 0
   private readonly handlePortMessage = (ev: { data: ArrayBuffer | Uint8Array }) => {
     // Defensive: some Electron builds dispatch transient message events
     // with an undefined payload (close/error sentinel). Drop them rather
@@ -170,14 +167,6 @@ export class DesktopPtyClient {
     const raw: ArrayBuffer | Uint8Array | undefined = ev?.data
     if (raw == null) return
     const buf = raw instanceof ArrayBuffer ? new Uint8Array(raw) : raw
-    if (this.portMsgCount < 3) {
-      this.portMsgCount += 1
-      // eslint-disable-next-line no-console
-      console.info(
-        '[shogo-pty-client] port msg #%d — %d bytes, first byte: 0x%s',
-        this.portMsgCount, buf.byteLength, buf[0]?.toString(16) ?? '??',
-      )
-    }
     const frame = decodeServerFrame(buf)
     if (!frame) {
       // eslint-disable-next-line no-console
@@ -307,8 +296,6 @@ export class DesktopPtyClient {
       if (this.sessionGone && this.spawnOptions) {
         await this.respawn()
       }
-      // eslint-disable-next-line no-console
-      console.info('[shogo-pty-client] attach → bridge.attach(sessionId=%s, sinceSeq=%d)', this.sessionId, this.lastSeq)
       const { port, channelId, latestSeq } = await this.bridge.attach(this.sessionId, this.lastSeq)
       // eslint-disable-next-line no-console
       console.info(
@@ -328,8 +315,6 @@ export class DesktopPtyClient {
       // we accept that the replay arrives in the same MessagePort queue.
       port.addEventListener('message', this.handlePortMessage)
       port.start?.()
-      // eslint-disable-next-line no-console
-      console.info('[shogo-pty-client] port subscribed, start() called — waiting for DATA frames')
       this.retryCount = 0
       this.everOpened = true
       this.sessionGone = false
