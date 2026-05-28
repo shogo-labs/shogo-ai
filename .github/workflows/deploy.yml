@@ -874,31 +874,23 @@ jobs:
       - name: Sync API environment variables
         env:
           RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
+        # The previous inline implementation here used `python3 -c ...
+        # 2>/dev/null) || IDX="-1"` which silently swallowed every
+        # failure mode (kubectl flake, json parse error, missing env
+        # var) and continued the deploy with the kustomize overlay
+        # placeholder still in place. See `.github/scripts/sync-api-env.sh`
+        # for the full postmortem. The script `set -euo pipefail`s,
+        # ADDs missing env vars instead of skipping, and verifies the
+        # post-patch value via a fresh `kubectl get`.
         run: |
-          patch_env() {
-            local var_name="$1" expected="$2"
-            IDX=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o json | \
-              python3 -c "import sys,json; envs=json.load(sys.stdin)['spec']['template']['spec']['containers'][0]['env']; print(next((i for i,e in enumerate(envs) if e['name']=='${var_name}'), -1))" 2>/dev/null) || IDX="-1"
-            if [ -z "$IDX" ] || [ "$IDX" = "-1" ]; then
-              echo "  $var_name not found in api ksvc env — skipping"
-              return
-            fi
-            CURRENT=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o jsonpath="{.spec.template.spec.containers[0].env[${IDX}].value}")
-            if [ "$CURRENT" != "$expected" ]; then
-              echo "  Updating $var_name: $CURRENT -> $expected"
-              kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
-                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/env/${IDX}/value\", \"value\": \"${expected}\"}
-              ]"
-            else
-              echo "  $var_name already correct"
-            fi
-          }
-          patch_env BETTER_AUTH_URL "https://${{ env.DOMAIN }}"
-          # Pin RUNTIME_IMAGE to the immutable SHA-tagged build resolved above.
-          # This is what the warm-pool controller uses for newly minted ksvc;
-          # see the staging incident postmortem (2026-05-04) for why we no
-          # longer use the mutable `:${env}-latest` tag here.
-          patch_env RUNTIME_IMAGE "$RUNTIME_IMAGE"
+          .github/scripts/sync-api-env.sh "${{ env.NS_SYSTEM }}" BETTER_AUTH_URL "https://${{ env.DOMAIN }}"
+          # RUNTIME_IMAGE is what the warm-pool controller bakes into newly
+          # minted agent ksvc. Pin it to the immutable :${env}-<sha> tag
+          # resolved by the runtime-tag step. The 2026-05-04 staging
+          # incident covered why the mutable `:${env}-latest` tag is
+          # unsafe here; the 2026-05-27 production incident covered why
+          # silent-skip-on-error is even worse.
+          .github/scripts/sync-api-env.sh "${{ env.NS_SYSTEM }}" RUNTIME_IMAGE "$RUNTIME_IMAGE"
 
       - name: Wait for rollout
         run: |
@@ -1241,17 +1233,20 @@ jobs:
           patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
           patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
 
-          # Pin RUNTIME_IMAGE on api ksvc to the immutable SHA tag
-          IDX=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o json | \
-            python3 -c "import sys,json; envs=json.load(sys.stdin)['spec']['template']['spec']['containers'][0]['env']; print(next((i for i,e in enumerate(envs) if e['name']=='RUNTIME_IMAGE'), -1))" 2>/dev/null) || IDX="-1"
-          if [ -n "$IDX" ] && [ "$IDX" != "-1" ]; then
-            CURRENT=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o jsonpath="{.spec.template.spec.containers[0].env[${IDX}].value}")
-            if [ "$CURRENT" != "$RUNTIME_IMAGE" ]; then
-              kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
-                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/env/${IDX}/value\", \"value\": \"${RUNTIME_IMAGE}\"}
-              ]"
-            fi
-          fi
+      # The inline `python3 ... 2>/dev/null) || IDX="-1"` block that used
+      # to live at the bottom of `Deploy Knative services` silently
+      # skipped on every error path (the kubectl pipefail, the python
+      # parse, the patch itself), let the kustomize overlay placeholder
+      # `:production-bootstrap` survive the deploy on EU/India during
+      # v1.8.13, and triggered the 2026-05-27 502 incident once the
+      # warm-pool controller tried to mint pods with a non-existent
+      # image. The shared script `set -euo pipefail`s, ADDs missing env
+      # vars, and verifies the post-patch value via a fresh `kubectl get`.
+      - name: Sync API environment variables
+        env:
+          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
+        run: |
+          .github/scripts/sync-api-env.sh "${{ env.NS_SYSTEM }}" RUNTIME_IMAGE "$RUNTIME_IMAGE"
 
       - name: Wait for rollout and health check
         run: |
@@ -1825,17 +1820,20 @@ jobs:
           patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
           patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
 
-          # Pin RUNTIME_IMAGE on api ksvc to the immutable SHA tag
-          IDX=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o json | \
-            python3 -c "import sys,json; envs=json.load(sys.stdin)['spec']['template']['spec']['containers'][0]['env']; print(next((i for i,e in enumerate(envs) if e['name']=='RUNTIME_IMAGE'), -1))" 2>/dev/null) || IDX="-1"
-          if [ -n "$IDX" ] && [ "$IDX" != "-1" ]; then
-            CURRENT=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o jsonpath="{.spec.template.spec.containers[0].env[${IDX}].value}")
-            if [ "$CURRENT" != "$RUNTIME_IMAGE" ]; then
-              kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
-                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/env/${IDX}/value\", \"value\": \"${RUNTIME_IMAGE}\"}
-              ]"
-            fi
-          fi
+      # The inline `python3 ... 2>/dev/null) || IDX="-1"` block that used
+      # to live at the bottom of `Deploy Knative services` silently
+      # skipped on every error path (the kubectl pipefail, the python
+      # parse, the patch itself), let the kustomize overlay placeholder
+      # `:production-bootstrap` survive the deploy on EU/India during
+      # v1.8.13, and triggered the 2026-05-27 502 incident once the
+      # warm-pool controller tried to mint pods with a non-existent
+      # image. The shared script `set -euo pipefail`s, ADDs missing env
+      # vars, and verifies the post-patch value via a fresh `kubectl get`.
+      - name: Sync API environment variables
+        env:
+          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
+        run: |
+          .github/scripts/sync-api-env.sh "${{ env.NS_SYSTEM }}" RUNTIME_IMAGE "$RUNTIME_IMAGE"
 
       - name: Wait for rollout and health check
         run: |
@@ -2254,17 +2252,20 @@ jobs:
           patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
           patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
 
-          # Pin RUNTIME_IMAGE on api ksvc to the immutable SHA tag
-          IDX=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o json | \
-            python3 -c "import sys,json; envs=json.load(sys.stdin)['spec']['template']['spec']['containers'][0]['env']; print(next((i for i,e in enumerate(envs) if e['name']=='RUNTIME_IMAGE'), -1))" 2>/dev/null) || IDX="-1"
-          if [ -n "$IDX" ] && [ "$IDX" != "-1" ]; then
-            CURRENT=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o jsonpath="{.spec.template.spec.containers[0].env[${IDX}].value}")
-            if [ "$CURRENT" != "$RUNTIME_IMAGE" ]; then
-              kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
-                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/env/${IDX}/value\", \"value\": \"${RUNTIME_IMAGE}\"}
-              ]"
-            fi
-          fi
+      # The inline `python3 ... 2>/dev/null) || IDX="-1"` block that used
+      # to live at the bottom of `Deploy Knative services` silently
+      # skipped on every error path (the kubectl pipefail, the python
+      # parse, the patch itself), let the kustomize overlay placeholder
+      # `:production-bootstrap` survive the deploy on EU/India during
+      # v1.8.13, and triggered the 2026-05-27 502 incident once the
+      # warm-pool controller tried to mint pods with a non-existent
+      # image. The shared script `set -euo pipefail`s, ADDs missing env
+      # vars, and verifies the post-patch value via a fresh `kubectl get`.
+      - name: Sync API environment variables
+        env:
+          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
+        run: |
+          .github/scripts/sync-api-env.sh "${{ env.NS_SYSTEM }}" RUNTIME_IMAGE "$RUNTIME_IMAGE"
 
       - name: Wait for rollout and health check
         run: |
