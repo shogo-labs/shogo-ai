@@ -232,3 +232,8 @@ apps/api/coverage/
 # Per-package coverage build outputs (committed snapshot lives in coverage/baselines/)
 packages/*/coverage/
 apps/*/coverage/
+
+# Agent-local state (never commit)
+.shogo/
+config.json
+apps/mobile/dist.stale-*/

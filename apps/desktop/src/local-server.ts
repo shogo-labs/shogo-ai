@@ -322,7 +322,7 @@ export async function startLocalServer(): Promise<void> {
       ? path.join(projectRoot, 'packages', 'sdk', 'bin', 'cli.mjs')
       : path.join(projectRoot, 'sdk-cli.mjs'),
     AGENT_RUNTIME_ENTRY: IS_DEV
-      ? path.join(projectRoot, 'packages', 'agent-runtime', 'src', 'entry.ts')
+      ? path.join(projectRoot, 'packages', 'agent-runtime', 'src', 'server.ts')
       : path.join(bundleDir, 'agent-runtime.js'),
     CANVAS_RUNTIME_DIST: IS_DEV
       ? path.join(projectRoot, 'packages', 'canvas-runtime', 'dist')

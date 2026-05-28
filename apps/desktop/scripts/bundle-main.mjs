@@ -145,6 +145,7 @@ const EXTERNALS = [
   'fflate',
   'multicast-dns',
   'node-ical',
+  'node-pty',
   'ps-list',
 ];
 
