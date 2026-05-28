@@ -569,6 +569,30 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
       setMenuPos({ x: ev.clientX, y: ev.clientY })
     }
 
+
+    const sendKeyboardFallback = React.useCallback((ev: React.KeyboardEvent<HTMLDivElement>) => {
+      const target = ev.target as HTMLElement | null
+      const tag = target?.tagName?.toLowerCase()
+      if (tag === 'textarea' || tag === 'input' || target?.isContentEditable) return
+      if (ev.metaKey && ev.key.toLowerCase() !== 'c') return
+      let data: string | null = null
+      if (ev.ctrlKey && ev.key.toLowerCase() === 'c') data = '\x03'
+      else if (ev.ctrlKey && ev.key.toLowerCase() === 'd') data = '\x04'
+      else if (ev.key === 'Enter') data = '\r'
+      else if (ev.key === 'Backspace') data = '\x7f'
+      else if (ev.key === 'Tab') data = '\t'
+      else if (ev.key === 'Escape') data = '\x1b'
+      else if (ev.key === 'ArrowUp') data = '\x1b[A'
+      else if (ev.key === 'ArrowDown') data = '\x1b[B'
+      else if (ev.key === 'ArrowRight') data = '\x1b[C'
+      else if (ev.key === 'ArrowLeft') data = '\x1b[D'
+      else if (!ev.ctrlKey && !ev.altKey && ev.key.length === 1) data = ev.key
+      if (data == null) return
+      ev.preventDefault()
+      ev.stopPropagation()
+      client.send(data)
+    }, [client])
+
     const menuGroups = React.useMemo(() => {
       if (!menuPos) return null
       const term = termRef.current
@@ -630,12 +654,16 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
     return React.createElement('div', {
       'data-shogo-terminal-surface': 'true',
       onContextMenu: openContextMenu,
+      onMouseDown: () => termRef.current?.focus(),
+      onKeyDown: sendKeyboardFallback,
+      tabIndex: 0,
       style: {
         position: 'relative',
         width: '100%',
         height: '100%',
         display: hidden ? 'none' : 'block',
         background: '#1e1e1e',
+        outline: 'none',
       },
     },
       React.createElement('div', {

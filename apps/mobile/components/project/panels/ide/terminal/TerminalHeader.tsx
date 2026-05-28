@@ -303,7 +303,7 @@ export function TerminalHeader(props: TerminalHeaderProps) {
       {killOpen && (
         <div
           role="presentation"
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
+          className="fixed inset-0 z-[9999] bg-black/40"
           onClick={() => setKillOpen(false)}
         >
           <div
@@ -311,7 +311,7 @@ export function TerminalHeader(props: TerminalHeaderProps) {
             aria-labelledby="kill-title"
             aria-describedby="kill-body"
             onClick={(e) => e.stopPropagation()}
-            className="w-[420px] rounded border border-[#454545] bg-[#252526] p-4 text-[#cccccc] shadow-2xl"
+            className="fixed left-1/2 top-1/2 max-h-[calc(100vh-32px)] w-[min(420px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 overflow-auto rounded border border-[#454545] bg-[#252526] p-4 text-[#cccccc] shadow-2xl"
           >
             <h2 id="kill-title" className="mb-2 text-[13px] font-semibold">Kill terminal?</h2>
             <p id="kill-body" className="mb-4 text-[12px] text-[#bdbdbd]">
