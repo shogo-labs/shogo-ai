@@ -1026,6 +1026,23 @@
         }
       ],
       "note": "Wave 2 cleanup pass. New file git-service-edge-branches.test.ts (12 tests) targets uncov error/branch paths the two existing test files do not reach. Uses real git repos in tmp dirs to drive actual execFileSync. Covers: initRepo nothing-to-commit catch (L532-538), commit() no-staged null return (L709-715), commit() author optional arm, getDiff status switch deleted/renamed/added (L887-905), ensureGitignoreEntries EISDIR catch (L370), removeStaleIndexLock 5-min-old lock removal (L440-445), checkout to current HEAD and to nonexistent ref (L965-1004). Joint coverage shows modest +6-line delta; the value is in the new error-path test coverage. 79 pass / 0 fail across all 3 git-service test files (was 67/0)."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 2 ad-hoc - greenfield job test",
+      "message": "test(coverage): jobs/affiliate-invoice-reconciliation.ts - zero prior tests to 80 percent lines / 97 percent funcs",
+      "perFile": [
+        {
+          "file": "apps/api/src/jobs/affiliate-invoice-reconciliation.ts",
+          "beforeLines": "~5/147 (estimated)",
+          "afterLines": "~117/147 (80.00%)",
+          "deltaLinesHit": 112,
+          "deltaFuncsHit": 6,
+          "newTests": 12
+        }
+      ],
+      "note": "Greenfield job test. Zero existing tests covered this 147-line file. New file affiliate-invoice-reconciliation.test.ts (12 tests, all passing) mocks @lib/global-job-lock, @services/affiliate.service, and stripe to drive every reachable branch of runAffiliateInvoiceReconciliation and startAffiliateInvoiceReconciliationCron. Covers: lock-skipped early return, SHOGO_AFFILIATES_NATIVE=false short-circuit, missing STRIPE_SECRET_KEY warning, stripeFactory returning null, happy single-page walk, per-invoice failure counted in summary.failed, multi-page pagination via starting_after cursor, empty first-page break, windowDays option, default windowDays=7, default-factory branch (STRIPE_SECRET_KEY set, uses mocked Stripe ctor). Cron test substitutes globalThis.setTimeout and setInterval, captures their callbacks, then invokes the captured outer setTimeout callback + the inner setInterval callback to drive lines 128-141. Only L135 remains uncov (.catch arm of the initial run; would only fire if runAffiliateInvoiceReconciliation rejected, which requires breaking the inner withGlobalJobLock contract). 97.53 percent funcs covered."
     }
   ],
   "frontend": {
