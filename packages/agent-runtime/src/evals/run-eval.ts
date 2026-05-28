@@ -1521,7 +1521,11 @@ async function main() {
 
   // Save results
   const timestamp = Date.now()
-  const outputPath = resolve(tmpdir(), `agent-eval-results-${modelArg}-${trackArg}-${timestamp}.json`)
+  // Sanitize model id for filesystem use — OpenRouter ids embed `/` (e.g.
+  // `openrouter:xiaomi/mimo-v2.5`) and `:` which would otherwise fail to
+  // open as a flat path under tmpdir.
+  const safeModel = modelArg.replace(/[\/:]/g, '_')
+  const outputPath = resolve(tmpdir(), `agent-eval-results-${safeModel}-${trackArg}-${timestamp}.json`)
   const exportData: EvalSuiteResult = {
     name: `agent-runtime-${trackArg}`,
     timestamp: new Date().toISOString(),

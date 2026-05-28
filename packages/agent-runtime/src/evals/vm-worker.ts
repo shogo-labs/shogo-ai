@@ -124,6 +124,11 @@ function createVMManager(): VMManagerLike {
 }
 
 function getVMImageDir(): string {
+  // Honor the same env override the desktop main process uses
+  // (apps/desktop/src/vm/index.ts::getVMImageDir). This lets eval runs use
+  // a pre-provisioned image installed under ~/Library/Application Support
+  // without first copying it into the repo's resources/vm directory.
+  if (process.env.SHOGO_VM_IMAGE_DIR) return process.env.SHOGO_VM_IMAGE_DIR
   return resolve(REPO_ROOT, 'apps/desktop/resources/vm')
 }
 
@@ -180,6 +185,8 @@ export async function startVMWorker(
   if (process.env.ANTHROPIC_API_KEY && !vmEnv.ANTHROPIC_API_KEY) vmEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY
   if (process.env.OPENAI_API_KEY && !vmEnv.OPENAI_API_KEY) vmEnv.OPENAI_API_KEY = process.env.OPENAI_API_KEY
   if (process.env.GOOGLE_API_KEY && !vmEnv.GOOGLE_API_KEY) vmEnv.GOOGLE_API_KEY = process.env.GOOGLE_API_KEY
+  if (process.env.OPENROUTER_API_KEY && !vmEnv.OPENROUTER_API_KEY) vmEnv.OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY
+  if (process.env.OPENROUTER_BASE_URL && !vmEnv.OPENROUTER_BASE_URL) vmEnv.OPENROUTER_BASE_URL = process.env.OPENROUTER_BASE_URL
 
   const handle = await manager.startVM({
     workspaceDir: dir,

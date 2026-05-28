@@ -164,6 +164,7 @@ const ENV_PREFIXES = [
   'ANTHROPIC_', 'AI_PROXY_', 'OPENAI_', 'GOOGLE_API_KEY', 'AWS_', 'STRIPE_',
   'GITHUB_TOKEN', 'GITLAB_TOKEN', 'COMPOSIO_', 'SERPER_',
   'HUGGINGFACEHUB_', 'WEBARENA_', 'WEB_CACHE_',
+  'OPENROUTER_', 'XAI_', 'GROQ_', 'CEREBRAS_', 'MISTRAL_',
 ]
 
 let _envFilePath: string | null = null

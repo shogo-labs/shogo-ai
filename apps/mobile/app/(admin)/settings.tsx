@@ -27,12 +27,23 @@ import {
   ChevronDown,
   Cloud,
   Check,
+  ListFilter,
+  Plus,
+  X,
+  Search,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { PlatformApi, type LlmConfig } from '@shogo-ai/sdk'
-import { getModelsByProvider, AGENT_MODE_DEFAULTS, type ModelEntry } from '@shogo/model-catalog'
+import {
+  PlatformApi,
+  BYOK_PROVIDERS,
+  type LlmConfig,
+  type VisibleModelsConfig,
+  type VisibleOpenRouterModel,
+} from '@shogo-ai/sdk'
+import { getModelsByProvider, AGENT_MODE_DEFAULTS, OPENROUTER_MODEL_PREFIX, type ModelEntry } from '@shogo/model-catalog'
 import { createHttpClient } from '../../lib/api'
 import { usePlatformConfig } from '../../lib/platform-config'
+import { invalidateVisibleModelsCache } from '../../lib/visible-models'
 
 // =============================================================================
 // Types
@@ -142,6 +153,8 @@ function CloudModelSettingsPage() {
           onAdvancedChange={setCloudAdvancedModel}
           onDefaultModeChange={setDefaultMode}
         />
+
+        <VisibleModelsCard platform={platform} hasOpenRouterKey={false} />
       </View>
     </ScrollView>
   )
@@ -188,10 +201,11 @@ function LocalSettingsPage() {
   const [embeddingModel, setEmbeddingModel] = useState('')
   const [embeddingDims, setEmbeddingDims] = useState('')
 
-  const [anthropicKey, setAnthropicKey] = useState('')
-  const [openaiKey, setOpenaiKey] = useState('')
-  const [anthropicMask, setAnthropicMask] = useState('')
-  const [openaiMask, setOpenaiMask] = useState('')
+  // BYOK provider keys, keyed by provider id. `keyMasks` reflects what the
+  // server has on file (read via /api/local/api-keys) and `keyDrafts` holds
+  // unsaved input from the admin. We never round-trip the masked value back.
+  const [keyMasks, setKeyMasks] = useState<Record<string, string>>({})
+  const [keyDrafts, setKeyDrafts] = useState<Record<string, string>>({})
 
   const [cloudBasicModel, setCloudBasicModel] = useState('')
   const [cloudAdvancedModel, setCloudAdvancedModel] = useState('')
@@ -213,18 +227,18 @@ function LocalSettingsPage() {
 
   const inferMode = useCallback((
     llmCfg: LlmConfig,
-    keyMasks: Record<string, string>,
+    masks: Record<string, string>,
     shogoConnected: boolean,
   ): AIMode | null => {
     if (shogoConnected) return 'shogo-cloud'
     if (llmCfg.LOCAL_LLM_BASE_URL) return 'local-llm'
-    if (keyMasks.ANTHROPIC_API_KEY || keyMasks.OPENAI_API_KEY) return 'api-keys'
+    if (Object.keys(masks).length > 0) return 'api-keys'
     return null
   }, [])
 
   const fetchConfig = useCallback(async () => {
     try {
-      const [llmCfg, keyMasks, shogoData, agentModels] = await Promise.all([
+      const [llmCfg, masks, shogoData, agentModels] = await Promise.all([
         platform.getLlmConfig(),
         platform.getProviderKeyMasks(),
         platform.getShogoKeyStatus(),
@@ -241,8 +255,7 @@ function LocalSettingsPage() {
       setEmbeddingModel(llmCfg.LOCAL_EMBEDDING_MODEL || '')
       setEmbeddingDims(llmCfg.LOCAL_EMBEDDING_DIMENSIONS || '')
 
-      if (keyMasks.ANTHROPIC_API_KEY) setAnthropicMask(keyMasks.ANTHROPIC_API_KEY)
-      if (keyMasks.OPENAI_API_KEY) setOpenaiMask(keyMasks.OPENAI_API_KEY)
+      setKeyMasks(masks)
 
       setShogoKeyConnected(shogoData.connected)
 
@@ -250,7 +263,7 @@ function LocalSettingsPage() {
       if (storedMode && ['shogo-cloud', 'api-keys', 'local-llm'].includes(storedMode)) {
         setActiveMode(storedMode)
       } else {
-        const inferred = inferMode(llmCfg, keyMasks, shogoData.connected)
+        const inferred = inferMode(llmCfg, masks, shogoData.connected)
         setActiveMode(inferred)
         if (inferred) {
           platform.putLlmConfig({ AI_MODE: inferred }).catch(() => {})
@@ -361,28 +374,50 @@ function LocalSettingsPage() {
     if (!isLoading) configLoadedRef.current = true
   }, [isLoading])
 
-  const handleApiKeyBlur = useCallback(async (provider: 'anthropic' | 'openai') => {
-    const key = provider === 'anthropic' ? anthropicKey : openaiKey
+  const handleProviderKeySave = useCallback(async (providerId: string) => {
+    const key = keyDrafts[providerId]
     if (!key) return
     setSaveStatus('saving')
     try {
-      await platform.putProviderKeys(
-        provider === 'anthropic' ? { anthropicApiKey: key } : { openaiApiKey: key },
-      )
-      if (provider === 'anthropic') {
-        setAnthropicMask(key.slice(0, 8) + '...' + key.slice(-4))
-        setAnthropicKey('')
-      } else {
-        setOpenaiMask(key.slice(0, 8) + '...' + key.slice(-4))
-        setOpenaiKey('')
-      }
+      await platform.putProviderKeys({ [providerId]: key })
+      setKeyMasks((prev) => ({
+        ...prev,
+        [providerId]: key.slice(0, 8) + '...' + key.slice(-4),
+      }))
+      setKeyDrafts((prev) => {
+        const next = { ...prev }
+        delete next[providerId]
+        return next
+      })
       setSaveStatus('saved')
       setTimeout(() => setSaveStatus('idle'), 2000)
     } catch {
       setSaveStatus('error')
       setTimeout(() => setSaveStatus('idle'), 3000)
     }
-  }, [anthropicKey, openaiKey, platform])
+  }, [keyDrafts, platform])
+
+  const handleProviderKeyClear = useCallback(async (providerId: string) => {
+    setSaveStatus('saving')
+    try {
+      await platform.putProviderKeys({ [providerId]: null })
+      setKeyMasks((prev) => {
+        const next = { ...prev }
+        delete next[providerId]
+        return next
+      })
+      setKeyDrafts((prev) => {
+        const next = { ...prev }
+        delete next[providerId]
+        return next
+      })
+      setSaveStatus('saved')
+      setTimeout(() => setSaveStatus('idle'), 2000)
+    } catch {
+      setSaveStatus('error')
+      setTimeout(() => setSaveStatus('idle'), 3000)
+    }
+  }, [platform])
 
   if (isLoading) {
     return (
@@ -519,75 +554,24 @@ function LocalSettingsPage() {
               onAdvancedChange={setCloudAdvancedModel}
               onDefaultModeChange={setCloudDefaultMode}
             />
+
+            <VisibleModelsCard
+              platform={platform}
+              hasOpenRouterKey={!!keyMasks.openrouter}
+            />
           </>
         )}
 
         {/* ── API Keys config ────────────────────────────────────────── */}
         {activeMode === 'api-keys' && (
           <>
-            <SectionCard
-              icon={Key}
-              title="Cloud API Keys"
-              description="Enter your own Anthropic or OpenAI API keys"
-            >
-              <View className="gap-4">
-                <FieldGroup label="Anthropic API Key">
-                  <View className="flex-row items-center gap-2">
-                    {anthropicMask ? (
-                      <View className="flex-row items-center gap-1.5">
-                        <View className="h-2 w-2 rounded-full bg-green-500" />
-                        <Text className="text-xs text-muted-foreground">{anthropicMask}</Text>
-                      </View>
-                    ) : (
-                      <View className="flex-row items-center gap-1.5">
-                        <View className="h-2 w-2 rounded-full bg-amber-500" />
-                        <Text className="text-xs text-muted-foreground">Not configured</Text>
-                      </View>
-                    )}
-                  </View>
-                  <TextInput
-                    value={anthropicKey}
-                    onChangeText={setAnthropicKey}
-                    onBlur={() => handleApiKeyBlur('anthropic')}
-                    onSubmitEditing={() => handleApiKeyBlur('anthropic')}
-                    placeholder={anthropicMask ? 'Enter new key to replace' : 'sk-ant-...'}
-                    secureTextEntry
-                    className="bg-background border border-border rounded-lg px-3 py-2.5 text-sm text-foreground mt-2"
-                    placeholderTextColor="#666"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                  />
-                </FieldGroup>
-
-                <FieldGroup label="OpenAI API Key">
-                  <View className="flex-row items-center gap-2">
-                    {openaiMask ? (
-                      <View className="flex-row items-center gap-1.5">
-                        <View className="h-2 w-2 rounded-full bg-green-500" />
-                        <Text className="text-xs text-muted-foreground">{openaiMask}</Text>
-                      </View>
-                    ) : (
-                      <View className="flex-row items-center gap-1.5">
-                        <View className="h-2 w-2 rounded-full bg-muted-foreground" />
-                        <Text className="text-xs text-muted-foreground">Optional</Text>
-                      </View>
-                    )}
-                  </View>
-                  <TextInput
-                    value={openaiKey}
-                    onChangeText={setOpenaiKey}
-                    onBlur={() => handleApiKeyBlur('openai')}
-                    onSubmitEditing={() => handleApiKeyBlur('openai')}
-                    placeholder={openaiMask ? 'Enter new key to replace' : 'sk-...'}
-                    secureTextEntry
-                    className="bg-background border border-border rounded-lg px-3 py-2.5 text-sm text-foreground mt-2"
-                    placeholderTextColor="#666"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                  />
-                </FieldGroup>
-              </View>
-            </SectionCard>
+            <ProviderKeysCard
+              keyMasks={keyMasks}
+              keyDrafts={keyDrafts}
+              onDraftChange={(id, val) => setKeyDrafts((prev) => ({ ...prev, [id]: val }))}
+              onSave={handleProviderKeySave}
+              onClear={handleProviderKeyClear}
+            />
 
             <AgentModelDefaultsCard
               basicModel={cloudBasicModel}
@@ -596,6 +580,11 @@ function LocalSettingsPage() {
               onBasicChange={setCloudBasicModel}
               onAdvancedChange={setCloudAdvancedModel}
               onDefaultModeChange={setCloudDefaultMode}
+            />
+
+            <VisibleModelsCard
+              platform={platform}
+              hasOpenRouterKey={!!keyMasks.openrouter}
             />
           </>
         )}
@@ -1019,6 +1008,403 @@ function CatalogModelSelector({
           </ScrollView>
         </View>
       )}
+    </View>
+  )
+}
+
+// =============================================================================
+// Provider Keys Card — generic BYOK key form, driven by `BYOK_PROVIDERS`.
+// =============================================================================
+
+function ProviderKeysCard({
+  keyMasks,
+  keyDrafts,
+  onDraftChange,
+  onSave,
+  onClear,
+}: {
+  keyMasks: Record<string, string>
+  keyDrafts: Record<string, string>
+  onDraftChange: (providerId: string, value: string) => void
+  onSave: (providerId: string) => void
+  onClear: (providerId: string) => void
+}) {
+  return (
+    <SectionCard
+      icon={Key}
+      title="Provider API Keys"
+      description="Bring your own keys for any of these providers. Models that need a key will only show up to users once it's configured."
+    >
+      <View className="gap-5">
+        {BYOK_PROVIDERS.map((provider) => {
+          const mask = keyMasks[provider.id]
+          const draft = keyDrafts[provider.id] ?? ''
+          return (
+            <View key={provider.id} className="gap-1.5">
+              <View className="flex-row items-center justify-between">
+                <Text className="text-sm font-medium text-foreground">{provider.name}</Text>
+                {mask ? (
+                  <View className="flex-row items-center gap-1.5">
+                    <View className="h-2 w-2 rounded-full bg-green-500" />
+                    <Text className="text-xs text-muted-foreground">{mask}</Text>
+                    <Pressable
+                      onPress={() => onClear(provider.id)}
+                      className="ml-2 px-2 py-0.5 rounded bg-muted active:bg-muted/70"
+                    >
+                      <Text className="text-[11px] text-muted-foreground">Clear</Text>
+                    </Pressable>
+                  </View>
+                ) : (
+                  <View className="flex-row items-center gap-1.5">
+                    <View className="h-2 w-2 rounded-full bg-muted-foreground/40" />
+                    <Text className="text-xs text-muted-foreground">Not configured</Text>
+                  </View>
+                )}
+              </View>
+              <TextInput
+                value={draft}
+                onChangeText={(text) => onDraftChange(provider.id, text)}
+                onBlur={() => { if (draft) onSave(provider.id) }}
+                onSubmitEditing={() => { if (draft) onSave(provider.id) }}
+                placeholder={mask ? 'Enter new key to replace' : `${provider.name} API key`}
+                secureTextEntry
+                className="bg-background border border-border rounded-lg px-3 py-2.5 text-sm text-foreground"
+                placeholderTextColor="#666"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+            </View>
+          )
+        })}
+      </View>
+    </SectionCard>
+  )
+}
+
+// =============================================================================
+// Visible Models Card — admin allowlist for the user-facing model picker.
+// =============================================================================
+
+interface OpenRouterCatalogEntry {
+  id: string
+  name: string
+  description?: string
+  contextLength?: number
+  pricing?: { prompt?: number; completion?: number }
+}
+
+function VisibleModelsCard({
+  platform,
+  hasOpenRouterKey,
+}: {
+  platform: PlatformApi
+  hasOpenRouterKey: boolean
+}) {
+  const [config, setConfig] = useState<VisibleModelsConfig>({ catalogIds: null, openrouterModels: [] })
+  const [isLoading, setIsLoading] = useState(true)
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [orCatalog, setOrCatalog] = useState<OpenRouterCatalogEntry[]>([])
+  const [orLoading, setOrLoading] = useState(false)
+  const [orError, setOrError] = useState<string | null>(null)
+  const [orSearch, setOrSearch] = useState('')
+  const [orPickerOpen, setOrPickerOpen] = useState(false)
+  const loadedRef = useRef(false)
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    platform
+      .getVisibleModelsConfig()
+      .then((data) => setConfig({
+        catalogIds: data.catalogIds === null ? null : (data.catalogIds ?? null),
+        openrouterModels: data.openrouterModels ?? [],
+      }))
+      .catch(() => { /* default state stays */ })
+      .finally(() => setIsLoading(false))
+  }, [platform])
+
+  useEffect(() => {
+    if (!loadedRef.current) return
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    setSaveStatus('saving')
+    saveTimerRef.current = setTimeout(async () => {
+      try {
+        await platform.putVisibleModelsConfig(config)
+        invalidateVisibleModelsCache()
+        setSaveStatus('saved')
+        setTimeout(() => setSaveStatus('idle'), 2000)
+      } catch {
+        setSaveStatus('error')
+        setTimeout(() => setSaveStatus('idle'), 3000)
+      }
+    }, 600)
+    return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current) }
+  }, [config, platform])
+
+  useEffect(() => {
+    if (!isLoading) loadedRef.current = true
+  }, [isLoading])
+
+  const showAllCatalog = config.catalogIds === null
+  const allowedCatalogSet = useMemo(
+    () => new Set(showAllCatalog ? [] : config.catalogIds ?? []),
+    [config.catalogIds, showAllCatalog],
+  )
+  const modelGroups = useMemo(() => getModelsByProvider(), [])
+
+  const toggleShowAll = useCallback((next: boolean) => {
+    setConfig((prev) => ({
+      ...prev,
+      catalogIds: next ? null : modelGroups.flatMap((g) => g.models.map((m) => m.id)),
+    }))
+  }, [modelGroups])
+
+  const toggleCatalogModel = useCallback((id: string) => {
+    setConfig((prev) => {
+      const current = prev.catalogIds ?? modelGroups.flatMap((g) => g.models.map((m) => m.id))
+      const next = current.includes(id)
+        ? current.filter((x) => x !== id)
+        : [...current, id]
+      return { ...prev, catalogIds: next }
+    })
+  }, [modelGroups])
+
+  const removeOpenRouterModel = useCallback((id: string) => {
+    setConfig((prev) => ({
+      ...prev,
+      openrouterModels: prev.openrouterModels.filter((m) => m.id !== id),
+    }))
+  }, [])
+
+  const addOpenRouterModel = useCallback((entry: OpenRouterCatalogEntry) => {
+    const id = `${OPENROUTER_MODEL_PREFIX}${entry.id}`
+    setConfig((prev) => {
+      if (prev.openrouterModels.some((m) => m.id === id)) return prev
+      const next: VisibleOpenRouterModel = {
+        id,
+        displayName: entry.name,
+        contextLength: entry.contextLength,
+      }
+      return { ...prev, openrouterModels: [...prev.openrouterModels, next] }
+    })
+  }, [])
+
+  const loadOpenRouterCatalog = useCallback(async () => {
+    setOrLoading(true)
+    setOrError(null)
+    try {
+      const res = await platform.getOpenRouterModels()
+      if (res.ok) {
+        setOrCatalog(res.models)
+      } else {
+        setOrError(res.error || 'Failed to fetch OpenRouter models')
+      }
+    } catch (err: any) {
+      setOrError(err?.message || 'Failed to fetch OpenRouter models')
+    } finally {
+      setOrLoading(false)
+    }
+  }, [platform])
+
+  useEffect(() => {
+    if (orPickerOpen && hasOpenRouterKey && orCatalog.length === 0 && !orLoading) {
+      loadOpenRouterCatalog()
+    }
+  }, [orPickerOpen, hasOpenRouterKey, orCatalog.length, orLoading, loadOpenRouterCatalog])
+
+  const orFiltered = useMemo(() => {
+    const q = orSearch.trim().toLowerCase()
+    const existingIds = new Set(config.openrouterModels.map((m) => m.id))
+    return orCatalog
+      .filter((m) => !existingIds.has(`${OPENROUTER_MODEL_PREFIX}${m.id}`))
+      .filter((m) =>
+        !q
+          || m.id.toLowerCase().includes(q)
+          || m.name.toLowerCase().includes(q)
+          || (m.description?.toLowerCase() || '').includes(q),
+      )
+      .slice(0, 100)
+  }, [orCatalog, orSearch, config.openrouterModels])
+
+  if (isLoading) {
+    return (
+      <View className="bg-card border border-border rounded-xl px-5 py-6 items-center">
+        <ActivityIndicator size="small" />
+      </View>
+    )
+  }
+
+  return (
+    <View className="bg-card border border-border rounded-xl">
+      <View className="px-5 py-4 border-b border-border">
+        <View className="flex-row items-center justify-between">
+          <View className="flex-row items-center gap-2.5 mb-1 flex-1">
+            <ListFilter size={16} className="text-foreground" />
+            <Text className="text-base font-semibold text-foreground">Available Models</Text>
+          </View>
+          <AutoSaveIndicator status={saveStatus} />
+        </View>
+        <Text className="text-xs text-muted-foreground">
+          Choose which models show up in the user-facing model picker. Defaults to all current-generation catalog models.
+        </Text>
+      </View>
+
+      <View className="px-5 py-4 gap-5">
+        {/* Show-all toggle */}
+        <Pressable
+          onPress={() => toggleShowAll(!showAllCatalog)}
+          className={cn(
+            'flex-row items-center justify-between p-3 rounded-lg border',
+            showAllCatalog ? 'border-primary bg-primary/5' : 'border-border bg-background',
+          )}
+        >
+          <View className="flex-1">
+            <Text className="text-sm font-medium text-foreground">Show all catalog models</Text>
+            <Text className="text-xs text-muted-foreground mt-0.5">
+              When on, every current-generation model is available regardless of the checkboxes below.
+            </Text>
+          </View>
+          {showAllCatalog && <Check size={18} className="text-primary" />}
+        </Pressable>
+
+        {/* Catalog allowlist */}
+        <View className="gap-3">
+          {modelGroups.map((group) => (
+            <View key={group.label} className="gap-1.5">
+              <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                {group.label}
+              </Text>
+              {group.models.map((m) => {
+                const checked = showAllCatalog || allowedCatalogSet.has(m.id)
+                return (
+                  <Pressable
+                    key={m.id}
+                    onPress={() => !showAllCatalog && toggleCatalogModel(m.id)}
+                    disabled={showAllCatalog}
+                    className={cn(
+                      'flex-row items-center justify-between px-3 py-2 rounded-lg border',
+                      checked && !showAllCatalog ? 'border-primary/50 bg-primary/5' : 'border-border bg-background',
+                      showAllCatalog && 'opacity-60',
+                    )}
+                  >
+                    <View className="flex-row items-center gap-2 flex-1">
+                      <View
+                        className={cn(
+                          'w-4 h-4 rounded border items-center justify-center',
+                          checked ? 'border-primary bg-primary' : 'border-border',
+                        )}
+                      >
+                        {checked && <Check size={11} color="#fff" />}
+                      </View>
+                      <Text className="text-sm text-foreground">{m.displayName}</Text>
+                    </View>
+                    <Text className="text-[11px] text-muted-foreground capitalize">{m.tier}</Text>
+                  </Pressable>
+                )
+              })}
+            </View>
+          ))}
+        </View>
+
+        {/* OpenRouter models */}
+        <View className="gap-2 pt-2 border-t border-border">
+          <View className="flex-row items-center justify-between">
+            <View className="flex-1">
+              <Text className="text-sm font-medium text-foreground">OpenRouter Models</Text>
+              <Text className="text-xs text-muted-foreground mt-0.5">
+                Curate models from OpenRouter to surface in the picker.
+              </Text>
+            </View>
+            <Pressable
+              onPress={() => setOrPickerOpen((v) => !v)}
+              disabled={!hasOpenRouterKey}
+              className={cn(
+                'flex-row items-center gap-1.5 px-3 py-1.5 rounded-lg',
+                hasOpenRouterKey ? 'bg-primary' : 'bg-muted opacity-50',
+              )}
+            >
+              <Plus size={12} color="#fff" />
+              <Text className="text-xs font-medium text-primary-foreground">
+                {orPickerOpen ? 'Hide' : 'Add'}
+              </Text>
+            </Pressable>
+          </View>
+
+          {!hasOpenRouterKey && (
+            <View className="flex-row items-center gap-2 p-3 rounded-lg bg-amber-500/10">
+              <AlertTriangle size={14} className="text-amber-500" />
+              <Text className="text-xs text-foreground flex-1">
+                Configure an OpenRouter API key above to browse OpenRouter's model list.
+              </Text>
+            </View>
+          )}
+
+          {config.openrouterModels.length > 0 && (
+            <View className="gap-1.5">
+              {config.openrouterModels.map((m) => (
+                <View
+                  key={m.id}
+                  className="flex-row items-center justify-between px-3 py-2 rounded-lg border border-border bg-background"
+                >
+                  <View className="flex-1">
+                    <Text className="text-sm text-foreground">{m.displayName}</Text>
+                    <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
+                      {m.id}
+                      {m.contextLength ? ` · ${(m.contextLength / 1000).toFixed(0)}k ctx` : ''}
+                    </Text>
+                  </View>
+                  <Pressable onPress={() => removeOpenRouterModel(m.id)} className="p-1.5">
+                    <X size={14} className="text-muted-foreground" />
+                  </Pressable>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {orPickerOpen && hasOpenRouterKey && (
+            <View className="gap-2 mt-2 p-3 rounded-lg border border-border bg-background">
+              <View className="flex-row items-center gap-2">
+                <Search size={12} className="text-muted-foreground" />
+                <TextInput
+                  value={orSearch}
+                  onChangeText={setOrSearch}
+                  placeholder="Search OpenRouter models..."
+                  placeholderTextColor="#666"
+                  className="flex-1 text-sm text-foreground"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                {orLoading && <ActivityIndicator size="small" />}
+              </View>
+              {orError && (
+                <Text className="text-xs text-destructive">{orError}</Text>
+              )}
+              {!orLoading && !orError && orFiltered.length === 0 && (
+                <Text className="text-xs text-muted-foreground">
+                  {orSearch ? 'No models match your search.' : 'No more models to add.'}
+                </Text>
+              )}
+              <ScrollView style={{ maxHeight: 240 }} nestedScrollEnabled>
+                {orFiltered.map((m) => (
+                  <Pressable
+                    key={m.id}
+                    onPress={() => addOpenRouterModel(m)}
+                    className="flex-row items-start justify-between px-2 py-2 rounded active:bg-muted"
+                  >
+                    <View className="flex-1">
+                      <Text className="text-sm text-foreground">{m.name}</Text>
+                      <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
+                        {m.id}
+                        {m.contextLength ? ` · ${(m.contextLength / 1000).toFixed(0)}k ctx` : ''}
+                      </Text>
+                    </View>
+                    <Plus size={14} className="text-muted-foreground" />
+                  </Pressable>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+        </View>
+      </View>
     </View>
   )
 }

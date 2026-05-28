@@ -750,6 +750,41 @@ app.get('/api/config', async (c) => {
   })
 })
 
+// Visible-models read endpoint — open to all callers (drives user-facing
+// chat-input pickers). Returns the admin allowlist as stored, with `null`
+// catalogIds meaning "all current-generation catalog models are visible".
+app.get('/api/platform/visible-models', async (c) => {
+  try {
+    const row = await prisma.platformSetting.findUnique({ where: { key: 'models.visible' } }).catch(() => null)
+    const raw = row?.value ?? null
+    let catalogIds: string[] | null = null
+    let openrouterModels: Array<{ id: string; displayName: string; contextLength?: number; tier?: string }> = []
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw)
+        if (Array.isArray(parsed?.catalogIds)) {
+          catalogIds = parsed.catalogIds.filter((x: unknown): x is string => typeof x === 'string')
+        }
+        if (Array.isArray(parsed?.openrouterModels)) {
+          openrouterModels = parsed.openrouterModels
+            .filter((m: any) => m && typeof m.id === 'string' && typeof m.displayName === 'string')
+            .map((m: any) => ({
+              id: m.id,
+              displayName: m.displayName,
+              contextLength: typeof m.contextLength === 'number' ? m.contextLength : undefined,
+              tier: typeof m.tier === 'string' ? m.tier : undefined,
+            }))
+        }
+      } catch {
+        // fall through with defaults
+      }
+    }
+    return c.json({ catalogIds, openrouterModels })
+  } catch (err: any) {
+    return c.json({ catalogIds: null, openrouterModels: [] })
+  }
+})
+
 // ── Local mode: VM management endpoints ──────────────────────────────────────
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
   app.route('/api/vm', vmRoutes())
@@ -796,16 +831,38 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
     }
   })
 
-  const API_KEY_NAMES = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY'] as const
+  // Provider key registry — drives both /api/local/api-keys and the admin UI.
+  // Add a new entry here to surface a new BYOK provider; the rest of the
+  // pipeline (UI, env injection, allowlist) picks it up generically.
+  const PROVIDER_KEYS = [
+    { id: 'anthropic',  envKey: 'ANTHROPIC_API_KEY' },
+    { id: 'openai',     envKey: 'OPENAI_API_KEY' },
+    { id: 'google',     envKey: 'GOOGLE_API_KEY' },
+    { id: 'openrouter', envKey: 'OPENROUTER_API_KEY' },
+  ] as const
+
+  const PROVIDER_BY_ID = new Map(PROVIDER_KEYS.map((p) => [p.id, p.envKey]))
+  const ALL_PROVIDER_ENV_KEYS = PROVIDER_KEYS.map((p) => p.envKey)
+
+  // Legacy field-name aliases. The original PUT body used camelCase keys like
+  // `anthropicApiKey`; we still accept these so older clients don't break.
+  const LEGACY_BODY_ALIASES: Record<string, string> = {
+    anthropicApiKey: 'anthropic',
+    openaiApiKey:    'openai',
+    googleApiKey:    'google',
+  }
 
   app.get('/api/local/api-keys', async (c) => {
     try {
       const rows = await localDb.localConfig.findMany({
-        where: { key: { in: [...API_KEY_NAMES] } },
+        where: { key: { in: ALL_PROVIDER_ENV_KEYS } },
       })
+      const byEnvKey = new Map(rows.map((r) => [r.key, r.value]))
       const keys: Record<string, string> = {}
-      for (const row of rows) {
-        keys[row.key] = row.value.slice(0, 8) + '...' + row.value.slice(-4)
+      for (const provider of PROVIDER_KEYS) {
+        const value = byEnvKey.get(provider.envKey)
+        if (!value) continue
+        keys[provider.id] = value.slice(0, 8) + '...' + value.slice(-4)
       }
       return c.json({ ok: true, keys })
     } catch {
@@ -814,19 +871,23 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
   })
 
   app.put('/api/local/api-keys', async (c) => {
-    const body = await c.req.json<{ anthropicApiKey?: string; openaiApiKey?: string; googleApiKey?: string }>()
+    const body = (await c.req.json<Record<string, string | null | undefined>>()) ?? {}
 
-    const keyMap: Array<[string | undefined, string]> = [
-      [body.anthropicApiKey, 'ANTHROPIC_API_KEY'],
-      [body.openaiApiKey, 'OPENAI_API_KEY'],
-      [body.googleApiKey, 'GOOGLE_API_KEY'],
-    ]
-
-    const upserts: Promise<any>[] = []
-    for (const [value, envKey] of keyMap) {
+    // Normalise body to provider-id keys, accepting both the new shape
+    // `{ anthropic: '...' }` and the legacy shape `{ anthropicApiKey: '...' }`.
+    const updates = new Map<string, string | null>()
+    for (const [field, value] of Object.entries(body)) {
+      const providerId = LEGACY_BODY_ALIASES[field] ?? field
+      if (!PROVIDER_BY_ID.has(providerId)) continue
       if (value === undefined) continue
+      updates.set(providerId, value === '' ? null : value)
+    }
+
+    const ops: Promise<any>[] = []
+    for (const [providerId, value] of updates) {
+      const envKey = PROVIDER_BY_ID.get(providerId)!
       if (value) {
-        upserts.push(
+        ops.push(
           localDb.localConfig.upsert({
             where: { key: envKey },
             update: { value },
@@ -835,11 +896,11 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
         )
         process.env[envKey] = value
       } else {
-        upserts.push(localDb.localConfig.deleteMany({ where: { key: envKey } }))
+        ops.push(localDb.localConfig.deleteMany({ where: { key: envKey } }))
         delete process.env[envKey]
       }
     }
-    await Promise.all(upserts)
+    await Promise.all(ops)
 
     return c.json({ ok: true })
   })
@@ -891,6 +952,50 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
     }
     await Promise.all(ops)
     return c.json({ ok: true })
+  })
+
+  // ── Local mode: OpenRouter model discovery ─────────────────────────────
+  // Fetches the live OpenRouter catalog so the admin can curate which
+  // OpenRouter models surface in the user-facing model picker. We pass the
+  // stored OPENROUTER_API_KEY along — OpenRouter accepts unauth'd /models
+  // calls but authenticated calls return user-specific availability and
+  // the user's own pricing tier.
+  app.get('/api/local/openrouter/models', async (c) => {
+    const key = process.env.OPENROUTER_API_KEY
+    const baseUrl = (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/$/, '')
+    try {
+      const res = await fetch(`${baseUrl}/models`, {
+        headers: key ? { Authorization: `Bearer ${key}` } : {},
+        signal: AbortSignal.timeout(8000),
+      })
+      if (!res.ok) {
+        return c.json({ ok: false, error: `OpenRouter returned ${res.status}`, models: [] })
+      }
+      const data = await res.json() as {
+        data?: Array<{
+          id: string
+          name?: string
+          description?: string
+          context_length?: number
+          pricing?: { prompt?: string; completion?: string }
+        }>
+      }
+      const models = (data.data || []).map((m) => ({
+        id: m.id,
+        name: m.name || m.id,
+        description: m.description,
+        contextLength: m.context_length,
+        pricing: m.pricing
+          ? {
+              prompt: m.pricing.prompt ? Number(m.pricing.prompt) : undefined,
+              completion: m.pricing.completion ? Number(m.pricing.completion) : undefined,
+            }
+          : undefined,
+      }))
+      return c.json({ ok: true, models })
+    } catch (err: any) {
+      return c.json({ ok: false, error: `Cannot reach OpenRouter: ${err.message || err}`, models: [] })
+    }
   })
 
   // ── Local mode: model discovery ────────────────────────────────────────
@@ -4774,6 +4879,123 @@ app.put('/api/admin/settings/agent-models', async (c) => {
 
     setAgentModeOverrides(overrides)
     return c.json({ ok: true, overrides })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// =============================================================================
+// Visible Models Config — admin-curated model allowlist for the user picker.
+// =============================================================================
+//
+// `models.visible` is a single PlatformSetting row holding a JSON-encoded
+// VisibleModelsConfig. Stored shape:
+//   {
+//     "catalogIds": null | string[],          // null = show all catalog models
+//     "openrouterModels": [                    // admin-curated extras
+//       { "id": "openrouter:anthropic/claude-3.5-sonnet",
+//         "displayName": "Claude 3.5 Sonnet (OpenRouter)",
+//         "contextLength": 200000, "tier": "standard" }
+//     ]
+//   }
+//
+// Same shape works for both cloud (super-admin sets it for all workspaces)
+// and local (admin sets it for their local users). PlatformSetting exists
+// in both schemas so the same handlers work without branching.
+
+const VISIBLE_MODELS_KEY = 'models.visible'
+
+interface VisibleOpenRouterModelStored {
+  id: string
+  displayName: string
+  contextLength?: number
+  tier?: 'economy' | 'standard' | 'premium'
+}
+
+interface VisibleModelsConfigStored {
+  catalogIds: string[] | null
+  openrouterModels: VisibleOpenRouterModelStored[]
+}
+
+const DEFAULT_VISIBLE_MODELS: VisibleModelsConfigStored = {
+  catalogIds: null,
+  openrouterModels: [],
+}
+
+function parseVisibleModelsValue(raw: string | null | undefined): VisibleModelsConfigStored {
+  if (!raw) return { ...DEFAULT_VISIBLE_MODELS }
+  try {
+    const parsed = JSON.parse(raw)
+    const catalogIds = Array.isArray(parsed?.catalogIds)
+      ? parsed.catalogIds.filter((x: unknown): x is string => typeof x === 'string')
+      : parsed?.catalogIds === null ? null : null
+    const openrouterModels = Array.isArray(parsed?.openrouterModels)
+      ? parsed.openrouterModels
+          .filter((m: any) => m && typeof m.id === 'string' && typeof m.displayName === 'string')
+          .map((m: any): VisibleOpenRouterModelStored => ({
+            id: m.id,
+            displayName: m.displayName,
+            contextLength: typeof m.contextLength === 'number' ? m.contextLength : undefined,
+            tier: m.tier === 'economy' || m.tier === 'standard' || m.tier === 'premium' ? m.tier : undefined,
+          }))
+      : []
+    return { catalogIds, openrouterModels }
+  } catch {
+    return { ...DEFAULT_VISIBLE_MODELS }
+  }
+}
+
+async function readVisibleModelsConfig(): Promise<VisibleModelsConfigStored> {
+  try {
+    const row = await prisma.platformSetting.findUnique({ where: { key: VISIBLE_MODELS_KEY } })
+    return parseVisibleModelsValue(row?.value)
+  } catch {
+    return { ...DEFAULT_VISIBLE_MODELS }
+  }
+}
+
+// GET /api/admin/settings/visible-models — read the configured allowlist.
+app.get('/api/admin/settings/visible-models', async (c) => {
+  try {
+    const config = await readVisibleModelsConfig()
+    return c.json(config)
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// PUT /api/admin/settings/visible-models — replace the configured allowlist.
+// Body shape: VisibleModelsConfig (catalogIds, openrouterModels). Pass
+// `catalogIds: null` (or omit) to revert to "show all catalog models".
+app.put('/api/admin/settings/visible-models', async (c) => {
+  try {
+    const body = await c.req.json()
+    const auth = c.get('auth') as any
+    const userId = auth?.user?.id || 'unknown'
+
+    const next: VisibleModelsConfigStored = {
+      catalogIds: Array.isArray(body?.catalogIds)
+        ? body.catalogIds.filter((x: unknown): x is string => typeof x === 'string')
+        : null,
+      openrouterModels: Array.isArray(body?.openrouterModels)
+        ? body.openrouterModels
+            .filter((m: any) => m && typeof m.id === 'string' && typeof m.displayName === 'string')
+            .map((m: any): VisibleOpenRouterModelStored => ({
+              id: m.id,
+              displayName: m.displayName,
+              contextLength: typeof m.contextLength === 'number' ? m.contextLength : undefined,
+              tier: m.tier === 'economy' || m.tier === 'standard' || m.tier === 'premium' ? m.tier : undefined,
+            }))
+        : [],
+    }
+
+    await prisma.platformSetting.upsert({
+      where: { key: VISIBLE_MODELS_KEY },
+      create: { key: VISIBLE_MODELS_KEY, value: JSON.stringify(next), updatedBy: userId },
+      update: { value: JSON.stringify(next), updatedBy: userId },
+    })
+
+    return c.json({ ok: true, config: next })
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
   }

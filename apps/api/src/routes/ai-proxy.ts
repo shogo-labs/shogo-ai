@@ -44,8 +44,11 @@ import {
   MODEL_ALIASES,
   IMAGE_MODEL_CATALOG,
   AGENT_MODE_DEFAULTS,
+  OPENROUTER_MODEL_PREFIX,
   resolveAgentModeDefault,
   getMaxOutputTokens,
+  isOpenRouterModel,
+  stripOpenRouterPrefix,
   type Provider,
   type ImageProvider,
   type AgentMode,
@@ -161,6 +164,13 @@ function resolveModel(model: string): ModelConfig | null {
     return resolveModel(resolvedModel)
   }
 
+  // OpenRouter — model id has the `openrouter:` prefix; the suffix is the
+  // canonical OpenRouter model id (e.g. `meta-llama/llama-3.1-405b-instruct`).
+  if (isOpenRouterModel(model)) {
+    const apiModel = stripOpenRouterPrefix(model)
+    return { provider: 'openrouter', apiModel, displayName: apiModel }
+  }
+
   // Exact match
   if (MODEL_REGISTRY[model]) {
     return MODEL_REGISTRY[model]
@@ -201,6 +211,8 @@ function getProviderApiKey(provider: Provider): string | null {
       return process.env.ANTHROPIC_API_KEY || null
     case 'openai':
       return process.env.OPENAI_API_KEY || null
+    case 'openrouter':
+      return process.env.OPENROUTER_API_KEY || null
     case 'local':
       return 'local'
     default:
@@ -1394,6 +1406,10 @@ function getOpenAICompatibleBaseUrl(modelConfig: ModelConfig): string {
   if (modelConfig.provider === 'local' && process.env.LOCAL_LLM_BASE_URL) {
     return `${process.env.LOCAL_LLM_BASE_URL.replace(/\/$/, '')}/v1/chat/completions`
   }
+  if (modelConfig.provider === 'openrouter') {
+    const base = (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/$/, '')
+    return `${base}/chat/completions`
+  }
   return 'https://api.openai.com/v1/chat/completions'
 }
 
@@ -1401,6 +1417,14 @@ function getOpenAICompatibleHeaders(apiKey: string, modelConfig: ModelConfig): R
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (modelConfig.provider !== 'local') {
     headers['Authorization'] = `Bearer ${apiKey}`
+  }
+  if (modelConfig.provider === 'openrouter') {
+    // Attribution headers — OpenRouter surfaces these in their dashboard
+    // and uses them for app-level moderation. Both are optional but
+    // recommended; users can override either via env if they prefer
+    // their own attribution.
+    headers['HTTP-Referer'] = process.env.OPENROUTER_HTTP_REFERER || 'https://shogo.ai'
+    headers['X-Title'] = process.env.OPENROUTER_X_TITLE || 'Shogo'
   }
   return headers
 }
@@ -2197,8 +2221,10 @@ export function aiProxyRoutes() {
         )
       }
 
-      // Enforce model tier: free/basic users can only use economy-tier models
-      if (modelConfig.provider !== 'local' && !isLocalDev) {
+      // Enforce model tier: free/basic users can only use economy-tier models.
+      // Local LLMs and BYOK OpenRouter calls are user-paid, so no tier check
+      // applies — the user is paying their own provider directly.
+      if (modelConfig.provider !== 'local' && modelConfig.provider !== 'openrouter' && !isLocalDev) {
         const tier = getModelTier(request.model)
         if (tier !== 'economy') {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
@@ -2236,6 +2262,10 @@ export function aiProxyRoutes() {
         `[AI Proxy] ${tokenPayload.projectId} → ${modelConfig.provider}/${modelConfig.apiModel} (stream: ${!!request.stream})`
       )
 
+      // BYOK paths bypass cloud usage tracking — user pays the provider
+      // directly (no Shogo Cloud middleman to bill against).
+      const isByokOpenRouter = modelConfig.provider === 'openrouter'
+
       // Route to provider
       if (request.stream) {
         if (modelConfig.provider === 'anthropic') {
@@ -2243,7 +2273,7 @@ export function aiProxyRoutes() {
             recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId)
           }, c.req.raw.signal)
         } else {
-          return await proxyOpenAIStream(request, apiKey, modelConfig, (inTok, outTok, cachedTok) => {
+          return await proxyOpenAIStream(request, apiKey, modelConfig, isByokOpenRouter ? undefined : (inTok, outTok, cachedTok) => {
             recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, 0, chatSessionId)
           }, c.req.raw.signal)
         }
@@ -2255,17 +2285,19 @@ export function aiProxyRoutes() {
           result = await proxyOpenAINonStream(request, apiKey, modelConfig, c.req.raw.signal)
         }
 
-        const totalPrompt = result.usage?.prompt_tokens || 0
-        const cachedPrompt = result.usage?.prompt_tokens_details?.cached_tokens || 0
-        recordUsage(
-          tokenPayload,
-          request.model,
-          totalPrompt - cachedPrompt,
-          result.usage?.completion_tokens || 0,
-          cachedPrompt,
-          0,
-          chatSessionId,
-        )
+        if (!isByokOpenRouter) {
+          const totalPrompt = result.usage?.prompt_tokens || 0
+          const cachedPrompt = result.usage?.prompt_tokens_details?.cached_tokens || 0
+          recordUsage(
+            tokenPayload,
+            request.model,
+            totalPrompt - cachedPrompt,
+            result.usage?.completion_tokens || 0,
+            cachedPrompt,
+            0,
+            chatSessionId,
+          )
+        }
 
         return c.json(result)
       }

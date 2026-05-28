@@ -5,6 +5,7 @@ import {
   MODEL_CATALOG,
   IMAGE_MODEL_CATALOG,
   AUTO_MODEL_ID,
+  OPENROUTER_MODEL_PREFIX,
   type ModelEntry,
   type ImageModelEntry,
   type ModelTier,
@@ -15,6 +16,18 @@ import {
   type Provider,
 } from './models'
 import { MODEL_ALIASES, resolveAgentModeDefault } from './aliases'
+
+/** True if `id` is an OpenRouter-routed model (carries the `openrouter:` prefix). */
+export function isOpenRouterModel(id: string): boolean {
+  return typeof id === 'string' && id.startsWith(OPENROUTER_MODEL_PREFIX)
+}
+
+/** Strip the `openrouter:` prefix to get the canonical OpenRouter model id. */
+export function stripOpenRouterPrefix(id: string): string {
+  return id.startsWith(OPENROUTER_MODEL_PREFIX)
+    ? id.slice(OPENROUTER_MODEL_PREFIX.length)
+    : id
+}
 
 /** Check if a model ID is the special "auto" routing value. */
 export function isAutoModel(id: string): boolean {
@@ -92,6 +105,8 @@ export function getModelShortDisplayName(id: string): string {
 export function inferProviderFromModel(modelId: string, fallback: string = 'anthropic'): string {
   if (modelId === 'basic') return 'anthropic'
   if (modelId === 'advanced') return 'anthropic'
+
+  if (isOpenRouterModel(modelId)) return 'openrouter'
 
   const entry = getModelEntry(modelId)
   if (entry) return entry.provider

@@ -22,12 +22,12 @@ import {
   PopoverContent,
 } from "@/components/ui/popover"
 import {
-  getModelsByProvider,
   getModelShortDisplayName,
   getModelTier,
   AUTO_MODEL_ID,
   type ModelTier,
 } from "@shogo/model-catalog"
+import { useModelPickerGroups } from "../../lib/visible-models"
 import {
   ArrowUp,
   Plus,
@@ -70,15 +70,6 @@ import {
   useTypingPlaceholder,
   AGENT_PLACEHOLDER_PREFIX,
 } from "../../hooks/useTypingPlaceholder"
-
-const MODEL_GROUPS = getModelsByProvider().map((g) => ({
-  label: g.label,
-  models: g.models.map((e) => ({
-    id: e.id,
-    displayName: e.displayName,
-    tier: e.tier as ModelTier,
-  })),
-}))
 
 const TIER_LABELS: Record<ModelTier, string> = {
   premium: "Premium",
@@ -189,6 +180,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
   ) {
     const { features } = usePlatformConfig()
     const effectiveIsPro = features.billing ? isPro : true
+    const modelGroups = useModelPickerGroups()
 
     const [internalValue, setInternalValue] = useState("")
     const [inputHeight, setInputHeight] = useState(MIN_INPUT_HEIGHT)
@@ -835,7 +827,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                       }}
                     />
                     <View className="h-px bg-border/50 mx-2" />
-                    {MODEL_GROUPS.map((group) => (
+                    {modelGroups.map((group) => (
                       <View key={group.label}>
                         <View className="px-3 pt-2.5 pb-1">
                           <Text className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">

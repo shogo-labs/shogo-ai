@@ -1442,6 +1442,10 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           delete runtimeEnv.CEREBRAS_API_KEY
           delete runtimeEnv.OPENROUTER_API_KEY
           delete runtimeEnv.MISTRAL_API_KEY
+          // Note: this branch only runs in shogo-cloud mode (the condition
+          // above already excludes api-keys / local-llm). In api-keys mode
+          // OPENROUTER_API_KEY is preserved so BYOK OpenRouter routing
+          // works end-to-end.
           console.log(`[RuntimeManager] Shogo Cloud mode: all providers routed through proxy for ${projectId}`)
         }
 
