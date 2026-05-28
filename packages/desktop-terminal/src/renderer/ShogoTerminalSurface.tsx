@@ -178,6 +178,15 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
     const matcherRef = React.useRef(new MatcherEngine())
     const commandOutputRef = React.useRef(new Map<number, string[]>())
     const activeCommandRef = React.useRef<number | null>(null)
+    // Hold the latest onCwdChange in a ref so the main mount effect does
+    // NOT re-run (and tear down the xterm instance) every time the parent
+    // passes a fresh inline callback. Without this, `patchSession` inside
+    // the parent's `onCwdChange` flips React state on every cwd event,
+    // re-renders the parent, hands us a new function reference, and
+    // remounts the terminal — leaving the user staring at a blank,
+    // unfocused xterm that swallows every keystroke.
+    const onCwdChangeRef = React.useRef<typeof onCwdChange>(onCwdChange)
+    onCwdChangeRef.current = onCwdChange
 
     /**
      * Phase 8 — ApprovalStore singleton.
@@ -407,7 +416,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
             commandOutputRef.current.set(ev.command.id, [])
           }
           if (ev.kind === 'cwd-changed') {
-            onCwdChange?.(ev.cwd)
+            onCwdChangeRef.current?.(ev.cwd)
           }
           if (ev.kind === 'command-finished') {
             const output = commandOutputRef.current.get(ev.command.id)?.join('') ?? ''
@@ -498,7 +507,11 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         disposed = true
         cleanup()
       }
-    }, [client, fontFamily, fontSize, enableGpu, tracker, onCwdChange])
+      // Deliberately omit `onCwdChange` from deps — see `onCwdChangeRef`
+      // above. Including it caused the entire xterm instance to be torn
+      // down and rebuilt on every parent render (root cause of the
+      // "blank terminal that won't accept keystrokes" bug).
+    }, [client, fontFamily, fontSize, enableGpu, tracker])
 
     React.useEffect(() => {
       if (!hidden && autoFocus) termRef.current?.focus()
