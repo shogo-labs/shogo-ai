@@ -25,12 +25,27 @@
 
 import { useSyncExternalStore } from 'react'
 
-export type BottomPanelTab = 'Terminal' | 'Problems' | 'Output'
+export type BottomPanelTab =
+  | 'Problems'
+  | 'Output'
+  | 'Debug Console'
+  | 'Terminal'
+  | 'Ports'
 
+/**
+ * Tab order matches VS Code 1.95 exactly: Problems → Output → Debug
+ * Console → Terminal → Ports. Phase 11 swapped the previous
+ * Terminal-first order to align with VS Code's bottom panel, but kept
+ * Terminal as the default *selection* on first open (see KEY_ACTIVE_TAB
+ * fallback below) so the existing Workbench keybind (⌘\`) lands the user
+ * on a familiar surface.
+ */
 export const BOTTOM_PANEL_TABS: readonly BottomPanelTab[] = [
-  'Terminal',
   'Problems',
   'Output',
+  'Debug Console',
+  'Terminal',
+  'Ports',
 ]
 
 const KEY_OPEN = 'shogo.ide.bottomPanelOpen'

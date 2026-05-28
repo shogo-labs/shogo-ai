@@ -15,8 +15,6 @@
 
 import { describe, it, expect, beforeEach } from 'bun:test'
 import {
-  ClientFrameType,
-  decodeClientFrame,
   encodeServerData,
   encodeServerExit,
   encodeServerTrunc,
@@ -64,6 +62,9 @@ interface FakeBridge extends ShogoDesktopTerminalBridge {
   attachCalls: { id: string; sinceSeq: number }[]
   detachCalls: { id: string; channelId: string }[]
   eventListeners: ((ev: ControlEvent) => void)[]
+  writeCalls: { id: string; text: string }[]
+  resizeCalls: { id: string; cols: number; rows: number }[]
+  signalCalls: { id: string; sig: 'INT' | 'TERM' | 'KILL' }[]
   _fire(ev: ControlEvent): void
   _failNextAttach: Error | null
 }
@@ -73,11 +74,14 @@ function makeBridge(): FakeBridge {
   const attachCalls: { id: string; sinceSeq: number }[] = []
   const detachCalls: { id: string; channelId: string }[] = []
   const eventListeners: ((ev: ControlEvent) => void)[] = []
+  const writeCalls: { id: string; text: string }[] = []
+  const resizeCalls: { id: string; cols: number; rows: number }[] = []
+  const signalCalls: { id: string; sig: 'INT' | 'TERM' | 'KILL' }[] = []
   const bridge: FakeBridge = {
     spawn: async () => { throw new Error('spawn not used in this suite') },
-    write: async () => {},
-    resize: async () => {},
-    signal: async () => {},
+    write: async (id, text) => { writeCalls.push({ id, text }) },
+    resize: async (id, cols, rows) => { resizeCalls.push({ id, cols, rows }) },
+    signal: async (id, sig) => { signalCalls.push({ id, sig }) },
     kill: async () => {},
     list: async () => [],
     async attach(id, sinceSeq) {
@@ -103,6 +107,9 @@ function makeBridge(): FakeBridge {
     attachCalls,
     detachCalls,
     eventListeners,
+    writeCalls,
+    resizeCalls,
+    signalCalls,
     _failNextAttach: null,
     _fire(ev) { for (const l of [...eventListeners]) l(ev) },
   }
@@ -185,31 +192,18 @@ describe('DesktopPtyClient', () => {
     expect(bridge.attachCalls.length).toBe(1)
   })
 
-  it('send / resize / signal encode the right client frames', async () => {
+  it('send / resize / signal use the reliable control-plane IPC path', async () => {
     const c = makeClient(bridge)
     c.connect()
     await flush()
     c.send('echo hi\r')
     c.resize(120, 40)
     c.signal('INT')
-    const port = bridge.ports[0]
-    expect(port.sent.length).toBe(3)
-    const f1 = decodeClientFrame(port.sent[0])
-    const f2 = decodeClientFrame(port.sent[1])
-    const f3 = decodeClientFrame(port.sent[2])
-    expect(f1?.type).toBe(ClientFrameType.DATA)
-    if (f1?.type === ClientFrameType.DATA) {
-      expect(new TextDecoder().decode(f1.bytes)).toBe('echo hi\r')
-    }
-    expect(f2?.type).toBe(ClientFrameType.RESIZE)
-    if (f2?.type === ClientFrameType.RESIZE) {
-      expect(f2.cols).toBe(120)
-      expect(f2.rows).toBe(40)
-    }
-    expect(f3?.type).toBe(ClientFrameType.SIGNAL)
-    if (f3?.type === ClientFrameType.SIGNAL) {
-      expect(f3.signal).toBe('INT')
-    }
+    await flush()
+    expect(bridge.ports[0].sent.length).toBe(0)
+    expect(bridge.writeCalls).toEqual([{ id: 'sess-1', text: 'echo hi\r' }])
+    expect(bridge.resizeCalls).toEqual([{ id: 'sess-1', cols: 120, rows: 40 }])
+    expect(bridge.signalCalls).toEqual([{ id: 'sess-1', sig: 'INT' }])
   })
 
   it('writes are dropped when not in open state', async () => {

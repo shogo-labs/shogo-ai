@@ -509,54 +509,89 @@ export function Terminal({
         aria-label="Terminal output"
         className="relative min-h-0 flex-1 bg-[#1e1e1e]"
       >
-        {sessions.map((s) => {
-          const isActive = s.id === active?.id;
-          if (s.status === "error" && isActive) {
-            return (
-              <SessionErrorPane
-                key={s.id}
-                message={s.errorMessage ?? "Failed to start terminal session"}
-                onRetry={() => {
-                  patchSession(s.id, (cur) => ({
-                    ...cur,
-                    status: "creating",
-                    errorMessage: null,
-                  }));
-                  void provisionSession(s.id);
-                }}
-              />
-            );
-          }
-          if (!s.client) {
-            // Pre-WS: render a placeholder for the active tab so the
-            // panel isn't blank during cold start. Inactive tabs get
-            // nothing to keep the DOM small.
-            return isActive ? (
-              <SessionStartingPane key={s.id} />
-            ) : null;
-          }
-          return (
-            <div
-              key={s.id}
-              style={{
-                position: "absolute",
-                inset: 0,
-                display: isActive ? "block" : "none",
-              }}
-            >
-              <XtermView
-                ref={(handle) => {
-                  if (handle) xtermRefs.current.set(s.id, handle);
-                  else xtermRefs.current.delete(s.id);
-                }}
-                client={s.client}
-                hidden={!isActive}
-                autoFocus={isActive && visible}
-                projectId={projectId}
-              />
+        {sessions.length > 1 ? (
+          <div className="flex h-full min-h-0 w-full bg-[#1e1e1e]">
+            <div className="flex min-w-0 flex-1">
+              {sessions.map((s, index) => {
+                const isActive = s.id === active?.id;
+                return (
+                  <div
+                    key={s.id}
+                    className="relative min-w-0 flex-1 border-r border-[#2d2d2d] last:border-r-0"
+                    onMouseDown={() => setActiveId(s.id)}
+                  >
+                    {s.status === "error" ? (
+                      <SessionErrorPane
+                        message={s.errorMessage ?? "Failed to start terminal session"}
+                        onRetry={() => {
+                          patchSession(s.id, (cur) => ({ ...cur, status: "creating", errorMessage: null }));
+                          void provisionSession(s.id);
+                        }}
+                      />
+                    ) : !s.client ? (
+                      <SessionStartingPane />
+                    ) : (
+                      <XtermView
+                        ref={(handle) => {
+                          if (handle) xtermRefs.current.set(s.id, handle);
+                          else xtermRefs.current.delete(s.id);
+                        }}
+                        client={s.client}
+                        hidden={false}
+                        autoFocus={isActive && visible}
+                        projectId={projectId}
+                      />
+                    )}
+                    {index > 0 && (
+                      <div className="pointer-events-none absolute left-0 top-0 h-full w-px bg-[#3c3c3c]" />
+                    )}
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
+            <TerminalSplitList
+              sessions={sessions}
+              labels={labels}
+              activeId={active?.id ?? ""}
+              onSelect={setActiveId}
+            />
+          </div>
+        ) : (
+          sessions.map((s) => {
+            const isActive = s.id === active?.id;
+            if (s.status === "error" && isActive) {
+              return (
+                <SessionErrorPane
+                  key={s.id}
+                  message={s.errorMessage ?? "Failed to start terminal session"}
+                  onRetry={() => {
+                    patchSession(s.id, (cur) => ({
+                      ...cur,
+                      status: "creating",
+                      errorMessage: null,
+                    }));
+                    void provisionSession(s.id);
+                  }}
+                />
+              );
+            }
+            if (!s.client) return isActive ? <SessionStartingPane key={s.id} /> : null;
+            return (
+              <div key={s.id} style={{ position: "absolute", inset: 0, display: isActive ? "block" : "none" }}>
+                <XtermView
+                  ref={(handle) => {
+                    if (handle) xtermRefs.current.set(s.id, handle);
+                    else xtermRefs.current.delete(s.id);
+                  }}
+                  client={s.client}
+                  hidden={!isActive}
+                  autoFocus={isActive && visible}
+                  projectId={projectId}
+                />
+              </div>
+            );
+          })
+        )}
       </div>
 
       {confirming && (
@@ -567,6 +602,46 @@ export function Terminal({
         />
       )}
     </div>
+  );
+}
+
+function TerminalSplitList({
+  sessions,
+  labels,
+  activeId,
+  onSelect,
+}: {
+  sessions: Session[];
+  labels: Map<string, string>;
+  activeId: string;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <aside
+      className="w-[148px] shrink-0 border-l border-[#2d2d2d] bg-[#1e1e1e] py-1 text-[12px] text-[#cccccc]"
+      aria-label="Terminal splits"
+    >
+      {sessions.map((s, index) => {
+        const active = s.id === activeId;
+        return (
+          <button
+            key={s.id}
+            type="button"
+            onClick={() => onSelect(s.id)}
+            className={[
+              "flex h-8 w-full items-center gap-1 px-2 text-left hover:bg-[#2a2d2e]",
+              active ? "bg-[#37373d] text-[#ffffff]" : "text-[#cccccc]",
+            ].join(" ")}
+            aria-current={active ? "true" : undefined}
+            title={labels.get(s.id) ?? `Terminal ${index + 1}`}
+          >
+            <span className="w-4 text-[#858585]">{index === 0 ? "┌" : "└"}</span>
+            <span className="rounded border border-[#858585] px-1 text-[10px] leading-4 text-[#cccccc]">⌁</span>
+            <span className="truncate">zsh</span>
+          </button>
+        );
+      })}
+    </aside>
   );
 }
 

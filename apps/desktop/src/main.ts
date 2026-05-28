@@ -44,6 +44,7 @@ import {
 import { registerFsIpcHandlers } from './fs-ipc'
 import { registerTerminalIpcHandlers, disposeTerminalIpc } from './ipc/terminal-ipc'
 import { registerLlmIpcHandlers, disposeLlmIpcHandlers } from './ipc/llm-ipc'
+import { registerPortsIpcHandlers, disposePortsIpcHandlers } from './ipc/ports-ipc'
 import { createTray, destroyTray } from './tray'
 import { runCloudLogin, CloudLoginError } from '@shogo-ai/worker/cloud-login'
 import {
@@ -1243,6 +1244,7 @@ app.whenReady().then(async () => {
   registerFsIpcHandlers()
   registerTerminalIpcHandlers()
   registerLlmIpcHandlers()
+  registerPortsIpcHandlers()
   buildAppMenu()
 
   const skipLocalServer = !isCloudMode && process.env.SHOGO_SKIP_LOCAL_SERVER === 'true'
@@ -1335,6 +1337,7 @@ app.on('before-quit', (event) => {
     destroyTray()
     void disposeTerminalIpc().catch(() => {})
     disposeLlmIpcHandlers()
+    disposePortsIpcHandlers()
     stopLocalServer().catch(() => {})
     return
   }
@@ -1344,6 +1347,7 @@ app.on('before-quit', (event) => {
   cleanupRecording()
   destroyTray()
   disposeLlmIpcHandlers()
+  disposePortsIpcHandlers()
   Promise.allSettled([disposeTerminalIpc(), stopLocalServer()])
     .then(() => console.log('[Desktop] Server cleanup complete'))
     .catch((err) => console.error('[Desktop] Server cleanup error:', err))
