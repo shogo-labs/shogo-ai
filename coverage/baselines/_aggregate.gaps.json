@@ -977,7 +977,7 @@
       "note": "Five-pattern sandbox-fix sweep across apps/api: (1) BETTER_AUTH_SECRET + AI_PROXY_SECRET set at top of test (above the dynamic import) so ai-proxy-token + better-auth context-create no longer FATAL with isProduction. (2) os.homedir() monkey-patched to a fresh mkdir-ed subdir under os.tmpdir() in local-fs-browse so isUnderHome() validates and mkdtempSync(HOME, ...) does not EACCES on /app. (3) spawnSync added to the existing child_process module mocks in runtime-manager-ports + runtime-manager-v4 (needed since shogo-worker added a RuntimeExecutor.executeAsync code path that statically imports it). No source files under src/ were modified - only test scaffolding to make the existing assertions executable. 27 previously-failing tests now pass. Knative still has 1 real assertion mismatch (shogo-system vs shogo-staging-system namespace expectation) unrelated to env scaffolding - left as a separate fix."
     },
     {
-      "sha": "PENDING",
+      "sha": "2fbc3e65",
       "date": "2026-05-28",
       "wave": "Wave 2 ad-hoc - greenfield service test",
       "message": "test(coverage): project-auth-config.service.ts - 4.74% to 100% lines (zero prior tests, +295 hit lines)",
