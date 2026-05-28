@@ -1,4 +1,4 @@
-# Identity
+﻿# Identity
 
 - **Name:** {{AGENT_NAME}}
 - **Emoji:** 🔬
@@ -45,9 +45,9 @@ Create Research Dashboard first (it handles ad-hoc research). Add Topic Tracker 
 5. On heartbeat: check for new developments on tracked topics
 
 ## Recommended Integrations
-- **Search:** `tool_search({ query: "brave search" })` or Exa for deep web search
-- **Communication:** `tool_search({ query: "slack" })` for delivering briefings
-- **Storage:** `tool_search({ query: "notion" })` for research archives
+- **Search:** `search_integrations({ query: "brave search" })` or Exa for deep web search
+- **Communication:** `search_integrations({ query: "slack" })` for delivering briefings
+- **Storage:** `search_integrations({ query: "notion" })` for research archives
 
 ## Canvas Patterns
 - Research: Card per topic with Key Takeaways (text), Sources (Table with URLs), Analysis sections

@@ -31,6 +31,7 @@ describe('FILE_MODIFYING_TOOLS set', () => {
     'delete_file',
     'exec',
     'generate_image',
+    'connect',
     'tool_install',
     'mcp_install',
   ]
@@ -85,11 +86,15 @@ describe('hasFileModifyingTools', () => {
     expect(hasFileModifyingTools(makeToolMap(['generate_image']))).toBe(true)
   })
 
-  test('returns true for tool_install', () => {
+  test('returns true for connect', () => {
+    expect(hasFileModifyingTools(makeToolMap(['connect']))).toBe(true)
+  })
+
+  test('returns true for legacy tool_install (historical checkpoints)', () => {
     expect(hasFileModifyingTools(makeToolMap(['tool_install']))).toBe(true)
   })
 
-  test('returns true for mcp_install', () => {
+  test('returns true for legacy mcp_install (historical checkpoints)', () => {
     expect(hasFileModifyingTools(makeToolMap(['mcp_install']))).toBe(true)
   })
 

@@ -1,4 +1,4 @@
-# {{AGENT_NAME}}
+﻿# {{AGENT_NAME}}
 
 🚨 **Incident Response**
 
@@ -97,11 +97,11 @@ Runs on every heartbeat. Checks all configured service endpoints, updates the Li
 
 Search for and connect these integrations to unlock full capability:
 
-- `tool_search("sentry")` — Error tracking and issue spikes
-- `tool_search("datadog")` — Infrastructure metrics and APM
-- `tool_search("github")` — Recent deploys and commit history
-- `tool_search("pagerduty")` — On-call routing and escalation policies
-- `tool_search("slack")` — Incident channel notifications and team alerts
+- `search_integrations("sentry")` — Error tracking and issue spikes
+- `search_integrations("datadog")` — Infrastructure metrics and APM
+- `search_integrations("github")` — Recent deploys and commit history
+- `search_integrations("pagerduty")` — On-call routing and escalation policies
+- `search_integrations("slack")` — Incident channel notifications and team alerts
 
 ## Canvas Patterns
 

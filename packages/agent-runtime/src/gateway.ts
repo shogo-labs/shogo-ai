@@ -291,9 +291,9 @@ export class AgentGateway {
   private toolMocks = new Map<string, (params: Record<string, any>) => any>()
   /** Synthetic tool definitions for mocked MCP tools that don't exist in the base tool set */
   private syntheticTools = new Map<string, { description: string; paramKeys: string[] }>()
-  /** Tools that have mock responses but should not appear until promoted via tool_install */
+  /** Tools that have mock responses but should not appear until promoted via connect */
   private hiddenMockTools = new Set<string>()
-  /** Hidden mocks promoted to visible after tool_install is called during a turn */
+  /** Hidden mocks promoted to visible after connect is called during a turn */
   private promotedMockTools: AgentTool[] = []
   /** User's IANA timezone, set from chat requests. Falls back to server timezone. */
   private userTimezone: string | null = null
@@ -496,7 +496,7 @@ export class AgentGateway {
     this.promotedMockTools = []
   }
 
-  /** After mock tool_install returns, promote hidden mock tools listed in the response */
+  /** After mock connect returns, promote hidden mock tools listed in the response */
   _promoteHiddenMocksFromInstall(result: any): void {
     const tools = result?.tools
     if (!Array.isArray(tools)) return
@@ -1193,7 +1193,7 @@ export class AgentGateway {
           prompt = [
             `[Skill: ${matchedSkill.name}]`,
             `A saved skill matched this request. Follow its instructions for this integration.`,
-            `You can still use tool_search if you need additional tools or integrations beyond what the skill provides.`,
+            `You can still use search_integrations if you need additional tools or integrations beyond what the skill provides.`,
             ``,
             matchedSkill.content,
             ``,
@@ -1255,7 +1255,7 @@ export class AgentGateway {
       const prompt = [
         `[Skill: ${matchedSkill.name}]`,
         `A saved skill matched this request. Follow its instructions for this integration.`,
-        `You can still use tool_search if you need additional tools or integrations beyond what the skill provides.`,
+        `You can still use search_integrations if you need additional tools or integrations beyond what the skill provides.`,
         ``,
         matchedSkill.content,
         ``,
@@ -1728,8 +1728,8 @@ export class AgentGateway {
         const mockFn = this.toolMocks.get(tool.name)
         if (!mockFn) return tool
 
-        // Special handling for tool_install: promote hidden mocks listed in the response
-        if (tool.name === 'tool_install') {
+        // Special handling for connect: promote hidden mocks listed in the response
+        if (tool.name === 'connect') {
           return {
             ...tool,
             execute: async (_id: string, params: any) => {
@@ -1760,7 +1760,7 @@ export class AgentGateway {
       })
 
       // Inject synthetic tool definitions for mocked tools not in the base set
-      // Skip hidden tools — they become available only after tool_install promotes them
+      // Skip hidden tools — they become available only after connect promotes them
       for (const [name, mockFn] of this.toolMocks) {
         if (existingNames.has(name)) continue
         if (this.hiddenMockTools.has(name)) continue
@@ -1784,9 +1784,9 @@ export class AgentGateway {
     }
 
     // Dynamic tools proxy: pi-agent-core uses tools.find() and iterates tools.
-    // When tool_install hot-adds servers mid-turn, their tools must be visible
+    // When connect hot-adds servers mid-turn, their tools must be visible
     // immediately. This proxy merges staticTools with live MCP tools on access.
-    // Also includes promotedMockTools (hidden mocks promoted via mock tool_install).
+    // Also includes promotedMockTools (hidden mocks promoted via mock connect).
     const mcpMgr = this.mcpClientManager
     const promoted = this.promotedMockTools
     const staticNames = new Set(staticTools.map(t => t.name))
@@ -2827,7 +2827,7 @@ export class AgentGateway {
       '',
       'When the user asks you to connect an integration, configure a channel, or set up a scheduled reminder, use the relevant tool immediately instead of only describing what you would do.',
       '- Credentials or hostnames in the user message are permission to call `channel_connect` for email, Slack, Discord, Telegram, etc.',
-      '- For managed integrations such as GitHub or Google Calendar, call `tool_search`/`mcp_search`, then `tool_install`/`mcp_install`, then use the installed tools.',
+      '- For managed integrations (Google, Slack, GitHub, etc.) and MCP servers alike, call `search_integrations` then `connect`. The result\'s `source` tag (`managed` | `mcp` | `skill`) tells you which path was taken.',
       '- For recurring reminders, digests, check-ins, or autonomous routines, call `heartbeat_configure` and write or update `HEARTBEAT.md` with the exact checklist.',
       '- If you need a missing detail such as timezone or channel name, call `ask_user` instead of asking only in prose.',
       '- A successful final response should summarize what you configured, not ask whether to start.',
@@ -3388,7 +3388,7 @@ export class AgentGateway {
     }
 
     lines.push('')
-    lines.push('Use these tools directly — no need to search or install them. Use `tool_uninstall` to remove any you no longer need.')
+    lines.push('Use these tools directly — no need to search or install them. Use `disconnect` to remove any you no longer need.')
     lines.push('')
     lines.push('**From canvas code:** These tools are also callable from React code via `import { useTools } from \'@shogo-ai/sdk/tools\'`. Use `const { execute } = useTools()` then `await execute(\'TOOL_NAME\', { ...args })`. This is the preferred pattern when building apps that need ongoing access to integration data.')
 

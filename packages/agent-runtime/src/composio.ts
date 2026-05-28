@@ -443,7 +443,7 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
     execute: async (_toolCallId: string, params: unknown) => {
       const client = getComposioClient()
       if (!client || !storedComposioUserId) {
-        return textResult({ error: 'Composio not initialized. Call tool_install first.' })
+        return textResult({ error: 'Composio not initialized. Call connect first.' })
       }
       const args = (params && typeof params === 'object') ? params as Record<string, any> : {}
       try {

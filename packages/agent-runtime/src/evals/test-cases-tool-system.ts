@@ -1,9 +1,9 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Unified Tool System Eval Test Cases
  *
- * Tests the unified tool_search / tool_install / tool_uninstall
+ * Tests the unified search_integrations / connect / disconnect
  * interface that abstracts Composio (managed OAuth) and catalog (local MCP)
  * sources behind a single agent-facing API.
  *
@@ -114,17 +114,17 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
       },
       {
         id: 'at-least-two-searches',
-        description: 'Made at least 2 tool_search calls (one per capability)',
+        description: 'Made at least 2 search_integrations calls (one per capability)',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls.filter(t => t.name === 'tool_search').length >= 2,
+        validate: (r) => r.toolCalls.filter(t => t.name === 'search_integrations').length >= 2,
       },
       {
         id: 'did-not-install',
         description: 'Did NOT install anything (user said just show options)',
         points: 20,
         phase: 'execution',
-        validate: (r) => neverUsedTool(r, 'tool_install') && !delegatedTo(r, 'integration'),
+        validate: (r) => neverUsedTool(r, 'connect') && !delegatedTo(r, 'integration'),
       },
       {
         id: 'response-mentions-both',
@@ -164,17 +164,17 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'searched-for-tools',
-        description: 'Used tool_search to find integrations',
+        description: 'Used search_integrations to find integrations',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
       },
       {
         id: 'installed-integrations',
-        description: 'Used tool_install to connect at least one integration',
+        description: 'Used connect to connect at least one integration',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'fetched-jira-issues',
@@ -319,21 +319,21 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'searched-for-github',
-        description: 'Used tool_search to find GitHub integration',
+        description: 'Used search_integrations to find GitHub integration',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
       },
       {
         id: 'installed-github',
-        description: 'Used tool_install to connect GitHub',
+        description: 'Used connect to connect GitHub',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'install-managed-style',
-        description: 'tool_install used managed-style (no command/args) for Composio',
+        description: 'connect used managed-style (no command/args) for Composio',
         points: 10,
         phase: 'execution',
         validate: (r) => installCalledWithoutCommand(r),
@@ -368,8 +368,8 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const searchIdx = r.toolCalls.findIndex(t => t.name === 'tool_search')
-          const installIdx = r.toolCalls.findIndex(t => t.name === 'tool_install')
+          const searchIdx = r.toolCalls.findIndex(t => t.name === 'search_integrations')
+          const installIdx = r.toolCalls.findIndex(t => t.name === 'connect')
           const fetchIdx = r.toolCalls.findIndex(t => t.name === 'GITHUB_LIST_ISSUES')
           const writeIdx = r.toolCalls.findIndex(t => t.name === 'write_file')
           return searchIdx >= 0 && installIdx > searchIdx && fetchIdx > installIdx && writeIdx > fetchIdx
@@ -417,7 +417,7 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
     input: 'Can you set up both of those for me?',
     maxScore: 100,
     toolMocks: {
-      tool_search: {
+      search_integrations: {
         type: 'pattern',
         description: 'Search for tools.',
         paramKeys: ['query', 'limit'],
@@ -445,7 +445,7 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
         ],
         default: { query: 'unknown', results: [], message: 'No tools found.' },
       },
-      tool_install: {
+      connect: {
         type: 'pattern',
         description: 'Install a tool.',
         paramKeys: ['name', 'command', 'args', 'env'],
@@ -476,10 +476,10 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
       },
       {
         id: 'installed-both',
-        description: 'Called tool_install at least twice',
+        description: 'Called connect at least twice',
         points: 20,
         phase: 'intention',
-        validate: (r) => r.toolCalls.filter(t => t.name === 'tool_install').length >= 2,
+        validate: (r) => r.toolCalls.filter(t => t.name === 'connect').length >= 2,
       },
       {
         id: 'slack-managed-style',
@@ -488,7 +488,7 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
         phase: 'execution',
         validate: (r) => {
           return r.toolCalls
-            .filter(t => t.name === 'tool_install')
+            .filter(t => t.name === 'connect')
             .some(t => {
               const input = t.input as Record<string, any>
               const name = (input.name || '').toLowerCase()
@@ -503,7 +503,7 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
         phase: 'execution',
         validate: (r) => {
           return r.toolCalls
-            .filter(t => t.name === 'tool_install')
+            .filter(t => t.name === 'connect')
             .some(t => {
               const input = t.input as Record<string, any>
               const name = (input.name || '').toLowerCase()
@@ -561,10 +561,10 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'installed-calendar',
-        description: 'Used tool_install to connect Google Calendar',
+        description: 'Used connect to connect Google Calendar',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'wrote-code-file',

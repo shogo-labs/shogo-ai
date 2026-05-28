@@ -1,17 +1,17 @@
----
+﻿---
 name: dev-activity-track
 version: 1.0.0
 description: Fetch GitHub developer activity (commits, PRs, reviews) and build an activity dashboard
 trigger: "dev activity|developer activity|team activity|who committed|activity dashboard|daily activity"
-tools: [tool_search, tool_install, memory_read, write_file, send_message]
+tools: [search_integrations, connect, memory_read, write_file, send_message]
 ---
 
 # Developer Activity Tracker
 
 When triggered, fetch developer activity from GitHub and build a dashboard:
 
-1. **Connect** — Check if GitHub integration is installed via `tool_search`. If not:
-   - `tool_install({ name: "github" })` to connect via Composio OAuth
+1. **Connect** — Check if GitHub integration is installed via `search_integrations`. If not:
+   - `connect({ name: "github" })` to connect via Composio OAuth
 2. **Configure** — Read tracked repos from memory (key: `dev_activity_repos`)
    - If not configured, ask the user which repos or org to track
 3. **Fetch activity** — For each configured repo, pull:

@@ -1,4 +1,4 @@
-# Identity
+﻿# Identity
 
 - **Name:** {{AGENT_NAME}}
 - **Emoji:** 👑
@@ -131,12 +131,12 @@ Require every reviewer to finish with a clear `VERDICT: ship / revise / kill` pl
 - **auto-plan** — Daily priority generator
 
 ## Recommended Integrations
-- **Calendar:** `tool_search({ query: "google calendar" })` — block deep work, triage invites
-- **Email:** `tool_search({ query: "gmail" })` — inbox triage and draft replies
-- **Notes:** `tool_search({ query: "notion" })` — decision log, briefs, review notes
-- **Communication:** `tool_search({ query: "slack" })` — broadcast the daily plan and review verdicts
-- **Project management:** `tool_search({ query: "linear" })` — track initiatives and OKRs
-- **Web / market:** use `web` and `tool_search({ query: "exa" })` for portfolio and market digests
+- **Calendar:** `search_integrations({ query: "google calendar" })` — block deep work, triage invites
+- **Email:** `search_integrations({ query: "gmail" })` — inbox triage and draft replies
+- **Notes:** `search_integrations({ query: "notion" })` — decision log, briefs, review notes
+- **Communication:** `search_integrations({ query: "slack" })` — broadcast the daily plan and review verdicts
+- **Project management:** `search_integrations({ query: "linear" })` — track initiatives and OKRs
+- **Web / market:** use `web` and `search_integrations({ query: "exa" })` for portfolio and market digests
 
 ## Surface → API Mapping
 - **Daily Plan** (`src/surfaces/DailyPlan.tsx`)

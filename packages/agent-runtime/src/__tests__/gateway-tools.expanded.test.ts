@@ -8,7 +8,7 @@
 //     read_guide, notify_user_error, ask_user, todo_write, channel_list,
 //     channel_disconnect, send_team_message, quick_action, agent_status,
 //     agent_cancel, agent_list, agent_result, search, delete_file,
-//     impact_radius, mcp_uninstall, tool_uninstall, server_sync)
+//     impact_radius, disconnect, server_sync)
 //   - exported helpers: formatToolInstallMessage, resolveToolNames,
 //     hostToContainer, containerToHost, setLoadedSkills, getLoadedSkills,
 //     setLoadedClaudeSkills, getLoadedClaudeSkills.
@@ -117,8 +117,8 @@ describe('formatToolInstallMessage', () => {
 
 describe('resolveToolNames + TOOL_GROUP_MAP', () => {
   test('expands a known group', () => {
-    const names = resolveToolNames(['tool_discovery'])
-    expect(names).toEqual(expect.arrayContaining(TOOL_GROUP_MAP.tool_discovery))
+    const names = resolveToolNames(['integrations'])
+    expect(names).toEqual(expect.arrayContaining(TOOL_GROUP_MAP.integrations))
   })
 
   test('passes through known individual names', () => {
@@ -138,11 +138,11 @@ describe('resolveToolNames + TOOL_GROUP_MAP', () => {
   })
 
   test('deduplicates across mixed refs', () => {
-    const names = resolveToolNames(['exec', 'exec', 'tool_discovery', 'tool_search'])
+    const names = resolveToolNames(['exec', 'exec', 'integrations', 'search_integrations'])
     const seen = new Set(names)
     expect(seen.size).toBe(names.length)
     expect(names).toContain('exec')
-    expect(names).toContain('tool_search')
+    expect(names).toContain('search_integrations')
   })
 
   test('ALL_TOOL_NAMES is a non-empty list of strings', () => {
@@ -782,33 +782,33 @@ describe('server_sync', () => {
 })
 
 // ---------------------------------------------------------------------------
-// mcp_uninstall / tool_uninstall — error paths
+// disconnect — error paths
 // ---------------------------------------------------------------------------
 
-describe('mcp_uninstall / tool_uninstall', () => {
-  test('mcp_uninstall: no mcpClientManager', async () => {
-    const d = await exec(makeCtx(), 'mcp_uninstall', { name: 'postgres' })
+describe('disconnect', () => {
+  test('disconnect: no mcpClientManager', async () => {
+    const d = await exec(makeCtx(), 'disconnect', { name: 'postgres' })
     expect(d).toBeDefined()
   })
 
-  test('tool_uninstall: returns error for unknown name', async () => {
-    const d = await exec(makeCtx(), 'tool_uninstall', { name: 'does-not-exist' })
+  test('disconnect: returns error for unknown name', async () => {
+    const d = await exec(makeCtx(), 'disconnect', { name: 'does-not-exist' })
     expect(d).toBeDefined()
   })
 })
 
 // ---------------------------------------------------------------------------
-// tool_install — skill: prefix paths
+// connect — skill: prefix paths
 // ---------------------------------------------------------------------------
 
-describe('tool_install (skill: prefix)', () => {
+describe('connect (skill: prefix)', () => {
   test('returns error when bundled skill is not found', async () => {
-    const d = await exec(makeCtx(), 'tool_install', { name: 'skill:totally-not-a-real-skill' })
+    const d = await exec(makeCtx(), 'connect', { name: 'skill:totally-not-a-real-skill' })
     expect(d.error).toBeDefined()
   })
 
   test('returns error when MCP client manager missing for non-skill name', async () => {
-    const d = await exec(makeCtx(), 'tool_install', { name: 'random-toolkit-name' })
+    const d = await exec(makeCtx(), 'connect', { name: 'random-toolkit-name' })
     expect(d.error).toBeDefined()
   })
 })

@@ -1785,7 +1785,7 @@ export default observer(function ProjectLayout() {
       for (const part of parts) {
         if (part.type !== 'tool-invocation' && part.type !== 'dynamic-tool') continue
         const toolName = part.toolInvocation?.toolName ?? part.toolName
-        if (toolName !== 'tool_install') continue
+        if (toolName !== 'connect' && toolName !== 'tool_install' && toolName !== 'mcp_install') continue
         const state = part.toolInvocation?.state ?? part.state
         if (state !== 'result' && state !== 'output-available') continue
         const result = parseToolInstallResult(

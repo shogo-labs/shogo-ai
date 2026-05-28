@@ -1,17 +1,17 @@
----
+﻿---
 name: pr-review
 version: 2.0.0
 description: Review a specific pull request — fetch diff, analyze code quality, post feedback
 trigger: "review pr|review pull request|check pr|code review|review #"
-tools: [tool_search, tool_install, memory_read, write_file]
+tools: [search_integrations, connect, memory_read, write_file]
 ---
 
 # PR Review
 
 When asked to review a specific PR:
 
-1. **Connect** — Ensure GitHub integration is installed via `tool_search`. If not:
-   - `tool_install({ name: "github" })` to connect via Composio OAuth
+1. **Connect** — Ensure GitHub integration is installed via `search_integrations`. If not:
+   - `connect({ name: "github" })` to connect via Composio OAuth
 2. **Fetch** — Get the PR details:
    - `GITHUB_GET_PULL_REQUEST` for PR metadata (title, description, author)
    - `GITHUB_LIST_PULL_REQUEST_FILES` for the changed files

@@ -1,10 +1,10 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Tool Discovery Eval Test Cases
  *
  * Tests the agent's ability to discover, install, use, and manage MCP servers
- * at runtime via mcp_search / mcp_install (or tool_search as a discovery step).
+ * at runtime via search_integrations / connect.
  * Prompts simulate non-technical users who don't know about tools —
  * the agent must figure out that it needs new capabilities and go through
  * the search/install/use lifecycle autonomously.
@@ -27,9 +27,9 @@
 import type { AgentEval } from './types'
 import {
   MCP_LIST_INSTALLED_MOCKS,
-  MCP_SEARCH_BASIC_MOCKS,
-  MCP_INSTALL_AND_USE_MOCKS,
-  MCP_UNINSTALL_MOCKS,
+  INTEGRATIONS_SEARCH_BASIC_MOCKS,
+  CONNECT_AND_USE_MOCKS,
+  DISCONNECT_MOCKS,
   MCP_SELF_EXTEND_FIGMA_MOCKS,
   MCP_SELF_EXTEND_DATABASE_MOCKS,
   MCP_MULTI_SERVER_MOCKS,
@@ -65,10 +65,10 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-list-installed',
-        description: 'Used mcp_search or tool_search to check available servers',
+        description: 'Used search_integrations to check available servers',
         points: 40,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'mcp_search') || usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
       },
       {
         id: 'mentions-playwright',
@@ -113,14 +113,14 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     ],
     input: 'Before you set anything up, just show me what options are available. I want to see what\'s out there first.',
     maxScore: 100,
-    toolMocks: MCP_SEARCH_BASIC_MOCKS,
+    toolMocks: INTEGRATIONS_SEARCH_BASIC_MOCKS,
     validationCriteria: [
       {
         id: 'used-mcp-search',
-        description: 'Used mcp_search to find postgres servers',
+        description: 'Used search_integrations to find postgres servers',
         points: 35,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'mcp_search') || usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
       },
       {
         id: 'search-mentions-postgres',
@@ -137,7 +137,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         description: 'Did NOT install (user said just show options)',
         points: 20,
         phase: 'execution',
-        validate: (r) => !usedToolInFinalTurn(r, 'mcp_install') && !usedToolInFinalTurn(r, 'tool_install'),
+        validate: (r) => !usedToolInFinalTurn(r, 'connect'),
       },
       {
         id: 'response-lists-options',
@@ -168,21 +168,21 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     level: 3,
     input: 'I need to see what files are in /tmp on my server. Can you get yourself set up with a file browsing tool and then show me the directory listing?',
     maxScore: 100,
-    toolMocks: MCP_INSTALL_AND_USE_MOCKS,
+    toolMocks: CONNECT_AND_USE_MOCKS,
     validationCriteria: [
       {
         id: 'used-mcp-search',
-        description: 'Used mcp_search to find a filesystem server',
+        description: 'Used search_integrations to find a filesystem server',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'mcp_search') || usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
       },
       {
         id: 'used-mcp-install',
-        description: 'Used mcp_install to install the server',
+        description: 'Used connect to install the server',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'mcp_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'used-filesystem-tool',
@@ -197,8 +197,8 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const searchIdx = r.toolCalls.findIndex(t => t.name === 'mcp_search' || t.name === 'tool_search')
-          const installIdx = r.toolCalls.findIndex(t => t.name === 'mcp_install')
+          const searchIdx = r.toolCalls.findIndex(t => t.name === 'search_integrations' || t.name === 'search_integrations')
+          const installIdx = r.toolCalls.findIndex(t => t.name === 'connect')
           const useIdx = r.toolCalls.findIndex(t => t.name === 'mcp_filesystem_list_directory')
           return searchIdx >= 0 && installIdx > searchIdx && useIdx > installIdx
         },
@@ -236,14 +236,14 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     ],
     input: 'OK, I don\'t use Slack anymore. Remove that one please.',
     maxScore: 100,
-    toolMocks: MCP_UNINSTALL_MOCKS,
+    toolMocks: DISCONNECT_MOCKS,
     validationCriteria: [
       {
         id: 'used-mcp-uninstall',
-        description: 'Used mcp_uninstall to remove the server',
+        description: 'Used disconnect to remove the server',
         points: 50,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'mcp_uninstall') || usedToolAnywhere(r, 'tool_uninstall'),
+        validate: (r) => usedToolAnywhere(r, 'disconnect'),
       },
       {
         id: 'uninstalled-slack',
@@ -292,17 +292,17 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'searched-for-capability',
-        description: 'Used mcp_search to find a Figma capability',
+        description: 'Used search_integrations to find a Figma capability',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'mcp_search') || usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
       },
       {
         id: 'installed-mcp-server',
-        description: 'Used mcp_install to add the Figma capability',
+        description: 'Used connect to add the Figma capability',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'mcp_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'passed-token',
@@ -339,7 +339,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
   // Case 6: I need to check my database
   // Level 3 | Discovery-only: no postgres tools mocked. Agent must install
   //           DB access with the connection string. Multi-turn: the history
-  //           turn may trigger mcp_search, so the final turn validates
+  //           turn may trigger search_integrations, so the final turn validates
   //           install + config passing, not necessarily a fresh search.
   // =========================================================================
   {
@@ -356,17 +356,17 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-discovery-or-install',
-        description: 'Used mcp_search or mcp_install (discovery flow)',
+        description: 'Used search_integrations or connect (discovery flow)',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'mcp_search') || usedToolAnywhere(r, 'mcp_install') || usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations') || usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'installed-mcp-server',
-        description: 'Used mcp_install to add the postgres server',
+        description: 'Used connect to add the postgres server',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'mcp_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'passed-connection-config',

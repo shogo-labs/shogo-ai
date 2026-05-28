@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Luxury Trip Planner Eval Test Cases
@@ -90,10 +90,10 @@ export const TRIP_PLANNER_EVALS: AgentEval[] = [
       // --- Airbnb MCP discovery ---
       {
         id: 'searched-for-airbnb-mcp',
-        description: 'Used mcp_search to find the Airbnb MCP server',
+        description: 'Used search_integrations to find the Airbnb MCP server',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'mcp_search') || usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
       },
       {
         id: 'search-query-relevant',
@@ -107,10 +107,10 @@ export const TRIP_PLANNER_EVALS: AgentEval[] = [
       },
       {
         id: 'installed-airbnb-mcp',
-        description: 'Used mcp_install to add the Airbnb MCP server',
+        description: 'Used connect to add the Airbnb MCP server',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'mcp_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       // --- Actually used Airbnb search ---
       {
@@ -126,8 +126,8 @@ export const TRIP_PLANNER_EVALS: AgentEval[] = [
         points: 5,
         phase: 'execution',
         validate: (r) => {
-          const searchIdx = r.toolCalls.findIndex(t => t.name === 'mcp_search' || t.name === 'tool_search')
-          const installIdx = r.toolCalls.findIndex(t => t.name === 'mcp_install')
+          const searchIdx = r.toolCalls.findIndex(t => t.name === 'search_integrations' || t.name === 'search_integrations')
+          const installIdx = r.toolCalls.findIndex(t => t.name === 'connect')
           const useIdx = r.toolCalls.findIndex(t => t.name === 'mcp_airbnb_airbnb_search')
           return searchIdx >= 0 && installIdx > searchIdx && useIdx > installIdx
         },

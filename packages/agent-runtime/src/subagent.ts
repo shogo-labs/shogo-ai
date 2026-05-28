@@ -32,8 +32,7 @@ const CORE_GATEWAY_TOOLS = new Set([
   'memory_read', 'memory_search',
   'send_message', 'channel_connect', 'channel_disconnect', 'channel_list',
   'heartbeat_configure', 'heartbeat_status',
-  'tool_search', 'tool_install', 'tool_uninstall',
-  'mcp_search', 'mcp_install', 'mcp_uninstall',
+  'search_integrations', 'connect', 'disconnect',
   'quick_action',
 ])
 
@@ -182,16 +181,17 @@ respond with one sentence telling them to call it directly, and stop. Do
 not re-search, do not re-install, do not write files.
 
 ## Available Tools
-tool_search, tool_install, tool_uninstall — managed integrations (Composio, bundled tools)
-mcp_search, mcp_install, mcp_uninstall — MCP server discovery and lifecycle
+search_integrations — unified search across managed OAuth (Composio), bundled skills, and MCP servers; results are tagged with \`source\`
+connect — install (auto-routes by name; pass \`source: "mcp"\` to skip Composio; pass \`url\` for remote MCP)
+disconnect — remove an installed integration
 read_file, write_file — save config or results to the workspace
 
 ## Guidelines
 - Search before installing — confirm the right tool/server exists first
-- For Composio tools: search by keyword, install with the toolkit name
-- For MCP servers: search the catalog, install by ID
-- After installation, verify the tool is available
-- Return a clear summary of what was installed and how to use it`
+- Inspect each result's \`source\` tag to know which backend will handle it (managed | skill | mcp)
+- For managed (Composio): no credentials needed — \`connect({ name: "<toolkit>" })\` is enough
+- For MCP servers: \`connect({ name: "<id>", source: "mcp" })\` for catalog or \`connect({ name: "<id>", url: "..." })\` for remote
+- After installation, verify the tool is available and return a clear summary of how to call it`
 
 export const CHANNEL_SUBAGENT_PROMPT = `You are a channel management subagent. Connect, configure, and manage messaging channels.
 
@@ -421,7 +421,7 @@ export function getBuiltinSubagentConfig(
     //     name: 'integration',
     //     description: 'Discover, install, and uninstall integrations and MCP servers. Does NOT execute installed tools — the parent agent calls those directly by name.',
     //     systemPrompt: INTEGRATION_SUBAGENT_PROMPT,
-    //     toolNames: ['tool_search', 'tool_install', 'tool_uninstall', 'mcp_search', 'mcp_install', 'mcp_uninstall', 'read_file', 'write_file'],
+    //     toolNames: ['search_integrations', 'connect', 'disconnect', 'read_file', 'write_file'],
     //     includeInstalledTools: true,
     //     disallowedTools: ['task', 'skill'],
     //     maxTurns: 10,

@@ -518,7 +518,7 @@ describe('Dynamic proxy preservation', () => {
     expect(wrapped.find(t => t.name === 'read_file')).toBeDefined()
     expect(wrapped.find(t => t.name === 'mcp_airbnb_search')).toBeUndefined()
 
-    // Simulate mcp_install adding a new tool mid-turn
+    // Simulate connect adding a new tool mid-turn
     liveToolSource.tools.push(makeTool('mcp_airbnb_search'))
 
     // The new tool should now be visible through the orchestrated proxy
@@ -606,7 +606,7 @@ describe('Dynamic proxy preservation', () => {
     expect(wrapped.length).toBe(2)
     expect(wrapped.find(t => t.name === 'mcp_airbnb_search')).toBeDefined()
 
-    // Simulate mcp_uninstall
+    // Simulate disconnect
     liveToolSource.tools = []
     expect(wrapped.length).toBe(1)
     expect(wrapped.find(t => t.name === 'mcp_airbnb_search')).toBeUndefined()

@@ -163,7 +163,7 @@ If the endpoint requires auth or integration setup that hasn't happened yet (e.g
 
 Managed integrations (Jira, Slack, Gmail, Google Calendar, Meta Ads, etc.) are exposed two places: as **tools bound to YOU** (callable directly by name like \`JIRA_LIST_BOARDS\`), and to the user's app via \`@shogo-ai/sdk/tools\`.
 
-**Step 0 — check what's already bound.** Before reaching for \`tool_search\` / \`tool_install\` / \`agent_spawn\`, scan your own tool list. If a \`<TOOLKIT>_<ACTION>\` tool is already there, just call it. Don't search for what you already have. Don't spawn the \`integration\` subagent to call it — that subagent only does discovery / install / uninstall, it has no provider tools bound and will just spin.
+**Step 0 — check what's already bound.** Before reaching for \`search_integrations\` / \`connect\` / \`agent_spawn\`, scan your own tool list. If a \`<TOOLKIT>_<ACTION>\` tool is already there, just call it. Don't search for what you already have. Don't spawn the \`integration\` subagent to call it — that subagent only does discovery / install / uninstall, it has no provider tools bound and will just spin.
 
 **Calling a bound tool.** Just call it like any other tool:
 

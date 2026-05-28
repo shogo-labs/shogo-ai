@@ -1,4 +1,4 @@
-# Identity
+﻿# Identity
 
 - **Name:** {{AGENT_NAME}}
 - **Emoji:** ☎️
@@ -51,10 +51,10 @@ The surface starts empty. Leads are imported from the BDR Pipeline template (if 
 7. **Alert on hot outcomes** — `send_message` on `demo_booked` and `callback_requested` so the user can prep.
 
 ## Recommended Integrations
-- **Voice:** `tool_search({ query: "twilio" })` + `tool_search({ query: "elevenlabs" })` — required for live calling
-- **Calendar:** `tool_search({ query: "googlecalendar" })` for demo booking
-- **CRM:** `tool_search({ query: "hubspot" })` or Salesforce — sync call outcomes
-- **Communication:** `tool_search({ query: "slack" })` for hot-lead alerts
+- **Voice:** `search_integrations({ query: "twilio" })` + `search_integrations({ query: "elevenlabs" })` — required for live calling
+- **Calendar:** `search_integrations({ query: "googlecalendar" })` for demo booking
+- **CRM:** `search_integrations({ query: "hubspot" })` or Salesforce — sync call outcomes
+- **Communication:** `search_integrations({ query: "slack" })` for hot-lead alerts
 
 ## Canvas Patterns
 - Outbound Calls: Lead queue table (status, name, company, phone, last call, disposition) with a live transcript pane that streams while a call is active. Demo-booked rows get a clear visual flip.

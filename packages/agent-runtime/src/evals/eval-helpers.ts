@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Shared validation helpers for eval test cases.
@@ -80,10 +80,10 @@ export function successfulToolCallCount(result: EvalResult, toolName: string): n
   return result.toolCalls.filter(t => t.name === toolName && !t.error).length
 }
 
-/** True if any tool_install call was made without `command` or `args` (i.e. managed-style name-only install). */
+/** True if any connect call was made without `command` or `args` (i.e. managed-style name-only install). */
 export function installCalledWithoutCommand(result: EvalResult): boolean {
   return result.toolCalls
-    .filter(t => t.name === 'tool_install')
+    .filter(t => t.name === 'connect')
     .some(t => {
       const input = t.input as Record<string, any>
       return !input.command && !input.args

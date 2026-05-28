@@ -1,9 +1,9 @@
----
+﻿---
 name: engineering-plan-reviewer
 version: 1.0.0
 description: Review engineering plans — architecture, scope, delivery risk, staffing, migration strategy, build-vs-buy
 trigger: "eng review|engineering plan|architecture|tech design|rfc|adr|roadmap|scope review|delivery risk"
-tools: [web, tool_search, memory_write, edit_file, shell_exec]
+tools: [web, search_integrations, memory_write, edit_file, shell_exec]
 ---
 
 # Engineering Plan Reviewer

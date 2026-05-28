@@ -1,9 +1,9 @@
----
+﻿---
 name: churn-and-refund
 version: 1.0.0
 description: Surface churn-risk customers from Stripe + support signals and execute refunds with receipts after explicit confirmation
 trigger: "churn|refund|emailed support|at risk|failed payment|cancel|stripe ops"
-tools: [tool_search, tool_install, memory_read, memory_write, send_message]
+tools: [search_integrations, connect, memory_read, memory_write, send_message]
 ---
 
 # Churn & Refund Workflow
@@ -11,7 +11,7 @@ tools: [tool_search, tool_install, memory_read, memory_write, send_message]
 When triggered, run a churn-risk + refund pass:
 
 1. **Confirm Stripe mode** — Ask test vs live. Persist to memory for the session. Default to test if unspecified.
-2. **Connect Stripe** — `tool_search({ query: "stripe" })`; install via Composio if missing. Refuse to proceed without it.
+2. **Connect Stripe** — `search_integrations({ query: "stripe" })`; install via Composio if missing. Refuse to proceed without it.
 3. **Pull metrics** — `STRIPE_GET_BALANCE`, `STRIPE_LIST_PAYMENTS`, `STRIPE_LIST_CUSTOMERS`, `STRIPE_LIST_INVOICES`. Render the KPI grid on the Revenue Dashboard.
 4. **Detect churn risk** — For each customer, combine signals from Stripe + (when connected) Gmail / Zendesk:
    - 2+ support contacts in the last 30 days

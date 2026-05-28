@@ -1,9 +1,9 @@
----
+﻿---
 name: standup-auto-generate
 version: 1.0.0
 description: Auto-generate daily standup summaries from GitHub commits, PRs, and Slack activity
 trigger: "generate standup|auto standup|standup summary|what did the team do|morning summary|daily summary"
-tools: [tool_search, tool_install, memory_read, memory_write, send_message]
+tools: [search_integrations, connect, memory_read, memory_write, send_message]
 ---
 
 # Automatic Standup Generator
@@ -11,8 +11,8 @@ tools: [tool_search, tool_install, memory_read, memory_write, send_message]
 Auto-generate standup summaries from development activity:
 
 1. **Connect** — Ensure GitHub and Slack are connected:
-   - `tool_install({ name: "github" })` if not connected
-   - `tool_install({ name: "slack" })` if not connected (optional but recommended)
+   - `connect({ name: "github" })` if not connected
+   - `connect({ name: "slack" })` if not connected (optional but recommended)
 2. **Gather data** — Pull last 24h of activity:
    - GitHub: commits, PRs opened/merged/reviewed, issues closed per developer
    - Slack (if connected): messages in engineering channels for context

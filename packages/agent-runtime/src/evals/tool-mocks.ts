@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Tool Mock Fixtures for Agent Evals
@@ -28,7 +28,7 @@
  * Optional latency knobs on a mock spec. When omitted at every level the
  * runtime falls back to install-body `defaults.delayMs` and then to
  * tool-class defaults (browser-navigate ~2200ms, click/fill ~600ms,
- * tool_install ~1800ms, etc.) so demo recordings don't return in 0ms.
+ * connect ~1800ms, etc.) so demo recordings don't return in 0ms.
  *
  * Resolution order (per call):
  *   per-pattern.delayMs > spec.delayMs > install-body defaults.delayMs
@@ -234,7 +234,7 @@ export const COMPETITIVE_INTEL_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const GITHUB_TRIAGE_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'static',
     description: 'Search for MCP servers by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -243,10 +243,10 @@ export const GITHUB_TRIAGE_MOCKS: ToolMockMap = {
       results: [
         { name: 'GitHub', qualifiedName: 'github', description: 'GitHub — managed OAuth integration. Access repos, issues, PRs.', source: 'managed', authType: 'oauth', composioToolkit: 'github' },
       ],
-      message: 'Found 1 tool(s). Use tool_install to add one.',
+      message: 'Found 1 tool(s). Use connect to add one.',
     },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     description: 'Install a tool, making its capabilities available immediately.',
     paramKeys: ['name'],
@@ -423,7 +423,7 @@ export const SENTRY_TRIAGE_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const MEETING_PREP_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     description: 'Search for tools by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -439,7 +439,7 @@ export const MEETING_PREP_MOCKS: ToolMockMap = {
     ],
     default: { query: 'calendar', results: [{ name: 'googlecalendar', description: 'Google Calendar — managed OAuth integration.', source: 'managed', authType: 'oauth' }], message: 'Found 1 tool(s).' },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     description: 'Install a tool, making its capabilities available immediately.',
     paramKeys: ['name'],
@@ -554,7 +554,7 @@ const STRIPE_PAYMENTS_RESPONSE = {
 }
 
 export const STRIPE_REVENUE_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'static',
     description: 'Search for tools by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -563,10 +563,10 @@ export const STRIPE_REVENUE_MOCKS: ToolMockMap = {
       results: [
         { name: 'Stripe', qualifiedName: 'stripe', description: 'Stripe — managed OAuth integration. Access payments, customers, invoices.', source: 'managed', authType: 'oauth', composioToolkit: 'stripe' },
       ],
-      message: 'Found 1 tool(s). Use tool_install to add one.',
+      message: 'Found 1 tool(s). Use connect to add one.',
     },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     description: 'Install a tool, making its capabilities available immediately.',
     paramKeys: ['name'],
@@ -640,7 +640,7 @@ const PR_PATTERN_SPEC: ToolMockSpec = {
 }
 
 export const PR_REVIEW_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'static',
     description: 'Search for tools by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -649,10 +649,10 @@ export const PR_REVIEW_MOCKS: ToolMockMap = {
       results: [
         { name: 'GitHub', qualifiedName: 'github', description: 'GitHub — managed OAuth integration. Access repos, issues, PRs.', source: 'managed', authType: 'oauth', composioToolkit: 'github' },
       ],
-      message: 'Found 1 tool(s). Use tool_install to add one.',
+      message: 'Found 1 tool(s). Use connect to add one.',
     },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     description: 'Install a tool, making its capabilities available immediately.',
     paramKeys: ['name'],
@@ -686,29 +686,18 @@ export const PR_REVIEW_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const MCP_LIST_INSTALLED_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'static',
-    description: 'Search for managed OAuth integrations.',
-    paramKeys: ['query'],
+    description: 'Search across managed OAuth integrations, skills, and MCP servers.',
+    paramKeys: ['query', 'limit', 'source'],
     response: {
       query: 'integrations',
       results: [
-        { name: 'Google Calendar', qualifiedName: 'googlecalendar', description: 'List, create, update calendar events.', source: 'managed' },
+        { name: 'Google Calendar', qualifiedName: 'googlecalendar', description: 'List, create, update calendar events.', installCommand: 'connect({ name: "googlecalendar" })', source: 'managed' },
+        { name: 'Playwright Browser', qualifiedName: '@anthropic/mcp-server-playwright', description: 'Browser automation — navigate, click, fill forms, take screenshots.', installCommand: 'connect({ name: "playwright", source: "mcp" })', source: 'mcp' },
+        { name: 'PostgreSQL', qualifiedName: '@anthropic/mcp-server-postgres', description: 'Query PostgreSQL databases.', installCommand: 'connect({ name: "postgres", source: "mcp" })', source: 'mcp' },
       ],
-      message: 'Found 1 managed integration(s).',
-    },
-  },
-  mcp_search: {
-    type: 'static',
-    description: 'Search for MCP servers by capability or keyword.',
-    paramKeys: ['query'],
-    response: {
-      query: 'integrations',
-      results: [
-        { name: 'Playwright Browser', qualifiedName: '@anthropic/mcp-server-playwright', description: 'Browser automation — navigate, click, fill forms, take screenshots.', installCommand: 'mcp_install({ name: "playwright" })', source: 'catalog' },
-        { name: 'PostgreSQL', qualifiedName: '@anthropic/mcp-server-postgres', description: 'Query PostgreSQL databases.', installCommand: 'mcp_install({ name: "postgres" })', source: 'catalog' },
-      ],
-      message: 'Found 2 MCP server(s). Use mcp_install to add one.',
+      message: 'Found 3 result(s): 1 managed OAuth integration(s) (no credentials needed), 2 MCP server(s). Use connect to add one.',
     },
   },
 }
@@ -717,31 +706,25 @@ export const MCP_LIST_INSTALLED_MOCKS: ToolMockMap = {
 // Fixture: MCP Discovery — Search (MCP Case 2)
 // ---------------------------------------------------------------------------
 
-export const MCP_SEARCH_BASIC_MOCKS: ToolMockMap = {
-  tool_search: {
-    type: 'static',
-    description: 'Search for managed OAuth integrations.',
-    paramKeys: ['query'],
-    response: { query: 'postgres', results: [], message: 'No managed integrations found. Try mcp_search for MCP protocol servers.' },
-  },
-  mcp_search: {
+export const INTEGRATIONS_SEARCH_BASIC_MOCKS: ToolMockMap = {
+  search_integrations: {
     type: 'pattern',
-    description: 'Search for MCP servers by capability or keyword.',
-    paramKeys: ['query', 'limit'],
+    description: 'Search across managed OAuth integrations, skills, and MCP servers.',
+    paramKeys: ['query', 'limit', 'source'],
     patterns: [
       {
         match: { query: 'postgres' },
         response: {
           query: 'postgres',
           results: [
-            { name: 'Postgres MCP Server', qualifiedName: '@modelcontextprotocol/server-postgres', description: 'Query PostgreSQL databases with read-only access. Supports schema inspection and parameterized queries.', installCommand: 'mcp_install({ name: "postgres" })', source: 'catalog' },
-            { name: 'Neon Postgres', qualifiedName: '@neondatabase/mcp-server-neon', description: 'Manage Neon serverless Postgres — create databases, run SQL, manage branches.', installCommand: 'mcp_install({ name: "neon" })', source: 'catalog' },
+            { name: 'Postgres MCP Server', qualifiedName: '@modelcontextprotocol/server-postgres', description: 'Query PostgreSQL databases with read-only access. Supports schema inspection and parameterized queries.', installCommand: 'connect({ name: "postgres", source: "mcp" })', source: 'mcp' },
+            { name: 'Neon Postgres', qualifiedName: '@neondatabase/mcp-server-neon', description: 'Manage Neon serverless Postgres — create databases, run SQL, manage branches.', installCommand: 'connect({ name: "neon", source: "mcp" })', source: 'mcp' },
           ],
-          message: 'Found 2 MCP server(s). Use mcp_install to add one.',
+          message: 'Found 2 result(s): 2 MCP server(s). Use connect to add one.',
         },
       },
     ],
-    default: { query: 'unknown', results: [], message: 'No MCP servers found. Try a different search term.' },
+    default: { query: 'unknown', results: [], message: 'No integrations found. Try a different search term.' },
   },
 }
 
@@ -749,26 +732,20 @@ export const MCP_SEARCH_BASIC_MOCKS: ToolMockMap = {
 // Fixture: MCP Discovery — Install and Use (MCP Case 3)
 // ---------------------------------------------------------------------------
 
-export const MCP_INSTALL_AND_USE_MOCKS: ToolMockMap = {
-  tool_search: {
+export const CONNECT_AND_USE_MOCKS: ToolMockMap = {
+  search_integrations: {
     type: 'static',
-    description: 'Search for managed OAuth integrations.',
-    paramKeys: ['query'],
-    response: { query: 'filesystem', results: [], message: 'No managed integrations found. Try mcp_search for MCP protocol servers.' },
-  },
-  mcp_search: {
-    type: 'static',
-    description: 'Search for MCP servers by capability or keyword.',
-    paramKeys: ['query', 'limit'],
+    description: 'Search across managed OAuth integrations, skills, and MCP servers.',
+    paramKeys: ['query', 'limit', 'source'],
     response: {
       query: 'filesystem',
       results: [
-        { name: 'Filesystem MCP Server', qualifiedName: '@modelcontextprotocol/server-filesystem', description: 'Secure file operations with configurable access controls.', installCommand: 'mcp_install({ name: "filesystem" })', source: 'catalog' },
+        { name: 'Filesystem MCP Server', qualifiedName: '@modelcontextprotocol/server-filesystem', description: 'Secure file operations with configurable access controls.', installCommand: 'connect({ name: "filesystem", source: "mcp" })', source: 'mcp' },
       ],
-      message: 'Found 1 MCP server(s). Use mcp_install to add one.',
+      message: 'Found 1 result(s): 1 MCP server(s). Use connect to add one.',
     },
   },
-  mcp_install: {
+  connect: {
     type: 'static',
     description: 'Install and start an MCP server, making its tools available immediately.',
     paramKeys: ['name', 'env', 'url', 'headers'],
@@ -797,8 +774,8 @@ export const MCP_INSTALL_AND_USE_MOCKS: ToolMockMap = {
 // Fixture: MCP Discovery — Uninstall (MCP Case 4)
 // ---------------------------------------------------------------------------
 
-export const MCP_UNINSTALL_MOCKS: ToolMockMap = {
-  mcp_uninstall: {
+export const DISCONNECT_MOCKS: ToolMockMap = {
+  disconnect: {
     type: 'static',
     description: 'Stop and remove an installed MCP server.',
     paramKeys: ['name'],
@@ -813,31 +790,26 @@ export const MCP_UNINSTALL_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const MCP_SELF_EXTEND_FIGMA_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'static',
-    description: 'Search for managed OAuth integrations.',
-    paramKeys: ['query'],
-    response: { query: 'figma', results: [], message: 'No managed integrations found. Try mcp_search for MCP protocol servers.' },
-  },
-  mcp_search: {
-    type: 'static',
-    description: 'Search for MCP servers by capability or keyword.',
-    paramKeys: ['query', 'limit'],
+    description: 'Search across managed OAuth integrations, skills, and MCP servers.',
+    paramKeys: ['query', 'limit', 'source'],
     response: {
       query: 'figma design',
       results: [
-        { name: 'Figma MCP Server', qualifiedName: '@anthropic/mcp-server-figma', description: 'Access Figma files, components, and design tokens. List files, export assets, inspect design properties.', installCommand: 'mcp_install({ name: "figma" })', source: 'catalog' },
-        { name: 'Figma Dev Mode', qualifiedName: '@figma/mcp-devmode', description: 'Read-only access to Figma dev mode — inspect components, spacing, and CSS.', installCommand: 'mcp_install({ name: "figma-devmode" })', source: 'catalog' },
+        { name: 'Figma MCP Server', qualifiedName: '@anthropic/mcp-server-figma', description: 'Access Figma files, components, and design tokens. List files, export assets, inspect design properties.', installCommand: 'connect({ name: "figma", source: "mcp" })', source: 'mcp' },
+        { name: 'Figma Dev Mode', qualifiedName: '@figma/mcp-devmode', description: 'Read-only access to Figma dev mode — inspect components, spacing, and CSS.', installCommand: 'connect({ name: "figma-devmode", source: "mcp" })', source: 'mcp' },
       ],
-      message: 'Found 2 MCP server(s). Use mcp_install to add one.',
+      message: 'Found 2 result(s): 2 MCP server(s). Use connect to add one.',
     },
   },
-  mcp_install: {
+  connect: {
     type: 'static',
-    description: 'Install and start an MCP server, making its tools available immediately.',
-    paramKeys: ['name', 'env', 'url', 'headers'],
+    description: 'Install (connect) an integration so its tools become available.',
+    paramKeys: ['name', 'source', 'env', 'url', 'headers'],
     response: {
       ok: true,
+      source: 'mcp',
       server: 'figma',
       toolCount: 4,
       tools: [
@@ -858,25 +830,19 @@ export const MCP_SELF_EXTEND_FIGMA_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const MCP_SELF_EXTEND_DATABASE_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'static',
-    description: 'Search for managed OAuth integrations.',
-    paramKeys: ['query'],
-    response: { query: 'postgres', results: [], message: 'No managed integrations found. Try mcp_search for MCP protocol servers.' },
-  },
-  mcp_search: {
-    type: 'static',
-    description: 'Search for MCP servers by capability or keyword.',
-    paramKeys: ['query', 'limit'],
+    description: 'Search across managed OAuth integrations, skills, and MCP servers.',
+    paramKeys: ['query', 'limit', 'source'],
     response: {
       query: 'postgres database',
       results: [
-        { name: 'Postgres MCP Server', qualifiedName: '@modelcontextprotocol/server-postgres', description: 'Query PostgreSQL databases with read-only access. Supports schema inspection and parameterized queries.', installCommand: 'mcp_install({ name: "postgres" })', source: 'catalog' },
+        { name: 'Postgres MCP Server', qualifiedName: '@modelcontextprotocol/server-postgres', description: 'Query PostgreSQL databases with read-only access. Supports schema inspection and parameterized queries.', installCommand: 'connect({ name: "postgres", source: "mcp" })', source: 'mcp' },
       ],
-      message: 'Found 1 MCP server(s). Use mcp_install to add one.',
+      message: 'Found 1 result(s): 1 MCP server(s). Use connect to add one.',
     },
   },
-  mcp_install: {
+  connect: {
     type: 'static',
     description: 'Install and start an MCP server, making its tools available immediately.',
     paramKeys: ['name', 'env', 'url', 'headers'],
@@ -899,25 +865,19 @@ export const MCP_SELF_EXTEND_DATABASE_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const MCP_MULTI_SERVER_MOCKS: ToolMockMap = {
-  tool_search: {
-    type: 'static',
-    description: 'Search for managed OAuth integrations.',
-    paramKeys: ['query'],
-    response: { query: 'unknown', results: [], message: 'No managed integrations found. Try mcp_search for MCP protocol servers.' },
-  },
-  mcp_search: {
+  search_integrations: {
     type: 'pattern',
-    description: 'Search for MCP servers by capability or keyword.',
-    paramKeys: ['query', 'limit'],
+    description: 'Search across managed OAuth integrations, skills, and MCP servers.',
+    paramKeys: ['query', 'limit', 'source'],
     patterns: [
       {
         match: { query: 'github' },
         response: {
           query: 'github',
           results: [
-            { name: 'GitHub MCP Server', qualifiedName: '@modelcontextprotocol/server-github', description: 'Access GitHub repos, issues, PRs, and actions.', installCommand: 'mcp_install({ name: "github" })', source: 'catalog' },
+            { name: 'GitHub MCP Server', qualifiedName: '@modelcontextprotocol/server-github', description: 'Access GitHub repos, issues, PRs, and actions.', installCommand: 'connect({ name: "github", source: "mcp" })', source: 'mcp' },
           ],
-          message: 'Found 1 MCP server(s). Use mcp_install to add one.',
+          message: 'Found 1 result(s): 1 MCP server(s). Use connect to add one.',
         },
       },
       {
@@ -925,15 +885,15 @@ export const MCP_MULTI_SERVER_MOCKS: ToolMockMap = {
         response: {
           query: 'slack',
           results: [
-            { name: 'Slack MCP Server', qualifiedName: '@anthropic/mcp-server-slack', description: 'Send messages, read channels, manage Slack workspace.', installCommand: 'mcp_install({ name: "slack" })', source: 'catalog' },
+            { name: 'Slack MCP Server', qualifiedName: '@anthropic/mcp-server-slack', description: 'Send messages, read channels, manage Slack workspace.', installCommand: 'connect({ name: "slack", source: "mcp" })', source: 'mcp' },
           ],
-          message: 'Found 1 MCP server(s). Use mcp_install to add one.',
+          message: 'Found 1 result(s): 1 MCP server(s). Use connect to add one.',
         },
       },
     ],
-    default: { query: 'unknown', results: [], message: 'No MCP servers found.' },
+    default: { query: 'unknown', results: [], message: 'No integrations found.' },
   },
-  mcp_install: {
+  connect: {
     type: 'pattern',
     description: 'Install and start an MCP server, making its tools available immediately.',
     paramKeys: ['name', 'env', 'url', 'headers'],
@@ -987,25 +947,19 @@ export const MCP_MULTI_SERVER_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const MCP_DISCOVERY_PERSONALITY_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'static',
-    description: 'Search for managed OAuth integrations.',
-    paramKeys: ['query'],
-    response: { query: 'linear', results: [], message: 'No managed integrations found. Try mcp_search for MCP protocol servers.' },
-  },
-  mcp_search: {
-    type: 'static',
-    description: 'Search for MCP servers by capability or keyword.',
-    paramKeys: ['query', 'limit'],
+    description: 'Search across managed OAuth integrations, skills, and MCP servers.',
+    paramKeys: ['query', 'limit', 'source'],
     response: {
       query: 'linear project management',
       results: [
-        { name: 'Linear MCP Server', qualifiedName: '@linear/mcp-server', description: 'Manage Linear issues, projects, and cycles. Create, update, and search issues.', installCommand: 'mcp_install({ name: "linear" })', source: 'catalog' },
+        { name: 'Linear MCP Server', qualifiedName: '@linear/mcp-server', description: 'Manage Linear issues, projects, and cycles. Create, update, and search issues.', installCommand: 'connect({ name: "linear", source: "mcp" })', source: 'mcp' },
       ],
-      message: 'Found 1 MCP server(s). Use mcp_install to add one.',
+      message: 'Found 1 result(s): 1 MCP server(s). Use connect to add one.',
     },
   },
-  mcp_install: {
+  connect: {
     type: 'static',
     description: 'Install and start an MCP server, making its tools available immediately.',
     paramKeys: ['name', 'env', 'url', 'headers'],
@@ -1204,7 +1158,7 @@ export const PRODUCTION_INCIDENT_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const SUPPORT_TICKET_TRIAGE_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     description: 'Search for tools by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -1214,7 +1168,7 @@ export const SUPPORT_TICKET_TRIAGE_MOCKS: ToolMockMap = {
         response: {
           query: 'zendesk',
           results: [{ name: 'zendesk', description: 'Zendesk — managed OAuth integration. List tickets, manage support.', source: 'managed', authType: 'oauth', composioToolkit: 'zendesk' }],
-          message: 'Found 1 tool(s). Use tool_install to add one.',
+          message: 'Found 1 tool(s). Use connect to add one.',
         },
       },
       {
@@ -1222,7 +1176,7 @@ export const SUPPORT_TICKET_TRIAGE_MOCKS: ToolMockMap = {
         response: {
           query: 'linear',
           results: [{ name: 'linear', description: 'Linear — managed OAuth integration. Create and manage issues.', source: 'managed', authType: 'oauth', composioToolkit: 'linear' }],
-          message: 'Found 1 tool(s). Use tool_install to add one.',
+          message: 'Found 1 tool(s). Use connect to add one.',
         },
       },
       {
@@ -1230,7 +1184,7 @@ export const SUPPORT_TICKET_TRIAGE_MOCKS: ToolMockMap = {
         response: {
           query: 'slack',
           results: [{ name: 'slack', description: 'Slack — managed OAuth integration. Send messages, manage channels.', source: 'managed', authType: 'oauth', composioToolkit: 'slack' }],
-          message: 'Found 1 tool(s). Use tool_install to add one.',
+          message: 'Found 1 tool(s). Use connect to add one.',
         },
       },
     ],
@@ -1241,10 +1195,10 @@ export const SUPPORT_TICKET_TRIAGE_MOCKS: ToolMockMap = {
         { name: 'linear', description: 'Linear — managed OAuth integration.', source: 'managed', authType: 'oauth' },
         { name: 'slack', description: 'Slack — managed OAuth integration.', source: 'managed', authType: 'oauth' },
       ],
-      message: 'Found 3 tool(s). Use tool_install to add one.',
+      message: 'Found 3 tool(s). Use connect to add one.',
     },
   },
-  tool_install: {
+  connect: {
     type: 'pattern',
     description: 'Install a tool, making its capabilities available immediately.',
     paramKeys: ['name'],
@@ -1319,7 +1273,7 @@ export const SUPPORT_TICKET_TRIAGE_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const TEAM_ONBOARDING_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     description: 'Search for tools by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -1347,7 +1301,7 @@ export const TEAM_ONBOARDING_MOCKS: ToolMockMap = {
       message: 'Found 3 tool(s).',
     },
   },
-  tool_install: {
+  connect: {
     type: 'pattern',
     description: 'Install a tool, making its capabilities available immediately.',
     paramKeys: ['name'],
@@ -1417,7 +1371,7 @@ export const TEAM_ONBOARDING_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const BUSINESS_DASHBOARD_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     description: 'Search for tools by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -1445,7 +1399,7 @@ export const BUSINESS_DASHBOARD_MOCKS: ToolMockMap = {
       message: 'Found 3 tool(s).',
     },
   },
-  tool_install: {
+  connect: {
     type: 'pattern',
     description: 'Install a tool, making its capabilities available immediately.',
     paramKeys: ['name', 'command', 'args', 'env'],
@@ -1561,37 +1515,31 @@ export const BUSINESS_DASHBOARD_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const AIRBNB_VACATION_PLANNER_MOCKS: ToolMockMap = {
-  tool_search: {
-    type: 'static',
-    description: 'Search for managed OAuth integrations.',
-    paramKeys: ['query'],
-    response: { query: 'airbnb', results: [], message: 'No managed integrations found. Try mcp_search for MCP protocol servers.' },
-  },
-  mcp_search: {
+  search_integrations: {
     type: 'pattern',
-    description: 'Search for MCP servers by capability or keyword.',
-    paramKeys: ['query', 'limit'],
+    description: 'Search across managed OAuth integrations, skills, and MCP servers.',
+    paramKeys: ['query', 'limit', 'source'],
     patterns: [
       {
         match: { query: 'airbnb' },
         response: {
           query: 'airbnb',
           results: [
-            { name: 'Airbnb MCP Server', qualifiedName: '@openbnb/mcp-server-airbnb', description: 'Search Airbnb listings, get pricing, availability, and property details. Access real Airbnb data for travel planning.', installCommand: 'mcp_install({ name: "airbnb" })', source: 'catalog', category: 'travel', relevanceScore: 95 },
+            { name: 'Airbnb MCP Server', qualifiedName: '@openbnb/mcp-server-airbnb', description: 'Search Airbnb listings, get pricing, availability, and property details. Access real Airbnb data for travel planning.', installCommand: 'connect({ name: "airbnb", source: "mcp" })', source: 'mcp', category: 'travel', relevanceScore: 95 },
           ],
-          message: 'Found 1 MCP server(s). Use mcp_install to add one.',
+          message: 'Found 1 result(s): 1 MCP server(s). Use connect to add one.',
         },
       },
     ],
     default: {
       query: 'travel',
       results: [
-        { name: 'Airbnb MCP Server', qualifiedName: '@openbnb/mcp-server-airbnb', description: 'Search Airbnb listings, get pricing, availability, and property details.', installCommand: 'mcp_install({ name: "airbnb" })', source: 'catalog', category: 'travel', relevanceScore: 80 },
+        { name: 'Airbnb MCP Server', qualifiedName: '@openbnb/mcp-server-airbnb', description: 'Search Airbnb listings, get pricing, availability, and property details.', installCommand: 'connect({ name: "airbnb", source: "mcp" })', source: 'mcp', category: 'travel', relevanceScore: 80 },
       ],
-      message: 'Found 1 MCP server(s). Use mcp_install to add one.',
+      message: 'Found 1 result(s): 1 MCP server(s). Use connect to add one.',
     },
   },
-  mcp_install: {
+  connect: {
     type: 'static',
     description: 'Install and start an MCP server, making its tools available immediately.',
     paramKeys: ['name', 'env', 'url', 'headers'],
@@ -1640,11 +1588,11 @@ export const AIRBNB_VACATION_PLANNER_MOCKS: ToolMockMap = {
 
 // ---------------------------------------------------------------------------
 // Fixture: Composio Google Calendar Discovery (Composio Case 1)
-// Full Composio flow: tool_search → tool_install → SEARCH_TOOLS → MANAGE_CONNECTIONS → MULTI_EXECUTE
+// Full Composio flow: search_integrations → connect → SEARCH_TOOLS → MANAGE_CONNECTIONS → MULTI_EXECUTE
 // ---------------------------------------------------------------------------
 
 export const COMPOSIO_GOOGLE_CALENDAR_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     description: 'Search for MCP servers by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -1672,7 +1620,7 @@ export const COMPOSIO_GOOGLE_CALENDAR_MOCKS: ToolMockMap = {
     ],
     default: { query: 'unknown', results: [], message: 'No integrations found.' },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     description: 'Install and start an MCP server, making its tools available immediately.',
     paramKeys: ['name'],
@@ -1717,11 +1665,11 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: {
 
 // ---------------------------------------------------------------------------
 // Fixture: Composio preference over local MCP (Composio Case 2)
-// tool_search returns both Composio and npm results
+// search_integrations returns both Composio and npm results
 // ---------------------------------------------------------------------------
 
 export const COMPOSIO_PREFERENCE_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'static',
     description: 'Search for MCP servers by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -1734,7 +1682,7 @@ export const COMPOSIO_PREFERENCE_MOCKS: ToolMockMap = {
       message: 'Found 2 integration(s). Composio results are preferred.',
     },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     description: 'Install and start an MCP server.',
     paramKeys: ['name'],
@@ -1770,7 +1718,7 @@ GITHUB_LIST_ISSUES: {
 // ---------------------------------------------------------------------------
 
 export const COMPOSIO_AUTH_REQUIRED_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'static',
     paramKeys: ['query', 'limit'],
     response: {
@@ -1781,7 +1729,7 @@ export const COMPOSIO_AUTH_REQUIRED_MOCKS: ToolMockMap = {
       message: 'Found 1 integration(s).',
     },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     paramKeys: ['name'],
     response: {
@@ -1815,7 +1763,7 @@ GMAIL_SEND_EMAIL: {
 // ---------------------------------------------------------------------------
 
 export const COMPOSIO_GMAIL_SEND_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'static',
     paramKeys: ['query', 'limit'],
     response: {
@@ -1826,7 +1774,7 @@ export const COMPOSIO_GMAIL_SEND_MOCKS: ToolMockMap = {
       message: 'Found 1 integration(s).',
     },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     paramKeys: ['name'],
     response: {
@@ -1864,7 +1812,7 @@ GMAIL_FETCH_EMAILS: {
 // ---------------------------------------------------------------------------
 
 export const COMPOSIO_GITHUB_PR_SKILL_SAVE_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'static',
     paramKeys: ['query', 'limit'],
     response: {
@@ -1875,7 +1823,7 @@ export const COMPOSIO_GITHUB_PR_SKILL_SAVE_MOCKS: ToolMockMap = {
       message: 'Found 1 integration(s). Composio results are preferred.',
     },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     paramKeys: ['name'],
     response: {
@@ -1920,7 +1868,7 @@ GITHUB_LIST_PULL_REQUESTS: {
 // ---------------------------------------------------------------------------
 
 export const AIRBNB_SKILL_SAVE_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'static',
     paramKeys: ['query', 'limit'],
     response: {
@@ -1928,10 +1876,10 @@ export const AIRBNB_SKILL_SAVE_MOCKS: ToolMockMap = {
       results: [
         { name: 'Airbnb MCP Server', qualifiedName: '@openbnb/mcp-server-airbnb', description: 'Search Airbnb listings, get pricing, availability, and property details.', installCommand: 'npx -y @openbnb/mcp-server-airbnb', source: 'catalog' },
       ],
-      message: 'Found 1 MCP server(s). Use tool_install to add one.',
+      message: 'Found 1 MCP server(s). Use connect to add one.',
     },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     paramKeys: ['name', 'command', 'args', 'env'],
     response: {
@@ -1993,7 +1941,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: {
     paramKeys: ['time_min', 'time_max'],
     response: { data: { items: [], total_events: 0 }, successful: true },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     paramKeys: ['name'],
     response: {
@@ -2014,7 +1962,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: {
 // ---------------------------------------------------------------------------
 
 export const COMPOSIO_GMAIL_CALENDAR_MULTI_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     paramKeys: ['query', 'limit'],
     patterns: [
@@ -2060,7 +2008,7 @@ export const COMPOSIO_GMAIL_CALENDAR_MULTI_MOCKS: ToolMockMap = {
       message: 'Found 2 integration(s).',
     },
   },
-  tool_install: {
+  connect: {
     type: 'pattern',
     paramKeys: ['name'],
     patterns: [
@@ -2135,7 +2083,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: {
 // ---------------------------------------------------------------------------
 
 export const REAL_DATA_GITHUB_ISSUES_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     description: 'Search for MCP servers by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -2154,7 +2102,7 @@ export const REAL_DATA_GITHUB_ISSUES_MOCKS: ToolMockMap = {
     ],
     default: { query: 'unknown', results: [], message: 'No integrations found.' },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     description: 'Install and start an MCP server, making its tools available immediately.',
     paramKeys: ['name'],
@@ -2228,7 +2176,7 @@ export const REAL_DATA_UPLOADED_CSV_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const REAL_DATA_GOOGLE_SHEETS_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     description: 'Search for MCP servers by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -2276,7 +2224,7 @@ export const REAL_DATA_GOOGLE_SHEETS_MOCKS: ToolMockMap = {
     ],
     default: { query: 'unknown', results: [], message: 'No integrations found.' },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     description: 'Install and start an MCP server, making its tools available immediately.',
     paramKeys: ['name'],
@@ -2318,7 +2266,7 @@ export const REAL_DATA_GOOGLE_SHEETS_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const GENERIC_CRUD_NO_REAL_DATA_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'static',
     description: 'Search for MCP servers by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -2328,7 +2276,7 @@ export const GENERIC_CRUD_NO_REAL_DATA_MOCKS: ToolMockMap = {
 
 // ===========================================================================
 // Unified Tool System Fixtures
-// Tests the unified tool_search / tool_install interface that abstracts
+// Tests the unified search_integrations / connect interface that abstracts
 // Composio (managed) and catalog (local MCP) sources behind one API.
 // ===========================================================================
 
@@ -2337,7 +2285,7 @@ export const GENERIC_CRUD_NO_REAL_DATA_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const UNIFIED_SEARCH_MIXED_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     description: 'Search for tools by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -2349,7 +2297,7 @@ export const UNIFIED_SEARCH_MIXED_MOCKS: ToolMockMap = {
           results: [
             { name: 'Playwright Browser', qualifiedName: '@playwright/mcp@latest', description: 'Full browser automation — navigate pages, click elements, fill forms, take screenshots.', source: 'catalog', installCommand: 'npx -y @playwright/mcp@latest', authType: 'none', icon: '🎭' },
           ],
-          message: 'Found 1 tool(s). Use tool_install to add one.',
+          message: 'Found 1 tool(s). Use connect to add one.',
         },
       },
       {
@@ -2359,13 +2307,13 @@ export const UNIFIED_SEARCH_MIXED_MOCKS: ToolMockMap = {
           results: [
             { name: 'Google Calendar', qualifiedName: 'googlecalendar', description: 'Google Calendar — managed OAuth integration. No credentials needed.', source: 'managed', authType: 'oauth', composioToolkit: 'googlecalendar' },
           ],
-          message: 'Found 1 tool(s). Use tool_install to add one.',
+          message: 'Found 1 tool(s). Use connect to add one.',
         },
       },
     ],
     default: { query: 'unknown', results: [], message: 'No tools found.' },
   },
-  tool_install: {
+  connect: {
     type: 'pattern',
     description: 'Install a tool, making its capabilities available immediately.',
     paramKeys: ['name', 'command', 'args', 'env'],
@@ -2406,7 +2354,7 @@ export const UNIFIED_SEARCH_MIXED_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const JIRA_SLACK_INSTALL_USE_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     description: 'Search for tools by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -2418,7 +2366,7 @@ export const JIRA_SLACK_INSTALL_USE_MOCKS: ToolMockMap = {
           results: [
             { name: 'Jira', qualifiedName: 'jira', description: 'Jira — managed OAuth integration. Track issues, bugs, and sprints.', source: 'managed', authType: 'oauth', composioToolkit: 'jira' },
           ],
-          message: 'Found 1 tool(s). Use tool_install to add one.',
+          message: 'Found 1 tool(s). Use connect to add one.',
         },
       },
       {
@@ -2428,7 +2376,7 @@ export const JIRA_SLACK_INSTALL_USE_MOCKS: ToolMockMap = {
           results: [
             { name: 'Slack', qualifiedName: 'slack', description: 'Slack — managed OAuth integration. Send messages, manage channels.', source: 'managed', authType: 'oauth', composioToolkit: 'slack' },
           ],
-          message: 'Found 1 tool(s). Use tool_install to add one.',
+          message: 'Found 1 tool(s). Use connect to add one.',
         },
       },
     ],
@@ -2438,10 +2386,10 @@ export const JIRA_SLACK_INSTALL_USE_MOCKS: ToolMockMap = {
         { name: 'Jira', qualifiedName: 'jira', description: 'Jira — managed OAuth integration.', source: 'managed', authType: 'oauth', composioToolkit: 'jira' },
         { name: 'Slack', qualifiedName: 'slack', description: 'Slack — managed OAuth integration.', source: 'managed', authType: 'oauth', composioToolkit: 'slack' },
       ],
-      message: 'Found 2 tool(s). Use tool_install to add one.',
+      message: 'Found 2 tool(s). Use connect to add one.',
     },
   },
-  tool_install: {
+  connect: {
     type: 'pattern',
     description: 'Install a tool, making its capabilities available immediately.',
     paramKeys: ['name', 'command', 'args', 'env'],
@@ -2501,7 +2449,7 @@ SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL: {
 // ---------------------------------------------------------------------------
 
 export const CANVAS_API_BIND_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'static',
     description: 'Search for tools by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -2513,7 +2461,7 @@ export const CANVAS_API_BIND_MOCKS: ToolMockMap = {
       message: 'Found 1 tool(s).',
     },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     description: 'Install a tool.',
     paramKeys: ['name'],
@@ -2547,7 +2495,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: {
 // ---------------------------------------------------------------------------
 
 export const TOOL_LIFECYCLE_FULL_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'static',
     description: 'Search for tools by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -2556,10 +2504,10 @@ export const TOOL_LIFECYCLE_FULL_MOCKS: ToolMockMap = {
       results: [
         { name: 'GitHub', qualifiedName: 'github', description: 'GitHub — managed OAuth integration. Access repos, issues, PRs.', source: 'managed', authType: 'oauth', composioToolkit: 'github' },
       ],
-      message: 'Found 1 tool(s). Use tool_install to add one.',
+      message: 'Found 1 tool(s). Use connect to add one.',
     },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     description: 'Install a tool.',
     paramKeys: ['name'],
@@ -2594,7 +2542,7 @@ GITHUB_LIST_ISSUES: {
 // ---------------------------------------------------------------------------
 
 export const TOOL_BIND_AT_INSTALL_MOCKS: ToolMockMap = {
-  tool_install: {
+  connect: {
     type: 'static',
     description: 'Install a tool.',
     paramKeys: ['name'],
@@ -2768,7 +2716,7 @@ export const LUXURY_BALI_TRIP_PLANNER_MOCKS: ToolMockMap = {
       url: 'https://www.google.com/search',
     },
   },
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     paramKeys: ['query', 'limit'],
     patterns: [
@@ -2779,7 +2727,7 @@ export const LUXURY_BALI_TRIP_PLANNER_MOCKS: ToolMockMap = {
           results: [
             { name: 'Airbnb MCP Server', qualifiedName: '@openbnb/mcp-server-airbnb', description: 'Search Airbnb listings, get pricing, availability, and property details. Access real Airbnb data for travel planning.', installCommand: 'npx -y @openbnb/mcp-server-airbnb', source: 'catalog', category: 'travel', relevanceScore: 95 },
           ],
-          message: 'Found 1 MCP server(s). Use tool_install to add one.',
+          message: 'Found 1 MCP server(s). Use connect to add one.',
         },
       },
     ],
@@ -2788,10 +2736,10 @@ export const LUXURY_BALI_TRIP_PLANNER_MOCKS: ToolMockMap = {
       results: [
         { name: 'Airbnb MCP Server', qualifiedName: '@openbnb/mcp-server-airbnb', description: 'Search Airbnb listings, get pricing, availability, and property details.', installCommand: 'npx -y @openbnb/mcp-server-airbnb', source: 'catalog', category: 'travel', relevanceScore: 80 },
       ],
-      message: 'Found 1 MCP server(s). Use tool_install to add one.',
+      message: 'Found 1 MCP server(s). Use connect to add one.',
     },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     paramKeys: ['name', 'command', 'args', 'env'],
     response: {
@@ -2862,7 +2810,7 @@ const BUILTIN_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const CICD_PIPELINE_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     description: 'Search for MCP servers by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -2874,7 +2822,7 @@ export const CICD_PIPELINE_MOCKS: ToolMockMap = {
           results: [
             { name: 'github', description: 'GitHub — managed OAuth integration. Access repos, issues, PRs, and Actions.', source: 'composio' },
           ],
-          message: 'Found 1 result(s). Use tool_install to add it.',
+          message: 'Found 1 result(s). Use connect to add it.',
         },
       },
       {
@@ -2885,7 +2833,7 @@ export const CICD_PIPELINE_MOCKS: ToolMockMap = {
             { name: 'github', description: 'GitHub — managed OAuth integration. Access repos, issues, PRs, and Actions.', source: 'composio' },
             { name: 'vercel', description: 'Vercel — managed OAuth integration. View deployments and projects.', source: 'composio' },
           ],
-          message: 'Found 2 result(s). Use tool_install to add one.',
+          message: 'Found 2 result(s). Use connect to add one.',
         },
       },
       {
@@ -2895,7 +2843,7 @@ export const CICD_PIPELINE_MOCKS: ToolMockMap = {
           results: [
             { name: 'github', description: 'GitHub — managed OAuth integration. Access repos, issues, PRs, and Actions.', source: 'composio' },
           ],
-          message: 'Found 1 result(s). Use tool_install to add it.',
+          message: 'Found 1 result(s). Use connect to add it.',
         },
       },
     ],
@@ -2904,10 +2852,10 @@ export const CICD_PIPELINE_MOCKS: ToolMockMap = {
       results: [
         { name: 'github', description: 'GitHub — managed OAuth integration. Access repos, issues, PRs, and Actions.', source: 'composio' },
       ],
-      message: 'Found 1 result(s). Use tool_install to add it.',
+      message: 'Found 1 result(s). Use connect to add it.',
     },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     description: 'Install a tool, making its capabilities available immediately.',
     paramKeys: ['name'],
@@ -3050,7 +2998,7 @@ function generateMassiveCalendarMock(): any {
 }
 
 export const DATA_PROCESSING_LARGE_ISSUES_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'static',
     paramKeys: ['query'],
     response: {
@@ -3061,7 +3009,7 @@ export const DATA_PROCESSING_LARGE_ISSUES_MOCKS: ToolMockMap = {
       message: 'Found 1 integration(s).',
     },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     paramKeys: ['name'],
     response: {
@@ -3088,7 +3036,7 @@ export const DATA_PROCESSING_LARGE_ISSUES_MOCKS: ToolMockMap = {
 }
 
 export const DATA_PROCESSING_LARGE_CALENDAR_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'static',
     paramKeys: ['query'],
     response: {
@@ -3099,7 +3047,7 @@ export const DATA_PROCESSING_LARGE_CALENDAR_MOCKS: ToolMockMap = {
       message: 'Found 1 integration(s).',
     },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     paramKeys: ['name'],
     response: {
@@ -3145,7 +3093,7 @@ export const DATA_PROCESSING_TOP_N_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const SKILL_SEARCH_MIXED_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     description: 'Search for tools, integrations, and skills.',
     paramKeys: ['query', 'limit'],
@@ -3155,8 +3103,8 @@ export const SKILL_SEARCH_MIXED_MOCKS: ToolMockMap = {
         response: {
           query: 'github',
           results: [
-            { name: 'GitHub', id: 'github', description: 'GitHub — managed OAuth integration. No API keys needed.', source: 'managed', installCommand: 'tool_install({ name: "github" })' },
-            { name: 'github-ops', id: 'skill:github-ops', description: 'Monitor GitHub repos — fetch PRs, issues, CI status and display on canvas', source: 'skill', installed: false, installCommand: 'tool_install({ name: "skill:github-ops" })', trigger: 'check github|repo status|ci status|pr review|open prs|pull requests' },
+            { name: 'GitHub', id: 'github', description: 'GitHub — managed OAuth integration. No API keys needed.', source: 'managed', installCommand: 'connect({ name: "github" })' },
+            { name: 'github-ops', id: 'skill:github-ops', description: 'Monitor GitHub repos — fetch PRs, issues, CI status and display on canvas', source: 'skill', installed: false, installCommand: 'connect({ name: "skill:github-ops" })', trigger: 'check github|repo status|ci status|pr review|open prs|pull requests' },
           ],
           message: 'Found 2 result(s). 1 managed integration(s). 1 skill(s).',
         },
@@ -3166,7 +3114,7 @@ export const SKILL_SEARCH_MIXED_MOCKS: ToolMockMap = {
         response: {
           query: 'seo',
           results: [
-            { name: 'health-check', id: 'skill:health-check', description: 'Run health checks on web services and APIs', source: 'skill', installed: false, installCommand: 'tool_install({ name: "skill:health-check" })', trigger: 'health check|site status|is it down|uptime' },
+            { name: 'health-check', id: 'skill:health-check', description: 'Run health checks on web services and APIs', source: 'skill', installed: false, installCommand: 'connect({ name: "skill:health-check" })', trigger: 'health check|site status|is it down|uptime' },
           ],
           message: 'Found 1 result(s). 1 skill(s).',
         },
@@ -3176,8 +3124,8 @@ export const SKILL_SEARCH_MIXED_MOCKS: ToolMockMap = {
         response: {
           query: 'pr',
           results: [
-            { name: 'GitHub', id: 'github', description: 'GitHub — managed OAuth integration. No API keys needed.', source: 'managed', installCommand: 'tool_install({ name: "github" })' },
-            { name: 'pr-review', id: 'skill:pr-review', description: 'Review PRs with structured feedback', source: 'skill', installed: false, installCommand: 'tool_install({ name: "skill:pr-review" })', trigger: 'pr review|review pr|code review' },
+            { name: 'GitHub', id: 'github', description: 'GitHub — managed OAuth integration. No API keys needed.', source: 'managed', installCommand: 'connect({ name: "github" })' },
+            { name: 'pr-review', id: 'skill:pr-review', description: 'Review PRs with structured feedback', source: 'skill', installed: false, installCommand: 'connect({ name: "skill:pr-review" })', trigger: 'pr review|review pr|code review' },
           ],
           message: 'Found 2 result(s). 1 managed integration(s). 1 skill(s).',
         },
@@ -3188,22 +3136,22 @@ export const SKILL_SEARCH_MIXED_MOCKS: ToolMockMap = {
 }
 
 // ---------------------------------------------------------------------------
-// Fixture: Skill install via tool_install
+// Fixture: Skill install via connect
 // Agent installs a bundled skill and reads it.
 // ---------------------------------------------------------------------------
 
 export const SKILL_INSTALL_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'static',
     response: {
       query: 'github ops',
       results: [
-        { name: 'github-ops', id: 'skill:github-ops', description: 'Monitor GitHub repos — fetch PRs, issues, CI status and display on canvas', source: 'skill', installed: false, installCommand: 'tool_install({ name: "skill:github-ops" })', trigger: 'check github|repo status|ci status|pr review|open prs|pull requests' },
+        { name: 'github-ops', id: 'skill:github-ops', description: 'Monitor GitHub repos — fetch PRs, issues, CI status and display on canvas', source: 'skill', installed: false, installCommand: 'connect({ name: "skill:github-ops" })', trigger: 'check github|repo status|ci status|pr review|open prs|pull requests' },
       ],
       message: 'Found 1 result(s). 1 skill(s).',
     },
   },
-  tool_install: {
+  connect: {
     type: 'pattern',
     paramKeys: ['name'],
     patterns: [
@@ -3224,7 +3172,7 @@ export const SKILL_INSTALL_MOCKS: ToolMockMap = {
       {
         match: { path: '.shogo/skills/github-ops/SKILL.md' },
         response: {
-          content: '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos — fetch PRs, issues, CI status via Composio and display on dashboard\ntrigger: "check github|repo status|ci status|pr review|open prs|pull requests"\ntools: [tool_search, tool_install, write_file, edit_file, send_message]\n---\n\n# GitHub Ops\n\nWhen triggered, check GitHub repos and build a triage dashboard:\n\n1. **Connect** — Check if GitHub integration is installed via tool_search.\n2. **Fetch** — Once connected, call GITHUB_LIST_PULL_REQUESTS for open PRs.\n3. **Build dashboard** — Create or update a GitHub ops dashboard.\n4. **Alert** — For PRs open >2 days with no reviewer.\n5. **Persist** — Log findings to memory for trend tracking.',
+          content: '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos — fetch PRs, issues, CI status via Composio and display on dashboard\ntrigger: "check github|repo status|ci status|pr review|open prs|pull requests"\ntools: [search_integrations, connect, write_file, edit_file, send_message]\n---\n\n# GitHub Ops\n\nWhen triggered, check GitHub repos and build a triage dashboard:\n\n1. **Connect** — Check if GitHub integration is installed via search_integrations.\n2. **Fetch** — Once connected, call GITHUB_LIST_PULL_REQUESTS for open PRs.\n3. **Build dashboard** — Create or update a GitHub ops dashboard.\n4. **Alert** — For PRs open >2 days with no reviewer.\n5. **Persist** — Log findings to memory for trend tracking.',
           path: '.shogo/skills/github-ops/SKILL.md',
           size: 612,
         },
@@ -3241,7 +3189,7 @@ export const SKILL_INSTALL_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const SKILL_LIFECYCLE_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     paramKeys: ['query'],
     patterns: [
@@ -3250,7 +3198,7 @@ export const SKILL_LIFECYCLE_MOCKS: ToolMockMap = {
         response: {
           query: 'health',
           results: [
-            { name: 'health-check', id: 'skill:health-check', description: 'Run health checks on web services and APIs', source: 'skill', installed: false, installCommand: 'tool_install({ name: "skill:health-check" })', trigger: 'health check|site status|is it down|uptime' },
+            { name: 'health-check', id: 'skill:health-check', description: 'Run health checks on web services and APIs', source: 'skill', installed: false, installCommand: 'connect({ name: "skill:health-check" })', trigger: 'health check|site status|is it down|uptime' },
           ],
           message: 'Found 1 result(s). 1 skill(s).',
         },
@@ -3259,12 +3207,12 @@ export const SKILL_LIFECYCLE_MOCKS: ToolMockMap = {
     default: {
       query: 'unknown',
       results: [
-        { name: 'health-check', id: 'skill:health-check', description: 'Run health checks on web services and APIs', source: 'skill', installed: false, installCommand: 'tool_install({ name: "skill:health-check" })', trigger: 'health check|site status|is it down|uptime' },
+        { name: 'health-check', id: 'skill:health-check', description: 'Run health checks on web services and APIs', source: 'skill', installed: false, installCommand: 'connect({ name: "skill:health-check" })', trigger: 'health check|site status|is it down|uptime' },
       ],
       message: 'Found 1 result(s). 1 skill(s).',
     },
   },
-  tool_install: {
+  connect: {
     type: 'pattern',
     paramKeys: ['name'],
     patterns: [
@@ -3316,7 +3264,7 @@ export const SKILL_LIFECYCLE_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const WEEKLY_REPORT_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     patterns: [
       {
@@ -3338,7 +3286,7 @@ export const WEEKLY_REPORT_MOCKS: ToolMockMap = {
     ],
     default: { results: [] },
   },
-  tool_install: {
+  connect: {
     type: 'pattern',
     patterns: [
       {
@@ -3464,29 +3412,22 @@ export const BUSINESS_USER_MOCKS: ToolMockMap = {
     ],
     default: { content: '<html><body><p>Search results for your query.</p></body></html>', status: 200 },
   },
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     patterns: [
-      { match: { query: 'github' }, response: { tools: [{ name: 'GITHUB_LIST_REPOS', description: 'List repos in an org', app: 'github' }, { name: 'GITHUB_LIST_PULL_REQUESTS', description: 'List PRs', app: 'github' }, { name: 'GITHUB_GET_REPO', description: 'Get repo details', app: 'github' }] } },
-      { match: { query: 'calendar' }, response: { tools: [{ name: 'GOOGLECALENDAR_FIND_EVENTS', description: 'Find calendar events', app: 'googlecalendar' }, { name: 'GOOGLECALENDAR_CREATE_EVENT', description: 'Create calendar event', app: 'googlecalendar' }] } },
+      { match: { query: 'github' }, response: { results: [{ name: 'GitHub', id: 'github', description: 'GitHub — managed OAuth integration. Access repos, issues, PRs.', installCommand: 'connect({ name: "github" })', source: 'managed' }], message: 'Found 1 result(s): 1 managed OAuth integration(s).' } },
+      { match: { query: 'calendar' }, response: { results: [{ name: 'Google Calendar', id: 'googlecalendar', description: 'Google Calendar — manage events, check availability.', installCommand: 'connect({ name: "googlecalendar" })', source: 'managed' }], message: 'Found 1 result(s): 1 managed OAuth integration(s).' } },
     ],
-    default: { tools: [] },
+    default: { results: [], message: 'No integrations found.' },
   },
-  mcp_search: {
-    type: 'pattern',
-    patterns: [
-      { match: { query: 'github' }, response: { servers: [{ name: 'github', description: 'GitHub API integration', tools: ['list_repos', 'list_prs', 'get_repo'] }] } },
-      { match: { query: 'calendar' }, response: { servers: [{ name: 'google-calendar', description: 'Google Calendar integration', tools: ['find_events', 'create_event'] }] } },
-    ],
-    default: { servers: [] },
-  },
-  tool_install: {
+  connect: {
     type: 'pattern',
     patterns: [
       {
         match: { name: 'github' },
         response: {
           ok: true,
+          source: 'managed',
           installed: true,
           integration: 'github',
           tools: ['GITHUB_LIST_REPOS', 'GITHUB_LIST_PULL_REQUESTS', 'GITHUB_GET_REPO'],
@@ -3497,6 +3438,7 @@ export const BUSINESS_USER_MOCKS: ToolMockMap = {
         match: { name: 'googlecalendar' },
         response: {
           ok: true,
+          source: 'managed',
           installed: true,
           integration: 'googlecalendar',
           tools: ['GOOGLECALENDAR_FIND_EVENTS', 'GOOGLECALENDAR_CREATE_EVENT'],
@@ -3507,6 +3449,7 @@ export const BUSINESS_USER_MOCKS: ToolMockMap = {
         match: { name: 'calendar' },
         response: {
           ok: true,
+          source: 'managed',
           installed: true,
           integration: 'googlecalendar',
           tools: ['GOOGLECALENDAR_FIND_EVENTS', 'GOOGLECALENDAR_CREATE_EVENT'],
@@ -3514,11 +3457,7 @@ export const BUSINESS_USER_MOCKS: ToolMockMap = {
         },
       },
     ],
-    default: { ok: true, installed: true, message: 'Tool installed and ready to use.' },
-  },
-  mcp_install: {
-    type: 'static',
-    response: { ok: true, installed: true, message: 'MCP server installed and connected.' },
+    default: { ok: true, installed: true, message: 'Integration installed and ready to use.' },
   },
   GITHUB_LIST_REPOS: {
     type: 'static',
@@ -3800,12 +3739,12 @@ export const CROSS_CUTTING_MOCKS: ToolMockMap = {
 
 // ---------------------------------------------------------------------------
 // Jira install + execute fixture (regression: agent must call JIRA_LIST_BOARDS
-// directly after `tool_install("jira")`, not via `skill` or
+// directly after `connect("jira")`, not via `skill` or
 // `agent_spawn({type:"integration"})`).
 // ---------------------------------------------------------------------------
 
 export const JIRA_INSTALL_FLOW_MOCKS: ToolMockMap = {
-  tool_search: {
+  search_integrations: {
     type: 'static',
     description: 'Search for managed integrations and MCP servers by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -3814,10 +3753,10 @@ export const JIRA_INSTALL_FLOW_MOCKS: ToolMockMap = {
       results: [
         { name: 'Jira', qualifiedName: 'jira', description: 'Jira — managed OAuth integration. List boards, search issues, manage tickets.', source: 'managed', authType: 'oauth', composioToolkit: 'jira' },
       ],
-      message: 'Found 1 tool(s). Use tool_install to add one.',
+      message: 'Found 1 tool(s). Use connect to add one.',
     },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     description: 'Install a managed OAuth integration.',
     paramKeys: ['name'],

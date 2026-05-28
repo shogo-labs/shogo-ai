@@ -1,4 +1,4 @@
-{
+﻿{
   "_meta": {
     "track": "multiturn",
     "generated": true,
@@ -9,7 +9,7 @@
     ]
   },
   "constants": {
-    "available_tools": "exec, read_file, write_file, edit_file, web, browser, delete_file, search, todo_write, ask_user, notify_user_error, skill, memory_read, memory_search, send_message, channel_connect, channel_disconnect, channel_list, cron, tool_search, tool_install, tool_uninstall, mcp_search, mcp_install, mcp_uninstall"
+    "available_tools": "exec, read_file, write_file, edit_file, web, browser, delete_file, search, todo_write, ask_user, notify_user_error, skill, memory_read, memory_search, send_message, channel_connect, channel_disconnect, channel_list, cron, search_integrations, connect, disconnect"
   },
   "examples": [
     {

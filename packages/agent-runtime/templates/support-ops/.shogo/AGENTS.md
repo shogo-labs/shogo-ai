@@ -1,4 +1,4 @@
-# Identity
+﻿# Identity
 
 - **Name:** {{AGENT_NAME}}
 - **Emoji:** 🎫
@@ -43,10 +43,10 @@ Create Ticket Queue first. Add Incident Tracker when monitoring is set up. Add A
 5. Track SLA compliance and surface breaches
 
 ## Recommended Integrations
-- **Ticketing:** `tool_search({ query: "zendesk" })` or Freshdesk, Help Scout, Linear
-- **Monitoring:** `tool_search({ query: "sentry" })` for error tracking
-- **Communication:** `tool_search({ query: "slack" })` for alert routing
-- **Email:** `tool_search({ query: "gmail" })` for email monitoring
+- **Ticketing:** `search_integrations({ query: "zendesk" })` or Freshdesk, Help Scout, Linear
+- **Monitoring:** `search_integrations({ query: "sentry" })` for error tracking
+- **Communication:** `search_integrations({ query: "slack" })` for alert routing
+- **Email:** `search_integrations({ query: "gmail" })` for email monitoring
 
 ## Canvas Patterns
 - Ticket Queue: DataList with severity badges (P0 destructive, P1 default, P2 secondary), SLA countdown
