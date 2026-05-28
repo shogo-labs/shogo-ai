@@ -550,6 +550,23 @@
         "functions": "5381/6178 = 87.1%"
       },
       "note": "Wave 1 complete \u2014 gateway-tools.ts 58.62% \u2192 80.03% (+21.41pp, +941 lines, 184 new tests across 4 sessions)"
+    },
+    {
+      "sha": "2bc5d0e7",
+      "date": "2026-05-28",
+      "wave": "Wave 2 \u2014 opportunistic",
+      "message": "test(coverage): ai-proxy.ts \u2014 93.00% \u2192 94.23% lines (+28 lines, +1 func)",
+      "perFile": [
+        {
+          "file": "apps/api/src/routes/ai-proxy.ts",
+          "beforeLines": "2113/2272 (93.00%)",
+          "afterLines": "2141/2272 (94.23%)",
+          "deltaLinesHit": 28,
+          "deltaFuncsHit": 1,
+          "newTests": 6
+        }
+      ],
+      "note": "New test file ai-proxy-extra-paths.test.ts covers shogo_sk_ bearer auth path (un-skipped) + logCacheControlIfEnabled gated diagnostic (AI_PROXY_LOG_CACHE=1) for both stream and nonstream Anthropic chat completions. No new test failures introduced; 4 pre-existing E2E failures unchanged."
     }
   ],
   "frontend": {
