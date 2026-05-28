@@ -1410,6 +1410,26 @@
         }
       ],
       "note": "Two-file batch hitting both 100%/100%. (A) email.service.ts: added +5 tests in a new \"singleton init branches\" describe block appended to email.service.test.ts. Made the mock createEmailOptional tunable via let-binding so configured/null can flip within one file. Tests cover: configured-init log + caching, unconfigured-init log + caching, isEmailConfigured=false path, sendTemplateEmail short-circuit (warn + no underlying call), __resetEmailServiceForTesting flip from configured to null. Standalone 28/0/45 expects/41ms. (B) stripe-connect.service.ts: added +11 tests in 3 new describes appended to stripe-connect.service.test.ts. Extended prisma mock with affiliate model (findUnique/update) and added subscriptions.update to FakeStripe. createCustomAccountForAffiliate (5): missing affiliate throws, existing acct short-circuit, mock-branch deterministic acct_mock_aff_ id, live happy with email + capabilities + metadata + settings.payouts.schedule, synthetic-email fallback for null user. submitPayoutDetailsForAffiliate (4): no-stripe-account throws, missing-affiliate throws, mock branch sets pending_verification w/o Stripe, live branch with ssnLast4+bankAccountToken forwards individual + external_account, omit-when-absent variant. cancelMarketplaceSubscription (2): unconfigured no-op, configured forwards cancel_at_period_end=true. Standalone 55/0/104 expects/96ms. Combined two-file run: 83 pass / 0 fail / 149 expects, both files 100% lines + 100% funcs."
+    },
+    {
+      "sha": "19ecd68",
+      "date": "2026-05-28",
+      "wave": "Wave 2 ad-hoc - affiliate.service.ts (getAffiliateSummary + default stripeFactory + newVisitorId)",
+      "message": "test(coverage): apps/api affiliate.service.ts - 89.73% -> 100.00% lines (+56 hit, +8 tests)",
+      "perFile": [
+        {
+          "file": "apps/api/src/services/affiliate.service.ts",
+          "beforeLines": "~491/547 89.73%",
+          "afterLines": "547/547 100.00%",
+          "beforeFuncs": "89.19%",
+          "afterFuncs": "97.50%",
+          "deltaLinesHit": 56,
+          "deltaLinesPct": "+10.27",
+          "deltaFuncsPct": "+8.31",
+          "newTests": 8
+        }
+      ],
+      "note": "Filled the last two uncov ranges: L719-721 (default stripeFactory null branch when STRIPE_SECRET_KEY is unset) and L881-933 (getAffiliateSummary, 53 lines, 1 function). Added 8 tests in 3 new describe blocks. runAffiliatePayouts default-factory tests use the existing payCommissions harness — seeded one approved commission so groups.length>0 fires the factory; tested both KEY-unset (warn + paid=0, no Stripe construction) and KEY-set early-return via candidates=0. getAffiliateSummary tests: null when not enrolled, zero-data happy with empty buckets, $sum aggregation across pending/approved/paid statuses, 30-day window filtering of clicks + attributions (excludes older), full L1/L2/L3 downline tree walk respecting SHOGO_AFFILIATE_MAX_DEPTH=3 cap (L4 great-grandchild NOT counted). newVisitorId single tiny test. Standalone: 47 pass / 0 fail / 117 expects / 122ms. Lines 100% (547/547). 1 funcs uncov (39/40 = 97.5%) is the defensive .catch(() => undefined) on L838 secondary DB update inside the runAffiliatePayouts catch block — guards a real DB race in the failed-payout path, NOT dead code, so kept (no istanbul-ignore pragma). Below the 99% funcs threshold by one defensive catch arrow; lines fully maxed."
     }
   ],
   "frontend": {
@@ -1426,7 +1446,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-28T21:17:36.724Z",
+  "lastUpdated": "2026-05-28T21:21:33.908Z",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
