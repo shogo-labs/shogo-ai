@@ -343,3 +343,40 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   getSystemInfo: (): Promise<Record<string, unknown>> =>
     ipcRenderer.invoke('get-system-info'),
 })
+
+// ─── Desktop terminal bridge ─────────────────────────────────────────────────
+// Exposes window.shogoDesktopTerminal. Lives in its own module so the
+// terminal-related contextBridge surface and port-handoff plumbing stay
+// out of the recording / IDE / preview wiring above. See
+// `preload-terminal.ts` for the full bridge implementation.
+import { exposeShogoDesktopTerminalBridge } from './preload-terminal'
+exposeShogoDesktopTerminalBridge()
+
+// Exposes window.shogoDesktopPorts — Phase 12 Ports tab bridge. Lives in its
+// own module so the contextBridge surface stays separable per feature.
+import { exposeShogoDesktopPortsBridge } from './preload-ports'
+exposeShogoDesktopPortsBridge()
+
+if (process.env.SHOGO_E2E === '1' || process.env.PLAYWRIGHT_E2E === '1') {
+  contextBridge.exposeInMainWorld('shogoTesting', {
+    openTerminal() {
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        key: '`',
+        code: 'Backquote',
+        metaKey: process.platform === 'darwin',
+        ctrlKey: process.platform !== 'darwin',
+        bubbles: true,
+      }))
+    },
+    sendKeys(text: string) {
+      document.activeElement?.dispatchEvent(new InputEvent('beforeinput', {
+        inputType: 'insertText',
+        data: text,
+        bubbles: true,
+      }))
+    },
+    getActiveSurface() {
+      return document.querySelector('[data-shogo-terminal-surface="true"]') !== null
+    },
+  })
+}

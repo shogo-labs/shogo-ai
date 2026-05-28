@@ -32,6 +32,7 @@ import {
 
 const POLL_INTERVAL_MS = 6_000
 
+
 export interface ProblemsProps {
   projectId: string | null | undefined
   /** True when the Problems tab is the active tab. We only poll while visible. */
@@ -83,10 +84,10 @@ function severityIcon(sev: Diagnostic["severity"], size = 12) {
   // work out of the box. Keep aria-hidden — text label travels via the
   // button's aria-label.
   switch (sev) {
-    case "error":   return <AlertCircle size={size} color="var(--ide-error)" aria-hidden />
-    case "warning": return <AlertTriangle size={size} color="var(--ide-warning)" aria-hidden />
-    case "info":    return <Info size={size} color="var(--ide-active-ring)" aria-hidden />
-    case "hint":    return <Lightbulb size={size} color="var(--ide-muted)" aria-hidden />
+    case "error":   return <AlertCircle size={size} color="#f48771" aria-hidden />
+    case "warning": return <AlertTriangle size={size} color="#dcdc8e" aria-hidden />
+    case "info":    return <Info size={size} color="#0e639c" aria-hidden />
+    case "hint":    return <Lightbulb size={size} color="#858585" aria-hidden />
   }
 }
 
@@ -201,7 +202,7 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
   if (!projectId) {
     return (
       <div
-        className="flex h-full items-center justify-center p-4 text-[12px] text-[color:var(--ide-muted)]"
+        className="flex h-full items-center justify-center p-4 text-[12px] text-[#858585]"
         role="status"
       >
         Open a project to see problems.
@@ -214,38 +215,38 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
 
   return (
     <div
-      className="flex h-full flex-col bg-[color:var(--ide-bg)] text-[color:var(--ide-text)]"
+      className="flex h-full flex-col bg-[#1e1e1e] text-[#cccccc]"
       aria-label="Problems"
     >
       {/* Header */}
-      <div className="flex min-h-[36px] items-center justify-between border-b border-[color:var(--ide-border)] px-3 py-1.5">
+      <div className="flex min-h-[36px] items-center justify-between border-b border-[#3c3c3c] px-3 py-1.5">
         <div className="flex items-center gap-3 text-[11px]" aria-live="polite">
           {result ? (
             hasZero ? (
-              <span className="text-[color:var(--ide-muted)]">No problems</span>
+              <span className="text-[#858585]">No problems</span>
             ) : (
               <>
                 {totals.errors > 0 && (
                   <span className="flex items-center gap-1">
-                    <AlertCircle size={12} color="var(--ide-error)" aria-hidden />
-                    <span className="text-[color:var(--ide-text)]">{totals.errors}</span>
-                    <span className="text-[color:var(--ide-muted)]">
+                    <AlertCircle size={12} color="#f48771" aria-hidden />
+                    <span className="text-[#cccccc]">{totals.errors}</span>
+                    <span className="text-[#858585]">
                       {totals.errors === 1 ? "error" : "errors"}
                     </span>
                   </span>
                 )}
                 {totals.warnings > 0 && (
                   <span className="flex items-center gap-1">
-                    <AlertTriangle size={12} color="var(--ide-warning)" aria-hidden />
-                    <span className="text-[color:var(--ide-text)]">{totals.warnings}</span>
-                    <span className="text-[color:var(--ide-muted)]">
+                    <AlertTriangle size={12} color="#dcdc8e" aria-hidden />
+                    <span className="text-[#cccccc]">{totals.warnings}</span>
+                    <span className="text-[#858585]">
                       {totals.warnings === 1 ? "warning" : "warnings"}
                     </span>
                   </span>
                 )}
                 {result.fromCache && (
                   <span
-                    className="text-[10px] text-[color:var(--ide-muted-strong)]"
+                    className="text-[10px] text-[#9d9d9d]"
                     title={`Last run: ${new Date(result.lastRunAt).toLocaleTimeString()}`}
                   >
                     cached
@@ -254,7 +255,7 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
               </>
             )
           ) : (
-            <span className="text-[color:var(--ide-muted)]">
+            <span className="text-[#858585]">
               {loading ? "Checking for problems…" : "Idle"}
             </span>
           )}
@@ -265,7 +266,7 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
           disabled={refreshing || !projectId}
           aria-label="Re-check for problems"
           title="Re-check for problems"
-          className="flex h-9 w-9 items-center justify-center rounded text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[color:var(--ide-active-ring)] disabled:opacity-50"
+          className="flex h-9 w-9 items-center justify-center rounded text-[#858585] hover:bg-[#2a2d2e] hover:text-[#ffffff] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#0e639c] disabled:opacity-50"
         >
           <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} aria-hidden />
         </button>
@@ -274,12 +275,12 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
       {/* Notes (per-source banners) */}
       {result?.notes && result.notes.length > 0 && (
         <div
-          className="border-b border-[color:var(--ide-border)] bg-[color:var(--ide-surface)] px-3 py-1 text-[10px] text-[color:var(--ide-muted)]"
+          className="border-b border-[#3c3c3c] bg-[#252526] px-3 py-1 text-[10px] text-[#cccccc]"
           role="status"
         >
           {result.notes.map(n => (
             <div key={n.source}>
-              <span className="uppercase tracking-wide text-[color:var(--ide-muted-strong)]">{n.source}</span>: {n.message}
+              <span className="uppercase tracking-wide text-[#9d9d9d]">{n.source}</span>: {n.message}
             </div>
           ))}
         </div>
@@ -289,7 +290,7 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
           Without this, network blips silently froze the list at the last good state. */}
       {error && result && !isStartingError && (
         <div
-          className="flex items-center justify-between gap-2 border-b border-[color:var(--ide-border)] bg-[color:var(--ide-surface)] px-3 py-1 text-[11px] text-[color:var(--ide-error)]"
+          className="flex items-center justify-between gap-2 border-b border-[#3c3c3c] bg-[#252526] px-3 py-1 text-[11px] text-[#f48771]"
           role="status"
         >
           <span className="truncate">
@@ -298,7 +299,7 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
           <button
             type="button"
             onClick={() => void load(true)}
-            className="rounded px-2 py-0.5 text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover)]"
+            className="rounded px-2 py-0.5 text-[#cccccc] hover:bg-[#2a2d2e]"
           >
             Retry
           </button>
@@ -312,7 +313,7 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
         ) : loading && !result ? (
           <SkeletonRows />
         ) : groups.length === 0 ? (
-          <div className="p-3 text-[12px] text-[color:var(--ide-muted)]">
+          <div className="p-3 text-[12px] text-[#858585]">
             No problems detected in workspace.
           </div>
         ) : (
@@ -329,21 +330,21 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
                     type="button"
                     onClick={() => toggle(g.file)}
                     aria-expanded={!isCollapsed}
-                    className="flex min-h-[36px] w-full items-center gap-1 px-2 text-left hover:bg-[color:var(--ide-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[color:var(--ide-active-ring)]"
+                    className="flex min-h-[36px] w-full items-center gap-1 px-2 text-left hover:bg-[#2a2d2e] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#0e639c]"
                   >
                     {isCollapsed
-                      ? <ChevronRight size={14} color="var(--ide-muted)" aria-hidden />
-                      : <ChevronDown size={14} color="var(--ide-muted)" aria-hidden />
+                      ? <ChevronRight size={14} color="#858585" aria-hidden />
+                      : <ChevronDown size={14} color="#858585" aria-hidden />
                     }
-                    <span className="truncate text-[color:var(--ide-text)]">{basenameOf(g.file)}</span>
-                    <span className="ml-1 truncate text-[10px] text-[color:var(--ide-muted)]">
+                    <span className="truncate text-[#cccccc]">{basenameOf(g.file)}</span>
+                    <span className="ml-1 truncate text-[10px] text-[#858585]">
                       {dirnameOf(g.file)}
                     </span>
-                    <span className="ml-auto flex items-center gap-2 text-[10px] text-[color:var(--ide-muted)]">
+                    <span className="ml-auto flex items-center gap-2 text-[10px] text-[#858585]">
                       {g.errorCount > 0 && (
                         <span
-                          className="rounded-full px-1.5 text-[color:var(--ide-error)]"
-                          style={{ background: "color-mix(in srgb, var(--ide-error) 22%, transparent)" }}
+                          className="rounded-full px-1.5 text-[#f48771]"
+                          style={{ background: "color-mix(in srgb, #f48771 22%, transparent)" }}
                           aria-label={`${g.errorCount} ${g.errorCount === 1 ? "error" : "errors"}`}
                         >
                           {g.errorCount}
@@ -351,8 +352,8 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
                       )}
                       {g.warningCount > 0 && (
                         <span
-                          className="rounded-full px-1.5 text-[color:var(--ide-warning)]"
-                          style={{ background: "color-mix(in srgb, var(--ide-warning) 22%, transparent)" }}
+                          className="rounded-full px-1.5 text-[#dcdc8e]"
+                          style={{ background: "color-mix(in srgb, #dcdc8e 22%, transparent)" }}
                           aria-label={`${g.warningCount} ${g.warningCount === 1 ? "warning" : "warnings"}`}
                         >
                           {g.warningCount}
@@ -371,14 +372,14 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
                             disabled={!onReveal}
                             aria-label={`${d.severity} ${d.code ?? ""} ${d.message} at ${basenameOf(d.file)} line ${d.line} column ${d.column}`}
                             title={d.message}
-                            className="flex min-h-[32px] w-full items-start gap-2 px-6 py-1 text-left hover:bg-[color:var(--ide-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[color:var(--ide-active-ring)] disabled:cursor-default disabled:hover:bg-transparent"
+                            className="flex min-h-[32px] w-full items-start gap-2 px-6 py-1 text-left hover:bg-[#2a2d2e] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#0e639c] disabled:cursor-default disabled:hover:bg-transparent"
                           >
                             <span className="mt-0.5 flex-shrink-0">{severityIcon(d.severity)}</span>
-                            <span className="flex-1 truncate text-[color:var(--ide-text)]">{d.message}</span>
+                            <span className="flex-1 truncate text-[#cccccc]">{d.message}</span>
                             {d.code && (
-                              <span className="flex-shrink-0 text-[10px] text-[color:var(--ide-muted)]">{d.code}</span>
+                              <span className="flex-shrink-0 text-[10px] text-[#858585]">{d.code}</span>
                             )}
-                            <span className="flex-shrink-0 text-[10px] tabular-nums text-[color:var(--ide-muted)]">
+                            <span className="flex-shrink-0 text-[10px] tabular-nums text-[#858585]">
                               [{d.source}] {d.line}:{d.column}
                             </span>
                           </button>
@@ -403,8 +404,8 @@ function SkeletonRows() {
     <div className="space-y-2 p-3" role="status" aria-label="Checking for problems">
       {[0, 1, 2].map(i => (
         <div key={i} className="flex items-center gap-2">
-          <div className="h-3 w-3 animate-pulse rounded bg-[color:var(--ide-border)]" />
-          <div className="h-3 flex-1 animate-pulse rounded bg-[color:var(--ide-border)]" />
+          <div className="h-3 w-3 animate-pulse rounded bg-[#3c3c3c]" />
+          <div className="h-3 flex-1 animate-pulse rounded bg-[#3c3c3c]" />
         </div>
       ))}
     </div>
@@ -415,19 +416,19 @@ function ErrorState({ error, onRetry }: { error: Error; onRetry: () => void }) {
   const isStarting = error instanceof DiagnosticsApiError && error.code === "service_starting"
   return (
     <div
-      className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-[color:var(--ide-muted)]"
+      className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-[#858585]"
       role="alert"
     >
-      <div className="text-[color:var(--ide-text)]">
+      <div className="text-[#cccccc]">
         {isStarting ? "Problems service is starting…" : "Couldn't load problems"}
       </div>
       {!isStarting && (
-        <div className="max-w-md text-[11px] text-[color:var(--ide-muted)]">{error.message}</div>
+        <div className="max-w-md text-[11px] text-[#858585]">{error.message}</div>
       )}
       <button
         type="button"
         onClick={onRetry}
-        className="mt-1 inline-flex h-9 items-center rounded border border-[color:var(--ide-border-strong)] px-3 text-[11px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover-subtle)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[color:var(--ide-active-ring)]"
+        className="mt-1 inline-flex h-9 items-center rounded border border-[#454545] px-3 text-[11px] text-[#cccccc] hover:bg-[#2a2d2e] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#0e639c]"
       >
         Retry
       </button>

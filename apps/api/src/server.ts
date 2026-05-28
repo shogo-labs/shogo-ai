@@ -3132,6 +3132,8 @@ async function forwardDiagnosticsResponse(c: any, response: Response, label: str
 }
 
 // GET /api/projects/:projectId/diagnostics
+const terminalDiagnostics = new Map<string, any[]>()
+
 app.get('/api/projects/:projectId/diagnostics', async (c) => {
   const projectId = c.req.param('projectId')
   // Containment: the path is later joined with workspacesDir; reject obvious traversal/escape.
@@ -3175,7 +3177,30 @@ app.get('/api/projects/:projectId/diagnostics', async (c) => {
   const url = new URL(c.req.url)
   url.pathname = `/projects/${projectId}/diagnostics`
   const newReq = new Request(url.toString(), { method: 'GET', headers: c.req.raw.headers })
-  return router.fetch(newReq)
+  const response = await router.fetch(newReq)
+  const sourceFilter = url.searchParams.get('source')
+  if (!response.ok || (sourceFilter && !sourceFilter.split(',').includes('terminal'))) return response
+  const body = await response.json() as any
+  const extra = terminalDiagnostics.get(projectId) ?? []
+  if (extra.length === 0) return c.json(body)
+  return c.json({
+    ...body,
+    diagnostics: [...(body.diagnostics ?? []), ...extra],
+    sources: Array.from(new Set([...(body.sources ?? []), 'terminal'])),
+    notes: body.notes,
+  })
+})
+
+app.post('/api/projects/:projectId/diagnostics/terminal', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!isSafeProjectId(projectId)) {
+    return c.json({ error: { code: 'invalid_project_id', message: 'Invalid project id' } }, 400)
+  }
+  let body: { diagnostics?: any[]; clear?: boolean } = {}
+  try { body = await c.req.json() } catch {}
+  if (body.clear) terminalDiagnostics.delete(projectId)
+  else terminalDiagnostics.set(projectId, Array.isArray(body.diagnostics) ? body.diagnostics : [])
+  return c.json({ ok: true })
 })
 
 // POST /api/projects/:projectId/diagnostics/refresh
