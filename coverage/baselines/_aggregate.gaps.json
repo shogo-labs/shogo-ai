@@ -895,7 +895,7 @@
       "note": "Side-quest while gateway.ts (Day 5) plateaus. New file packages/shared-runtime/src/__tests__/s3-sync-tar-exit-codes.test.ts owns its own mock.module(node:child_process) \u2014 process-global per Bun, so we put it in its own file to keep the s3-sync.test.ts real-spawn archive tests intact (same pattern as existing s3-sync-tar-fallback.test.ts). 6 tests, all passing standalone, cover lines 243-262 of s3-sync.ts (the child.once exit handler in extractTarFastNonBlocking): exit code 0 control, non-zero with benign macOS xattr stderr (gz + zst), non-zero with real EOF stderr (gz + zst), and empty-stderr non-zero. Run-tests-isolated.ts gives every file its own process so the mock doesn-t leak in CI."
     },
     {
-      "sha": "PENDING",
+      "sha": "874e4327",
       "date": "2026-05-28",
       "wave": "Wave 2 Day 8 - apps/api lib/runtime/manager.ts",
       "message": "test(coverage): runtime/manager.ts config closures + getProjectWorkspaceId + stop legacy paths + startHealthCheck timer - 81.93 to 89.41% lines",
