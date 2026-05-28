@@ -1081,17 +1081,17 @@
       "effectiveLinePct": 100.0
     }
   ],
-  "lastUpdated": "2026-05-28T14:58:45Z",
+  "lastUpdated": "2026-05-28T16:12:21Z",
   "aggregate": {
     "lines": {
-      "hit": 69032,
+      "hit": 70221,
       "total": 75878,
-      "pct": 90.98
+      "pct": 92.54
     },
     "functions": {
-      "hit": 5395,
+      "hit": 5492,
       "total": 6235,
-      "pct": 86.53
+      "pct": 88.08
     }
   }
 }
