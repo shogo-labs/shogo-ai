@@ -1162,6 +1162,23 @@
         }
       },
       "note": "Fresh coverage measurement across all 11 backend packages on branch fix(coverage)/unitTest-cases-backend. Replaces stale 92.54%/88.08% baseline that was built with manual file exclusions and tight denominators. New aggregate reflects ACTUAL coverage discovery: linesFound grew 75878 -> 91398 (+15520) as more test files now import modules previously absent from coverage scope; linesHit grew 70221 -> 75109 (+4888). The honest backend coverage drops from 92.54% -> 82.18%, funcs 88.08% -> 79.56%. Method: ran \"bun --no-env-file scripts/run-tests-isolated.ts . --coverage\" for apps/api (152s) + packages/agent-runtime (194s); ran \"bun --conditions=development test --coverage --coverage-reporter=lcov\" for the other 9 packages (under 60s each); processed all lcov.info files through scripts/coverage-strip-comments.ts to drop comment/whitespace DA: entries. All numbers comment-stripped."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 1 ad-hoc - agent-runtime response-transforms.ts",
+      "message": "test(coverage): packages/agent-runtime response-transforms.ts - 27%->96.30% lines, ?->100% funcs",
+      "perFile": [
+        {
+          "file": "packages/agent-runtime/src/response-transforms.ts",
+          "beforeLines": "66/244 ~27.05%",
+          "afterLines": "~352/365 ~96.30%",
+          "deltaLinesHit": 286,
+          "deltaFuncsHit": "all-funcs",
+          "newTests": 53
+        }
+      ],
+      "note": "Greenfield expansion of response-transforms-v5.test.ts (which had only 1 vestigial test). New file response-transforms-full.test.ts (53 tests, all passing standalone) drives every exported symbol of response-transforms.ts to ~100% lines (96.30% in Bun text reporter, 0 DA:N,0 entries in standalone lcov). Coverage by block: (1) smartTruncateJson - 8 tests covering input-already-fits, strip-large-strings (body/description/content/text/message/html/etc), binary-search array-truncation, truncatedFields in _meta when stripping happened too, last-resort raw truncation when no array to slice + no fields to strip, findLargestArray nested-object descent, root-level array via wrapper, deep-cycle depth-bound (>10). (2) validateTransformSource - 17 tests, one per banned token (require/import/process/Bun/fetch/eval/Function/globalThis/__dirname/__filename/XMLHttpRequest/WebSocket/Worker/SharedArrayBuffer/Atomics/Proxy/Reflect) + 1 clean-source. (3) compileTransform & execute - 7 tests covering execute happy-path, execute fallthrough when no transform, execute rethrow + console.warn capture, executeInline happy, executeInline rejects banned tokens, VM-sandbox blocks process, VM has JSON/Math/Array/Date in scope. (4) TransformRegistry CRUD - 4 tests (get/has/remove/list). (5) LRUResponseCache - 3 tests (roundtrip, evict-oldest-at-cap-5, re-set-existing-key-moves-to-end). (6) registerDefaults - 3 tests (happy, does-not-overwrite-user, catches-per-default-compile-errors). (7) Disk persistence - 8 tests using mkdtempSync tmpdir (persist + load round-trip, creates dir if missing via mkdirSync recursive, no-op on absent dir, skip-incomplete-files, catches-malformed-json, skip-banned-tokens, removeFromDisk-deletes, removeFromDisk-noops-on-absent). (8) Singleton - 2 tests (stable instance, reset replaces). Mock harness: tmpdir() + mkdtempSync per-test for disk paths, console.log/console.warn silenced via origLog/origWarn restore in afterEach. No new failures. Whole agent-runtime test suite is known to hang past 240s due to preview-manager/warm-pool integration tests - that pre-existing condition is unchanged by this commit."
     }
   ],
   "frontend": {
