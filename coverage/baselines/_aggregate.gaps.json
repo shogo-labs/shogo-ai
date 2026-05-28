@@ -766,6 +766,23 @@
         }
       ],
       "note": "New file gateway-tools.code-review.test.ts (17 tests) covers detect_changes (L4940-5070) and review_context (L5076-5260): explicit changed_files vs git diff, unified-diff line-range parsing with @@ hunks + overlap filter, source snippet read with line-range slicing, no-changes fallthrough, git-diff failure error, File-kind skip, test-gaps filter, end-to-end review_context with merged source-hunk ranges, max_lines_per_file capping, fallback to truncated full file when no nodes, include_source=false branch, nonexistent file skip. Patches require(child_process).execSync at module level (mock.module is unreliable for dynamic require inside the tool body), mocks ../risk-scorer and ../flow-detector. Cumulative Wave 1 Sessions 1-4 on gateway-tools.ts: 77.47 to 86.16 percent (+436 lines hit, +8.69pp). Session 4 delta: +103 lines. agent-runtime pkg: 77.14 to 77.43 percent."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 1 - Crush Giant (gateway-tools.ts) Session 5",
+      "message": "test(coverage): gateway-tools.ts browser relay + screencast - 86.16% to 87.46% lines",
+      "perFile": [
+        {
+          "file": "packages/agent-runtime/src/gateway-tools.ts",
+          "beforeLines": "4319/5013 (86.16%)",
+          "afterLines": "4385/5014 (87.46%)",
+          "deltaLinesHit": 66,
+          "deltaFuncsHit": 0,
+          "newTests": 8
+        }
+      ],
+      "note": "New file gateway-tools.browser-relay.test.ts (8 tests) - first playwright/cdp harness on the branch. Covers L2324-2369 spawnCDPRelay (extension mode handshake: success / spawn error / non-zero exit / BROWSER_CDP_ENDPOINT bypass / reuse on second call) and L2487-2522 ensureScreencast (launch mode CDP attach + Page.screencastFrame publish + ack). Mocks: playwright-core chromium.{connectOverCDP,launch} returning fake browser/page/context, screencast-broadcaster.publish capture, child_process.spawn patched at cached CJS module level returning a FakeChild EventEmitter that emits ready/connected on stdout. Cumulative Wave 1 Sessions 1-5 on gateway-tools.ts: 77.47 to 87.46 percent (+502 lines hit, +9.99pp). Session 5 delta: +66 lines. agent-runtime pkg: 77.43 to 77.66 percent. Remaining big clusters: L2708-2796 in-page DOM helpers (~64 lines) which are unreachable from node coverage (they run inside page.evaluate browser context)."
     }
   ],
   "frontend": {
