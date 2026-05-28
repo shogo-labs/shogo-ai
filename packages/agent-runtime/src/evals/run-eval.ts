@@ -109,6 +109,7 @@ const args = process.argv.slice(2)
 const trackArg = getArg(args, 'track', 'all')!
 const modelArg = getArg(args, 'model', 'haiku')!
 const workersArg = parseInt(getArg(args, 'workers', '1')!)
+const timeoutMsArg = parseInt(getArg(args, 'timeout-ms', '300000')!)
 const filterArg = getArg(args, 'filter')
 const tagsArg = getArg(args, 'tags')
 const agentModeArg = getArg(args, 'agent-mode') as 'basic' | 'advanced' | 'auto' | undefined
@@ -783,7 +784,7 @@ async function runEvalOnWorker(
   try {
     const result = await runEval(ev, {
       agentEndpoint: `${getWorkerBaseUrl(worker)}/agent/chat`,
-      timeoutMs: 300_000,
+      timeoutMs: Number.isFinite(timeoutMsArg) && timeoutMsArg > 0 ? timeoutMsArg : 300_000,
       verbose: verboseFlag,
       workspaceDir: worker.dir,
       agentMode: agentModeArg,

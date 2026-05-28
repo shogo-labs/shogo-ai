@@ -2541,7 +2541,35 @@ GITHUB_LIST_ISSUES: {
 // Tests that agent installs integration and writes a React component.
 // ---------------------------------------------------------------------------
 
+// Single canonical Google Calendar search hit reused across patterns.
+const GCAL_SEARCH_HIT = {
+  name: 'Google Calendar',
+  qualifiedName: 'googlecalendar',
+  description: 'Google Calendar — managed OAuth integration. No credentials needed.',
+  source: 'managed',
+  authType: 'oauth',
+  composioToolkit: 'googlecalendar',
+} as const
+
 export const TOOL_BIND_AT_INSTALL_MOCKS: ToolMockMap = {
+  // Mock search_integrations so models that prefer "search → connect" (rather
+  // than guessing the qualifiedName and connecting directly) can still
+  // discover Google Calendar. Without this entry, models like MiMo-v2.5 fall
+  // into a "search → empty → give up" loop instead of installing the tool.
+  search_integrations: {
+    type: 'pattern',
+    description: 'Search for tools by capability or keyword.',
+    paramKeys: ['query', 'source', 'limit'],
+    patterns: [
+      { match: { query: 'calendar' }, response: { query: 'google calendar', results: [GCAL_SEARCH_HIT], message: 'Found 1 tool(s). Use connect to add one.' } },
+      { match: { query: 'google' }, response: { query: 'google calendar', results: [GCAL_SEARCH_HIT], message: 'Found 1 tool(s). Use connect to add one.' } },
+      { match: { query: 'gcal' }, response: { query: 'google calendar', results: [GCAL_SEARCH_HIT], message: 'Found 1 tool(s). Use connect to add one.' } },
+      { match: { query: 'event' }, response: { query: 'google calendar', results: [GCAL_SEARCH_HIT], message: 'Found 1 tool(s). Use connect to add one.' } },
+      { match: { query: 'meeting' }, response: { query: 'google calendar', results: [GCAL_SEARCH_HIT], message: 'Found 1 tool(s). Use connect to add one.' } },
+      { match: { query: 'schedule' }, response: { query: 'google calendar', results: [GCAL_SEARCH_HIT], message: 'Found 1 tool(s). Use connect to add one.' } },
+    ],
+    default: { query: 'google calendar', results: [GCAL_SEARCH_HIT], message: 'Found 1 tool(s). Use connect to add one.' },
+  },
   connect: {
     type: 'static',
     description: 'Install a tool.',
