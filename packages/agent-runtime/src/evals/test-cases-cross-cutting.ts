@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Cross-cutting eval track
@@ -603,11 +603,11 @@ const XCUT_INTEGRATION_TOOLS_DIRECT: AgentEval = {
   validationCriteria: [
     {
       id: 'installed-jira',
-      description: 'Installed the Jira integration via tool_install',
+      description: 'Installed the Jira integration via connect',
       points: 2,
       phase: 'execution',
       validate: (r) =>
-        r.toolCalls.some(tc => tc.name === 'tool_install' && /jira/i.test(String((tc.input as any)?.name ?? ''))),
+        r.toolCalls.some(tc => tc.name === 'connect' && /jira/i.test(String((tc.input as any)?.name ?? ''))),
     },
     {
       id: 'called-list-boards-directly',

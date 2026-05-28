@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Data Processing Eval Test Cases
@@ -77,10 +77,10 @@ export const DATA_PROCESSING_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'installed-github',
-        description: 'Installed GitHub via tool_install',
+        description: 'Installed GitHub via connect',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'called-list-issues',
@@ -150,10 +150,10 @@ export const DATA_PROCESSING_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'installed-calendar',
-        description: 'Installed Google Calendar via tool_install',
+        description: 'Installed Google Calendar via connect',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'called-calendar-tool',
@@ -220,10 +220,10 @@ export const DATA_PROCESSING_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'installed-github',
-        description: 'Installed GitHub via tool_install',
+        description: 'Installed GitHub via connect',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'called-list-issues',

@@ -191,10 +191,10 @@ Skills with a \`trigger\` field automatically activate when a user message match
 
 ### Discovering & Installing Skills
 
-Use \`tool_search\` to find available skills (and integrations) by keyword.
-Skill results have \`source: "skill"\` and can be installed with \`tool_install({ name: "skill:<name>" })\`.
+Use \`search_integrations\` to find available skills (and integrations) by keyword.
+Skill results have \`source: "skill"\` and can be installed with \`connect({ name: "skill:<name>" })\`.
 
-When a user asks for something not covered by installed skills, proactively search with \`tool_search\` before building from scratch.
+When a user asks for something not covered by installed skills, proactively search with \`search_integrations\` before building from scratch.
 
 ### Managing Skills
 
@@ -231,12 +231,10 @@ Skills reload automatically — changes take effect on the next message.`
 
 export const OPTIMIZED_MCP_DISCOVERY_GUIDE = `## Tool Discovery & Self-Extension
 
-You have THREE distinct systems for discovering and installing tools at runtime.
-They are separate and should not be confused:
+You have TWO discovery paths at runtime:
 
 1. **CLI-First Tools** (\`write_file\` + \`exec\`) — pre-installed CLIs for services where the user provides a token
-2. **Managed Integrations** (\`tool_search\` / \`tool_install\`) — OAuth service integrations
-3. **MCP Servers** (\`mcp_search\` / \`mcp_install\`) — standalone protocol servers
+2. **Integrations** (\`search_integrations\` / \`connect\` / \`disconnect\`) — unified surface covering managed OAuth (Composio), bundled skills, and MCP protocol servers. Each result is tagged with a \`source\` (\`managed\` | \`skill\` | \`mcp\`) so you can tell which backend will handle it.
 
 ### CLI-First Tools (Highest Priority)
 
@@ -263,33 +261,23 @@ Always save to \`.env\` first. When the user provides multiple tokens, write the
 \`.env\` (one KEY=VALUE per line). To append without overwriting, read the existing \`.env\`
 first, then write the combined content.
 
-### Managed Integrations (tool_search / tool_install)
+### Integrations (search_integrations / connect / disconnect)
 
-Hundreds of integrations (Google, Slack, GitHub, Linear, Notion, Jira, and many
-more) are available as **managed OAuth integrations**. These require NO manual
-credentials or API keys — authentication is handled automatically.
+\`search_integrations\` returns a single tagged list. Each result has a \`source\` field:
+- \`managed\` — Composio OAuth integration (Google, Slack, GitHub, Linear, Notion, Jira, and hundreds more). NO manual credentials or API keys required — auth is handled automatically. **Prefer these** when the user does not provide a token and the service is available.
+- \`skill\` — bundled or installed skill (knowledge-based or process-oriented workflows: marketing, copywriting, SEO, automation, dev workflows).
+- \`mcp\` — standalone MCP protocol server for databases, file systems, APIs, browser automation, and more. May require env vars or API keys.
 
-**Prefer managed integrations** when the user does NOT provide a token and the service is available. To use them:
-- Call \`tool_search\` to find integrations by service name
-- Call \`tool_install({ name: "<integration-slug>" })\` — no credentials or args needed
-- Tools become available immediately with auto-auth
+\`connect\` installs by name and auto-routes:
+- \`connect({ name: "googlecalendar" })\` — tries Composio first, returns \`source: "managed"\`
+- \`connect({ name: "postgres" })\` — no Composio match, falls through to MCP catalog, returns \`source: "mcp"\`
+- \`connect({ name: "skill:github-ops" })\` — installs a bundled skill, returns \`source: "skill"\`
+- \`connect({ name: "myserver", url: "https://..." })\` — connects to a remote MCP server
+- \`connect({ name: "gmail", source: "mcp" })\` — explicit override; skips Composio
 
-### MCP Servers (mcp_search / mcp_install)
+Pass \`env\` for MCP server API keys or connection strings when needed.
 
-MCP (Model Context Protocol) servers are standalone tool servers for databases,
-file systems, APIs, browser automation, and more. Unlike managed integrations,
-MCP servers may require configuration (environment variables, API keys).
-
-- Call \`mcp_search\` to find servers by capability
-- Call \`mcp_install({ name: "<server-id>" })\` for catalog servers
-- Call \`mcp_install({ name: "<name>", url: "<url>" })\` for remote servers
-- Pass \`env\` for API keys or connection strings when needed
-
-### Skills
-
-For knowledge-based or process-oriented tasks (marketing, copywriting, SEO, automation, dev workflows),
-search for bundled skills with \`tool_search\`. Skills appear in results alongside managed integrations.
-Install with \`tool_install({ name: "skill:<name>" })\`. See the Skill Matching section for details.
+\`disconnect({ name })\` auto-detects which backend owns the entry and removes it.
 
 ### Skill Shortcut
 
@@ -297,10 +285,10 @@ When the user message starts with \`[Skill: ...]\`, a saved skill provides
 setup instructions, tool slugs, and execution steps. Follow the skill
 instructions directly for that integration:
 
-- **DO** call \`tool_install\` or \`mcp_install\` as the skill directs
+- **DO** call \`connect\` as the skill directs
 - **GO STRAIGHT** to execution using the tool names listed in the skill
 
-You can still use \`tool_search\` or \`mcp_search\` if the user needs capabilities
+You can still use \`search_integrations\` if the user needs capabilities
 not covered by the loaded skill.
 
 ### When to Search
@@ -309,8 +297,8 @@ Search for tools when any of these situations apply:
 
 1. **Connection or integration request**: The user asks to "connect to", "integrate
    with", "set up", or "link" a service (e.g. "can you connect to my Slack?",
-   "integrate with GitHub", "set up Google Calendar"). ALWAYS call \`tool_search\`
-   first for managed integrations. If not found, try \`mcp_search\`.
+   "integrate with GitHub", "set up Google Calendar"). ALWAYS call \`search_integrations\`
+   first.
 2. **Explicit service mention**: The user mentions a specific platform or service
    (e.g. GitHub, Slack, Google Calendar) — search for it BEFORE building.
 3. **Real data needed**: The user wants real, live data from an external source
@@ -328,11 +316,10 @@ Do NOT substitute with placeholder/seeded data when a real integration exists.
 2. **Check for CLI-first tools**: If the service matches a pre-installed CLI (GitHub, GitLab,
    AWS, Stripe, Oracle) AND the user provides a token/key, save it to \`.env\` and use the CLI via \`exec\`
 3. **Check what you have**: If the tools you need are ALREADY in your tool list
-   (e.g. you can see mcp_github_list_issues), use them directly — skip search/install
-4. **Search for managed integration first**: \`tool_search\` with the service name
-5. **If managed result found**: call \`tool_install\` — no credentials needed, auto-bind works
-6. **If no managed result**: try \`mcp_search\` for an MCP server, then \`mcp_install\`
-7. **Use**: call the new tools to fetch real data, then build the UI around it
+   (e.g. you can see GMAIL_SEND_EMAIL or postgres__query), use them directly — skip search/install
+4. **Search**: \`search_integrations\` with the service name
+5. **Install**: \`connect\` with the result's \`name\` — no credentials needed for \`source: "managed"\`. Inspect the returned \`source\` to confirm which backend bound the tools.
+6. **Use**: call the new tools to fetch real data, then build the UI around it
 
 ### Safety
 
@@ -342,23 +329,24 @@ Do NOT substitute with placeholder/seeded data when a real integration exists.
 
 ### Examples
 
-**Managed integrations (tool_search → tool_install):**
-- User: "Can you connect to my Slack?" → tool_search("slack"), tool_install the managed result
-- User: "Integrate with GitHub" → tool_search("github"), tool_install the managed result
-- User: "Set up Google Calendar" → tool_search("google calendar"), tool_install
-- User: "Show my Google Calendar events" → tool_search("google calendar"), tool_install, use tools
-- User: "Check my GitHub PRs" → tool_search("github"), tool_install, use tools
-- User: "Send a Slack message" → tool_search("slack"), tool_install, use tools
+**Managed (Composio OAuth):**
+- User: "Can you connect to my Slack?" → search_integrations("slack"), connect the managed result
+- User: "Integrate with GitHub" → search_integrations("github"), connect the managed result
+- User: "Set up Google Calendar" → search_integrations("google calendar"), connect
+- User: "Show my Google Calendar events" → search_integrations("google calendar"), connect, then call GOOGLECALENDAR_* tools
+- User: "Check my GitHub PRs" → search_integrations("github"), connect, use tools
+- User: "Send a Slack message" → search_integrations("slack"), connect, use tools
 
-**MCP servers (mcp_search → mcp_install):**
-- User: "Connect to my custom MCP server at https://..." → mcp_install({ name: "custom", url: "https://..." })
+**MCP:**
+- User: "Connect to my custom MCP server at https://..." → connect({ name: "custom", url: "https://..." })
+- User: "Query my postgres database" → search_integrations("postgres") returns an mcp result → connect({ name: "postgres", source: "mcp", env: { DATABASE_URL: "..." } })
 
 ### Critical: Always Follow Through
 
-After installing a tool (via \`tool_install\` or \`mcp_install\`), you MUST immediately
-call it in the same turn. Never stop after install to wait for user action — the
-installation is complete and the tools are ready. If the install returns ok: true,
-proceed directly to calling the newly available tools.
+After \`connect\` returns \`ok: true\`, you MUST immediately call the newly bound tools
+in the same turn. Never stop after install to wait for user action — the
+installation is complete and the tools are ready. Inspect the returned \`source\`
+to remind yourself which backend handled it.
 
 Similarly: when asked to remember something, ALWAYS use write_file to save to MEMORY.md. When asked to
 update your personality/role, ALWAYS use read_file + edit_file on AGENTS.md (which contains
@@ -395,8 +383,8 @@ tools: [{tools used — list gateway tool names}]
 # {Descriptive Name}
 
 ## Setup
-{For managed: tool_install({ name: "{integration}" }) — auth is checked automatically}
-{For MCP: mcp_install({ name: "{server}" }) or mcp_install({ name: "{server}", url: "..." })}
+{For managed: connect({ name: "{integration}" }) — auth is checked automatically}
+{For MCP: connect({ name: "{server}", source: "mcp" }) or connect({ name: "{server}", url: "..." })}
 
 ## Available Tools
 {List ALL discovered tool slugs with descriptions, e.g.:

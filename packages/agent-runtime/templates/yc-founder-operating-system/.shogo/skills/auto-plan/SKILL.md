@@ -1,9 +1,9 @@
----
+﻿---
 name: auto-plan
 version: 1.0.0
 description: Daily prioritizer — build and re-rank the founder's top 3 priorities from calendar, inbox, open decisions, and goals
 trigger: "plan my day|daily plan|priorities|auto plan|re-rank|what should i do today"
-tools: [tool_search, tool_install, edit_file, read_file, shell_exec, memory_write]
+tools: [search_integrations, connect, edit_file, read_file, shell_exec, memory_write]
 ---
 
 # Auto-Plan

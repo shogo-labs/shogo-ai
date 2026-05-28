@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Event Planner Mega Eval — "Stellar Events"
@@ -261,10 +261,10 @@ const PHASE_1: AgentEval = {
     },
     {
       id: 'calendar-installed',
-      description: 'Installed calendar integration (tool_install or mcp_install)',
+      description: 'Installed calendar integration via connect',
       points: 4,
       phase: 'execution',
-      validate: (r) => usedToolAnywhere(r, 'tool_install') || usedToolAnywhere(r, 'mcp_install'),
+      validate: (r) => usedToolAnywhere(r, 'connect'),
     },
     {
       id: 'heartbeat-configured',

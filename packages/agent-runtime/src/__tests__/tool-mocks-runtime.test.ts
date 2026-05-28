@@ -98,13 +98,13 @@ describe('compileInstallBody', () => {
         // bare map: no install defaults at all
         browser: { type: 'static', response: { ok: true } },
         web: { type: 'static', response: { html: '<p>x</p>' } },
-        tool_install: { type: 'static', response: { installed: [] } },
+        connect: { type: 'static', response: { installed: [] } },
       },
       { randomFn: () => 0.5, sleepFn: async (ms) => { sleeps.push(ms) } },
     )
     await compiled.fns.browser!({ action: 'navigate' })
     await compiled.fns.web!({})
-    await compiled.fns.tool_install!({})
+    await compiled.fns.connect!({})
     // jitter at 0.5 evaluates to (1 - 1) * 400 = 0, so we get the raw class default
     expect(sleeps).toEqual([2200, 1500, 1800])
   })
@@ -158,7 +158,7 @@ describe('compileInstallBody', () => {
           type: 'static',
           response: 1,
           hidden: true,
-          description: 'Promoted later by tool_install',
+          description: 'Promoted later by connect',
           paramKeys: ['target_id'],
         },
         VISIBLE_TOOL: {

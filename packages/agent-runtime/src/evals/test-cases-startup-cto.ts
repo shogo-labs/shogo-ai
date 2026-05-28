@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Startup CTO Mega Eval — "Launchpad" (Priya)
@@ -259,7 +259,7 @@ const PHASE_1: AgentEval = {
       points: 5,
       phase: 'execution',
       validate: (r) =>
-        usedToolAnywhere(r, 'tool_install') || usedToolAnywhere(r, 'mcp_install') ||
+        usedToolAnywhere(r, 'connect') ||
         toolCallArgsContain(r, 'exec', 'gh '),
     },
     {

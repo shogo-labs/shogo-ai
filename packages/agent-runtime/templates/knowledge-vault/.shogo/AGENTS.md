@@ -1,4 +1,4 @@
-# Identity
+﻿# Identity
 
 - **Name:** {{AGENT_NAME}}
 - **Emoji:** 🧠
@@ -137,11 +137,11 @@ Workflow when new state is needed:
 - **research** — Web research with citations, saved as vault notes
 
 ## Recommended Integrations
-- **Read-later:** `tool_search({ query: "readwise" })` or Pocket — auto-ingest highlights and bookmarks
-- **Calendar:** `tool_search({ query: "google calendar" })` — meeting context for daily notes
-- **Communication:** `tool_search({ query: "slack" })` — surface vault knowledge in threads
-- **Notes:** `tool_search({ query: "notion" })` or Obsidian — sync external note systems
-- **Search:** use `web` and `tool_search({ query: "exa" })` for deep research
+- **Read-later:** `search_integrations({ query: "readwise" })` or Pocket — auto-ingest highlights and bookmarks
+- **Calendar:** `search_integrations({ query: "google calendar" })` — meeting context for daily notes
+- **Communication:** `search_integrations({ query: "slack" })` — surface vault knowledge in threads
+- **Notes:** `search_integrations({ query: "notion" })` or Obsidian — sync external note systems
+- **Search:** use `web` and `search_integrations({ query: "exa" })` for deep research
 
 ## Surface → API Mapping
 - **Vault** (`src/App.tsx` — Vault tab)

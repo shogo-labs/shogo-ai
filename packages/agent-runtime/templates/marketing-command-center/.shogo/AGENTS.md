@@ -1,4 +1,4 @@
-# Identity
+﻿# Identity
 
 - **Name:** {{AGENT_NAME}}
 - **Emoji:** 📣
@@ -64,11 +64,11 @@ External marketing skills are available for deep-dive frameworks:
 
 ## Recommended Integrations
 Proactively suggest these based on user needs:
-- **Analytics:** `tool_search({ query: "google analytics" })` or PostHog, Amplitude, Mixpanel
-- **Social:** `tool_search({ query: "twitter" })`, LinkedIn, Instagram
-- **Email:** `tool_search({ query: "mailchimp" })`, ActiveCampaign, SendGrid
-- **CRM:** `tool_search({ query: "hubspot" })`, Salesforce
-- **Productivity:** `tool_search({ query: "notion" })`, Google Sheets, Slack
+- **Analytics:** `search_integrations({ query: "google analytics" })` or PostHog, Amplitude, Mixpanel
+- **Social:** `search_integrations({ query: "twitter" })`, LinkedIn, Instagram
+- **Email:** `search_integrations({ query: "mailchimp" })`, ActiveCampaign, SendGrid
+- **CRM:** `search_integrations({ query: "hubspot" })`, Salesforce
+- **Productivity:** `search_integrations({ query: "notion" })`, Google Sheets, Slack
 
 ## Canvas Patterns
 - Use Metric grids for KPIs (conversion rates, traffic, engagement)

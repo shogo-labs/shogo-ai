@@ -3063,133 +3063,124 @@ function createChannelListTool(ctx: ToolContext): AgentTool {
 }
 
 // ---------------------------------------------------------------------------
-// MCP Discovery Tools
+// Integration Discovery Tools (unified search / connect / disconnect)
 // ---------------------------------------------------------------------------
 
-function createToolSearchTool(ctx: ToolContext): AgentTool {
+/**
+ * Unified search across managed OAuth integrations (Composio), bundled
+ * skills, and MCP server catalog. Each result carries a `source` tag so
+ * the model knows which path `connect` will take. Pass `source` to
+ * restrict results to a single backend.
+ */
+function createSearchIntegrationsTool(ctx: ToolContext): AgentTool {
   return {
-    name: 'tool_search',
-    description: 'Search for managed OAuth integrations and bundled skills by keyword. For MCP servers, use mcp_search.',
-    label: 'Search Tools & Skills',
+    name: 'search_integrations',
+    description: 'Search for integrations by keyword. Returns managed OAuth integrations (Google, Slack, GitHub, etc.), bundled skills, and MCP protocol servers in one tagged list. Each result has a `source` tag (managed | skill | mcp). Pass `source` to filter to one backend.',
+    label: 'Search Integrations',
     parameters: Type.Object({
-      query: Type.String({ description: 'Search query describing the capability you need (e.g. "google calendar", "seo audit", "github ops", "slack mentions")' }),
+      query: Type.String({ description: 'Search query describing the capability you need (e.g. "google calendar", "postgres database", "seo audit", "github ops", "slack mentions")' }),
       limit: Type.Optional(Type.Number({ description: 'Max results to return (default: 5)' })),
+      source: Type.Optional(Type.Union([
+        Type.Literal('managed'),
+        Type.Literal('skill'),
+        Type.Literal('mcp'),
+      ], { description: 'Restrict to a single source (managed = Composio OAuth, skill = bundled skills, mcp = MCP protocol servers). Omit to search all three.' })),
     }),
     execute: async (_id: string, params: any) => {
       const query = params.query as string
       const limit = Math.min(params.limit || 5, 10)
+      const source = params.source as 'managed' | 'skill' | 'mcp' | undefined
 
       const results: Array<Record<string, any>> = []
 
-      // 1. Search Composio toolkit catalog (managed OAuth)
-      if (isComposioEnabled()) {
-        try {
-          const composioToolkits = await searchComposioToolkits(query)
-          for (const tk of composioToolkits.slice(0, limit)) {
-            results.push({
-              name: tk.name,
-              id: tk.slug,
-              description: `${tk.name} — managed OAuth integration. No API keys or credentials needed.`,
-              installCommand: `tool_install({ name: "${tk.slug}" })`,
-              source: 'managed',
-              logo: tk.logo,
-            })
-          }
-        } catch { /* Composio API unavailable */ }
+      if (!source || source === 'managed') {
+        if (isComposioEnabled()) {
+          try {
+            const composioToolkits = await searchComposioToolkits(query)
+            for (const tk of composioToolkits.slice(0, limit)) {
+              results.push({
+                name: tk.name,
+                id: tk.slug,
+                description: `${tk.name} — managed OAuth integration. No API keys or credentials needed.`,
+                installCommand: `connect({ name: "${tk.slug}" })`,
+                source: 'managed',
+                logo: tk.logo,
+              })
+            }
+          } catch { /* Composio API unavailable */ }
+        }
       }
 
-      // 2. Search skills (bundled + installed)
-      try {
-        const installed = loadAllSkills(ctx.workspaceDir)
-        const bundled = loadBundledSkills(new Set(installed.map(s => s.name)))
-        const skillResults = searchSkills(query, installed, bundled, limit)
-        for (const skill of skillResults) {
+      if (!source || source === 'skill') {
+        try {
+          const installed = loadAllSkills(ctx.workspaceDir)
+          const bundled = loadBundledSkills(new Set(installed.map(s => s.name)))
+          const skillResults = searchSkills(query, installed, bundled, limit)
+          for (const skill of skillResults) {
+            results.push({
+              name: skill.name,
+              id: `skill:${skill.name}`,
+              description: skill.description || `Skill: ${skill.name}`,
+              source: 'skill',
+              installed: skill.installed,
+              installCommand: skill.installed
+                ? `Already installed. Read with: read_file({ path: "skills/${skill.name}.md" })`
+                : `connect({ name: "skill:${skill.name}" })`,
+              trigger: skill.trigger,
+            })
+          }
+        } catch { /* skill search failed, continue */ }
+      }
+
+      if (!source || source === 'mcp') {
+        const queryLower = query.toLowerCase()
+        const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2)
+        const scored: Array<{ entry: typeof MCP_CATALOG[0]; score: number }> = []
+        for (const entry of MCP_CATALOG) {
+          const haystack = `${entry.id} ${entry.name} ${entry.description} ${entry.category} ${entry.providedTools.join(' ')}`.toLowerCase()
+          const idName = `${entry.id} ${entry.name}`.toLowerCase()
+          let score = 0
+          if (haystack.includes(queryLower)) score += 10
+          if (idName.includes(queryLower)) score += 20
+          for (const w of queryWords) {
+            if (idName.includes(w)) score += 5
+            else if (haystack.includes(w)) score += 1
+          }
+          if (score > 0) scored.push({ entry, score })
+        }
+        scored.sort((a, b) => b.score - a.score)
+        for (const { entry } of scored.slice(0, limit)) {
           results.push({
-            name: skill.name,
-            id: `skill:${skill.name}`,
-            description: skill.description || `Skill: ${skill.name}`,
-            source: 'skill',
-            installed: skill.installed,
-            installCommand: skill.installed
-              ? `Already installed. Read with: read_file({ path: "skills/${skill.name}.md" })`
-              : `tool_install({ name: "skill:${skill.name}" })`,
-            trigger: skill.trigger,
+            name: entry.name,
+            id: entry.id,
+            description: entry.description,
+            category: entry.category,
+            installCommand: `connect({ name: "${entry.id}", source: "mcp" })`,
+            source: 'mcp',
           })
         }
-      } catch { /* skill search failed, continue */ }
+      }
 
       if (results.length === 0) {
-        return textResult({ query, results: [], message: 'No integrations or skills found. Try mcp_search for MCP protocol servers, or a different search term.' })
+        return textResult({ query, results: [], message: 'No integrations found. Try a different search term.' })
       }
 
       const managedCount = results.filter(r => r.source === 'managed').length
       const skillCount = results.filter(r => r.source === 'skill').length
-      let message = `Found ${results.length} result(s).`
-      if (managedCount > 0) message += ` ${managedCount} managed integration(s) (no credentials needed).`
-      if (skillCount > 0) message += ` ${skillCount} skill(s) — install with tool_install or read with read_file.`
+      const mcpCount = results.filter(r => r.source === 'mcp').length
+      const parts: string[] = []
+      if (managedCount > 0) parts.push(`${managedCount} managed OAuth integration(s) (no credentials needed)`)
+      if (skillCount > 0) parts.push(`${skillCount} skill(s)`)
+      if (mcpCount > 0) parts.push(`${mcpCount} MCP server(s)`)
+      const message = `Found ${results.length} result(s)${parts.length ? `: ${parts.join(', ')}` : ''}. Use connect to add one.`
 
       return textResult({ query, results, message })
     },
   }
 }
 
-function createMcpSearchTool(): AgentTool {
-  return {
-    name: 'mcp_search',
-    description: 'Search for MCP protocol servers (databases, file systems, APIs). For managed OAuth integrations, use tool_search.',
-    label: 'Search MCP Servers',
-    parameters: Type.Object({
-      query: Type.String({ description: 'Search query describing the capability you need (e.g. "postgres database", "filesystem", "brave search")' }),
-      limit: Type.Optional(Type.Number({ description: 'Max results to return (default: 5)' })),
-    }),
-    execute: async (_id: string, params: any) => {
-      const query = params.query as string
-      const limit = Math.min(params.limit || 5, 10)
-
-      const queryLower = query.toLowerCase()
-      const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2)
-      const scored: Array<{ entry: typeof MCP_CATALOG[0]; score: number }> = []
-      for (const entry of MCP_CATALOG) {
-        const haystack = `${entry.id} ${entry.name} ${entry.description} ${entry.category} ${entry.providedTools.join(' ')}`.toLowerCase()
-        const idName = `${entry.id} ${entry.name}`.toLowerCase()
-        let score = 0
-        if (haystack.includes(queryLower)) score += 10
-        if (idName.includes(queryLower)) score += 20
-        for (const w of queryWords) {
-          if (idName.includes(w)) score += 5
-          else if (haystack.includes(w)) score += 1
-        }
-        if (score > 0) scored.push({ entry, score })
-      }
-      scored.sort((a, b) => b.score - a.score)
-
-      const results: Array<Record<string, any>> = []
-      for (const { entry } of scored.slice(0, limit)) {
-        results.push({
-          name: entry.name,
-          id: entry.id,
-          description: entry.description,
-          category: entry.category,
-          installCommand: `mcp_install({ name: "${entry.id}" })`,
-          source: 'catalog',
-        })
-      }
-
-      if (results.length === 0) {
-        return textResult({ query, results: [], message: 'No MCP servers found. Try a different search term, or use tool_search for managed OAuth integrations.' })
-      }
-
-      return textResult({
-        query,
-        results,
-        message: `Found ${results.length} MCP server(s). Use mcp_install to add one.`,
-      })
-    },
-  }
-}
-
 /**
- * Snippet appended to every successful `tool_install` message so the
+ * Snippet appended to every successful `connect` message so the
  * model has a concrete code shape to copy when the user asks for a
  * dashboard or any other in-app use of the integration. Without this
  * the model tends to invent provider env vars (`*_API_TOKEN`) and
@@ -3294,203 +3285,238 @@ export function formatToolInstallMessage(
   return `${base} Auth status: needs_auth. The user may need to authorize via the Tools panel.\n\n${directUsage}\n${SDK_USAGE_FOOTER}`
 }
 
-function createToolInstallTool(ctx: ToolContext): AgentTool {
+/**
+ * Install (connect) a Composio toolkit and bind its proxy tools. Shared
+ * between the auto-routed and explicit-`source: 'managed'` paths of
+ * `connect`, so we only ship one Composio install code path.
+ */
+async function connectViaComposio(
+  ctx: ToolContext,
+  name: string,
+  composioToolkit: { slug: string; name: string },
+): Promise<AgentToolResult<any>> {
+  if (!ctx.mcpClientManager) {
+    return textResult({ error: 'MCP client manager not available' })
+  }
+  if (!isComposioInitialized()) {
+    const userId = ctx.userId || process.env.USER_ID || 'default'
+    const workspaceId = process.env.WORKSPACE_ID || 'default'
+    const scopeEnv = process.env.COMPOSIO_USER_SCOPE
+    const scope: 'workspace' | 'project' =
+      scopeEnv === 'workspace' || scopeEnv === 'project' ? scopeEnv : 'workspace'
+    const initialized = await initComposioSession(userId, workspaceId, ctx.projectId, scope)
+    if (!initialized) {
+      return textResult({ error: `Failed to connect "${composioToolkit.name}" via Composio. The integration may not be available.` })
+    }
+  }
+  const proxy = await registerToolkitProxyTools(ctx.mcpClientManager, composioToolkit.slug)
+  const auth = await checkComposioAuth(composioToolkit.slug)
+  return textResult({
+    ok: true,
+    source: 'managed',
+    server: 'composio',
+    integration: composioToolkit.slug,
+    toolCount: proxy.toolCount,
+    tools: proxy.toolNames,
+    authStatus: auth.status,
+    ...(auth.authUrl ? { authUrl: auth.authUrl } : {}),
+    message: formatToolInstallMessage(composioToolkit.name, proxy.toolNames, auth),
+  })
+}
+
+/**
+ * Install a bundled skill into the workspace. Returns a result tagged
+ * with `source: 'skill'`. Triggered when `connect` is called with a
+ * `skill:<name>` argument.
+ */
+async function connectSkill(ctx: ToolContext, skillName: string): Promise<AgentToolResult<any>> {
+  const installed = loadAllSkills(ctx.workspaceDir)
+  const bundled = loadBundledSkills(new Set(installed.map(s => s.name)))
+  const bundledSkill = bundled.find(s => s.name === skillName)
+  if (!bundledSkill) {
+    const destDir = join(ctx.workspaceDir, '.shogo', 'skills', skillName)
+    if (existsSync(destDir)) {
+      return textResult({ error: `Skill "${skillName}" is already installed`, path: `.shogo/skills/${skillName}/SKILL.md` })
+    }
+    return textResult({ error: `Bundled skill "${skillName}" not found. Use search_integrations to find available skills.` })
+  }
+  const destDir = join(ctx.workspaceDir, '.shogo', 'skills', skillName)
+  mkdirSync(destDir, { recursive: true })
+  const srcDir = bundledSkill.skillDir
+  for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
+    const srcPath = join(srcDir, entry.name)
+    const destPath = join(destDir, entry.name)
+    if (entry.isDirectory()) {
+      const { cpSync } = require('fs')
+      cpSync(srcPath, destPath, { recursive: true })
+    } else {
+      writeFileSync(destPath, readFileSync(srcPath))
+    }
+  }
+  return textResult({
+    ok: true,
+    source: 'skill',
+    type: 'skill',
+    name: skillName,
+    path: `.shogo/skills/${skillName}/SKILL.md`,
+    message: `Skill "${skillName}" installed. It will be active on the next message. Read it with read_file({ path: ".shogo/skills/${skillName}/SKILL.md" }) to see its instructions.`,
+  })
+}
+
+/**
+ * Install (connect) an MCP server — either from the local catalog or a
+ * remote URL. Shared between the auto-routed (Composio miss) and
+ * explicit-`source: 'mcp'` paths of `connect`.
+ */
+async function connectViaMcp(
+  ctx: ToolContext,
+  name: string,
+  opts: { env?: Record<string, string>; url?: string; headers?: Record<string, string> },
+): Promise<AgentToolResult<any>> {
+  if (!ctx.mcpClientManager) {
+    return textResult({ error: 'MCP client manager not available' })
+  }
+  const { env, url, headers } = opts
+
+  if (url) {
+    if (ctx.mcpClientManager.isRunning(name)) {
+      const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === name)
+      return textResult({ error: `Server "${name}" is already running with ${info?.toolCount || 0} tools`, tools: info?.toolNames })
+    }
+    const tools = await ctx.mcpClientManager.hotAddRemoteServer(name, { url, headers })
+    return textResult({
+      ok: true,
+      source: 'mcp',
+      server: name,
+      type: 'remote',
+      toolCount: tools.length,
+      tools: tools.map(t => ({ name: t.name, description: t.description })),
+      message: `Connected to remote MCP server "${name}" at ${url} with ${tools.length} tool(s).`,
+    })
+  }
+
+  if (ctx.mcpClientManager.isRunning(name)) {
+    const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === name)
+    return textResult({ error: `Server "${name}" is already running with ${info?.toolCount || 0} tools`, tools: info?.toolNames })
+  }
+
+  const catalogEntry = MCP_CATALOG.find(e => e.id === name)
+  if (!isMcpServerAllowed(name) || !catalogEntry) {
+    const catalogIds = MCP_CATALOG.map(e => e.id).join(', ')
+    return textResult({ error: `"${name}" is not in the MCP catalog. Available servers: ${catalogIds}. For remote servers, provide a "url" parameter.` })
+  }
+
+  let config: { command: string; args?: string[]; env?: Record<string, string> }
+  if (isPreinstalledMcpId(name)) {
+    config = {
+      command: 'npx',
+      args: [catalogEntry.package, ...catalogEntry.defaultArgs],
+      env,
+    }
+  } else {
+    config = await ctx.mcpClientManager.installPackageLocally(
+      catalogEntry.package,
+      catalogEntry.defaultArgs,
+      env,
+    )
+    if (env) config.env = { ...config.env, ...env }
+  }
+
+  const tools = await ctx.mcpClientManager.hotAddServer(name, config)
+  return textResult({
+    ok: true,
+    source: 'mcp',
+    server: name,
+    toolCount: tools.length,
+    tools: tools.map(t => ({ name: t.name, description: t.description })),
+    message: `Installed MCP server "${name}" with ${tools.length} tool(s). They are now available for use.`,
+  })
+}
+
+/**
+ * Unified install tool. Routes by `source` if explicit; otherwise
+ * tries Composio first (managed OAuth has zero-config auth), falls
+ * through to the MCP catalog, then to a remote URL if provided.
+ * Skill installs are auto-detected by the `skill:` prefix on `name`.
+ *
+ * Each result is tagged with `source: 'managed' | 'skill' | 'mcp'`
+ * so the model and the UI know which path was taken.
+ */
+function createConnectTool(ctx: ToolContext): AgentTool {
   return {
-    name: 'tool_install',
-    description: 'Install a managed OAuth integration or bundled skill. For integrations, just provide the name (no API keys needed). For skills, use "skill:" prefix. Use tool_search first to find the right name.',
-    label: 'Install Integration or Skill',
+    name: 'connect',
+    description: 'Install (connect) an integration so its tools become available. Auto-routes by name: tries Composio managed OAuth first (Google, Slack, GitHub, etc. — no credentials needed), falls back to MCP catalog (postgres, filesystem, etc.), then to a remote URL if provided. Use `source: "mcp"` to skip Composio. Use `skill:<name>` to install a bundled skill. Pair with search_integrations to discover names.',
+    label: 'Connect Integration',
     parameters: Type.Object({
-      name: Type.String({ description: 'Integration name (e.g. "googlecalendar", "slack") or skill with prefix (e.g. "skill:github-ops", "skill:mktg-seo-audit"). Use tool_search to find available options.' }),
+      name: Type.String({ description: 'Integration name. Examples: "googlecalendar", "gmail", "slack" (managed); "postgres", "filesystem" (mcp catalog); "skill:github-ops" (bundled skill); any custom name when providing url.' }),
+      source: Type.Optional(Type.Union([
+        Type.Literal('managed'),
+        Type.Literal('mcp'),
+      ], { description: 'Force a specific backend. Omit for auto-routing (Composio first, then MCP).' })),
+      env: Type.Optional(Type.Any({ description: 'MCP-only: environment variables for the server process (API keys, connection strings).' })),
+      url: Type.Optional(Type.String({ description: 'MCP-only: remote MCP server URL (HTTP/StreamableHTTP). When provided, connects to the remote server instead of installing from the catalog.' })),
+      headers: Type.Optional(Type.Any({ description: 'MCP-only: HTTP headers for remote MCP server authentication.' })),
     }),
     execute: async (_id: string, params: any) => {
-      const { name } = params as { name: string }
-
-      // Skill install path: "skill:<name>" copies a bundled skill into the workspace
-      if (name.startsWith('skill:')) {
-        const skillName = name.slice(6)
-        const installed = loadAllSkills(ctx.workspaceDir)
-        const bundled = loadBundledSkills(new Set(installed.map(s => s.name)))
-        const bundledSkill = bundled.find(s => s.name === skillName)
-        if (!bundledSkill) {
-          const destDir = join(ctx.workspaceDir, '.shogo', 'skills', skillName)
-          if (existsSync(destDir)) {
-            return textResult({ error: `Skill "${skillName}" is already installed`, path: `.shogo/skills/${skillName}/SKILL.md` })
-          }
-          return textResult({ error: `Bundled skill "${skillName}" not found. Use tool_search to find available skills.` })
-        }
-        const destDir = join(ctx.workspaceDir, '.shogo', 'skills', skillName)
-        mkdirSync(destDir, { recursive: true })
-        // Copy the entire bundled skill directory
-        const srcDir = bundledSkill.skillDir
-        for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
-          const srcPath = join(srcDir, entry.name)
-          const destPath = join(destDir, entry.name)
-          if (entry.isDirectory()) {
-            const { cpSync } = require('fs')
-            cpSync(srcPath, destPath, { recursive: true })
-          } else {
-            writeFileSync(destPath, readFileSync(srcPath))
-          }
-        }
-        return textResult({
-          ok: true,
-          type: 'skill',
-          name: skillName,
-          path: `.shogo/skills/${skillName}/SKILL.md`,
-          message: `Skill "${skillName}" installed. It will be active on the next message. Read it with read_file({ path: ".shogo/skills/${skillName}/SKILL.md" }) to see its instructions.`,
-        })
-      }
-
-      if (!ctx.mcpClientManager) {
-        return textResult({ error: 'MCP client manager not available' })
+      const { name, source, env, url, headers } = params as {
+        name: string
+        source?: 'managed' | 'mcp'
+        env?: Record<string, string>
+        url?: string
+        headers?: Record<string, string>
       }
 
       try {
-      // Check if Composio session is already initialized
-      if (isComposioInitialized() && isComposioEnabled()) {
-        const composioToolkit = await findComposioToolkit(name)
-        if (composioToolkit) {
-          const proxy = await registerToolkitProxyTools(ctx.mcpClientManager, composioToolkit.slug)
-          const auth = await checkComposioAuth(composioToolkit.slug)
-          return textResult({
-            ok: true,
-            server: 'composio',
-            integration: composioToolkit.slug,
-            toolCount: proxy.toolCount,
-            tools: proxy.toolNames,
-            authStatus: auth.status,
-            ...(auth.authUrl ? { authUrl: auth.authUrl } : {}),
-            message: formatToolInstallMessage(composioToolkit.name, proxy.toolNames, auth),
-          })
+        if (name.startsWith('skill:')) {
+          return await connectSkill(ctx, name.slice(6))
         }
-      }
 
-      // Dynamically check if this matches a Composio toolkit
-      if (isComposioEnabled()) {
-        const composioToolkit = await findComposioToolkit(name)
-        if (composioToolkit) {
-          const userId = ctx.userId || process.env.USER_ID || 'default'
-          const workspaceId = process.env.WORKSPACE_ID || 'default'
-          const scopeEnv = process.env.COMPOSIO_USER_SCOPE
-          const scope: 'workspace' | 'project' =
-            scopeEnv === 'workspace' || scopeEnv === 'project' ? scopeEnv : 'workspace'
-          const initialized = await initComposioSession(userId, workspaceId, ctx.projectId, scope)
-          if (initialized) {
-            const proxy = await registerToolkitProxyTools(ctx.mcpClientManager, composioToolkit.slug)
-            const auth = await checkComposioAuth(composioToolkit.slug)
-            return textResult({
-              ok: true,
-              server: 'composio',
-              integration: composioToolkit.slug,
-              toolCount: proxy.toolCount,
-              tools: proxy.toolNames,
-              authStatus: auth.status,
-              ...(auth.authUrl ? { authUrl: auth.authUrl } : {}),
-              message: formatToolInstallMessage(composioToolkit.name, proxy.toolNames, auth),
-            })
+        if (!ctx.mcpClientManager) {
+          return textResult({ error: 'MCP client manager not available' })
+        }
+
+        if (source === 'mcp') {
+          return await connectViaMcp(ctx, name, { env, url, headers })
+        }
+
+        if (source !== 'managed' && url) {
+          return await connectViaMcp(ctx, name, { env, url, headers })
+        }
+
+        if (isComposioEnabled()) {
+          const composioToolkit = await findComposioToolkit(name)
+          if (composioToolkit) {
+            return await connectViaComposio(ctx, name, composioToolkit)
           }
-          return textResult({ error: `Failed to connect "${composioToolkit.name}" via Composio. The integration may not be available.` })
+          if (source === 'managed') {
+            return textResult({ error: `"${name}" is not a managed Composio integration. Use search_integrations to find available integrations, or omit \`source\` to fall through to MCP.` })
+          }
+        } else if (source === 'managed') {
+          return textResult({ error: `Composio is not configured (set COMPOSIO_API_KEY). Cannot install "${name}" as a managed integration.` })
         }
-      }
 
-      return textResult({ error: `"${name}" is not a managed integration. Use tool_search to find available integrations, or use mcp_install to install an MCP server.` })
+        return await connectViaMcp(ctx, name, { env, url, headers })
       } catch (err: any) {
-        console.error(`[tool_install] Unhandled error installing "${params?.name}":`, err)
-        return textResult({ error: `Failed to install integration "${params?.name}": ${err.message}` })
+        console.error(`[connect] Unhandled error installing "${params?.name}":`, err)
+        return textResult({ error: `Failed to install "${params?.name}": ${err.message}` })
       }
     },
   }
 }
 
-function createMcpInstallTool(ctx: ToolContext): AgentTool {
+/**
+ * Unified uninstall tool. Auto-detects whether the running entry is a
+ * remote MCP server vs. local server vs. Composio proxy via
+ * `mcpClientManager.getServerInfo()` and calls the right
+ * `hotRemove*` method.
+ */
+function createDisconnectTool(ctx: ToolContext): AgentTool {
   return {
-    name: 'mcp_install',
-    description: `Install and start an MCP server, making its tools available immediately. Catalog: ${MCP_CATALOG.map(e => e.id).join(', ')}. For remote servers, provide name + url. May require env vars for API keys.`,
-    label: 'Install MCP Server',
+    name: 'disconnect',
+    description: 'Stop and remove an installed integration (managed OAuth, MCP server, or skill binding). Its tools will no longer be available. Auto-detects which backend owns the name.',
+    label: 'Disconnect Integration',
     parameters: Type.Object({
-      name: Type.String({ description: 'MCP server name from the catalog (e.g. "postgres", "filesystem", "github") or a custom name when providing a URL.' }),
-      env: Type.Optional(Type.Any({ description: 'Environment variables for the server process (e.g. API keys, connection strings)' })),
-      url: Type.Optional(Type.String({ description: 'Remote MCP server URL (for HTTP/StreamableHTTP servers). When provided, connects to the remote server instead of installing an npm package.' })),
-      headers: Type.Optional(Type.Any({ description: 'HTTP headers for remote MCP server authentication' })),
-    }),
-    execute: async (_id: string, params: any) => {
-      const { name, env, url, headers } = params as {
-        name: string; env?: Record<string, string>
-        url?: string; headers?: Record<string, string>
-      }
-
-      if (!ctx.mcpClientManager) {
-        return textResult({ error: 'MCP client manager not available' })
-      }
-
-      try {
-      // Handle remote MCP server URL
-      if (url) {
-        if (ctx.mcpClientManager.isRunning(name)) {
-          const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === name)
-          return textResult({ error: `Server "${name}" is already running with ${info?.toolCount || 0} tools`, tools: info?.toolNames })
-        }
-        const tools = await ctx.mcpClientManager.hotAddRemoteServer(name, { url, headers })
-        return textResult({
-          ok: true,
-          server: name,
-          type: 'remote',
-          toolCount: tools.length,
-          tools: tools.map(t => ({ name: t.name, description: t.description })),
-          message: `Connected to remote MCP server "${name}" at ${url} with ${tools.length} tool(s).`,
-        })
-      }
-
-      if (ctx.mcpClientManager.isRunning(name)) {
-        const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === name)
-        return textResult({ error: `Server "${name}" is already running with ${info?.toolCount || 0} tools`, tools: info?.toolNames })
-      }
-
-      const catalogEntry = MCP_CATALOG.find(e => e.id === name)
-      if (!isMcpServerAllowed(name) || !catalogEntry) {
-        const catalogIds = MCP_CATALOG.map(e => e.id).join(', ')
-        return textResult({ error: `"${name}" is not in the MCP catalog. Available servers: ${catalogIds}. For remote servers, provide a "url" parameter. For managed OAuth integrations, use tool_install instead.` })
-      }
-
-      let config: { command: string; args?: string[]; env?: Record<string, string> }
-      if (isPreinstalledMcpId(name)) {
-        config = {
-          command: 'npx',
-          args: [catalogEntry.package, ...catalogEntry.defaultArgs],
-          env,
-        }
-      } else {
-        config = await ctx.mcpClientManager.installPackageLocally(
-          catalogEntry.package,
-          catalogEntry.defaultArgs,
-          env,
-        )
-        if (env) config.env = { ...config.env, ...env }
-      }
-
-      const tools = await ctx.mcpClientManager.hotAddServer(name, config)
-      return textResult({
-        ok: true,
-        server: name,
-        toolCount: tools.length,
-        tools: tools.map(t => ({ name: t.name, description: t.description })),
-        message: `Installed MCP server "${name}" with ${tools.length} tool(s). They are now available for use.`,
-      })
-      } catch (err: any) {
-        console.error(`[mcp_install] Unhandled error installing "${name}":`, err)
-        return textResult({ error: `Failed to install MCP server "${name}": ${err.message}` })
-      }
-    },
-  }
-}
-
-function createToolUninstallTool(ctx: ToolContext): AgentTool {
-  return {
-    name: 'tool_uninstall',
-    description: 'Stop and remove a managed integration. Its tools will no longer be available. For MCP servers, use mcp_uninstall instead.',
-    label: 'Uninstall Integration',
-    parameters: Type.Object({
-      name: Type.String({ description: 'Integration name to remove (use tool_search to find names)' }),
+      name: Type.String({ description: 'Integration name to remove (use search_integrations to find names of currently installed entries)' }),
     }),
     execute: async (_id: string, params: any) => {
       const name = params.name as string
@@ -3504,46 +3530,16 @@ function createToolUninstallTool(ctx: ToolContext): AgentTool {
           return textResult({ error: `Integration "${name}" is not running`, installed: ctx.mcpClientManager.getServerNames() })
         }
 
-        await ctx.mcpClientManager.hotRemoveServer(name)
-        return textResult({ ok: true, removed: name, message: `Removed integration "${name}" and all its tools.` })
-      } catch (err: any) {
-        console.error(`[tool_uninstall] Unhandled error removing "${name}":`, err)
-        return textResult({ error: `Failed to remove "${name}": ${err.message}` })
-      }
-    },
-  }
-}
-
-function createMcpUninstallTool(ctx: ToolContext): AgentTool {
-  return {
-    name: 'mcp_uninstall',
-    description: 'Stop and remove a running MCP server. Its tools will no longer be available. For managed integrations, use tool_uninstall instead.',
-    label: 'Uninstall MCP Server',
-    parameters: Type.Object({
-      name: Type.String({ description: 'MCP server name to remove (use mcp_search to find names)' }),
-    }),
-    execute: async (_id: string, params: any) => {
-      const name = params.name as string
-
-      if (!ctx.mcpClientManager) {
-        return textResult({ error: 'MCP client manager not available' })
-      }
-
-      try {
-        if (!ctx.mcpClientManager.isRunning(name)) {
-          return textResult({ error: `MCP server "${name}" is not running`, installed: ctx.mcpClientManager.getServerNames() })
-        }
-
         const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === name)
         if (info?.config.command === 'remote') {
           await ctx.mcpClientManager.hotRemoveRemoteServer(name)
         } else {
           await ctx.mcpClientManager.hotRemoveServer(name)
         }
-        return textResult({ ok: true, removed: name, message: `Removed MCP server "${name}" and all its tools.` })
+        return textResult({ ok: true, removed: name, message: `Removed integration "${name}" and all its tools.` })
       } catch (err: any) {
-        console.error(`[mcp_uninstall] Unhandled error removing "${name}":`, err)
-        return textResult({ error: `Failed to remove MCP server "${name}": ${err.message}` })
+        console.error(`[disconnect] Unhandled error removing "${name}":`, err)
+        return textResult({ error: `Failed to remove "${name}": ${err.message}` })
       }
     },
   }
@@ -4383,12 +4379,9 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createChannelListTool(ctx),
     createReadLintsTool(ctx),
     createServerSyncTool(ctx),
-    createToolSearchTool(ctx),
-    createToolInstallTool(ctx),
-    createToolUninstallTool(ctx),
-    createMcpSearchTool(),
-    createMcpInstallTool(ctx),
-    createMcpUninstallTool(ctx),
+    createSearchIntegrationsTool(ctx),
+    createConnectTool(ctx),
+    createDisconnectTool(ctx),
     g(createGenerateImageTool(ctx), 'network'),
     g(createTranscribeAudioTool(ctx), 'network'),
     createHeartbeatConfigureTool(ctx),
@@ -4464,7 +4457,7 @@ function inferRuntime(filename: string): string {
 /**
  * If the requested skill name matches an installed managed-integration
  * toolkit (e.g. user typed `skill: invoke` with skill="jira" after
- * `tool_install("jira")`), return a remediation hint pointing them at
+ * `connect("jira")`), return a remediation hint pointing them at
  * the bound tools. Otherwise return null so the caller falls back to
  * the generic "Skill not found" message.
  *
@@ -4738,8 +4731,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   memory: ['memory_read', 'memory_search'],
   messaging: ['send_message', 'channel_connect', 'channel_disconnect', 'channel_list'],
   heartbeat: ['heartbeat_configure', 'heartbeat_status'],
-  tool_discovery: ['tool_search', 'tool_install', 'tool_uninstall'],
-  mcp_discovery: ['mcp_search', 'mcp_install', 'mcp_uninstall'],
+  integrations: ['search_integrations', 'connect', 'disconnect'],
   audio: ['transcribe_audio'],
 }
 
@@ -4750,8 +4742,7 @@ export const ALL_TOOL_NAMES = [
   'memory_read', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list',
   'heartbeat_configure', 'heartbeat_status',
   'read_lints', 'server_sync',
-  'tool_search', 'tool_install', 'tool_uninstall',
-  'mcp_search', 'mcp_install', 'mcp_uninstall',
+  'search_integrations', 'connect', 'disconnect',
   'transcribe_audio',
   'quick_action',
 ] as const

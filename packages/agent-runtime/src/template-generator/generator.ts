@@ -50,7 +50,7 @@ A single file with all agent configuration sections:
 - Multi-surface canvas strategy: list 3-5 canvas surfaces the agent manages
 - Core workflow: numbered steps for the agent's main loop
 - Skill workflow: how the bundled skills should be used
-- Recommended integrations: suggest tool_search queries for relevant MCP integrations
+- Recommended integrations: suggest search_integrations queries for relevant integrations
 - Canvas patterns: which components to use (Metric grids, DataList, Charts, Tabs)
 
 ## HEARTBEAT.md

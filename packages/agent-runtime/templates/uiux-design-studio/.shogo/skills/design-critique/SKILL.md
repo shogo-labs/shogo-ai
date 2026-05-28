@@ -1,9 +1,9 @@
----
+﻿---
 name: design-critique
 version: 1.0.0
 description: Panel of 3 senior design reviewers who independently evaluate and score any screen, flow, or component, then synthesize a final verdict
 trigger: "critique|review design|check ui|audit ux|accessibility check|design review|check accessibility|audit design|evaluate ui|score design"
-tools: [tool_search, read_file, browser, web, memory_write]
+tools: [search_integrations, read_file, browser, web, memory_write]
 ---
 
 # Design Critique Panel

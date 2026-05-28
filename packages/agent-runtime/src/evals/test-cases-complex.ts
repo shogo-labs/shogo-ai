@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Complex Multi-Tool Eval Test Cases — Canvas V2 (Code Mode)
@@ -708,7 +708,7 @@ export const COMPLEX_EVALS: AgentEval[] = [
     conversationHistory: [
       { role: 'user', content: 'I need to see my Stripe revenue and manage invoices.' },
     ],
-    input: 'My MRR is about $12,500 from 180 customers. Install the Stripe integration (tool_install stripe), then use STRIPE_RETRIEVE_BALANCE to get my current balance and STRIPE_LIST_CHARGES to pull recent payments. Build me a React dashboard with: revenue metrics at the top (MRR, balance, pending, customer count), a table of recent payments, and an invoice management section with a form to create new invoices (client, amount, status, due date). Set up a Prisma schema for invoices. Use proper React state for the form. Verify everything is lint-free and log the revenue snapshot to memory.',
+    input: 'My MRR is about $12,500 from 180 customers. Install the Stripe integration (connect stripe), then use STRIPE_RETRIEVE_BALANCE to get my current balance and STRIPE_LIST_CHARGES to pull recent payments. Build me a React dashboard with: revenue metrics at the top (MRR, balance, pending, customer count), a table of recent payments, and an invoice management section with a form to create new invoices (client, amount, status, due date). Set up a Prisma schema for invoices. Use proper React state for the form. Verify everything is lint-free and log the revenue snapshot to memory.',
     maxScore: 100,
     toolMocks: withSkillServerMocks(STRIPE_REVENUE_MOCKS),
     validationCriteria: [

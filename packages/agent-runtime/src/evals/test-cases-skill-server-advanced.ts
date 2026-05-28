@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Advanced Skill Server Evals — Complex Multi-Step Agent Scenarios
@@ -97,10 +97,10 @@ function allCanvasCode(r: EvalResult): string {
     .toLowerCase()
 }
 
-/** True if agent called tool_install for a specific integration (or any). */
+/** True if agent called connect for a specific integration (or any). */
 function installedIntegration(r: EvalResult, name?: string): boolean {
   return r.toolCalls.some(t => {
-    if (t.name !== 'tool_install') return false
+    if (t.name !== 'connect') return false
     if (!name) return true
     return JSON.stringify(t.input).toLowerCase().includes(name.toLowerCase())
   })
@@ -418,18 +418,18 @@ const EMAIL_SLACK_RECON_MOCKS: ToolMockMap = {
   ...makeSkillServerMocks(['ActionItem'], {
     ActionItem: [{ title: 'Review API spec', source: 'email', requester: 'mike', urgency: 'medium' }],
   }),
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     description: 'Search for tools.',
     paramKeys: ['query', 'limit'],
     patterns: [
-      { match: { query: 'gmail' }, response: { query: 'gmail', results: [{ name: 'gmail', description: 'Gmail — managed OAuth integration. Read and send emails.', source: 'managed', authType: 'oauth' }], message: 'Found 1 tool(s). Use tool_install to add one.' } },
-      { match: { query: 'email' }, response: { query: 'email', results: [{ name: 'gmail', description: 'Gmail — managed OAuth integration. Read and send emails.', source: 'managed', authType: 'oauth' }], message: 'Found 1 tool(s). Use tool_install to add one.' } },
-      { match: { query: 'slack' }, response: { query: 'slack', results: [{ name: 'slack', description: 'Slack — managed OAuth integration. Read and send messages.', source: 'managed', authType: 'oauth' }], message: 'Found 1 tool(s). Use tool_install to add one.' } },
+      { match: { query: 'gmail' }, response: { query: 'gmail', results: [{ name: 'gmail', description: 'Gmail — managed OAuth integration. Read and send emails.', source: 'managed', authType: 'oauth' }], message: 'Found 1 tool(s). Use connect to add one.' } },
+      { match: { query: 'email' }, response: { query: 'email', results: [{ name: 'gmail', description: 'Gmail — managed OAuth integration. Read and send emails.', source: 'managed', authType: 'oauth' }], message: 'Found 1 tool(s). Use connect to add one.' } },
+      { match: { query: 'slack' }, response: { query: 'slack', results: [{ name: 'slack', description: 'Slack — managed OAuth integration. Read and send messages.', source: 'managed', authType: 'oauth' }], message: 'Found 1 tool(s). Use connect to add one.' } },
     ],
     default: { query: 'communication', results: [{ name: 'gmail', description: 'Gmail — managed OAuth.', source: 'managed', authType: 'oauth' }, { name: 'slack', description: 'Slack — managed OAuth.', source: 'managed', authType: 'oauth' }], message: 'Found 2 tool(s).' },
   },
-  tool_install: {
+  connect: {
     type: 'pattern',
     description: 'Install a tool.',
     paramKeys: ['name'],
@@ -465,8 +465,8 @@ const EMAIL_SLACK_RECON_EVAL: AgentEval = {
   maxScore: 30,
   toolMocks: EMAIL_SLACK_RECON_MOCKS,
   validationCriteria: [
-    { id: 'used-tool-search', description: 'Used tool_search to discover integrations', points: 2, phase: 'intention', validate: (r) => usedToolAnywhere(r, 'tool_search') },
-    { id: 'installed-integrations', description: 'Installed Gmail and Slack via tool_install before using them', points: 2, phase: 'intention', validate: (r) => installedIntegration(r, 'gmail') && installedIntegration(r, 'slack') },
+    { id: 'used-tool-search', description: 'Used search_integrations to discover integrations', points: 2, phase: 'intention', validate: (r) => usedToolAnywhere(r, 'search_integrations') },
+    { id: 'installed-integrations', description: 'Installed Gmail and Slack via connect before using them', points: 2, phase: 'intention', validate: (r) => installedIntegration(r, 'gmail') && installedIntegration(r, 'slack') },
     { id: 'called-both', description: 'Called both Gmail and Slack integration tools', points: 4, phase: 'execution', validate: (r) => usedTool(r, 'GMAIL_FETCH_EMAILS') && usedTool(r, 'SLACK_LIST_MESSAGES') },
     { id: 'wrote-schema', description: 'Wrote schema.prisma with action-item model', points: 3, phase: 'execution', validate: (r) => wroteSchemaWithAnyModels(r, 1) },
     { id: 'schema-fields', description: 'Schema has source, urgency, requester fields', points: 3, phase: 'execution', validate: (r) => schemaContainsFields(r, 'source') || (schemaContainsFields(r, 'urgency') || schemaContainsFields(r, 'priority')) },
@@ -707,7 +707,7 @@ const BRIEFING_MOCKS: ToolMockMap = {
   ...makeSkillServerMocks(['BriefingItem'], {
     BriefingItem: [{ category: 'engineering', title: 'SSO login shipped', source: 'github' }],
   }),
-  tool_search: {
+  search_integrations: {
     type: 'pattern',
     description: 'Search for tools.',
     paramKeys: ['query', 'limit'],
@@ -719,7 +719,7 @@ const BRIEFING_MOCKS: ToolMockMap = {
     ],
     default: { query: 'communication', results: [{ name: 'gmail', description: 'Gmail — managed OAuth.', source: 'managed', authType: 'oauth' }, { name: 'slack', description: 'Slack — managed OAuth.', source: 'managed', authType: 'oauth' }], message: 'Found 2 tool(s).' },
   },
-  tool_install: {
+  connect: {
     type: 'pattern',
     description: 'Install a tool.',
     paramKeys: ['name'],
@@ -750,7 +750,7 @@ const BRIEFING_EVAL: AgentEval = {
   toolMocks: BRIEFING_MOCKS,
   validationCriteria: [
     { id: 'read-github-data', description: 'Read the exported GitHub activity data', points: 2, phase: 'intention', validate: (r) => r.toolCalls.some(t => t.name === 'read_file' && String((t.input as any).path ?? '').includes('github_activity')) },
-    { id: 'installed-email-slack', description: 'Installed Gmail and/or Slack via tool_install', points: 2, phase: 'intention', validate: (r) => installedIntegration(r, 'gmail') || installedIntegration(r, 'slack') },
+    { id: 'installed-email-slack', description: 'Installed Gmail and/or Slack via connect', points: 2, phase: 'intention', validate: (r) => installedIntegration(r, 'gmail') || installedIntegration(r, 'slack') },
     { id: 'used-all-three', description: 'Read GitHub file + used Gmail + Slack integrations', points: 4, phase: 'execution', validate: (r) => r.toolCalls.some(t => t.name === 'read_file' && String((t.input as any).path ?? '').includes('github')) && usedTool(r, 'GMAIL_FETCH_EMAILS') && usedTool(r, 'SLACK_LIST_MESSAGES') },
     { id: 'wrote-schema', description: 'Wrote schema for briefing data', points: 3, phase: 'execution', validate: (r) => wroteSchemaWithAnyModels(r, 1) },
     { id: 'posted-filtered', description: 'POSTed filtered/categorized data to skill server', points: 3, phase: 'execution', validate: (r) => postedToSkillServer(r) },
@@ -864,7 +864,7 @@ const META_ADS_INTEGRATION_MOCKS: ToolMockMap = {
   ...makeSkillServerMocks(['Campaign'], {
     Campaign: [{ name: 'Summer Sale Push', platform: 'meta', budget: 5000, spend: 3200, impressions: 450000, clicks: 12500, conversions: 380, status: 'active' }],
   }),
-  tool_search: {
+  search_integrations: {
     type: 'static',
     response: {
       results: [
@@ -872,7 +872,7 @@ const META_ADS_INTEGRATION_MOCKS: ToolMockMap = {
       ],
     },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     response: {
       ok: true,

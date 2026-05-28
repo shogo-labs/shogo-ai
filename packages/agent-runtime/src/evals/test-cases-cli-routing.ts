@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * CLI Routing Eval Test Cases
@@ -125,7 +125,7 @@ const CLI_EXEC_MOCK: ToolMockMap = {
     type: 'static',
     response: { content: '', lines: 0 },
   },
-  tool_search: {
+  search_integrations: {
     type: 'static',
     response: {
       results: [
@@ -133,7 +133,7 @@ const CLI_EXEC_MOCK: ToolMockMap = {
       ],
     },
   },
-  tool_install: {
+  connect: {
     type: 'static',
     response: { ok: true, tools: ['GITHUB_LIST_REPOS', 'GITHUB_CREATE_ISSUE'] },
   },
@@ -181,7 +181,7 @@ const ghTokenFlow: AgentEval = {
       validate: (r) => responseContains(r, 'login bug') || responseContains(r, 'dark mode') || responseContains(r, 'pull request'),
     },
   ],
-  antiPatterns: ['Used tool_install instead of CLI', 'Inlined token in exec command'],
+  antiPatterns: ['Used connect instead of CLI', 'Inlined token in exec command'],
 }
 
 const glabTokenFlow: AgentEval = {
@@ -222,7 +222,7 @@ const glabTokenFlow: AgentEval = {
       validate: (r) => responseContains(r, 'merge request') || responseContains(r, 'refactor') || responseContains(r, 'auth module'),
     },
   ],
-  antiPatterns: ['Used mcp_install for gitlab instead of CLI'],
+  antiPatterns: ['Used connect for gitlab instead of CLI'],
 }
 
 const awsTokenFlow: AgentEval = {
@@ -311,7 +311,7 @@ const stripeTokenFlow: AgentEval = {
       validate: (r) => responseContains(r, 'customer') || responseContains(r, 'john') || responseContains(r, 'jane'),
     },
   ],
-  antiPatterns: ['Used tool_install for stripe instead of CLI'],
+  antiPatterns: ['Used connect for stripe instead of CLI'],
 }
 
 const ociTokenFlow: AgentEval = {
@@ -352,7 +352,7 @@ const ociTokenFlow: AgentEval = {
       validate: (r) => r.toolCalls.length <= 8,
     },
   ],
-  antiPatterns: ['Used mcp_install for Oracle Cloud'],
+  antiPatterns: ['Used connect for Oracle Cloud'],
 }
 
 // ---------------------------------------------------------------------------
@@ -361,7 +361,7 @@ const ociTokenFlow: AgentEval = {
 
 const ghPreferCli: AgentEval = {
   id: 'cli-prefer-gh-over-managed',
-  name: 'CLI Routing: Prefer gh CLI over tool_install when token given',
+  name: 'CLI Routing: Prefer gh CLI over connect when token given',
   category: 'tool-routing',
   level: 2,
   input: 'Connect to GitHub and list my open issues. My token is ghp_PREFER_CLI_TEST_TOKEN_123.',
@@ -377,17 +377,17 @@ const ghPreferCli: AgentEval = {
     },
     {
       id: 'used-gh-cli',
-      description: 'Used gh CLI via exec instead of tool_install',
+      description: 'Used gh CLI via exec instead of connect',
       points: 30,
       phase: 'execution',
       validate: (r) => execCommandContains(r, 'gh issue') || execCommandContains(r, 'gh '),
     },
     {
       id: 'did-not-tool-install',
-      description: 'Did NOT use tool_install for GitHub',
+      description: 'Did NOT use connect for GitHub',
       points: 25,
       phase: 'execution',
-      validate: (r) => neverUsedTool(r, 'tool_install') && !delegatedTo(r, 'integration'),
+      validate: (r) => neverUsedTool(r, 'connect') && !delegatedTo(r, 'integration'),
     },
     {
       id: 'mentions-issues',
@@ -397,7 +397,7 @@ const ghPreferCli: AgentEval = {
       validate: (r) => responseContains(r, 'issue') || responseContains(r, 'login page') || responseContains(r, 'favicon'),
     },
   ],
-  antiPatterns: ['Called tool_install("github") despite having a token'],
+  antiPatterns: ['Called connect("github") despite having a token'],
 }
 
 const stripePreferCli: AgentEval = {
@@ -425,10 +425,10 @@ const stripePreferCli: AgentEval = {
     },
     {
       id: 'did-not-tool-install',
-      description: 'Did NOT use tool_install for Stripe',
+      description: 'Did NOT use connect for Stripe',
       points: 25,
       phase: 'execution',
-      validate: (r) => neverUsedTool(r, 'tool_install') && !delegatedTo(r, 'integration'),
+      validate: (r) => neverUsedTool(r, 'connect') && !delegatedTo(r, 'integration'),
     },
     {
       id: 'mentions-subscription',
@@ -438,7 +438,7 @@ const stripePreferCli: AgentEval = {
       validate: (r) => responseContains(r, 'subscription') || responseContains(r, 'sub_'),
     },
   ],
-  antiPatterns: ['Called tool_install for Stripe despite having API key'],
+  antiPatterns: ['Called connect for Stripe despite having API key'],
 }
 
 const glabPreferCli: AgentEval = {
@@ -466,10 +466,10 @@ const glabPreferCli: AgentEval = {
     },
     {
       id: 'did-not-mcp-install',
-      description: 'Did NOT use mcp_install for GitLab',
+      description: 'Did NOT use connect for GitLab',
       points: 25,
       phase: 'execution',
-      validate: (r) => neverUsedTool(r, 'mcp_install') && !delegatedTo(r, 'integration'),
+      validate: (r) => neverUsedTool(r, 'connect') && !delegatedTo(r, 'integration'),
     },
     {
       id: 'mentions-pipelines',
@@ -479,7 +479,7 @@ const glabPreferCli: AgentEval = {
       validate: (r) => responseContains(r, 'pipeline') || responseContains(r, 'running') || responseContains(r, 'success'),
     },
   ],
-  antiPatterns: ['Called mcp_install for GitLab MCP server despite having token'],
+  antiPatterns: ['Called connect for GitLab MCP server despite having token'],
 }
 
 const awsPreferCli: AgentEval = {
@@ -507,10 +507,10 @@ const awsPreferCli: AgentEval = {
     },
     {
       id: 'no-managed-install',
-      description: 'Did NOT use tool_install or mcp_install',
+      description: 'Did NOT use connect',
       points: 25,
       phase: 'execution',
-      validate: (r) => neverUsedTool(r, 'tool_install') && neverUsedTool(r, 'mcp_install') && !delegatedTo(r, 'integration'),
+      validate: (r) => neverUsedTool(r, 'connect') && neverUsedTool(r, 'connect') && !delegatedTo(r, 'integration'),
     },
     {
       id: 'mentions-buckets',
@@ -547,10 +547,10 @@ const ghActionsPreferCli: AgentEval = {
     },
     {
       id: 'no-tool-install',
-      description: 'Did NOT use tool_install',
+      description: 'Did NOT use connect',
       points: 25,
       phase: 'execution',
-      validate: (r) => neverUsedTool(r, 'tool_install') && !delegatedTo(r, 'integration'),
+      validate: (r) => neverUsedTool(r, 'connect') && !delegatedTo(r, 'integration'),
     },
     {
       id: 'mentions-runs',
@@ -618,10 +618,10 @@ const antiPatternSkipEnv: AgentEval = {
     },
     {
       id: 'used-cli-not-managed',
-      description: 'Used gh CLI, not tool_install',
+      description: 'Used gh CLI, not connect',
       points: 30,
       phase: 'execution',
-      validate: (r) => execCommandContains(r, 'gh ') && neverUsedTool(r, 'tool_install') && !delegatedTo(r, 'integration'),
+      validate: (r) => execCommandContains(r, 'gh ') && neverUsedTool(r, 'connect') && !delegatedTo(r, 'integration'),
     },
     {
       id: 'mentions-results',
@@ -631,7 +631,7 @@ const antiPatternSkipEnv: AgentEval = {
       validate: (r) => responseContains(r, 'pull request') || responseContains(r, 'PR') || responseContains(r, 'login bug'),
     },
   ],
-  antiPatterns: ['Used tool_install/tool_search instead of saving token and using CLI'],
+  antiPatterns: ['Used connect/search_integrations instead of saving token and using CLI'],
 }
 
 const fallbackToManaged: AgentEval = {
@@ -645,10 +645,10 @@ const fallbackToManaged: AgentEval = {
   validationCriteria: [
     {
       id: 'searched-for-integration',
-      description: 'Searched for GitHub integration via tool_search',
+      description: 'Searched for GitHub integration via search_integrations',
       points: 40,
       phase: 'intention',
-      validate: (r) => usedToolAnywhere(r, 'tool_search') || usedToolAnywhere(r, 'tool_install'),
+      validate: (r) => usedToolAnywhere(r, 'search_integrations') || usedToolAnywhere(r, 'connect'),
     },
     {
       id: 'did-not-write-env',
@@ -721,7 +721,7 @@ const multiTokenSingleTurn: AgentEval = {
       description: 'Did not fall back to managed integrations',
       points: 15,
       phase: 'execution',
-      validate: (r) => neverUsedTool(r, 'tool_install') && !delegatedTo(r, 'integration'),
+      validate: (r) => neverUsedTool(r, 'connect') && !delegatedTo(r, 'integration'),
     },
   ],
 }

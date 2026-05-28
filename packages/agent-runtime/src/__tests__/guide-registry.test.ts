@@ -24,7 +24,7 @@ describe('Guide Registry', () => {
   test('buildGuideRegistry returns all expected guides', () => {
     const registry = buildGuideRegistry()
     const expectedKeys = [
-      'mcp-discovery', 'subagent', 'browser', 'constraint-awareness',
+      'integrations', 'subagent', 'browser', 'constraint-awareness',
       'personality', 'skill-matching', 'self-evolution', 'tool-planning', 'memory',
     ]
     for (const key of expectedKeys) {
@@ -35,7 +35,7 @@ describe('Guide Registry', () => {
 
   test('guides contain substantive content', () => {
     const registry = buildGuideRegistry()
-    expect(registry.get('mcp-discovery')).toContain('tool_search')
+    expect(registry.get('integrations')).toContain('search_integrations')
     expect(registry.get('subagent')).toContain('agent_spawn')
     expect(registry.get('browser')).toContain('snapshot')
     expect(registry.get('personality')).toContain('AGENTS.md')

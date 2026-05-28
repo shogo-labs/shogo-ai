@@ -49,6 +49,8 @@ const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'work
 export const FILE_MODIFYING_TOOLS = new Set([
   'write_file', 'edit_file', 'delete_file',
   'exec', 'generate_image',
+  'connect',
+  // Legacy names retained so historical tool calls in checkpoints continue to flag
   'tool_install', 'mcp_install',
 ])
 

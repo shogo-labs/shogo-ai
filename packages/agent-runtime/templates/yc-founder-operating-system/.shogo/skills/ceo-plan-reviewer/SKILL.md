@@ -1,9 +1,9 @@
----
+﻿---
 name: ceo-plan-reviewer
 version: 1.0.0
 description: Stress-test CEO-level plans — strategy, market, fundraising, hiring, positioning, org design
 trigger: "ceo review|strategy review|fundraise|market|positioning|hiring plan|org plan|gtm"
-tools: [web, tool_search, memory_write, edit_file, shell_exec]
+tools: [web, search_integrations, memory_write, edit_file, shell_exec]
 ---
 
 # CEO Plan Reviewer

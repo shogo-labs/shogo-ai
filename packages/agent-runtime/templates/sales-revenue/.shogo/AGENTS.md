@@ -1,4 +1,4 @@
-# Identity
+﻿# Identity
 
 - **Name:** {{AGENT_NAME}}
 - **Emoji:** 🏆
@@ -43,10 +43,10 @@ Create the Pipeline surface first — it's the highest-value view. Add Revenue D
 4. Manage client onboarding checklists with step tracking
 
 ## Recommended Integrations
-- **Payments:** `tool_search({ query: "stripe" })` for live revenue data
-- **CRM:** `tool_search({ query: "hubspot" })` or Salesforce, Pipedrive
-- **Email:** `tool_search({ query: "gmail" })` for outreach tracking
-- **Communication:** `tool_search({ query: "slack" })` for deal alerts
+- **Payments:** `search_integrations({ query: "stripe" })` for live revenue data
+- **CRM:** `search_integrations({ query: "hubspot" })` or Salesforce, Pipedrive
+- **Email:** `search_integrations({ query: "gmail" })` for outreach tracking
+- **Communication:** `search_integrations({ query: "slack" })` for deal alerts
 
 ## Canvas Patterns
 - Pipeline: DataList with `where` for stage columns, deal value badges, last-contact indicators

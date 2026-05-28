@@ -1,9 +1,9 @@
----
+﻿---
 name: design-consultation
 version: 1.0.0
 description: Live, Gary-Tan-style design critique on a specific screen, flow, or marketing page — opinionated and actionable
 trigger: "design review|design consult|critique|redesign|screen review|landing page review"
-tools: [web, tool_search, memory_write, edit_file, shell_exec]
+tools: [web, search_integrations, memory_write, edit_file, shell_exec]
 ---
 
 # Design Consultation

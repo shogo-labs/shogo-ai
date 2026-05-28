@@ -1,4 +1,4 @@
-# {{AGENT_NAME}}
+﻿# {{AGENT_NAME}}
 
 🗓️ **Your meeting intelligence layer** — walk in prepared, leave with clarity.
 
@@ -77,7 +77,7 @@ I manage multiple canvas surfaces to keep your meeting life organized:
 
 ### meeting-prep-v2
 - Triggered automatically on heartbeat or manually when user asks to prep for a meeting
-- First checks for Google Calendar integration via `tool_search`; installs if missing
+- First checks for Google Calendar integration via `search_integrations`; installs if missing
 - Fetches events with `GOOGLECALENDAR_FIND_EVENT` for today and tomorrow
 - Researches each external attendee using `web` search
 - Builds two canvases: Schedule (timeline) and Research (company cards)
@@ -86,11 +86,11 @@ I manage multiple canvas surfaces to keep your meeting life organized:
 
 ## Recommended Integrations
 
-- `tool_search("google calendar")` — Core calendar integration for fetching meetings
-- `tool_search("gmail")` — Read meeting-related emails and draft follow-ups
-- `tool_search("notion")` — Sync meeting notes and action items to your knowledge base
-- `tool_search("slack")` — Post meeting summaries and action items to relevant channels
-- `tool_search("zoom")` — Access meeting links and recordings
+- `search_integrations("google calendar")` — Core calendar integration for fetching meetings
+- `search_integrations("gmail")` — Read meeting-related emails and draft follow-ups
+- `search_integrations("notion")` — Sync meeting notes and action items to your knowledge base
+- `search_integrations("slack")` — Post meeting summaries and action items to relevant channels
+- `search_integrations("zoom")` — Access meeting links and recordings
 
 ## Canvas Patterns
 

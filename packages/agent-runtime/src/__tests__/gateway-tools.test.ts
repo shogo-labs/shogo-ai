@@ -440,7 +440,7 @@ describe('gateway-tools', () => {
 
   describe('tool sets', () => {
     test('createTools returns expected tools', () => {
-      expect(createTools(createCtx())).toHaveLength(51)
+      expect(createTools(createCtx())).toHaveLength(48)
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_configure')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_status')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()
@@ -460,162 +460,108 @@ describe('gateway-tools', () => {
   })
 
   // =========================================================================
-  // Tool vs MCP Discovery Split
+  // Unified integrations surface (search_integrations / connect / disconnect)
   // =========================================================================
 
-  describe('tool vs MCP discovery split', () => {
-    test('all 6 discovery tools exist with correct names', () => {
+  describe('unified integrations surface', () => {
+    test('all 3 unified discovery tools exist with correct names', () => {
       const tools = createTools(createCtx())
       const names = tools.map(t => t.name)
 
-      expect(names).toContain('tool_search')
-      expect(names).toContain('tool_install')
-      expect(names).toContain('tool_uninstall')
-      expect(names).toContain('mcp_search')
-      expect(names).toContain('mcp_install')
-      expect(names).toContain('mcp_uninstall')
+      expect(names).toContain('search_integrations')
+      expect(names).toContain('connect')
+      expect(names).toContain('disconnect')
     })
 
-    test('tool_discovery group maps to Composio tools only', () => {
-      expect(TOOL_GROUP_MAP.tool_discovery).toEqual(['tool_search', 'tool_install', 'tool_uninstall'])
-    })
-
-    test('mcp_discovery group maps to MCP tools only', () => {
-      expect(TOOL_GROUP_MAP.mcp_discovery).toEqual(['mcp_search', 'mcp_install', 'mcp_uninstall'])
-    })
-
-    test('tool_discovery and mcp_discovery groups are disjoint', () => {
-      const toolSet = new Set(TOOL_GROUP_MAP.tool_discovery)
-      const mcpSet = new Set(TOOL_GROUP_MAP.mcp_discovery)
-      for (const name of toolSet) {
-        expect(mcpSet.has(name)).toBe(false)
+    test('legacy six discovery tools no longer exist', () => {
+      const tools = createTools(createCtx())
+      const names = tools.map(t => t.name)
+      for (const legacy of ['tool_search', 'tool_install', 'tool_uninstall', 'mcp_search', 'mcp_install', 'mcp_uninstall']) {
+        expect(names).not.toContain(legacy)
       }
     })
 
-    test('ALL_TOOL_NAMES includes all 6 discovery tools', () => {
+    test('integrations group maps to the unified trio', () => {
+      expect(TOOL_GROUP_MAP.integrations).toEqual(['search_integrations', 'connect', 'disconnect'])
+    })
+
+    test('legacy tool_discovery / mcp_discovery groups are gone', () => {
+      expect((TOOL_GROUP_MAP as Record<string, unknown>).tool_discovery).toBeUndefined()
+      expect((TOOL_GROUP_MAP as Record<string, unknown>).mcp_discovery).toBeUndefined()
+    })
+
+    test('ALL_TOOL_NAMES includes the unified trio and excludes legacy names', () => {
       const names = ALL_TOOL_NAMES as readonly string[]
-      expect(names).toContain('tool_search')
-      expect(names).toContain('tool_install')
-      expect(names).toContain('tool_uninstall')
-      expect(names).toContain('mcp_search')
-      expect(names).toContain('mcp_install')
-      expect(names).toContain('mcp_uninstall')
+      expect(names).toContain('search_integrations')
+      expect(names).toContain('connect')
+      expect(names).toContain('disconnect')
+      for (const legacy of ['tool_search', 'tool_install', 'tool_uninstall', 'mcp_search', 'mcp_install', 'mcp_uninstall']) {
+        expect(names).not.toContain(legacy)
+      }
     })
 
-    test('resolveToolNames("tool_discovery") returns Composio tools', () => {
-      const resolved = resolveToolNames(['tool_discovery'])
-      expect(resolved).toContain('tool_search')
-      expect(resolved).toContain('tool_install')
-      expect(resolved).toContain('tool_uninstall')
-      expect(resolved).not.toContain('mcp_search')
-      expect(resolved).not.toContain('mcp_install')
-      expect(resolved).not.toContain('mcp_uninstall')
+    test('resolveToolNames("integrations") returns the unified trio', () => {
+      const resolved = resolveToolNames(['integrations'])
+      expect(resolved).toContain('search_integrations')
+      expect(resolved).toContain('connect')
+      expect(resolved).toContain('disconnect')
     })
 
-    test('resolveToolNames("mcp_discovery") returns MCP tools', () => {
-      const resolved = resolveToolNames(['mcp_discovery'])
-      expect(resolved).toContain('mcp_search')
-      expect(resolved).toContain('mcp_install')
-      expect(resolved).toContain('mcp_uninstall')
-      expect(resolved).not.toContain('tool_search')
-      expect(resolved).not.toContain('tool_install')
-      expect(resolved).not.toContain('tool_uninstall')
-    })
-
-    test('tool_search has Composio-only description', () => {
-      const tool = getTool(createCtx(), 'tool_search')
-      expect(tool.description).toContain('managed OAuth')
-      expect(tool.description).toContain('mcp_search')
-      expect(tool.description).not.toContain('MCP_CATALOG')
-    })
-
-    test('mcp_search has MCP-only description', () => {
-      const tool = getTool(createCtx(), 'mcp_search')
-      expect(tool.description).toContain('MCP')
-      expect(tool.description).toContain('protocol server')
-      expect(tool.description).toContain('tool_search')
-    })
-
-    test('tool_install has managed-integration description without env/url/headers params', () => {
-      const tool = getTool(createCtx(), 'tool_install')
-      expect(tool.description).toContain('managed OAuth')
+    test('search_integrations description mentions the source tag', () => {
+      const tool = getTool(createCtx(), 'search_integrations')
+      expect(tool.description.toLowerCase()).toContain('source')
       const schema = JSON.stringify(tool.parameters)
-      expect(schema).not.toContain('"url"')
-      expect(schema).not.toContain('"headers"')
-      expect(schema).not.toContain('"env"')
+      expect(schema).toContain('"query"')
+      expect(schema).toContain('"source"')
+    })
+
+    test('connect description leads with auto-routing and supports MCP-only params', () => {
+      const tool = getTool(createCtx(), 'connect')
+      expect(tool.description).toContain('Composio')
+      expect(tool.description).toContain('MCP')
+      const schema = JSON.stringify(tool.parameters)
       expect(schema).toContain('"name"')
-    })
-
-    test('mcp_install has MCP description with env/url/headers params', () => {
-      const tool = getTool(createCtx(), 'mcp_install')
-      expect(tool.description).toContain('MCP')
-      const schema = JSON.stringify(tool.parameters)
+      expect(schema).toContain('"source"')
       expect(schema).toContain('"url"')
       expect(schema).toContain('"headers"')
       expect(schema).toContain('"env"')
-      expect(schema).not.toContain('"autoBind"')
-      expect(schema).not.toContain('"bind"')
     })
 
-    test('tool_install rejects non-Composio names and suggests mcp_install', async () => {
+    test('connect with explicit source="mcp" rejects non-catalog names', async () => {
       const ctx = createCtx({ mcpClientManager: new MCPClientManager() })
-      const result = await exec(ctx, 'tool_install', { name: 'postgres' })
-      expect(result.error).toContain('not a managed integration')
-      expect(result.error).toContain('mcp_install')
-    })
-
-    test('mcp_install rejects non-catalog names and suggests tool_install', async () => {
-      const ctx = createCtx({ mcpClientManager: new MCPClientManager() })
-      const result = await exec(ctx, 'mcp_install', { name: 'totally-unknown-server' })
+      const result = await exec(ctx, 'connect', { name: 'totally-unknown-server', source: 'mcp' })
       expect(result.error).toContain('not in the MCP catalog')
-      expect(result.error).toContain('tool_install')
     })
 
-    test('mcp_search returns catalog results with mcp_install commands', async () => {
-      const result = await exec(createCtx(), 'mcp_search', { query: 'sqlite' })
+    test('search_integrations returns mcp results tagged source=mcp with connect installCommand', async () => {
+      const result = await exec(createCtx(), 'search_integrations', { query: 'sqlite', source: 'mcp' })
       expect(result.results.length).toBeGreaterThan(0)
       const first = result.results[0]
-      expect(first.source).toBe('catalog')
-      expect(first.installCommand).toContain('mcp_install')
-      expect(first.installCommand).not.toContain('tool_install')
+      expect(first.source).toBe('mcp')
+      expect(first.installCommand).toContain('connect(')
+      expect(first.installCommand).toContain('source: "mcp"')
     })
 
-    test('tool_search without Composio returns empty and suggests mcp_search', async () => {
-      const result = await exec(createCtx(), 'tool_search', { query: 'postgres' })
+    test('search_integrations without Composio still returns no managed results gracefully', async () => {
+      const result = await exec(createCtx(), 'search_integrations', { query: 'somethingthatdoesnotexist', source: 'managed' })
       expect(result.results).toHaveLength(0)
-      expect(result.message).toContain('mcp_search')
     })
 
-    test('mcp_uninstall returns error for non-running server', async () => {
+    test('disconnect returns error for non-running integration', async () => {
       const ctx = createCtx({ mcpClientManager: new MCPClientManager() })
-      const result = await exec(ctx, 'mcp_uninstall', { name: 'postgres' })
+      const result = await exec(ctx, 'disconnect', { name: 'slack' })
       expect(result.error).toContain('not running')
     })
 
-    test('tool_uninstall returns error for non-running integration', async () => {
-      const ctx = createCtx({ mcpClientManager: new MCPClientManager() })
-      const result = await exec(ctx, 'tool_uninstall', { name: 'slack' })
-      expect(result.error).toContain('not running')
-    })
-
-    test('tool labels distinguish integrations from MCP servers', () => {
+    test('unified tools have user-friendly labels', () => {
       const tools = createTools(createCtx())
-      const mcpSearch = tools.find(t => t.name === 'mcp_search')!
-      const mcpInstall = tools.find(t => t.name === 'mcp_install')!
-      const mcpUninstall = tools.find(t => t.name === 'mcp_uninstall')!
+      const search = tools.find(t => t.name === 'search_integrations')!
+      const connect = tools.find(t => t.name === 'connect')!
+      const disconnect = tools.find(t => t.name === 'disconnect')!
 
-      expect(mcpSearch.label).toContain('MCP')
-      expect(mcpInstall.label).toContain('MCP')
-      expect(mcpUninstall.label).toContain('MCP')
-
-      // tool_* labels should NOT contain "MCP" — they cover integrations/skills
-      const toolSearch = tools.find(t => t.name === 'tool_search')!
-      const toolInstall = tools.find(t => t.name === 'tool_install')!
-      const toolUninstall = tools.find(t => t.name === 'tool_uninstall')!
-
-      expect(toolSearch.label).not.toContain('MCP')
-      expect(toolInstall.label).not.toContain('MCP')
-      expect(toolUninstall.label).not.toContain('MCP')
+      expect(search.label).toMatch(/integrations|search/i)
+      expect(connect.label).toMatch(/connect/i)
+      expect(disconnect.label).toMatch(/disconnect/i)
     })
   })
 

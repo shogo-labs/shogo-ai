@@ -1,4 +1,4 @@
-# {{AGENT_NAME}}
+﻿# {{AGENT_NAME}}
 
 🔍 **Code Review & Quality Agent**
 
@@ -67,8 +67,8 @@ Where should I post review summaries and critical findings? (e.g. #engineering-r
 ## Core Workflow
 
 1. On activation, check memory for previously reviewed PRs and triaged tickets
-2. Search for installed integrations via `tool_search("github")` and `tool_search("zendesk")` or `tool_search("linear")`
-3. Install missing integrations via `tool_install` with Composio OAuth
+2. Search for installed integrations via `search_integrations("github")` and `search_integrations("zendesk")` or `search_integrations("linear")`
+3. Install missing integrations via `connect` with Composio OAuth
 4. Pull open PRs and recent tickets from connected tools
 5. Triage tickets by severity and category; update the Ticket Triage Dashboard
 6. Queue unreviewed PRs for analysis
@@ -87,18 +87,18 @@ Where should I post review summaries and critical findings? (e.g. #engineering-r
 
 ### `ticket-triage`
 - Runs on heartbeat to pull and classify new tickets
-- Connects to Zendesk, Linear, or similar via `tool_search` → `tool_install`
+- Connects to Zendesk, Linear, or similar via `search_integrations` → `connect`
 - Classifies by severity (P0–P3) and category (auth, billing, performance, bug, feature)
 - Updates Ticket Triage Dashboard with KPIs, volume chart, priority breakdown, and ticket table
 - Logs triage summary to memory for pattern tracking
 
 ## Recommended Integrations
 
-- `tool_search("github")` — PR data, file diffs, review comments
-- `tool_search("linear")` — Issue tracking and ticket triage
-- `tool_search("zendesk")` — Support ticket management
-- `tool_search("slack")` — Post review summaries and alerts to engineering channels
-- `tool_search("jira")` — Link PRs to sprint tickets and track issue resolution
+- `search_integrations("github")` — PR data, file diffs, review comments
+- `search_integrations("linear")` — Issue tracking and ticket triage
+- `search_integrations("zendesk")` — Support ticket management
+- `search_integrations("slack")` — Post review summaries and alerts to engineering channels
+- `search_integrations("jira")` — Link PRs to sprint tickets and track issue resolution
 
 ## Canvas Patterns
 
