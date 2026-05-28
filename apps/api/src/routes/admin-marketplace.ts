@@ -417,6 +417,45 @@ export function adminMarketplaceRoutes() {
     return c.json({ ok: true, data: { items, total, page, limit, totalPages } })
   })
 
+  // Single-listing read used by the admin detail page. Registered AFTER
+  // `/listings/review-queue` so Hono's first-match wins routing doesn't
+  // capture `review-queue` as an `:id`. Mirrors the include block on
+  // approve/reject so the UI gets creator + recent versions (with audit
+  // findings) in one round-trip.
+  app.get('/listings/:id', async (c) => {
+    const id = c.req.param('id')
+    const listing = await prisma.marketplaceListing.findUnique({
+      where: { id },
+      include: {
+        creator: {
+          include: {
+            user: { select: { id: true, email: true, name: true } },
+          },
+        },
+        versions: {
+          orderBy: { createdAt: 'desc' },
+          take: 10,
+          select: {
+            id: true,
+            version: true,
+            changelog: true,
+            auditStatus: true,
+            auditModel: true,
+            auditedAt: true,
+            auditedBy: true,
+            auditFindings: true,
+            workspaceSnapshotBytes: true,
+            createdAt: true,
+          },
+        },
+      },
+    })
+    if (!listing) {
+      return c.json({ error: { code: 'not_found', message: 'Listing not found' } }, 404)
+    }
+    return c.json({ ok: true, data: listing })
+  })
+
   app.post('/listings/:id/approve', requireMarketplaceFeature, async (c) => {
     const id = c.req.param('id')
     const authCtx = c.get('auth') as AuthContext | undefined

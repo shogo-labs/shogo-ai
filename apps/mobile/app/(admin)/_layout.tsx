@@ -33,6 +33,7 @@ import {
   ScrollText,
   Gift,
   Heart,
+  Store,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
@@ -47,6 +48,7 @@ const BASE_NAV_ITEMS = [
   { href: '/(admin)/users', icon: Users, label: 'Users' },
   { href: '/(admin)/workspaces', icon: Building2, label: 'Workspaces' },
   { href: '/(admin)/grants', icon: Gift, label: 'Credit grants' },
+  { href: '/(admin)/marketplace', icon: Store, label: 'Marketplace' },
   { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
   { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },
   { href: '/(admin)/infrastructure', icon: Server, label: 'Infrastructure' },
@@ -350,6 +352,10 @@ function getPageTitle(pathname: string): string {
   if (pathname.includes('workspaces')) return 'Workspaces'
   if (pathname.startsWith('/grants/')) return 'Grant Detail'
   if (pathname.includes('grants')) return 'Credit grants'
+  if (pathname.startsWith('/marketplace/listing/')) return 'Listing Detail'
+  if (pathname.startsWith('/marketplace/payouts')) return 'Marketplace Payouts'
+  if (pathname.startsWith('/marketplace/listings')) return 'Marketplace Listings'
+  if (pathname.startsWith('/marketplace')) return 'Marketplace Review'
   if (pathname.startsWith('/projects/')) return 'Project Detail'
   if (pathname.includes('projects')) return 'Projects'
   if (pathname.includes('analytics')) return 'Analytics'
