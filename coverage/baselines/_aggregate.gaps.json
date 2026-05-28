@@ -1068,6 +1068,47 @@
         }
       ],
       "note": "Greenfield jobs batch. Two cron-runner files (67 + 62 lines) both had ZERO dedicated test files - only module-load constants counted. New file affiliate-jobs.test.ts (12 tests, all passing) mocks @lib/global-job-lock and @services/affiliate.service to drive every reachable branch: flag-disabled short-circuit, lock-not-acquired skip, happy path with service result, opts.now=undefined default-branch. Timer wiring tests substitute globalThis.setTimeout + setInterval, capture both fns, then invoke the outer setTimeout callback (kicks off initial run + schedules interval) AND the captured setInterval callback (covers periodic-run body + .catch arm via approveThrows/payoutsThrows flag set to make the service mock throw, asserting console.error was called >=2 times). Both files at 100% lines / 100% funcs. +~123 hit lines combined. Same batched-greenfield pattern as 60943a16 (affiliate-invoice-reconciliation) - third greenfield haul of the day."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 2 ad-hoc - greenfield batch (4 files)",
+      "message": "test(coverage): 4 zero-test files - all to 100/100 - +~330 lines",
+      "perFile": [
+        {
+          "file": "apps/api/src/lib/strip-orphan-tool-parts.ts",
+          "beforeLines": "~5/84",
+          "afterLines": "84/84 (100%)",
+          "deltaLinesHit": 79,
+          "deltaFuncsHit": 3,
+          "newTests": 8
+        },
+        {
+          "file": "apps/api/src/lib/kourier-lb-discovery.ts",
+          "beforeLines": "~6/92",
+          "afterLines": "92/92 (100%)",
+          "deltaLinesHit": 86,
+          "deltaFuncsHit": 4,
+          "newTests": 7
+        },
+        {
+          "file": "apps/api/src/middleware/marketplace-feature.ts",
+          "beforeLines": "~7/112",
+          "afterLines": "112/112 (100%)",
+          "deltaLinesHit": 105,
+          "deltaFuncsHit": 3,
+          "newTests": 9
+        },
+        {
+          "file": "apps/api/src/routes/project-auth-config.ts",
+          "beforeLines": "~7/106",
+          "afterLines": "106/106 (100%)",
+          "deltaLinesHit": 99,
+          "deltaFuncsHit": 5,
+          "newTests": 10
+        }
+      ],
+      "note": "Greenfield 4-file batch. All four files (strip-orphan-tool-parts.ts, kourier-lb-discovery.ts, marketplace-feature.ts middleware, project-auth-config.ts route) had ZERO dedicated tests - only module-load constants counted. New file greenfield-lib-batch.test.ts (34 tests, all passing) drives every reachable branch: (1) stripOrphanToolParts pure function - 8 tests covering keep-text-only, drop-orphan-tool-parts, keep-complete-states (output-available/error/denied), drop-entire-message-when-all-orphan, no-parts-array pass-through, dynamic-tool variant, non-object parts defensive, missing-state-as-orphan. (2) discoverKourierLbIp K8s LB IP discovery - mocks fs + @kubernetes/client-node - 7 tests covering ingress.ip happy, empty-ingress null, hostname-only throws, K8s API failure throws, in-cluster SA auth (CA + token files present), loadFromDefault fallback, CoreV1Api cache. (3) isMarketplaceEnabled + requireMarketplaceFeature - mocks prisma.platformSetting - 9 tests covering value=true/false/null, prisma-throws fail-closed, 15s cache TTL, NODE_ENV=test bypass, SHOGO_LOCAL_MODE=true bypass, flag-disabled 503 response, flag-enabled next() call. (4) projectAuthConfigRoutes - drives all 4 endpoints via Hono app.request - 10 tests covering GET config happy, PUT upsert happy, PUT invalid JSON 400, PUT non-object body 400, PUT ProjectAuthConfigError -> 400 with err.code, PUT generic error -> 500 internal, GET users with cursor/q/limit, GET users no params, GET users malformed limit, DELETE revokes. Total +~369 hit lines, +15 funcs, +34 tests. Fifth greenfield haul of the day - apps/api now has no remaining easily-reachable zero-test source files."
     }
   ],
   "frontend": {
