@@ -994,7 +994,7 @@
       "note": "Greenfield service test. project-auth-config.service.ts had ZERO test files and was 4.74% covered in the gaps baseline (only the module-load top-level constants). New file apps/api/src/__tests__/project-auth-config.service.test.ts (37 tests, all passing) drives every exported function via an in-memory prisma double with 8 tables (authConfigs/signIns/projects/users/members/invitations/sessions). Covers: getConfig (no-row default, stored verbatim, invalid-mode coercion, non-array allowedEmails coercion), upsertConfig (all 6 happy paths + 10 validation errors including ProjectAuthConfigError shape verification + dedupe/lowercase for emails and domains + @-prefix stripping for domains + update-preserves-prior), evaluateAllowlist (anyone / custom-email-hit / custom-domain-hit / custom-miss / workspace-no-project / workspace-member-hit / workspace-no-membership / pending-invitation-hit / expired-invitation-miss / malformed-email), recordSignIn (first vs increment), listUsers (empty / full / pagination / limit-clamp / case-insensitive query filter / member+allowlist flag math), revokeUser (delete signin + sessions, scoping to user id, idempotency). 100% lines / 100% funcs after one session."
     },
     {
-      "sha": "f6162ad3",
+      "sha": "2a17fddc",
       "date": "2026-05-28",
       "wave": "Wave 2 cleanup - analytics.service.ts Postgres branches",
       "message": "test(coverage): analytics.service.ts - cover Postgres dialect branches via SHOGO_LOCAL_MODE-unset import - 98.92 to 100% lines",
