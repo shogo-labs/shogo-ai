@@ -698,6 +698,23 @@
         "functions": "5778/7208 (80.16%)"
       },
       "note": "One source commit since last Sync (b61780dc, +28 standalone lines in voice.ts). Full apps/api isolated re-run captures +33 lines (+5 indirect from new test imports). README badge bumped 82.12 -> 82.16; baseline aggregate JSON files were left stale by the prior commit (4baf00f3 + 58cc5485) due to a python heredoc syntax error. This commit corrects them."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 1 \u2014 Crush Giant (gateway-tools.ts)",
+      "message": "test(coverage): gateway-tools.ts skill dispatcher \u2014 77.47% to 80.09% lines",
+      "perFile": [
+        {
+          "file": "packages/agent-runtime/src/gateway-tools.ts",
+          "beforeLines": "3883/5012 (77.47%)",
+          "afterLines": "4015/5013 (80.09%)",
+          "deltaLinesHit": 132,
+          "deltaFuncsHit": 0,
+          "newTests": 24
+        }
+      ],
+      "note": "New test file gateway-tools.skill-dispatcher.test.ts (24 tests, all passing) covers the createSkillTool dispatcher (L4490-4720) across all four actions: search (4 tests), install (3 tests), run_script (6 tests), invoke (11 tests including setup branch, ARGUMENTS substitution, fork/inline modes). Mocks ../skills, ../sandbox-exec, ../subagent at module level. Honest note: v4 plan target is +200 lines/session; shipped +132. The remaining ~100 lines to hit the threshold live in clusters that need playwright/cdp mocks (L2487 screencast, L2708 DOM accessibility), Redis mock (L1977 getWebCacheRedis), or composio mock (L3324 toolkit copy) \u2014 separate test files in Session 2 of this Giant. agent-runtime package: 75.91% to 76.37% (+0.46pp)."
     }
   ],
   "frontend": {
