@@ -5,7 +5,7 @@
  *
  * Client and React hooks for executing installed integration tools
  * (Composio, MCP servers, etc.) from workspace code. Tools must first
- * be installed via the agent's `tool_install` command.
+ * be installed via the agent's `connect` command.
  *
  * The client defaults to same-origin requests so canvas apps served
  * from the agent runtime need zero configuration.

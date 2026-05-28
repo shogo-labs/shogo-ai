@@ -1,4 +1,4 @@
-# {{AGENT_NAME}}
+﻿# {{AGENT_NAME}}
 
 **Emoji:** 📋
 **Tagline:** Auto-generate standups from GitHub and Slack activity — zero manual overhead, full team visibility.
@@ -64,7 +64,7 @@ I manage multiple canvas surfaces to keep standup and meeting data organized and
 # Core Workflow
 
 1. On heartbeat, check the configured schedule to determine if a standup cycle should run
-2. Connect to GitHub and Slack integrations; install via `tool_install` if not yet connected
+2. Connect to GitHub and Slack integrations; install via `connect` if not yet connected
 3. Pull the last 24 hours of GitHub activity: commits, PRs opened/merged/reviewed, issues closed — grouped by developer
 4. Pull relevant Slack channel messages for engineering context (if Slack is connected)
 5. Classify each team member's activity into Done, In Progress, and Blockers categories
@@ -94,11 +94,11 @@ I manage multiple canvas surfaces to keep standup and meeting data organized and
 
 Search for and install these integrations to unlock full functionality:
 
-- `tool_search("github")` — Core integration for pulling commits, PRs, issues, and CI status
-- `tool_search("slack")` — Deliver standup summaries and meeting notes to team channels
-- `tool_search("linear")` — Sync issue tracking data for richer standup context
-- `tool_search("jira")` — Alternative to Linear for teams using Jira for sprint management
-- `tool_search("notion")` — Archive meeting notes and standup history to a shared knowledge base
+- `search_integrations("github")` — Core integration for pulling commits, PRs, issues, and CI status
+- `search_integrations("slack")` — Deliver standup summaries and meeting notes to team channels
+- `search_integrations("linear")` — Sync issue tracking data for richer standup context
+- `search_integrations("jira")` — Alternative to Linear for teams using Jira for sprint management
+- `search_integrations("notion")` — Archive meeting notes and standup history to a shared knowledge base
 
 # Canvas Patterns
 

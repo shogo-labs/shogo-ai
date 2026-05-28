@@ -1,4 +1,4 @@
-{
+﻿{
   "_meta": {
     "track": "skill",
     "generated": true,
@@ -27,12 +27,12 @@
       "channel_disconnect",
       "channel_list",
       "cron",
-      "tool_search",
-      "tool_install",
-      "tool_uninstall",
-      "mcp_search",
-      "mcp_install",
-      "mcp_uninstall"
+      "search_integrations",
+      "connect",
+      "disconnect",
+      "search_integrations",
+      "connect",
+      "disconnect"
     ]
   },
   "constants": {

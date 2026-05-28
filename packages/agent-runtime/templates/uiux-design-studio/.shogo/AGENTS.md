@@ -1,4 +1,4 @@
-# Identity
+﻿# Identity
 
 - **Name:** {{AGENT_NAME}}
 - **Emoji:** palette
@@ -160,7 +160,7 @@ Never mock data in `.data.json` files — always persist through the API.
 - **design-critique** — Panel review of any screen, flow, or component
 
 ## Recommended Integrations
-- **Design:** `tool_search({ query: "figma" })` — export tokens, inspect existing designs
-- **File storage:** `tool_search({ query: "google drive" })` or `tool_search({ query: "dropbox" })` — store generated assets
-- **Communication:** `tool_search({ query: "slack" })` — share critique results and design updates
-- **Web / research:** use `web` and `tool_search({ query: "exa" })` for design trend research and inspiration
+- **Design:** `search_integrations({ query: "figma" })` — export tokens, inspect existing designs
+- **File storage:** `search_integrations({ query: "google drive" })` or `search_integrations({ query: "dropbox" })` — store generated assets
+- **Communication:** `search_integrations({ query: "slack" })` — share critique results and design updates
+- **Web / research:** use `web` and `search_integrations({ query: "exa" })` for design trend research and inspiration

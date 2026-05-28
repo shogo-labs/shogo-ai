@@ -190,7 +190,7 @@ describe('notify_user_error', () => {
   test('returns acknowledged shape so the agent can continue', async () => {
     const result = await call(createCtx(), 'notify_user_error', {
       title: 'GitHub Auth Error',
-      message: 'Token expired. Reconnect via tool_install.',
+      message: 'Token expired. Reconnect via connect.',
     })
     expect(result.acknowledged).toBe(true)
   })
@@ -559,41 +559,38 @@ describe('skill', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Tool / MCP discovery — error paths we can reach without a running Composio
-// or live MCP servers.
+// Unified integrations surface — error paths we can reach without a running
+// Composio session or live MCP servers.
 // ---------------------------------------------------------------------------
 
 describe('discovery error paths', () => {
-  test('mcp_install rejects unknown server names with a catalog suggestion', async () => {
-    const result = await call(createCtx(), 'mcp_install', { name: 'not-a-real-server-xyz' })
+  test('connect rejects unknown names with no Composio match', async () => {
+    const result = await call(createCtx(), 'connect', { name: 'not-a-real-server-xyz' })
     expect(result.error || result.message).toBeTruthy()
   })
 
-  test('tool_install rejects unknown toolkit slugs and suggests mcp_install', async () => {
-    const result = await call(createCtx(), 'tool_install', { name: 'not-a-real-toolkit-xyz' })
+  test('connect with explicit source="mcp" rejects names not in the catalog', async () => {
+    const result = await call(createCtx(), 'connect', { name: 'not-a-real-toolkit-xyz', source: 'mcp' })
     expect(typeof result).toBe('object')
+    expect(result.error).toBeDefined()
   })
 
-  test('mcp_uninstall returns an error for a server that is not running', async () => {
-    const result = await call(createCtx(), 'mcp_uninstall', { name: 'github' })
+  test('disconnect returns an error for a server that is not running', async () => {
+    const result = await call(createCtx(), 'disconnect', { name: 'github' })
     expect(typeof result.error).toBe('string')
   })
 
-  test('tool_uninstall returns an error for an integration that is not running', async () => {
-    const result = await call(createCtx(), 'tool_uninstall', { name: 'github' })
-    expect(typeof result.error).toBe('string')
-  })
-
-  test('mcp_search returns the catalog entries shape', async () => {
-    const result = await call(createCtx(), 'mcp_search', { query: 'github' })
+  test('search_integrations returns the catalog entries shape for mcp source', async () => {
+    const result = await call(createCtx(), 'search_integrations', { query: 'github', source: 'mcp' })
     // The catalog ships at least one github entry, but at minimum the
     // result must contain a results array.
     expect(Array.isArray(result.results) || typeof result.message === 'string').toBe(true)
   })
 
-  test('tool_search without Composio enabled returns an empty results message', async () => {
-    const result = await call(createCtx(), 'tool_search', { query: 'github' })
+  test('search_integrations without Composio enabled returns an empty managed-only result gracefully', async () => {
+    const result = await call(createCtx(), 'search_integrations', { query: 'somethingnonexistent', source: 'managed' })
     expect(typeof result).toBe('object')
+    expect(result.results).toEqual([])
   })
 })
 

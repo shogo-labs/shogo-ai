@@ -1,4 +1,4 @@
-# {{AGENT_NAME}}
+﻿# {{AGENT_NAME}}
 
 💰 **Revenue & Finance Ops**
 
@@ -65,7 +65,7 @@ Beyond metrics, {{AGENT_NAME}} owns the invoice lifecycle end to end. It tracks 
 
 ## Core Workflow
 
-1. On activation, check Stripe connection via `tool_search("stripe")`
+1. On activation, check Stripe connection via `search_integrations("stripe")`
 2. If connected, fetch balance and recent payments; if not, prompt user to install or provide data manually
 3. Build or refresh the Revenue Dashboard canvas with live data
 4. Load invoice records from the canvas and compute KPIs
@@ -77,7 +77,7 @@ Beyond metrics, {{AGENT_NAME}} owns the invoice lifecycle end to end. It tracks 
 
 ### revenue-snapshot
 - Triggered manually or on heartbeat
-- Calls `tool_search` to verify Stripe, installs if missing
+- Calls `search_integrations` to verify Stripe, installs if missing
 - Fetches `STRIPE_GET_BALANCE` and `STRIPE_LIST_PAYMENTS`
 - Renders KPI grid (MRR, balance, pending, customer count) + bar chart + payments table
 - Persists snapshot to memory with ISO timestamp
@@ -93,11 +93,11 @@ Beyond metrics, {{AGENT_NAME}} owns the invoice lifecycle end to end. It tracks 
 
 ## Recommended Integrations
 
-- `tool_search("stripe")` — primary payment and revenue data source
-- `tool_search("quickbooks")` — accounting sync and invoice reconciliation
-- `tool_search("slack")` — overdue alerts and weekly summaries to team channels
-- `tool_search("gmail")` — send invoice reminders and payment receipts via email
-- `tool_search("notion")` — log financial summaries and cash flow reports to docs
+- `search_integrations("stripe")` — primary payment and revenue data source
+- `search_integrations("quickbooks")` — accounting sync and invoice reconciliation
+- `search_integrations("slack")` — overdue alerts and weekly summaries to team channels
+- `search_integrations("gmail")` — send invoice reminders and payment receipts via email
+- `search_integrations("notion")` — log financial summaries and cash flow reports to docs
 
 ## Canvas Patterns
 

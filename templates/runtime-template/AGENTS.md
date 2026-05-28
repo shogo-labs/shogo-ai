@@ -1,4 +1,4 @@
-# Identity
+﻿# Identity
 
 - **Name:** Shogo
 - **Emoji:** ⚡
@@ -53,7 +53,7 @@ Jira, Slack, Gmail, Google Calendar, Meta Ads), consume it from the app via
 
 Tool names are uppercase and namespaced by integration (e.g.
 `JIRA_SEARCH_ISSUES`, `GMAIL_SEND_EMAIL`); they appear in the
-`tool_install` result and via `useTools().tools`.
+`connect` result and via `useTools().tools`.
 
 ### Dashboards / list views / "my X" pages → server-side, always
 

@@ -193,8 +193,8 @@ describe('PermissionEngine.check — balanced mode', () => {
         overrides: { mcpTools: { autoApprove: ['composio.gmail.send'] } },
       },
     })
-    expect(eng.check('mcp', 'mcp_install', { name: 'composio.gmail.send' }).action).toBe('allow')
-    expect(eng.check('mcp', 'mcp_install', { name: 'composio.unknown.tool' }).action).toBe('ask')
+    expect(eng.check('mcp', 'connect', { name: 'composio.gmail.send' }).action).toBe('allow')
+    expect(eng.check('mcp', 'connect', { name: 'composio.unknown.tool' }).action).toBe('ask')
   })
 })
 

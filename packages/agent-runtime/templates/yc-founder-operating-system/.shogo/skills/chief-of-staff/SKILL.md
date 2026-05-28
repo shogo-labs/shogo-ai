@@ -1,9 +1,9 @@
----
+﻿---
 name: chief-of-staff
 version: 1.0.0
 description: Triage inbox, calendar, and requests for a founder/CEO; route work to the right reviewer and keep the decision log
 trigger: "triage|chief of staff|route|delegate|inbox|calendar|decide|decision log"
-tools: [tool_search, tool_install, edit_file, read_file, shell_exec, memory_write, agent_spawn]
+tools: [search_integrations, connect, edit_file, read_file, shell_exec, memory_write, agent_spawn]
 ---
 
 # Chief of Staff

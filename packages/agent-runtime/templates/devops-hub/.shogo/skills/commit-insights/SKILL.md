@@ -1,17 +1,17 @@
----
+﻿---
 name: commit-insights
 version: 1.0.0
 description: Analyze git commit patterns, PR cycle times, code churn, and team velocity for engineering managers
 trigger: "commit insights|engineering metrics|team velocity|pr cycle time|code churn|engineering health|team stats"
-tools: [tool_search, tool_install, memory_read, memory_write, send_message, web]
+tools: [search_integrations, connect, memory_read, memory_write, send_message, web]
 ---
 
 # Commit Insights
 
 Analyze git activity and produce engineering health metrics:
 
-1. **Connect** — Check if GitHub integration is installed via `tool_search`. If not:
-   - `tool_install({ name: "github" })` to connect via Composio OAuth
+1. **Connect** — Check if GitHub integration is installed via `search_integrations`. If not:
+   - `connect({ name: "github" })` to connect via Composio OAuth
 2. **Configure** — Read tracked repos and team from memory (key: `git_insights_config`)
    - Repos to analyze, team member GitHub usernames
    - If not configured, ask the user which repos/team to track

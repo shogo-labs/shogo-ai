@@ -1,17 +1,17 @@
----
+﻿---
 name: slack-forward
 version: 1.0.0
 description: Format and forward email alerts to configured Slack channels with rich formatting
 trigger: "forward to slack|slack alert|notify slack|send to slack|post to slack"
-tools: [tool_search, tool_install, memory_read, memory_write, send_message]
+tools: [search_integrations, connect, memory_read, memory_write, send_message]
 ---
 
 # Slack Forward
 
 Format and deliver email alerts to Slack:
 
-1. **Connect** — Check if Slack integration is installed via `tool_search`. If not:
-   - `tool_install({ name: "slack" })` to connect via Composio OAuth
+1. **Connect** — Check if Slack integration is installed via `search_integrations`. If not:
+   - `connect({ name: "slack" })` to connect via Composio OAuth
 2. **Load config** — Read channel mapping from memory (key: `slack_alert_channels`)
    - Default channel for general alerts
    - Per-sender overrides (e.g., billing@vendor.com -> #finance)

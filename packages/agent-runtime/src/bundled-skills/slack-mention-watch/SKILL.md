@@ -1,17 +1,17 @@
----
+﻿---
 name: slack-mention-watch
 version: 1.0.0
 description: Monitor Slack for @mentions, keywords, and important channel activity
 trigger: "check mentions|slack mentions|who mentioned me|keyword alert|monitor slack|slack watch"
-tools: [tool_search, tool_install, memory_read, write_file, send_message]
+tools: [search_integrations, connect, memory_read, write_file, send_message]
 ---
 
 # Slack Mention Watch
 
 Monitor Slack for mentions, keywords, and important activity:
 
-1. **Connect** — Check if Slack integration is installed via `tool_search`. If not:
-   - `tool_install({ name: "slack" })` to connect via Composio OAuth
+1. **Connect** — Check if Slack integration is installed via `search_integrations`. If not:
+   - `connect({ name: "slack" })` to connect via Composio OAuth
 2. **Load rules** — Read watch rules from memory (key: `slack_watch_rules`)
    - @mention detection (always on by default)
    - Keyword patterns (e.g., "production down", "outage", "deploy")

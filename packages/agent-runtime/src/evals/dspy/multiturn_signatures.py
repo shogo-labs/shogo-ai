@@ -1,4 +1,4 @@
-"""Multi-turn conversation planning track DSPy signatures."""
+﻿"""Multi-turn conversation planning track DSPy signatures."""
 
 import dspy
 
@@ -19,7 +19,7 @@ class ConversationPlanner(dspy.Signature):
     available_tools: str = dspy.InputField(
         desc="Tool names and descriptions: exec, read_file, write_file, edit_file, web, "
              "memory_read, memory_search, browser, send_message, cron, "
-             "tool_search, tool_install, mcp_search, mcp_install"
+             "search_integrations, connect, disconnect"
     )
 
     planned_tool_sequence: str = dspy.OutputField(

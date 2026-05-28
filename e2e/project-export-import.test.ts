@@ -185,7 +185,7 @@ describe('Project Export/Import E2E', () => {
 
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toBe('application/zip')
-    expect(res.headers.get('content-disposition')).toContain('.shogo-project')
+    expect(res.headers.get('content-disposition')).toMatch(/\.shogo(?!-project)/)
 
     const buf = new Uint8Array(await res.arrayBuffer())
     expect(buf.length).toBeGreaterThan(0)

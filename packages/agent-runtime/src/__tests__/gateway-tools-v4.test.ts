@@ -135,9 +135,9 @@ describe('resolveToolNames', () => {
     expect(r).toEqual(['exec', 'web', 'memory_read'])
   })
 
-  test('mcp_-prefixed refs pass through even when not in ALL_TOOL_NAMES', () => {
-    const r = resolveToolNames(['mcp_install', 'mcp_some_unknown_tool'])
-    expect(r).toEqual(expect.arrayContaining(['mcp_install', 'mcp_some_unknown_tool']))
+  test('mcp_-prefixed dynamic tool names pass through even when not in ALL_TOOL_NAMES', () => {
+    const r = resolveToolNames(['mcp_postgres_query', 'mcp_some_unknown_tool'])
+    expect(r).toEqual(expect.arrayContaining(['mcp_postgres_query', 'mcp_some_unknown_tool']))
   })
 
   test('drops unknown non-mcp_ refs silently', () => {

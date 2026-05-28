@@ -1,19 +1,19 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+﻿// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Composio Integration Eval Test Cases
  *
  * Tests the agent's ability to discover, install, and use Composio-backed
- * integrations (Google Calendar, Gmail, GitHub, etc.) via the tool_search →
- * tool_install → direct toolkit tool calls flow.
+ * integrations (Google Calendar, Gmail, GitHub, etc.) via the search_integrations →
+ * connect → direct toolkit tool calls flow.
  *
- * tool_install now registers individual proxy tools (e.g. GOOGLECALENDAR_LIST_EVENTS)
+ * connect now registers individual proxy tools (e.g. GOOGLECALENDAR_LIST_EVENTS)
  * and handles auth automatically. The agent calls tools directly, not via meta-tools.
  *
  * Also tests:
  * - Composio preference over local/npm MCP servers
  * - Skill-based shortcutting (skip discovery when skill exists)
- * - Auth flow handling (tool_install returns authUrl)
+ * - Auth flow handling (connect returns authUrl)
  * - Write operations (sending emails)
  */
 
@@ -61,21 +61,21 @@ export const COMPOSIO_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'searched-for-calendar',
-        description: 'Used tool_search to find Google Calendar',
+        description: 'Used search_integrations to find Google Calendar',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
       },
       {
         id: 'installed-composio',
-        description: 'Used tool_install to connect Composio integration',
+        description: 'Used connect to connect Composio integration',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'install-no-command',
-        description: 'tool_install called without command/args (Composio needs only name)',
+        description: 'connect called without command/args (Composio needs only name)',
         points: 10,
         phase: 'execution',
         validate: (r) => installCalledWithoutCommand(r),
@@ -123,21 +123,21 @@ export const COMPOSIO_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'searched-for-github',
-        description: 'Used tool_search to find GitHub',
+        description: 'Used search_integrations to find GitHub',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
       },
       {
         id: 'installed-composio',
-        description: 'Used tool_install (for Composio, not npm)',
+        description: 'Used connect (for Composio, not npm)',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'install-composio-name',
-        description: 'tool_install used Composio toolkit name (no command/args)',
+        description: 'connect used Composio toolkit name (no command/args)',
         points: 15,
         phase: 'execution',
         validate: (r) => installCalledWithoutCommand(r),
@@ -166,7 +166,7 @@ export const COMPOSIO_EVALS: AgentEval[] = [
     ],
     antiPatterns: [
       'Agent installed the npm @modelcontextprotocol/server-github instead of using Composio',
-      'Agent passed command or args to tool_install for a Composio integration',
+      'Agent passed command or args to connect for a Composio integration',
     ],
   },
 
@@ -190,15 +190,15 @@ name: google-calendar
 version: 1.0.0
 description: List Google Calendar events for a specified time range.
 trigger: "google calendar|calendar events|my meetings|my schedule|upcoming events|weekly calendar|show my calendar|list meetings|meetings|calendar"
-tools: [GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS, GOOGLECALENDAR_CREATE_EVENT, tool_install]
+tools: [GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS, GOOGLECALENDAR_CREATE_EVENT, connect]
 ---
 # Google Calendar
 
-This skill provides everything needed — do NOT call tool_search.
+This skill provides everything needed — do NOT call search_integrations.
 
 ## Setup
-1. Ensure Composio is connected: tool_install({ name: "googlecalendar" })
-   (Auth is checked automatically by tool_install)
+1. Ensure Composio is connected: connect({ name: "googlecalendar" })
+   (Auth is checked automatically by connect)
 
 ## Available Tools
 - GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS — List events across all calendars
@@ -220,10 +220,10 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
       },
       {
         id: 'skipped-search',
-        description: 'Did NOT use tool_search at all (skill provides the info)',
+        description: 'Did NOT use search_integrations at all (skill provides the info)',
         points: 25,
         phase: 'execution',
-        validate: (r) => neverUsedTool(r, 'tool_search') && !delegatedTo(r, 'integration'),
+        validate: (r) => neverUsedTool(r, 'search_integrations') && !delegatedTo(r, 'integration'),
       },
       {
         id: 'fewer-tool-calls',
@@ -241,10 +241,10 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
       },
       {
         id: 'used-install',
-        description: 'Still called tool_install to ensure Composio is connected',
+        description: 'Still called connect to ensure Composio is connected',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedToolAnywhere(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
     ],
     antiPatterns: [
@@ -254,7 +254,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
 
   // =========================================================================
   // Case 4: Auth flow — not yet connected
-  // Level 2 | tool_install returns authStatus: 'needs_auth' + authUrl → agent shows URL
+  // Level 2 | connect returns authStatus: 'needs_auth' + authUrl → agent shows URL
   // =========================================================================
   {
     id: 'composio-auth-flow',
@@ -267,21 +267,21 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
     validationCriteria: [
       {
         id: 'searched-for-gmail',
-        description: 'Used tool_search to find Gmail',
+        description: 'Used search_integrations to find Gmail',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
       },
       {
         id: 'installed-composio',
-        description: 'Used tool_install for Gmail (returns authUrl)',
+        description: 'Used connect for Gmail (returns authUrl)',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'showed-auth-url',
-        description: 'Response includes the auth/connect URL from tool_install',
+        description: 'Response includes the auth/connect URL from connect',
         points: 35,
         phase: 'execution',
         validate: (r) => responseContains(r, 'connect.composio.dev') || responseContains(r, 'authenticate') || responseContains(r, 'authorize') || responseContains(r, 'connect'),
@@ -322,17 +322,17 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
     validationCriteria: [
       {
         id: 'searched-for-gmail',
-        description: 'Used tool_search to find Gmail',
+        description: 'Used search_integrations to find Gmail',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
       },
       {
         id: 'installed-composio',
-        description: 'Used tool_install for Gmail via Composio',
+        description: 'Used connect for Gmail via Composio',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'used-gmail-send',
@@ -387,7 +387,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
         description: 'Completed the full Composio discovery flow',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedToolAnywhere(r, 'tool_search') && usedToolAnywhere(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations') && usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'fetched-prs',
@@ -491,7 +491,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
         description: 'Searched and installed the Airbnb MCP server',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedToolAnywhere(r, 'tool_search') && usedToolAnywhere(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations') && usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'used-airbnb-search',
@@ -551,7 +551,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
           })
           if (!writeCall) return false
           const content = ((writeCall.input as Record<string, any>).content || '') as string
-          return content.includes('airbnb') && content.includes('tool_install')
+          return content.includes('airbnb') && content.includes('connect')
         },
       },
       {
@@ -602,10 +602,10 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
     validationCriteria: [
       {
         id: 'did-not-search',
-        description: 'Did NOT use tool_search (tools already available from context)',
+        description: 'Did NOT use search_integrations (tools already available from context)',
         points: 20,
         phase: 'execution',
-        validate: (r) => neverUsedTool(r, 'tool_search') && !delegatedTo(r, 'integration'),
+        validate: (r) => neverUsedTool(r, 'search_integrations') && !delegatedTo(r, 'integration'),
       },
       {
         id: 'used-create-event',
@@ -657,17 +657,17 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
     validationCriteria: [
       {
         id: 'discovered-integrations',
-        description: 'Used tool_search to find integrations',
+        description: 'Used search_integrations to find integrations',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
       },
       {
         id: 'installed-composio',
-        description: 'Installed Composio via tool_install',
+        description: 'Installed Composio via connect',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'fetched-emails',
@@ -740,12 +740,12 @@ name: google-calendar
 version: 1.0.0
 description: List and manage Google Calendar events.
 trigger: "google calendar|calendar events|my meetings|my schedule|upcoming events"
-tools: [GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS, GOOGLECALENDAR_CREATE_EVENT, tool_install]
+tools: [GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS, GOOGLECALENDAR_CREATE_EVENT, connect]
 ---
 # Google Calendar
 
 ## Setup
-1. tool_install({ name: "googlecalendar" })
+1. connect({ name: "googlecalendar" })
 
 ## Available Tools
 - GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS — List events
@@ -755,17 +755,17 @@ tools: [GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS, GOOGLECALENDAR_CREATE_EVENT, t
     validationCriteria: [
       {
         id: 'did-search',
-        description: 'Used tool_search since no email skill was loaded',
+        description: 'Used search_integrations since no email skill was loaded',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
       },
       {
         id: 'installed-composio',
         description: 'Installed Composio for Gmail',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'used-gmail-send',

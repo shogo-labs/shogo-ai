@@ -1,18 +1,18 @@
----
+﻿---
 name: ticket-triage
 version: 2.0.0
 description: Triage support tickets — categorize by severity, identify patterns, build dashboard
 trigger: "triage tickets|support tickets|ticket status|check tickets|new tickets"
-tools: [tool_search, tool_install, write_file]
+tools: [search_integrations, connect, write_file]
 ---
 
 # Ticket Triage
 
 When triggered, pull and triage support tickets:
 
-1. **Connect** — Search for a ticketing integration via `tool_search`. If none installed:
-   - `tool_search("zendesk")` or `tool_search("linear")` to find options
-   - `tool_install` with the chosen toolkit for Composio OAuth
+1. **Connect** — Search for a ticketing integration via `search_integrations`. If none installed:
+   - `search_integrations("zendesk")` or `search_integrations("linear")` to find options
+   - `connect` with the chosen toolkit for Composio OAuth
 2. **Fetch** — Pull recent tickets via the connected tool (e.g. ZENDESK_LIST_TICKETS)
 3. **Categorize** — Classify each ticket by:
    - Severity: P0 Critical, P1 High, P2 Medium, P3 Low

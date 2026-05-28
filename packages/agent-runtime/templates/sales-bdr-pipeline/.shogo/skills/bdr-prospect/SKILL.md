@@ -1,9 +1,9 @@
----
+﻿---
 name: bdr-prospect
 version: 1.0.0
 description: Research target accounts, enrich leads, draft personalized cold-email openers, and queue Gmail drafts for review
 trigger: "bdr|prospect|cold email|cold outreach|outbound|lead list|enrich|series a|founders"
-tools: [tool_search, tool_install, web, browser, memory_read, memory_write, send_message]
+tools: [search_integrations, connect, web, browser, memory_read, memory_write, send_message]
 ---
 
 # BDR Prospecting
@@ -16,7 +16,7 @@ When triggered, build or extend the BDR Pipeline:
    - Fields: `name`, `role`, `company`, `companySize`, `stage`, `fundingDate`, `location`, `email`, `linkedin`, `recentSignal`, `signalSource`, `opener`, `draftStatus` (none|drafting|queued|sent|replied|bounced), `gmailDraftId`, `notes`
 4. **Enrich rows** — Add leads in batches of 10 by rewriting the canvas file. For each row, capture a real, dated `recentSignal` plus the URL it came from. If you cannot find a real signal, set `draftStatus` to `none` and `notes` to "needs research" rather than inventing one.
 5. **Draft openers** — For each enriched row, write a personalized opener (under 90 words) that opens with the signal, ties it to the user's value prop, and ends with a low-friction CTA. Update the row's `opener` field.
-6. **Connect Gmail** — Check via `tool_search({ query: "gmail" })`. If missing, `tool_install({ name: "gmail" })` so the user can OAuth. Do not proceed to drafts until Gmail is connected.
+6. **Connect Gmail** — Check via `search_integrations({ query: "gmail" })`. If missing, `connect({ name: "gmail" })` so the user can OAuth. Do not proceed to drafts until Gmail is connected.
 7. **Queue Gmail drafts** — Once Gmail is connected, call `GMAIL_CREATE_DRAFT` for each row using the user's sender identity. Save the returned draft id to `gmailDraftId` and set `draftStatus` to `queued`. Never send.
 8. **Persist** — `memory_write` a summary: ICP used, total rows added, drafts queued, anything skipped and why.
 9. **Notify** — `send_message` a one-line summary so the operator knows the batch is ready for review.

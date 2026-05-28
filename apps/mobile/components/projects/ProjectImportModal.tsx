@@ -205,7 +205,7 @@ export function ProjectImportModal({
       await new Promise<void>((resolve) => {
         const input = document.createElement('input')
         input.type = 'file'
-        input.accept = '.shogo-project,.zip'
+        input.accept = '.shogo,.shogo-project,.zip'
         input.style.cssText =
           'position:fixed;left:-9999px;opacity:0;width:1px;height:1px;pointer-events:none'
         document.body.appendChild(input)
@@ -248,7 +248,7 @@ export function ProjectImportModal({
       const blob = new Blob([bytes], { type: 'application/zip' })
       setPendingFile({
         blob,
-        name: asset.name || 'project.shogo-project',
+        name: asset.name || 'project.shogo',
         size: asset.size || bytes.byteLength,
       })
     } catch (err: any) {
@@ -443,7 +443,7 @@ function OptionsStep({
   return (
     <>
       <Text className="text-sm text-typography-600 leading-relaxed">
-        Choose a <Text className="font-mono text-xs">.shogo-project</Text> archive to import into this workspace.
+        Choose a <Text className="font-mono text-xs">.shogo</Text> archive to import into this workspace.
       </Text>
 
       {pendingFile ? (

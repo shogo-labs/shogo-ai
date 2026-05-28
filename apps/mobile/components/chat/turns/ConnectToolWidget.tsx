@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * ConnectToolWidget - OAuth connect button for Composio tool_install results.
+ * ConnectToolWidget - OAuth connect button for Composio connect results.
  *
  * Renders a "Connect" button that opens a popup for OAuth.
  * Starts polling the API immediately after opening the popup (with a short
@@ -356,7 +356,7 @@ export function ConnectToolWidget({
 }
 
 /**
- * Parse a tool_install result to extract auth info.
+ * Parse a connect / tool_install / mcp_install result to extract auth info (handles legacy names for chat history).
  * Handles both object and stringified-JSON results.
  */
 export function parseToolInstallResult(result: unknown): {

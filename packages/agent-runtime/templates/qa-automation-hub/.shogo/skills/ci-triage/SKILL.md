@@ -1,9 +1,9 @@
----
+﻿---
 name: ci-triage
 version: 1.0.0
 description: Classify and triage CI/CD pipeline failures — regressions, flaky tests, infra issues
 trigger: "ci failure|build failed|pipeline broken|flaky test|triage|ci broken|tests failing|build red|pipeline failed"
-tools: [tool_search, tool_install, memory_read, memory_write, shell_exec]
+tools: [search_integrations, connect, memory_read, memory_write, shell_exec]
 ---
 
 # CI Failure Triage
@@ -13,8 +13,8 @@ Systematically diagnose CI/CD failures and classify them by root cause.
 ## Triage Workflow
 
 ### 1. Connect to CI Provider
-- Ensure GitHub integration (or relevant CI tool) is installed via `tool_search`
-- If not connected: `tool_install({ name: "github" })` for GitHub Actions
+- Ensure GitHub integration (or relevant CI tool) is installed via `search_integrations`
+- If not connected: `connect({ name: "github" })` for GitHub Actions
 - For other providers, ask user for access method
 
 ### 2. Pull Failure Logs

@@ -1,9 +1,9 @@
----
+﻿---
 name: design-plan-reviewer
 version: 1.0.0
 description: Review product and UX plans — job-to-be-done clarity, flow quality, information density, craft bar
 trigger: "design plan|ux plan|product plan|pm review|flow review|spec review"
-tools: [web, tool_search, memory_write, edit_file, shell_exec]
+tools: [web, search_integrations, memory_write, edit_file, shell_exec]
 ---
 
 # Design Plan Reviewer

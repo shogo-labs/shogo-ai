@@ -1,9 +1,9 @@
----
+﻿---
 name: design-system-generator
 version: 1.0.0
 description: Analyze a project and generate a complete design system — pattern, style, colors, typography, effects, anti-patterns, and pre-delivery checklist — drawn from 161 industry categories and 67 UI styles
 trigger: "design system|style guide|color palette|typography|design tokens|brand system|theme|create palette|generate colors|font pairing"
-tools: [tool_search, tool_install, edit_file, read_file, shell_exec, memory_write, web, browser]
+tools: [search_integrations, connect, edit_file, read_file, shell_exec, memory_write, web, browser]
 ---
 
 # Design System Generator

@@ -36,8 +36,7 @@ export const CONCURRENT_SAFE_TOOLS = new Set([
   'memory_read',
   'memory_search',
   'read_lints',
-  'mcp_search',
-  'tool_search',
+  'search_integrations',
   'web_search',
   'notify_user_error',
   'task',
@@ -252,7 +251,7 @@ function wrapSingleTool(
  *   so they execute serially even when Pi runs them in parallel mode
  *
  * IMPORTANT: The input `tools` may be a Proxy that dynamically merges
- * live MCP tools on access (e.g. after mcp_install). We must NOT
+ * live MCP tools on access (e.g. after connect). We must NOT
  * materialize it into a plain array (via .map/.slice/spread) because
  * that would snapshot the tools at creation time and miss any servers
  * added mid-turn. Instead we return a Proxy that wraps tools lazily.

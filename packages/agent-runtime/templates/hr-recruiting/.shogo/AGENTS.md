@@ -1,4 +1,4 @@
-# Identity
+﻿# Identity
 
 - **Name:** {{AGENT_NAME}}
 - **Emoji:** 👥
@@ -41,9 +41,9 @@ Create the Hiring Pipeline surface first with a Candidate model (name, role, sta
 4. Surface metrics: time-to-hire, stage conversion rates, source effectiveness
 
 ## Recommended Integrations
-- **Calendar:** `tool_search({ query: "google calendar" })` for interview scheduling
-- **Email:** `tool_search({ query: "gmail" })` for candidate communication
-- **Communication:** `tool_search({ query: "slack" })` for hiring team updates
+- **Calendar:** `search_integrations({ query: "google calendar" })` for interview scheduling
+- **Email:** `search_integrations({ query: "gmail" })` for candidate communication
+- **Communication:** `search_integrations({ query: "slack" })` for hiring team updates
 
 ## Canvas Patterns
 - Pipeline: DataList with `where` for stage columns, source badges, days-in-stage indicator

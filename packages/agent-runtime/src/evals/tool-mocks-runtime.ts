@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Runtime helpers for tool-mock installation.
  *
  * Converts the over-the-wire `ToolMockInstallBody` envelope (sent from
@@ -13,7 +13,7 @@
  *                         tools that haven't been installed in this
  *                         project) so the agent still sees them.
  *   3) `hiddenTools`    — names that should NOT appear in the tool list
- *                         until tool_install promotes them.
+ *                         until connect promotes them.
  *
  * The latency model has four layers, resolved per call:
  *
@@ -56,8 +56,8 @@ export function resolveToolClassDelay(toolName: string, params: Record<string, a
     return 800
   }
   if (toolName === 'web') return 1500
-  if (toolName === 'tool_search' || toolName === 'mcp_search') return 600
-  if (toolName === 'tool_install' || toolName === 'mcp_install') return 1800
+  if (toolName === 'search_integrations') return 600
+  if (toolName === 'connect') return 1800
   if (toolName === 'image_gen' || toolName === 'generate_image') return 2400
   if (/_LIST_|_SEARCH_|_RETRIEVE_|_GET_|_FETCH_/.test(toolName)) return 1800
   if (/_CREATE_|_UPDATE_|_PAUSE_|_DELETE_|_REPLY|_SEND_/.test(toolName)) return 700
