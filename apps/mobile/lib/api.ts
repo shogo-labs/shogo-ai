@@ -960,7 +960,7 @@ export const api = {
 
     const disposition = res.headers.get('content-disposition') || ''
     const match = disposition.match(/filename="?([^"]+)"?/)
-    const filename = match?.[1] || 'project.shogo-project'
+    const filename = match?.[1] || 'project.shogo'
 
     const blob = await res.blob()
     return { blob, filename }
@@ -971,7 +971,7 @@ export const api = {
     authCookie?: string | null,
   ): Promise<{ id: string; name: string; description?: string | null } | null> {
     const formData = new FormData()
-    formData.append('file', params.file, params.filename || 'project.shogo-project')
+    formData.append('file', params.file, params.filename || 'project.shogo')
     formData.append('workspaceId', params.workspaceId)
     formData.append('includeChats', params.includeChats === false ? 'false' : 'true')
 
@@ -1016,7 +1016,7 @@ export const api = {
     },
     onProgress: (ev: ProjectImportProgress) => void,
   ): Promise<ImportDoneResult> {
-    const filename = params.filename || 'project.shogo-project'
+    const filename = params.filename || 'project.shogo'
     const opts = {
       file: params.file,
       workspaceId: params.workspaceId,

@@ -463,6 +463,7 @@ function ChatInputImpl({
       const lowerName = file.name.toLowerCase()
       const isExempt =
         lowerName.endsWith(".zip") ||
+        lowerName.endsWith(".shogo") ||
         lowerName.endsWith(".shogo-project") ||
         file.type === "application/zip" ||
         file.type === "application/x-zip-compressed"
