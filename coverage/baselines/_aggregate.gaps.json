@@ -734,7 +734,7 @@
       "note": "Two new test files. (1) gateway-tools.agent-spawn.test.ts - 15 tests covering createAgentSpawnTool fork mode (parent-context check, nested-fork guard, happy path with data-usage, no-uiWriter, invalid model_tier) and normal mode (no agentManager, spawn failure, background, instance-lost, sync happy, resume with history, model_tier/max_turns/readonly overrides, builtin-config fallback, zero-tokens-skips-usage). Mocks ../subagent.runSubagent. (2) Appended 3 tests to gateway-tools.edit-file.test.ts: CRLF/LF normalization, trailing-whitespace tolerance, JSON-escaped-quote unescape. Cumulative Session 1+2 on gateway-tools.ts: 77.47 to 82.09 percent (+232 lines hit). Below v4 +200/session target (got +100); remaining clusters need playwright/cdp or composio mocks - Session 3."
     },
     {
-      "sha": "PENDING",
+      "sha": "bf01e2af",
       "date": "2026-05-28",
       "wave": "Wave 1 - Crush Giant (gateway-tools.ts) Session 3",
       "message": "test(coverage): gateway-tools.ts composio + channel_connect - 82.09% to 84.10% lines",
