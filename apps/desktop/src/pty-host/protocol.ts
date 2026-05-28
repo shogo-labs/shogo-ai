@@ -8,8 +8,8 @@
  * Two channels run in parallel:
  *
  *   1. **Control channel** — JSON via `parentPort.postMessage` and
- *      `child.postMessage`. Low-rate (spawn/kill/list). Always goes
- *      through main. Used by `PtyHostClient.*` methods.
+ *      `child.postMessage`. Low-rate (spawn/kill/list/snapshot). Always
+ *      goes through main. Used by `PtyHostClient.*` methods.
  *
  *   2. **Data channel** — one `MessageChannelMain` per attached client.
  *      Live PTY output and writes flow over the channel's MessagePorts
@@ -39,6 +39,12 @@ export interface SpawnOptions {
   /** Initial PTY size. Clamped to 1..1000 on the host side. */
   cols: number
   rows: number
+  /** Optional opaque tag for restore-from-snapshot flows (Phase 9). */
+  restoreId?: string
+  /** Stable workspace key used for snapshots/restores. */
+  workspaceHash?: string
+  /** Optional profile id from the renderer profile store. */
+  profileId?: string
 }
 
 export interface SessionInfo {
@@ -63,6 +69,10 @@ export type ControlRequest =
   | { kind: 'list'; reqId: number }
   | { kind: 'attach'; reqId: number; id: string; sinceSeq: number }
   | { kind: 'detach'; reqId: number; id: string; channelId: string }
+  | { kind: 'snapshots:list'; reqId: number; workspaceHash: string }
+  | { kind: 'snapshots:restore'; reqId: number; workspaceHash: string; id: string }
+  | { kind: 'snapshots:discard'; reqId: number; workspaceHash: string; id: string }
+  | { kind: 'snapshots:flush'; reqId: number }
 
 // ─── control: host → main ───────────────────────────────────────────────
 
@@ -70,8 +80,20 @@ export type ControlResponse =
   | { kind: 'spawn:ok'; reqId: number; session: SessionInfo }
   | { kind: 'list:ok'; reqId: number; sessions: SessionInfo[] }
   | { kind: 'attach:ok'; reqId: number; id: string; channelId: string; latestSeq: number }
+  | { kind: 'snapshots:list:ok'; reqId: number; snapshots: SnapshotSummary[] }
+  | { kind: 'snapshots:restore:ok'; reqId: number; session: SessionInfo }
   | { kind: 'ok'; reqId: number }
   | { kind: 'err'; reqId: number; code: string; message: string }
+
+export interface SnapshotSummary {
+  id: string
+  workspaceHash: string
+  cwd: string
+  shell: string
+  profileId?: string
+  writtenAt: number
+  ringBytes: number
+}
 
 /**
  * Events the host pushes spontaneously (no reqId). Live data goes over
@@ -79,7 +101,10 @@ export type ControlResponse =
  */
 export type ControlEvent =
   | { kind: 'session:exit'; id: string; code: number | null; signal: string | null; reason: string }
+  | { kind: 'session:reap'; id: string; reason: 'idle' | 'detach-grace' | 'max-age' | 'shutdown' }
   | { kind: 'host:ready'; version: string }
+  | { kind: 'host:beat'; t: number }
+  | { kind: 'host:unresponsive'; lastBeatAt: number }
   | { kind: 'host:log'; level: 'info' | 'warn' | 'error'; message: string }
 
 export type HostInbound = ControlRequest

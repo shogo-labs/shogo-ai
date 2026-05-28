@@ -14,7 +14,9 @@ import type {
   ControlEvent,
   SessionInfo,
   SpawnOptions,
+  SnapshotSummary,
 } from '@shogo/pty-core'
+import type { LlmClient } from './cmd-k-popover'
 
 /** What the preload bridges into the renderer. */
 export interface ShogoDesktopTerminalBridge {
@@ -24,6 +26,10 @@ export interface ShogoDesktopTerminalBridge {
   signal(id: string, sig: 'INT' | 'TERM' | 'KILL'): Promise<void>
   kill(id: string): Promise<void>
   list(): Promise<SessionInfo[]>
+  listSnapshots?(workspaceHash: string): Promise<SnapshotSummary[]>
+  restoreSession?(workspaceHash: string, snapshotId: string): Promise<{ newSessionId: string; session?: SessionInfo }>
+  discardSnapshot?(workspaceHash: string, snapshotId: string): Promise<void>
+  restartHost?(): Promise<void>
   /**
    * Open the data plane for an existing session.
    *
@@ -42,6 +48,9 @@ export interface ShogoDesktopTerminalBridge {
   detach(id: string, channelId: string): Promise<void>
   /** Subscribe to control-channel events (session:exit, host:log…). */
   onEvent(cb: (ev: ControlEvent) => void): () => void
+  llm?: LlmClient & {
+    openChatWithContext?(markdown: string): Promise<void>
+  }
 }
 
 export type { ControlEvent }
@@ -72,7 +81,7 @@ export function getDesktopBridge(): ShogoDesktopTerminalBridge {
   if (!g.shogoDesktopTerminal) {
     throw new Error(
       'shogoDesktopTerminal bridge missing — Desktop terminal called from a ' +
-        'non-Electron context, or preload-terminal.ts failed to load.',
+      'non-Electron context, or preload-terminal.ts failed to load.',
     )
   }
   return g.shogoDesktopTerminal

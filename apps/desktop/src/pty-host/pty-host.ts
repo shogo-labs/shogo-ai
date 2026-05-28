@@ -6,7 +6,7 @@
  * Runs in a sandboxed Node child spawned by main via
  * `utilityProcess.fork()`. Owns the `Map<sessionId, PtySession>` and
  * routes control messages from main; the live data channel runs
- * separately over MessagePorts.
+ * separately over MessagePorts (see Phase 2).
  *
  * This file must be bundled as a STANDALONE js file at
  * `apps/desktop/dist/pty-host.js` because `utilityProcess.fork()` takes
@@ -20,6 +20,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import fs from 'node:fs/promises'
 import {
   decodeClientFrame,
   encodeServerData,
@@ -34,6 +35,8 @@ import {
   type ControlRequest,
   type ControlResponse,
 } from './protocol'
+import { applyShellIntegration, type ShellIntegrationPlan } from './shell-integration'
+import { SnapshotStore, type FsAdapter, type SessionSnapshot } from './persistence'
 
 /**
  * Minimal shape we use from Electron's MessagePortMain. Typed loosely so
@@ -48,9 +51,14 @@ interface HostPort {
   close(): void
 }
 
+const channelAcks = new Map<string, number>()
+
 // `parentPort` is provided by Electron's utilityProcess host. Typed loosely
 // because we don't want to drag Electron's main-process types into the
 // utility bundle.
+//
+// utilityProcess's host adds these to `process` itself, not to a module
+// export — see the Electron docs. We grab a typed reference once.
 interface UtilityParentPort {
   postMessage(msg: unknown, transferList?: unknown[]): void
   on(event: 'message', listener: (msg: unknown) => void): void
@@ -64,17 +72,42 @@ interface UtilityProcess {
 
 declare const process: NodeJS.Process & UtilityProcess
 
-const HOST_VERSION = '1.0.0'
+const HOST_VERSION = '0.0.1-phase1'
 const TEXT_DEC = new TextDecoder()
 
 const sessions = new Map<string, PtySession>()
+/**
+ * Per-session shell-integration cleanup callbacks. Keyed by session id.
+ * Populated when applyShellIntegration() materialised temp files; called
+ * when the session exits (natural or kill). Idempotent inside the
+ * shell-integration plan, so a duplicate fire is safe.
+ */
+const integrationCleanups = new Map<string, () => void>()
+
+const snapshotDir = process.env.SHOGO_TERMINAL_SNAPSHOT_DIR
+const snapshotStore = snapshotDir
+  ? new SnapshotStore({
+      dir: snapshotDir,
+      fs: {
+        writeFile: fs.writeFile,
+        readFile: fs.readFile as unknown as FsAdapter['readFile'],
+        readdir: fs.readdir as unknown as FsAdapter['readdir'],
+        mkdir: fs.mkdir as unknown as FsAdapter['mkdir'],
+        rename: fs.rename,
+        unlink: fs.unlink,
+        async exists(p: string) {
+          try { await fs.access(p); return true } catch { return false }
+        },
+      },
+    })
+  : null
 
 function send(msg: ControlResponse | ControlEvent, transfer?: unknown[]): void {
   if (transfer && transfer.length > 0) process.parentPort.postMessage(msg, transfer)
   else process.parentPort.postMessage(msg)
 }
 
-function reply(_reqId: number, ok: ControlResponse): void {
+function reply(reqId: number, ok: ControlResponse): void {
   send(ok)
 }
 
@@ -85,22 +118,52 @@ function fail(reqId: number, code: string, message: string): void {
 function handleSpawn(req: Extract<ControlRequest, { kind: 'spawn' }>): void {
   try {
     const id = randomUUID()
-    const sess = new PtySession(id, req.opts)
+    // Inject shell-integration BEFORE spawning. Plan transforms args+env
+    // (e.g. --rcfile, ZDOTDIR) and gives us a cleanup() for temp files.
+    // Failures here are non-fatal — we fall back to a passthrough plan
+    // so the user still gets a working terminal even if integration
+    // file writes failed (out-of-disk, sandboxed tmpdir, etc.).
+    let plan: ShellIntegrationPlan
+    try {
+      plan = applyShellIntegration(req.opts)
+    } catch {
+      plan = {
+        kind: 'unknown',
+        status: 'unsupported-shell',
+        spawn: req.opts,
+        artifacts: [],
+        cleanup: () => undefined,
+      }
+    }
+    if (plan.artifacts.length > 0) integrationCleanups.set(id, plan.cleanup)
+
+    const sess = new PtySession(id, plan.spawn)
     sessions.set(id, sess)
+    scheduleSnapshot(id)
 
     // Watch for natural exit so we can broadcast a control event AND drop
-    // the session from the map.
-    const pollHandle = setInterval(() => {
+    // the session from the map. node-pty's onExit already fanned out the
+    // exit to attached subscribers — this is the lifecycle signal to main.
+    const watchExit = () => {
       if (!sess.isExited()) return
-      clearInterval(pollHandle)
       sessions.delete(id)
+      runIntegrationCleanup(id)
+      const info = sess.info()
       send({
         kind: 'session:exit',
         id,
-        code: null,
+        code: null, // PtySession swallows the value internally; future work
         signal: null,
         reason: 'pty:exited',
       } satisfies ControlEvent)
+    }
+    // Poll briefly — node-pty's onExit is async relative to spawn(). Cheaper
+    // than wiring another event in the session class for a Phase 1 host.
+    const pollHandle = setInterval(() => {
+      if (sess.isExited()) {
+        clearInterval(pollHandle)
+        watchExit()
+      }
     }, 250)
     pollHandle.unref?.()
 
@@ -109,6 +172,29 @@ function handleSpawn(req: Extract<ControlRequest, { kind: 'spawn' }>): void {
     const message = e instanceof Error ? e.message : String(e)
     fail(req.reqId, 'spawn:failed', message)
   }
+}
+
+function snapshotOf(id: string): Omit<SessionSnapshot, 'version' | 'writtenAt'> | null {
+  const sess = sessions.get(id)
+  if (!sess || !snapshotStore) return null
+  const info = sess.info()
+  const replay = sess.replaySince(0)
+  const headless = sess.serializeHeadless()
+  return {
+    id,
+    workspaceHash: sess.opts.workspaceHash ?? 'default',
+    cwd: info.cwd,
+    shell: info.shell,
+    profileId: sess.opts.profileId,
+    lastSeq: replay.latestSeq,
+    ring: headless ?? TEXT_DEC.decode(replay.bytes),
+  }
+}
+
+function scheduleSnapshot(id: string): void {
+  if (!snapshotStore) return
+  const snap = snapshotOf(id)
+  if (snap) snapshotStore.update(snap)
 }
 
 function handleWrite(req: Extract<ControlRequest, { kind: 'write' }>): void {
@@ -137,7 +223,15 @@ function handleKill(req: Extract<ControlRequest, { kind: 'kill' }>): void {
   if (!sess) { fail(req.reqId, 'no-session', `unknown session ${req.id}`); return }
   sess.kill('pty:killed')
   sessions.delete(req.id)
+  runIntegrationCleanup(req.id)
   reply(req.reqId, { kind: 'ok', reqId: req.reqId })
+}
+
+function runIntegrationCleanup(id: string): void {
+  const cb = integrationCleanups.get(id)
+  if (!cb) return
+  integrationCleanups.delete(id)
+  try { cb() } catch { /* best-effort */ }
 }
 
 function handleList(req: Extract<ControlRequest, { kind: 'list' }>): void {
@@ -149,11 +243,15 @@ function handleList(req: Extract<ControlRequest, { kind: 'list' }>): void {
  * `attach` — bind a data port (when supplied) to the session's data
  * fanout. When a port is included:
  *   1. Replay scrollback strictly BEFORE subscribing live (so the
- *      replay-then-subscribe invariant holds).
+ *      replay-then-subscribe invariant holds — same as agent-runtime).
  *   2. Subscribe a {channelId, port-writing} subscriber to the session.
- *   3. Decode inbound frames on the port → write/resize/signal on the
- *      session.
+ *   3. Decode inbound frames on the port → write/resize/signal/kill on
+ *      the session.
  *   4. On port close, unsubscribe.
+ *
+ * When no port is supplied (Phase 1 test path), only reserve a logical
+ * channelId and return latestSeq. Useful for unit tests that don't
+ * care about the data plane.
  */
 function handleAttach(
   req: Extract<ControlRequest, { kind: 'attach' }>,
@@ -170,6 +268,7 @@ function handleAttach(
       port.postMessage(encodeServerTrunc())
     }
     if (bytes.length > 0) {
+      // Replay arrives as one DATA frame keyed at latestSeq.
       port.postMessage(encodeServerData(latestSeq, bytes))
     }
 
@@ -178,8 +277,10 @@ function handleAttach(
       channelId,
       onData(seq, b) {
         try { port.postMessage(encodeServerData(seq, b)) } catch { /* port closed */ }
+        scheduleSnapshot(req.id)
       },
       onExit(code, signal, _reason) {
+        scheduleSnapshot(req.id)
         try { port.postMessage(encodeServerExit(code, signal)) } catch { /* port closed */ }
         try { port.close() } catch { /* swallow */ }
       },
@@ -192,7 +293,7 @@ function handleAttach(
       if (!frame) return
       switch (frame.type) {
         case ClientFrameType.DATA:
-          sess.write(TEXT_DEC.decode(frame.bytes))
+          sess.write(new TextDecoder().decode(frame.bytes))
           break
         case ClientFrameType.RESIZE:
           sess.resize(frame.cols, frame.rows)
@@ -201,11 +302,11 @@ function handleAttach(
           sess.signal(frame.signal)
           break
         case ClientFrameType.ACK:
-          // No-op for now; ACK is reserved for future flow control.
+          channelAcks.set(channelId, frame.seq)
           break
       }
     })
-    port.on('close', () => { sess.unsubscribe(channelId) })
+    port.on('close', () => { sess.unsubscribe(channelId); channelAcks.delete(channelId) })
     port.start()
   }
 
@@ -224,19 +325,80 @@ function handleDetach(req: Extract<ControlRequest, { kind: 'detach' }>): void {
   reply(req.reqId, { kind: 'ok', reqId: req.reqId })
 }
 
+async function handleListSnapshots(req: Extract<ControlRequest, { kind: 'snapshots:list' }>): Promise<void> {
+  if (!snapshotStore) { reply(req.reqId, { kind: 'snapshots:list:ok', reqId: req.reqId, snapshots: [] }); return }
+  const snapshots = await snapshotStore.list(req.workspaceHash)
+  reply(req.reqId, {
+    kind: 'snapshots:list:ok',
+    reqId: req.reqId,
+    snapshots: snapshots.map((s) => ({
+      id: s.id,
+      workspaceHash: s.workspaceHash,
+      cwd: s.cwd,
+      shell: s.shell,
+      profileId: s.profileId,
+      writtenAt: s.writtenAt,
+      ringBytes: new TextEncoder().encode(s.ring).byteLength,
+    })),
+  })
+}
+
+async function handleRestoreSnapshot(req: Extract<ControlRequest, { kind: 'snapshots:restore' }>): Promise<void> {
+  if (!snapshotStore) { fail(req.reqId, 'snapshot:disabled', 'snapshot store disabled'); return }
+  const snap = await snapshotStore.load(req.workspaceHash, req.id)
+  if (!snap) { fail(req.reqId, 'snapshot:not-found', `snapshot ${req.id} not found`); return }
+  const id = randomUUID()
+  const opts = {
+    shell: snap.shell,
+    args: process.platform === 'win32' ? [] : ['-l'],
+    cwd: snap.cwd,
+    env: process.env as Record<string, string>,
+    cols: 80,
+    rows: 24,
+    restoreId: snap.id,
+    workspaceHash: snap.workspaceHash,
+    profileId: snap.profileId,
+  }
+  const plan = applyShellIntegration(opts)
+  const sess = new PtySession(id, plan.spawn)
+  if (plan.artifacts.length > 0) integrationCleanups.set(id, plan.cleanup)
+  sess.seedReplay(new TextEncoder().encode(snap.ring), snap.lastSeq)
+  sessions.set(id, sess)
+  scheduleSnapshot(id)
+  reply(req.reqId, { kind: 'snapshots:restore:ok', reqId: req.reqId, session: sess.info() })
+}
+
+async function handleDiscardSnapshot(req: Extract<ControlRequest, { kind: 'snapshots:discard' }>): Promise<void> {
+  if (snapshotStore) await snapshotStore.delete(req.workspaceHash, req.id)
+  reply(req.reqId, { kind: 'ok', reqId: req.reqId })
+}
+
+async function handleFlushSnapshots(req: Extract<ControlRequest, { kind: 'snapshots:flush' }>): Promise<void> {
+  if (snapshotStore) {
+    for (const id of sessions.keys()) scheduleSnapshot(id)
+    await snapshotStore.flushAll()
+  }
+  reply(req.reqId, { kind: 'ok', reqId: req.reqId })
+}
+
 function dispatch(msg: unknown, port: HostPort | null = null): void {
   if (!msg || typeof msg !== 'object') return
   const m = msg as ControlRequest
   switch (m.kind) {
-    case 'spawn':  handleSpawn(m); break
-    case 'write':  handleWrite(m); break
+    case 'spawn':  handleSpawn(m);  break
+    case 'write':  handleWrite(m);  break
     case 'resize': handleResize(m); break
     case 'signal': handleSignal(m); break
-    case 'kill':   handleKill(m); break
-    case 'list':   handleList(m); break
+    case 'kill':   handleKill(m);   break
+    case 'list':   handleList(m);   break
     case 'attach': handleAttach(m, port); break
     case 'detach': handleDetach(m); break
+    case 'snapshots:list': void handleListSnapshots(m); break
+    case 'snapshots:restore': void handleRestoreSnapshot(m); break
+    case 'snapshots:discard': void handleDiscardSnapshot(m); break
+    case 'snapshots:flush': void handleFlushSnapshots(m); break
     default: {
+      // Unknown kind — log via control event so main can surface it.
       send({
         kind: 'host:log',
         level: 'warn',
@@ -246,8 +408,20 @@ function dispatch(msg: unknown, port: HostPort | null = null): void {
   }
 }
 
+/**
+ * Exported for unit testing. Production uses the bottom of this file
+ * which wires `process.parentPort`. Tests may pass a port to exercise
+ * the data-plane binding path.
+ */
+export function _dispatchForTest(msg: unknown, port: HostPort | null = null): void {
+  dispatch(msg, port)
+}
+export function _sessionsForTest(): Map<string, PtySession> { return sessions }
+
 // ─── boot ────────────────────────────────────────────────────────────────
 
+// Only attach to parentPort when running as a utilityProcess (skipped when
+// the module is imported by a unit test).
 const isUtilityProcess = typeof (process as Partial<UtilityProcess>).parentPort !== 'undefined'
 
 if (isUtilityProcess) {
@@ -260,10 +434,16 @@ if (isUtilityProcess) {
     dispatch(inner !== undefined ? inner : m, port)
   })
   process.parentPort.on('close', () => {
+    void handleFlushSnapshots({ kind: 'snapshots:flush', reqId: 0 })
     for (const s of sessions.values()) s.kill('pty:shutdown')
     sessions.clear()
   })
   send({ kind: 'host:ready', version: HOST_VERSION } satisfies ControlEvent)
+  const beat = setInterval(() => {
+    send({ kind: 'host:beat', t: Date.now() } satisfies ControlEvent)
+  }, 2_000)
+  beat.unref?.()
 }
 
+// Re-export the channel name for main's port broker.
 export { PTY_PORT_CHANNEL }

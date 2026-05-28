@@ -106,7 +106,7 @@ const config: ForgeConfig = {
   packagerConfig: {
     name: 'Shogo',
     ...(hasIcon ? { icon: './resources/icon' } : {}),
-    asar: { unpack: '**/node_modules/node-pty/**/*' },
+    asar: { unpack: '{**/node_modules/node-pty/**/*,**/node_modules/xterm-headless/**/*}' },
     // macOS privacy strings. Without NSMicrophoneUsageDescription, the
     // packaged .app silently fails getUserMedia({ audio: true }) instead
     // of triggering the system microphone prompt.
