@@ -105,6 +105,8 @@ mock.module('../lib/prisma', () => withPrismaExports({ prisma }))
 mock.module('../lib/runtime/manager', () => ({
   getRuntimeManager: mock(() => ({
     start: mock(async () => ({})),
+    status: mock(() => null),
+    stop: mock(async () => undefined),
   })),
 }))
 
@@ -120,7 +122,13 @@ beforeEach(async () => {
   folderSeq = 1
   workspaceFindFirstResult = { id: 'workspace-1' }
   transactionShouldThrow = false
-  rootDir = mkdtempSync(join(os.homedir(), 'shogo-local-projects-'))
+  // Sandbox safety: route handlers call os.homedir() to validate paths
+  // are under $HOME. The container's $HOME is /app which is read-only,
+  // so we redirect homedir() to a writable tmp ancestor for the duration
+  // of the suite. afterAll() doesn't need to restore because each test
+  // file runs in its own process under run-tests-isolated.ts.
+  ;(os as { homedir: () => string }).homedir = () => os.tmpdir()
+  rootDir = mkdtempSync(join(os.tmpdir(), 'shogo-local-projects-'))
   childDir = join(rootDir, 'child')
   otherDir = join(rootDir, 'other')
   mkdirSync(childDir)
