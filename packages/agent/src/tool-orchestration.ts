@@ -280,13 +280,22 @@ export function wrapToolsWithOrchestration(
     return w
   }
 
+  // 'slice' is intentionally NOT in this set — pi-agent-core calls
+  // `tools.slice()` twice (createMutableAgentState + createContextSnapshot)
+  // BEFORE the first LLM iteration. Routing it through the generic
+  // wrapped-then-bound path returns a plain array that's frozen for the
+  // rest of the turn, which silently breaks composio `connect` (promoted
+  // proxy tools never reach the LLM) and hot-added MCP servers (tools
+  // appear in the gateway proxy but not in the snapshot the LLM sees).
+  // The dedicated 'slice' branch below keeps no-arg slices live by
+  // returning the proxy itself.
   const PROXIED_PROPS = new Set<string | symbol>([
     'find', 'filter', 'map', 'forEach', 'some', 'every',
-    'slice', 'concat', 'includes', 'reduce', 'flatMap',
+    'concat', 'includes', 'reduce', 'flatMap',
     'indexOf', 'findIndex',
   ])
 
-  const proxy = new Proxy(tools, {
+  const proxy: AgentTool[] = new Proxy(tools, {
     get(target, prop, receiver) {
       if (prop === 'length') {
         return Array.from(target).length
@@ -294,6 +303,15 @@ export function wrapToolsWithOrchestration(
       if (prop === Symbol.iterator) {
         const wrapped = Array.from(target).map(getOrWrap)
         return wrapped[Symbol.iterator].bind(wrapped)
+      }
+      // Keep the no-arg `.slice()` live. Range slices stay static — they
+      // express an explicit "snapshot this portion" intent.
+      if (prop === 'slice') {
+        return (start?: number, end?: number) => {
+          if (start === undefined && end === undefined) return proxy
+          const wrapped = Array.from(target).map(getOrWrap)
+          return wrapped.slice(start, end)
+        }
       }
       if (typeof prop === 'string' && PROXIED_PROPS.has(prop)) {
         const wrapped = Array.from(target).map(getOrWrap)

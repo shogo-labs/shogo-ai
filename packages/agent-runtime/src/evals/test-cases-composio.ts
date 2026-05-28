@@ -27,7 +27,36 @@ import {
   AIRBNB_SKILL_SAVE_MOCKS,
   COMPOSIO_CALENDAR_FOLLOWUP_MOCKS,
   COMPOSIO_GMAIL_CALENDAR_MULTI_MOCKS,
+  withHiddenNativeTools,
 } from './tool-mocks'
+
+// Native built-in tools the model can use to bypass the integration flow these
+// evals are trying to measure. We hide them per-eval so the model has to go
+// through `search_integrations` → `connect` → toolkit tool, instead of:
+//   - `send_message` to "email" someone (it advertises email/slack/discord)
+//   - `edit_file`/`exec`/`agent_spawn`/`browser`/`web` to spiral into a
+//     canvas-building or research detour instead of just calling the tool.
+//
+// `read_file`/`write_file` stay visible for the skill-save evals (which
+// require write_file to persist the skill) and are hidden for the pure
+// tool-call evals where neither is needed.
+const INTEGRATION_BYPASS_TOOLS = [
+  'send_message',
+  'edit_file',
+  'exec',
+  'agent_spawn',
+  'browser',
+  'web',
+]
+const PURE_TOOL_CALL_HIDES = [
+  ...INTEGRATION_BYPASS_TOOLS,
+  'read_file',
+  'write_file',
+]
+const SKILL_SAVE_HIDES = [
+  ...INTEGRATION_BYPASS_TOOLS,
+  'read_file',
+]
 import {
   usedTool,
   usedToolAnywhere,
@@ -181,9 +210,10 @@ export const COMPOSIO_EVALS: AgentEval[] = [
     level: 3,
     input: 'What meetings do I have tomorrow?',
     maxScore: 100,
-    toolMocks: {
-      ...COMPOSIO_GOOGLE_CALENDAR_MOCKS,
-    },
+    toolMocks: withHiddenNativeTools(
+      { ...COMPOSIO_GOOGLE_CALENDAR_MOCKS },
+      PURE_TOOL_CALL_HIDES,
+    ),
     workspaceFiles: {
       'skills/google-calendar.md': `---
 name: google-calendar
@@ -318,7 +348,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
     level: 3,
     input: 'Send an email to john@example.com about the meeting tomorrow at 2pm. Subject: "Meeting Tomorrow" and let him know we will discuss the Q1 roadmap.',
     maxScore: 100,
-    toolMocks: COMPOSIO_GMAIL_SEND_MOCKS,
+    toolMocks: withHiddenNativeTools(COMPOSIO_GMAIL_SEND_MOCKS, PURE_TOOL_CALL_HIDES),
     validationCriteria: [
       {
         id: 'searched-for-gmail',
@@ -378,9 +408,13 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
     name: 'Composio: Auto-save skill after successful flow',
     category: 'mcp-discovery',
     level: 3,
-    input: 'Show me my open pull requests on GitHub',
+    // Fix D: explicit ask to save a skill. The prior prompt only asked
+    // for PRs and relied on the agent's discretion to auto-save, which
+    // never fired under the haiku model — the eval is testing the save
+    // step itself, so we make the requirement obvious.
+    input: 'Show me my open pull requests on GitHub. After you do, save a reusable skill at skills/<short-name>.md (with a YAML frontmatter trigger line and the GitHub tool names you used) so I can repeat this faster next time.',
     maxScore: 100,
-    toolMocks: COMPOSIO_GITHUB_PR_SKILL_SAVE_MOCKS,
+    toolMocks: withHiddenNativeTools(COMPOSIO_GITHUB_PR_SKILL_SAVE_MOCKS, SKILL_SAVE_HIDES),
     validationCriteria: [
       {
         id: 'completed-discovery',
@@ -482,9 +516,10 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
     name: 'Local MCP: Auto-save skill after successful flow',
     category: 'mcp-discovery',
     level: 3,
-    input: 'Search for Airbnb listings in Bali for 2 adults, March 15-22',
+    // Fix D: explicit save-skill ask; same rationale as composio-skill-save.
+    input: 'Search for Airbnb listings in Bali for 2 adults, March 15-22. After the search, save a reusable skill at skills/<short-name>.md (with a YAML frontmatter trigger line and the airbnb tool + connect setup) so I can repeat this faster next time.',
     maxScore: 100,
-    toolMocks: AIRBNB_SKILL_SAVE_MOCKS,
+    toolMocks: withHiddenNativeTools(AIRBNB_SKILL_SAVE_MOCKS, SKILL_SAVE_HIDES),
     validationCriteria: [
       {
         id: 'completed-discovery',
@@ -653,7 +688,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
     level: 4,
     input: 'Check my Gmail for any emails from John about the budget, then create a Google Calendar event for our budget review meeting tomorrow at 3pm',
     maxScore: 100,
-    toolMocks: COMPOSIO_GMAIL_CALENDAR_MULTI_MOCKS,
+    toolMocks: withHiddenNativeTools(COMPOSIO_GMAIL_CALENDAR_MULTI_MOCKS, PURE_TOOL_CALL_HIDES),
     validationCriteria: [
       {
         id: 'discovered-integrations',
@@ -733,7 +768,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
     level: 3,
     input: 'Send an email to alice@example.com about the project deadline being moved to Friday',
     maxScore: 100,
-    toolMocks: COMPOSIO_GMAIL_SEND_MOCKS,
+    toolMocks: withHiddenNativeTools(COMPOSIO_GMAIL_SEND_MOCKS, PURE_TOOL_CALL_HIDES),
     workspaceFiles: {
       'skills/google-calendar.md': `---
 name: google-calendar

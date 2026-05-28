@@ -67,7 +67,12 @@ export async function sendTurn(
     const timeout = setTimeout(() => controller.abort(), config.timeoutMs)
 
     try {
-      const body: Record<string, unknown> = { messages }
+      // The runtime rejects requests with a missing/empty chatSessionId
+      // (see `chat-session-fallback-leak.test.ts`). The eval suite always
+      // calls /agent/session/reset between evals which clears the `'chat'`
+      // bucket, so reusing that key here matches the reset contract and
+      // keeps each eval isolated.
+      const body: Record<string, unknown> = { messages, chatSessionId: 'chat' }
       if (config.interactionMode) {
         body.interactionMode = config.interactionMode
       }
@@ -77,7 +82,10 @@ export async function sendTurn(
 
       const res = await fetch(config.agentEndpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Chat-Session-Id': 'chat',
+        },
         body: JSON.stringify(body),
         signal: controller.signal,
       })

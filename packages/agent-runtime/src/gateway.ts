@@ -1723,8 +1723,18 @@ export class AgentGateway {
       const existingNames = new Set(assembledTools.map(t => t.name))
       const gateway = this
 
+      // Drop native tools that the eval harness marked hidden. Previously
+      // `hiddenMockTools` only suppressed synthetic-tool injection, leaving
+      // native built-ins (read_file/write_file/edit_file/exec/send_message/
+      // …) visible even when the eval explicitly hid them via
+      // `{ hidden: true }`. That let models bypass an integration flow by
+      // calling, e.g., `send_message` for an email task instead of going
+      // through Composio Gmail. Filtering native tools here makes
+      // `hidden: true` behave consistently for both kinds.
+      const visibleAssembled = assembledTools.filter(t => !this.hiddenMockTools.has(t.name))
+
       // Wrap existing tools with mock interceptors
-      staticTools = assembledTools.map(tool => {
+      staticTools = visibleAssembled.map(tool => {
         const mockFn = this.toolMocks.get(tool.name)
         if (!mockFn) return tool
 

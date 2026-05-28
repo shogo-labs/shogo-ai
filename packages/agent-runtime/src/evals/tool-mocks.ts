@@ -3840,3 +3840,44 @@ export function buildMockPayload(
   if (!evalToolMocks) return BUILTIN_MOCKS
   return { ...BUILTIN_MOCKS, ...evalToolMocks }
 }
+
+/**
+ * Hide native built-in tools from the agent for a single eval.
+ *
+ * Why this exists: some eval prompts (e.g. "send an email to alice@…")
+ * have an obvious cheat path through a native tool like `send_message`
+ * (described as supporting email/slack/discord). The model picks the
+ * one-call native path and skips the integration discovery flow the
+ * eval is actually trying to measure. Likewise, "set up Gmail" tends
+ * to derail into `write_file`/`edit_file`/`exec` canvas-building loops
+ * instead of routing through `search_integrations` + `connect`.
+ *
+ * Pair with a small filter in `gateway.ts` that drops native tools
+ * present in `hiddenMockTools` from the visible tool list, so the
+ * model never sees them at all (the runtime's eval suite is the only
+ * thing that flips this on).
+ *
+ * Usage:
+ *   toolMocks: withHiddenNativeTools(COMPOSIO_GMAIL_SEND_MOCKS, [
+ *     'send_message', 'read_file', 'edit_file', 'exec',
+ *     'agent_spawn', 'browser', 'web',
+ *   ])
+ */
+export function withHiddenNativeTools(
+  base: ToolMockMap,
+  nativeToolNames: string[],
+): ToolMockMap {
+  const out: ToolMockMap = { ...base }
+  for (const name of nativeToolNames) {
+    out[name] = {
+      type: 'static',
+      hidden: true,
+      // The model never sees the tool (it's filtered before the catalog
+      // is sent), so this response is only here to satisfy the
+      // ToolMockSpec discriminant and would only fire if a later code
+      // path were to surface it again.
+      response: { error: `tool ${name} is hidden in this eval` },
+    }
+  }
+  return out
+}
