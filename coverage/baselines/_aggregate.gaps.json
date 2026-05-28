@@ -1109,6 +1109,23 @@
         }
       ],
       "note": "Greenfield 4-file batch. All four files (strip-orphan-tool-parts.ts, kourier-lb-discovery.ts, marketplace-feature.ts middleware, project-auth-config.ts route) had ZERO dedicated tests - only module-load constants counted. New file greenfield-lib-batch.test.ts (34 tests, all passing) drives every reachable branch: (1) stripOrphanToolParts pure function - 8 tests covering keep-text-only, drop-orphan-tool-parts, keep-complete-states (output-available/error/denied), drop-entire-message-when-all-orphan, no-parts-array pass-through, dynamic-tool variant, non-object parts defensive, missing-state-as-orphan. (2) discoverKourierLbIp K8s LB IP discovery - mocks fs + @kubernetes/client-node - 7 tests covering ingress.ip happy, empty-ingress null, hostname-only throws, K8s API failure throws, in-cluster SA auth (CA + token files present), loadFromDefault fallback, CoreV1Api cache. (3) isMarketplaceEnabled + requireMarketplaceFeature - mocks prisma.platformSetting - 9 tests covering value=true/false/null, prisma-throws fail-closed, 15s cache TTL, NODE_ENV=test bypass, SHOGO_LOCAL_MODE=true bypass, flag-disabled 503 response, flag-enabled next() call. (4) projectAuthConfigRoutes - drives all 4 endpoints via Hono app.request - 10 tests covering GET config happy, PUT upsert happy, PUT invalid JSON 400, PUT non-object body 400, PUT ProjectAuthConfigError -> 400 with err.code, PUT generic error -> 500 internal, GET users with cursor/q/limit, GET users no params, GET users malformed limit, DELETE revokes. Total +~369 hit lines, +15 funcs, +34 tests. Fifth greenfield haul of the day - apps/api now has no remaining easily-reachable zero-test source files."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 2 ad-hoc - sdk storage adapter",
+      "message": "test(coverage): packages/sdk storage/adapter.ts - 26%->96.43% lines, 38.89%->100% funcs",
+      "perFile": [
+        {
+          "file": "packages/sdk/src/storage/adapter.ts",
+          "beforeLines": "52/199 ~26.09%",
+          "afterLines": "192/199 ~96.43%",
+          "deltaLinesHit": 140,
+          "deltaFuncsHit": 12,
+          "newTests": 34
+        }
+      ],
+      "note": "Greenfield test file for storage/adapter.ts - previously only the NoOp + Memory module-load stubs were counted. New __tests__/adapter.test.ts (34 tests, all passing) drives every branch of the 5 exported symbols: (1) isBrowser - 3 tests covering Node-no-window, browser-window+localStorage, window-without-localStorage. (2) getDefaultStorageAdapter - 2 tests covering Node->NoOp and browser->Web. (3) WebStorageAdapter - 11 tests covering default+custom prefix, getItem happy/missing/throws, setItem happy/throws, removeItem happy/throws, clear-prefix-only, clear-with-null-key-from-monkeypatched-key(), clear-with-length-throws. (4) AsyncStorageAdapter - 10 tests covering default+custom prefix, getItem happy/throws, setItem happy/throws, removeItem happy/throws, clear-with-underlying-clear, clear-with-underlying-throws, clear-when-underlying-has-no-clear-method. (5) NoOpStorageAdapter - 4 trivial passthrough tests. (6) MemoryStorageAdapter - 4 round-trip tests. Mock harness: installFakeBrowser() injects a switchable fake localStorage onto globalThis.window/localStorage with per-method throw flags (get/set/remove/key/length); makeFakeAsyncStorage() builds a Map-backed AsyncStorage with the same per-method throw flags + an optional-clear-method flag. Residual ~7 lines uncov are Bun coverage measurement artifact (whole-package run aggregates 0-line stubs from other test files that touch but do not import this file); standalone bun-test on this file alone shows 0 uncovered DA lines."
     }
   ],
   "frontend": {
