@@ -930,7 +930,7 @@
       "note": "Wave 2 Day 9 first strike - biggest single-commit win on this branch. All 19 fails in local-projects-routes.expanded.test.ts were sandbox-environment failures, not real bugs: (a) mkdtempSync(os.homedir()) returns EACCES because the runtime cannot write to /app; (b) the route handlers themselves call os.homedir() to validate paths-are-under-home, so even after fixing the test mkdtemp the route rejected all paths as outside_home. Two-line fix: (1) mkdtemp now uses os.tmpdir() and (2) at the top of beforeEach we monkey-patch os.homedir to return os.tmpdir() so the route validation accepts the test paths. Per-file isolation under run-tests-isolated.ts means the patch doesnt leak. Also added status() and stop() methods to the mocked RuntimeManager since the refresh-trust route calls them. Result: 19 fail / 7 pass became 0 fail / 19 pass with no new test code; just fixed the 3 mock-environment gaps the original PR author missed. Coverage delta is enormous (+56 pp) because the test was already comprehensive - it just never executed in the sandbox."
     },
     {
-      "sha": "PENDING",
+      "sha": "0b0c2a39",
       "date": "2026-05-28",
       "wave": "Wave 2 Day 9-10 sweep - sandbox env-fix on 10 broken test files",
       "message": "test(coverage): unbreak 10 sandbox-broken test files in apps/api - ~+200 lines aggregate",
