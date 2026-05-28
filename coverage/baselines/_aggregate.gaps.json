@@ -825,6 +825,23 @@
       "wave": "Sync README",
       "message": "docs(coverage): bump README backend to 90.75% (expanded v3 aggregate)",
       "note": "Full re-measure across all 11 backend packages with comment-stripping post-processor and per-package SF filter (foreign files leaked into other packages lcov runs are excluded). True aggregate is 90.75% lines / 86.53% funcs \u2014 up from baseline claim of 82.16%. Big movers from baseline: agent-runtime 71.69 to 89.05 (+17.36pp from Wave 1 Sessions 1-7), apps/api 81.62 to 90.12 (test failures no longer suppress coverage with isolated runner), shogo-worker 89.40 to 97.75 (better measurement), model-catalog 0 to 100 (was broken, now measurable), sdk 98.70 to 90.98 (drop due to growth in src not yet tested \u2014 was over-counted in baseline). Frontend badge intentionally untouched (out of scope on this branch)."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 1 - Crush Giant (gateway-tools.ts) Session 8",
+      "message": "test+refactor: gateway-tools.ts tool_install skill: + description concat collapse - 90.02% to 91.45% lines",
+      "perFile": [
+        {
+          "file": "packages/agent-runtime/src/gateway-tools.ts",
+          "beforeLines": "4400/4888 (90.02%)",
+          "afterLines": "4397/4808 (91.45%)",
+          "deltaLinesHit": -3,
+          "deltaLinesFound": -80,
+          "newTests": 4
+        }
+      ],
+      "note": "Two changes: (1) New file gateway-tools.tool-install-skill.test.ts (4 tests) covers the bundled-skill copy path in createToolInstallTool L3173-3210 (skill: prefix): bundled-not-found error, already-installed error, happy path with subdirectories using cpSync recursive, minimal flat-files skill. Mocks ../skills loadBundledSkills/loadAllSkills with stateful arrays. (2) REFACTOR: collapsed 22 multi-line description concat blocks into single-line strings or template literals. The single-quote + concat pattern across 3-9 lines per description caused bun coverage to mark each non-first line as uncov (the expression evaluates as one but bun counts per-line). Collapsing the 22 blocks dropped 80 LF without changing any behavior or test result. Same policy as Session 7 page.evaluate extraction: relocate coverage-noise out of the source. No istanbul-ignore used. Cumulative Wave 1 Sessions 1-8 on gateway-tools.ts: 77.47 to 91.45 percent (+13.98pp). Wave 1 target was ~92 percent - we are 0.55pp away (~27 lines)."
     }
   ],
   "frontend": {
