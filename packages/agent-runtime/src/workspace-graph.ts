@@ -16,8 +16,23 @@
 
 import type { Database } from 'bun:sqlite'
 import { existsSync, readFileSync, statSync } from 'fs'
+import { readFile as readFileAsync } from 'fs/promises'
 import { join, relative, basename } from 'path'
 import type { IndexEngine } from './index-engine'
+
+// Yield to the event loop every N files in buildGraph(). Tree-sitter
+// parse + SQLite insert per file is heavy CPU on the JS main thread,
+// and without these yields a large polyglot workspace blocks chat
+// for the entire build. We use `setTimeout(1)` (a real kernel timer,
+// not `setImmediate`) for the same reason as `index-engine.ts` —
+// see SCAN_YIELD_EVERY's comment for the empirical justification.
+//
+// This only matters when the build actually runs (lazy
+// `getOrCreateGraph()` in gateway-tools.ts, or
+// `SHOGO_INDEX_PREWARM=1`); the eager boot-time build is gated off
+// by default.
+const GRAPH_YIELD_EVERY = 25
+const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 1))
 
 // ---------------------------------------------------------------------------
 // Types
@@ -197,8 +212,14 @@ export class WorkspaceGraph {
   /**
    * Build or rebuild the graph for files indexed under a given source.
    * Reads file content, runs extractors, and stores nodes + edges.
+   *
+   * Async + cooperative: yields the JS thread back to Bun.serve every
+   * {@link GRAPH_YIELD_EVERY} files. The fully-synchronous form
+   * previously starved /health and the chat proxy for the entire
+   * build on large polyglot workspaces (e.g. a 9k-file C++/Python tree
+   * blocked the runtime for ~3 minutes after gateway start).
    */
-  buildGraph(sourceId?: string): { nodesCreated: number; edgesCreated: number; filesProcessed: number } {
+  async buildGraph(sourceId?: string): Promise<{ nodesCreated: number; edgesCreated: number; filesProcessed: number }> {
     const sourceFilter = sourceId ? ` WHERE source = ?` : ''
     const params = sourceId ? [sourceId] : []
 
@@ -213,6 +234,7 @@ export class WorkspaceGraph {
     let filesProcessed = 0
     const now = Date.now() / 1000
 
+    let processedSinceYield = 0
     for (const { path: filePath, source } of files) {
       const src = this.indexEngine.getSource(source)
       if (!src) continue
@@ -222,8 +244,12 @@ export class WorkspaceGraph {
 
       let content: string
       try {
-        content = readFileSync(absPath, 'utf-8')
+        content = await readFileAsync(absPath, 'utf-8')
       } catch { continue }
+
+      if (++processedSinceYield % GRAPH_YIELD_EVERY === 0) {
+        await yieldToEventLoop()
+      }
 
       const fileHash = this.computeHash(content)
 

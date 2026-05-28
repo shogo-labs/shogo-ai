@@ -46,6 +46,34 @@ bun run build
 bun run test
 ```
 
+### Line Endings (Windows)
+
+The repository's `.gitattributes` already pins all text files to LF via
+`* text=auto eol=lf`, but Git for Windows ships with `core.autocrlf=true`
+in the global config. That global default can cause stray CRLF drift in
+the working tree even when the index is clean, which then leaves edited
+files looking like they were "CRLF-mangled" in diffs and PRs.
+
+For Windows contributors we recommend disabling autocrlf locally for this
+repo:
+
+```bash
+git config --local core.autocrlf false
+```
+
+If your working tree already has CRLF drift (you can spot it with
+`git ls-files --eol | grep w/crlf`), refresh the affected files in-place
+**after committing any work in progress**:
+
+```bash
+# Stash or commit your changes first, then:
+git rm --cached -r .
+git reset --hard
+```
+
+This deletes the index, re-stages everything with `.gitattributes`
+applied, and re-checks the working tree out as LF.
+
 Before opening a pull request, make sure you have read:
 
 - `LICENSE`

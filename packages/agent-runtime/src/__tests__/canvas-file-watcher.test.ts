@@ -273,7 +273,7 @@ describe('getInstance', () => {
 import { writeFileSync } from 'fs'
 import { __testInternals } from '../canvas-file-watcher'
 
-const { buildIgnoreGlobs, loadSimpleIgnoredDirsFromGitignore } = __testInternals
+const { buildIgnoreGlobs, loadSimpleIgnoredDirsFromGitignore, shouldIgnore, isNoisyFileBasename } = __testInternals
 
 describe('loadSimpleIgnoredDirsFromGitignore (gitignore parser)', () => {
   test('returns [] when no ignore files exist', async () => {
@@ -378,5 +378,152 @@ describe('buildIgnoreGlobs (.gitignore feed → chokidar globs)', () => {
       expect(globs).toContain(`**/${name}`)
       expect(globs).toContain(`**/${name}/**`)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Noisy-file ignore patterns (2026-05-27)
+// ---------------------------------------------------------------------------
+//
+// Origin: `[CanvasFileWatcher] chokidar error: EPERM: operation not permitted,
+// watch '…\prisma\dev.db-journal'` on Windows. The narrow `prisma/dev.db`
+// literal entry in IGNORED_PATH_PREFIXES didn't cover the SQLite sidecar
+// files (`-journal`, `-wal`, `-shm`, `-mj<hex>`) because they're siblings of
+// `dev.db`, not children, so neither `shouldIgnore`'s prefix check nor
+// `buildIgnoreGlobs`' `<root>/prisma/dev.db/**` pattern matched.
+//
+// The fix replaced that one entry with a watchman-style `NOISY_FILE_PATTERNS`
+// table covering five categories (SQLite, lock files, editor swaps, OS
+// metadata, atomic-write temps), wired through both `shouldIgnore` (per-event
+// defensive net via basename regex) and `buildIgnoreGlobs` (chokidar glob
+// layer that short-circuits the `add` event before the awaitWriteFinish stat
+// races with the file's exclusive lock / deletion).
+//
+// These tests pin down both layers so a future refactor can't silently
+// regress the EPERM suppression or accidentally over-broaden into legitimate
+// source files (the `prisma/schema.prisma` regression guard exists because
+// the obvious-looking "just ignore `prisma/`" fix would break the agent's
+// ability to react to schema edits).
+
+describe('isNoisyFileBasename (basename regex)', () => {
+  test('matches SQLite databases and all documented sidecars', () => {
+    expect(isNoisyFileBasename('prisma/dev.db')).toBe(true)
+    expect(isNoisyFileBasename('prisma/dev.db-journal')).toBe(true)
+    expect(isNoisyFileBasename('prisma/dev.db-wal')).toBe(true)
+    expect(isNoisyFileBasename('prisma/dev.db-shm')).toBe(true)
+    expect(isNoisyFileBasename('prisma/dev.db-mj7f3a9c')).toBe(true)
+    expect(isNoisyFileBasename('data/cache.sqlite')).toBe(true)
+    expect(isNoisyFileBasename('data/cache.sqlite-wal')).toBe(true)
+    expect(isNoisyFileBasename('data/cache.sqlite3')).toBe(true)
+    expect(isNoisyFileBasename('data/cache.sqlite3-shm')).toBe(true)
+  })
+
+  test('matches lock files (generic *.lock, Emacs .#, MS Office ~$)', () => {
+    expect(isNoisyFileBasename('package-lock.json.lock')).toBe(true)
+    expect(isNoisyFileBasename('app/.#Component.tsx')).toBe(true)
+    expect(isNoisyFileBasename('docs/~$report.docx')).toBe(true)
+  })
+
+  test('matches editor swap/backup files (vim swp/swo/swn, generic ~)', () => {
+    expect(isNoisyFileBasename('src/App.tsx.swp')).toBe(true)
+    expect(isNoisyFileBasename('src/App.tsx.swo')).toBe(true)
+    expect(isNoisyFileBasename('src/App.tsx.swn')).toBe(true)
+    expect(isNoisyFileBasename('src/App.tsx~')).toBe(true)
+  })
+
+  test('matches OS metadata files', () => {
+    expect(isNoisyFileBasename('.DS_Store')).toBe(true)
+    expect(isNoisyFileBasename('src/.DS_Store')).toBe(true)
+    expect(isNoisyFileBasename('Thumbs.db')).toBe(true)
+    expect(isNoisyFileBasename('assets/Thumbs.db')).toBe(true)
+    expect(isNoisyFileBasename('desktop.ini')).toBe(true)
+    expect(isNoisyFileBasename('.directory')).toBe(true)
+  })
+
+  test('matches atomic-write temp shapes', () => {
+    expect(isNoisyFileBasename('dist/index.js.tmp')).toBe(true)
+    expect(isNoisyFileBasename('build/.tmp.xyz123')).toBe(true)
+    expect(isNoisyFileBasename('downloads/movie.mp4.partial')).toBe(true)
+    expect(isNoisyFileBasename('downloads/movie.mp4.crdownload')).toBe(true)
+  })
+
+  test('handles Windows backslash separators (relative paths)', () => {
+    expect(isNoisyFileBasename('prisma\\dev.db-journal')).toBe(true)
+    expect(isNoisyFileBasename('src\\App.tsx.swp')).toBe(true)
+  })
+
+  test('does NOT match legitimate source files (over-broadening guard)', () => {
+    // Prisma schema — the most important false-positive to guard against,
+    // because the agent edits this and the canvas needs to react.
+    expect(isNoisyFileBasename('prisma/schema.prisma')).toBe(false)
+    // Generic source files.
+    expect(isNoisyFileBasename('src/App.tsx')).toBe(false)
+    expect(isNoisyFileBasename('src/index.css')).toBe(false)
+    expect(isNoisyFileBasename('package.json')).toBe(false)
+    // `.lock` must be suffix-anchored, not substring: a file named
+    // `lockfile.ts` is a regular TS source file, not a lock file.
+    expect(isNoisyFileBasename('src/lockfile.ts')).toBe(false)
+    expect(isNoisyFileBasename('src/foo.lockfile.ts')).toBe(false)
+    // `.db` is suffix-anchored too — files with `.db` in the middle of
+    // the name (rare but not impossible) are regular files.
+    expect(isNoisyFileBasename('src/db.config.ts')).toBe(false)
+    // `~` only at end-of-basename, not in the middle.
+    expect(isNoisyFileBasename('src/My~File.tsx')).toBe(false)
+  })
+})
+
+describe('shouldIgnore (per-event check, both layers combined)', () => {
+  test('regression: prisma SQLite sidecars (the original EPERM report)', () => {
+    expect(shouldIgnore('prisma/dev.db')).toBe(true)
+    expect(shouldIgnore('prisma/dev.db-journal')).toBe(true)
+    expect(shouldIgnore('prisma/dev.db-wal')).toBe(true)
+    expect(shouldIgnore('prisma/dev.db-shm')).toBe(true)
+  })
+
+  test('still ignores hard-coded path prefixes (node_modules, .git, dist, etc.)', () => {
+    expect(shouldIgnore('node_modules/foo/index.js')).toBe(true)
+    expect(shouldIgnore('.git/HEAD')).toBe(true)
+    expect(shouldIgnore('dist/bundle.js')).toBe(true)
+    expect(shouldIgnore('.next/cache/data')).toBe(true)
+  })
+
+  test('still allows legitimate source files through', () => {
+    expect(shouldIgnore('prisma/schema.prisma')).toBe(false)
+    expect(shouldIgnore('src/App.tsx')).toBe(false)
+    expect(shouldIgnore('app/index.tsx')).toBe(false)
+    expect(shouldIgnore('package.json')).toBe(false)
+  })
+})
+
+describe('buildIgnoreGlobs (noisy-file pattern coverage)', () => {
+  test('includes a glob for each NOISY_FILE_PATTERNS category', () => {
+    const globs = buildIgnoreGlobs(tmpDir)
+    // SQLite
+    expect(globs).toContain('**/*.db')
+    expect(globs).toContain('**/*.db-journal')
+    expect(globs).toContain('**/*.db-wal')
+    expect(globs).toContain('**/*.db-shm')
+    expect(globs).toContain('**/*.db-mj*')
+    expect(globs).toContain('**/*.sqlite')
+    expect(globs).toContain('**/*.sqlite3')
+    // Lock files
+    expect(globs).toContain('**/*.lock')
+    expect(globs).toContain('**/.#*')
+    expect(globs).toContain('**/~$*')
+    // Editor swap/backup
+    expect(globs).toContain('**/*.swp')
+    expect(globs).toContain('**/*.swo')
+    expect(globs).toContain('**/*.swn')
+    expect(globs).toContain('**/?*~')
+    // OS metadata
+    expect(globs).toContain('**/.DS_Store')
+    expect(globs).toContain('**/Thumbs.db')
+    expect(globs).toContain('**/desktop.ini')
+    expect(globs).toContain('**/.directory')
+    // Atomic-write temps
+    expect(globs).toContain('**/*.tmp')
+    expect(globs).toContain('**/.tmp.*')
+    expect(globs).toContain('**/*.partial')
+    expect(globs).toContain('**/*.crdownload')
   })
 })

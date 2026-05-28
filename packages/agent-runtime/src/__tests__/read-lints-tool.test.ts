@@ -5,7 +5,7 @@
  * Uses a mock LSP that returns controlled diagnostics.
  */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdirSync, writeFileSync, rmSync, realpathSync } from 'fs'
+import { mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync } from 'fs'
 import { join } from 'path'
 import { createTools, type ToolContext } from '../gateway-tools'
 import { FileStateCache } from '../file-state-cache'
@@ -306,5 +306,110 @@ describe('read_lints tool', () => {
     const ctx = createCtx(createMockLSPManager(diagnostics), cache)
     const result = await execReadLints(ctx)
     expect(result.auto_scoped).toBeUndefined()
+  })
+
+  // ---------------------------------------------------------------------------
+  // Hardcoded-port scan: rewrites known runtime-port URLs to
+  // `${process.env.<VAR>}`, errors on .py hits, warns on other ports.
+  // ---------------------------------------------------------------------------
+
+  test('port autofix: rewrites localhost:3001 in a .tsx file and returns port_fixes', async () => {
+    const filePath = join(TEST_DIR, 'canvas', 'fetch.tsx')
+    writeFileSync(filePath, `const url = "http://localhost:3001/api/items"\n`, 'utf-8')
+    const cache = new FileStateCache()
+    cache.markEditedThisTurn('canvas/fetch.tsx')
+    const ctx = createCtx(createMockLSPManager(), cache)
+
+    const result = await execReadLints(ctx)
+    expect(result.ok).toBe(true)
+    expect(result.port_fixes).toHaveLength(1)
+    expect(result.port_fixes[0].path).toBe('canvas/fetch.tsx')
+    expect(result.port_fixes[0].fixes[0].envVar).toBe('API_SERVER_PORT')
+    expect(result.hint).toContain('Rewrote')
+
+    const after = readFileSync(filePath, 'utf-8')
+    expect(after).toBe('const url = `http://localhost:${process.env.API_SERVER_PORT}/api/items`\n')
+  })
+
+  test('port autofix: rewrites localhost:8080 in a .ts file with RUNTIME_PORT', async () => {
+    const filePath = join(TEST_DIR, 'canvas', 'api.ts')
+    writeFileSync(filePath, `fetch('http://localhost:8080/rt')\n`, 'utf-8')
+    const cache = new FileStateCache()
+    cache.markEditedThisTurn('canvas/api.ts')
+    const savedPort = process.env.PORT
+    delete process.env.PORT
+    try {
+      const ctx = createCtx(createMockLSPManager(), cache)
+      const result = await execReadLints(ctx)
+      expect(result.port_fixes).toHaveLength(1)
+      expect(result.port_fixes[0].fixes[0].envVar).toBe('RUNTIME_PORT')
+      const after = readFileSync(filePath, 'utf-8')
+      expect(after).toBe('fetch(`http://localhost:${process.env.RUNTIME_PORT}/rt`)\n')
+    } finally {
+      if (savedPort !== undefined) process.env.PORT = savedPort
+    }
+  })
+
+  test('port error: .py file with hardcoded 3001 flips ok to false', async () => {
+    const filePath = join(TEST_DIR, 'canvas', 'seed.py')
+    writeFileSync(filePath, `URL = "http://localhost:3001/api"\n`, 'utf-8')
+    const cache = new FileStateCache()
+    cache.markEditedThisTurn('canvas/seed.py')
+    const ctx = createCtx(createMockLSPManager(), cache)
+
+    const result = await execReadLints(ctx)
+    expect(result.ok).toBe(false)
+    expect(result.files).toHaveLength(1)
+    expect(result.files[0].path).toBe('canvas/seed.py')
+    expect(result.files[0].errors[0]).toContain('hardcoded runtime port')
+    expect(result.files[0].errors[0]).toContain("os.environ['API_SERVER_PORT']")
+    // File must NOT be rewritten
+    expect(readFileSync(filePath, 'utf-8')).toBe(`URL = "http://localhost:3001/api"\n`)
+  })
+
+  test('port warning: unknown port keeps ok true but exposes port_warnings', async () => {
+    const filePath = join(TEST_DIR, 'canvas', 'pg.ts')
+    writeFileSync(filePath, `const db = "http://localhost:5432/x"\n`, 'utf-8')
+    const cache = new FileStateCache()
+    cache.markEditedThisTurn('canvas/pg.ts')
+    const ctx = createCtx(createMockLSPManager(), cache)
+
+    const result = await execReadLints(ctx)
+    expect(result.ok).toBe(true)
+    expect(result.port_fixes).toBeUndefined()
+    expect(result.port_warnings).toHaveLength(1)
+    expect(result.port_warnings[0].path).toBe('canvas/pg.ts')
+    expect(result.port_warnings[0].warnings[0].reason).toContain('5432')
+    // File must NOT be rewritten
+    expect(readFileSync(filePath, 'utf-8')).toBe(`const db = "http://localhost:5432/x"\n`)
+  })
+
+  test('port scan: combines LSP errors and port errors for the same .py file', async () => {
+    const filePath = join(TEST_DIR, 'canvas', 'broken.py')
+    writeFileSync(filePath, `URL = "http://localhost:3001/api"\nbad_syntax\n`, 'utf-8')
+    const diagnostics = new Map<string, LSPDiagnostic[]>([
+      [`file://${TEST_DIR}/canvas/broken.py`, [diag(1, 'Unexpected token', 1, 9999)]],
+    ])
+    const cache = new FileStateCache()
+    cache.markEditedThisTurn('canvas/broken.py')
+    const ctx = createCtx(createMockLSPManager(diagnostics), cache)
+
+    const result = await execReadLints(ctx)
+    expect(result.ok).toBe(false)
+    expect(result.files).toHaveLength(1)
+    expect(result.files[0].errors.length).toBeGreaterThanOrEqual(2)
+    expect(result.files[0].errors.some((e: string) => e.includes('hardcoded runtime port'))).toBe(true)
+    expect(result.files[0].errors.some((e: string) => e.includes('Unexpected token'))).toBe(true)
+  })
+
+  test('port scan: explicit path triggers autofix even without auto-scope', async () => {
+    const filePath = join(TEST_DIR, 'canvas', 'explicit.tsx')
+    writeFileSync(filePath, `const u = "http://localhost:3001/x"`, 'utf-8')
+    const ctx = createCtx(createMockLSPManager())
+    const result = await execReadLints(ctx, { path: 'canvas/explicit.tsx' })
+    expect(result.port_fixes).toHaveLength(1)
+    expect(readFileSync(filePath, 'utf-8')).toBe(
+      'const u = `http://localhost:${process.env.API_SERVER_PORT}/x`',
+    )
   })
 })

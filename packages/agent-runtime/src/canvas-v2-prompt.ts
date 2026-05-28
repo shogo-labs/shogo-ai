@@ -10,8 +10,11 @@
 // The project's API server (`server.tsx` at the project root) listens on
 // this port. Same-origin proxying through the runtime's `/api/*` makes
 // the port irrelevant from React code, but agent tools (`web`, `exec`,
-// scripts) sometimes need the full URL.
-const API_PORT = '3001'
+// scripts) sometimes need the full URL. Imported from the shared
+// hardcoded-port lint module so the prompt and read_lints autofix can't
+// drift apart.
+import { PROJECT_API_PORT } from './lint-hardcoded-ports'
+const API_PORT = PROJECT_API_PORT
 
 // ---------------------------------------------------------------------------
 // Section 1: Core Guide

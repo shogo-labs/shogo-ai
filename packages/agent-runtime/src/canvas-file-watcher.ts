@@ -88,13 +88,79 @@ const IGNORED_PATH_PREFIXES = [
   '.turbo',
   '.cache',
   'src/generated',
-  'prisma/dev.db',
+  // Python convention. These are bytecode/virtualenv dirs that no
+  // user ever edits — same rationale as `node_modules` for JS. Both
+  // also match nested via the NESTED_PREFIXES set below (e.g. a
+  // monorepo with `packages/foo/.venv/`).
+  '__pycache__',
+  '.venv',
+  'venv',
 ]
 
 function shouldIgnore(relativePath: string): boolean {
   if (!relativePath || relativePath === '.' || relativePath.startsWith('..')) return true
   for (const p of IGNORED_PATH_PREFIXES) {
     if (relativePath === p || relativePath.startsWith(p + '/')) return true
+  }
+  if (isNoisyFileBasename(relativePath)) return true
+  return false
+}
+
+// Transient or exclusively-locked files that chokidar will EPERM on when
+// it tries to `fs.stat` them for awaitWriteFinish (typical Windows
+// failure mode — see the `EPERM: operation not permitted, watch '…dev.db-
+// journal'` reports). Each entry pairs a chokidar glob (used to short-
+// circuit `add` events before they fire) with a basename regex (used in
+// `shouldIgnore` as a defensive net for any event chokidar still
+// delivers — e.g. an event for a path matched only by basename, not by
+// the workspace-anchored glob). The two MUST stay in sync.
+//
+// Categories: SQLite (databases + journal/WAL/SHM/master-journal sidecars
+// per https://www.sqlite.org/tempfiles.html), lock files (*.lock, Emacs
+// `.#*`, MS Office `~$*`), editor swaps/backups (vim `*.sw[opn]`, generic
+// `*~`), OS metadata (.DS_Store, Thumbs.db, desktop.ini, .directory), and
+// atomic-write temps (*.tmp, .tmp.*, *.partial, *.crdownload).
+const NOISY_FILE_PATTERNS: readonly { glob: string; regex: RegExp }[] = [
+  // SQLite databases and sidecars
+  { glob: '**/*.db',         regex: /\.db$/i },
+  { glob: '**/*.db-journal', regex: /\.db-journal$/i },
+  { glob: '**/*.db-wal',     regex: /\.db-wal$/i },
+  { glob: '**/*.db-shm',     regex: /\.db-shm$/i },
+  { glob: '**/*.db-mj*',     regex: /\.db-mj[0-9a-f]+$/i },
+  { glob: '**/*.sqlite',     regex: /\.sqlite$/i },
+  { glob: '**/*.sqlite-*',   regex: /\.sqlite-(journal|wal|shm|mj[0-9a-f]+)$/i },
+  { glob: '**/*.sqlite3',    regex: /\.sqlite3$/i },
+  { glob: '**/*.sqlite3-*',  regex: /\.sqlite3-(journal|wal|shm|mj[0-9a-f]+)$/i },
+
+  // Lock files
+  { glob: '**/*.lock',       regex: /\.lock$/i },
+  { glob: '**/.#*',          regex: /^\.#/ },
+  { glob: '**/~$*',          regex: /^~\$/ },
+
+  // Editor swap/backup files
+  { glob: '**/*.swp',        regex: /\.swp$/ },
+  { glob: '**/*.swo',        regex: /\.swo$/ },
+  { glob: '**/*.swn',        regex: /\.swn$/ },
+  { glob: '**/?*~',          regex: /.+~$/ },
+
+  // OS metadata
+  { glob: '**/.DS_Store',    regex: /^\.DS_Store$/ },
+  { glob: '**/Thumbs.db',    regex: /^Thumbs\.db$/i },
+  { glob: '**/desktop.ini',  regex: /^desktop\.ini$/i },
+  { glob: '**/.directory',   regex: /^\.directory$/ },
+
+  // Atomic-write temps
+  { glob: '**/*.tmp',        regex: /\.tmp$/i },
+  { glob: '**/.tmp.*',       regex: /^\.tmp\./ },
+  { glob: '**/*.partial',    regex: /\.partial$/ },
+  { glob: '**/*.crdownload', regex: /\.crdownload$/ },
+]
+
+function isNoisyFileBasename(relativePath: string): boolean {
+  const slash = Math.max(relativePath.lastIndexOf('/'), relativePath.lastIndexOf('\\'))
+  const base = slash === -1 ? relativePath : relativePath.slice(slash + 1)
+  for (const p of NOISY_FILE_PATTERNS) {
+    if (p.regex.test(base)) return true
   }
   return false
 }
@@ -148,6 +214,9 @@ function buildIgnoreGlobs(
     '.next',
     '.turbo',
     '.cache',
+    '__pycache__',
+    '.venv',
+    'venv',
   ])
   const globs: string[] = []
   for (const p of IGNORED_PATH_PREFIXES) {
@@ -170,6 +239,14 @@ function buildIgnoreGlobs(
     globs.push(`${workspaceDir}/${name}/**`)
     globs.push(`**/${name}`)
     globs.push(`**/${name}/**`)
+  }
+  // Noisy file shapes (SQLite sidecars, lock files, editor swaps, OS
+  // metadata, atomic-write temps). The per-event `isNoisyFileBasename`
+  // check in `shouldIgnore` is the runtime backstop; these globs let
+  // chokidar suppress the `add` event entirely so we never even reach
+  // the awaitWriteFinish stat call that EPERMs on Windows.
+  for (const p of NOISY_FILE_PATTERNS) {
+    globs.push(p.glob)
   }
   return globs
 }
@@ -249,6 +326,8 @@ async function loadSimpleIgnoredDirsFromGitignore(
 export const __testInternals = {
   buildIgnoreGlobs,
   loadSimpleIgnoredDirsFromGitignore,
+  shouldIgnore,
+  isNoisyFileBasename,
 }
 
 export type CanvasEvent =

@@ -15,8 +15,25 @@
 
 import { Database } from 'bun:sqlite'
 import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, type Dirent } from 'fs'
+import { readdir as readdirAsync, readFile as readFileAsync, stat as statAsync } from 'fs/promises'
 import { join, extname } from 'path'
 import OpenAI from 'openai'
+
+// Yield to the event loop every N file-system ops during the workspace
+// scan so Bun.serve's `fetch` handler (chat proxy, /health, …) can
+// interleave between batches. We use `setTimeout(1)` rather than
+// `setImmediate` because Bun drains the microtask queue from the
+// indexer's Promise chain before honoring `setImmediate` callbacks,
+// so a zero-delay yield doesn't actually give the server macrotask
+// any wall time — verified empirically: `setImmediate` yields left
+// /health timing out for the whole scan, a 1 ms real timer fixes it.
+//
+// This only matters when the lazy scan actually runs (first
+// `/workspace-search` call, or when `SHOGO_INDEX_PREWARM=1`). The
+// eager boot-time pre-warm is gated off by default — see
+// `gateway.ts:initIndexEngine`.
+const SCAN_YIELD_EVERY = 50
+const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 1))
 
 // ---------------------------------------------------------------------------
 // Types
@@ -99,15 +116,60 @@ export const CODE_SKIP_FILE_PATTERNS = [/\.pyc$/, /\.pyo$/, /\.so$/, /\.dylib$/,
 export const FILE_EXTENSIONS = new Set(['.txt', '.csv', '.md'])
 
 export function createCodeSource(workspaceDir: string): ScanSource {
+  // Merge the hard-coded skip-dirs with user-declared bare directory
+  // names pulled from the workspace's `.gitignore` / `.shogoignore`.
+  // Same parser the chokidar watcher uses (see
+  // `canvas-file-watcher.ts:loadSimpleIgnoredDirsFromGitignore`) so the
+  // two paths stay in lockstep — anything the user already declared as
+  // ignored for git is also skipped by the indexer, without us having
+  // to hard-code anyone's project-specific vendored directory
+  // (`third_party/`, `Pods/`, `bazel-out/`, `target/`, …) into the
+  // shared base list. The synchronous read is fine here: this is a
+  // one-shot config build at gateway startup, well before reindex
+  // begins.
+  const userSkipDirs = loadIgnoredDirsSync(workspaceDir)
+  const skipDirs = new Set<string>([...CODE_SKIP_DIRS, ...userSkipDirs])
   return {
     id: 'code',
     scanDir: workspaceDir,
     extensions: CODE_EXTENSIONS,
-    skipDirs: CODE_SKIP_DIRS,
+    skipDirs,
     skipFilePatterns: CODE_SKIP_FILE_PATTERNS,
     maxFileSize: 512 * 1024,
     chunkLines: 40,
   }
+}
+
+/**
+ * Sync sibling of `canvas-file-watcher.ts:loadSimpleIgnoredDirsFromGitignore`.
+ * Kept in a separate module to avoid pulling the chokidar watcher's
+ * full dependency graph into anything that just wants the config
+ * builder. The parsing rules are identical: bare directory names
+ * (with optional trailing `/`), no globs, no negations, no path-
+ * anchored entries. Failures to read are swallowed — a workspace
+ * without either file just falls back to the hard-coded base set.
+ */
+function loadIgnoredDirsSync(workspaceDir: string): string[] {
+  const dirs = new Set<string>()
+  for (const file of ['.gitignore', '.shogoignore']) {
+    let content: string
+    try {
+      content = readFileSync(join(workspaceDir, file), 'utf8')
+    } catch {
+      continue
+    }
+    for (const rawLine of content.split('\n')) {
+      const line = rawLine.trim()
+      if (!line || line.startsWith('#')) continue
+      if (line.startsWith('!')) continue
+      if (line.includes('*') || line.includes('?') || line.includes('[')) continue
+      const trimmed = line.endsWith('/') ? line.slice(0, -1) : line
+      if (!trimmed) continue
+      if (trimmed.includes('/')) continue
+      dirs.add(trimmed)
+    }
+  }
+  return [...dirs]
 }
 
 export function createFilesSource(workspaceDir: string): ScanSource {
@@ -332,20 +394,26 @@ export class IndexEngine {
       : [...this.sources.values()]
 
     for (const src of sourcesToIndex) {
-      const diskFiles = this.discoverFiles(src)
+      const diskFiles = await this.discoverFiles(src)
       const getMeta = this.db.prepare('SELECT mtime_ms FROM meta WHERE path = ? AND source = ?')
 
       const toIndex: string[] = []
       const diskPaths = new Set(diskFiles.map(f => f.relativePath))
 
+      // Stat-vs-meta diff over (potentially) thousands of files. The
+      // sync `statSync` form blocks the JS thread for the whole sweep;
+      // use async stat and yield every {@link SCAN_YIELD_EVERY} entries
+      // so chat / health requests get serviced between batches.
+      let i = 0
       for (const { relativePath, absolutePath } of diskFiles) {
         try {
-          const stat = statSync(absolutePath)
+          const stat = await statAsync(absolutePath)
           const meta = getMeta.get(relativePath, src.id) as { mtime_ms: number } | undefined
           if (!meta || meta.mtime_ms < stat.mtimeMs) {
             toIndex.push(relativePath)
           }
         } catch { /* file disappeared between discover and stat */ }
+        if (++i % SCAN_YIELD_EVERY === 0) await yieldToEventLoop()
       }
 
       const indexedPaths = this.db.prepare('SELECT path FROM meta WHERE source = ?').all(src.id) as { path: string }[]
@@ -392,23 +460,31 @@ export class IndexEngine {
     }
 
     const absPath = join(src.scanDir, relPath)
-    if (!existsSync(absPath)) return
 
     if (src.skipFilePatterns?.some(p => p.test(relPath))) return
 
-    if (src.maxFileSize) {
-      try {
-        const stat = statSync(absPath)
-        if (stat.size > src.maxFileSize) return
-      } catch { return }
-    }
+    // Single stat: covers existence, size cap, and the mtime we record
+    // back into `meta` below. Replaces an `existsSync` + two `statSync`
+    // calls that used to fire on every file (3 sync syscalls per file ×
+    // tens of thousands of files = a multi-minute thread-pool stall).
+    let stat
+    try {
+      stat = await statAsync(absPath)
+    } catch { return }
+    if (src.maxFileSize && stat.size > src.maxFileSize) return
 
+    // Async read so libuv handles the I/O off the JS thread. The sync
+    // `readFileSync` form previously held the main thread for the
+    // entire file duration on every file — fine on a 5-file demo,
+    // catastrophic on a polyglot workspace with thousands of source
+    // files (vendored deps, generated code, etc.) where it stacked
+    // into ~67% sustained CPU on the runtime's main thread and
+    // starved Bun.serve's `fetch` handler.
     let content: string
     try {
-      content = readFileSync(absPath, 'utf-8')
+      content = await readFileAsync(absPath, 'utf-8')
     } catch { return }
 
-    const stat = statSync(absPath)
     const chunkLines = src.chunkLines ?? DEFAULT_CHUNK_LINES
     const chunks = this.chunkText(content, relPath, src.id, chunkLines)
 
@@ -718,18 +794,38 @@ export class IndexEngine {
   // File Discovery
   // ---------------------------------------------------------------------------
 
-  private discoverFiles(src: ScanSource): Array<{ relativePath: string; absolutePath: string }> {
+  private async discoverFiles(src: ScanSource): Promise<Array<{ relativePath: string; absolutePath: string }>> {
     if (!existsSync(src.scanDir)) return []
-    return this.walkDir(src, src.scanDir, '')
+    const results: Array<{ relativePath: string; absolutePath: string }> = []
+    const counter = { ops: 0 }
+    await this.walkDir(src, src.scanDir, '', results, counter)
+    return results
   }
 
-  private walkDir(src: ScanSource, dir: string, prefix: string): Array<{ relativePath: string; absolutePath: string }> {
-    const results: Array<{ relativePath: string; absolutePath: string }> = []
-
+  /**
+   * Async, depth-first directory walk. Uses `fsp.readdir` / `fsp.stat`
+   * (libuv thread pool) instead of the sync counterparts so each I/O
+   * op yields the JS thread back to the event loop while waiting on
+   * the kernel. We also explicitly `setImmediate`-yield every
+   * {@link SCAN_YIELD_EVERY} ops — on Windows NTFS, even async `readdir`
+   * can return fast enough that the await chain never visits a
+   * macrotask, leaving Bun.serve's `fetch` handler starved through
+   * an entire 9k-file scan.
+   */
+  private async walkDir(
+    src: ScanSource,
+    dir: string,
+    prefix: string,
+    results: Array<{ relativePath: string; absolutePath: string }>,
+    counter: { ops: number },
+  ): Promise<void> {
     let entries: Dirent[]
     try {
-      entries = readdirSync(dir, { withFileTypes: true, encoding: 'utf-8' }) as Dirent[]
-    } catch { return results }
+      entries = await readdirAsync(dir, { withFileTypes: true, encoding: 'utf-8' }) as Dirent[]
+    } catch { return }
+
+    counter.ops++
+    if (counter.ops % SCAN_YIELD_EVERY === 0) await yieldToEventLoop()
 
     for (const entry of entries) {
       if (entry.name.startsWith('.')) continue
@@ -740,16 +836,19 @@ export class IndexEngine {
       if (entry.isDirectory()) {
         if (src.skipDirs?.has(entry.name)) continue
         if (entry.name === 'node_modules') continue
-        results.push(...this.walkDir(src, absPath, relPath))
-      } else if (this.shouldIndex(src, entry.name, absPath)) {
+        await this.walkDir(src, absPath, relPath, results, counter)
+      } else if (await this.shouldIndex(src, entry.name, absPath, counter)) {
         results.push({ relativePath: relPath, absolutePath: absPath })
       }
     }
-
-    return results
   }
 
-  private shouldIndex(src: ScanSource, name: string, absPath: string): boolean {
+  private async shouldIndex(
+    src: ScanSource,
+    name: string,
+    absPath: string,
+    counter: { ops: number },
+  ): Promise<boolean> {
     if (src.extensions) {
       const ext = extname(name).toLowerCase()
       if (!src.extensions.has(ext)) return false
@@ -757,7 +856,9 @@ export class IndexEngine {
     if (src.skipFilePatterns?.some(p => p.test(name))) return false
     if (src.maxFileSize) {
       try {
-        const stat = statSync(absPath)
+        const stat = await statAsync(absPath)
+        counter.ops++
+        if (counter.ops % SCAN_YIELD_EVERY === 0) await yieldToEventLoop()
         if (stat.size > src.maxFileSize) return false
       } catch { return false }
     }
