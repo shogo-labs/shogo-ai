@@ -601,6 +601,23 @@
         }
       ],
       "note": "New test file voice-routes-twilio-provision.test.ts covers GET /voice/twilio/available-numbers/:projectId and POST /voice/twilio/provision-number/:projectId \u2014 both endpoints that voice-routes.test.ts and voice-routes-runtime-token.test.ts skipped. Tests happy path, idempotency, all 5 error tails: 503 (unconfigured), 402 (balance), 502 (EL agent fail/Twilio search fail/Twilio purchase fail/EL link fail with compensating release), 409 (no numbers available). Funcs now 100%. No new test failures."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 2 \u2014 opportunistic",
+      "message": "test(coverage): voice.ts cleanup paths \u2014 89.36% \u2192 92.01% lines",
+      "perFile": [
+        {
+          "file": "apps/api/src/routes/voice.ts",
+          "beforeLines": "1319/1476 (89.36%)",
+          "afterLines": "1358/1476 (92.01%)",
+          "deltaLinesHit": 39,
+          "deltaFuncsHit": 0,
+          "newTests": 15
+        }
+      ],
+      "note": "New test file voice-routes-twilio-cleanup.test.ts covers: DELETE /voice/twilio/number/:projectId (5 tests: no_number, happy path, Twilio release error, EL deletePhone error, Twilio unconfigured warning); POST /voice/twilio/status/:projectId metering catch (3 tests: recordCallUsage failure, no-CallSid ignore, project_not_configured ignore); POST /voice/translator/chat/:chatSessionId (6 tests: 503 no model, 400 invalid JSON, 404 session not found, 403 non-member, 200 happy path, resolveVoiceContext error warning); POST /voice/transcript/:chatSessionId persist 500. Funcs remain at 100%. No new test failures."
     }
   ],
   "frontend": {
