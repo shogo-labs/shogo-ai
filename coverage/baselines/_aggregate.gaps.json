@@ -586,7 +586,7 @@
       "note": "Second extra-paths test file. Flips hasBalance/hasAdvancedModelAccess to false to cover all 402/403 billing rejection tails in /ai/v1/chat/completions and /ai/anthropic/v1/messages. Covers AbortError \u2192 499 and non-Abort error \u2192 500 in Anthropic pass-through. Covers resolveModel claude/gpt prefix fallbacks and null return. Covers resolveAgentModel local branches with LOCAL_LLM_BASE_URL set. Crosses the \u226595% line-coverage threshold. No new test failures; 4 pre-existing E2E failures unchanged."
     },
     {
-      "sha": "PENDING",
+      "sha": "926d26b3",
       "date": "2026-05-28",
       "wave": "Wave 2 \u2014 opportunistic",
       "message": "test(coverage): voice.ts Twilio provision \u2014 80.38% \u2192 89.36% lines",
