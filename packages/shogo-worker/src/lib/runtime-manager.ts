@@ -31,7 +31,7 @@
  *   - No Prisma reads. All policy comes from the spawn config.
  *   - No security policy build. Cloud signs the policy and sends it.
  */
-import { type ChildProcess, spawn } from 'node:child_process';
+import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { createConnection } from 'node:net';
@@ -1097,9 +1097,9 @@ export class WorkerRuntimeManager implements RuntimeResolver {
   }
 
   /**
-   * Kill every process in `slot.pid`'s process group. Best-effort:
-   * if the group is already gone (everyone exited cleanly), or the
-   * platform doesn't support PGID kills (Windows), this is a no-op.
+   * Kill every process in `slot.pid`'s process group / job tree.
+   * Best-effort: if the group is already gone (everyone exited cleanly)
+   * this is a no-op.
    *
    * Why we use the recorded PID and not `slot.proc.pid`: by the time
    * {@link handleExit} runs, `proc` has already fired its `'exit'`
@@ -1107,10 +1107,31 @@ export class WorkerRuntimeManager implements RuntimeResolver {
    * intact until the *last* member of the group exits, so the PGID
    * we captured at spawn is still valid for reaping the orphans even
    * after the group leader is gone.
+   *
+   * Windows: `process.kill(-pid, ...)` is unsupported and Node's
+   * `child.kill('SIGTERM')` is just `TerminateProcess` on the parent,
+   * which does NOT cascade to grandchildren — vite, the inner
+   * preview-manager API server, tsserver, pyright, and `server.tsx`
+   * all survive as orphans (each holding chokidar watcher handles
+   * that wedge the next spawn's event loop). We use `taskkill /F /T`
+   * to walk the process tree by parent PID instead.
    */
   private killProcessGroup(slot: InternalRuntime, signal: NodeJS.Signals): void {
-    if (process.platform === 'win32') return;
     if (!slot.pid) return;
+    if (process.platform === 'win32') {
+      try {
+        spawnSync('taskkill', ['/F', '/T', '/PID', String(slot.pid)], {
+          stdio: 'ignore',
+          windowsHide: true,
+        });
+      } catch {
+        // taskkill missing or the tree already collapsed — either way
+        // we have no recourse and the parent .kill() above (or the
+        // belt-and-suspenders SIGKILL in waitForExit) is the best we
+        // can still do.
+      }
+      return;
+    }
     try {
       process.kill(-slot.pid, signal);
     } catch {

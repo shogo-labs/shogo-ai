@@ -1088,6 +1088,30 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       return inflight
     }
 
+    // If a prior start crashed into 'error' (or got stuck in 'starting'
+    // with no inflight promise, e.g. when waitForHealth timed out and
+    // the worker's spawn left a wedged tree behind), tear down whatever
+    // is still on disk for this project before we allocate a fresh
+    // port and spawn another copy. Otherwise we accumulate parallel
+    // agent-runtime trees per failed retry — each one binding ports
+    // 37xxx + spawning vite + tsserver + server.tsx — and the chat
+    // proxy fans out across them indefinitely. Discovered on Windows
+    // where the worker's previous SIGTERM was a no-op on grandchildren
+    // (see killProcessGroup in packages/shogo-worker/src/lib/runtime-manager.ts).
+    if (existing && (existing.status === 'error' || existing.status === 'starting')) {
+      console.log(
+        `[RuntimeManager] start(${projectId}): prior runtime in status='${existing.status}' — ` +
+          `stopping leaked tree before respawn`,
+      )
+      try {
+        await this.stop(projectId)
+      } catch (err: any) {
+        console.warn(
+          `[RuntimeManager] start(${projectId}): pre-respawn stop failed: ${err?.message ?? err} — continuing`,
+        )
+      }
+    }
+
     const promise = this.doStart(projectId)
     this.startingPromises.set(projectId, promise)
     try {

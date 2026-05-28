@@ -14,6 +14,11 @@ import {
   readFileWithMetadata,
   writeWithMetadata,
   getStructuredPatch,
+  detectLineEndings,
+  normalizeLineEndings,
+  resolveLineEndingPolicy,
+  matchesGitAttributesPattern,
+  clearGitAttributesCache,
 } from '../edit-file-utils'
 import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 
@@ -556,6 +561,253 @@ describe('CRLF preservation in edit_file', () => {
 
     const raw = readFileSync(filePath, 'utf-8')
     expect(raw).toBe('const a = 99\r\nconst b = 2\r\n')
+  })
+
+  // Regression: stray CRLFs in new_string used to splice into LF files and
+  // gradually tip the majority-vote detector, locking the file into CRLF on
+  // future edits. The pipeline now normalizes new_string to the target.
+  test('LF file with CRLF in new_string stays LF', async () => {
+    const ctx = createCtx()
+    const filePath = join(TEST_DIR, 'lf-stays-lf.ts')
+    writeFileSync(filePath, 'const a = 1\nconst b = 2\n')
+    await exec(ctx, 'read_file', { path: 'lf-stays-lf.ts' })
+
+    const result = await exec(ctx, 'edit_file', {
+      path: 'lf-stays-lf.ts',
+      old_string: 'const a = 1',
+      new_string: 'const a = 99\r\nconst c = 3',
+    })
+    expect(result.ok).toBe(true)
+
+    const raw = readFileSync(filePath, 'utf-8')
+    expect(raw).not.toContain('\r')
+    expect(raw).toBe('const a = 99\nconst c = 3\nconst b = 2\n')
+  })
+
+  // Symmetric: a CRLF file is still editable when the model emits LF in
+  // old_string / new_string. We normalize both sides to the target ending
+  // before matching.
+  test('CRLF file accepts LF-only old_string and new_string', async () => {
+    const ctx = createCtx()
+    const filePath = join(TEST_DIR, 'crlf-accepts-lf.ts')
+    writeFileSync(filePath, 'line one\r\nline two\r\nline three\r\n')
+    await exec(ctx, 'read_file', { path: 'crlf-accepts-lf.ts' })
+
+    const result = await exec(ctx, 'edit_file', {
+      path: 'crlf-accepts-lf.ts',
+      old_string: 'line one\nline two',
+      new_string: 'LINE ONE\nLINE TWO',
+    })
+    expect(result.ok).toBe(true)
+
+    const raw = readFileSync(filePath, 'utf-8')
+    expect(raw).toBe('LINE ONE\r\nLINE TWO\r\nline three\r\n')
+  })
+
+  test('.gitattributes eol=lf forces LF even when disk has CRLF', async () => {
+    clearGitAttributesCache()
+    const ctx = createCtx()
+    writeFileSync(join(TEST_DIR, '.gitattributes'), '* text=auto eol=lf\n')
+    const filePath = join(TEST_DIR, 'forced-lf.ts')
+    writeFileSync(filePath, 'const a = 1\r\nconst b = 2\r\n')
+    await exec(ctx, 'read_file', { path: 'forced-lf.ts' })
+
+    const result = await exec(ctx, 'edit_file', {
+      path: 'forced-lf.ts',
+      old_string: 'const a = 1',
+      new_string: 'const a = 99',
+    })
+    expect(result.ok).toBe(true)
+
+    const raw = readFileSync(filePath, 'utf-8')
+    expect(raw).not.toContain('\r')
+    expect(raw).toBe('const a = 99\nconst b = 2\n')
+    clearGitAttributesCache()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Line ending policy + heuristics
+// ---------------------------------------------------------------------------
+
+describe('detectLineEndings (conservative)', () => {
+  test('all LF -> LF', () => {
+    expect(detectLineEndings('a\nb\nc\n')).toBe('LF')
+  })
+
+  test('all CRLF -> CRLF', () => {
+    expect(detectLineEndings('a\r\nb\r\nc\r\n')).toBe('CRLF')
+  })
+
+  test('empty / no newlines -> LF', () => {
+    expect(detectLineEndings('')).toBe('LF')
+    expect(detectLineEndings('one line')).toBe('LF')
+  })
+
+  test('majority LF with a few CRLF stays LF', () => {
+    const content = 'a\r\nb\r\n' + 'c\n'.repeat(100)
+    expect(detectLineEndings(content)).toBe('LF')
+  })
+
+  // Old detector said CRLF here (51% rule); new detector requires ≥95%
+  // CRLF, so this stays LF and the writer won't mass-convert.
+  test('51% CRLF still classifies as LF (no majority-vote trap)', () => {
+    const content = 'x\r\n'.repeat(60) + 'y\n'.repeat(40)
+    expect(detectLineEndings(content)).toBe('LF')
+  })
+
+  test('≥95% CRLF classifies as CRLF', () => {
+    const content = 'x\r\n'.repeat(99) + 'y\n'
+    expect(detectLineEndings(content)).toBe('CRLF')
+  })
+})
+
+describe('normalizeLineEndings', () => {
+  test('normalizes mixed input to LF', () => {
+    expect(normalizeLineEndings('a\r\nb\rc\n', 'LF')).toBe('a\nb\nc\n')
+  })
+
+  test('normalizes mixed input to CRLF', () => {
+    expect(normalizeLineEndings('a\r\nb\rc\n', 'CRLF')).toBe('a\r\nb\r\nc\r\n')
+  })
+
+  test('CRLF -> LF is idempotent', () => {
+    const s = 'a\nb\nc'
+    expect(normalizeLineEndings(s, 'LF')).toBe(s)
+  })
+})
+
+describe('matchesGitAttributesPattern', () => {
+  test('* matches anything', () => {
+    expect(matchesGitAttributesPattern('*', 'foo.ts')).toBe(true)
+    expect(matchesGitAttributesPattern('*', 'a/b/c.txt')).toBe(true)
+  })
+
+  test('*.ext matches by extension', () => {
+    expect(matchesGitAttributesPattern('*.ts', 'foo.ts')).toBe(true)
+    expect(matchesGitAttributesPattern('*.ts', 'sub/foo.ts')).toBe(true)
+    expect(matchesGitAttributesPattern('*.ts', 'foo.js')).toBe(false)
+  })
+
+  test('anchored path matches exactly', () => {
+    expect(matchesGitAttributesPattern('/scripts/foo.sh', 'scripts/foo.sh')).toBe(true)
+    expect(matchesGitAttributesPattern('/scripts/foo.sh', 'a/scripts/foo.sh')).toBe(false)
+  })
+
+  test('dir/** matches files under dir', () => {
+    expect(matchesGitAttributesPattern('scripts/**', 'scripts/a/b.sh')).toBe(true)
+  })
+})
+
+describe('resolveLineEndingPolicy', () => {
+  const POLICY_DIR = '/tmp/test-edit-file-policy'
+
+  beforeEach(() => {
+    rmSync(POLICY_DIR, { recursive: true, force: true })
+    mkdirSync(POLICY_DIR, { recursive: true })
+    clearGitAttributesCache()
+  })
+
+  afterEach(() => {
+    rmSync(POLICY_DIR, { recursive: true, force: true })
+    clearGitAttributesCache()
+  })
+
+  test('returns null when no .gitattributes exists', () => {
+    const filePath = join(POLICY_DIR, 'nope.ts')
+    writeFileSync(filePath, 'x\n')
+    expect(resolveLineEndingPolicy(filePath)).toBe(null)
+  })
+
+  test('honors * eol=lf', () => {
+    writeFileSync(join(POLICY_DIR, '.gitattributes'), '* text=auto eol=lf\n')
+    const filePath = join(POLICY_DIR, 'a.ts')
+    writeFileSync(filePath, 'x\n')
+    expect(resolveLineEndingPolicy(filePath)).toBe('LF')
+  })
+
+  test('honors *.bat eol=crlf', () => {
+    writeFileSync(
+      join(POLICY_DIR, '.gitattributes'),
+      '* text=auto eol=lf\n*.bat text eol=crlf\n',
+    )
+    const tsFile = join(POLICY_DIR, 'a.ts')
+    const batFile = join(POLICY_DIR, 'run.bat')
+    writeFileSync(tsFile, 'x\n')
+    writeFileSync(batFile, 'echo\r\n')
+    expect(resolveLineEndingPolicy(tsFile)).toBe('LF')
+    expect(resolveLineEndingPolicy(batFile)).toBe('CRLF')
+  })
+
+  test('binary directive returns null', () => {
+    writeFileSync(
+      join(POLICY_DIR, '.gitattributes'),
+      '* eol=lf\n*.png binary\n',
+    )
+    const pngFile = join(POLICY_DIR, 'img.png')
+    writeFileSync(pngFile, Buffer.from([0, 1, 2, 3]))
+    expect(resolveLineEndingPolicy(pngFile)).toBe(null)
+  })
+
+  test('ignores comments and blank lines', () => {
+    writeFileSync(
+      join(POLICY_DIR, '.gitattributes'),
+      '# comment\n\n  # indented comment\n* eol=lf\n',
+    )
+    const filePath = join(POLICY_DIR, 'a.ts')
+    writeFileSync(filePath, 'x\n')
+    expect(resolveLineEndingPolicy(filePath)).toBe('LF')
+  })
+
+  test('targetLineEndings reflects .gitattributes even when disk has CRLF', () => {
+    writeFileSync(join(POLICY_DIR, '.gitattributes'), '* eol=lf\n')
+    const filePath = join(POLICY_DIR, 'crlf-disk.ts')
+    writeFileSync(filePath, 'a\r\nb\r\nc\r\n')
+    const meta = readFileWithMetadata(filePath)
+    expect(meta.lineEndings).toBe('CRLF') // disk reality
+    expect(meta.targetLineEndings).toBe('LF') // policy wins
+  })
+})
+
+describe('write_file honors line ending policy', () => {
+  const WF_DIR = '/tmp/test-edit-file-write-eol'
+
+  beforeAll(() => {
+    trustWorkspaceForTests(WF_DIR)
+  })
+
+  beforeEach(() => {
+    rmSync(WF_DIR, { recursive: true, force: true })
+    mkdirSync(WF_DIR, { recursive: true })
+    clearGitAttributesCache()
+  })
+
+  afterEach(() => {
+    rmSync(WF_DIR, { recursive: true, force: true })
+    clearGitAttributesCache()
+  })
+
+  test('new file under eol=lf converts CRLF content to LF', async () => {
+    writeFileSync(join(WF_DIR, '.gitattributes'), '* eol=lf\n')
+    const ctx = createCtx({ workspaceDir: WF_DIR })
+    const result = await exec(ctx, 'write_file', {
+      path: 'fresh.ts',
+      content: 'line1\r\nline2\r\n',
+    })
+    expect(result.ok).toBe(true)
+    const raw = readFileSync(join(WF_DIR, 'fresh.ts'), 'utf-8')
+    expect(raw).toBe('line1\nline2\n')
+  })
+
+  test('new file with no policy defaults to LF', async () => {
+    const ctx = createCtx({ workspaceDir: WF_DIR })
+    const result = await exec(ctx, 'write_file', {
+      path: 'default.ts',
+      content: 'a\r\nb\r\n',
+    })
+    expect(result.ok).toBe(true)
+    const raw = readFileSync(join(WF_DIR, 'default.ts'), 'utf-8')
+    expect(raw).toBe('a\nb\n')
   })
 })
 

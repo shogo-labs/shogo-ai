@@ -808,28 +808,57 @@ export class AgentGateway {
       })
     }
 
-    // Pre-warm unified index engine for workspace-wide search — deferred
-    // by 3 s after gateway start. The initial workspace scan + tree-sitter
-    // grammar preload uses sync fs walks (readdirSync + statSync per file)
-    // and sqlite writes, which on Windows held the event loop long enough
-    // to make /health unresponsive during cold boot. The index is only
-    // needed for /workspace-search and graph queries — neither is on the
-    // critical path of opening a project. Tunable via
-    // `SHOGO_INDEX_START_DELAY_MS`.
+    // Index engine + workspace graph: previously pre-warmed in the
+    // background on every gateway start. That meant every boot did a
+    // full `readdir + stat` sweep of the workspace and a tree-sitter
+    // parse of every code file — even when nothing had changed since
+    // the last boot — which on a large polyglot workspace (e.g. a 9k-
+    // file vendored C++/Python tree) held the JS main thread at ~95%
+    // CPU for several minutes and made the chat proxy and /health
+    // unresponsive for that whole window.
+    //
+    // The eager pre-warm is now gated off by default. The instances
+    // are still constructed in `initIndexEngine()` (cheap — just
+    // opens SQLite), so the lazy paths in `IndexEngine.search()` and
+    // `getOrCreateGraph()` (gateway-tools.ts) still work and trigger
+    // a scan on first use. Set `SHOGO_INDEX_PREWARM=1` to restore
+    // the old behavior. The proper fix — incremental updates fed
+    // from CanvasFileWatcher events plus a persisted "last scan"
+    // timestamp so subsequent boots skip the full re-walk — is
+    // tracked separately.
+    const prewarm = (process.env.SHOGO_INDEX_PREWARM ?? '').trim() === '1'
     const indexDelayMs = parseInt(process.env.SHOGO_INDEX_START_DELAY_MS ?? '3000', 10)
-    setTimeout(() => this.initIndexEngine(), Math.max(0, indexDelayMs))
+    if (prewarm) {
+      setTimeout(() => this.initIndexEngine({ prewarm: true }), Math.max(0, indexDelayMs))
+    } else {
+      // Still construct the engine + graph so the lazy paths have
+      // something to attach to; just skip the reindex/buildGraph work.
+      setTimeout(() => this.initIndexEngine({ prewarm: false }), Math.max(0, indexDelayMs))
+    }
     console.log('[AgentGateway] Started successfully')
     this.emitLog('Agent gateway started')
   }
 
-  private initIndexEngine(): void {
+  /**
+   * Construct (and optionally pre-warm) the index engine + workspace
+   * graph. Pre-warm is opt-in via `SHOGO_INDEX_PREWARM=1` — see the
+   * call site in `start()` for the rationale. When `prewarm` is
+   * false, this just wires up the instances so lazy callers
+   * (`IndexEngine.search()`, `getOrCreateGraph()` in
+   * gateway-tools.ts) have something to attach to; no scanning,
+   * stat-ing, or tree-sitter parsing happens here.
+   */
+  private initIndexEngine(opts: { prewarm: boolean } = { prewarm: false }): void {
     try {
       const { IndexEngine, createDefaultConfig } = require('./index-engine')
       const engine = new IndexEngine(createDefaultConfig(this.workspaceDir))
       this.indexEngine = engine
-      engine.reindexBackground()
+      if (opts.prewarm) {
+        engine.reindexBackground()
+      } else {
+        console.log(`${this.logPrefix} Index engine constructed (pre-warm disabled; first search will scan lazily)`)
+      }
 
-      // Initialize workspace knowledge graph (shares the same SQLite DB)
       try {
         const { WorkspaceGraph } = require('./workspace-graph')
         const { createDefaultExtractors } = require('./graph-extractors')
@@ -840,14 +869,19 @@ export class AgentGateway {
         engine.setGraph(graph)
         this.workspaceGraph = graph
 
-        // Pre-load Tree-sitter grammars then build graph + detect flows
+        if (!opts.prewarm) {
+          // Skip tree-sitter preload + graph build. The lazy
+          // `getOrCreateGraph()` path in gateway-tools.ts will run
+          // both on first tool call that needs them.
+          return
+        }
+
         const codeExt = extractors.find((e: any) => e instanceof CodeExtractor)
         const preloadPromise = codeExt?.preload?.() ?? Promise.resolve()
         preloadPromise.then(() => {
-          setTimeout(() => {
+          setTimeout(async () => {
             try {
-              graph.buildGraph()
-              // Detect execution flows after graph is built
+              await graph.buildGraph()
               try {
                 const { traceFlows, storeFlows } = require('./flow-detector')
                 const flows = traceFlows(graph)

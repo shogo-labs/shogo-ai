@@ -51,6 +51,7 @@ import {
 import {
   findActualString, preserveQuoteStyle, stripTrailingWhitespace,
   applyEditToFile, readFileWithMetadata, writeWithMetadata, getStructuredPatch,
+  resolveLineEndingPolicy, normalizeLineEndings,
   type LineEndingType,
 } from './edit-file-utils'
 import { MemorySearchEngine } from '@shogo-ai/sdk/memory'
@@ -83,6 +84,7 @@ function assertAllowedPath(targetPath: string, mode: 'read' | 'write' | 'exec', 
 import { deriveApiUrl, derivePublicApiUrl } from './internal-api'
 import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
+import { scanAndFixFile as scanFileForHardcodedPorts, type PortFix, type PortWarning } from './lint-hardcoded-ports'
 import { FileStateCache } from './file-state-cache'
 import { enforceImageSizeLimit, MAX_IMAGE_BASE64_BYTES } from './image-size-guard'
 import type { TeamManager } from './team-manager'
@@ -887,12 +889,18 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
       const dir = dirname(resolved)
       if (dir && dir !== resolved) mkdirSync(dir, { recursive: true })
 
-      if (append) {
-        const existing = existsSync(resolved) ? readFileSync(resolved, 'utf-8') : ''
-        writeFileSync(resolved, existing + content, 'utf-8')
-      } else {
-        writeFileSync(resolved, content, 'utf-8')
-      }
+      // Resolve target line endings: honor an existing file's detected
+      // ending (which itself honors .gitattributes via readFileWithMetadata),
+      // otherwise honor .gitattributes for the new path, otherwise LF.
+      const fileExists = existsSync(resolved)
+      const target: LineEndingType = fileExists
+        ? readFileWithMetadata(resolved).targetLineEndings
+        : (resolveLineEndingPolicy(resolved) ?? 'LF')
+
+      const payload = append
+        ? (fileExists ? readFileSync(resolved, 'utf-8') : '') + content
+        : content
+      writeWithMetadata(resolved, payload, 'utf-8', target)
       ctx.fileStateCache?.invalidate(filePath)
       markEditedIfLintable(ctx, filePath)
       ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
@@ -1318,13 +1326,15 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
       if (!existsSync(resolved)) {
         if (old_string === '') {
           mkdirSync(dirname(resolved), { recursive: true })
-          writeFileSync(resolved, new_string, 'utf-8')
+          const target: LineEndingType = resolveLineEndingPolicy(resolved) ?? 'LF'
+          const normalized = normalizeLineEndings(new_string, target)
+          writeWithMetadata(resolved, normalized, 'utf-8', target)
           const newMtime = Math.floor(statSync(resolved).mtimeMs)
-          ctx.fileStateCache?.recordEdit(filePath, new_string, newMtime)
+          ctx.fileStateCache?.recordEdit(filePath, normalized, newMtime)
           markEditedIfLintable(ctx, filePath)
           ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
           if (ctx.lspManager && LINTABLE_EXTENSION_RE.test(filePath)) {
-            ctx.lspManager.notifyFileChanged(resolved, new_string)
+            ctx.lspManager.notifyFileChanged(resolved, normalized)
             ctx.lspManager.notifyFileSaved?.(resolved)
           }
           return textResult({ ok: true, path: filePath, created: true })
@@ -1368,17 +1378,26 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
         }
       }
 
-      // Read with encoding + line-ending detection
-      const { content, encoding, lineEndings } = readFileWithMetadata(resolved)
+      // Read with encoding + line-ending detection + .gitattributes policy
+      const meta = readFileWithMetadata(resolved)
+      const { encoding } = meta
+      const target: LineEndingType = meta.targetLineEndings
+      // Normalize the on-disk content to the target so matching and
+      // splicing happen in a single, consistent line-ending world. This
+      // prevents stray CRLFs (in the file OR the model's payload) from
+      // tipping detection or producing mixed output.
+      const content = normalizeLineEndings(meta.content, target)
       const isMarkdown = /\.(md|mdx)$/i.test(filePath)
-      const cleanNewString = isMarkdown ? new_string : stripTrailingWhitespace(new_string)
+      const rawNewString = isMarkdown ? new_string : stripTrailingWhitespace(new_string)
+      const cleanNewString = normalizeLineEndings(rawNewString, target)
+      const normalizedOldString = normalizeLineEndings(old_string, target)
 
       // --- Match pipeline ---
       // 1. Exact match
-      const exactOccurrences = content.split(old_string).length - 1
+      const exactOccurrences = content.split(normalizedOldString).length - 1
       if (exactOccurrences === 1 || (exactOccurrences > 1 && replace_all)) {
-        const updated = applyEditToFile(content, old_string, cleanNewString, replace_all)
-        return commitEdit(ctx, filePath, resolved, content, updated, encoding, lineEndings, replace_all ? exactOccurrences : 1)
+        const updated = applyEditToFile(content, normalizedOldString, cleanNewString, replace_all)
+        return commitEdit(ctx, filePath, resolved, content, updated, encoding, target, replace_all ? exactOccurrences : 1)
       }
       if (exactOccurrences > 1 && !replace_all) {
         return textResult({
@@ -1389,20 +1408,20 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
 
       // 2. Curly quote normalization
       if (!replace_all) {
-        const actualString = findActualString(content, old_string)
-        if (actualString && actualString !== old_string) {
-          const adjustedNew = preserveQuoteStyle(old_string, actualString, cleanNewString)
+        const actualString = findActualString(content, normalizedOldString)
+        if (actualString && actualString !== normalizedOldString) {
+          const adjustedNew = preserveQuoteStyle(normalizedOldString, actualString, cleanNewString)
           const updated = applyEditToFile(content, actualString, adjustedNew, false)
-          return commitEdit(ctx, filePath, resolved, content, updated, encoding, lineEndings, 1, 'Matched with quote normalization')
+          return commitEdit(ctx, filePath, resolved, content, updated, encoding, target, 1, 'Matched with quote normalization')
         }
       }
 
       // 3. Fuzzy match (whitespace/line-ending normalization)
       if (!replace_all) {
-        const fuzzy = fuzzyFindInContent(content, old_string)
+        const fuzzy = fuzzyFindInContent(content, normalizedOldString)
         if (fuzzy) {
           const updated = content.substring(0, fuzzy.index) + cleanNewString + content.substring(fuzzy.index + fuzzy.match.length)
-          return commitEdit(ctx, filePath, resolved, content, updated, encoding, lineEndings, 1, 'Matched with whitespace normalization')
+          return commitEdit(ctx, filePath, resolved, content, updated, encoding, target, 1, 'Matched with whitespace normalization')
         }
       }
 
@@ -1438,11 +1457,11 @@ async function commitEdit(
   originalContent: string,
   updated: string,
   encoding: BufferEncoding,
-  lineEndings: LineEndingType,
+  target: LineEndingType,
   replacements: number,
   note?: string,
 ): Promise<AgentToolResult<any>> {
-  writeWithMetadata(resolved, updated, encoding, lineEndings)
+  writeWithMetadata(resolved, updated, encoding, target)
 
   // Post-edit state tracking (recordEdit instead of invalidate)
   const newMtime = Math.floor(statSync(resolved).mtimeMs)
@@ -4846,7 +4865,7 @@ function createSearchTool(ctx: ToolContext): AgentTool {
 // Impact Radius Tool (knowledge graph blast-radius analysis)
 // ---------------------------------------------------------------------------
 
-function getOrCreateGraph(ctx: ToolContext): import('./workspace-graph').WorkspaceGraph | null {
+async function getOrCreateGraph(ctx: ToolContext): Promise<import('./workspace-graph').WorkspaceGraph | null> {
   if (ctx.workspaceGraph) return ctx.workspaceGraph
 
   try {
@@ -4855,7 +4874,7 @@ function getOrCreateGraph(ctx: ToolContext): import('./workspace-graph').Workspa
     const { createDefaultExtractors } = require('./graph-extractors')
     const graph = new WorkspaceGraph(engine)
     for (const ext of createDefaultExtractors()) graph.registerExtractor(ext)
-    graph.buildGraph()
+    await graph.buildGraph()
     engine.setGraph(graph)
     ctx.workspaceGraph = graph
     return graph
@@ -4879,7 +4898,7 @@ function createImpactRadiusTool(ctx: ToolContext): AgentTool {
     execute: async (_toolCallId, params) => {
       const { files, max_depth = 2 } = params as { files: string[]; max_depth?: number }
 
-      const graph = getOrCreateGraph(ctx)
+      const graph = await getOrCreateGraph(ctx)
       if (!graph) {
         return textResult({ error: 'Knowledge graph not available. The workspace graph could not be initialized.' })
       }
@@ -4931,7 +4950,7 @@ function createDetectChangesTool(ctx: ToolContext): AgentTool {
         base?: string; changed_files?: string[]; include_source?: boolean
       }
 
-      const graph = getOrCreateGraph(ctx)
+      const graph = await getOrCreateGraph(ctx)
       if (!graph) {
         return textResult({ error: 'Knowledge graph not available.' })
       }
@@ -5078,7 +5097,7 @@ function createReviewContextTool(ctx: ToolContext): AgentTool {
         include_source?: boolean; max_lines_per_file?: number
       }
 
-      const graph = getOrCreateGraph(ctx)
+      const graph = await getOrCreateGraph(ctx)
       if (!graph) {
         return textResult({ error: 'Knowledge graph not available.' })
       }
@@ -6182,6 +6201,68 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
         allDiags = await lsp.getDiagnosticsAsync(targetUri)
       }
 
+      // -----------------------------------------------------------------
+      // Hardcoded-port scan: rewrites known runtime-port URLs to
+      // `${process.env.<VAR>}` interpolations, errors on `.py` hits,
+      // warns on any other localhost:<port>. Runs on the same URIs the
+      // tool was already considering this turn.
+      // -----------------------------------------------------------------
+      const urisToScan = new Set<string>(allDiags.keys())
+      if (targetUri) urisToScan.add(targetUri)
+      if (autoScopedPaths) {
+        for (const rel of autoScopedPaths) {
+          urisToScan.add(`file://${assertWithinWorkspace(ctx.workspaceDir, rel)}`)
+        }
+      }
+
+      const portFixesByFile: Array<{ path: string; fixes: PortFix[] }> = []
+      const portWarningsByFile: Array<{ path: string; warnings: PortWarning[] }> = []
+      const portErrorsByFile = new Map<string, string[]>()
+
+      for (const uri of urisToScan) {
+        if (!uri.startsWith('file://')) continue
+        const absPath = uri.slice('file://'.length)
+        // Normalize to forward slashes so the relative-path comparison works
+        // regardless of which separator the URI was built with (the existing
+        // URI plumbing isn't strict about separators on Windows).
+        let relPath: string
+        try {
+          relPath = relative(ctx.workspaceDir, absPath).replace(/\\/g, '/')
+        } catch {
+          continue
+        }
+        if (!relPath || relPath.startsWith('..')) continue
+        if (!LINTABLE_EXTENSION_RE.test(relPath)) continue
+        if (relPath.endsWith('.d.ts') || relPath.endsWith('.pyi')) continue
+
+        let content: string
+        try {
+          content = readFileSync(absPath, 'utf-8')
+        } catch {
+          continue
+        }
+
+        const scan = scanFileForHardcodedPorts(relPath, content)
+        if (scan.newContent !== undefined) {
+          try {
+            writeFileSync(absPath, scan.newContent, 'utf-8')
+            ctx.lspManager?.notifyFileChanged(absPath, scan.newContent)
+          } catch {
+            // Best-effort; still report the fixes we computed.
+          }
+          portFixesByFile.push({ path: relPath, fixes: scan.fixes })
+        }
+        if (scan.warnings.length > 0) {
+          portWarningsByFile.push({ path: relPath, warnings: scan.warnings })
+        }
+        if (scan.errors.length > 0) {
+          portErrorsByFile.set(
+            relPath,
+            scan.errors.map(e => `Line ${e.line}: hardcoded runtime port — ${e.reason}`),
+          )
+        }
+      }
+
       // Collect canvas runtime errors (compile/render failures from the live preview)
       const runtimeErrorEntries = getCanvasRuntimeErrors()
       const runtimeErrors = runtimeErrorEntries.length > 0
@@ -6193,13 +6274,32 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
         ? { auto_scoped: true as const, scoped_to: autoScopedPaths }
         : {}
 
-      if (allDiags.size === 0) {
+      const portMeta = {
+        ...(portFixesByFile.length > 0 ? { port_fixes: portFixesByFile } : {}),
+        ...(portWarningsByFile.length > 0 ? { port_warnings: portWarningsByFile } : {}),
+      }
+      const fixesHint = portFixesByFile.length > 0
+        ? (() => {
+            const n = portFixesByFile.reduce((acc, f) => acc + f.fixes.length, 0)
+            return `Rewrote ${n} hardcoded runtime-port URL(s) to \`\${process.env.<VAR>}\` interpolations. Verify the change looks correct.`
+          })()
+        : null
+
+      if (allDiags.size === 0 && portErrorsByFile.size === 0) {
         if (runtimeErrors) {
-          return textResult({ ok: false, ...scopeMeta, runtimeErrors, hint: 'Canvas runtime errors detected. Check your canvas code for the issues above.' })
+          return textResult({
+            ok: false,
+            ...scopeMeta,
+            ...portMeta,
+            runtimeErrors,
+            hint: 'Canvas runtime errors detected. Check your canvas code for the issues above.',
+          })
         }
         return textResult({
           ok: true,
           ...scopeMeta,
+          ...portMeta,
+          ...(fixesHint ? { hint: fixesHint } : {}),
           message: filePath
             ? `No errors in ${filePath}`
             : autoScopedPaths
@@ -6213,7 +6313,20 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
       const files: Array<{ path: string; ok: boolean; errors: string[] }> = []
 
       for (const [uri, diags] of allDiags) {
-        const relPath = uri.startsWith(workspacePrefix) ? uri.slice(workspacePrefix.length) : uri
+        // Use the same separator-tolerant relativization as the port scan so
+        // entries always agree when merging LSP + port diagnostics.
+        let relPath: string
+        if (uri.startsWith('file://')) {
+          const absFromUri = uri.slice('file://'.length)
+          try {
+            const rel = relative(ctx.workspaceDir, absFromUri).replace(/\\/g, '/')
+            relPath = !rel || rel.startsWith('..') ? uri : rel
+          } catch {
+            relPath = uri
+          }
+        } else {
+          relPath = uri.startsWith(workspacePrefix) ? uri.slice(workspacePrefix.length) : uri
+        }
         if (relPath.endsWith('.d.ts') || relPath.endsWith('.pyi')) continue
 
         const errors = diags
@@ -6221,18 +6334,34 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
           .filter(d => d.code !== TS_RETURN_OUTSIDE_FN)
           .map(d => `Line ${d.range.start.line + 1}: ${d.message}`)
 
-        if (errors.length === 0) continue
-        totalErrors += errors.length
-        files.push({ path: relPath, ok: false, errors })
+        const portErrors = portErrorsByFile.get(relPath) ?? []
+        const combined = [...errors, ...portErrors]
+        if (combined.length === 0) continue
+        totalErrors += combined.length
+        files.push({ path: relPath, ok: false, errors: combined })
+        portErrorsByFile.delete(relPath)
+      }
+      // Files that only had port errors (no LSP diags at all) still need to land.
+      for (const [relPath, portErrors] of portErrorsByFile) {
+        totalErrors += portErrors.length
+        files.push({ path: relPath, ok: false, errors: portErrors })
       }
 
       if (files.length === 0) {
         if (runtimeErrors) {
-          return textResult({ ok: false, ...scopeMeta, runtimeErrors, hint: 'Canvas runtime errors detected. Check your canvas code for the issues above.' })
+          return textResult({
+            ok: false,
+            ...scopeMeta,
+            ...portMeta,
+            runtimeErrors,
+            hint: 'Canvas runtime errors detected. Check your canvas code for the issues above.',
+          })
         }
         return textResult({
           ok: true,
           ...scopeMeta,
+          ...portMeta,
+          ...(fixesHint ? { hint: fixesHint } : {}),
           message: filePath
             ? `No errors in ${filePath}`
             : autoScopedPaths
@@ -6242,12 +6371,15 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
       }
 
       const allOk = totalErrors === 0 && !runtimeErrors
+      const baseHint = allOk ? null : 'Fix the errors above using edit_file, then run read_lints again to verify.'
+      const hint = [fixesHint, baseHint].filter(Boolean).join(' ') || undefined
       return textResult({
         ok: allOk,
         ...scopeMeta,
+        ...portMeta,
         files,
         ...(runtimeErrors ? { runtimeErrors } : {}),
-        ...(allOk ? {} : { hint: 'Fix the errors above using edit_file, then run read_lints again to verify.' }),
+        ...(hint ? { hint } : {}),
       })
     },
   }

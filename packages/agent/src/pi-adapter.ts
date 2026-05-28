@@ -78,7 +78,7 @@ export function resolveModel(provider: string, modelId: string): Model<Api> {
     model = {
       id: modelId,
       name: modelId,
-      api: provider === 'anthropic' ? 'anthropic-messages' : 'openai-completions',
+      api: provider === 'anthropic' ? 'anthropic-messages' : 'openai-responses',
       provider,
       baseUrl: getDefaultBaseUrl(provider),
       reasoning: true,

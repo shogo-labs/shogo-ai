@@ -98,8 +98,8 @@ describe('WorkspaceGraph: building', () => {
     rmSync(TEST_DIR, { recursive: true, force: true })
   })
 
-  test('buildGraph creates File nodes for all indexed files', () => {
-    const result = graph.buildGraph('files')
+  test('buildGraph creates File nodes for all indexed files', async () => {
+    const result = await graph.buildGraph('files')
     expect(result.filesProcessed).toBeGreaterThan(0)
     expect(result.nodesCreated).toBeGreaterThan(0)
 
@@ -141,8 +141,8 @@ describe('WorkspaceGraph: building', () => {
     expect(fileNode!.name).toBe('readme.md')
   })
 
-  test('rebuild with unchanged files is a no-op', () => {
-    const result = graph.buildGraph('files')
+  test('rebuild with unchanged files is a no-op', async () => {
+    const result = await graph.buildGraph('files')
     expect(result.filesProcessed).toBe(0)
   })
 })
@@ -170,7 +170,7 @@ describe('WorkspaceGraph: impact radius', () => {
     graph = new WorkspaceGraph(engine)
     graph.registerExtractor(new MarkdownExtractor())
     graph.registerExtractor(new ReferenceExtractor())
-    graph.buildGraph('files')
+    await graph.buildGraph('files')
   })
 
   afterAll(() => {
@@ -227,7 +227,7 @@ describe('WorkspaceGraph: incremental updates', () => {
     graph = new WorkspaceGraph(engine)
     graph.registerExtractor(new MarkdownExtractor())
     graph.registerExtractor(new ReferenceExtractor())
-    graph.buildGraph('files')
+    await graph.buildGraph('files')
   })
 
   afterAll(() => {
@@ -274,7 +274,7 @@ describe('WorkspaceGraph: queryNeighbors', () => {
     graph = new WorkspaceGraph(engine)
     graph.registerExtractor(new MarkdownExtractor())
     graph.registerExtractor(new ReferenceExtractor())
-    graph.buildGraph('files')
+    await graph.buildGraph('files')
   })
 
   afterAll(() => {
