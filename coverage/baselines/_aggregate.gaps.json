@@ -910,6 +910,24 @@
         }
       ],
       "note": "Wave 2 Day 8 - first strike. New file apps/api/src/__tests__/runtime-manager-config-closures.test.ts (13 tests, all pass). Mocks @shogo-ai/worker/runtime-manager to capture the WorkerRuntimeManager constructor config, then invokes the spawnCommand + resolveBin + idleMs closures directly (L143-156). Adds prisma-mock-backed coverage for getProjectWorkspaceId success/null/throws (L975-987). Reaches into rm.runtimes to inject fake ChildProcess records and drives stop() through both the legacy agentProcess fallback AND the runtime.process branch, including the setTimeout SIGKILL escalation (L1832-1875). Drives startHealthCheck setInterval callback with a thrown error to cover the .catch handler (L1973-1981). 85 tests pass / 0 fail across the 9 runtime-manager test files. Manager.ts uncov now collapses to just L774-777 (copyFilter, 4 lines) + L1073-1549 (start/doStart, 476 lines - next session target)."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 2 Day 9 - apps/api routes/local-projects.ts",
+      "message": "test(coverage): local-projects.ts - unblock 19 sandbox-broken tests - 37.04 to 93.62 percent lines",
+      "perFile": [
+        {
+          "file": "apps/api/src/routes/local-projects.ts",
+          "beforeLines": "~351/948 (37.04%)",
+          "afterLines": "~888/948 (93.62%)",
+          "deltaLinesHit": 537,
+          "deltaFuncsHit": 63,
+          "newTests": 0,
+          "fixedTests": 19
+        }
+      ],
+      "note": "Wave 2 Day 9 first strike - biggest single-commit win on this branch. All 19 fails in local-projects-routes.expanded.test.ts were sandbox-environment failures, not real bugs: (a) mkdtempSync(os.homedir()) returns EACCES because the runtime cannot write to /app; (b) the route handlers themselves call os.homedir() to validate paths-are-under-home, so even after fixing the test mkdtemp the route rejected all paths as outside_home. Two-line fix: (1) mkdtemp now uses os.tmpdir() and (2) at the top of beforeEach we monkey-patch os.homedir to return os.tmpdir() so the route validation accepts the test paths. Per-file isolation under run-tests-isolated.ts means the patch doesnt leak. Also added status() and stop() methods to the mocked RuntimeManager since the refresh-trust route calls them. Result: 19 fail / 7 pass became 0 fail / 19 pass with no new test code; just fixed the 3 mock-environment gaps the original PR author missed. Coverage delta is enormous (+56 pp) because the test was already comprehensive - it just never executed in the sandbox."
     }
   ],
   "frontend": {
