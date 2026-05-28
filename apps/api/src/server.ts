@@ -6974,28 +6974,14 @@ await (async () => {
   }
 })()
 
-// Boot-time data migration chain (templates → marketplace, then S3
-// snapshot backfill). The implementation lives in
-// `lib/boot-marketplace-migrations.ts` so the ordering invariant
-// (step 2 must observe step 1's writes) is unit-testable. Skipped in
-// test environments to keep test boot times tight; either step can
-// be individually disabled via the `SHOGO_SKIP_*` env vars (used as a
-// kill-switch during incidents).
-if (process.env.NODE_ENV !== 'test') {
-  void (async () => {
-    const { runBootMarketplaceMigrations } = await import('./lib/boot-marketplace-migrations')
-    await runBootMarketplaceMigrations({
-      loadRunMigration: async () =>
-        (await import('../scripts/migrate-templates-to-marketplace')).runMigration,
-      loadRunSnapshotBackfill: async () =>
-        (await import('../scripts/backfill-marketplace-snapshots-to-s3')).runSnapshotBackfill,
-      env: {
-        SHOGO_SKIP_TEMPLATE_MIGRATION: process.env.SHOGO_SKIP_TEMPLATE_MIGRATION,
-        SHOGO_SKIP_SNAPSHOT_BACKFILL: process.env.SHOGO_SKIP_SNAPSHOT_BACKFILL,
-      },
-    })
-  })()
-}
+// First-party templates are no longer re-seeded at boot. The
+// historical chain (`migrate-templates-to-marketplace.ts` →
+// `backfill-marketplace-snapshots-to-s3.ts`) was removed because it
+// hardcoded a synthetic `shogo-official@shogo.ai` owner that fought
+// the manual transfer to `admin@shogo.ai`. Marketplace listings now
+// originate exclusively through the creator UI / API; the snapshot
+// S3 backfill remains available as a manual `bun` script for any
+// future one-shot migration needs.
 
 // Match a path like `/api/projects/<projectId>/terminal/sessions/<id>/ws`.
 const PTY_WS_PATH_RE = /^\/api\/projects\/([^/]+)\/terminal\/sessions\/([^/]+)\/ws$/
