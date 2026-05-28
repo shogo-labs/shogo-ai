@@ -785,7 +785,7 @@
       "note": "New file gateway-tools.browser-relay.test.ts (8 tests) - first playwright/cdp harness on the branch. Covers L2324-2369 spawnCDPRelay (extension mode handshake: success / spawn error / non-zero exit / BROWSER_CDP_ENDPOINT bypass / reuse on second call) and L2487-2522 ensureScreencast (launch mode CDP attach + Page.screencastFrame publish + ack). Mocks: playwright-core chromium.{connectOverCDP,launch} returning fake browser/page/context, screencast-broadcaster.publish capture, child_process.spawn patched at cached CJS module level returning a FakeChild EventEmitter that emits ready/connected on stdout. Cumulative Wave 1 Sessions 1-5 on gateway-tools.ts: 77.47 to 87.46 percent (+502 lines hit, +9.99pp). Session 5 delta: +66 lines. agent-runtime pkg: 77.43 to 77.66 percent. Remaining big clusters: L2708-2796 in-page DOM helpers (~64 lines) which are unreachable from node coverage (they run inside page.evaluate browser context)."
     },
     {
-      "sha": "PENDING",
+      "sha": "e1d85ed7",
       "date": "2026-05-28",
       "wave": "Wave 1 - Crush Giant (gateway-tools.ts) Session 6",
       "message": "test(coverage)+refactor: gateway-tools.ts impact_note + self-heal failed + dead-code delete - 87.46% to 88.07% lines",
