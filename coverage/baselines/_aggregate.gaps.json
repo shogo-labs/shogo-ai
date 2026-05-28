@@ -1282,7 +1282,7 @@
       "note": "Appended 10 new tests to meetings-route.test.ts (now 48 pass / 0 fail). Drives the 2 largest uncov blocks. (1) POST /api/local/meetings/recording/upload (L347-L443) - 6 tests: multipart no audio file -> 400, empty bytes -> 400, WAV bytes -> 201 + audioPath ending .wav, no workspace -> 400, non-WAV with ffmpeg failure -> falls back to webm + creates meeting, non-WAV with ffmpeg success -> happy. (2) transcribeMeeting (private fn called fire-and-forget by /upload and /transcribe) (L678-L816) - 4 tests via POST /:id/transcribe: happy path (transcribe + meeting update), missing audio file path (sets error transcript), useCloud=true path takes cloud route, 404 when meeting absent. Reuses existing 165-line mock harness (fs, child_process execSyncSpy, transcription/diarization/recording services, prismaMock in-memory meetings + workspaces). Tests await 30-80ms after route response to let the fire-and-forget tasks settle before assertions. Residual ~150 uncov lines: L629-L660 (32 - install-sherpa success path branches), L698-L816 (partial - transcribeMeeting internals beyond what fire-and-forget covered: speaker diarization merge + write transcript file to project + various edge cases). Combined w/ existing meetings-route-extra.test.ts: src/routes/meetings.ts | 74.51% lines | 70.85% funcs. Standalone-file run: 48 pass / 0 fail / 99 expect() calls / 422ms."
     },
     {
-      "sha": "PENDING",
+      "sha": "dd9052f4",
       "date": "2026-05-28",
       "wave": "Wave 2 ad-hoc - project-export-import.ts k8s + SSE branches",
       "message": "test(coverage): apps/api project-export-import.ts - 67.74%->73.53% lines, 61.18%->76.07% funcs (+36 hit, +13 tests)",
