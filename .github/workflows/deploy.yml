@@ -842,6 +842,18 @@ jobs:
               k8s/base/image-prepuller.yaml | kubectl apply -f -
           kubectl get daemonset image-prepuller -n ${{ env.NS_SYSTEM }}
 
+      # See the matching production step for context — a 5-minute
+      # CronJob that catches the 2026-05-27 incident classes (placeholder
+      # env leak, BackOff warm-pool pod, zero-Ready ksvcs) and fails the
+      # K8s job to fire the existing alerting hook. Same monitor, same
+      # base manifest, sed-substituted to the staging namespaces.
+      - name: Deploy warm-pool monitor
+        run: |
+          sed -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
+              -e "s|value: shogo-staging-system|value: ${{ env.NS_SYSTEM }}|g" \
+              -e "s|value: shogo-staging-workspaces|value: ${{ env.NS_WORKSPACES }}|g" \
+              k8s/base/warm-pool-monitor.yaml | kubectl apply -f -
+
       - name: Deploy Knative services
         env:
           OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
@@ -941,6 +953,25 @@ jobs:
           for s in studio api docs; do
             wait_ksvc_ready "$s" "${{ env.NS_SYSTEM }}" 600
           done
+
+      # Deploy-time gate against the 2026-05-27 incident class. After api
+      # ksvc is Ready, give the warm-pool controller time to reconcile,
+      # then verify it actually mints healthy pods. This is the second
+      # line of defense after sync-api-env.sh — it catches a deploy that
+      # somehow shipped a broken RUNTIME_IMAGE config without going
+      # through the placeholder-rejection guardrail.
+      - name: Check warm-pool health
+        run: |
+          .github/scripts/check-warm-pool-health.sh "${{ env.NS_SYSTEM }}" "${{ env.NS_WORKSPACES }}"
+
+      # Prevent the multi-reconciler race that amplified the 2026-05-27
+      # US incident: an obsolete api-* revision kept pods alive (min-scale=2)
+      # and its warm-pool controller fought the new revision's controller,
+      # each tearing down the other's warm pods. GC obsolete revisions so
+      # only the latest controller is reconciling.
+      - name: Garbage-collect old api revisions
+        run: |
+          .github/scripts/gc-old-api-revisions.sh "${{ env.NS_SYSTEM }}"
 
       - name: Restart image prepuller
         if: needs.detect-changes.outputs.runtime_changed == 'true'
@@ -1214,6 +1245,18 @@ jobs:
               -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
               k8s/base/image-prepuller.yaml | kubectl apply -f -
 
+      # Continuous warm-pool health monitor: a 5-minute CronJob that fails
+      # the K8s job (and pages via the existing kube_job_status_failed
+      # alert) on any of the 2026-05-27 incident classes — placeholder env
+      # leak on api ksvc, ImagePullBackOff/CrashLoopBackOff on a warm-pool
+      # pod, or zero-Ready warm-pool ksvcs. See k8s/base/warm-pool-monitor.yaml.
+      - name: Deploy warm-pool monitor
+        run: |
+          sed -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
+              -e "s|value: shogo-staging-system|value: ${{ env.NS_SYSTEM }}|g" \
+              -e "s|value: shogo-staging-workspaces|value: ${{ env.NS_WORKSPACES }}|g" \
+              k8s/base/warm-pool-monitor.yaml | kubectl apply -f -
+
       - name: Deploy Knative services
         env:
           OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
@@ -1307,6 +1350,18 @@ jobs:
             echo "::error::US API health check did not return 200 after 20 attempts"
             exit 1
           fi
+
+      # See the staging block for context on these two gates. Tier 1 of
+      # the 2026-05-27 prevention: warm-pool sanity. Tier 4: prune
+      # obsolete api revisions to kill the multi-reconciler race that
+      # amplified the US half of the incident.
+      - name: Check warm-pool health
+        run: |
+          .github/scripts/check-warm-pool-health.sh "${{ env.NS_SYSTEM }}" "${{ env.NS_WORKSPACES }}"
+
+      - name: Garbage-collect old api revisions
+        run: |
+          .github/scripts/gc-old-api-revisions.sh "${{ env.NS_SYSTEM }}"
 
       # ----------------------------------------------------------------------
       # Logical replication: keep the cross-region publication in sync.
@@ -1798,6 +1853,18 @@ jobs:
               -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
               k8s/base/image-prepuller.yaml | kubectl apply -f -
 
+      # Continuous warm-pool health monitor: a 5-minute CronJob that fails
+      # the K8s job (and pages via the existing kube_job_status_failed
+      # alert) on any of the 2026-05-27 incident classes — placeholder env
+      # leak on api ksvc, ImagePullBackOff/CrashLoopBackOff on a warm-pool
+      # pod, or zero-Ready warm-pool ksvcs. See k8s/base/warm-pool-monitor.yaml.
+      - name: Deploy warm-pool monitor
+        run: |
+          sed -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
+              -e "s|value: shogo-staging-system|value: ${{ env.NS_SYSTEM }}|g" \
+              -e "s|value: shogo-staging-workspaces|value: ${{ env.NS_WORKSPACES }}|g" \
+              k8s/base/warm-pool-monitor.yaml | kubectl apply -f -
+
       - name: Deploy Knative services
         env:
           OCIR_REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
@@ -1882,6 +1949,18 @@ jobs:
             echo "::error::EU /api/health returned HTTP $STATUS (expected 200) via Kourier ${KOURIER_IP}"
             exit 1
           fi
+
+      # See the staging block for context on these two gates. Tier 1 of
+      # the 2026-05-27 prevention: warm-pool sanity. Tier 4: prune
+      # obsolete api revisions to kill the multi-reconciler race that
+      # amplified the US half of the incident.
+      - name: Check warm-pool health
+        run: |
+          .github/scripts/check-warm-pool-health.sh "${{ env.NS_SYSTEM }}" "${{ env.NS_WORKSPACES }}"
+
+      - name: Garbage-collect old api revisions
+        run: |
+          .github/scripts/gc-old-api-revisions.sh "${{ env.NS_SYSTEM }}"
 
       - name: Summary
         run: |
@@ -2227,6 +2306,18 @@ jobs:
               -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
               k8s/base/image-prepuller.yaml | kubectl apply -f -
 
+      # Continuous warm-pool health monitor: a 5-minute CronJob that fails
+      # the K8s job (and pages via the existing kube_job_status_failed
+      # alert) on any of the 2026-05-27 incident classes — placeholder env
+      # leak on api ksvc, ImagePullBackOff/CrashLoopBackOff on a warm-pool
+      # pod, or zero-Ready warm-pool ksvcs. See k8s/base/warm-pool-monitor.yaml.
+      - name: Deploy warm-pool monitor
+        run: |
+          sed -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
+              -e "s|value: shogo-staging-system|value: ${{ env.NS_SYSTEM }}|g" \
+              -e "s|value: shogo-staging-workspaces|value: ${{ env.NS_WORKSPACES }}|g" \
+              k8s/base/warm-pool-monitor.yaml | kubectl apply -f -
+
       - name: Deploy Knative services
         env:
           OCIR_REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
@@ -2317,6 +2408,18 @@ jobs:
             echo "::error::India /api/health returned HTTP $STATUS (expected 200) via Kourier ${KOURIER_IP}"
             exit 1
           fi
+
+      # See the staging block for context on these two gates. Tier 1 of
+      # the 2026-05-27 prevention: warm-pool sanity. Tier 4: prune
+      # obsolete api revisions to kill the multi-reconciler race that
+      # amplified the US half of the incident.
+      - name: Check warm-pool health
+        run: |
+          .github/scripts/check-warm-pool-health.sh "${{ env.NS_SYSTEM }}" "${{ env.NS_WORKSPACES }}"
+
+      - name: Garbage-collect old api revisions
+        run: |
+          .github/scripts/gc-old-api-revisions.sh "${{ env.NS_SYSTEM }}"
 
       - name: Summary
         run: |
