@@ -41,6 +41,18 @@ export interface DesktopPtyClientOptions {
   sessionId: string
   /** Inject bridge (test only). Defaults to globalThis.shogoDesktopTerminal. */
   bridge?: ShogoDesktopTerminalBridge
+  /**
+   * Recipe to re-spawn this session from scratch.
+   *
+   * The pty-host is a crash-isolated utility process that `PtyHostClient`
+   * auto-restarts. After a restart the new host has NONE of the previous
+   * sessions, so re-attaching the original `sessionId` fails forever with
+   * `no-session`. When `spawnOptions` is supplied the client recovers by
+   * spawning a FRESH session on the live host (updating `sessionId`) and
+   * attaching to that: exactly how a real terminal host survives a host
+   * crash. Omit it for attach-only clients (nothing to re-spawn).
+   */
+  spawnOptions?: SpawnOptions
   /** Min reconnect delay (ms). Default 100 — IPC is local. */
   minBackoffMs?: number
   /** Max reconnect delay (ms). Default 2000 — IPC is local. */
@@ -77,9 +89,22 @@ function transferableBuffer(frame: Uint8Array): ArrayBuffer {
   return frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength) as ArrayBuffer
 }
 
+/**
+ * Decode a base64 `session:data` payload back into raw bytes. `atob` is
+ * available in the Electron renderer (and in the bun test runtime); it maps
+ * each base64 octet to a latin1 char whose code point is the original byte.
+ */
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i)
+  return out
+}
+
 export class DesktopPtyClient {
-  private readonly sessionId: string
+  private sessionId: string
   private readonly bridge: ShogoDesktopTerminalBridge
+  private readonly spawnOptions?: SpawnOptions
   private readonly minBackoff: number
   private readonly maxBackoff: number
   private readonly terminalReasons: ReadonlySet<string>
@@ -91,6 +116,25 @@ export class DesktopPtyClient {
   private exitListeners = new Set<ExitListener>()
   private truncListeners = new Set<TruncListener>()
   private errorListeners = new Set<ErrorListener>()
+
+  /**
+   * Replay DATA frames that arrived BEFORE any `onData` listener was
+   * attached. Local IPC is fast enough that the pty-host's replay frame
+   * (shell prompt + cwd OSC) routinely lands on the renderer's
+   * `MessagePort` queue before `XtermView` finishes the dynamic
+   * `import('@xterm/xterm')` and subscribes. Without this buffer those
+   * bytes are fanned out to an empty Set and lost forever, so the user
+   * sees a blinking but empty cell with no prompt and no cwd update.
+   *
+   * Bounded at `MAX_PENDING_BYTES` so a runaway shell can't grow the
+   * renderer heap before the listener attaches. If we exceed the cap,
+   * we drop the OLDEST chunks first (newest output is what the user
+   * cares about most). Chunks are flushed in FIFO order on first
+   * `onData(...)` subscribe and then the buffer is cleared.
+   */
+  private pendingData: Uint8Array[] = []
+  private pendingDataBytes = 0
+  private static readonly MAX_PENDING_BYTES = 1 << 20 // 1 MiB
 
   private port: MessagePortLike | null = null
   private channelId: string | null = null
@@ -104,6 +148,18 @@ export class DesktopPtyClient {
   /** Set when a control event (session:exit / session:reap / no-session)
    * tells us reconnect is pointless. */
   private suppressReconnect = false
+  /** True once we've reached `open` at least once. Distinguishes a host
+   * restart MID-session (recover by re-spawning) from the very first boot
+   * (nothing to recover yet). */
+  private everOpened = false
+  /** Set when we learn our host-side session no longer exists (host
+   * crashed/restarted, or a `no-session` attach error). The next connect
+   * attempt re-spawns a fresh session before attaching. */
+  private sessionGone = false
+  /** Last terminal grid size seen via resize() — re-applied after a
+   * (re)attach so a re-spawned shell starts at the correct dimensions. */
+  private lastCols = 0
+  private lastRows = 0
   /** Bound for `port.removeEventListener`. */
   /** Counter so we log only the first ~3 messages to avoid console spam. */
   private portMsgCount = 0
@@ -134,6 +190,7 @@ export class DesktopPtyClient {
   constructor(opts: DesktopPtyClientOptions, initial: PtyClientListeners = {}) {
     this.sessionId = opts.sessionId
     this.bridge = opts.bridge ?? getDesktopBridge()
+    this.spawnOptions = opts.spawnOptions
     this.minBackoff = opts.minBackoffMs ?? 100
     this.maxBackoff = opts.maxBackoffMs ?? 2_000
     this.terminalReasons = new Set(opts.terminalCloseReasons ?? DESKTOP_TERMINAL_CLOSE_REASONS)
@@ -149,8 +206,20 @@ export class DesktopPtyClient {
     // didn't come over the data port (e.g. the host reaped us due to
     // idle timeout — the port closes before any EXIT frame).
     this.offEvent = this.bridge.onEvent((ev) => {
+      // `host:ready` / `host:beat` / etc. carry no session id and must NOT
+      // be filtered by the per-session guard below.
       if ('id' in ev && ev.id !== this.sessionId) return
       switch (ev.kind) {
+        case 'session:data':
+          // Live PTY output over the control plane (see desktop-protocol.ts).
+      // This is the primary data path: the MessageChannelMain data port
+      // is not reliably entangled across the utilityProcess <-> renderer
+          // boundary, so the host streams bytes here instead.
+          this.ingestData(ev.seq, base64ToBytes(ev.dataB64))
+          break
+        case 'session:trunc':
+          this.ingestTrunc()
+          break
         case 'session:exit':
           this.suppressReconnect = this.suppressReconnect || this.terminalReasons.has(ev.reason)
           this.emitExit({ code: ev.code, signal: ev.signal })
@@ -160,6 +229,26 @@ export class DesktopPtyClient {
           this.suppressReconnect = this.suppressReconnect || this.terminalReasons.has(`pty:${ev.reason}`)
           this.emitExit({ code: null, signal: null })
           this.markClosed()
+          break
+        case 'host:ready':
+          // The pty-host (re)started. If we'd already established a session
+          // it no longer exists in the new host process, so re-spawn it.
+          // Before our first successful attach there is nothing to recover
+          // (this is just the initial boot), so we gate on `everOpened`.
+          if (
+            this._state !== 'disposed' &&
+            this.everOpened &&
+            !this.suppressReconnect &&
+            this.spawnOptions
+          ) {
+            // eslint-disable-next-line no-console
+            console.info('[shogo-pty-client] pty-host restarted - re-spawning session')
+            this.sessionGone = true
+            this.markClosed()
+            this.cancelReconnect()
+            this._state = 'idle'
+            this.connect()
+          }
           break
       }
     })
@@ -173,7 +262,19 @@ export class DesktopPtyClient {
     return () => this.stateListeners.delete(cb)
   }
   onData(cb: DataListener): Unsubscribe {
+    // First subscriber drains any DATA that arrived during the window
+    // between `port.start()` and the React-mounted xterm subscribing.
+    // See `pendingData` field comment.
+    const isFirstListener = this.dataListeners.size === 0
     this.dataListeners.add(cb)
+    if (isFirstListener && this.pendingData.length > 0) {
+      const drained = this.pendingData
+      this.pendingData = []
+      this.pendingDataBytes = 0
+      for (const bytes of drained) {
+        try { cb(bytes) } catch { /* swallow; listener errors must not poison the buffer */ }
+      }
+    }
     return () => this.dataListeners.delete(cb)
   }
   onExit(cb: ExitListener): Unsubscribe {
@@ -200,6 +301,12 @@ export class DesktopPtyClient {
 
   private async doAttach(): Promise<void> {
     try {
+      // If a previous attempt learned our session is gone (the host
+      // crashed/restarted), spawn a fresh one before attaching. Re-attaching
+      // a dead session id can only ever return `no-session`.
+      if (this.sessionGone && this.spawnOptions) {
+        await this.respawn()
+      }
       // eslint-disable-next-line no-console
       console.info('[shogo-pty-client] attach → bridge.attach(sessionId=%s, sinceSeq=%d)', this.sessionId, this.lastSeq)
       const { port, channelId, latestSeq } = await this.bridge.attach(this.sessionId, this.lastSeq)
@@ -224,18 +331,75 @@ export class DesktopPtyClient {
       // eslint-disable-next-line no-console
       console.info('[shogo-pty-client] port subscribed, start() called — waiting for DATA frames')
       this.retryCount = 0
+      this.everOpened = true
+      this.sessionGone = false
       // We're already up to date through latestSeq (the server will only
       // send seqs > sinceSeq). lastSeq updates as DATA frames arrive.
       void latestSeq
       this.setState('open')
+      // Re-assert the grid size: a freshly re-spawned shell starts at the
+      // dimensions baked into spawnOptions, which may be stale after the
+      // user resized the panel. No-op on the very first attach (the surface
+      // calls resize() right after mount anyway).
+      this.reapplyResize()
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err))
+      // A "session is gone" failure (the host crashed/restarted, or reaped
+      // the session) is NOT a transient disconnect: re-attaching the same
+      // id will fail forever. When we can re-spawn, flag it and let the
+      // reconnect timer build a fresh session instead of surfacing a scary
+      // error to the user. Otherwise fall back to the plain reconnect path.
+      if (this.spawnOptions && this.isSessionGone(e)) {
+        // eslint-disable-next-line no-console
+        console.warn('[shogo-pty-client] session gone (%s) - will re-spawn on next attempt', e.message)
+        this.sessionGone = true
+        this.markClosed()
+        this.scheduleReconnect()
+        return
+      }
       // eslint-disable-next-line no-console
       console.error('[shogo-pty-client] attach ✗ failed:', e)
       this.emitError(e)
       this.markClosed()
       this.scheduleReconnect()
     }
+  }
+
+  /**
+   * Spawn a brand-new host session from `spawnOptions` and adopt its id.
+   * Used to recover from a pty-host restart. Resets `lastSeq` because the
+   * new session has its own (empty) scrollback; there is nothing to replay
+   * from the old, dead session.
+   */
+  private async respawn(): Promise<void> {
+    if (!this.spawnOptions) return
+    const session = await this.bridge.spawn(this.spawnOptions)
+    this.sessionId = session.id
+    this.lastSeq = 0
+    this.sessionGone = false
+    // eslint-disable-next-line no-console
+    console.info('[shogo-pty-client] re-spawned session %s', session.id)
+  }
+
+  /**
+   * Does this error mean the host-side session no longer exists? Covers the
+   * pty-host's own `no-session` reply and the main-process `PtyHostClient`
+   * errors raised when the host process died mid-request.
+   */
+  private isSessionGone(err: Error): boolean {
+    const m = err.message || ''
+    return (
+      m.includes('no-session') ||
+      m.includes('unknown session') ||
+      m.includes('pty-host exited') ||
+      m.includes('pty-host not running') ||
+      m.includes('pty-host disposed')
+    )
+  }
+
+  private reapplyResize(): void {
+    if (this.lastCols < 1 || this.lastRows < 1) return
+    void this.bridge.resize(this.sessionId, this.lastCols, this.lastRows).catch(() => { /* best-effort */ })
   }
 
   send(bytes: Uint8Array | string): void {
@@ -251,9 +415,13 @@ export class DesktopPtyClient {
   }
 
   resize(cols: number, rows: number): void {
-    if (this._state !== 'open') return
     if (!Number.isInteger(cols) || !Number.isInteger(rows)) return
     if (cols < 1 || rows < 1 || cols > 0xffff || rows > 0xffff) return
+    // Remember the latest dimensions regardless of state so we can re-assert
+    // them after a re-spawn (see reapplyResize).
+    this.lastCols = cols
+    this.lastRows = rows
+    if (this._state !== 'open') return
     void this.bridge.resize(this.sessionId, cols, rows).catch(() => { /* best-effort */ })
   }
 
@@ -278,6 +446,8 @@ export class DesktopPtyClient {
       void this.bridge.detach(this.sessionId, this.channelId).catch(() => { /* host might be gone */ })
       this.channelId = null
     }
+    this.pendingData = []
+    this.pendingDataBytes = 0
   }
 
   // ─── internals ─────────────────────────────────────────────────────
@@ -285,11 +455,7 @@ export class DesktopPtyClient {
   private handleFrame(frame: ServerFrame): void {
     switch (frame.type) {
       case ServerFrameType.DATA: {
-        if (frame.seq > this.lastSeq) this.lastSeq = frame.seq
-        this.sendAck(this.lastSeq)
-        for (const cb of [...this.dataListeners]) {
-          try { cb(frame.bytes) } catch { /* swallow */ }
-        }
+        this.ingestData(frame.seq, frame.bytes)
         return
       }
       case ServerFrameType.EXIT: {
@@ -302,11 +468,47 @@ export class DesktopPtyClient {
         return
       }
       case ServerFrameType.TRUNC: {
-        for (const cb of [...this.truncListeners]) {
-          try { cb() } catch { /* swallow */ }
-        }
+        this.ingestTrunc()
         return
       }
+    }
+  }
+
+  /**
+   * Fan a chunk of PTY output out to listeners (or buffer it until the first
+   * listener subscribes). Shared by the data-port frame path and the
+   * control-plane `session:data` event path so both behave identically.
+   */
+  private ingestData(seq: number, bytes: Uint8Array): void {
+    if (seq > this.lastSeq) this.lastSeq = seq
+    this.sendAck(this.lastSeq)
+    if (this.dataListeners.size === 0) {
+      this.bufferPendingData(bytes)
+      return
+    }
+    for (const cb of [...this.dataListeners]) {
+      try { cb(bytes) } catch { /* swallow */ }
+    }
+  }
+
+  private ingestTrunc(): void {
+    for (const cb of [...this.truncListeners]) {
+      try { cb() } catch { /* swallow */ }
+    }
+  }
+
+  private bufferPendingData(bytes: Uint8Array): void {
+    this.pendingData.push(bytes)
+    this.pendingDataBytes += bytes.byteLength
+    // Bound the buffer by dropping oldest chunks. The newest data (likely
+    // the live prompt + last command output) is what the user sees
+    // first when xterm finally subscribes.
+    while (
+      this.pendingDataBytes > DesktopPtyClient.MAX_PENDING_BYTES &&
+      this.pendingData.length > 1
+    ) {
+      const dropped = this.pendingData.shift()
+      if (dropped) this.pendingDataBytes -= dropped.byteLength
     }
   }
 
@@ -388,7 +590,9 @@ export async function spawnDesktopPtyClient(opts: DesktopPtySpawnOptions): Promi
   const bridge = injectedBridge ?? getDesktopBridge()
   const session = await bridge.spawn(spawnOpts)
   return {
-    client: new DesktopPtyClient({ sessionId: session.id, bridge }),
+    // Hand the client the same spawn recipe so it can self-heal across a
+    // pty-host restart (re-spawn instead of forever re-attaching a dead id).
+    client: new DesktopPtyClient({ sessionId: session.id, bridge, spawnOptions: spawnOpts }),
     session,
   }
 }

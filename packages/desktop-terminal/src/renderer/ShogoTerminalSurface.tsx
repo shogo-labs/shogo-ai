@@ -588,29 +588,34 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
       setMenuPos({ x: ev.clientX, y: ev.clientY })
     }
 
-
-    const sendKeyboardFallback = React.useCallback((ev: React.KeyboardEvent<HTMLDivElement>) => {
+    /**
+     * Click-to-focus.
+     *
+     * xterm.js owns its own hidden `<textarea>` for keystroke capture. The
+     * ONLY thing we need from this wrapper div is to forward clicks on the
+     * surrounding padding (where xterm's internal mousedown listener can't
+     * see them) into `term.focus()`.
+     *
+     * Important: this div MUST NOT carry `tabIndex` (and therefore must NOT
+     * have a competing onKeyDown handler). An earlier version added
+     * `tabIndex={0}` + an ad-hoc `sendKeyboardFallback`, which caused the
+     * wrapper to steal focus from xterm's textarea on every padding-click —
+     * resulting in a blinking-but-unfocused cursor where most keystrokes
+     * silently disappeared (the fallback only knew about a handful of
+     * keys; meta-combos, IME, dead keys, paste, etc. all dropped).
+     */
+    const focusTerminal = React.useCallback((ev: React.MouseEvent<HTMLDivElement>) => {
+      // Don't steal focus from popovers (search box, ⌘K palette, etc.)
+      // that legitimately host their own inputs above the surface.
       const target = ev.target as HTMLElement | null
       const tag = target?.tagName?.toLowerCase()
-      if (tag === 'textarea' || tag === 'input' || target?.isContentEditable) return
-      if (ev.metaKey && ev.key.toLowerCase() !== 'c') return
-      let data: string | null = null
-      if (ev.ctrlKey && ev.key.toLowerCase() === 'c') data = '\x03'
-      else if (ev.ctrlKey && ev.key.toLowerCase() === 'd') data = '\x04'
-      else if (ev.key === 'Enter') data = '\r'
-      else if (ev.key === 'Backspace') data = '\x7f'
-      else if (ev.key === 'Tab') data = '\t'
-      else if (ev.key === 'Escape') data = '\x1b'
-      else if (ev.key === 'ArrowUp') data = '\x1b[A'
-      else if (ev.key === 'ArrowDown') data = '\x1b[B'
-      else if (ev.key === 'ArrowRight') data = '\x1b[C'
-      else if (ev.key === 'ArrowLeft') data = '\x1b[D'
-      else if (!ev.ctrlKey && !ev.altKey && ev.key.length === 1) data = ev.key
-      if (data == null) return
-      ev.preventDefault()
-      ev.stopPropagation()
-      client.send(data)
-    }, [client])
+      if (tag === 'input' || tag === 'textarea' || tag === 'button' ||
+          target?.isContentEditable ||
+          target?.closest?.('[role="dialog"], [role="menu"], [role="search"]')) {
+        return
+      }
+      termRef.current?.focus()
+    }, [])
 
     const menuGroups = React.useMemo(() => {
       if (!menuPos) return null
@@ -673,16 +678,18 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
     return React.createElement('div', {
       'data-shogo-terminal-surface': 'true',
       onContextMenu: openContextMenu,
-      onMouseDown: () => termRef.current?.focus(),
-      onKeyDown: sendKeyboardFallback,
-      tabIndex: 0,
+      // mousedown fires before the browser commits focus, so calling
+      // term.focus() here wins the race against any default focus rule.
+      onMouseDown: focusTerminal,
+      // No `tabIndex` here — see `focusTerminal` comment. A focusable
+      // wrapper would steal focus from xterm's textarea and silently
+      // swallow keystrokes.
       style: {
         position: 'relative',
         width: '100%',
         height: '100%',
         display: hidden ? 'none' : 'block',
         background: '#1e1e1e',
-        outline: 'none',
       },
     },
       React.createElement('div', {

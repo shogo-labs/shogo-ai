@@ -102,6 +102,12 @@ export interface SnapshotSummary {
 export type ControlEvent =
   | { kind: 'session:exit'; id: string; code: number | null; signal: string | null; reason: string }
   | { kind: 'session:reap'; id: string; reason: 'idle' | 'detach-grace' | 'max-age' | 'shutdown' }
+  // Live PTY output over the control plane. See the matching note in
+  // @shogo/pty-core's desktop-protocol.ts: bytes are base64 so they survive
+  // utilityProcess -> main -> renderer IPC without the MessagePort transferable
+  // pitfalls that leave the data port silent in practice.
+  | { kind: 'session:data'; id: string; seq: number; dataB64: string }
+  | { kind: 'session:trunc'; id: string }
   | { kind: 'host:ready'; version: string }
   | { kind: 'host:beat'; t: number }
   | { kind: 'host:unresponsive'; lastBeatAt: number }

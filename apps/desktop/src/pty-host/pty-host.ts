@@ -23,9 +23,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs/promises'
 import {
   decodeClientFrame,
-  encodeServerData,
   encodeServerExit,
-  encodeServerTrunc,
   ClientFrameType,
 } from '@shogo/pty-core'
 import { PtySession, type DataSubscriber } from './pty-session'
@@ -126,6 +124,19 @@ function send(msg: ControlResponse | ControlEvent, transfer?: unknown[]): void {
 
 function reply(reqId: number, ok: ControlResponse): void {
   send(ok)
+}
+
+/**
+ * Push a chunk of live PTY output to the renderer over the control plane.
+ *
+ * Bytes are base64-encoded so the event stays a plain JSON-cloneable string:
+ * `parentPort`/`webContents.send` reliably preserve strings, whereas the
+ * MessageChannelMain data port between the utilityProcess and the renderer
+ * does not deliver in practice (the root cause of the blank terminal).
+ */
+function sendSessionData(id: string, seq: number, bytes: Uint8Array): void {
+  const dataB64 = Buffer.from(bytes).toString('base64')
+  send({ kind: 'session:data', id, seq, dataB64 } satisfies ControlEvent)
 }
 
 function fail(reqId: number, code: string, message: string): void {
@@ -279,25 +290,37 @@ function handleAttach(
   const channelId = randomUUID()
 
   if (port) {
-    // Replay first.
+    // -- Data delivery: control plane, NOT the data port. ------------------
+    // The MessageChannelMain port handed to the renderer is not reliably
+    // entangled with the host-side port across the utilityProcess <-> renderer
+    // boundary, so output posted to it never arrives (the renderer sits at
+    // "waiting for DATA frames" forever). Input already worked around this by
+    // using the control-plane `write`; output now does the same: every chunk
+    // is base64-framed into a `session:data` control event that travels the
+    // proven parentPort -> main -> webContents.send path. The port is still
+    // opened/closed below so attach/detach lifecycle + acks keep working, but
+    // it no longer carries bytes.
     const { bytes, latestSeq, truncated } = sess.replaySince(req.sinceSeq)
     if (truncated) {
-      postFrame(port, encodeServerTrunc())
+      send({ kind: 'session:trunc', id: req.id } satisfies ControlEvent)
     }
     if (bytes.length > 0) {
-      // Replay arrives as one DATA frame keyed at latestSeq.
-      postFrame(port, encodeServerData(latestSeq, bytes))
+      // Replay arrives as one DATA event keyed at latestSeq.
+      sendSessionData(req.id, latestSeq, bytes)
     }
 
     // Now wire live subscription + inbound frame handler.
     const subscriber: DataSubscriber = {
       channelId,
       onData(seq, b) {
-        try { postFrame(port, encodeServerData(seq, b)) } catch { /* port closed */ }
+        sendSessionData(req.id, seq, b)
         scheduleSnapshot(req.id)
       },
       onExit(code, signal, _reason) {
         scheduleSnapshot(req.id)
+        // Exit also reaches the renderer via the `session:exit` control event
+        // emitted by the spawn-time exit watcher; the port EXIT frame is kept
+        // for parity but is not relied upon.
         try { postFrame(port, encodeServerExit(code, signal)) } catch { /* port closed */ }
         try { port.close() } catch { /* swallow */ }
       },

@@ -122,6 +122,23 @@ function findReply<T extends { reqId: number }>(reqId: number): T {
   return r as T
 }
 
+/**
+ * Live PTY output is delivered to the renderer over the control plane as
+ * `session:data` events (base64), NOT over the data port — the
+ * MessageChannelMain port between the utilityProcess and the renderer does
+ * not reliably deliver. These helpers read the control-event outbox.
+ */
+interface SessionDataEvent { kind: 'session:data'; id: string; seq: number; dataB64: string }
+function sessionDataEvents(): SessionDataEvent[] {
+  return outbox.filter(
+    (m): m is SessionDataEvent =>
+      typeof m === 'object' && m !== null && (m as { kind?: string }).kind === 'session:data',
+  )
+}
+function decodeData(ev: SessionDataEvent): string {
+  return Buffer.from(ev.dataB64, 'base64').toString('utf8')
+}
+
 function spawnOne(reqId = 1) {
   _dispatchForTest({
     kind: 'spawn',
@@ -145,7 +162,7 @@ describe('PtyHost data-port binding (Phase 2)', () => {
     expect(reply.latestSeq).toBe(0)
   })
 
-  it('attach WITH a port replays scrollback first, then streams live DATA frames', () => {
+  it('attach WITH a port replays scrollback first, then streams live DATA over the control plane', () => {
     const id = spawnOne(10)
     // Emit some output BEFORE the attach so it lands in the ring.
     STUBS[0]._emitData('preface\r\n')
@@ -156,21 +173,19 @@ describe('PtyHost data-port binding (Phase 2)', () => {
     expect(findReply<{ kind: string }>(11).kind).toBe('attach:ok')
     expect(port.started).toBe(true)
 
-    // First frame should be a DATA replay covering the preface.
-    const replay = decodeServerFrame(port.sent[0])
-    if (!replay || replay.type !== ServerFrameType.DATA) {
-      throw new Error('first frame should be DATA replay')
-    }
-    expect(new TextDecoder().decode(replay.bytes)).toBe('preface\r\n')
+    // First DATA event should be the replay covering the preface.
+    let events = sessionDataEvents()
+    expect(events.length).toBe(1)
+    expect(decodeData(events[0])).toBe('preface\r\n')
 
-    // Now live: post-attach emissions should flow through as new DATA frames.
+    // Now live: post-attach emissions flow through as new session:data events.
     STUBS[0]._emitData('live')
-    expect(port.sent.length).toBe(2)
-    const live = decodeServerFrame(port.sent[1])
-    if (!live || live.type !== ServerFrameType.DATA) {
-      throw new Error('second frame should be live DATA')
-    }
-    expect(new TextDecoder().decode(live.bytes)).toBe('live')
+    events = sessionDataEvents()
+    expect(events.length).toBe(2)
+    expect(decodeData(events[1])).toBe('live')
+
+    // The data port carries NO bytes — it's only kept for lifecycle/acks.
+    expect(port.sent.length).toBe(0)
   })
 
   it('inbound DATA frames on the port write into the underlying PTY', () => {
@@ -202,14 +217,14 @@ describe('PtyHost data-port binding (Phase 2)', () => {
     const port = new FakeHostPort()
     _dispatchForTest({ kind: 'attach', reqId: 51, id, sinceSeq: 0 }, port)
     STUBS[0]._emitData('before-close')
-    expect(port.sent.length).toBe(1)
+    expect(sessionDataEvents().length).toBe(1)
 
     port.close()
     STUBS[0]._emitData('after-close')
-    // The session may still receive emissions, but the port subscriber
-    // should be gone. Re-check: port.sent stays at 1 (close prevents
-    // postMessage), AND the session has 0 attached subscribers.
-    expect(port.sent.length).toBe(1)
+    // Closing the port unsubscribes the fanout, so no further session:data
+    // events are emitted for this session.
+    expect(sessionDataEvents().length).toBe(1)
+    expect(decodeData(sessionDataEvents()[0])).toBe('before-close')
   })
 
   it('on PTY exit, an EXIT frame is sent to the port and the port is closed', () => {
@@ -237,14 +252,10 @@ describe('PtyHost data-port binding (Phase 2)', () => {
     // Replay since seq=2 — should only get chunk3 (the chunk with seq=3).
     _dispatchForTest({ kind: 'attach', reqId: 71, id, sinceSeq: 2 }, port)
 
-    const dataFrames = port.sent
-      .map((f) => decodeServerFrame(f))
-      .filter((f): f is { type: typeof ServerFrameType.DATA; seq: number; bytes: Uint8Array } =>
-        f?.type === ServerFrameType.DATA)
-    expect(dataFrames.length).toBeGreaterThanOrEqual(1)
-    // The replay coalesces remaining chunks into one DATA frame ending at latestSeq=3.
-    expect(dataFrames[0].seq).toBe(3)
-    const text = new TextDecoder().decode(dataFrames[0].bytes)
-    expect(text).toBe('chunk3')
+    const events = sessionDataEvents()
+    expect(events.length).toBeGreaterThanOrEqual(1)
+    // The replay coalesces remaining chunks into one DATA event ending at latestSeq=3.
+    expect(events[0].seq).toBe(3)
+    expect(decodeData(events[0])).toBe('chunk3')
   })
 })
