@@ -638,7 +638,7 @@
       "note": "New test file voice-routes-readonly-and-errors.test.ts covers readonly endpoints (GET /voice/usage with date filters, GET /voice/calls with limit clamping + transcript variants, GET /voice/calls/:callId with 404), POST /projects/:projectId/agents/sync (invalid JSON + array body + happy path), POST /voice/twilio/outbound auth/body validation, and /voice/signed-url EL throw tail. Smaller delta than prior sessions (+7 lines) because most readonly bodies were already covered; the new tests primarily add defensive matrix coverage. Funcs remain at 100%. No new test failures (5 OTHER_TOKEN cross-project tests dropped after they were found to fail under cross-file mock pollution; that branch is already covered by voice-routes-runtime-token.test.ts for signed-url)."
     },
     {
-      "sha": "PENDING",
+      "sha": "095cbc89",
       "date": "2026-05-28",
       "wave": "Sync (baseline correction)",
       "message": "docs(coverage): bump README backend \u2192 82.12% (expanded v3 aggregate, full re-measure)",
