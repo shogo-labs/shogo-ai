@@ -1164,7 +1164,7 @@
       "note": "Fresh coverage measurement across all 11 backend packages on branch fix(coverage)/unitTest-cases-backend. Replaces stale 92.54%/88.08% baseline that was built with manual file exclusions and tight denominators. New aggregate reflects ACTUAL coverage discovery: linesFound grew 75878 -> 91398 (+15520) as more test files now import modules previously absent from coverage scope; linesHit grew 70221 -> 75109 (+4888). The honest backend coverage drops from 92.54% -> 82.18%, funcs 88.08% -> 79.56%. Method: ran \"bun --no-env-file scripts/run-tests-isolated.ts . --coverage\" for apps/api (152s) + packages/agent-runtime (194s); ran \"bun --conditions=development test --coverage --coverage-reporter=lcov\" for the other 9 packages (under 60s each); processed all lcov.info files through scripts/coverage-strip-comments.ts to drop comment/whitespace DA: entries. All numbers comment-stripped."
     },
     {
-      "sha": "PENDING",
+      "sha": "1b3436b5",
       "date": "2026-05-28",
       "wave": "Wave 1 ad-hoc - agent-runtime response-transforms.ts",
       "message": "test(coverage): packages/agent-runtime response-transforms.ts - 27%->96.30% lines, ?->100% funcs",
