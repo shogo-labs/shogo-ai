@@ -20,9 +20,11 @@ const fakeEmailService = {
   },
 }
 
+let optionalReturns: typeof fakeEmailService | null = fakeEmailService
+
 mock.module('@shogo-ai/sdk/email/server', () => ({
   createEmail: () => fakeEmailService,
-  createEmailOptional: () => fakeEmailService,
+  createEmailOptional: () => optionalReturns,
 }))
 
 const svc = await import('../email.service')
@@ -298,5 +300,84 @@ describe('sendTemplateEmail failure modes', () => {
     sendTemplateImpl = async () => { throw new Error('network down') }
     const res = await svc.sendWelcomeEmail({ to: 'a@b.test', name: 'Ada' })
     expect(res).toEqual({ success: false, error: 'network down' })
+  })
+})
+
+// ─── singleton init branches — exercised via __resetEmailServiceForTesting ───
+//
+// These tests cover the configured-init log line, the not-configured-init
+// log line, and the `if (!email)` short-circuit inside sendTemplateEmail.
+// They keep the cross-file test stable by always restoring the mock to
+// `fakeEmailService` and re-running the reset in afterEach.
+
+describe('email.service — singleton init branches', () => {
+  const logs: string[] = []
+  let origLog: typeof console.log
+
+  beforeEach(() => {
+    optionalReturns = fakeEmailService
+    svc.__resetEmailServiceForTesting()
+    logs.length = 0
+    origLog = console.log
+    console.log = (...a: unknown[]) => { logs.push(a.join(' ')) }
+  })
+
+  afterEach(() => {
+    console.log = origLog
+    optionalReturns = fakeEmailService
+    svc.__resetEmailServiceForTesting()
+  })
+
+  it('configured init branch logs "Service initialized successfully" and returns the service', () => {
+    optionalReturns = fakeEmailService
+    const inst = svc.getEmailService()
+    expect(inst).not.toBeNull()
+    expect(logs.some((l) => l.includes('Service initialized successfully'))).toBe(true)
+
+    // Subsequent calls hit the cached path (no second init log).
+    logs.length = 0
+    const again = svc.getEmailService()
+    expect(again).toBe(inst)
+    expect(logs.length).toBe(0)
+  })
+
+  it('unconfigured init branch logs "not configured" and returns null', () => {
+    optionalReturns = null
+    const inst = svc.getEmailService()
+    expect(inst).toBeNull()
+    expect(logs.some((l) => l.includes('not configured'))).toBe(true)
+  })
+
+  it('isEmailConfigured returns false when the singleton initialized to null', () => {
+    optionalReturns = null
+    expect(svc.isEmailConfigured()).toBe(false)
+  })
+
+  it('sendTemplateEmail short-circuits with the not-configured error shape and skips the underlying call', async () => {
+    optionalReturns = null
+    svc.__resetEmailServiceForTesting()
+
+    const origWarn = console.warn
+    const warns: string[] = []
+    console.warn = (...a: unknown[]) => { warns.push(a.join(' ')) }
+    try {
+      const before = sendCalls.length
+      const res = await svc.sendWelcomeEmail({ to: 'a@b.test', name: 'Ada' })
+      expect(res).toEqual({ success: false, error: 'Email service not configured' })
+      expect(warns.some((w) => w.includes('welcome email skipped'))).toBe(true)
+      expect(sendCalls.length).toBe(before)
+    } finally {
+      console.warn = origWarn
+    }
+  })
+
+  it('__resetEmailServiceForTesting flips the cached singleton (configured → null)', () => {
+    optionalReturns = fakeEmailService
+    expect(svc.getEmailService()).not.toBeNull()
+
+    svc.__resetEmailServiceForTesting()
+    optionalReturns = null
+    expect(svc.getEmailService()).toBeNull()
+    expect(svc.isEmailConfigured()).toBe(false)
   })
 })
