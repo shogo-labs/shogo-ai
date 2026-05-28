@@ -1196,6 +1196,23 @@
         }
       ],
       "note": "Closes 2 of the 3 remaining gap blocks in skills.ts: L437-L487 (51-line deprecated loadSkills) + L414-L420 (matchSkill regex-trigger branch) + L281-L324 (searchSkills scoring) + L251-L265 (loadBundledSkills). Combined run with claude-skill-compat.test.ts + skill-registry.test.ts to mirror full-suite measurement. New file skills-deprecated-and-match.test.ts (27 tests, all passing) drives: (1) loadSkills (deprecated) - 9 tests: absent-dir [], empty-dir [], dir-format SKILL.md happy, flat .md happy with tools array, missing name/trigger skipped with warning, duplicate name across formats (dir wins), per-file catch keeps the rest, non-.md ignored, dir without SKILL.md silently skipped. (2) matchSkill regex - 7 tests: /pattern/ matches, case-insensitive, invalid regex silently skipped, multi-regex |-separated first-match-wins, mixed plain+regex triggers, skill-without-trigger guard, first-list-skill wins. (3) searchSkills - 9 tests: short query [], no-score-match [], exact-name 25pts, trigger-substring 20pts, per-word content-1pt, dedupe-by-name across installed+bundled (installed wins), limit cap, results-sorted-by-score-desc, no-trigger-defensive. (4) loadBundledSkills - 2 tests: returns array (real dir or []), respects existingSkillNames filter. Mock harness: mkdtempSync(tmpdir()) per disk test, console.warn/error silenced. Remaining uncov 7 lines are L115/151-152/237/349/483/493 - all small per-frontmatter-key fallback branches inside parseFrontmatter and 2 unreachable defensive guards in dirname()/loadAllClaudeCodeSkills that need real .claude/skills/ on disk - to be addressed separately if needed. Standalone-file run: 27 pass / 0 fail."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 1 ad-hoc - agent-runtime index-engine.ts",
+      "message": "test(coverage): packages/agent-runtime index-engine.ts - 75.8%->96.88% lines, 100% funcs",
+      "perFile": [
+        {
+          "file": "packages/agent-runtime/src/index-engine.ts",
+          "beforeLines": "464/612 ~75.8%",
+          "afterLines": "~593/612 ~96.88%",
+          "deltaLinesHit": 129,
+          "deltaFuncsHit": 9,
+          "newTests": 14
+        }
+      ],
+      "note": "Closes the largest remaining gaps in index-engine.ts: createDefaultConfig (L184-191) + reconnect (L308-326) + reindexBackground (L439-442) + indexFile public single-file API (L454-457) + embedAndStore (L518-557) + vectorSearch (L675-787). Mock harness: mock.module(openai) installs FakeOpenAI class whose embeddings.create returns deterministic 256-dim vectors so embedAndStore + vectorSearch are drivable without a real key. Each test toggles oaiState.shouldFail to drive the failure-counter path in embedAndStore + the catch-and-return-[] path in vectorSearch. New file index-engine-coverage.test.ts (14 tests, all passing) drives: (1) createDefaultConfig - 1 test verifying cfg.sources [code,files], dbPath suffix, enableEmbeddings=false, chunkOverlap=10. (2) reconnect - 2 tests: round-trip after first reindex remains usable; reconnect after already-closed-db hits the catch path. (3) reindexBackground - 2 tests: fires + resolves; dedup of concurrent calls (second is no-op when indexing is set). (4) indexFile - 2 tests: indexes by sourceId+relPath; silently no-ops unknown sourceId. (5) Embeddings - 6 tests with AI_PROXY_TOKEN=test-token env: embeddingsEnabled flips true, reindex calls embedAndStore, vectorSearch returns scored results via mocked embeddings, embedAndStore tolerates OpenAI failure (failure counter bumps), vectorSearch returns [] when OpenAI throws, vectorSearch caches query embedding (second call same query = no extra openai call). (6) Search filters - 1 test: vectorSearch respects pathFilter + extensions options. mkdtempSync(tmpdir()) per test for sqlite db files. console.warn silenced during failure-path tests. Combined-run verification with existing index-engine.test.ts -> 96.88% lines / 100.00% funcs. Standalone-file run: 14 pass / 0 fail."
     }
   ],
   "frontend": {
