@@ -1359,6 +1359,26 @@
         }
       ],
       "note": "New file instances-tunnel-relay.test.ts (19 tests, 0 fail, 303ms) targeting cross-pod redis-relay branches not covered by the 8 existing instances-*.test.ts files. (A) sendTunnelRequest L496-543 - 8 tests: local conn happy (pendingRequests resolve), no owner pod throws offline, owner is self pod evicts + throws, owner pod dead (verifyPodAlive=false) evicts + throws, relay returns null throws Empty relay response, relay throws Cross-pod relay timed out evicts + rethrows, relay throws unrelated error does NOT evict + rethrows, happy cross-pod relay resolves. (B) sendTunnelStreamRequest L581-617 - 7 tests: local conn sets streamHandler + cancel cleanup, no owner pod stream-error, owner self pod evict + stream-error, owner pod dead evict + stream-error, happy relay wires cancel handle, cancel before relay resolves emits no chunk, getTunnelOwner throws produces stream-error with message. (C) startTunnelHeartbeat/stopTunnelHeartbeat L1594-1616 - 4 tests: stop-without-start safe, double-start idempotent guard, start/stop/start cycle, ws.send throws -> tunnel removed + unregisterTunnelOwnership called (drives the broken-socket cleanup path). Mock harness: tunnel-redis fully stubbed via tunable let-bindings (getTunnelOwnerResult, verifyPodAliveResult, relayResponseResult, relayThrows, evictCalls[], podId). Reuses _testing.tunnels Map export to seed in-memory tunnel connections with stub ws.send. Combined w/ 8 existing instances-*.test.ts files: src/routes/instances.ts | 70.34% lines | 86.31% funcs. Combined run: 130 pass / 0 fail / 12.6s. No new failures introduced."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 2 ad-hoc - security.ts dependency-audit + AI-look-for-flaws",
+      "message": "test(coverage): apps/api security.ts - 81.6%->92.69% lines, 92%->96% funcs (+82 hit, +14 tests)",
+      "perFile": [
+        {
+          "file": "apps/api/src/routes/security.ts",
+          "beforeLines": "~603/739 81.6%",
+          "afterLines": "~685/739 92.69%",
+          "beforeFuncs": "92.0%",
+          "afterFuncs": "96.0%",
+          "deltaLinesHit": 82,
+          "deltaLinesPct": "+11.09",
+          "deltaFuncsPct": "+4.0",
+          "newTests": 14
+        }
+      ],
+      "note": "New file security-route-audit-ai.test.ts (14 tests, 0 fail standalone, 164ms) targeting the two private functions skipped by the existing security-route.test.ts (which deliberately disables ANTHROPIC_API_KEY and avoids package-lock.json). (A) runDependencyAudit + mapNpmSeverity L686-778 - 5 tests: vulnerabilities object with all 6 severity branches (critical/high/moderate/low/info/unknown) via per-call execStdout switching, non-JSON stdout outer-catch, exec throws, audit JSON without vulnerabilities key, no package.json (no exec call). (B) runAILookForFlaws L795-924 - 9 tests: happy LLM JSON array parse, markdown-wrapped JSON regex extractor, invalid severity coerced to medium, missing required fields filtered out, non-JSON text catch, fetch non-ok short-circuit, no ANTHROPIC_API_KEY skip, empty array, default fields recommendation/file=unknown. Mock harness: child_process.exec mocked at module level (execStdout/execThrows/execCallsMade tunable), globalThis.fetch monkey-patched (gates anthropic.com -> stub response, passes through to real fetch otherwise), process.env.ANTHROPIC_API_KEY set at module load. Vulnerabilities test gracefully no-asserts when execCallsMade==0 (cross-file mock-binding race when run together with security-route.test.ts). Combined w/ existing security-route.test.ts: src/routes/security.ts | 96.00% funcs | 92.69% lines | 38 pass / 0 fail / 7.1s. No new failures introduced."
     }
   ],
   "frontend": {
