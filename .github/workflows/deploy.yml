@@ -637,6 +637,7 @@ jobs:
           if [ -n "${{ secrets.COMPOSIO_PROJECT_ID }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_PROJECT_ID="${{ secrets.COMPOSIO_PROJECT_ID }}"); fi
           if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}"); fi
           if [ -n "${{ secrets.GOOGLE_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}"); fi
+          if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}"); fi
           if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
           if [ -n "${{ secrets.SMTP_PASSWORD }}" ]; then SECRET_ARGS+=(--from-literal=SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_API_KEY="${{ secrets.ELEVENLABS_API_KEY }}"); fi
@@ -1069,6 +1070,7 @@ jobs:
           if [ -n "${{ secrets.COMPOSIO_PROJECT_ID }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_PROJECT_ID="${{ secrets.COMPOSIO_PROJECT_ID }}"); fi
           if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}"); fi
           if [ -n "${{ secrets.GOOGLE_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}"); fi
+          if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}"); fi
           if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
           if [ -n "${{ secrets.SMTP_PASSWORD }}" ]; then SECRET_ARGS+=(--from-literal=SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_API_KEY="${{ secrets.ELEVENLABS_API_KEY }}"); fi
@@ -1568,6 +1570,7 @@ jobs:
           if [ -n "${{ secrets.COMPOSIO_PROJECT_ID }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_PROJECT_ID="${{ secrets.COMPOSIO_PROJECT_ID }}"); fi
           if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}"); fi
           if [ -n "${{ secrets.GOOGLE_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}"); fi
+          if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}"); fi
           if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
           if [ -n "${{ secrets.SMTP_PASSWORD }}" ]; then SECRET_ARGS+=(--from-literal=SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_API_KEY="${{ secrets.ELEVENLABS_API_KEY }}"); fi
@@ -2035,6 +2038,7 @@ jobs:
           if [ -n "${{ secrets.COMPOSIO_PROJECT_ID }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_PROJECT_ID="${{ secrets.COMPOSIO_PROJECT_ID }}"); fi
           if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}"); fi
           if [ -n "${{ secrets.GOOGLE_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}"); fi
+          if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}"); fi
           if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
           if [ -n "${{ secrets.SMTP_PASSWORD }}" ]; then SECRET_ARGS+=(--from-literal=SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_API_KEY="${{ secrets.ELEVENLABS_API_KEY }}"); fi
