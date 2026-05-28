@@ -1430,6 +1430,26 @@
         }
       ],
       "note": "Filled the last two uncov ranges: L719-721 (default stripeFactory null branch when STRIPE_SECRET_KEY is unset) and L881-933 (getAffiliateSummary, 53 lines, 1 function). Added 8 tests in 3 new describe blocks. runAffiliatePayouts default-factory tests use the existing payCommissions harness — seeded one approved commission so groups.length>0 fires the factory; tested both KEY-unset (warn + paid=0, no Stripe construction) and KEY-set early-return via candidates=0. getAffiliateSummary tests: null when not enrolled, zero-data happy with empty buckets, $sum aggregation across pending/approved/paid statuses, 30-day window filtering of clicks + attributions (excludes older), full L1/L2/L3 downline tree walk respecting SHOGO_AFFILIATE_MAX_DEPTH=3 cap (L4 great-grandchild NOT counted). newVisitorId single tiny test. Standalone: 47 pass / 0 fail / 117 expects / 122ms. Lines 100% (547/547). 1 funcs uncov (39/40 = 97.5%) is the defensive .catch(() => undefined) on L838 secondary DB update inside the runAffiliatePayouts catch block — guards a real DB race in the failed-payout path, NOT dead code, so kept (no istanbul-ignore pragma). Below the 99% funcs threshold by one defensive catch arrow; lines fully maxed."
+    },
+    {
+      "sha": "b70cf42",
+      "date": "2026-05-28",
+      "wave": "Wave 2 ad-hoc - routes/affiliates.ts error-branch sweep",
+      "message": "test(coverage): apps/api routes/affiliates.ts - 76.69% -> 99.25% lines (+60 hit, +25 tests)",
+      "perFile": [
+        {
+          "file": "apps/api/src/routes/affiliates.ts",
+          "beforeLines": "203/265 76.69%",
+          "afterLines": "263/265 99.25%",
+          "beforeFuncs": "91.67%",
+          "afterFuncs": "100.00%",
+          "deltaLinesHit": 60,
+          "deltaLinesPct": "+22.56",
+          "deltaFuncsPct": "+8.33",
+          "newTests": 25
+        }
+      ],
+      "note": "Filled all six route-layer error/edge branches in one batched session by reusing the existing prismaStub + auth-middleware mock harness (no new mock.module of affiliate.service - per the file docstring rule). +25 tests in 5 new describe blocks: (A) POST /click error branches (5): bad_request JSON parse, invalid_request zod, AffiliateError affiliate_not_found 404, AffiliateError affiliate_inactive 410 (drives affiliateErrorStatus switch right-side), generic err 500 via affiliateClick.create throw. (B) POST /enroll error branches (9): flag-off 503, no-auth 401, bad_request JSON parse, invalid_request zod, AffiliateError terms_required 400, invalid_code 400 (--bad regex fail), parent_not_found 404, user_not_found 404 (user missing in db), generic 500 via user.findUnique throw. (C) GET /me (2): flag-off 503, enrolled=false when no row. (D) POST /me/stripe-connect/onboard error branches (2): flag-off 503, 500 generic via wrapper throwing non-NOT_FOUND error. (E) POST /me/stripe-connect/details (7) - entire previously-uncov endpoint L355-375: flag-off 503, not_onboarded (null stripeCustomAccountId + missing affiliate row), bad_request JSON parse, 200 happy with payoutStatus passthrough, 500 generic wrapper rejection, 501 not_implemented when error message matches /submitPayoutDetailsForAffiliate/ regex. Standalone: 45 pass / 0 fail / 87 expects / 456ms. Remaining 2 uncov lines are inside the L130 ternary - column-coverage artifact, both branches behaviorally exercised. Funcs: 25/25 = 100%."
     }
   ],
   "frontend": {
@@ -1446,7 +1466,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-28T21:21:33.908Z",
+  "lastUpdated": "2026-05-28T21:28:23.810Z",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
