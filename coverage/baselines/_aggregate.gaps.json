@@ -732,6 +732,23 @@
         }
       ],
       "note": "Two new test files. (1) gateway-tools.agent-spawn.test.ts - 15 tests covering createAgentSpawnTool fork mode (parent-context check, nested-fork guard, happy path with data-usage, no-uiWriter, invalid model_tier) and normal mode (no agentManager, spawn failure, background, instance-lost, sync happy, resume with history, model_tier/max_turns/readonly overrides, builtin-config fallback, zero-tokens-skips-usage). Mocks ../subagent.runSubagent. (2) Appended 3 tests to gateway-tools.edit-file.test.ts: CRLF/LF normalization, trailing-whitespace tolerance, JSON-escaped-quote unescape. Cumulative Session 1+2 on gateway-tools.ts: 77.47 to 82.09 percent (+232 lines hit). Below v4 +200/session target (got +100); remaining clusters need playwright/cdp or composio mocks - Session 3."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 1 - Crush Giant (gateway-tools.ts) Session 3",
+      "message": "test(coverage): gateway-tools.ts composio + channel_connect - 82.09% to 84.10% lines",
+      "perFile": [
+        {
+          "file": "packages/agent-runtime/src/gateway-tools.ts",
+          "beforeLines": "4115/5013 (82.09%)",
+          "afterLines": "4216/5013 (84.10%)",
+          "deltaLinesHit": 101,
+          "deltaFuncsHit": 0,
+          "newTests": 24
+        }
+      ],
+      "note": "Two new test files. (1) gateway-tools.tool-install-composio.test.ts - 13 tests for the composio branches in tool_install (already-initialized + active-auth, needs_auth with/without authUrl, deferred initComposioSession success/failure, COMPOSIO_USER_SCOPE env handling, unhandled error catch) AND tool_search (managed-results path, API-error swallow). Mocks ../composio with stateful toggles. (2) gateway-tools.channel-connect.test.ts - 13 tests covering pro-model access check (no proxy, denied, granted, fetch-throws, res-not-ok, env-var fallback) and webchat widget URL composition (local with PORT, kubernetes via derivePublicApiUrl, preset widgetSecret preservation, reconnect replaces entry, missing required keys, invalid type). Mocks globalThis.fetch and toggles process.env.KUBERNETES_SERVICE_HOST. Cumulative Sessions 1+2+3 on gateway-tools.ts: 77.47 to 84.10 percent (+333 lines hit, +6.63pp). Session 3 delta: +101 lines (below v4 +200 target but cumulative arc is strong). Remaining big clusters need playwright/cdp for in-page DOM helpers or sqlite for code_review diff/git execSync."
     }
   ],
   "frontend": {
