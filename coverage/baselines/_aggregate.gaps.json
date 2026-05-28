@@ -569,7 +569,7 @@
       "note": "New test file ai-proxy-extra-paths.test.ts covers shogo_sk_ bearer auth path (un-skipped) + logCacheControlIfEnabled gated diagnostic (AI_PROXY_LOG_CACHE=1) for both stream and nonstream Anthropic chat completions. No new test failures introduced; 4 pre-existing E2E failures unchanged."
     },
     {
-      "sha": "PENDING",
+      "sha": "c12be55c",
       "date": "2026-05-28",
       "wave": "Wave 2 \u2014 opportunistic",
       "message": "test(coverage): ai-proxy.ts \u2014 94.23% \u2192 96.39% lines (+49 lines)",
