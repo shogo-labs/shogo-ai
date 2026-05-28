@@ -171,6 +171,20 @@ export interface ShogoKeyConnectResult {
   workspace?: { name: string }
 }
 
+/** First-class BYOK providers exposed via `/api/local/api-keys`.
+ *
+ * Adding a provider here is the only client-side change needed to surface
+ * it in the admin UI; the matching env-var entry and routing live in the
+ * API server. Order is the rendering order in the admin form. */
+export const BYOK_PROVIDERS = [
+  { id: 'anthropic',  name: 'Anthropic',  envKey: 'ANTHROPIC_API_KEY',  signupUrl: 'https://console.anthropic.com/' },
+  { id: 'openai',     name: 'OpenAI',     envKey: 'OPENAI_API_KEY',     signupUrl: 'https://platform.openai.com/api-keys' },
+  { id: 'google',     name: 'Google',     envKey: 'GOOGLE_API_KEY',     signupUrl: 'https://aistudio.google.com/app/apikey' },
+  { id: 'openrouter', name: 'OpenRouter', envKey: 'OPENROUTER_API_KEY', signupUrl: 'https://openrouter.ai/keys' },
+] as const
+
+export type BYOKProviderId = typeof BYOK_PROVIDERS[number]['id']
+
 export interface LlmConfig {
   AI_MODE?: string
   LOCAL_LLM_BASE_URL?: string
@@ -179,6 +193,35 @@ export interface LlmConfig {
   LOCAL_EMBEDDING_MODEL?: string
   LOCAL_EMBEDDING_DIMENSIONS?: string
   [key: string]: string | undefined
+}
+
+/** A single OpenRouter model entry surfaced to user-facing pickers. */
+export interface VisibleOpenRouterModel {
+  /** ID in our catalog convention, e.g. `openrouter:anthropic/claude-3.5-sonnet`. */
+  id: string
+  displayName: string
+  contextLength?: number
+  tier?: 'economy' | 'standard' | 'premium'
+}
+
+/** Admin-curated allowlist of models that surface in the user picker.
+ *
+ * - `catalogIds === null` means "show all current-generation catalog models"
+ *   (the default — admin hasn't configured a curated list yet).
+ * - `catalogIds === []` shows zero catalog models (only the OpenRouter ones).
+ * - `openrouterModels` is always an explicit additive list.
+ */
+export interface VisibleModelsConfig {
+  catalogIds: string[] | null
+  openrouterModels: VisibleOpenRouterModel[]
+}
+
+/** Resolved view returned by `GET /api/platform/visible-models`. Same wire
+ * shape as `VisibleModelsConfig`; named distinctly because consumers use
+ * this to render pickers, not to render an admin-editor. */
+export interface ResolvedVisibleModels {
+  catalogIds: string[] | null
+  openrouterModels: VisibleOpenRouterModel[]
 }
 
 export interface InstanceInfo {
@@ -396,14 +439,24 @@ export class PlatformApi {
   // Local: Provider API Keys
   // ===========================================================================
 
-  /** Get masked provider API keys (e.g. Anthropic, OpenAI). */
+  /** Get masked provider API keys keyed by provider id (e.g. `anthropic`,
+   * `openai`, `google`, `openrouter`). Missing entries mean no key is set. */
   async getProviderKeyMasks(): Promise<Record<string, string>> {
     const res = await this.http.get<{ keys: Record<string, string> }>('/api/local/api-keys')
     return res.data?.keys ?? {}
   }
 
-  /** Save provider API keys. Only provided keys are updated. */
-  async putProviderKeys(keys: { anthropicApiKey?: string; openaiApiKey?: string; googleApiKey?: string }): Promise<void> {
+  /**
+   * Save provider API keys. Pass a map keyed by provider id (`anthropic`,
+   * `openai`, `google`, `openrouter`) — only provided entries are updated.
+   * Pass `''` or `null` to clear a stored key.
+   *
+   * Legacy camelCase fields (`anthropicApiKey`, `openaiApiKey`,
+   * `googleApiKey`) are still accepted for backwards-compatibility.
+   */
+  async putProviderKeys(
+    keys: Record<string, string | null | undefined>,
+  ): Promise<void> {
     await this.http.request('/api/local/api-keys', { method: 'PUT', body: keys })
   }
 
@@ -417,6 +470,34 @@ export class PlatformApi {
       '/api/local/models',
       { baseUrl },
     )
+    return res.data ?? { ok: false, models: [] }
+  }
+
+  /** Live catalog from OpenRouter (`/api/v1/models`). Requires an
+   * `OPENROUTER_API_KEY` to be configured for user-specific pricing,
+   * but works unauthenticated too. */
+  async getOpenRouterModels(): Promise<{
+    ok: boolean
+    models: Array<{
+      id: string
+      name: string
+      description?: string
+      contextLength?: number
+      pricing?: { prompt?: number; completion?: number }
+    }>
+    error?: string
+  }> {
+    const res = await this.http.get<{
+      ok: boolean
+      models: Array<{
+        id: string
+        name: string
+        description?: string
+        contextLength?: number
+        pricing?: { prompt?: number; completion?: number }
+      }>
+      error?: string
+    }>('/api/local/openrouter/models')
     return res.data ?? { ok: false, models: [] }
   }
 
@@ -435,6 +516,36 @@ export class PlatformApi {
   /** Set which models the basic/advanced agent modes resolve to and the default mode. Pass null to reset to platform default. */
   async putAgentModelDefaults(overrides: { basic?: string | null; advanced?: string | null; defaultMode?: string | null }): Promise<void> {
     await this.http.request('/api/admin/settings/agent-models', { method: 'PUT', body: overrides })
+  }
+
+  // ===========================================================================
+  // Admin: Visible Models (catalog allowlist + curated OpenRouter models)
+  // ===========================================================================
+
+  /** Read the admin-configured visible-models config (allowlist + OR extras). */
+  async getVisibleModelsConfig(): Promise<VisibleModelsConfig> {
+    const res = await this.http.get<VisibleModelsConfig>(
+      '/api/admin/settings/visible-models',
+    )
+    return res.data ?? { catalogIds: null, openrouterModels: [] }
+  }
+
+  /** Replace the visible-models config. Pass `catalogIds: null` to revert
+   * to "show all catalog models". */
+  async putVisibleModelsConfig(config: VisibleModelsConfig): Promise<void> {
+    await this.http.request('/api/admin/settings/visible-models', {
+      method: 'PUT',
+      body: config,
+    })
+  }
+
+  /** Public read of the resolved visible-models config — this is the seam
+   * user-facing chat input pickers should use to render their model list. */
+  async getVisibleModels(): Promise<ResolvedVisibleModels> {
+    const res = await this.http.get<ResolvedVisibleModels>(
+      '/api/platform/visible-models',
+    )
+    return res.data ?? { catalogIds: null, openrouterModels: [] }
   }
 
   // ===========================================================================

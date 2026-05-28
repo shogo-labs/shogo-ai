@@ -30,7 +30,7 @@ import {
   getProviders,
 } from '@mariozechner/pi-ai'
 import type { AgentMessage, StreamFn } from '@mariozechner/pi-agent-core'
-import { getMaxOutputTokens } from './model-catalog'
+import { getMaxOutputTokens, OPENROUTER_MODEL_PREFIX, stripOpenRouterPrefix } from './model-catalog'
 
 // ---------------------------------------------------------------------------
 // Model Resolution
@@ -65,20 +65,35 @@ const PROVIDER_BASE_URL_ENV: Record<string, string> = {
  * the API server's AI proxy instead of hitting provider APIs directly.
  */
 export function resolveModel(provider: string, modelId: string): Model<Api> {
+  // Strip our `openrouter:` catalog prefix before consulting pi-ai's
+  // registry — pi-ai stores OpenRouter models by their bare upstream id
+  // (e.g. `xiaomi/mimo-v2.5`).
+  const lookupId =
+    provider === 'openrouter' && modelId.startsWith(OPENROUTER_MODEL_PREFIX)
+      ? stripOpenRouterPrefix(modelId)
+      : modelId
   const catalogMax = getMaxOutputTokens(modelId)
 
   let model: Model<Api> | undefined
   try {
-    model = getModel(provider as any, modelId as any) ?? undefined
+    model = getModel(provider as any, lookupId as any) ?? undefined
   } catch {
     // Model not in registry
   }
 
   if (!model) {
+    // OpenRouter is OpenAI Chat Completions-compatible — use that API
+    // shape and route through OpenRouter's base URL. Pi-ai's built-in
+    // OpenRouter model entries follow exactly the same convention.
+    const isOpenRouter = provider === 'openrouter'
     model = {
-      id: modelId,
-      name: modelId,
-      api: provider === 'anthropic' ? 'anthropic-messages' : 'openai-responses',
+      id: lookupId,
+      name: lookupId,
+      api: provider === 'anthropic'
+        ? 'anthropic-messages'
+        : isOpenRouter
+          ? 'openai-completions'
+          : 'openai-responses',
       provider,
       baseUrl: getDefaultBaseUrl(provider),
       reasoning: true,
@@ -118,6 +133,8 @@ function getDefaultBaseUrl(provider: string): string {
     case 'xai': return 'https://api.x.ai'
     case 'groq': return 'https://api.groq.com/openai'
     case 'cerebras': return 'https://api.cerebras.ai'
+    case 'openrouter': return 'https://openrouter.ai/api/v1'
+    case 'mistral': return 'https://api.mistral.ai'
     default: return ''
   }
 }

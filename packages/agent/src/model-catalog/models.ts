@@ -13,7 +13,14 @@
 /** Special model ID that enables the intelligent model router. */
 export const AUTO_MODEL_ID = 'auto' as const
 
-export type Provider = 'anthropic' | 'openai' | 'google' | 'local'
+export type Provider = 'anthropic' | 'openai' | 'google' | 'local' | 'openrouter'
+
+/** Prefix used for OpenRouter model IDs in our catalog/allowlist. The ID
+ * after the prefix is the canonical OpenRouter model id (e.g.
+ * `openrouter:meta-llama/llama-3.1-405b-instruct`). The prefix lets
+ * `inferProviderFromModel` route requests without colliding with native
+ * Anthropic/OpenAI model names. */
+export const OPENROUTER_MODEL_PREFIX = 'openrouter:' as const
 export type ImageProvider = 'openai' | 'google' | 'local'
 export type ModelTier = 'economy' | 'standard' | 'premium'
 export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'gpt' | 'other'

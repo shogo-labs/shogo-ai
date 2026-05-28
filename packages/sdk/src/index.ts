@@ -76,6 +76,8 @@ export {
 // Platform API (API keys, local config, feature flags)
 export {
   PlatformApi,
+  BYOK_PROVIDERS,
+  type BYOKProviderId,
   type PlatformConfig,
   type ApiKeyInfo,
   type ApiKeyKind,
@@ -91,6 +93,9 @@ export {
   type WorkspaceSummary,
   type FeatureFlagOverrides,
   type FeatureFlagPatch,
+  type VisibleModelsConfig,
+  type VisibleOpenRouterModel,
+  type ResolvedVisibleModels,
 } from './platform/index.js'
 
 // Machines API (paired desktops / VPS workers + per-project "Run on" routing)
