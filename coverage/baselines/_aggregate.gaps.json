@@ -552,7 +552,7 @@
       "note": "Wave 1 complete \u2014 gateway-tools.ts 58.62% \u2192 80.03% (+21.41pp, +941 lines, 184 new tests across 4 sessions)"
     },
     {
-      "sha": "2bc5d0e7",
+      "sha": "bb51af4d",
       "date": "2026-05-28",
       "wave": "Wave 2 \u2014 opportunistic",
       "message": "test(coverage): ai-proxy.ts \u2014 93.00% \u2192 94.23% lines (+28 lines, +1 func)",
