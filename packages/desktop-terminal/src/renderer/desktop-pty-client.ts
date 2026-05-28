@@ -129,15 +129,23 @@ export class DesktopPtyClient {
     if (initial.onTruncated) this.onTruncated(initial.onTruncated)
     if (initial.onError) this.onError(initial.onError)
 
-    // Subscribe to control events so we learn about exits that didn't come
-    // over the data port (e.g. the host reaped the session before any
-    // EXIT frame reached us).
+    // Subscribe to control events so we learn about exits/reaps that
+    // didn't come over the data port (e.g. the host reaped us due to
+    // idle timeout — the port closes before any EXIT frame).
     this.offEvent = this.bridge.onEvent((ev) => {
-      if (ev.kind !== 'session:exit') return
-      if (ev.id !== this.sessionId) return
-      this.suppressReconnect = this.suppressReconnect || this.terminalReasons.has(ev.reason)
-      this.emitExit({ code: ev.code, signal: ev.signal })
-      this.markClosed()
+      if ('id' in ev && ev.id !== this.sessionId) return
+      switch (ev.kind) {
+        case 'session:exit':
+          this.suppressReconnect = this.suppressReconnect || this.terminalReasons.has(ev.reason)
+          this.emitExit({ code: ev.code, signal: ev.signal })
+          this.markClosed()
+          break
+        case 'session:reap':
+          this.suppressReconnect = this.suppressReconnect || this.terminalReasons.has(`pty:${ev.reason}`)
+          this.emitExit({ code: null, signal: null })
+          this.markClosed()
+          break
+      }
     })
   }
 

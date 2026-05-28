@@ -13,11 +13,10 @@
  *     the port broker can subscribe.
  *   - Auto-restart on host crash with exponential backoff.
  *
- * Data plane (live PTY output) does NOT go through this class. The port
- * broker (`terminal-port-broker.ts`) allocates a `MessageChannelMain`,
- * hands one port to the renderer (via `webContents.postMessage(channel,
- * msg, [port])`) and the other to the host (via `child.postMessage(msg,
- * [port])`).
+ * Data plane (live PTY output) does NOT go through this class. Phase 2's
+ * `terminal-port-broker.ts` allocates a `MessageChannelMain`, hands one
+ * port to the renderer (via `webContents.postMessage(channel, msg, [port])`)
+ * and the other to the host (via `child.postMessage(msg, [port])`).
  */
 
 import { EventEmitter } from 'node:events'
@@ -28,6 +27,7 @@ import type {
   ControlRequest,
   ControlResponse,
   SessionInfo,
+  SnapshotSummary,
   SpawnOptions,
 } from './pty-host/protocol'
 
@@ -35,12 +35,14 @@ const HOST_RESTART_BASE_MS = 500
 const HOST_RESTART_MAX_MS = 10_000
 
 export interface PtyHostClientEvents {
-  /** Host's control-event stream — exit, log, ready. */
+  /** Host's control-event stream — exit, reap, log, ready. */
   event: (ev: ControlEvent) => void
   /** Host crashed; this client is reconnecting. */
   'host:crash': (info: { code: number | null; restartInMs: number }) => void
   /** Host (re)booted cleanly. */
   'host:ready': (version: string) => void
+  /** Heartbeat watchdog says pty-host is not responding. */
+  'host:unresponsive': (info: { lastBeatAt: number }) => void
 }
 
 type PendingResolver = {
@@ -55,6 +57,8 @@ export class PtyHostClient extends EventEmitter {
   private restartAttempt = 0
   private disposed = false
   private bootingPromise: Promise<void> | null = null
+  private lastBeatAt = Date.now()
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
   override on<K extends keyof PtyHostClientEvents>(event: K, listener: PtyHostClientEvents[K]): this
   override on(event: string | symbol, listener: (...args: unknown[]) => void): this
@@ -73,8 +77,13 @@ export class PtyHostClient extends EventEmitter {
 
   private async boot(): Promise<void> {
     const entry = path.join(app.getAppPath(), 'dist', 'pty-host.js')
+    const snapshotDir = path.join(app.getPath('userData'), 'terminal-snapshots')
     const child = utilityProcess.fork(entry, [], {
-      env: { ...process.env as Record<string, string> },
+      // Inherit env minus anything sensitive the host has no business reading.
+      env: {
+        ...process.env as Record<string, string>,
+        SHOGO_TERMINAL_SNAPSHOT_DIR: snapshotDir,
+      },
       serviceName: 'shogo-pty-host',
       stdio: 'inherit',
     })
@@ -94,18 +103,23 @@ export class PtyHostClient extends EventEmitter {
           else slot.resolve(m)
           return
         }
+        // Control event (no reqId).
         const ev = m as ControlEvent
         if (ev.kind === 'host:ready') {
           this.restartAttempt = 0
+          this.lastBeatAt = Date.now()
           this.emit('host:ready', ev.version)
           if (!resolved) { resolved = true; resolve() }
         }
+        if (ev.kind === 'host:beat') this.lastBeatAt = ev.t
         this.emit('event', ev)
       }
 
       child.on('message', onMessage)
+      this.startHeartbeatWatchdog()
 
       child.on('exit', (code) => {
+        // Reject pending requests so callers get an error rather than hanging.
         for (const [, slot] of this.pending) slot.reject(new Error('pty-host exited'))
         this.pending.clear()
         this.child = null
@@ -133,6 +147,8 @@ export class PtyHostClient extends EventEmitter {
 
   async dispose(): Promise<void> {
     this.disposed = true
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
+    this.heartbeatTimer = null
     if (this.child) {
       try { this.child.kill() } catch { /* may already be dead */ }
       this.child = null
@@ -140,6 +156,26 @@ export class PtyHostClient extends EventEmitter {
     for (const [, slot] of this.pending) slot.reject(new Error('pty-host disposed'))
     this.pending.clear()
     this.removeAllListeners()
+  }
+
+  async restart(): Promise<void> {
+    if (this.child) {
+      try { this.child.kill() } catch {}
+      this.child = null
+    }
+    await this.ensureReady()
+  }
+
+  private startHeartbeatWatchdog(): void {
+    if (this.heartbeatTimer) return
+    this.heartbeatTimer = setInterval(() => {
+      if (this.disposed || !this.child) return
+      const age = Date.now() - this.lastBeatAt
+      if (age <= 6_000) return
+      const ev: ControlEvent = { kind: 'host:unresponsive', lastBeatAt: this.lastBeatAt }
+      this.emit('host:unresponsive', { lastBeatAt: this.lastBeatAt })
+      this.emit('event', ev)
+    }, 2_000)
   }
 
   // ─── control plane ────────────────────────────────────────────────────
@@ -164,6 +200,10 @@ export class PtyHostClient extends EventEmitter {
         reject,
       })
       if (transfer && transfer.length > 0) {
+        // Electron's UtilityProcess.postMessage accepts a transfer array
+        // of MessagePortMain instances. Cast through unknown because
+        // TypeScript's union for postMessage transfer is narrower than
+        // what Electron actually accepts at runtime.
         ;(child.postMessage as (m: unknown, t?: unknown[]) => void)(req, transfer)
       } else {
         child.postMessage(req)
@@ -202,12 +242,32 @@ export class PtyHostClient extends EventEmitter {
   }
 
   /**
-   * Attach with data-plane port handoff. Allocates a `MessageChannelMain`
-   * on the caller's behalf (the broker does the allocation and supplies
-   * `hostPort`). The host receives the port via the same control message
-   * used by `attach`, binds a subscriber to the session's data fanout,
-   * ships any pending replay (sinceSeq → latestSeq) through the port,
-   * and starts streaming live DATA / EXIT / TRUNC frames.
+   * Legacy / no-port attach — reserves a channelId without binding a
+   * MessagePort. Kept for the Phase 1 test surface.
+   */
+  async attach(id: string, sinceSeq: number): Promise<{ channelId: string; latestSeq: number }> {
+    const r = await this.request<{
+      kind: 'attach:ok'
+      reqId: number
+      id: string
+      channelId: string
+      latestSeq: number
+    }>((reqId) => ({ kind: 'attach', reqId, id, sinceSeq }))
+    return { channelId: r.channelId, latestSeq: r.latestSeq }
+  }
+
+  /**
+   * Phase 2 attach with data-plane port handoff.
+   *
+   * Allocates a `MessageChannelMain` on the caller's behalf (the broker
+   * does the actual allocation and supplies `hostPort`). The host receives
+   * the port via the same control message used by `attach`, binds a
+   * subscriber to the session's data fanout, ships any pending replay
+   * (sinceSeq → latestSeq) through the port, and starts streaming live
+   * DATA / EXIT / TRUNC frames.
+   *
+   * The corresponding renderer-side port is delivered separately by the
+   * broker via `webContents.postMessage(PTY_PORT_CHANNEL, ...)`.
    */
   async attachWithPort(
     id: string,
@@ -229,6 +289,28 @@ export class PtyHostClient extends EventEmitter {
 
   async detach(id: string, channelId: string): Promise<void> {
     await this.request((reqId) => ({ kind: 'detach', reqId, id, channelId }))
+  }
+
+  async listSnapshots(workspaceHash: string): Promise<SnapshotSummary[]> {
+    const r = await this.request<{ kind: 'snapshots:list:ok'; reqId: number; snapshots: SnapshotSummary[] }>(
+      (reqId) => ({ kind: 'snapshots:list', reqId, workspaceHash }),
+    )
+    return r.snapshots
+  }
+
+  async restoreSession(workspaceHash: string, id: string): Promise<SessionInfo> {
+    const r = await this.request<{ kind: 'snapshots:restore:ok'; reqId: number; session: SessionInfo }>(
+      (reqId) => ({ kind: 'snapshots:restore', reqId, workspaceHash, id }),
+    )
+    return r.session
+  }
+
+  async discardSnapshot(workspaceHash: string, id: string): Promise<void> {
+    await this.request((reqId) => ({ kind: 'snapshots:discard', reqId, workspaceHash, id }))
+  }
+
+  async flushSnapshots(): Promise<void> {
+    await this.request((reqId) => ({ kind: 'snapshots:flush', reqId }))
   }
 }
 

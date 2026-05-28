@@ -352,3 +352,26 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
 import { exposeShogoDesktopTerminalBridge } from './preload-terminal'
 exposeShogoDesktopTerminalBridge()
 
+if (process.env.SHOGO_E2E === '1' || process.env.PLAYWRIGHT_E2E === '1') {
+  contextBridge.exposeInMainWorld('shogoTesting', {
+    openTerminal() {
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        key: '`',
+        code: 'Backquote',
+        metaKey: process.platform === 'darwin',
+        ctrlKey: process.platform !== 'darwin',
+        bubbles: true,
+      }))
+    },
+    sendKeys(text: string) {
+      document.activeElement?.dispatchEvent(new InputEvent('beforeinput', {
+        inputType: 'insertText',
+        data: text,
+        bubbles: true,
+      }))
+    },
+    getActiveSurface() {
+      return document.querySelector('[data-shogo-terminal-surface="true"]') !== null
+    },
+  })
+}

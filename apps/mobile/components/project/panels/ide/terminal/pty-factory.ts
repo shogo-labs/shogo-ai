@@ -81,6 +81,7 @@ export type CreatePtyClientArgs =
         env?: Record<string, string>
         cols: number
         rows: number
+        restoreId?: string
       }
     }
 

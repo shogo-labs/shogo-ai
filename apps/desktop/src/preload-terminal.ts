@@ -19,44 +19,48 @@ import type {
   ControlEvent,
   SessionInfo,
   SpawnOptions,
+  SnapshotSummary,
 } from '@shogo/pty-core'
 
 const CH = {
-  spawn: 'shogo:terminal:spawn',
-  write: 'shogo:terminal:write',
+  spawn:  'shogo:terminal:spawn',
+  write:  'shogo:terminal:write',
   resize: 'shogo:terminal:resize',
   signal: 'shogo:terminal:signal',
-  kill: 'shogo:terminal:kill',
-  list: 'shogo:terminal:list',
+  kill:   'shogo:terminal:kill',
+  list:   'shogo:terminal:list',
   attach: 'shogo:terminal:attach',
   detach: 'shogo:terminal:detach',
-  event: 'shogo:terminal:event',
+  listSnapshots: 'shogo:terminal:snapshots:list',
+  restoreSession: 'shogo:terminal:snapshots:restore',
+  discardSnapshot: 'shogo:terminal:snapshots:discard',
+  restartHost: 'shogo:terminal:host:restart',
+  event:  'shogo:terminal:event',
+  llmStreamCommand: 'shogo:llm:stream-command',
+  llmOpenChatWithContext: 'shogo:llm:open-chat-with-context',
+  llmDelta: 'shogo:llm:stream-command:delta',
+  llmDone: 'shogo:llm:stream-command:done',
+  llmError: 'shogo:llm:stream-command:error',
   // Port-handoff channel — must match PTY_PORT_CHANNEL in pty-host/protocol.ts.
-  port: 'shogo:pty:port',
+  port:   'shogo:pty:port',
 } as const
 
 // Pending attach() calls keyed by sessionId — the port arrives over a
 // separate `ipcRenderer.on(CH.port)` listener and resolves the Promise.
-const pendingAttach = new Map<
-  string,
-  (port: MessagePort, meta: { channelId: string; latestSeq: number }) => void
->()
+const pendingAttach = new Map<string, (port: MessagePort, meta: { channelId: string; latestSeq: number }) => void>()
 
-ipcRenderer.on(
-  CH.port,
-  (event: IpcRendererEvent, payload: { sessionId: string; channelId: string; latestSeq: number }) => {
-    const port = event.ports[0]
-    const resolver = pendingAttach.get(payload.sessionId)
-    if (resolver) {
-      pendingAttach.delete(payload.sessionId)
-      resolver(port, { channelId: payload.channelId, latestSeq: payload.latestSeq })
-    } else {
-      // Race: an attach was disposed before its port arrived. Close it so
-      // the host's subscriber unbinds cleanly.
-      try { port.close() } catch { /* swallow */ }
-    }
-  },
-)
+ipcRenderer.on(CH.port, (event: IpcRendererEvent, payload: { sessionId: string; channelId: string; latestSeq: number }) => {
+  const port = event.ports[0]
+  const resolver = pendingAttach.get(payload.sessionId)
+  if (resolver) {
+    pendingAttach.delete(payload.sessionId)
+    resolver(port, { channelId: payload.channelId, latestSeq: payload.latestSeq })
+  } else {
+    // Race: an attach was disposed before its port arrived. Close it so
+    // the host's subscriber unbinds cleanly.
+    try { port.close() } catch { /* swallow */ }
+  }
+})
 
 // Event multicast: every onEvent subscriber gets every event.
 const eventListeners = new Set<(ev: ControlEvent) => void>()
@@ -64,6 +68,28 @@ ipcRenderer.on(CH.event, (_e, ev: ControlEvent) => {
   for (const cb of [...eventListeners]) {
     try { cb(ev) } catch { /* swallow */ }
   }
+})
+
+const llmStreams = new Map<string, {
+  onDelta(text: string): void
+  onDone(text: string): void
+  onError(error: Error): void
+}>()
+
+ipcRenderer.on(CH.llmDelta, (_e, msg: { requestId: string; text: string }) => {
+  llmStreams.get(msg.requestId)?.onDelta(msg.text)
+})
+ipcRenderer.on(CH.llmDone, (_e, msg: { requestId: string; text: string }) => {
+  const slot = llmStreams.get(msg.requestId)
+  if (!slot) return
+  llmStreams.delete(msg.requestId)
+  slot.onDone(msg.text)
+})
+ipcRenderer.on(CH.llmError, (_e, msg: { requestId: string; message: string }) => {
+  const slot = llmStreams.get(msg.requestId)
+  if (!slot) return
+  llmStreams.delete(msg.requestId)
+  slot.onError(new Error(msg.message))
 })
 
 // ─── adapter: wrap a real MessagePort into MessagePortLike ──────────────
@@ -118,15 +144,24 @@ const bridge = {
   async list(): Promise<SessionInfo[]> {
     return ipcRenderer.invoke(CH.list) as Promise<SessionInfo[]>
   },
+  async listSnapshots(workspaceHash: string): Promise<SnapshotSummary[]> {
+    return ipcRenderer.invoke(CH.listSnapshots, workspaceHash) as Promise<SnapshotSummary[]>
+  },
+  async restoreSession(workspaceHash: string, snapshotId: string): Promise<{ newSessionId: string; session?: SessionInfo }> {
+    return ipcRenderer.invoke(CH.restoreSession, workspaceHash, snapshotId) as Promise<{ newSessionId: string; session?: SessionInfo }>
+  },
+  async discardSnapshot(workspaceHash: string, snapshotId: string): Promise<void> {
+    await ipcRenderer.invoke(CH.discardSnapshot, workspaceHash, snapshotId)
+  },
+  async restartHost(): Promise<void> {
+    await ipcRenderer.invoke(CH.restartHost)
+  },
   async attach(id: string, sinceSeq: number): Promise<{
     port: ReturnType<typeof wrapPort>
     channelId: string
     latestSeq: number
   }> {
-    const portPromise = new Promise<{
-      port: MessagePort
-      meta: { channelId: string; latestSeq: number }
-    }>((resolve) => {
+    const portPromise = new Promise<{ port: MessagePort; meta: { channelId: string; latestSeq: number } }>((resolve) => {
       pendingAttach.set(id, (port, meta) => resolve({ port, meta }))
     })
     try {
@@ -144,6 +179,27 @@ const bridge = {
   onEvent(cb: (ev: ControlEvent) => void): () => void {
     eventListeners.add(cb)
     return () => { eventListeners.delete(cb) }
+  },
+  llm: {
+    async streamCommand(opts: {
+      prompt: string
+      context: unknown
+      onDelta(text: string): void
+      onDone(text: string): void
+      onError(error: Error): void
+    }): Promise<{ cancel(): void }> {
+      const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+      llmStreams.set(requestId, {
+        onDelta: opts.onDelta,
+        onDone: opts.onDone,
+        onError: opts.onError,
+      })
+      await ipcRenderer.invoke(CH.llmStreamCommand, { requestId, prompt: opts.prompt, context: opts.context })
+      return { cancel() { llmStreams.delete(requestId) } }
+    },
+    async openChatWithContext(markdown: string): Promise<void> {
+      await ipcRenderer.invoke(CH.llmOpenChatWithContext, markdown)
+    },
   },
 }
 
