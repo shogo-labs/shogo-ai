@@ -893,6 +893,23 @@
         }
       ],
       "note": "Side-quest while gateway.ts (Day 5) plateaus. New file packages/shared-runtime/src/__tests__/s3-sync-tar-exit-codes.test.ts owns its own mock.module(node:child_process) \u2014 process-global per Bun, so we put it in its own file to keep the s3-sync.test.ts real-spawn archive tests intact (same pattern as existing s3-sync-tar-fallback.test.ts). 6 tests, all passing standalone, cover lines 243-262 of s3-sync.ts (the child.once exit handler in extractTarFastNonBlocking): exit code 0 control, non-zero with benign macOS xattr stderr (gz + zst), non-zero with real EOF stderr (gz + zst), and empty-stderr non-zero. Run-tests-isolated.ts gives every file its own process so the mock doesn-t leak in CI."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 2 Day 8 - apps/api lib/runtime/manager.ts",
+      "message": "test(coverage): runtime/manager.ts config closures + getProjectWorkspaceId + stop legacy paths + startHealthCheck timer - 81.93 to 89.41% lines",
+      "perFile": [
+        {
+          "file": "apps/api/src/lib/runtime/manager.ts",
+          "beforeLines": "1716/2095 (81.93%)",
+          "afterLines": "1873/2095 (89.41%)",
+          "deltaLinesHit": 157,
+          "deltaFuncsHit": null,
+          "newTests": 13
+        }
+      ],
+      "note": "Wave 2 Day 8 - first strike. New file apps/api/src/__tests__/runtime-manager-config-closures.test.ts (13 tests, all pass). Mocks @shogo-ai/worker/runtime-manager to capture the WorkerRuntimeManager constructor config, then invokes the spawnCommand + resolveBin + idleMs closures directly (L143-156). Adds prisma-mock-backed coverage for getProjectWorkspaceId success/null/throws (L975-987). Reaches into rm.runtimes to inject fake ChildProcess records and drives stop() through both the legacy agentProcess fallback AND the runtime.process branch, including the setTimeout SIGKILL escalation (L1832-1875). Drives startHealthCheck setInterval callback with a thrown error to cover the .catch handler (L1973-1981). 85 tests pass / 0 fail across the 9 runtime-manager test files. Manager.ts uncov now collapses to just L774-777 (copyFilter, 4 lines) + L1073-1549 (start/doStart, 476 lines - next session target)."
     }
   ],
   "frontend": {
