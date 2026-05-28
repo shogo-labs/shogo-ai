@@ -56,6 +56,7 @@ export type ShellIntegrationStatus =
   | 'applied'
   | 'disabled-by-env'
   | 'disabled-by-option'
+  | 'disabled-by-default'
   | 'unsupported-shell'
   | 'windows-powershell-5'
   | 'conpty-too-old'
@@ -155,10 +156,16 @@ export function applyShellIntegration<T extends SpawnOptionsLike>(
 ): ShellIntegrationPlan<T> {
   const kind = detectShellKind(input.shell)
   const envOptOut = (input.env.SHOGO_DISABLE_SHELL_INTEGRATION ?? '') === '1'
+  // Until Phase 6 stabilises the shell-integration scripts end-to-end we
+  // keep them OPT-IN: default to a plain shell so the terminal renders
+  // a prompt and accepts input. Set SHOGO_ENABLE_SHELL_INTEGRATION=1 to
+  // turn the OSC 633 marks back on for testing.
+  const envOptIn = (input.env.SHOGO_ENABLE_SHELL_INTEGRATION ?? '') === '1'
 
   // ── status short-circuits ──────────────────────────────────────────
   if (opts.disabled) return passthrough(input, kind, 'disabled-by-option')
   if (envOptOut) return passthrough(input, kind, 'disabled-by-env')
+  if (!envOptIn) return passthrough(input, kind, 'disabled-by-default')
   if (kind === 'unknown') {
     const name = shellBasename(input.shell)
     if (name === 'powershell') return passthrough(input, kind, 'windows-powershell-5')

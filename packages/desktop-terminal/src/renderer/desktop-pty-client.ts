@@ -108,10 +108,29 @@ export class DesktopPtyClient {
    * tells us reconnect is pointless. */
   private suppressReconnect = false
   /** Bound for `port.removeEventListener`. */
+  /** Counter so we log only the first ~3 messages to avoid console spam. */
+  private portMsgCount = 0
   private readonly handlePortMessage = (ev: { data: ArrayBuffer | Uint8Array }) => {
-    const buf = ev.data instanceof ArrayBuffer ? new Uint8Array(ev.data) : ev.data
+    // Defensive: some Electron builds dispatch transient message events
+    // with an undefined payload (close/error sentinel). Drop them rather
+    // than letting decodeServerFrame crash on `.byteLength`.
+    const raw: ArrayBuffer | Uint8Array | undefined = ev?.data
+    if (raw == null) return
+    const buf = raw instanceof ArrayBuffer ? new Uint8Array(raw) : raw
+    if (this.portMsgCount < 3) {
+      this.portMsgCount += 1
+      // eslint-disable-next-line no-console
+      console.info(
+        '[shogo-pty-client] port msg #%d — %d bytes, first byte: 0x%s',
+        this.portMsgCount, buf.byteLength, buf[0]?.toString(16) ?? '??',
+      )
+    }
     const frame = decodeServerFrame(buf)
-    if (!frame) return
+    if (!frame) {
+      // eslint-disable-next-line no-console
+      console.warn('[shogo-pty-client] decodeServerFrame returned null for', buf.byteLength, 'byte msg')
+      return
+    }
     this.handleFrame(frame)
   }
 
@@ -184,7 +203,15 @@ export class DesktopPtyClient {
 
   private async doAttach(): Promise<void> {
     try {
+      // eslint-disable-next-line no-console
+      console.info('[shogo-pty-client] attach → bridge.attach(sessionId=%s, sinceSeq=%d)', this.sessionId, this.lastSeq)
       const { port, channelId, latestSeq } = await this.bridge.attach(this.sessionId, this.lastSeq)
+      // eslint-disable-next-line no-console
+      console.info(
+        '[shogo-pty-client] attach ✓ — got port:', !!port,
+        'channelId:', channelId,
+        'latestSeq:', latestSeq,
+      )
       if (this._state === 'disposed') {
         try { port.close() } catch { /* swallow */ }
         return
@@ -197,6 +224,8 @@ export class DesktopPtyClient {
       // we accept that the replay arrives in the same MessagePort queue.
       port.addEventListener('message', this.handlePortMessage)
       port.start?.()
+      // eslint-disable-next-line no-console
+      console.info('[shogo-pty-client] port subscribed, start() called — waiting for DATA frames')
       this.retryCount = 0
       // We're already up to date through latestSeq (the server will only
       // send seqs > sinceSeq). lastSeq updates as DATA frames arrive.
@@ -204,6 +233,8 @@ export class DesktopPtyClient {
       this.setState('open')
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err))
+      // eslint-disable-next-line no-console
+      console.error('[shogo-pty-client] attach ✗ failed:', e)
       this.emitError(e)
       this.markClosed()
       this.scheduleReconnect()

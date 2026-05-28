@@ -44,11 +44,28 @@ import { SnapshotStore, type FsAdapter, type SessionSnapshot } from './persisten
  * bundle.
  */
 interface HostPort {
-  postMessage(msg: ArrayBuffer | Uint8Array): void
+  postMessage(msg: ArrayBuffer | Uint8Array, transfer?: unknown[]): void
   on(event: 'message', listener: (e: { data: ArrayBuffer | Uint8Array }) => void): void
   on(event: 'close', listener: () => void): void
   start(): void
   close(): void
+}
+
+/**
+ * Electron's `MessagePortMain` → renderer `MessagePort` boundary does NOT
+ * reliably structured-clone typed-array views. A `Uint8Array` posted from
+ * the utility process arrives in the renderer as `MessageEvent { data:
+ * undefined }`. The fix: always send an ArrayBuffer (the underlying
+ * storage), and include it in the transfer list so it's a zero-copy move
+ * rather than a clone.
+ *
+ * Mirrors what the renderer preload's `wrapPort.postMessage` does for the
+ * inbound direction. See:
+ *   apps/desktop/src/preload-terminal.ts: wrapPort.postMessage
+ */
+function postFrame(port: HostPort, frame: Uint8Array): void {
+  const ab = frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength) as ArrayBuffer
+  port.postMessage(ab, [ab])
 }
 
 const channelAcks = new Map<string, number>()
@@ -265,23 +282,23 @@ function handleAttach(
     // Replay first.
     const { bytes, latestSeq, truncated } = sess.replaySince(req.sinceSeq)
     if (truncated) {
-      port.postMessage(encodeServerTrunc())
+      postFrame(port, encodeServerTrunc())
     }
     if (bytes.length > 0) {
       // Replay arrives as one DATA frame keyed at latestSeq.
-      port.postMessage(encodeServerData(latestSeq, bytes))
+      postFrame(port, encodeServerData(latestSeq, bytes))
     }
 
     // Now wire live subscription + inbound frame handler.
     const subscriber: DataSubscriber = {
       channelId,
       onData(seq, b) {
-        try { port.postMessage(encodeServerData(seq, b)) } catch { /* port closed */ }
+        try { postFrame(port, encodeServerData(seq, b)) } catch { /* port closed */ }
         scheduleSnapshot(req.id)
       },
       onExit(code, signal, _reason) {
         scheduleSnapshot(req.id)
-        try { port.postMessage(encodeServerExit(code, signal)) } catch { /* port closed */ }
+        try { postFrame(port, encodeServerExit(code, signal)) } catch { /* port closed */ }
         try { port.close() } catch { /* swallow */ }
       },
     }

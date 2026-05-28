@@ -296,7 +296,7 @@ describe('Terminal — preset menu', () => {
     await waitForSessionsCreated(1)
     act(() => fakeClients[0].__fireOpen())
 
-    await user.click(screen.getByRole('button', { name: /terminal actions/i }))
+    await user.click(screen.getByRole('button', { name: /preset commands/i }))
     const menu = await screen.findByRole('menu')
     await user.click(within(menu).getByRole('menuitem', { name: /reset database/i }))
 
@@ -308,7 +308,7 @@ describe('Terminal — preset menu', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(sendCalls).toHaveLength(0)
 
-    await user.click(screen.getByRole('button', { name: /terminal actions/i }))
+    await user.click(screen.getByRole('button', { name: /preset commands/i }))
     const reopened = await screen.findByRole('menu')
     await user.click(within(reopened).getByRole('menuitem', { name: /reset database/i }))
     const dialog2 = await screen.findByRole('dialog')
@@ -326,7 +326,7 @@ describe('Terminal — preset menu', () => {
     await waitForSessionsCreated(1)
     act(() => fakeClients[0].__fireOpen())
 
-    await user.click(screen.getByRole('button', { name: /terminal actions/i }))
+    await user.click(screen.getByRole('button', { name: /preset commands/i }))
     const menu = await screen.findByRole('menu')
     await user.click(within(menu).getByRole('menuitem', { name: /bun install/i }))
 
@@ -338,29 +338,37 @@ describe('Terminal — preset menu', () => {
 })
 
 describe('Terminal — toolbar', () => {
-  test('Stop button SIGINTs the active PTY when the shell is open', async () => {
+  // Phase 3 chrome parity: "Stop" and "Clear" no longer live as visible toolbar
+  // buttons. They're inside the "Views and More Actions…" menu in the new
+  // TerminalHeader, matching VS Code's terminal panel. These tests open the
+  // menu first, then click the menu item.
+
+  test('Stop entry in the … menu SIGINTs the active PTY when the shell is open', async () => {
     const user = userEvent.setup()
     render(<Terminal projectId="p1" visible />)
     await waitForSessionsCreated(1)
-    // Flip to "ready" so the Stop button renders.
+    // Flip to "ready" so the Stop entry renders in the menu.
     act(() => fakeClients[0].__fireOpen())
 
-    const stopBtn = await screen.findByRole('button', { name: /stop running command/i })
-    await user.click(stopBtn)
+    await user.click(screen.getByRole('button', { name: /views and more actions/i }))
+    const stopItem = await screen.findByRole('menuitem', { name: /stop running command/i })
+    await user.click(stopItem)
 
     expect(signalCalls).toHaveLength(1)
     expect(signalCalls[0].sig).toBe('INT')
   })
 
-  test('Clear button blanks the xterm buffer for the active session', async () => {
+  test('Clear entry in the … menu blanks the xterm buffer for the active session', async () => {
     const user = userEvent.setup()
     render(<Terminal projectId="p1" visible />)
     await waitForSessionsCreated(1)
     act(() => fakeClients[0].__fireOpen())
 
-    const clearBtn = await screen.findByRole('button', { name: /clear output/i })
-    expect(clearBtn).not.toBeDisabled()
-    await user.click(clearBtn)
+    await user.click(screen.getByRole('button', { name: /views and more actions/i }))
+    // Menu item label is "Clear" plus a "⌘K" shortcut hint, which
+    // becomes part of its accessible name. Match the label only.
+    const clearItem = await screen.findByRole('menuitem', { name: /^clear\b/i })
+    await user.click(clearItem)
 
     expect(xtermClearCalls.length).toBeGreaterThanOrEqual(1)
   })

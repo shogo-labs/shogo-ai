@@ -71,11 +71,12 @@ else
     fi
 fi
 
-# Inject the prompt-end mark right before PS1 is rendered. We wrap PS1
-# instead of replacing it so the user's colours, git status, etc. all
-# render unmodified between B (prompt end) and the next A (prompt start).
+# Append the prompt-end (B) mark to PS1 so it fires AFTER the user's
+# prompt characters draw. OSC 633 contract is A …user prompt… B. The
+# \\[…\\] wrapper tells readline those bytes are zero-width so prompt
+# alignment stays correct.
 __shogo_PS1_orig="$PS1"
-PS1="\\[$(__shogo_prompt_end)\\]\${PS1}"
+PS1="\${PS1}\\[$(__shogo_prompt_end)\\]"
 
 # First-time announce: emit a Cwd and an initial prompt-start so the
 # tracker has an anchor before the very first command runs.
@@ -85,26 +86,24 @@ __shogo_prompt_start
 
 export const ZSH_ENV = `# shogo shell integration — zsh .zshenv
 #
-# This file sits in the temporary ZDOTDIR. zsh sources .zshenv on EVERY
-# invocation (interactive, non-interactive, login, sub-shells). Our job
-# here is exactly two things:
+# zsh sources .zshenv on EVERY invocation (interactive, non-interactive,
+# login, sub-shells). Our job here is exactly one thing: source the user's
+# own .zshenv from their ORIGINAL ZDOTDIR if it exists.
 #
-#   1. Restore the user's original ZDOTDIR so their dotfiles still source.
-#   2. Source the user's own .zshenv from that location, if it exists.
+# CRITICAL: we must NOT mutate ZDOTDIR. If we did, zsh's next step
+# ("source $ZDOTDIR/.zshrc") would read the user's .zshrc and entirely
+# skip ours — no hooks would be installed and the terminal would show
+# no OSC 633 marks. ZDOTDIR stays pointed at our temp dir for the
+# duration of zsh startup; our .zshrc takes care of sourcing the user's
+# .zshrc explicitly.
 #
 # We deliberately do NOT install any hooks here — those go in .zshrc
 # (interactive only) so non-interactive sub-shells stay clean.
 
-if [ -n "\${_SHOGO_ORIG_ZDOTDIR-}" ]; then
-    ZDOTDIR="$_SHOGO_ORIG_ZDOTDIR"
-else
-    # The user had no ZDOTDIR — fall back to $HOME (zsh's default).
-    ZDOTDIR="$HOME"
-fi
-export ZDOTDIR
+_SHOGO_USER_ZDOTDIR="\${_SHOGO_ORIG_ZDOTDIR:-$HOME}"
 
-if [ -r "$ZDOTDIR/.zshenv" ]; then
-    . "$ZDOTDIR/.zshenv"
+if [ -r "$_SHOGO_USER_ZDOTDIR/.zshenv" ]; then
+    . "$_SHOGO_USER_ZDOTDIR/.zshenv"
 fi
 `
 
@@ -159,10 +158,11 @@ __shogo_precmd_hook() {
 add-zsh-hook preexec __shogo_preexec_hook
 add-zsh-hook precmd  __shogo_precmd_hook
 
-# Wrap the user's PS1 so we emit the prompt-end mark immediately before
-# the user's prompt starts drawing characters. Use %{...%} so zsh
-# doesn't count the OSC bytes toward prompt width.
-PS1="%{$(__shogo_prompt_end)%}\${PS1}"
+# Wrap the user's PS1 so we emit the prompt-end (B) mark IMMEDIATELY AFTER
+# the user's prompt characters finish drawing. The OSC 633 contract is
+# A …user prompt… B, so B goes at the END of PS1. The %{...%} wrapper
+# tells zsh those bytes are zero-width so prompt alignment stays correct.
+PS1="\${PS1}%{$(__shogo_prompt_end)%}"
 
 # Initial Cwd + A so the tracker has an anchor for the very first prompt.
 __shogo_cwd
