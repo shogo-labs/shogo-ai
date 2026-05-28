@@ -749,6 +749,23 @@
         }
       ],
       "note": "Two new test files. (1) gateway-tools.tool-install-composio.test.ts - 13 tests for the composio branches in tool_install (already-initialized + active-auth, needs_auth with/without authUrl, deferred initComposioSession success/failure, COMPOSIO_USER_SCOPE env handling, unhandled error catch) AND tool_search (managed-results path, API-error swallow). Mocks ../composio with stateful toggles. (2) gateway-tools.channel-connect.test.ts - 13 tests covering pro-model access check (no proxy, denied, granted, fetch-throws, res-not-ok, env-var fallback) and webchat widget URL composition (local with PORT, kubernetes via derivePublicApiUrl, preset widgetSecret preservation, reconnect replaces entry, missing required keys, invalid type). Mocks globalThis.fetch and toggles process.env.KUBERNETES_SERVICE_HOST. Cumulative Sessions 1+2+3 on gateway-tools.ts: 77.47 to 84.10 percent (+333 lines hit, +6.63pp). Session 3 delta: +101 lines (below v4 +200 target but cumulative arc is strong). Remaining big clusters need playwright/cdp for in-page DOM helpers or sqlite for code_review diff/git execSync."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 1 - Crush Giant (gateway-tools.ts) Session 4",
+      "message": "test(coverage): gateway-tools.ts detect_changes + review_context - 84.10% to 86.16% lines",
+      "perFile": [
+        {
+          "file": "packages/agent-runtime/src/gateway-tools.ts",
+          "beforeLines": "4216/5013 (84.10%)",
+          "afterLines": "4319/5013 (86.16%)",
+          "deltaLinesHit": 103,
+          "deltaFuncsHit": 0,
+          "newTests": 17
+        }
+      ],
+      "note": "New file gateway-tools.code-review.test.ts (17 tests) covers detect_changes (L4940-5070) and review_context (L5076-5260): explicit changed_files vs git diff, unified-diff line-range parsing with @@ hunks + overlap filter, source snippet read with line-range slicing, no-changes fallthrough, git-diff failure error, File-kind skip, test-gaps filter, end-to-end review_context with merged source-hunk ranges, max_lines_per_file capping, fallback to truncated full file when no nodes, include_source=false branch, nonexistent file skip. Patches require(child_process).execSync at module level (mock.module is unreliable for dynamic require inside the tool body), mocks ../risk-scorer and ../flow-detector. Cumulative Wave 1 Sessions 1-4 on gateway-tools.ts: 77.47 to 86.16 percent (+436 lines hit, +8.69pp). Session 4 delta: +103 lines. agent-runtime pkg: 77.14 to 77.43 percent."
     }
   ],
   "frontend": {
