@@ -2339,7 +2339,7 @@ export default observer(function ProjectLayout() {
                         colors={
                           isDark
                             ? ["rgba(0,0,0,0.4)", "rgba(0,0,0,0)"]
-                            : ["rgba(0,0,0,0.08)", "rgba(0,0,0,0)"]
+                            : ["rgba(0,0,0,0.04)", "rgba(0,0,0,0)"]
                         }
                         start={{ x: 0, y: 0 }}
                         end={{ x: 0, y: 1 }}
@@ -2442,7 +2442,7 @@ export default observer(function ProjectLayout() {
                           colors={
                             isDark
                               ? ["rgba(0,0,0,0.4)", "rgba(0,0,0,0)"]
-                              : ["rgba(0,0,0,0.08)", "rgba(0,0,0,0)"]
+                              : ["rgba(0,0,0,0.04)", "rgba(0,0,0,0)"]
                           }
                           start={{ x: 0, y: 0 }}
                           end={{ x: 0, y: 1 }}

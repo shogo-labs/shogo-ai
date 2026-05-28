@@ -14,8 +14,9 @@
  *      browser tabs, `bun dev:all`, native mobile). The browser File
  *      System Access API can't substitute because it doesn't expose
  *      absolute paths, which the backend's validation gauntlet requires.
- *   3. **Import .shogo-project…** — restore a previously-exported
- *      project ZIP via `ProjectImportModal`.
+ *   3. **Import .shogo…** — restore a previously-exported
+ *      project ZIP via `ProjectImportModal`. Legacy `.shogo-project`
+ *      archives are still accepted for backward compatibility.
  *
  * Two visual variants:
  *   - 'chip'    — small toolbar pill, matches the model / mode chips
@@ -213,7 +214,7 @@ export function ProjectSourceMenu({
                 <Download size={16} className="text-muted-foreground" />
               </View>
               <View className="flex-1">
-                <Text className="text-sm font-medium text-foreground">Import .shogo-project…</Text>
+                <Text className="text-sm font-medium text-foreground">Import .shogo…</Text>
                 <Text className="text-[11px] text-muted-foreground">
                   Restore a project previously exported from Shogo.
                 </Text>

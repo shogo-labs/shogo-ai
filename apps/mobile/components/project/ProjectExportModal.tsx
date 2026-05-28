@@ -4,7 +4,7 @@
  * ProjectExportModal
  *
  * Small modal shown before an export starts. Lets the user choose whether to
- * include chat history in the exported `.shogo-project` bundle. A separate
+ * include chat history in the exported `.shogo` bundle. A separate
  * toggle for the built-app `dist/` is intentionally not offered — the server
  * always ships `dist/` when present so imports start up fast.
  */
@@ -99,7 +99,7 @@ export function ProjectExportModal({
 
         <ModalBody className="px-6 py-5" contentContainerClassName="gap-4">
           <Text className="text-sm text-typography-600 leading-relaxed">
-            Download this project as a <Text className="font-mono text-xs">.shogo-project</Text> archive.
+            Download this project as a <Text className="font-mono text-xs">.shogo</Text> archive.
             You can re-import it into any workspace.
           </Text>
 

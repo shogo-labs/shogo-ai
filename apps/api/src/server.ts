@@ -441,6 +441,7 @@ app.use('/*', cors({
     return allowedOrigins.includes(origin) ? origin : allowedOrigins[0]
   },
   credentials: true,
+  exposeHeaders: ['Content-Disposition'],
 }))
 
 // CSRF protection — validates Origin header on state-changing requests (POST/PUT/PATCH/DELETE).
@@ -1127,7 +1128,7 @@ app.route('/api', techStackRoutes())
 // Eval output listing + import — for local dev/testing
 app.route('/api', evalOutputRoutes())
 
-// Project export/import — full project bundle (.shogo-project ZIP)
+// Project export/import — full project bundle (.shogo ZIP)
 app.route('/api/projects', projectExportImportRoutes())
 
 // External preview: saved + detected dev-server URL for the desktop

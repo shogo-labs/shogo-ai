@@ -185,6 +185,7 @@ export function executeNativeAttachAction(
       const lowerName = doc.name.toLowerCase()
       const isExempt =
         lowerName.endsWith(".zip") ||
+        lowerName.endsWith(".shogo") ||
         lowerName.endsWith(".shogo-project") ||
         mime === "application/zip" ||
         mime === "application/x-zip-compressed"
