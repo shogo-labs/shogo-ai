@@ -1342,7 +1342,7 @@
       "note": "Delta-from-baseline sync: 8 sprintCommits applied since 445ac3fa (last README sync at 82.18%). +873 lines hit, -50 lines found (knative-project-manager.ts dead-code removal at 1f46dfab), +21 funcs hit, -3 funcs found. Per-package updates: apps/api +298L hit / -50L found / +7F hit / -3F found; packages/agent-runtime +575L hit / +14F hit. Other 9 packages unchanged since last sync. Frontend badge not touched (out of scope for this branch)."
     },
     {
-      "sha": "PENDING",
+      "sha": "7e00ad92",
       "date": "2026-05-28",
       "wave": "Wave 2 ad-hoc - instances.ts tunnel relay + heartbeat",
       "message": "test(coverage): apps/api instances.ts - 65.79%->70.34% lines, 81.09%->86.31% funcs (+75 hit, +19 tests)",
