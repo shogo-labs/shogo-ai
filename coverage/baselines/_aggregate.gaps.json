@@ -668,7 +668,7 @@
       "note": "Second Sync within the same session. Fresh `bun --conditions=development test --coverage` across all 11 backend packages produced identical totals to the 2026-05-28T10:40:37.355974+00:00 sync (06807c3a). No commits to working tree since fa457189; expected no delta. README badge unchanged at 82.12% yellow. Frontend badge UNTOUCHED."
     },
     {
-      "sha": "b61780dc",
+      "sha": "4baf00f3",
       "date": "2026-05-28",
       "wave": "Wave 2 \u2014 opportunistic",
       "message": "test(coverage): voice.ts debit + error tails \u2014 92.48% \u2192 94.38% lines",
