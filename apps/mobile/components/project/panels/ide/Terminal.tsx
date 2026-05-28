@@ -126,6 +126,22 @@ function estimateGridSize(el: HTMLElement | null): { cols: number; rows: number 
  * scheme. We keep the host + port (so localhost dev keeps hitting the
  * Bun server on 8002) and only swap the protocol prefix.
  */
+
+function displayCwd(cwd: string | null | undefined): string {
+  if (!cwd) return "~";
+  const home = typeof process !== "undefined" ? process.env.HOME : undefined;
+  let v = cwd;
+  if (home && v.startsWith(home)) v = `~${v.slice(home.length) || ""}`;
+  return v;
+}
+
+function cwdBasename(cwd: string | null | undefined): string {
+  const v = displayCwd(cwd);
+  if (v === "~") return "~";
+  const parts = v.split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? v;
+}
+
 function wsBaseFromApi(apiBase: string): string {
   if (apiBase.startsWith("https://")) return "wss://" + apiBase.slice("https://".length);
   if (apiBase.startsWith("http://")) return "ws://" + apiBase.slice("http://".length);
@@ -237,6 +253,7 @@ export function Terminal({
         patchSession(sessionId, (s) => ({
           ...s,
           ptySessionId: data.id,
+          cwd: data.cwd ?? s.cwd ?? null,
           client,
           // Stay in "creating" until WS opens; we flip to "ready" in
           // onState above so the UI can show a "connecting…" hint until
@@ -497,6 +514,7 @@ export function Terminal({
         onClear={clear}
         clearDisabled={!active?.client}
         running={active?.status === "ready"}
+        activeCwd={active?.cwd ?? null}
         presetGroups={presetGroups}
         presetsLoading={loading}
         presetsError={loadError}
@@ -540,6 +558,9 @@ export function Terminal({
                         hidden={false}
                         autoFocus={isActive && visible}
                         projectId={projectId}
+                        onCwdChange={(cwd) => {
+                          patchSession(s.id, (cur) => ({ ...cur, cwd }));
+                        }}
                       />
                     )}
                     {index > 0 && (
@@ -588,6 +609,9 @@ export function Terminal({
                   hidden={!isActive}
                   autoFocus={isActive && visible}
                   projectId={projectId}
+                  onCwdChange={(cwd) => {
+                    patchSession(s.id, (cur) => ({ ...cur, cwd }));
+                  }}
                 />
               </div>
             );
@@ -643,7 +667,8 @@ function TerminalSplitList({
             >
               <span className="w-4 shrink-0 text-[#858585]">{index === 0 ? "┌" : "└"}</span>
               <span className="shrink-0 rounded border border-[#858585] px-1 text-[10px] leading-4 text-[#cccccc]">⌁</span>
-              <span className="truncate">zsh</span>
+              <span className="min-w-0 flex-1 truncate">zsh</span>
+              <span className="max-w-[54px] shrink-0 truncate text-[10px] text-[#858585]">{cwdBasename(s.cwd)}</span>
             </button>
             <button
               type="button"
@@ -682,6 +707,7 @@ function SessionTabs({
   onClear,
   clearDisabled,
   running,
+  activeCwd,
   presetGroups,
   presetsLoading,
   presetsError,
@@ -699,6 +725,7 @@ function SessionTabs({
   onClear: () => void;
   clearDisabled: boolean;
   running: boolean;
+  activeCwd: string | null;
   presetGroups: PresetGroup[];
   presetsLoading: boolean;
   presetsError: string | null;
@@ -741,7 +768,10 @@ function SessionTabs({
               ) : (
                 <span className="inline-block h-2 w-2 rounded-full bg-[#4ec9b0]/60" />
               )}
-              <span className="max-w-[120px] truncate">{label}</span>
+              <span className="flex max-w-[150px] flex-col leading-tight">
+                <span className="truncate">{label}</span>
+                <span className="truncate text-[9px] text-[#858585]">{cwdBasename(s.cwd)}</span>
+              </span>
               <button
                 type="button"
                 title={`Close ${label}`}
@@ -776,7 +806,15 @@ function SessionTabs({
           <ChevronDown size={12} />
         </button>
       </div>
-      <div className="flex items-center gap-1 pr-1">
+      <div className="flex items-center gap-2 pr-1">
+        <div
+          className="flex max-w-[280px] items-center gap-1 truncate rounded px-2 py-1 font-mono text-[11px] text-[#cccccc]"
+          title={displayCwd(activeCwd)}
+          aria-label={`Current directory ${displayCwd(activeCwd)}`}
+        >
+          <span aria-hidden="true">📁</span>
+          <span className="truncate">{displayCwd(activeCwd)}</span>
+        </div>
         <PhasedTerminalHeader
           activeId={activeId}
           onNew={onAdd}

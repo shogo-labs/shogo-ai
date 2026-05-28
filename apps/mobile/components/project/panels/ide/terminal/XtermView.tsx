@@ -33,6 +33,7 @@ interface XtermViewProps {
   /** Auto-focus the terminal on mount + when becoming visible. */
   autoFocus?: boolean
   projectId?: string | null
+  onCwdChange?: (cwd: string) => void
 }
 
 /**
@@ -57,6 +58,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   fontFamily,
   autoFocus = true,
   projectId,
+  onCwdChange,
 }, ref) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const sessionRef = useRef<XtermSession | null>(null)
@@ -149,6 +151,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         fontFamily={fontFamily}
         autoFocus={autoFocus}
         projectId={projectId}
+        onCwdChange={onCwdChange}
       />
     )
   }
