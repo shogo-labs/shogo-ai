@@ -603,7 +603,7 @@
       "note": "New test file voice-routes-twilio-provision.test.ts covers GET /voice/twilio/available-numbers/:projectId and POST /voice/twilio/provision-number/:projectId \u2014 both endpoints that voice-routes.test.ts and voice-routes-runtime-token.test.ts skipped. Tests happy path, idempotency, all 5 error tails: 503 (unconfigured), 402 (balance), 502 (EL agent fail/Twilio search fail/Twilio purchase fail/EL link fail with compensating release), 409 (no numbers available). Funcs now 100%. No new test failures."
     },
     {
-      "sha": "PENDING",
+      "sha": "94b7d4c7",
       "date": "2026-05-28",
       "wave": "Wave 2 \u2014 opportunistic",
       "message": "test(coverage): voice.ts cleanup paths \u2014 89.36% \u2192 92.01% lines",
