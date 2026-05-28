@@ -531,6 +531,16 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         : null,
       React.createElement(StickyScroll as React.ComponentType<any>, {
         tracker,
+        // Phase 7: VS Code hides the sticky bar once the user has
+        // scrolled back to the live prompt (viewport already shows the
+        // running command). We approximate that with xterm's buffer
+        // state: when `viewportY === baseY` we're pinned to the bottom.
+        isAtBottom: () => {
+          const term = termRef.current
+          if (!term) return false
+          const buf = term.buffer.active
+          return buf.viewportY >= buf.baseY
+        },
         onClick: (command: Command) => {
           const marker = command.promptMarker ?? command.startMarker
           if (marker) termRef.current?.scrollToLine(marker.line)

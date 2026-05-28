@@ -114,25 +114,74 @@ export interface StickyScrollProps {
   tickMs?: number
   /** Extra class for styling. */
   className?: string
+  /**
+   * Optional predicate. When provided and returns `true`, the bar
+   * stays hidden even if a command is running — VS Code suppresses it
+   * once the user has scrolled back down to the live prompt. The host
+   * supplies this by comparing `term.buffer.active.viewportY` to
+   * `term.buffer.active.baseY` (or by checking `term.buffer.active`
+   * whatever you like).
+   */
+  isAtBottom?(): boolean
+  /** Fade-out animation length in ms when the bar dismisses. Default 800. */
+  fadeOutMs?: number
 }
 
 /**
  * Default rendering — apps/desktop replaces this with its own styled
  * version using shadcn. We keep the markup minimal so it composes
  * cleanly.
+ *
+ * Phase 7 polish:
+ *   • 1px bottom border so the bar reads as a distinct surface, not a
+ *     gradient overlay on the first row of output.
+ *   • Hide-when-at-bottom: when the host predicate says the user is
+ *     already pinned to the live prompt, the bar disappears (matches
+ *     VS Code's behavior — no point pinning what's already visible).
+ *   • 800ms fade-out on transition from running → done: instead of
+ *     yanking the bar off-screen, we render the last known state with
+ *     opacity 0 and a `transition: opacity 800ms`. After the timer
+ *     fires we drop the element entirely.
  */
 export function StickyScroll(props: StickyScrollProps): unknown {
   const R = React
   const state = useStickyScroll({ tracker: props.tracker, tickMs: props.tickMs, now: props.now })
-  if (!state) return null
+  const fadeOutMs = props.fadeOutMs ?? 800
+  const atBottom = props.isAtBottom?.() ?? false
+
+  // The "effective" state is what we actually want to render. When the
+  // user is at bottom OR no command is running, we want to hide — but
+  // if we just dropped a previous state, hold it through the fade.
+  const liveShouldShow = state !== null && !atBottom
+  const [phase, setPhase] = R.useState<'hidden' | 'shown' | 'fading'>(liveShouldShow ? 'shown' : 'hidden')
+  const lastStateRef = R.useRef<StickyState | null>(state)
+  if (state !== null) lastStateRef.current = state
+
+  R.useEffect(() => {
+    if (liveShouldShow) {
+      setPhase('shown')
+      return
+    }
+    if (phase === 'shown') {
+      setPhase('fading')
+      const t: ReturnType<typeof setTimeout> = setTimeout(() => setPhase('hidden'), fadeOutMs)
+      return () => clearTimeout(t)
+    }
+  }, [liveShouldShow, phase, fadeOutMs])
+
+  if (phase === 'hidden') return null
+  const display = liveShouldShow ? (state as StickyState) : (lastStateRef.current as StickyState)
+  if (!display) return null
+
   return R.createElement(
     'div',
     {
       role: 'status',
       'aria-live': 'polite',
       'data-testid': 'shogo-sticky-scroll',
+      'data-phase': phase,
       className: props.className,
-      onClick: () => props.onClick?.(state.command),
+      onClick: () => props.onClick?.(display.command),
       style: {
         position: 'absolute',
         top: 0,
@@ -147,14 +196,18 @@ export function StickyScroll(props: StickyScrollProps): unknown {
         whiteSpace: 'nowrap',
         overflow: 'hidden',
         textOverflow: 'ellipsis',
+        borderBottom: '1px solid rgba(255,255,255,0.12)',
+        opacity: phase === 'fading' ? 0 : 1,
+        transition: `opacity ${fadeOutMs}ms ease-out`,
+        pointerEvents: phase === 'fading' ? 'none' : 'auto',
       },
     },
     R.createElement('span', { 'aria-hidden': 'true' }, '⏵ '),
-    R.createElement('span', null, state.label),
+    R.createElement('span', null, display.label),
     R.createElement(
       'span',
       { style: { float: 'right', opacity: 0.7 } },
-      formatElapsed(state.elapsedMs),
+      formatElapsed(display.elapsedMs),
     ),
   )
 }
