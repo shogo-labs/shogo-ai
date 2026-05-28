@@ -685,7 +685,7 @@
       "note": "New test file voice-routes-debit-and-error-tails.test.ts covers: provision-number setup debit failure console (L1205-1208) and monthly debit failure console (L1231-1234) using a counter-based consumeUsage mock; translator/chat outer catch with streamText throwing (L741-748); /voice/signed-url shared-agent getSignedUrl catch (L580-584); /voice/signed-url?projectId=... projectSignedUrlHandler catch (L299-310) + happy path + 404 when agent not found; /voice/transcript create branch (L435-443) when body has no id. Funcs remain at 100%. No new test failures."
     },
     {
-      "sha": "PENDING",
+      "sha": "f5836217",
       "date": "2026-05-28",
       "wave": "Sync (post b61780dc voice tests)",
       "message": "docs(coverage): bump README 82.12% -> 82.16% (re-measure after voice tests)",
