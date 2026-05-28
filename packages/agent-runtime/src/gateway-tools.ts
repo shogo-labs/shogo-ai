@@ -48,6 +48,7 @@ import {
   type SubagentStreamCallbacks,
   type CustomAgentDef,
 } from './subagent'
+import { ACCESSIBILITY_SNAPSHOT_SCRIPT } from './browser-snapshot-script'
 import {
   findActualString, preserveQuoteStyle, stripTrailingWhitespace,
   applyEditToFile, readFileWithMetadata, writeWithMetadata, getStructuredPatch,
@@ -2680,127 +2681,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             return textResult({ ok: true, title, url: pageUrl })
           }
           case 'snapshot': {
-            const snapshot = await p.evaluate(() => {
-              const INTERACTIVE_TAGS = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'SUMMARY'])
-              const INTERACTIVE_ROLES = new Set([
-                'button', 'link', 'textbox', 'checkbox', 'radio', 'combobox',
-                'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option',
-                'switch', 'tab', 'slider', 'spinbutton', 'searchbox', 'treeitem',
-              ])
-
-              document.querySelectorAll('[data-shogo-ref]').forEach(el => el.removeAttribute('data-shogo-ref'))
-              let nextRef = 1
-
-              function getRole(el: Element): string {
-                const explicit = el.getAttribute('role')
-                if (explicit) return explicit
-                const tag = el.tagName
-                if (tag === 'A' && el.hasAttribute('href')) return 'link'
-                if (tag === 'BUTTON' || (tag === 'INPUT' && ((el as HTMLInputElement).type === 'submit' || (el as HTMLInputElement).type === 'button'))) return 'button'
-                if (tag === 'INPUT') {
-                  const t = (el as HTMLInputElement).type
-                  if (t === 'checkbox') return 'checkbox'
-                  if (t === 'radio') return 'radio'
-                  if (t === 'range') return 'slider'
-                  if (t === 'number') return 'spinbutton'
-                  if (t === 'search') return 'searchbox'
-                  return 'textbox'
-                }
-                if (tag === 'SELECT') return 'combobox'
-                if (tag === 'TEXTAREA') return 'textbox'
-                if (tag === 'IMG') return 'img'
-                if (/^H[1-6]$/.test(tag)) return 'heading'
-                if (tag === 'NAV') return 'navigation'
-                if (tag === 'MAIN') return 'main'
-                if (tag === 'HEADER') return 'banner'
-                if (tag === 'FOOTER') return 'contentinfo'
-                if (tag === 'ASIDE') return 'complementary'
-                if (tag === 'FORM') return 'form'
-                if (tag === 'TABLE') return 'table'
-                if (tag === 'UL' || tag === 'OL') return 'list'
-                if (tag === 'LI') return 'listitem'
-                if (tag === 'SECTION' && el.getAttribute('aria-label')) return 'region'
-                return ''
-              }
-
-              function getName(el: Element): string {
-                const ariaLabel = el.getAttribute('aria-label')
-                if (ariaLabel) return ariaLabel
-                const title = el.getAttribute('title')
-                if (title) return title
-                const alt = el.getAttribute('alt')
-                if (alt) return alt
-                const placeholder = el.getAttribute('placeholder')
-                if (placeholder) return placeholder
-                if (el.id) {
-                  const label = document.querySelector(`label[for="${el.id}"]`)
-                  if (label?.textContent?.trim()) return label.textContent.trim()
-                }
-                const directText = Array.from(el.childNodes)
-                  .filter(n => n.nodeType === Node.TEXT_NODE)
-                  .map(n => n.textContent?.trim())
-                  .filter(Boolean)
-                  .join(' ')
-                if (directText) return directText.substring(0, 80)
-                if (el.children.length <= 2) {
-                  const inner = el.textContent?.trim()
-                  if (inner && inner.length <= 80) return inner
-                }
-                return ''
-              }
-
-              function isVisible(el: Element): boolean {
-                if (el.hasAttribute('hidden') || el.getAttribute('aria-hidden') === 'true') return false
-                const s = window.getComputedStyle(el)
-                return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0'
-              }
-
-              function walk(el: Element, depth: number): string[] {
-                if (!isVisible(el)) return []
-                const role = getRole(el)
-                const name = getName(el)
-                const lines: string[] = []
-                let childDepth = depth
-
-                if (role) {
-                  const indent = '  '.repeat(depth)
-                  let line = `${indent}${role}`
-                  if (name) line += ` "${name}"`
-
-                  const v = (el as HTMLInputElement).value
-                  if (v && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) {
-                    line += ` value="${v.substring(0, 80)}"`
-                  }
-
-                  const attrs: string[] = []
-                  if ((el as HTMLInputElement).disabled) attrs.push('disabled')
-                  if ((el as HTMLInputElement).checked) attrs.push('checked')
-                  const expanded = el.getAttribute('aria-expanded')
-                  if (expanded !== null) attrs.push(`expanded=${expanded}`)
-                  if (el.getAttribute('aria-selected') === 'true') attrs.push('selected')
-                  if (el.getAttribute('aria-required') === 'true') attrs.push('required')
-                  if (attrs.length) line += ` [${attrs.join(', ')}]`
-
-                  const isInteractive = INTERACTIVE_TAGS.has(el.tagName) || INTERACTIVE_ROLES.has(role)
-                  if (isInteractive && !(el as HTMLInputElement).disabled) {
-                    const r = nextRef++
-                    el.setAttribute('data-shogo-ref', String(r))
-                    line += ` <ref=${r}>`
-                  }
-
-                  lines.push(line)
-                  childDepth = depth + 1
-                }
-
-                for (const child of el.children) {
-                  lines.push(...walk(child, childDepth))
-                }
-                return lines
-              }
-
-              const lines = walk(document.body, 0)
-              return { text: lines.join('\n') || '(empty page)', refCount: nextRef - 1 }
-            })
+            const snapshot = await p.evaluate(ACCESSIBILITY_SNAPSHOT_SCRIPT) as { text: string; refCount: number }
             return textResult({ snapshot: snapshot.text, url: p.url(), title: await p.title(), refCount: snapshot.refCount })
           }
           case 'click': {
