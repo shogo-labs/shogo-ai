@@ -827,7 +827,7 @@
       "note": "Full re-measure across all 11 backend packages with comment-stripping post-processor and per-package SF filter (foreign files leaked into other packages lcov runs are excluded). True aggregate is 90.75% lines / 86.53% funcs \u2014 up from baseline claim of 82.16%. Big movers from baseline: agent-runtime 71.69 to 89.05 (+17.36pp from Wave 1 Sessions 1-7), apps/api 81.62 to 90.12 (test failures no longer suppress coverage with isolated runner), shogo-worker 89.40 to 97.75 (better measurement), model-catalog 0 to 100 (was broken, now measurable), sdk 98.70 to 90.98 (drop due to growth in src not yet tested \u2014 was over-counted in baseline). Frontend badge intentionally untouched (out of scope on this branch)."
     },
     {
-      "sha": "PENDING",
+      "sha": "9805cf3c",
       "date": "2026-05-28",
       "wave": "Wave 1 - Crush Giant (gateway-tools.ts) Session 8",
       "message": "test+refactor: gateway-tools.ts tool_install skill: + description concat collapse - 90.02% to 91.45% lines",
