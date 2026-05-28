@@ -4,25 +4,25 @@
   "aggregate": {
     "lines": {
       "total": 89571,
-      "hit": 73560,
-      "pct": 82.12
+      "hit": 73593,
+      "pct": 82.16
     },
     "functions": {
       "total": 7208,
-      "hit": 5776,
-      "pct": 80.13
+      "hit": 5778,
+      "pct": 80.16
     }
   },
   "perPackage": [
     {
       "package": "apps/api",
-      "linesHit": 36506,
+      "linesHit": 36539,
       "linesFound": 44768,
-      "linePct": 81.54,
-      "funcsHit": 2767,
+      "linePct": 81.62,
+      "funcsHit": 2769,
       "funcsFound": 3405,
-      "funcPct": 81.26,
-      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
+      "funcPct": 81.32,
+      "source": "fresh 2026-05-28 sync (third this session)"
     },
     {
       "package": "packages/agent-runtime",
@@ -32,7 +32,7 @@
       "funcsHit": 1541,
       "funcsFound": 2213,
       "funcPct": 69.63,
-      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
+      "source": "fresh 2026-05-28 sync (third this session)"
     },
     {
       "package": "packages/sdk",
@@ -42,7 +42,7 @@
       "funcsHit": 508,
       "funcsFound": 525,
       "funcPct": 96.76,
-      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
+      "source": "fresh 2026-05-28 sync (third this session)"
     },
     {
       "package": "packages/shared-runtime",
@@ -52,7 +52,7 @@
       "funcsHit": 389,
       "funcsFound": 444,
       "funcPct": 87.61,
-      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
+      "source": "fresh 2026-05-28 sync (third this session)"
     },
     {
       "package": "packages/model-catalog",
@@ -62,8 +62,8 @@
       "funcsHit": 0,
       "funcsFound": 0,
       "funcPct": 0,
-      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages",
-      "note": "TEST INFRA BROKEN \u2014 Cannot find module @shogo-ai/sdk/model-catalog from packages/model-catalog/src/index.ts. lcov.info emits empty. Tracked separately; excluded from aggregate this round."
+      "source": "fresh 2026-05-28 sync (third this session)",
+      "note": "TEST INFRA BROKEN \u2014 Cannot resolve @shogo-ai/sdk/model-catalog. Excluded."
     },
     {
       "package": "packages/voice",
@@ -73,7 +73,7 @@
       "funcsHit": 168,
       "funcsFound": 172,
       "funcPct": 97.67,
-      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
+      "source": "fresh 2026-05-28 sync (third this session)"
     },
     {
       "package": "packages/email",
@@ -83,7 +83,7 @@
       "funcsHit": 63,
       "funcsFound": 64,
       "funcPct": 98.44,
-      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
+      "source": "fresh 2026-05-28 sync (third this session)"
     },
     {
       "package": "packages/agent",
@@ -93,7 +93,7 @@
       "funcsHit": 29,
       "funcsFound": 29,
       "funcPct": 100.0,
-      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
+      "source": "fresh 2026-05-28 sync (third this session)"
     },
     {
       "package": "packages/core",
@@ -103,7 +103,7 @@
       "funcsHit": 47,
       "funcsFound": 51,
       "funcPct": 92.16,
-      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
+      "source": "fresh 2026-05-28 sync (third this session)"
     },
     {
       "package": "packages/cli",
@@ -113,7 +113,7 @@
       "funcsHit": 41,
       "funcsFound": 49,
       "funcPct": 83.67,
-      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
+      "source": "fresh 2026-05-28 sync (third this session)"
     },
     {
       "package": "packages/shogo-worker",
@@ -123,7 +123,7 @@
       "funcsHit": 223,
       "funcsFound": 256,
       "funcPct": 87.11,
-      "source": "fresh 2026-05-28 sync \u2014 bun test --coverage across all 11 packages"
+      "source": "fresh 2026-05-28 sync (third this session)"
     }
   ],
   "topGaps": [
@@ -683,6 +683,21 @@
         }
       ],
       "note": "New test file voice-routes-debit-and-error-tails.test.ts covers: provision-number setup debit failure console (L1205-1208) and monthly debit failure console (L1231-1234) using a counter-based consumeUsage mock; translator/chat outer catch with streamText throwing (L741-748); /voice/signed-url shared-agent getSignedUrl catch (L580-584); /voice/signed-url?projectId=... projectSignedUrlHandler catch (L299-310) + happy path + 404 when agent not found; /voice/transcript create branch (L435-443) when body has no id. Funcs remain at 100%. No new test failures."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Sync (post b61780dc voice tests)",
+      "message": "docs(coverage): bump README 82.12% -> 82.16% (re-measure after voice tests)",
+      "aggregateBefore": {
+        "lines": "73560/89571 (82.12%)",
+        "functions": "5776/7208 (80.13%)"
+      },
+      "aggregateAfter": {
+        "lines": "73593/89571 (82.16%)",
+        "functions": "5778/7208 (80.16%)"
+      },
+      "note": "One source commit since last Sync (b61780dc, +28 standalone lines in voice.ts). Full apps/api isolated re-run captures +33 lines (+5 indirect from new test imports). README badge bumped 82.12 -> 82.16; baseline aggregate JSON files were left stale by the prior commit (4baf00f3 + 58cc5485) due to a python heredoc syntax error. This commit corrects them."
     }
   ],
   "frontend": {
@@ -699,7 +714,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-28T10:54:06.602814+00:00",
+  "lastUpdated": "2026-05-28T11:27:13.595347+00:00",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
