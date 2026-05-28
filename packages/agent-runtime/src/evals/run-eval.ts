@@ -1197,7 +1197,8 @@ async function main() {
   const results: EvalResult[] = []
   const partialPath = resolve(tmpdir(), `agent-eval-partial-${modelArg}-${trackArg}.json`)
 
-  const runDir = join(EVAL_OUTPUTS_DIR, `${trackArg}-${modelArg}-${runTimestamp}`)
+  const safeModelDir = modelArg.replace(/[\/:]/g, '_')
+  const runDir = join(EVAL_OUTPUTS_DIR, `${trackArg}-${safeModelDir}-${runTimestamp}`)
   mkdirSync(join(runDir, 'logs'), { recursive: true })
   console.log(`  Logs: ${join(runDir, 'logs')}`)
 
