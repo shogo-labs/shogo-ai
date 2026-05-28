@@ -4,13 +4,13 @@
   "aggregate": {
     "lines": {
       "total": 75174,
-      "hit": 67090,
-      "pct": 89.25
+      "hit": 67217,
+      "pct": 89.42
     },
     "functions": {
       "total": 6178,
-      "hit": 5345,
-      "pct": 86.52
+      "hit": 5359,
+      "pct": 86.74
     }
   },
   "perPackage": [
@@ -26,14 +26,13 @@
     },
     {
       "package": "packages/agent-runtime",
-      "linesHit": 17615,
+      "linesHit": 17742,
       "linesFound": 20951,
-      "linePct": 84.08,
-      "funcsHit": 1260,
+      "linePct": 84.68,
+      "funcsHit": 1274,
       "funcsFound": 1662,
-      "funcPct": 75.81,
-      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)",
-      "functionsHit": 23
+      "funcPct": 76.65,
+      "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
     },
     {
       "package": "packages/sdk",
@@ -490,6 +489,26 @@
         "lines": "67090/75174 = 89.25%",
         "functions": "5345/6178 = 86.52%"
       }
+    },
+    {
+      "sha": "39e97b98",
+      "date": "2026-05-28",
+      "wave": "Wave 1 Day 2 of 4",
+      "message": "test(coverage): gateway-tools.ts small-tools cluster sweep \u2014 66.52% \u2192 69.16% lines",
+      "perFile": [
+        {
+          "file": "packages/agent-runtime/src/gateway-tools.ts",
+          "beforeLines": "3199/4809 (66.52%)",
+          "afterLines": "3326/4809 (69.16%)",
+          "deltaLinesHit": 127,
+          "deltaFuncsHit": 14,
+          "newTests": 68
+        }
+      ],
+      "aggregateAfter": {
+        "lines": "67217/75174 = 89.42%",
+        "functions": "5359/6178 = 86.74%"
+      }
     }
   ],
   "frontend": {
@@ -506,7 +525,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-28T07:19:48.450713Z",
+  "lastUpdated": "2026-05-28T08:07:25.861012+00:00",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
