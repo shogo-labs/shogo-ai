@@ -652,6 +652,38 @@ describe('GET /listings/review-queue', () => {
   })
 })
 
+describe('GET /listings/:id', () => {
+  test('returns the listing when it exists', async () => {
+    listings.push({
+      id: 'l1',
+      status: 'pending_review',
+      updatedAt: 100,
+      creator: { user: {} },
+    })
+    const res = await call('GET', '/listings/l1')
+    expect(res.status).toBe(200)
+    expect(res.body.data.id).toBe('l1')
+  })
+
+  test('404 when listing is missing', async () => {
+    const res = await call('GET', '/listings/missing')
+    expect(res.status).toBe(404)
+  })
+
+  test('does not shadow review-queue (regression)', async () => {
+    listings.push({
+      id: 'l1',
+      status: 'pending_review',
+      updatedAt: 100,
+      creator: { user: {} },
+    })
+    const res = await call('GET', '/listings/review-queue')
+    expect(res.status).toBe(200)
+    expect(res.body.data).toBeDefined()
+    expect(Array.isArray(res.body.data.items)).toBe(true)
+  })
+})
+
 describe('POST /listings/:id/approve', () => {
   test('flips pending_review → published with reviewedAt + reviewedBy', async () => {
     listings.push({
