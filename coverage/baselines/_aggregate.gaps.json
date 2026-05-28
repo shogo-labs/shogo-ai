@@ -700,7 +700,7 @@
       "note": "One source commit since last Sync (b61780dc, +28 standalone lines in voice.ts). Full apps/api isolated re-run captures +33 lines (+5 indirect from new test imports). README badge bumped 82.12 -> 82.16; baseline aggregate JSON files were left stale by the prior commit (4baf00f3 + 58cc5485) due to a python heredoc syntax error. This commit corrects them."
     },
     {
-      "sha": "6633e608",
+      "sha": "7509de4b",
       "date": "2026-05-28",
       "wave": "Wave 1 \u2014 Crush Giant (gateway-tools.ts)",
       "message": "test(coverage): gateway-tools.ts skill dispatcher \u2014 77.47% to 80.09% lines",
