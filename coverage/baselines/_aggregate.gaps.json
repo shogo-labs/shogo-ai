@@ -1028,7 +1028,7 @@
       "note": "Wave 2 cleanup pass. New file git-service-edge-branches.test.ts (12 tests) targets uncov error/branch paths the two existing test files do not reach. Uses real git repos in tmp dirs to drive actual execFileSync. Covers: initRepo nothing-to-commit catch (L532-538), commit() no-staged null return (L709-715), commit() author optional arm, getDiff status switch deleted/renamed/added (L887-905), ensureGitignoreEntries EISDIR catch (L370), removeStaleIndexLock 5-min-old lock removal (L440-445), checkout to current HEAD and to nonexistent ref (L965-1004). Joint coverage shows modest +6-line delta; the value is in the new error-path test coverage. 79 pass / 0 fail across all 3 git-service test files (was 67/0)."
     },
     {
-      "sha": "PENDING",
+      "sha": "60943a16",
       "date": "2026-05-28",
       "wave": "Wave 2 ad-hoc - greenfield job test",
       "message": "test(coverage): jobs/affiliate-invoice-reconciliation.ts - zero prior tests to 80 percent lines / 97 percent funcs",
