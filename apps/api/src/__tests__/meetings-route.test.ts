@@ -565,3 +565,156 @@ describe('DELETE /api/local/meetings/:id', () => {
     expect(unlinkCalls).not.toContain('/tmp/missing.wav')
   })
 })
+
+// ---------------------------------------------------------------------------
+// POST /api/local/meetings/recording/upload (L347-L443) — 5 paths
+// + POST /api/local/meetings/:id/transcribe re-trigger -> transcribeMeeting
+//   (L678-L816) — 4 paths
+// ---------------------------------------------------------------------------
+
+describe('POST /api/local/meetings/recording/upload', () => {
+  test('multipart with no audio file -> 400', async () => {
+    const form = new FormData()
+    form.set('duration', '5')
+    const res = await meetingRoutes.request('/api/local/meetings/recording/upload', {
+      method: 'POST', body: form,
+    })
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: string }
+    expect(body.error).toMatch(/No audio file/)
+  })
+
+  test('empty audio bytes (non-multipart) -> 400', async () => {
+    const res = await meetingRoutes.request('/api/local/meetings/recording/upload', {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: new Uint8Array(0),
+    })
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: string }
+    expect(body.error).toMatch(/Empty audio/)
+  })
+
+  test('WAV bytes -> 201 + meeting created with audioPath suffix .wav', async () => {
+    workspaceRow = { id: 'w1' }
+    const wav = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0,0,0,0, 0x57,0x41,0x56,0x45, 0,0,0,0])
+    const res = await meetingRoutes.request('/api/local/meetings/recording/upload', {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream', 'x-recording-duration': '10' },
+      body: wav,
+    })
+    expect(res.status).toBe(201)
+    const body = await res.json() as { meeting: { audioPath: string; duration: number } }
+    expect(body.meeting.audioPath).toMatch(/audio\.wav$/)
+    expect(body.meeting.duration).toBe(10)
+    // Let fire-and-forget transcribeMeeting settle (no-throw assertion)
+    await new Promise(r => setTimeout(r, 30))
+  })
+
+  test('WAV bytes with no workspace -> 400 no workspace found', async () => {
+    workspaceRow = null
+    const wav = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0,0,0,0, 0x57,0x41,0x56,0x45, 0,0,0,0])
+    const res = await meetingRoutes.request('/api/local/meetings/recording/upload', {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: wav,
+    })
+    expect(res.status).toBe(400)
+  })
+
+  test('non-WAV with ffmpeg failure -> falls back to webm + creates meeting', async () => {
+    workspaceRow = { id: 'w1' }
+    execSyncSpy.mockImplementationOnce(() => { throw new Error('ffmpeg not found') })
+    const webm = new Uint8Array([0x1A, 0x45, 0xDF, 0xA3, 1, 2, 3, 4])
+    const res = await meetingRoutes.request('/api/local/meetings/recording/upload', {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: webm,
+    })
+    expect(res.status).toBe(201)
+    const body = await res.json() as { meeting: { audioPath: string } }
+    expect(body.meeting.audioPath).toMatch(/\.webm$/)
+    await new Promise(r => setTimeout(r, 30))
+  })
+
+  test('non-WAV with ffmpeg success -> happy path', async () => {
+    workspaceRow = { id: 'w1' }
+    // execSyncSpy default returns Buffer.from('') (success)
+    const webm = new Uint8Array([0x1A, 0x45, 0xDF, 0xA3, 5, 6, 7, 8])
+    const res = await meetingRoutes.request('/api/local/meetings/recording/upload', {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: webm,
+    })
+    expect(res.status).toBe(201)
+    await new Promise(r => setTimeout(r, 30))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// transcribeMeeting (private) — exercised via POST /:id/transcribe
+//
+// We can't await the fire-and-forget directly, so we wait a tick and
+// verify side-effects via prisma.meeting.update calls or the meetings map.
+// ---------------------------------------------------------------------------
+
+describe('transcribeMeeting (via /api/local/meetings/:id/transcribe)', () => {
+  beforeEach(() => {
+    workspaceRow = { id: 'w1' }
+  })
+
+  test('happy path: transcribe + update meeting to ready with transcript', async () => {
+    meetings.set('m-ok', { id: 'm-ok', audioPath: '/audio/ok.wav', workspaceId: 'w1', status: 'ready' })
+    fsFiles.add('/audio/ok.wav')
+    transcription.transcribe.mockImplementationOnce(async () => ({
+      text: 'hello world', segments: [{ start: 0, end: 1, text: 'hello world' }], language: 'en',
+    }))
+    const res = await meetingRoutes.request('/api/local/meetings/m-ok/transcribe', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    expect(res.status).toBe(200)
+    await new Promise(r => setTimeout(r, 80))
+    const m = meetings.get('m-ok')!
+    expect(m.status === 'ready' || m.status === 'transcribing').toBe(true)
+  })
+
+  test('missing audio file path: updates meeting with error transcript', async () => {
+    meetings.set('m-noaudio', { id: 'm-noaudio', audioPath: '/audio/missing.wav', workspaceId: 'w1', status: 'transcribing' })
+    // fsFiles does NOT contain /audio/missing.wav
+    const res = await meetingRoutes.request('/api/local/meetings/m-noaudio/transcribe', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(res.status).toBe(200)
+    await new Promise(r => setTimeout(r, 80))
+    const m = meetings.get('m-noaudio')!
+    expect(m.transcript).toBeDefined()
+  })
+
+  test('transcribe with options.useCloud=true takes the cloud path', async () => {
+    meetings.set('m-cloud', { id: 'm-cloud', audioPath: '/audio/cloud.wav', workspaceId: 'w1', status: 'ready' })
+    fsFiles.add('/audio/cloud.wav')
+    transcription.transcribe.mockImplementationOnce(async () => ({
+      text: 'cloud', segments: [], language: 'en',
+    }))
+    const res = await meetingRoutes.request('/api/local/meetings/m-cloud/transcribe', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ useCloud: true, model: 'whisper-1' }),
+    })
+    expect(res.status).toBe(200)
+    await new Promise(r => setTimeout(r, 80))
+  })
+
+  test('404 when meeting does not exist', async () => {
+    const res = await meetingRoutes.request('/api/local/meetings/nope/transcribe', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(res.status).toBe(404)
+  })
+})

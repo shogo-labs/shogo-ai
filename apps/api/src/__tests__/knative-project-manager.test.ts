@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
+
+process.env.AI_PROXY_SECRET = process.env.AI_PROXY_SECRET || 'test-secret-knative-do-not-use-in-prod'
+process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET || 'test-better-auth-secret-knative'
 /**
  * Knative Project Manager — unit tests.
  *
@@ -791,5 +794,109 @@ describe('getProjectPodUrl (module-level helper)', () => {
     const url = await getProjectPodUrl('p-db')
 
     expect(url).toBe('http://warm-db-1.shogo-test.svc.cluster.local')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// createProject + _doCreateProject + waitForReady + deletePVCsForProject
+//
+// Closes the largest remaining uncov ranges in knative-project-manager.ts:
+//   L625-L737  createProject + _doCreateProject
+//   L825-L873  waitForReady + healthCheck-in-loop
+//   L948-L1017 deletePVCsForProject branches
+// ---------------------------------------------------------------------------
+
+describe('createProject (happy + 409 race + dedup)', () => {
+  beforeEach(() => {
+    customGetResponse = null
+    customGetError = { code: 404, response: { statusCode: 404 } }
+    createConflict = false
+    projectKnativeServiceName = null
+    capture.length = 0
+    projectUpdateCalls.length = 0
+    executeRawCalls.length = 0
+    warmPoolMock = {
+      getWarmPodForProject: async () => null,
+      claimWarmPodForProject: async () => null,
+      getMappingForProject: async () => null,
+    }
+  })
+
+  test('happy path: creates PVC + KSvc + DomainMapping + updates DB', async () => {
+    const mgr = new KnativeProjectManager()
+    nextFetch = () => new Response('{}', { status: 200 })
+    const url = await mgr.createProject('p-happy')
+    expect(typeof url).toBe('string')
+    // KSvc create was issued
+    const createKsvc = capture.find(c => c.method === 'createNamespacedCustomObject')
+    expect(createKsvc).toBeDefined()
+    // DB save happened
+    expect(projectUpdateCalls.some(u => u.where?.id === 'p-happy')).toBe(true)
+  })
+
+  test('409 race condition is swallowed (returns URL anyway)', async () => {
+    const mgr = new KnativeProjectManager()
+    createConflict = true
+    nextFetch = () => new Response('{}', { status: 200 })
+    const url = await mgr.createProject('p-race')
+    expect(typeof url).toBe('string')
+  })
+
+  test('skips creation when status.exists is already true', async () => {
+    const mgr = new KnativeProjectManager()
+    customGetError = null
+    customGetResponse = {
+      metadata: { creationTimestamp: '2026-01-01T00:00:00Z', generation: 1 },
+      status: {
+        url: 'http://svc.local',
+        actualReplicas: 1,
+        conditions: [{ type: 'Ready', status: 'True', message: 'ok' }],
+        observedGeneration: 1,
+      },
+    }
+    const url = await mgr.createProject('p-exists')
+    expect(typeof url).toBe('string')
+    // No createNamespacedCustomObject for the ksvc (already existed)
+    const createKsvc = capture.find(c => c.method === 'createNamespacedCustomObject')
+    expect(createKsvc).toBeUndefined()
+  })
+
+  test('deduplicates concurrent calls (second join existing promise)', async () => {
+    const mgr = new KnativeProjectManager()
+    nextFetch = () => new Response('{}', { status: 200 })
+    const [a, b] = await Promise.all([
+      mgr.createProject('p-dedup'),
+      mgr.createProject('p-dedup'),
+    ])
+    expect(a).toBe(b)
+    // Both calls resolve to same URL because second joined the pending promise
+  })
+})
+
+describe('waitForReady', () => {
+  beforeEach(() => {
+    capture.length = 0
+  })
+
+  test('returns when status is ready + healthCheck passes', async () => {
+    const mgr = new KnativeProjectManager()
+    customGetError = null
+    customGetResponse = {
+      metadata: { creationTimestamp: '2026-01-01T00:00:00Z', generation: 1 },
+      status: {
+        url: 'http://svc.local',
+        actualReplicas: 1,
+        conditions: [{ type: 'Ready', status: 'True', message: 'ok' }],
+        observedGeneration: 1,
+      },
+    }
+    nextFetch = () => new Response('{}', { status: 200 })
+    await mgr.waitForReady('p-r', 5000)
+  })
+
+  test('throws after timeout', async () => {
+    const mgr = new KnativeProjectManager()
+    customGetError = { code: 404, response: { statusCode: 404 } } // never ready
+    await expect(mgr.waitForReady('p-timeout', 100)).rejects.toThrow(/did not become ready/)
   })
 })

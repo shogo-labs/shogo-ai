@@ -480,3 +480,397 @@ describe('POST /api/affiliates/me/stripe-connect/onboard', () => {
     expect(json.onboardUrl).toBe('acct_aff_1')
   })
 })
+
+// ============================================================================
+// /click — error-branch coverage (body parse, zod, AffiliateError switch)
+// ============================================================================
+describe('POST /api/affiliates/click (error branches)', () => {
+  test('bad_request when body is not JSON', async () => {
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/click', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-shogo-internal-secret': 'test-secret' },
+      body: 'not-json{',
+    })
+    expect(res.status).toBe(400)
+    const j: any = await res.json()
+    expect(j.error.code).toBe('bad_request')
+  })
+
+  test('invalid_request when payload fails zod (missing code)', async () => {
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/click', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-shogo-internal-secret': 'test-secret' },
+      body: JSON.stringify({ visitorId: 'v_12345678' }),
+    })
+    expect(res.status).toBe(400)
+    const j: any = await res.json()
+    expect(j.error.code).toBe('invalid_request')
+    expect(Array.isArray(j.error.issues)).toBe(true)
+  })
+
+  test('AffiliateError affiliate_not_found → 404', async () => {
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/click', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-shogo-internal-secret': 'test-secret' },
+      body: JSON.stringify({ code: 'nope', visitorId: 'v_12345678' }),
+    })
+    expect(res.status).toBe(404)
+    const j: any = await res.json()
+    expect(j.error.code).toBe('affiliate_not_found')
+  })
+
+  test('AffiliateError affiliate_inactive → 410 (via affiliateErrorStatus switch)', async () => {
+    affiliateRows.set('aff_ina', {
+      id: 'aff_ina', userId: 'u_ina', code: 'ina', depth: 0, status: 'inactive', createdAt: new Date(),
+    })
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/click', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-shogo-internal-secret': 'test-secret' },
+      body: JSON.stringify({ code: 'ina', visitorId: 'v_12345678' }),
+    })
+    expect(res.status).toBe(410)
+    const j: any = await res.json()
+    expect(j.error.code).toBe('affiliate_inactive')
+  })
+
+  test('generic err → 500 server_error', async () => {
+    affiliateRows.set('aff_ok', {
+      id: 'aff_ok', userId: 'u_ok', code: 'ok', depth: 0, status: 'active', createdAt: new Date(),
+    })
+    const orig = prismaStub.affiliateClick.create
+    prismaStub.affiliateClick.create = (async () => { throw new Error('boom-db') }) as any
+    try {
+      const origErr = console.error
+      console.error = () => {}
+      const app = makeApp()
+      const res = await app.request('/api/affiliates/click', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-shogo-internal-secret': 'test-secret' },
+        body: JSON.stringify({ code: 'ok', visitorId: 'v_12345678' }),
+      })
+      console.error = origErr
+      expect(res.status).toBe(500)
+      const j: any = await res.json()
+      expect(j.error.code).toBe('server_error')
+    } finally {
+      prismaStub.affiliateClick.create = orig
+    }
+  })
+})
+
+// ============================================================================
+// /enroll — error-branch coverage
+// ============================================================================
+describe('POST /api/affiliates/enroll (error branches)', () => {
+  test('503 when flag off', async () => {
+    delete process.env.SHOGO_AFFILIATES_NATIVE
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user-id': 'u1' },
+      body: JSON.stringify({ termsAccepted: true }),
+    })
+    expect(res.status).toBe(503)
+  })
+
+  test('401 when no auth header', async () => {
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ termsAccepted: true }),
+    })
+    expect(res.status).toBe(401)
+  })
+
+  test('400 bad_request when body is not JSON', async () => {
+    users.set('u_e', { id: 'u_e', email: 'e@x.io', name: 'E' })
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_e' },
+      body: '{not-json',
+    })
+    expect(res.status).toBe(400)
+    const j: any = await res.json()
+    expect(j.error.code).toBe('bad_request')
+  })
+
+  test('400 invalid_request when zod validation fails', async () => {
+    users.set('u_e', { id: 'u_e', email: 'e@x.io', name: 'E' })
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_e' },
+      body: JSON.stringify({}),
+    })
+    expect(res.status).toBe(400)
+    const j: any = await res.json()
+    expect(j.error.code).toBe('invalid_request')
+  })
+
+  test('AffiliateError terms_required → 400', async () => {
+    users.set('u_e', { id: 'u_e', email: 'e@x.io', name: 'E' })
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_e' },
+      body: JSON.stringify({ termsAccepted: false }),
+    })
+    expect(res.status).toBe(400)
+    const j: any = await res.json()
+    expect(j.error.code).toBe('terms_required')
+  })
+
+  test('AffiliateError invalid_code → 400', async () => {
+    users.set('u_e', { id: 'u_e', email: 'e@x.io', name: 'E' })
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_e' },
+      body: JSON.stringify({ termsAccepted: true, code: '--bad' }),
+    })
+    expect(res.status).toBe(400)
+    const j: any = await res.json()
+    expect(j.error.code).toBe('invalid_code')
+  })
+
+  test('AffiliateError parent_not_found → 404', async () => {
+    users.set('u_e', { id: 'u_e', email: 'e@x.io', name: 'E' })
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_e' },
+      body: JSON.stringify({ termsAccepted: true, parentCode: 'ghost' }),
+    })
+    expect(res.status).toBe(404)
+    const j: any = await res.json()
+    expect(j.error.code).toBe('parent_not_found')
+  })
+
+  test('AffiliateError user_not_found → 404 (user missing in db)', async () => {
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_ghost' },
+      body: JSON.stringify({ termsAccepted: true }),
+    })
+    expect(res.status).toBe(404)
+    const j: any = await res.json()
+    expect(j.error.code).toBe('user_not_found')
+  })
+
+  test('generic err → 500 server_error (user lookup throws)', async () => {
+    users.set('u_e', { id: 'u_e', email: 'e@x.io', name: 'E' })
+    const orig = prismaStub.user.findUnique
+    prismaStub.user.findUnique = (async () => { throw new Error('db-down') }) as any
+    const origErr = console.error
+    console.error = () => {}
+    try {
+      const app = makeApp()
+      const res = await app.request('/api/affiliates/enroll', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_e' },
+        body: JSON.stringify({ termsAccepted: true }),
+      })
+      expect(res.status).toBe(500)
+      const j: any = await res.json()
+      expect(j.error.code).toBe('server_error')
+    } finally {
+      prismaStub.user.findUnique = orig
+      console.error = origErr
+    }
+  })
+})
+
+// ============================================================================
+// /me — flag + auth + not-enrolled branches
+// ============================================================================
+describe('GET /api/affiliates/me', () => {
+  test('503 when flag off', async () => {
+    delete process.env.SHOGO_AFFILIATES_NATIVE
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/me', {
+      headers: { 'x-test-user-id': 'u1' },
+    })
+    expect(res.status).toBe(503)
+  })
+
+  test('returns enrolled: false when user has no affiliate row', async () => {
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/me', {
+      headers: { 'x-test-user-id': 'u_no' },
+    })
+    expect(res.status).toBe(200)
+    const j: any = await res.json()
+    expect(j.ok).toBe(true)
+    expect(j.enrolled).toBe(false)
+  })
+})
+
+// ============================================================================
+// /me/stripe-connect/onboard — error branches
+// ============================================================================
+describe('POST /api/affiliates/me/stripe-connect/onboard (error branches)', () => {
+  test('503 when flag off', async () => {
+    delete process.env.SHOGO_AFFILIATES_NATIVE
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/me/stripe-connect/onboard', {
+      method: 'POST',
+      headers: { 'x-test-user-id': 'u1' },
+    })
+    expect(res.status).toBe(503)
+  })
+
+  test('500 generic when wrapper throws non-NOT_FOUND error', async () => {
+    affiliateRows.set('aff_g', { id: 'aff_g', userId: 'u_g', payoutStatus: 'not_setup' })
+    // Override the dynamic-import mock for stripe-connect: make wrapper throw a real error.
+    mock.module('../../services/stripe-connect.service', () => ({
+      createCustomAccountForAffiliate: async () => { throw new Error('stripe-down') },
+      submitPayoutDetailsForAffiliate: async () => ({ payoutStatus: 'pending_verification' }),
+    }))
+    const origErr = console.error
+    console.error = () => {}
+    try {
+      const app = makeApp()
+      const res = await app.request('/api/affiliates/me/stripe-connect/onboard', {
+        method: 'POST',
+        headers: { 'x-test-user-id': 'u_g' },
+      })
+      expect(res.status).toBe(500)
+      const j: any = await res.json()
+      expect(j.error.code).toBe('server_error')
+    } finally {
+      console.error = origErr
+      // Restore the good mock for subsequent tests.
+      mock.module('../../services/stripe-connect.service', () => ({
+        createCustomAccountForAffiliate: async (affId: string) => `acct_${affId}`,
+        submitPayoutDetailsForAffiliate: async () => ({ payoutStatus: 'pending_verification' }),
+      }))
+    }
+  })
+})
+
+// ============================================================================
+// /me/stripe-connect/details — covers entire endpoint (L355-375)
+// ============================================================================
+describe('POST /api/affiliates/me/stripe-connect/details', () => {
+  test('503 when flag off', async () => {
+    delete process.env.SHOGO_AFFILIATES_NATIVE
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/me/stripe-connect/details', {
+      method: 'POST',
+      headers: { 'x-test-user-id': 'u1' },
+    })
+    expect(res.status).toBe(503)
+  })
+
+  test('400 not_onboarded when affiliate has no stripeCustomAccountId', async () => {
+    affiliateRows.set('aff_d', { id: 'aff_d', userId: 'u_d', stripeCustomAccountId: null })
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/me/stripe-connect/details', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_d' },
+      body: JSON.stringify({}),
+    })
+    expect(res.status).toBe(400)
+    const j: any = await res.json()
+    expect(j.error.code).toBe('not_onboarded')
+  })
+
+  test('400 not_onboarded when user has no affiliate row at all', async () => {
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/me/stripe-connect/details', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_x' },
+      body: JSON.stringify({}),
+    })
+    expect(res.status).toBe(400)
+    const j: any = await res.json()
+    expect(j.error.code).toBe('not_onboarded')
+  })
+
+  test('400 bad_request when body fails to parse', async () => {
+    affiliateRows.set('aff_d', { id: 'aff_d', userId: 'u_d', stripeCustomAccountId: 'acct_x' })
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/me/stripe-connect/details', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_d' },
+      body: '{not-json',
+    })
+    expect(res.status).toBe(400)
+    const j: any = await res.json()
+    expect(j.error.code).toBe('bad_request')
+  })
+
+  test('200 happy: returns wrapper result on success', async () => {
+    affiliateRows.set('aff_d', { id: 'aff_d', userId: 'u_d', stripeCustomAccountId: 'acct_x' })
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/me/stripe-connect/details', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_d' },
+      body: JSON.stringify({ firstName: 'A', lastName: 'B' }),
+    })
+    expect(res.status).toBe(200)
+    const j: any = await res.json()
+    expect(j.ok).toBe(true)
+    expect(j.payoutStatus).toBe('pending_verification')
+  })
+
+  test('500 generic when wrapper throws non-matching error', async () => {
+    affiliateRows.set('aff_d', { id: 'aff_d', userId: 'u_d', stripeCustomAccountId: 'acct_x' })
+    mock.module('../../services/stripe-connect.service', () => ({
+      createCustomAccountForAffiliate: async (affId: string) => `acct_${affId}`,
+      submitPayoutDetailsForAffiliate: async () => { throw new Error('stripe-down') },
+    }))
+    const origErr = console.error
+    console.error = () => {}
+    try {
+      const app = makeApp()
+      const res = await app.request('/api/affiliates/me/stripe-connect/details', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_d' },
+        body: JSON.stringify({ firstName: 'A' }),
+      })
+      expect(res.status).toBe(500)
+      const j: any = await res.json()
+      expect(j.error.code).toBe('server_error')
+    } finally {
+      console.error = origErr
+      mock.module('../../services/stripe-connect.service', () => ({
+        createCustomAccountForAffiliate: async (affId: string) => `acct_${affId}`,
+        submitPayoutDetailsForAffiliate: async () => ({ payoutStatus: 'pending_verification' }),
+      }))
+    }
+  })
+
+  test('501 not_implemented when wrapper rejects with a "submitPayoutDetailsForAffiliate" message', async () => {
+    affiliateRows.set('aff_d', { id: 'aff_d', userId: 'u_d', stripeCustomAccountId: 'acct_x' })
+    mock.module('../../services/stripe-connect.service', () => ({
+      createCustomAccountForAffiliate: async (affId: string) => `acct_${affId}`,
+      submitPayoutDetailsForAffiliate: async () => {
+        throw new Error('submitPayoutDetailsForAffiliate is not implemented')
+      },
+    }))
+    try {
+      const app = makeApp()
+      const res = await app.request('/api/affiliates/me/stripe-connect/details', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_d' },
+        body: JSON.stringify({ firstName: 'A' }),
+      })
+      expect(res.status).toBe(501)
+      const j: any = await res.json()
+      expect(j.error.code).toBe('not_implemented')
+    } finally {
+      mock.module('../../services/stripe-connect.service', () => ({
+        createCustomAccountForAffiliate: async (affId: string) => `acct_${affId}`,
+        submitPayoutDetailsForAffiliate: async () => ({ payoutStatus: 'pending_verification' }),
+      }))
+    }
+  })
+})

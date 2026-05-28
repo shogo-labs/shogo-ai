@@ -48,6 +48,7 @@ import {
   type SubagentStreamCallbacks,
   type CustomAgentDef,
 } from './subagent'
+import { ACCESSIBILITY_SNAPSHOT_SCRIPT } from './browser-snapshot-script'
 import {
   findActualString, preserveQuoteStyle, stripTrailingWhitespace,
   applyEditToFile, readFileWithMetadata, writeWithMetadata, getStructuredPatch,
@@ -383,16 +384,7 @@ function buildSoftTimeoutResult(entry: CommandEntry, softTimeoutMs: number): Age
 function createExecTool(ctx: ToolContext): AgentTool {
   return {
     name: 'exec',
-    description:
-      'Run a shell command. The shell remembers your working directory across calls — ' +
-      'do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. ' +
-      'The result includes the current cwd. Destructive commands are blocked. ' +
-      'Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. ' +
-      'Never use interactive flags (-i). Prefer read_file over cat/head/tail. ' +
-      'Tokens saved to .env are auto-loaded. ' +
-      `Soft timeout: if the command does not finish within \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}), ` +
-      'this tool returns `{ status: "running", run_id, pid, ... }` while the command keeps running in the background. ' +
-      'You can then call `exec_wait(run_id)` to keep waiting, or `exec("kill <pid>")` to terminate it and move on.',
+    description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Destructive commands are blocked. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail. Tokens saved to .env are auto-loaded. Soft timeout: if the command does not finish within \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}), this tool returns \`{ status: "running", run_id, pid, ... }\` while the command keeps running in the background. You can then call \`exec_wait(run_id)\` to keep waiting, or \`exec("kill <pid>")\` to terminate it and move on.`,
     label: 'Execute Command',
     parameters: Type.Object({
       command: Type.String({ description: 'Shell command to execute' }),
@@ -491,11 +483,7 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
   return {
     name: 'exec_wait',
     description:
-      'Wait for a backgrounded shell command (one that returned `status: "running"` from a previous exec call). ' +
-      `Soft-bounded: returns whatever has happened by \`timeout_ms\` (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}). ` +
-      'If the command is still running after the wait, you receive the same { status: "running", run_id, pid, ... } shape and can call again. ' +
-      'If the command finished (or was killed via exec("kill <pid>")), you receive the final stdout/stderr/exitCode. ' +
-      'Optional `pattern` resolves early as soon as the regex matches accumulated stdout or stderr.',
+      `Wait for a backgrounded shell command (one that returned \`status: "running"\` from a previous exec call). Soft-bounded: returns whatever has happened by \`timeout_ms\` (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}). If the command is still running after the wait, you receive the same { status: "running", run_id, pid, ... } shape and can call again. If the command finished (or was killed via exec("kill <pid>")), you receive the final stdout/stderr/exitCode. Optional \`pattern\` resolves early as soon as the regex matches accumulated stdout or stderr.`,
     label: 'Wait for Command',
     parameters: Type.Object({
       run_id: Type.String({ description: 'The run_id returned by a previous exec or exec_wait call' }),
@@ -680,14 +668,7 @@ function detectBinaryContent(
 function createReadFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_file',
-    description:
-      'Read a file from the agent workspace. Supports partial reads via offset and limit ' +
-      'to handle large files without consuming the full context window. ' +
-      'When using offset/limit, output includes line numbers in N|content format. ' +
-      'For large files (500+ lines), prefer offset/limit or use grep to find specific sections. ' +
-      'When called on an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp, .avif, .heic, .ico), ' +
-      'the image is returned as multimodal image content for vision-capable models to view or describe; ' +
-      'offset/limit are ignored for images, and images larger than 20 MB are rejected.',
+    description: 'Read a file from the agent workspace. Supports partial reads via offset and limit to handle large files without consuming the full context window. When using offset/limit, output includes line numbers in N|content format. For large files (500+ lines), prefer offset/limit or use grep to find specific sections. When called on an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp, .avif, .heic, .ico), the image is returned as multimodal image content for vision-capable models to view or describe; offset/limit are ignored for images, and images larger than 20 MB are rejected.',
     label: 'Read File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
@@ -1279,10 +1260,7 @@ function maybeValidateQuickActions(
 function createServerSyncTool(ctx: ToolContext): AgentTool {
   return {
     name: 'server_sync',
-    description:
-      "Force the project's API server to regenerate routes from prisma/schema.prisma and restart. " +
-      'Use this when routes are returning 404 after a schema change, or to verify the server is healthy. ' +
-      'Returns the current phase and list of active API routes.',
+    description: "Force the project's API server to regenerate routes from prisma/schema.prisma and restart. Use this when routes are returning 404 after a schema change, or to verify the server is healthy. Returns the current phase and list of active API routes.",
     label: 'Server Sync',
     parameters: Type.Object({}),
     execute: async () => {
@@ -1328,31 +1306,17 @@ function fuzzyFindInContent(content: string, needle: string): { index: number; m
     if (unescIdx !== -1) return { index: unescIdx, match: unescaped }
   }
 
-  // 3. Try normalizing line endings (\r\n vs \n)
-  const normalizedNeedle = needle.replace(/\r\n/g, '\n')
-  const normalizedContent = content.replace(/\r\n/g, '\n')
-  const normIdx = normalizedContent.indexOf(normalizedNeedle)
-  if (normIdx !== -1) {
-    const lines = needle.split('\n')
-    let rebuilt = ''
-    let pos = normIdx
-    for (let i = 0; i < lines.length; i++) {
-      const lineLen = lines[i].length
-      rebuilt += content.substring(pos, pos + lineLen)
-      pos += lineLen
-      if (i < lines.length - 1) {
-        if (content[pos] === '\r' && content[pos + 1] === '\n') { rebuilt += '\r\n'; pos += 2 }
-        else if (content[pos] === '\n') { rebuilt += '\n'; pos += 1 }
-      }
-    }
-    if (content.includes(rebuilt)) return { index: content.indexOf(rebuilt), match: rebuilt }
-    return { index: normIdx, match: normalizedNeedle }
-  }
+  // NOTE: A previous "step 3" did CRLF<->LF normalization here, but both
+  // `content` and `needle` arrive pre-normalized to the same target line
+  // ending from the caller (see edit_file: readFileWithMetadata then
+  // normalizeLineEndings on old_string at gateway-tools.ts L1388-1393).
+  // The IF branch was provably dead. Removed per coverage policy (no
+  // // istanbul ignore allowed on this branch).
 
-  // 4. Try stripping trailing whitespace per line
+  // 3. Try stripping trailing whitespace per line
   const stripTrailing = (s: string) => s.split('\n').map(l => l.trimEnd()).join('\n')
-  const strippedNeedle = stripTrailing(normalizedNeedle)
-  const strippedContent = stripTrailing(normalizedContent)
+  const strippedNeedle = stripTrailing(needle)
+  const strippedContent = stripTrailing(content)
   const stripIdx = strippedContent.indexOf(strippedNeedle)
   if (stripIdx !== -1) {
     const contentLines = content.split('\n')
@@ -1393,14 +1357,16 @@ const MAX_EDIT_FILE_SIZE = 1024 * 1024 * 1024 // 1 GiB
 function createEditFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'edit_file',
-    description:
-      'Performs exact string replacements in files.\n\n' +
-      'Usage:\n' +
-      '- You must use read_file at least once before editing. This tool will error if you attempt an edit without reading.\n' +
-      '- When editing text from read_file output, preserve the exact indentation (tabs/spaces) as it appears in the file content.\n' +
-      '- ALWAYS prefer editing existing files. NEVER use write_file for existing files unless replacing the entire content.\n' +
-      '- The edit will FAIL if old_string is not unique. Provide more surrounding context to make it unique, or use replace_all.\n' +
+    description: [
+      'Performs exact string replacements in files.',
+      '',
+      'Usage:',
+      '- You must use read_file at least once before editing. This tool will error if you attempt an edit without reading.',
+      '- When editing text from read_file output, preserve the exact indentation (tabs/spaces) as it appears in the file content.',
+      '- ALWAYS prefer editing existing files. NEVER use write_file for existing files unless replacing the entire content.',
+      '- The edit will FAIL if old_string is not unique. Provide more surrounding context to make it unique, or use replace_all.',
       '- Use replace_all for renaming a variable or string across the file.',
+    ].join('\n'),
     label: 'Edit File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
@@ -1623,10 +1589,7 @@ const APP_TEMPLATE_METADATA: Array<{
 function createTemplateListTool(): AgentTool {
   return {
     name: 'template_list',
-    description:
-      'List available app starter templates. Every new app MUST start from a template. ' +
-      'Choose the closest match, or use "_template" (blank) if nothing fits. ' +
-      'Call this BEFORE writing any code if no template has been selected yet.',
+    description: 'List available app starter templates. Every new app MUST start from a template. Choose the closest match, or use "_template" (blank) if nothing fits. Call this BEFORE writing any code if no template has been selected yet.',
     label: 'List App Templates',
     parameters: Type.Object({}),
     execute: async () => {
@@ -1641,10 +1604,7 @@ function createTemplateListTool(): AgentTool {
 function createTemplateCopyTool(ctx: ToolContext): AgentTool {
   return {
     name: 'template_copy',
-    description:
-      'Scaffold a project from a starter template. Extracts the template into project/, ' +
-      'sets up the database, installs dependencies, and restarts the preview server. ' +
-      'After this, customize the scaffolded code — do NOT create files from scratch.',
+    description: 'Scaffold a project from a starter template. Extracts the template into project/, sets up the database, installs dependencies, and restarts the preview server. After this, customize the scaffolded code — do NOT create files from scratch.',
     label: 'Copy App Template',
     parameters: Type.Object({
       template: Type.String({ description: 'Template name from template_list (e.g. "todo-app", "_template" for blank)' }),
@@ -1695,9 +1655,7 @@ const todoStores = new Map<string, Array<{ id: string; content: string; status: 
 function createTodoWriteTool(ctx: ToolContext): AgentTool {
   return {
     name: 'todo_write',
-    description:
-      'Manage a session task checklist. Each call replaces the full todo list. ' +
-      'Use to track progress on multi-step tasks.',
+    description: 'Manage a session task checklist. Each call replaces the full todo list. Use to track progress on multi-step tasks.',
     label: 'Todo Write',
     parameters: Type.Object({
       todos: Type.Array(Type.Object({
@@ -1728,9 +1686,7 @@ function createTodoWriteTool(ctx: ToolContext): AgentTool {
 function createAskUserTool(_ctx: ToolContext): AgentTool {
   return {
     name: 'ask_user',
-    description:
-      'Ask the user structured multiple-choice questions to gather requirements or clarify ambiguity. ' +
-      'The UI will render interactive option selectors. Do not call any other tools after this — wait for the user\'s response.',
+    description: 'Ask the user structured multiple-choice questions to gather requirements or clarify ambiguity. The UI will render interactive option selectors. Do not call any other tools after this — wait for the user\'s response.',
     label: 'Ask User',
     parameters: Type.Object({
       questions: Type.Array(Type.Object({
@@ -1757,10 +1713,7 @@ function createAskUserTool(_ctx: ToolContext): AgentTool {
 function createNotifyUserErrorTool(): AgentTool {
   return {
     name: 'notify_user_error',
-    description:
-      'Show a prominent error notification to the user when a tool fails, an integration is broken, ' +
-      'or you cannot complete the requested task. Call this BEFORE explaining the error in chat text. ' +
-      'The UI renders an unmissable banner with the title and remediation steps.',
+    description: 'Show a prominent error notification to the user when a tool fails, an integration is broken, or you cannot complete the requested task. Call this BEFORE explaining the error in chat text. The UI renders an unmissable banner with the title and remediation steps.',
     label: 'Error Notification',
     parameters: Type.Object({
       title: Type.String({ description: 'Short error title, e.g. "GitHub Access Error", "Slack Auth Expired"' }),
@@ -2077,12 +2030,14 @@ const MIN_USEFUL_CONTENT_LENGTH = 200
 
 type Redis = import('ioredis').default
 
-const WEB_CACHE_REDIS_URL = process.env.WEB_CACHE_REDIS_URL
 const WEB_CACHE_TTL = 60 * 60 * 24 * 30 // 30 days
 
 let _webCacheRedis: Redis | null = null
 let _webCacheRedisFailed = false
 function getWebCacheRedis(): Redis | null {
+  // Read env at call time so tests can flip it; production behavior is
+  // unchanged (env vars don't change after process start).
+  const WEB_CACHE_REDIS_URL = process.env.WEB_CACHE_REDIS_URL
   if (!WEB_CACHE_REDIS_URL || _webCacheRedisFailed) return null
   if (!_webCacheRedis) {
     const Redis = require('ioredis').default as new (...args: any[]) => Redis
@@ -2109,7 +2064,7 @@ function getWebCacheRedis(): Redis | null {
 }
 
 function webCacheKey(prefix: string, input: string): string | null {
-  if (!WEB_CACHE_REDIS_URL) return null
+  if (!process.env.WEB_CACHE_REDIS_URL) return null
   const hash = Bun.hash(input).toString(36)
   return `web-cache:${prefix}:${hash}`
 }
@@ -2297,11 +2252,7 @@ async function rawFetch(url: string, maxChars: number): Promise<AgentToolResult<
 function createWebTool(): AgentTool {
   return {
     name: 'web',
-    description:
-      'Unified web tool: fetch a URL or search the web via Google (Serper API). ' +
-      'Provide `url` to fetch a page, or `query` to search. Google property URLs (Maps, Flights, Shopping) ' +
-      'are automatically routed through the search API for rich results. ' +
-      'Search types: "search" (default), "news", "images", "places", "maps", "shopping".',
+    description: 'Unified web tool: fetch a URL or search the web via Google (Serper API). Provide `url` to fetch a page, or `query` to search. Google property URLs (Maps, Flights, Shopping) are automatically routed through the search API for rich results. Search types: "search" (default), "news", "images", "places", "maps", "shopping".',
     label: 'Web',
     parameters: Type.Object({
       url: Type.Optional(Type.String({ description: 'URL to fetch. Google URLs (Maps, Flights, Shopping) are auto-routed to search API.' })),
@@ -2748,10 +2699,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
 
   const tool: AgentTool = {
     name: 'browser',
-    description:
-      'Control a browser. MUST snapshot before any interaction to get element refs. ' +
-      'Actions: navigate, snapshot, click, fill, select, extract, text, screenshot, evaluate, scroll, wait_for, close. ' +
-      'Workflow: navigate → snapshot → use ref numbers → snapshot again after changes. Use read_guide("browser") for details.',
+    description: 'Control a browser. MUST snapshot before any interaction to get element refs. Actions: navigate, snapshot, click, fill, select, extract, text, screenshot, evaluate, scroll, wait_for, close. Workflow: navigate → snapshot → use ref numbers → snapshot again after changes. Use read_guide("browser") for details.',
     label: 'Browser',
     parameters: Type.Object({
       action: Type.Union([
@@ -2802,127 +2750,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             return textResult({ ok: true, title, url: pageUrl })
           }
           case 'snapshot': {
-            const snapshot = await p.evaluate(() => {
-              const INTERACTIVE_TAGS = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'SUMMARY'])
-              const INTERACTIVE_ROLES = new Set([
-                'button', 'link', 'textbox', 'checkbox', 'radio', 'combobox',
-                'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option',
-                'switch', 'tab', 'slider', 'spinbutton', 'searchbox', 'treeitem',
-              ])
-
-              document.querySelectorAll('[data-shogo-ref]').forEach(el => el.removeAttribute('data-shogo-ref'))
-              let nextRef = 1
-
-              function getRole(el: Element): string {
-                const explicit = el.getAttribute('role')
-                if (explicit) return explicit
-                const tag = el.tagName
-                if (tag === 'A' && el.hasAttribute('href')) return 'link'
-                if (tag === 'BUTTON' || (tag === 'INPUT' && ((el as HTMLInputElement).type === 'submit' || (el as HTMLInputElement).type === 'button'))) return 'button'
-                if (tag === 'INPUT') {
-                  const t = (el as HTMLInputElement).type
-                  if (t === 'checkbox') return 'checkbox'
-                  if (t === 'radio') return 'radio'
-                  if (t === 'range') return 'slider'
-                  if (t === 'number') return 'spinbutton'
-                  if (t === 'search') return 'searchbox'
-                  return 'textbox'
-                }
-                if (tag === 'SELECT') return 'combobox'
-                if (tag === 'TEXTAREA') return 'textbox'
-                if (tag === 'IMG') return 'img'
-                if (/^H[1-6]$/.test(tag)) return 'heading'
-                if (tag === 'NAV') return 'navigation'
-                if (tag === 'MAIN') return 'main'
-                if (tag === 'HEADER') return 'banner'
-                if (tag === 'FOOTER') return 'contentinfo'
-                if (tag === 'ASIDE') return 'complementary'
-                if (tag === 'FORM') return 'form'
-                if (tag === 'TABLE') return 'table'
-                if (tag === 'UL' || tag === 'OL') return 'list'
-                if (tag === 'LI') return 'listitem'
-                if (tag === 'SECTION' && el.getAttribute('aria-label')) return 'region'
-                return ''
-              }
-
-              function getName(el: Element): string {
-                const ariaLabel = el.getAttribute('aria-label')
-                if (ariaLabel) return ariaLabel
-                const title = el.getAttribute('title')
-                if (title) return title
-                const alt = el.getAttribute('alt')
-                if (alt) return alt
-                const placeholder = el.getAttribute('placeholder')
-                if (placeholder) return placeholder
-                if (el.id) {
-                  const label = document.querySelector(`label[for="${el.id}"]`)
-                  if (label?.textContent?.trim()) return label.textContent.trim()
-                }
-                const directText = Array.from(el.childNodes)
-                  .filter(n => n.nodeType === Node.TEXT_NODE)
-                  .map(n => n.textContent?.trim())
-                  .filter(Boolean)
-                  .join(' ')
-                if (directText) return directText.substring(0, 80)
-                if (el.children.length <= 2) {
-                  const inner = el.textContent?.trim()
-                  if (inner && inner.length <= 80) return inner
-                }
-                return ''
-              }
-
-              function isVisible(el: Element): boolean {
-                if (el.hasAttribute('hidden') || el.getAttribute('aria-hidden') === 'true') return false
-                const s = window.getComputedStyle(el)
-                return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0'
-              }
-
-              function walk(el: Element, depth: number): string[] {
-                if (!isVisible(el)) return []
-                const role = getRole(el)
-                const name = getName(el)
-                const lines: string[] = []
-                let childDepth = depth
-
-                if (role) {
-                  const indent = '  '.repeat(depth)
-                  let line = `${indent}${role}`
-                  if (name) line += ` "${name}"`
-
-                  const v = (el as HTMLInputElement).value
-                  if (v && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) {
-                    line += ` value="${v.substring(0, 80)}"`
-                  }
-
-                  const attrs: string[] = []
-                  if ((el as HTMLInputElement).disabled) attrs.push('disabled')
-                  if ((el as HTMLInputElement).checked) attrs.push('checked')
-                  const expanded = el.getAttribute('aria-expanded')
-                  if (expanded !== null) attrs.push(`expanded=${expanded}`)
-                  if (el.getAttribute('aria-selected') === 'true') attrs.push('selected')
-                  if (el.getAttribute('aria-required') === 'true') attrs.push('required')
-                  if (attrs.length) line += ` [${attrs.join(', ')}]`
-
-                  const isInteractive = INTERACTIVE_TAGS.has(el.tagName) || INTERACTIVE_ROLES.has(role)
-                  if (isInteractive && !(el as HTMLInputElement).disabled) {
-                    const r = nextRef++
-                    el.setAttribute('data-shogo-ref', String(r))
-                    line += ` <ref=${r}>`
-                  }
-
-                  lines.push(line)
-                  childDepth = depth + 1
-                }
-
-                for (const child of el.children) {
-                  lines.push(...walk(child, childDepth))
-                }
-                return lines
-              }
-
-              const lines = walk(document.body, 0)
-              return { text: lines.join('\n') || '(empty page)', refCount: nextRef - 1 }
-            })
+            const snapshot = await p.evaluate(ACCESSIBILITY_SNAPSHOT_SCRIPT) as { text: string; refCount: number }
             return textResult({ snapshot: snapshot.text, url: p.url(), title: await p.title(), refCount: snapshot.refCount })
           }
           case 'click': {
@@ -3668,9 +3496,7 @@ import { isInForkChild, buildForkDirective } from './subagent-prompts'
 function createAgentCreateTool(ctx: ToolContext): AgentTool {
   return {
     name: 'agent_create',
-    description:
-      'Register a new sub-agent type at runtime. Define its system prompt, allowed tools, and model tier. ' +
-      'Use the same name to update an existing type. Set persist: true to save across sessions.',
+    description: 'Register a new sub-agent type at runtime. Define its system prompt, allowed tools, and model tier. Use the same name to update an existing type. Set persist: true to save across sessions.',
     label: 'Create Agent',
     parameters: Type.Object({
       name: Type.String({ description: 'Unique agent type name (e.g. "test-writer", "pr-reviewer")' }),
@@ -3714,15 +3540,7 @@ function createAgentCreateTool(ctx: ToolContext): AgentTool {
 function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): AgentTool {
   return {
     name: 'agent_spawn',
-    description:
-      'Launch an instance of a registered or built-in agent type. Returns an instance_id. ' +
-      'Use background: true for async execution, then check with agent_status/agent_result. ' +
-      'Built-in types: explore, general-purpose, code-reviewer, integration, channel, media, devops, browser, browser_qa. ' +
-      'IMPORTANT: `integration` is for discovery / install / uninstall ONLY. ' +
-      'Once a tool is installed, it is bound to YOU — call it directly by name ' +
-      '(e.g. JIRA_LIST_BOARDS({})). Do NOT spawn the integration subagent to ' +
-      'execute installed tools; it does not have them bound. ' +
-      'Omit type to use fork mode (inherits your full context — ideal for context-heavy tasks).',
+    description: 'Launch an instance of a registered or built-in agent type. Returns an instance_id. Use background: true for async execution, then check with agent_status/agent_result. Built-in types: explore, general-purpose, code-reviewer, integration, channel, media, devops, browser, browser_qa. IMPORTANT: `integration` is for discovery / install / uninstall ONLY. Once a tool is installed, it is bound to YOU — call it directly by name (e.g. JIRA_LIST_BOARDS({})). Do NOT spawn the integration subagent to execute installed tools; it does not have them bound. Omit type to use fork mode (inherits your full context — ideal for context-heavy tasks).',
     label: 'Spawn Agent',
     parameters: Type.Object({
       type: Type.Optional(Type.String({
@@ -4056,9 +3874,7 @@ function createAgentCancelTool(ctx: ToolContext): AgentTool {
 function createAgentResultTool(ctx: ToolContext): AgentTool {
   return {
     name: 'agent_result',
-    description:
-      'Wait for and retrieve the result of an agent instance. Blocks until the agent completes ' +
-      'by default (up to 2 min). Set timeout_ms to 0 for an immediate non-blocking check.',
+    description: 'Wait for and retrieve the result of an agent instance. Blocks until the agent completes by default (up to 2 min). Set timeout_ms to 0 for an immediate non-blocking check.',
     label: 'Agent Result',
     parameters: Type.Object({
       instance_id: Type.String({ description: 'Instance ID to retrieve result for' }),
@@ -4420,9 +4236,7 @@ function createSendTeamMessageTool(ctx: ToolContext): AgentTool {
 function createQuickActionTool(ctx: ToolContext): AgentTool {
   return {
     name: 'quick_action',
-    description:
-      'Register a quick action — a one-click prompt shortcut shown in the user\'s chat UI. ' +
-      'Use this when you notice a user sending a repeatable workflow prompt (commits, tests, deploys, etc.).',
+    description: 'Register a quick action — a one-click prompt shortcut shown in the user\'s chat UI. Use this when you notice a user sending a repeatable workflow prompt (commits, tests, deploys, etc.).',
     label: 'Register Quick Action',
     parameters: Type.Object({
       label: Type.String({ description: 'Short display name (1-2 words, max 20 chars). Must be unique.' }),
@@ -4593,9 +4407,7 @@ function getIntegrationOverlapHint(
 function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): AgentTool {
   return {
     name: 'skill',
-    description:
-      'Manage and invoke skills. Actions: invoke (default), search, install, run_script. ' +
-      'See read_guide("skill-matching") for details.',
+    description: 'Manage and invoke skills. Actions: invoke (default), search, install, run_script. See read_guide("skill-matching") for details.',
     label: 'Skill',
     parameters: Type.Object({
       action: Type.Optional(Type.String({ description: 'Action: "invoke" (default), "search", "install", or "run_script"' })),
@@ -4924,10 +4736,7 @@ function createDeleteFileTool(ctx: ToolContext): AgentTool {
 function createSearchTool(ctx: ToolContext): AgentTool {
   return {
     name: 'search',
-    description:
-      'Semantic search across the workspace by meaning. Searches code and uploaded files. ' +
-      'Returns ranked chunks with file paths and line numbers. ' +
-      'Use source="code" for code only, source="files" for uploaded files only.',
+    description: 'Semantic search across the workspace by meaning. Searches code and uploaded files. Returns ranked chunks with file paths and line numbers. Use source="code" for code only, source="files" for uploaded files only.',
     label: 'Search',
     parameters: Type.Object({
       query: Type.String({ description: 'Natural language search query' }),
@@ -4989,10 +4798,7 @@ async function getOrCreateGraph(ctx: ToolContext): Promise<import('./workspace-g
 function createImpactRadiusTool(ctx: ToolContext): AgentTool {
   return {
     name: 'impact_radius',
-    description:
-      'Find all files and symbols affected by changes to given files. ' +
-      'Shows blast radius: callers, dependents, importers, and related documents. ' +
-      'Useful before making changes to understand what else might break or need updating.',
+    description: 'Find all files and symbols affected by changes to given files. Shows blast radius: callers, dependents, importers, and related documents. Useful before making changes to understand what else might break or need updating.',
     label: 'Impact Radius',
     parameters: Type.Object({
       files: Type.Array(Type.String(), { description: 'File paths to check (relative to workspace root)' }),
@@ -5038,10 +4844,7 @@ function createImpactRadiusTool(ctx: ToolContext): AgentTool {
 function createDetectChangesTool(ctx: ToolContext): AgentTool {
   return {
     name: 'detect_changes',
-    description:
-      'Analyze git changes and map them to code graph nodes. Shows which functions/classes changed, ' +
-      'their risk scores, affected execution flows, and test gaps. ' +
-      'Use before code review to understand change impact.',
+    description: 'Analyze git changes and map them to code graph nodes. Shows which functions/classes changed, their risk scores, affected execution flows, and test gaps. Use before code review to understand change impact.',
     label: 'Detect Changes',
     parameters: Type.Object({
       base: Type.Optional(Type.String({ description: 'Git ref to diff against (default: "HEAD~1")' })),
@@ -5178,11 +4981,7 @@ function createDetectChangesTool(ctx: ToolContext): AgentTool {
 function createReviewContextTool(ctx: ToolContext): AgentTool {
   return {
     name: 'review_context',
-    description:
-      'Get a comprehensive, token-optimized review bundle for changed files. ' +
-      'Includes structural subgraph, risk scores, affected flows, test gaps, ' +
-      'truncated source hunks around affected nodes, and review guidance. ' +
-      'Use this when reviewing a PR or set of changes.',
+    description: 'Get a comprehensive, token-optimized review bundle for changed files. Includes structural subgraph, risk scores, affected flows, test gaps, truncated source hunks around affected nodes, and review guidance. Use this when reviewing a PR or set of changes.',
     label: 'Review Context',
     parameters: Type.Object({
       changed_files: Type.Optional(Type.Array(Type.String(), { description: 'Explicit file list (skips git diff if provided)' })),
@@ -5458,9 +5257,7 @@ const CHANNEL_SETUP_GUIDES: Record<string, { requiredKeys: string[]; guide: stri
 function createChannelConnectTool(ctx: ToolContext): AgentTool {
   return {
     name: 'channel_connect',
-    description:
-      'Connect a messaging channel. Supported: telegram, discord, email, slack, whatsapp, webhook, teams, webchat. ' +
-      'Saves config and hot-connects immediately.',
+    description: 'Connect a messaging channel. Supported: telegram, discord, email, slack, whatsapp, webhook, teams, webchat. Saves config and hot-connects immediately.',
     label: 'Connect Channel',
     parameters: Type.Object({
       type: Type.String({
@@ -5609,10 +5406,7 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
 function createTranscribeAudioTool(ctx: ToolContext): AgentTool {
   return {
     name: 'transcribe_audio',
-    description:
-      'Transcribe an audio file to text using OpenAI Whisper. ' +
-      'Supports mp3, mp4, mpeg, mpga, m4a, wav, and webm formats. ' +
-      'Provide a path to an audio file in the workspace.',
+    description: 'Transcribe an audio file to text using OpenAI Whisper. Supports mp3, mp4, mpeg, mpga, m4a, wav, and webm formats. Provide a path to an audio file in the workspace.',
     label: 'Transcribe Audio',
     parameters: Type.Object({
       path: Type.String({ description: 'Path to the audio file in the workspace (e.g. "recording.mp3")' }),
@@ -5689,10 +5483,7 @@ function createTranscribeAudioTool(ctx: ToolContext): AgentTool {
 function createGenerateImageTool(ctx: ToolContext): AgentTool {
   return {
     name: 'generate_image',
-    description:
-      'Generate an image from a text prompt using AI (DALL-E, GPT Image, Imagen, etc). ' +
-      'The image is saved to the agent workspace. Optionally provide a reference_image path ' +
-      'to edit/modify an existing workspace image instead of generating from scratch.',
+    description: 'Generate an image from a text prompt using AI (DALL-E, GPT Image, Imagen, etc). The image is saved to the agent workspace. Optionally provide a reference_image path to edit/modify an existing workspace image instead of generating from scratch.',
     label: 'Generate Image',
     parameters: Type.Object({
       prompt: Type.String({ description: 'Text description of the image to generate, or edit instruction when using reference_image' }),
@@ -5835,9 +5626,7 @@ function createGenerateImageTool(ctx: ToolContext): AgentTool {
 function createHeartbeatConfigureTool(ctx: ToolContext): AgentTool {
   return {
     name: 'heartbeat_configure',
-    description:
-      'Configure the heartbeat system: enable/disable, set interval, and quiet hours. ' +
-      'Changes are persisted to config.json and synced to the central scheduler database.',
+    description: 'Configure the heartbeat system: enable/disable, set interval, and quiet hours. Changes are persisted to config.json and synced to the central scheduler database.',
     label: 'Configure Heartbeat',
     parameters: Type.Object({
       enabled: Type.Optional(Type.Boolean({ description: 'Enable or disable heartbeat' })),
@@ -6247,13 +6036,7 @@ function createUpdatePlanTool(ctx: ToolContext): AgentTool {
 function createReadLintsTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_lints',
-    description:
-      'Check files for errors (TypeScript type errors, Python type errors, undefined references, syntax issues) ' +
-      'and canvas runtime errors (compile/render failures from the live preview). ' +
-      'Returns diagnostics from language servers plus any recent canvas runtime errors. ' +
-      'Supports .ts, .tsx, .js, .jsx, and .py files. ' +
-      'Use after writing or editing code files to catch mistakes. ' +
-      'Omit `path` to auto-lint the files you edited this turn (falls back to all tracked files if you have not edited anything yet).',
+    description: 'Check files for errors (TypeScript type errors, Python type errors, undefined references, syntax issues) and canvas runtime errors (compile/render failures from the live preview). Returns diagnostics from language servers plus any recent canvas runtime errors. Supports .ts, .tsx, .js, .jsx, and .py files. Use after writing or editing code files to catch mistakes. Omit `path` to auto-lint the files you edited this turn (falls back to all tracked files if you have not edited anything yet).',
     label: 'Read Lints',
     parameters: Type.Object({
       path: Type.Optional(Type.String({ description: 'File to check (e.g. src/App.tsx or scripts/main.py). Rarely needed — omit to auto-lint the files you just edited this turn.' })),

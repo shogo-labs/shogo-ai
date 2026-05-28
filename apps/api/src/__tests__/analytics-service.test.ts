@@ -240,13 +240,18 @@ describe('getChatConversations', () => {
     expect(result.conversations[1].messages).toHaveLength(1)
   })
 
-  test('truncation query uses RIGHT() for assistant messages', async () => {
+  test('truncation query right-truncates assistant messages (RIGHT on pg, substr on sqlite)', async () => {
     const since = new Date()
     mockPrisma.$queryRawUnsafe.mockResolvedValueOnce([])
 
     await getChatConversations(since, true)
     const query = mockPrisma.$queryRawUnsafe.mock.calls[0][0] as string
-    expect(query).toContain('RIGHT(cm."content"')
+    // Dialect-dependent: pg uses RIGHT(col, n); sqlite uses substr(col, -n).
+    // Both right-truncate to the trailing 1000 chars; assert either form
+    // matches so the test passes under both SHOGO_LOCAL_MODE values.
+    const usesPg = query.includes('RIGHT(cm."content"')
+    const usesSqlite = query.includes('substr(cm."content", -1000)')
+    expect(usesPg || usesSqlite).toBe(true)
     expect(query).toContain('1000')
   })
 })

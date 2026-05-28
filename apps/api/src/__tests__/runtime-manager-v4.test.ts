@@ -16,6 +16,7 @@ mock.module('child_process', () => ({
   execFile: () => {},
   execFileSync: () => '',
   exec: () => {},
+  spawnSync: () => ({ status: 0, stdout: "", stderr: "", error: null }),
   spawn: mock(() => ({
     stdout: { on: () => {} },
     stderr: { on: () => {} },

@@ -126,4 +126,68 @@ describe('createWriteFileTool', () => {
     })
     expect(r.details.quickActionsLint?.valid).toBe(true)
   })
+
+  test('appendImpactHint adds impact_note when graph reports impactedFiles', async () => {
+    const ctx = makeCtx({
+      workspaceGraph: {
+        getImpactRadius: () => ({
+          impactedFiles: ['src/a.ts', 'src/b.ts', 'src/c.ts'],
+          changedNodes: [], edges: [], impactedNodes: [],
+        }),
+      },
+    })
+    const r = await run(ctx, 'write_file', {
+      path: 'lib/u.ts',
+      content: 'export const x = 1\n',
+    })
+    expect(r.details.ok).toBe(true)
+    expect(String(r.details.impact_note)).toContain('referenced by 3 other file(s)')
+    expect(String(r.details.impact_note)).toContain('src/a.ts')
+  })
+
+  test('appendImpactHint truncates large impact lists with "and N more"', async () => {
+    const many = Array.from({ length: 12 }, (_, i) => `src/f${i}.ts`)
+    const ctx = makeCtx({
+      workspaceGraph: {
+        getImpactRadius: () => ({
+          impactedFiles: many, changedNodes: [], edges: [], impactedNodes: [],
+        }),
+      },
+    })
+    const r = await run(ctx, 'write_file', {
+      path: 'lib/u2.ts',
+      content: 'export const y = 2\n',
+    })
+    expect(String(r.details.impact_note)).toContain('referenced by 12 other file(s)')
+    expect(String(r.details.impact_note)).toContain('and 7 more')
+  })
+
+  test('appendImpactHint silent when impactedFiles empty', async () => {
+    const ctx = makeCtx({
+      workspaceGraph: {
+        getImpactRadius: () => ({
+          impactedFiles: [], changedNodes: [], edges: [], impactedNodes: [],
+        }),
+      },
+    })
+    const r = await run(ctx, 'write_file', {
+      path: 'lib/u3.ts',
+      content: 'export const z = 3\n',
+    })
+    expect(r.details.impact_note).toBeUndefined()
+  })
+
+  test('appendImpactHint swallows graph errors silently', async () => {
+    const ctx = makeCtx({
+      workspaceGraph: {
+        getImpactRadius: () => { throw new Error('graph corrupt') },
+      },
+    })
+    const r = await run(ctx, 'write_file', {
+      path: 'lib/u4.ts',
+      content: 'export const w = 4\n',
+    })
+    expect(r.details.ok).toBe(true)
+    expect(r.details.impact_note).toBeUndefined()
+  })
 })

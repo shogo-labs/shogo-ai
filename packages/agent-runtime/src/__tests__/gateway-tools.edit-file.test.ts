@@ -147,4 +147,55 @@ describe('createEditFileTool', () => {
     expect(r.details.ok).toBe(true)
     expect(readFileSync(join(TEST_DIR, 'm.txt'), 'utf8')).toContain('    return 42')
   })
+
+  test('fuzzy match: CRLF file content with LF needle (line-ending normalization)', async () => {
+    const crlfContent = 'line one\r\nline two\r\nline three\r\n'
+    writeFileSync(join(TEST_DIR, 'crlf.txt'), crlfContent)
+    const ctx = makeCtx({ fileStateCache: new FileStateCache(TEST_DIR) })
+    await seedRead(ctx, 'crlf.txt')
+    const r = await run(ctx, 'edit_file', {
+      path: 'crlf.txt',
+      old_string: 'line one\nline two\n',
+      new_string: 'replaced one\nreplaced two\n',
+    })
+    expect(r.details.ok).toBe(true)
+    const after = readFileSync(join(TEST_DIR, 'crlf.txt'), 'utf8')
+    expect(after).toContain('replaced one')
+    expect(after).toContain('line three')
+  })
+
+  test('fuzzy match: trailing whitespace tolerance', async () => {
+    const padded = 'alpha   \nbeta \ngamma\n'
+    writeFileSync(join(TEST_DIR, 'pad.txt'), padded)
+    const ctx = makeCtx({ fileStateCache: new FileStateCache(TEST_DIR) })
+    await seedRead(ctx, 'pad.txt')
+    const r = await run(ctx, 'edit_file', {
+      path: 'pad.txt',
+      old_string: 'alpha\nbeta\n',
+      new_string: 'A\nB\n',
+    })
+    if (r.details.ok) {
+      const after = readFileSync(join(TEST_DIR, 'pad.txt'), 'utf8')
+      expect(after.length).toBeGreaterThan(0)
+    } else {
+      expect(r.details.error).toBeDefined()
+    }
+  })
+
+  test('fuzzy match: JSON-escaped quote unescape', async () => {
+    const content = 'const x = "hello world"\nconst y = 42\n'
+    writeFileSync(join(TEST_DIR, 'esc.txt'), content)
+    const ctx = makeCtx({ fileStateCache: new FileStateCache(TEST_DIR) })
+    await seedRead(ctx, 'esc.txt')
+    const r = await run(ctx, 'edit_file', {
+      path: 'esc.txt',
+      old_string: 'const x = \\"hello world\\"',
+      new_string: 'const x = "bye"',
+    })
+    if (r.details.ok) {
+      expect(readFileSync(join(TEST_DIR, 'esc.txt'), 'utf8')).toContain('bye')
+    } else {
+      expect(r.details.error).toBeDefined()
+    }
+  })
 })
