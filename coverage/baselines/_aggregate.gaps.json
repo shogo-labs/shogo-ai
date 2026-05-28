@@ -4,13 +4,13 @@
   "aggregate": {
     "lines": {
       "total": 75174,
-      "hit": 67217,
-      "pct": 89.42
+      "hit": 67479,
+      "pct": 89.76
     },
     "functions": {
       "total": 6178,
-      "hit": 5359,
-      "pct": 86.74
+      "hit": 5375,
+      "pct": 87.0
     }
   },
   "perPackage": [
@@ -26,12 +26,12 @@
     },
     {
       "package": "packages/agent-runtime",
-      "linesHit": 17742,
+      "linesHit": 18004,
       "linesFound": 20951,
-      "linePct": 84.68,
-      "funcsHit": 1274,
+      "linePct": 85.93,
+      "funcsHit": 1290,
       "funcsFound": 1662,
-      "funcPct": 76.65,
+      "funcPct": 77.62,
       "source": "fresh 2026-05-27 bun test --coverage (full re-measure)"
     },
     {
@@ -509,6 +509,26 @@
         "lines": "67217/75174 = 89.42%",
         "functions": "5359/6178 = 86.74%"
       }
+    },
+    {
+      "sha": "2db83f09",
+      "date": "2026-05-28",
+      "wave": "Wave 1 Day 3 of 4",
+      "message": "test(coverage): gateway-tools.ts browser tool \u2014 69.16% \u2192 75.54% lines",
+      "perFile": [
+        {
+          "file": "packages/agent-runtime/src/gateway-tools.ts",
+          "beforeLines": "3326/4809 (69.16%)",
+          "afterLines": "3588/4750 (75.54%)",
+          "deltaLinesHit": 262,
+          "deltaFuncsHit": 16,
+          "newTests": 40
+        }
+      ],
+      "aggregateAfter": {
+        "lines": "67479/75174 = 89.76%",
+        "functions": "5375/6178 = 87.0%"
+      }
     }
   ],
   "frontend": {
@@ -525,7 +545,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-28T08:07:25.861012+00:00",
+  "lastUpdated": "2026-05-28T08:12:24.311609+00:00",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
