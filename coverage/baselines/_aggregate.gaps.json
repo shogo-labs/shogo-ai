@@ -1045,7 +1045,7 @@
       "note": "Greenfield job test. Zero existing tests covered this 147-line file. New file affiliate-invoice-reconciliation.test.ts (12 tests, all passing) mocks @lib/global-job-lock, @services/affiliate.service, and stripe to drive every reachable branch of runAffiliateInvoiceReconciliation and startAffiliateInvoiceReconciliationCron. Covers: lock-skipped early return, SHOGO_AFFILIATES_NATIVE=false short-circuit, missing STRIPE_SECRET_KEY warning, stripeFactory returning null, happy single-page walk, per-invoice failure counted in summary.failed, multi-page pagination via starting_after cursor, empty first-page break, windowDays option, default windowDays=7, default-factory branch (STRIPE_SECRET_KEY set, uses mocked Stripe ctor). Cron test substitutes globalThis.setTimeout and setInterval, captures their callbacks, then invokes the captured outer setTimeout callback + the inner setInterval callback to drive lines 128-141. Only L135 remains uncov (.catch arm of the initial run; would only fire if runAffiliateInvoiceReconciliation rejected, which requires breaking the inner withGlobalJobLock contract). 97.53 percent funcs covered."
     },
     {
-      "sha": "PENDING",
+      "sha": "b2846855",
       "date": "2026-05-28",
       "wave": "Wave 2 ad-hoc - greenfield jobs batch",
       "message": "test(coverage): approve-eligible-commissions.ts + run-affiliate-payouts.ts - zero prior tests to 100/100",
