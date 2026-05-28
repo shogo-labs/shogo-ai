@@ -554,6 +554,7 @@ export function Terminal({
               labels={labels}
               activeId={active?.id ?? ""}
               onSelect={setActiveId}
+              onClose={closeSession}
             />
           </div>
         ) : (
@@ -610,11 +611,13 @@ function TerminalSplitList({
   labels,
   activeId,
   onSelect,
+  onClose,
 }: {
   sessions: Session[];
   labels: Map<string, string>;
   activeId: string;
   onSelect: (id: string) => void;
+  onClose: (id: string) => void;
 }) {
   return (
     <aside
@@ -624,21 +627,37 @@ function TerminalSplitList({
       {sessions.map((s, index) => {
         const active = s.id === activeId;
         return (
-          <button
+          <div
             key={s.id}
-            type="button"
-            onClick={() => onSelect(s.id)}
             className={[
-              "flex h-8 w-full items-center gap-1 px-2 text-left hover:bg-[#2a2d2e]",
+              "group flex h-8 w-full items-center gap-1 px-2 text-left hover:bg-[#2a2d2e]",
               active ? "bg-[#37373d] text-[#ffffff]" : "text-[#cccccc]",
             ].join(" ")}
             aria-current={active ? "true" : undefined}
             title={labels.get(s.id) ?? `Terminal ${index + 1}`}
           >
-            <span className="w-4 text-[#858585]">{index === 0 ? "┌" : "└"}</span>
-            <span className="rounded border border-[#858585] px-1 text-[10px] leading-4 text-[#cccccc]">⌁</span>
-            <span className="truncate">zsh</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => onSelect(s.id)}
+              className="flex min-w-0 flex-1 items-center gap-1 text-left"
+            >
+              <span className="w-4 shrink-0 text-[#858585]">{index === 0 ? "┌" : "└"}</span>
+              <span className="shrink-0 rounded border border-[#858585] px-1 text-[10px] leading-4 text-[#cccccc]">⌁</span>
+              <span className="truncate">zsh</span>
+            </button>
+            <button
+              type="button"
+              aria-label={`Kill ${labels.get(s.id) ?? `Terminal ${index + 1}`}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onClose(s.id);
+              }}
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[#858585] opacity-0 hover:bg-[#3c3c3c] hover:text-[#f48771] group-hover:opacity-100"
+              title="Kill terminal"
+            >
+              ×
+            </button>
+          </div>
         );
       })}
     </aside>
