@@ -928,6 +928,53 @@
         }
       ],
       "note": "Wave 2 Day 9 first strike - biggest single-commit win on this branch. All 19 fails in local-projects-routes.expanded.test.ts were sandbox-environment failures, not real bugs: (a) mkdtempSync(os.homedir()) returns EACCES because the runtime cannot write to /app; (b) the route handlers themselves call os.homedir() to validate paths-are-under-home, so even after fixing the test mkdtemp the route rejected all paths as outside_home. Two-line fix: (1) mkdtemp now uses os.tmpdir() and (2) at the top of beforeEach we monkey-patch os.homedir to return os.tmpdir() so the route validation accepts the test paths. Per-file isolation under run-tests-isolated.ts means the patch doesnt leak. Also added status() and stop() methods to the mocked RuntimeManager since the refresh-trust route calls them. Result: 19 fail / 7 pass became 0 fail / 19 pass with no new test code; just fixed the 3 mock-environment gaps the original PR author missed. Coverage delta is enormous (+56 pp) because the test was already comprehensive - it just never executed in the sandbox."
+    },
+    {
+      "sha": "PENDING",
+      "date": "2026-05-28",
+      "wave": "Wave 2 Day 9-10 sweep - sandbox env-fix on 10 broken test files",
+      "message": "test(coverage): unbreak 10 sandbox-broken test files in apps/api - ~+200 lines aggregate",
+      "perFile": [
+        {
+          "file": "apps/api/src/routes/ai-proxy.ts",
+          "deltaLinesHit": 150,
+          "deltaFuncsHit": 20,
+          "note": "6 ai-proxy*.test.ts files newly executing; ai-proxy.ts joint coverage now 96.35% lines"
+        },
+        {
+          "file": "apps/api/src/routes/admin.ts",
+          "deltaLinesHit": 30,
+          "deltaFuncsHit": 3,
+          "note": "userAttributionRoute exercised by affiliate-public-routes-mount-order"
+        },
+        {
+          "file": "apps/api/src/routes/license-keys.ts",
+          "deltaLinesHit": 20,
+          "deltaFuncsHit": 2,
+          "note": "licenseKeyRoutes mount-order exercised"
+        },
+        {
+          "file": "apps/api/src/lib/runtime/manager.ts",
+          "deltaLinesHit": 0,
+          "deltaFuncsHit": 0,
+          "note": "runtime-manager-ports/v4 now run but mostly duplicate prior coverage"
+        }
+      ],
+      "testsUnblocked": 27,
+      "filesFixed": [
+        "local-fs-browse.test.ts (13 -> 0 fail)",
+        "ai-proxy.test.ts (6 -> 0 fail)",
+        "ai-proxy-e2e.test.ts (1 -> 0 fail; 7 tests now run)",
+        "ai-proxy-handlers.test.ts (1 -> 0 fail; 40 tests now run)",
+        "ai-proxy-images-e2e.test.ts (1 -> 0 fail; 10 tests now run)",
+        "ai-proxy-routes.test.ts (1 -> 0 fail; 13 tests now run)",
+        "affiliate-public-routes-mount-order.test.ts (1 -> 0 fail; 3 tests now run)",
+        "affiliate-signup-attribution.test.ts (1 -> 0 fail; 9 tests now run)",
+        "knative-project-manager.test.ts (1 -> 0 fail of 2 env-blocked; 37 -> 36 pass+1 unrelated assertion mismatch)",
+        "runtime-manager-ports.test.ts (abort -> 7 pass)",
+        "runtime-manager-v4.test.ts (abort -> 28 pass)"
+      ],
+      "note": "Five-pattern sandbox-fix sweep across apps/api: (1) BETTER_AUTH_SECRET + AI_PROXY_SECRET set at top of test (above the dynamic import) so ai-proxy-token + better-auth context-create no longer FATAL with isProduction. (2) os.homedir() monkey-patched to a fresh mkdir-ed subdir under os.tmpdir() in local-fs-browse so isUnderHome() validates and mkdtempSync(HOME, ...) does not EACCES on /app. (3) spawnSync added to the existing child_process module mocks in runtime-manager-ports + runtime-manager-v4 (needed since shogo-worker added a RuntimeExecutor.executeAsync code path that statically imports it). No source files under src/ were modified - only test scaffolding to make the existing assertions executable. 27 previously-failing tests now pass. Knative still has 1 real assertion mismatch (shogo-system vs shogo-staging-system namespace expectation) unrelated to env scaffolding - left as a separate fix."
     }
   ],
   "frontend": {

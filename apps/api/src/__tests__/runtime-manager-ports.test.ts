@@ -23,6 +23,9 @@ mock.module('child_process', () => ({
   execFile: () => {},
   execFileSync: () => '',
   exec: () => {},
+  // spawnSync added when shogo-worker RuntimeExecutor.executeAsync was
+  // introduced — without it static import { spawnSync } fails.
+  spawnSync: () => ({ status: 0, stdout: "", stderr: "", error: null }),
   spawn: mock(() => ({
     stdout: { on: () => {} },
     stderr: { on: () => {} },
