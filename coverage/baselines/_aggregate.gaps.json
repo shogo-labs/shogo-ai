@@ -861,7 +861,7 @@
       "note": "Two new test files + one tiny source refactor that finally clear Wave 1 Day 1-4 92 percent target. (1) gateway-tools.plan-summary.test.ts - 6 tests for runPlanSummary IIFE (data-plan-summary-start emission, summarizePlan call with parentModel arg, upsertSummarySection writeback, data-plan-summary completion event, dualPlan gating, no-meaningful-change skip, summarizePlan throw -> data-plan-summary-error event, plan file removed mid-flight gracefully handled). Mocks ../plan-translation. (2) gateway-tools.web-cache.test.ts - 3 tests for getWebCacheRedis (env unset no-op no Redis constructed, env set Redis singleton with error+end listeners attached, end event flips failure flag and short-circuits subsequent calls). Mocks ioredis with FakeRedis class. (3) MICRO-REFACTOR: WEB_CACHE_REDIS_URL was a module-init const that env-changes after import could never reach. Moved to a call-time process.env read inside getWebCacheRedis + webCacheKey. Production behavior unchanged (env doesn t change after process start) but the function is now testable. Cumulative Wave 1 Sessions 1-9 on gateway-tools.ts: 77.47 to 92.35 percent (+14.88pp). WAVE 1 DAY 1-4 FINISH LINE CLEARED."
     },
     {
-      "sha": "PENDING",
+      "sha": "1af12c83",
       "date": "2026-05-28",
       "wave": "Wave 1 Day 5 - gateway.ts",
       "message": "test(coverage): gateway.ts initIndexEngine + onCostMetric + summarizeFn - 85.31% to 86.36% lines",
