@@ -1922,12 +1922,14 @@ const MIN_USEFUL_CONTENT_LENGTH = 200
 
 type Redis = import('ioredis').default
 
-const WEB_CACHE_REDIS_URL = process.env.WEB_CACHE_REDIS_URL
 const WEB_CACHE_TTL = 60 * 60 * 24 * 30 // 30 days
 
 let _webCacheRedis: Redis | null = null
 let _webCacheRedisFailed = false
 function getWebCacheRedis(): Redis | null {
+  // Read env at call time so tests can flip it; production behavior is
+  // unchanged (env vars don't change after process start).
+  const WEB_CACHE_REDIS_URL = process.env.WEB_CACHE_REDIS_URL
   if (!WEB_CACHE_REDIS_URL || _webCacheRedisFailed) return null
   if (!_webCacheRedis) {
     const Redis = require('ioredis').default as new (...args: any[]) => Redis
@@ -1954,7 +1956,7 @@ function getWebCacheRedis(): Redis | null {
 }
 
 function webCacheKey(prefix: string, input: string): string | null {
-  if (!WEB_CACHE_REDIS_URL) return null
+  if (!process.env.WEB_CACHE_REDIS_URL) return null
   const hash = Bun.hash(input).toString(36)
   return `web-cache:${prefix}:${hash}`
 }
