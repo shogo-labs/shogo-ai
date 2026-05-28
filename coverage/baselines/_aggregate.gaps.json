@@ -620,7 +620,7 @@
       "note": "New test file voice-routes-twilio-cleanup.test.ts covers: DELETE /voice/twilio/number/:projectId (5 tests: no_number, happy path, Twilio release error, EL deletePhone error, Twilio unconfigured warning); POST /voice/twilio/status/:projectId metering catch (3 tests: recordCallUsage failure, no-CallSid ignore, project_not_configured ignore); POST /voice/translator/chat/:chatSessionId (6 tests: 503 no model, 400 invalid JSON, 404 session not found, 403 non-member, 200 happy path, resolveVoiceContext error warning); POST /voice/transcript/:chatSessionId persist 500. Funcs remain at 100%. No new test failures."
     },
     {
-      "sha": "PENDING",
+      "sha": "06807c3a",
       "date": "2026-05-28",
       "wave": "Wave 2 \u2014 opportunistic",
       "message": "test(coverage): voice.ts readonly + agents/sync paths \u2014 92.01% \u2192 92.48% lines",
