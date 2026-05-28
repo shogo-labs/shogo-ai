@@ -4,10 +4,14 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import {
   __resetSessionIdSeqForTest,
   addSession,
+  addSplit,
+  closeGroup,
   closeSession,
+  groupIdsOf,
   labelsFor,
   makeSession,
   patchSession,
+  sessionsInGroup,
   type Session,
 } from '../session-reducer'
 
@@ -32,6 +36,80 @@ describe('makeSession', () => {
   })
 })
 
+describe('groups', () => {
+  test('makeSession mints a fresh group id per call by default', () => {
+    const a = makeSession()
+    const b = makeSession()
+    expect(a.groupId).not.toBe(b.groupId)
+  })
+
+  test('makeSession reuses a passed group id (split pane)', () => {
+    const a = makeSession()
+    const split = makeSession(a.groupId)
+    expect(split.groupId).toBe(a.groupId)
+  })
+
+  test('groupIdsOf returns ordered, de-duplicated group ids', () => {
+    const a = makeSession()
+    const b = makeSession(a.groupId) // split of a
+    const c = makeSession() // new tab
+    expect(groupIdsOf([a, b, c])).toEqual([a.groupId, c.groupId])
+  })
+
+  test('sessionsInGroup returns only the group members', () => {
+    const a = makeSession()
+    const b = makeSession(a.groupId)
+    const c = makeSession()
+    expect(ids(sessionsInGroup([a, b, c], a.groupId))).toEqual([a.id, b.id])
+    expect(ids(sessionsInGroup([a, b, c], c.groupId))).toEqual([c.id])
+  })
+})
+
+describe('addSplit', () => {
+  test('inserts the split right after the last member of its group', () => {
+    const a = makeSession() // group A
+    const b = makeSession() // group B
+    const splitA = makeSession(a.groupId)
+    // a, b currently; split of A should land after a, keeping A contiguous.
+    expect(ids(addSplit([a, b], splitA))).toEqual([a.id, splitA.id, b.id])
+  })
+
+  test('falls back to append when the group is not present', () => {
+    const a = makeSession()
+    const orphanSplit = makeSession('g-unknown')
+    expect(ids(addSplit([a], orphanSplit))).toEqual([a.id, orphanSplit.id])
+  })
+})
+
+describe('closeGroup', () => {
+  test('removes every pane in the group', () => {
+    const a = makeSession()
+    const aSplit = makeSession(a.groupId)
+    const b = makeSession()
+    const result = closeGroup([a, aSplit, b], a.groupId, a.id)
+    expect(ids(result.sessions)).toEqual([b.id])
+    expect(result.nextActiveId).toBe(b.id)
+    expect(result.panelDismissed).toBe(false)
+  })
+
+  test('dismisses the panel when closing the only group', () => {
+    const a = makeSession()
+    const aSplit = makeSession(a.groupId)
+    const result = closeGroup([a, aSplit], a.groupId, aSplit.id)
+    expect(result.sessions).toEqual([])
+    expect(result.panelDismissed).toBe(true)
+  })
+
+  test('keeps the active id when closing a non-active group', () => {
+    const a = makeSession()
+    const b = makeSession()
+    const result = closeGroup([a, b], b.groupId, a.id)
+    expect(ids(result.sessions)).toEqual([a.id])
+    expect(result.nextActiveId).toBeNull()
+    expect(result.panelDismissed).toBe(false)
+  })
+})
+
 describe('labelsFor', () => {
   test('produces 1-indexed positional labels', () => {
     const a = makeSession()
@@ -41,6 +119,16 @@ describe('labelsFor', () => {
     expect(labels.get(a.id)).toBe('Terminal 1')
     expect(labels.get(b.id)).toBe('Terminal 2')
     expect(labels.get(c.id)).toBe('Terminal 3')
+  })
+
+  test('split panes share their tab\'s positional label', () => {
+    const a = makeSession()
+    const aSplit = makeSession(a.groupId)
+    const b = makeSession()
+    const labels = labelsFor([a, aSplit, b])
+    expect(labels.get(a.id)).toBe('Terminal 1')
+    expect(labels.get(aSplit.id)).toBe('Terminal 1')
+    expect(labels.get(b.id)).toBe('Terminal 2')
   })
 
   test('re-derives positional labels after a tab is removed (no gaps)', () => {

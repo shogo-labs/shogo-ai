@@ -23,10 +23,14 @@ import {
 import { XtermView, type XtermViewHandle } from "./terminal/XtermView";
 import {
   addSession as addSessionToList,
+  addSplit as addSplitToList,
+  closeGroup as closeGroupInList,
   closeSession as closeSessionInList,
+  groupIdsOf,
   labelsFor,
   makeSession,
   patchSession as patchSessionInList,
+  sessionsInGroup,
   type Session,
 } from "./terminal/session-reducer";
 import { TerminalHeader } from "./terminal/TerminalHeader";
@@ -173,6 +177,8 @@ export function Terminal({
   const [confirming, setConfirming] = useState<PresetCommandDto | null>(null);
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
   // One imperative xterm handle per session, populated once XtermView mounts.
   const xtermRefs = useRef(new Map<string, XtermViewHandle | null>());
   // Pixel-size source of truth for `estimateGridSize`. We measure this
@@ -184,6 +190,10 @@ export function Terminal({
   const apiBase = API_URL;
   const active = sessions.find((s) => s.id === activeId) ?? sessions[0];
   const labels = useMemo(() => labelsFor(sessions), [sessions]);
+  // Tabs are groups; ordered group ids drive both the tab strip and the
+  // group-at-a-time layout below.
+  const groupIds = useMemo(() => groupIdsOf(sessions), [sessions]);
+  const activeGroupId = active?.groupId ?? "";
 
   const patchSession = useCallback((id: string, patch: (s: Session) => Session) => {
     setSessions((prev) => patchSessionInList(prev, id, patch));
@@ -353,10 +363,26 @@ export function Terminal({
     loadAttemptedRef.current = false;
   }, [projectId]);
 
-  // ─── Session add / close ────────────────────────────────────────────
+  // ─── Session add / split / close ────────────────────────────────────
+  // "New Terminal": a fresh group → its own tab, rendered as a single pane.
   const addSession = useCallback(() => {
     const s = makeSession();
     setSessions((prev) => addSessionToList(prev, s));
+    setActiveId(s.id);
+    if (projectId) {
+      provisionedRef.current.add(s.id);
+      void provisionSession(s.id);
+    }
+  }, [projectId, provisionSession]);
+
+  // "Split Terminal": a new pane inside the active session's group → shown
+  // side-by-side within the current tab.
+  const splitSession = useCallback(() => {
+    const current =
+      sessionsRef.current.find((x) => x.id === activeIdRef.current) ??
+      sessionsRef.current[0];
+    const s = makeSession(current?.groupId);
+    setSessions((prev) => addSplitToList(prev, s));
     setActiveId(s.id);
     if (projectId) {
       provisionedRef.current.add(s.id);
@@ -391,6 +417,36 @@ export function Terminal({
       });
     },
     [activeId, disposeSession, onRequestClose, projectId, provisionSession],
+  );
+
+  // Close a whole tab (every split pane in the group).
+  const closeGroup = useCallback(
+    (groupId: string) => {
+      setSessions((prev) => {
+        prev
+          .filter((s) => s.groupId === groupId)
+          .forEach((s) => disposeSession(s));
+        const result = closeGroupInList(prev, groupId, activeIdRef.current);
+        if (result.panelDismissed) {
+          onRequestClose?.();
+          const fresh = makeSession();
+          queueMicrotask(() => {
+            setActiveId(fresh.id);
+            if (projectId) {
+              provisionedRef.current.add(fresh.id);
+              void provisionSession(fresh.id);
+            }
+          });
+          return [fresh];
+        }
+        if (result.nextActiveId) {
+          const next = result.nextActiveId;
+          queueMicrotask(() => setActiveId(next));
+        }
+        return result.sessions;
+      });
+    },
+    [disposeSession, onRequestClose, projectId, provisionSession],
   );
 
   const closeAllSessions = useCallback(() => {
@@ -504,12 +560,20 @@ export function Terminal({
     <div className="relative flex h-full min-h-0 flex-col bg-[#1e1e1e]">
       <SessionTabs
         sessions={sessions}
+        groupIds={groupIds}
         labels={labels}
         activeId={active?.id ?? ""}
-        onSelect={setActiveId}
-        onClose={closeSession}
+        activeGroupId={activeGroupId}
+        onSelectGroup={(groupId) => {
+          const group = sessionsInGroup(sessionsRef.current, groupId);
+          const target = group.find((s) => s.id === activeIdRef.current) ?? group[0];
+          if (target) setActiveId(target.id);
+        }}
+        onCloseGroup={closeGroup}
         onCloseAll={closeAllSessions}
+        onKillActive={() => closeSession(active?.id ?? "")}
         onAdd={addSession}
+        onSplit={splitSession}
         onStop={stop}
         onClear={clear}
         clearDisabled={!active?.client}
@@ -527,96 +591,81 @@ export function Terminal({
         aria-label="Terminal output"
         className="relative min-h-0 flex-1 bg-[#1e1e1e]"
       >
-        {sessions.length > 1 ? (
-          <div className="flex h-full min-h-0 w-full bg-[#1e1e1e]">
-            <div className="flex min-w-0 flex-1">
-              {sessions.map((s, index) => {
-                const isActive = s.id === active?.id;
-                return (
-                  <div
-                    key={s.id}
-                    className="relative min-w-0 flex-1 border-r border-[#2d2d2d] last:border-r-0"
-                    onMouseDown={() => setActiveId(s.id)}
-                  >
-                    {s.status === "error" ? (
-                      <SessionErrorPane
-                        message={s.errorMessage ?? "Failed to start terminal session"}
-                        onRetry={() => {
-                          patchSession(s.id, (cur) => ({ ...cur, status: "creating", errorMessage: null }));
-                          void provisionSession(s.id);
-                        }}
-                      />
-                    ) : !s.client ? (
-                      <SessionStartingPane />
-                    ) : (
-                      <XtermView
-                        ref={(handle) => {
-                          if (handle) xtermRefs.current.set(s.id, handle);
-                          else xtermRefs.current.delete(s.id);
-                        }}
-                        client={s.client}
-                        hidden={false}
-                        autoFocus={isActive && visible}
-                        projectId={projectId}
-                        onCwdChange={(cwd) => {
-                          patchSession(s.id, (cur) => ({ ...cur, cwd }));
-                        }}
-                      />
-                    )}
-                    {index > 0 && (
-                      <div className="pointer-events-none absolute left-0 top-0 h-full w-px bg-[#3c3c3c]" />
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-            <TerminalSplitList
-              sessions={sessions}
-              labels={labels}
-              activeId={active?.id ?? ""}
-              onSelect={setActiveId}
-              onClose={closeSession}
-            />
-          </div>
-        ) : (
-          sessions.map((s) => {
-            const isActive = s.id === active?.id;
-            if (s.status === "error" && isActive) {
-              return (
-                <SessionErrorPane
-                  key={s.id}
-                  message={s.errorMessage ?? "Failed to start terminal session"}
-                  onRetry={() => {
-                    patchSession(s.id, (cur) => ({
-                      ...cur,
-                      status: "creating",
-                      errorMessage: null,
-                    }));
-                    void provisionSession(s.id);
-                  }}
-                />
-              );
-            }
-            if (!s.client) return isActive ? <SessionStartingPane key={s.id} /> : null;
-            return (
-              <div key={s.id} style={{ position: "absolute", inset: 0, display: isActive ? "block" : "none" }}>
-                <XtermView
-                  ref={(handle) => {
-                    if (handle) xtermRefs.current.set(s.id, handle);
-                    else xtermRefs.current.delete(s.id);
-                  }}
-                  client={s.client}
-                  hidden={!isActive}
-                  autoFocus={isActive && visible}
-                  projectId={projectId}
-                  onCwdChange={(cwd) => {
-                    patchSession(s.id, (cur) => ({ ...cur, cwd }));
-                  }}
-                />
+        {/*
+         * Render one container per *group* (tab). Only the active group is
+         * shown (display:flex); the rest stay mounted but display:none so
+         * background shells keep streaming and their scrollback survives a
+         * tab switch. Within a group, every session renders side-by-side —
+         * that's how a tab with >1 pane becomes a split. A single-pane group
+         * is just a normal full-width terminal.
+         */}
+        {groupIds.map((gid) => {
+          const groupSessions = sessionsInGroup(sessions, gid);
+          const isActiveGroup = gid === activeGroupId;
+          const isSplit = groupSessions.length > 1;
+          return (
+            <div
+              key={gid}
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: isActiveGroup ? "flex" : "none",
+              }}
+              className="h-full min-h-0 w-full bg-[#1e1e1e]"
+            >
+              <div className="flex min-w-0 flex-1">
+                {groupSessions.map((s, index) => {
+                  const isActive = s.id === active?.id;
+                  return (
+                    <div
+                      key={s.id}
+                      className="relative min-w-0 flex-1 border-r border-[#2d2d2d] last:border-r-0"
+                      onMouseDown={() => setActiveId(s.id)}
+                    >
+                      {s.status === "error" ? (
+                        <SessionErrorPane
+                          message={s.errorMessage ?? "Failed to start terminal session"}
+                          onRetry={() => {
+                            patchSession(s.id, (cur) => ({ ...cur, status: "creating", errorMessage: null }));
+                            void provisionSession(s.id);
+                          }}
+                        />
+                      ) : !s.client ? (
+                        <SessionStartingPane />
+                      ) : (
+                        <XtermView
+                          ref={(handle) => {
+                            if (handle) xtermRefs.current.set(s.id, handle);
+                            else xtermRefs.current.delete(s.id);
+                          }}
+                          client={s.client}
+                          hidden={!isActiveGroup}
+                          autoFocus={isActive && isActiveGroup && visible}
+                          projectId={projectId}
+                          onCwdChange={(cwd) => {
+                            patchSession(s.id, (cur) => ({ ...cur, cwd }));
+                          }}
+                        />
+                      )}
+                      {isSplit && index > 0 && (
+                        <div className="pointer-events-none absolute left-0 top-0 h-full w-px bg-[#3c3c3c]" />
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-            );
-          })
-        )}
+              {isSplit && (
+                <TerminalSplitList
+                  sessions={groupSessions}
+                  labels={labels}
+                  activeId={active?.id ?? ""}
+                  onSelect={setActiveId}
+                  onClose={closeSession}
+                />
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {confirming && (
@@ -697,12 +746,16 @@ interface PresetGroup {
 
 function SessionTabs({
   sessions,
+  groupIds,
   labels,
   activeId,
-  onSelect,
-  onClose,
+  activeGroupId,
+  onSelectGroup,
+  onCloseGroup,
   onCloseAll,
+  onKillActive,
   onAdd,
+  onSplit,
   onStop,
   onClear,
   clearDisabled,
@@ -715,12 +768,16 @@ function SessionTabs({
   onRunPreset,
 }: {
   sessions: Session[];
+  groupIds: string[];
   labels: Map<string, string>;
   activeId: string;
-  onSelect: (id: string) => void;
-  onClose: (id: string) => void;
+  activeGroupId: string;
+  onSelectGroup: (groupId: string) => void;
+  onCloseGroup: (groupId: string) => void;
   onCloseAll: () => void;
+  onKillActive: () => void;
   onAdd: () => void;
+  onSplit: () => void;
   onStop: () => void;
   onClear: () => void;
   clearDisabled: boolean;
@@ -736,21 +793,28 @@ function SessionTabs({
   return (
     <div className="relative flex shrink-0 items-center justify-between border-b border-[#2a2a2a] bg-[#1e1e1e] pr-2">
       <div role="tablist" aria-label="Terminals" className="flex min-w-0 flex-1 items-center overflow-x-auto">
-        {sessions.map((s) => {
-          const active = s.id === activeId;
-          const label = labels.get(s.id) ?? s.id;
+        {groupIds.map((gid) => {
+          const groupSessions = sessions.filter((s) => s.groupId === gid);
+          // Representative pane for the tab's icon/cwd: the active session if
+          // it lives in this group, else the group's first pane.
+          const rep =
+            groupSessions.find((s) => s.id === activeId) ?? groupSessions[0];
+          if (!rep) return null;
+          const active = gid === activeGroupId;
+          const label = labels.get(rep.id) ?? rep.id;
+          const paneCount = groupSessions.length;
           return (
             <div
-              key={s.id}
+              key={gid}
               role="tab"
               tabIndex={0}
               aria-selected={active}
               aria-label={label}
-              onClick={() => onSelect(s.id)}
+              onClick={() => onSelectGroup(gid)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
-                  onSelect(s.id);
+                  onSelectGroup(gid);
                 }
               }}
               className={`group flex shrink-0 cursor-pointer items-center gap-1 border-r border-[#2a2a2a] px-2 py-[6px] text-[11px] ${
@@ -759,18 +823,21 @@ function SessionTabs({
                   : "bg-[#252526] text-[#858585] hover:bg-[#2a2a2a] hover:text-white"
               }`}
             >
-              {s.status === "creating" ? (
+              {rep.status === "creating" ? (
                 <Loader2 size={10} className="animate-spin text-[#0078d4]" />
-              ) : s.status === "error" ? (
+              ) : rep.status === "error" ? (
                 <AlertTriangle size={10} className="text-[#f48771]" />
-              ) : s.status === "closed" ? (
+              ) : rep.status === "closed" ? (
                 <span className="inline-block h-2 w-2 rounded-full bg-[#858585]/60" />
               ) : (
                 <span className="inline-block h-2 w-2 rounded-full bg-[#4ec9b0]/60" />
               )}
               <span className="flex max-w-[150px] flex-col leading-tight">
-                <span className="truncate">{label}</span>
-                <span className="truncate text-[9px] text-[#858585]">{cwdBasename(s.cwd)}</span>
+                <span className="truncate">
+                  {label}
+                  {paneCount > 1 ? ` (${paneCount})` : ""}
+                </span>
+                <span className="truncate text-[9px] text-[#858585]">{cwdBasename(rep.cwd)}</span>
               </span>
               <button
                 type="button"
@@ -778,7 +845,7 @@ function SessionTabs({
                 aria-label={`Close ${label}`}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onClose(s.id);
+                  onCloseGroup(gid);
                 }}
                 className={`ml-1 rounded p-[1px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white ${
                   active ? "opacity-100" : "opacity-60 group-hover:opacity-100"
@@ -818,8 +885,8 @@ function SessionTabs({
         <PhasedTerminalHeader
           activeId={activeId}
           onNew={onAdd}
-          onSplit={onAdd /* Phase 9 wires real splits; for now ⌘\ behaves as 'new tab' */}
-          onKillActive={() => onClose(activeId)}
+          onSplit={onSplit}
+          onKillActive={onKillActive}
           running={running}
           onStop={onStop}
           onClear={onClear}
@@ -861,7 +928,7 @@ function SessionTabs({
             <MenuItem
               onClick={() => {
                 setMenuOpen(false);
-                onClose(activeId);
+                onCloseGroup(activeGroupId);
               }}
             >
               Close Terminal
