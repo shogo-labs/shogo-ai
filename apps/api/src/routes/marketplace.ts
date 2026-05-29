@@ -476,7 +476,21 @@ export function marketplaceRoutes() {
         avatarUrl: body.avatarUrl ?? undefined,
         websiteUrl: body.websiteUrl ?? undefined,
       })
-      await stripeConnect.createCustomAccount(profile.id, authCtx.email)
+      // Best-effort: provision the Stripe Connect account so payouts can be
+      // configured later. If this fails (network, Stripe outage, missing
+      // config), don't fail the whole request — the profile is already
+      // persisted and `/creator/payout-details` will self-heal the Connect
+      // account on first payout setup. Failing here would surface as
+      // "Failed to create creator profile" even though the profile exists,
+      // forcing the user to navigate away and back to recover.
+      try {
+        await stripeConnect.createCustomAccount(profile.id, authCtx.email)
+      } catch (stripeErr) {
+        console.error(
+          '[marketplace] createCreatorProfile stripe connect (non-fatal)',
+          stripeErr,
+        )
+      }
       return c.json({ profile })
     } catch (err) {
       const code = (err as { code?: string }).code
