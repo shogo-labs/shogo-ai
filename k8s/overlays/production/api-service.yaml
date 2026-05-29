@@ -147,6 +147,12 @@ spec:
               value: "shogo.one"
             - name: BETTER_AUTH_URL
               value: "https://studio.shogo.ai"
+            # User-browser-reachable frontend URL used to build links in
+            # transactional emails (welcome, invites, billing, member-joined).
+            # Resolved by getFrontendUrl() in apps/api/src/lib/cloud-urls.ts;
+            # set explicitly so links never fall back to localhost.
+            - name: APP_URL
+              value: "https://studio.shogo.ai"
             - name: SHOGO_PUBLIC_API_URL
               value: "https://studio.shogo.ai"
             - name: ALLOWED_ORIGINS
