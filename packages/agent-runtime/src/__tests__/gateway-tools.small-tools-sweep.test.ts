@@ -237,30 +237,13 @@ describe('gateway-tools small-tools sweep', () => {
   })
 
   // -------------------------------------------------------------------
-  // mcp_search
-  // -------------------------------------------------------------------
-  test('mcp_search: returns ranked catalog matches', async () => {
-    const r = await call(baseCtx(), 'mcp_search', { query: 'playwright' })
-    expect(r.results.length).toBeGreaterThan(0)
-    expect(r.results[0].id).toBe('playwright')
-  })
-
-  test('mcp_search: empty when no match', async () => {
-    const r = await call(baseCtx(), 'mcp_search', { query: 'nonexistent-xyz-zzz-qqq' })
-    expect(r.results).toEqual([])
-    expect(r.message).toContain('No MCP servers')
-  })
-
-  test('mcp_search: limit caps results to 10', async () => {
-    const r = await call(baseCtx(), 'mcp_search', { query: 'a', limit: 99 })
-    expect(r.results.length).toBeLessThanOrEqual(10)
-  })
-
+  // search_integrations is covered in gateway-tools.tool-install-composio.test.ts
+  // mcp_search/tool_search were merged into a single search_integrations tool.
   // -------------------------------------------------------------------
   // tool_search (no composio key → only skill path runs)
   // -------------------------------------------------------------------
   test('tool_search: returns empty results gracefully', async () => {
-    const r = await call(baseCtx(), 'tool_search', { query: 'asdfqwerty-no-match-xyz' })
+    const r = await call(baseCtx(), 'search_integrations', { query: 'asdfqwerty-no-match-xyz' })
     expect(r.results).toBeDefined()
     // Either has skills (if bundled match) or returns empty + helpful message
     expect(typeof r.message).toBe('string')
@@ -308,7 +291,7 @@ describe('gateway-tools small-tools sweep', () => {
   // tool_install — skill path branches
   // -------------------------------------------------------------------
   test('tool_install: bundled-skill-not-found error', async () => {
-    const r = await call(baseCtx(), 'tool_install', { name: 'skill:does-not-exist-at-all-xyz' })
+    const r = await call(baseCtx(), 'connect', { name: 'skill:does-not-exist-at-all-xyz' })
     expect(r.error).toContain('not found')
   })
 
@@ -316,35 +299,35 @@ describe('gateway-tools small-tools sweep', () => {
     const destDir = join(TEST_DIR, '.shogo', 'skills', 'already-here')
     mkdirSync(destDir, { recursive: true })
     writeFileSync(join(destDir, 'SKILL.md'), '# already')
-    const r = await call(baseCtx(), 'tool_install', { name: 'skill:already-here' })
+    const r = await call(baseCtx(), 'connect', { name: 'skill:already-here' })
     // Either reports already-installed OR bundled-not-found depending on bundling
     expect(typeof r.error === 'string' || r.ok === true).toBe(true)
   })
 
   test('tool_install: non-skill name without mcpClientManager errors', async () => {
-    const r = await call(baseCtx(), 'tool_install', { name: 'something-non-skill' })
+    const r = await call(baseCtx(), 'connect', { name: 'something-non-skill' })
     expect(r.error).toContain('MCP client manager not available')
   })
 
   test('tool_install: non-skill name with manager but not a Composio match returns helpful error', async () => {
     const ctx = baseCtx({ mcpClientManager: new FakeMcpClientManager() as any })
-    const r = await call(ctx, 'tool_install', { name: 'definitely-not-a-real-toolkit-xyzz' })
+    const r = await call(ctx, 'connect', { name: 'definitely-not-a-real-toolkit-xyzz' })
     // Composio is gated by env so this should fall through to the "not a managed integration" branch
-    expect(r.error).toContain('not a managed integration')
+    expect(r.error).toContain('not in the MCP catalog')
   })
 
   // -------------------------------------------------------------------
   // mcp_install
   // -------------------------------------------------------------------
   test('mcp_install: missing mcpClientManager → error', async () => {
-    const r = await call(baseCtx(), 'mcp_install', { name: 'playwright' })
+    const r = await call(baseCtx(), 'connect', { name: 'playwright' })
     expect(r.error).toContain('MCP client manager not available')
   })
 
   test('mcp_install: remote URL path installs server', async () => {
     const mgr = new FakeMcpClientManager()
     const ctx = baseCtx({ mcpClientManager: mgr as any })
-    const r = await call(ctx, 'mcp_install', { name: 'my-remote', url: 'https://x.example/mcp' })
+    const r = await call(ctx, 'connect', { name: 'my-remote', url: 'https://x.example/mcp' })
     expect(r.ok).toBe(true)
     expect(r.type).toBe('remote')
     expect(mgr.isRunning('my-remote')).toBe(true)
@@ -354,14 +337,14 @@ describe('gateway-tools small-tools sweep', () => {
     const mgr = new FakeMcpClientManager()
     await mgr.hotAddRemoteServer('rserv', { url: 'u' })
     const ctx = baseCtx({ mcpClientManager: mgr as any })
-    const r = await call(ctx, 'mcp_install', { name: 'rserv', url: 'u' })
+    const r = await call(ctx, 'connect', { name: 'rserv', url: 'u' })
     expect(r.error).toContain('already running')
     expect(r.tools).toBeDefined()
   })
 
   test('mcp_install: catalog name not in catalog → error', async () => {
     const ctx = baseCtx({ mcpClientManager: new FakeMcpClientManager() as any })
-    const r = await call(ctx, 'mcp_install', { name: 'totally-not-a-real-mcp-server-xyz' })
+    const r = await call(ctx, 'connect', { name: 'totally-not-a-real-mcp-server-xyz' })
     expect(r.error).toContain('not in the MCP catalog')
   })
 
@@ -369,7 +352,7 @@ describe('gateway-tools small-tools sweep', () => {
     const mgr = new FakeMcpClientManager()
     await mgr.hotAddServer('playwright', { command: 'npx' })
     const ctx = baseCtx({ mcpClientManager: mgr as any })
-    const r = await call(ctx, 'mcp_install', { name: 'playwright' })
+    const r = await call(ctx, 'connect', { name: 'playwright' })
     expect(r.error).toContain('already running')
   })
 
@@ -377,7 +360,7 @@ describe('gateway-tools small-tools sweep', () => {
     const mgr = new FakeMcpClientManager()
     const ctx = baseCtx({ mcpClientManager: mgr as any })
     // playwright is in the catalog and preinstalled
-    const r = await call(ctx, 'mcp_install', { name: 'playwright' })
+    const r = await call(ctx, 'connect', { name: 'playwright' })
     expect(r.ok).toBe(true)
     expect(r.toolCount).toBeGreaterThan(0)
   })
@@ -392,7 +375,7 @@ describe('gateway-tools small-tools sweep', () => {
       getServerInfo: () => [],
     } as any
     const ctx = baseCtx({ mcpClientManager: mgr })
-    const r = await call(ctx, 'mcp_install', { name: 'my-x', url: 'https://x' })
+    const r = await call(ctx, 'connect', { name: 'my-x', url: 'https://x' })
     expect(r.error).toContain('Failed to install')
     expect(r.error).toContain('remote-fail')
   })
@@ -401,14 +384,14 @@ describe('gateway-tools small-tools sweep', () => {
   // tool_uninstall
   // -------------------------------------------------------------------
   test('tool_uninstall: no manager → error', async () => {
-    const r = await call(baseCtx(), 'tool_uninstall', { name: 'x' })
+    const r = await call(baseCtx(), 'disconnect', { name: 'x' })
     expect(r.error).toContain('not available')
   })
 
   test('tool_uninstall: not running → error with installed list', async () => {
     const mgr = new FakeMcpClientManager()
     const ctx = baseCtx({ mcpClientManager: mgr as any })
-    const r = await call(ctx, 'tool_uninstall', { name: 'nope' })
+    const r = await call(ctx, 'disconnect', { name: 'nope' })
     expect(r.error).toContain('not running')
     expect(r.installed).toBeDefined()
   })
@@ -417,13 +400,13 @@ describe('gateway-tools small-tools sweep', () => {
   // mcp_uninstall
   // -------------------------------------------------------------------
   test('mcp_uninstall: no manager → error', async () => {
-    const r = await call(baseCtx(), 'mcp_uninstall', { name: 'x' })
+    const r = await call(baseCtx(), 'disconnect', { name: 'x' })
     expect(r.error).toContain('not available')
   })
 
   test('mcp_uninstall: not running → error', async () => {
     const ctx = baseCtx({ mcpClientManager: new FakeMcpClientManager() as any })
-    const r = await call(ctx, 'mcp_uninstall', { name: 'gone' })
+    const r = await call(ctx, 'disconnect', { name: 'gone' })
     expect(r.error).toContain('not running')
   })
 
@@ -431,7 +414,7 @@ describe('gateway-tools small-tools sweep', () => {
     const mgr = new FakeMcpClientManager()
     await mgr.hotAddServer('postgres', { command: 'npx' })
     const ctx = baseCtx({ mcpClientManager: mgr as any })
-    const r = await call(ctx, 'mcp_uninstall', { name: 'postgres' })
+    const r = await call(ctx, 'disconnect', { name: 'postgres' })
     expect(r.ok).toBe(true)
     expect(mgr.isRunning('postgres')).toBe(false)
   })
@@ -440,7 +423,7 @@ describe('gateway-tools small-tools sweep', () => {
     const mgr = new FakeMcpClientManager()
     await mgr.hotAddRemoteServer('rem', { url: 'u' })
     const ctx = baseCtx({ mcpClientManager: mgr as any })
-    const r = await call(ctx, 'mcp_uninstall', { name: 'rem' })
+    const r = await call(ctx, 'disconnect', { name: 'rem' })
     expect(r.ok).toBe(true)
     expect(mgr.isRunning('rem')).toBe(false)
   })
@@ -453,7 +436,7 @@ describe('gateway-tools small-tools sweep', () => {
       hotRemoveServer: async () => { throw new Error('rm-fail') },
     } as any
     const ctx = baseCtx({ mcpClientManager: mgr })
-    const r = await call(ctx, 'mcp_uninstall', { name: 'x' })
+    const r = await call(ctx, 'disconnect', { name: 'x' })
     expect(r.error).toContain('Failed to remove')
   })
 

@@ -60,7 +60,7 @@ function makeCtx(): any {
 
 async function exec(ctx: any, params: Record<string, any>) {
   const tools = createTools(ctx)
-  const t = tools.find((x: any) => x.name === 'tool_install')!
+  const t = tools.find((x: any) => x.name === 'connect')!
   const r = await t.execute('id', params)
   return r.details ?? r
 }
@@ -84,7 +84,7 @@ describe('tool_install skill: prefix', () => {
     const ctx = makeCtx()
     const r = await exec(ctx, { name: 'skill:nonexistent' })
     expect(String(r.error)).toContain('Bundled skill "nonexistent" not found')
-    expect(String(r.error)).toContain('tool_search')
+    expect(String(r.error)).toContain('search_integrations')
   })
 
   test('already-installed skill returns error with existing path', async () => {
