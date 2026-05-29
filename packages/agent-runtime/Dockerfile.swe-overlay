@@ -43,6 +43,10 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 
 COPY packages/shared-runtime ./packages/shared-runtime
 COPY packages/agent-runtime ./packages/agent-runtime
+# agent-runtime re-exports PTY protocol primitives from `@shogo/pty-core`
+# (34123b03); without the source dir, loading pty-protocol crashes with
+# `Cannot find module '@shogo/pty-core'`.
+COPY packages/pty-core ./packages/pty-core
 COPY templates/runtime-template ./templates/runtime-template
 
 # Pre-install runtime-template dependencies so workspaces get node_modules instantly
@@ -99,6 +103,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/packages/shared-runtime ./packages/shared-runtime
 COPY --from=builder /app/packages/agent-runtime ./packages/agent-runtime
+COPY --from=builder /app/packages/pty-core ./packages/pty-core
 COPY --from=builder /app/templates/runtime-template ./templates/runtime-template
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/bun.lock ./
