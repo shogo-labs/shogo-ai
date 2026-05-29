@@ -175,11 +175,18 @@ instance-id: shogo-build-$(date +%s)
 local-hostname: shogo-vm
 METADATA
 
-# Tar the runtime-template from the repo (single source of truth — no hardcoded versions)
+# Tar the runtime-template from the repo (single source of truth — no hardcoded versions).
+# Stage a copy and materialize the `@shogo-ai/sdk: workspace:*` sentinel into a concrete
+# `^X.Y.Z` (resolved from npm's latest dist-tag on this build host) first — the in-VM
+# `bun install` runs outside the monorepo, where `workspace:*` can't resolve.
 echo "Creating runtime-template tarball from repo..."
+TEMPLATE_STAGE="$(mktemp -d)"
+cp -R "${REPO_ROOT}/templates/runtime-template" "${TEMPLATE_STAGE}/runtime-template"
+bun run "${REPO_ROOT}/scripts/materialize-runtime-template.ts" "${TEMPLATE_STAGE}/runtime-template/package.json"
 tar -czf "${SEED_TMP}/runtime-template.tar.gz" \
   --exclude=node_modules --exclude=.DS_Store --exclude=bun.lock --exclude=.git \
-  -C "${REPO_ROOT}/templates" runtime-template
+  -C "${TEMPLATE_STAGE}" runtime-template
+rm -rf "${TEMPLATE_STAGE}"
 echo "  $(du -h "${SEED_TMP}/runtime-template.tar.gz" | cut -f1) runtime-template.tar.gz"
 
 SEED_ISO="${WORK_DIR}/seed.iso"

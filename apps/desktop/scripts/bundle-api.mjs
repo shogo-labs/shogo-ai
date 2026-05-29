@@ -400,6 +400,14 @@ function main() {
       filter: (src) => !src.includes('node_modules') && !src.includes('.git'),
     })
     console.log('  ✓ Copied runtime-template')
+    // The source template pins `@shogo-ai/sdk` as `workspace:*`, which a pod
+    // can't resolve. Rewrite the bundled copy to a concrete `^X.Y.Z` from
+    // npm's `latest` dist-tag so pods install cleanly + track the latest SDK.
+    const materializeScript = path.join(REPO_ROOT, 'scripts', 'materialize-runtime-template.ts')
+    execSync(`bun run "${materializeScript}" "${path.join(runtimeTemplateDest, 'package.json')}"`, {
+      stdio: 'inherit',
+    })
+    console.log('  ✓ Materialized @shogo-ai/* pins in runtime-template')
   } else {
     console.warn('  ⚠ runtime-template not found at', runtimeTemplateSource)
   }

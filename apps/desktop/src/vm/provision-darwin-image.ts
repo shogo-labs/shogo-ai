@@ -182,10 +182,24 @@ async function main() {
   if (fs.existsSync(seedISOPath)) fs.rmSync(seedISOPath, { force: true })
 
   console.log('Creating runtime-template tarball from repo...')
+  // Stage a copy and materialize the `@shogo-ai/sdk: workspace:*` sentinel into a
+  // concrete `^X.Y.Z` (resolved from npm's latest dist-tag on this host) — the in-VM
+  // `bun install` runs outside the monorepo, where `workspace:*` can't resolve.
+  const templateStage = fs.mkdtempSync(path.join(os.tmpdir(), 'shogo-rt-template-'))
+  fs.cpSync(
+    path.join(REPO_ROOT, 'templates', 'runtime-template'),
+    path.join(templateStage, 'runtime-template'),
+    { recursive: true },
+  )
+  execSync(
+    `bun run "${path.join(REPO_ROOT, 'scripts', 'materialize-runtime-template.ts')}" "${path.join(templateStage, 'runtime-template', 'package.json')}"`,
+    { stdio: 'inherit' },
+  )
   const templateTar = execSync(
-    `tar -czf - --exclude=node_modules --exclude=.DS_Store --exclude=bun.lock --exclude=.git -C "${path.join(REPO_ROOT, 'templates')}" runtime-template`,
+    `tar -czf - --exclude=node_modules --exclude=.DS_Store --exclude=bun.lock --exclude=.git -C "${templateStage}" runtime-template`,
     { maxBuffer: 10 * 1024 * 1024 },
   )
+  fs.rmSync(templateStage, { recursive: true, force: true })
   console.log(`  runtime-template.tar.gz: ${(templateTar.length / 1024).toFixed(1)} KB`)
 
   console.log('Creating seed ISO...')
