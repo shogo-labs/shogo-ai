@@ -376,3 +376,104 @@ describe('isConptyOscCapable', () => {
     expect(isConptyOscCapable()).toBe(true)
   })
 })
+
+// ─── Nushell ────────────────────────────────────────────────────────────
+//
+// Nushell support added in Round 2. We verify:
+//   1. Detection: 'nu' and 'nushell' both map to the 'nushell' kind.
+//   2. `apply()` lays down a config wrapper + integration script when
+//      SHOGO_ENABLE_SHELL_INTEGRATION=1 and rewrites argv to pass
+//      `--config <wrapper>`.
+//   3. The wrapper sources the user's `~/.config/nushell/config.nu`
+//      (if HOME is set) before our integration script.
+//   4. The integration script content starts with the expected header.
+//   5. The opt-out env var still short-circuits.
+
+describe('Nushell shell integration', () => {
+  it('detects nu and nushell basenames', () => {
+    expect(detectShellKind('/usr/local/bin/nu')).toBe('nushell')
+    expect(detectShellKind('nu')).toBe('nushell')
+    expect(detectShellKind('/opt/nushell')).toBe('nushell')
+    expect(detectShellKind('C:\\nushell\\nu.exe')).toBe('nushell')
+  })
+
+  it('apply() materialises wrapper + integration scripts and rewrites argv', () => {
+    const input: SpawnOptionsLike = {
+      shell: '/usr/local/bin/nu',
+      args: ['--interactive'],
+      cwd: '/tmp',
+      env: { HOME: '/home/u', SHOGO_ENABLE_SHELL_INTEGRATION: '1' },
+      cols: 80,
+      rows: 24,
+    }
+    const plan = applyShellIntegration(input, { tmpRoot: TMP_ROOT })
+    expect(plan.kind).toBe('nushell')
+    expect(plan.status).toBe('applied')
+    expect(plan.spawn.args[0]).toBe('--config')
+    const wrapperPath = plan.spawn.args[1]
+    expect(wrapperPath.endsWith('shogo-nu-config.nu')).toBe(true)
+    expect(plan.spawn.args.slice(2)).toEqual(['--interactive'])
+    expect(existsSync(wrapperPath)).toBe(true)
+    const wrapperContent = readFileSync(wrapperPath, 'utf8')
+    expect(wrapperContent).toContain('/home/u/.config/nushell/config.nu')
+    expect(wrapperContent).toContain('shogo-nu-integration.nu')
+    const intPath = plan.artifacts.find((p) => p.endsWith('shogo-nu-integration.nu'))!
+    expect(existsSync(intPath)).toBe(true)
+    const intContent = readFileSync(intPath, 'utf8')
+    expect(intContent).toContain('shogo shell integration — Nushell')
+    expect(intContent).toContain('__shogo_osc633')
+    plan.cleanup()
+    expect(existsSync(intPath)).toBe(false)
+  })
+
+  it('honours $XDG_CONFIG_HOME for user config path', () => {
+    const input: SpawnOptionsLike = {
+      shell: '/usr/local/bin/nushell',
+      args: [],
+      cwd: '/tmp',
+      env: {
+        HOME: '/home/u',
+        XDG_CONFIG_HOME: '/etc/cfg',
+        SHOGO_ENABLE_SHELL_INTEGRATION: '1',
+      },
+      cols: 80,
+      rows: 24,
+    }
+    const plan = applyShellIntegration(input, { tmpRoot: TMP_ROOT })
+    const wrapperContent = readFileSync(plan.spawn.args[1], 'utf8')
+    expect(wrapperContent).toContain('/etc/cfg/nushell/config.nu')
+    plan.cleanup()
+  })
+
+  it('SHOGO_DISABLE_SHELL_INTEGRATION=1 short-circuits to passthrough', () => {
+    const input: SpawnOptionsLike = {
+      shell: '/usr/local/bin/nu',
+      args: ['--interactive'],
+      cwd: '/tmp',
+      env: {
+        SHOGO_ENABLE_SHELL_INTEGRATION: '1',
+        SHOGO_DISABLE_SHELL_INTEGRATION: '1',
+      },
+      cols: 80,
+      rows: 24,
+    }
+    const plan = applyShellIntegration(input, { tmpRoot: TMP_ROOT })
+    expect(plan.status).toBe('disabled-by-env')
+    expect(plan.spawn.args).toEqual(['--interactive'])
+    expect(plan.artifacts).toEqual([])
+  })
+
+  it('default opt-in gate (no SHOGO_ENABLE_SHELL_INTEGRATION) passes through', () => {
+    const input: SpawnOptionsLike = {
+      shell: '/usr/local/bin/nu',
+      args: [],
+      cwd: '/tmp',
+      env: {},
+      cols: 80,
+      rows: 24,
+    }
+    const plan = applyShellIntegration(input, { tmpRoot: TMP_ROOT })
+    expect(plan.status).toBe('disabled-by-default')
+    expect(plan.kind).toBe('nushell')
+  })
+})

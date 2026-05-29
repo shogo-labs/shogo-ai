@@ -49,6 +49,10 @@ export interface XtermViewHandle {
   focus: () => void
   /** Force a re-fit (e.g. after the parent layout changes height). */
   refit: () => void
+  /** Open the xterm find UI when the backing renderer supports it. */
+  openFind?: () => void
+  /** Open the recent-command picker when the backing renderer supports it. */
+  openRecent?: () => void
 }
 
 export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function XtermView({
@@ -135,6 +139,8 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       clear: () => desktopHandleRef.current?.clear() ?? sessionRef.current?.clear(),
       focus: () => desktopHandleRef.current?.focus() ?? sessionRef.current?.focus(),
       refit: () => desktopHandleRef.current?.refit() ?? sessionRef.current?.fit(),
+      openFind: () => desktopHandleRef.current?.openFind?.(),
+      openRecent: () => desktopHandleRef.current?.openRecent?.(),
     }),
     [],
   )
@@ -166,12 +172,31 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         backgroundColor: '#1e1e1e',
       }}
     >
+      <style>{`
+        [data-shogo-xterm-view] .xterm-viewport {
+          overflow-y: auto !important;
+          scrollbar-gutter: stable;
+          scrollbar-width: thin;
+        }
+        [data-shogo-xterm-view] .xterm-viewport::-webkit-scrollbar {
+          width: 10px;
+        }
+        [data-shogo-xterm-view] .xterm-viewport::-webkit-scrollbar-thumb {
+          background: #424242;
+          border-radius: 999px;
+          border: 2px solid #1e1e1e;
+        }
+        [data-shogo-xterm-view] .xterm-viewport::-webkit-scrollbar-track {
+          background: #1e1e1e;
+        }
+      `}</style>
       <div
         ref={containerRef}
+        data-shogo-xterm-view="true"
         // xterm.js writes its own DOM under here; padding makes the
         // terminal look like VS Code (small breathing room from the
         // panel edges).
-        style={{ width: '100%', height: '100%', padding: '4px 6px' }}
+        style={{ width: '100%', height: '100%', padding: '4px 6px', overflow: 'hidden' }}
       />
       {state !== 'open' && state !== 'idle' && (
         <ConnectionOverlay state={state} />

@@ -17,6 +17,7 @@
  */
 
 import * as React from 'react'
+import { createPortal } from 'react-dom'
 import {
   CommandHistorySource,
   DirectoryHistorySource,
@@ -265,7 +266,7 @@ function PickerShell(props: PickerShellProps): React.ReactElement {
     else if (ev.key === 'ArrowUp') { ev.preventDefault(); props.onUp() }
     else if (ev.key === 'ArrowDown') { ev.preventDefault(); props.onDown() }
   }
-  return React.createElement(
+  const shell = React.createElement(
     'div',
     {
       role: 'dialog',
@@ -273,10 +274,10 @@ function PickerShell(props: PickerShellProps): React.ReactElement {
       'data-testid': props.testId,
       className: props.className,
       style: {
-        position: 'absolute',
+        position: 'fixed',
         top: 60, left: '50%', transform: 'translateX(-50%)',
-        width: 480, maxHeight: 360,
-        zIndex: 20,
+        width: 'min(480px, calc(100vw - 32px))', maxHeight: 'min(360px, calc(100vh - 96px))',
+        zIndex: 2147483647,
         background: 'rgba(20,20,24,0.95)',
         border: '1px solid #444',
         borderRadius: 6,
@@ -286,24 +287,51 @@ function PickerShell(props: PickerShellProps): React.ReactElement {
         color: '#eee',
       },
     },
-    React.createElement('input', {
-      'data-testid': `${props.testId}-input`,
-      autoFocus: true,
-      placeholder: 'Type to filter…',
-      value: props.query,
-      onChange: (e: React.ChangeEvent<HTMLInputElement>) => props.onQuery(e.target.value),
-      onKeyDown: onKey,
-      style: {
-        background: 'transparent', color: '#eee', border: 'none',
-        borderBottom: '1px solid #333', padding: '8px 10px', outline: 'none', font: 'inherit',
-      },
-    }),
+    React.createElement(
+      'div',
+      { style: { position: 'relative', borderBottom: '1px solid #333' } },
+      React.createElement('input', {
+        'data-testid': `${props.testId}-input`,
+        autoFocus: true,
+        placeholder: 'Type to filter…',
+        value: props.query,
+        onChange: (e: React.ChangeEvent<HTMLInputElement>) => props.onQuery(e.target.value),
+        onKeyDown: onKey,
+        style: {
+          width: '100%',
+          boxSizing: 'border-box',
+          background: 'transparent', color: '#eee', border: 'none',
+          padding: '8px 34px 8px 10px', outline: 'none', font: 'inherit',
+        },
+      }),
+      React.createElement('button', {
+        type: 'button',
+        'aria-label': 'Close recent command picker',
+        onClick: props.onClose,
+        style: {
+          position: 'absolute',
+          top: '50%',
+          right: 6,
+          transform: 'translateY(-50%)',
+          width: 24,
+          height: 24,
+          border: 'none',
+          borderRadius: 4,
+          background: 'transparent',
+          color: '#aaa',
+          cursor: 'pointer',
+          font: '18px / 22px system-ui',
+        },
+      }, '×'),
+    ),
     React.createElement(
       'div',
       { style: { overflowY: 'auto', flex: 1 } },
       props.children,
     ),
   )
+  if (typeof document === 'undefined') return shell
+  return createPortal(shell, document.body)
 }
 
 interface PickerRowProps {
