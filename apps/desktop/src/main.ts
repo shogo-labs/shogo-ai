@@ -1108,12 +1108,22 @@ function setupSessionHandlers(): void {
   ses.webRequest.onHeadersReceived((details, callback) => {
     const headers = { ...details.responseHeaders }
 
-    if (details.url.startsWith(apiOrigin)) {
+    const isApiOrigin = details.url.startsWith(apiOrigin)
+    // Direct agent-runtime ports (e.g. http://localhost:<agentPort>/agent/
+    // workspace/download/...) echo back `ALLOWED_ORIGINS[0]` (http://localhost:3000)
+    // for our `shogo://app` origin, so credentialed fetches — chat image
+    // copy/download — are CORS-blocked even though the <img> renders fine.
+    // Rewrite the CORS headers here so those fetches succeed regardless of the
+    // runtime's own CORS config.
+    const isLocalAgent =
+      !isApiOrigin && /^https?:\/\/(localhost|127\.0\.0\.1):\d+/i.test(details.url)
+
+    if (isApiOrigin || isLocalAgent) {
       headers['Access-Control-Allow-Origin'] = [appOrigin]
       headers['Access-Control-Allow-Credentials'] = ['true']
       headers['Access-Control-Allow-Methods'] = ['GET,POST,PUT,PATCH,DELETE,OPTIONS']
 
-      // Preserve the API server's `Access-Control-Allow-Headers` when present:
+      // Preserve the server's `Access-Control-Allow-Headers` when present:
       // Hono's `cors()` middleware reflects the request's
       // `Access-Control-Request-Headers`, so the API already echoes back any
       // custom header the renderer sends (`X-Chat-Session-Id`, `X-Session-Id`,
@@ -1127,7 +1137,9 @@ function setupSessionHandlers(): void {
       if (!hasAllowHeaders) {
         headers['Access-Control-Allow-Headers'] = ['Content-Type,Authorization,X-Requested-With']
       }
+    }
 
+    if (isApiOrigin) {
       const setCookies = headers['Set-Cookie'] || headers['set-cookie']
       if (setCookies) {
         const rewritten = setCookies.map((cookie: string) => {
