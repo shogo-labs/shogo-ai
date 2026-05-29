@@ -1726,7 +1726,7 @@ jobs:
             --env="DATABASE_URL=${DB_URL}" \
             --env="SKIP_MIGRATIONS=false" \
             --command -- sh -c "cd /app && bunx prisma migrate deploy" \
-            --timeout=120s
+            --timeout=600s
 
       - name: Verify configured node pool matches running nodes
         run: |
@@ -2191,7 +2191,7 @@ jobs:
             --env="DATABASE_URL=${DB_URL}" \
             --env="SKIP_MIGRATIONS=false" \
             --command -- sh -c "cd /app && bunx prisma migrate deploy" \
-            --timeout=120s
+            --timeout=600s
 
       - name: Verify configured node pool matches running nodes
         run: |
