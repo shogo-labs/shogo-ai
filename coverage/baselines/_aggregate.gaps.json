@@ -3,96 +3,88 @@
   "note": "Honest v2 aggregate from per-file-isolated test runs (apps/api + agent-runtime + shared-runtime use run-tests-isolated.ts to merge ~141 per-test-file lcovs each), comment-stripped via coverage-strip-comments.ts. Strict per-package src/ scoping via scripts/sum-lcov.ts --include. Aggregate 87.81% lines. Frontend badge UNTOUCHED.",
   "aggregate": {
     "lines": {
-      "hit": 75982,
-      "total": 91348,
-      "pct": 83.18
+      "hit": 76995,
+      "total": 92201,
+      "pct": 83.51
     },
     "functions": {
-      "hit": 5905,
-      "total": 7393,
-      "pct": 79.87
+      "hit": 6036,
+      "total": 7498,
+      "pct": 80.5
     }
   },
   "perPackage": [
     {
       "package": "apps/api",
-      "linesHit": 36751,
-      "linesFound": 44771,
-      "linePct": 82.09,
-      "funcsHit": 2783,
-      "funcsFound": 3418,
-      "funcPct": 81.42,
-      "source": "fresh isolated test:coverage 2026-05-28T17:42"
+      "linesHit": 37560,
+      "linesFound": 44867,
+      "linePct": 83.71,
+      "funcsHit": 2836,
+      "funcsFound": 3454,
+      "funcPct": 82.11
     },
     {
       "package": "packages/agent-runtime",
-      "linesHit": 22312,
-      "linesFound": 28412,
-      "linePct": 78.53,
-      "funcsHit": 1542,
-      "funcsFound": 2214,
-      "funcPct": 69.65,
-      "source": "fresh isolated test:coverage 2026-05-28T17:46"
+      "linesHit": 23049,
+      "linesFound": 28696,
+      "linePct": 80.32,
+      "funcsHit": 1596,
+      "funcsFound": 2243,
+      "funcPct": 71.15
     },
     {
       "package": "packages/sdk",
-      "linesHit": 6469,
-      "linesFound": 7717,
-      "linePct": 83.83,
-      "funcsHit": 598,
-      "funcsFound": 683,
-      "funcPct": 87.55,
-      "source": "fresh bun test --coverage 2026-05-28T17:32"
+      "linesHit": 6615,
+      "linesFound": 7992,
+      "linePct": 82.77,
+      "funcsHit": 627,
+      "funcsFound": 706,
+      "funcPct": 88.81
     },
     {
       "package": "packages/shared-runtime",
-      "linesHit": 3658,
-      "linesFound": 4188,
-      "linePct": 87.34,
-      "funcsHit": 377,
-      "funcsFound": 439,
-      "funcPct": 85.88,
-      "source": "fresh bun test --coverage 2026-05-28T17:38"
+      "linesHit": 3815,
+      "linesFound": 4283,
+      "linePct": 89.07,
+      "funcsHit": 389,
+      "funcsFound": 444,
+      "funcPct": 87.61
     },
     {
       "package": "packages/model-catalog",
-      "linesHit": 331,
-      "linesFound": 378,
-      "linePct": 87.57,
-      "funcsHit": 13,
-      "funcsFound": 21,
-      "funcPct": 61.9,
-      "source": "fresh bun test --coverage 2026-05-28T17:33"
+      "linesHit": 345,
+      "linesFound": 404,
+      "linePct": 85.4,
+      "funcsHit": 14,
+      "funcsFound": 25,
+      "funcPct": 56.0
     },
     {
       "package": "packages/voice",
       "linesHit": 1679,
       "linesFound": 1679,
-      "linePct": 100,
+      "linePct": 100.0,
       "funcsHit": 168,
       "funcsFound": 172,
-      "funcPct": 97.67,
-      "source": "fresh bun test --coverage 2026-05-28T17:33"
+      "funcPct": 97.67
     },
     {
       "package": "packages/email",
       "linesHit": 696,
       "linesFound": 696,
-      "linePct": 100,
+      "linePct": 100.0,
       "funcsHit": 63,
       "funcsFound": 64,
-      "funcPct": 98.44,
-      "source": "fresh bun test --coverage 2026-05-28T17:33"
+      "funcPct": 98.44
     },
     {
       "package": "packages/agent",
-      "linesHit": 449,
-      "linesFound": 449,
-      "linePct": 100,
-      "funcsHit": 29,
-      "funcsFound": 29,
-      "funcPct": 100,
-      "source": "fresh bun test --coverage 2026-05-28T17:33"
+      "linesHit": 472,
+      "linesFound": 475,
+      "linePct": 99.37,
+      "funcsHit": 32,
+      "funcsFound": 33,
+      "funcPct": 96.97
     },
     {
       "package": "packages/core",
@@ -101,8 +93,7 @@
       "linePct": 98.47,
       "funcsHit": 47,
       "funcsFound": 51,
-      "funcPct": 92.16,
-      "source": "fresh bun test --coverage 2026-05-28T17:33"
+      "funcPct": 92.16
     },
     {
       "package": "packages/cli",
@@ -111,18 +102,16 @@
       "linePct": 84.54,
       "funcsHit": 41,
       "funcsFound": 49,
-      "funcPct": 83.67,
-      "source": "fresh bun test --coverage 2026-05-28T17:33"
+      "funcPct": 83.67
     },
     {
       "package": "packages/shogo-worker",
       "linesHit": 1863,
-      "linesFound": 2107,
-      "linePct": 88.42,
+      "linesFound": 2108,
+      "linePct": 88.38,
       "funcsHit": 223,
-      "funcsFound": 256,
-      "funcPct": 87.11,
-      "source": "fresh bun test --coverage 2026-05-28T17:33"
+      "funcsFound": 257,
+      "funcPct": 86.77
     }
   ],
   "topGaps": [
@@ -1470,6 +1459,100 @@
         }
       ],
       "note": "Targets the three biggest uncov clusters (startMetroTunnel, runViteOneShotBuild, getActiveRoutes) plus mid-tier helpers. Hoisted mock.module('node:child_process') gives controllable EventEmitter-shaped fake ChildProcess; the test then emits stdout/stderr/exit/error events to drive each branch."
+    },
+    {
+      "sha": "70fd8ea4",
+      "date": "2026-05-29",
+      "wave": "README sync",
+      "message": "docs(coverage): bump README backend \u2192 83.51% (expanded v4 aggregate, fresh measurement)",
+      "aggregateBefore": {
+        "lines": {
+          "hit": 75982,
+          "total": 91348,
+          "pct": 83.18
+        },
+        "functions": {
+          "hit": 5905,
+          "total": 7393,
+          "pct": 79.87
+        }
+      },
+      "aggregateAfter": {
+        "lines": {
+          "hit": 76995,
+          "total": 92201,
+          "pct": 83.51
+        },
+        "functions": {
+          "hit": 6036,
+          "total": 7498,
+          "pct": 80.5
+        }
+      },
+      "commitsApplied": [
+        "e1912204",
+        "23176a6e",
+        "ebca4531",
+        "26373df6",
+        "f6c9890b",
+        "acf8f836",
+        "3bff58c5",
+        "b0fb2edd",
+        "0d20f765",
+        "c3759319",
+        "23e95f47",
+        "4f791e55",
+        "5a66ce16",
+        "095e5676",
+        "512bf94e",
+        "34e0f1ad",
+        "b6a1b49c",
+        "4c62b6a7",
+        "d98aa68d",
+        "7a5184bf",
+        "2f7b37ce",
+        "2d4b4492",
+        "82afb0d9",
+        "0310fe81",
+        "ae0c2afd",
+        "417a93cf",
+        "3ae647cd",
+        "fbdf124e",
+        "b70cf42d",
+        "d2f45e7d",
+        "19ecd689",
+        "81258b09",
+        "a732578a",
+        "fd5411e3",
+        "81700955",
+        "ab262aaa",
+        "801e0b73",
+        "81730a4e",
+        "f701c381",
+        "7e00ad92",
+        "344fbae0",
+        "f4919535",
+        "86f67f04",
+        "153556ce",
+        "75cb2611",
+        "91be0b3b",
+        "f09e4ef0",
+        "9a69f2fc",
+        "bf6e7023",
+        "e9b880fc",
+        "a856defe",
+        "f95593a1",
+        "50d4525d",
+        "3cc2bf93",
+        "f3aa50ec",
+        "12e38aac",
+        "62503b4a",
+        "e2e9f785",
+        "a221f974",
+        "db061507",
+        "34123b03"
+      ],
+      "note": "Full fresh re-measurement of all 11 backend packages (v4 expanded aggregate). Methodology: per-package `bun test --coverage` + scripts/coverage-strip-comments.ts post-processing, sum LH/LF/FNH/FNF across packages (all-files-in-lcov, matches prior Sync methodology for continuity). Delta from prior Sync (83.18%): +1013 lines hit, +853 lines found (net +0.33pp), +131 funcs hit, +105 funcs found (net +0.63pp). Driver: 4x stabilization commits (agent-runtime tool renames + shogo-worker cross-file mock fix + runner serial-retry + web-search httpbin stub) + Wave 1 Session 4 preview-manager.ts (+213 lines). Per-package noteworthy moves: packages/agent-runtime +737 lines hit / +284 lines found (preview-manager.ts 68.60% \u2192 82.44%), apps/api +809 lines hit / +96 lines found, packages/shared-runtime +157 lines hit / +95 lines found, packages/sdk +146 lines hit / +275 lines found (hooks-coverage tests now contributing). Frontend badge NOT touched (out of scope for this branch)."
     }
   ],
   "frontend": {
