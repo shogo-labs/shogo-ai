@@ -318,6 +318,86 @@ export function invalidateCloudInstance(id: string): void {
   instanceCache.delete(id)
 }
 
+// ─── Visible-models passthrough ─────────────────────────────────────────────
+
+const VISIBLE_MODELS_TTL_MS = 30 * 60_000
+
+export interface CloudVisibleModels {
+  catalogIds: string[] | null
+  openrouterModels: unknown[]
+  /** Catalog models already resolved by the cloud against its own catalog,
+   *  so the local picker can render entries this build doesn't ship. */
+  catalogModels?: unknown[]
+}
+
+let cachedVisibleModels: { value: CloudVisibleModels; expiresAt: number } | null = null
+
+/** Test-only: drop the visible-models cache. */
+export function _resetVisibleModelsCache(): void {
+  cachedVisibleModels = null
+}
+
+/**
+ * Pull the connected cloud's resolved visible-models config so a
+ * cloud-connected desktop reflects what a cloud super-admin curated under
+ * "Available Models". Returns `null` when cloud sourcing does not apply
+ * (not local mode, no credential, or BYOK / local-LLM AI mode) or when the
+ * upstream is unreachable — the caller should then fall back to the local
+ * DB read.
+ *
+ * The gate mirrors `isShogoCloudForwarding()` in routes/ai-proxy.ts: only
+ * source the catalog from cloud when AI traffic is actually routed there.
+ *
+ * Successful reads are cached for 30 minutes; failures are not cached, so a
+ * transient outage doesn't pin an empty picker for the full TTL.
+ */
+export async function fetchCloudVisibleModels(): Promise<CloudVisibleModels | null> {
+  if (!isLocalMode()) return null
+  const aiMode = process.env.AI_MODE
+  if (aiMode === 'api-keys' || aiMode === 'local-llm') return null
+  const key = await getUpstreamCredential()
+  if (!key) return null
+
+  const now = Date.now()
+  if (cachedVisibleModels && cachedVisibleModels.expiresAt > now) {
+    return cachedVisibleModels.value
+  }
+
+  let value: CloudVisibleModels | null = null
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 4_000)
+    try {
+      const resp = await fetchUpstream('/api/platform/visible-models', {
+        method: 'GET',
+        headers: { accept: 'application/json' },
+        signal: controller.signal,
+      })
+      if (resp.ok) {
+        const body = (await resp.json().catch(() => null)) as Record<string, unknown> | null
+        if (body && typeof body === 'object') {
+          value = {
+            catalogIds: Array.isArray(body.catalogIds)
+              ? (body.catalogIds as unknown[]).filter((x): x is string => typeof x === 'string')
+              : null,
+            openrouterModels: Array.isArray(body.openrouterModels) ? (body.openrouterModels as unknown[]) : [],
+            catalogModels: Array.isArray(body.catalogModels) ? (body.catalogModels as unknown[]) : undefined,
+          }
+        }
+      }
+    } finally {
+      clearTimeout(timer)
+    }
+  } catch {
+    value = null
+  }
+
+  if (value) {
+    cachedVisibleModels = { value, expiresAt: now + VISIBLE_MODELS_TTL_MS }
+  }
+  return value
+}
+
 export interface ForwardOptions {
   /** Override the upstream path. Defaults to `c.req.path`. */
   path?: string

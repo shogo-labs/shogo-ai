@@ -213,6 +213,20 @@ export interface VisibleOpenRouterModel {
   }
 }
 
+/** A catalog model entry fully resolved by the serving API, carrying the
+ *  metadata a picker needs to render it without a local catalog lookup.
+ *
+ *  This is what lets a cloud-connected desktop render models its bundled
+ *  `MODEL_CATALOG` may not know about: the connected cloud resolves its own
+ *  catalog and ships the display fields over the wire. */
+export interface VisibleCatalogModel {
+  id: string
+  provider: string
+  displayName: string
+  shortDisplayName?: string
+  tier: 'economy' | 'standard' | 'premium'
+}
+
 /** Admin-curated allowlist of models that surface in the user picker.
  *
  * - `catalogIds === null` means "show all current-generation catalog models"
@@ -225,12 +239,19 @@ export interface VisibleModelsConfig {
   openrouterModels: VisibleOpenRouterModel[]
 }
 
-/** Resolved view returned by `GET /api/platform/visible-models`. Same wire
- * shape as `VisibleModelsConfig`; named distinctly because consumers use
- * this to render pickers, not to render an admin-editor. */
+/** Resolved view returned by `GET /api/platform/visible-models`.
+ *
+ * Extends the stored {@link VisibleModelsConfig} with `catalogModels`: the
+ * allowlist resolved against the serving API's own catalog. Pickers should
+ * prefer `catalogModels` when present (it reflects the connected cloud's
+ * catalog) and fall back to filtering the bundled catalog by `catalogIds`
+ * for older payloads that omit it. */
 export interface ResolvedVisibleModels {
   catalogIds: string[] | null
   openrouterModels: VisibleOpenRouterModel[]
+  /** Resolved catalog models for the allowlist. Optional for back-compat
+   *  with API servers that predate this field. */
+  catalogModels?: VisibleCatalogModel[]
 }
 
 export interface InstanceInfo {
