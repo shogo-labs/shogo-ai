@@ -6310,7 +6310,7 @@ app.post('/api/webhooks/stripe', async (c) => {
               const ownerEmail = workspace?.members?.[0]?.user?.email
               if (ownerEmail) {
                 const planLabel = planId.charAt(0).toUpperCase() + planId.slice(1)
-                const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
+                const baseUrl = getFrontendUrl()
                 const includedUsd = (await import('./config/usage-plans')).getMonthlyIncludedForPlan(planId, checkoutSeats)
                 sendPlanUpgradedEmail({
                   to: ownerEmail,
@@ -6422,7 +6422,7 @@ app.post('/api/webhooks/stripe', async (c) => {
               const ownerEmail = workspace?.members?.[0]?.user?.email
               if (ownerEmail) {
                 const planLabel = (sub.metadata?.planId || 'Pro').charAt(0).toUpperCase() + (sub.metadata?.planId || 'pro').slice(1)
-                const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
+                const baseUrl = getFrontendUrl()
                 sendPaymentFailedEmail({
                   to: ownerEmail,
                   workspaceName: workspace!.name,
@@ -6838,7 +6838,7 @@ app.post('/api/invite-links', async (c) => {
 
   const inviteeEmail = body.email as string | undefined
   if (inviteeEmail) {
-    const baseUrl = process.env.BETTER_AUTH_URL || process.env.APP_URL || ''
+    const baseUrl = getFrontendUrl()
     const acceptUrl = `${baseUrl}/invite/${link.token}`
     const [inviter, workspace] = await Promise.all([
       prisma.user.findUnique({ where: { id: userId }, select: { name: true } }),
@@ -6993,7 +6993,7 @@ app.post('/api/invite-links/:token/accept', async (c) => {
   }
 
   // Send notification emails (non-blocking — errors are logged internally)
-  const baseUrl = process.env.BETTER_AUTH_URL || process.env.APP_URL || ''
+  const baseUrl = getFrontendUrl()
   const resolvedWorkspaceId = memberData.workspaceId
   const [acceptingUser, workspace, project] = await Promise.all([
     prisma.user.findUnique({ where: { id: userId }, select: { name: true, email: true } }),
