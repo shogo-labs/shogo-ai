@@ -767,3 +767,45 @@ jobs:
           files: artifacts/**/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Make desktop downloads the headline of the release notes
+        # Four workflows publish to this tag (macos + windows desktop,
+        # publish-agent-runtime, publish-shogo-worker), so a desktop user lands
+        # on a release listing ~26 assets and can't tell which to download.
+        # This job is gated on boot-smoke-x64 — reliably the LAST publisher — so
+        # we deterministically (re)write the title + body here with the
+        # installers up top and everything else (CLI / runtime / auto-update
+        # feeds) tucked into a collapsed section. `gh release edit` overwrites
+        # the body regardless of which workflow created the release first.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'EOF'
+          ## Download Shogo Desktop
+
+          ### macOS
+          - **Apple Silicon (M1–M4):** [Shogo-arm64.dmg](${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/Shogo-arm64.dmg)
+          - **Intel:** [Shogo-x64.dmg](${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/Shogo-x64.dmg)
+
+          ### Windows
+          - **Installer:** [Shogo-Setup.exe](${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/Shogo-Setup.exe)
+
+          > Not sure which Mac you have? Apple menu → **About This Mac**. "Apple M…" is Apple Silicon; "Intel" is Intel.
+
+          <details>
+          <summary>Other files in this release — you don't need these to install the desktop app</summary>
+
+          These ride the same tag for the CLI, self-hosted workers, and the in-app auto-updater:
+
+          - `shogo-agent-runtime-*.tar.gz` — fetched by `shogo runtime install`
+          - `shogo-*.tar.gz` — Shogo CLI / worker binaries
+          - `*.zip`, `*.nupkg`, `RELEASES` — macOS & Windows auto-update feeds (used by the app, not for manual download)
+          - `*.sha256` — checksums for the tarballs above
+          </details>
+          EOF
+          gh release edit "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "Shogo Desktop ${{ github.ref_name }}" \
+            --notes-file release-notes.md
+          echo "Release notes updated for ${{ github.ref_name }}."
