@@ -144,6 +144,14 @@ jobs:
       - name: Detect changed paths and build matrix
         id: set-matrix
         env:
+          # gh api (below) needs an authenticated token to look up the last
+          # successful build SHA. Without it the call silently fails and we
+          # fall back to a previous-commit diff — which DROPS changes that
+          # were built in a run that later failed before deploying (e.g. a
+          # web build that succeeded but whose run failed at the runtime
+          # build). Authenticating makes the baseline the last *deployed*
+          # commit so those changes get picked up on the next run.
+          GH_TOKEN: ${{ github.token }}
           BEFORE_SHA: ${{ github.event.before }}
           IS_TAG_PUSH: ${{ github.ref_type == 'tag' }}
           CURRENT_TAG: ${{ github.ref_name }}
