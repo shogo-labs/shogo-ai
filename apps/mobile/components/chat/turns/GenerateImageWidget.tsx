@@ -9,11 +9,13 @@
  */
 
 import { useState, useCallback, useMemo } from "react"
-import { View, Text, Image, Pressable, Linking, ActivityIndicator } from "react-native"
+import { View, Text, Image, Pressable, ActivityIndicator, Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { ImageIcon, Pencil } from "lucide-react-native"
 import type { ToolCallData } from "../tools/types"
 import { useChatContextSafe } from "../ChatContext"
+import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
+import { downloadImage, isShogoDesktop } from "../chatImageActions"
 
 export interface GenerateImageWidgetProps {
   tool: ToolCallData
@@ -46,6 +48,8 @@ export function GenerateImageWidget({ tool }: GenerateImageWidgetProps) {
   const chatContext = useChatContextSafe()
   const [hasError, setHasError] = useState(false)
   const [isLoaded, setIsLoaded] = useState(false)
+  const [showPreview, setShowPreview] = useState(false)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
 
   const result = useMemo(() => parseResult(tool.result), [tool.result])
 
@@ -55,7 +59,24 @@ export function GenerateImageWidget({ tool }: GenerateImageWidgetProps) {
   }, [result?.path, chatContext?.agentUrl])
 
   const handlePress = useCallback(() => {
-    if (imageUrl) Linking.openURL(imageUrl)
+    if (imageUrl) setShowPreview(true)
+  }, [imageUrl])
+
+  const handleContextMenu = useCallback((event: any) => {
+    // The custom right-click menu is desktop-only; on web we let the browser
+    // show its native context menu.
+    if (!isShogoDesktop() || !imageUrl) return
+    event.preventDefault?.()
+    event.stopPropagation?.()
+    const nativeEvent = event.nativeEvent ?? event
+    setContextMenu({
+      x: nativeEvent.clientX ?? 0,
+      y: nativeEvent.clientY ?? 0,
+    })
+  }, [imageUrl])
+
+  const handleDownloadImage = useCallback(() => {
+    if (imageUrl) void downloadImage(imageUrl, "generated-image", "image/png")
   }, [imageUrl])
 
   if (tool.state === "streaming") {
@@ -94,7 +115,17 @@ export function GenerateImageWidget({ tool }: GenerateImageWidgetProps) {
 
   return (
     <View className="mx-3 my-1.5">
-      <Pressable onPress={handlePress} className="rounded-lg overflow-hidden border border-border">
+      <Pressable
+        onPress={handlePress}
+        {...(Platform.OS === "web" ? { onContextMenu: handleContextMenu } as any : {})}
+        className={cn(
+          "rounded-lg overflow-hidden border border-border",
+          Platform.OS === "web" && "cursor-zoom-in",
+        )}
+        accessibilityRole="button"
+        accessibilityLabel="Open generated image preview"
+        accessibilityHint="Opens a larger preview."
+      >
         {!isLoaded && !hasError && (
           <View className="w-[280px] bg-muted/50 items-center justify-center" style={{ aspectRatio: 1 }}>
             <ActivityIndicator size="small" />
@@ -139,6 +170,22 @@ export function GenerateImageWidget({ tool }: GenerateImageWidgetProps) {
           </Text>
         )}
       </View>
+      <ImagePreviewModal
+        visible={showPreview}
+        onClose={() => setShowPreview(false)}
+        url={imageUrl}
+        mediaType="image/png"
+        title="Generated image"
+        alt={`Generated image: ${result.revised_prompt || "AI generated"}`}
+      />
+      {contextMenu ? (
+        <ChatImageContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onDownload={handleDownloadImage}
+          onClose={() => setContextMenu(null)}
+        />
+      ) : null}
     </View>
   )
 }
