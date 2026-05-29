@@ -266,6 +266,7 @@ export async function startLocalServer(): Promise<void> {
   const serverEntry = IS_DEV
     ? path.join(projectRoot, 'apps', 'api', 'src', 'entry.ts')
     : path.join(bundleDir, 'api.js')
+  const serverArgs = IS_DEV ? ['--conditions=development', serverEntry] : [serverEntry]
 
   // Kill leftover processes from a previous session
   cleanupStaleProcesses()
@@ -372,12 +373,12 @@ export async function startLocalServer(): Promise<void> {
     )
   }
 
-  console.log(`[Desktop] Starting local API server: ${bunPath} ${serverEntry}`)
+  console.log(`[Desktop] Starting local API server: ${bunPath} ${serverArgs.join(' ')}`)
   console.log(`[Desktop] Database: ${getDbPath()}`)
   console.log(`[Desktop] Workspaces: ${getWorkspacesDir()}`)
   console.log(`[Desktop] Ports: API=${apiPort}, RuntimeBase=${RUNTIME_BASE_PORT}`)
 
-  apiProcess = spawn(bunPath, [serverEntry], {
+  apiProcess = spawn(bunPath, serverArgs, {
     cwd: getProjectRoot(),
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
