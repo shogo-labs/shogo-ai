@@ -4,6 +4,13 @@ import { useResizable, VerticalSplit } from "./Splitter";
 import { ActivityBar } from "./ActivityBar";
 import { FileTree, type FileTreeHandlers } from "./FileTree";
 import { StatusBar } from "./StatusBar";
+import { useGitStatus } from "./git/useGitStatus";
+import { GitStatusProvider } from "./git/GitStatusContext";
+import { SourceControlViewlet } from "./scm/SourceControlViewlet";
+import { attachGitDecorations, maybeAutoStageIfConflictResolved } from "./git/editorIntegration";
+import { MergeEditorModal } from "./git/MergeEditorModal";
+import { getDesktopGitBridge } from "./git/bridge";
+import { getDesktopFsBridge } from "./workspace/desktopFs";
 import { EditorGroupView } from "./EditorGroup";
 import { isImagePath } from "./ImagePreview";
 import {
@@ -270,6 +277,11 @@ export function Workbench({
   groupsRef.current = groups;
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevActiveIdForAutosaveRef = useRef<string | null>(null);
+  // Ref so `persistOpenFile` can reach the latest git root without
+  // re-creating itself every time the root changes.
+  const gitWorkspaceRootRef = useRef<string | null>(null);
+  // G4.5 — open relPath in the 3-way merge editor when non-null.
+  const [mergePath, setMergePath] = useState<string | null>(null);
   const fsaSupported = useMemo(() => isFsaSupported(), []);
 
   const activeGroup = groups[activeGroupIdx] ?? groups[0];
@@ -959,6 +971,13 @@ export function Workbench({
           })),
         );
         if (applied) setConflicts((cs) => cs.filter((c) => c.fileId !== id));
+        // G4.5 auto-stage: if this file was a merge conflict and the user
+        // saved a buffer with no conflict markers left, treat it as
+        // resolved and `git add` it. No-op on web/native (bridge null).
+        const root = gitWorkspaceRootRef.current;
+        if (root) {
+          void maybeAutoStageIfConflictResolved(root, f.path, content);
+        }
         if (!silent) showToast(`Saved ${f.name}`);
         return true;
       } catch (err) {
@@ -1328,7 +1347,82 @@ export function Workbench({
     gotoLine, openLocalFolder, sidebarOpen, requestNewTerminal,
   ]);
 
+  // --- G1 git wiring ---------------------------------------------------
+  // Resolve the absolute workspace root via the desktop fs bridge (managed
+  // projects only for G1; external folder-bound projects light up once G2
+  // adds an explicit resolver). On non-desktop platforms the bridge is
+  // null and `workspaceRoot` stays null, so `useGitStatus` short-circuits
+  // and `GitStatusProvider` publishes a noop value — no decorations, no
+  // status-bar branch segment, no IPC churn.
+  const [gitWorkspaceRoot, setGitWorkspaceRootState] = useState<string | null>(null);
+  const setGitWorkspaceRoot = useCallback((v: string | null) => {
+    gitWorkspaceRootRef.current = v;
+    setGitWorkspaceRootState(v);
+  }, []);
+  useEffect(() => {
+    if (!projectId) {
+      setGitWorkspaceRoot(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      // G2: try the git registry FIRST (covers external folder-bound
+      // projects via setProjectRoot done in useOpenLocalFolder), fall
+      // back to fs.resolveWorkspace (managed projects).
+      const gitBridge = getDesktopGitBridge();
+      if (gitBridge) {
+        const r = await gitBridge.resolveProjectRoot(projectId);
+        if (cancelled) return;
+        if (r.ok && r.root) {
+          setGitWorkspaceRoot(r.root);
+          return;
+        }
+      }
+      const fsBridge = getDesktopFsBridge();
+      if (!fsBridge) {
+        setGitWorkspaceRoot(null);
+        return;
+      }
+      const r = await fsBridge.resolveWorkspace(projectId);
+      if (cancelled) return;
+      setGitWorkspaceRoot(r.ok && r.root ? r.root : null);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+  const gitSnapshot = useGitStatus(gitWorkspaceRoot);
+
+  // ─── G4: git gutter markers + inline blame + conflict CodeLens ─────
+  // Attach Monaco decorations + a code lens provider for the active
+  // editor whenever Monaco is ready, a git workspace root is known, and
+  // the active file or its git snapshot updates. The integration is a
+  // no-op on web/native because `getDesktopGitBridge()` returns null
+  // inside `attachGitDecorations`.
+  useEffect(() => {
+    if (!gitWorkspaceRoot) return;
+    if (!active?.path) return;
+    const ed = editorRefs.current[activeGroup?.id ?? ""];
+    const monaco = monacoNsRef.current;
+    if (!ed || !monaco) return;
+    const disposer = attachGitDecorations({
+      monaco,
+      ed,
+      workspaceRoot: gitWorkspaceRoot,
+      relPath: active.path,
+      refreshTick: gitSnapshot?.refreshedAt ?? 0,
+    });
+    return () => disposer.dispose();
+  }, [
+    monacoReadyTick,
+    gitWorkspaceRoot,
+    active?.path,
+    activeGroup?.id,
+    gitSnapshot?.refreshedAt,
+  ]);
+
   return (
+    <GitStatusProvider snapshot={gitSnapshot}>
     <div
       className="shogo-ide flex h-full w-full min-w-0 min-h-0 flex-col overflow-hidden"
       data-theme={themeMode}
@@ -1384,15 +1478,19 @@ export function Workbench({
                   />
                 )}
                 {activity === "git" && (
-                  projectId ? (
-                    <CheckpointsPanel visible projectId={projectId} />
-                  ) : (
-                    <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-[color:var(--ide-muted)]">
-                      <div className="text-[13px]">
-                        Source control requires a project context.
-                      </div>
-                    </div>
-                  )
+                  <SourceControlViewlet
+                    workspaceRoot={gitWorkspaceRoot}
+                    onOpenDiff={(path, group) => {
+                      // G4.5: clicking a Merge row opens the 3-way merge
+                      // editor. Other groups still fall through to the
+                      // (forthcoming) Monaco diff view — tracked as G2.5
+                      // polish.
+                      if (group === "merge" && gitWorkspaceRoot) {
+                        setMergePath(path);
+                      }
+                    }}
+                    fallback={projectId ? <CheckpointsPanel visible projectId={projectId} /> : undefined}
+                  />
                 )}
                 {activity === "settings" && (
                   <SettingsPane settings={settings} onChange={setSettings} />
@@ -1508,6 +1606,8 @@ export function Workbench({
         line={cursor.line}
         col={cursor.col}
         saved={!active?.dirty}
+        git={gitSnapshot}
+        workspaceRoot={gitWorkspaceRoot}
       />
 
       {palette === "command" && (
@@ -1521,7 +1621,35 @@ export function Workbench({
       {palette === "file" && (
         <QuickOpen fileItems={fileItems} onClose={() => setPalette(null)} onLine={gotoLine} />
       )}
+      {mergePath && gitWorkspaceRoot && monacoNsRef.current && (
+        <MergeEditorModal
+          monaco={monacoNsRef.current}
+          workspaceRoot={gitWorkspaceRoot}
+          relPath={mergePath}
+          onClose={() => setMergePath(null)}
+          onSave={async (content) => {
+            // Reuse the existing single-file save path so the dirty bit,
+            // savedContent, and toast all behave normally.
+            const f = groupsRef.current
+              .flatMap((g) => g.files)
+              .find((x) => x.path === mergePath);
+            if (!f) return;
+            const svc = svcOf(f.rootId);
+            if (!svc) return;
+            await svc.writeFile(f.path, content);
+            setGroups((prev) =>
+              prev.map((g) => ({
+                ...g,
+                files: g.files.map((x) =>
+                  x.id === f.id ? { ...x, content, savedContent: content, dirty: false } : x,
+                ),
+              })),
+            );
+          }}
+        />
+      )}
     </div>
+    </GitStatusProvider>
   );
 }
 

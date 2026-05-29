@@ -13,6 +13,8 @@ import {
 } from "lucide-react-native";
 import type { TreeNode } from "./types";
 import { ContextMenu, type MenuEntry } from "./ContextMenu";
+import { useGitStatusContext } from "./git/GitStatusContext";
+import type { GitShortCode } from "./git/bridge";
 
 export interface FileTreeHandlers {
   onOpen: (node: TreeNode) => void;
@@ -131,6 +133,7 @@ export function FileTree({
   const [menu, setMenu] = useState<{ x: number; y: number; node: TreeNode | null } | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const git = useGitStatusContext();
 
   const rows = useMemo(() => {
     const base = flatten(tree, expanded, loadingLazy, lazyErrors);
@@ -791,6 +794,7 @@ export function FileTree({
               </>
             )}
             <span className="truncate min-w-0 flex-1" title={node.path}>{node.name}</span>
+            <GitStatusBadge code={node.kind === "dir" ? (git.folderDirty(node.path) ? "·" : null) : git.getStatus(node.path)} isFolderDirty={node.kind === "dir" && git.folderDirty(node.path)} />
           </div>
         );
       })}
@@ -883,4 +887,70 @@ function findNode(tree: TreeNode[], path: string): TreeNode | null {
     }
   }
   return null;
+}
+
+/**
+ * Single-letter status badge rendered at the right edge of every file row.
+ * Color matches VS Code Dark+ conventions: M orange, A/U green, D/conflict red.
+ * Renders nothing for clean files (returns null to skip the DOM node entirely).
+ */
+function GitStatusBadge({
+  code,
+  isFolderDirty,
+}: {
+  code: GitShortCode | null;
+  isFolderDirty: boolean;
+}) {
+  if (!code && !isFolderDirty) return null;
+  if (isFolderDirty && !code) {
+    return (
+      <span
+        className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-[#e2c08d]"
+        title="Folder contains modified files"
+      />
+    );
+  }
+  const color =
+    code === "M" || code === "T"
+      ? "text-[#e2c08d]"
+      : code === "A" || code === "?"
+      ? "text-[#73c991]"
+      : code === "D" || code === "U"
+      ? "text-[#f48771]"
+      : code === "R" || code === "C"
+      ? "text-[#7aa6ff]"
+      : "text-[color:var(--ide-muted)]";
+  return (
+    <span
+      className={`ml-1 inline-block text-[11px] font-semibold tabular-nums ${color}`}
+      title={statusTooltip(code!)}
+    >
+      {code}
+    </span>
+  );
+}
+
+function statusTooltip(c: GitShortCode): string {
+  switch (c) {
+    case "M":
+      return "Modified";
+    case "A":
+      return "Added";
+    case "D":
+      return "Deleted";
+    case "R":
+      return "Renamed";
+    case "C":
+      return "Copied";
+    case "T":
+      return "Type changed";
+    case "U":
+      return "Unmerged (conflict)";
+    case "?":
+      return "Untracked";
+    case "!":
+      return "Ignored";
+    default:
+      return "Modified";
+  }
 }
