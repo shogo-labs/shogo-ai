@@ -13,7 +13,14 @@ on:
 
 env:
   BUN_VERSION: '1.3.11'
-  NODE_VERSION: '24'
+  # PINNED, do not float to '24'. Node 24.16.0 silently breaks
+  # @electron/packager 18.4.4: packaging runs through "Copying files /
+  # Finalizing package" and exits 0 without producing Shogo.app, bricking the
+  # release. v1.8.16 packaged fine on 24.15.0; v1.8.17–v1.8.19 failed on 24.16.0
+  # (the only environmental change between them). Pin to the last known-good
+  # until @electron-forge/@electron/packager ships a Node 24.16+-compatible
+  # release. See the build-desktop "Package Electron app" step.
+  NODE_VERSION: '24.15.0'
   GO_VERSION: '1.22'
 
 jobs:
