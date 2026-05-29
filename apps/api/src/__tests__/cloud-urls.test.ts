@@ -221,4 +221,29 @@ describe('getFrontendUrl — defensive edges', () => {
     delete process.env.VITE_PORT
     expect(getFrontendUrl()).toBe('http://localhost:3000')
   })
+
+  // Regression: production emails (welcome, invites, billing, member-joined)
+  // build links from getFrontendUrl(). With the k8s production overlay
+  // (APP_URL set to the studio domain, ALLOWED_ORIGINS listing the studio
+  // domains) the result MUST be the public studio URL and never localhost.
+  test('production overlay config resolves to studio.shogo.ai (never localhost)', () => {
+    process.env.APP_URL = 'https://studio.shogo.ai'
+    process.env.ALLOWED_ORIGINS =
+      'https://studio.shogo.ai,https://shogo.ai,https://eu.studio.shogo.ai,https://india.studio.shogo.ai'
+    const url = getFrontendUrl()
+    expect(url).toBe('https://studio.shogo.ai')
+    expect(url).not.toContain('localhost')
+  })
+
+  // Even if APP_URL were dropped from the deploy, the first ALLOWED_ORIGINS
+  // entry keeps prod links off localhost — the property the old inline
+  // `|| 'http://localhost:3001'` fallbacks violated.
+  test('falls back to first ALLOWED_ORIGINS entry (not localhost) when APP_URL is dropped in prod', () => {
+    delete process.env.APP_URL
+    process.env.ALLOWED_ORIGINS =
+      'https://studio.shogo.ai,https://eu.studio.shogo.ai,https://india.studio.shogo.ai'
+    const url = getFrontendUrl()
+    expect(url).toBe('https://studio.shogo.ai')
+    expect(url).not.toContain('localhost')
+  })
 })

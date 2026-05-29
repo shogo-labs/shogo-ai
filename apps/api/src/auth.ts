@@ -22,6 +22,7 @@ import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail } 
 import { resolveAttributionForUser } from "./services/affiliate.service"
 import { evaluateAllowlist, recordSignIn } from "./services/project-auth-config.service"
 import { prisma } from "./lib/prisma"
+import { getFrontendUrl } from "./lib/cloud-urls"
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 const LOAD_TEST_SECRET = process.env.LOAD_TEST_SECRET
@@ -511,7 +512,7 @@ export const auth = betterAuth({
           }
 
           // FIRE-AND-FORGET: Send welcome email (non-blocking)
-          const baseUrl = process.env.APP_URL || process.env.BETTER_AUTH_URL || 'http://localhost:3001'
+          const baseUrl = getFrontendUrl()
           sendWelcomeEmail({
             to: user.email,
             name: user.name || 'User',
