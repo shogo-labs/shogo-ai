@@ -49,8 +49,15 @@ COPY packages/agent-runtime ./packages/agent-runtime
 COPY packages/pty-core ./packages/pty-core
 COPY templates/runtime-template ./templates/runtime-template
 
-# Pre-install runtime-template dependencies so workspaces get node_modules instantly
-RUN cd templates/runtime-template && bun install
+# Pre-install runtime-template dependencies so workspaces get node_modules instantly.
+# The template pins `@shogo-ai/sdk` as `workspace:*` (a "materialize-me" sentinel);
+# rewrite it to a concrete `^X.Y.Z` first so the standalone install resolves a real
+# published SDK from npm (not a workspace symlink, which would break when this
+# node_modules is copied into a pod workspace). This image has no `npm` binary, so
+# ALLOW_UNPUBLISHED_SDK_PIN=1 lets the script fall back to the in-repo
+# packages/sdk version (copied above via `packages/*/package.json`).
+RUN ALLOW_UNPUBLISHED_SDK_PIN=1 bun run scripts/materialize-runtime-template.ts templates/runtime-template/package.json && \
+    cd templates/runtime-template && bun install
 
 RUN apt-get update && apt-get install -y --no-install-recommends git && \
     bun run scripts/fetch-external-skills.ts && \

@@ -195,6 +195,20 @@ export function copyTemplates(destDir: string, repoRoot: string): void {
     const srcTemplate = resolve(repoRoot, 'templates/runtime-template')
     mkdirSync(rtDir, { recursive: true })
     cpSync(srcTemplate, rtDir, { recursive: true })
+    // The source template pins `@shogo-ai/sdk` as the `workspace:*` sentinel,
+    // which can't resolve in this out-of-workspace copy. Materialize it to a
+    // concrete `^X.Y.Z` first. Idempotent: a copy taken from an already-built
+    // desktop bundle is concrete, so this is a no-op (and we skip it entirely
+    // to avoid needing the materialize script / npm in that case).
+    const rtPkgPath = join(rtDir, 'package.json')
+    if (existsSync(rtPkgPath) && readFileSync(rtPkgPath, 'utf-8').includes('"workspace:')) {
+      const materializeScript = resolve(repoRoot, 'scripts/materialize-runtime-template.ts')
+      execSync(`bun run "${materializeScript}" "${rtPkgPath}"`, {
+        stdio: 'pipe',
+        timeout: 60_000,
+        env: { ...process.env, ALLOW_UNPUBLISHED_SDK_PIN: '1' },
+      })
+    }
     try {
       execSync('bun install', { cwd: rtDir, stdio: 'pipe', timeout: 60_000 })
     } catch {

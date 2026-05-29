@@ -1104,7 +1104,23 @@ export function migrateLegacyShogoSdkPin(dir: string): { upgraded: boolean; befo
         // Strip leading range operators (^, ~, >=, etc.) to get a
         // concrete version for comparison.
         const m = range.match(/(\d+\.\d+\.\d+)/)
-        if (m) templateSdkVersion = m[1]
+        if (m) {
+          templateSdkVersion = m[1]
+        } else if (range.startsWith('workspace:')) {
+          // Source (unmaterialized) template — `@shogo-ai/sdk` is the
+          // `workspace:*` sentinel, which carries no concrete version.
+          // This only happens in a dev checkout where getRuntimeTemplatePath
+          // resolves to the source tree (shipped templates are always
+          // materialized to a concrete `^X.Y.Z` first). Best-effort: read the
+          // sibling monorepo SDK version so dev workspaces still heal; if the
+          // package isn't co-located, fall through to a clean no-op.
+          try {
+            const repoSdkPkg = JSON.parse(
+              readFileSync(join(templatePath, '..', '..', 'packages', 'sdk', 'package.json'), 'utf-8'),
+            )
+            if (typeof repoSdkPkg.version === 'string') templateSdkVersion = repoSdkPkg.version
+          } catch { /* no co-located packages/sdk — leave null, migration no-ops */ }
+        }
       }
     } catch { /* template package.json missing/malformed — no upgrade target */ }
   }
