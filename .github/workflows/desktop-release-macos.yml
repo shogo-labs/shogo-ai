@@ -448,6 +448,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SKIP_MOBILE_BUILD: '1'
+          # Surface @electron/packager's swallowed reason for the silent no-op.
+          DEBUG: '@electron/packager,electron-packager,@electron/universal,@electron/get,electron-forge:*'
+          DEBUG_COLORS: 'false'
         run: |
           set -uo pipefail
           EXPECTED="out/Shogo-darwin-${{ matrix.arch }}/Shogo.app"
