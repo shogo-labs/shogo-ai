@@ -476,7 +476,21 @@ export function marketplaceRoutes() {
         avatarUrl: body.avatarUrl ?? undefined,
         websiteUrl: body.websiteUrl ?? undefined,
       })
-      await stripeConnect.createCustomAccount(profile.id, authCtx.email)
+      // Best-effort: provision the Stripe Connect account so payouts can be
+      // configured later. If this fails (network, Stripe outage, missing
+      // config), don't fail the whole request — the profile is already
+      // persisted and `/creator/payout-details` will self-heal the Connect
+      // account on first payout setup. Failing here would surface as
+      // "Failed to create creator profile" even though the profile exists,
+      // forcing the user to navigate away and back to recover.
+      try {
+        await stripeConnect.createCustomAccount(profile.id, authCtx.email)
+      } catch (stripeErr) {
+        console.error(
+          '[marketplace] createCreatorProfile stripe connect (non-fatal)',
+          stripeErr,
+        )
+      }
       return c.json({ profile })
     } catch (err) {
       const code = (err as { code?: string }).code
@@ -539,6 +553,15 @@ export function marketplaceRoutes() {
       if (!profile) {
         return c.json({ error: 'Creator profile not found' }, 404)
       }
+      if (!profile.stripeCustomAccountId) {
+        if (!authCtx.email) {
+          return c.json({ error: 'Email required to set up payouts' }, 400)
+        }
+        // Self-heal profiles that were created before the Connect account
+        // step succeeded (or where it failed silently). Without this, the
+        // user is permanently stuck on a 400.
+        await stripeConnect.createCustomAccount(profile.id, authCtx.email)
+      }
       const details = (await c.req.json()) as stripeConnect.PayoutDetails
       await stripeConnect.submitPayoutDetails(profile.id, details)
       return c.json({ ok: true })
@@ -549,6 +572,43 @@ export function marketplaceRoutes() {
       }
       console.error('[marketplace] submitPayoutDetails', err)
       return c.json({ error: 'Failed to submit payout details' }, 500)
+    }
+  })
+
+  // Stripe-hosted onboarding (preferred path). Replaces the legacy
+  // `/creator/payout-details` form: client POSTs here, gets back a URL,
+  // and redirects the user to Stripe's own KYC pages.
+  app.post('/creator/payout-onboarding-link', async (c) => {
+    const authCtx = c.get('auth') as AuthContext | undefined
+    if (!authCtx?.isAuthenticated || !authCtx.userId) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    try {
+      const profile = await marketplaceService.getCreatorProfile(authCtx.userId)
+      if (!profile) {
+        return c.json({ error: 'Creator profile not found' }, 404)
+      }
+      if (!profile.stripeCustomAccountId) {
+        if (!authCtx.email) {
+          return c.json({ error: 'Email required to set up payouts' }, 400)
+        }
+        await stripeConnect.createCustomAccount(profile.id, authCtx.email)
+      }
+      const body = (await c.req.json().catch(() => ({}))) as {
+        refreshUrl?: string
+        returnUrl?: string
+      }
+      if (!body.refreshUrl || !body.returnUrl) {
+        return c.json({ error: 'refreshUrl and returnUrl are required' }, 400)
+      }
+      const link = await stripeConnect.createOnboardingLink(profile.id, {
+        refreshUrl: body.refreshUrl,
+        returnUrl: body.returnUrl,
+      })
+      return c.json(link)
+    } catch (err) {
+      console.error('[marketplace] createOnboardingLink', err)
+      return c.json({ error: 'Failed to create onboarding link' }, 500)
     }
   })
 
