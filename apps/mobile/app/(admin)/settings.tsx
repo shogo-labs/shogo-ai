@@ -168,6 +168,8 @@ function CloudModelSettingsPage() {
         />
 
         <VisibleModelsCard platform={platform} hasOpenRouterKey={false} />
+        <CustomProvidersCard platform={platform} />
+        <CustomModelsCard platform={platform} />
       </View>
     </ScrollView>
   )
