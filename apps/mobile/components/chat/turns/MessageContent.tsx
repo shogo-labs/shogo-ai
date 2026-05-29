@@ -9,7 +9,7 @@
  */
 
 import { useState, useCallback } from "react"
-import { View, Text, Image, Pressable, Linking } from "react-native"
+import { View, Text, Image, Pressable, Linking, Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { FileText } from "lucide-react-native"
 import type { UIMessage } from "@ai-sdk/react"
@@ -18,6 +18,8 @@ import { MarkdownText } from "../MarkdownText"
 import { analyzeContent } from "../long-text-utils"
 import { LongTextPreviewCard } from "../LongTextPreviewCard"
 import { FileViewerModal } from "../FileViewerModal"
+import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
+import { downloadImage, isShogoDesktop } from "../chatImageActions"
 
 export interface MessageContentProps {
   message: UIMessage
@@ -104,6 +106,7 @@ function extractFileParts(message: UIMessage): FilePart[] {
 
 function ImageThumbnail({
   url,
+  mediaType,
   index,
 }: {
   url: string
@@ -111,10 +114,29 @@ function ImageThumbnail({
   index: number
 }) {
   const [hasError, setHasError] = useState(false)
+  const [showModal, setShowModal] = useState(false)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
 
   const handlePress = useCallback(() => {
-    Linking.openURL(url)
-  }, [url])
+    setShowModal(true)
+  }, [])
+
+  const handleContextMenu = useCallback((event: any) => {
+    // The custom right-click menu is desktop-only; on web we let the browser
+    // show its native context menu.
+    if (!isShogoDesktop()) return
+    event.preventDefault?.()
+    event.stopPropagation?.()
+    const nativeEvent = event.nativeEvent ?? event
+    setContextMenu({
+      x: nativeEvent.clientX ?? 0,
+      y: nativeEvent.clientY ?? 0,
+    })
+  }, [])
+
+  const handleDownloadImage = useCallback(() => {
+    void downloadImage(url, `image-attachment-${index + 1}`, mediaType)
+  }, [index, mediaType, url])
 
   if (hasError) {
     return (
@@ -127,16 +149,42 @@ function ImageThumbnail({
   }
 
   return (
-    <Pressable onPress={handlePress} testID="image-thumbnail">
-      <Image
-        source={{ uri: url }}
-        className="max-w-[280px] rounded-md"
-        resizeMode="contain"
-        accessibilityLabel={`Image attachment ${index + 1}`}
-        onError={() => setHasError(true)}
-        style={{ width: 280, aspectRatio: 4 / 3 }}
+    <>
+      <Pressable
+        onPress={handlePress}
+        {...(Platform.OS === "web" ? { onContextMenu: handleContextMenu } as any : {})}
+        testID="image-thumbnail"
+        accessibilityRole="button"
+        accessibilityLabel={`Open image attachment ${index + 1}`}
+        accessibilityHint="Opens a larger preview."
+        className={Platform.OS === "web" ? "cursor-zoom-in" : undefined}
+      >
+        <Image
+          source={{ uri: url }}
+          className="max-w-[280px] rounded-md"
+          resizeMode="contain"
+          accessibilityLabel={`Image attachment ${index + 1}`}
+          onError={() => setHasError(true)}
+          style={{ width: 280, aspectRatio: 4 / 3 }}
+        />
+      </Pressable>
+      <ImagePreviewModal
+        visible={showModal}
+        onClose={() => setShowModal(false)}
+        url={url}
+        mediaType={mediaType}
+        title={`Image attachment ${index + 1}`}
+        alt={`Image attachment ${index + 1}`}
       />
-    </Pressable>
+      {contextMenu ? (
+        <ChatImageContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onDownload={handleDownloadImage}
+          onClose={() => setContextMenu(null)}
+        />
+      ) : null}
+    </>
   )
 }
 
