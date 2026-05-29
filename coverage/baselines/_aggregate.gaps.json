@@ -319,6 +319,26 @@
   "method": "sum(LH)/sum(LF) per backend package (apps/api, agent-runtime, sdk, shared-runtime, model-catalog=100%). Comment-stripped. NOT cross-package union.",
   "sprintCommits": [
     {
+      "sha": "113ea51d",
+      "date": "2026-05-29",
+      "wave": "Wave 1 Session 4b \u2014 preview-manager.ts spawn paths (continuation)",
+      "message": "test(coverage): preview-manager.ts 85.60% -> 91.85% lines (+196 hit, +29 tests)",
+      "perFile": [
+        {
+          "file": "packages/agent-runtime/src/preview-manager.ts",
+          "beforeLines": "85.60% (8-file run, before this session)",
+          "afterLines": "91.85% (9-file run, +preview-manager.spawn-paths-2.test.ts)",
+          "beforeFuncs": "57.47%",
+          "afterFuncs": "66.49%",
+          "deltaLinesHit": 196,
+          "deltaLinesPct": "+6.25",
+          "deltaFuncsPct": "+9.02",
+          "newTests": 29
+        }
+      ],
+      "note": "Continuation of session 4. New test file preview-manager.spawn-paths-2.test.ts (515 lines) targets the remaining biggest uncov clusters using the same hoisted node:child_process mock pattern as session 4. Clusters covered: runExpoExportWeb (~70L, 7 tests including reentrancy guard, exit-0-with-index commit, exit-0-no-index refuse-to-swap, non-zero exit cleanup, spawn-throws bail, async error event), backgroundSetupMetro + runSetupTasksMetro (~60L, 3 tests with stubbed inner methods to verify orchestration + localMode branch), handleSchemaChange (~36L, 5 tests: missing schema, no-models, happy path order, regen-failed cleanup, pendingSchemaChange recursive re-run), handleCrash + crashRestartTimer (~25L, 6 tests including intentionalStop/regenerating short-circuits, max-restarts cap, happy-path restart sequence with 1100ms timer-fire wait, intentionalStop-between-arm-and-fire, killApi-throws caught), startCustomRoutesWatcher (~17L, 4 tests using real fs.watch and synthetic writes), runShogoGenerate close-not-0 + error event (~7L, 4 tests). Isolated runner: 3287 pass / 0 fail / 72 skip (+29 tests, 0 regressions vs the 3258 baseline at session 4)."
+    },
+    {
       "sha": "18cd12f",
       "file": "server-framework.ts",
       "delta_lh": 35,
