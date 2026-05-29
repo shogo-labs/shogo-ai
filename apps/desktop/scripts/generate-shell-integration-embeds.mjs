@@ -35,6 +35,7 @@ const FILES = [
   ['ZSH_LOGOUT',   'zsh/.zlogout'],
   ['FISH',         'fish.fish'],
   ['PWSH',         'pwsh.ps1'],
+  ['NUSHELL',      'nu.nu'],
 ]
 
 function escapeForBacktick(s) {

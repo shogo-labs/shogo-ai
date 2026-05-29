@@ -12,6 +12,8 @@ import { GpuRenderer } from './gpu-renderer'
 import { SearchController } from './search-popover'
 import { QuickFixManager } from './quick-fix'
 import { CmdKController, CmdKPopover, type LlmClient } from './cmd-k-popover'
+import { CommandHistorySource, trackerAdapter } from './history/history-sources'
+import { RecentCommandPicker, useCommandPicker } from './pickers/recent-pickers'
 import { getDesktopBridge } from './desktop-features'
 import { MatcherEngine } from './problem-matchers'
 import { TerminalContextMenu, buildVsCodeMenuGroups } from './context-menu'
@@ -42,6 +44,8 @@ export interface ShogoTerminalSurfaceHandle {
   clear(): void
   focus(): void
   refit(): void
+  openFind?(): void
+  openRecent?(): void
 }
 
 export interface ShogoTerminalSurfaceProps {
@@ -255,6 +259,11 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
       // controller construction without re-binding.
       onSubmit: (command) => runWithApprovalRef.current(command),
     }))
+    const [commandHistorySource] = React.useState(() => new CommandHistorySource({ tracker: trackerAdapter(tracker) }))
+    const recentCommandPicker = useCommandPicker({
+      source: commandHistorySource,
+      onAccept: (entry) => runWithApprovalRef.current(entry.command),
+    })
 
     React.useEffect(() => {
       setState(client.state)
@@ -546,7 +555,11 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
       clear: () => termRef.current?.clear(),
       focus: () => termRef.current?.focus(),
       refit: () => fitRef.current?.fit(),
-    }), [])
+      openFind: () => {
+        setSearchOpen(true)
+      },
+      openRecent: () => recentCommandPicker.open(),
+    }), [recentCommandPicker])
 
     const openContextMenu = (ev: React.MouseEvent) => {
       ev.preventDefault()
@@ -670,9 +683,27 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         background: '#1e1e1e',
       },
     },
+      React.createElement('style', null, `
+        [data-shogo-terminal-surface] .xterm-viewport {
+          overflow-y: auto !important;
+          scrollbar-gutter: stable;
+          scrollbar-width: thin;
+        }
+        [data-shogo-terminal-surface] .xterm-viewport::-webkit-scrollbar {
+          width: 10px;
+        }
+        [data-shogo-terminal-surface] .xterm-viewport::-webkit-scrollbar-thumb {
+          background: #424242;
+          border-radius: 999px;
+          border: 2px solid #1e1e1e;
+        }
+        [data-shogo-terminal-surface] .xterm-viewport::-webkit-scrollbar-track {
+          background: #1e1e1e;
+        }
+      `),
       React.createElement('div', {
         ref: hostRef,
-        style: { width: '100%', height: '100%', padding: '4px 6px' },
+        style: { width: '100%', height: '100%', padding: '4px 6px', overflow: 'hidden' },
       }),
       menuPos && menuGroups
         ? React.createElement(TerminalContextMenu, {
@@ -818,6 +849,10 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
             },
           })
         : null,
+      React.createElement(RecentCommandPicker, {
+        handle: recentCommandPicker,
+        className: 'shogo-recent-command-picker',
+      }),
       React.createElement(CmdKPopover, { controller: cmdK }),
       hostUnresponsive
         ? React.createElement('button', {
