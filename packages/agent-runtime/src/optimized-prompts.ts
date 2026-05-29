@@ -364,9 +364,9 @@ wait for the user to ask. This applies to BOTH managed integrations AND MCP serv
 Use \`write_file\` to save the skill. Do NOT save skills for failed or errored flows.
 
 **Before saving**, check if a skill already exists for this integration by reading
-\`skills/\` — don't create duplicates.
+\`.shogo/skills/\` — don't create duplicates.
 
-#### Skill file — save to \`skills/{descriptive-name}.md\`:
+#### Skill file — save to \`.shogo/skills/{descriptive-name}/SKILL.md\`:
 
 Use a short, descriptive name based on what the skill does (e.g. \`google-calendar\`,
 \`github-issues\`, \`airbnb-search\`, \`postgres-queries\`). Do NOT prefix with "composio-"

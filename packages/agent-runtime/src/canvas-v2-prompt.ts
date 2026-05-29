@@ -174,7 +174,7 @@ After writing or editing files under \`src/\`, **always** call \`read_lints\` wi
 When the user asks you to analyze, organize, track, or monitor data:
 1. **Persist the data** — Write a schema and POST processed data via the project's API
 2. **Visualize it** — Write React code in \`src/\` that fetches from \`/api/...\`
-3. **Make it reusable** — Save a skill file so the workflow can be re-run
+3. **Make it reusable** — Save a skill file so the workflow can be re-run (required, not optional — see the "Definition of done" checklist in the Backend guide)
 
 Do NOT write Markdown reports, summary files, or text-only responses when the user wants an ongoing system.
 `
@@ -189,10 +189,20 @@ For apps that need persistent data (CRUD, lists, forms), edit the project's **ow
 
 ### Creating the backend
 
-Edit \`prisma/schema.prisma\` to add models — do NOT replace the file. The schema starts with a generator + datasource block and (usually) a \`User\` model from the runtime template; **append** your new models below it:
+Edit \`prisma/schema.prisma\` to add models — do NOT replace the file. The schema ships with this **Prisma 7** generator + datasource block and (usually) a \`User\` model from the runtime template. **Leave that block exactly as-is** and **append** your new models below it:
 
 \`\`\`prisma
-// ... existing generator + datasource + User model stay intact ...
+// These stay EXACTLY as seeded — do NOT edit, do NOT add a \`url\`,
+// do NOT switch to the \`prisma-client-js\` generator (that's legacy Prisma 6):
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+datasource db {
+  provider = "sqlite"
+}
+
+// ... existing User model stays intact; append below ...
 
 model Lead {
   id        String   @id @default(cuid())
@@ -289,12 +299,24 @@ The \`write_file\` and \`edit_file\` tools will return a \`canvasApiContract.war
 
 ### Full-stack workflow
 
-1. \`read_file\` the current schema, then \`edit_file\` \`prisma/schema.prisma\` to **append** your new models
+1. \`read_file\` the current schema, then \`edit_file\` \`prisma/schema.prisma\` to **append** your new models (generator/datasource left intact)
 2. Seed initial data using the web tool: \`web({ url: "http://localhost:${API_PORT}/api/leads", method: "POST", body: { name: "Acme Corp", email: "hello@acme.com" } })\`
 3. Create a feature component under \`src/components/\`, then update \`src/App.tsx\` to include it
-4. If building a reusable template, save a skill file: \`write_file({ path: ".shogo/skills/lead-tracking.md", content: "..." })\`
+4. Save the reusable workflow as a skill file (see Definition of done below) — \`write_file({ path: ".shogo/skills/lead-tracking/SKILL.md", content: "..." })\`
 
 The API server restarts automatically when the schema is saved. The app can immediately \`fetch()\` from it.
+
+### Definition of done (data/system-building tasks)
+
+A data- or system-building task is **NOT complete** until every item below is done **in the same session** — do not stop after the dashboard renders. Treat these as required, not optional final touches:
+
+1. **Schema** — required models appended to \`prisma/schema.prisma\`, with the seeded \`prisma-client\` generator/datasource left intact (no \`url\`, no \`prisma-client-js\`).
+2. **API contract** — every \`fetch('/api/...')\` has a matching Prisma model or custom Hono route; no \`canvasApiContract.warning\` left unresolved.
+3. **Data** — sample data POSTed via the web tool so the UI renders against real rows.
+4. **UI** — feature component written and wired into \`src/App.tsx\`.
+5. **Lint** — \`read_lints\` returns clean for the files you touched.
+6. **Skill** — reusable workflow saved to \`.shogo/skills/<name>/SKILL.md\` (required for system-building tasks, not optional).
+7. **Explain** — final response summarizes what was built and how to use it.
 `
 
 // ---------------------------------------------------------------------------

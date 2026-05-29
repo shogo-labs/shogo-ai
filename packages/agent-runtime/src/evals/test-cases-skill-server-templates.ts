@@ -38,33 +38,57 @@ const V2_CONFIG = JSON.stringify({
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Aggregate every schema.prisma edit the agent made into a single string.
+ *
+ * The prompt mandates the additive workflow — `read_file` the seeded schema,
+ * then `edit_file` to APPEND new models — so most correct runs never produce a
+ * `write_file` for `prisma/schema.prisma`. In VM/Docker eval mode the workspace
+ * lives inside the guest, so graders can't read the final file from disk; we
+ * reconstruct intent from the tool-call deltas instead. We pull `content` from
+ * `write_file` and `new_string`/`new_str`/`content` from `edit_file` for any
+ * call targeting the schema.
+ */
+function schemaEditsContent(r: import('./types').EvalResult): string {
+  return r.toolCalls
+    .filter((t) => t.name === 'write_file' || t.name === 'edit_file')
+    .filter((t) => String((t.input as any).path ?? '').includes('schema.prisma'))
+    .map((t) => {
+      const input = t.input as any
+      return String(input.content ?? input.new_string ?? input.new_str ?? '')
+    })
+    .join('\n')
+}
+
 function wroteSchema(r: import('./types').EvalResult, ...requiredModels: string[]): boolean {
-  const write = r.toolCalls
-    .filter((t) => t.name === 'write_file')
-    .find((t) => String((t.input as any).path ?? '').includes('schema.prisma'))
-  if (!write) return false
-  const content = String((write.input as any).content ?? '').toLowerCase()
+  const content = schemaEditsContent(r).toLowerCase()
+  if (!content) return false
   return requiredModels.every((m) => content.includes(`model ${m.toLowerCase()}`))
 }
 
 function schemaContainsFields(r: import('./types').EvalResult, ...fields: string[]): boolean {
-  const write = r.toolCalls
-    .filter((t) => t.name === 'write_file')
-    .find((t) => String((t.input as any).path ?? '').includes('schema.prisma'))
-  if (!write) return false
-  const content = String((write.input as any).content ?? '').toLowerCase()
+  const content = schemaEditsContent(r).toLowerCase()
+  if (!content) return false
   return fields.every((f) => content.includes(f.toLowerCase()))
 }
 
+/**
+ * Prisma 7 check, redefined as "did not regress to legacy syntax."
+ *
+ * The seeded schema already ships the Prisma 7 generator
+ * (`provider = "prisma-client"`, no `url`). An append that leaves that block
+ * intact is correct, so the common case (agent only adds `model` blocks via
+ * `edit_file`, never touching the generator/datasource) should pass. We only
+ * fail when the agent actively introduces legacy Prisma 6 syntax in a schema
+ * edit: the `prisma-client-js` generator or a `url`/`env()` datasource line.
+ */
 function schemaUsesPrisma7(r: import('./types').EvalResult): boolean {
-  const write = r.toolCalls
-    .filter((t) => t.name === 'write_file')
-    .find((t) => String((t.input as any).path ?? '').includes('schema.prisma'))
-  if (!write) return false
-  const content = String((write.input as any).content ?? '')
-  const hasNoUrl = !content.includes('url')
-  const hasPrismaClient = content.includes('prisma-client') && !content.includes('prisma-client-js')
-  return hasNoUrl && hasPrismaClient
+  const edits = schemaEditsContent(r)
+  if (!edits) return false
+  const lower = edits.toLowerCase()
+  const introducedLegacyGenerator = lower.includes('prisma-client-js')
+  const introducedUrl = /\burl\s*=/.test(lower) || lower.includes('env(')
+  return !introducedLegacyGenerator && !introducedUrl
 }
 
 function isCodeFile(path: string): boolean {
