@@ -170,9 +170,16 @@ Run `rm -rf apps/desktop/resources/{node_modules,bundle}` before `bundle-api.mjs
 
 **Code signature broken after first launch**
 The app must not write to its own bundle. All runtime data goes to
-`~/Library/Application Support/Shogo/data/`. If Prisma engines are
-writing inside the bundle, check that `PRISMA_SCHEMA_ENGINE_BINARY` is set
-to a writable location (handled automatically by `local-server.ts`).
+`~/Library/Application Support/Shogo/data/`.
+
+**`PRISMA_SCHEMA_ENGINE_BINARY … can't be resolved` on launch (Intel Macs, v1.8.14)**
+Prisma 7 migrates SQLite with the arch-independent WASM schema engine
+(`@prisma/schema-engine-wasm`), so `local-server.ts` no longer copies the
+native `schema-engine-*` binary or sets `PRISMA_SCHEMA_ENGINE_BINARY`. The old
+code pointed the env var at an arch-derived native binary; because macOS x64
+builds are cross-compiled on arm64 CI runners, only the arm64 engine was ever
+bundled and Intel launches failed fast. Do not reintroduce that env var unless
+you also bundle the matching-arch native engine for every target.
 
 **Prisma Node version check fails during `bun install` in project**
 The bundled Bun binary is too old. Delete `apps/desktop/resources/bun/` and
