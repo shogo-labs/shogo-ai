@@ -84,11 +84,32 @@ describe('web tool', () => {
   })
 
   test('fetches a URL directly when no Google routing needed', async () => {
-    const result = await search({ url: 'https://httpbin.org/json' })
-    expect(result.error).toBeUndefined()
-    expect(result.content).toBeDefined()
-    expect(result.status).toBe(200)
-  }, 15000)
+    // Stub fetch so this unit test does NOT depend on httpbin.org. The
+    // path under test is the no-Google-routing branch in the web tool,
+    // not the live network. Without the stub this test flakes whenever
+    // httpbin.org response time exceeds the 15s timeout (frequent on
+    // CI / parallel-runner load).
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (url: any) => {
+      const u = String(url)
+      if (!u.startsWith('https://example.invalid/')) {
+        // Fall through for unrelated URLs.
+        return originalFetch(url as any)
+      }
+      return new Response(JSON.stringify({ ok: true, slideshow: { title: 'Sample' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }) as any
+    try {
+      const result = await search({ url: 'https://example.invalid/json' })
+      expect(result.error).toBeUndefined()
+      expect(result.content).toBeDefined()
+      expect(result.status).toBe(200)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }, 5000)
 })
 
 // Live API tests — only run when SERPER_API_KEY is available
