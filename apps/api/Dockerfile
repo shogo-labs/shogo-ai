@@ -50,6 +50,12 @@ RUN groupadd -g 1001 appgroup && useradd -u 1001 -g appgroup -m -s /bin/bash app
 # appuser), so COPY preserves ownership without a --chown traversal.
 COPY --from=workspace /app/node_modules ./node_modules
 COPY --from=workspace /app/packages/agent-runtime ./packages/agent-runtime
+# pty-core (34123b03 "feat(desktop): add cursor-parity terminal") holds the
+# shared PTY protocol primitives. packages/agent-runtime/src/pty-protocol.ts
+# re-exports from `@shogo/pty-core`, which apps/api/src/server.ts pulls in at
+# boot via pty-ws-handler — without the source dir the API crashes with
+# `Cannot find module '@shogo/pty-core'`. Same omission pattern as 27619a00.
+COPY --from=workspace /app/packages/pty-core ./packages/pty-core
 COPY --from=workspace /app/packages/shared-runtime ./packages/shared-runtime
 COPY --from=workspace /app/packages/sdk ./packages/sdk
 COPY --from=workspace /app/packages/model-catalog ./packages/model-catalog
