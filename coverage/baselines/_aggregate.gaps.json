@@ -1617,7 +1617,7 @@
       "notes": "prompt builders + tree + heartbeat log + alerts + slash context; passes 43/0 in isolation; full-suite cross-pollution from foreign fs-mock unrelated to this session."
     },
     {
-      "sha": "SYNC",
+      "sha": "4255068f",
       "date": "2026-05-29",
       "wave": "Sync Readme \u2014 post Sessions 4b/5/8",
       "aggregateBefore": {
