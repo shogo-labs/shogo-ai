@@ -49,6 +49,22 @@ export interface Session {
    * so a closed tab shows "[exited 0]" until the user dismisses it.
    */
   exit: { code: number | null; signal: string | null } | null
+  /**
+   * User-chosen label that overrides the positional "Terminal N" name.
+   * Stored per-session but every pane in a group shares the same value
+   * (renameGroup writes to all of them). `null` falls back to the
+   * positional label. Empty strings are normalised to `null` by the
+   * reducer.
+   */
+  customLabel: string | null
+  /**
+   * Optional accent color (CSS hex like `#0078d4`) for this tab/group.
+   * Like `customLabel`, stored per-session but kept in sync across every
+   * pane in a group by `setTabColor`. `null` means "use the theme's
+   * default accent". Anything that doesn't match `/^#[0-9a-fA-F]{6}$/`
+   * is normalised to `null` on write.
+   */
+  tabColor: string | null
 }
 
 let _idSeq = 0
@@ -77,7 +93,46 @@ export function makeSession(groupId?: string): Session {
     cwd: null,
     errorMessage: null,
     exit: null,
+    customLabel: null,
+    tabColor: null,
   }
+}
+
+/**
+ * 6-digit CSS hex (`#rrggbb`) — lower or upper case. Anything else is
+ * treated as "no color" by `setTabColor`. We intentionally do not accept
+ * 3-digit `#rgb` shorthand to keep the parser predictable and the wire
+ * format stable.
+ */
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
+
+export function isValidTabColor(value: string): boolean {
+  return HEX_COLOR_RE.test(value)
+}
+
+/**
+ * Set the accent color on every pane in `groupId`. Returns the same array
+ * by reference when no session is mutated. Invalid hex strings (and the
+ * empty string) are normalised to `null` so the caller can pass user
+ * input straight through.
+ */
+export function setTabColor(
+  sessions: Session[],
+  groupId: string,
+  color: string | null,
+): Session[] {
+  const normalised =
+    color && color.trim().length > 0 && HEX_COLOR_RE.test(color.trim())
+      ? color.trim().toLowerCase()
+      : null
+  let mutated = false
+  const next = sessions.map((s) => {
+    if (s.groupId !== groupId) return s
+    if (s.tabColor === normalised) return s
+    mutated = true
+    return { ...s, tabColor: normalised }
+  })
+  return mutated ? next : sessions
 }
 
 /** Ordered, de-duplicated list of group ids in session order. */
@@ -101,14 +156,61 @@ export function sessionsInGroup(sessions: Session[], groupId: string): Session[]
  * `Map<sessionId, "Terminal N">`. Labels are per *group* (tab), so every
  * split pane inside a tab shares that tab's positional label. Re-derive on
  * every render so labels stay correct after a tab closes.
+ *
+ * If any pane in a group has a non-null `customLabel`, that wins for the
+ * whole group (renameGroup keeps every pane in sync, but the reducer is
+ * permissive — first non-null label found is used as a fallback).
  */
 export function labelsFor(sessions: Session[]): Map<string, string> {
-  const groupLabel = new Map(
+  const positional = new Map(
     groupIdsOf(sessions).map((g, i) => [g, `Terminal ${i + 1}`]),
   )
+  const groupLabel = new Map<string, string>()
+  for (const g of positional.keys()) groupLabel.set(g, positional.get(g)!)
+  for (const s of sessions) {
+    if (s.customLabel && s.customLabel.length > 0) {
+      groupLabel.set(s.groupId, s.customLabel)
+    }
+  }
   return new Map(
     sessions.map((s) => [s.id, groupLabel.get(s.groupId) ?? s.id]),
   )
+}
+
+/**
+ * `Map<groupId, hex | null>` — the resolved accent color for each group.
+ * Tracks the first non-null `tabColor` across the group's panes (in
+ * practice all panes share the same value after `setTabColor`).
+ */
+export function colorsFor(sessions: Session[]): Map<string, string | null> {
+  const out = new Map<string, string | null>()
+  for (const s of sessions) {
+    const existing = out.get(s.groupId)
+    if (existing == null && s.tabColor) out.set(s.groupId, s.tabColor)
+    else if (!out.has(s.groupId)) out.set(s.groupId, null)
+  }
+  return out
+}
+
+/**
+ * Set a custom label on every pane in a group. Pass `null` or an empty
+ * string to clear the custom label and fall back to the positional name.
+ * Empty strings are normalised to `null` for storage uniformity.
+ */
+export function renameGroup(
+  sessions: Session[],
+  groupId: string,
+  label: string | null,
+): Session[] {
+  const normalised = label && label.trim().length > 0 ? label.trim() : null
+  let mutated = false
+  const next = sessions.map((s) => {
+    if (s.groupId !== groupId) return s
+    if (s.customLabel === normalised) return s
+    mutated = true
+    return { ...s, customLabel: normalised }
+  })
+  return mutated ? next : sessions
 }
 
 export interface CloseResult {
@@ -200,6 +302,55 @@ export function closeGroup(
     return { sessions: next, nextActiveId: neighbour.id, panelDismissed: false }
   }
   return { sessions: next, nextActiveId: null, panelDismissed: false }
+}
+
+/**
+ * Move a whole group (tab) to a different position relative to a target
+ * group. Implementation extracts the source group's contiguous run of
+ * sessions, removes it, then splices it back in `before`/`after` the
+ * target group's run. Preserves:
+ *
+ *   - Contiguity of every group (the `groupIdsOf` invariant).
+ *   - Order of sessions *within* the moved group (splits keep their
+ *     left-to-right order).
+ *   - Session identity (no clones, just permutation).
+ *
+ * No-ops when `from === to`, when the source group doesn't exist, or
+ * when the target group doesn't exist. The caller does not need to
+ * update the active id — the moved sessions keep their ids, so the
+ * existing active session stays focused.
+ */
+export function reorderGroups(
+  sessions: Session[],
+  fromGroupId: string,
+  toGroupId: string,
+  edge: 'before' | 'after',
+): Session[] {
+  if (fromGroupId === toGroupId) return sessions
+  const sourceRun: Session[] = []
+  const remainder: Session[] = []
+  for (const s of sessions) {
+    if (s.groupId === fromGroupId) sourceRun.push(s)
+    else remainder.push(s)
+  }
+  if (sourceRun.length === 0) return sessions
+
+  const targetIdxInRemainder = remainder.findIndex((s) => s.groupId === toGroupId)
+  if (targetIdxInRemainder === -1) return sessions
+
+  let insertAt = targetIdxInRemainder
+  if (edge === 'after') {
+    insertAt = targetIdxInRemainder + 1
+    while (
+      insertAt < remainder.length &&
+      remainder[insertAt].groupId === toGroupId
+    ) {
+      insertAt++
+    }
+  }
+  const next = remainder.slice()
+  next.splice(insertAt, 0, ...sourceRun)
+  return next
 }
 
 /**
