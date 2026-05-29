@@ -281,6 +281,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SKIP_MOBILE_BUILD: '1'
+          # Surface @electron/packager's swallowed reason if `make` silently
+          # produces no installer (out/make empty). v1.8.17–v1.8.21 shipped no
+          # Shogo-Setup.exe because forge buries packager errors and the upload
+          # step only warns on no-files. Temporary diagnostic.
+          DEBUG: '@electron/packager,electron-packager,@electron/universal,@electron/get,electron-forge:*'
+          DEBUG_COLORS: 'false'
 
       - name: Upload artifacts
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
