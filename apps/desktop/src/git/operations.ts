@@ -12,7 +12,7 @@
 //   - shell out via runGit(), respecting GIT_TERMINAL_PROMPT=0;
 //   - return a discriminated result so callers don't have to catch.
 
-import { unlink } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import { runGit } from "./repository";
@@ -80,7 +80,13 @@ export async function gitDiscard(root: string, paths: string[]): Promise<OpResul
   // would also nuke any other untracked file the user hasn't selected.
   for (const rel of toDelete) {
     try {
-      await unlink(join(root, rel));
+      // `rm` with `recursive: true` handles both files and directories.
+      // Porcelain with --untracked-files=all normally expands directories
+      // into individual files, but a `.gitignore`'d subdirectory inside
+      // an untracked dir can still come through as a directory entry.
+      // `force: true` swallows ENOENT in case the file was already gone
+      // (e.g. race with an external delete).
+      await rm(join(root, rel), { recursive: true, force: true });
     } catch (err) {
       return { ok: false, error: `failed to delete ${rel}: ${err instanceof Error ? err.message : String(err)}` };
     }
