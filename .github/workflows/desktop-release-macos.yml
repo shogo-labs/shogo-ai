@@ -255,6 +255,11 @@ jobs:
       # vs/editor/editor.main.js are required and non-truncated).
 
       - name: Bundle API server into resources
+        # SHOGO_TARGET_ARCH tells bundle-api.mjs which arch the .app is for, so
+        # it installs target-arch optional native deps (e.g. sqlite-vec-darwin-
+        # x64) instead of the arm64-runner's host arch. See bundle-api.mjs.
+        env:
+          SHOGO_TARGET_ARCH: ${{ matrix.arch }}
         run: node apps/desktop/scripts/bundle-api.mjs
 
       - name: Create seed database (SQLite)

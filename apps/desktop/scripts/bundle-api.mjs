@@ -288,10 +288,28 @@ function main() {
 
   if (!skipInstall) {
     const isWindows = process.platform === 'win32'
+    // Target arch for the packaged app. macOS x64 releases are cross-compiled
+    // on arm64 CI runners, so the desktop-release workflow exports
+    // SHOGO_TARGET_ARCH (= matrix.arch). Default to the host arch for local
+    // same-arch builds.
+    const targetArch = process.env.SHOGO_TARGET_ARCH || process.arch
+    const isCrossArch = !isWindows && targetArch !== process.arch
+
+    // `bun install` (and a plain `npm install`) resolve optionalDependencies
+    // for the HOST arch. For per-arch native packages — notably `sqlite-vec`,
+    // whose binary lives in the `sqlite-vec-darwin-<arch>` optional dep — that
+    // bundles e.g. the arm64 `vec0.dylib` into an x64 app, so vector search
+    // bricks on Intel (the v1.8.14 failure class, caught by check-native-arch).
+    // npm honours `--cpu`/`--os` for optionalDependency selection, so for a
+    // cross-arch build we pin them to the target and let npm fetch the
+    // matching-arch artifact (the .dylib is a plain file with no install
+    // script, so nothing target-arch needs to *execute* on this host).
     const installCmd = isWindows
       ? 'npm install --omit=dev'
-      : 'bun install --production'
-    console.log(`  Running: ${installCmd}`)
+      : isCrossArch
+        ? `npm install --omit=dev --cpu=${targetArch} --os=darwin`
+        : 'bun install --production'
+    console.log(`  Running: ${installCmd}${isCrossArch ? ` (cross-arch: host=${process.arch}, target=${targetArch})` : ''}`)
     execSync(installCmd, {
       cwd: RESOURCES_DIR,
       stdio: 'inherit',
