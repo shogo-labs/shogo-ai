@@ -561,10 +561,24 @@ function LocalSettingsPage() {
               onDefaultModeChange={setCloudDefaultMode}
             />
 
-            <VisibleModelsCard
-              platform={platform}
-              hasOpenRouterKey={!!keyMasks.openrouter}
-            />
+            {shogoKeyConnected ? (
+              <SectionCard
+                icon={ListFilter}
+                title="Available Models"
+                description="Managed by your Shogo Cloud admin"
+              >
+                <Text className="text-sm text-muted-foreground">
+                  The models shown in the picker are controlled by your Shogo
+                  Cloud workspace. Changes an admin makes to the available
+                  models there apply to this device automatically.
+                </Text>
+              </SectionCard>
+            ) : (
+              <VisibleModelsCard
+                platform={platform}
+                hasOpenRouterKey={!!keyMasks.openrouter}
+              />
+            )}
           </>
         )}
 

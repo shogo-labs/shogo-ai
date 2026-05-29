@@ -271,13 +271,26 @@ export function getAvailableModels(filter: AvailableModelFilter = { generation: 
 }
 
 /**
+ * Human-readable group label for a provider. Used both by `getModelsByProvider`
+ * and by client pickers that group cloud-resolved models (which carry only a
+ * raw `provider` string) so the labelling stays consistent in one place.
+ */
+export function getProviderLabel(provider: string): string {
+  if (provider === 'anthropic') return 'Anthropic'
+  if (provider === 'openai') return 'OpenAI'
+  if (provider === 'google') return 'Google'
+  if (provider === 'openrouter') return 'OpenRouter'
+  return provider
+}
+
+/**
  * Get current-generation models grouped by provider, suitable for UI display.
  */
 export function getModelsByProvider(): Array<{ label: string; models: ModelEntry[] }> {
   const current = getAvailableModels({ generation: 'current' })
   const groups: Record<string, ModelEntry[]> = {}
   for (const entry of current) {
-    const label = entry.provider === 'anthropic' ? 'Anthropic' : entry.provider === 'openai' ? 'OpenAI' : entry.provider
+    const label = getProviderLabel(entry.provider)
     if (!groups[label]) groups[label] = []
     groups[label].push(entry)
   }

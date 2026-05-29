@@ -71,6 +71,7 @@ import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
 import { apiKeyRoutes } from './routes/api-keys'
 import { cliAuthRoutes } from './routes/cli-auth'
 import { getFrontendUrl, getShogoCloudUrl } from './lib/cloud-urls'
+import { fetchCloudVisibleModels } from './lib/federated-upstream'
 import { localAuthRoutes } from './routes/local-auth'
 import { meetingRoutes } from './routes/meetings'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
@@ -750,10 +751,48 @@ app.get('/api/config', async (c) => {
   })
 })
 
+/** Resolve an allowlist into full picker-ready catalog entries against this
+ *  server's own `MODEL_CATALOG`. `null` ids means "all current-generation
+ *  models". Shipping these over the wire lets a cloud-connected desktop
+ *  render models its bundled catalog may not know about. */
+async function resolveVisibleCatalogModels(
+  catalogIds: string[] | null,
+): Promise<Array<{ id: string; provider: string; displayName: string; shortDisplayName: string; tier: string }>> {
+  const { getModelsByProvider, getModelEntry } = await import('@shogo/model-catalog')
+  const toVisible = (entry: any) => ({
+    id: entry.id,
+    provider: entry.provider,
+    displayName: entry.displayName,
+    shortDisplayName: entry.shortDisplayName,
+    tier: entry.tier,
+  })
+  if (catalogIds === null) {
+    return getModelsByProvider().flatMap((g: any) => g.models).map(toVisible)
+  }
+  const out: Array<ReturnType<typeof toVisible>> = []
+  for (const id of catalogIds) {
+    const entry = getModelEntry(id)
+    if (entry) out.push(toVisible(entry))
+  }
+  return out
+}
+
 // Visible-models read endpoint — open to all callers (drives user-facing
 // chat-input pickers). Returns the admin allowlist as stored, with `null`
 // catalogIds meaning "all current-generation catalog models are visible".
+//
+// When this instance is a desktop signed in to a Shogo Cloud (and routing
+// AI through it), the catalog is sourced from that cloud so changes a cloud
+// super-admin makes to "Available Models" reflect here. Any failure falls
+// back to the local DB read below.
 app.get('/api/platform/visible-models', async (c) => {
+  try {
+    const fromCloud = await fetchCloudVisibleModels()
+    if (fromCloud) return c.json(fromCloud)
+  } catch {
+    // unreachable cloud / parse error — fall through to local read
+  }
+
   try {
     const row = await prisma.platformSetting.findUnique({ where: { key: 'models.visible' } }).catch(() => null)
     const raw = row?.value ?? null
@@ -779,8 +818,11 @@ app.get('/api/platform/visible-models', async (c) => {
         // fall through with defaults
       }
     }
-    return c.json({ catalogIds, openrouterModels })
+    const catalogModels = await resolveVisibleCatalogModels(catalogIds)
+    return c.json({ catalogIds, openrouterModels, catalogModels })
   } catch (err: any) {
+    // Omit catalogModels entirely so clients fall back to their bundled
+    // catalog rather than rendering an empty picker.
     return c.json({ catalogIds: null, openrouterModels: [] })
   }
 })
