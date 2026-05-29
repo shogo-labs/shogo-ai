@@ -41,6 +41,7 @@ import {
   ZSH_LOGOUT,
   FISH,
   PWSH,
+  NUSHELL,
 } from './embedded-scripts.generated'
 
 // Shell-integration scripts are embedded as TS string constants by
@@ -50,7 +51,7 @@ import {
 
 // ─── public types ───────────────────────────────────────────────────────
 
-export type ShellKind = 'bash' | 'zsh' | 'fish' | 'pwsh' | 'unknown'
+export type ShellKind = 'bash' | 'zsh' | 'fish' | 'pwsh' | 'nushell' | 'unknown'
 
 export type ShellIntegrationStatus =
   | 'applied'
@@ -110,6 +111,7 @@ export function detectShellKind(shellPath: string): ShellKind {
   if (name === 'zsh' || /^zsh[-_]/.test(name) || name.endsWith('-zsh')) return 'zsh'
   if (name === 'fish') return 'fish'
   if (name === 'pwsh') return 'pwsh'
+  if (name === 'nu' || name === 'nushell') return 'nushell'
   // Windows PowerShell 5.x — detected separately so we can return a
   // distinct status. Caller treats `powershell` as unsupported.
   if (name === 'powershell') return 'unknown'
@@ -285,6 +287,35 @@ export function applyShellIntegration<T extends SpawnOptionsLike>(
       )
       artifacts.push(intPath, wrapperPath)
       nextArgs = ['-NoExit', '-NoLogo', '-Command', `. '${wrapperPath.replace(/'/g, "''")}'`]
+      break
+    }
+    case 'nushell': {
+      // Nushell loads its main `config.nu` from `$nu.default-config-dir`
+      // by default. We can override that via `--config <path>` which
+      // points at a wrapper config that first sources the user's
+      // original config (if present) then sources our integration
+      // script. Nushell also has `--env-config` for env.nu — we leave
+      // that alone since our integration doesn't need env-time hooks.
+      const intPath = join(root, 'shogo-nu-integration.nu')
+      writeFileSync(intPath, NUSHELL, 'utf8')
+      const wrapperPath = join(root, 'shogo-nu-config.nu')
+      const userConfigDir = input.env.XDG_CONFIG_HOME
+        ? join(input.env.XDG_CONFIG_HOME, 'nushell')
+        : input.env.HOME
+        ? join(input.env.HOME, '.config', 'nushell')
+        : ''
+      const userConfig = userConfigDir ? join(userConfigDir, 'config.nu') : ''
+      const wrapper = [
+        '# shogo wrapper config — sources user config first, then our integration',
+        userConfig
+          ? `if ("${userConfig.replace(/"/g, '\\"')}" | path exists) { source "${userConfig.replace(/"/g, '\\"')}" }`
+          : '',
+        `source "${intPath.replace(/"/g, '\\"')}"`,
+        '',
+      ].join('\n')
+      writeFileSync(wrapperPath, wrapper, 'utf8')
+      artifacts.push(intPath, wrapperPath)
+      nextArgs = ['--config', wrapperPath, ...input.args]
       break
     }
   }

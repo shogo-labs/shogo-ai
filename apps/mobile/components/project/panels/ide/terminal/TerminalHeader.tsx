@@ -24,10 +24,12 @@ import {
   Plus,
   Square as StopIcon,
   SquareSplitHorizontal,
+  SquareSplitVertical,
   Terminal as TerminalIcon,
   Trash2,
 } from 'lucide-react-native'
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 import type { ShellName } from './useShellName'
 
@@ -49,6 +51,13 @@ export interface TerminalHeaderProps {
   onNewWithProfile?: (profile: ShellName) => void
 
   onSplit: () => void
+  /**
+   * Phase 3 — vertical split. When provided, a second split button is
+   * rendered after the horizontal-split button. Leaving this undefined
+   * preserves the pre-Phase-3 single-button layout for any caller that
+   * hasn't been updated.
+   */
+  onSplitDown?: () => void
 
   /** Close the active terminal tab (kills the PTY). */
   onKill: () => void
@@ -196,16 +205,29 @@ export function TerminalHeader(props: TerminalHeaderProps) {
         )}
       </div>
 
-      {/* 4. □ split */}
+      {/* 4. □ split right */}
       <button
         type="button"
         onClick={props.onSplit}
-        aria-label="Split Terminal"
+        aria-label="Split Terminal Right"
         className={ICON_BTN}
-        title="Split Terminal  (⌘\)"
+        title="Split Terminal Right  (⌘\)"
       >
         <SquareSplitHorizontal size={12} />
       </button>
+
+      {/* 4b. □ split down (Phase 3) */}
+      {props.onSplitDown && (
+        <button
+          type="button"
+          onClick={props.onSplitDown}
+          aria-label="Split Terminal Down"
+          className={ICON_BTN}
+          title="Split Terminal Down  (⌘⇧\)"
+        >
+          <SquareSplitVertical size={12} />
+        </button>
+      )}
 
       {/* 5. 🗑️ kill */}
       <button
@@ -297,13 +319,10 @@ export function TerminalHeader(props: TerminalHeaderProps) {
         )}
       </div>
 
-      {/* Kill-while-running confirm modal — simple <dialog>-style overlay since
-          apps/mobile doesn't have a shadcn AlertDialog import; uses the same
-          DOM primitives as the rest of the panel. */}
-      {killOpen && (
+      {killOpen && createPortal(
         <div
           role="presentation"
-          className="fixed inset-0 z-[9999] bg-black/40"
+          className="fixed inset-0 z-[2147483647] flex items-center justify-center bg-black/55 p-4"
           onClick={() => setKillOpen(false)}
         >
           <div
@@ -311,7 +330,7 @@ export function TerminalHeader(props: TerminalHeaderProps) {
             aria-labelledby="kill-title"
             aria-describedby="kill-body"
             onClick={(e) => e.stopPropagation()}
-            className="fixed left-1/2 top-1/2 max-h-[calc(100vh-32px)] w-[min(420px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 overflow-auto rounded border border-[#454545] bg-[#252526] p-4 text-[#cccccc] shadow-2xl"
+            className="max-h-[calc(100vh-32px)] w-[min(420px,calc(100vw-32px))] overflow-auto rounded border border-[#454545] bg-[#252526] p-4 text-[#cccccc] shadow-2xl"
           >
             <h2 id="kill-title" className="mb-2 text-[13px] font-semibold">Kill terminal?</h2>
             <p id="kill-body" className="mb-4 text-[12px] text-[#bdbdbd]">
@@ -337,7 +356,8 @@ export function TerminalHeader(props: TerminalHeaderProps) {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )
