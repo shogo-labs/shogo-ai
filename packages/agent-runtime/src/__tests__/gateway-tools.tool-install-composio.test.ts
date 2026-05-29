@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 //
-// gateway-tools.ts — tool_install composio branch coverage
-// Targets L3324-3393: the composio paths inside createToolInstallTool
-// (isComposioInitialized() + isComposioEnabled() branches, findComposioToolkit
-// hit/miss, initComposioSession success/failure, registerToolkitProxyTools,
-// checkComposioAuth status variants).
+// gateway-tools.ts — connect composio branch coverage
+// Targets connectViaComposio: the composio paths inside the unified connect
+// tool (isComposioInitialized() + isComposioEnabled() branches,
+// findComposioToolkit hit/miss, initComposioSession success/failure,
+// registerToolkitProxyTools, checkComposioAuth status variants).
 
 import { describe, test, expect, mock } from 'bun:test'
 
