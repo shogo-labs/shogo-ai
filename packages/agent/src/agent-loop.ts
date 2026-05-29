@@ -21,6 +21,7 @@
 
 import type { AgentTool, AgentEvent, StreamFn } from '@mariozechner/pi-agent-core'
 import { Agent } from '@mariozechner/pi-agent-core'
+import { streamSimple } from '@mariozechner/pi-ai'
 import type { Message, Api, ImageContent, AssistantMessage } from '@mariozechner/pi-ai'
 import { LoopDetector, type LoopDetectorConfig, type LoopDetectorResult } from './loop-detector'
 import {
@@ -31,6 +32,7 @@ import {
   sumUsage,
 } from './pi-adapter'
 import { wrapToolsWithOrchestration, type OrchestrationOptions } from './tool-orchestration'
+import { makeStallFallbackStreamFn, resolveStallFallbackOptions, type StallFallbackOptions } from './stall-fallback'
 
 export type { LoopDetectorConfig, LoopDetectorResult }
 export type { OrchestrationOptions }
@@ -88,6 +90,19 @@ export interface AgentLoopOptions {
   loopDetection?: Partial<LoopDetectorConfig> | false
   /** Custom stream function (for testing — replaces Pi's streamSimple) */
   streamFn?: StreamFn
+  /**
+   * Time-to-first-token stall fallback. When the active model produces no
+   * streamed content within the configured window, the in-flight request is
+   * aborted and retried against a stronger fallback model for a cooldown window
+   * (default 60s); after the window the next call re-probes the primary.
+   * Defaults to enabled (with the built-in MiMo→MiMo-Pro rule) whenever the
+   * default `streamSimple` is used; pass `false` to disable, or a config object
+   * to customize rules/threshold/window. Ignored when a custom `streamFn` is
+   * supplied (tests/mocks run unwrapped). Can also be disabled via
+   * `SHOGO_STALL_FALLBACK=0` and tuned via `SHOGO_STALL_FALLBACK_TTFT_MS` /
+   * `SHOGO_STALL_FALLBACK_WINDOW_MS`.
+   */
+  stallFallback?: StallFallbackOptions | false
   /** Tool orchestration config. Pass false to disable wrapping (tools run raw parallel). */
   orchestration?: OrchestrationOptions | false
   /** AbortSignal for external cancellation (e.g., user stop). */
@@ -245,6 +260,21 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       }
     : undefined
 
+  // Resolve the effective stream function. Tests/mocks pass an explicit
+  // `streamFn` and must run unwrapped. When using Pi's default `streamSimple`,
+  // optionally wrap it with TTFT stall-fallback (sticky for this run, so a
+  // single wrapper instance is shared across every API call in the loop).
+  let effectiveStreamFn: StreamFn | undefined = options.streamFn
+  if (!options.streamFn) {
+    const stallOpts = resolveStallFallbackOptions(options.stallFallback)
+    if (stallOpts) {
+      effectiveStreamFn = makeStallFallbackStreamFn(streamSimple, {
+        logPrefix: '[AgentLoop:StallFallback]',
+        ...stallOpts,
+      })
+    }
+  }
+
   const agent = new Agent({
     initialState: {
       systemPrompt: system,
@@ -256,7 +286,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     toolExecution: 'parallel',
     convertToLlm: defaultConvertToLlm,
     transformContext: wrappedTransformContext as any,
-    streamFn: options.streamFn,
+    streamFn: effectiveStreamFn,
     getApiKey: (prov) => {
       if (apiKey && prov === provider) return apiKey
       return resolveApiKey(prov)
@@ -492,7 +522,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
           toolExecution: 'parallel',
           convertToLlm: defaultConvertToLlm,
           transformContext: wrappedTransformContext as any,
-          streamFn: options.streamFn,
+          streamFn: effectiveStreamFn,
           getApiKey: (prov) => {
             if (apiKey && prov === provider) return apiKey
             return resolveApiKey(prov)
