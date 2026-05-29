@@ -55,7 +55,7 @@ const SKIP_TOP_LEVEL = new Set<string>([
   'src/generated',
 ])
 
-function main(): void {
+async function main(): Promise<void> {
   if (!existsSync(TEMPLATE_SRC)) {
     console.error(`[copy-runtime-template-to-dist] template source not found at ${TEMPLATE_SRC}`)
     process.exit(1)
@@ -93,8 +93,11 @@ function main(): void {
   // can't resolve. Rewrite the bundled copy's `package.json` to a concrete
   // `^X.Y.Z` resolved from npm's `latest` dist-tag so the standalone-deploy
   // package installs cleanly (and always tracks the latest published SDK).
-  materialize(join(TEMPLATE_DEST, 'package.json'))
+  await materialize(join(TEMPLATE_DEST, 'package.json'))
   console.log(`[copy-runtime-template-to-dist] materialized @shogo-ai/* pins in ${TEMPLATE_DEST}/package.json`)
 }
 
-main()
+main().catch((err) => {
+  console.error(err instanceof Error ? err.message : err)
+  process.exit(1)
+})

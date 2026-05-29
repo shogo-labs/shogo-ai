@@ -63,45 +63,74 @@ const DEP_KEYS = ['dependencies', 'devDependencies', 'peerDependencies', 'option
 
 const versionCache = new Map<string, string>()
 
-/**
- * Resolve the version to pin for a single `@shogo-ai/*` package.
- *
- * Primary: npm `latest` dist-tag. Fallback (only with
- * ALLOW_UNPUBLISHED_SDK_PIN=1): the in-repo source version.
- */
-function resolveVersion(name: string): string {
-  const cached = versionCache.get(name)
-  if (cached) return cached
+const NPM_REGISTRY = (process.env.npm_config_registry || 'https://registry.npmjs.org').replace(/\/+$/, '')
 
-  let version = ''
+/**
+ * Latest published version from the npm registry's `latest` dist-tag, fetched
+ * over HTTP. This needs only `fetch` (built into Bun) — no `npm` binary — so it
+ * works in minimal Docker images (e.g. Dockerfile.swe-overlay) that ship `bun`
+ * but not `npm`/`node`. Returns '' on any failure.
+ */
+async function fetchLatestFromRegistry(name: string): Promise<string> {
   try {
-    version = execFileSync('npm', ['view', name, 'version'], {
+    // Scoped names must be URL-encoded (@shogo-ai/sdk -> @shogo-ai%2Fsdk).
+    const url = `${NPM_REGISTRY}/${name.replace('/', '%2F')}`
+    const res = await fetch(url, { headers: { accept: 'application/json' } })
+    if (!res.ok) return ''
+    const body = (await res.json()) as { 'dist-tags'?: Record<string, string> }
+    return body['dist-tags']?.latest ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/** Latest published version via the `npm` binary (respects local .npmrc). '' on failure. */
+function npmViewVersion(name: string): string {
+  try {
+    return execFileSync('npm', ['view', name, 'version'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim()
   } catch {
-    version = ''
+    return ''
   }
+}
 
-  if (!version) {
-    if (process.env.ALLOW_UNPUBLISHED_SDK_PIN === '1') {
-      const fallback = readInRepoVersion(name)
-      if (fallback) {
-        console.warn(
-          `[materialize-runtime-template] WARNING: npm view ${name} failed; ` +
-            `falling back to in-repo version ${fallback} (UNVERIFIED against npm — ` +
-            `ALLOW_UNPUBLISHED_SDK_PIN=1). Do NOT use this for a real release build.`,
-        )
-        version = fallback
-      }
+/**
+ * Resolve the version to pin for a single `@shogo-ai/*` package.
+ *
+ * Tiered so the "latest PUBLISHED" guarantee holds in every environment:
+ *   1. npm registry over HTTP (works with just `bun`, no `npm` binary).
+ *   2. `npm view` (binary; respects a custom registry / .npmrc when present).
+ *   3. in-repo `packages/<pkg>` version — ONLY with ALLOW_UNPUBLISHED_SDK_PIN=1,
+ *      and only as a true-offline last resort. This can be AHEAD of npm (the
+ *      in-repo SDK is normally bumped before it publishes), so it is unsafe for
+ *      a shipped artifact and is loudly warned + opt-in.
+ */
+async function resolveVersion(name: string): Promise<string> {
+  const cached = versionCache.get(name)
+  if (cached) return cached
+
+  let version = await fetchLatestFromRegistry(name)
+  if (!version) version = npmViewVersion(name)
+
+  if (!version && process.env.ALLOW_UNPUBLISHED_SDK_PIN === '1') {
+    const fallback = readInRepoVersion(name)
+    if (fallback) {
+      console.warn(
+        `[materialize-runtime-template] WARNING: could not reach the npm registry for ${name}; ` +
+          `falling back to in-repo version ${fallback} (UNVERIFIED — may be ahead of what is ` +
+          `published; ALLOW_UNPUBLISHED_SDK_PIN=1). Do NOT use this for a shipped artifact.`,
+      )
+      version = fallback
     }
   }
 
   if (!version) {
     throw new Error(
       `[materialize-runtime-template] could not resolve a published version for ${name} ` +
-        `(npm view returned empty). Set ALLOW_UNPUBLISHED_SDK_PIN=1 to fall back to the ` +
-        `in-repo version for offline/local builds.`,
+        `(npm registry unreachable). Set ALLOW_UNPUBLISHED_SDK_PIN=1 to fall back to the ` +
+        `in-repo version for truly offline builds.`,
     )
   }
 
@@ -125,12 +154,14 @@ function readInRepoVersion(name: string): string | null {
   }
 }
 
+type VersionResolver = (name: string) => string | Promise<string>
+
 /**
  * @param pkgJsonPath manifest to rewrite in place.
- * @param resolveFn   version resolver (defaults to npm `latest` dist-tag).
+ * @param resolveFn   version resolver (defaults to the npm-registry resolver).
  *                    Injectable so tests can avoid network access.
  */
-export function materialize(pkgJsonPath: string, resolveFn: (name: string) => string = resolveVersion): boolean {
+export async function materialize(pkgJsonPath: string, resolveFn: VersionResolver = resolveVersion): Promise<boolean> {
   const abs = isAbsolute(pkgJsonPath) ? pkgJsonPath : resolve(process.cwd(), pkgJsonPath)
   if (!existsSync(abs)) {
     throw new Error(`[materialize-runtime-template] manifest not found: ${abs}`)
@@ -153,7 +184,7 @@ export function materialize(pkgJsonPath: string, resolveFn: (name: string) => st
             `is not an @shogo-ai/* package — cannot materialize to a published version.`,
         )
       }
-      const version = resolveFn(name)
+      const version = await resolveFn(name)
       deps[name] = `^${version}`
       changed = true
       console.log(`[materialize-runtime-template] ${name}: ${spec} -> ^${version} (${abs})`)
@@ -181,16 +212,19 @@ export function materialize(pkgJsonPath: string, resolveFn: (name: string) => st
   return changed
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const args = process.argv.slice(2)
   const targets = args.length > 0 ? args : [join(REPO_ROOT, 'templates', 'runtime-template', 'package.json')]
   for (const target of targets) {
-    materialize(target)
+    await materialize(target)
   }
 }
 
 // Only run the CLI when invoked directly (`bun run materialize-runtime-template.ts`),
 // not when imported by another build script.
 if (import.meta.main) {
-  main()
+  main().catch((err) => {
+    console.error(err instanceof Error ? err.message : err)
+    process.exit(1)
+  })
 }
