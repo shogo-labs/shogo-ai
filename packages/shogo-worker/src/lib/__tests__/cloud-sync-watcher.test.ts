@@ -169,9 +169,14 @@ describe('CloudSyncWatcher', () => {
     watcher.start();
     await wait(50);
 
-    writeFileSync(join(dir, '.shogo', 'db.sqlite'), 'SQLITE');
+    // App.tsx fires first so its watch event is queued before debounce starts;
+    // .shogo/db.sqlite arrives within the debounce window. The increased
+    // post-write wait absorbs cross-file timing variance (see
+    // gateway-mock side effect from git-cloner.test.ts's hoisted
+    // mock.module('node:child_process', ...) bloating bun's startup).
     writeFileSync(join(dir, 'App.tsx'), 'APP');
-    await wait(400);
+    writeFileSync(join(dir, '.shogo', 'db.sqlite'), 'SQLITE');
+    await wait(700);
     await watcher.stop();
 
     const fileTransportPaths = calls.flatMap((c) => c.paths);
