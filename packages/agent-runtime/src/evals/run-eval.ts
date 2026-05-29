@@ -48,7 +48,17 @@ import { type K8sWorkerConfig, startK8sWorker, stopK8sWorkerSync, stopK8sWorker,
 loadEnvFromDisk(REPO_ROOT)
 
 import { runEval } from './runner'
-import { calculateDollarCost, isOpenRouterModel } from '@shogo/model-catalog'
+import { calculateDollarCost } from '@shogo-ai/sdk/model-catalog'
+
+// The canonical helper + constant live at `@shogo-ai/agent/model-catalog`
+// (`helpers.ts::isOpenRouterModel`, `models.ts::OPENROUTER_MODEL_PREFIX`)
+// but agent-runtime resolves the dependency through the stale SDK dist
+// shim, which doesn't yet re-export them. Inline the trivial prefix
+// check here rather than rebuild the SDK on every eval run.
+const OPENROUTER_MODEL_PREFIX = 'openrouter:'
+function isOpenRouterModel(id: string): boolean {
+  return typeof id === 'string' && id.startsWith(OPENROUTER_MODEL_PREFIX)
+}
 import { getOpenRouterPricing, type PerTokenPricing } from './openrouter-pricing'
 import { resetWorkspaceDefaults, seedLSPConfig, seedRuntimeTemplate, seedSkillServer } from '../workspace-defaults'
 import { COMPLEX_EVALS } from './test-cases-complex'
@@ -276,9 +286,14 @@ function getEvals(track: string): AgentEval[] {
     case 'plan': return PLAN_EVALS
     case 'persona': return [...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS]
     case 'agentic': return [...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS]
+    // Everything in `all` minus the `agentic` persona/coordination tracks.
+    // Useful when you've already scored a model on the agentic suite and
+    // want to fill in the rest of the matrix without re-running the
+    // expensive long-pipeline persona evals.
+    case 'non-agentic': return [...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_SMOKE_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS]
     case 'all': return [...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, workspace-parity, complex, memory, personality, multiturn, mcp-discovery, unified-connect, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, subagent, subagent-smoke, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, knowledge-graph, token-budget, plan, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, agentic, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, workspace-parity, complex, memory, personality, multiturn, mcp-discovery, unified-connect, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, subagent, subagent-smoke, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, knowledge-graph, token-budget, plan, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, agentic, non-agentic, all`)
       process.exit(1)
   }
 }
