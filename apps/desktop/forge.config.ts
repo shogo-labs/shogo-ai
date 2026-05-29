@@ -130,6 +130,18 @@ const config: ForgeConfig = {
       /^\/prisma\/migrations/,
       /tsconfig\.json$/,
       /forge\.config\.ts$/,
+      // Workspace packages are linked into node_modules via `file:` deps
+      // (e.g. `@shogo/pty-core`), which npm/bun materialize as symlinks that
+      // point OUT of apps/desktop (../../packages/*). @electron/asar refuses
+      // to pack a symlink that escapes the package and throws "links out of
+      // the package", which electron-forge swallows into a silent no-op (no
+      // Shogo.app, exit 0) — this bricked the v1.8.17–v1.8.20 macOS releases.
+      // These packages exist only so the build-time bundlers can resolve and
+      // INLINE them (bundle-main.mjs → dist/main.js, bundle-pty-host.mjs →
+      // dist/pty-host.js); nothing in the shipped app require()s them at
+      // runtime (pty-core ships only src/*.ts, and preload imports it as a
+      // type-only import). So exclude the whole @shogo namespace from packaging.
+      /^\/node_modules\/@shogo(\/|$)/,
     ],
   },
   makers: [
