@@ -36,8 +36,10 @@ const {
   forwardToUpstream,
   copyResponseHeaders,
   onUpstreamRejection,
+  fetchCloudVisibleModels,
   _resetUpstreamCredentialCache,
   _resetInstanceCache,
+  _resetVisibleModelsCache,
 } = await import('../federated-upstream')
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -45,6 +47,7 @@ const {
 const realFetch = globalThis.fetch
 const ORIG_API_KEY = process.env.SHOGO_API_KEY
 const ORIG_LOCAL_MODE = process.env.SHOGO_LOCAL_MODE
+const ORIG_AI_MODE = process.env.AI_MODE
 
 type FetchCall = { url: string; init?: RequestInit }
 let fetchCalls: FetchCall[] = []
@@ -66,11 +69,13 @@ function jsonResponse(body: any, status = 200, headers: Record<string, string> =
 beforeEach(() => {
   process.env.SHOGO_LOCAL_MODE = 'true'
   process.env.SHOGO_API_KEY = 'shogo_sk_test'
+  delete process.env.AI_MODE
   findUniqueMock.mockReset()
   findUniqueMock.mockImplementation(async () => null)
   fetchCalls = []
   _resetUpstreamCredentialCache()
   _resetInstanceCache()
+  _resetVisibleModelsCache()
 })
 
 afterEach(() => {
@@ -79,6 +84,8 @@ afterEach(() => {
   else process.env.SHOGO_API_KEY = ORIG_API_KEY
   if (ORIG_LOCAL_MODE === undefined) delete process.env.SHOGO_LOCAL_MODE
   else process.env.SHOGO_LOCAL_MODE = ORIG_LOCAL_MODE
+  if (ORIG_AI_MODE === undefined) delete process.env.AI_MODE
+  else process.env.AI_MODE = ORIG_AI_MODE
 })
   cloudUrlImpl = () => 'https://cloud.test'
 
@@ -350,6 +357,93 @@ describe('copyResponseHeaders', () => {
     expect(headers['content-length']).toBeUndefined()
     expect(headers['transfer-encoding']).toBeUndefined()
     expect(headers['connection']).toBeUndefined()
+  })
+})
+
+// ─── fetchCloudVisibleModels ───────────────────────────────────────────────
+
+describe('fetchCloudVisibleModels', () => {
+  test('returns null without fetching when local mode is off', async () => {
+    delete process.env.SHOGO_LOCAL_MODE
+    installFetch(() => { throw new Error('should not be called') })
+    expect(await fetchCloudVisibleModels()).toBeNull()
+    expect(fetchCalls).toHaveLength(0)
+  })
+
+  test('returns null without fetching when AI_MODE is api-keys (BYOK)', async () => {
+    process.env.AI_MODE = 'api-keys'
+    installFetch(() => { throw new Error('should not be called') })
+    expect(await fetchCloudVisibleModels()).toBeNull()
+    expect(fetchCalls).toHaveLength(0)
+  })
+
+  test('returns null without fetching when AI_MODE is local-llm', async () => {
+    process.env.AI_MODE = 'local-llm'
+    installFetch(() => { throw new Error('should not be called') })
+    expect(await fetchCloudVisibleModels()).toBeNull()
+    expect(fetchCalls).toHaveLength(0)
+  })
+
+  test('returns null without fetching when there is no credential', async () => {
+    delete process.env.SHOGO_API_KEY
+    findUniqueMock.mockImplementation(async () => null)
+    installFetch(() => { throw new Error('should not be called') })
+    expect(await fetchCloudVisibleModels()).toBeNull()
+    expect(fetchCalls).toHaveLength(0)
+  })
+
+  test('fetches the cloud catalog with auth and normalizes the body', async () => {
+    installFetch(() => jsonResponse({
+      catalogIds: ['a', 1, 'b'],
+      openrouterModels: [{ id: 'openrouter:x', displayName: 'X' }],
+      catalogModels: [{ id: 'a', provider: 'anthropic', displayName: 'A', tier: 'premium' }],
+    }))
+    const out = await fetchCloudVisibleModels()
+    expect(fetchCalls[0].url).toBe('https://cloud.test/api/platform/visible-models')
+    const auth = new Headers(fetchCalls[0].init?.headers as any).get('authorization')
+    expect(auth).toBe('Bearer shogo_sk_test')
+    // Non-string catalog ids are filtered out.
+    expect(out?.catalogIds).toEqual(['a', 'b'])
+    expect(out?.openrouterModels).toHaveLength(1)
+    expect(out?.catalogModels).toHaveLength(1)
+  })
+
+  test('coerces a non-array catalogIds to null (show-all sentinel)', async () => {
+    installFetch(() => jsonResponse({ catalogIds: null, openrouterModels: [] }))
+    const out = await fetchCloudVisibleModels()
+    expect(out?.catalogIds).toBeNull()
+    expect(out?.catalogModels).toBeUndefined()
+  })
+
+  test('caches a successful read for the TTL', async () => {
+    installFetch(() => jsonResponse({ catalogIds: ['a'], openrouterModels: [] }))
+    const first = await fetchCloudVisibleModels()
+    expect(first?.catalogIds).toEqual(['a'])
+    installFetch(() => { throw new Error('should hit cache') })
+    const second = await fetchCloudVisibleModels()
+    expect(second?.catalogIds).toEqual(['a'])
+  })
+
+  test('returns null and does not cache on a non-OK upstream', async () => {
+    installFetch(() => new Response('boom', { status: 500 }))
+    expect(await fetchCloudVisibleModels()).toBeNull()
+    // A subsequent successful read is not blocked by a cached null.
+    installFetch(() => jsonResponse({ catalogIds: ['a'], openrouterModels: [] }))
+    expect((await fetchCloudVisibleModels())?.catalogIds).toEqual(['a'])
+  })
+
+  test('returns null when the upstream fetch throws', async () => {
+    installFetch(() => { throw new Error('ECONNREFUSED') })
+    expect(await fetchCloudVisibleModels()).toBeNull()
+  })
+
+  test('notifies the rejection observer on a 401', async () => {
+    const seen: string[] = []
+    const unsubscribe = onUpstreamRejection((r) => seen.push(r))
+    installFetch(() => new Response('', { status: 401 }))
+    expect(await fetchCloudVisibleModels()).toBeNull()
+    expect(seen.length).toBeGreaterThan(0)
+    unsubscribe()
   })
 })
 
