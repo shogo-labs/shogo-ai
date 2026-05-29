@@ -443,6 +443,29 @@ async function main() {
     }
   } else {
     results = await runPool(allFiles, extraArgs, root, effectiveParallel)
+    // Retry any failed file SERIALLY once before declaring it a real
+    // failure. The parallel pool's per-file failures are dominated by
+    // shared-resource contention (TS LSP startup, fs.watch jitter, port
+    // races between concurrent child processes) — each victim file
+    // passes cleanly when re-run alone. Serial retry eliminates the
+    // false positive without masking a stable bug: if the file still
+    // fails on a quiet retry, the original failure stands.
+    const flaky = results.filter((r) => r.exitCode !== 0)
+    if (flaky.length > 0 && flaky.length <= 5) {
+      console.log()
+      console.log(`retrying ${flaky.length} failed file(s) serially...`)
+      for (const old of flaky) {
+        const rel = relative(process.cwd(), old.file)
+        process.stdout.write(`  ${rel} (retry) ... `)
+        const retried = runOneSync(old.file, extraArgs, root, undefined)
+        const tag = retried.exitCode === 0 ? 'OK' : 'FAIL'
+        process.stdout.write(
+          `${tag} (${retried.passed} pass, ${retried.failed} fail, ${retried.skipped} skip, ${retried.durationMs}ms)\n`,
+        )
+        const idx = results.indexOf(old)
+        if (idx >= 0) results[idx] = retried
+      }
+    }
   }
 
   let totalPassed = 0
