@@ -172,7 +172,17 @@ resource "cloudflare_worker_script" "subdomain_router" {
     export default {
       async fetch(request) {
         const url = new URL(request.url);
-        const subdomain = url.hostname.split('.')[0];
+        // Strip an optional leading `www.` so `www.<app>.shogo.one`
+        // serves the same app as `<app>.shogo.one`. NOTE: this only
+        // fixes *routing* — the edge still needs a TLS cert that covers
+        // the `www.<app>` hostname. Universal SSL's `*.shogo.one`
+        // wildcard is one label deep, so `www.<app>.shogo.one` requires
+        // a separately-provisioned cert (advanced cert at
+        // `*.<app>.shogo.one`, or Total TLS over a proxied `www.<app>`
+        // DNS record). Without that cert the TLS handshake fails before
+        // this Worker ever runs.
+        const hostname = url.hostname.replace(/^www\./, '');
+        const subdomain = hostname.split('.')[0];
 
         const originUrl = buildOriginUrl(subdomain, url.pathname);
         const response = await fetch(originUrl, {

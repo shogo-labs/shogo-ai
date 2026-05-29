@@ -31,7 +31,10 @@ set -euo pipefail
 
 API_NS="${1:?api namespace required}"
 WP_NS="${2:?workspaces namespace required}"
-WAIT_BEFORE_CHECK="${3:-90}"
+# Total readiness budget (seconds). The check polls within this window and
+# only fails if the pool still reports 0 Ready at the end — see the polling
+# loop below. Terminal BackOff/CrashLoop pods still fail fast regardless.
+WAIT_BEFORE_CHECK="${3:-600}"
 
 # A second-line guard against the same regression PR #697 fixed in
 # sync-api-env.sh: refuse to ship if any api ksvc env value still
@@ -50,60 +53,90 @@ if [[ -n "$bad_envs" ]]; then
   exit 1
 fi
 
-# The warm-pool controller's reconcile interval is 30s by default. A pod
-# that fails to pull its image is classified as ImagePullBackOff by the
-# kubelet within ~10s of creation. Wait long enough for at least one
-# reconcile cycle plus image-pull headroom on a cold node, otherwise we
-# risk a false-pass on a controller that simply hasn't started filling
-# the pool yet.
-echo "Sleeping ${WAIT_BEFORE_CHECK}s to let warm-pool controller reconcile..."
-sleep "$WAIT_BEFORE_CHECK"
-
-echo "Checking warm-pool health in $WP_NS"
-
-ksvc_json=$(kubectl get ksvc -n "$WP_NS" -l "shogo.io/warm-pool=true" -o json)
-total_count=$(echo "$ksvc_json" | jq '.items | length')
-ready_count=$(echo "$ksvc_json" | jq '
-  [.items[]
-    | select(.status.conditions[]? | select(.type == "Ready" and .status == "True"))
-  ] | length
-')
-echo "  warm-pool ksvcs: $ready_count Ready / $total_count total"
-
+# Detect warm-pool pods that are *genuinely* broken — ImagePullBackOff /
+# ErrImagePull / CrashLoopBackOff are the canonical "image is broken" /
+# "container crashes on boot" failure modes. These are terminal: more
+# waiting won't fix them, so finding any one of them fails immediately.
+#
 # Knative does not propagate the `shogo.io/warm-pool=true` label down to
 # pods, but it does propagate `serving.knative.dev/service`. So we list
 # all pods in the workspaces ns and filter by that label prefix.
-broken=$(kubectl get pods -n "$WP_NS" -o json | jq -r '
-  .items[]
-  | select(.metadata.labels["serving.knative.dev/service"] // "" | startswith("warm-pool-"))
-  | (
-      ((.status.containerStatuses // []) + (.status.initContainerStatuses // []))
-      | map(.state.waiting.reason? // "")
-      | map(select(. == "ImagePullBackOff" or . == "ErrImagePull" or . == "CrashLoopBackOff"))
-    ) as $bad
-  | select(($bad | length) > 0)
-  | "\(.metadata.name) [\($bad | join(","))]"
-')
-if [[ -n "$broken" ]]; then
-  echo "::error::check-warm-pool-health: warm-pool pod(s) in BackOff state:"
-  echo "$broken" | awk '{print "  " $0}'
-  echo "::group::warm-pool pods (most recent 30)"
-  kubectl get pods -n "$WP_NS" -o wide --sort-by=.metadata.creationTimestamp 2>&1 | tail -30 || true
-  echo "::endgroup::"
-  exit 1
-fi
+broken_warm_pool_pods() {
+  kubectl get pods -n "$WP_NS" -o json | jq -r '
+    .items[]
+    | select(.metadata.labels["serving.knative.dev/service"] // "" | startswith("warm-pool-"))
+    | (
+        ((.status.containerStatuses // []) + (.status.initContainerStatuses // []))
+        | map(.state.waiting.reason? // "")
+        | map(select(. == "ImagePullBackOff" or . == "ErrImagePull" or . == "CrashLoopBackOff"))
+      ) as $bad
+    | select(($bad | length) > 0)
+    | "\(.metadata.name) [\($bad | join(","))]"
+  '
+}
 
+# Poll for warm-pool readiness instead of sampling once. A single sleep+check
+# false-fails the deploy whenever the warm-pool ksvcs are still converging
+# (e.g. their revisions are cold-pulling the large runtime image onto freshly
+# scaled nodes in a secondary region — observed as Ready=Unknown /
+# RevisionMissing for a few minutes). We keep failing FAST on terminal BackOff
+# pods, but otherwise give the pool the full window to report ≥1 Ready before
+# declaring the deploy unhealthy.
+#
+# WAIT_BEFORE_CHECK (3rd arg) is the total budget; POLL_INTERVAL controls the
+# cadence. Defaults: settle 30s, then poll every 20s up to ~10min total.
+POLL_INTERVAL="${POLL_INTERVAL:-20}"
+SETTLE="${SETTLE:-30}"
+
+echo "Letting warm-pool controller settle for ${SETTLE}s, then polling up to ${WAIT_BEFORE_CHECK}s for readiness..."
+sleep "$SETTLE"
+
+deadline=$(( $(date +%s) + WAIT_BEFORE_CHECK ))
+total_count=0
+ready_count=0
+while :; do
+  # Terminal failure: a broken pod will never recover by waiting.
+  broken=$(broken_warm_pool_pods)
+  if [[ -n "$broken" ]]; then
+    echo "::error::check-warm-pool-health: warm-pool pod(s) in BackOff state:"
+    echo "$broken" | awk '{print "  " $0}'
+    echo "::group::warm-pool pods (most recent 30)"
+    kubectl get pods -n "$WP_NS" -o wide --sort-by=.metadata.creationTimestamp 2>&1 | tail -30 || true
+    echo "::endgroup::"
+    exit 1
+  fi
+
+  ksvc_json=$(kubectl get ksvc -n "$WP_NS" -l "shogo.io/warm-pool=true" -o json)
+  total_count=$(echo "$ksvc_json" | jq '.items | length')
+  ready_count=$(echo "$ksvc_json" | jq '
+    [.items[]
+      | select(.status.conditions[]? | select(.type == "Ready" and .status == "True"))
+    ] | length
+  ')
+  echo "  warm-pool ksvcs: $ready_count Ready / $total_count total (t-$(( deadline - $(date +%s) ))s)"
+
+  # Healthy as soon as the pool has at least one Ready ksvc and nothing broken.
+  if [[ "$ready_count" -ge 1 ]]; then
+    echo "✓ warm pool healthy ($ready_count/$total_count ksvcs Ready, no broken pods)"
+    exit 0
+  fi
+
+  if [[ "$(date +%s)" -ge "$deadline" ]]; then
+    break
+  fi
+  sleep "$POLL_INTERVAL"
+done
+
+# Zero warm-pool ksvcs is a warning, not an error: a fresh bootstrap or a
+# deploy immediately after `kubectl delete ksvc -l shogo.io/warm-pool=true`
+# (incident remediation) legitimately lands here.
 if [[ "$total_count" -eq 0 ]]; then
-  echo "::warning::no warm-pool ksvcs exist yet — controller may still be reconciling, or pool was just wiped"
+  echo "::warning::no warm-pool ksvcs exist after ${WAIT_BEFORE_CHECK}s — controller may still be reconciling, or pool was just wiped"
   exit 0
 fi
 
-if [[ "$ready_count" -lt 1 ]]; then
-  echo "::error::check-warm-pool-health: $total_count warm-pool ksvcs exist but 0 are Ready"
-  echo "::group::warm-pool ksvcs"
-  kubectl get ksvc -n "$WP_NS" -l "shogo.io/warm-pool=true" 2>&1 || true
-  echo "::endgroup::"
-  exit 1
-fi
-
-echo "✓ warm pool healthy ($ready_count/$total_count ksvcs Ready, no broken pods)"
+echo "::error::check-warm-pool-health: $total_count warm-pool ksvcs exist but 0 are Ready after ${WAIT_BEFORE_CHECK}s"
+echo "::group::warm-pool ksvcs"
+kubectl get ksvc -n "$WP_NS" -l "shogo.io/warm-pool=true" 2>&1 || true
+echo "::endgroup::"
+exit 1
