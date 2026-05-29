@@ -225,6 +225,13 @@ export interface VisibleCatalogModel {
   displayName: string
   shortDisplayName?: string
   tier: 'economy' | 'standard' | 'premium'
+  /** Model family for color-coding/labelling (e.g. `opus`, `gpt`, `other`).
+   *  Optional for back-compat with API servers that predate this field;
+   *  lets clients label purely-DB-defined models they don't bundle. */
+  family?: string
+  /** Max output tokens, shipped so clients can size requests for DB-only
+   *  models absent from their bundled catalog. */
+  maxOutputTokens?: number
 }
 
 /** Admin-curated allowlist of models that surface in the user picker.
@@ -252,6 +259,87 @@ export interface ResolvedVisibleModels {
   /** Resolved catalog models for the allowlist. Optional for back-compat
    *  with API servers that predate this field. */
   catalogModels?: VisibleCatalogModel[]
+}
+
+// ===========================================================================
+// DB-defined model catalog (super-admin managed). Lets new models, including
+// custom OpenAI-compatible providers (e.g. MiMo), be added without a release.
+// ===========================================================================
+
+/** A custom OpenAI/Anthropic-compatible provider (e.g. MiMo / xiaomimimo).
+ *  The API key is write-only: reads return only {@link apiKeyMask}. */
+export interface ModelProvider {
+  id: string
+  label: string
+  baseUrl: string
+  protocol: 'openai' | 'anthropic'
+  authStyle: 'bearer' | 'api-key-header'
+  enabled: boolean
+  /** Recognizable mask of the stored key (e.g. `sk-s…3xaa`), never the key. */
+  apiKeyMask: string
+  /** False when the stored key can't be decrypted (missing/rotated master key). */
+  keyDecryptable: boolean
+  createdAt: string
+  updatedAt: string
+  updatedBy: string | null
+}
+
+/** Create/update payload for a {@link ModelProvider}. `apiKey` is plaintext and
+ *  encrypted server-side; omit it on update to keep the existing key. */
+export interface ModelProviderInput {
+  label?: string
+  baseUrl?: string
+  protocol?: 'openai' | 'anthropic'
+  authStyle?: 'bearer' | 'api-key-header'
+  apiKey?: string
+  enabled?: boolean
+}
+
+/** A DB-defined model row (mirrors the static catalog shape + per-token pricing). */
+export interface ModelDefinition {
+  id: string
+  provider: string
+  providerId: string | null
+  apiModel: string
+  displayName: string
+  shortDisplayName: string
+  tier: 'economy' | 'standard' | 'premium'
+  family: 'opus' | 'sonnet' | 'haiku' | 'gpt' | 'other'
+  generation: 'current' | 'legacy'
+  maxOutputTokens: number
+  enabled: boolean
+  sortOrder: number | null
+  aliases: string[]
+  capabilities: Record<string, unknown> | null
+  inputPerMillion: number
+  cachedInputPerMillion: number
+  cacheWritePerMillion: number
+  outputPerMillion: number
+  createdAt: string
+  updatedAt: string
+  updatedBy: string | null
+}
+
+/** Create/update payload for a {@link ModelDefinition}. */
+export interface ModelDefinitionInput {
+  id?: string
+  provider?: string
+  providerId?: string | null
+  apiModel?: string
+  displayName?: string
+  shortDisplayName?: string
+  tier?: 'economy' | 'standard' | 'premium'
+  family?: 'opus' | 'sonnet' | 'haiku' | 'gpt' | 'other'
+  generation?: 'current' | 'legacy'
+  maxOutputTokens?: number
+  enabled?: boolean
+  sortOrder?: number | null
+  aliases?: string[]
+  capabilities?: Record<string, unknown> | null
+  inputPerMillion?: number
+  cachedInputPerMillion?: number
+  cacheWritePerMillion?: number
+  outputPerMillion?: number
 }
 
 export interface InstanceInfo {
@@ -586,6 +674,68 @@ export class PlatformApi {
       '/api/platform/visible-models',
     )
     return res.data ?? { catalogIds: null, openrouterModels: [] }
+  }
+
+  // ===========================================================================
+  // Admin: DB-defined model catalog (custom providers + models)
+  // ===========================================================================
+
+  /** List custom model providers. Keys are returned masked, never in plaintext. */
+  async listModelProviders(): Promise<ModelProvider[]> {
+    const res = await this.http.get<{ providers: ModelProvider[] }>('/api/admin/settings/model-providers')
+    return res.data?.providers ?? []
+  }
+
+  /** Create a custom model provider. `apiKey` is required and stored encrypted. */
+  async createModelProvider(input: ModelProviderInput): Promise<ModelProvider> {
+    const res = await this.http.request<{ ok: boolean; provider: ModelProvider }>(
+      '/api/admin/settings/model-providers',
+      { method: 'POST', body: input },
+    )
+    return res.data!.provider
+  }
+
+  /** Update a custom model provider. Omit `apiKey` to keep the existing key. */
+  async updateModelProvider(id: string, input: ModelProviderInput): Promise<ModelProvider> {
+    const res = await this.http.request<{ ok: boolean; provider: ModelProvider }>(
+      `/api/admin/settings/model-providers/${encodeURIComponent(id)}`,
+      { method: 'PUT', body: input },
+    )
+    return res.data!.provider
+  }
+
+  /** Delete a custom model provider. Linked models have their providerId nulled. */
+  async deleteModelProvider(id: string): Promise<void> {
+    await this.http.request(`/api/admin/settings/model-providers/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  }
+
+  /** List DB-defined models. */
+  async listModels(): Promise<ModelDefinition[]> {
+    const res = await this.http.get<{ models: ModelDefinition[] }>('/api/admin/settings/models')
+    return res.data?.models ?? []
+  }
+
+  /** Create a DB-defined model. */
+  async createModel(input: ModelDefinitionInput): Promise<ModelDefinition> {
+    const res = await this.http.request<{ ok: boolean; model: ModelDefinition }>(
+      '/api/admin/settings/models',
+      { method: 'POST', body: input },
+    )
+    return res.data!.model
+  }
+
+  /** Update a DB-defined model. */
+  async updateModel(id: string, input: ModelDefinitionInput): Promise<ModelDefinition> {
+    const res = await this.http.request<{ ok: boolean; model: ModelDefinition }>(
+      `/api/admin/settings/models/${encodeURIComponent(id)}`,
+      { method: 'PUT', body: input },
+    )
+    return res.data!.model
+  }
+
+  /** Delete a DB-defined model. */
+  async deleteModel(id: string): Promise<void> {
+    await this.http.request(`/api/admin/settings/models/${encodeURIComponent(id)}`, { method: 'DELETE' })
   }
 
   // ===========================================================================

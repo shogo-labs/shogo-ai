@@ -26,6 +26,7 @@ import {
   type ModelName,
 } from '../lib/usage-cost'
 import { resolveModelId } from '@shogo/model-catalog'
+import { getDbModelPricing } from '../lib/db-model-pricing'
 
 // ============================================================================
 // Types
@@ -1714,12 +1715,22 @@ async function maybeRecordExperimentRun(
 }
 
 /** Token-cost recomputation in dollar units. Mirrors the catalog used by the
- * proxy billing path so analytics and billing agree on numbers. */
+ * proxy billing path so analytics and billing agree on numbers. DB-defined
+ * models (custom providers, admin-added models) use their per-token pricing
+ * so analytics agrees with `usage-cost.calculateUsageCost`. */
 function serverComputeCreditCost(
   model: string,
   inputTokens: number,
   outputTokens: number,
   cachedInputTokens: number,
 ): number {
+  const dbPricing = getDbModelPricing(model)
+  if (dbPricing) {
+    const rawUsd =
+      (inputTokens * dbPricing.inputPerMillion / 1_000_000) +
+      (cachedInputTokens * dbPricing.cachedInputPerMillion / 1_000_000) +
+      (outputTokens * dbPricing.outputPerMillion / 1_000_000)
+    return Math.max(0, rawUsd)
+  }
   return Math.max(0, calculateDollarCost(model, inputTokens, outputTokens, cachedInputTokens, 0))
 }

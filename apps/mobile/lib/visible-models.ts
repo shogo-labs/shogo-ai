@@ -13,7 +13,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { PlatformApi, type ResolvedVisibleModels } from '@shogo-ai/sdk'
 import {
   getModelsByProvider,
+  getModelEntry,
   getProviderLabel,
+  AUTO_MODEL_ID,
   type ModelEntry,
   type ModelTier,
 } from '@shogo/model-catalog'
@@ -22,7 +24,12 @@ import { createHttpClient } from './api'
 export interface PickerModel {
   id: string
   displayName: string
+  shortDisplayName?: string
   tier: ModelTier
+  family?: string
+  /** Native provider id (e.g. `anthropic`, `custom`). Lets surfaces that
+   *  need the provider (not just the group label) build their options. */
+  provider?: string
 }
 
 export interface PickerGroup {
@@ -35,6 +42,41 @@ const DEFAULT_OR_TIER: ModelTier = 'standard'
 let cached: ResolvedVisibleModels | null = null
 let inflight: Promise<ResolvedVisibleModels> | null = null
 
+/** Per-id metadata resolved by the serving API (notably for DB-defined models
+ *  this build doesn't carry in its bundled `MODEL_CATALOG`, e.g. MiMo). Kept
+ *  module-global so non-picker surfaces (chips, analytics) can resolve a
+ *  model's display/family/tier without re-fetching. */
+interface ResolvedModelMeta {
+  displayName: string
+  shortDisplayName?: string
+  tier: ModelTier
+  family?: string
+  maxOutputTokens?: number
+}
+
+const serverModelMeta = new Map<string, ResolvedModelMeta>()
+
+function indexServerCatalog(data: ResolvedVisibleModels): void {
+  serverModelMeta.clear()
+  for (const m of data.catalogModels ?? []) {
+    serverModelMeta.set(m.id, {
+      displayName: m.displayName,
+      shortDisplayName: m.shortDisplayName,
+      tier: (m.tier as ModelTier) ?? 'standard',
+      family: m.family,
+      maxOutputTokens: m.maxOutputTokens,
+    })
+  }
+  for (const m of data.openrouterModels ?? []) {
+    if (serverModelMeta.has(m.id)) continue
+    serverModelMeta.set(m.id, {
+      displayName: m.displayName,
+      tier: (m.tier as ModelTier | undefined) ?? DEFAULT_OR_TIER,
+      family: 'other',
+    })
+  }
+}
+
 async function fetchVisibleModels(): Promise<ResolvedVisibleModels> {
   if (cached) return cached
   if (!inflight) {
@@ -43,6 +85,7 @@ async function fetchVisibleModels(): Promise<ResolvedVisibleModels> {
       .getVisibleModels()
       .then((data) => {
         cached = data
+        indexServerCatalog(data)
         return data
       })
       .catch(() => {
@@ -62,6 +105,66 @@ async function fetchVisibleModels(): Promise<ResolvedVisibleModels> {
 export function invalidateVisibleModelsCache(): void {
   cached = null
   inflight = null
+  serverModelMeta.clear()
+}
+
+// ===========================================================================
+// Metadata resolver chain — server metadata (cloud-resolved, covers DB-only
+// models) → bundled MODEL_CATALOG → id-based heuristics. Use these on any
+// surface that needs to label/gate a model by id so DB-defined models render
+// correctly even though they aren't in this build's bundled catalog.
+// ===========================================================================
+
+/** Resolve a model's full display name from its id. */
+export function resolveDisplayName(id: string): string {
+  if (id === AUTO_MODEL_ID) return 'Auto'
+  const server = serverModelMeta.get(id)
+  if (server?.displayName) return server.displayName
+  const entry = getModelEntry(id)
+  if (entry) return entry.displayName
+  return id
+}
+
+/** Resolve a model's short display name (for compact chips). */
+export function resolveShortName(id: string): string {
+  if (!id) return 'Unknown'
+  if (id === AUTO_MODEL_ID) return 'Auto'
+  const server = serverModelMeta.get(id)
+  if (server?.shortDisplayName) return server.shortDisplayName
+  if (server?.displayName) return server.displayName
+  const entry = getModelEntry(id)
+  if (entry) return entry.shortDisplayName ?? entry.displayName
+  return id.length > 20 ? id.slice(0, 20) + '...' : id
+}
+
+/** Resolve a model's tier (for Pro gating). Server metadata wins so
+ *  DB-defined models gate by their admin-set tier; falls back to bundled
+ *  catalog then the same id heuristics as `getModelTier`. */
+export function resolveTier(id: string): ModelTier {
+  if (id === AUTO_MODEL_ID) return 'economy'
+  const server = serverModelMeta.get(id)
+  if (server) return server.tier
+  const entry = getModelEntry(id)
+  if (entry) return entry.tier
+  const lower = id.toLowerCase()
+  if (lower.includes('opus')) return 'premium'
+  if (lower.includes('haiku') || lower.includes('nano') || lower.includes('mini')) return 'economy'
+  return 'standard'
+}
+
+/** Resolve a model's family (for color-coding/labels). Falls back to a
+ *  best-effort id heuristic when neither server nor bundled metadata knows. */
+export function resolveFamily(id: string): string {
+  const server = serverModelMeta.get(id)
+  if (server?.family) return server.family
+  const entry = getModelEntry(id)
+  if (entry) return entry.family
+  const lower = id.toLowerCase()
+  if (lower.includes('opus')) return 'opus'
+  if (lower.includes('sonnet')) return 'sonnet'
+  if (lower.includes('haiku')) return 'haiku'
+  if (lower.includes('gpt')) return 'gpt'
+  return 'other'
 }
 
 /**
@@ -83,7 +186,14 @@ function groupResolvedCatalogModels(
       byLabel.set(label, bucket)
       order.push(label)
     }
-    bucket.push({ id: m.id, displayName: m.displayName, tier: m.tier as ModelTier })
+    bucket.push({
+      id: m.id,
+      displayName: m.displayName,
+      shortDisplayName: m.shortDisplayName,
+      tier: m.tier as ModelTier,
+      family: m.family,
+      provider: m.provider,
+    })
   }
   return order.map((label) => ({ label, models: byLabel.get(label)! }))
 }
@@ -123,7 +233,10 @@ export function buildModelGroups(
         .map((m: ModelEntry) => ({
           id: m.id,
           displayName: m.displayName,
+          shortDisplayName: m.shortDisplayName,
           tier: m.tier as ModelTier,
+          family: m.family,
+          provider: m.provider,
         })),
     })).filter((g) => g.models.length > 0)
   }

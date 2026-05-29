@@ -34,12 +34,10 @@ import { usePlatformConfig } from "../../lib/platform-config"
 import { AttachSourceSheet } from "./AttachSourceSheet"
 import { ContextTracker } from "./ContextTracker"
 import {
-  getModelShortDisplayName,
-  getModelTier,
   AUTO_MODEL_ID,
   type ModelTier,
 } from "@shogo/model-catalog"
-import { useModelPickerGroups } from "../../lib/visible-models"
+import { useModelPickerGroups, resolveShortName, resolveTier } from "../../lib/visible-models"
 import {
   ArrowUp,
   Plus,
@@ -307,7 +305,7 @@ function ChatInputImpl({
 
   const handleModelChange = useCallback(
     (modelId: string) => {
-      const tier = getModelTier(modelId)
+      const tier = resolveTier(modelId)
       if (tier !== "economy" && !effectiveIsPro) {
         onUpgradeClick?.()
         return
@@ -1421,7 +1419,7 @@ function ChatInputImpl({
                   className="h-[22px] flex-row items-center gap-1 rounded-md px-1.5"
                 >
                   <Text className="text-xs text-muted-foreground">
-                    {getModelShortDisplayName(currentModelId)}
+                    {resolveShortName(currentModelId)}
                   </Text>
                   <ChevronDown className="h-2 w-2 text-muted-foreground/60" size={8} />
                 </Pressable>

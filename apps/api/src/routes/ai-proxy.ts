@@ -36,6 +36,7 @@ import {
 } from '../lib/ai-proxy-token'
 import { verifyRuntimeToken } from '../lib/runtime-token'
 import { resolveApiKey } from './api-keys'
+import { getDbRoutingConfigSync, getMergedModelEntrySync } from '../services/model-registry.service'
 import { wipeCloudKey } from '../lib/cloud-key-wipe'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
 import { getRuntimeManager } from '../lib/runtime'
@@ -52,6 +53,7 @@ import {
   type Provider,
   type ImageProvider,
   type AgentMode,
+  type ModelTier,
 } from '@shogo/model-catalog'
 
 // =============================================================================
@@ -124,6 +126,12 @@ interface ModelConfig {
   provider: Provider
   apiModel: string
   displayName: string
+  /** Custom-provider (`provider === 'custom'`) OpenAI-compatible base URL. */
+  baseUrl?: string
+  /** Custom-provider decrypted upstream API key. */
+  apiKey?: string
+  /** Custom-provider auth style for attaching the key. */
+  authStyle?: 'bearer' | 'api-key-header'
 }
 
 // =============================================================================
@@ -171,6 +179,21 @@ function resolveModel(model: string): ModelConfig | null {
     return { provider: 'openrouter', apiModel, displayName: apiModel }
   }
 
+  // DB-defined models (incl. custom OpenAI-compatible providers like MiMo).
+  // These augment and override the static catalog, so consult them before
+  // the static MODEL_REGISTRY. Resolves DB aliases internally.
+  const dbRouting = getDbRoutingConfigSync(model)
+  if (dbRouting) {
+    return {
+      provider: dbRouting.provider as Provider,
+      apiModel: dbRouting.apiModel,
+      displayName: dbRouting.displayName,
+      baseUrl: dbRouting.baseUrl,
+      apiKey: dbRouting.apiKey,
+      authStyle: dbRouting.authStyle,
+    }
+  }
+
   // Exact match
   if (MODEL_REGISTRY[model]) {
     return MODEL_REGISTRY[model]
@@ -203,6 +226,17 @@ function resolveModel(model: string): ModelConfig | null {
 }
 
 /**
+ * Resolve the access tier for a model id, honoring DB-defined models (incl.
+ * custom providers) over the static catalog so admin-configured tiers gate
+ * correctly. Falls back to the static heuristic for unknown ids.
+ */
+function resolveModelTier(model: string): ModelTier {
+  const dbEntry = getMergedModelEntrySync(model)
+  if (dbEntry) return dbEntry.tier
+  return getModelTier(model)
+}
+
+/**
  * Get the API key for a provider.
  */
 function getProviderApiKey(provider: Provider): string | null {
@@ -216,8 +250,20 @@ function getProviderApiKey(provider: Provider): string | null {
     case 'local':
       return 'local'
     default:
+      // 'custom' providers carry their (decrypted) key on the ModelConfig,
+      // resolved by `resolveModelApiKey` below — not from an env var.
       return null
   }
+}
+
+/**
+ * Resolve the upstream API key for a resolved model. Custom providers carry
+ * their decrypted key on the config (from the encrypted DB row); everything
+ * else reads the server-side env var for its provider.
+ */
+function resolveModelApiKey(modelConfig: ModelConfig): string | null {
+  if (modelConfig.provider === 'custom') return modelConfig.apiKey || null
+  return getProviderApiKey(modelConfig.provider)
 }
 
 /**
@@ -1410,11 +1456,23 @@ function getOpenAICompatibleBaseUrl(modelConfig: ModelConfig): string {
     const base = (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/$/, '')
     return `${base}/chat/completions`
   }
+  // Custom OpenAI-compatible providers (e.g. MiMo): the admin-configured
+  // base URL already includes the version path (e.g. .../v1), so we just
+  // append the chat-completions route.
+  if (modelConfig.provider === 'custom' && modelConfig.baseUrl) {
+    return `${modelConfig.baseUrl.replace(/\/$/, '')}/chat/completions`
+  }
   return 'https://api.openai.com/v1/chat/completions'
 }
 
 function getOpenAICompatibleHeaders(apiKey: string, modelConfig: ModelConfig): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  // Custom providers can authenticate via `api-key` header instead of a
+  // Bearer token (MiMo accepts either); honor the configured auth style.
+  if (modelConfig.provider === 'custom' && modelConfig.authStyle === 'api-key-header') {
+    headers['api-key'] = apiKey
+    return headers
+  }
   if (modelConfig.provider !== 'local') {
     headers['Authorization'] = `Bearer ${apiKey}`
   }
@@ -2225,7 +2283,7 @@ export function aiProxyRoutes() {
       // Local LLMs and BYOK OpenRouter calls are user-paid, so no tier check
       // applies — the user is paying their own provider directly.
       if (modelConfig.provider !== 'local' && modelConfig.provider !== 'openrouter' && !isLocalDev) {
-        const tier = getModelTier(request.model)
+        const tier = resolveModelTier(request.model)
         if (tier !== 'economy') {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
           if (!hasAdvanced) {
@@ -2243,8 +2301,9 @@ export function aiProxyRoutes() {
         }
       }
 
-      // Get provider API key
-      const apiKey = getProviderApiKey(modelConfig.provider)
+      // Get provider API key (custom providers carry a decrypted key on the
+      // resolved config; native providers read their server-side env var).
+      const apiKey = resolveModelApiKey(modelConfig)
       if (!apiKey) {
         return c.json(
           {
@@ -2646,7 +2705,7 @@ export function aiProxyRoutes() {
 
       // Enforce model tier: free/basic users can only use economy-tier models
       if (!isLocal && !isLocalDev) {
-        const tier = getModelTier(resolvedModel)
+        const tier = resolveModelTier(resolvedModel)
         if (tier !== 'economy') {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
           if (!hasAdvanced) {

@@ -31,6 +31,9 @@ import {
   Plus,
   X,
   Search,
+  Trash2,
+  Pencil,
+  Boxes,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
@@ -39,6 +42,10 @@ import {
   type LlmConfig,
   type VisibleModelsConfig,
   type VisibleOpenRouterModel,
+  type ModelProvider,
+  type ModelProviderInput,
+  type ModelDefinition,
+  type ModelDefinitionInput,
 } from '@shogo-ai/sdk'
 import {
   getModelsByProvider,
@@ -574,10 +581,14 @@ function LocalSettingsPage() {
                 </Text>
               </SectionCard>
             ) : (
-              <VisibleModelsCard
-                platform={platform}
-                hasOpenRouterKey={!!keyMasks.openrouter}
-              />
+              <>
+                <VisibleModelsCard
+                  platform={platform}
+                  hasOpenRouterKey={!!keyMasks.openrouter}
+                />
+                <CustomProvidersCard platform={platform} />
+                <CustomModelsCard platform={platform} />
+              </>
             )}
           </>
         )}
@@ -1127,6 +1138,712 @@ function fmtPerMillion(perToken?: number): string | null {
   if (perMillion < 0.01) return `$${perMillion.toFixed(4)}/M`
   if (perMillion < 1) return `$${perMillion.toFixed(2)}/M`
   return `$${perMillion.toFixed(2)}/M`
+}
+
+// ---------------------------------------------------------------------------
+// Custom providers (third-party OpenAI/Anthropic-compatible endpoints, e.g.
+// MiMo). The API key is write-only: reads return only a mask.
+// ---------------------------------------------------------------------------
+
+const PROVIDER_PROTOCOLS = ['openai', 'anthropic'] as const
+const PROVIDER_AUTH_STYLES = ['bearer', 'api-key-header'] as const
+
+interface ProviderFormState {
+  label: string
+  baseUrl: string
+  protocol: 'openai' | 'anthropic'
+  authStyle: 'bearer' | 'api-key-header'
+  apiKey: string
+  enabled: boolean
+}
+
+const EMPTY_PROVIDER_FORM: ProviderFormState = {
+  label: '',
+  baseUrl: '',
+  protocol: 'openai',
+  authStyle: 'bearer',
+  apiKey: '',
+  enabled: true,
+}
+
+function FieldLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+      {children}
+    </Text>
+  )
+}
+
+function SegmentedControl<T extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: readonly T[]
+  value: T
+  onChange: (v: T) => void
+}) {
+  return (
+    <View className="flex-row gap-1.5">
+      {options.map((opt) => (
+        <Pressable
+          key={opt}
+          onPress={() => onChange(opt)}
+          className={cn(
+            'px-3 py-1.5 rounded-md border',
+            value === opt ? 'border-primary bg-primary/10' : 'border-border bg-background',
+          )}
+        >
+          <Text className={cn('text-xs', value === opt ? 'text-primary font-medium' : 'text-muted-foreground')}>
+            {opt}
+          </Text>
+        </Pressable>
+      ))}
+    </View>
+  )
+}
+
+function CustomProvidersCard({ platform }: { platform: PlatformApi }) {
+  const [providers, setProviders] = useState<ModelProvider[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm] = useState<ProviderFormState>(EMPTY_PROVIDER_FORM)
+
+  const reload = useCallback(async () => {
+    try {
+      const list = await platform.listModelProviders()
+      setProviders(list)
+      setError(null)
+    } catch (err: any) {
+      setError(err?.message || 'Failed to load providers')
+    } finally {
+      setIsLoading(false)
+    }
+  }, [platform])
+
+  useEffect(() => { reload() }, [reload])
+
+  const openCreate = useCallback(() => {
+    setEditingId(null)
+    setForm(EMPTY_PROVIDER_FORM)
+    setShowForm(true)
+  }, [])
+
+  const openEdit = useCallback((p: ModelProvider) => {
+    setEditingId(p.id)
+    setForm({
+      label: p.label,
+      baseUrl: p.baseUrl,
+      protocol: p.protocol,
+      authStyle: p.authStyle,
+      apiKey: '', // write-only; blank keeps the existing key
+      enabled: p.enabled,
+    })
+    setShowForm(true)
+  }, [])
+
+  const submit = useCallback(async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const base: ModelProviderInput = {
+        label: form.label.trim(),
+        baseUrl: form.baseUrl.trim(),
+        protocol: form.protocol,
+        authStyle: form.authStyle,
+        enabled: form.enabled,
+      }
+      if (form.apiKey.trim()) base.apiKey = form.apiKey.trim()
+      if (editingId) {
+        await platform.updateModelProvider(editingId, base)
+      } else {
+        await platform.createModelProvider(base)
+      }
+      invalidateVisibleModelsCache()
+      setShowForm(false)
+      setForm(EMPTY_PROVIDER_FORM)
+      setEditingId(null)
+      await reload()
+    } catch (err: any) {
+      setError(err?.message || 'Failed to save provider')
+    } finally {
+      setBusy(false)
+    }
+  }, [form, editingId, platform, reload])
+
+  const remove = useCallback(async (id: string) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await platform.deleteModelProvider(id)
+      invalidateVisibleModelsCache()
+      await reload()
+    } catch (err: any) {
+      setError(err?.message || 'Failed to delete provider')
+    } finally {
+      setBusy(false)
+    }
+  }, [platform, reload])
+
+  const canSubmit = form.label.trim() && /^https?:\/\//.test(form.baseUrl.trim()) && (editingId || form.apiKey.trim())
+
+  return (
+    <View className="bg-card border border-border rounded-xl">
+      <View className="px-5 py-4 border-b border-border">
+        <View className="flex-row items-center justify-between">
+          <View className="flex-row items-center gap-2.5 flex-1">
+            <Server size={16} className="text-foreground" />
+            <Text className="text-base font-semibold text-foreground">Custom Providers</Text>
+          </View>
+          {!showForm && (
+            <Pressable onPress={openCreate} className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-md border border-border bg-background">
+              <Plus size={14} className="text-foreground" />
+              <Text className="text-xs text-foreground">Add</Text>
+            </Pressable>
+          )}
+        </View>
+        <Text className="text-xs text-muted-foreground mt-1">
+          Third-party OpenAI-compatible endpoints (e.g. MiMo). Keys are encrypted at rest and never shown again.
+        </Text>
+      </View>
+
+      <View className="px-5 py-4 gap-3">
+        {error && <Text className="text-xs text-red-500">{error}</Text>}
+        {isLoading ? (
+          <ActivityIndicator size="small" />
+        ) : (
+          <>
+            {providers.length === 0 && !showForm && (
+              <Text className="text-xs text-muted-foreground">No custom providers yet.</Text>
+            )}
+            {providers.map((p) => (
+              <View key={p.id} className="px-3 py-2.5 rounded-lg border border-border bg-background">
+                <View className="flex-row items-center justify-between">
+                  <View className="flex-1">
+                    <View className="flex-row items-center gap-2">
+                      <Text className="text-sm font-medium text-foreground">{p.label}</Text>
+                      {!p.enabled && <Text className="text-[10px] text-muted-foreground">(disabled)</Text>}
+                    </View>
+                    <Text className="text-xs text-muted-foreground mt-0.5">{p.baseUrl}</Text>
+                    <Text className="text-[11px] text-muted-foreground mt-0.5">
+                      {p.protocol} · {p.authStyle} · key {p.apiKeyMask}
+                      {!p.keyDecryptable && ' · ⚠ unreadable (re-enter)'}
+                    </Text>
+                  </View>
+                  <View className="flex-row items-center gap-1.5">
+                    <Pressable onPress={() => openEdit(p)} disabled={busy} className="p-1.5 rounded-md border border-border">
+                      <Pencil size={13} className="text-muted-foreground" />
+                    </Pressable>
+                    <Pressable onPress={() => remove(p.id)} disabled={busy} className="p-1.5 rounded-md border border-border">
+                      <Trash2 size={13} className="text-red-500" />
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            ))}
+
+            {showForm && (
+              <View className="px-3 py-3 rounded-lg border border-primary/40 bg-primary/5 gap-3">
+                <View className="flex-row items-center justify-between">
+                  <Text className="text-sm font-semibold text-foreground">
+                    {editingId ? 'Edit provider' : 'New provider'}
+                  </Text>
+                  <Pressable onPress={() => { setShowForm(false); setEditingId(null) }} className="p-1">
+                    <X size={16} className="text-muted-foreground" />
+                  </Pressable>
+                </View>
+                <View>
+                  <FieldLabel>Label</FieldLabel>
+                  <TextInput
+                    value={form.label}
+                    onChangeText={(t) => setForm((f) => ({ ...f, label: t }))}
+                    placeholder="MiMo"
+                    placeholderTextColor="#9ca3af"
+                    className="px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm"
+                  />
+                </View>
+                <View>
+                  <FieldLabel>Base URL</FieldLabel>
+                  <TextInput
+                    value={form.baseUrl}
+                    onChangeText={(t) => setForm((f) => ({ ...f, baseUrl: t }))}
+                    placeholder="https://api.xiaomimimo.com/v1"
+                    placeholderTextColor="#9ca3af"
+                    autoCapitalize="none"
+                    className="px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm"
+                  />
+                </View>
+                <View>
+                  <FieldLabel>Protocol</FieldLabel>
+                  <SegmentedControl options={PROVIDER_PROTOCOLS} value={form.protocol} onChange={(v) => setForm((f) => ({ ...f, protocol: v }))} />
+                </View>
+                <View>
+                  <FieldLabel>Auth style</FieldLabel>
+                  <SegmentedControl options={PROVIDER_AUTH_STYLES} value={form.authStyle} onChange={(v) => setForm((f) => ({ ...f, authStyle: v }))} />
+                </View>
+                <View>
+                  <FieldLabel>{editingId ? 'API key (leave blank to keep current)' : 'API key'}</FieldLabel>
+                  <TextInput
+                    value={form.apiKey}
+                    onChangeText={(t) => setForm((f) => ({ ...f, apiKey: t }))}
+                    placeholder="sk-..."
+                    placeholderTextColor="#9ca3af"
+                    autoCapitalize="none"
+                    secureTextEntry
+                    className="px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm"
+                  />
+                </View>
+                <Pressable
+                  onPress={() => setForm((f) => ({ ...f, enabled: !f.enabled }))}
+                  className="flex-row items-center justify-between p-2.5 rounded-md border border-border bg-background"
+                >
+                  <Text className="text-sm text-foreground">Enabled</Text>
+                  {form.enabled && <Check size={16} className="text-primary" />}
+                </Pressable>
+                <Pressable
+                  onPress={submit}
+                  disabled={!canSubmit || busy}
+                  className={cn('items-center py-2.5 rounded-md', canSubmit && !busy ? 'bg-primary' : 'bg-muted')}
+                >
+                  {busy ? <ActivityIndicator size="small" /> : (
+                    <Text className={cn('text-sm font-medium', canSubmit ? 'text-primary-foreground' : 'text-muted-foreground')}>
+                      {editingId ? 'Save changes' : 'Create provider'}
+                    </Text>
+                  )}
+                </Pressable>
+              </View>
+            )}
+          </>
+        )}
+      </View>
+    </View>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Custom models (DB-defined models, native or backed by a custom provider).
+// ---------------------------------------------------------------------------
+
+const MODEL_TIER_OPTIONS = ['economy', 'standard', 'premium'] as const
+const MODEL_FAMILY_OPTIONS = ['opus', 'sonnet', 'haiku', 'gpt', 'other'] as const
+const MODEL_GENERATION_OPTIONS = ['current', 'legacy'] as const
+const NATIVE_PROVIDER_OPTIONS = ['anthropic', 'openai', 'google', 'openrouter', 'local'] as const
+
+interface ModelFormState {
+  id: string
+  provider: string
+  providerId: string
+  apiModel: string
+  displayName: string
+  shortDisplayName: string
+  tier: 'economy' | 'standard' | 'premium'
+  family: 'opus' | 'sonnet' | 'haiku' | 'gpt' | 'other'
+  generation: 'current' | 'legacy'
+  maxOutputTokens: string
+  aliases: string
+  inputPerMillion: string
+  cachedInputPerMillion: string
+  cacheWritePerMillion: string
+  outputPerMillion: string
+  enabled: boolean
+}
+
+const EMPTY_MODEL_FORM: ModelFormState = {
+  id: '',
+  provider: 'anthropic',
+  providerId: '',
+  apiModel: '',
+  displayName: '',
+  shortDisplayName: '',
+  tier: 'standard',
+  family: 'other',
+  generation: 'current',
+  maxOutputTokens: '64000',
+  aliases: '',
+  inputPerMillion: '0',
+  cachedInputPerMillion: '0',
+  cacheWritePerMillion: '0',
+  outputPerMillion: '0',
+  enabled: true,
+}
+
+function CustomModelsCard({ platform }: { platform: PlatformApi }) {
+  const [models, setModels] = useState<ModelDefinition[]>([])
+  const [providers, setProviders] = useState<ModelProvider[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm] = useState<ModelFormState>(EMPTY_MODEL_FORM)
+
+  const reload = useCallback(async () => {
+    try {
+      const [list, provs] = await Promise.all([platform.listModels(), platform.listModelProviders()])
+      setModels(list)
+      setProviders(provs)
+      setError(null)
+    } catch (err: any) {
+      setError(err?.message || 'Failed to load models')
+    } finally {
+      setIsLoading(false)
+    }
+  }, [platform])
+
+  useEffect(() => { reload() }, [reload])
+
+  const openCreate = useCallback(() => {
+    setEditingId(null)
+    setForm(EMPTY_MODEL_FORM)
+    setShowForm(true)
+  }, [])
+
+  const openEdit = useCallback((m: ModelDefinition) => {
+    setEditingId(m.id)
+    setForm({
+      id: m.id,
+      provider: m.provider,
+      providerId: m.providerId ?? '',
+      apiModel: m.apiModel,
+      displayName: m.displayName,
+      shortDisplayName: m.shortDisplayName,
+      tier: m.tier,
+      family: m.family,
+      generation: m.generation,
+      maxOutputTokens: String(m.maxOutputTokens),
+      aliases: (m.aliases ?? []).join(', '),
+      inputPerMillion: String(m.inputPerMillion),
+      cachedInputPerMillion: String(m.cachedInputPerMillion),
+      cacheWritePerMillion: String(m.cacheWritePerMillion),
+      outputPerMillion: String(m.outputPerMillion),
+      enabled: m.enabled,
+    })
+    setShowForm(true)
+  }, [])
+
+  const submit = useCallback(async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const num = (s: string) => {
+        const n = Number(s)
+        return Number.isFinite(n) && n >= 0 ? n : 0
+      }
+      const payload: ModelDefinitionInput = {
+        provider: form.provider,
+        providerId: form.provider === 'custom' ? (form.providerId || null) : null,
+        apiModel: form.apiModel.trim(),
+        displayName: form.displayName.trim(),
+        shortDisplayName: form.shortDisplayName.trim() || form.displayName.trim(),
+        tier: form.tier,
+        family: form.family,
+        generation: form.generation,
+        maxOutputTokens: num(form.maxOutputTokens) || 64000,
+        aliases: form.aliases.split(',').map((a) => a.trim()).filter(Boolean),
+        inputPerMillion: num(form.inputPerMillion),
+        cachedInputPerMillion: num(form.cachedInputPerMillion),
+        cacheWritePerMillion: num(form.cacheWritePerMillion),
+        outputPerMillion: num(form.outputPerMillion),
+        enabled: form.enabled,
+      }
+      if (editingId) {
+        await platform.updateModel(editingId, payload)
+      } else {
+        await platform.createModel({ ...payload, id: form.id.trim() })
+      }
+      invalidateVisibleModelsCache()
+      setShowForm(false)
+      setForm(EMPTY_MODEL_FORM)
+      setEditingId(null)
+      await reload()
+    } catch (err: any) {
+      setError(err?.message || 'Failed to save model')
+    } finally {
+      setBusy(false)
+    }
+  }, [form, editingId, platform, reload])
+
+  const remove = useCallback(async (id: string) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await platform.deleteModel(id)
+      invalidateVisibleModelsCache()
+      await reload()
+    } catch (err: any) {
+      setError(err?.message || 'Failed to delete model')
+    } finally {
+      setBusy(false)
+    }
+  }, [platform, reload])
+
+  const providerOptions = useMemo(
+    () => [...NATIVE_PROVIDER_OPTIONS, 'custom'] as const,
+    [],
+  )
+  const canSubmit =
+    (editingId || form.id.trim()) &&
+    form.apiModel.trim() &&
+    form.displayName.trim() &&
+    (form.provider !== 'custom' || form.providerId)
+
+  return (
+    <View className="bg-card border border-border rounded-xl">
+      <View className="px-5 py-4 border-b border-border">
+        <View className="flex-row items-center justify-between">
+          <View className="flex-row items-center gap-2.5 flex-1">
+            <Boxes size={16} className="text-foreground" />
+            <Text className="text-base font-semibold text-foreground">Custom Models</Text>
+          </View>
+          {!showForm && (
+            <Pressable onPress={openCreate} className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-md border border-border bg-background">
+              <Plus size={14} className="text-foreground" />
+              <Text className="text-xs text-foreground">Add</Text>
+            </Pressable>
+          )}
+        </View>
+        <Text className="text-xs text-muted-foreground mt-1">
+          Add new models without a release. Set the id, display name, pricing, and routing here.
+        </Text>
+      </View>
+
+      <View className="px-5 py-4 gap-3">
+        {error && <Text className="text-xs text-red-500">{error}</Text>}
+        {isLoading ? (
+          <ActivityIndicator size="small" />
+        ) : (
+          <>
+            {models.length === 0 && !showForm && (
+              <Text className="text-xs text-muted-foreground">No DB-defined models yet.</Text>
+            )}
+            {models.map((m) => (
+              <View key={m.id} className="px-3 py-2.5 rounded-lg border border-border bg-background">
+                <View className="flex-row items-center justify-between">
+                  <View className="flex-1">
+                    <View className="flex-row items-center gap-2">
+                      <Text className="text-sm font-medium text-foreground">{m.displayName}</Text>
+                      {!m.enabled && <Text className="text-[10px] text-muted-foreground">(disabled)</Text>}
+                    </View>
+                    <Text className="text-xs text-muted-foreground mt-0.5">
+                      {m.id} · {m.provider}{m.provider === 'custom' && m.providerId ? `→${providers.find((p) => p.id === m.providerId)?.label ?? m.providerId}` : ''} · {m.tier}
+                    </Text>
+                    <Text className="text-[11px] text-muted-foreground mt-0.5">
+                      in ${m.inputPerMillion}/M · out ${m.outputPerMillion}/M · {m.maxOutputTokens} max
+                    </Text>
+                  </View>
+                  <View className="flex-row items-center gap-1.5">
+                    <Pressable onPress={() => openEdit(m)} disabled={busy} className="p-1.5 rounded-md border border-border">
+                      <Pencil size={13} className="text-muted-foreground" />
+                    </Pressable>
+                    <Pressable onPress={() => remove(m.id)} disabled={busy} className="p-1.5 rounded-md border border-border">
+                      <Trash2 size={13} className="text-red-500" />
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            ))}
+
+            {showForm && (
+              <View className="px-3 py-3 rounded-lg border border-primary/40 bg-primary/5 gap-3">
+                <View className="flex-row items-center justify-between">
+                  <Text className="text-sm font-semibold text-foreground">{editingId ? 'Edit model' : 'New model'}</Text>
+                  <Pressable onPress={() => { setShowForm(false); setEditingId(null) }} className="p-1">
+                    <X size={16} className="text-muted-foreground" />
+                  </Pressable>
+                </View>
+
+                {!editingId && (
+                  <View>
+                    <FieldLabel>Model id (canonical)</FieldLabel>
+                    <TextInput
+                      value={form.id}
+                      onChangeText={(t) => setForm((f) => ({ ...f, id: t }))}
+                      placeholder="mimo-v2.5"
+                      placeholderTextColor="#9ca3af"
+                      autoCapitalize="none"
+                      className="px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm"
+                    />
+                  </View>
+                )}
+
+                <View>
+                  <FieldLabel>Provider</FieldLabel>
+                  <View className="flex-row flex-wrap gap-1.5">
+                    {providerOptions.map((opt) => (
+                      <Pressable
+                        key={opt}
+                        onPress={() => setForm((f) => ({ ...f, provider: opt }))}
+                        className={cn('px-3 py-1.5 rounded-md border', form.provider === opt ? 'border-primary bg-primary/10' : 'border-border bg-background')}
+                      >
+                        <Text className={cn('text-xs', form.provider === opt ? 'text-primary font-medium' : 'text-muted-foreground')}>{opt}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+
+                {form.provider === 'custom' && (
+                  <View>
+                    <FieldLabel>Custom provider</FieldLabel>
+                    {providers.length === 0 ? (
+                      <Text className="text-xs text-amber-500">Create a custom provider first.</Text>
+                    ) : (
+                      <View className="flex-row flex-wrap gap-1.5">
+                        {providers.map((p) => (
+                          <Pressable
+                            key={p.id}
+                            onPress={() => setForm((f) => ({ ...f, providerId: p.id }))}
+                            className={cn('px-3 py-1.5 rounded-md border', form.providerId === p.id ? 'border-primary bg-primary/10' : 'border-border bg-background')}
+                          >
+                            <Text className={cn('text-xs', form.providerId === p.id ? 'text-primary font-medium' : 'text-muted-foreground')}>{p.label}</Text>
+                          </Pressable>
+                        ))}
+                      </View>
+                    )}
+                  </View>
+                )}
+
+                <View>
+                  <FieldLabel>Upstream api model</FieldLabel>
+                  <TextInput
+                    value={form.apiModel}
+                    onChangeText={(t) => setForm((f) => ({ ...f, apiModel: t }))}
+                    placeholder="mimo-v2.5"
+                    placeholderTextColor="#9ca3af"
+                    autoCapitalize="none"
+                    className="px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm"
+                  />
+                </View>
+
+                <View className="flex-row gap-2">
+                  <View className="flex-1">
+                    <FieldLabel>Display name</FieldLabel>
+                    <TextInput
+                      value={form.displayName}
+                      onChangeText={(t) => setForm((f) => ({ ...f, displayName: t }))}
+                      placeholder="MiMo v2.5"
+                      placeholderTextColor="#9ca3af"
+                      className="px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm"
+                    />
+                  </View>
+                  <View className="flex-1">
+                    <FieldLabel>Short name</FieldLabel>
+                    <TextInput
+                      value={form.shortDisplayName}
+                      onChangeText={(t) => setForm((f) => ({ ...f, shortDisplayName: t }))}
+                      placeholder="MiMo 2.5"
+                      placeholderTextColor="#9ca3af"
+                      className="px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm"
+                    />
+                  </View>
+                </View>
+
+                <View>
+                  <FieldLabel>Tier</FieldLabel>
+                  <SegmentedControl options={MODEL_TIER_OPTIONS} value={form.tier} onChange={(v) => setForm((f) => ({ ...f, tier: v }))} />
+                </View>
+                <View>
+                  <FieldLabel>Family</FieldLabel>
+                  <SegmentedControl options={MODEL_FAMILY_OPTIONS} value={form.family} onChange={(v) => setForm((f) => ({ ...f, family: v }))} />
+                </View>
+                <View>
+                  <FieldLabel>Generation</FieldLabel>
+                  <SegmentedControl options={MODEL_GENERATION_OPTIONS} value={form.generation} onChange={(v) => setForm((f) => ({ ...f, generation: v }))} />
+                </View>
+
+                <View className="flex-row gap-2">
+                  <View className="flex-1">
+                    <FieldLabel>Max output tokens</FieldLabel>
+                    <TextInput
+                      value={form.maxOutputTokens}
+                      onChangeText={(t) => setForm((f) => ({ ...f, maxOutputTokens: t.replace(/[^0-9]/g, '') }))}
+                      keyboardType="number-pad"
+                      className="px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm"
+                    />
+                  </View>
+                  <View className="flex-1">
+                    <FieldLabel>Aliases (comma-sep)</FieldLabel>
+                    <TextInput
+                      value={form.aliases}
+                      onChangeText={(t) => setForm((f) => ({ ...f, aliases: t }))}
+                      placeholder="mimo, mimo-2.5"
+                      placeholderTextColor="#9ca3af"
+                      autoCapitalize="none"
+                      className="px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm"
+                    />
+                  </View>
+                </View>
+
+                <FieldLabel>Pricing (USD per 1M tokens)</FieldLabel>
+                <View className="flex-row gap-2">
+                  <View className="flex-1">
+                    <FieldLabel>Input</FieldLabel>
+                    <TextInput
+                      value={form.inputPerMillion}
+                      onChangeText={(t) => setForm((f) => ({ ...f, inputPerMillion: t }))}
+                      keyboardType="decimal-pad"
+                      className="px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm"
+                    />
+                  </View>
+                  <View className="flex-1">
+                    <FieldLabel>Output</FieldLabel>
+                    <TextInput
+                      value={form.outputPerMillion}
+                      onChangeText={(t) => setForm((f) => ({ ...f, outputPerMillion: t }))}
+                      keyboardType="decimal-pad"
+                      className="px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm"
+                    />
+                  </View>
+                </View>
+                <View className="flex-row gap-2">
+                  <View className="flex-1">
+                    <FieldLabel>Cached input</FieldLabel>
+                    <TextInput
+                      value={form.cachedInputPerMillion}
+                      onChangeText={(t) => setForm((f) => ({ ...f, cachedInputPerMillion: t }))}
+                      keyboardType="decimal-pad"
+                      className="px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm"
+                    />
+                  </View>
+                  <View className="flex-1">
+                    <FieldLabel>Cache write</FieldLabel>
+                    <TextInput
+                      value={form.cacheWritePerMillion}
+                      onChangeText={(t) => setForm((f) => ({ ...f, cacheWritePerMillion: t }))}
+                      keyboardType="decimal-pad"
+                      className="px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm"
+                    />
+                  </View>
+                </View>
+
+                <Pressable
+                  onPress={() => setForm((f) => ({ ...f, enabled: !f.enabled }))}
+                  className="flex-row items-center justify-between p-2.5 rounded-md border border-border bg-background"
+                >
+                  <Text className="text-sm text-foreground">Enabled</Text>
+                  {form.enabled && <Check size={16} className="text-primary" />}
+                </Pressable>
+
+                <Pressable
+                  onPress={submit}
+                  disabled={!canSubmit || busy}
+                  className={cn('items-center py-2.5 rounded-md', canSubmit && !busy ? 'bg-primary' : 'bg-muted')}
+                >
+                  {busy ? <ActivityIndicator size="small" /> : (
+                    <Text className={cn('text-sm font-medium', canSubmit ? 'text-primary-foreground' : 'text-muted-foreground')}>
+                      {editingId ? 'Save changes' : 'Create model'}
+                    </Text>
+                  )}
+                </Pressable>
+              </View>
+            )}
+          </>
+        )}
+      </View>
+    </View>
+  )
 }
 
 function VisibleModelsCard({

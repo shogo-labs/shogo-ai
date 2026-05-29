@@ -26,6 +26,8 @@ const ARRAY_FIELDS = new Set([
   'screenshotUrls',
   // ProjectAuthConfig allowlist fields
   'allowedEmails', 'allowedDomains',
+  // ModelDefinition alias list (Json? on PG, String? JSON on SQLite)
+  'aliases',
 ])
 
 // Fields that are Json? in PostgreSQL but stored as String? in SQLite.
@@ -35,6 +37,8 @@ const JSON_OBJECT_FIELDS = new Set([
   'workspaceSnapshot', 'metadata', 'settings', 'channels',
   'actionMetadata', 'transcript', 'examples',
   'baselineManifest', 'auditFindings',
+  // ModelDefinition capability ratings (Json? on PG, String? JSON on SQLite)
+  'capabilities',
 ])
 
 // In SQLite mode, String[] fields are stored as JSON strings, and

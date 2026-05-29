@@ -22,6 +22,7 @@ import {
   type AgentMode,
   type BillingModel,
 } from '@shogo/model-catalog'
+import { getDbModelPricing } from './db-model-pricing'
 
 export type { ModelTier, AgentMode }
 export { MODEL_DOLLAR_COSTS, calculateDollarCost }
@@ -90,6 +91,23 @@ export function calculateUsageCost(
   cachedInputTokens: number = 0,
   cacheWriteTokens: number = 0,
 ): UsageCostResult {
+  // DB-defined models (including custom providers) carry their own per-token
+  // pricing. Prefer it over the static bucket so admin-added models bill at
+  // their configured rates. (Agent-mode aliases fall through to the bucket
+  // logic below.)
+  if (modelOrAgentMode) {
+    const dbPricing = getDbModelPricing(modelOrAgentMode)
+    if (dbPricing) {
+      const dbRawUsd =
+        (inputTokens * dbPricing.inputPerMillion / 1_000_000) +
+        (cacheWriteTokens * dbPricing.cacheWritePerMillion / 1_000_000) +
+        (cachedInputTokens * dbPricing.cachedInputPerMillion / 1_000_000) +
+        (outputTokens * dbPricing.outputPerMillion / 1_000_000)
+      if (dbRawUsd === 0) return { rawUsd: 0, billedUsd: 0 }
+      return { rawUsd: dbRawUsd, billedUsd: dbRawUsd * MARKUP_MULTIPLIER }
+    }
+  }
+
   const model = resolveModel(modelOrAgentMode)
   const costs = MODEL_DOLLAR_COSTS[model]
   const rawUsd =

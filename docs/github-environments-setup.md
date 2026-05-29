@@ -53,6 +53,7 @@ These should ideally be set as **organization-level secrets** to avoid duplicati
 |---|---|
 | `ANTHROPIC_API_KEY` | Anthropic Claude API key |
 | `BETTER_AUTH_SECRET` | Better Auth session secret |
+| `SECRETS_ENCRYPTION_KEY` | AES-256-GCM master key (base64, 32 bytes) for encrypting model-provider API keys at rest. **Must be identical across all regions sharing the primary DB** (production-us/eu/india) so encrypted rows decrypt everywhere; staging uses its own. Generate with `openssl rand -base64 32`. |
 | `STRIPE_SECRET_KEY` | Stripe API key |
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret |
 | `GH_APP_ID` | GitHub App ID |
