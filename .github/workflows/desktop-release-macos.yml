@@ -358,7 +358,7 @@ jobs:
             echo "Go VM helper codesigned with virtualization entitlement"
           fi
 
-      - name: Package Electron app
+      - name: Package Electron app (with retry on silent no-op)
         working-directory: apps/desktop
         # SKIP_MOBILE_BUILD=1 tells the forge `prePackage` hook (which
         # runs `scripts/sync-web.mjs`) to reuse apps/mobile/dist/ from
@@ -367,38 +367,54 @@ jobs:
         # fail loudly if vs/loader.js or vs/editor/editor.main.js is
         # missing — see apps/desktop/forge.config.ts and
         # apps/desktop/scripts/sync-web.mjs.
-        run: npx electron-forge package --arch=${{ matrix.arch }}
+        #
+        # @electron/packager intermittently exits 0 while producing NO
+        # `out/` directory: it prints "Copying files / Preparing native
+        # dependencies / Finalizing package" within ~30 ms and returns
+        # without writing anything. This is a transient packager flake —
+        # it has struck both arch legs on a single run (v1.8.17) even
+        # though the immediately-preceding release (v1.8.16) packaged the
+        # identical code fine, and the failing commit touched only
+        # agent-runtime. Previously a standalone "verify" step only
+        # *detected* the no-op and failed the whole tagged release,
+        # forcing a manual `gh run rerun`. We now retry in-place: run the
+        # packager, check for Shogo.app, and on a no-op wipe `out/` and
+        # try again (up to 3 attempts) before failing.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SKIP_MOBILE_BUILD: '1'
-
-      - name: Verify packager produced Shogo.app
-        # electron-forge has been observed to exit 0 from
-        # `package --arch=arm64` while silently producing no `out/`
-        # directory (see v1.8.15 macOS arm64 leg — the packager
-        # printed "Copying files / Preparing native dependencies /
-        # Finalizing package" within ~30 ms and returned without
-        # writing anything). When that happens the next step
-        # (Codesign) is where the failure surfaces, with a confusing
-        # `find: out: No such file or directory` and no pointer to
-        # the actual culprit. This assertion fails IN this step so
-        # the bad job is identified as a packager problem and a
-        # `gh run rerun --failed` actually re-runs the right step.
-        working-directory: apps/desktop
         run: |
-          set -euo pipefail
+          set -uo pipefail
           EXPECTED="out/Shogo-darwin-${{ matrix.arch }}/Shogo.app"
-          if [ ! -d "$EXPECTED" ]; then
-            echo "::error::electron-forge package exited 0 but $EXPECTED does not exist."
-            echo "out/ contents:"
-            ls -la out/ 2>&1 || echo "  (out/ does not exist)"
-            if [ -d out ]; then
-              echo "out/* contents (one level deeper):"
-              ls -la out/*/ 2>&1 || true
+          ATTEMPTS=3
+          for attempt in $(seq 1 "$ATTEMPTS"); do
+            echo "=== electron-forge package attempt $attempt/$ATTEMPTS ==="
+            rm -rf out
+            npx electron-forge package --arch=${{ matrix.arch }} || echo "  (electron-forge exited non-zero on attempt $attempt)"
+            if [ -d "$EXPECTED" ]; then
+              echo "Packager produced: $EXPECTED (attempt $attempt)"
+              exit 0
             fi
-            exit 1
-          fi
-          echo "Packager produced: $EXPECTED"
+            echo "::warning::electron-forge package produced no $EXPECTED on attempt $attempt (likely the silent @electron/packager no-op)."
+            echo "out/ contents after attempt $attempt:"
+            ls -la out/ 2>&1 || echo "  (out/ does not exist)"
+            [ "$attempt" -lt "$ATTEMPTS" ] && sleep 5
+          done
+          echo "::error::electron-forge package failed to produce $EXPECTED after $ATTEMPTS attempts."
+          exit 1
+
+      - name: Verify bundled native binaries match target arch
+        # Guards the v1.8.14 failure mode: macOS x64 builds are cross-compiled
+        # on this arm64 runner, so `bun install` / `npm install` resolve native
+        # arch-specific deps (e.g. @prisma/engines' schema-engine, sqlite-vec,
+        # node-pty) for the HOST arch (arm64) and electron-forge packages them
+        # into the x64 .app. Packaging succeeds; the app then bricks on first
+        # launch for Intel users with a wrong-arch binary. This step inspects
+        # every Mach-O in the .app (via `lipo -archs`, no execution required, so
+        # it works for the x64 leg on an arm64 runner) and fails the build if
+        # any binary is missing the target arch slice.
+        working-directory: apps/desktop
+        run: node scripts/check-native-arch.mjs --arch ${{ matrix.arch }} "out/Shogo-darwin-${{ matrix.arch }}/Shogo.app"
 
       - name: Codesign app bundle
         if: env.SIGNING_KEYCHAIN != ''
@@ -522,9 +538,127 @@ jobs:
           name: desktop-darwin-${{ matrix.arch }}
           path: apps/desktop/out/make/**/*
 
+  boot-smoke-x64:
+    # End-to-end guard for the v1.8.14 incident: the x64 .app is cross-built on
+    # the arm64 `build-desktop` runner and is NEVER executed there (an arm64 host
+    # can't run an x64 binary), so a boot-fatal regression on Intel sails through
+    # every existing check. This job runs on a real Intel runner (macos-13),
+    # extracts the shipped x64 app, launches it from a clean profile, and asserts
+    # the local server actually starts — which is exactly the path that the bad
+    # PRISMA_SCHEMA_ENGINE_BINARY bricked.
+    name: Boot smoke test (macOS x64 / Intel)
+    needs: build-desktop
+    runs-on: macos-13
+    timeout-minutes: 15
+    steps:
+      - name: Download x64 artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: desktop-darwin-x64
+          path: artifacts/
+
+      - name: Extract Shogo.app
+        id: extract
+        run: |
+          set -euo pipefail
+          # maker-zip emits Shogo-darwin-x64-<version>.zip; prefer it over the
+          # .dmg because unzip needs no `hdiutil attach` privileges.
+          ZIP=$(find artifacts -type f -name 'Shogo-darwin-x64-*.zip' -print -quit || true)
+          if [ -z "$ZIP" ]; then
+            echo "::error::Could not find Shogo-darwin-x64-*.zip in artifacts/"
+            find artifacts -type f | head -50
+            exit 1
+          fi
+          echo "Found: $ZIP"
+          mkdir -p extracted
+          unzip -q "$ZIP" -d extracted
+          APP=$(find extracted -maxdepth 2 -name 'Shogo.app' -type d -print -quit)
+          if [ -z "$APP" ]; then
+            echo "::error::Shogo.app not found after unzip"
+            find extracted -maxdepth 3 | head -50
+            exit 1
+          fi
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+          echo "Extracted app: $APP"
+
+      - name: Assert app binary is x86_64
+        run: |
+          set -euo pipefail
+          BIN="${{ steps.extract.outputs.app }}/Contents/MacOS/Shogo"
+          ARCHS=$(lipo -archs "$BIN")
+          echo "Shogo binary archs: $ARCHS"
+          if ! echo "$ARCHS" | grep -qw x86_64; then
+            echo "::error::x64 artifact's main binary is not x86_64 (got: $ARCHS)"
+            exit 1
+          fi
+
+      - name: Launch app and verify local server boots
+        run: |
+          set -uo pipefail
+          APP="${{ steps.extract.outputs.app }}"
+          BIN="$APP/Contents/MacOS/Shogo"
+
+          # Guarantee the first-launch (seed + migrate) path by clearing any
+          # prior profile, and start from an empty log so our markers are
+          # unambiguous. console.log (INFO) and writeLogSync (FATAL) both append
+          # to this file — see apps/desktop/src/main.ts.
+          rm -rf "$HOME/Library/Application Support/Shogo" "$HOME/Library/Logs/Shogo"
+          mkdir -p "$HOME/Library/Logs/Shogo"
+          LOG="$HOME/Library/Logs/Shogo/main.log"
+          : > "$LOG"
+
+          # Exec the Mach-O directly (not `open`) so an unsigned/un-notarized
+          # build on a fork doesn't get blocked or path-translocated by
+          # Gatekeeper. stdout/stderr are also captured as a fallback signal.
+          "$BIN" > /tmp/shogo-stdout.log 2>&1 &
+          APP_PID=$!
+          echo "Launched Shogo (pid=$APP_PID)"
+
+          PASS_RE='API server is healthy'
+          FAIL_RE='\[FATAL\].*Failed to start local server|Failed to run database migrations'
+
+          RESULT=""
+          for i in $(seq 1 120); do
+            if ! kill -0 "$APP_PID" 2>/dev/null; then
+              # Process exited on its own — only the failure path does that
+              # during boot (app.quit() after the FATAL).
+              if grep -qE "$FAIL_RE" "$LOG" /tmp/shogo-stdout.log 2>/dev/null; then
+                RESULT="fail"; break
+              fi
+            fi
+            if grep -qE "$FAIL_RE" "$LOG" /tmp/shogo-stdout.log 2>/dev/null; then
+              RESULT="fail"; break
+            fi
+            if grep -qE "$PASS_RE" "$LOG" /tmp/shogo-stdout.log 2>/dev/null; then
+              RESULT="pass"; break
+            fi
+            sleep 2
+          done
+
+          echo "=== main.log ==="
+          cat "$LOG" 2>/dev/null || true
+          echo "=== stdout/stderr ==="
+          cat /tmp/shogo-stdout.log 2>/dev/null || true
+          echo "================="
+
+          # Always tear the app down; it stays resident on success.
+          kill "$APP_PID" 2>/dev/null || true
+          pkill -f "$APP/Contents/MacOS/Shogo" 2>/dev/null || true
+
+          if [ "$RESULT" = "pass" ]; then
+            echo "Boot smoke test PASSED — local server reached healthy state on Intel."
+            exit 0
+          fi
+          if [ "$RESULT" = "fail" ]; then
+            echo "::error::Boot smoke test FAILED — the packaged x64 app could not start its local server on Intel. See logs above."
+            exit 1
+          fi
+          echo "::error::Boot smoke test TIMED OUT — neither healthy nor fatal marker appeared within ~240s. See logs above."
+          exit 1
+
   release:
     name: Create Release
-    needs: build-desktop
+    needs: [build-desktop, boot-smoke-x64]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:

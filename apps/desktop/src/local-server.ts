@@ -858,17 +858,7 @@ function baselineMigrations(
   }
 }
 
-function getSchemaEngineName(): string {
-  const platform = process.platform
-  const arch = process.arch
-  if (platform === 'win32') return `schema-engine-windows.exe`
-  if (platform === 'darwin' && arch === 'arm64') return `schema-engine-darwin-arm64`
-  if (platform === 'darwin') return `schema-engine-darwin`
-  return `schema-engine-debian-openssl-3.0.x`
-}
-
 function runMigrations(bunPath: string, env: Record<string, string>): void {
-  const fs = require('fs') as typeof import('fs')
   const projectRoot = getProjectRoot()
   const IS_DEV = !require('electron').app.isPackaged
 
@@ -905,35 +895,29 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
     return
   }
 
-  // Copy schema-engine binary to a writable location (Prisma needs it for SQLite)
-  const { getDataDir } = require('./paths') as typeof import('./paths')
-  const writableEngineDir = path.join(getDataDir(), '.prisma-engines')
-  fs.mkdirSync(writableEngineDir, { recursive: true })
-
-  const bundledEnginesDir = path.join(projectRoot, 'node_modules', '@prisma', 'engines')
-  if (fs.existsSync(bundledEnginesDir)) {
-    for (const f of fs.readdirSync(bundledEnginesDir)) {
-      if (f.startsWith('schema-engine')) {
-        const src = path.join(bundledEnginesDir, f)
-        const dst = path.join(writableEngineDir, f)
-        if (!fs.existsSync(dst)) {
-          fs.copyFileSync(src, dst)
-          try { fs.chmodSync(dst, 0o755) } catch { /* Windows doesn't need chmod */ }
-        }
-      }
-    }
-  }
-
+  // Prisma 7 migrates SQLite via the arch-independent WASM schema engine
+  // (`@prisma/schema-engine-wasm`, bundled transitively under `prisma`), so we
+  // deliberately do NOT set `PRISMA_SCHEMA_ENGINE_BINARY` and do NOT copy the
+  // native `schema-engine-*` binary.
+  //
+  // The old code derived the binary name from the *running* arch
+  // (`schema-engine-darwin` on Intel, `schema-engine-darwin-arm64` on Apple
+  // Silicon) and pointed the env var at it. But macOS x64 builds are
+  // cross-compiled on arm64 CI runners, so only the arm64 engine ever gets
+  // bundled. On Intel Macs the env var then resolved to a `schema-engine-darwin`
+  // that was never shipped, and Prisma fails fast with:
+  //   "Env var PRISMA_SCHEMA_ENGINE_BINARY is provided but provided path … can't be resolved."
+  // That bricked first launch for every Intel user (v1.8.14). Letting Prisma 7
+  // fall back to its WASM engine sidesteps the whole arch-mismatch class of bugs
+  // and removes the writable-copy dance that only existed for the old native
+  // engine's code-signing constraint.
   const runDeploy = (): { stdout: string; stderr: string; ok: boolean; error?: any } => {
     try {
       const result = execSync(
         `"${bunPath}" x prisma migrate deploy --config=prisma.config.js`,
         {
           cwd: projectRoot,
-          env: {
-            ...env,
-            PRISMA_SCHEMA_ENGINE_BINARY: path.join(writableEngineDir, getSchemaEngineName()),
-          },
+          env,
           stdio: 'pipe',
           timeout: 30000,
           encoding: 'utf-8',
