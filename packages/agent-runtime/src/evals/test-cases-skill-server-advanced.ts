@@ -49,31 +49,44 @@ const V2_CONFIG = JSON.stringify({
 // Shared validation helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Aggregate every schema.prisma edit the agent made into a single string.
+ *
+ * The prompt mandates the additive workflow — `read_file` the seeded schema,
+ * then `edit_file` to APPEND new models — so most correct runs never produce a
+ * `write_file` for `prisma/schema.prisma`. In VM/Docker eval mode the workspace
+ * lives inside the guest, so graders can't read the final file from disk; we
+ * reconstruct intent from the tool-call deltas instead. We pull `content` from
+ * `write_file` and `new_string`/`new_str`/`content` from `edit_file` for any
+ * call targeting the schema.
+ */
+function schemaEditsContent(r: EvalResult): string {
+  return r.toolCalls
+    .filter((t) => t.name === 'write_file' || t.name === 'edit_file')
+    .filter((t) => String((t.input as any).path ?? '').includes('schema.prisma'))
+    .map((t) => {
+      const input = t.input as any
+      return String(input.content ?? input.new_string ?? input.new_str ?? '')
+    })
+    .join('\n')
+}
+
 function wroteSchema(r: EvalResult, ...requiredModels: string[]): boolean {
-  const write = r.toolCalls
-    .filter((t) => t.name === 'write_file')
-    .find((t) => String((t.input as any).path ?? '').includes('schema.prisma'))
-  if (!write) return false
-  const content = String((write.input as any).content ?? '').toLowerCase()
+  const content = schemaEditsContent(r).toLowerCase()
+  if (!content) return false
   return requiredModels.every((m) => content.includes(`model ${m.toLowerCase()}`))
 }
 
 function wroteSchemaWithAnyModels(r: EvalResult, minModels: number): boolean {
-  const write = r.toolCalls
-    .filter((t) => t.name === 'write_file')
-    .find((t) => String((t.input as any).path ?? '').includes('schema.prisma'))
-  if (!write) return false
-  const content = String((write.input as any).content ?? '')
+  const content = schemaEditsContent(r)
+  if (!content) return false
   const matches = content.match(/model\s+\w+/g)
   return (matches?.length ?? 0) >= minModels
 }
 
 function schemaContainsFields(r: EvalResult, ...fields: string[]): boolean {
-  const write = r.toolCalls
-    .filter((t) => t.name === 'write_file')
-    .find((t) => String((t.input as any).path ?? '').includes('schema.prisma'))
-  if (!write) return false
-  const content = String((write.input as any).content ?? '').toLowerCase()
+  const content = schemaEditsContent(r).toLowerCase()
+  if (!content) return false
   return fields.every((f) => content.includes(f.toLowerCase()))
 }
 
