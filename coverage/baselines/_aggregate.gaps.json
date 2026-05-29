@@ -1594,6 +1594,27 @@
         "34123b03"
       ],
       "note": "Full fresh re-measurement of all 11 backend packages (v4 expanded aggregate). Methodology: per-package `bun test --coverage` + scripts/coverage-strip-comments.ts post-processing, sum LH/LF/FNH/FNF across packages (all-files-in-lcov, matches prior Sync methodology for continuity). Delta from prior Sync (83.18%): +1013 lines hit, +853 lines found (net +0.33pp), +131 funcs hit, +105 funcs found (net +0.63pp). Driver: 4x stabilization commits (agent-runtime tool renames + shogo-worker cross-file mock fix + runner serial-retry + web-search httpbin stub) + Wave 1 Session 4 preview-manager.ts (+213 lines). Per-package noteworthy moves: packages/agent-runtime +737 lines hit / +284 lines found (preview-manager.ts 68.60% \u2192 82.44%), apps/api +809 lines hit / +96 lines found, packages/shared-runtime +157 lines hit / +95 lines found, packages/sdk +146 lines hit / +275 lines found (hooks-coverage tests now contributing). Frontend badge NOT touched (out of scope for this branch)."
+    },
+    {
+      "sha": "67c0b42",
+      "date": "2026-05-29",
+      "wave": "Wave 5 Session 8",
+      "file": "packages/agent-runtime/src/gateway.ts",
+      "before": {
+        "lines": 89.02,
+        "funcs": 65.57
+      },
+      "after": {
+        "lines": 92.44,
+        "funcs": 67.61
+      },
+      "delta": {
+        "lines": "+3.42pp",
+        "funcs": "+2.04pp",
+        "linesHit": 220
+      },
+      "tests": 43,
+      "notes": "prompt builders + tree + heartbeat log + alerts + slash context; passes 43/0 in isolation; full-suite cross-pollution from foreign fs-mock unrelated to this session."
     }
   ],
   "frontend": {
