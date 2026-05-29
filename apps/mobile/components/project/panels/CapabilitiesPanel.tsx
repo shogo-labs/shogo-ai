@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { View, Text, Pressable, ScrollView, ActivityIndicator } from 'react-native'
 import {
   Globe,
@@ -37,7 +37,8 @@ import {
   PopoverContent,
 } from '@/components/ui/popover'
 import { agentFetch } from '../../../lib/agent-fetch'
-import { getAvailableModels, getModelsByProvider, AUTO_MODEL_ID, type ModelTier } from '@shogo/model-catalog'
+import { AUTO_MODEL_ID, type ModelTier } from '@shogo/model-catalog'
+import { useModelPickerGroups } from '../../../lib/visible-models'
 import { SkillsPanel } from './SkillsPanel'
 import { ToolsPanel } from './ToolsPanel'
 import { api, createHttpClient, type TechStackSummary } from '../../../lib/api'
@@ -179,23 +180,6 @@ interface ModelOption {
 
 const AUTO_MODEL_OPTION: ModelOption = { provider: 'auto', name: AUTO_MODEL_ID, displayName: 'Auto', tier: 'standard' as ModelTier }
 
-const AVAILABLE_MODELS: ModelOption[] = getAvailableModels({ generation: 'current' }).map(e => ({
-  provider: e.provider,
-  name: e.id,
-  displayName: e.displayName,
-  tier: e.tier,
-}))
-
-const MODEL_GROUPS = getModelsByProvider().map(g => ({
-  label: g.label,
-  models: g.models.map(e => ({
-    provider: e.provider,
-    name: e.id,
-    displayName: e.displayName,
-    tier: e.tier,
-  })),
-}))
-
 const TIER_LABELS: Record<ModelTier, string> = {
   premium: 'Premium',
   standard: 'Standard',
@@ -262,9 +246,28 @@ export function CapabilitiesConfigPane({
   const [expandedCap, setExpandedCap] = useState<string | null>(null)
   const [pendingToggle, setPendingToggle] = useState<{ key: string; enabled: boolean } | null>(null)
 
+  // Model options come from the admin-curated visible-models config (resolved
+  // by the serving API), so DB-defined models — including custom providers —
+  // appear here without being in this build's bundled catalog.
+  const pickerGroups = useModelPickerGroups()
+  const modelGroups = useMemo(
+    () =>
+      pickerGroups.map(g => ({
+        label: g.label,
+        models: g.models.map((m): ModelOption => ({
+          provider: m.provider ?? 'custom',
+          name: m.id,
+          displayName: m.displayName,
+          tier: m.tier,
+        })),
+      })),
+    [pickerGroups],
+  )
+  const availableModels = useMemo(() => modelGroups.flatMap(g => g.models), [modelGroups])
+
   const isModelControlled = controlledModelId !== undefined
   const controlledModelEntry = isModelControlled
-    ? AVAILABLE_MODELS.find(m => m.name === controlledModelId)
+    ? availableModels.find(m => m.name === controlledModelId)
     : null
   const [internalModel, setInternalModel] = useState<{ provider: string; name: string } | null>(null)
   const currentModel = isModelControlled
@@ -390,7 +393,7 @@ export function CapabilitiesConfigPane({
   const isAutoSelected = currentModel?.name === AUTO_MODEL_ID
   const resolvedModel = isAutoSelected
     ? AUTO_MODEL_OPTION
-    : AVAILABLE_MODELS.find(
+    : availableModels.find(
         m => m.name === currentModel?.name || (currentModel?.name && m.name === currentModel.name.replace(/-\d{8}$/, ''))
       )
 
@@ -594,7 +597,7 @@ export function CapabilitiesConfigPane({
                     {isAutoSelected && <Check size={14} className="text-primary" />}
                   </Pressable>
                   <View className="h-px bg-border/50 mx-2" />
-                  {MODEL_GROUPS.map((group) => (
+                  {modelGroups.map((group) => (
                     <View key={group.label}>
                       <View className="px-3 pt-2.5 pb-1">
                         <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">

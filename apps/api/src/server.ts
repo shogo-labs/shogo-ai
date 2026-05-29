@@ -82,6 +82,7 @@ import { vmRoutes, triggerVMImageDownload } from './routes/vm'
 import { localProjectsRoutes } from './routes/local-projects'
 import { externalPreviewRoutes } from './routes/external-preview'
 import { requireSuperAdmin } from './middleware/super-admin'
+import { adminModelCatalogRoutes } from './routes/admin-model-catalog'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
 import { createAdminRoutes } from './generated/admin-routes'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
@@ -749,27 +750,35 @@ app.get('/api/config', async (c) => {
   })
 })
 
-/** Resolve an allowlist into full picker-ready catalog entries against this
- *  server's own `MODEL_CATALOG`. `null` ids means "all current-generation
- *  models". Shipping these over the wire lets a cloud-connected desktop
- *  render models its bundled catalog may not know about. */
+/** Resolve an allowlist into full picker-ready catalog entries against the
+ *  MERGED catalog (static `MODEL_CATALOG` overlaid with enabled DB-defined
+ *  models). `null` ids means "all current-generation models". Shipping these
+ *  over the wire lets a cloud-connected desktop render models its bundled
+ *  catalog may not know about — including purely-DB-defined ones (e.g. MiMo).
+ *
+ *  The `family` and `maxOutputTokens` fields are included so clients can
+ *  label/color and gate a model they don't carry in their bundled catalog. */
 async function resolveVisibleCatalogModels(
   catalogIds: string[] | null,
-): Promise<Array<{ id: string; provider: string; displayName: string; shortDisplayName: string; tier: string }>> {
-  const { getModelsByProvider, getModelEntry } = await import('@shogo/model-catalog')
+): Promise<Array<{ id: string; provider: string; displayName: string; shortDisplayName: string; tier: string; family: string; maxOutputTokens: number }>> {
+  const { getMergedCatalogSync, getMergedModelEntrySync } = await import('./services/model-registry.service')
   const toVisible = (entry: any) => ({
     id: entry.id,
     provider: entry.provider,
     displayName: entry.displayName,
     shortDisplayName: entry.shortDisplayName,
     tier: entry.tier,
+    family: entry.family,
+    maxOutputTokens: entry.maxOutputTokens,
   })
   if (catalogIds === null) {
-    return getModelsByProvider().flatMap((g: any) => g.models).map(toVisible)
+    return getMergedCatalogSync()
+      .filter((e) => e.generation === 'current')
+      .map(toVisible)
   }
   const out: Array<ReturnType<typeof toVisible>> = []
   for (const id of catalogIds) {
-    const entry = getModelEntry(id)
+    const entry = getMergedModelEntrySync(id)
     if (entry) out.push(toVisible(entry))
   }
   return out
@@ -5117,6 +5126,14 @@ app.put('/api/admin/settings/visible-models', async (c) => {
   }
 })
 
+// DB-defined model catalog CRUD (super-admin). Lets new models — including
+// custom OpenAI-compatible providers (e.g. MiMo) — be added entirely from the
+// admin UI without a code release. Mounted under /api/admin/settings/* so it
+// inherits the super-admin guard registered above. See
+// routes/admin-model-catalog.ts for the handlers (extracted so they can be
+// route-tested in isolation).
+app.route('/api/admin/settings', adminModelCatalogRoutes())
+
 const FEATURE_FLAG_KEYS = {
   marketplace: 'feature.marketplace',
   ezMode: 'feature.ez_mode',
@@ -7310,6 +7327,20 @@ await (async () => {
     }
   } catch (err: any) {
     console.log('[AgentModels] No model overrides loaded (non-fatal):', err.message)
+  }
+})()
+
+// Prime the DB-defined model registry (custom providers + DB models) so the
+// AI proxy and visible-models endpoint resolve them on the first request
+// instead of waiting for the lazy background refresh. Non-fatal: the static
+// catalog still works if this fails.
+await (async () => {
+  try {
+    const { primeModelRegistry } = await import('./services/model-registry.service')
+    await primeModelRegistry()
+    console.log('[ModelRegistry] Primed DB-defined model catalog')
+  } catch (err: any) {
+    console.log('[ModelRegistry] Could not prime registry (non-fatal):', err.message)
   }
 })()
 

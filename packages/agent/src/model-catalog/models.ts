@@ -13,7 +13,7 @@
 /** Special model ID that enables the intelligent model router. */
 export const AUTO_MODEL_ID = 'auto' as const
 
-export type Provider = 'anthropic' | 'openai' | 'google' | 'local' | 'openrouter'
+export type Provider = 'anthropic' | 'openai' | 'google' | 'local' | 'openrouter' | 'custom'
 
 /** Prefix used for OpenRouter model IDs in our catalog/allowlist. The ID
  * after the prefix is the canonical OpenRouter model id (e.g.

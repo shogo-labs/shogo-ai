@@ -95,7 +95,12 @@ export {
   type FeatureFlagPatch,
   type VisibleModelsConfig,
   type VisibleOpenRouterModel,
+  type VisibleCatalogModel,
   type ResolvedVisibleModels,
+  type ModelProvider,
+  type ModelProviderInput,
+  type ModelDefinition,
+  type ModelDefinitionInput,
 } from './platform/index.js'
 
 // Machines API (paired desktops / VPS workers + per-project "Run on" routing)

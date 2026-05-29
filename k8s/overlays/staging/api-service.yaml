@@ -214,6 +214,16 @@ spec:
                 secretKeyRef:
                   name: api-secrets
                   key: ANTHROPIC_API_KEY
+            # AES-256-GCM master key for encrypting model-provider API keys
+            # at rest (apps/api/src/lib/secret-crypto.ts). Optional so the API
+            # still boots if unset; saving a custom-provider key 503s until it
+            # is provisioned.
+            - name: SECRETS_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: SECRETS_ENCRYPTION_KEY
+                  optional: true
             - name: STRIPE_SECRET_KEY
               valueFrom:
                 secretKeyRef:

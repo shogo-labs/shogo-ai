@@ -649,6 +649,11 @@ jobs:
           # the affiliate click-tracking internal call. See
           # docs/affiliate-mlm-rollout.md.
           if [ -n "${{ secrets.SHOGO_INTERNAL_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SHOGO_INTERNAL_SECRET="${{ secrets.SHOGO_INTERNAL_SECRET }}"); fi
+          # AES-256-GCM master key for encrypting model-provider API keys at
+          # rest (apps/api/src/lib/secret-crypto.ts). Must be identical across
+          # all regions that share the primary DB so encrypted ModelProvider
+          # rows decrypt everywhere. See docs/github-environments-setup.md.
+          if [ -n "${{ secrets.SECRETS_ENCRYPTION_KEY }}" ]; then SECRET_ARGS+=(--from-literal=SECRETS_ENCRYPTION_KEY="${{ secrets.SECRETS_ENCRYPTION_KEY }}"); fi
 
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \
@@ -1082,6 +1087,11 @@ jobs:
           # the affiliate click-tracking internal call. See
           # docs/affiliate-mlm-rollout.md.
           if [ -n "${{ secrets.SHOGO_INTERNAL_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SHOGO_INTERNAL_SECRET="${{ secrets.SHOGO_INTERNAL_SECRET }}"); fi
+          # AES-256-GCM master key for encrypting model-provider API keys at
+          # rest (apps/api/src/lib/secret-crypto.ts). Must be identical across
+          # all regions that share the primary DB so encrypted ModelProvider
+          # rows decrypt everywhere. See docs/github-environments-setup.md.
+          if [ -n "${{ secrets.SECRETS_ENCRYPTION_KEY }}" ]; then SECRET_ARGS+=(--from-literal=SECRETS_ENCRYPTION_KEY="${{ secrets.SECRETS_ENCRYPTION_KEY }}"); fi
 
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \
@@ -1582,6 +1592,11 @@ jobs:
           # the affiliate click-tracking internal call. See
           # docs/affiliate-mlm-rollout.md.
           if [ -n "${{ secrets.SHOGO_INTERNAL_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SHOGO_INTERNAL_SECRET="${{ secrets.SHOGO_INTERNAL_SECRET }}"); fi
+          # AES-256-GCM master key for encrypting model-provider API keys at
+          # rest (apps/api/src/lib/secret-crypto.ts). Must be identical across
+          # all regions that share the primary DB so encrypted ModelProvider
+          # rows decrypt everywhere. See docs/github-environments-setup.md.
+          if [ -n "${{ secrets.SECRETS_ENCRYPTION_KEY }}" ]; then SECRET_ARGS+=(--from-literal=SECRETS_ENCRYPTION_KEY="${{ secrets.SECRETS_ENCRYPTION_KEY }}"); fi
 
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \
@@ -2050,6 +2065,11 @@ jobs:
           # the affiliate click-tracking internal call. See
           # docs/affiliate-mlm-rollout.md.
           if [ -n "${{ secrets.SHOGO_INTERNAL_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SHOGO_INTERNAL_SECRET="${{ secrets.SHOGO_INTERNAL_SECRET }}"); fi
+          # AES-256-GCM master key for encrypting model-provider API keys at
+          # rest (apps/api/src/lib/secret-crypto.ts). Must be identical across
+          # all regions that share the primary DB so encrypted ModelProvider
+          # rows decrypt everywhere. See docs/github-environments-setup.md.
+          if [ -n "${{ secrets.SECRETS_ENCRYPTION_KEY }}" ]; then SECRET_ARGS+=(--from-literal=SECRETS_ENCRYPTION_KEY="${{ secrets.SECRETS_ENCRYPTION_KEY }}"); fi
 
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \
