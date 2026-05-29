@@ -237,3 +237,4 @@ apps/*/coverage/
 .shogo/
 config.json
 apps/mobile/dist.stale-*/
+.github/pr-*.md

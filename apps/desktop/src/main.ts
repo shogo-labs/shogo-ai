@@ -42,6 +42,7 @@ import {
   startRecordingHttpBridge,
 } from './recording'
 import { registerFsIpcHandlers } from './fs-ipc'
+import { registerGitIpcHandlers, disposeGitIpc } from './git/ipc'
 import { registerTerminalIpcHandlers, disposeTerminalIpc } from './ipc/terminal-ipc'
 import { registerLlmIpcHandlers, disposeLlmIpcHandlers } from './ipc/llm-ipc'
 import { registerPortsIpcHandlers, disposePortsIpcHandlers } from './ipc/ports-ipc'
@@ -1254,6 +1255,7 @@ app.whenReady().then(async () => {
   // root that isn't under the local workspaces dir, so cloud-only sessions
   // simply never invoke them.
   registerFsIpcHandlers()
+  registerGitIpcHandlers()
   registerTerminalIpcHandlers()
   registerLlmIpcHandlers()
   registerPortsIpcHandlers()
@@ -1350,6 +1352,7 @@ app.on('before-quit', (event) => {
     void disposeTerminalIpc().catch(() => {})
     disposeLlmIpcHandlers()
     disposePortsIpcHandlers()
+    disposeGitIpc()
     stopLocalServer().catch(() => {})
     return
   }
@@ -1360,6 +1363,7 @@ app.on('before-quit', (event) => {
   destroyTray()
   disposeLlmIpcHandlers()
   disposePortsIpcHandlers()
+  disposeGitIpc()
   Promise.allSettled([disposeTerminalIpc(), stopLocalServer()])
     .then(() => console.log('[Desktop] Server cleanup complete'))
     .catch((err) => console.error('[Desktop] Server cleanup error:', err))
