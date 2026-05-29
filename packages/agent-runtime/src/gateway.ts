@@ -63,7 +63,7 @@ import {
   AUTO_MODEL_ID,
 } from '@shogo/model-catalog'
 import { selectModelForSpawn, buildAutoTierMap, formatRoutingLog, type SpawnClassificationInput } from './model-router'
-import { CODE_AGENT_GENERAL_GUIDE } from './code-agent-prompt'
+import { CODE_AGENT_GENERAL_GUIDE, OUTPUT_CONTRACT_GUIDE } from './code-agent-prompt'
 import { SHOGO_SDK_GUIDE } from './shogo-sdk-prompt'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
@@ -2594,7 +2594,18 @@ export class AgentGateway {
       if (result.text) return result.text
       if (isHeartbeat) return 'HEARTBEAT_OK'
       console.warn(`${this.logPrefix} Empty model response for session ${sessionId} (${result.iterations} iterations, ${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`)
-      return 'Sorry, I was unable to generate a response. Please try again.'
+      const emptyFallback = 'Sorry, I was unable to generate a response. Please try again.'
+      // Stream the fallback so clients (and eval bridges) never receive a
+      // completely silent turn when nothing was emitted and no error fired.
+      try {
+        if (uiWriter && !uiTextId && !result.error) {
+          const fbId = `text-${Date.now()}-fallback`
+          uiWriter.write({ type: 'text-start', id: fbId })
+          uiWriter.write({ type: 'text-delta', id: fbId, delta: emptyFallback })
+          uiWriter.write({ type: 'text-end', id: fbId })
+        }
+      } catch { /* writer may be dead — ignore */ }
+      return emptyFallback
     } catch (error: any) {
       console.error(`${this.logPrefix} Agent turn failed:`, error.message, error.stack?.split('\n').slice(0, 3).join('\n'))
       chunker?.dispose()
@@ -2666,6 +2677,7 @@ export class AgentGateway {
     }
 
     parts.push(CODE_AGENT_GENERAL_GUIDE)
+    parts.push(OUTPUT_CONTRACT_GUIDE)
     if (this.config.browserEnabled !== false) {
       parts.push(BROWSER_TOOL_GUIDE)
     }
@@ -2706,6 +2718,7 @@ export class AgentGateway {
     }
 
     parts.push(CODE_AGENT_GENERAL_GUIDE)
+    parts.push(OUTPUT_CONTRACT_GUIDE)
     if (this.config.browserEnabled !== false) {
       parts.push(BROWSER_TOOL_GUIDE)
     }

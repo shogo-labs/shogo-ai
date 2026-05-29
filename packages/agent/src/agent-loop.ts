@@ -486,12 +486,20 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
 
   const lastToolName = toolCalls.length > 0 ? toolCalls[toolCalls.length - 1]?.name : undefined
   const stoppedByIterationLimit = abortReason === 'max_iterations'
+  // An empty turn with no tools and no hard provider error means the model
+  // ended without emitting a visible answer (e.g. it spent the turn on hidden
+  // reasoning, or the structured task overwhelmed it). Elicit the answer with
+  // a tool-free finalizer rather than returning nothing.
+  const emptyNoToolTurn =
+    toolCalls.length === 0 && !finalText.trim() && !implicitError && !promptError
   const shouldForceFinalText =
-    toolCalls.length > 0 &&
     lastToolName !== 'ask_user' &&
     !signal?.aborted &&
     !loopBreak &&
-    (!finalText.trim() || maxIterationsExhausted || lastStopReason === 'length')
+    (
+      (toolCalls.length > 0 && (!finalText.trim() || maxIterationsExhausted || lastStopReason === 'length')) ||
+      emptyNoToolTurn
+    )
 
   if (shouldForceFinalText) {
     const truncatedMidAnswer = lastStopReason === 'length' && finalText.trim().length > 0
@@ -502,7 +510,13 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
           'Do not call any tools and do not ask the user to type "continue".',
           'When you reach a natural ending, finish the response so the user has a complete answer.',
         ].join('\n')
-      : [
+      : emptyNoToolTurn
+        ? [
+            'You ended your turn without producing a visible answer.',
+            'Provide your COMPLETE final response to the user\'s request now, as a single self-contained deliverable.',
+            'Do not call any tools. If the request asked for code or JSON, output exactly one clean block in the requested format with no extra prose.',
+          ].join('\n')
+        : [
           'Tool use is now closed for this visible turn.',
           'Do not call any tools. Write the final response to the user now.',
           'Summarize what was completed, include any important findings or blockers, and be explicit if the task is not fully finished.',
