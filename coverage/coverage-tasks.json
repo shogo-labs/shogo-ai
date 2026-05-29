@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-05-22T05:05:30.108447Z",
+  "generatedAt": "2026-05-29T11:55:00.000000Z",
   "campaign": "backend-coverage-to-100-v2",
-  "branch": "fix/unit-backend-testCases",
+  "branch": "fix(coverage)/backend-unit-test-cases",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
@@ -1140,12 +1140,12 @@
       "effectiveLinePct": 100.0
     }
   ],
-  "lastUpdated": "2026-05-29T16:30:00Z",
+  "lastUpdated": "2026-05-29",
   "aggregate": {
     "lines": {
-      "hit": 76995,
+      "hit": 77173,
       "total": 92201,
-      "pct": 83.51
+      "pct": 83.7
     },
     "functions": {
       "hit": 6036,

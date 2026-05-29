@@ -3,9 +3,9 @@
   "note": "Honest v2 aggregate from per-file-isolated test runs (apps/api + agent-runtime + shared-runtime use run-tests-isolated.ts to merge ~141 per-test-file lcovs each), comment-stripped via coverage-strip-comments.ts. Strict per-package src/ scoping via scripts/sum-lcov.ts --include. Aggregate 87.81% lines. Frontend badge UNTOUCHED.",
   "aggregate": {
     "lines": {
-      "hit": 76995,
+      "hit": 77173,
       "total": 92201,
-      "pct": 83.51
+      "pct": 83.7
     },
     "functions": {
       "hit": 6036,
@@ -25,9 +25,9 @@
     },
     {
       "package": "packages/agent-runtime",
-      "linesHit": 23049,
+      "linesHit": 23227,
       "linesFound": 28696,
-      "linePct": 80.32,
+      "linePct": 80.94,
       "funcsHit": 1596,
       "funcsFound": 2243,
       "funcPct": 71.15
@@ -1615,6 +1615,24 @@
       },
       "tests": 43,
       "notes": "prompt builders + tree + heartbeat log + alerts + slash context; passes 43/0 in isolation; full-suite cross-pollution from foreign fs-mock unrelated to this session."
+    },
+    {
+      "sha": "SYNC",
+      "date": "2026-05-29",
+      "wave": "Sync Readme \u2014 post Sessions 4b/5/8",
+      "aggregateBefore": {
+        "lines": 83.51,
+        "funcs": 80.5
+      },
+      "aggregateAfter": {
+        "lines": 83.7,
+        "funcs": 80.5
+      },
+      "delta": {
+        "lines": "+0.19pp",
+        "funcs": "0pp"
+      },
+      "note": "Recompute via isolated runner: agent-runtime 23049\u219223227 lines hit (+178). Other 10 packages unchanged since last sync (no source/test changes). Funcs delta within rounding \u2014 new tests exercised already-touched functions."
     }
   ],
   "frontend": {
