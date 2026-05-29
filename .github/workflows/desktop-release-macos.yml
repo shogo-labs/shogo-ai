@@ -259,6 +259,64 @@ jobs:
         working-directory: apps/desktop
         run: npm install
 
+      # @electron/get caches downloaded Electron zips here. Caching it across
+      # runs means a flaky network on any single run can't leave us without a
+      # binary — see the next step. Keyed on the lockfile so an electron bump
+      # invalidates it.
+      - name: Cache Electron binaries
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/Library/Caches/electron
+          key: electron-cache-darwin-${{ matrix.arch }}-${{ hashFiles('apps/desktop/package-lock.json') }}
+          restore-keys: electron-cache-darwin-${{ matrix.arch }}-
+
+      - name: Ensure Electron binary is downloaded (prevent silent empty package)
+        # ROOT CAUSE of the v1.8.17/v1.8.18 release failures: Electron's npm
+        # postinstall downloads the prebuilt binary into node_modules/electron/
+        # dist via @electron/get. On a flaky runner that download can fail/return
+        # empty WITHOUT failing `npm install` (the same runs show ETIMEDOUT on
+        # the Playwright Chromium download). @electron/packager then "Copies
+        # files" from an empty dist in milliseconds and exits 0 having produced
+        # NO Shogo.app — bricking the tagged release with no error. v1.8.16
+        # simply got a healthy network and worked.
+        #
+        # We make the binary non-optional: force a clean re-download of the
+        # TARGET arch (electron's install.js honours npm_config_arch, so the x64
+        # leg pre-warms the x64 cache that @electron/packager later reads on this
+        # arm64 runner), retry on failure, and HARD-VERIFY the real Mach-O exists
+        # before packaging. If it still can't be fetched we fail loudly here
+        # rather than shipping an empty app.
+        working-directory: apps/desktop
+        env:
+          # Lets @electron/get use the GitHub API without hitting the
+          # unauthenticated shared-runner rate limit when resolving releases.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          DIST="node_modules/electron/dist"
+          BIN="$DIST/Electron.app/Contents/MacOS/Electron"
+          for attempt in 1 2 3 4 5; do
+            if [ -f "$BIN" ]; then
+              echo "Electron binary present: $BIN"
+              break
+            fi
+            echo "=== Electron binary missing — clean download attempt $attempt (arch=${{ matrix.arch }}) ==="
+            rm -rf "$DIST" node_modules/electron/path.txt
+            # Set both arch envs: older electron reads npm_config_arch at
+            # postinstall, newer builds read ELECTRON_INSTALL_ARCH. The x64 leg
+            # runs on this arm64 host, so without an explicit arch it would
+            # fetch arm64 and the x64 package would still copy a wrong/host dist.
+            npm_config_arch=${{ matrix.arch }} ELECTRON_INSTALL_ARCH=${{ matrix.arch }} \
+              node node_modules/electron/install.js \
+              || echo "  (electron install.js exited non-zero on attempt $attempt)"
+            [ "$attempt" -lt 5 ] && [ ! -f "$BIN" ] && sleep 10
+          done
+          if [ ! -f "$BIN" ]; then
+            echo "::error::Electron ${{ matrix.arch }} binary could not be downloaded after 5 attempts. @electron/packager would silently produce an empty app, so failing the build now."
+            exit 1
+          fi
+          echo "Electron binary ready ($(du -sh "$DIST" | cut -f1)) for ${{ matrix.arch }}."
+
       - name: Build TypeScript
         working-directory: apps/desktop
         # `npx tsc` emits dist/{main,preload,...}.js. The follow-up
