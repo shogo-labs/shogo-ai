@@ -160,7 +160,7 @@ const ModalBackdrop = React.forwardRef<
 const ModalContent = React.forwardRef<
   React.ComponentRef<typeof UIModal.Content>,
   IModalContentProps
->(function ModalContent({ className, size, ...props }, ref) {
+>(function ModalContent({ className, size, style, ...props }, ref) {
   const { size: parentSize } = useStyleContext(SCOPE);
 
   return (
@@ -194,7 +194,7 @@ const ModalContent = React.forwardRef<
         size,
         class: className,
       })}
-      style={{ pointerEvents: 'auto' }}
+      style={[style, { pointerEvents: 'auto' }]}
     />
   );
 });
