@@ -131,7 +131,7 @@ describe('exported helpers', () => {
   })
 
   test('resolveToolNames preserves explicit names + expands groups', () => {
-    const names = resolveToolNames(['exec', 'tool_discovery'])
+    const names = resolveToolNames(['exec', 'integrations'])
     expect(names.includes('exec')).toBe(true)
     expect(names.length).toBeGreaterThan(1)
   })

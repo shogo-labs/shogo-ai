@@ -52,7 +52,7 @@ function makeCtx(overrides: any = {}): any {
     projectId: 'proj-composio',
     sessionId: 'sess-1',
     mainSessionIds: ['sess-1'],
-    mcpClientManager: { install: async () => ({ ok: true }) },
+    mcpClientManager: { install: async () => ({ ok: true }), isRunning: () => false, getServerInfo: () => [] },
     userId: 'user-1',
     ...overrides,
   }
@@ -60,7 +60,7 @@ function makeCtx(overrides: any = {}): any {
 
 async function exec(ctx: any, params: Record<string, any>) {
   const tools = createTools(ctx)
-  const t = tools.find((x: any) => x.name === 'tool_install')!
+  const t = tools.find((x: any) => x.name === 'connect')!
   const r = await t.execute('test-id', params)
   return r.details ?? r
 }
@@ -76,7 +76,7 @@ function resetState() {
   state.searchThrows = false
 }
 
-describe('tool_install composio paths', () => {
+describe('connect composio paths', () => {
   test('no MCP manager returns error', async () => {
     resetState()
     const ctx = makeCtx({ mcpClientManager: undefined })
@@ -84,11 +84,13 @@ describe('tool_install composio paths', () => {
     expect(String(r.error)).toContain('MCP client manager not available')
   })
 
-  test('composio disabled + not initialized falls through to unknown-integration error', async () => {
+  test('composio disabled + not initialized falls through to MCP catalog miss', async () => {
     resetState()
     const ctx = makeCtx()
     const r = await exec(ctx, { name: 'unknown-thing' })
-    expect(String(r.error)).toContain('not a managed integration')
+    // Composio is off and the name isn't in the MCP catalog, so connect
+    // auto-routes to MCP and reports the catalog miss.
+    expect(String(r.error)).toContain('not in the MCP catalog')
   })
 
   test('composio already initialized + toolkit found + active auth', async () => {
@@ -163,13 +165,15 @@ describe('tool_install composio paths', () => {
     expect(String(r.error)).toContain('Failed to connect "Notion"')
   })
 
-  test('composio enabled but findComposioToolkit returns null → falls through to unknown', async () => {
+  test('composio enabled but findComposioToolkit returns null → falls through to MCP', async () => {
     resetState()
     state.enabled = true
     state.toolkit = null
     const ctx = makeCtx()
     const r = await exec(ctx, { name: 'mystery' })
-    expect(String(r.error)).toContain('not a managed integration')
+    // No managed match and no explicit source, so connect falls through to the
+    // MCP catalog (which also misses).
+    expect(String(r.error)).toContain('not in the MCP catalog')
   })
 
   test('honors COMPOSIO_USER_SCOPE=project env var', async () => {
@@ -234,7 +238,7 @@ describe('tool_install composio paths', () => {
 })
 
 
-describe('tool_search composio paths', () => {
+describe('search_integrations composio paths', () => {
   test('composio enabled — search returns managed results', async () => {
     resetState()
     state.enabled = true
@@ -244,13 +248,13 @@ describe('tool_search composio paths', () => {
     ]
     const ctx = makeCtx()
     const tools = createTools(ctx)
-    const t = tools.find((x: any) => x.name === 'tool_search')!
+    const t = tools.find((x: any) => x.name === 'search_integrations')!
     const r: any = await t.execute('id', { query: 'slack' })
     const detail = r.details ?? r
     expect(Array.isArray(detail.results)).toBe(true)
     const managed = detail.results.filter((x: any) => x.source === 'managed')
     expect(managed.length).toBeGreaterThanOrEqual(1)
-    expect(managed[0].installCommand).toContain('tool_install')
+    expect(managed[0].installCommand).toContain('connect')
   })
 
   test('composio enabled — search swallows API errors', async () => {
@@ -259,7 +263,7 @@ describe('tool_search composio paths', () => {
     state.searchThrows = true
     const ctx = makeCtx()
     const tools = createTools(ctx)
-    const t = tools.find((x: any) => x.name === 'tool_search')!
+    const t = tools.find((x: any) => x.name === 'search_integrations')!
     const r: any = await t.execute('id', { query: 'anything' })
     const detail = r.details ?? r
     expect(detail.results).toBeDefined()

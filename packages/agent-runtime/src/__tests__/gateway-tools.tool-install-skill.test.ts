@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 //
-// gateway-tools.ts — tool_install "skill:" branch coverage
-// Targets L3173-3210: createToolInstallTool's bundled-skill copy path
-// (mkdirSync destDir, readdirSync srcDir, cpSync for subdirs, writeFileSync
-// for files). Plus the already-installed and not-found branches.
+// gateway-tools.ts — connect "skill:" branch coverage
+// Targets connectSkill: the bundled-skill copy path (mkdirSync destDir,
+// readdirSync srcDir, cpSync for subdirs, writeFileSync for files). Plus the
+// already-installed and not-found branches.
 
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import {
@@ -60,7 +60,7 @@ function makeCtx(): any {
 
 async function exec(ctx: any, params: Record<string, any>) {
   const tools = createTools(ctx)
-  const t = tools.find((x: any) => x.name === 'tool_install')!
+  const t = tools.find((x: any) => x.name === 'connect')!
   const r = await t.execute('id', params)
   return r.details ?? r
 }
@@ -79,12 +79,12 @@ afterEach(() => {
   }
 })
 
-describe('tool_install skill: prefix', () => {
-  test('bundled skill not found returns error with tool_search hint', async () => {
+describe('connect skill: prefix', () => {
+  test('bundled skill not found returns error with search_integrations hint', async () => {
     const ctx = makeCtx()
     const r = await exec(ctx, { name: 'skill:nonexistent' })
     expect(String(r.error)).toContain('Bundled skill "nonexistent" not found')
-    expect(String(r.error)).toContain('tool_search')
+    expect(String(r.error)).toContain('search_integrations')
   })
 
   test('already-installed skill returns error with existing path', async () => {
