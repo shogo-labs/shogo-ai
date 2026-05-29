@@ -319,6 +319,27 @@
   "method": "sum(LH)/sum(LF) per backend package (apps/api, agent-runtime, sdk, shared-runtime, model-catalog=100%). Comment-stripped. NOT cross-package union.",
   "sprintCommits": [
     {
+      "sha": "8ed47539",
+      "date": "2026-05-29",
+      "wave": "Wave 2 Session 5 \u2014 apps/api runtime/manager.ts doStart() orchestration",
+      "message": "test(coverage): runtime/manager.ts 62.26% -> 99.52% lines (+480 hit, +23 tests)",
+      "perFile": [
+        {
+          "file": "apps/api/src/lib/runtime/manager.ts",
+          "beforeLines": "62.26%",
+          "afterLines": "99.52%",
+          "beforeFuncs": "89.41%",
+          "afterFuncs": "91.40%",
+          "deltaLinesHit": 480,
+          "deltaLinesPct": "+37.26",
+          "deltaFuncsPct": "+1.99",
+          "newTests": 23,
+          "remainingUncov": "L774-777 (copyFilter lambda body), L1550 (inner catch callback) \u2014 5 lines total"
+        }
+      ],
+      "note": "Wave 2 v4 Top-10 file. doStart() (L1125-1555, ~430 uncov) drives the runtime spawn orchestration \u2014 was the single biggest uncov cluster across all of apps/api. New test file runtime-manager-doStart.test.ts (508 lines) stubs every helper method (getProjectInfo/ensureProjectDirectory/allocatePortAsync/getProjectWorkspaceId/getProjectComposioScope/buildSecurityPolicy/agentManager.{ensureRunning,stop,status,touch}/startHealthCheck/buildUrl) on the RuntimeManager instance and toggles env vars (PROJECTS_DATABASE_URL, SHOGO_API_KEY, AI_MODE, SHOGO_LOCAL_MODE, AGENT_RUNTIME_ENTRY, AI_PROXY_SECRET) to exercise each branch: 23 tests across 5 describe blocks (guards / external-project / project-type detection / env composition / error paths / proxy-token failure). Isolated runner: 7840 pass / 0 fail / 42 skip (+23 vs 7817 baseline)."
+    },
+    {
       "sha": "113ea51d",
       "date": "2026-05-29",
       "wave": "Wave 1 Session 4b \u2014 preview-manager.ts spawn paths (continuation)",
