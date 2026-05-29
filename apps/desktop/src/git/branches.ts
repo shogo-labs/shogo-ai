@@ -8,6 +8,9 @@
 // of truth.
 
 import { runGit } from "./repository";
+import { isSafeRefArg } from "./validate";
+
+const REJECT_REF: OpResult = { ok: false, error: "invalid branch name" };
 import { getOrCreateGitWorkspace } from "./service";
 
 export interface BranchInfo {
@@ -70,6 +73,7 @@ export async function listBranches(root: string): Promise<ListResult> {
 
 /** `git checkout <name>` — also handles ambiguous remote-tracking refs. */
 export async function checkoutBranch(root: string, name: string): Promise<OpResult> {
+  if (!isSafeRefArg(name)) return REJECT_REF;
   const res = await runGit(["checkout", name], { cwd: root, timeoutMs: 30_000 });
   if (!res.ok) return { ok: false, error: res.stderr.trim() || `git checkout exit ${res.code}` };
   getOrCreateGitWorkspace(root).requestRefresh();
@@ -85,6 +89,8 @@ export async function createBranch(
   name: string,
   base?: string,
 ): Promise<OpResult> {
+  if (!isSafeRefArg(name)) return REJECT_REF;
+  if (base !== undefined && !isSafeRefArg(base)) return REJECT_REF;
   const args = ["checkout", "-b", name];
   if (base) args.push(base);
   const res = await runGit(args, { cwd: root, timeoutMs: 30_000 });
@@ -103,6 +109,7 @@ export async function deleteBranch(
   name: string,
   opts?: { force?: boolean },
 ): Promise<OpResult> {
+  if (!isSafeRefArg(name)) return REJECT_REF;
   const flag = opts?.force ? "-D" : "-d";
   const res = await runGit(["branch", flag, name], { cwd: root });
   if (!res.ok) return { ok: false, error: res.stderr.trim() || `git branch ${flag} exit ${res.code}` };
@@ -115,6 +122,7 @@ export async function renameBranch(
   oldName: string,
   newName: string,
 ): Promise<OpResult> {
+  if (!isSafeRefArg(oldName) || !isSafeRefArg(newName)) return REJECT_REF;
   const res = await runGit(["branch", "-m", oldName, newName], { cwd: root });
   if (!res.ok) return { ok: false, error: res.stderr.trim() || `git branch -m exit ${res.code}` };
   getOrCreateGitWorkspace(root).requestRefresh();
@@ -127,6 +135,7 @@ export async function publishBranch(
   branch: string,
   remote = "origin",
 ): Promise<OpResult> {
+  if (!isSafeRefArg(branch) || !isSafeRefArg(remote)) return REJECT_REF;
   const res = await runGit(
     ["push", "-u", remote, branch],
     { cwd: root, timeoutMs: 120_000 },

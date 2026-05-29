@@ -9,6 +9,13 @@
 import { runGit } from "./repository";
 import { getOrCreateGitWorkspace } from "./service";
 
+type OpResultLike = { ok: false; error: string };
+const STASH_REF_RE = /^stash@\{\d{1,4}\}$/;
+function isSafeStashRef(s: unknown): s is string {
+  return typeof s === "string" && STASH_REF_RE.test(s);
+}
+const REJECT_STASH: OpResultLike = { ok: false, error: "invalid stash ref (expected stash@{N})" };
+
 export interface StashEntry {
   /** `stash@{N}` reference — pass back to apply/pop/drop. */
   ref: string;
@@ -63,6 +70,7 @@ export async function stashPush(
 }
 
 export async function stashApply(root: string, ref: string): Promise<OpResult> {
+  if (!isSafeStashRef(ref)) return REJECT_STASH;
   const res = await runGit(["stash", "apply", ref], { cwd: root });
   if (!res.ok) return { ok: false, error: res.stderr.trim() || `git stash apply exit ${res.code}` };
   getOrCreateGitWorkspace(root).requestRefresh();
@@ -70,6 +78,7 @@ export async function stashApply(root: string, ref: string): Promise<OpResult> {
 }
 
 export async function stashPop(root: string, ref: string): Promise<OpResult> {
+  if (!isSafeStashRef(ref)) return REJECT_STASH;
   const res = await runGit(["stash", "pop", ref], { cwd: root });
   if (!res.ok) return { ok: false, error: res.stderr.trim() || `git stash pop exit ${res.code}` };
   getOrCreateGitWorkspace(root).requestRefresh();
@@ -77,6 +86,7 @@ export async function stashPop(root: string, ref: string): Promise<OpResult> {
 }
 
 export async function stashDrop(root: string, ref: string): Promise<OpResult> {
+  if (!isSafeStashRef(ref)) return REJECT_STASH;
   const res = await runGit(["stash", "drop", ref], { cwd: root });
   if (!res.ok) return { ok: false, error: res.stderr.trim() || `git stash drop exit ${res.code}` };
   return { ok: true };

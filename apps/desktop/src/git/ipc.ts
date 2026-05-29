@@ -161,8 +161,26 @@ export function registerGitIpcHandlers(): void {
         dispose();
         SUBSCRIPTIONS.delete(subId);
       };
+      // Three signals can mean "this subscription is dead":
+      //   1. webContents destroyed (window closed)
+      //   2. did-start-navigation (page reload / nav — old React tree is
+      //      gone, useGitStatus unmount handlers never ran, so the
+      //      renderer-side subscription is orphaned)
+      //   3. explicit git:unsubscribe call (cleanup via React unmount)
+      //
+      // Without (2), Cmd+R during dev / a renderer crash would leak the
+      // subscription forever — the Set never shrinks, the poller keeps
+      // running, webContents.send() no-ops via isDestroyed() but the
+      // subscriber stays in service.ts so the workspace can't suspend.
       webContents.once("destroyed", cleanup);
-      SUBSCRIPTIONS.set(subId, { workspaceRoot: g.root, webContents, dispose: cleanup });
+      const onNav = (): void => cleanup();
+      webContents.on("did-start-navigation", onNav);
+      // Patch dispose() so unsubscribe also removes the nav listener.
+      const fullCleanup = (): void => {
+        try { webContents.off("did-start-navigation", onNav); } catch { /* noop */ }
+        cleanup();
+      };
+      SUBSCRIPTIONS.set(subId, { workspaceRoot: g.root, webContents, dispose: fullCleanup });
       return { ok: true as const, subId, channel };
     },
   );

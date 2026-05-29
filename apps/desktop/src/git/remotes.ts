@@ -16,8 +16,11 @@
 
 import { runGit } from "./repository";
 import { getOrCreateGitWorkspace } from "./service";
+import { isSafeRefArg } from "./validate";
 
 type OpResult = { ok: true; stdout: string } | { ok: false; error: string };
+
+const REJECT: OpResult = { ok: false, error: "invalid remote or branch name" };
 
 export async function listRemotes(root: string): Promise<{ ok: true; remotes: string[] } | { ok: false; error: string }> {
   const res = await runGit(["remote"], { cwd: root });
@@ -35,6 +38,7 @@ export async function fetchRemote(
   root: string,
   opts?: { remote?: string; prune?: boolean; all?: boolean },
 ): Promise<OpResult> {
+  if (opts?.remote !== undefined && !isSafeRefArg(opts.remote)) return REJECT;
   const args = ["fetch"];
   if (opts?.all) args.push("--all");
   if (opts?.prune) args.push("--prune");
@@ -49,6 +53,8 @@ export async function pullRemote(
   root: string,
   opts?: { remote?: string; branch?: string; rebase?: boolean; ffOnly?: boolean },
 ): Promise<OpResult> {
+  if (opts?.remote !== undefined && !isSafeRefArg(opts.remote)) return REJECT;
+  if (opts?.branch !== undefined && !isSafeRefArg(opts.branch)) return REJECT;
   const args = ["pull"];
   if (opts?.rebase) args.push("--rebase");
   if (opts?.ffOnly) args.push("--ff-only");
@@ -64,6 +70,8 @@ export async function pushRemote(
   root: string,
   opts?: { remote?: string; branch?: string; force?: boolean; forceWithLease?: boolean; tags?: boolean; setUpstream?: boolean },
 ): Promise<OpResult> {
+  if (opts?.remote !== undefined && !isSafeRefArg(opts.remote)) return REJECT;
+  if (opts?.branch !== undefined && !isSafeRefArg(opts.branch)) return REJECT;
   const args = ["push"];
   if (opts?.force && !opts.forceWithLease) args.push("--force");
   if (opts?.forceWithLease) args.push("--force-with-lease");
