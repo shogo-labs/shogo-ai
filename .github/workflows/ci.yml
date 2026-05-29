@@ -74,9 +74,16 @@ jobs:
         # build the tests see an empty source tree and fail. The
         # template has its own `bun install` because it's outside the
         # root workspaces glob.
+        #
+        # The template pins `@shogo-ai/sdk` as the `workspace:*` sentinel,
+        # which can't resolve in this standalone install — materialize it to
+        # the latest published `^X.Y.Z` first (GitHub runners have npm + net).
+        # Plain `bun install` (not --frozen-lockfile): the rewrite makes the
+        # template's checked-in bun.lock drift from its package.json.
         run: |
+          bun run scripts/materialize-runtime-template.ts templates/runtime-template/package.json
           cd templates/runtime-template
-          bun install --frozen-lockfile
+          bun install
           bun run build
 
       - name: Build one agent template (sales-bdr-pipeline) for overlay tests

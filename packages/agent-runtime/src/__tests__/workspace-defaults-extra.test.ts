@@ -807,6 +807,42 @@ describe('migrateLegacyShogoSdkPin', () => {
     }))
     expect(wd.migrateLegacyShogoSdkPin(dir)).toEqual({ upgraded: false })
   })
+
+  test('workspace:* template (unmaterialized) falls back to co-located packages/sdk version', () => {
+    // Lay out a fake monorepo: <root>/templates/runtime-template + <root>/packages/sdk.
+    const root = makeTmp()
+    const tplDir = join(root, 'templates', 'runtime-template')
+    mkdirSync(tplDir, { recursive: true })
+    writeFileSync(join(tplDir, 'package.json'), JSON.stringify({
+      name: 'tpl',
+      dependencies: { '@shogo-ai/sdk': 'workspace:*' },
+    }))
+    mkdirSync(join(root, 'packages', 'sdk'), { recursive: true })
+    writeFileSync(join(root, 'packages', 'sdk', 'package.json'), JSON.stringify({ version: '1.9.0' }))
+    process.env.RUNTIME_TEMPLATE_DIR = tplDir
+
+    const dir = makeTmp()
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      dependencies: { '@shogo-ai/sdk': '^0.4.0' },
+    }))
+    const result = wd.migrateLegacyShogoSdkPin(dir)
+    expect(result.upgraded).toBe(true)
+    expect(result.after).toBe('^1.9.0')
+  })
+
+  test('workspace:* template with no co-located packages/sdk → clean no-op', () => {
+    const tplDir = makeTmp()
+    writeFileSync(join(tplDir, 'package.json'), JSON.stringify({
+      name: 'tpl',
+      dependencies: { '@shogo-ai/sdk': 'workspace:*' },
+    }))
+    process.env.RUNTIME_TEMPLATE_DIR = tplDir
+    const dir = makeTmp()
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      dependencies: { '@shogo-ai/sdk': '^0.4.0' },
+    }))
+    expect(wd.migrateLegacyShogoSdkPin(dir)).toEqual({ upgraded: false })
+  })
 })
 
 // ---------------------------------------------------------------------------

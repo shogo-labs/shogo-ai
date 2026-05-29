@@ -446,6 +446,53 @@ describe('copyTemplates', () => {
     expect(execSyncCalls.filter((c) => c.cmd === 'bun install').length).toBe(2)
   })
 
+  test('runtime-template with workspace:* pin → materializes before bun install', () => {
+    cpSyncImpl = (_src, dest) => {
+      fsState.set(dest, { type: 'dir' })
+      // Simulate copying the SOURCE template, which carries the workspace:* sentinel.
+      if (dest.endsWith('/runtime-template')) {
+        fsState.set(`${dest}/package.json`, {
+          type: 'file',
+          content: Buffer.from('{"dependencies":{"@shogo-ai/sdk":"workspace:*"}}'),
+        })
+      } else {
+        fsState.set(`${dest}/package.json`, { type: 'file', content: Buffer.from('{}') })
+      }
+    }
+    execSyncImpl = (_cmd, opts) => {
+      const cwd = opts?.cwd
+      if (cwd) fsState.set(`${cwd}/node_modules`, { type: 'dir' })
+      return ''
+    }
+    pb.copyTemplates('/dest', '/repo')
+    // The materialize helper must run before the runtime-template install.
+    const materializeIdx = execSyncCalls.findIndex((c) => c.cmd.includes('materialize-runtime-template.ts'))
+    const rtInstallIdx = execSyncCalls.findIndex(
+      (c) => c.cmd === 'bun install' && c.opts?.cwd?.includes('runtime-template'),
+    )
+    expect(materializeIdx).toBeGreaterThanOrEqual(0)
+    expect(rtInstallIdx).toBeGreaterThan(materializeIdx)
+    // And it must pass the offline fallback flag (desktop hosts may lack npm).
+    expect(execSyncCalls[materializeIdx].opts?.env?.ALLOW_UNPUBLISHED_SDK_PIN).toBe('1')
+  })
+
+  test('runtime-template already concrete (no workspace:*) → no materialize call', () => {
+    cpSyncImpl = (_src, dest) => {
+      fsState.set(dest, { type: 'dir' })
+      fsState.set(`${dest}/package.json`, {
+        type: 'file',
+        content: Buffer.from('{"dependencies":{"@shogo-ai/sdk":"^1.7.0"}}'),
+      })
+    }
+    execSyncImpl = (_cmd, opts) => {
+      const cwd = opts?.cwd
+      if (cwd) fsState.set(`${cwd}/node_modules`, { type: 'dir' })
+      return ''
+    }
+    pb.copyTemplates('/dest', '/repo')
+    expect(execSyncCalls.some((c) => c.cmd.includes('materialize-runtime-template.ts'))).toBe(false)
+  })
+
   test('runtime-template node_modules already exists → skips cp/install', () => {
     fsState.set('/dest/templates/runtime-template/node_modules', { type: 'dir' })
     fsState.set('/dest/templates/skill-server/package.json', {

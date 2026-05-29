@@ -34,6 +34,7 @@
 import { cpSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { materialize } from '../../../scripts/materialize-runtime-template.ts'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -54,7 +55,7 @@ const SKIP_TOP_LEVEL = new Set<string>([
   'src/generated',
 ])
 
-function main(): void {
+async function main(): Promise<void> {
   if (!existsSync(TEMPLATE_SRC)) {
     console.error(`[copy-runtime-template-to-dist] template source not found at ${TEMPLATE_SRC}`)
     process.exit(1)
@@ -87,6 +88,16 @@ function main(): void {
   })
 
   console.log(`[copy-runtime-template-to-dist] copied ${TEMPLATE_SRC} → ${TEMPLATE_DEST}`)
+
+  // The source template pins `@shogo-ai/sdk` as `workspace:*`, which a pod
+  // can't resolve. Rewrite the bundled copy's `package.json` to a concrete
+  // `^X.Y.Z` resolved from npm's `latest` dist-tag so the standalone-deploy
+  // package installs cleanly (and always tracks the latest published SDK).
+  await materialize(join(TEMPLATE_DEST, 'package.json'))
+  console.log(`[copy-runtime-template-to-dist] materialized @shogo-ai/* pins in ${TEMPLATE_DEST}/package.json`)
 }
 
-main()
+main().catch((err) => {
+  console.error(err instanceof Error ? err.message : err)
+  process.exit(1)
+})

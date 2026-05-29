@@ -84,7 +84,12 @@ RUN bun run generate:routes
 # Plain `bun install` (no --frozen-lockfile): the runtime-template's
 # bun.lock has drift relative to its package.json on this branch and the
 # original apps/api/runtime Dockerfiles also use plain bun install here.
+# Materialize the `@shogo-ai/sdk: workspace:*` sentinel to a concrete
+# `^X.Y.Z` first (this image has npm + network, so it resolves npm's latest
+# published version). The resulting node_modules is transient — it only
+# feeds build-template-dists and is removed below.
 RUN --mount=type=cache,target=/home/appuser/.bun/install/cache,uid=1001,gid=1001 \
+    bun run scripts/materialize-runtime-template.ts templates/runtime-template/package.json && \
     cd templates/runtime-template && \
     bun install && \
     cd /app && \

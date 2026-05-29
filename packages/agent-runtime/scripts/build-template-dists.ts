@@ -84,7 +84,10 @@ function linkNodeModules(stagingDir: string): void {
   const src = join(RUNTIME_TEMPLATE_DIR, 'node_modules')
   if (!existsSync(src)) {
     throw new Error(
-      `runtime-template node_modules missing at ${src} — run \`bun install\` in templates/runtime-template/ before building template dists`,
+      `runtime-template node_modules missing at ${src} — the template pins ` +
+        `@shogo-ai/sdk as workspace:*, so first materialize it then install:\n` +
+        `  bun run scripts/materialize-runtime-template.ts templates/runtime-template/package.json\n` +
+        `  cd templates/runtime-template && bun install`,
     )
   }
   symlinkSync(src, join(stagingDir, 'node_modules'), 'dir')
@@ -211,7 +214,9 @@ async function main(): Promise<void> {
   if (!existsSync(join(RUNTIME_TEMPLATE_DIR, 'node_modules', '.bin', 'vite'))) {
     console.error(
       `[build-template-dists] Vite binary missing at templates/runtime-template/node_modules/.bin/vite.\n` +
-        `Run \`cd templates/runtime-template && bun install\` first, then retry.`,
+        `The template pins @shogo-ai/sdk as workspace:*; materialize then install first:\n` +
+        `  bun run scripts/materialize-runtime-template.ts templates/runtime-template/package.json\n` +
+        `  cd templates/runtime-template && bun install`,
     )
     process.exit(1)
   }
