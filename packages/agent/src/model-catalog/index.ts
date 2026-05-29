@@ -55,6 +55,7 @@ export {
   getMaxOutputTokens,
   getAvailableModels,
   getModelsByProvider,
+  getProviderLabel,
   isAutoModel,
   isOpenRouterModel,
   stripOpenRouterPrefix,

@@ -16,6 +16,7 @@ import {
   calculateDollarCost,
   getAvailableModels,
   getModelsByProvider,
+  getProviderLabel,
   getSubagentOrchestrationReliability,
   MODEL_DOLLAR_COSTS,
 } from '../model-catalog/helpers.js'
@@ -244,6 +245,19 @@ describe('getModelsByProvider', () => {
     const labels = groups.map(g => g.label)
     expect(labels.some(l => l === 'Anthropic' || l === 'OpenAI')).toBe(true)
     expect(groups.every(g => g.models.length > 0)).toBe(true)
+  })
+})
+
+describe('getProviderLabel', () => {
+  it('maps known providers to friendly labels', () => {
+    expect(getProviderLabel('anthropic')).toBe('Anthropic')
+    expect(getProviderLabel('openai')).toBe('OpenAI')
+    expect(getProviderLabel('google')).toBe('Google')
+    expect(getProviderLabel('openrouter')).toBe('OpenRouter')
+  })
+
+  it('falls back to the raw provider string for unknown providers', () => {
+    expect(getProviderLabel('mystery-co')).toBe('mystery-co')
   })
 })
 
