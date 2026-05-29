@@ -52,7 +52,14 @@ function makeCtx(overrides: any = {}): any {
     projectId: 'proj-composio',
     sessionId: 'sess-1',
     mainSessionIds: ['sess-1'],
-    mcpClientManager: { install: async () => ({ ok: true }) },
+    mcpClientManager: {
+      install: async () => ({ ok: true }),
+      isRunning: () => false,
+      getServerInfo: () => [],
+      hotAddServer: async () => [],
+      hotAddRemoteServer: async () => [],
+      installPackageLocally: async () => ({ command: 'node', args: [], env: {} }),
+    },
     userId: 'user-1',
     ...overrides,
   }
@@ -60,7 +67,7 @@ function makeCtx(overrides: any = {}): any {
 
 async function exec(ctx: any, params: Record<string, any>) {
   const tools = createTools(ctx)
-  const t = tools.find((x: any) => x.name === 'tool_install')!
+  const t = tools.find((x: any) => x.name === 'connect')!
   const r = await t.execute('test-id', params)
   return r.details ?? r
 }
@@ -88,7 +95,7 @@ describe('tool_install composio paths', () => {
     resetState()
     const ctx = makeCtx()
     const r = await exec(ctx, { name: 'unknown-thing' })
-    expect(String(r.error)).toContain('not a managed integration')
+    expect(String(r.error)).toContain('not in the MCP catalog')
   })
 
   test('composio already initialized + toolkit found + active auth', async () => {
@@ -169,7 +176,7 @@ describe('tool_install composio paths', () => {
     state.toolkit = null
     const ctx = makeCtx()
     const r = await exec(ctx, { name: 'mystery' })
-    expect(String(r.error)).toContain('not a managed integration')
+    expect(String(r.error)).toContain('not in the MCP catalog')
   })
 
   test('honors COMPOSIO_USER_SCOPE=project env var', async () => {
@@ -244,13 +251,13 @@ describe('tool_search composio paths', () => {
     ]
     const ctx = makeCtx()
     const tools = createTools(ctx)
-    const t = tools.find((x: any) => x.name === 'tool_search')!
+    const t = tools.find((x: any) => x.name === 'search_integrations')!
     const r: any = await t.execute('id', { query: 'slack' })
     const detail = r.details ?? r
     expect(Array.isArray(detail.results)).toBe(true)
     const managed = detail.results.filter((x: any) => x.source === 'managed')
     expect(managed.length).toBeGreaterThanOrEqual(1)
-    expect(managed[0].installCommand).toContain('tool_install')
+    expect(managed[0].installCommand).toContain('connect')
   })
 
   test('composio enabled — search swallows API errors', async () => {
@@ -259,7 +266,7 @@ describe('tool_search composio paths', () => {
     state.searchThrows = true
     const ctx = makeCtx()
     const tools = createTools(ctx)
-    const t = tools.find((x: any) => x.name === 'tool_search')!
+    const t = tools.find((x: any) => x.name === 'search_integrations')!
     const r: any = await t.execute('id', { query: 'anything' })
     const detail = r.details ?? r
     expect(detail.results).toBeDefined()

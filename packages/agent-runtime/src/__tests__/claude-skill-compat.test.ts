@@ -312,13 +312,27 @@ Old instructions.
       expect(content).toContain('old-skill')
     })
 
-    test('does not migrate if .shogo/skills/ already exists', () => {
-      mkdirSync(join(TEST_DIR, '.shogo', 'skills'), { recursive: true })
+    test('does not migrate if .shogo/skills/ already exists AND is non-empty', () => {
+      // Contract: an existing non-empty .shogo/skills/ is treated as source of truth.
+      // Empty .shogo/skills/ (e.g. pre-created by workspace defaults) does NOT block migration —
+      // see migrateFromLegacySkills() in src/skills.ts for the empty-dir-allows-migrate rule.
+      mkdirSync(join(TEST_DIR, '.shogo', 'skills', 'pre-existing'), { recursive: true })
+      writeFileSync(join(TEST_DIR, '.shogo', 'skills', 'pre-existing', 'SKILL.md'), 'pre-existing')
       mkdirSync(join(TEST_DIR, 'skills'), { recursive: true })
       writeFileSync(join(TEST_DIR, 'skills', 'should-skip.md'), 'content')
 
       migrateFromLegacySkills(TEST_DIR)
       expect(existsSync(join(TEST_DIR, '.shogo', 'skills', 'should-skip'))).toBe(false)
+      expect(existsSync(join(TEST_DIR, '.shogo', 'skills', 'pre-existing', 'SKILL.md'))).toBe(true)
+    })
+
+    test('migrates when .shogo/skills/ exists but is empty (workspace-default case)', () => {
+      mkdirSync(join(TEST_DIR, '.shogo', 'skills'), { recursive: true })
+      mkdirSync(join(TEST_DIR, 'skills'), { recursive: true })
+      writeFileSync(join(TEST_DIR, 'skills', 'fresh-skill.md'), `---\nname: fresh-skill\ndescription: x\n---\ncontent`)
+
+      migrateFromLegacySkills(TEST_DIR)
+      expect(existsSync(join(TEST_DIR, '.shogo', 'skills', 'fresh-skill', 'SKILL.md'))).toBe(true)
     })
 
     test('does nothing when skills/ does not exist', () => {
