@@ -9,6 +9,7 @@
 
 import { type IpcMainInvokeEvent, ipcMain, type WebContents } from "electron";
 import { homedir } from "node:os";
+import { sep as pathSep } from "node:path";
 import { resolve as resolvePath } from "node:path";
 
 import {
@@ -70,7 +71,12 @@ let nextSubId = 1;
 
 function isUnderHome(absPath: string): boolean {
   const resolved = resolvePath(absPath);
-  return resolved === HOME || resolved.startsWith(HOME + "/");
+  // Use the platform's path separator — on Windows `path.resolve()` and
+  // `os.homedir()` both return back-slash paths, so a hardcoded "/" here
+  // would reject every real path on Windows ("C:\\Users\\Alice\\repo"
+  // does not start with "C:\\Users\\Alice/"). path.sep is "\\" on
+  // Windows and "/" elsewhere.
+  return resolved === HOME || resolved.startsWith(HOME + pathSep);
 }
 
 function guard(workspaceRoot: unknown):
