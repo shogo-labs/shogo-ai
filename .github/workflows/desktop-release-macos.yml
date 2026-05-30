@@ -615,13 +615,20 @@ jobs:
     # End-to-end guard for the v1.8.14 incident: the x64 .app is cross-built on
     # the arm64 `build-desktop` runner and is NEVER executed there (an arm64 host
     # can't run an x64 binary), so a boot-fatal regression on Intel sails through
-    # every existing check. This job runs on a real Intel runner (macos-13),
-    # extracts the shipped x64 app, launches it from a clean profile, and asserts
-    # the local server actually starts — which is exactly the path that the bad
-    # PRISMA_SCHEMA_ENGINE_BINARY bricked.
+    # every existing check. This job runs on a real Intel runner
+    # (macos-15-intel), extracts the shipped x64 app, launches it from a clean
+    # profile, and asserts the local server actually starts — which is exactly
+    # the path that the bad PRISMA_SCHEMA_ENGINE_BINARY bricked.
+    #
+    # Must stay on an Intel label: the whole point is to exercise the x86_64
+    # slice on real Intel hardware. `macos-13` was GitHub's prior Intel runner
+    # but was fully retired on 2025-12-04, after which this job queued forever
+    # with no runner and the gated `release` job below never ran. `macos-15-intel`
+    # is the supported x86_64 replacement (Apple Silicon arm64 runners can't
+    # execute the x64 binary, so we can't fall back to those).
     name: Boot smoke test (macOS x64 / Intel)
     needs: build-desktop
-    runs-on: macos-13
+    runs-on: macos-15-intel
     timeout-minutes: 15
     steps:
       - name: Download x64 artifact
