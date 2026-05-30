@@ -18,21 +18,32 @@ import * as childProc from 'child_process'
 import { PreviewManager } from '../preview-manager'
 
 let dir: string
+let managers: PreviewManager[]
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'pm-bp-'))
+  managers = []
 })
 afterEach(() => {
+  // Stop every manager spawned by mk() so its schema/custom-routes watchers
+  // are closed before we rmSync(dir). Otherwise the watcher fires an async
+  // ENOENT error into the next test's macrotask queue (visible failure:
+  // 'detects legacy "bunx shogo generate" scripts and refuses to invoke them').
+  for (const m of managers) {
+    try { m.stop() } catch {}
+  }
   rmSync(dir, { recursive: true, force: true })
 })
 
 function mk(over: Partial<ConstructorParameters<typeof PreviewManager>[0]> = {}) {
-  return new PreviewManager({
+  const m = new PreviewManager({
     workspaceDir: dir,
     runtimePort: 38306,
     publicUrl: 'https://preview.example/abc',
     localMode: false,
     ...over,
   })
+  managers.push(m)
+  return m
 }
 
 // apiPort is resolved internally by resolveApiServerPort() and is not a

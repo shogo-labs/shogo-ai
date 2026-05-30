@@ -283,5 +283,18 @@
       "funcPct": 100.0,
       "uncoveredLines": 0
     }
-  ]
+  ],
+  "lastUpdated": "2026-05-29",
+  "lastSync": {
+    "date": "2026-05-29",
+    "aggregateLines": {
+      "linesHit": 3815,
+      "linesFound": 4283,
+      "linePct": 89.07,
+      "funcsHit": 389,
+      "funcsFound": 444,
+      "funcPct": 87.61
+    },
+    "note": "Fresh measurement at v4 Sync. See coverage/baselines/_aggregate.gaps.json sprintCommits[] for full per-package deltas."
+  }
 }
