@@ -43,6 +43,13 @@ export interface EditorSettings {
   /** Persist editor buffers to the workspace after a short pause while typing. */
   autoSave: boolean;
   formatOnSave: boolean;
+  /**
+   * Desktop-only: Monaco theme id (built-in from `BUILTIN_DESKTOP_THEMES`
+   * or `shogo-user-<slug>` for an imported custom theme). Ignored by the
+   * web/mobile build; CodeEditor falls back to shogo-dark/light when this
+   * is unset or unregistered.
+   */
+  editorTheme?: string;
 }
 
 export const DEFAULT_SETTINGS: EditorSettings = {

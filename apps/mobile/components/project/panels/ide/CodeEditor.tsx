@@ -5,6 +5,12 @@ import type { EditorSettings } from "./types";
 import { setupAgentFix } from "./agentFixProvider";
 import { setMonacoRef } from "./monaco/workspaceModels";
 import { setupExtraLibs } from "./monaco/extraLibs";
+import { isDesktopRuntime } from "./terminal/pty-factory";
+import {
+  registerDesktopThemes,
+  loadCustomThemes,
+  BUILTIN_DESKTOP_THEMES,
+} from "./monaco/themes";
 
 // Point `@monaco-editor/loader` at our self-hosted Monaco bundle (mirrored
 // from `node_modules/monaco-editor/min/vs` into `public/vs` by
@@ -125,6 +131,15 @@ function configureMonaco(monaco: MonacoNs) {
   // Register the "Fix with Shogo" hover button + quick-fix code action for
   // every language Monaco knows about. Idempotent across split editors.
   setupAgentFix(monaco);
+
+  // Desktop-only: register the curated theme catalog and replay any
+  // user-imported JSON themes from localStorage. Gated by isDesktopRuntime()
+  // so the web/mobile bundle never registers these themes — that surface is
+  // intentionally frozen at shogo-dark / shogo-light.
+  if (isDesktopRuntime()) {
+    registerDesktopThemes(monaco);
+    loadCustomThemes(monaco);
+  }
 }
 
 export function CodeEditor({
@@ -133,6 +148,7 @@ export function CodeEditor({
   pathKey,
   settings,
   themeMode,
+  editorTheme,
   onChange,
   onCursor,
   onMount,
@@ -144,6 +160,13 @@ export function CodeEditor({
   settings: EditorSettings;
   /** Resolved app theme — Monaco flips between shogo-dark / shogo-light. */
   themeMode: "dark" | "light";
+  /**
+   * Desktop-only override for the Monaco theme id. When set to a registered
+   * theme (one of `BUILTIN_DESKTOP_THEMES` or a user-imported custom theme),
+   * it takes precedence over the shogo-dark/light auto-pick. Ignored when
+   * `isDesktopRuntime()` is false so web users never see the desktop themes.
+   */
+  editorTheme?: string;
   onChange: (v: string) => void;
   onCursor: (line: number, col: number) => void;
   onMount?: (ed: editor.IStandaloneCodeEditor, monaco: MonacoNs) => void;
@@ -151,7 +174,20 @@ export function CodeEditor({
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const monacoRef = useRef<MonacoNs | null>(null);
 
-  const themeName = themeMode === "light" ? "shogo-light" : "shogo-dark";
+  // Resolve the effective Monaco theme:
+  //   1. Desktop + caller passed a registered custom/builtin theme  → use it.
+  //   2. Otherwise fall back to the always-available shogo-dark/light.
+  // Falling through (instead of trusting whatever the caller sent) means a
+  // stale localStorage value for a theme that no longer exists can never
+  // brick the editor with an undefined theme id.
+  const fallback = themeMode === "light" ? "shogo-light" : "shogo-dark";
+  const desktopRegistered = isDesktopRuntime()
+    && !!editorTheme
+    && (
+      BUILTIN_DESKTOP_THEMES.some(t => t.id === editorTheme)
+      || editorTheme.startsWith("shogo-user-")
+    );
+  const themeName = desktopRegistered ? (editorTheme as string) : fallback;
 
   // Live-swap Monaco theme when the app theme changes under an already-mounted
   // editor (e.g. user toggles theme while a file is open).

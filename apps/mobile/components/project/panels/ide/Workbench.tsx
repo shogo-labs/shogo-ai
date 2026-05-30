@@ -1529,6 +1529,7 @@ export function Workbench({
                       group={g}
                       focused={i === activeGroupIdx}
                       themeMode={themeMode}
+                      editorTheme={settings.editorTheme}
                       onFocus={() => setActiveGroupIdx(i)}
                       onSelect={(id) => updateGroup(i, (gg) => ({ ...gg, activeId: id }))}
                       onClose={(id) => closeInGroup(i, id)}
