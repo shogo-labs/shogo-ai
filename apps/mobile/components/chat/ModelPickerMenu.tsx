@@ -53,22 +53,13 @@ function formatContextWindow(tokens?: number): string | null {
   return `${tokens} context window`
 }
 
-/** Fixed width of the web side info panel. Without an explicit width the
- *  flex child collapses to its min-content size inside the popover, which
- *  wraps the model name mid-word ("Claud e Opus 4.7"). */
+/** Width of the detached web info card that floats beside the list on hover. */
 const INFO_PANEL_WIDTH = 232
 
-function ModelInfoPanel({ model }: { model: PickerModel | null }) {
-  if (!model) {
-    return (
-      <View style={{ width: INFO_PANEL_WIDTH }} className="p-4 justify-center">
-        <Text className="text-xs text-muted-foreground">Hover a model for details.</Text>
-      </View>
-    )
-  }
+function ModelInfoPanel({ model }: { model: PickerModel }) {
   const context = formatContextWindow(model.contextWindow)
   return (
-    <View style={{ width: INFO_PANEL_WIDTH }} className="p-4 gap-3">
+    <View className="p-4 gap-3">
       <Text className="text-sm font-semibold text-foreground">{model.displayName}</Text>
       {model.description ? (
         <Text className="text-xs text-muted-foreground leading-5">{model.description}</Text>
@@ -106,8 +97,9 @@ export function ModelPickerMenu({
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
-  const activeInfoModel =
-    models.find((m) => m.id === (hoveredId ?? currentModelId)) ?? null
+  // Only surface the side info card when a row is actively hovered — it should
+  // not default to the current model when the menu first opens.
+  const activeInfoModel = hoveredId ? (models.find((m) => m.id === hoveredId) ?? null) : null
 
   const renderRow = (model: PickerModel) => {
     const isSelected = currentModelId === model.id
@@ -121,6 +113,7 @@ export function ModelPickerMenu({
         <Pressable
           onPress={() => onSelect(model.id)}
           onHoverIn={isWeb ? () => setHoveredId(model.id) : undefined}
+          onHoverOut={isWeb ? () => setHoveredId((id) => (id === model.id ? null : id)) : undefined}
           className={cn(
             "flex-row items-center gap-2.5 px-3 py-2",
             isSelected && "bg-accent",
@@ -207,16 +200,23 @@ export function ModelPickerMenu({
   if (!isWeb) return list
 
   return (
-    // `userSelect: none` stops the popover text from being click-drag
-    // highlighted; `outline-none` kills the browser focus ring the popover
-    // container would otherwise draw around itself.
+    // The list is the popover body; the info card is a separate floating piece
+    // anchored to the list's right edge, so it isn't clipped by the menu's
+    // width and only appears while a row is hovered. `userSelect: none` stops
+    // click-drag text highlighting; `outline-none` kills the focus ring.
     <View
-      className="flex-row web:outline-none no-focus-ring"
+      className="relative web:outline-none no-focus-ring"
       style={{ userSelect: "none" } as any}
     >
       {list}
-      <View className="w-px bg-border/50" />
-      <ModelInfoPanel model={activeInfoModel} />
+      {activeInfoModel ? (
+        <View
+          className="bg-card border border-border rounded-lg shadow-lg"
+          style={{ position: "absolute", left: "100%", top: 0, marginLeft: 8, width: INFO_PANEL_WIDTH }}
+        >
+          <ModelInfoPanel model={activeInfoModel} />
+        </View>
+      ) : null}
     </View>
   )
 }

@@ -55,11 +55,15 @@ describe('buildModelList (flat, admin-ordered)', () => {
     expect(sonnet.reasoningEffort).toBe('medium')
   })
 
-  test('bundled fallback honors sortOrder is stable when absent', () => {
-    // No catalogModels → uses bundled MODEL_CATALOG (filtered by null = all
-    // current-gen). We only assert it produces a non-empty flat list.
+  test('no catalogModels → empty list (no bundled-catalog fallback)', () => {
+    // The picker is purely server-driven: when the snapshot carries no
+    // catalogModels (loading / error / unseeded server) the list is empty
+    // rather than flickering in the code-shipped catalog.
     const list = buildModelList({ catalogIds: null, openrouterModels: [] } as any)
-    expect(Array.isArray(list)).toBe(true)
-    expect(list.length).toBeGreaterThan(0)
+    expect(list).toEqual([])
+  })
+
+  test('null snapshot → empty list', () => {
+    expect(buildModelList(null)).toEqual([])
   })
 })
