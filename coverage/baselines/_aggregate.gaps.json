@@ -1633,6 +1633,34 @@
         "funcs": "0pp"
       },
       "note": "Recompute via isolated runner: agent-runtime 23049\u219223227 lines hit (+178). Other 10 packages unchanged since last sync (no source/test changes). Funcs delta within rounding \u2014 new tests exercised already-touched functions."
+    },
+    {
+      "sha": "0a6535b1",
+      "date": "2026-05-30",
+      "wave": "Wave 3 Session 7 \u2014 Fix & Close",
+      "file": "apps/api/src/routes/meetings.ts",
+      "before": {
+        "lines": 70.85,
+        "funcs": 74.51,
+        "failingTests": 20
+      },
+      "after": {
+        "lines": 95.88,
+        "funcs": 84.62,
+        "failingTests": 0
+      },
+      "delta": {
+        "lines": "+25.03pp",
+        "funcs": "+10.11pp",
+        "linesHit": 213
+      },
+      "tests": {
+        "added": 36,
+        "totalInFile": 83,
+        "isolated": "83 pass / 0 fail / 176 expects / 2.13s"
+      },
+      "fullSuite": "apps/api isolated runner 7929 pass / 0 fail / 42 skip (+89 vs 7840 baseline)",
+      "note": "Consolidated meetings-route-extra.test.ts INTO meetings-route.test.ts to kill the cross-file `mock.module('../lib/prisma',...)` collision that produced 20 false fails. Added throw-behavior switches + extended fs mock with per-path content (Buffer) and per-path sizes so WAV header parsing in getAudioDuration becomes drivable. Ported all 19 unique edge tests from the deleted file, plus +14 transcribeMeeting full-happy/error-arm tests (RIFF+WAV happy path -> ready, zero sampleRate short-audio, non-WAV duration=-1 webm, transcribe throws -> status=error, diarization merge + split + throws-swallowed, projectId branch, writeTranscriptToProject with markdown segments + Speakers/Duration headers, missing project dir, non-JSON transcript text-fallback), +3 install-sherpa happy-path tests (script found + execSync ok, SHOGO_SHERPA_DIR destination step, SHOGO_BUN_PATH interpreter). Switched transcription.*/diarization.* clears to mockReset to flush queued mockImplementationOnce entries between tests. Remaining 32 uncov lines are fire-and-forget transcribeMeeting().catch arrows + tiny tail error branches \u2014 none dead code, no istanbul-ignore pragmas added."
     }
   ],
   "frontend": {
