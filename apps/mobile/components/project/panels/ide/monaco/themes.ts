@@ -225,7 +225,7 @@ export type ParseResult =
   | { ok: false; error: string }
 
 const VALID_BASES = new Set(['vs', 'vs-dark', 'hc-black', 'hc-light'])
-const HEX_RE = /^#?[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/
+const HEX_RE = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/
 
 /**
  * Strict validator + normalizer for a user-supplied theme JSON blob.
@@ -262,7 +262,7 @@ export function parseThemeJson(input: string): ParseResult {
   const colorEntries = Object.entries(o.colors as Record<string, unknown>)
   for (const [k, v] of colorEntries) {
     if (typeof v !== 'string' || !HEX_RE.test(v)) {
-      return { ok: false, error: `colors.${k} must be a #RRGGBB or #RRGGBBAA hex string` }
+      return { ok: false, error: `colors.${k} must be a hex color (#RGB, #RGBA, #RRGGBB, or #RRGGBBAA)` }
     }
   }
 
@@ -285,7 +285,13 @@ export function parseThemeJson(input: string): ParseResult {
           if (typeof rr[k] !== 'string') {
             return { ok: false, error: `rules[${i}].${k} must be a string` }
           }
-          rule[k] = rr[k] as string
+          let v = rr[k] as string
+          // Monaco token rules expect hex without `#`. Strip it so a rule
+          // copied verbatim from a VS Code theme.json actually applies.
+          if ((k === 'foreground' || k === 'background') && v.startsWith('#')) {
+            v = v.slice(1)
+          }
+          rule[k] = v
         }
       }
       rules.push(rule)
@@ -375,16 +381,53 @@ export function registerCustomTheme(
   return parsed.id
 }
 
-/** Replays every persisted custom theme onto a freshly mounted Monaco. */
+/**
+ * Replays every persisted custom theme onto a freshly mounted Monaco.
+ *
+ * Resilient: each theme is registered inside its own try/catch so a single
+ * malformed entry (older format, partial write, manually edited
+ * localStorage) cannot crash configureMonaco at editor mount. Returns the
+ * subset of themes that actually registered, so callers / the picker only
+ * surface working themes.
+ */
 export function loadCustomThemes(
   monaco: MonacoLike,
   storage: ThemeStorage = defaultStorage(),
 ): ThemeDescriptor[] {
   const themes = storage.read()
+  const ok: ThemeDescriptor[] = []
   for (const t of themes) {
-    monaco.editor.defineTheme(t.id, t.definition)
+    if (!isWellFormedDescriptor(t)) continue
+    try {
+      monaco.editor.defineTheme(t.id, t.definition)
+      ok.push(t)
+    } catch (e) {
+      // Surface to devtools but never bubble — startup must succeed.
+      // eslint-disable-next-line no-console
+      console.warn(`[shogo-ide/themes] failed to register custom theme "${t.id}":`, e)
+    }
   }
-  return themes
+  return ok
+}
+
+/**
+ * Structural sanity check for a ThemeDescriptor read out of storage.
+ * Defends against an older version of the descriptor format ever shipping
+ * partially-written data, or a user hand-editing localStorage.
+ */
+function isWellFormedDescriptor(t: unknown): t is ThemeDescriptor {
+  if (!t || typeof t !== 'object') return false
+  const r = t as Record<string, unknown>
+  if (typeof r.id !== 'string' || !r.id) return false
+  if (typeof r.label !== 'string') return false
+  if (r.mode !== 'dark' && r.mode !== 'light') return false
+  if (r.origin !== 'builtin' && r.origin !== 'custom') return false
+  const d = r.definition as Record<string, unknown> | undefined
+  if (!d || typeof d !== 'object') return false
+  if (typeof d.base !== 'string' || !VALID_BASES.has(d.base as string)) return false
+  if (!d.colors || typeof d.colors !== 'object' || Array.isArray(d.colors)) return false
+  if (d.rules !== undefined && !Array.isArray(d.rules)) return false
+  return true
 }
 
 /** Combined list for the Settings picker. */
