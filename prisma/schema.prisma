@@ -680,6 +680,15 @@ model UsageWallet {
   anniversaryDay               Int
   lastDailyReset               DateTime
   lastMonthlyReset             DateTime
+  // Rolling usage windows (time-gated "unlimited"). Each window starts on the
+  // first metered action after the previous window elapsed and accumulates
+  // marked-up USD of compute until it resets. `null` start = window not yet
+  // opened. See `usage-plans.ts` (FIVE_HOUR_MS / SEVEN_DAY_MS) and
+  // `ROLLING_WINDOW_LIMITS`.
+  fiveHourWindowStart          DateTime?
+  fiveHourUsedUsd              Float    @default(0)
+  weeklyWindowStart            DateTime?
+  weeklyUsedUsd                Float    @default(0)
   createdAt                    DateTime @default(now())
   updatedAt                    DateTime @updatedAt
 
@@ -718,6 +727,7 @@ enum UsageSource {
   daily
   monthly
   overage
+  window
 }
 
 /// Super-admin-managed credit grant. Each row gives a workspace a fixed

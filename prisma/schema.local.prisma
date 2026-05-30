@@ -601,6 +601,10 @@ model UsageWallet {
   anniversaryDay               Int
   lastDailyReset               DateTime
   lastMonthlyReset             DateTime
+  fiveHourWindowStart          DateTime?
+  fiveHourUsedUsd              Float    @default(0)
+  weeklyWindowStart            DateTime?
+  weeklyUsedUsd                Float    @default(0)
   createdAt                    DateTime @default(now())
   updatedAt                    DateTime @updatedAt
 

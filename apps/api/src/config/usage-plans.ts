@@ -138,6 +138,79 @@ export function comparePlanRank(
 }
 
 /**
+ * Rolling usage-window durations, in milliseconds. Usage is gated by two
+ * independent windows that run in parallel (modeled on how Codex / Claude
+ * Code time-gate "unlimited" plans): a short burst window and a longer
+ * weekly window. Each window starts on the first metered action after the
+ * previous window elapsed (fixed-window-from-first-event) and exposes a
+ * `resetsAt = windowStart + duration`.
+ */
+export const FIVE_HOUR_MS = 5 * 60 * 60 * 1000
+export const SEVEN_DAY_MS = 7 * 24 * 60 * 60 * 1000
+
+/**
+ * Per-window included USD-of-compute per plan. Within these windows usage is
+ * effectively unlimited (no finite monthly pool is drained); when a window is
+ * exhausted, usage falls through to metered overage (if enabled) and otherwise
+ * blocks until the window's `resetsAt`.
+ *
+ * `null` means uncapped (truly unlimited) — used by enterprise.
+ *
+ * For per-seat plans (`pro`, `business`) the limits below are *per seat* and
+ * are multiplied by the seat count in `getWindowLimitsForPlan`. `free` and
+ * `basic` are single-pool (not scaled by seats).
+ *
+ * Values are USD of marked-up compute (see `usage-cost.ts`) and are intended
+ * to be tuned operationally.
+ */
+export const ROLLING_WINDOW_LIMITS: Record<
+  PlanId,
+  { fiveHourUsd: number; weeklyUsd: number } | null
+> = {
+  free: { fiveHourUsd: 0.5, weeklyUsd: 2 },
+  basic: { fiveHourUsd: 2, weeklyUsd: 10 },
+  pro: { fiveHourUsd: 8, weeklyUsd: 40 },
+  business: { fiveHourUsd: 20, weeklyUsd: 120 },
+  enterprise: null,
+}
+
+/** Plans whose window limits scale linearly with the paid seat count. */
+const PER_SEAT_WINDOW_PLANS: ReadonlySet<PlanId> = new Set<PlanId>(['pro', 'business'])
+
+export interface WindowLimits {
+  fiveHourUsd: number
+  weeklyUsd: number
+}
+
+/**
+ * Resolve the rolling-window limits for a (plan, seats) tuple.
+ *
+ * - Returns `null` for uncapped plans (enterprise) — callers treat `null`
+ *   as "unlimited, no window enforcement".
+ * - Per-seat plans (`pro`, `business`) multiply the per-seat limits by
+ *   `max(1, seats)`. Single-pool plans (`free`, `basic`) ignore seats.
+ * - Unknown / unrecognized plan ids fall back to the `free` limits so a
+ *   brand-new workspace whose plan hasn't resolved still gets the safety-net
+ *   window.
+ */
+export function getWindowLimitsForPlan(
+  planId: string | null | undefined,
+  seats: number = 1,
+): WindowLimits | null {
+  const normalized = normalizePlanId(planId) ?? 'free'
+  const base = ROLLING_WINDOW_LIMITS[normalized]
+  if (base == null) return null
+  if (!PER_SEAT_WINDOW_PLANS.has(normalized)) {
+    return { fiveHourUsd: base.fiveHourUsd, weeklyUsd: base.weeklyUsd }
+  }
+  const safeSeats = Math.max(1, Math.floor(seats || 1))
+  return {
+    fiveHourUsd: base.fiveHourUsd * safeSeats,
+    weeklyUsd: base.weeklyUsd * safeSeats,
+  }
+}
+
+/**
  * Voice / telephony raw provider rates (Mode B only). All values are USD.
  * The workspace is charged these rates times `MARKUP_MULTIPLIER` on top
  * of whatever daily/monthly included pool they have.

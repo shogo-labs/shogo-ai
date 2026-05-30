@@ -34,6 +34,10 @@ type Wallet = {
   anniversaryDay: number
   lastDailyReset: Date
   lastMonthlyReset: Date
+  fiveHourWindowStart: Date | null
+  fiveHourUsedUsd: number
+  weeklyWindowStart: Date | null
+  weeklyUsedUsd: number
 }
 type Grant = {
   id: string
@@ -146,6 +150,10 @@ const prismaApi = {
         anniversaryDay: data.anniversaryDay,
         lastDailyReset: data.lastDailyReset,
         lastMonthlyReset: data.lastMonthlyReset,
+        fiveHourWindowStart: data.fiveHourWindowStart ?? null,
+        fiveHourUsedUsd: data.fiveHourUsedUsd ?? 0,
+        weeklyWindowStart: data.weeklyWindowStart ?? null,
+        weeklyUsedUsd: data.weeklyUsedUsd ?? 0,
       }
       wallets.set(data.workspaceId, w)
       return w
@@ -340,6 +348,10 @@ function freshWallet(over: Partial<Wallet> = {}): Wallet {
     anniversaryDay: 1,
     lastDailyReset: now,
     lastMonthlyReset: now,
+    fiveHourWindowStart: null,
+    fiveHourUsedUsd: 0,
+    weeklyWindowStart: null,
+    weeklyUsedUsd: 0,
     ...over,
   }
 }
@@ -529,113 +541,218 @@ describe('plan helpers (no local mode)', () => {
 // ============================================================================
 // hasBalance
 // ============================================================================
-describe('hasBalance', () => {
-  it('lazy-allocates wallet on first call', async () => {
-    expect(await billing.hasBalance('w1', 0.001)).toBe(true)
+// Build a Sub row with the minimum fields resolveWorkspaceWindowLimits reads
+// (planId + seats), so tests can pin a workspace to a specific plan tier.
+function setPlan(planId: string, seats = 1, workspaceId = 'w1') {
+  const s: Sub = {
+    id: `sub_${planId}`, workspaceId, stripeSubscriptionId: `stripe_${planId}`,
+    stripeCustomerId: 'cus_x', planId, seats, status: 'active',
+    billingInterval: 'monthly', currentPeriodStart: today, currentPeriodEnd: today,
+    cancelAtPeriodEnd: false, createdAt: today,
+  }
+  subs.set(workspaceId, [s])
+}
+
+const now0 = () => new Date()
+
+describe('hasBalance (rolling windows)', () => {
+  it('lazy-allocates wallet on first call; free window has room', async () => {
+    expect(await billing.hasBalance('w1', 0.01)).toBe(true)
     expect(wallets.get('w1')).toBeDefined()
   })
-  it('returns true when monthly included covers cost', async () => {
-    wallets.set('w1', freshWallet({ monthlyIncludedUsd: 5 }))
+  it('returns true when a window still has room (pro plan)', async () => {
+    setPlan('pro') // 5h=8, weekly=40
+    wallets.set('w1', freshWallet())
     expect(await billing.hasBalance('w1', 3)).toBe(true)
   })
-  it('returns false when no overage and included < cost', async () => {
-    wallets.set('w1', freshWallet({ monthlyIncludedUsd: 0, dailyIncludedUsd: 0, overageEnabled: false }))
-    expect(await billing.hasBalance('w1', 5)).toBe(false)
-  })
-  it('returns true when overage with no hard limit can cover', async () => {
-    wallets.set('w1', freshWallet({ monthlyIncludedUsd: 0, dailyIncludedUsd: 0, overageEnabled: true, overageHardLimitUsd: null }))
-    expect(await billing.hasBalance('w1', 9999)).toBe(true)
-  })
-  it('returns false when hard limit blocks the spend', async () => {
-    wallets.set('w1', freshWallet({ monthlyIncludedUsd: 0, dailyIncludedUsd: 0, overageEnabled: true, overageHardLimitUsd: 10, overageAccumulatedUsd: 10 }))
-    expect(await billing.hasBalance('w1', 5)).toBe(false)
-  })
-  it('reflects daily reset (new day → daily refills)', async () => {
-    const yesterday = new Date(Date.now() - 24 * 3600 * 1000)
+  it('returns false when both windows exhausted and no overage (free)', async () => {
     wallets.set('w1', freshWallet({
-      dailyIncludedUsd: 0, lastDailyReset: yesterday,
-      dailyUsedThisMonthUsd: 0, monthlyIncludedUsd: 0,
-    }))
-    expect(await billing.hasBalance('w1', 0.4)).toBe(true)
-  })
-  it('reflects monthly daily cap exhausted (no refill)', async () => {
-    // lastMonthlyReset stays in the SAME current month (so the cap counter
-    // is not zeroed), but lastDailyReset is yesterday so the daily-reset
-    // branch fires and the cap-check decides daily=0. The free-tier cap
-    // is $5/month and the daily allowance is $1, so dispensing 5 already
-    // tips the next refill over the cap.
-    const now = new Date()
-    const sameMonth = new Date(now.getUTCFullYear(), now.getUTCMonth(), 1)
-    const yesterday = new Date(now.getTime() - 24 * 3600 * 1000)
-    wallets.set('w1', freshWallet({
-      dailyIncludedUsd: 0, lastDailyReset: yesterday,
-      dailyUsedThisMonthUsd: 5, lastMonthlyReset: sameMonth,
-      monthlyIncludedUsd: 0,
+      overageEnabled: false,
+      fiveHourWindowStart: now0(), fiveHourUsedUsd: 0.5, // free 5h cap = 0.5
+      weeklyWindowStart: now0(), weeklyUsedUsd: 2,         // free weekly cap = 2
     }))
     expect(await billing.hasBalance('w1', 0.4)).toBe(false)
+  })
+  it('returns true via overage when window exhausted and overage uncapped', async () => {
+    wallets.set('w1', freshWallet({
+      overageEnabled: true, overageHardLimitUsd: null,
+      fiveHourWindowStart: now0(), fiveHourUsedUsd: 0.5,
+      weeklyWindowStart: now0(), weeklyUsedUsd: 2,
+    }))
+    expect(await billing.hasBalance('w1', 9999)).toBe(true)
+  })
+  it('returns false when window exhausted and overage hard limit blocks', async () => {
+    wallets.set('w1', freshWallet({
+      overageEnabled: true, overageHardLimitUsd: 10, overageAccumulatedUsd: 10,
+      fiveHourWindowStart: now0(), fiveHourUsedUsd: 0.5,
+      weeklyWindowStart: now0(), weeklyUsedUsd: 2,
+    }))
+    expect(await billing.hasBalance('w1', 5)).toBe(false)
+  })
+  it('enterprise plan is always within balance (uncapped)', async () => {
+    setPlan('enterprise')
+    wallets.set('w1', freshWallet({ fiveHourUsedUsd: 1e9, weeklyUsedUsd: 1e9 }))
+    expect(await billing.hasBalance('w1', 1e9)).toBe(true)
+  })
+  it('an elapsed five-hour window frees up room', async () => {
+    const sixHoursAgo = new Date(Date.now() - 6 * 3600 * 1000)
+    wallets.set('w1', freshWallet({
+      fiveHourWindowStart: sixHoursAgo, fiveHourUsedUsd: 0.5, // would block if not reset
+      weeklyWindowStart: now0(), weeklyUsedUsd: 0,
+    }))
+    expect(await billing.hasBalance('w1', 0.4)).toBe(true)
   })
 })
 
 // ============================================================================
-// consumeUsage
+// consumeUsage (rolling windows)
 // ============================================================================
-describe('consumeUsage', () => {
+describe('consumeUsage (rolling windows)', () => {
   const base = {
     workspaceId: 'w1', projectId: null, memberId: 'u1',
     actionType: 'chat_message', billedUsd: 0.1,
   }
 
-  it('returns failure when no wallet can be created (allocate fallthrough)', async () => {
-    wallets.set('w1', freshWallet({ monthlyIncludedUsd: 0, dailyIncludedUsd: 0, overageEnabled: false }))
-    const r = await billing.consumeUsage(base)
-    expect(r.success).toBe(false)
-    expect(r.error).toMatch(/Usage limit reached/)
-  })
-
-  it('deducts from daily first', async () => {
-    wallets.set('w1', freshWallet({ dailyIncludedUsd: 0.5, monthlyIncludedUsd: 0 }))
+  it('charges within the window with source=window and increments both windows', async () => {
+    wallets.set('w1', freshWallet())
     const r = await billing.consumeUsage({ ...base, billedUsd: 0.2 })
     expect(r.success).toBe(true)
-    expect(r.source).toBe('daily')
-    expect(wallets.get('w1')?.dailyIncludedUsd).toBeCloseTo(0.3, 5)
+    expect(r.source).toBe('window')
+    const w = wallets.get('w1')!
+    expect(w.fiveHourUsedUsd).toBeCloseTo(0.2, 5)
+    expect(w.weeklyUsedUsd).toBeCloseTo(0.2, 5)
+    expect(w.fiveHourWindowStart).toBeInstanceOf(Date)
+    expect(w.weeklyWindowStart).toBeInstanceOf(Date)
   })
 
-  it('falls through to monthly when daily insufficient', async () => {
-    wallets.set('w1', freshWallet({ dailyIncludedUsd: 0.1, monthlyIncludedUsd: 10 }))
-    const r = await billing.consumeUsage({ ...base, billedUsd: 5 })
-    expect(r.source).toBe('monthly')
-    expect(wallets.get('w1')?.monthlyIncludedUsd).toBe(5)
+  it('opens the window on first action then accumulates across calls', async () => {
+    wallets.set('w1', freshWallet())
+    await billing.consumeUsage({ ...base, billedUsd: 0.1 })
+    await billing.consumeUsage({ ...base, billedUsd: 0.1 })
+    expect(wallets.get('w1')!.fiveHourUsedUsd).toBeCloseTo(0.2, 5)
   })
 
-  it('falls through to overage when enabled', async () => {
-    wallets.set('w1', freshWallet({ dailyIncludedUsd: 0, monthlyIncludedUsd: 0, overageEnabled: true, overageHardLimitUsd: 1000 }))
+  it('blocks with resetsAt + window when exhausted and no overage', async () => {
+    const start = now0()
+    wallets.set('w1', freshWallet({
+      overageEnabled: false,
+      fiveHourWindowStart: start, fiveHourUsedUsd: 0.4,  // 5h room = 0.1
+      weeklyWindowStart: start, weeklyUsedUsd: 1.95,     // weekly room = 0.05
+    }))
+    const r = await billing.consumeUsage({ ...base, billedUsd: 0.2 })
+    expect(r.success).toBe(false)
+    expect(r.error).toMatch(/Usage limit reached/)
+    expect(r.resetsAt).toBeInstanceOf(Date)
+    expect(r.window).toBeDefined()
+  })
+
+  it('falls through to overage when window exhausted and overage enabled', async () => {
+    const start = now0()
+    wallets.set('w1', freshWallet({
+      overageEnabled: true, overageHardLimitUsd: 1000,
+      fiveHourWindowStart: start, fiveHourUsedUsd: 0.5,
+      weeklyWindowStart: start, weeklyUsedUsd: 2,
+    }))
     const r = await billing.consumeUsage({ ...base, billedUsd: 5 })
+    expect(r.success).toBe(true)
     expect(r.source).toBe('overage')
     expect(r.overageChargedUsd).toBe(5)
-    expect(wallets.get('w1')?.overageAccumulatedUsd).toBe(5)
+    const w = wallets.get('w1')!
+    expect(w.overageAccumulatedUsd).toBe(5)
+    // Beyond-window usage does NOT accrue to the windows.
+    expect(w.weeklyUsedUsd).toBe(2)
+    expect(w.fiveHourUsedUsd).toBe(0.5)
   })
 
-  it('returns hard-limit error when overage room insufficient', async () => {
+  it('returns hard-limit error (with resetsAt) when overage room insufficient', async () => {
+    const start = now0()
     wallets.set('w1', freshWallet({
-      dailyIncludedUsd: 0, monthlyIncludedUsd: 0,
       overageEnabled: true, overageHardLimitUsd: 3, overageAccumulatedUsd: 0,
+      fiveHourWindowStart: start, fiveHourUsedUsd: 0.5,
+      weeklyWindowStart: start, weeklyUsedUsd: 2,
     }))
     const r = await billing.consumeUsage({ ...base, billedUsd: 5 })
     expect(r.success).toBe(false)
     expect(r.error).toMatch(/hard limit/)
+    expect(r.resetsAt).toBeInstanceOf(Date)
   })
 
-  it('records a usage event row with correct source', async () => {
-    wallets.set('w1', freshWallet({ dailyIncludedUsd: 0.5, monthlyIncludedUsd: 10 }))
+  it('scales window per seat (pro x3 seats → 3x the 5h cap)', async () => {
+    setPlan('pro', 3) // 5h = 8 * 3 = 24
+    wallets.set('w1', freshWallet())
+    const r = await billing.consumeUsage({ ...base, billedUsd: 20 })
+    expect(r.success).toBe(true)
+    expect(r.source).toBe('window')
+  })
+
+  it('enterprise is unlimited within windows (no block)', async () => {
+    setPlan('enterprise')
+    wallets.set('w1', freshWallet())
+    const r = await billing.consumeUsage({ ...base, billedUsd: 100000 })
+    expect(r.success).toBe(true)
+    expect(r.source).toBe('window')
+  })
+
+  it('resets the five-hour window once it has elapsed', async () => {
+    const sixHoursAgo = new Date(Date.now() - 6 * 3600 * 1000)
+    wallets.set('w1', freshWallet({
+      fiveHourWindowStart: sixHoursAgo, fiveHourUsedUsd: 0.5,
+      weeklyWindowStart: now0(), weeklyUsedUsd: 0,
+    }))
+    const r = await billing.consumeUsage({ ...base, billedUsd: 0.3 })
+    expect(r.success).toBe(true)
+    const w = wallets.get('w1')!
+    expect(w.fiveHourUsedUsd).toBeCloseTo(0.3, 5)
+    expect(w.fiveHourWindowStart!.getTime()).toBeGreaterThan(sixHoursAgo.getTime())
+  })
+
+  it('records a usage event row with source=window', async () => {
+    wallets.set('w1', freshWallet())
     await billing.consumeUsage({ ...base, billedUsd: 0.2 })
     expect(usageEvents).toHaveLength(1)
-    expect(usageEvents[0].source).toBe('daily')
+    expect(usageEvents[0].source).toBe('window')
+  })
+})
+
+// ============================================================================
+// getUsageWindows
+// ============================================================================
+describe('getUsageWindows', () => {
+  it('reports utilization and resetsAt for an open window (free)', async () => {
+    const start = now0()
+    wallets.set('w1', freshWallet({
+      fiveHourWindowStart: start, fiveHourUsedUsd: 0.25, // free 5h cap 0.5 → 50%
+      weeklyWindowStart: start, weeklyUsedUsd: 0.5,       // free weekly cap 2 → 25%
+    }))
+    const w = await billing.getUsageWindows('w1')
+    expect(w.fiveHour.limitUsd).toBe(0.5)
+    expect(w.fiveHour.utilization).toBeCloseTo(0.5, 5)
+    expect(w.fiveHour.resetsAt).toBeInstanceOf(Date)
+    expect(w.weekly.utilization).toBeCloseTo(0.25, 5)
   })
 
-  it('passes through in local mode without debiting', async () => {
-    process.env.SHOGO_LOCAL_MODE = 'true'
-    // Local mode is captured at module load; can't re-toggle. Skip this assertion.
-    delete (process.env as any).SHOGO_LOCAL_MODE
+  it('reports zero usage / null reset for an unopened window', async () => {
+    wallets.set('w1', freshWallet())
+    const w = await billing.getUsageWindows('w1')
+    expect(w.fiveHour.usedUsd).toBe(0)
+    expect(w.fiveHour.resetsAt).toBeNull()
+  })
+
+  it('clamps utilization to 1 when over the cap', async () => {
+    wallets.set('w1', freshWallet({
+      fiveHourWindowStart: now0(), fiveHourUsedUsd: 99,
+      weeklyWindowStart: now0(), weeklyUsedUsd: 99,
+    }))
+    const w = await billing.getUsageWindows('w1')
+    expect(w.fiveHour.utilization).toBe(1)
+  })
+
+  it('returns null limit + zero utilization for uncapped (enterprise)', async () => {
+    setPlan('enterprise')
+    wallets.set('w1', freshWallet({ fiveHourWindowStart: now0(), fiveHourUsedUsd: 123 }))
+    const w = await billing.getUsageWindows('w1')
+    expect(w.fiveHour.limitUsd).toBeNull()
+    expect(w.fiveHour.utilization).toBe(0)
   })
 })
 
@@ -650,7 +767,12 @@ describe('consumeCredits (legacy)', () => {
     expect(r.remainingCredits).toBeGreaterThan(0)
   })
   it('surfaces error from underlying consumeUsage', async () => {
-    wallets.set('w1', freshWallet({ dailyIncludedUsd: 0, monthlyIncludedUsd: 0, overageEnabled: false }))
+    const start = new Date()
+    wallets.set('w1', freshWallet({
+      overageEnabled: false,
+      fiveHourWindowStart: start, fiveHourUsedUsd: 0.5, // free 5h cap exhausted
+      weeklyWindowStart: start, weeklyUsedUsd: 2,         // free weekly cap exhausted
+    }))
     const r = await billing.consumeCredits('w1', null, 'u', 'x', 1)
     expect(r.success).toBe(false)
     expect(r.error).toBeDefined()
@@ -1122,98 +1244,42 @@ describe('consumeUsage — wallet allocation fallback (L532-540)', () => {
   })
 })
 
-describe('consumeUsage — daily reset branches (L573-583)', () => {
-  it('refills daily allowance on a new calendar day when monthly cap not exceeded', async () => {
-    const yesterday = new Date()
-    yesterday.setUTCDate(yesterday.getUTCDate() - 1)
+describe('consumeUsage — monthly boundary resets overage bookkeeping', () => {
+  it('zeros accumulated/billed overage and advances lastMonthlyReset on month rollover', async () => {
+    const lastMonth = new Date()
+    lastMonth.setUTCMonth(lastMonth.getUTCMonth() - 1)
+    // Window is exhausted so the charge takes the overage path; the month
+    // boundary should have already zeroed prior overage accumulation.
+    const start = now0()
     wallets.set('w1', freshWallet({
-      dailyIncludedUsd: 0,
-      monthlyIncludedUsd: 0,
-      dailyUsedThisMonthUsd: 0,
-      lastDailyReset: yesterday,
+      overageEnabled: true, overageHardLimitUsd: 1000,
+      overageAccumulatedUsd: 25, overageBilledUsd: 100,
+      lastMonthlyReset: lastMonth,
+      fiveHourWindowStart: start, fiveHourUsedUsd: 0.5,
+      weeklyWindowStart: start, weeklyUsedUsd: 2,
     }))
+    const r = await billing.consumeUsage({
+      workspaceId: 'w1', projectId: null, memberId: 'u1',
+      actionType: 'x', billedUsd: 5,
+    })
+    expect(r.success).toBe(true)
+    expect(r.source).toBe('overage')
+    const w = wallets.get('w1')!
+    // Prior 25 was zeroed on the boundary, then 5 charged this period.
+    expect(w.overageAccumulatedUsd).toBe(5)
+    expect(w.overageBilledUsd).toBe(0)
+    expect(+w.lastMonthlyReset).toBeGreaterThan(+lastMonth)
+  })
+
+  it('does not drain the legacy monthly included pool on a normal charge', async () => {
+    wallets.set('w1', freshWallet({ monthlyIncludedUsd: 100 }))
     const r = await billing.consumeUsage({
       workspaceId: 'w1', projectId: null, memberId: 'u1',
       actionType: 'x', billedUsd: 0.1,
     })
     expect(r.success).toBe(true)
-    expect(r.source).toBe('daily')
-    const w = wallets.get('w1')!
-    expect(w.dailyIncludedUsd).toBeCloseTo(0.9, 5)
-    expect(w.dailyUsedThisMonthUsd).toBe(1)
-    expect(+w.lastDailyReset).toBeGreaterThan(+yesterday)
-  })
-
-  it('zeros daily allowance on reset when monthly cap would be exceeded', async () => {
-    const yesterday = new Date()
-    yesterday.setUTCDate(yesterday.getUTCDate() - 1)
-    wallets.set('w1', freshWallet({
-      dailyIncludedUsd: 0,
-      monthlyIncludedUsd: 10,
-      dailyUsedThisMonthUsd: 4.5,
-      lastDailyReset: yesterday,
-    }))
-    const r = await billing.consumeUsage({
-      workspaceId: 'w1', projectId: null, memberId: 'u1',
-      actionType: 'x', billedUsd: 0.5,
-    })
-    expect(r.success).toBe(true)
-    expect(r.source).toBe('monthly')
-    expect(wallets.get('w1')?.dailyIncludedUsd).toBe(0)
-    expect(wallets.get('w1')?.dailyUsedThisMonthUsd).toBe(4.5)
-  })
-})
-
-describe('consumeUsage — monthly reset + free-tier refill (L556-572, 640-647)', () => {
-  it('refills monthlyIncludedUsd for free workspaces on month rollover', async () => {
-    const lastMonth = new Date()
-    lastMonth.setUTCMonth(lastMonth.getUTCMonth() - 1)
-    grants.set('w1', [{
-      id: 'g1', workspaceId: 'w1', freeSeats: 0,
-      monthlyIncludedUsd: 50, planId: null,
-      startsAt: new Date('2024-01-01'), expiresAt: null,
-    }])
-    wallets.set('w1', freshWallet({
-      dailyIncludedUsd: 0,
-      monthlyIncludedUsd: 0,
-      overageAccumulatedUsd: 25,
-      lastMonthlyReset: lastMonth,
-    }))
-    const r = await billing.consumeUsage({
-      workspaceId: 'w1', projectId: null, memberId: 'u1',
-      actionType: 'x', billedUsd: 5,
-    })
-    expect(r.success).toBe(true)
-    expect(r.source).toBe('monthly')
-    const w = wallets.get('w1')!
-    expect(w.monthlyIncludedUsd).toBeCloseTo(45, 5)
-    expect(w.monthlyIncludedAllocationUsd).toBe(50)
-    expect(w.overageBilledUsd).toBe(0)
-    expect(w.overageAccumulatedUsd).toBe(0)
-    expect(+w.lastMonthlyReset).toBeGreaterThan(+lastMonth)
-  })
-
-  it('does NOT refill for paid subscribers on month rollover', async () => {
-    const lastMonth = new Date()
-    lastMonth.setUTCMonth(lastMonth.getUTCMonth() - 1)
-    subs.set('w1', [{
-      id: 's1', workspaceId: 'w1', stripeSubscriptionId: 'sub_1', stripeCustomerId: 'cus_1',
-      planId: 'pro', seats: 1, status: 'active', billingInterval: 'monthly',
-      currentPeriodStart: lastMonth, currentPeriodEnd: lastMonth, cancelAtPeriodEnd: false,
-      createdAt: lastMonth,
-    }])
-    wallets.set('w1', freshWallet({
-      dailyIncludedUsd: 0,
-      monthlyIncludedUsd: 100,
-      lastMonthlyReset: lastMonth,
-    }))
-    const r = await billing.consumeUsage({
-      workspaceId: 'w1', projectId: null, memberId: 'u1',
-      actionType: 'x', billedUsd: 5,
-    })
-    expect(r.success).toBe(true)
-    const w = wallets.get('w1')!
-    expect(w.monthlyIncludedUsd).toBe(95)
-    expect(w.monthlyIncludedAllocationUsd).toBe(20)
+    expect(r.source).toBe('window')
+    // The vestigial monthly pool is untouched by the window path.
+    expect(wallets.get('w1')!.monthlyIncludedUsd).toBe(100)
   })
 })

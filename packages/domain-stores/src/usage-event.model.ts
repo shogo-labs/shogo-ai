@@ -26,7 +26,7 @@ export const UsageEventModel = types
     actionMetadata: types.optional(types.frozen(), {}),
     rawUsd: types.optional(types.number, 0),
     billedUsd: types.number,
-    source: types.enumeration("UsageSource", ["daily", "monthly", "overage"]),
+    source: types.enumeration("UsageSource", ["daily", "monthly", "overage", "window"]),
     balanceBefore: types.number,
     balanceAfter: types.number,
     createdAt: types.optional(types.number, 0),

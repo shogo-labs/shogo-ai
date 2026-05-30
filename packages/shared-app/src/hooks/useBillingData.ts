@@ -22,6 +22,23 @@ export interface EffectiveBalance {
 
 export type PlanSource = "subscription" | "grant" | "free"
 
+/** One rolling usage window as surfaced to the client. */
+export interface UsageWindowView {
+  kind: "five_hour" | "weekly"
+  usedUsd: number
+  /** `null` when the plan is uncapped (enterprise). */
+  limitUsd: number | null
+  /** 0..1 (0 for uncapped plans). */
+  utilization: number
+  /** ISO timestamp the window next resets, or `null` if not yet opened. */
+  resetsAt: string | null
+}
+
+export interface UsageWindows {
+  fiveHour: UsageWindowView
+  weekly: UsageWindowView
+}
+
 export interface BillingDataState {
   subscription: any | undefined
   usageWallet: any | undefined
@@ -42,6 +59,9 @@ export interface BillingDataState {
   // Where the effective plan came from. Lets callers distinguish a grant
   // upgrade (no Stripe customer to send to portal) from a real subscription.
   planSource: PlanSource
+  // Rolling 5-hour + weekly usage windows (time-gated "unlimited"). Undefined
+  // until the workspace-plan endpoint resolves.
+  usageWindows: UsageWindows | undefined
 }
 
 export function useBillingData(workspaceId: string | undefined): BillingDataState {
@@ -64,6 +84,7 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
   // are not persisted as Subscription rows but still need to surface in the
   // UI as the current plan.
   const [effectivePlan, setEffectivePlan] = useState<{ planId: string; source: PlanSource } | null>(null)
+  const [usageWindows, setUsageWindows] = useState<UsageWindows | undefined>(undefined)
 
   useEffect(() => {
     if (!workspaceId || !store?.subscriptionCollection) { setIsLoadingSubscription(false); return }
@@ -77,7 +98,7 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
     Promise.all([
       store.subscriptionCollection.loadAll({ workspaceId }),
       http
-        .get<{ ok?: boolean; planId?: string; source?: PlanSource }>(
+        .get<{ ok?: boolean; planId?: string; source?: PlanSource; usageWindows?: UsageWindows }>(
           `/api/billing/workspace-plan?workspaceId=${encodeURIComponent(workspaceId)}`,
         )
         .then((res) => {
@@ -88,6 +109,7 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
               planId: data.planId,
               source: (data.source as PlanSource) ?? (data.planId === "free" ? "free" : "subscription"),
             })
+            if (data.usageWindows) setUsageWindows(data.usageWindows as UsageWindows)
           }
         })
         .catch(() => {
@@ -233,5 +255,6 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
     refetchUsageEvents,
     effectivePlanId,
     planSource,
+    usageWindows,
   }
 }
