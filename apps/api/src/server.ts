@@ -6338,7 +6338,16 @@ app.post('/api/webhooks/stripe', async (c) => {
             if (event.type === 'customer.subscription.created') {
               await billingService.allocateMonthlyIncluded(wsId, metaPlanId, quantity)
             } else {
-              const includedUsd = (await import('./config/usage-plans')).getMonthlyIncludedForPlan(metaPlanId, quantity)
+              // Stack any active super-admin grants on top of the plan's
+              // per-seat included USD, mirroring `allocateMonthlyIncluded`.
+              // Omitting grants here silently wiped a workspace's credit
+              // grant on the next Stripe `customer.subscription.updated`
+              // event (e.g. a seat change), making applied credits vanish.
+              const grant = await billingService.getActiveGrantsForWorkspace(wsId)
+              const totalSeats = Math.max(1, Math.floor(quantity || 1)) + grant.freeSeats
+              const includedUsd =
+                (await import('./config/usage-plans')).getMonthlyIncludedForPlan(metaPlanId, totalSeats) +
+                grant.monthlyIncludedUsd
               await prisma.usageWallet.updateMany({
                 where: { workspaceId: wsId },
                 data: {
