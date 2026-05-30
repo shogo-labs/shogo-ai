@@ -1214,7 +1214,7 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
         body: JSON.stringify({ key: body.key }),
         signal: AbortSignal.timeout(10000),
       })
-      let validateData: { valid: boolean; workspace?: any; error?: string }
+      let validateData: { valid: boolean; workspace?: any; user?: any; error?: string }
       try {
         validateData = await validateRes.json()
       } catch {
@@ -1234,8 +1234,11 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
         }),
         localDb.localConfig.upsert({
           where: { key: 'SHOGO_KEY_INFO' },
-          update: { value: JSON.stringify({ workspace: validateData.workspace }) },
-          create: { key: 'SHOGO_KEY_INFO', value: JSON.stringify({ workspace: validateData.workspace }) },
+          // Persist `user` alongside `workspace` so the agent-runtime can scope
+          // Composio to the cloud identity the key is bound to without a
+          // validate round-trip (see lib/federated-upstream getUpstreamIdentity).
+          update: { value: JSON.stringify({ workspace: validateData.workspace, user: validateData.user }) },
+          create: { key: 'SHOGO_KEY_INFO', value: JSON.stringify({ workspace: validateData.workspace, user: validateData.user }) },
         }),
       ])
 

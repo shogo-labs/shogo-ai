@@ -1447,6 +1447,25 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           // OPENROUTER_API_KEY is preserved so BYOK OpenRouter routing
           // works end-to-end.
           console.log(`[RuntimeManager] Shogo Cloud mode: all providers routed through proxy for ${projectId}`)
+
+          // Composio connections live on the cloud's Composio account keyed by
+          // the cloud user/workspace the SHOGO_API_KEY is bound to (the
+          // integrations UI forwards "Connect" to the cloud). Scope the
+          // runtime's Composio identity to those cloud ids so the agent
+          // resolves the same connections instead of the *synthetic local*
+          // user/workspace (which would always read back needs_auth). See
+          // packages/agent-runtime/src/composio.ts (resolveComposioIdentity).
+          try {
+            const { getUpstreamIdentity } = await import('../federated-upstream')
+            const cloudIdentity = await getUpstreamIdentity()
+            if (cloudIdentity) {
+              runtimeEnv.COMPOSIO_CLOUD_USER_ID = cloudIdentity.userId
+              runtimeEnv.COMPOSIO_CLOUD_WORKSPACE_ID = cloudIdentity.workspaceId
+              console.log(`[RuntimeManager] Composio scoped to cloud identity for ${projectId}`)
+            }
+          } catch (err: any) {
+            console.warn(`[RuntimeManager] Could not resolve cloud Composio identity: ${err?.message}`)
+          }
         }
 
         // Security policy — read user prefs + project overrides, merge, and pass to runtime

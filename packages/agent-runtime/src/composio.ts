@@ -47,6 +47,36 @@ interface ComposioAuthConfigs {
   [toolkit: string]: string
 }
 
+/**
+ * In local cloud-forwarding mode the agent-runtime runs against a *synthetic*
+ * local identity (e.g. user `local@shogo.local`, workspace "Local User
+ * Personal") that does NOT match the cloud user/workspace the `SHOGO_API_KEY`
+ * is bound to. Composio connections, however, live on the cloud's Composio
+ * account keyed by the cloud identity — the integrations UI forwards
+ * "Connect" to the cloud (see `routes/integrations.ts` `shouldForwardToCloud`),
+ * so every OAuth connection is created under `shogo_{cloudUser}_{cloudWs}`.
+ *
+ * If the agent scopes Composio to the local ids it builds
+ * `shogo_{localUser}_{localWs}` and never resolves those connections — every
+ * auth check falls through to `needs_auth` and every toolkit (Google Docs,
+ * Gmail, Slack, …) appears disconnected.
+ *
+ * The desktop `RuntimeManager` resolves the cloud identity bound to the key
+ * and exports it via `COMPOSIO_CLOUD_USER_ID` / `COMPOSIO_CLOUD_WORKSPACE_ID`.
+ * When present we prefer them so the agent's Composio user id matches what the
+ * cloud (and the UI) use. When absent (self-hosted, BYO-key, tests) we fall
+ * back to the caller-supplied ids and behave exactly as before.
+ */
+function resolveComposioIdentity(
+  userId: string,
+  workspaceId: string,
+): { userId: string; workspaceId: string } {
+  return {
+    userId: process.env.COMPOSIO_CLOUD_USER_ID || userId,
+    workspaceId: process.env.COMPOSIO_CLOUD_WORKSPACE_ID || workspaceId,
+  }
+}
+
 export interface ComposioToolkitInfo {
   slug: string
   name: string
@@ -266,9 +296,11 @@ export async function initComposioSession(
   projectId: string,
   scope: ComposioScope = 'project',
 ): Promise<boolean> {
+  const { userId: effectiveUserId, workspaceId: effectiveWorkspaceId } =
+    resolveComposioIdentity(userId, workspaceId)
   const composioUserId = scope === 'workspace'
-    ? `shogo_${userId}_${workspaceId}`
-    : `shogo_${userId}_${workspaceId}_${projectId}`
+    ? `shogo_${effectiveUserId}_${effectiveWorkspaceId}`
+    : `shogo_${effectiveUserId}_${effectiveWorkspaceId}_${projectId}`
 
   if (storedComposioUserId === composioUserId) return true
 
@@ -290,10 +322,10 @@ export async function initComposioSession(
 
     storedComposioUserId = composioUserId
     storedProjectScopedComposioUserId = scope === 'workspace'
-      ? `shogo_${userId}_${workspaceId}_${projectId}`
+      ? `shogo_${effectiveUserId}_${effectiveWorkspaceId}_${projectId}`
       : null
     // TODO: Remove legacy ID tracking after migration period
-    storedLegacyComposioUserId = `shogo_${userId}_${projectId}`
+    storedLegacyComposioUserId = `shogo_${effectiveUserId}_${projectId}`
     const elapsed = performance.now() - t0
     recordTiming('session init', elapsed)
     console.log(`[Composio] Session initialized for user "${composioUserId}"`)
@@ -352,9 +384,11 @@ export function buildComposioUserId(
   projectId: string,
   scope: ComposioScope = 'project',
 ): string {
+  const { userId: effectiveUserId, workspaceId: effectiveWorkspaceId } =
+    resolveComposioIdentity(userId, workspaceId)
   return scope === 'workspace'
-    ? `shogo_${userId}_${workspaceId}`
-    : `shogo_${userId}_${workspaceId}_${projectId}`
+    ? `shogo_${effectiveUserId}_${effectiveWorkspaceId}`
+    : `shogo_${effectiveUserId}_${effectiveWorkspaceId}_${projectId}`
 }
 
 /**
