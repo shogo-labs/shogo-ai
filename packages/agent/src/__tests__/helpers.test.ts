@@ -126,9 +126,17 @@ describe('inferProviderFromModel', () => {
   it('infers google from "gemini" prefix', () => {
     expect(inferProviderFromModel('gemini-2.5-pro')).toBe('google')
   })
-  it('falls back to custom fallback for unknowns', () => {
-    expect(inferProviderFromModel('mistral-xl', 'other')).toBe('other')
-    expect(inferProviderFromModel('mistral-xl')).toBe('anthropic')
+  it('routes unknown (non-prefixed, non-catalog) ids to custom so they go through the proxy', () => {
+    // DB-defined OpenAI-compatible models (e.g. MiMo) are unknown to the
+    // static catalog and have no native prefix; they must route as 'custom'
+    // (proxy chat-completions) rather than the historical Anthropic fallback,
+    // which 404'd on the unknown model name.
+    expect(inferProviderFromModel('mistral-xl', 'other')).toBe('custom')
+    expect(inferProviderFromModel('mimo-v2.5')).toBe('custom')
+  })
+  it('returns the fallback when no model id is provided', () => {
+    expect(inferProviderFromModel('', 'anthropic')).toBe('anthropic')
+    expect(inferProviderFromModel('', 'openai')).toBe('openai')
   })
 })
 

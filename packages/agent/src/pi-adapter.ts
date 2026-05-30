@@ -65,6 +65,30 @@ const PROVIDER_BASE_URL_ENV: Record<string, string> = {
  * the API server's AI proxy instead of hitting provider APIs directly.
  */
 export function resolveModel(provider: string, modelId: string): Model<Api> {
+  // DB-defined custom OpenAI-compatible models (e.g. MiMo) are not in pi-ai's
+  // static registry and must not be mis-inferred as native Anthropic/OpenAI
+  // models. Route them through the AI proxy's OpenAI *chat-completions*
+  // endpoint, which resolves the DB model id to its real upstream provider
+  // and preserves tool calls / streaming (the Anthropic conversion path is
+  // text-only). Tag the pi model's provider as 'openai' so the proxy token
+  // and base URL injected by configureAIProxy (OPENAI_API_KEY /
+  // OPENAI_BASE_URL) are used for auth and routing.
+  if (provider === 'custom') {
+    const baseUrl = resolveBaseUrl('openai') ?? getDefaultBaseUrl('openai')
+    return {
+      id: modelId,
+      name: modelId,
+      api: 'openai-completions',
+      provider: 'openai',
+      baseUrl,
+      reasoning: true,
+      input: ['text', 'image'],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 200000,
+      maxTokens: getMaxOutputTokens(modelId),
+    } as Model<Api>
+  }
+
   // Strip our `openrouter:` catalog prefix before consulting pi-ai's
   // registry — pi-ai stores OpenRouter models by their bare upstream id
   // (e.g. `xiaomi/mimo-v2.5`).
