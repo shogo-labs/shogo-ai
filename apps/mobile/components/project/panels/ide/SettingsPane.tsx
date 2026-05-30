@@ -149,7 +149,15 @@ function ThemeSection({
 
   const handleImport = async (file: File) => {
     setError(null);
-    const text = await file.text();
+    let text: string;
+    try {
+      // File.text() can reject for permission/abort/IO errors. Surface them
+      // as an inline message instead of an unhandled promise rejection.
+      text = await file.text();
+    } catch (e) {
+      setError(`failed to read file: ${(e as Error).message || String(e)}`);
+      return;
+    }
     const parsed = parseThemeJson(text);
     if (!parsed.ok) {
       setError(parsed.error);
@@ -160,8 +168,12 @@ function ThemeSection({
       setError("Monaco not mounted yet — open a file and try again.");
       return;
     }
-    const id = registerCustomTheme(monaco, parsed.theme);
-    onChange(id);
+    try {
+      const id = registerCustomTheme(monaco, parsed.theme);
+      onChange(id);
+    } catch (e) {
+      setError(`failed to register theme: ${(e as Error).message || String(e)}`);
+    }
   };
 
   return (

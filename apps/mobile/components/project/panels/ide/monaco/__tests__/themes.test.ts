@@ -237,6 +237,51 @@ describe('parseThemeJson', () => {
     expect(r.ok).toBe(true)
   })
 
+  it('accepts 3-digit (#RGB) hex colors — parity with CSS / VS Code themes', () => {
+    const r = parseThemeJson(JSON.stringify({ base: 'vs-dark', colors: { 'editor.foreground': '#fff', 'editor.background': '000' } }))
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.theme.definition.colors['editor.foreground']).toBe('#fff')
+      expect(r.theme.definition.colors['editor.background']).toBe('#000')
+    }
+  })
+
+  it('accepts 4-digit (#RGBA) hex colors', () => {
+    const r = parseThemeJson(JSON.stringify({ base: 'vs-dark', colors: { 'editor.selectionBackground': '#fff8' } }))
+    expect(r.ok).toBe(true)
+  })
+
+  it('rejects 5-digit hex (between shorthand and full)', () => {
+    const r = parseThemeJson(JSON.stringify({ base: 'vs-dark', colors: { 'editor.background': '#fffff' } }))
+    expect(r.ok).toBe(false)
+  })
+
+  it('strips leading # from rule foreground/background (Monaco rule format)', () => {
+    const r = parseThemeJson(JSON.stringify({
+      base: 'vs-dark',
+      colors: { 'editor.background': '#000000' },
+      rules: [{ token: 'comment', foreground: '#888888', background: '#111111', fontStyle: 'italic' }],
+    }))
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      const rule = r.theme.definition.rules[0]
+      expect(rule.foreground).toBe('888888')
+      expect(rule.background).toBe('111111')
+      // fontStyle is NOT stripped — it's not a color value.
+      expect(rule.fontStyle).toBe('italic')
+    }
+  })
+
+  it('leaves rule foreground without # untouched', () => {
+    const r = parseThemeJson(JSON.stringify({
+      base: 'vs-dark',
+      colors: { 'editor.background': '#000000' },
+      rules: [{ token: 'keyword', foreground: 'bb9af7' }],
+    }))
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.theme.definition.rules[0].foreground).toBe('bb9af7')
+  })
+
   it('rejects rules that are not an array', () => {
     const r = parseThemeJson(JSON.stringify({ base: 'vs-dark', colors: { 'editor.background': '#000000' }, rules: 'nope' }))
     expect(r.ok).toBe(false)
@@ -343,6 +388,58 @@ describe('loadCustomThemes', () => {
     const out = loadCustomThemes(monaco, makeStorage())
     expect(out).toEqual([])
     expect(calls).toEqual([])
+  })
+})
+
+describe('loadCustomThemes — resilience to bad data', () => {
+  it('skips malformed descriptors (missing definition / wrong shape)', () => {
+    // We bypass the public makeStorage helper because we want to plant
+    // entries that are typed-correctly at the boundary but rotten inside.
+    const bad = [
+      { id: '', label: 'no-id',     mode: 'dark', origin: 'custom', definition: { base: 'vs-dark', inherit: true, rules: [], colors: {} } },
+      { id: 'shogo-user-x', label: 'bad-base', mode: 'dark', origin: 'custom', definition: { base: 'midnight', inherit: true, rules: [], colors: {} } },
+      { id: 'shogo-user-y', label: 'no-colors', mode: 'dark', origin: 'custom', definition: { base: 'vs-dark', inherit: true, rules: [] } },
+      { id: 'shogo-user-z', label: 'ok', mode: 'dark', origin: 'custom', definition: { base: 'vs-dark', inherit: true, rules: [], colors: { 'editor.background': '#000000' } } },
+    ] as unknown as ThemeDescriptor[]
+    const storage = makeStorage(bad)
+    const { monaco, calls } = makeMonaco()
+
+    const out = loadCustomThemes(monaco, storage)
+
+    // Only the well-formed entry is registered.
+    expect(out.map(t => t.id)).toEqual(['shogo-user-z'])
+    expect(calls.map(c => c.name)).toEqual(['shogo-user-z'])
+  })
+
+  it('catches defineTheme errors so one bad theme cannot brick startup', () => {
+    let count = 0
+    const calls: string[] = []
+    const monaco: MonacoLike = {
+      editor: {
+        defineTheme(name) {
+          calls.push(name)
+          // Throw on the first registration to simulate a Monaco rejection.
+          if (count++ === 0) throw new Error('boom')
+        },
+      },
+    }
+    const seed: ThemeDescriptor[] = [
+      { id: 'shogo-user-explodes', label: 'X', mode: 'dark', origin: 'custom',
+        definition: { base: 'vs-dark', inherit: true, rules: [], colors: { 'editor.background': '#000000' } } },
+      { id: 'shogo-user-survives', label: 'Y', mode: 'dark', origin: 'custom',
+        definition: { base: 'vs-dark', inherit: true, rules: [], colors: { 'editor.background': '#111111' } } },
+    ]
+
+    // Silence the warn we know fires.
+    const origWarn = console.warn
+    console.warn = () => {}
+    try {
+      const out = loadCustomThemes(monaco, makeStorage(seed))
+      expect(out.map(t => t.id)).toEqual(['shogo-user-survives'])
+      expect(calls).toEqual(['shogo-user-explodes', 'shogo-user-survives'])
+    } finally {
+      console.warn = origWarn
+    }
   })
 })
 
