@@ -149,6 +149,43 @@ export const FIVE_HOUR_MS = 5 * 60 * 60 * 1000
 export const SEVEN_DAY_MS = 7 * 24 * 60 * 60 * 1000
 
 /**
+ * Average weeks per calendar month (365.25 / 12 / 7 ≈ 4.348). The weekly
+ * rolling window is the binding constraint on monthly usage, so the
+ * "effective monthly included" usage of a plan is `weeklyUsd × WEEKS_PER_MONTH`
+ * for back-to-back windows. See `getMonthlyIncludedEquivalent`.
+ */
+export const WEEKS_PER_MONTH = 365.25 / 12 / 7
+
+/**
+ * ── How the window limits are sized (don't-lose-money math) ──────────────
+ *
+ * Windows count *marked-up* USD (`billedUsd = providerRawCost × MARKUP`,
+ * MARKUP = 1.20). Included usage is covered by the subscription — we don't
+ * charge per unit inside a window — so our real cost for a maxed window is the
+ * underlying provider COGS = `markedUp / MARKUP`.
+ *
+ * Worst case is a user who pins their windows continuously for a whole month.
+ * Their monthly provider COGS is:
+ *
+ *     monthlyCogsRaw = weeklyUsd × WEEKS_PER_MONTH / MARKUP
+ *
+ * We size `weeklyUsd` so that this worst case stays at or below
+ * `TARGET_COMPUTE_COST_RATIO` of the *list* monthly subscription price,
+ * leaving headroom for the ~17% annual discount, ~3% payment fees, infra and
+ * margin. Solving for the cap:
+ *
+ *     weeklyUsd ≤ TARGET_COMPUTE_COST_RATIO × monthlyPrice × MARKUP / WEEKS_PER_MONTH
+ *
+ * At MARKUP 1.20, ratio 0.75, prices basic $8 / pro $20 / business $40 the
+ * caps are ≈ $1.66 / $4.14 / $8.28 per seat; the values below round *down* to
+ * clean figures (worst-case COGS lands ≈72.5% of list / ≈87% of annual
+ * revenue). 5-hour windows are sized at 40% of the weekly budget so a single
+ * burst can't drain the whole week. `null` = uncapped (enterprise). Values are
+ * intended to be tuned operationally — see `TARGET_COMPUTE_COST_RATIO`.
+ */
+export const TARGET_COMPUTE_COST_RATIO = 0.75
+
+/**
  * Per-window included USD-of-compute per plan. Within these windows usage is
  * effectively unlimited (no finite monthly pool is drained); when a window is
  * exhausted, usage falls through to metered overage (if enabled) and otherwise
@@ -158,19 +195,20 @@ export const SEVEN_DAY_MS = 7 * 24 * 60 * 60 * 1000
  *
  * For per-seat plans (`pro`, `business`) the limits below are *per seat* and
  * are multiplied by the seat count in `getWindowLimitsForPlan`. `free` and
- * `basic` are single-pool (not scaled by seats).
+ * `basic` are single-pool (not scaled by seats). `free` is a deliberate
+ * loss-leader (no revenue) capped small.
  *
- * Values are USD of marked-up compute (see `usage-cost.ts`) and are intended
- * to be tuned operationally.
+ * Values are USD of marked-up compute (see `usage-cost.ts`). See the block
+ * comment above for the don't-lose-money derivation.
  */
 export const ROLLING_WINDOW_LIMITS: Record<
   PlanId,
   { fiveHourUsd: number; weeklyUsd: number } | null
 > = {
-  free: { fiveHourUsd: 0.5, weeklyUsd: 2 },
-  basic: { fiveHourUsd: 2, weeklyUsd: 10 },
-  pro: { fiveHourUsd: 8, weeklyUsd: 40 },
-  business: { fiveHourUsd: 20, weeklyUsd: 120 },
+  free: { fiveHourUsd: 0.2, weeklyUsd: 0.5 },
+  basic: { fiveHourUsd: 0.64, weeklyUsd: 1.6 },
+  pro: { fiveHourUsd: 1.6, weeklyUsd: 4 },
+  business: { fiveHourUsd: 3.2, weeklyUsd: 8 },
   enterprise: null,
 }
 
@@ -208,6 +246,29 @@ export function getWindowLimitsForPlan(
     fiveHourUsd: base.fiveHourUsd * safeSeats,
     weeklyUsd: base.weeklyUsd * safeSeats,
   }
+}
+
+/**
+ * Effective monthly included usage (marked-up USD) implied by the weekly
+ * rolling window for a (plan, seats) tuple. The weekly window is the binding
+ * monthly constraint, so for back-to-back windows the monthly ceiling is
+ * `weeklyUsd × WEEKS_PER_MONTH`.
+ *
+ * This is the *upper bound* of included usage assuming continuous use — pausing
+ * pushes each window's reset later, fitting fewer full weekly buckets per
+ * month. It is the included/unlimited zone only; usage beyond it falls through
+ * to metered overage. Returns `null` for uncapped plans (enterprise).
+ *
+ * Intended for internal/finance/admin surfaces — the customer UI shows usage
+ * relative to the window (utilization %), not this dollar figure.
+ */
+export function getMonthlyIncludedEquivalent(
+  planId: string | null | undefined,
+  seats: number = 1,
+): number | null {
+  const limits = getWindowLimitsForPlan(planId, seats)
+  if (limits == null) return null
+  return limits.weeklyUsd * WEEKS_PER_MONTH
 }
 
 /**

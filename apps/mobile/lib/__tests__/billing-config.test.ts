@@ -17,9 +17,11 @@ import {
   FREE_DAILY_INCLUDED_USD,
   SEAT_INCLUDED_USD,
   ROLLING_WINDOW_LIMITS,
+  WEEKS_PER_MONTH,
   getDailyIncludedForPlan,
   getIncludedUsdCapacityForDisplay,
   getIncludedUsdForPlan,
+  getMonthlyIncludedEquivalent,
   getWindowLimitsForPlan,
   formatResetCountdown,
   formatUsd,
@@ -39,15 +41,17 @@ describe('getWindowLimitsForPlan', () => {
   })
 
   test('scales per-seat plans linearly', () => {
+    const proBase = ROLLING_WINDOW_LIMITS.pro!
     const pro3 = getWindowLimitsForPlan('pro', 3)
-    expect(pro3).toEqual({ fiveHourUsd: 8 * 3, weeklyUsd: 40 * 3 })
+    expect(pro3).toEqual({ fiveHourUsd: proBase.fiveHourUsd * 3, weeklyUsd: proBase.weeklyUsd * 3 })
+    const bizBase = ROLLING_WINDOW_LIMITS.business!
     const biz2 = getWindowLimitsForPlan('business', 2)
-    expect(biz2).toEqual({ fiveHourUsd: 20 * 2, weeklyUsd: 120 * 2 })
+    expect(biz2).toEqual({ fiveHourUsd: bizBase.fiveHourUsd * 2, weeklyUsd: bizBase.weeklyUsd * 2 })
   })
 
   test('clamps non-positive / fractional seats to at least 1', () => {
-    expect(getWindowLimitsForPlan('pro', 0)).toEqual({ fiveHourUsd: 8, weeklyUsd: 40 })
-    expect(getWindowLimitsForPlan('pro', -4)).toEqual({ fiveHourUsd: 8, weeklyUsd: 40 })
+    expect(getWindowLimitsForPlan('pro', 0)).toEqual(ROLLING_WINDOW_LIMITS.pro!)
+    expect(getWindowLimitsForPlan('pro', -4)).toEqual(ROLLING_WINDOW_LIMITS.pro!)
   })
 
   test('returns null (uncapped) for enterprise', () => {
@@ -55,7 +59,27 @@ describe('getWindowLimitsForPlan', () => {
   })
 
   test('matches legacy suffixed plan ids by prefix', () => {
-    expect(getWindowLimitsForPlan('pro_200', 1)).toEqual({ fiveHourUsd: 8, weeklyUsd: 40 })
+    expect(getWindowLimitsForPlan('pro_200', 1)).toEqual(ROLLING_WINDOW_LIMITS.pro!)
+  })
+})
+
+describe('getMonthlyIncludedEquivalent', () => {
+  test('is weeklyUsd × WEEKS_PER_MONTH for capped plans', () => {
+    expect(getMonthlyIncludedEquivalent('pro', 1)).toBeCloseTo(
+      ROLLING_WINDOW_LIMITS.pro!.weeklyUsd * WEEKS_PER_MONTH,
+      6,
+    )
+  })
+
+  test('scales per seat', () => {
+    expect(getMonthlyIncludedEquivalent('business', 3)).toBeCloseTo(
+      getMonthlyIncludedEquivalent('business', 1)! * 3,
+      6,
+    )
+  })
+
+  test('returns null for uncapped enterprise', () => {
+    expect(getMonthlyIncludedEquivalent('enterprise')).toBeNull()
   })
 })
 
