@@ -1489,6 +1489,11 @@ model ModelDefinition {
   aliases          Json? // string[] of alias ids
   capabilities     Json? // { subagentOrchestration?: "reliable"|"flaky"|"unsupported" }
 
+  // User-facing picker metadata.
+  description    String? // Short blurb shown in the model picker info panel.
+  contextWindow  Int? // Total context window in tokens (distinct from maxOutputTokens).
+  reasoningEffort String? // "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
+
   // Per-1M-token USD list prices (raw; markup applied at billing time).
   inputPerMillion       Float @default(0)
   cachedInputPerMillion Float @default(0)

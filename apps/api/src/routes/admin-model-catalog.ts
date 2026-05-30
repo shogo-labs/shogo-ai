@@ -24,6 +24,19 @@ import {
   isSecretCryptoConfigured,
 } from '../lib/secret-crypto'
 import { invalidateModelRegistry } from '../services/model-registry.service'
+import {
+  SUPPORTED_NATIVE_PROVIDERS,
+  isNativeProvider,
+  getNativeProviderApiKeySync,
+  getNativeProviderKeyInfoSync,
+  setNativeProviderKey,
+} from '../services/provider-credentials.service'
+import {
+  resolveEnablePricing,
+  refreshModelPricingFromLiteLLM,
+  getPricingRefreshedAt,
+  isPricingStale,
+} from '../services/model-pricing-catalog.service'
 
 const MODEL_PROVIDER_PROTOCOLS = new Set(['openai', 'anthropic'])
 const MODEL_PROVIDER_AUTH_STYLES = new Set(['bearer', 'api-key-header'])
@@ -31,6 +44,7 @@ const MODEL_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'openrouter', 
 const MODEL_TIERS = new Set(['economy', 'standard', 'premium'])
 const MODEL_FAMILIES = new Set(['opus', 'sonnet', 'haiku', 'gpt', 'other'])
 const MODEL_GENERATIONS = new Set(['current', 'legacy'])
+const MODEL_REASONING_EFFORTS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh'])
 
 /** Shape a ModelProvider row for read responses — never includes the key. */
 export function toProviderResponse(row: any) {
@@ -70,6 +84,12 @@ function sanitizeAliases(v: unknown): string[] {
   return v.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim())
 }
 
+/** Coerce an optional positive-integer context window (tokens), else null. */
+function sanitizeContextWindow(v: unknown): number | null {
+  const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null
+}
+
 export function toModelResponse(row: any) {
   return {
     id: row.id,
@@ -86,6 +106,9 @@ export function toModelResponse(row: any) {
     sortOrder: row.sortOrder ?? null,
     aliases: Array.isArray(row.aliases) ? row.aliases : [],
     capabilities: row.capabilities ?? null,
+    description: row.description ?? null,
+    contextWindow: row.contextWindow ?? null,
+    reasoningEffort: row.reasoningEffort ?? null,
     inputPerMillion: row.inputPerMillion,
     cachedInputPerMillion: row.cachedInputPerMillion,
     cacheWritePerMillion: row.cacheWritePerMillion,
@@ -96,12 +119,320 @@ export function toModelResponse(row: any) {
   }
 }
 
+// Providers we can discover live + fully route today. Google is intentionally
+// excluded until chat routing lands (see plan "Deferred"), so it can't be
+// half-enabled here. OpenRouter's catalog is public, so it discovers even
+// without a key.
+const DISCOVERY_PROVIDERS = new Set(['anthropic', 'openai', 'openrouter'])
+
+interface DiscoveredModel {
+  id: string
+  displayName: string
+  contextLength?: number
+  inputPerMillion?: number
+  cachedInputPerMillion?: number
+  cacheWritePerMillion?: number
+  outputPerMillion?: number
+}
+
+/** OpenRouter exposes authoritative per-token rates (USD, as strings) on each
+ *  model. Convert to per-million. Returns undefined when no usable rate. */
+function openRouterPerMillion(v: unknown): number | undefined {
+  const n = typeof v === 'string' ? Number(v) : typeof v === 'number' ? v : NaN
+  return Number.isFinite(n) && n > 0 ? n * 1_000_000 : undefined
+}
+
+/** OpenAI's /models lists embeddings, audio, image, moderation, etc. Keep only
+ *  chat-capable text models so the picker isn't flooded. */
+const OPENAI_NON_CHAT = /(embedding|whisper|tts|audio|realtime|dall-e|image|moderation|transcribe|search|babbage|davinci|ada|curie|codex|guard)/i
+
+async function discoverProviderModels(
+  provider: string,
+  apiKey: string,
+): Promise<{ ok: boolean; models: DiscoveredModel[]; error?: string }> {
+  try {
+    if (provider === 'anthropic') {
+      const res = await fetch('https://api.anthropic.com/v1/models?limit=1000', {
+        headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+        signal: AbortSignal.timeout(8000),
+      })
+      if (!res.ok) return { ok: false, models: [], error: `Anthropic returned ${res.status}` }
+      const data = (await res.json()) as {
+        data?: Array<{ id: string; display_name?: string; max_input_tokens?: number }>
+      }
+      const models = (data.data || []).map((m) => ({
+        id: m.id,
+        displayName: m.display_name || m.id,
+        ...(Number.isFinite(m.max_input_tokens) && (m.max_input_tokens as number) > 0
+          ? { contextLength: m.max_input_tokens }
+          : {}),
+      }))
+      return { ok: true, models }
+    }
+    if (provider === 'openai') {
+      const res = await fetch('https://api.openai.com/v1/models', {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(8000),
+      })
+      if (!res.ok) return { ok: false, models: [], error: `OpenAI returned ${res.status}` }
+      const data = (await res.json()) as { data?: Array<{ id: string }> }
+      const models = (data.data || [])
+        .filter((m) => !OPENAI_NON_CHAT.test(m.id))
+        .map((m) => ({ id: m.id, displayName: m.id }))
+        .sort((a, b) => a.id.localeCompare(b.id))
+      return { ok: true, models }
+    }
+    if (provider === 'openrouter') {
+      // OpenRouter's /models is public; send the key only when present so
+      // user-specific pricing/limits apply, but discovery works without one.
+      const res = await fetch('https://openrouter.ai/api/v1/models', {
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+        signal: AbortSignal.timeout(8000),
+      })
+      if (!res.ok) return { ok: false, models: [], error: `OpenRouter returned ${res.status}` }
+      const data = (await res.json()) as {
+        data?: Array<{
+          id: string
+          name?: string
+          context_length?: number
+          pricing?: {
+            prompt?: string
+            completion?: string
+            input_cache_read?: string
+            input_cache_write?: string
+          }
+        }>
+      }
+      const models = (data.data || [])
+        .map((m) => ({
+          id: m.id,
+          displayName: m.name || m.id,
+          ...(Number.isFinite(m.context_length) && (m.context_length as number) > 0
+            ? { contextLength: m.context_length }
+            : {}),
+          inputPerMillion: openRouterPerMillion(m.pricing?.prompt),
+          outputPerMillion: openRouterPerMillion(m.pricing?.completion),
+          cachedInputPerMillion: openRouterPerMillion(m.pricing?.input_cache_read),
+          cacheWritePerMillion: openRouterPerMillion(m.pricing?.input_cache_write),
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id))
+      return { ok: true, models }
+    }
+    return { ok: false, models: [], error: `unsupported provider: ${provider}` }
+  } catch (err: any) {
+    return { ok: false, models: [], error: `Cannot reach ${provider}: ${err?.message || err}` }
+  }
+}
+
+/** Best-effort family/tier inference from a provider model id, so discovered
+ *  models slot into the same billing/labeling buckets as catalog models. */
+function inferFamily(provider: string, id: string): string {
+  const lower = id.toLowerCase()
+  if (provider === 'anthropic' || provider === 'openrouter') {
+    if (lower.includes('opus')) return 'opus'
+    if (lower.includes('sonnet')) return 'sonnet'
+    if (lower.includes('haiku')) return 'haiku'
+    if (lower.includes('gpt') || lower.includes('openai/')) return 'gpt'
+    return 'other'
+  }
+  if (provider === 'openai') return 'gpt'
+  return 'other'
+}
+
 /**
  * Router for super-admin model + provider management. Mount under
  * `/api/admin/settings`.
  */
 export function adminModelCatalogRoutes() {
   const router = new Hono()
+
+  // GET /provider-keys — masked native provider keys + how each is configured.
+  router.get('/provider-keys', async (c) => {
+    const keys: Record<string, { configured: boolean; mask: string; source: 'db' | 'env' | null }> = {}
+    for (const provider of SUPPORTED_NATIVE_PROVIDERS) {
+      keys[provider] = getNativeProviderKeyInfoSync(provider)
+    }
+    return c.json({ keys })
+  })
+
+  // PUT /provider-keys — encrypt + store native provider keys (PlatformSetting).
+  // Body: a map keyed by provider id, e.g. `{ openai: 'sk-…', anthropic: '' }`.
+  // Empty string / null clears the stored override (env fallback then applies).
+  router.put('/provider-keys', async (c) => {
+    try {
+      const body = (await c.req.json<Record<string, string | null | undefined>>()) ?? {}
+      const auth = c.get('auth') as any
+      const userId = auth?.user?.id || 'unknown'
+
+      const updates: Array<[string, string | null]> = []
+      for (const [provider, value] of Object.entries(body)) {
+        if (!isNativeProvider(provider)) continue
+        if (value === undefined) continue
+        updates.push([provider, value === '' ? null : value])
+      }
+      // If any non-clear value is present, the master key must be configured.
+      if (updates.some(([, v]) => v !== null) && !isSecretCryptoConfigured()) {
+        return c.json({ error: 'SECRETS_ENCRYPTION_KEY is not configured on this server; cannot store provider keys.' }, 503)
+      }
+      for (const [provider, value] of updates) {
+        await setNativeProviderKey(provider, value, userId)
+      }
+      await invalidateModelRegistry()
+
+      const keys: Record<string, { configured: boolean; mask: string; source: 'db' | 'env' | null }> = {}
+      for (const provider of SUPPORTED_NATIVE_PROVIDERS) {
+        keys[provider] = getNativeProviderKeyInfoSync(provider)
+      }
+      return c.json({ ok: true, keys })
+    } catch (err: any) {
+      return c.json({ error: err.message }, 500)
+    }
+  })
+
+  // GET /providers/:provider/models — live discovery for anthropic / openai /
+  // openrouter. OpenRouter's catalog is public, so it lists without a key.
+  router.get('/providers/:provider/models', async (c) => {
+    const provider = c.req.param('provider')
+    if (!DISCOVERY_PROVIDERS.has(provider)) {
+      return c.json({ ok: false, models: [], error: 'unsupported provider' }, 400)
+    }
+    const apiKey = getNativeProviderApiKeySync(provider)
+    if (!apiKey && provider !== 'openrouter') {
+      return c.json({ ok: false, models: [], error: `No API key configured for ${provider}.` })
+    }
+    const result = await discoverProviderModels(provider, apiKey || '')
+    if (!result.ok) return c.json(result)
+
+    // Enrich with per-token pricing so the admin sees the rate that will be
+    // persisted, not $0. OpenRouter ships authoritative rates on each model;
+    // for everything else (and any OpenRouter model missing a rate) resolve via
+    // the LiteLLM catalog, falling back to the per-family bucket.
+    const models = await Promise.all(
+      result.models.map(async (m) => {
+        if (typeof m.inputPerMillion === 'number' || typeof m.outputPerMillion === 'number') {
+          return {
+            ...m,
+            inputPerMillion: m.inputPerMillion ?? 0,
+            cachedInputPerMillion: m.cachedInputPerMillion ?? 0,
+            cacheWritePerMillion: m.cacheWritePerMillion ?? 0,
+            outputPerMillion: m.outputPerMillion ?? 0,
+          }
+        }
+        const pricing = await resolveEnablePricing(m.id)
+        return {
+          ...m,
+          contextLength: m.contextLength ?? pricing.contextWindow,
+          inputPerMillion: pricing.inputPerMillion,
+          cachedInputPerMillion: pricing.cachedInputPerMillion,
+          cacheWritePerMillion: pricing.cacheWritePerMillion,
+          outputPerMillion: pricing.outputPerMillion,
+        }
+      }),
+    )
+    return c.json({ ok: true, models })
+  })
+
+  // POST /providers/:provider/models/enable — persist which discovered models
+  // are enabled as `model_definitions` rows. Body: `{ models: [{ id,
+  // displayName?, contextWindow?, enabled }] }`. Enabling upserts a row;
+  // disabling flips `enabled: false` (the row is kept so pricing/edits stick).
+  router.post('/providers/:provider/models/enable', async (c) => {
+    try {
+      const provider = c.req.param('provider')
+      if (!DISCOVERY_PROVIDERS.has(provider)) {
+        return c.json({ error: 'unsupported provider' }, 400)
+      }
+      const body = await c.req.json()
+      const auth = c.get('auth') as any
+      const userId = auth?.user?.id || 'unknown'
+
+      const items = Array.isArray(body?.models) ? body.models : []
+      for (const item of items) {
+        const id = typeof item?.id === 'string' ? item.id.trim() : ''
+        if (!id) continue
+        const enabled = item?.enabled !== false
+        const displayName = typeof item?.displayName === 'string' && item.displayName.trim()
+          ? item.displayName.trim()
+          : id
+        const contextWindow = sanitizeContextWindow(item?.contextWindow)
+        const family = inferFamily(provider, id)
+
+        const existing = await (prisma as any).modelDefinition.findUnique({ where: { id } })
+        if (existing) {
+          await (prisma as any).modelDefinition.update({
+            where: { id },
+            data: {
+              enabled,
+              ...(contextWindow ? { contextWindow } : {}),
+              updatedBy: userId,
+            },
+          })
+        } else if (enabled) {
+          // Auto-fill per-token pricing + context window from the LiteLLM
+          // catalog (falling back to the per-family bucket) so the model is
+          // never billed at $0. The daily refresh keeps these current.
+          const pricing = await resolveEnablePricing(id)
+          const effectiveContextWindow = contextWindow ?? pricing.contextWindow ?? null
+          await (prisma as any).modelDefinition.create({
+            data: {
+              id,
+              provider,
+              apiModel: id,
+              displayName,
+              shortDisplayName: displayName,
+              tier: 'standard',
+              family,
+              generation: 'current',
+              maxOutputTokens: 64000,
+              enabled: true,
+              ...(effectiveContextWindow ? { contextWindow: effectiveContextWindow } : {}),
+              inputPerMillion: pricing.inputPerMillion,
+              cachedInputPerMillion: pricing.cachedInputPerMillion,
+              cacheWritePerMillion: pricing.cacheWritePerMillion,
+              outputPerMillion: pricing.outputPerMillion,
+              updatedBy: userId,
+            },
+          })
+        }
+      }
+      await invalidateModelRegistry()
+      return c.json({ ok: true })
+    } catch (err: any) {
+      return c.json({ error: err.message }, 500)
+    }
+  })
+
+  // GET /pricing/status — when token prices were last refreshed from LiteLLM.
+  router.get('/pricing/status', async (c) => {
+    try {
+      const [refreshedAt, stale] = await Promise.all([getPricingRefreshedAt(), isPricingStale()])
+      return c.json({ refreshedAt, stale })
+    } catch (err: any) {
+      return c.json({ error: err.message }, 500)
+    }
+  })
+
+  // POST /pricing/refresh — pull the latest LiteLLM rate card and update pricing
+  // + context window on matching model_definitions. `force` refreshes even when
+  // fresh; otherwise it only refreshes when the daily TTL has elapsed (so the
+  // AI page can fire this on load without hammering GitHub).
+  router.post('/pricing/refresh', async (c) => {
+    try {
+      const body = await c.req.json().catch(() => ({}))
+      const force = body?.force === true
+      const auth = c.get('auth') as any
+      const userId = auth?.user?.id || 'unknown'
+
+      if (!force && !(await isPricingStale())) {
+        return c.json({ ok: true, skipped: true, refreshedAt: await getPricingRefreshedAt(), updated: 0, total: 0 })
+      }
+      const result = await refreshModelPricingFromLiteLLM(userId)
+      if (result.ok) await invalidateModelRegistry()
+      return c.json(result)
+    } catch (err: any) {
+      return c.json({ error: err.message }, 500)
+    }
+  })
 
   // GET /model-providers — list custom providers (masked key).
   router.get('/model-providers', async (c) => {
@@ -250,6 +581,22 @@ export function adminModelCatalogRoutes() {
         ? Math.floor(body.maxOutputTokens)
         : 64000
 
+      if (body?.reasoningEffort != null && !MODEL_REASONING_EFFORTS.has(body.reasoningEffort)) {
+        return c.json({ error: 'invalid reasoningEffort' }, 400)
+      }
+      const description = typeof body?.description === 'string' && body.description.trim()
+        ? body.description.trim()
+        : null
+      const reasoningEffort = MODEL_REASONING_EFFORTS.has(body?.reasoningEffort) ? body.reasoningEffort : null
+
+      // Fill pricing + context window from the LiteLLM catalog (then per-family
+      // bucket) for any field the admin didn't supply, so a manually-added
+      // model is never billed at $0 and carries a context window.
+      const litellm = await resolveEnablePricing(id, apiModel)
+      const pickPrice = (raw: unknown, fallback: number) =>
+        raw != null ? sanitizePrice(raw) : fallback
+      const contextWindow = sanitizeContextWindow(body?.contextWindow) ?? litellm.contextWindow ?? null
+
       let providerId: string | null = null
       if (provider === 'custom') {
         providerId = typeof body?.providerId === 'string' ? body.providerId : ''
@@ -274,10 +621,13 @@ export function adminModelCatalogRoutes() {
           sortOrder: Number.isFinite(body?.sortOrder) ? Math.floor(body.sortOrder) : null,
           aliases: sanitizeAliases(body?.aliases),
           capabilities: body?.capabilities && typeof body.capabilities === 'object' ? body.capabilities : null,
-          inputPerMillion: sanitizePrice(body?.inputPerMillion),
-          cachedInputPerMillion: sanitizePrice(body?.cachedInputPerMillion),
-          cacheWritePerMillion: sanitizePrice(body?.cacheWritePerMillion),
-          outputPerMillion: sanitizePrice(body?.outputPerMillion),
+          description,
+          contextWindow,
+          reasoningEffort,
+          inputPerMillion: pickPrice(body?.inputPerMillion, litellm.inputPerMillion),
+          cachedInputPerMillion: pickPrice(body?.cachedInputPerMillion, litellm.cachedInputPerMillion),
+          cacheWritePerMillion: pickPrice(body?.cacheWritePerMillion, litellm.cacheWritePerMillion),
+          outputPerMillion: pickPrice(body?.outputPerMillion, litellm.outputPerMillion),
           updatedBy: userId,
         },
       })
@@ -325,6 +675,18 @@ export function adminModelCatalogRoutes() {
       if (Array.isArray(body?.aliases)) data.aliases = sanitizeAliases(body.aliases)
       if ('capabilities' in (body ?? {})) {
         data.capabilities = body.capabilities && typeof body.capabilities === 'object' ? body.capabilities : null
+      }
+      if ('description' in (body ?? {})) {
+        data.description = typeof body.description === 'string' && body.description.trim() ? body.description.trim() : null
+      }
+      if ('contextWindow' in (body ?? {})) {
+        data.contextWindow = sanitizeContextWindow(body.contextWindow)
+      }
+      if ('reasoningEffort' in (body ?? {})) {
+        if (body.reasoningEffort != null && !MODEL_REASONING_EFFORTS.has(body.reasoningEffort)) {
+          return c.json({ error: 'invalid reasoningEffort' }, 400)
+        }
+        data.reasoningEffort = MODEL_REASONING_EFFORTS.has(body.reasoningEffort) ? body.reasoningEffort : null
       }
       for (const key of ['inputPerMillion', 'cachedInputPerMillion', 'cacheWritePerMillion', 'outputPerMillion'] as const) {
         if (body?.[key] !== undefined) data[key] = sanitizePrice(body[key])

@@ -55,6 +55,14 @@ export interface ModelCapabilities {
   subagentOrchestration?: CapabilityReliability
 }
 
+/**
+ * Reasoning / thinking effort applied when the model runs. Mirrors the
+ * agent loop's `ThinkingLevel`. `xhigh` is the deepest budget; `off`
+ * disables extended thinking. Admin-configurable per model and surfaced
+ * (as a label) in the user picker.
+ */
+export type ReasoningEffort = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+
 export interface ModelEntry {
   id: string
   provider: Provider
@@ -72,6 +80,14 @@ export interface ModelEntry {
    * models (those don't go through this static catalog at all).
    */
   capabilities?: ModelCapabilities
+  /** Admin-controlled position in the user-facing model picker. */
+  sortOrder?: number
+  /** Short blurb shown in the model picker info panel. */
+  description?: string
+  /** Total context window in tokens (distinct from `maxOutputTokens`). */
+  contextWindow?: number
+  /** Reasoning effort applied when this model runs (drives `thinkingLevel`). */
+  reasoningEffort?: ReasoningEffort
 }
 
 export interface ImageModelEntry {
