@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 //
-// gateway-tools.ts — tool_install composio branch coverage
-// Targets L3324-3393: the composio paths inside createToolInstallTool
-// (isComposioInitialized() + isComposioEnabled() branches, findComposioToolkit
-// hit/miss, initComposioSession success/failure, registerToolkitProxyTools,
-// checkComposioAuth status variants).
+// gateway-tools.ts — connect composio branch coverage
+// Targets connectViaComposio: the composio paths inside the unified connect
+// tool (isComposioInitialized() + isComposioEnabled() branches,
+// findComposioToolkit hit/miss, initComposioSession success/failure,
+// registerToolkitProxyTools, checkComposioAuth status variants).
 
 import { describe, test, expect, mock } from 'bun:test'
 
@@ -52,14 +52,7 @@ function makeCtx(overrides: any = {}): any {
     projectId: 'proj-composio',
     sessionId: 'sess-1',
     mainSessionIds: ['sess-1'],
-    mcpClientManager: {
-      install: async () => ({ ok: true }),
-      isRunning: () => false,
-      getServerInfo: () => [],
-      hotAddServer: async () => [],
-      hotAddRemoteServer: async () => [],
-      installPackageLocally: async () => ({ command: 'node', args: [], env: {} }),
-    },
+    mcpClientManager: { install: async () => ({ ok: true }), isRunning: () => false, getServerInfo: () => [] },
     userId: 'user-1',
     ...overrides,
   }
@@ -83,7 +76,7 @@ function resetState() {
   state.searchThrows = false
 }
 
-describe('tool_install composio paths', () => {
+describe('connect composio paths', () => {
   test('no MCP manager returns error', async () => {
     resetState()
     const ctx = makeCtx({ mcpClientManager: undefined })
@@ -91,10 +84,12 @@ describe('tool_install composio paths', () => {
     expect(String(r.error)).toContain('MCP client manager not available')
   })
 
-  test('composio disabled + not initialized falls through to unknown-integration error', async () => {
+  test('composio disabled + not initialized falls through to MCP catalog miss', async () => {
     resetState()
     const ctx = makeCtx()
     const r = await exec(ctx, { name: 'unknown-thing' })
+    // Composio is off and the name isn't in the MCP catalog, so connect
+    // auto-routes to MCP and reports the catalog miss.
     expect(String(r.error)).toContain('not in the MCP catalog')
   })
 
@@ -170,12 +165,14 @@ describe('tool_install composio paths', () => {
     expect(String(r.error)).toContain('Failed to connect "Notion"')
   })
 
-  test('composio enabled but findComposioToolkit returns null → falls through to unknown', async () => {
+  test('composio enabled but findComposioToolkit returns null → falls through to MCP', async () => {
     resetState()
     state.enabled = true
     state.toolkit = null
     const ctx = makeCtx()
     const r = await exec(ctx, { name: 'mystery' })
+    // No managed match and no explicit source, so connect falls through to the
+    // MCP catalog (which also misses).
     expect(String(r.error)).toContain('not in the MCP catalog')
   })
 
@@ -241,7 +238,7 @@ describe('tool_install composio paths', () => {
 })
 
 
-describe('tool_search composio paths', () => {
+describe('search_integrations composio paths', () => {
   test('composio enabled — search returns managed results', async () => {
     resetState()
     state.enabled = true

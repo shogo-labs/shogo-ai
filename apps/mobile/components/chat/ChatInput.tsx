@@ -33,13 +33,8 @@ import {
 import { usePlatformConfig } from "../../lib/platform-config"
 import { AttachSourceSheet } from "./AttachSourceSheet"
 import { ContextTracker } from "./ContextTracker"
-import {
-  getModelShortDisplayName,
-  getModelTier,
-  AUTO_MODEL_ID,
-  type ModelTier,
-} from "@shogo/model-catalog"
-import { useModelPickerGroups } from "../../lib/visible-models"
+import { resolveShortName, resolveTier } from "../../lib/visible-models"
+import { ModelPickerMenu } from "./ModelPickerMenu"
 import {
   ArrowUp,
   Plus,
@@ -63,7 +58,6 @@ import {
   Sparkles,
   Languages,
 } from "lucide-react-native"
-import { AutoModelOption } from "./AutoModelOption"
 import { useVoiceInput } from "./useVoiceInput"
 import { VoiceWaveform } from "./VoiceWaveform"
 import {
@@ -83,12 +77,6 @@ export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6"
 export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
 
 import { EnvironmentPicker } from "./EnvironmentPicker"
-
-const TIER_LABELS: Record<ModelTier, string> = {
-  premium: "Premium",
-  standard: "Standard",
-  economy: "Economy",
-}
 
 export type InteractionMode = "agent" | "plan" | "ask"
 
@@ -268,7 +256,6 @@ function ChatInputImpl({
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
   const effectiveIsPro = features.billing ? isPro : true
-  const modelGroups = useModelPickerGroups()
 
   const bridge = useChatBridgeOptional()
   const ezAvailable = Platform.OS === "web" && features.ezMode && !!bridge
@@ -307,7 +294,7 @@ function ChatInputImpl({
 
   const handleModelChange = useCallback(
     (modelId: string) => {
-      const tier = getModelTier(modelId)
+      const tier = resolveTier(modelId)
       if (tier !== "economy" && !effectiveIsPro) {
         onUpgradeClick?.()
         return
@@ -1421,73 +1408,22 @@ function ChatInputImpl({
                   className="h-[22px] flex-row items-center gap-1 rounded-md px-1.5"
                 >
                   <Text className="text-xs text-muted-foreground">
-                    {getModelShortDisplayName(currentModelId)}
+                    {resolveShortName(currentModelId)}
                   </Text>
                   <ChevronDown className="h-2 w-2 text-muted-foreground/60" size={8} />
                 </Pressable>
               )}
             >
               <PopoverBackdrop />
-              <PopoverContent className="w-[260px] p-0 max-h-[320px]">
-                <ScrollView>
-                  <AutoModelOption
-                    currentModelId={currentModelId}
-                    onSelect={() => {
-                      handleModelChange(AUTO_MODEL_ID)
-                      setModelPickerOpen(false)
-                    }}
-                  />
-                  <View className="h-px bg-border/50 mx-2" />
-                  {modelGroups.map((group) => (
-                    <View key={group.label}>
-                      <View className="px-3 pt-2.5 pb-1">
-                        <Text className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-                          {group.label}
-                        </Text>
-                      </View>
-                      {group.models.map((model) => {
-                        const isSelected = currentModelId === model.id
-                        const isLocked = !effectiveIsPro && model.tier !== "economy"
-                        return (
-                          <Pressable
-                            key={model.id}
-                            onPress={() => {
-                              handleModelChange(model.id)
-                              setModelPickerOpen(false)
-                            }}
-                            className={cn(
-                              "flex-row items-center gap-2.5 px-3 py-2",
-                              isSelected && "bg-accent",
-                              isLocked && "opacity-50"
-                            )}
-                          >
-                            <View className="flex-1">
-                              <Text className={cn("text-sm", isLocked ? "text-muted-foreground" : "text-foreground")}>
-                                {model.displayName}
-                              </Text>
-                            </View>
-                            {isLocked ? (
-                              <Lock className="h-3 w-3 text-muted-foreground" size={12} />
-                            ) : isSelected ? (
-                              <Check className="h-3.5 w-3.5 text-primary" size={14} />
-                            ) : (
-                              <Text
-                                className={cn(
-                                  "text-[10px]",
-                                  model.tier === "premium" ? "text-amber-500" :
-                                  model.tier === "economy" ? "text-emerald-500" :
-                                  "text-muted-foreground"
-                                )}
-                              >
-                                {TIER_LABELS[model.tier]}
-                              </Text>
-                            )}
-                          </Pressable>
-                        )
-                      })}
-                    </View>
-                  ))}
-                </ScrollView>
+              <PopoverContent className="p-0 max-h-[360px] web:outline-none web:overflow-visible web:max-w-none">
+                <ModelPickerMenu
+                  currentModelId={currentModelId}
+                  effectiveIsPro={effectiveIsPro}
+                  onSelect={(modelId) => {
+                    handleModelChange(modelId)
+                    setModelPickerOpen(false)
+                  }}
+                />
               </PopoverContent>
             </Popover>
 

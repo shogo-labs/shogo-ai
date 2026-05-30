@@ -23,7 +23,36 @@
  * See `packages/agent-runtime/APP_MODE_DISABLED.md`.
  */
 
-export { CODE_AGENT_GENERAL_GUIDE }
+export { CODE_AGENT_GENERAL_GUIDE, OUTPUT_CONTRACT_GUIDE }
+
+// ---------------------------------------------------------------------------
+// Section 0: Output contract (deliverable discipline)
+//
+// Applied to the eval/benchmark profiles (general, swe) where the final
+// message IS the graded artifact. Deterministic graders parse exactly one
+// code/JSON block and ignore everything else, so prose, multiple fenced
+// blocks, or commentary interleaved with code silently zeroes correct work.
+// ---------------------------------------------------------------------------
+
+const OUTPUT_CONTRACT_GUIDE = `## Output Contract — read before writing your final answer
+
+Your final message is often consumed by an automated grader or another program, not just a human. Sloppy packaging of a correct answer scores the same as a wrong answer. Obey these rules for the FINAL response:
+
+### When the request asks for code
+- Emit **exactly ONE** fenced code block (one \`\`\`language … \`\`\`) containing the COMPLETE answer. If asked for several classes/functions, put them ALL in that single block — never split across multiple blocks separated by prose. Graders extract the first block only; a second block is invisible.
+- The block must be **valid, runnable source**. Do not put commentary, reasoning, "wait, let me reconsider…", or markdown tables inside the code. Every line between the fences must parse in the target language.
+- If the prompt says "provide ONLY the definitions" / "no test code" / "no imports", obey it literally: no preamble sentence, no trailing explanation, nothing but the requested code.
+
+### When the request asks for JSON (or a specific structured shape)
+- Emit a **single** JSON object/array, either raw or in one \`\`\`json block. It must \`JSON.parse\` cleanly: double-quoted keys, no trailing commas, no comments, no \`...\` placeholders.
+- Include **every** key the schema in the prompt specifies, with the exact key names and value types requested. Missing or renamed keys are scored as missing.
+- Do not wrap the JSON in explanatory prose. The object is the answer.
+
+### Always
+- Lead with the deliverable. Put any optional explanation AFTER the artifact, never interleaved with it, and only if the prompt didn't forbid it.
+- Always produce a concrete final answer. If you ran out of steps or hit a blocker, still emit your best complete artifact rather than stopping with no answer or an apology.
+
+`
 
 // ---------------------------------------------------------------------------
 // Section 1: General coding guide (for all modes — canvas, none, app)

@@ -104,6 +104,7 @@ export function getModelShortDisplayName(id: string): string {
  * falls back to prefix heuristics for unknown model strings.
  */
 export function inferProviderFromModel(modelId: string, fallback: string = 'anthropic'): string {
+  if (!modelId) return fallback
   if (modelId === 'basic') return 'anthropic'
   if (modelId === 'advanced') return 'anthropic'
 
@@ -115,7 +116,16 @@ export function inferProviderFromModel(modelId: string, fallback: string = 'anth
   if (modelId.startsWith('gpt')) return 'openai'
   if (modelId.startsWith('claude')) return 'anthropic'
   if (modelId.startsWith('gemini')) return 'google'
-  return fallback
+
+  // Unknown model id: not in the static catalog and not a recognized native
+  // prefix. These are DB-defined OpenAI-compatible models (e.g. MiMo) that
+  // only the AI proxy knows how to route. Returning the (historically
+  // Anthropic) `fallback` here mis-routed them to the Anthropic Messages
+  // endpoint, which 404s on the unknown model name ("404 model: <id>").
+  // Treat them as 'custom' so the runtime sends them through the proxy's
+  // OpenAI chat-completions endpoint, which resolves the id to its real
+  // upstream provider. Genuinely-unknown ids get a clean proxy 400 instead.
+  return 'custom'
 }
 
 // ---------------------------------------------------------------------------

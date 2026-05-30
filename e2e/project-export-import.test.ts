@@ -57,6 +57,22 @@ app.route('/api/projects', projectExportImportRoutes())
 app.post('/api/projects/:projectId/publish', (c) => c.json({ ok: true }))
 app.get('/api/projects/:projectId/files', (c) => c.json({ ok: true }))
 
+// Export switched from GET to POST — the optional archive password rides in
+// the request body rather than the URL.
+function makeExportReq(
+  projectId: string,
+  opts?: { includeChats?: boolean; password?: string },
+): Request {
+  return new Request(`http://localhost/api/projects/${projectId}/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      includeChats: opts?.includeChats ?? true,
+      ...(opts?.password ? { password: opts.password } : {}),
+    }),
+  })
+}
+
 describe('Project Export/Import E2E', () => {
   beforeAll(async () => {
     // Pick any existing workspace to attach the test user to.
@@ -180,7 +196,7 @@ describe('Project Export/Import E2E', () => {
   })
 
   it('should export a project as a valid ZIP with project.json, workspace, and chat-history', async () => {
-    const req = new Request(`http://localhost/api/projects/${testProjectId}/export`)
+    const req = makeExportReq(testProjectId)
     const res = await app.fetch(req)
 
     expect(res.status).toBe(200)
@@ -237,7 +253,7 @@ describe('Project Export/Import E2E', () => {
 
   it('should import an exported project and create a new project with all data', async () => {
     // Export first
-    const exportReq = new Request(`http://localhost/api/projects/${testProjectId}/export`)
+    const exportReq = makeExportReq(testProjectId)
     const exportRes = await app.fetch(exportReq)
     expect(exportRes.status).toBe(200)
     const zipBuf = await exportRes.arrayBuffer()
@@ -306,12 +322,12 @@ describe('Project Export/Import E2E', () => {
 
   it('should round-trip: re-export imported project matches original', async () => {
     // Export original
-    const origRes = await app.fetch(new Request(`http://localhost/api/projects/${testProjectId}/export`))
+    const origRes = await app.fetch(makeExportReq(testProjectId))
     const origZip = unzipSync(new Uint8Array(await origRes.arrayBuffer()))
     const origJson = JSON.parse(strFromU8(origZip['project.json']))
 
     // Import
-    const exportRes = await app.fetch(new Request(`http://localhost/api/projects/${testProjectId}/export`))
+    const exportRes = await app.fetch(makeExportReq(testProjectId))
     const formData = new FormData()
     formData.append('file', new Blob([await exportRes.arrayBuffer()]), 'rt.shogo-project')
     formData.append('workspaceId', testWorkspaceId)
@@ -320,7 +336,7 @@ describe('Project Export/Import E2E', () => {
     cleanupProjectIds.push(imported.id)
 
     // Re-export the imported project
-    const reExportRes = await app.fetch(new Request(`http://localhost/api/projects/${imported.id}/export`))
+    const reExportRes = await app.fetch(makeExportReq(imported.id))
     const reZip = unzipSync(new Uint8Array(await reExportRes.arrayBuffer()))
     const reJson = JSON.parse(strFromU8(reZip['project.json']))
 
@@ -403,7 +419,7 @@ describe('Project Export/Import E2E', () => {
 
   it('export with ?includeChats=false omits chat-history entries', async () => {
     const res = await app.fetch(
-      new Request(`http://localhost/api/projects/${testProjectId}/export?includeChats=false`),
+      makeExportReq(testProjectId, { includeChats: false }),
     )
     expect(res.status).toBe(200)
     const unzipped = unzipSync(new Uint8Array(await res.arrayBuffer()))
@@ -419,7 +435,7 @@ describe('Project Export/Import E2E', () => {
   it('import with includeChats=false skips chat sessions even when bundle has them', async () => {
     // Export normally (bundle includes chats)
     const exportRes = await app.fetch(
-      new Request(`http://localhost/api/projects/${testProjectId}/export`),
+      makeExportReq(testProjectId),
     )
     const zipBuf = await exportRes.arrayBuffer()
 
@@ -445,7 +461,7 @@ describe('Project Export/Import E2E', () => {
 
   it('export includes workspace/dist/* so imports can serve the preview immediately', async () => {
     const res = await app.fetch(
-      new Request(`http://localhost/api/projects/${testProjectId}/export`),
+      makeExportReq(testProjectId),
     )
     const unzipped = unzipSync(new Uint8Array(await res.arrayBuffer()))
 
@@ -456,7 +472,7 @@ describe('Project Export/Import E2E', () => {
 
   it('round-trip: imported project has dist/ on disk ready for preview-manager', async () => {
     const exportRes = await app.fetch(
-      new Request(`http://localhost/api/projects/${testProjectId}/export`),
+      makeExportReq(testProjectId),
     )
     const formData = new FormData()
     formData.append('file', new Blob([await exportRes.arrayBuffer()]), 'dist.shogo-project')
@@ -481,7 +497,7 @@ describe('Project Export/Import E2E', () => {
 
   it('SSE import emits phase events and a terminal done event', async () => {
     const exportRes = await app.fetch(
-      new Request(`http://localhost/api/projects/${testProjectId}/export`),
+      makeExportReq(testProjectId),
     )
     const zipBuf = await exportRes.arrayBuffer()
 

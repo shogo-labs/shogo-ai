@@ -1,19 +1,95 @@
-import { Check } from "lucide-react-native";
+import { ArrowDown, ArrowUp, Check, GitBranch, Loader2, RefreshCw } from "lucide-react-native";
+import { useState } from "react";
+
+import { BranchPicker } from "./git/BranchPicker";
+import type { GitSnapshot } from "./git/bridge";
+import { getDesktopGitBridge } from "./git/bridge";
 
 export function StatusBar({
   language,
   line,
   col,
   saved,
+  git,
+  workspaceRoot,
 }: {
   language: string;
   line: number;
   col: number;
   saved: boolean;
+  /**
+   * Optional git snapshot for the active workspace. Provided by Workbench
+   * on desktop via `useGitStatus`. On web/mobile this prop stays null /
+   * undefined and the segment isn't rendered.
+   */
+  git?: GitSnapshot | null;
+  /**
+   * Absolute workspace root — needed for the click-to-pick branch
+   * overlay and the sync button. Null on web/mobile.
+   */
+  workspaceRoot?: string | null;
 }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+
+  const bridge = getDesktopGitBridge();
+  const handleSync = async () => {
+    if (!bridge || !workspaceRoot) return;
+    setSyncing(true);
+    setSyncError(null);
+    const r = await bridge.remotes.sync(workspaceRoot, {});
+    setSyncing(false);
+    if (!r.ok) setSyncError(r.error ?? r.reason ?? "sync failed");
+    // Auto-clear the error after 6 seconds so the bar doesn't get stuck.
+    if (!r.ok) setTimeout(() => setSyncError(null), 6000);
+  };
+
   return (
     <div className="flex h-6 items-center justify-between bg-[color:var(--ide-primary)] px-3 text-[12px] text-white">
-      <div className="flex items-center gap-4" />
+      <div className="flex items-center gap-3">
+        {git?.isRepo && git.branch ? (
+          <>
+            <button
+              onClick={() => setPickerOpen(true)}
+              title={
+                git.upstream
+                  ? `Tracking ${git.upstream}${git.ahead || git.behind ? ` · ${git.ahead} ahead, ${git.behind} behind` : ""} · click to change branch`
+                  : "No upstream · click to change branch"
+              }
+              className="flex items-center gap-1 -mx-1 px-1 py-0.5 rounded hover:bg-white/15"
+            >
+              <GitBranch size={12} />
+              <span>{git.detached ? "HEAD detached" : git.branch}</span>
+              {git.ahead > 0 && (
+                <span className="flex items-center gap-0.5 opacity-80">
+                  <ArrowUp size={10} />
+                  {git.ahead}
+                </span>
+              )}
+              {git.behind > 0 && (
+                <span className="flex items-center gap-0.5 opacity-80">
+                  <ArrowDown size={10} />
+                  {git.behind}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={handleSync}
+              disabled={syncing || !workspaceRoot}
+              title="Sync (fetch · pull · push)"
+              className="flex items-center gap-1 -mx-1 px-1 py-0.5 rounded hover:bg-white/15 disabled:opacity-60"
+            >
+              {syncing ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+            </button>
+            {syncError && (
+              <span className="text-[10px] bg-rose-500/30 px-1.5 py-0.5 rounded max-w-[280px] truncate" title={syncError}>
+                {syncError}
+              </span>
+            )}
+          </>
+        ) : null}
+      </div>
       <div className="flex items-center gap-4">
         <span>
           Ln {line}, Col {col}
@@ -25,6 +101,17 @@ export function StatusBar({
           {saved ? "Saved" : "Unsaved"}
         </span>
       </div>
+      {pickerOpen && workspaceRoot && git?.branch !== undefined && (
+        <BranchPicker
+          workspaceRoot={workspaceRoot}
+          currentBranch={git.branch}
+          onClose={() => setPickerOpen(false)}
+          onChanged={() => {
+            // Snapshot will refresh on its own via the 5s poll +
+            // service refresh; nothing else to do here.
+          }}
+        />
+      )}
     </div>
   );
 }

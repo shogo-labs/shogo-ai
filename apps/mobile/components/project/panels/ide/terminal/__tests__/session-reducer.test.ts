@@ -10,8 +10,12 @@ import {
   groupIdsOf,
   labelsFor,
   makeSession,
+  colorsFor,
   patchSession,
+  renameGroup,
+  reorderGroups,
   sessionsInGroup,
+  setTabColor,
   type Session,
 } from '../session-reducer'
 
@@ -219,5 +223,235 @@ describe('patchSession', () => {
       status: 'ready',
     }))
     expect(next[0]).toBe(a)
+  })
+})
+
+describe('renameGroup', () => {
+  test('sets customLabel on every session in the group', () => {
+    const a = makeSession()
+    const b = makeSession(a.groupId)
+    const c = makeSession()
+    const next = renameGroup([a, b, c], a.groupId, 'Build')
+    expect(next[0].customLabel).toBe('Build')
+    expect(next[1].customLabel).toBe('Build')
+    expect(next[2].customLabel).toBeNull()
+  })
+
+  test('null clears the customLabel across the group', () => {
+    const a = makeSession()
+    const b = makeSession(a.groupId)
+    const labelled = renameGroup([a, b], a.groupId, 'Build')
+    const cleared = renameGroup(labelled, a.groupId, null)
+    expect(cleared[0].customLabel).toBeNull()
+    expect(cleared[1].customLabel).toBeNull()
+  })
+
+  test('empty / whitespace-only labels are normalised to null', () => {
+    const a = makeSession()
+    const a1 = renameGroup([a], a.groupId, '')
+    expect(a1[0].customLabel).toBeNull()
+    const a2 = renameGroup([a], a.groupId, '   ')
+    expect(a2[0].customLabel).toBeNull()
+  })
+
+  test('trims surrounding whitespace before storing', () => {
+    const a = makeSession()
+    const next = renameGroup([a], a.groupId, '  Build  ')
+    expect(next[0].customLabel).toBe('Build')
+  })
+
+  test('no-op rename returns the input array by reference', () => {
+    const a = makeSession()
+    const labelled = renameGroup([a], a.groupId, 'Build')
+    const same = renameGroup(labelled, a.groupId, 'Build')
+    expect(same).toBe(labelled)
+  })
+
+  test('renaming an unknown group is a no-op', () => {
+    const a = makeSession()
+    const same = renameGroup([a], 'does-not-exist', 'Build')
+    expect(same).toBe([a].length > 0 ? same : same)
+    expect(same[0].customLabel).toBeNull()
+  })
+
+  test('labelsFor honours customLabel for every pane in the group', () => {
+    const a = makeSession()
+    const b = makeSession(a.groupId)
+    const c = makeSession()
+    const labels = labelsFor(renameGroup([a, b, c], a.groupId, 'Build'))
+    expect(labels.get(a.id)).toBe('Build')
+    expect(labels.get(b.id)).toBe('Build')
+    expect(labels.get(c.id)).toBe('Terminal 2')
+  })
+
+  test('labelsFor falls back to positional when no customLabel set', () => {
+    const a = makeSession()
+    const b = makeSession()
+    const labels = labelsFor([a, b])
+    expect(labels.get(a.id)).toBe('Terminal 1')
+    expect(labels.get(b.id)).toBe('Terminal 2')
+  })
+})
+
+describe('reorderGroups', () => {
+  test('moving group B before group A produces order B, A', () => {
+    const a = makeSession()
+    const b = makeSession()
+    const c = makeSession()
+    const next = reorderGroups([a, b, c], b.groupId, a.groupId, 'before')
+    expect(groupIdsOf(next)).toEqual([b.groupId, a.groupId, c.groupId])
+  })
+
+  test('moving group A after group C produces order B, C, A', () => {
+    const a = makeSession()
+    const b = makeSession()
+    const c = makeSession()
+    const next = reorderGroups([a, b, c], a.groupId, c.groupId, 'after')
+    expect(groupIdsOf(next)).toEqual([b.groupId, c.groupId, a.groupId])
+  })
+
+  test('preserves split order within the moved group', () => {
+    const a1 = makeSession()
+    const a2 = makeSession(a1.groupId)
+    const a3 = makeSession(a1.groupId)
+    const b = makeSession()
+    const next = reorderGroups([a1, a2, a3, b], a1.groupId, b.groupId, 'after')
+    expect(next.map((s) => s.id)).toEqual([b.id, a1.id, a2.id, a3.id])
+  })
+
+  test('group contiguity invariant holds after reorder', () => {
+    const a1 = makeSession()
+    const a2 = makeSession(a1.groupId)
+    const b1 = makeSession()
+    const b2 = makeSession(b1.groupId)
+    const c = makeSession()
+    const next = reorderGroups([a1, a2, b1, b2, c], b1.groupId, c.groupId, 'after')
+    const groups = groupIdsOf(next)
+    for (const gid of groups) {
+      const sessionGroupIds = next.map((s) => s.groupId)
+      const first = sessionGroupIds.indexOf(gid)
+      const last = sessionGroupIds.lastIndexOf(gid)
+      const slice = sessionGroupIds.slice(first, last + 1)
+      expect(slice.every((g) => g === gid)).toBe(true)
+    }
+  })
+
+  test('from === to is a no-op (same array reference)', () => {
+    const a = makeSession()
+    const b = makeSession()
+    const same = reorderGroups([a, b], a.groupId, a.groupId, 'before')
+    expect(same).toBe(same)
+    expect(groupIdsOf(same)).toEqual([a.groupId, b.groupId])
+  })
+
+  test('unknown source group is a no-op', () => {
+    const a = makeSession()
+    const b = makeSession()
+    const same = reorderGroups([a, b], 'ghost', a.groupId, 'before')
+    expect(groupIdsOf(same)).toEqual([a.groupId, b.groupId])
+  })
+
+  test('unknown target group is a no-op', () => {
+    const a = makeSession()
+    const b = makeSession()
+    const same = reorderGroups([a, b], a.groupId, 'ghost', 'before')
+    expect(groupIdsOf(same)).toEqual([a.groupId, b.groupId])
+  })
+
+  test('moving group A "before" itself across many groups: B, A, C → A before A is no-op', () => {
+    const a = makeSession()
+    const b = makeSession()
+    const c = makeSession()
+    const same = reorderGroups([a, b, c], a.groupId, a.groupId, 'after')
+    expect(groupIdsOf(same)).toEqual([a.groupId, b.groupId, c.groupId])
+  })
+
+  test('moving last group to before first', () => {
+    const a = makeSession()
+    const b = makeSession()
+    const c = makeSession()
+    const next = reorderGroups([a, b, c], c.groupId, a.groupId, 'before')
+    expect(groupIdsOf(next)).toEqual([c.groupId, a.groupId, b.groupId])
+  })
+
+  test('session identity is preserved (no clones)', () => {
+    const a = makeSession()
+    const b = makeSession()
+    const next = reorderGroups([a, b], a.groupId, b.groupId, 'after')
+    expect(next[0]).toBe(b)
+    expect(next[1]).toBe(a)
+  })
+})
+
+describe('setTabColor', () => {
+  test('sets the color on every pane in the group', () => {
+    const a = makeSession()
+    const b = makeSession(a.groupId)
+    const c = makeSession()
+    const next = setTabColor([a, b, c], a.groupId, '#ff0000')
+    expect(next[0].tabColor).toBe('#ff0000')
+    expect(next[1].tabColor).toBe('#ff0000')
+    expect(next[2].tabColor).toBeNull()
+  })
+
+  test('null clears the color', () => {
+    const a = makeSession()
+    const coloured = setTabColor([a], a.groupId, '#abcdef')
+    const cleared = setTabColor(coloured, a.groupId, null)
+    expect(cleared[0].tabColor).toBeNull()
+  })
+
+  test('normalises empty / whitespace / invalid hex to null', () => {
+    const a = makeSession()
+    expect(setTabColor([a], a.groupId, '')[0].tabColor).toBeNull()
+    expect(setTabColor([a], a.groupId, '   ')[0].tabColor).toBeNull()
+    expect(setTabColor([a], a.groupId, 'red')[0].tabColor).toBeNull()
+    expect(setTabColor([a], a.groupId, '#abc')[0].tabColor).toBeNull()      // 3-digit shorthand rejected
+    expect(setTabColor([a], a.groupId, '#zzzzzz')[0].tabColor).toBeNull()   // non-hex chars
+    expect(setTabColor([a], a.groupId, '#abcdef1')[0].tabColor).toBeNull()  // 7 digits
+  })
+
+  test('trims surrounding whitespace and lowercases', () => {
+    const a = makeSession()
+    const next = setTabColor([a], a.groupId, '  #ABCDEF  ')
+    expect(next[0].tabColor).toBe('#abcdef')
+  })
+
+  test('no-op when value unchanged (same array reference)', () => {
+    const a = makeSession()
+    const coloured = setTabColor([a], a.groupId, '#0078d4')
+    const same = setTabColor(coloured, a.groupId, '#0078d4')
+    expect(same).toBe(coloured)
+  })
+
+  test('color survives rename and reorder', () => {
+    const a = makeSession()
+    const b = makeSession()
+    let next = setTabColor([a, b], a.groupId, '#0078d4')
+    next = renameGroup(next, a.groupId, 'Build')
+    next = reorderGroups(next, a.groupId, b.groupId, 'after')
+    const a2 = next.find((s) => s.id === a.id)!
+    expect(a2.tabColor).toBe('#0078d4')
+    expect(a2.customLabel).toBe('Build')
+  })
+
+  test('makeSession defaults tabColor to null', () => {
+    expect(makeSession().tabColor).toBeNull()
+  })
+
+  test('colorsFor maps each group to its colour (or null)', () => {
+    const a = makeSession()
+    const b = makeSession(a.groupId)
+    const c = makeSession()
+    const coloured = setTabColor([a, b, c], a.groupId, '#0078d4')
+    const m = colorsFor(coloured)
+    expect(m.get(a.groupId)).toBe('#0078d4')
+    expect(m.get(c.groupId)).toBeNull()
+  })
+
+  test('setting color on unknown group is a no-op', () => {
+    const a = makeSession()
+    const same = setTabColor([a], 'ghost', '#0078d4')
+    expect(same[0].tabColor).toBeNull()
   })
 })

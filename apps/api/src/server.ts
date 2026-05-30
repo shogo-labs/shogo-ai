@@ -38,8 +38,6 @@ import { filesRoutes } from './routes/files'
 import { projectChatRoutes } from './routes/project-chat'
 import { projectAdminRoutes } from './routes/project-admin'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
-import { ProjectPtyRegistry } from '@shogo/agent-runtime/src/pty-project-registry'
-import { createPtyWsHandlers, type WsData as PtyWsData } from '@shogo/agent-runtime/src/pty-ws-handler'
 import { diagnosticsRoutes } from '@shogo/shared-runtime'
 import { testsRoutes } from './routes/tests'
 import { securityRoutes } from './routes/security'
@@ -84,6 +82,8 @@ import { vmRoutes, triggerVMImageDownload } from './routes/vm'
 import { localProjectsRoutes } from './routes/local-projects'
 import { externalPreviewRoutes } from './routes/external-preview'
 import { requireSuperAdmin } from './middleware/super-admin'
+import { adminModelCatalogRoutes } from './routes/admin-model-catalog'
+import { getNativeProviderApiKeySync } from './services/provider-credentials.service'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
 import { createAdminRoutes } from './generated/admin-routes'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
@@ -751,30 +751,85 @@ app.get('/api/config', async (c) => {
   })
 })
 
-/** Resolve an allowlist into full picker-ready catalog entries against this
- *  server's own `MODEL_CATALOG`. `null` ids means "all current-generation
- *  models". Shipping these over the wire lets a cloud-connected desktop
- *  render models its bundled catalog may not know about. */
+/** Resolve an allowlist into full picker-ready catalog entries against the
+ *  MERGED catalog (static `MODEL_CATALOG` overlaid with enabled DB-defined
+ *  models). `null` ids means "all current-generation models". Shipping these
+ *  over the wire lets a cloud-connected desktop render models its bundled
+ *  catalog may not know about — including purely-DB-defined ones (e.g. MiMo).
+ *
+ *  The `family` and `maxOutputTokens` fields are included so clients can
+ *  label/color and gate a model they don't carry in their bundled catalog. */
+/** Native provider id -> the env var that holds its API key. Both cloud
+ *  (k8s secrets) and local BYOK (which mirrors saved keys into `process.env`)
+ *  populate these, so a single presence check gates visibility for either. */
+const PROVIDER_ENV_KEY: Record<string, string> = {
+  anthropic: 'ANTHROPIC_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  google: 'GOOGLE_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY',
+}
+
+/** A model is presentable only when its provider has a usable key. `custom`
+ *  models carry their own encrypted key (and are only merged when enabled), so
+ *  they're always considered configured. Unknown/legacy providers aren't gated
+ *  to avoid hiding models we don't have an env mapping for. */
+function isModelProviderConfigured(provider: string): boolean {
+  if (provider === 'custom' || provider === 'local') return true
+  if (!PROVIDER_ENV_KEY[provider]) return true
+  // Respect admin-stored (encrypted DB) keys as well as env vars.
+  return !!getNativeProviderApiKeySync(provider)
+}
+
 async function resolveVisibleCatalogModels(
   catalogIds: string[] | null,
-): Promise<Array<{ id: string; provider: string; displayName: string; shortDisplayName: string; tier: string }>> {
-  const { getModelsByProvider, getModelEntry } = await import('@shogo/model-catalog')
+): Promise<Array<{ id: string; provider: string; displayName: string; shortDisplayName: string; tier: string; family: string; maxOutputTokens: number; sortOrder?: number; description?: string; contextWindow?: number; reasoningEffort?: string }>> {
+  const { getMergedCatalogSync, getMergedModelEntrySync, getDbModelEntriesSync } = await import('./services/model-registry.service')
   const toVisible = (entry: any) => ({
     id: entry.id,
     provider: entry.provider,
     displayName: entry.displayName,
     shortDisplayName: entry.shortDisplayName,
     tier: entry.tier,
+    family: entry.family,
+    maxOutputTokens: entry.maxOutputTokens,
+    ...(typeof entry.sortOrder === 'number' ? { sortOrder: entry.sortOrder } : {}),
+    ...(entry.description ? { description: entry.description } : {}),
+    ...(typeof entry.contextWindow === 'number' ? { contextWindow: entry.contextWindow } : {}),
+    ...(entry.reasoningEffort ? { reasoningEffort: entry.reasoningEffort } : {}),
   })
+  // Stable sort by sortOrder (ascending); models without one sink to the
+  // bottom, preserving their catalog order. This is what gives the user
+  // picker its admin-controlled order.
+  const bySortOrder = <T extends { sortOrder?: number }>(rows: T[]): T[] =>
+    rows
+      .map((row, i) => ({ row, i }))
+      .sort((a, b) => {
+        const ao = a.row.sortOrder ?? Number.POSITIVE_INFINITY
+        const bo = b.row.sortOrder ?? Number.POSITIVE_INFINITY
+        return ao === bo ? a.i - b.i : ao - bo
+      })
+      .map((x) => x.row)
   if (catalogIds === null) {
-    return getModelsByProvider().flatMap((g: any) => g.models).map(toVisible)
+    // DB-managed picker: when any models are defined in the DB, the picker
+    // reflects exactly those (the admin-curated/seeded set) so super admins
+    // can fully control — and remove — what users see. The static
+    // MODEL_CATALOG is a routing-only fallback, used here ONLY when the DB
+    // has no models yet, so a fresh/unseeded instance is never empty.
+    const dbEntries = getDbModelEntriesSync()
+    const source = dbEntries.length > 0 ? dbEntries : getMergedCatalogSync()
+    return bySortOrder(
+      source
+        .filter((e) => e.generation === 'current')
+        .filter((e) => isModelProviderConfigured(e.provider))
+        .map(toVisible),
+    )
   }
   const out: Array<ReturnType<typeof toVisible>> = []
   for (const id of catalogIds) {
-    const entry = getModelEntry(id)
-    if (entry) out.push(toVisible(entry))
+    const entry = getMergedModelEntrySync(id)
+    if (entry && isModelProviderConfigured(entry.provider)) out.push(toVisible(entry))
   }
-  return out
+  return bySortOrder(out)
 }
 
 // Visible-models read endpoint — open to all callers (drives user-facing
@@ -3028,65 +3083,75 @@ app.get('/api/projects/:projectId/terminal/commands', async (c) => {
 // on a WebSocket at /api/projects/:projectId/terminal/sessions/:sessionId/ws,
 // upgraded inside the Bun.serve fetch handler at the bottom of this file.
 //
-// Local dev: spawn shells directly inside this process via PtySessionManager.
-// Kubernetes: TODO — proxy WS frames through to the per-project runtime pod
-// (REST is straightforward HTTP forwarding; WS proxy is a follow-up).
+// Both local-dev and Kubernetes proxy to the per-project agent-runtime: locally
+// that's a child process spawned by RuntimeManager on http://localhost:<agentPort>,
+// in K8s it's the project pod resolved via getProjectPodUrl(). Either way the
+// runtime's /terminal/sessions[...] REST and WS routes (defined in
+// packages/agent-runtime/src/runtime-terminal-routes.ts and pty-ws-handler.ts)
+// own the real PTY. The bridge here is just a pipe — see lib/pty-pod-bridge.ts
+// for the WS half and lib/pty-pod-rest-proxy.ts for the REST half.
 
-const ptyRegistry = new ProjectPtyRegistry({
-  resolveWorkspaceDir: (projectId) => {
-    const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-    return join(workspacesDir, projectId)
-  },
-})
-// One handler set serves all projects: each WS carries its own
-// PtySessionManager reference (set at upgrade time below).
-const ptyWs = createPtyWsHandlers()
+/**
+ * Resolve the base URL of the per-project runtime (local child process or
+ * K8s pod). Throws if the local runtime is not running so the gateway can
+ * surface a structured 503 — same convention used by the preview/diagnostics
+ * proxies. The K8s branch delegates to the existing pod resolver.
+ */
+async function resolveRuntimeBaseUrl(projectId: string): Promise<string> {
+  if (isKubernetes()) {
+    const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+    return getProjectPodUrl(projectId)
+  }
+  const runtime = getRuntimeManager().status(projectId)
+  if (!runtime?.agentPort) {
+    throw new Error('Project runtime is not running — open the project first')
+  }
+  return `http://localhost:${runtime.agentPort}`
+}
+
+/**
+ * Build the dependency bundle for `proxyTerminalSessionsToPod`. The imports
+ * are already cached by the module loader; the wrapper exists so each handler
+ * stays a one-liner.
+ */
+async function ptyPodRestDeps() {
+  const [{ deriveRuntimeToken }, { proxyTerminalSessionsToPod }] = await Promise.all([
+    import('./lib/runtime-token'),
+    import('./lib/pty-pod-rest-proxy'),
+  ])
+  return {
+    proxyTerminalSessionsToPod,
+    deps: { resolvePodUrl: resolveRuntimeBaseUrl, deriveRuntimeToken, isSafeProjectId },
+  }
+}
 
 app.post('/api/projects/:projectId/terminal/sessions', async (c) => {
   const projectId = c.req.param('projectId')
-  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-  const projectDir = join(workspacesDir, projectId)
-  if (!existsSync(projectDir)) {
-    return c.json({ error: { code: 'project_not_found', message: 'Project not found' } }, 404)
-  }
-  let body: { cwd?: string; cols?: number; rows?: number } = {}
-  try { body = await c.req.json() } catch {}
-  const mgr = ptyRegistry.for(projectId)
-  try {
-    const rec = mgr.create({
-      cwd: body.cwd,
-      cols: body.cols,
-      rows: body.rows,
-    })
-    return c.json({
-      id: rec.id,
-      cwd: rec.session.cwd,
-      cols: rec.session.cols,
-      rows: rec.session.rows,
-      createdAt: rec.createdAt,
-    })
-  } catch (err: any) {
-    const msg = err?.message ?? String(err)
-    const code = msg.startsWith('max-sessions-reached') ? 'max_sessions_reached' : 'spawn_failed'
-    return c.json({ error: { code, message: msg } }, 400)
-  }
+  const body = await c.req.text()
+  const { proxyTerminalSessionsToPod, deps } = await ptyPodRestDeps()
+  return proxyTerminalSessionsToPod(deps, {
+    projectId, method: 'POST', pathSuffix: '', body, contentType: c.req.header('content-type'),
+  })
 })
 
-app.get('/api/projects/:projectId/terminal/sessions', (c) => {
+app.get('/api/projects/:projectId/terminal/sessions', async (c) => {
   const projectId = c.req.param('projectId')
-  const mgr = ptyRegistry.peek(projectId)
-  return c.json({ sessions: mgr?.list() ?? [] })
+  const { proxyTerminalSessionsToPod, deps } = await ptyPodRestDeps()
+  return proxyTerminalSessionsToPod(deps, {
+    projectId, method: 'GET', pathSuffix: '', body: undefined, contentType: undefined,
+  })
 })
 
-app.delete('/api/projects/:projectId/terminal/sessions/:id', (c) => {
+app.delete('/api/projects/:projectId/terminal/sessions/:id', async (c) => {
   const projectId = c.req.param('projectId')
   const id = c.req.param('id')
-  const mgr = ptyRegistry.peek(projectId)
-  if (!mgr || !mgr.get(id)) {
-    return c.json({ error: { code: 'unknown_session', message: 'Session not found' } }, 404)
+  if (!/^[A-Za-z0-9_-]+$/.test(id) || id.length > 128) {
+    return c.json({ error: { code: 'invalid_session_id', message: 'Invalid session id' } }, 400)
   }
-  mgr.kill(id)
-  return c.json({ ok: true })
+  const { proxyTerminalSessionsToPod, deps } = await ptyPodRestDeps()
+  return proxyTerminalSessionsToPod(deps, {
+    projectId, method: 'DELETE', pathSuffix: `/${encodeURIComponent(id)}`, body: undefined, contentType: undefined,
+  })
 })
 
 // =============================================================================
@@ -5108,6 +5173,14 @@ app.put('/api/admin/settings/visible-models', async (c) => {
     return c.json({ error: err.message }, 500)
   }
 })
+
+// DB-defined model catalog CRUD (super-admin). Lets new models — including
+// custom OpenAI-compatible providers (e.g. MiMo) — be added entirely from the
+// admin UI without a code release. Mounted under /api/admin/settings/* so it
+// inherits the super-admin guard registered above. See
+// routes/admin-model-catalog.ts for the handlers (extracted so they can be
+// route-tested in isolation).
+app.route('/api/admin/settings', adminModelCatalogRoutes())
 
 const FEATURE_FLAG_KEYS = {
   marketplace: 'feature.marketplace',
@@ -7305,6 +7378,21 @@ await (async () => {
   }
 })()
 
+// Prime the DB-defined model registry (custom providers + DB models) so the
+// AI proxy and visible-models endpoint resolve them on the first request
+// instead of waiting for the lazy background refresh. Non-fatal: the static
+// catalog still works if this fails.
+await (async () => {
+  try {
+    const { primeModelRegistry } = await import('./services/model-registry.service')
+    const { primeProviderCredentials } = await import('./services/provider-credentials.service')
+    await Promise.all([primeModelRegistry(), primeProviderCredentials()])
+    console.log('[ModelRegistry] Primed DB-defined model catalog + provider credentials')
+  } catch (err: any) {
+    console.log('[ModelRegistry] Could not prime registry (non-fatal):', err.message)
+  }
+})()
+
 // First-party templates are no longer re-seeded at boot. The
 // historical chain (`migrate-templates-to-marketplace.ts` →
 // `backfill-marketplace-snapshots-to-s3.ts`) was removed because it
@@ -7317,13 +7405,16 @@ await (async () => {
 // Match a path like `/api/projects/<projectId>/terminal/sessions/<id>/ws`.
 const PTY_WS_PATH_RE = /^\/api\/projects\/([^/]+)\/terminal\/sessions\/([^/]+)\/ws$/
 
-// Tag attached to PTY WS data so the multiplexed websocket{} dispatcher
-// can route open/message/close to the right handler set.
-const PTY_DATA_KIND = '__pty_ws__'
-type PtyTaggedData = PtyWsData & { __kind: typeof PTY_DATA_KIND }
-function isPtyData(data: unknown): data is PtyTaggedData {
-  return !!data && typeof data === 'object' && (data as { __kind?: string }).__kind === PTY_DATA_KIND
-}
+// PTY WS bridge: studio gateway ↔ per-project agent-runtime (local child or
+// K8s pod). Lazily-imported so the dispatcher branch only depends on it when
+// a bridged socket is open. See lib/pty-pod-bridge.ts for the pipe internals.
+import {
+  buildPtyPodBridgeData,
+  createPtyPodBridgeHandlers,
+  isPtyPodBridgeData,
+  type PtyPodBridgeData,
+} from './lib/pty-pod-bridge'
+const ptyPodBridge = createPtyPodBridgeHandlers()
 
 export default {
   port: API_PORT,
@@ -7339,41 +7430,47 @@ export default {
       if (upgraded) return undefined
       return new Response('WebSocket upgrade failed', { status: 500 })
     }
-    // PTY terminal session WebSocket: in local-dev we own the manager;
-    // in Kubernetes we proxy to the runtime pod (TODO).
+    // PTY terminal session WebSocket: bridged to the per-project runtime
+    // (localhost in dev, pod in K8s). The runtime owns the real PTY.
     if (req.headers.get('upgrade')?.toLowerCase() === 'websocket') {
       const ptyMatch = PTY_WS_PATH_RE.exec(url.pathname)
       if (ptyMatch) {
         const [, projectId, sessionId] = ptyMatch
-        if (isKubernetes()) {
-          // K8s WS proxy is a follow-up. For now reject so the client
-          // doesn't think it's connected to a non-functional channel.
-          return new Response('PTY WS proxy not yet implemented in K8s', { status: 501 })
-        }
-        const mgr = ptyRegistry.peek(projectId)
-        if (!mgr || !mgr.get(sessionId)) {
-          return new Response('Unknown session', { status: 404 })
-        }
         const since = Number(url.searchParams.get('since')) || 0
-        const data: PtyTaggedData = { __kind: PTY_DATA_KIND, manager: mgr, sessionId, since }
-        const upgraded = server.upgrade(req, { data })
-        if (upgraded) return undefined
-        return new Response('PTY WebSocket upgrade failed', { status: 500 })
+        if (!isSafeProjectId(projectId) || !/^[A-Za-z0-9_-]+$/.test(sessionId) || sessionId.length > 128) {
+          return new Response('Invalid id', { status: 400 })
+        }
+        try {
+          const { deriveRuntimeToken } = await import('./lib/runtime-token')
+          const podUrl = await resolveRuntimeBaseUrl(projectId)
+          const data: PtyPodBridgeData = buildPtyPodBridgeData({
+            podUrl,
+            sessionId,
+            since,
+            runtimeToken: deriveRuntimeToken(projectId),
+          })
+          const upgraded = server.upgrade(req, { data })
+          if (upgraded) return undefined
+          return new Response('PTY WebSocket upgrade failed', { status: 500 })
+        } catch (err: any) {
+          console.error('[TerminalProxy] WS runtime-resolve failed:', err?.message ?? err)
+          return new Response('Runtime unavailable', { status: 503 })
+        }
       }
     }
     return app.fetch(req, server)
   },
   websocket: {
     open(ws: any) {
-      if (isPtyData(ws.data)) ptyWs.open(ws)
+      if (isPtyPodBridgeData(ws.data)) ptyPodBridge.open(ws)
       else handleInstanceWsOpen(ws)
     },
     message(ws: any, msg: any) {
-      if (isPtyData(ws.data)) ptyWs.message(ws, msg)
+      if (isPtyPodBridgeData(ws.data)) ptyPodBridge.message(ws, msg)
       else handleInstanceWsMessage(ws, msg)
     },
     close(ws: any, code?: number, reason?: string) {
-      if (isPtyData(ws.data)) ptyWs.close(ws, code, reason)
+      if (isPtyPodBridgeData(ws.data)) ptyPodBridge.close(ws, code, reason)
       else handleInstanceWsClose(ws, code, reason)
     },
   },

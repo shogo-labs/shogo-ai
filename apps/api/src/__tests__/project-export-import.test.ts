@@ -19,20 +19,22 @@
  *       - happy-path import with workspace files + chat history
  *       - unsafe path rejection (../, /, c:\)
  *       - bundle manifest warnings forwarded
- *       - encryptedSecrets present but no passphrase → warning
+ *       - password-protected (ZipCrypto) archive round-trip + missing /
+ *         wrong password → fatal 400
  *       - includeChats=false → counts chat-history entries as skipped
- *   - exercises the GET /:projectId/export Hono route for both the
+ *   - exercises the POST /:projectId/export Hono route for both the
  *     404-not-found and 200-zip happy paths.
  *
  *   bun test apps/api/src/__tests__/project-export-import.test.ts
  */
 
-import { describe, test, expect, beforeAll, beforeEach, mock } from 'bun:test'
+import { describe, test, expect, beforeEach, mock } from 'bun:test'
 import { Hono } from 'hono'
 import { zipSync, strToU8 } from 'fflate'
+import { encryptZipCrypto } from '../lib/zip-encryption'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { mkdtempSync, existsSync } from 'node:fs'
+import { mkdtempSync, existsSync, readFileSync } from 'node:fs'
 
 delete process.env.KUBERNETES_SERVICE_HOST
 delete process.env.S3_WORKSPACES_BUCKET
@@ -337,17 +339,69 @@ describe('runImport', () => {
     }
   })
 
-  test('encryptedSecrets without passphrase produces a non-fatal warning', async () => {
+  test('password-protected archive round-trips with the correct password', async () => {
     members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
-    const projectJson = {
-      ...JSON.parse(makeProjectJson()),
-      encryptedSecrets: { v: 1, alg: 'aes-256-gcm', ciphertext: '..', iv: '..', salt: '..', tag: '..' },
-    }
-    const buf = zipSync({ 'project.json': strToU8(JSON.stringify(projectJson)) })
-    const result = await runImport(buf, 'w-1', 'u-1', { includeChats: true, runBootstrap: false }, () => {})
+    const encrypted = await encryptZipCrypto(
+      {
+        'project.json': strToU8(makeProjectJson()),
+        'workspace/.env': strToU8('API_KEY=secret-token-123\n'),
+      },
+      'hunter2',
+    )
+    const result = await runImport(
+      encrypted,
+      'w-1',
+      'u-1',
+      { includeChats: true, password: 'hunter2', runBootstrap: false },
+      () => {},
+    )
     expect(result.ok).toBe(true)
     if (result.ok) {
-      expect(result.warnings.some((w) => w.includes('encryptedSecrets'))).toBe(true)
+      // Secrets travelled in-place inside the encrypted archive.
+      const envOnDisk = join(tmpRoot, result.project.id, '.env')
+      expect(existsSync(envOnDisk)).toBe(true)
+      expect(readFileSync(envOnDisk, 'utf8')).toContain('secret-token-123')
+      expect(result.secretsAutoFilled).toBe(true)
+    }
+  })
+
+  test('password-protected archive without a password → fatal 400', async () => {
+    members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
+    const encrypted = await encryptZipCrypto(
+      { 'project.json': strToU8(makeProjectJson()) },
+      'hunter2',
+    )
+    const result = await runImport(
+      encrypted,
+      'w-1',
+      'u-1',
+      { includeChats: true, runBootstrap: false },
+      () => {},
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.status).toBe(400)
+      expect(result.error.toLowerCase()).toContain('password')
+    }
+  })
+
+  test('password-protected archive with the wrong password → fatal 400', async () => {
+    members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
+    const encrypted = await encryptZipCrypto(
+      { 'project.json': strToU8(makeProjectJson()) },
+      'hunter2',
+    )
+    const result = await runImport(
+      encrypted,
+      'w-1',
+      'u-1',
+      { includeChats: true, password: 'wrong-password', runBootstrap: false },
+      () => {},
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.status).toBe(400)
+      expect(result.error.toLowerCase()).toContain('password')
     }
   })
 
@@ -386,14 +440,20 @@ describe('runImport', () => {
 // =========================================================================
 
 describe('projectExportImportRoutes', () => {
-  test('GET /:projectId/export returns 404 when project does not exist', async () => {
+  test('POST /:projectId/export returns 404 when project does not exist', async () => {
     const app = new Hono()
     app.route('/api/projects', projectExportImportRoutes())
-    const res = await app.fetch(new Request('http://x/api/projects/missing/export'))
+    const res = await app.fetch(
+      new Request('http://x/api/projects/missing/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ includeChats: false }),
+      }),
+    )
     expect(res.status).toBe(404)
   })
 
-  test('GET /:projectId/export returns a zip with project.json + manifest.json', async () => {
+  test('POST /:projectId/export returns a zip with project.json + manifest.json', async () => {
     projects.set('p-1', {
       id: 'p-1', name: 'My Project', description: 'd', workspaceId: 'w-1',
       createdBy: 'u-1', tier: 'starter', status: 'draft', accessLevel: 'anyone',
@@ -406,7 +466,13 @@ describe('projectExportImportRoutes', () => {
     })
     const app = new Hono()
     app.route('/api/projects', projectExportImportRoutes())
-    const res = await app.fetch(new Request('http://x/api/projects/p-1/export?includeChats=false'))
+    const res = await app.fetch(
+      new Request('http://x/api/projects/p-1/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ includeChats: false }),
+      }),
+    )
     expect(res.status).toBe(200)
     expect(res.headers.get('Content-Type')).toBe('application/zip')
     const body = await res.arrayBuffer()

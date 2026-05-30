@@ -761,6 +761,19 @@ describe('CORS middleware', () => {
     })
     expect(res.headers.get('access-control-allow-origin')).toBe('http://127.0.0.1:5173')
   })
+
+  test('echoes the shogo:// desktop origin instead of the ALLOWED_ORIGINS fallback', async () => {
+    // The desktop app renders from `shogo://app` and fetches workspace assets
+    // directly from this runtime. Without an explicit allowance it falls through
+    // to `ALLOWED_ORIGINS[0]`, blocking credentialed image copy/download fetches.
+    const { app } = await buildApp({
+      env: { ALLOWED_ORIGINS: 'http://localhost:3000' },
+    })
+    const res = await app.request('/health', {
+      headers: { origin: 'shogo://app' },
+    })
+    expect(res.headers.get('access-control-allow-origin')).toBe('shogo://app')
+  })
 })
 
 // ---------------------------------------------------------------------------

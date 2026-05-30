@@ -186,7 +186,16 @@ function makeProjectJson(extra: Record<string, unknown> = {}): string {
 
 // ─── K8s export branch (L980-1040) ──────────────────────────────────────────
 
-describe('GET /:projectId/export — k8s source mode', () => {
+// Export switched from GET to POST (password rides in the request body).
+function exportReq(projectId: string) {
+  return new Request(`http://x/api/projects/${projectId}/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ includeChats: false }),
+  })
+}
+
+describe('POST /:projectId/export — k8s source mode', () => {
   test('k8s mode: AgentClient bundle files are written under workspace/ in the zip', async () => {
     seedProject('p-k8s')
     bundleResponse = {
@@ -198,7 +207,7 @@ describe('GET /:projectId/export — k8s source mode', () => {
 
     const app = new Hono()
     app.route('/api/projects', projectExportImportRoutes())
-    const res = await app.fetch(new Request('http://x/api/projects/p-k8s/export?includeChats=false'))
+    const res = await app.fetch(exportReq('p-k8s'))
 
     expect(res.status).toBe(200)
     expect(res.headers.get('Content-Type')).toBe('application/zip')
@@ -212,7 +221,7 @@ describe('GET /:projectId/export — k8s source mode', () => {
 
     const app = new Hono()
     app.route('/api/projects', projectExportImportRoutes())
-    const res = await app.fetch(new Request('http://x/api/projects/p-empty-bundle/export?includeChats=false'))
+    const res = await app.fetch(exportReq('p-empty-bundle'))
 
     expect(res.status).toBe(200)
   })
@@ -228,7 +237,7 @@ describe('GET /:projectId/export — k8s source mode', () => {
 
     const app = new Hono()
     app.route('/api/projects', projectExportImportRoutes())
-    const res = await app.fetch(new Request('http://x/api/projects/p-backslash/export?includeChats=false'))
+    const res = await app.fetch(exportReq('p-backslash'))
 
     expect(res.status).toBe(200)
     expect((await res.arrayBuffer()).byteLength).toBeGreaterThan(0)
@@ -240,7 +249,7 @@ describe('GET /:projectId/export — k8s source mode', () => {
 
     const app = new Hono()
     app.route('/api/projects', projectExportImportRoutes())
-    const res = await app.fetch(new Request('http://x/api/projects/p-malformed-bundle/export?includeChats=false'))
+    const res = await app.fetch(exportReq('p-malformed-bundle'))
 
     expect(res.status).toBe(200)
   })
@@ -251,7 +260,7 @@ describe('GET /:projectId/export — k8s source mode', () => {
 
     const app = new Hono()
     app.route('/api/projects', projectExportImportRoutes())
-    const res = await app.fetch(new Request('http://x/api/projects/p-pod-down/export?includeChats=false'))
+    const res = await app.fetch(exportReq('p-pod-down'))
 
     expect(res.status).toBe(200)
     expect((await res.arrayBuffer()).byteLength).toBeGreaterThan(0)
@@ -269,7 +278,7 @@ describe('GET /:projectId/export — k8s source mode', () => {
 
     const app = new Hono()
     app.route('/api/projects', projectExportImportRoutes())
-    const res = await app.fetch(new Request('http://x/api/projects/p-excluded/export?includeChats=false'))
+    const res = await app.fetch(exportReq('p-excluded'))
 
     expect(res.status).toBe(200)
   })

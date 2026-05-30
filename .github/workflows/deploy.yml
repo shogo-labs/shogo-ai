@@ -144,6 +144,14 @@ jobs:
       - name: Detect changed paths and build matrix
         id: set-matrix
         env:
+          # gh api (below) needs an authenticated token to look up the last
+          # successful build SHA. Without it the call silently fails and we
+          # fall back to a previous-commit diff — which DROPS changes that
+          # were built in a run that later failed before deploying (e.g. a
+          # web build that succeeded but whose run failed at the runtime
+          # build). Authenticating makes the baseline the last *deployed*
+          # commit so those changes get picked up on the next run.
+          GH_TOKEN: ${{ github.token }}
           BEFORE_SHA: ${{ github.event.before }}
           IS_TAG_PUSH: ${{ github.ref_type == 'tag' }}
           CURRENT_TAG: ${{ github.ref_name }}
@@ -649,6 +657,11 @@ jobs:
           # the affiliate click-tracking internal call. See
           # docs/affiliate-mlm-rollout.md.
           if [ -n "${{ secrets.SHOGO_INTERNAL_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SHOGO_INTERNAL_SECRET="${{ secrets.SHOGO_INTERNAL_SECRET }}"); fi
+          # AES-256-GCM master key for encrypting model-provider API keys at
+          # rest (apps/api/src/lib/secret-crypto.ts). Must be identical across
+          # all regions that share the primary DB so encrypted ModelProvider
+          # rows decrypt everywhere. See docs/github-environments-setup.md.
+          if [ -n "${{ secrets.SECRETS_ENCRYPTION_KEY }}" ]; then SECRET_ARGS+=(--from-literal=SECRETS_ENCRYPTION_KEY="${{ secrets.SECRETS_ENCRYPTION_KEY }}"); fi
 
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \
@@ -700,7 +713,30 @@ jobs:
 
       - name: Apply Kubernetes manifests
         run: |
-          kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
+          # Render RUNTIME_IMAGE into the api ksvc at apply time, mirroring the
+          # image-prepuller's RUNTIME_IMAGE_PLACEHOLDER substitution. The
+          # overlay ships the placeholder token, never a real (or
+          # `:<env>-bootstrap`) value, so `kubectl apply` itself can never stamp
+          # a non-existent runtime image onto the api ksvc and then rely on a
+          # later imperative patch to undo it. That undo-gap bricked India on
+          # 2026-05-27 when a mid-deploy abort left the placeholder live. We
+          # resolve the immutable :<env>-<sha> tag here with the same logic as
+          # the later "Resolve runtime image" step; sync-api-env.sh re-verifies
+          # it downstream as defense-in-depth.
+          OCIR_REGISTRY="${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}"
+          PREV_TAG=$(kubectl get configmap shogo-runtime-version -n "${{ env.NS_SYSTEM }}" -o jsonpath='{.data.image_tag}' 2>/dev/null || echo "")
+          if [ "${{ needs.detect-changes.outputs.runtime_changed }}" = "true" ]; then
+            RUNTIME_TAG="${{ env.IMAGE_TAG }}"
+          elif [ -n "$PREV_TAG" ]; then
+            RUNTIME_TAG="$PREV_TAG"
+          else
+            RUNTIME_TAG="${{ env.IMAGE_TAG }}"
+          fi
+          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:${RUNTIME_TAG}"
+          echo "Rendering manifests with RUNTIME_IMAGE=${RUNTIME_IMAGE}"
+          kubectl kustomize "k8s/overlays/${{ env.ENVIRONMENT }}/" \
+            | sed "s|RUNTIME_IMAGE_PLACEHOLDER|${RUNTIME_IMAGE}|g" \
+            | kubectl apply -f -
           # Node-level inotify quota bump — DaemonSet lives in kube-system,
           # outside the kustomize overlay (kustomize blocks reaching into
           # ../../base/ from an overlay). See k8s/base/inotify-tuner.yaml
@@ -1082,6 +1118,11 @@ jobs:
           # the affiliate click-tracking internal call. See
           # docs/affiliate-mlm-rollout.md.
           if [ -n "${{ secrets.SHOGO_INTERNAL_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SHOGO_INTERNAL_SECRET="${{ secrets.SHOGO_INTERNAL_SECRET }}"); fi
+          # AES-256-GCM master key for encrypting model-provider API keys at
+          # rest (apps/api/src/lib/secret-crypto.ts). Must be identical across
+          # all regions that share the primary DB so encrypted ModelProvider
+          # rows decrypt everywhere. See docs/github-environments-setup.md.
+          if [ -n "${{ secrets.SECRETS_ENCRYPTION_KEY }}" ]; then SECRET_ARGS+=(--from-literal=SECRETS_ENCRYPTION_KEY="${{ secrets.SECRETS_ENCRYPTION_KEY }}"); fi
 
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \
@@ -1131,7 +1172,30 @@ jobs:
 
       - name: Apply Kubernetes manifests
         run: |
-          kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
+          # Render RUNTIME_IMAGE into the api ksvc at apply time, mirroring the
+          # image-prepuller's RUNTIME_IMAGE_PLACEHOLDER substitution. The
+          # overlay ships the placeholder token, never a real (or
+          # `:<env>-bootstrap`) value, so `kubectl apply` itself can never stamp
+          # a non-existent runtime image onto the api ksvc and then rely on a
+          # later imperative patch to undo it. That undo-gap bricked India on
+          # 2026-05-27 when a mid-deploy abort left the placeholder live. We
+          # resolve the immutable :<env>-<sha> tag here with the same logic as
+          # the later "Resolve runtime image" step; sync-api-env.sh re-verifies
+          # it downstream as defense-in-depth.
+          OCIR_REGISTRY="${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}"
+          PREV_TAG=$(kubectl get configmap shogo-runtime-version -n "${{ env.NS_SYSTEM }}" -o jsonpath='{.data.image_tag}' 2>/dev/null || echo "")
+          if [ "${{ needs.detect-changes.outputs.runtime_changed }}" = "true" ]; then
+            RUNTIME_TAG="${{ env.IMAGE_TAG }}"
+          elif [ -n "$PREV_TAG" ]; then
+            RUNTIME_TAG="$PREV_TAG"
+          else
+            RUNTIME_TAG="${{ env.IMAGE_TAG }}"
+          fi
+          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:${RUNTIME_TAG}"
+          echo "Rendering manifests with RUNTIME_IMAGE=${RUNTIME_IMAGE}"
+          kubectl kustomize "k8s/overlays/${{ env.ENVIRONMENT }}/" \
+            | sed "s|RUNTIME_IMAGE_PLACEHOLDER|${RUNTIME_IMAGE}|g" \
+            | kubectl apply -f -
           # Node-level inotify quota bump — DaemonSet lives in kube-system,
           # outside the kustomize overlay (kustomize blocks reaching into
           # ../../base/ from an overlay). See k8s/base/inotify-tuner.yaml
@@ -1582,6 +1646,11 @@ jobs:
           # the affiliate click-tracking internal call. See
           # docs/affiliate-mlm-rollout.md.
           if [ -n "${{ secrets.SHOGO_INTERNAL_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SHOGO_INTERNAL_SECRET="${{ secrets.SHOGO_INTERNAL_SECRET }}"); fi
+          # AES-256-GCM master key for encrypting model-provider API keys at
+          # rest (apps/api/src/lib/secret-crypto.ts). Must be identical across
+          # all regions that share the primary DB so encrypted ModelProvider
+          # rows decrypt everywhere. See docs/github-environments-setup.md.
+          if [ -n "${{ secrets.SECRETS_ENCRYPTION_KEY }}" ]; then SECRET_ARGS+=(--from-literal=SECRETS_ENCRYPTION_KEY="${{ secrets.SECRETS_ENCRYPTION_KEY }}"); fi
 
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \
@@ -1631,7 +1700,30 @@ jobs:
 
       - name: Apply Kubernetes manifests
         run: |
-          kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
+          # Render RUNTIME_IMAGE into the api ksvc at apply time, mirroring the
+          # image-prepuller's RUNTIME_IMAGE_PLACEHOLDER substitution. The
+          # overlay ships the placeholder token, never a real (or
+          # `:<env>-bootstrap`) value, so `kubectl apply` itself can never stamp
+          # a non-existent runtime image onto the api ksvc and then rely on a
+          # later imperative patch to undo it. That undo-gap bricked India on
+          # 2026-05-27 when a mid-deploy abort left the placeholder live. We
+          # resolve the immutable :<env>-<sha> tag here with the same logic as
+          # the later "Resolve runtime image" step; sync-api-env.sh re-verifies
+          # it downstream as defense-in-depth.
+          OCIR_REGISTRY="${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}"
+          PREV_TAG=$(kubectl get configmap shogo-runtime-version -n "${{ env.NS_SYSTEM }}" -o jsonpath='{.data.image_tag}' 2>/dev/null || echo "")
+          if [ "${{ needs.detect-changes.outputs.runtime_changed }}" = "true" ]; then
+            RUNTIME_TAG="${{ env.IMAGE_TAG }}"
+          elif [ -n "$PREV_TAG" ]; then
+            RUNTIME_TAG="$PREV_TAG"
+          else
+            RUNTIME_TAG="${{ env.IMAGE_TAG }}"
+          fi
+          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:${RUNTIME_TAG}"
+          echo "Rendering manifests with RUNTIME_IMAGE=${RUNTIME_IMAGE}"
+          kubectl kustomize "k8s/overlays/${{ env.ENVIRONMENT }}/" \
+            | sed "s|RUNTIME_IMAGE_PLACEHOLDER|${RUNTIME_IMAGE}|g" \
+            | kubectl apply -f -
           # Node-level inotify quota bump — DaemonSet lives in kube-system,
           # outside the kustomize overlay (kustomize blocks reaching into
           # ../../base/ from an overlay). See k8s/base/inotify-tuner.yaml
@@ -1695,15 +1787,17 @@ jobs:
         # bailed with P3009 — a fatal exit code that the workflow ignored.
         # The publication-side fix is in `skip-replicated-migrations.sql`,
         # but the deploy must also stop pretending failures are warnings.
+        #
+        # Runs as a Job that waits for completion (see the script header).
+        # The old `kubectl run -i` form failed both secondary regions on
+        # 2026-05-30: its 60s --pod-running-timeout expired during the
+        # cold pull of the api image onto a fresh node and aborted the
+        # deploy mid-flight, before RUNTIME_IMAGE was synced onto the api
+        # ksvc.
         run: |
-          DB_URL=$(kubectl get secret postgres-credentials -n ${{ env.NS_SYSTEM }} -o jsonpath='{.data.DATABASE_URL}' | base64 -d)
-          kubectl run prisma-migrate-eu --rm -i --restart=Never \
-            --namespace=${{ env.NS_SYSTEM }} \
-            --image="${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}/shogo/shogo-api:${{ env.IMAGE_TAG }}" \
-            --env="DATABASE_URL=${DB_URL}" \
-            --env="SKIP_MIGRATIONS=false" \
-            --command -- sh -c "cd /app && bunx prisma migrate deploy" \
-            --timeout=120s
+          .github/scripts/run-prisma-migrations.sh \
+            "${{ env.NS_SYSTEM }}" \
+            "${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}/shogo/shogo-api:${{ env.IMAGE_TAG }}"
 
       - name: Verify configured node pool matches running nodes
         run: |
@@ -2050,6 +2144,11 @@ jobs:
           # the affiliate click-tracking internal call. See
           # docs/affiliate-mlm-rollout.md.
           if [ -n "${{ secrets.SHOGO_INTERNAL_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SHOGO_INTERNAL_SECRET="${{ secrets.SHOGO_INTERNAL_SECRET }}"); fi
+          # AES-256-GCM master key for encrypting model-provider API keys at
+          # rest (apps/api/src/lib/secret-crypto.ts). Must be identical across
+          # all regions that share the primary DB so encrypted ModelProvider
+          # rows decrypt everywhere. See docs/github-environments-setup.md.
+          if [ -n "${{ secrets.SECRETS_ENCRYPTION_KEY }}" ]; then SECRET_ARGS+=(--from-literal=SECRETS_ENCRYPTION_KEY="${{ secrets.SECRETS_ENCRYPTION_KEY }}"); fi
 
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \
@@ -2099,7 +2198,30 @@ jobs:
 
       - name: Apply Kubernetes manifests
         run: |
-          kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/
+          # Render RUNTIME_IMAGE into the api ksvc at apply time, mirroring the
+          # image-prepuller's RUNTIME_IMAGE_PLACEHOLDER substitution. The
+          # overlay ships the placeholder token, never a real (or
+          # `:<env>-bootstrap`) value, so `kubectl apply` itself can never stamp
+          # a non-existent runtime image onto the api ksvc and then rely on a
+          # later imperative patch to undo it. That undo-gap bricked India on
+          # 2026-05-27 when a mid-deploy abort left the placeholder live. We
+          # resolve the immutable :<env>-<sha> tag here with the same logic as
+          # the later "Resolve runtime image" step; sync-api-env.sh re-verifies
+          # it downstream as defense-in-depth.
+          OCIR_REGISTRY="${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}"
+          PREV_TAG=$(kubectl get configmap shogo-runtime-version -n "${{ env.NS_SYSTEM }}" -o jsonpath='{.data.image_tag}' 2>/dev/null || echo "")
+          if [ "${{ needs.detect-changes.outputs.runtime_changed }}" = "true" ]; then
+            RUNTIME_TAG="${{ env.IMAGE_TAG }}"
+          elif [ -n "$PREV_TAG" ]; then
+            RUNTIME_TAG="$PREV_TAG"
+          else
+            RUNTIME_TAG="${{ env.IMAGE_TAG }}"
+          fi
+          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:${RUNTIME_TAG}"
+          echo "Rendering manifests with RUNTIME_IMAGE=${RUNTIME_IMAGE}"
+          kubectl kustomize "k8s/overlays/${{ env.ENVIRONMENT }}/" \
+            | sed "s|RUNTIME_IMAGE_PLACEHOLDER|${RUNTIME_IMAGE}|g" \
+            | kubectl apply -f -
           # Node-level inotify quota bump — DaemonSet lives in kube-system,
           # outside the kustomize overlay (kustomize blocks reaching into
           # ../../base/ from an overlay). See k8s/base/inotify-tuner.yaml
@@ -2156,14 +2278,9 @@ jobs:
         if: needs.detect-changes.outputs.api_changed == 'true'
         run: |
           # Failure here is fatal — see the matching note in deploy-eu.
-          DB_URL=$(kubectl get secret postgres-credentials -n ${{ env.NS_SYSTEM }} -o jsonpath='{.data.DATABASE_URL}' | base64 -d)
-          kubectl run prisma-migrate-india --rm -i --restart=Never \
-            --namespace=${{ env.NS_SYSTEM }} \
-            --image="${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}/shogo/shogo-api:${{ env.IMAGE_TAG }}" \
-            --env="DATABASE_URL=${DB_URL}" \
-            --env="SKIP_MIGRATIONS=false" \
-            --command -- sh -c "cd /app && bunx prisma migrate deploy" \
-            --timeout=120s
+          .github/scripts/run-prisma-migrations.sh \
+            "${{ env.NS_SYSTEM }}" \
+            "${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}/shogo/shogo-api:${{ env.IMAGE_TAG }}"
 
       - name: Verify configured node pool matches running nodes
         run: |

@@ -981,16 +981,14 @@ function ProjectMenuView({
 
   const runExport = useCallback(async (options: {
     includeChats: boolean
-    passphrase?: string
-    includeEnv?: boolean
+    password?: string
   }) => {
     if (isExporting) return
     setIsExporting(true)
     try {
       const { blob, filename } = await api.exportProjectBlob(projectId, {
         includeChats: options.includeChats,
-        passphrase: options.passphrase,
-        includeEnv: options.includeEnv,
+        password: options.password,
       })
 
       if (Platform.OS === 'web' && typeof document !== 'undefined') {

@@ -94,7 +94,17 @@ USER appuser
 # Rebuild bun's module resolution links from .bun/ cache (no downloads).
 # Running as appuser so output is correctly owned — no chown -R needed.
 # Cache target matches BUN_INSTALL_CACHE_DIR set in Dockerfile.base.
+#
+# Skipping the lockfile save is required: the stubbed workspace package.jsons
+# copied above make bun recompute the dependency graph, so a plain `bun install`
+# tries to persist an updated bun.lock by writing a temp file into the
+# root-owned /app dir and fails with
+# `EACCES: failed to create temporary file to save lockfile`. We only need the
+# node_modules relink here, never a lockfile rewrite. BUN_CONFIG_SKIP_SAVE_LOCKFILE
+# is the documented, guaranteed switch for this; --no-save is kept as a belt-and-
+# suspenders (and to leave package.json untouched), mirroring the prewarm install
+# in Dockerfile.base.
 RUN --mount=type=cache,target=/app/.bun/cache,uid=1001,gid=1001 \
-    bun install --ignore-scripts
+    BUN_CONFIG_SKIP_SAVE_LOCKFILE=1 bun install --ignore-scripts --no-save
 
 ENTRYPOINT ["/entrypoint.sh"]

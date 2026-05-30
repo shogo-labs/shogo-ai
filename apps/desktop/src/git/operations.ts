@@ -1,0 +1,166 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2026 Shogo Technologies, Inc.
+//
+// Write-side git operations invoked from the SCM viewlet: stage, unstage,
+// discard, commit. Plus a read-only `fileContent` helper used for diff
+// view construction (we need `git show` against HEAD / index / arbitrary
+// refs without round-tripping through a buffer cache).
+//
+// All operations:
+//   - take a workspaceRoot the caller has already validated lives under
+//     $HOME (this file does NOT re-validate — the IPC layer is the gate);
+//   - shell out via runGit(), respecting GIT_TERMINAL_PROMPT=0;
+//   - return a discriminated result so callers don't have to catch.
+
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
+
+import { runGit } from "./repository";
+import { getOrCreateGitWorkspace } from "./service";
+import { parsePorcelainV2 } from "./porcelain";
+
+type OpResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+type StringResult =
+  | { ok: true; content: string }
+  | { ok: false; error: string };
+
+/** `git add <paths...>` */
+export async function gitStage(root: string, paths: string[]): Promise<OpResult> {
+  if (paths.length === 0) return { ok: true };
+  const res = await runGit(["add", "--", ...paths], { cwd: root });
+  if (!res.ok) return { ok: false, error: res.stderr.trim() || `git add exit ${res.code}` };
+  getOrCreateGitWorkspace(root).requestRefresh();
+  return { ok: true };
+}
+
+/** `git reset HEAD -- <paths...>` (kept for compatibility with older git). */
+export async function gitUnstage(root: string, paths: string[]): Promise<OpResult> {
+  if (paths.length === 0) return { ok: true };
+  const res = await runGit(["reset", "HEAD", "--", ...paths], { cwd: root });
+  if (!res.ok) return { ok: false, error: res.stderr.trim() || `git reset exit ${res.code}` };
+  getOrCreateGitWorkspace(root).requestRefresh();
+  return { ok: true };
+}
+
+/**
+ * Discard working-tree changes. Behaviour per current status of each path:
+ *   - untracked      → delete file from disk
+ *   - tracked dirty  → `git checkout -- <path>` (restore from index)
+ *   - staged + dirty → `git checkout` clears the working diff but leaves the
+ *                      stage; we leave the stage alone so the user can
+ *                      still `git reset HEAD` separately if desired.
+ */
+export async function gitDiscard(root: string, paths: string[]): Promise<OpResult> {
+  if (paths.length === 0) return { ok: true };
+  // Refresh the porcelain so we classify accurately right now.
+  const statusRes = await runGit(
+    ["status", "--porcelain=v2", "-z", "--untracked-files=all"],
+    { cwd: root },
+  );
+  if (!statusRes.ok) {
+    return { ok: false, error: statusRes.stderr.trim() || `git status exit ${statusRes.code}` };
+  }
+  const parsed = parsePorcelainV2(statusRes.stdout);
+  const untracked = new Set<string>();
+  for (const f of parsed.files) {
+    if (f.working === "untracked" && f.index === "unmodified") untracked.add(f.path);
+  }
+
+  const toDelete: string[] = [];
+  const toCheckout: string[] = [];
+  for (const p of paths) {
+    if (untracked.has(p)) toDelete.push(p);
+    else toCheckout.push(p);
+  }
+
+  // Untracked: rm from disk. We DON'T use `git clean -f` because that
+  // would also nuke any other untracked file the user hasn't selected.
+  for (const rel of toDelete) {
+    try {
+      // `rm` with `recursive: true` handles both files and directories.
+      // Porcelain with --untracked-files=all normally expands directories
+      // into individual files, but a `.gitignore`'d subdirectory inside
+      // an untracked dir can still come through as a directory entry.
+      // `force: true` swallows ENOENT in case the file was already gone
+      // (e.g. race with an external delete).
+      await rm(join(root, rel), { recursive: true, force: true });
+    } catch (err) {
+      return { ok: false, error: `failed to delete ${rel}: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
+  if (toCheckout.length > 0) {
+    const res = await runGit(["checkout", "HEAD", "--", ...toCheckout], { cwd: root });
+    if (!res.ok) {
+      return { ok: false, error: res.stderr.trim() || `git checkout exit ${res.code}` };
+    }
+  }
+
+  getOrCreateGitWorkspace(root).requestRefresh();
+  return { ok: true };
+}
+
+export interface CommitOptions {
+  message: string;
+  amend?: boolean;
+  signoff?: boolean;
+}
+
+/** `git commit -m <message>` against the current index. No -a. */
+export async function gitCommit(root: string, opts: CommitOptions): Promise<OpResult> {
+  if (!opts.message.trim() && !opts.amend) {
+    return { ok: false, error: "commit message is empty" };
+  }
+  const args = ["commit"];
+  if (opts.amend) args.push("--amend");
+  if (opts.signoff) args.push("--signoff");
+  if (opts.message.trim()) {
+    args.push("-m", opts.message);
+  }
+  // Pass message via -m flag, not stdin, so multi-line messages work
+  // consistently across platforms. We rely on git's own quoting.
+  const res = await runGit(args, { cwd: root, timeoutMs: 30_000 });
+  if (!res.ok) {
+    return { ok: false, error: res.stderr.trim() || res.stdout.trim() || `git commit exit ${res.code}` };
+  }
+  getOrCreateGitWorkspace(root).requestRefresh();
+  return { ok: true };
+}
+
+/**
+ * Read a file at a given ref. Used to construct Monaco diff buffers in the
+ * renderer. `ref` is one of:
+ *   - "HEAD"   → committed version
+ *   - ":"      → staged (index) version
+ *   - "WORKING"→ working-tree version (just fs.readFile under the hood)
+ *   - anything else is passed through verbatim (e.g. branch / sha)
+ */
+export async function gitFileContent(
+  root: string,
+  relPath: string,
+  ref: string,
+): Promise<StringResult> {
+  if (ref === "WORKING") {
+    const { readFile } = await import("node:fs/promises");
+    try {
+      const buf = await readFile(join(root, relPath));
+      return { ok: true, content: buf.toString("utf8") };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+  const spec = ref === ":" ? `:${relPath}` : `${ref}:${relPath}`;
+  const res = await runGit(["show", spec], { cwd: root });
+  if (!res.ok) {
+    // Specifically detect "doesn't exist in HEAD" — for added files
+    // there is no HEAD version, which is normal and we surface as empty.
+    if (/exists on disk, but not in/.test(res.stderr) || /does not exist/.test(res.stderr) || /unknown revision/.test(res.stderr)) {
+      return { ok: true, content: "" };
+    }
+    return { ok: false, error: res.stderr.trim() || `git show exit ${res.code}` };
+  }
+  return { ok: true, content: res.stdout };
+}
