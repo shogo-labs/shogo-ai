@@ -97,16 +97,16 @@
     "test": "bun --no-env-file test src/"
   },
   "peerDependencies": {
-    "@mariozechner/pi-ai": ">=0.67.0",
-    "@mariozechner/pi-agent-core": ">=0.67.0"
+    "@mariozechner/pi-ai": ">=0.73.0",
+    "@mariozechner/pi-agent-core": ">=0.73.0"
   },
   "peerDependenciesMeta": {
     "@mariozechner/pi-ai": { "optional": true },
     "@mariozechner/pi-agent-core": { "optional": true }
   },
   "devDependencies": {
-    "@mariozechner/pi-ai": "^0.67.6",
-    "@mariozechner/pi-agent-core": "^0.67.6",
+    "@mariozechner/pi-ai": "^0.73.1",
+    "@mariozechner/pi-agent-core": "^0.73.1",
     "@types/node": "^25.5.0",
     "tsup": "^8.0.0",
     "typescript": "^6.0.2"
