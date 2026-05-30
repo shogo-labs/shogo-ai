@@ -19,21 +19,30 @@
 import { prisma, SubscriptionStatus, BillingInterval } from '../lib/prisma';
 import {
   FREE_DAILY_INCLUDED_USD,
-  MONTHLY_DAILY_CAP_USD,
   PLAN_INCLUDED_USD,
   PLAN_RANK,
+  FIVE_HOUR_MS,
+  SEVEN_DAY_MS,
   comparePlanRank,
   getDailyIncludedForPlan,
   getMonthlyIncludedForPlan,
+  getWindowLimitsForPlan,
   normalizePlanId,
+  type WindowLimits,
 } from '../config/usage-plans';
 import { getOveragePriceConfig } from '../config/stripe-prices';
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
 /**
  * USD source a usage event was charged against. Mirrors the DB enum.
+ * `window` = charged against a rolling usage window (the time-gated
+ * "unlimited" path); `overage` = beyond the window, metered to Stripe.
+ * `daily`/`monthly` are retained for legacy events and local mode.
  */
-export type UsageSource = 'daily' | 'monthly' | 'overage'
+export type UsageSource = 'daily' | 'monthly' | 'overage' | 'window'
+
+/** Identifies which rolling window gated a request. */
+export type UsageWindowKind = 'five_hour' | 'weekly'
 
 /**
  * Get subscription for a workspace
@@ -348,11 +357,61 @@ export async function isBusinessOrHigherPlan(workspaceId: string): Promise<boole
   return PLAN_RANK[plan] >= PLAN_RANK.business
 }
 
+/** Snapshot of one rolling usage window for the usage endpoint / UI. */
+export interface UsageWindowSnapshot {
+  kind: UsageWindowKind
+  usedUsd: number
+  /** `null` when the plan is uncapped (enterprise). */
+  limitUsd: number | null
+  /** 0..1; always 0 for uncapped plans. */
+  utilization: number
+  /** When the window next resets, or `null` if it hasn't opened yet. */
+  resetsAt: Date | null
+}
+
 /**
- * Check if workspace has sufficient USD to cover `minimumRequiredUsd`.
- * Applies the same lazy daily reset logic `consumeUsage` uses, including
- * the monthly cap on daily dispensing (`MONTHLY_DAILY_CAP_USD`). Overage
- * is treated as available when it's enabled AND the hard cap allows it.
+ * Compute the current state of a workspace's rolling windows, applying the
+ * same lazy reset semantics as `consumeUsage` (without persisting). Returns
+ * `null` per-window limit for uncapped plans.
+ */
+export async function getUsageWindows(
+  workspaceId: string,
+): Promise<{ fiveHour: UsageWindowSnapshot; weekly: UsageWindowSnapshot }> {
+  const now = new Date()
+  let wallet = await prisma.usageWallet.findUnique({ where: { workspaceId } })
+  if (!wallet) wallet = await allocateFreeWallet(workspaceId)
+
+  const limits = await resolveWorkspaceWindowLimits(prisma, workspaceId, now)
+  const five = rollWindow(wallet?.fiveHourWindowStart, wallet?.fiveHourUsedUsd ?? 0, now, FIVE_HOUR_MS)
+  const week = rollWindow(wallet?.weeklyWindowStart, wallet?.weeklyUsedUsd ?? 0, now, SEVEN_DAY_MS)
+
+  const fiveOpened = !!wallet?.fiveHourWindowStart && five.start.getTime() === new Date(wallet.fiveHourWindowStart).getTime()
+  const weekOpened = !!wallet?.weeklyWindowStart && week.start.getTime() === new Date(wallet.weeklyWindowStart).getTime()
+
+  const snapshot = (
+    kind: UsageWindowKind,
+    state: RollingWindowState,
+    limitUsd: number | null,
+    durationMs: number,
+    opened: boolean,
+  ): UsageWindowSnapshot => ({
+    kind,
+    usedUsd: opened ? state.used : 0,
+    limitUsd,
+    utilization: limitUsd && limitUsd > 0 ? Math.min(1, (opened ? state.used : 0) / limitUsd) : 0,
+    resetsAt: opened ? new Date(state.start.getTime() + durationMs) : null,
+  })
+
+  return {
+    fiveHour: snapshot('five_hour', five, limits?.fiveHourUsd ?? null, FIVE_HOUR_MS, fiveOpened),
+    weekly: snapshot('weekly', week, limits?.weeklyUsd ?? null, SEVEN_DAY_MS, weekOpened),
+  }
+}
+
+/**
+ * Check if workspace can spend at least `minimumRequiredUsd`. True when
+ * either rolling window still has room, when the plan is uncapped, or when
+ * metered overage is enabled and within its hard cap.
  */
 export async function hasBalance(
   workspaceId: string,
@@ -367,26 +426,21 @@ export async function hasBalance(
   if (!wallet) return false;
 
   const now = new Date();
-  const needsDailyReset = now.toDateString() !== new Date(wallet.lastDailyReset).toDateString();
+  const limits = await resolveWorkspaceWindowLimits(prisma, workspaceId, now);
 
-  let daily = wallet.dailyIncludedUsd;
-  if (needsDailyReset) {
-    // The daily allowance only refills for the free tier; paid plans rely
-    // on their monthly included pool. Resolve the effective plan once so
-    // the calculation lines up with `_consumeUsageTransaction`.
-    const plan = await getEffectivePlanId(workspaceId, now);
-    const dailyForPlan = getDailyIncludedForPlan(plan);
-    const dispensed = isNewMonth(now, wallet.lastMonthlyReset) ? 0 : wallet.dailyUsedThisMonthUsd;
-    daily = dispensed + dailyForPlan <= MONTHLY_DAILY_CAP_USD ? dailyForPlan : 0;
-  }
+  // Uncapped plan (enterprise): always has balance.
+  if (limits == null) return true;
 
-  const included = daily + wallet.monthlyIncludedUsd;
-  if (included >= minimumRequiredUsd) return true;
+  const five = rollWindow(wallet.fiveHourWindowStart, wallet.fiveHourUsedUsd, now, FIVE_HOUR_MS);
+  const week = rollWindow(wallet.weeklyWindowStart, wallet.weeklyUsedUsd, now, SEVEN_DAY_MS);
+  const windowRoom = Math.min(limits.fiveHourUsd - five.used, limits.weeklyUsd - week.used);
+  if (windowRoom >= minimumRequiredUsd) return true;
 
+  // Windows exhausted — overage is the fallback when enabled and uncapped.
   if (!wallet.overageEnabled) return false;
   if (wallet.overageHardLimitUsd == null) return true;
   const overageRoom = Math.max(0, wallet.overageHardLimitUsd - wallet.overageAccumulatedUsd);
-  return included + overageRoom >= minimumRequiredUsd;
+  return overageRoom >= minimumRequiredUsd;
 }
 
 
@@ -420,12 +474,23 @@ export interface ConsumeUsageParams {
 export interface ConsumeUsageResult {
   success: boolean
   error?: string
-  /** Remaining included USD after the debit (daily + monthly). */
+  /**
+   * Remaining USD before the gating limit after the debit. For the window
+   * path this is the smaller of the two windows' remaining room; for overage
+   * it reflects remaining included room (0 once windows are exhausted).
+   */
   remainingIncludedUsd?: number
   /** How much of the debit hit overage (USD). */
   overageChargedUsd?: number
   /** Source of the deduction. */
   source?: UsageSource
+  /**
+   * When a request is blocked (or fell through to overage) because a rolling
+   * window is exhausted, the UTC time the blocking window next resets.
+   */
+  resetsAt?: Date
+  /** Which window was exhausted, when `resetsAt` is set. */
+  window?: UsageWindowKind
 }
 
 /**
@@ -540,108 +605,104 @@ async function _consumeUsageTransaction(
       }
     }
 
-    // Lazy daily + monthly reset
     const now = new Date();
-    const needsDailyReset = now.toDateString() !== new Date(wallet.lastDailyReset).toDateString();
+
+    // Resolve the workspace's rolling-window limits (plan + seats). `null`
+    // means uncapped (enterprise): usage is unbounded within the windows.
+    const limits = await resolveWorkspaceWindowLimits(tx, workspaceId, now);
+
+    // Lazy window reset: a window "opens" on the first action and resets once
+    // its full duration has elapsed (fixed-window-from-first-event).
+    const five = rollWindow(wallet.fiveHourWindowStart, wallet.fiveHourUsedUsd, now, FIVE_HOUR_MS);
+    const week = rollWindow(wallet.weeklyWindowStart, wallet.weeklyUsedUsd, now, SEVEN_DAY_MS);
+
+    // Monthly boundary still governs overage bookkeeping (overage is invoiced
+    // per Stripe period). The included USD pools are no longer drained — the
+    // rolling windows are the gate — so we only reset overage accounting here.
     const needsMonthlyReset = isNewMonth(now, wallet.lastMonthlyReset);
-
-    // Free-tier safety net: paid plans are refilled by `allocateMonthlyIncluded`
-    // on `invoice.payment_succeeded`, but workspaces without a Stripe
-    // subscription would otherwise drift forever. On a month rollover, refill
-    // `monthlyIncludedUsd` from the active grants for free workspaces. We
-    // skip paid workspaces here so we don't double-allocate over the
-    // webhook (which has authoritative seat counts).
-    let monthlyIncludedRefill: number | null = null
-    if (needsMonthlyReset) {
-      const paidSub = await tx.subscription.findFirst({
-        where: { workspaceId, status: { in: ['active', 'trialing'] } },
-        select: { id: true },
-      })
-      if (!paidSub) {
-        const grant = await getActiveGrantsForWorkspace(workspaceId, now)
-        monthlyIncludedRefill = PLAN_INCLUDED_USD.free + grant.monthlyIncludedUsd
-      }
-    }
-
-    let dailyUsedThisMonthUsd = needsMonthlyReset ? 0 : wallet.dailyUsedThisMonthUsd;
-    let dailyIncludedUsd: number;
-
-    if (needsDailyReset) {
-      // The daily allowance is a free-tier safety net; paid plans rely on
-      // their monthly included pool and get 0 from `getDailyIncludedForPlan`.
-      // Resolving the plan only on day boundaries keeps the hot path lean.
-      const dailyPlan = await getEffectivePlanId(workspaceId, now);
-      const dailyForPlan = getDailyIncludedForPlan(dailyPlan);
-      if (dailyUsedThisMonthUsd + dailyForPlan <= MONTHLY_DAILY_CAP_USD) {
-        dailyIncludedUsd = dailyForPlan;
-        dailyUsedThisMonthUsd += dailyForPlan;
-      } else {
-        dailyIncludedUsd = 0;
-      }
-    } else {
-      dailyIncludedUsd = wallet.dailyIncludedUsd;
-    }
-
-    let monthlyIncludedUsd =
-      monthlyIncludedRefill != null ? monthlyIncludedRefill : wallet.monthlyIncludedUsd;
     let overageAccumulatedUsd = needsMonthlyReset ? 0 : wallet.overageAccumulatedUsd;
 
-    // Deduction order: daily -> monthly -> overage (if enabled).
     let source: UsageSource;
     let balanceBefore: number;
     let balanceAfter: number;
     let overageCharged = 0;
+    let chargedToWindows = false;
 
-    if (dailyIncludedUsd >= billedUsd) {
-      source = 'daily';
-      balanceBefore = dailyIncludedUsd;
-      dailyIncludedUsd -= billedUsd;
-      balanceAfter = dailyIncludedUsd;
-    } else if (monthlyIncludedUsd >= billedUsd) {
-      source = 'monthly';
-      balanceBefore = monthlyIncludedUsd;
-      monthlyIncludedUsd -= billedUsd;
-      balanceAfter = monthlyIncludedUsd;
-    } else if (wallet.overageEnabled) {
-      const overageRoom = wallet.overageHardLimitUsd == null
-        ? Number.POSITIVE_INFINITY
-        : Math.max(0, wallet.overageHardLimitUsd - overageAccumulatedUsd);
-      if (overageRoom < billedUsd) {
-        return {
-          success: false,
-          error: 'Usage hard limit reached',
-          remainingIncludedUsd: dailyIncludedUsd + monthlyIncludedUsd,
-          source: 'overage',
-        };
-      }
-      source = 'overage';
-      balanceBefore = overageAccumulatedUsd;
-      overageAccumulatedUsd += billedUsd;
-      balanceAfter = overageAccumulatedUsd;
-      overageCharged = billedUsd;
+    if (limits == null) {
+      // Uncapped plan: always allowed, but still accrue window usage so the
+      // usage endpoint can surface consumption.
+      source = 'window';
+      balanceBefore = Number.POSITIVE_INFINITY;
+      balanceAfter = Number.POSITIVE_INFINITY;
+      chargedToWindows = true;
     } else {
-      return {
-        success: false,
-        error: 'Usage limit reached',
-        remainingIncludedUsd: dailyIncludedUsd + monthlyIncludedUsd,
-      };
+      const fiveRoom = limits.fiveHourUsd - five.used;
+      const weekRoom = limits.weeklyUsd - week.used;
+      const fitsFive = fiveRoom >= billedUsd;
+      const fitsWeek = weekRoom >= billedUsd;
+
+      if (fitsFive && fitsWeek) {
+        source = 'window';
+        balanceBefore = Math.min(fiveRoom, weekRoom);
+        balanceAfter = balanceBefore - billedUsd;
+        chargedToWindows = true;
+      } else {
+        // A window is exhausted. Compute which window blocks and when it
+        // resets so the caller can surface a "resets in X" message.
+        const { window, resetsAt } = blockingWindow(
+          fitsFive,
+          fitsWeek,
+          five.start,
+          week.start,
+        );
+
+        if (wallet.overageEnabled) {
+          const overageRoom = wallet.overageHardLimitUsd == null
+            ? Number.POSITIVE_INFINITY
+            : Math.max(0, wallet.overageHardLimitUsd - overageAccumulatedUsd);
+          if (overageRoom < billedUsd) {
+            return {
+              success: false,
+              error: 'Usage hard limit reached',
+              remainingIncludedUsd: 0,
+              source: 'overage',
+              window,
+              resetsAt,
+            };
+          }
+          // Beyond-window usage is metered to overage and does NOT accrue to
+          // the windows (the window is already full).
+          source = 'overage';
+          balanceBefore = overageAccumulatedUsd;
+          overageAccumulatedUsd += billedUsd;
+          balanceAfter = overageAccumulatedUsd;
+          overageCharged = billedUsd;
+        } else {
+          return {
+            success: false,
+            error: 'Usage limit reached',
+            remainingIncludedUsd: 0,
+            window,
+            resetsAt,
+          };
+        }
+      }
+    }
+
+    if (chargedToWindows) {
+      five.used += billedUsd;
+      week.used += billedUsd;
     }
 
     await tx.usageWallet.update({
       where: { workspaceId },
       data: {
-        dailyIncludedUsd,
-        monthlyIncludedUsd,
+        fiveHourWindowStart: five.start,
+        fiveHourUsedUsd: five.used,
+        weeklyWindowStart: week.start,
+        weeklyUsedUsd: week.used,
         overageAccumulatedUsd,
-        dailyUsedThisMonthUsd,
-        ...(needsDailyReset ? { lastDailyReset: now } : {}),
-        ...(needsMonthlyReset ? { lastMonthlyReset: now } : {}),
-        ...(monthlyIncludedRefill != null
-          ? {
-              monthlyIncludedAllocationUsd: monthlyIncludedRefill,
-              overageBilledUsd: 0,
-            }
-          : {}),
+        ...(needsMonthlyReset ? { lastMonthlyReset: now, overageBilledUsd: 0 } : {}),
       },
     });
 
@@ -655,18 +716,95 @@ async function _consumeUsageTransaction(
         rawUsd,
         billedUsd,
         source,
-        balanceBefore,
-        balanceAfter,
+        balanceBefore: Number.isFinite(balanceBefore) ? balanceBefore : 0,
+        balanceAfter: Number.isFinite(balanceAfter) ? balanceAfter : 0,
       },
     });
 
+    const remainingIncludedUsd = limits == null
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0, Math.min(limits.fiveHourUsd - five.used, limits.weeklyUsd - week.used));
+
     return {
       success: true,
-      remainingIncludedUsd: dailyIncludedUsd + monthlyIncludedUsd,
+      remainingIncludedUsd,
       overageChargedUsd: overageCharged,
       source,
     };
   });
+}
+
+/** Mutable rolling-window state used inside the consume transaction. */
+interface RollingWindowState {
+  start: Date
+  used: number
+}
+
+/**
+ * Apply the lazy reset for a single rolling window. If the window has never
+ * opened (`start == null`) or its duration has fully elapsed, it reopens at
+ * `now` with zero usage; otherwise the existing start/used are preserved.
+ */
+function rollWindow(
+  start: Date | null | undefined,
+  used: number,
+  now: Date,
+  durationMs: number,
+): RollingWindowState {
+  if (!start || now.getTime() - new Date(start).getTime() >= durationMs) {
+    return { start: now, used: 0 }
+  }
+  return { start: new Date(start), used }
+}
+
+/**
+ * Determine which window blocked the request and when it next resets.
+ * When both windows are full, the later reset wins (the request needs both
+ * to clear), and we attribute it to the weekly window as the longer pole.
+ */
+function blockingWindow(
+  fitsFive: boolean,
+  fitsWeek: boolean,
+  fiveStart: Date,
+  weekStart: Date,
+): { window: UsageWindowKind; resetsAt: Date } {
+  const fiveResetsAt = new Date(fiveStart.getTime() + FIVE_HOUR_MS)
+  const weekResetsAt = new Date(weekStart.getTime() + SEVEN_DAY_MS)
+  if (!fitsFive && !fitsWeek) {
+    return weekResetsAt.getTime() >= fiveResetsAt.getTime()
+      ? { window: 'weekly', resetsAt: weekResetsAt }
+      : { window: 'five_hour', resetsAt: fiveResetsAt }
+  }
+  if (!fitsWeek) return { window: 'weekly', resetsAt: weekResetsAt }
+  return { window: 'five_hour', resetsAt: fiveResetsAt }
+}
+
+/**
+ * Resolve a workspace's rolling-window limits from its effective plan and
+ * seat count. Active Stripe subscription wins (seats from the sub); otherwise
+ * the highest active grant's plan and free-seat count apply; otherwise free.
+ * Returns `null` for uncapped (enterprise) plans.
+ *
+ * Reads are issued through the surrounding transaction client where possible
+ * to stay consistent with the wallet read.
+ */
+async function resolveWorkspaceWindowLimits(
+  tx: { subscription: { findFirst: typeof prisma.subscription.findFirst } },
+  workspaceId: string,
+  now: Date,
+): Promise<WindowLimits | null> {
+  const sub = await tx.subscription.findFirst({
+    where: { workspaceId, status: { in: ['active', 'trialing'] } },
+    select: { planId: true, seats: true },
+  })
+  if (sub) {
+    const plan = normalizePlanId(sub.planId) ?? 'free'
+    return getWindowLimitsForPlan(plan, sub.seats)
+  }
+  const grant = await getActiveGrantsForWorkspace(workspaceId, now)
+  const plan = normalizePlanId(grant.planId) ?? 'free'
+  const seats = Math.max(1, grant.freeSeats || 0)
+  return getWindowLimitsForPlan(plan, seats)
 }
 
 /**

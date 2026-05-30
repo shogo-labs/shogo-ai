@@ -1668,6 +1668,35 @@ import { getProjectUser } from '../lib/project-user-context'
 import { accumulateUsage, accumulateImageUsage } from '../lib/proxy-billing-session'
 
 /**
+ * Build the time-gating detail attached to a 402 "usage limit reached"
+ * response. When a rolling window is exhausted this surfaces which window
+ * gated the request and when it next resets, so clients can show a
+ * "resets in X" countdown (mirroring Codex / Claude Code). Best-effort:
+ * returns nulls if the windows can't be resolved.
+ */
+async function buildUsageLimitInfo(
+  workspaceId: string,
+): Promise<{ resetsAt: string | null; window: string | null; retryAfterSeconds: number | null }> {
+  try {
+    const w = await billingService.getUsageWindows(workspaceId)
+    const exhausted = [w.fiveHour, w.weekly].filter(
+      (s) => s.limitUsd != null && s.utilization >= 1 && s.resetsAt != null,
+    )
+    if (exhausted.length === 0) return { resetsAt: null, window: null, retryAfterSeconds: null }
+    const soonest = exhausted.reduce((a, b) =>
+      a.resetsAt!.getTime() <= b.resetsAt!.getTime() ? a : b,
+    )
+    return {
+      resetsAt: soonest.resetsAt!.toISOString(),
+      window: soonest.kind,
+      retryAfterSeconds: Math.max(0, Math.ceil((soonest.resetsAt!.getTime() - Date.now()) / 1000)),
+    }
+  } catch {
+    return { resetsAt: null, window: null, retryAfterSeconds: null }
+  }
+}
+
+/**
  * Record token usage for billing.
  *
  * If there's an active billing session for this project (opened by
@@ -2224,12 +2253,14 @@ export function aiProxyRoutes() {
 
     // Pre-check: reject if workspace has no included USD left (skip in local dev)
     if (!isLocalDev && !await billingService.hasBalance(tokenPayload.workspaceId)) {
+      const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
       return c.json(
         {
           error: {
             message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.',
             type: 'billing_error',
             code: 'usage_limit_reached',
+            ...usageLimit,
           },
         },
         402
@@ -2396,8 +2427,9 @@ export function aiProxyRoutes() {
     }
 
     if (!isLocalDev && !await billingService.hasBalance(tokenPayload.workspaceId)) {
+      const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
       return c.json(
-        { error: { message: 'Usage limit reached.', type: 'billing_error', code: 'usage_limit_reached' } },
+        { error: { message: 'Usage limit reached.', type: 'billing_error', code: 'usage_limit_reached', ...usageLimit } },
         402
       )
     }
@@ -2686,8 +2718,9 @@ export function aiProxyRoutes() {
 
     // Pre-check usage balance (skip in local dev)
     if (!isLocalDev && !await billingService.hasBalance(tokenPayload.workspaceId)) {
+      const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
       return c.json(
-        { type: 'error', error: { type: 'billing_error', message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.' } },
+        { type: 'error', error: { type: 'billing_error', message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.', ...usageLimit } },
         402
       )
     }
@@ -3087,8 +3120,9 @@ export function aiProxyRoutes() {
     }
 
     if (!await billingService.hasBalance(tokenPayload.workspaceId)) {
+      const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
       return c.json(
-        { error: { message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.', type: 'billing_error', code: 'usage_limit_reached' } },
+        { error: { message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.', type: 'billing_error', code: 'usage_limit_reached', ...usageLimit } },
         402
       )
     }
@@ -3180,8 +3214,9 @@ export function aiProxyRoutes() {
     }
 
     if (!await billingService.hasBalance(tokenPayload.workspaceId)) {
+      const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
       return c.json(
-        { error: { message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.', type: 'billing_error', code: 'usage_limit_reached' } },
+        { error: { message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.', type: 'billing_error', code: 'usage_limit_reached', ...usageLimit } },
         402
       )
     }

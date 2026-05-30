@@ -44,6 +44,7 @@ import { trackInitiateCheckout, trackPurchase } from '../../lib/tracking'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useDomainActions } from '@shogo/shared-app/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
+import type { UsageWindowView } from '@shogo/shared-app/hooks'
 import {
   PLAN_PRICING,
   BASIC_FEATURES,
@@ -55,6 +56,7 @@ import {
   getIncludedUsdCapacityForDisplay,
   formatUsd,
   formatCurrencyPrice,
+  formatResetCountdown,
   getPlanDisplayName,
 } from '../../lib/billing-config'
 import { SeatCounter } from '../../components/billing/SeatCounter'
@@ -68,6 +70,44 @@ import {
   Skeleton,
   cn,
 } from '@shogo/shared-ui/primitives'
+
+// ─── Rolling usage-window bar ──────────────────────────────
+
+function UsageWindowBar({ label, window }: { label: string; window: UsageWindowView | undefined }) {
+  // Uncapped (enterprise) plans report a null limit.
+  const uncapped = !!window && window.limitUsd == null
+  const utilization = window ? Math.min(1, Math.max(0, window.utilization)) : 0
+  const pct = Math.round(utilization * 100)
+  const countdown = window ? formatResetCountdown(window.resetsAt) : ''
+
+  const usageText = !window
+    ? '—'
+    : uncapped
+      ? 'Unlimited'
+      : `${formatUsd(window.usedUsd)} of ${formatUsd(window.limitUsd ?? 0)}`
+
+  return (
+    <View className="gap-1.5">
+      <View className="flex-row items-center justify-between">
+        <Text className="text-sm font-medium text-foreground">{label}</Text>
+        <Text className="text-sm text-muted-foreground">{usageText}</Text>
+      </View>
+      <View className="h-2 rounded-full bg-muted overflow-hidden">
+        {!uncapped && (
+          <View
+            className={cn('h-2 rounded-full', pct >= 100 ? 'bg-destructive' : 'bg-primary')}
+            style={{ width: `${uncapped ? 0 : pct}%` }}
+          />
+        )}
+      </View>
+      {!uncapped && countdown ? (
+        <Text className="text-xs text-muted-foreground">
+          {pct >= 100 ? `Limit reached — resets in ${countdown}` : `Resets in ${countdown}`}
+        </Text>
+      ) : null}
+    </View>
+  )
+}
 
 // ─── Main Page ─────────────────────────────────────────────
 
@@ -93,6 +133,7 @@ export default observer(function BillingPage() {
     refetchSubscription,
     refetchUsageWallet,
     planSource,
+    usageWindows,
   } = useBillingData(currentWorkspace?.id)
   // A grant-conferred plan has no Stripe customer / portal, so hide
   // "Manage" / Stripe-only affordances and let "Free Plan"-style copy
@@ -582,44 +623,51 @@ export default observer(function BillingPage() {
         </CardContent>
       </Card>
 
-      {/* Usage Display */}
+      {/* Usage Display — time-gated rolling windows */}
       <Card className="mb-8">
         <CardContent className="p-4 gap-4">
           <View>
             <Text className="text-sm font-medium text-foreground mb-1">
-              Usage remaining this period
+              Usage limits
             </Text>
             <Text className="text-2xl font-bold text-foreground">
-              {formatUsd(usdRemaining)} of {formatUsd(usdTotal)}
+              Unlimited within your windows
             </Text>
           </View>
+
+          <View className="gap-4">
+            <UsageWindowBar
+              label="5-hour window"
+              window={usageWindows?.fiveHour}
+            />
+            <UsageWindowBar
+              label="Weekly window"
+              window={usageWindows?.weekly}
+            />
+          </View>
+
           <View className="gap-2">
-            <Text className="text-sm font-medium text-foreground">
-              Daily allowance is used before your monthly pool
-            </Text>
-            <View className="gap-2">
+            <View className="flex-row items-center gap-2">
+              <Info size={16} className="text-muted-foreground" />
+              <Text className="text-sm text-muted-foreground">
+                {Platform.OS === 'ios'
+                  ? 'Usage is unlimited within rolling 5-hour and weekly limits. Each window resets on its own schedule.'
+                  : 'Usage is billed at the AI provider\'s raw cost plus a flat 20% markup and is unlimited within rolling 5-hour and weekly limits (per seat on Pro/Business). When a window is exhausted, usage resumes after it resets.'}
+              </Text>
+            </View>
+            {Platform.OS !== 'ios' && effectiveBalance?.overageEnabled && (
               <View className="flex-row items-center gap-2">
                 <Info size={16} className="text-muted-foreground" />
                 <Text className="text-sm text-muted-foreground">
-                  {Platform.OS === 'ios'
-                    ? 'Pro and Business include monthly usage per seat. Daily allowance resets at midnight UTC.'
-                    : 'All usage is billed at the AI provider\'s raw cost plus a flat 20% markup. Pro and Business include $20/$40 of monthly usage per seat. No credits, no unit conversions. Daily allowance resets at midnight UTC.'}
+                  Need more before a window resets? Overage charges in escalating trust blocks ($100 → $500){effectiveBalance.overageHardLimitUsd != null
+                    ? ` (cap ${formatUsd(effectiveBalance.overageHardLimitUsd)}/mo)`
+                    : ''}
+                  {effectiveBalance.overageAccumulatedUsd > 0
+                    ? `. Overage this period: ${formatUsd(effectiveBalance.overageAccumulatedUsd)}`
+                    : ''}
                 </Text>
               </View>
-              {Platform.OS !== 'ios' && effectiveBalance?.overageEnabled && (
-                <View className="flex-row items-center gap-2">
-                  <Info size={16} className="text-muted-foreground" />
-                  <Text className="text-sm text-muted-foreground">
-                    Overage charges in escalating trust blocks ($100 → $500) once included usage runs out{effectiveBalance.overageHardLimitUsd != null
-                      ? ` (cap ${formatUsd(effectiveBalance.overageHardLimitUsd)}/mo)`
-                      : ''}
-                    {effectiveBalance.overageAccumulatedUsd > 0
-                      ? `. Overage this period: ${formatUsd(effectiveBalance.overageAccumulatedUsd)}`
-                      : ''}
-                  </Text>
-                </View>
-              )}
-            </View>
+            )}
           </View>
         </CardContent>
       </Card>
