@@ -803,7 +803,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 )}
               >
                 <PopoverBackdrop />
-                <PopoverContent className="p-0 max-h-[360px]">
+                <PopoverContent className="p-0 max-h-[360px] web:outline-none">
                   <ModelPickerMenu
                     currentModelId={currentModelId}
                     effectiveIsPro={effectiveIsPro}

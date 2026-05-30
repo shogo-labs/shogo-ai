@@ -34,6 +34,7 @@ const {
   invalidateModelRegistry,
   getMergedCatalogSync,
   getMergedModelEntrySync,
+  getDbModelEntriesSync,
   getDbRoutingConfigSync,
   getDbModelPricingSync,
 } = await import('../model-registry.service')
@@ -109,6 +110,24 @@ describe('model-registry.service', () => {
     expect(ids.has('claude-opus-4-8')).toBe(true)
     // A known static model is still present
     expect(ids.has('claude-sonnet-4-6')).toBe(true)
+  })
+
+  test('getDbModelEntriesSync returns only DB models, not the static catalog', () => {
+    const ids = new Set(getDbModelEntriesSync().map((m) => m.id))
+    // DB-defined models are present…
+    expect(ids.has('mimo-v2.5')).toBe(true)
+    expect(ids.has('claude-opus-4-8')).toBe(true)
+    // …while static-only catalog entries are excluded (the picker uses this
+    // so the admin's DB set is the source of truth).
+    expect(ids.has('claude-sonnet-4-6')).toBe(false)
+  })
+
+  test('getDbModelEntriesSync drops disabled DB models', async () => {
+    MODELS = MODELS.map((m) => (m.id === 'mimo-v2.5' ? { ...m, enabled: false } : m))
+    await invalidateModelRegistry()
+    const ids = new Set(getDbModelEntriesSync().map((m) => m.id))
+    expect(ids.has('mimo-v2.5')).toBe(false)
+    expect(ids.has('claude-opus-4-8')).toBe(true)
   })
 
   test('DB model overrides static on id collision', async () => {

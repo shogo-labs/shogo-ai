@@ -918,40 +918,34 @@ export const api = {
 
   // ─── Project Export/Import ──────────────────────────────────
 
-  getProjectExportUrl(
-    projectId: string,
-    opts?: {
-      includeChats?: boolean
-      passphrase?: string  // Encrypted-secrets opt-in (≥8 chars).
-      includeEnv?: boolean // True = ship raw .env files; false (default) = smart-split.
-    },
-  ): string {
-    const params = new URLSearchParams()
-    if (opts?.includeChats === false) params.set('includeChats', 'false')
-    if (opts?.passphrase && opts.passphrase.length > 0) {
-      params.set('passphrase', opts.passphrase)
-    }
-    if (opts?.includeEnv === true) params.set('includeEnv', 'true')
-    const qs = params.toString()
-    return `${API_URL}/api/projects/${projectId}/export${qs ? `?${qs}` : ''}`
+  getProjectExportUrl(projectId: string): string {
+    return `${API_URL}/api/projects/${projectId}/export`
   },
 
   async exportProjectBlob(
     projectId: string,
     opts?: {
       includeChats?: boolean
-      passphrase?: string
-      includeEnv?: boolean
+      /** When set, the archive is ZipCrypto-encrypted with this password. */
+      password?: string
       authCookie?: string | null
     },
   ): Promise<{ blob: Blob; filename: string }> {
-    const url = api.getProjectExportUrl(projectId, opts)
-    const headers: Record<string, string> = {}
+    const url = api.getProjectExportUrl(projectId)
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    }
     if (opts?.authCookie) headers['Cookie'] = opts.authCookie
 
+    // POST (not GET) so the password rides in the request body, never the URL.
     const res = await fetch(url, {
+      method: 'POST',
       credentials: Platform.OS === 'web' ? 'include' : 'omit',
       headers,
+      body: JSON.stringify({
+        includeChats: opts?.includeChats !== false,
+        ...(opts?.password ? { password: opts.password } : {}),
+      }),
     })
     if (!res.ok) {
       const text = await res.text()
@@ -1009,8 +1003,8 @@ export const api = {
       workspaceId: string
       filename?: string
       includeChats: boolean
-      /** Unlock `encryptedSecrets` (auto-fills tokens). */
-      passphrase?: string
+      /** Unlocks a ZipCrypto password-protected archive. */
+      password?: string
       /** Defaults to true; set false to skip bun install / generate / etc. */
       runBootstrap?: boolean
     },
@@ -1021,7 +1015,7 @@ export const api = {
       file: params.file,
       workspaceId: params.workspaceId,
       includeChats: params.includeChats,
-      passphrase: params.passphrase || '',
+      password: params.password || '',
       runBootstrap: params.runBootstrap !== false,
       filename,
     }
@@ -1162,7 +1156,7 @@ interface ImportHelperOpts {
   file: Blob
   workspaceId: string
   includeChats: boolean
-  passphrase: string
+  password: string
   runBootstrap: boolean
   filename: string
 }
@@ -1172,7 +1166,7 @@ function buildImportFormData(opts: ImportHelperOpts): FormData {
   fd.append('file', opts.file, opts.filename)
   fd.append('workspaceId', opts.workspaceId)
   fd.append('includeChats', opts.includeChats ? 'true' : 'false')
-  if (opts.passphrase) fd.append('passphrase', opts.passphrase)
+  if (opts.password) fd.append('password', opts.password)
   if (!opts.runBootstrap) fd.append('runBootstrap', 'false')
   return fd
 }

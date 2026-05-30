@@ -2,9 +2,10 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Extra coverage for src/routes/project-export-import.ts targeting:
- *   - GET /:projectId/export with chat sessions in the bundle (includeChats=true default)
- *   - GET /:projectId/export with malformed project.settings JSON (catch branch)
- *   - GET /:projectId/export with passphrase + includeEnv=true query branches
+ *   - POST /:projectId/export with chat sessions in the bundle (includeChats=true default)
+ *   - POST /:projectId/export with malformed project.settings JSON (catch branch)
+ *   - POST /:projectId/export with a body password (ZipCrypto archive) and the
+ *     default unencrypted path
  *   - POST /import 413 file-too-large
  *   - POST /import "missing file in form data" branch
  *   - runImport: unsafe paths in workspace files (path traversal rejection)
@@ -15,6 +16,7 @@
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
 import { Hono } from 'hono'
 import { zipSync, strToU8 } from 'fflate'
+import { isEncryptedZip } from '../lib/zip-encryption'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { mkdtempSync } from 'node:fs'
@@ -166,14 +168,22 @@ function makeProjectJson(extra: Record<string, unknown> = {}): string {
   })
 }
 
-// ─── GET /:projectId/export — query-param branches ──────────────────────────
+// ─── POST /:projectId/export — body branches ────────────────────────────────
 
-describe('GET /:projectId/export — query param branches', () => {
-  test('default includeChats (no query) with no chat sessions still exports successfully', async () => {
+function exportReq(projectId: string, body?: { includeChats?: boolean; password?: string }) {
+  return new Request(`http://x/api/projects/${projectId}/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
+  })
+}
+
+describe('POST /:projectId/export — body branches', () => {
+  test('default includeChats (empty body) with no chat sessions still exports successfully', async () => {
     seedProject('p-no-sessions')
     const app = new Hono()
     app.route('/api/projects', projectExportImportRoutes())
-    const res = await app.fetch(new Request('http://x/api/projects/p-no-sessions/export'))
+    const res = await app.fetch(exportReq('p-no-sessions'))
 
     expect(res.status).toBe(200)
     expect(res.headers.get('Content-Type')).toBe('application/zip')
@@ -187,7 +197,7 @@ describe('GET /:projectId/export — query param branches', () => {
 
     const app = new Hono()
     app.route('/api/projects', projectExportImportRoutes())
-    const res = await app.fetch(new Request('http://x/api/projects/p-no-chats/export?includeChats=false'))
+    const res = await app.fetch(exportReq('p-no-chats', { includeChats: false }))
 
     expect(res.status).toBe(200)
     expect((await res.arrayBuffer()).byteLength).toBeGreaterThan(0)
@@ -197,29 +207,31 @@ describe('GET /:projectId/export — query param branches', () => {
     seedProject('p-bad-settings', { settings: '{this is not json}}' })
     const app = new Hono()
     app.route('/api/projects', projectExportImportRoutes())
-    const res = await app.fetch(new Request('http://x/api/projects/p-bad-settings/export?includeChats=false'))
+    const res = await app.fetch(exportReq('p-bad-settings', { includeChats: false }))
     expect(res.status).toBe(200)
   })
 
-  test('passphrase query enables secrets bundling without crashing the export', async () => {
+  test('a body password produces a ZipCrypto-encrypted archive', async () => {
     seedProject('p-secrets')
     const app = new Hono()
     app.route('/api/projects', projectExportImportRoutes())
     const res = await app.fetch(
-      new Request('http://x/api/projects/p-secrets/export?includeChats=false&passphrase=swordfish'),
+      exportReq('p-secrets', { includeChats: false, password: 'swordfish' }),
     )
     expect(res.status).toBe(200)
     expect(res.headers.get('Content-Type')).toBe('application/zip')
+    const bytes = new Uint8Array(await res.arrayBuffer())
+    expect(isEncryptedZip(bytes)).toBe(true)
   })
 
-  test('includeEnv=true is accepted as a query param', async () => {
-    seedProject('p-env')
+  test('no password produces a plain (unencrypted) archive', async () => {
+    seedProject('p-plain')
     const app = new Hono()
     app.route('/api/projects', projectExportImportRoutes())
-    const res = await app.fetch(
-      new Request('http://x/api/projects/p-env/export?includeChats=false&includeEnv=true&passphrase=p'),
-    )
+    const res = await app.fetch(exportReq('p-plain', { includeChats: false }))
     expect(res.status).toBe(200)
+    const bytes = new Uint8Array(await res.arrayBuffer())
+    expect(isEncryptedZip(bytes)).toBe(false)
   })
 })
 

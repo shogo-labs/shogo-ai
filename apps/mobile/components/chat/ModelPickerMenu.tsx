@@ -53,17 +53,22 @@ function formatContextWindow(tokens?: number): string | null {
   return `${tokens} context window`
 }
 
+/** Fixed width of the web side info panel. Without an explicit width the
+ *  flex child collapses to its min-content size inside the popover, which
+ *  wraps the model name mid-word ("Claud e Opus 4.7"). */
+const INFO_PANEL_WIDTH = 232
+
 function ModelInfoPanel({ model }: { model: PickerModel | null }) {
   if (!model) {
     return (
-      <View className="flex-1 p-4 justify-center">
+      <View style={{ width: INFO_PANEL_WIDTH }} className="p-4 justify-center">
         <Text className="text-xs text-muted-foreground">Hover a model for details.</Text>
       </View>
     )
   }
   const context = formatContextWindow(model.contextWindow)
   return (
-    <View className="flex-1 p-4 gap-3">
+    <View style={{ width: INFO_PANEL_WIDTH }} className="p-4 gap-3">
       <Text className="text-sm font-semibold text-foreground">{model.displayName}</Text>
       {model.description ? (
         <Text className="text-xs text-muted-foreground leading-5">{model.description}</Text>
@@ -202,7 +207,13 @@ export function ModelPickerMenu({
   if (!isWeb) return list
 
   return (
-    <View className="flex-row">
+    // `userSelect: none` stops the popover text from being click-drag
+    // highlighted; `outline-none` kills the browser focus ring the popover
+    // container would otherwise draw around itself.
+    <View
+      className="flex-row web:outline-none no-focus-ring"
+      style={{ userSelect: "none" } as any}
+    >
       {list}
       <View className="w-px bg-border/50" />
       <ModelInfoPanel model={activeInfoModel} />
