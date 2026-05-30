@@ -165,11 +165,6 @@ spec:
               value: "https://studio.shogo.ai"
             - name: ALLOWED_ORIGINS
               value: "https://studio.shogo.ai,https://shogo.ai,https://eu.studio.shogo.ai,https://india.studio.shogo.ai"
-            # Public hostname for browser/desktop WebSocket traffic. It is
-            # routed by api-tunnel-ingress.yaml directly to the api revision pod
-            # so WS Upgrade bypasses the Knative DomainMapping loopback.
-            - name: SHOGO_TUNNEL_WS_URL
-              value: "wss://tunnel.shogo.ai"
             - name: REDIS_URL
               value: "redis://redis-master.shogo-system:6379"
             - name: DATABASE_URL
