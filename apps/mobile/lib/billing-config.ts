@@ -38,14 +38,23 @@ export interface WindowLimits {
   weeklyUsd: number
 }
 
-/** Per-window included USD of compute per plan. `null` = uncapped. */
+/**
+ * Per-window included USD of compute per plan. `null` = uncapped. Sized so a
+ * worst-case (window-pinning) user's monthly provider COGS stays ≈72.5% of
+ * list subscription revenue (TARGET_COMPUTE_COST_RATIO 0.75) — see the
+ * don't-lose-money derivation in the backend `usage-plans.ts`. Keep these in
+ * sync with the backend values.
+ */
 export const ROLLING_WINDOW_LIMITS: Record<PlanId, WindowLimits | null> = {
-  free: { fiveHourUsd: 0.5, weeklyUsd: 2 },
-  basic: { fiveHourUsd: 2, weeklyUsd: 10 },
-  pro: { fiveHourUsd: 8, weeklyUsd: 40 },
-  business: { fiveHourUsd: 20, weeklyUsd: 120 },
+  free: { fiveHourUsd: 0.2, weeklyUsd: 0.5 },
+  basic: { fiveHourUsd: 0.64, weeklyUsd: 1.6 },
+  pro: { fiveHourUsd: 1.6, weeklyUsd: 4 },
+  business: { fiveHourUsd: 3.2, weeklyUsd: 8 },
   enterprise: null,
 }
+
+/** Average weeks per calendar month (365.25 / 12 / 7 ≈ 4.348). */
+export const WEEKS_PER_MONTH = 365.25 / 12 / 7
 
 /**
  * Window limits for a (plan, seats) pair. Pro/Business scale per seat; Free
@@ -69,6 +78,20 @@ export function getWindowLimitsForPlan(
     return { fiveHourUsd: base.fiveHourUsd * s, weeklyUsd: base.weeklyUsd * s }
   }
   return { fiveHourUsd: base.fiveHourUsd, weeklyUsd: base.weeklyUsd }
+}
+
+/**
+ * Effective monthly included usage (marked-up USD) implied by the weekly
+ * window: `weeklyUsd × WEEKS_PER_MONTH`. Upper bound assuming continuous use.
+ * Returns `null` for uncapped (enterprise). Mirrors the backend helper.
+ */
+export function getMonthlyIncludedEquivalent(
+  planId: string | null | undefined,
+  seats: number = 1,
+): number | null {
+  const limits = getWindowLimitsForPlan(planId, seats)
+  if (limits == null) return null
+  return limits.weeklyUsd * WEEKS_PER_MONTH
 }
 
 /**
