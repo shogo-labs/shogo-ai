@@ -252,4 +252,47 @@ describe('admin models CRUD', () => {
     expect((await put('/models/nope', { displayName: 'X' })).status).toBe(404)
     expect((await del('/models/nope')).status).toBe(404)
   })
+
+  test('persists picker metadata (description, contextWindow, reasoningEffort)', async () => {
+    const res = await post('/models', {
+      id: 'sonnet-meta',
+      provider: 'anthropic',
+      apiModel: 'claude-sonnet-4-6',
+      displayName: 'Claude Sonnet 4.6',
+      description: "Anthropic's smartest model, great for difficult tasks.",
+      contextWindow: 200000,
+      reasoningEffort: 'medium',
+    })
+    expect(res.status).toBe(200)
+    const data = await res.json() as any
+    expect(data.model.description).toBe("Anthropic's smartest model, great for difficult tasks.")
+    expect(data.model.contextWindow).toBe(200000)
+    expect(data.model.reasoningEffort).toBe('medium')
+  })
+
+  test('rejects an invalid reasoningEffort on create and update', async () => {
+    expect((await post('/models', {
+      id: 'bad-effort', provider: 'openai', apiModel: 'x', displayName: 'X', reasoningEffort: 'turbo',
+    })).status).toBe(400)
+
+    await post('/models', { id: 'ok-effort', provider: 'openai', apiModel: 'x', displayName: 'X' })
+    expect((await put('/models/ok-effort', { reasoningEffort: 'turbo' })).status).toBe(400)
+    // A valid level updates cleanly.
+    const ok = await put('/models/ok-effort', { reasoningEffort: 'high' })
+    expect(ok.status).toBe(200)
+    expect((await ok.json() as any).model.reasoningEffort).toBe('high')
+  })
+
+  test('update clears metadata when passed null/empty', async () => {
+    await post('/models', {
+      id: 'clearable', provider: 'openai', apiModel: 'x', displayName: 'X',
+      description: 'temporary', contextWindow: 128000, reasoningEffort: 'low',
+    })
+    const res = await put('/models/clearable', { description: '  ', contextWindow: 0, reasoningEffort: null })
+    expect(res.status).toBe(200)
+    const data = await res.json() as any
+    expect(data.model.description).toBeNull()
+    expect(data.model.contextWindow).toBeNull()
+    expect(data.model.reasoningEffort).toBeNull()
+  })
 })

@@ -21,6 +21,8 @@ import {
 } from '@shogo/model-catalog'
 import { createHttpClient } from './api'
 
+export type ReasoningEffort = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+
 export interface PickerModel {
   id: string
   displayName: string
@@ -30,6 +32,12 @@ export interface PickerModel {
   /** Native provider id (e.g. `anthropic`, `custom`). Lets surfaces that
    *  need the provider (not just the group label) build their options. */
   provider?: string
+  /** Short blurb shown in the picker info panel. */
+  description?: string
+  /** Total context window in tokens (distinct from max output tokens). */
+  contextWindow?: number
+  /** Reasoning effort applied when the model runs. */
+  reasoningEffort?: ReasoningEffort
 }
 
 export interface PickerGroup {
@@ -43,15 +51,18 @@ let cached: ResolvedVisibleModels | null = null
 let inflight: Promise<ResolvedVisibleModels> | null = null
 
 /** Per-id metadata resolved by the serving API (notably for DB-defined models
- *  this build doesn't carry in its bundled `MODEL_CATALOG`, e.g. MiMo). Kept
- *  module-global so non-picker surfaces (chips, analytics) can resolve a
- *  model's display/family/tier without re-fetching. */
+ *  this build doesn't carry in its bundled `MODEL_CATALOG`, e.g. custom-provider
+ *  models). Kept module-global so non-picker surfaces (chips, analytics) can
+ *  resolve a model's display/family/tier without re-fetching. */
 interface ResolvedModelMeta {
   displayName: string
   shortDisplayName?: string
   tier: ModelTier
   family?: string
   maxOutputTokens?: number
+  description?: string
+  contextWindow?: number
+  reasoningEffort?: ReasoningEffort
 }
 
 const serverModelMeta = new Map<string, ResolvedModelMeta>()
@@ -65,6 +76,9 @@ function indexServerCatalog(data: ResolvedVisibleModels): void {
       tier: (m.tier as ModelTier) ?? 'standard',
       family: m.family,
       maxOutputTokens: m.maxOutputTokens,
+      description: m.description,
+      contextWindow: m.contextWindow,
+      reasoningEffort: m.reasoningEffort as ReasoningEffort | undefined,
     })
   }
   for (const m of data.openrouterModels ?? []) {
@@ -167,6 +181,15 @@ export function resolveFamily(id: string): string {
   return 'other'
 }
 
+/** Resolve a model's configured reasoning effort, if any. Server metadata
+ *  wins (covers DB-defined models); falls back to the bundled catalog. */
+export function resolveReasoningEffort(id: string): ReasoningEffort | undefined {
+  const server = serverModelMeta.get(id)
+  if (server?.reasoningEffort) return server.reasoningEffort
+  const entry = getModelEntry(id)
+  return entry?.reasoningEffort as ReasoningEffort | undefined
+}
+
 /**
  * Group a flat list of resolved catalog models by provider, preserving
  * first-seen provider order. Used when the serving API ships
@@ -193,6 +216,9 @@ function groupResolvedCatalogModels(
       tier: m.tier as ModelTier,
       family: m.family,
       provider: m.provider,
+      description: m.description,
+      contextWindow: m.contextWindow,
+      reasoningEffort: m.reasoningEffort as ReasoningEffort | undefined,
     })
   }
   return order.map((label) => ({ label, models: byLabel.get(label)! }))
@@ -237,6 +263,9 @@ export function buildModelGroups(
           tier: m.tier as ModelTier,
           family: m.family,
           provider: m.provider,
+          description: m.description,
+          contextWindow: m.contextWindow,
+          reasoningEffort: m.reasoningEffort as ReasoningEffort | undefined,
         })),
     })).filter((g) => g.models.length > 0)
   }
@@ -279,4 +308,78 @@ export function useVisibleModels(): ResolvedVisibleModels | null {
 export function useModelPickerGroups(): PickerGroup[] {
   const visible = useVisibleModels()
   return useMemo(() => buildModelGroups(visible), [visible])
+}
+
+/**
+ * Build a single flat, admin-ordered list of picker models (the redesigned
+ * chat picker layout). Order is whatever the serving API returns — it sorts
+ * the catalog by each model's admin-set `sortOrder` — with the bundled
+ * fallback preserving catalog order. OpenRouter extras are appended last.
+ *
+ * This is the flat counterpart to {@link buildModelGroups}; surfaces that
+ * still want provider sections keep using the grouped hook.
+ */
+export function buildModelList(visible: ResolvedVisibleModels | null): PickerModel[] {
+  const openrouterModels = visible?.openrouterModels ?? []
+  const out: PickerModel[] = []
+
+  if (visible?.catalogModels) {
+    // Server already sorted these by admin sortOrder — preserve that order
+    // verbatim (no provider regrouping).
+    for (const m of visible.catalogModels) {
+      out.push({
+        id: m.id,
+        displayName: m.displayName,
+        shortDisplayName: m.shortDisplayName,
+        tier: (m.tier as ModelTier) ?? 'standard',
+        family: m.family,
+        provider: m.provider,
+        description: m.description,
+        contextWindow: m.contextWindow,
+        reasoningEffort: m.reasoningEffort as ReasoningEffort | undefined,
+      })
+    }
+  } else {
+    const catalogIds = visible?.catalogIds ?? null
+    const allowed = catalogIds === null ? null : new Set(catalogIds)
+    for (const group of getModelsByProvider()) {
+      for (const m of group.models as ModelEntry[]) {
+        if (allowed !== null && !allowed.has(m.id)) continue
+        out.push({
+          id: m.id,
+          displayName: m.displayName,
+          shortDisplayName: m.shortDisplayName,
+          tier: m.tier as ModelTier,
+          family: m.family,
+          provider: m.provider,
+          description: m.description,
+          contextWindow: m.contextWindow,
+          reasoningEffort: m.reasoningEffort as ReasoningEffort | undefined,
+        })
+      }
+    }
+    // Honor sortOrder when the bundled catalog carries it (stable otherwise).
+    const sorted = out
+      .map((row, i) => ({ row, i, order: getModelEntry(row.id)?.sortOrder ?? Number.POSITIVE_INFINITY }))
+      .sort((a, b) => (a.order === b.order ? a.i - b.i : a.order - b.order))
+      .map((x) => x.row)
+    out.length = 0
+    out.push(...sorted)
+  }
+
+  for (const m of openrouterModels) {
+    out.push({
+      id: m.id,
+      displayName: m.displayName,
+      tier: (m.tier as ModelTier | undefined) ?? DEFAULT_OR_TIER,
+    })
+  }
+
+  return out
+}
+
+/** Memoised hook returning the flat, admin-ordered picker list. */
+export function useModelPickerList(): PickerModel[] {
+  const visible = useVisibleModels()
+  return useMemo(() => buildModelList(visible), [visible])
 }

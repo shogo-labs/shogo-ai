@@ -70,6 +70,7 @@ import type { InteractionMode } from '../../../../components/chat/ChatInput'
 import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../../../components/chat/ChatInput'
 import { loadModelPreference, saveModelPreference } from '../../../../lib/agent-mode-preference'
 import { MODEL_CATALOG } from '@shogo/model-catalog'
+import { resolveReasoningEffort } from '../../../../lib/visible-models'
 import { agentFetch } from '../../../../lib/agent-fetch'
 import { useActiveInstance } from '../../../../contexts/active-instance'
 import { ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
@@ -656,10 +657,11 @@ export default observer(function ProjectLayout() {
       modelPrefSyncedRef.current = syncKey
       const entry = MODEL_CATALOG[next as keyof typeof MODEL_CATALOG]
       if (!entry) return
+      const thinkingLevel = resolveReasoningEffort(next)
       agentFetch(`${agentUrl}/agent/config`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: { provider: entry.provider, name: entry.id } }),
+        body: JSON.stringify({ model: { provider: entry.provider, name: entry.id, ...(thinkingLevel ? { thinkingLevel } : {}) } }),
       }).catch((err) => {
         console.error('[ProjectLayout] Failed to sync persisted model to runtime:', err)
         modelPrefSyncedRef.current = null
@@ -675,10 +677,11 @@ export default observer(function ProjectLayout() {
       const entry = MODEL_CATALOG[modelId as keyof typeof MODEL_CATALOG]
       if (entry) {
         try {
+          const thinkingLevel = resolveReasoningEffort(modelId)
           await agentFetch(`${agentUrl}/agent/config`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: { provider: entry.provider, name: entry.id } }),
+            body: JSON.stringify({ model: { provider: entry.provider, name: entry.id, ...(thinkingLevel ? { thinkingLevel } : {}) } }),
           })
         } catch (err) {
           console.error('[ProjectLayout] Failed to push model config to runtime:', err)

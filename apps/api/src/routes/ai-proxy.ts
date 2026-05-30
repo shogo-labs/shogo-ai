@@ -37,6 +37,7 @@ import {
 import { verifyRuntimeToken } from '../lib/runtime-token'
 import { resolveApiKey } from './api-keys'
 import { getDbRoutingConfigSync, getMergedModelEntrySync } from '../services/model-registry.service'
+import { getNativeProviderApiKeySync } from '../services/provider-credentials.service'
 import { wipeCloudKey } from '../lib/cloud-key-wipe'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
 import { getRuntimeManager } from '../lib/runtime'
@@ -242,11 +243,10 @@ function resolveModelTier(model: string): ModelTier {
 function getProviderApiKey(provider: Provider): string | null {
   switch (provider) {
     case 'anthropic':
-      return process.env.ANTHROPIC_API_KEY || null
     case 'openai':
-      return process.env.OPENAI_API_KEY || null
     case 'openrouter':
-      return process.env.OPENROUTER_API_KEY || null
+      // DB-stored (admin-entered, encrypted) key first, else the env var.
+      return getNativeProviderApiKeySync(provider)
     case 'local':
       return 'local'
     default:
@@ -1779,8 +1779,8 @@ function resolveImageModel(model: string): ImageModelConfig | null {
 
 function getImageProviderApiKey(provider: ImageProvider): string | null {
   switch (provider) {
-    case 'openai': return process.env.OPENAI_API_KEY || null
-    case 'google': return process.env.GOOGLE_API_KEY || null
+    case 'openai': return getNativeProviderApiKeySync('openai')
+    case 'google': return getNativeProviderApiKeySync('google')
     case 'local': return 'local'
     default: return null
   }

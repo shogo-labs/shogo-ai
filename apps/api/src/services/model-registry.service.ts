@@ -87,6 +87,9 @@ interface ModelRow {
   sortOrder: number | null
   aliases: unknown
   capabilities: unknown
+  description: string | null
+  contextWindow: number | null
+  reasoningEffort: string | null
   inputPerMillion: number
   cachedInputPerMillion: number
   cacheWritePerMillion: number
@@ -151,6 +154,10 @@ function rowToModelEntry(row: ModelRow): ModelEntry {
     billingModel: deriveBillingModel(row.family, row.tier),
     maxOutputTokens: row.maxOutputTokens,
     ...(capabilities ? { capabilities } : {}),
+    ...(typeof row.sortOrder === 'number' ? { sortOrder: row.sortOrder } : {}),
+    ...(row.description ? { description: row.description } : {}),
+    ...(row.contextWindow ? { contextWindow: row.contextWindow } : {}),
+    ...(row.reasoningEffort ? { reasoningEffort: row.reasoningEffort as ModelEntry['reasoningEffort'] } : {}),
   }
 }
 

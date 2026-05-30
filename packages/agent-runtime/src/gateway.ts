@@ -138,14 +138,24 @@ function resolveModelAlias(modelId: string): string {
 }
 
 /**
- * Resolve the thinking/reasoning level for a turn. The 'basic' agent mode
- * uses claude-haiku which benefits from medium reasoning effort.
+ * Resolve the thinking/reasoning level for a turn.
+ *
+ * Precedence:
+ *   1. `basic` agent mode → its dedicated env override (haiku benefits from
+ *      medium reasoning effort).
+ *   2. The selected model's admin-configured `reasoningEffort`, threaded
+ *      through `config.model.thinkingLevel` by the picker.
+ *   3. The `AGENT_THINKING_LEVEL` env default, then `medium`.
  */
-function resolveThinkingLevel(modelOverride?: string): 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' {
+export function resolveThinkingLevel(
+  modelOverride?: string,
+  configThinkingLevel?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh',
+): 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' {
   const envLevel = process.env.AGENT_THINKING_LEVEL as any
   if (modelOverride === 'basic') {
     return (process.env.AGENT_BASIC_THINKING_LEVEL as any) || 'medium'
   }
+  if (configThinkingLevel) return configThinkingLevel
   return envLevel || 'medium'
 }
 
@@ -187,8 +197,11 @@ export interface GatewayConfig {
   heartbeatEnabled: boolean
   quietHours: { start: string; end: string; timezone: string }
   channels: Array<{ type: string; config: Record<string, string>; model?: string }>
-  /** Model configuration: provider + name (e.g. { provider: 'anthropic', name: 'claude-sonnet-4-5' }) */
-  model: { provider: string; name: string }
+  /** Model configuration: provider + name (e.g. { provider: 'anthropic', name: 'claude-sonnet-4-5' }).
+   *  `thinkingLevel` is the admin-configured reasoning effort for the selected
+   *  model (set by the client when picking a model); it overrides the env
+   *  default in `resolveThinkingLevel`. */
+  model: { provider: string; name: string; thinkingLevel?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' }
   maxSessionMessages?: number
   /** Session management configuration */
   session?: Partial<SessionManagerConfig>
@@ -2273,7 +2286,10 @@ export class AgentGateway {
         maxIterations,
         loopDetection: this.config.loopDetection,
         streamFn: this._streamFn,
-        thinkingLevel: resolveThinkingLevel(autoRouting ? undefined : session.modelOverride),
+        thinkingLevel: resolveThinkingLevel(
+          autoRouting ? undefined : session.modelOverride,
+          autoRouting ? undefined : this.config.model.thinkingLevel,
+        ),
         signal: turnAbort.signal,
         extraHeaders,
         onContextOverflow: async () => {

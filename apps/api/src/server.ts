@@ -83,6 +83,7 @@ import { localProjectsRoutes } from './routes/local-projects'
 import { externalPreviewRoutes } from './routes/external-preview'
 import { requireSuperAdmin } from './middleware/super-admin'
 import { adminModelCatalogRoutes } from './routes/admin-model-catalog'
+import { getNativeProviderApiKeySync } from './services/provider-credentials.service'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
 import { createAdminRoutes } from './generated/admin-routes'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
@@ -758,9 +759,30 @@ app.get('/api/config', async (c) => {
  *
  *  The `family` and `maxOutputTokens` fields are included so clients can
  *  label/color and gate a model they don't carry in their bundled catalog. */
+/** Native provider id -> the env var that holds its API key. Both cloud
+ *  (k8s secrets) and local BYOK (which mirrors saved keys into `process.env`)
+ *  populate these, so a single presence check gates visibility for either. */
+const PROVIDER_ENV_KEY: Record<string, string> = {
+  anthropic: 'ANTHROPIC_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  google: 'GOOGLE_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY',
+}
+
+/** A model is presentable only when its provider has a usable key. `custom`
+ *  models carry their own encrypted key (and are only merged when enabled), so
+ *  they're always considered configured. Unknown/legacy providers aren't gated
+ *  to avoid hiding models we don't have an env mapping for. */
+function isModelProviderConfigured(provider: string): boolean {
+  if (provider === 'custom' || provider === 'local') return true
+  if (!PROVIDER_ENV_KEY[provider]) return true
+  // Respect admin-stored (encrypted DB) keys as well as env vars.
+  return !!getNativeProviderApiKeySync(provider)
+}
+
 async function resolveVisibleCatalogModels(
   catalogIds: string[] | null,
-): Promise<Array<{ id: string; provider: string; displayName: string; shortDisplayName: string; tier: string; family: string; maxOutputTokens: number }>> {
+): Promise<Array<{ id: string; provider: string; displayName: string; shortDisplayName: string; tier: string; family: string; maxOutputTokens: number; sortOrder?: number; description?: string; contextWindow?: number; reasoningEffort?: string }>> {
   const { getMergedCatalogSync, getMergedModelEntrySync } = await import('./services/model-registry.service')
   const toVisible = (entry: any) => ({
     id: entry.id,
@@ -770,18 +792,37 @@ async function resolveVisibleCatalogModels(
     tier: entry.tier,
     family: entry.family,
     maxOutputTokens: entry.maxOutputTokens,
+    ...(typeof entry.sortOrder === 'number' ? { sortOrder: entry.sortOrder } : {}),
+    ...(entry.description ? { description: entry.description } : {}),
+    ...(typeof entry.contextWindow === 'number' ? { contextWindow: entry.contextWindow } : {}),
+    ...(entry.reasoningEffort ? { reasoningEffort: entry.reasoningEffort } : {}),
   })
+  // Stable sort by sortOrder (ascending); models without one sink to the
+  // bottom, preserving their catalog order. This is what gives the user
+  // picker its admin-controlled order.
+  const bySortOrder = <T extends { sortOrder?: number }>(rows: T[]): T[] =>
+    rows
+      .map((row, i) => ({ row, i }))
+      .sort((a, b) => {
+        const ao = a.row.sortOrder ?? Number.POSITIVE_INFINITY
+        const bo = b.row.sortOrder ?? Number.POSITIVE_INFINITY
+        return ao === bo ? a.i - b.i : ao - bo
+      })
+      .map((x) => x.row)
   if (catalogIds === null) {
-    return getMergedCatalogSync()
-      .filter((e) => e.generation === 'current')
-      .map(toVisible)
+    return bySortOrder(
+      getMergedCatalogSync()
+        .filter((e) => e.generation === 'current')
+        .filter((e) => isModelProviderConfigured(e.provider))
+        .map(toVisible),
+    )
   }
   const out: Array<ReturnType<typeof toVisible>> = []
   for (const id of catalogIds) {
     const entry = getMergedModelEntrySync(id)
-    if (entry) out.push(toVisible(entry))
+    if (entry && isModelProviderConfigured(entry.provider)) out.push(toVisible(entry))
   }
-  return out
+  return bySortOrder(out)
 }
 
 // Visible-models read endpoint — open to all callers (drives user-facing
@@ -7337,8 +7378,9 @@ await (async () => {
 await (async () => {
   try {
     const { primeModelRegistry } = await import('./services/model-registry.service')
-    await primeModelRegistry()
-    console.log('[ModelRegistry] Primed DB-defined model catalog')
+    const { primeProviderCredentials } = await import('./services/provider-credentials.service')
+    await Promise.all([primeModelRegistry(), primeProviderCredentials()])
+    console.log('[ModelRegistry] Primed DB-defined model catalog + provider credentials')
   } catch (err: any) {
     console.log('[ModelRegistry] Could not prime registry (non-fatal):', err.message)
   }
