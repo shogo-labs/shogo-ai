@@ -54,11 +54,14 @@ NS="${1:?namespace required}"
 NAME="${2:?env name required}"
 EXPECTED="${3?expected value required (pass empty string explicitly if intended)}"
 
-# Defense-in-depth against the 2026-05-27 footgun: every kustomize overlay
-# ships RUNTIME_IMAGE pointing at the placeholder `:<env>-bootstrap` tag,
-# which exists in no OCIR. If the runtime-tag step ever resolves back to
-# that placeholder (e.g. because of a misread configmap or a broken
-# variable interpolation), refuse to apply it rather than re-arm the bug.
+# Defense-in-depth against the 2026-05-27 footgun. RUNTIME_IMAGE is now
+# rendered into the api ksvc at apply time (deploy.yml's "Apply Kubernetes
+# manifests" step substitutes RUNTIME_IMAGE_PLACEHOLDER with the resolved
+# immutable tag), so the old literal `:<env>-bootstrap` placeholder no
+# longer ships in the overlays. This step still runs as a verify/no-op. If
+# the runtime-tag step ever resolves back to a `bootstrap` value (e.g. a
+# misread configmap or broken variable interpolation), refuse to apply it
+# rather than re-arm the bug.
 if [[ "$NAME" == "RUNTIME_IMAGE" && "$EXPECTED" == *bootstrap* ]]; then
   echo "::error::sync-api-env: refusing to pin RUNTIME_IMAGE to placeholder value '$EXPECTED'"
   exit 1

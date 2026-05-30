@@ -103,20 +103,19 @@ spec:
               value: "0"
             - name: PROJECT_NAMESPACE
               value: "shogo-workspaces"
-            # RUNTIME_IMAGE is intentionally NOT declared here. It is injected
-            # at deploy time by `.github/scripts/sync-api-env.sh` (the "Sync API
-            # environment variables" step), which pins it to the immutable
-            # `:production-<git-sha>` runtime tag from the `shogo-runtime-version`
-            # ConfigMap and refuses any value containing "bootstrap".
-            #
-            # A literal `:production-bootstrap` used to live here. That tag
-            # exists in no OCIR, and `kubectl apply -k` re-stamped it onto the
-            # api ksvc on every deploy; if the job aborted before the sync step,
-            # the warm-pool controller minted pods against the non-existent
-            # image and every workspace went ImagePullBackOff (the 2026-05-27 /
-            # India incident). Keeping it out of the manifest makes that leak
-            # structurally impossible — sync-api-env.sh ADDs the var when it is
-            # missing.
+            # RUNTIME_IMAGE is a render-time placeholder, NOT a real value. The
+            # deploy's "Apply Kubernetes manifests" step replaces
+            # RUNTIME_IMAGE_PLACEHOLDER with the resolved immutable
+            # `:production-<git-sha>` runtime tag (same mechanism as the
+            # image-prepuller) before `kubectl apply`. Shipping the token rather
+            # than a literal `:production-bootstrap` — a tag that exists in no
+            # OCIR — means apply can never stamp a non-existent runtime image
+            # onto the api ksvc and then depend on a later patch to undo it.
+            # That undo-gap bricked India on 2026-05-27 when a mid-deploy abort
+            # left the placeholder live. sync-api-env.sh re-verifies the value
+            # downstream as defense-in-depth.
+            - name: RUNTIME_IMAGE
+              value: "RUNTIME_IMAGE_PLACEHOLDER"
             - name: PREVIEW_BASE_DOMAIN
               value: "shogo.ai"
             - name: PREVIEW_ENVIRONMENT
