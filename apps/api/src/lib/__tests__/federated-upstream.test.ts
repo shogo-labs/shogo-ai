@@ -28,6 +28,7 @@ mock.module('../cloud-urls', () => ({
 const {
   getUpstreamCredential,
   getUpstreamWorkspaceId,
+  getUpstreamIdentity,
   isFederatedEnabled,
   getUpstreamOrigin,
   listCloudInstancesForWorkspace,
@@ -164,6 +165,46 @@ describe('getUpstreamWorkspaceId', () => {
   test('returns null when SHOGO_KEY_INFO is malformed JSON', async () => {
     findUniqueMock.mockImplementation(async () => ({ value: 'not-json' }))
     expect(await getUpstreamWorkspaceId()).toBeNull()
+  })
+})
+
+describe('getUpstreamIdentity', () => {
+  test('fast path: returns user+workspace from SHOGO_KEY_INFO without a fetch', async () => {
+    findUniqueMock.mockImplementation(async ({ where }: any) => {
+      if (where.key === 'SHOGO_KEY_INFO') {
+        return { value: JSON.stringify({ workspace: { id: 'cloud-ws-1' }, user: { id: 'cloud-user-1' } }) }
+      }
+      return null
+    })
+    installFetch(() => { throw new Error('should not be called') })
+    expect(await getUpstreamIdentity()).toEqual({ userId: 'cloud-user-1', workspaceId: 'cloud-ws-1' })
+    expect(fetchCalls).toHaveLength(0)
+  })
+
+  test('backfill: older SHOGO_KEY_INFO (workspace only) validates the key to learn the user', async () => {
+    findUniqueMock.mockImplementation(async ({ where }: any) => {
+      if (where.key === 'SHOGO_KEY_INFO') {
+        return { value: JSON.stringify({ workspace: { id: 'cloud-ws-1' } }) }
+      }
+      return null
+    })
+    installFetch(() => jsonResponse({ valid: true, workspace: { id: 'cloud-ws-1' }, user: { id: 'cloud-user-9' } }))
+    expect(await getUpstreamIdentity()).toEqual({ userId: 'cloud-user-9', workspaceId: 'cloud-ws-1' })
+    expect(fetchCalls[0].url).toBe('https://cloud.test/api/api-keys/validate')
+  })
+
+  test('returns null (and caches) when the cloud rejects the key', async () => {
+    findUniqueMock.mockImplementation(async () => null)
+    installFetch(() => jsonResponse({ valid: false, error: 'revoked' }, 200))
+    expect(await getUpstreamIdentity()).toBeNull()
+  })
+
+  test('returns null without a fetch when there is no credential', async () => {
+    delete process.env.SHOGO_API_KEY
+    findUniqueMock.mockImplementation(async () => null)
+    installFetch(() => { throw new Error('should not be called') })
+    expect(await getUpstreamIdentity()).toBeNull()
+    expect(fetchCalls).toHaveLength(0)
   })
 })
 
