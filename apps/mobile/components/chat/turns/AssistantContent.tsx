@@ -20,7 +20,8 @@ import {
   ConnectToolWidget,
   parseToolInstallResult,
 } from "./ConnectToolWidget"
-import { AskUserQuestionWidget } from "./AskUserQuestionWidget"
+import { AskUserQuestionWidget, AskUserQuestionBar } from "./AskUserQuestionWidget"
+import { askUserStreamVariant } from "./pendingQuestion"
 import { TodoWidget } from "./TodoWidget"
 import { ToolCallGroup } from "./ToolCallGroup"
 import { ExplorationGroup } from "./ExplorationGroup"
@@ -768,14 +769,25 @@ export const AssistantContent = memo(
           }
 
           if (part.tool.toolName === "ask_user") {
-            const isPending = part.tool.result === undefined
-            const isExpanded = isPending || expandedTools.has(part.id)
+            // While pending, the interactive answer UI is attached above the
+            // chat input. The stream only shows a small collapsed bar that
+            // scrolls to that widget when tapped.
+            if (askUserStreamVariant(part.tool.result) === "bar") {
+              return (
+                <AskUserQuestionBar
+                  key={part.id}
+                  tool={part.tool}
+                  onPress={() => chatContext?.focusPendingQuestion?.()}
+                />
+              )
+            }
 
+            // Answered: keep the existing collapsed summary widget in-stream.
             return (
               <AskUserQuestionWidget
                 key={part.id}
                 tool={part.tool}
-                isExpanded={isExpanded}
+                isExpanded={expandedTools.has(part.id)}
                 onToggle={getToggle(part.id)}
                 onSubmitResponse={(response) => {
                   if (chatContext?.sendMessage) {

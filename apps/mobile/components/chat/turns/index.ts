@@ -22,5 +22,10 @@ export {
   type CollapsibleToolGroupProps,
 } from "./CollapsibleToolGroup"
 export { TodoWidget, type TodoWidgetProps } from "./TodoWidget"
-export { AskUserQuestionWidget, type AskUserQuestionWidgetProps } from "./AskUserQuestionWidget"
+export {
+  AskUserQuestionWidget,
+  type AskUserQuestionWidgetProps,
+  AskUserQuestionBar,
+  type AskUserQuestionBarProps,
+} from "./AskUserQuestionWidget"
 export { type ConversationTurn, type TurnBoundary, type MessagePart } from "./types"
