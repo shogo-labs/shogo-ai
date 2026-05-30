@@ -30,7 +30,39 @@ import { join } from 'node:path'
 
 export const CANVAS_BRIDGE_URL = '/agent/canvas/bridge.js'
 export const CANVAS_BRIDGE_SCRIPT_TAG = `<script src="${CANVAS_BRIDGE_URL}" defer></script>`
-export const CANVAS_BRIDGE_PATH = join(__dirname, '..', 'static', 'canvas-bridge.js')
+
+/**
+ * Where the bridge lives on disk. Two resolution strategies, in order:
+ *
+ *  1. `CANVAS_BRIDGE_DIR` env override - an explicit absolute directory that
+ *     holds `canvas-bridge.js`. Used by the Desktop microVM, where the
+ *     bundled runtime boots from `/opt/shogo/server.js` and the sibling
+ *     formula below would resolve to `/opt/static/...` - a path the seed ISO
+ *     never populates. The VM boot (`apps/desktop/src/vm/cloud-init.ts`)
+ *     extracts the bridge into `/opt/shogo/static` and points this var at it,
+ *     exactly the way it injects `TREE_SITTER_WASM_DIR=/opt/shogo/wasm`.
+ *
+ *  2. `join(__dirname, '..', 'static', 'canvas-bridge.js')` - the
+ *     sibling-of-runtime-dir layout that holds for Cloud (runs
+ *     `src/server.ts`, so `packages/agent-runtime/static/...`) and the
+ *     Desktop host-execution path (runs `resources/bundle/agent-runtime.js`,
+ *     so `resources/static/...`, shipped by `bundle-api.mjs` per PR #677).
+ *     Left untouched so those two targets behave identically to before.
+ *
+ * Before this override existed, the Desktop VM - the default runtime path on
+ * VM-capable hardware - always fell into the empty stub, so the
+ * "Update available - Refresh" pill never appeared there even though PR #677
+ * fixed the host-execution path. See the integration test for the contract.
+ */
+export function resolveCanvasBridgePath(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const override = env.CANVAS_BRIDGE_DIR?.trim()
+  if (override) return join(override, 'canvas-bridge.js')
+  return join(__dirname, '..', 'static', 'canvas-bridge.js')
+}
+
+export const CANVAS_BRIDGE_PATH = resolveCanvasBridgePath()
 
 /**
  * Canonical fallback body served when `CANVAS_BRIDGE_PATH` cannot be read.
