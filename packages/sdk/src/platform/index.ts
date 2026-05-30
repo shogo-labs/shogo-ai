@@ -30,6 +30,13 @@ export interface PlatformConfig {
   needsSetup?: boolean
   shogoKeyConnected?: boolean
   configLoaded?: boolean
+  /**
+   * WebSocket transport host for browser clients (e.g. wss://tunnel.<env>.shogo.ai).
+   * Knative DomainMappings can't carry the WS Upgrade, so web surfaces dial
+   * this non-DomainMapping host instead of their own origin. Undefined in
+   * local mode, where the origin is itself WS-capable.
+   */
+  wsBaseUrl?: string
   features: {
     billing: boolean
     admin: boolean

@@ -743,10 +743,22 @@ app.get('/api/config', async (c) => {
     console.error('[config] Failed to load feature flag overrides:', err)
   }
 
+  // WebSocket transport host for browser clients. Knative DomainMappings
+  // (e.g. studio.<env>.shogo.ai) wrap their KIngress in a rewriteHost →
+  // ExternalName loopback that runs over h2c without RFC 8441
+  // extended-CONNECT, so they silently drop `Upgrade: websocket` (503 UC).
+  // The api-tunnel-ingress (SHOGO_TUNNEL_WS_URL, e.g. wss://tunnel.<env>.shogo.ai)
+  // is a non-DomainMapping route straight to the api revision pod that does
+  // carry the Upgrade. Web surfaces (IDE terminal WS) must dial this host
+  // instead of window.location.origin. Absent (local dev) ⇒ client falls
+  // back to its own origin, which is WS-capable there.
+  const wsBaseUrl = (process.env.SHOGO_TUNNEL_WS_URL || '').trim() || undefined
+
   return c.json({
     localMode,
     needsSetup,
     shogoKeyConnected: hasShogоApiKey,
+    wsBaseUrl,
     features: { ...featureDefaults, ...overrides },
   })
 })

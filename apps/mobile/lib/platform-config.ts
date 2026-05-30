@@ -10,6 +10,13 @@ export interface PlatformConfig {
   needsSetup?: boolean
   shogoKeyConnected?: boolean
   configLoaded: boolean
+  /**
+   * WebSocket transport host for browser clients (e.g. wss://tunnel.<env>.shogo.ai).
+   * Knative DomainMappings drop the WS Upgrade, so the IDE terminal must dial
+   * this non-DomainMapping host instead of window.location.origin. Undefined
+   * in local mode (origin is WS-capable there).
+   */
+  wsBaseUrl?: string
   features: {
     billing: boolean
     admin: boolean

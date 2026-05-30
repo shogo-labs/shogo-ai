@@ -14,6 +14,7 @@ import {
   Settings,
 } from "lucide-react-native";
 import { API_URL } from "../../../../lib/api";
+import { usePlatformConfig } from "../../../../lib/platform-config";
 import { agentFetch } from "../../../../lib/agent-fetch";
 import { readTerminalError } from "./terminal/error-reader";
 import {
@@ -180,6 +181,24 @@ function wsBaseFromApi(apiBase: string): string {
   return apiBase;
 }
 
+/**
+ * Pick the WebSocket origin for the terminal PTY stream.
+ *
+ * In Kubernetes the public studio host (studio.<env>.shogo.ai) is a Knative
+ * DomainMapping whose KIngress is a rewriteHost → ExternalName loopback over
+ * h2c without RFC 8441 extended-CONNECT — it silently 503s every
+ * `Upgrade: websocket`. REST works, the WS handshake never reaches the api
+ * gateway. The server therefore advertises `wsBaseUrl` (SHOGO_TUNNEL_WS_URL,
+ * a non-DomainMapping route straight to the api pod that does carry the
+ * Upgrade) via /api/config. We dial that when present and fall back to the
+ * origin otherwise (local dev, where the origin is WS-capable).
+ */
+function resolveWsBase(apiBase: string, wsBaseUrl: string | undefined): string {
+  const tunnel = (wsBaseUrl ?? "").trim();
+  if (tunnel) return tunnel.replace(/\/+$/, "");
+  return wsBaseFromApi(apiBase);
+}
+
 export function Terminal({
   projectId,
   visible,
@@ -259,6 +278,10 @@ export function Terminal({
   const panelRef = useRef<HTMLDivElement | null>(null);
 
   const apiBase = API_URL;
+  // WS Upgrade can't traverse the studio DomainMapping in K8s; the server
+  // advertises a WS-capable host (SHOGO_TUNNEL_WS_URL) via /api/config.
+  const { wsBaseUrl } = usePlatformConfig();
+  const wsBase = useMemo(() => resolveWsBase(apiBase ?? "", wsBaseUrl), [apiBase, wsBaseUrl]);
   const active = sessions.find((s) => s.id === activeId) ?? sessions[0];
   const labels = useMemo(() => labelsFor(sessions), [sessions]);
   // Tabs are groups; ordered group ids drive both the tab strip and the
@@ -320,7 +343,7 @@ export function Terminal({
             throw await readTerminalError(res, `HTTP ${res.status}`);
           }
           data = (await res.json()) as CreateSessionResponse;
-          const wsUrl = `${wsBaseFromApi(apiBase)}/api/projects/${projectId}/terminal/sessions/${data.id}/ws`;
+          const wsUrl = `${wsBase}/api/projects/${projectId}/terminal/sessions/${data.id}/ws`;
           client = await createPtyClient({ url: wsUrl, sessionId: data.id });
         }
         // Listeners attached *before* connect() so we don't miss the
@@ -392,7 +415,7 @@ export function Terminal({
         }));
       }
     },
-    [apiBase, projectId, patchSession],
+    [apiBase, wsBase, projectId, patchSession],
   );
 
   /**

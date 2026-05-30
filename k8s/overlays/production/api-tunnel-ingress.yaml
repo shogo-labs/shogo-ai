@@ -1,0 +1,61 @@
+# =============================================================================
+# API Tunnel WebSocket Ingress - Production (legacy overlay)
+# =============================================================================
+# This mirrors the production-us tunnel route for the legacy `production`
+# overlay. The deploy workflow maps production deploys to production-us, but
+# keeping this overlay complete prevents a direct `kubectl apply -k
+# k8s/overlays/production/` from reintroducing the WebSocket regression.
+#
+# Knative DomainMapping wraps its KIngress in a rewriteHost + ExternalName
+# loopback that silently drops `Upgrade: websocket` (503 UC) because that
+# upstream hop uses h2c without RFC 8441 extended-CONNECT. Plain HTTP works,
+# which is why REST APIs stay healthy while browser WebSocket handshakes fail.
+#
+# This non-DomainMapping route points directly at the api ksvc revision pods on
+# the queue-proxy port. Kourier emits a normal Envoy upstream cluster, so the
+# WebSocket Upgrade reaches apps/api.
+# =============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-tunnel-direct
+  namespace: shogo-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: api-tunnel
+    environment: production
+spec:
+  type: ClusterIP
+  selector:
+    serving.knative.dev/service: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8012
+      protocol: TCP
+---
+apiVersion: networking.internal.knative.dev/v1alpha1
+kind: Ingress
+metadata:
+  name: api-tunnel
+  namespace: shogo-system
+  annotations:
+    networking.knative.dev/ingress.class: kourier.ingress.networking.knative.dev
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: api-tunnel
+    environment: production
+spec:
+  httpOption: Enabled
+  rules:
+    - hosts:
+        - tunnel.shogo.ai
+      visibility: ExternalIP
+      http:
+        paths:
+          - splits:
+              - serviceName: api-tunnel-direct
+                serviceNamespace: shogo-system
+                servicePort: 80
+                percent: 100
