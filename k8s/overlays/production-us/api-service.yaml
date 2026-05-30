@@ -128,13 +128,20 @@ spec:
               value: "0"
             - name: PROJECT_NAMESPACE
               value: "shogo-production-workspaces"
-            # RUNTIME_IMAGE is patched per-deploy to an immutable
-            # `:production-<git-sha>` tag (workflow "Pin RUNTIME_IMAGE on api
-            # ksvc"). Bootstrap value below is only used on a fresh cluster.
-            # NEVER use a mutable `:*-latest` tag here — see the staging
-            # incident postmortem (2026-05-04).
-            - name: RUNTIME_IMAGE
-              value: "us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-runtime:production-bootstrap"
+            # RUNTIME_IMAGE is intentionally NOT declared here. It is injected
+            # at deploy time by `.github/scripts/sync-api-env.sh` (the "Sync API
+            # environment variables" step), which pins it to the immutable
+            # `:production-<git-sha>` runtime tag from the `shogo-runtime-version`
+            # ConfigMap and refuses any value containing "bootstrap".
+            #
+            # A literal `:production-bootstrap` used to live here. That tag
+            # exists in no OCIR, and `kubectl apply -k` re-stamped it onto the
+            # api ksvc on every deploy; if the job aborted before the sync step,
+            # the warm-pool controller minted pods against the non-existent
+            # image and every workspace went ImagePullBackOff (the 2026-05-27 /
+            # India incident). Keeping it out of the manifest makes that leak
+            # structurally impossible — sync-api-env.sh ADDs the var when it is
+            # missing.
             - name: PREVIEW_BASE_DOMAIN
               value: "shogo.ai"
             - name: PREVIEW_ENVIRONMENT
