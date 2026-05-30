@@ -215,10 +215,9 @@ const MOBILE_HERO_SCRIM_DARK = 'rgba(9, 9, 11, 0.28)'
 type Tab = 'signin' | 'signup'
 
 /**
- * Mandatory privacy/terms acceptance gate shown on every sign-in and sign-up
- * surface (web + iOS + Android). The screen blocks all auth actions — email
- * submit, Google, and Apple — until the user ticks this box. Required by
- * legal/policy review and tracked in SHOG-666.
+ * Passive privacy/terms notice shown on every sign-in and sign-up surface
+ * (web + iOS + Android). Continuing with any auth action (email, Google, or
+ * Apple) implies acceptance — users no longer have to tick a checkbox.
  */
 const PRIVACY_URL = 'https://shogo.ai/privacy'
 const TERMS_URL = 'https://shogo.ai/terms'
@@ -229,71 +228,31 @@ function openExternalUrl(url: string) {
   })
 }
 
-function ConsentCheckbox({
-  checked,
-  onChange,
-  disabled,
-}: {
-  checked: boolean
-  onChange: (next: boolean) => void
-  disabled?: boolean
-}) {
+function ConsentNotice() {
   return (
-    <View className="flex-row items-start gap-2 mt-1" accessibilityRole="checkbox" accessibilityState={{ checked, disabled }}>
-      <Pressable
-        onPress={() => !disabled && onChange(!checked)}
-        disabled={disabled}
-        role="checkbox"
-        accessibilityLabel="I accept the Privacy Policy and Terms of Use"
-        accessibilityState={{ checked, disabled }}
-        hitSlop={8}
-        style={{
-          width: 18,
-          height: 18,
-          marginTop: 2,
-          borderRadius: 4,
-          borderWidth: 1.5,
-          borderColor: checked ? BRAND_LANDING_HEX : '#9ca3af',
-          backgroundColor: checked ? BRAND_LANDING_HEX : 'transparent',
-          alignItems: 'center',
-          justifyContent: 'center',
-          opacity: disabled ? 0.5 : 1,
-        }}
+    <Text className="text-xs text-muted-foreground mt-1" style={{ flexWrap: 'wrap' }}>
+      By continuing, you agree to our{' '}
+      <Text
+        className="text-brand-landing"
+        style={{ textDecorationLine: 'underline', fontWeight: '600' }}
+        onPress={() => openExternalUrl(PRIVACY_URL)}
+        accessibilityRole="link"
+        accessibilityLabel="Privacy Policy"
       >
-        {checked ? (
-          <Text style={{ color: '#fff', fontSize: 12, lineHeight: 14, fontWeight: '700' }}>✓</Text>
-        ) : null}
-      </Pressable>
-      <Pressable
-        onPress={() => !disabled && onChange(!checked)}
-        disabled={disabled}
-        style={{ flex: 1 }}
+        Privacy Policy
+      </Text>
+      {' '}and{' '}
+      <Text
+        className="text-brand-landing"
+        style={{ textDecorationLine: 'underline', fontWeight: '600' }}
+        onPress={() => openExternalUrl(TERMS_URL)}
+        accessibilityRole="link"
+        accessibilityLabel="Terms of Use"
       >
-        <Text className="text-xs text-muted-foreground" style={{ flexWrap: 'wrap' }}>
-          I have read and accept the{' '}
-          <Text
-            className="text-brand-landing"
-            style={{ textDecorationLine: 'underline', fontWeight: '600' }}
-            onPress={(e) => { e.stopPropagation?.(); openExternalUrl(PRIVACY_URL) }}
-            accessibilityRole="link"
-            accessibilityLabel="Privacy Policy"
-          >
-            Privacy Policy
-          </Text>
-          {' '}and{' '}
-          <Text
-            className="text-brand-landing"
-            style={{ textDecorationLine: 'underline', fontWeight: '600' }}
-            onPress={(e) => { e.stopPropagation?.(); openExternalUrl(TERMS_URL) }}
-            accessibilityRole="link"
-            accessibilityLabel="Terms of Use"
-          >
-            Terms of Use
-          </Text>
-          , and I agree that my use of the services are subject to these terms.
-        </Text>
-      </Pressable>
-    </View>
+        Terms of Use
+      </Text>
+      .
+    </Text>
   )
 }
 
@@ -373,8 +332,7 @@ function SignInForm({
   error,
   onClearError,
   onScrollToBottom,
-  consentAccepted,
-}: Pick<LoginScreenProps, 'onSignIn' | 'onForgotPassword' | 'isLoading' | 'error' | 'onClearError'> & { onScrollToBottom?: () => void; consentAccepted: boolean }) {
+}: Pick<LoginScreenProps, 'onSignIn' | 'onForgotPassword' | 'isLoading' | 'error' | 'onClearError'> & { onScrollToBottom?: () => void }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
@@ -388,7 +346,6 @@ function SignInForm({
 
   const handleSubmit = async () => {
     if (!email || !password) return
-    if (!consentAccepted) return
     await onSignIn(email, password)
   }
 
@@ -471,14 +428,14 @@ function SignInForm({
         </Alert>
       ) : null}
 
-      <Button variant="brand" onPress={handleSubmit} disabled={isLoading || !email || !password || !consentAccepted} className="mt-1">
+      <Button variant="brand" onPress={handleSubmit} disabled={isLoading || !email || !password} className="mt-1">
         {isLoading ? <ActivityIndicator color="#fff" size="small" /> : 'Sign In'}
       </Button>
     </View>
   )
 }
 
-function SignUpForm({ onSignUp, isLoading, error, onClearError, onScrollToBottom, consentAccepted }: Pick<LoginScreenProps, 'onSignUp' | 'isLoading' | 'error' | 'onClearError'> & { onScrollToBottom?: () => void; consentAccepted: boolean }) {
+function SignUpForm({ onSignUp, isLoading, error, onClearError, onScrollToBottom }: Pick<LoginScreenProps, 'onSignUp' | 'isLoading' | 'error' | 'onClearError'> & { onScrollToBottom?: () => void }) {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -490,7 +447,7 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError, onScrollToBottom
   const isEmailValid = useMemo(() => isValidEmail(email), [email])
   const showEmailError = emailTouched && email.length > 0 && !isEmailValid
   const passwordStrength = useMemo(() => getPasswordStrength(password), [password])
-  const isFormValid = name.length > 0 && isEmailValid && password.length >= 8 && consentAccepted
+  const isFormValid = name.length > 0 && isEmailValid && password.length >= 8
 
   const focusPassword = () => {
     passwordRef.current?.focus()
@@ -621,7 +578,6 @@ function MobileLoginPanel({
 }: LoginScreenProps & { heroSource: ImageSourcePropType }) {
   const [activeTab, setActiveTab] = useState<Tab>('signin')
   const [dismissed, setDismissed] = useState(false)
-  const [consentAccepted, setConsentAccepted] = useState(false)
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const scrollRef = useRef<ScrollView>(null)
   const scheme = colorScheme ?? 'light'
@@ -742,18 +698,13 @@ function MobileLoginPanel({
                     error={displayError}
                     onClearError={dismissError}
                     onScrollToBottom={scrollToBottom}
-                    consentAccepted={consentAccepted}
                   />
                 )
-                : <SignUpForm onSignUp={onSignUp} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} consentAccepted={consentAccepted} />
+                : <SignUpForm onSignUp={onSignUp} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} />
               }
 
               <View className="mt-4">
-                <ConsentCheckbox
-                  checked={consentAccepted}
-                  onChange={setConsentAccepted}
-                  disabled={isLoading}
-                />
+                <ConsentNotice />
               </View>
 
               {(onGoogleSignIn || onAppleSignIn) ? (
@@ -764,14 +715,12 @@ function MobileLoginPanel({
                     <View className="flex-1"><Separator /></View>
                   </View>
                   {onAppleSignIn ? (
-                    <View style={{ marginBottom: onGoogleSignIn ? 12 : 0, opacity: consentAccepted ? 1 : 0.5 }} pointerEvents={consentAccepted ? 'auto' : 'none'}>
-                      <AppleContinueButton onPress={onAppleSignIn} colorScheme={colorScheme} disabled={isLoading || !consentAccepted} />
+                    <View style={{ marginBottom: onGoogleSignIn ? 12 : 0 }}>
+                      <AppleContinueButton onPress={onAppleSignIn} colorScheme={colorScheme} disabled={isLoading} />
                     </View>
                   ) : null}
                   {onGoogleSignIn ? (
-                    <View style={{ opacity: consentAccepted ? 1 : 0.5 }} pointerEvents={consentAccepted ? 'auto' : 'none'}>
-                      <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} />
-                    </View>
+                    <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} />
                   ) : null}
                 </>
               ) : null}
@@ -798,7 +747,6 @@ const loginHeroWordmarkWhite = require('../../../../apps/mobile/assets/login/sho
 function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onAppleSignIn, onForgotPassword, isLoading, error, onClearError, colorScheme }: LoginScreenProps) {
   const [activeTab, setActiveTab] = useState<Tab>('signin')
   const [dismissed, setDismissed] = useState(false)
-  const [consentAccepted, setConsentAccepted] = useState(false)
   const scrollRef = useRef<ScrollView>(null)
 
   useEffect(() => { if (error) setDismissed(false) }, [error])
@@ -875,18 +823,13 @@ function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onAppleSignIn, o
                 error={displayError}
                 onClearError={dismissError}
                 onScrollToBottom={scrollToBottom}
-                consentAccepted={consentAccepted}
               />
             )
-            : <SignUpForm onSignUp={onSignUp} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} consentAccepted={consentAccepted} />
+            : <SignUpForm onSignUp={onSignUp} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} />
           }
 
           <View className="mt-4">
-            <ConsentCheckbox
-              checked={consentAccepted}
-              onChange={setConsentAccepted}
-              disabled={isLoading}
-            />
+            <ConsentNotice />
           </View>
 
           {(onGoogleSignIn || onAppleSignIn) ? (
@@ -897,14 +840,12 @@ function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onAppleSignIn, o
                 <View className="flex-1"><Separator /></View>
               </View>
               {onAppleSignIn ? (
-                <View style={{ marginBottom: onGoogleSignIn ? 12 : 0, opacity: consentAccepted ? 1 : 0.5 }} pointerEvents={consentAccepted ? 'auto' : 'none'}>
-                  <AppleContinueButton onPress={onAppleSignIn} colorScheme={colorScheme} disabled={isLoading || !consentAccepted} />
+                <View style={{ marginBottom: onGoogleSignIn ? 12 : 0 }}>
+                  <AppleContinueButton onPress={onAppleSignIn} colorScheme={colorScheme} disabled={isLoading} />
                 </View>
               ) : null}
               {onGoogleSignIn ? (
-                <View style={{ opacity: consentAccepted ? 1 : 0.5 }} pointerEvents={consentAccepted ? 'auto' : 'none'}>
-                  <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} />
-                </View>
+                <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} />
               ) : null}
             </>
           ) : null}
