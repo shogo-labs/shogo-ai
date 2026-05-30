@@ -32,7 +32,7 @@ import { useEffect, useRef, useState } from "react"
 import {
   DiagnosticsApiError,
   fetchDiagnostics,
-} from "../../../../lib/diagnostics-api"
+} from "../../../../../lib/diagnostics-api"
 import { problemsBadge, type ProblemsBadgeResult } from "./formatBadge"
 
 const DEFAULT_INTERVAL_MS = 30_000

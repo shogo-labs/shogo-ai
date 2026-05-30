@@ -8,7 +8,6 @@ import { useGitStatus } from "./git/useGitStatus";
 import { isDesktopRuntime } from "./terminal/pty-factory";
 import { gitChangeCount, type BadgeData } from "./badges/formatBadge";
 import { useProblemsBadgeCount } from "./badges/useProblemsBadgeCount";
-import type { ActivityId } from "./types";
 import { GitStatusProvider } from "./git/GitStatusContext";
 import { SourceControlViewlet } from "./scm/SourceControlViewlet";
 import { attachGitDecorations, maybeAutoStageIfConflictResolved } from "./git/editorIntegration";
