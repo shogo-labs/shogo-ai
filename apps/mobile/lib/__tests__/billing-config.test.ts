@@ -16,13 +16,77 @@ import { describe, test, expect } from 'bun:test'
 import {
   FREE_DAILY_INCLUDED_USD,
   SEAT_INCLUDED_USD,
+  ROLLING_WINDOW_LIMITS,
   getDailyIncludedForPlan,
   getIncludedUsdCapacityForDisplay,
   getIncludedUsdForPlan,
+  getWindowLimitsForPlan,
+  formatResetCountdown,
   formatUsd,
   formatCurrencyPrice,
   getPlanDisplayName,
 } from '../billing-config'
+
+describe('getWindowLimitsForPlan', () => {
+  test('returns free limits for free / unknown plans', () => {
+    expect(getWindowLimitsForPlan('free')).toEqual(ROLLING_WINDOW_LIMITS.free!)
+    expect(getWindowLimitsForPlan(undefined)).toEqual(ROLLING_WINDOW_LIMITS.free!)
+    expect(getWindowLimitsForPlan('mystery')).toEqual(ROLLING_WINDOW_LIMITS.free!)
+  })
+
+  test('does not scale single-pool plans by seats', () => {
+    expect(getWindowLimitsForPlan('basic', 5)).toEqual(ROLLING_WINDOW_LIMITS.basic!)
+  })
+
+  test('scales per-seat plans linearly', () => {
+    const pro3 = getWindowLimitsForPlan('pro', 3)
+    expect(pro3).toEqual({ fiveHourUsd: 8 * 3, weeklyUsd: 40 * 3 })
+    const biz2 = getWindowLimitsForPlan('business', 2)
+    expect(biz2).toEqual({ fiveHourUsd: 20 * 2, weeklyUsd: 120 * 2 })
+  })
+
+  test('clamps non-positive / fractional seats to at least 1', () => {
+    expect(getWindowLimitsForPlan('pro', 0)).toEqual({ fiveHourUsd: 8, weeklyUsd: 40 })
+    expect(getWindowLimitsForPlan('pro', -4)).toEqual({ fiveHourUsd: 8, weeklyUsd: 40 })
+  })
+
+  test('returns null (uncapped) for enterprise', () => {
+    expect(getWindowLimitsForPlan('enterprise', 99)).toBeNull()
+  })
+
+  test('matches legacy suffixed plan ids by prefix', () => {
+    expect(getWindowLimitsForPlan('pro_200', 1)).toEqual({ fiveHourUsd: 8, weeklyUsd: 40 })
+  })
+})
+
+describe('formatResetCountdown', () => {
+  const now = Date.parse('2026-05-30T12:00:00Z')
+
+  test('returns "" for no reset time', () => {
+    expect(formatResetCountdown(null, now)).toBe('')
+    expect(formatResetCountdown(undefined, now)).toBe('')
+  })
+
+  test('returns "now" when reset is in the past', () => {
+    expect(formatResetCountdown('2026-05-30T11:00:00Z', now)).toBe('now')
+  })
+
+  test('formats minutes only under an hour', () => {
+    expect(formatResetCountdown('2026-05-30T12:30:00Z', now)).toBe('30m')
+  })
+
+  test('formats hours + minutes under a day', () => {
+    expect(formatResetCountdown('2026-05-30T14:13:00Z', now)).toBe('2h 13m')
+  })
+
+  test('formats days + hours over a day', () => {
+    expect(formatResetCountdown('2026-06-02T16:00:00Z', now)).toBe('3d 4h')
+  })
+
+  test('returns "" for an unparseable value', () => {
+    expect(formatResetCountdown('not-a-date', now)).toBe('')
+  })
+})
 
 describe('getIncludedUsdCapacityForDisplay', () => {
   test('uses wallet-locked monthly allocation when set; paid plans get no daily top-up', () => {

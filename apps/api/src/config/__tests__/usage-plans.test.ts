@@ -5,15 +5,54 @@ import { describe, expect, it } from 'bun:test'
 import {
   FREE_DAILY_INCLUDED_USD,
   MONTHLY_DAILY_CAP_USD,
+  FIVE_HOUR_MS,
+  SEVEN_DAY_MS,
   PLAN_INCLUDED_USD,
   PLAN_VOICE_RATE_OVERRIDES,
+  ROLLING_WINDOW_LIMITS,
   SEAT_INCLUDED_USD,
   VOICE_RAW_USD,
   comparePlanRank,
   getDailyIncludedForPlan,
   getMonthlyIncludedForPlan,
+  getWindowLimitsForPlan,
   normalizePlanId,
 } from '../usage-plans'
+
+describe('rolling usage windows', () => {
+  it('FIVE_HOUR_MS and SEVEN_DAY_MS are correct durations', () => {
+    expect(FIVE_HOUR_MS).toBe(5 * 60 * 60 * 1000)
+    expect(SEVEN_DAY_MS).toBe(7 * 24 * 60 * 60 * 1000)
+  })
+
+  it('ROLLING_WINDOW_LIMITS covers all tiers with enterprise uncapped', () => {
+    expect(ROLLING_WINDOW_LIMITS.free).toEqual({ fiveHourUsd: 0.5, weeklyUsd: 2 })
+    expect(ROLLING_WINDOW_LIMITS.enterprise).toBeNull()
+  })
+
+  it('getWindowLimitsForPlan falls back to free for unknown/null plans', () => {
+    expect(getWindowLimitsForPlan(null)).toEqual(ROLLING_WINDOW_LIMITS.free!)
+    expect(getWindowLimitsForPlan('???')).toEqual(ROLLING_WINDOW_LIMITS.free!)
+  })
+
+  it('does not scale free/basic by seats', () => {
+    expect(getWindowLimitsForPlan('free', 10)).toEqual(ROLLING_WINDOW_LIMITS.free!)
+    expect(getWindowLimitsForPlan('basic', 10)).toEqual(ROLLING_WINDOW_LIMITS.basic!)
+  })
+
+  it('scales pro/business per seat', () => {
+    expect(getWindowLimitsForPlan('pro', 3)).toEqual({ fiveHourUsd: 24, weeklyUsd: 120 })
+    expect(getWindowLimitsForPlan('business', 2)).toEqual({ fiveHourUsd: 40, weeklyUsd: 240 })
+  })
+
+  it('clamps seats to a minimum of 1', () => {
+    expect(getWindowLimitsForPlan('pro', 0)).toEqual({ fiveHourUsd: 8, weeklyUsd: 40 })
+  })
+
+  it('returns null for enterprise regardless of seats', () => {
+    expect(getWindowLimitsForPlan('enterprise', 50)).toBeNull()
+  })
+})
 
 describe('constants', () => {
   it('FREE_DAILY_INCLUDED_USD is $1.00', () => {

@@ -5615,10 +5615,11 @@ app.get('/api/billing/workspace-plan', async (c) => {
     if (!await verifyWorkspaceMembership(c, workspaceId)) {
       return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
     }
-    const [sub, wallet, effective] = await Promise.all([
+    const [sub, wallet, effective, usageWindows] = await Promise.all([
       billingService.getSubscription(workspaceId),
       billingService.getUsageWallet(workspaceId),
       billingService.getEffectivePlanId(workspaceId),
+      billingService.getUsageWindows(workspaceId),
     ])
     const source: 'subscription' | 'grant' | 'free' =
       sub ? 'subscription' : effective !== 'free' ? 'grant' : 'free'
@@ -5638,9 +5639,32 @@ app.get('/api/billing/workspace-plan', async (c) => {
       overageEnabled: wallet?.overageEnabled ?? false,
       overageHardLimitUsd: wallet?.overageHardLimitUsd ?? null,
       overageAccumulatedUsd: wallet?.overageAccumulatedUsd ?? 0,
+      // Rolling usage windows (time-gated "unlimited"). `limitUsd: null`
+      // means the window is uncapped (enterprise).
+      usageWindows,
     })
   } catch (error: any) {
     return c.json({ error: { code: 'plan_query_failed', message: error.message } }, 500)
+  }
+})
+
+/**
+ * Lightweight usage-windows endpoint for polling the rolling 5-hour and
+ * weekly windows (used for "% remaining" bars + reset countdowns, mirroring
+ * the Codex / Claude Code usage endpoints).
+ */
+app.get('/api/billing/usage-windows', async (c) => {
+  try {
+    const url = new URL(c.req.url)
+    const workspaceId = url.searchParams.get('workspaceId')
+    if (!workspaceId) return c.json({ error: 'missing workspaceId' }, 400)
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
+    }
+    const windows = await billingService.getUsageWindows(workspaceId)
+    return c.json({ ok: true, windows })
+  } catch (error: any) {
+    return c.json({ error: { code: 'usage_windows_failed', message: error.message } }, 500)
   }
 })
 

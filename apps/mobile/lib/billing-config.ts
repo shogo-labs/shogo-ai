@@ -24,6 +24,73 @@ export const SEAT_INCLUDED_USD: Record<PlanId, number> = {
   enterprise: 2000,
 }
 
+/**
+ * Rolling usage-window durations (ms). Usage is "unlimited" within these two
+ * parallel windows (time-gated, like Codex / Claude Code); when a window is
+ * exhausted, usage falls through to metered overage and otherwise blocks
+ * until the window resets. Mirrors the backend `usage-plans.ts`.
+ */
+export const FIVE_HOUR_MS = 5 * 60 * 60 * 1000
+export const SEVEN_DAY_MS = 7 * 24 * 60 * 60 * 1000
+
+export interface WindowLimits {
+  fiveHourUsd: number
+  weeklyUsd: number
+}
+
+/** Per-window included USD of compute per plan. `null` = uncapped. */
+export const ROLLING_WINDOW_LIMITS: Record<PlanId, WindowLimits | null> = {
+  free: { fiveHourUsd: 0.5, weeklyUsd: 2 },
+  basic: { fiveHourUsd: 2, weeklyUsd: 10 },
+  pro: { fiveHourUsd: 8, weeklyUsd: 40 },
+  business: { fiveHourUsd: 20, weeklyUsd: 120 },
+  enterprise: null,
+}
+
+/**
+ * Window limits for a (plan, seats) pair. Pro/Business scale per seat; Free
+ * and Basic are single-pool; Enterprise is uncapped (`null`). Mirrors the
+ * backend `getWindowLimitsForPlan`.
+ */
+export function getWindowLimitsForPlan(
+  planId: string | null | undefined,
+  seats: number = 1,
+): WindowLimits | null {
+  const normalized = String(planId ?? 'free').toLowerCase().trim()
+  const key: PlanId = normalized.startsWith('enterprise') ? 'enterprise'
+    : normalized.startsWith('business') ? 'business'
+    : normalized.startsWith('pro') ? 'pro'
+    : normalized.startsWith('basic') ? 'basic'
+    : 'free'
+  const base = ROLLING_WINDOW_LIMITS[key]
+  if (base == null) return null
+  if (key === 'pro' || key === 'business') {
+    const s = Math.max(1, Math.floor(seats || 1))
+    return { fiveHourUsd: base.fiveHourUsd * s, weeklyUsd: base.weeklyUsd * s }
+  }
+  return { fiveHourUsd: base.fiveHourUsd, weeklyUsd: base.weeklyUsd }
+}
+
+/**
+ * Human-readable countdown to when a window resets, e.g. "2h 13m" or "3d 4h".
+ * Returns "now" when the reset is in the past / imminent and "" when there is
+ * no reset time (window not yet opened).
+ */
+export function formatResetCountdown(resetsAt: string | Date | null | undefined, now: number = Date.now()): string {
+  if (!resetsAt) return ''
+  const target = typeof resetsAt === 'string' ? Date.parse(resetsAt) : resetsAt.getTime()
+  if (Number.isNaN(target)) return ''
+  const ms = target - now
+  if (ms <= 0) return 'now'
+  const totalMinutes = Math.ceil(ms / 60000)
+  const days = Math.floor(totalMinutes / (60 * 24))
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60)
+  const minutes = totalMinutes % 60
+  if (days > 0) return `${days}d ${hours}h`
+  if (hours > 0) return `${hours}h ${minutes}m`
+  return `${minutes}m`
+}
+
 export interface PlanPricing {
   /** Monthly subscription price in USD (per seat for `perSeat: true`). */
   monthly: number
@@ -61,14 +128,14 @@ export const PLAN_PRICING: Record<'basic' | 'pro' | 'business', PlanPricing> = {
 }
 
 export const BASIC_FEATURES = [
-  '$5 of monthly usage',
+  'Unlimited usage (fair-use 5-hour & weekly limits)',
   'Basic AI model (fast responses)',
   'Unlimited domains',
   'Single user — no seats',
 ]
 
 export const PRO_FEATURES = [
-  '$20 of monthly usage per seat',
+  'Unlimited usage with higher 5-hour & weekly limits (per seat)',
   'All AI models',
   'Auto-billed overage in $100→$500 trust blocks (cap optional)',
   'Unlimited domains',
@@ -79,7 +146,7 @@ export const PRO_FEATURES = [
 
 export const BUSINESS_FEATURES = [
   'Everything in Pro, plus:',
-  '$40 of monthly usage per seat',
+  'Highest 5-hour & weekly usage limits (per seat)',
   'Team analytics & usage reporting',
   'SSO authentication',
   'Audit logs',
@@ -91,6 +158,7 @@ export const BUSINESS_FEATURES = [
 
 export const ENTERPRISE_FEATURES = [
   'Everything in Business, plus:',
+  'Uncapped usage — no 5-hour or weekly limits',
   'Dedicated support',
   'Onboarding services',
   'Custom connections',
