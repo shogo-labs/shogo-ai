@@ -32,6 +32,7 @@ import { tmpdir } from 'node:os'
 
 import {
   loadCanvasBridgeSource,
+  resolveCanvasBridgePath,
   CANVAS_BRIDGE_PATH,
   CANVAS_BRIDGE_MISSING_STUB,
   CANVAS_BRIDGE_URL,
@@ -139,6 +140,41 @@ describe('loadCanvasBridgeSource', () => {
     } finally {
       warnSpy.mockRestore()
     }
+  })
+
+  test('CANVAS_BRIDGE_DIR env override is honored (Desktop microVM path)', () => {
+    // The bundled runtime boots from /opt/shogo/server.js inside the VM, so
+    // the sibling formula would resolve to /opt/static (never shipped). The
+    // VM boot sets CANVAS_BRIDGE_DIR=/opt/shogo/static; the loader must read
+    // the bridge from there. Without this the in-VM runtime serves the empty
+    // stub and the "Update available - Refresh" pill never appears - the
+    // exact regression that survived PR #677 (which only fixed host exec).
+    expect(resolveCanvasBridgePath({ CANVAS_BRIDGE_DIR: '/opt/shogo/static' }))
+      .toBe(join('/opt/shogo/static', 'canvas-bridge.js'))
+    // Whitespace-only / empty override is ignored (falls back to sibling).
+    expect(resolveCanvasBridgePath({ CANVAS_BRIDGE_DIR: '   ' }))
+      .toMatch(/[\\/]static[\\/]canvas-bridge\.js$/)
+    // No override -> unchanged sibling-of-runtime-dir layout (Cloud + Desktop
+    // host execution behave exactly as before).
+    expect(resolveCanvasBridgePath({})).toBe(CANVAS_BRIDGE_PATH)
+    // `undefined` env value is treated as "no override" (defensive: the VM
+    // env block could omit the var on an older app build).
+    expect(resolveCanvasBridgePath({ CANVAS_BRIDGE_DIR: undefined }))
+      .toMatch(/[\\/]static[\\/]canvas-bridge\.js$/)
+  })
+
+  test('end-to-end: a CANVAS_BRIDGE_DIR override resolves AND loads the real file', () => {
+    // This is the VM path in miniature: the bridge lives in an arbitrary
+    // directory (in the VM, /opt/shogo/static) and the runtime is told about
+    // it via CANVAS_BRIDGE_DIR. resolve + load must return the real bytes,
+    // not the missing-file stub.
+    const body = '/* vm bridge */ window.__VM_BRIDGE__ = 1;\n'
+    writeFileSync(join(tmpDir, 'canvas-bridge.js'), body, 'utf-8')
+    const resolved = resolveCanvasBridgePath({ CANVAS_BRIDGE_DIR: tmpDir })
+    expect(resolved).toBe(join(tmpDir, 'canvas-bridge.js'))
+    const loaded = loadCanvasBridgeSource(resolved)
+    expect(loaded).toBe(body)
+    expect(loaded).not.toContain(STUB_MARKER)
   })
 
   test('exported URL + script-tag constants are coherent (injection points line up)', () => {
