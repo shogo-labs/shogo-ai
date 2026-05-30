@@ -783,7 +783,7 @@ function isModelProviderConfigured(provider: string): boolean {
 async function resolveVisibleCatalogModels(
   catalogIds: string[] | null,
 ): Promise<Array<{ id: string; provider: string; displayName: string; shortDisplayName: string; tier: string; family: string; maxOutputTokens: number; sortOrder?: number; description?: string; contextWindow?: number; reasoningEffort?: string }>> {
-  const { getMergedCatalogSync, getMergedModelEntrySync } = await import('./services/model-registry.service')
+  const { getMergedCatalogSync, getMergedModelEntrySync, getDbModelEntriesSync } = await import('./services/model-registry.service')
   const toVisible = (entry: any) => ({
     id: entry.id,
     provider: entry.provider,
@@ -810,8 +810,15 @@ async function resolveVisibleCatalogModels(
       })
       .map((x) => x.row)
   if (catalogIds === null) {
+    // DB-managed picker: when any models are defined in the DB, the picker
+    // reflects exactly those (the admin-curated/seeded set) so super admins
+    // can fully control — and remove — what users see. The static
+    // MODEL_CATALOG is a routing-only fallback, used here ONLY when the DB
+    // has no models yet, so a fresh/unseeded instance is never empty.
+    const dbEntries = getDbModelEntriesSync()
+    const source = dbEntries.length > 0 ? dbEntries : getMergedCatalogSync()
     return bySortOrder(
-      getMergedCatalogSync()
+      source
         .filter((e) => e.generation === 'current')
         .filter((e) => isModelProviderConfigured(e.provider))
         .map(toVisible),

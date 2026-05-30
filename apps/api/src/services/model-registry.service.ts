@@ -99,6 +99,10 @@ interface ModelRow {
 interface RegistrySnapshot {
   /** All models, static-overlaid-by-DB, keyed by id. */
   merged: Map<string, ModelEntry>
+  /** Ids of models that came from the DB (`ModelDefinition`), as opposed to
+   *  the static `MODEL_CATALOG`. Lets the visible-models picker reflect only
+   *  the admin-managed set while the static catalog stays a routing fallback. */
+  dbIds: Set<string>
   /** Routing config keyed by id (DB models only; static handled by proxy). */
   routing: Map<string, ModelRoutingConfig>
   /** Per-token pricing keyed by id (DB models only). */
@@ -120,6 +124,7 @@ function emptySnapshot(): RegistrySnapshot {
   }
   return {
     merged,
+    dbIds: new Set(),
     routing: new Map(),
     pricing: new Map(),
     aliasToId: new Map(),
@@ -186,6 +191,7 @@ async function refresh(): Promise<void> {
     for (const row of models) {
       const entry = rowToModelEntry(row)
       next.merged.set(entry.id, entry) // DB overrides static on id collision
+      next.dbIds.add(entry.id)
 
       next.pricing.set(row.id, {
         inputPerMillion: row.inputPerMillion,
@@ -263,6 +269,24 @@ export async function invalidateModelRegistry(): Promise<void> {
 export function getMergedCatalogSync(): ModelEntry[] {
   refreshIfStaleInBackground()
   return Array.from(snapshot.merged.values())
+}
+
+/**
+ * Synchronous accessor for only the DB-defined (`ModelDefinition`) models —
+ * i.e. the admin-managed set, excluding the static `MODEL_CATALOG` baseline.
+ * Used by the visible-models picker so the admin can fully curate (and
+ * remove) what users see. Returns enabled rows only, since `refresh()` loads
+ * `enabled: true` definitions. Empty when nothing has been added/seeded yet,
+ * in which case callers fall back to the static catalog.
+ */
+export function getDbModelEntriesSync(): ModelEntry[] {
+  refreshIfStaleInBackground()
+  const out: ModelEntry[] = []
+  for (const id of snapshot.dbIds) {
+    const entry = snapshot.merged.get(id)
+    if (entry) out.push(entry)
+  }
+  return out
 }
 
 /** Synchronous merged-entry lookup, resolving DB aliases. */

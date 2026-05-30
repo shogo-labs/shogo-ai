@@ -18,12 +18,13 @@ import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
 import { createS3SyncForProject, isMacOSJunkName } from '@shogo/shared-runtime'
 import { prisma } from '../lib/prisma'
 import type { AuthContext } from '../middleware/auth'
+import { parseEnvFile } from '../lib/bundle-crypto'
 import {
-  encryptSecrets,
-  decryptSecrets,
-  parseEnvFile,
-  type EncryptedSecretsBlob,
-} from '../lib/bundle-crypto'
+  isEncryptedZip,
+  encryptZipCrypto,
+  decryptZip,
+  ZipPasswordError,
+} from '../lib/zip-encryption'
 import { deriveRuntimeToken } from '../lib/runtime-token'
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
@@ -236,9 +237,9 @@ type ImportEvent =
       // a Setup Checklist instead of dumping the user into a broken agent.
       requiredCredentials?: RequiredCredential[]
       warnings?: string[]
-      // True when the bundle had `encryptedSecrets` AND we successfully
-      // decrypted with the supplied passphrase — the importer's UI uses this
-      // to skip the manual "fill in tokens" step.
+      // True when the archive was password-protected (ZipCrypto) and we
+      // decrypted it — secrets travelled in-place, so the importer's UI can
+      // skip the manual "fill in tokens" step.
       secretsAutoFilled?: boolean
     }
   | { phase: 'error'; message: string; fatal: boolean }
@@ -268,7 +269,6 @@ interface ProjectBundle {
     quietHoursTimezone?: string | null
   } | null
   requiredCredentials?: RequiredCredential[]
-  encryptedSecrets?: EncryptedSecretsBlob
 }
 
 interface BundleManifest {
@@ -309,7 +309,7 @@ export async function runImport(
   zipBuffer: Uint8Array,
   workspaceId: string,
   userId: string,
-  options: { includeChats: boolean; passphrase?: string; runBootstrap?: boolean },
+  options: { includeChats: boolean; password?: string; runBootstrap?: boolean },
   emit: (ev: ImportEvent) => void | Promise<void>,
 ): Promise<ImportResult> {
   // Verify user has access to the target workspace
@@ -326,11 +326,32 @@ export async function runImport(
     }
   }
 
+  // Password-protected (ZipCrypto) archives can't be read by fflate. Detect
+  // via the local file header's encryption flag, then decrypt with zip.js.
+  const archiveEncrypted = isEncryptedZip(zipBuffer)
   let unzipped: Record<string, Uint8Array>
-  try {
-    unzipped = unzipSync(zipBuffer)
-  } catch {
-    return { ok: false, status: 400, error: 'Invalid or corrupt ZIP file' }
+  if (archiveEncrypted) {
+    if (!options.password) {
+      return {
+        ok: false,
+        status: 400,
+        error: 'This archive is password-protected — enter its password to import.',
+      }
+    }
+    try {
+      unzipped = await decryptZip(zipBuffer, options.password)
+    } catch (err) {
+      if (err instanceof ZipPasswordError) {
+        return { ok: false, status: 400, error: 'Incorrect password for this archive.' }
+      }
+      return { ok: false, status: 400, error: 'Invalid or corrupt ZIP file' }
+    }
+  } else {
+    try {
+      unzipped = unzipSync(zipBuffer)
+    } catch {
+      return { ok: false, status: 400, error: 'Invalid or corrupt ZIP file' }
+    }
   }
 
   const projectJsonData = unzipped['project.json']
@@ -403,39 +424,11 @@ export async function runImport(
     },
   })
 
-  // ─── Decrypt opt-in secrets ──────────────────────────────────────
-  // If the bundle ships an `encryptedSecrets` blob and the importer supplied
-  // a passphrase, unlock it and use it to: (a) re-merge channel tokens, and
-  // (b) restore secret values inside `.env*` files after they're written.
-  // Both are best-effort — wrong passphrase becomes a non-fatal warning, and
-  // the importer can still complete via the manual Setup Checklist.
-  let decryptedSecrets:
-    | {
-        version: number
-        channels: Array<{ channel: string; field: string; value: string }>
-        env: Record<string, Record<string, string>>
-      }
-    | null = null
-  let secretsAutoFilled = false
-  if (bundle.encryptedSecrets && options.passphrase) {
-    try {
-      decryptedSecrets = await decryptSecrets(bundle.encryptedSecrets, options.passphrase)
-      secretsAutoFilled = true
-    } catch (err: any) {
-      await emit({
-        phase: 'error',
-        message: err?.message || 'Could not decrypt encryptedSecrets — passphrase may be wrong.',
-        fatal: false,
-      })
-      importWarnings.push(
-        'encryptedSecrets present but passphrase did not unlock — you will need to fill in credentials manually.',
-      )
-    }
-  } else if (bundle.encryptedSecrets && !options.passphrase) {
-    importWarnings.push(
-      'Bundle ships encryptedSecrets but no passphrase was provided — credentials will need to be configured manually.',
-    )
-  }
+  // When the archive was password-protected, every file (including `.env*`
+  // and the channel tokens in `agentConfig.channels`) travelled in-place, so
+  // there is no separate secrets blob to unlock — the decrypted contents are
+  // already complete. `secretsAutoFilled` reflects that for the importer UI.
+  const secretsAutoFilled = archiveEncrypted
 
   {
     const ac = bundle.agentConfig
@@ -451,19 +444,6 @@ export async function runImport(
       }
     }
     if (!Array.isArray(channelsValue)) channelsValue = []
-
-    // Splice decrypted channel secrets back in by matching channel.type+field.
-    if (decryptedSecrets?.channels?.length) {
-      for (const secret of decryptedSecrets.channels) {
-        const target = channelsValue.find((ch: any) => {
-          const t = ch?.type || ch?.channel
-          return t === secret.channel
-        })
-        if (target && target[secret.field] === null) {
-          target[secret.field] = secret.value
-        }
-      }
-    }
 
     const agentData: Record<string, any> = {
       projectId: project.id,
@@ -545,35 +525,6 @@ export async function runImport(
     // client gets a smooth progress bar without flooding the SSE stream.
     if ((i + 1) % 25 === 0 || i === workspaceEntries.length - 1) {
       await emit({ phase: 'writeFiles', done: i + 1, total: totalFiles })
-    }
-  }
-
-  // ─── Restore decrypted .env values ────────────────────────────────
-  // The bundle's `.env*` files were sanitised at export time (secret values
-  // blanked). When we successfully decrypted the secrets blob, splice the
-  // original values back into the on-disk `.env*` files now that they exist.
-  if (decryptedSecrets?.env) {
-    for (const [zipPath, kv] of Object.entries(decryptedSecrets.env)) {
-      // zipPath is like `workspace/.env` — convert to a real on-disk path.
-      const rel = zipPath.replace(/^workspace\//, '').replace(/\\/g, '/')
-      const fullPath = join(projectDir, rel)
-      if (!existsSync(fullPath)) continue
-      try {
-        const text = readFileSync(fullPath, 'utf8')
-        const lines = parseEnvFile(text)
-        const restored = lines.map((line) => {
-          if (line.isComment || !line.key) return line.raw
-          if (kv[line.key] !== undefined) return `${line.key}=${kv[line.key]}`
-          return line.raw
-        })
-        writeFileSync(fullPath, restored.join('\n'))
-      } catch (err: any) {
-        await emit({
-          phase: 'error',
-          message: `Could not restore secrets into ${rel}: ${err?.message || 'unknown'}`,
-          fatal: false,
-        })
-      }
     }
   }
 
@@ -704,17 +655,9 @@ export async function runImport(
       'No MEMORY.md content found in workspace — agent will start with empty memory.',
     )
   }
-  // If we successfully auto-filled secrets, the items they covered no longer
-  // need to appear on the Setup Checklist.
-  let pendingCredentials = requiredCredentials
-  if (decryptedSecrets) {
-    const filled = new Set<string>()
-    for (const s of decryptedSecrets.channels || []) filled.add(`${s.channel}.${s.field}`)
-    for (const [zipPath, kv] of Object.entries(decryptedSecrets.env || {})) {
-      for (const k of Object.keys(kv)) filled.add(`${zipPath.replace(/^workspace\//, '')}.${k}`)
-    }
-    pendingCredentials = requiredCredentials.filter((c) => !filled.has(c.label))
-  }
+  // Password-protected bundles ship secrets in-place, so `requiredCredentials`
+  // is empty for them. Unencrypted bundles still surface a Setup Checklist.
+  const pendingCredentials = requiredCredentials
   if (pendingCredentials.length > 0) {
     importWarnings.push(
       `${pendingCredentials.length} credential(s) need to be configured: ${pendingCredentials.map((c) => c.label).join(', ')}.`,
@@ -872,22 +815,27 @@ export async function runImport(
 export function projectExportImportRoutes() {
   const app = new Hono()
 
-  // GET /:projectId/export
-  // Auth is handled by the requireProjectAccess middleware applied to /api/projects/:projectId/*
-  app.get('/:projectId/export', async (c) => {
+  // POST /:projectId/export
+  // Auth is handled by the requireProjectAccess middleware applied to
+  // /api/projects/:projectId/* (it covers all HTTP methods).
+  //
+  // POST (not GET) so the optional archive password rides in the request body
+  // rather than the URL — query strings end up in access/proxy logs and
+  // browser history, which is exactly where a password must never appear.
+  app.post('/:projectId/export', async (c) => {
     const projectId = c.req.param('projectId')
-    // Default to including chats; only "false" disables.
-    const includeChats = c.req.query('includeChats') !== 'false'
-    // Encrypted-secrets opt-in. When `passphrase` is supplied, channel tokens
-    // and `.env` secret values are bundled inside an `encryptedSecrets` blob
-    // (AES-256-GCM, PBKDF2-derived key) instead of being dropped entirely.
-    const passphrase = c.req.query('passphrase') || ''
-    const includeSecrets = !!passphrase
-    // `.env` policy. Default = smart-split (redact secrets, ship `.env.example`
-    // showing keys only). `?includeEnv=true` falls back to passthrough — the
-    // raw .env files travel verbatim. Only respected when paired with a
-    // passphrase OR when the operator explicitly opts in.
-    const includeEnvRaw = c.req.query('includeEnv') === 'true'
+    const reqBody = (await c.req.json().catch(() => ({}))) as {
+      includeChats?: boolean
+      password?: string
+    }
+    // Default to including chats; only an explicit `false` disables.
+    const includeChats = reqBody.includeChats !== false
+    // Optional archive password. When present, the entire `.shogo` archive is
+    // ZipCrypto-encrypted and secrets travel in-place (no redaction); without
+    // it, secret-looking values are redacted and surfaced as requiredCredentials.
+    const password = typeof reqBody.password === 'string' ? reqBody.password : ''
+    const passwordProtect = password.length > 0
+    const redactSecrets = !passwordProtect
 
     const project = await prisma.project.findUnique({
       where: { id: projectId },
@@ -922,10 +870,28 @@ export function projectExportImportRoutes() {
     }
 
     // Parse channels: Prisma SQLite returns Json columns as strings, while
-    // Postgres returns parsed values. Strip secrets and capture them as
-    // requiredCredentials so the importer is told what to fill in.
-    const { sanitized: sanitizedChannels, required: requiredCredentials } =
-      sanitizeChannelsForExport(project.agentConfig?.channels)
+    // Postgres returns parsed values.
+    //   - Unencrypted export: strip secrets and capture them as
+    //     requiredCredentials so the importer is told what to fill in.
+    //   - Password-protected export: ship channel tokens verbatim (the
+    //     archive password protects them) and require nothing post-import.
+    let sanitizedChannels: any[]
+    let requiredCredentials: RequiredCredential[]
+    if (redactSecrets) {
+      ;({ sanitized: sanitizedChannels, required: requiredCredentials } =
+        sanitizeChannelsForExport(project.agentConfig?.channels))
+    } else {
+      let rawChannels: any = project.agentConfig?.channels
+      if (typeof rawChannels === 'string') {
+        try {
+          rawChannels = JSON.parse(rawChannels)
+        } catch {
+          rawChannels = []
+        }
+      }
+      sanitizedChannels = Array.isArray(rawChannels) ? rawChannels : []
+      requiredCredentials = []
+    }
 
     const agentConfigExport: Record<string, any> | null = project.agentConfig
       ? {
@@ -1090,14 +1056,12 @@ export function projectExportImportRoutes() {
 
     // ─── .env smart-split ──────────────────────────────────────────────
     // Walk every workspace/.env* file we just bundled. For each one:
-    //   - If the user opted into raw .env passthrough, leave it untouched.
+    //   - Password-protected export: leave it untouched — secret values
+    //     travel verbatim inside the encrypted archive.
     //   - Otherwise redact every secret-looking key, ship a sanitised copy
-    //     under the same path, and add the redacted keys to requiredCredentials
-    //     so the importer is told what's missing. The original *values* are
-    //     captured into `envSecretsByFile` so they can travel inside the
-    //     optional encryptedSecrets blob (when a passphrase is supplied).
-    const envSecretsByFile: Record<string, Record<string, string>> = {}
-    if (!includeEnvRaw) {
+    //     under the same path, add the redacted keys to requiredCredentials
+    //     so the importer is told what's missing, and emit a `.env.example`.
+    if (redactSecrets) {
       const envPaths = Object.keys(zipContents).filter((k) => {
         if (!k.startsWith('workspace/')) return false
         const base = k.split('/').pop() || ''
@@ -1106,7 +1070,7 @@ export function projectExportImportRoutes() {
       for (const zipPath of envPaths) {
         const text = strFromU8(zipContents[zipPath])
         const lines = parseEnvFile(text)
-        const fileSecrets: Record<string, string> = {}
+        let redactedAny = false
         const sanitised: string[] = []
         for (const line of lines) {
           if (line.isComment || !line.key) {
@@ -1114,7 +1078,7 @@ export function projectExportImportRoutes() {
             continue
           }
           if (isSecretKey(line.key) && line.value.length > 0) {
-            fileSecrets[line.key] = line.value
+            redactedAny = true
             sanitised.push(`${line.key}=`)
             requiredCredentials.push({
               channel: zipPath.replace(/^workspace\//, ''),
@@ -1126,8 +1090,7 @@ export function projectExportImportRoutes() {
           }
         }
         zipContents[zipPath] = strToU8(sanitised.join('\n'))
-        if (Object.keys(fileSecrets).length > 0) {
-          envSecretsByFile[zipPath] = fileSecrets
+        if (redactedAny) {
           // Also ship a `.env.example` next to the original — values blanked,
           // keys preserved — so the importer has a one-glance reference.
           const exampleLines = lines.map((l) =>
@@ -1139,51 +1102,10 @@ export function projectExportImportRoutes() {
           }
         }
       }
-    }
-
-    // ─── Encrypted secrets blob (opt-in) ───────────────────────────────
-    // When a passphrase is supplied, restore the *original* channel tokens and
-    // the redacted .env values (which we kept in memory only) inside an
-    // AES-GCM-encrypted blob attached to project.json. The importer can unlock
-    // it with the same passphrase to auto-fill credentials.
-    if (includeSecrets) {
-      // Re-derive the original channel secrets — we need them BEFORE
-      // sanitizeChannelsForExport stripped them. Parse the raw JSON again.
-      let rawChannels: any = project.agentConfig?.channels
-      if (typeof rawChannels === 'string') {
-        try { rawChannels = JSON.parse(rawChannels) } catch { rawChannels = [] }
-      }
-      const channelSecrets: Array<{ channel: string; field: string; value: string }> = []
-      if (Array.isArray(rawChannels)) {
-        rawChannels.forEach((entry: any, idx: number) => {
-          if (!entry || typeof entry !== 'object') return
-          const channelType = entry.type || entry.channel || `channel-${idx}`
-          for (const [k, v] of Object.entries(entry)) {
-            if (typeof v === 'string' && v.length > 0 && isSecretKey(k)) {
-              channelSecrets.push({ channel: String(channelType), field: k, value: v })
-            }
-          }
-        })
-      }
-
-      const secretsPayload = {
-        version: 1,
-        channels: channelSecrets,
-        env: envSecretsByFile,
-      }
-      try {
-        const blob: EncryptedSecretsBlob = await encryptSecrets(
-          secretsPayload,
-          passphrase,
-        )
-        ;(projectJson as any).encryptedSecrets = blob
-        // Re-emit project.json with the new field.
-        zipContents['project.json'] = strToU8(JSON.stringify(projectJson, null, 2))
-      } catch (err: any) {
-        exportWarnings.push(
-          `Encrypted-secrets opt-in failed (${err?.message || 'unknown'}); bundle shipped without secrets.`,
-        )
-      }
+      // Re-emit project.json so the env-derived requiredCredentials added above
+      // are reflected in the bundle the importer reads (the initial serialise
+      // happened before .env processing).
+      zipContents['project.json'] = strToU8(JSON.stringify(projectJson, null, 2))
     }
 
     for (const session of chatSessions) {
@@ -1241,14 +1163,18 @@ export function projectExportImportRoutes() {
         included: chatSessions.length,
       },
       requiredCredentialsCount: requiredCredentials.length,
-      hasEncryptedSecrets: includeSecrets && !!(projectJson as any).encryptedSecrets,
-      envPolicy: includeEnvRaw ? 'passthrough' : 'smart-split',
+      encryption: passwordProtect ? 'zipcrypto' : 'none',
+      envPolicy: passwordProtect ? 'passthrough' : 'smart-split',
       warnings: exportWarnings,
       contextFilesSeeded,
     }
     zipContents['manifest.json'] = strToU8(JSON.stringify(manifest, null, 2))
 
-    const zipped = zipSync(zipContents, { level: 6 })
+    // Password-protected exports are encrypted with ZipCrypto (zip.js) so any
+    // standard tool can open them with the password; otherwise fflate is fine.
+    const zipped = passwordProtect
+      ? await encryptZipCrypto(zipContents, password)
+      : zipSync(zipContents, { level: 6 })
 
     const safeName = project.name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60)
     const filename = `${safeName}.shogo`
@@ -1289,7 +1215,7 @@ export function projectExportImportRoutes() {
     let zipBuffer: Uint8Array
     let workspaceId: string
     let includeChats: boolean
-    let passphrase: string
+    let password: string
     let runBootstrap: boolean
 
     if (contentType.includes('multipart/form-data')) {
@@ -1298,7 +1224,12 @@ export function projectExportImportRoutes() {
       workspaceId = (formData.get('workspaceId') as string) || ''
       const includeChatsRaw = (formData.get('includeChats') as string | null) ?? 'true'
       includeChats = includeChatsRaw !== 'false'
-      passphrase = (formData.get('passphrase') as string | null) || ''
+      // Password unlocks a ZipCrypto-protected archive. Accept the legacy
+      // `passphrase` field name too for older clients.
+      password =
+        (formData.get('password') as string | null) ||
+        (formData.get('passphrase') as string | null) ||
+        ''
       // Bootstrap defaults ON; client can opt out with `runBootstrap=false`.
       const bootstrapRaw = (formData.get('runBootstrap') as string | null) ?? 'true'
       runBootstrap = bootstrapRaw !== 'false'
@@ -1329,7 +1260,7 @@ export function projectExportImportRoutes() {
             zipBuffer,
             workspaceId,
             userId,
-            { includeChats, passphrase, runBootstrap },
+            { includeChats, password, runBootstrap },
             async (ev) => {
               if (ev.phase === 'error') {
                 await stream.writeSSE({
@@ -1379,7 +1310,7 @@ export function projectExportImportRoutes() {
         zipBuffer,
         workspaceId,
         userId,
-        { includeChats, passphrase, runBootstrap },
+        { includeChats, password, runBootstrap },
         () => {
           /* drop events */
         },
