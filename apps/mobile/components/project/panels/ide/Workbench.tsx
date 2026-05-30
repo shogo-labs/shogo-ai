@@ -5,6 +5,10 @@ import { ActivityBar } from "./ActivityBar";
 import { FileTree, type FileTreeHandlers } from "./FileTree";
 import { StatusBar } from "./StatusBar";
 import { useGitStatus } from "./git/useGitStatus";
+import { isDesktopRuntime } from "./terminal/pty-factory";
+import { gitChangeCount, type BadgeData } from "./badges/formatBadge";
+import { useProblemsBadgeCount } from "./badges/useProblemsBadgeCount";
+import type { ActivityId } from "./types";
 import { GitStatusProvider } from "./git/GitStatusContext";
 import { SourceControlViewlet } from "./scm/SourceControlViewlet";
 import { attachGitDecorations, maybeAutoStageIfConflictResolved } from "./git/editorIntegration";
@@ -1421,6 +1425,31 @@ export function Workbench({
     gitSnapshot?.refreshedAt,
   ]);
 
+  // Activity Bar badges — desktop-only signal so web/mobile keep their
+  // intentionally bare rail. `useProblemsBadgeCount` short-circuits
+  // when `enabled` is false, so the diagnostics endpoint is never hit
+  // outside Electron.
+  const desktopBadgesEnabled = isDesktopRuntime();
+  const problemsBadgeResult = useProblemsBadgeCount({
+    projectId: projectId ?? null,
+    enabled: desktopBadgesEnabled,
+  });
+  const activityBadges: Partial<Record<ActivityId, BadgeData>> | null = useMemo(() => {
+    if (!desktopBadgesEnabled) return null;
+    const out: Partial<Record<ActivityId, BadgeData>> = {};
+    const gitN = gitChangeCount(gitSnapshot);
+    if (gitN > 0) out.git = { count: gitN, tone: "neutral" };
+    if (problemsBadgeResult.count > 0) {
+      const tone = problemsBadgeResult.severity === "error" ? "error" : "warn";
+      // Shogo surfaces the Problems pane under the Files (Explorer)
+      // activity (the bottom panel hosts it from Files context), so the
+      // problems dot lives on the Files icon — same convention as the
+      // BottomPanel toggle.
+      out.files = { count: problemsBadgeResult.count, tone };
+    }
+    return Object.keys(out).length === 0 ? null : out;
+  }, [desktopBadgesEnabled, gitSnapshot, problemsBadgeResult.count, problemsBadgeResult.severity]);
+
   return (
     <GitStatusProvider snapshot={gitSnapshot}>
     <div
@@ -1432,6 +1461,7 @@ export function Workbench({
           active={activity}
           sidebarOpen={sidebarOpen}
           terminalOpen={bottomPanelOpen}
+          badges={activityBadges}
           onSelect={(id) => {
             setActivity(id);
             if (!sidebarOpen) setSidebarOpen(true);
