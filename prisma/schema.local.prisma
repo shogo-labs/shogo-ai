@@ -2053,6 +2053,7 @@ model AffiliateCommissionTier {
   level        Int     @unique
   rateBps      Int
   durationDays Int?
+  secondaryRateBps Int?
   label        String?
 
   @@map("affiliate_commission_tiers")

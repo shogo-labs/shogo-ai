@@ -39,14 +39,31 @@ import { withGlobalJobLock } from '../lib/global-job-lock'
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
 export const DEFAULT_MAX_DEPTH = 3
+// Levels actually PAID commissions. Default 1 = direct referrer only (MLM
+// payouts off). This is decoupled from DEFAULT_MAX_DEPTH so deep enrollment
+// trees still form; we just don't pay the upline beyond this depth. Set
+// SHOGO_AFFILIATE_PAYOUT_MAX_DEPTH=3 to re-enable full multi-level payouts.
+export const DEFAULT_PAYOUT_MAX_DEPTH = 1
 export const DEFAULT_REFUND_HOLD_DAYS = 30
 export const DEFAULT_MIN_PAYOUT_CENTS = 5000
 export const DEFAULT_COOKIE_DAYS = 60
 
+/** Max enrollment depth: how deep a `parentCode` chain may grow. */
 export function getMaxDepth(): number {
   const raw = process.env.SHOGO_AFFILIATE_MAX_DEPTH
   const n = raw ? parseInt(raw, 10) : DEFAULT_MAX_DEPTH
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_MAX_DEPTH
+}
+
+/**
+ * Max PAYOUT depth: how many upline levels actually earn a commission on an
+ * invoice. Defaults to 1 (direct referrer only). Independent from
+ * getMaxDepth() so the enrollment tree can be deeper than what we pay.
+ */
+export function getPayoutMaxDepth(): number {
+  const raw = process.env.SHOGO_AFFILIATE_PAYOUT_MAX_DEPTH
+  const n = raw ? parseInt(raw, 10) : DEFAULT_PAYOUT_MAX_DEPTH
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_PAYOUT_MAX_DEPTH
 }
 
 export function getRefundHoldDays(): number {
@@ -508,7 +525,10 @@ export async function recordCommissionsForInvoice(
     orderBy: { level: 'asc' },
   })
   if (tiers.length === 0) return 0
-  const cap = Math.min(tiers.length, getMaxDepth())
+  // Payout depth is capped independently of enrollment depth: by default
+  // only the direct referrer (level 1) earns, even when the enrollment
+  // upline is deeper. Bump SHOGO_AFFILIATE_PAYOUT_MAX_DEPTH to pay deeper.
+  const cap = Math.min(tiers.length, getPayoutMaxDepth())
   const upline = await getUpline(affiliateId, cap)
 
   const refundHoldDays = getRefundHoldDays()
@@ -526,12 +546,18 @@ export async function recordCommissionsForInvoice(
     if (level > cap) break
     const uplineEntry = upline.find((u) => u.level === level)
     if (!uplineEntry) continue
+    let rateBps = tier.rateBps as number
     if (tier.durationDays != null && attrAgeDays > tier.durationDays) {
-      // This level's window has expired; skip it but keep walking
-      // (callers may have configured a longer L3 window than L1).
-      continue
+      // This level's primary window has expired. If a step-down rate is
+      // configured (e.g. 20% for year one -> 10% forever), keep paying at
+      // that reduced rate; otherwise the level stops earning (legacy
+      // behavior — and callers may set a longer window on a deeper level).
+      if (tier.secondaryRateBps != null) {
+        rateBps = tier.secondaryRateBps as number
+      } else {
+        continue
+      }
     }
-    const rateBps = tier.rateBps as number
     const amountCents = Math.floor((basisCents * rateBps) / 10_000)
     if (amountCents <= 0) continue
 
