@@ -16,6 +16,33 @@ SHOGO_AFFILIATES_NATIVE=true   →  click tracking, attribution, commissions,
 Every server-side surface checks the flag and short-circuits when off,
 so a code rollout without the flag flip is a no-op for users.
 
+## Commission structure (default: single-level)
+
+The program ships with **multi-level payouts disabled by default**. Only
+the direct referrer earns:
+
+- **20%** of a referred customer's invoices for the **first 365 days**
+  (from their attribution date), then **10% forever after**. This
+  step-down is configured per tier via the new `secondaryRateBps` column
+  on `affiliate_commission_tiers` (level 1 seeded at `1000` bps).
+- Levels 2 and 3 of someone's downline earn **nothing** by default — a
+  referrer is not paid for the customers that *their* referrals bring in.
+
+Two independent depth knobs control this:
+
+```
+SHOGO_AFFILIATE_MAX_DEPTH=3          →  how deep the enrollment tree may grow
+                                         (parentCode chains). Deep trees still
+                                         form even when payouts are single-level.
+SHOGO_AFFILIATE_PAYOUT_MAX_DEPTH=1   →  how many upline levels actually earn a
+                                         commission. 1 = direct referrer only.
+                                         Set to 3 to re-enable full MLM payouts.
+```
+
+Re-enabling MLM payouts later is a single env flip
+(`SHOGO_AFFILIATE_PAYOUT_MAX_DEPTH=3`) — no code change, no migration. The
+L2/L3 tier rows and the enrollment tree are preserved the whole time.
+
 ## What's already shipped (gated)
 
 - Prisma models + migrations on both Postgres and SQLite.
@@ -45,7 +72,8 @@ In every cloud region's API deployment:
 | Var | Recommended value | Notes |
 | --- | --- | --- |
 | `SHOGO_AFFILIATES_NATIVE` | `true` at flip time | Master kill switch. |
-| `SHOGO_AFFILIATE_MAX_DEPTH` | `3` | Matches seed tier rows. |
+| `SHOGO_AFFILIATE_MAX_DEPTH` | `3` | Enrollment tree depth (parentCode chains). |
+| `SHOGO_AFFILIATE_PAYOUT_MAX_DEPTH` | `1` | Levels actually paid. `1` = direct referrer only (MLM payouts off); `3` re-enables full MLM. |
 | `SHOGO_AFFILIATE_REFUND_HOLD_DAYS` | `30` | Commissions stay `pending` for this long. |
 | `SHOGO_AFFILIATE_MIN_PAYOUT_CENTS` | `5000` | Minimum payout balance. |
 | `SHOGO_AFFILIATE_COOKIE_DAYS` | `60` | Click-attribution window. |
@@ -73,8 +101,10 @@ In the Cloudflare Pages project for `shogo-website`:
    `affiliate_attribution` row exists for the new user.
 5. Complete a paid checkout. Confirm:
    - Stripe Customer + Subscription metadata contain `affiliateId`.
-   - On `invoice.payment_succeeded`, three `affiliate_commission` rows
-     are written (one per upline level present).
+   - On `invoice.payment_succeeded`, one `affiliate_commission` row is
+     written for the direct referrer at 20% (default single-level). If you
+     set `SHOGO_AFFILIATE_PAYOUT_MAX_DEPTH=3` to test MLM, expect one row
+     per upline level present.
 6. Wait out the refund-hold (or temporarily set
    `SHOGO_AFFILIATE_REFUND_HOLD_DAYS=0`) and run
    `runApproveEligibleCommissions` manually. Confirm `pending → approved`.

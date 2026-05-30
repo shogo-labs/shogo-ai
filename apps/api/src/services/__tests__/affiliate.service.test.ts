@@ -331,9 +331,9 @@ beforeEach(() => {
   commissions = []
   payouts = []
   tiers = [
-    { id: 'tier_l1', level: 1, rateBps: 2000, durationDays: 365, label: 'L1' },
-    { id: 'tier_l2', level: 2, rateBps: 500, durationDays: 365, label: 'L2' },
-    { id: 'tier_l3', level: 3, rateBps: 200, durationDays: 365, label: 'L3' },
+    { id: 'tier_l1', level: 1, rateBps: 2000, durationDays: 365, secondaryRateBps: 1000, label: 'L1' },
+    { id: 'tier_l2', level: 2, rateBps: 500, durationDays: 365, secondaryRateBps: null, label: 'L2' },
+    { id: 'tier_l3', level: 3, rateBps: 200, durationDays: 365, secondaryRateBps: null, label: 'L3' },
   ]
   users = new Map()
   nextId = 0
@@ -343,6 +343,7 @@ beforeEach(() => {
   stripeFailureMethod = null
   process.env.SHOGO_AFFILIATES_NATIVE = 'true'
   delete process.env.SHOGO_AFFILIATE_MAX_DEPTH
+  delete process.env.SHOGO_AFFILIATE_PAYOUT_MAX_DEPTH
   delete process.env.SHOGO_AFFILIATE_REFUND_HOLD_DAYS
   delete process.env.SHOGO_AFFILIATE_MIN_PAYOUT_CENTS
   delete process.env.SHOGO_AFFILIATE_COOKIE_DAYS
@@ -641,6 +642,8 @@ describe('recordCommissionsForInvoice', () => {
   }
 
   test('writes 3-level commission split with seeded tier table', async () => {
+    // Opt into multi-level payouts; default is direct-referrer only.
+    process.env.SHOGO_AFFILIATE_PAYOUT_MAX_DEPTH = '3'
     setupTree()
     const stripe = makeStripe()
     const created = await svc.recordCommissionsForInvoice(buildInvoice(), stripe, new Date('2026-05-15'))
@@ -711,6 +714,7 @@ describe('recordCommissionsForInvoice', () => {
   })
 
   test('attribution older than L1 durationDays → skips L1 but still pays L2/L3 with longer windows', async () => {
+    process.env.SHOGO_AFFILIATE_PAYOUT_MAX_DEPTH = '3'
     const { direct } = setupTree()
     attributions.set('u-buyer', {
       id: 'attr_buyer',
@@ -724,9 +728,56 @@ describe('recordCommissionsForInvoice', () => {
       { id: 't3', level: 3, rateBps: 200, durationDays: 365, label: 'L3 expired' },
     ]
     const created = await svc.recordCommissionsForInvoice(buildInvoice(), makeStripe(), new Date('2026-05-15'))
-    // L1 expired (30d < ~500d), L2 forever applies, L3 365d < ~500d, also skip.
+    // L1 expired (30d < ~500d) with no step-down rate, L2 forever applies,
+    // L3 365d < ~500d, also skip.
     expect(created).toBe(1)
     expect(commissions[0].level).toBe(2)
+  })
+
+  test('default payout depth pays only the direct referrer (MLM off)', async () => {
+    // No SHOGO_AFFILIATE_PAYOUT_MAX_DEPTH set → defaults to 1.
+    setupTree()
+    const created = await svc.recordCommissionsForInvoice(buildInvoice(), makeStripe(), new Date('2026-05-15'))
+    expect(created).toBe(1)
+    expect(commissions).toHaveLength(1)
+    expect(commissions[0].affiliateId).toBe('aff_direct')
+    expect(commissions[0].level).toBe(1)
+    expect(commissions[0].amountCents).toBe(2000) // 20%
+    // Upline (l2, root) earns nothing.
+    expect(affiliates.get('aff_l2')!.pendingPayoutCents).toBe(0)
+    expect(affiliates.get('aff_root')!.pendingPayoutCents).toBe(0)
+  })
+
+  test('direct referrer earns 20% in year one', async () => {
+    setupTree() // attributedAt 2026-05-01
+    // 14 days in → inside the 365-day window.
+    const created = await svc.recordCommissionsForInvoice(buildInvoice(), makeStripe(), new Date('2026-05-15'))
+    expect(created).toBe(1)
+    expect(commissions[0].rateBps).toBe(2000)
+    expect(commissions[0].amountCents).toBe(2000) // 20% of 10_000
+  })
+
+  test('direct referrer steps down to 10% forever after year one', async () => {
+    setupTree() // attributedAt 2026-05-01
+    // ~13 months later → past the 365-day window, secondaryRateBps applies.
+    const created = await svc.recordCommissionsForInvoice(buildInvoice(), makeStripe(), new Date('2027-06-15'))
+    expect(created).toBe(1)
+    expect(commissions[0].rateBps).toBe(1000)
+    expect(commissions[0].amountCents).toBe(1000) // 10% of 10_000
+    expect(affiliates.get('aff_direct')!.pendingPayoutCents).toBe(1000)
+  })
+
+  test('no step-down rate → level stops earning after its window', async () => {
+    const { direct } = setupTree()
+    tiers = [{ id: 't1', level: 1, rateBps: 2000, durationDays: 30, secondaryRateBps: null, label: 'L1' }]
+    attributions.set('u-buyer', {
+      id: 'attr_buyer',
+      userId: 'u-buyer',
+      affiliateId: direct.id,
+      attributedAt: new Date('2026-01-01'),
+    })
+    const created = await svc.recordCommissionsForInvoice(buildInvoice(), makeStripe(), new Date('2026-05-15'))
+    expect(created).toBe(0)
   })
 })
 
