@@ -10,6 +10,7 @@ import { gitChangeCount, type BadgeData } from "./badges/formatBadge";
 import { useProblemsBadgeCount } from "./badges/useProblemsBadgeCount";
 import { GitStatusProvider } from "./git/GitStatusContext";
 import { SourceControlViewlet } from "./scm/SourceControlViewlet";
+import { RunDebugPanel } from "./run/RunDebugPanel";
 import { attachGitDecorations, maybeAutoStageIfConflictResolved } from "./git/editorIntegration";
 import { MergeEditorModal } from "./git/MergeEditorModal";
 import { getDesktopGitBridge } from "./git/bridge";
@@ -1518,8 +1519,17 @@ export function Workbench({
                         setMergePath(path);
                       }
                     }}
-                    fallback={projectId ? <CheckpointsPanel visible projectId={projectId} /> : undefined}
+                    // Checkpoint now lives on its own activity bar entry
+                    // (id: "checkpoint"); the SourceControl viewlet no
+                    // longer falls back to it. If the project has no git
+                    // repo, the viewlet renders its own empty state.
                   />
+                )}
+                {activity === "checkpoint" && projectId && (
+                  <CheckpointsPanel visible projectId={projectId} />
+                )}
+                {activity === "debug" && (
+                  <RunDebugPanel workspaceRoot={gitWorkspaceRoot} />
                 )}
                 {activity === "settings" && (
                   <SettingsPane settings={settings} onChange={setSettings} />
