@@ -138,12 +138,16 @@ describe('inferProviderFromModel', () => {
     expect(inferProviderFromModel('advanced')).toBe('anthropic')
   })
 
-  test('unknown model uses fallback', () => {
-    expect(inferProviderFromModel('unknown-model', 'google')).toBe('google')
+  test('unknown (non-prefixed) model routes to custom so it goes through the proxy', () => {
+    // DB-defined OpenAI-compatible models (e.g. MiMo) are unknown to the
+    // static catalog; they must route as 'custom' (proxy chat-completions)
+    // rather than mis-routing to a native provider that 404s on the id.
+    expect(inferProviderFromModel('unknown-model', 'google')).toBe('custom')
+    expect(inferProviderFromModel('unknown-model')).toBe('custom')
   })
 
-  test('default fallback is anthropic', () => {
-    expect(inferProviderFromModel('unknown-model')).toBe('anthropic')
+  test('empty model id uses the provided fallback', () => {
+    expect(inferProviderFromModel('', 'anthropic')).toBe('anthropic')
   })
 
   test('gemini models → google', () => {
