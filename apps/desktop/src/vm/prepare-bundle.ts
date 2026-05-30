@@ -304,6 +304,21 @@ export function prepareVMBundle(opts: PrepareVMBundleOptions): void {
   // --- Tree-sitter wasm files (always needed — embedded in seed ISO) ---
   copyWasmFiles(join(destDir, 'wasm'), repoRoot)
 
+  // --- Canvas bridge static asset (always needed - embedded in seed ISO) ---
+  // The in-VM runtime boots from /opt/shogo/server.js and reads the bridge
+  // from CANVAS_BRIDGE_DIR (set to /opt/shogo/static by cloud-init.ts). Ship
+  // the source asset into the bundle here so the VM managers can embed it in
+  // the seed ISO; without it the in-VM runtime falls back to the empty IIFE
+  // stub and the workspace iframe never shows "Update available - Refresh"
+  // (the same gap PR #677 closed for the host-execution path, but on the VM
+  // path that real Desktop installs actually use).
+  const canvasBridgeSrc = resolve(repoRoot, 'packages/agent-runtime/static/canvas-bridge.js')
+  if (existsSync(canvasBridgeSrc)) {
+    const staticDest = join(destDir, 'static')
+    mkdirSync(staticDest, { recursive: true })
+    copyFileSync(canvasBridgeSrc, join(staticDest, 'canvas-bridge.js'))
+  }
+
   // With pre-provisioned images the following are baked into rootfs-provisioned.qcow2:
   //   - /usr/local/bin/bun (+ node/npx/npm aliases)
   //   - /opt/shogo/node_modules/ (prisma, typescript-language-server, typescript, pyright)
