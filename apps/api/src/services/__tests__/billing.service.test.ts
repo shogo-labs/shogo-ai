@@ -561,15 +561,15 @@ describe('hasBalance (rolling windows)', () => {
     expect(wallets.get('w1')).toBeDefined()
   })
   it('returns true when a window still has room (pro plan)', async () => {
-    setPlan('pro') // 5h=8, weekly=40
+    setPlan('pro') // 5h=1.6, weekly=4
     wallets.set('w1', freshWallet())
-    expect(await billing.hasBalance('w1', 3)).toBe(true)
+    expect(await billing.hasBalance('w1', 0.5)).toBe(true)
   })
   it('returns false when both windows exhausted and no overage (free)', async () => {
     wallets.set('w1', freshWallet({
       overageEnabled: false,
-      fiveHourWindowStart: now0(), fiveHourUsedUsd: 0.5, // free 5h cap = 0.5
-      weeklyWindowStart: now0(), weeklyUsedUsd: 2,         // free weekly cap = 2
+      fiveHourWindowStart: now0(), fiveHourUsedUsd: 0.5, // over free 5h cap = 0.2
+      weeklyWindowStart: now0(), weeklyUsedUsd: 2,         // over free weekly cap = 0.5
     }))
     expect(await billing.hasBalance('w1', 0.4)).toBe(false)
   })
@@ -600,7 +600,7 @@ describe('hasBalance (rolling windows)', () => {
       fiveHourWindowStart: sixHoursAgo, fiveHourUsedUsd: 0.5, // would block if not reset
       weeklyWindowStart: now0(), weeklyUsedUsd: 0,
     }))
-    expect(await billing.hasBalance('w1', 0.4)).toBe(true)
+    expect(await billing.hasBalance('w1', 0.1)).toBe(true)
   })
 })
 
@@ -678,9 +678,10 @@ describe('consumeUsage (rolling windows)', () => {
   })
 
   it('scales window per seat (pro x3 seats → 3x the 5h cap)', async () => {
-    setPlan('pro', 3) // 5h = 8 * 3 = 24
+    setPlan('pro', 3) // 5h = 1.6 * 3 = 4.8, weekly = 4 * 3 = 12
     wallets.set('w1', freshWallet())
-    const r = await billing.consumeUsage({ ...base, billedUsd: 20 })
+    // 2.5 fits the 3-seat 5h cap (4.8) but would exceed the 1-seat cap (1.6).
+    const r = await billing.consumeUsage({ ...base, billedUsd: 2.5 })
     expect(r.success).toBe(true)
     expect(r.source).toBe('window')
   })
@@ -699,10 +700,10 @@ describe('consumeUsage (rolling windows)', () => {
       fiveHourWindowStart: sixHoursAgo, fiveHourUsedUsd: 0.5,
       weeklyWindowStart: now0(), weeklyUsedUsd: 0,
     }))
-    const r = await billing.consumeUsage({ ...base, billedUsd: 0.3 })
+    const r = await billing.consumeUsage({ ...base, billedUsd: 0.1 })
     expect(r.success).toBe(true)
     const w = wallets.get('w1')!
-    expect(w.fiveHourUsedUsd).toBeCloseTo(0.3, 5)
+    expect(w.fiveHourUsedUsd).toBeCloseTo(0.1, 5)
     expect(w.fiveHourWindowStart!.getTime()).toBeGreaterThan(sixHoursAgo.getTime())
   })
 
@@ -721,11 +722,11 @@ describe('getUsageWindows', () => {
   it('reports utilization and resetsAt for an open window (free)', async () => {
     const start = now0()
     wallets.set('w1', freshWallet({
-      fiveHourWindowStart: start, fiveHourUsedUsd: 0.25, // free 5h cap 0.5 → 50%
-      weeklyWindowStart: start, weeklyUsedUsd: 0.5,       // free weekly cap 2 → 25%
+      fiveHourWindowStart: start, fiveHourUsedUsd: 0.1,   // free 5h cap 0.2 → 50%
+      weeklyWindowStart: start, weeklyUsedUsd: 0.125,     // free weekly cap 0.5 → 25%
     }))
     const w = await billing.getUsageWindows('w1')
-    expect(w.fiveHour.limitUsd).toBe(0.5)
+    expect(w.fiveHour.limitUsd).toBe(0.2)
     expect(w.fiveHour.utilization).toBeCloseTo(0.5, 5)
     expect(w.fiveHour.resetsAt).toBeInstanceOf(Date)
     expect(w.weekly.utilization).toBeCloseTo(0.25, 5)
@@ -762,7 +763,8 @@ describe('getUsageWindows', () => {
 describe('consumeCredits (legacy)', () => {
   it('converts credit-cost to USD and returns credits-remaining', async () => {
     wallets.set('w1', freshWallet({ dailyIncludedUsd: 0.5, monthlyIncludedUsd: 10 }))
-    const r = await billing.consumeCredits('w1', null, 'u', 'x', 2)
+    // 1 credit → $0.10 billed; leaves room under the free 5h cap ($0.20).
+    const r = await billing.consumeCredits('w1', null, 'u', 'x', 1)
     expect(r.success).toBe(true)
     expect(r.remainingCredits).toBeGreaterThan(0)
   })
@@ -1134,6 +1136,9 @@ describe('consumeUsage — FK retry (L398-404, isFkConstraintError branches)', (
   })
 
   it('re-throws FK errors after exhausting retry attempts', async () => {
+    // Uncapped plan so the (non-transactional) retry loop always reaches the
+    // usage-event create — keeps this FK test independent of window cap tuning.
+    setPlan('enterprise')
     wallets.set('w1', freshWallet({ dailyIncludedUsd: 1, monthlyIncludedUsd: 0 }))
     usageEventCreateImpl = () => {
       const err: any = new Error('FK constraint')

@@ -51,9 +51,7 @@ import {
   PRO_FEATURES,
   BUSINESS_FEATURES,
   ENTERPRISE_FEATURES,
-  SEAT_INCLUDED_USD,
-  getIncludedUsdForPlan,
-  getIncludedUsdCapacityForDisplay,
+  getWindowLimitsForPlan,
   formatUsd,
   formatCurrencyPrice,
   formatResetCountdown,
@@ -73,6 +71,23 @@ import {
 
 // ─── Rolling usage-window bar ──────────────────────────────
 
+// Relative usage framing for plan cards (no dollar figures, like Codex /
+// Claude Code). Expresses each tier's rolling-window allowance as a multiple
+// of the entry paid tier (Basic), derived from the weekly window so copy
+// stays in sync with ROLLING_WINDOW_LIMITS. Enterprise is uncapped.
+const BASIC_WEEKLY_USD = getWindowLimitsForPlan('basic', 1)?.weeklyUsd ?? 0
+
+function relativeUsageCopy(planId: string): string {
+  const limits = getWindowLimitsForPlan(planId, 1)
+  if (!limits) return 'Unlimited usage — no rate windows'
+  if (!BASIC_WEEKLY_USD || limits.weeklyUsd <= BASIC_WEEKLY_USD) {
+    return 'Standard 5-hour & weekly usage windows'
+  }
+  // Round to one decimal, dropping a trailing ".0" (e.g. 2.5×, 5×).
+  const multiple = Number((limits.weeklyUsd / BASIC_WEEKLY_USD).toFixed(1))
+  return `${multiple}× the usage of Basic — higher 5-hour & weekly windows`
+}
+
 function UsageWindowBar({ label, window }: { label: string; window: UsageWindowView | undefined }) {
   // Uncapped (enterprise) plans report a null limit.
   const uncapped = !!window && window.limitUsd == null
@@ -84,7 +99,7 @@ function UsageWindowBar({ label, window }: { label: string; window: UsageWindowV
     ? '—'
     : uncapped
       ? 'Unlimited'
-      : `${formatUsd(window.usedUsd)} of ${formatUsd(window.limitUsd ?? 0)}`
+      : `${pct}% used`
 
   return (
     <View className="gap-1.5">
@@ -305,16 +320,6 @@ export default observer(function BillingPage() {
     }).catch(() => {})
     return () => { cancelled = true }
   }, [http])
-
-  const subSeats = subscription?.seats ?? 1
-  const usdRemaining =
-    effectiveBalance?.total ?? getIncludedUsdForPlan(subscription?.planId, subSeats)
-  const usdTotal = getIncludedUsdCapacityForDisplay({
-    planId: subscription?.planId,
-    seats: subSeats,
-    remainingTotal: effectiveBalance?.total,
-    monthlyIncludedAllocationUsd: effectiveBalance?.monthlyIncludedAllocationUsd,
-  })
 
   const planName = subscription
     ? `${getPlanDisplayName(subscription.planId)} Plan`
@@ -768,7 +773,7 @@ export default observer(function BillingPage() {
 
               <View className="lg:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
-                  {formatUsd(SEAT_INCLUDED_USD.basic)} of usage / month
+                  {relativeUsageCopy('basic')}
                 </Text>
                 <Text className="text-sm text-muted-foreground">
                   All features in Free, plus:
@@ -830,7 +835,7 @@ export default observer(function BillingPage() {
                     onChange={setProSeats}
                     min={1}
                     max={500}
-                    label={`$${SEAT_INCLUDED_USD.pro} / seat / month`}
+                    label="Usage windows scale per seat"
                   />
                 )}
               </View>
@@ -847,7 +852,7 @@ export default observer(function BillingPage() {
 
               <View className="lg:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
-                  {formatUsd(SEAT_INCLUDED_USD.pro * proSeats)} of usage / month
+                  {relativeUsageCopy('pro')}
                 </Text>
                 <Text className="text-sm text-muted-foreground">
                   All features in Free, plus:
@@ -913,7 +918,7 @@ export default observer(function BillingPage() {
                     onChange={setBusinessSeats}
                     min={1}
                     max={500}
-                    label={`$${SEAT_INCLUDED_USD.business} / seat / month`}
+                    label="Usage windows scale per seat"
                   />
                 )}
               </View>
@@ -930,7 +935,7 @@ export default observer(function BillingPage() {
 
               <View className="lg:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
-                  {formatUsd(SEAT_INCLUDED_USD.business * businessSeats)} of usage / month
+                  {relativeUsageCopy('business')}
                 </Text>
                 <FeatureList features={BUSINESS_FEATURES} />
               </View>
