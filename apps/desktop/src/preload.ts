@@ -454,6 +454,33 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
       }
     },
   },
+// --- Run and Debug (M1: package.json script runner) ----------------
+  // Backed by `apps/desktop/src/run-ipc.ts` in main. Reads
+  // package.json scripts, spawns the appropriate package-manager
+  // command (bun/pnpm/yarn/npm based on lockfile detection), and
+  // streams stdout/stderr/exit to the renderer over named events.
+  // Full DAP integration is tracked as FEAT-DEBUG; this is the
+  // "Run without debugging" equivalent.
+  run: {
+    listScripts: (root: string): Promise<{ ok: boolean; scripts?: { name: string; command: string }[]; packageManager?: 'bun' | 'pnpm' | 'yarn' | 'npm'; error?: string }> =>
+      ipcRenderer.invoke('run:listScripts', root),
+    start: (root: string, scriptName: string, preferredPm?: 'bun' | 'pnpm' | 'yarn' | 'npm'): Promise<{ ok: boolean; runId?: string; error?: string }> =>
+      ipcRenderer.invoke('run:start', root, scriptName, preferredPm),
+    stop: (runId: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('run:stop', runId),
+    onOutput: (runId: string, cb: (data: { stream: 'stdout' | 'stderr'; data: string }) => void): (() => void) => {
+      const channel = `run:output:${runId}`
+      const listener = (_e: unknown, payload: { stream: 'stdout' | 'stderr'; data: string }) => cb(payload)
+      ipcRenderer.on(channel, listener)
+      return () => ipcRenderer.removeListener(channel, listener)
+    },
+    onExit: (runId: string, cb: (info: { code: number | null; signal: string | null }) => void): (() => void) => {
+      const channel = `run:exit:${runId}`
+      const listener = (_e: unknown, payload: { code: number | null; signal: string | null }) => cb(payload)
+      ipcRenderer.on(channel, listener)
+      return () => ipcRenderer.removeListener(channel, listener)
+    },
+  },
 
   // Bug report / log sharing
   captureScreenshot: (): Promise<{ ok: boolean; base64?: string; error?: string }> =>
