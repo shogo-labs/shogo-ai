@@ -151,6 +151,23 @@ export function useOpenLocalFolder({
 
       const project = res?.project as { id?: string; name?: string } | undefined
       if (project?.id) {
+        // G2: register the absolute picked path with the desktop git
+        // service so it can resolve this projectId later without an API
+        // round-trip. No-op on web/native (bridge is null).
+        const pickedPath = picked.paths?.[0] ?? ''
+        const finalPath = (res as { acceptedGitRoot?: boolean; gitRoot?: string })?.acceptedGitRoot
+          ? (res as { gitRoot?: string }).gitRoot ?? pickedPath
+          : pickedPath
+        try {
+          const gitBridge = (typeof window !== 'undefined'
+            ? (window as unknown as { shogoDesktop?: { git?: { setProjectRoot?: (id: string, root: string) => Promise<unknown> } } }).shogoDesktop?.git
+            : null)
+          if (gitBridge?.setProjectRoot) {
+            void gitBridge.setProjectRoot(project.id, finalPath)
+          }
+        } catch (err) {
+          console.warn('[useOpenLocalFolder] git.setProjectRoot failed', err)
+        }
         if (onSuccess) onSuccess({ id: project.id, name: project.name ?? 'Untitled' })
         else router.push({ pathname: '/(app)/projects/[id]' as any, params: { id: project.id } })
       } else if (res?.error || res?.message) {

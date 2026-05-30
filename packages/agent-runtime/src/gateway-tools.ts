@@ -2690,6 +2690,15 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
     return null
   }
 
+  // Stale refs are the dominant interactive-browser failure: an earlier action
+  // mutated the DOM, so the ref numbers from the previous snapshot no longer
+  // resolve. Return an actionable, recovery-oriented message instead of a raw
+  // Playwright timeout so the agent re-snapshots and retries rather than giving up.
+  function staleTargetHint(action: string, ref?: number, selector?: string): string {
+    const target = ref !== undefined ? `ref=${ref}` : selector ? `selector="${selector}"` : '(no target)'
+    return `${action} target not found (${target}). The page likely changed since your last snapshot, so ref numbers are stale. Call browser({ action: "snapshot" }) again to get fresh refs, then retry the ${action}.`
+  }
+
   // Capture mode: when SHOGO_MOCK_CAPTURE_DIR is set, every browser
   // tool call is dumped to disk for later replay by the demo mock
   // system. The wrapper at the bottom of this function (before the
@@ -2743,7 +2752,19 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
         switch (action) {
           case 'navigate': {
             if (!url) return textResult({ error: 'url is required for navigate' })
-            await p.goto(url, { timeout: 30000, waitUntil: 'domcontentloaded' })
+            try {
+              await p.goto(url, { timeout: 30000, waitUntil: 'domcontentloaded' })
+            } catch (navErr: any) {
+              // Slow or JS-heavy pages can exceed the domcontentloaded budget
+              // while still being perfectly usable. Only hard-fail when no
+              // document loaded at all; otherwise continue with the page we got.
+              const landed = (() => { try { return p.url() } catch { return '' } })()
+              if (!landed || landed === 'about:blank') throw navErr
+              console.warn(`[browser] navigate soft-timeout for ${url}: ${navErr?.message} — continuing with loaded page ${landed}`)
+            }
+            // Give SPA/client-rendered content a moment to settle so the first
+            // snapshot sees real, ref-able elements instead of an empty shell.
+            try { await p.waitForLoadState('networkidle', { timeout: 5000 }) } catch {}
             if (waitMs > 0) await p.waitForTimeout(Math.min(waitMs, 5000))
             const title = await p.title()
             const pageUrl = p.url()
@@ -2756,7 +2777,14 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
           case 'click': {
             const locator = resolveLocator(p, ref, selector)
             if (!locator) return textResult({ error: 'ref or selector is required for click' })
-            await locator.click({ timeout: 5000 })
+            try { await locator.scrollIntoViewIfNeeded({ timeout: 3000 }) } catch {}
+            try {
+              await locator.click({ timeout: 10000 })
+            } catch (clickErr: any) {
+              const found = await locator.count().catch(() => 0)
+              if (found === 0) return textResult({ error: staleTargetHint('click', ref, selector), action: 'click' })
+              throw clickErr
+            }
             if (waitMs > 0) await p.waitForTimeout(Math.min(waitMs, 3000))
             return textResult({ ok: true, action: 'click', ref, selector })
           }
@@ -2764,7 +2792,14 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             const locator = resolveLocator(p, ref, selector)
             if (!locator) return textResult({ error: 'ref or selector is required for fill' })
             if (value === undefined) return textResult({ error: 'value is required for fill' })
-            await locator.fill(value, { timeout: 5000 })
+            try { await locator.scrollIntoViewIfNeeded({ timeout: 3000 }) } catch {}
+            try {
+              await locator.fill(value, { timeout: 10000 })
+            } catch (fillErr: any) {
+              const found = await locator.count().catch(() => 0)
+              if (found === 0) return textResult({ error: staleTargetHint('fill', ref, selector), action: 'fill' })
+              throw fillErr
+            }
             return textResult({ ok: true, action: 'fill', ref, selector })
           }
           case 'extract': {
@@ -2822,7 +2857,14 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             const locator = resolveLocator(p, ref, selector)
             if (!locator) return textResult({ error: 'ref or selector is required for select' })
             if (value === undefined) return textResult({ error: 'value is required for select' })
-            await locator.selectOption(value, { timeout: 5000 })
+            try { await locator.scrollIntoViewIfNeeded({ timeout: 3000 }) } catch {}
+            try {
+              await locator.selectOption(value, { timeout: 10000 })
+            } catch (selectErr: any) {
+              const found = await locator.count().catch(() => 0)
+              if (found === 0) return textResult({ error: staleTargetHint('select', ref, selector), action: 'select' })
+              throw selectErr
+            }
             return textResult({ ok: true, action: 'select', ref, selector, value })
           }
           case 'scroll': {

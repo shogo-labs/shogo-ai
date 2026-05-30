@@ -255,6 +255,11 @@ jobs:
       # vs/editor/editor.main.js are required and non-truncated).
 
       - name: Bundle API server into resources
+        # SHOGO_TARGET_ARCH tells bundle-api.mjs which arch the .app is for, so
+        # it installs target-arch optional native deps (e.g. sqlite-vec-darwin-
+        # x64) instead of the arm64-runner's host arch. See bundle-api.mjs.
+        env:
+          SHOGO_TARGET_ARCH: ${{ matrix.arch }}
         run: node apps/desktop/scripts/bundle-api.mjs
 
       - name: Create seed database (SQLite)
@@ -610,13 +615,20 @@ jobs:
     # End-to-end guard for the v1.8.14 incident: the x64 .app is cross-built on
     # the arm64 `build-desktop` runner and is NEVER executed there (an arm64 host
     # can't run an x64 binary), so a boot-fatal regression on Intel sails through
-    # every existing check. This job runs on a real Intel runner (macos-13),
-    # extracts the shipped x64 app, launches it from a clean profile, and asserts
-    # the local server actually starts — which is exactly the path that the bad
-    # PRISMA_SCHEMA_ENGINE_BINARY bricked.
+    # every existing check. This job runs on a real Intel runner
+    # (macos-15-intel), extracts the shipped x64 app, launches it from a clean
+    # profile, and asserts the local server actually starts — which is exactly
+    # the path that the bad PRISMA_SCHEMA_ENGINE_BINARY bricked.
+    #
+    # Must stay on an Intel label: the whole point is to exercise the x86_64
+    # slice on real Intel hardware. `macos-13` was GitHub's prior Intel runner
+    # but was fully retired on 2025-12-04, after which this job queued forever
+    # with no runner and the gated `release` job below never ran. `macos-15-intel`
+    # is the supported x86_64 replacement (Apple Silicon arm64 runners can't
+    # execute the x64 binary, so we can't fall back to those).
     name: Boot smoke test (macOS x64 / Intel)
     needs: build-desktop
-    runs-on: macos-13
+    runs-on: macos-15-intel
     timeout-minutes: 15
     steps:
       - name: Download x64 artifact
@@ -762,3 +774,45 @@ jobs:
           files: artifacts/**/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Make desktop downloads the headline of the release notes
+        # Four workflows publish to this tag (macos + windows desktop,
+        # publish-agent-runtime, publish-shogo-worker), so a desktop user lands
+        # on a release listing ~26 assets and can't tell which to download.
+        # This job is gated on boot-smoke-x64 — reliably the LAST publisher — so
+        # we deterministically (re)write the title + body here with the
+        # installers up top and everything else (CLI / runtime / auto-update
+        # feeds) tucked into a collapsed section. `gh release edit` overwrites
+        # the body regardless of which workflow created the release first.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'EOF'
+          ## Download Shogo Desktop
+
+          ### macOS
+          - **Apple Silicon (M1–M4):** [Shogo-arm64.dmg](${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/Shogo-arm64.dmg)
+          - **Intel:** [Shogo-x64.dmg](${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/Shogo-x64.dmg)
+
+          ### Windows
+          - **Installer:** [Shogo-Setup.exe](${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/Shogo-Setup.exe)
+
+          > Not sure which Mac you have? Apple menu → **About This Mac**. "Apple M…" is Apple Silicon; "Intel" is Intel.
+
+          <details>
+          <summary>Other files in this release — you don't need these to install the desktop app</summary>
+
+          These ride the same tag for the CLI, self-hosted workers, and the in-app auto-updater:
+
+          - `shogo-agent-runtime-*.tar.gz` — fetched by `shogo runtime install`
+          - `shogo-*.tar.gz` — Shogo CLI / worker binaries
+          - `*.zip`, `*.nupkg`, `RELEASES` — macOS & Windows auto-update feeds (used by the app, not for manual download)
+          - `*.sha256` — checksums for the tarballs above
+          </details>
+          EOF
+          gh release edit "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "Shogo Desktop ${{ github.ref_name }}" \
+            --notes-file release-notes.md
+          echo "Release notes updated for ${{ github.ref_name }}."

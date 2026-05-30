@@ -33,10 +33,9 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
-  getModelShortDisplayName,
-  getModelFamily,
   type ModelFamily,
 } from '@shogo/model-catalog'
+import { resolveShortName, resolveFamily } from '../../lib/visible-models'
 
 // =============================================================================
 // Types
@@ -172,14 +171,14 @@ const FAMILY_TEXT_COLOR: Record<ModelFamily, string> = {
 }
 
 export function getModelColor(model: string): string {
-  return FAMILY_BG_COLOR[getModelFamily(model)] ?? 'bg-muted border-border'
+  return FAMILY_BG_COLOR[resolveFamily(model) as ModelFamily] ?? 'bg-muted border-border'
 }
 
 export function getModelTextColor(model: string): string {
-  return FAMILY_TEXT_COLOR[getModelFamily(model)] ?? 'text-muted-foreground'
+  return FAMILY_TEXT_COLOR[resolveFamily(model) as ModelFamily] ?? 'text-muted-foreground'
 }
 
-export const getModelDisplayName = getModelShortDisplayName
+export const getModelDisplayName = resolveShortName
 
 // =============================================================================
 // Components

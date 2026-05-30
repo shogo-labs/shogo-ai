@@ -313,7 +313,11 @@ function stopWorker(w: Worker) {
 // ---------------------------------------------------------------------------
 
 function prepWorkspace(worker: Worker, exercise: Exercise) {
-  const safeDirs = ['canvas', 'files', 'src', 'prisma', '.shogo']
+  // NOTE: do NOT clear '.shogo' here — it holds the live sessions.db that the
+  // running gateway has open. On POSIX, deleting the open DB file makes SQLite
+  // throw "disk I/O error" on the next write (Windows locks the file, hiding
+  // this). Per-exercise session isolation is handled via /agent/session/reset.
+  const safeDirs = ['canvas', 'files', 'src', 'prisma']
   for (const sub of safeDirs) {
     const p = join(worker.dir, sub)
     try { if (existsSync(p)) rmSync(p, { recursive: true, force: true }) } catch {}
@@ -426,17 +430,27 @@ async function runExercise(
   }
 
   const resolvedModel = MODEL_MAP[modelArg] || modelArg
-  const defaultModel = 'claude-sonnet-4-6'
-  if (resolvedModel !== defaultModel) {
-    try {
-      await fetch(`http://localhost:${worker.port}/agent/config`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: { provider: 'anthropic', name: resolvedModel } }),
-      })
-    } catch (e: any) {
-      console.warn(`      [setup] Model override failed: ${e.message}`)
-    }
+  // Resolve provider:name. Supports anthropic aliases (haiku/sonnet),
+  // explicit "provider:name" (e.g. openrouter:xiaomi/mimo-v2.5), and bare
+  // OpenRouter "vendor/model" slugs.
+  let ovProvider = 'anthropic'
+  let ovName = resolvedModel
+  if (resolvedModel.includes(':')) {
+    const ci = resolvedModel.indexOf(':')
+    ovProvider = resolvedModel.slice(0, ci)
+    ovName = resolvedModel.slice(ci + 1)
+  } else if (resolvedModel.includes('/')) {
+    ovProvider = 'openrouter'
+    ovName = resolvedModel
+  }
+  try {
+    await fetch(`http://localhost:${worker.port}/agent/config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: { provider: ovProvider, name: ovName } }),
+    })
+  } catch (e: any) {
+    console.warn(`      [setup] Model override failed: ${e.message}`)
   }
 
   try {
@@ -631,8 +645,8 @@ async function main() {
 
   let exercises = discoverExercises(repoArg, availableLangs)
   if (filterArg) {
-    const f = filterArg.toLowerCase()
-    exercises = exercises.filter(e => e.id.toLowerCase().includes(f))
+    const fs = filterArg.toLowerCase().split(',').map(s => s.trim()).filter(Boolean)
+    exercises = exercises.filter(e => fs.some(f => e.id.toLowerCase().includes(f)))
   }
 
   console.log(`  Exercises: ${exercises.length}`)
@@ -673,7 +687,8 @@ async function main() {
 
   const overallStart = Date.now()
   const results: ExerciseResult[] = new Array(exercises.length)
-  const partialPath = resolve(tmpdir(), `aider-bench-partial-${modelArg}-${Date.now()}.json`)
+  const partialModel = modelArg.replace(/[^a-zA-Z0-9._-]+/g, '_')
+  const partialPath = resolve(tmpdir(), `aider-bench-partial-${partialModel}-${Date.now()}.json`)
 
   let nextIndex = 0
   let completed = 0
@@ -848,9 +863,10 @@ async function main() {
     },
   }
 
+  const safeModel = modelArg.replace(/[^a-zA-Z0-9._-]+/g, '_')
   const outPath = resolve(
     tmpdir(),
-    `aider-bench-results-${modelArg}-${Date.now()}.json`,
+    `aider-bench-results-${safeModel}-${Date.now()}.json`,
   )
   writeFileSync(outPath, JSON.stringify(output, null, 2))
   console.log(`Results saved to: ${outPath}`)

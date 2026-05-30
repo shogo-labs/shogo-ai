@@ -130,11 +130,19 @@ spec:
               value: "0"
             - name: PROJECT_NAMESPACE
               value: "shogo-production-workspaces"
-            # RUNTIME_IMAGE is patched per-deploy to an immutable
-            # `:production-<git-sha>` tag. NEVER use a mutable tag here.
-            # See the staging incident postmortem (2026-05-04).
+            # RUNTIME_IMAGE is a render-time placeholder, NOT a real value. The
+            # deploy's "Apply Kubernetes manifests" step replaces
+            # RUNTIME_IMAGE_PLACEHOLDER with the resolved immutable
+            # `:production-<git-sha>` runtime tag (same mechanism as the
+            # image-prepuller) before `kubectl apply`. Shipping the token rather
+            # than a literal `:production-bootstrap` — a tag that exists in no
+            # OCIR — means apply can never stamp a non-existent runtime image
+            # onto the api ksvc and then depend on a later patch to undo it.
+            # That undo-gap bricked India on 2026-05-27 when a mid-deploy abort
+            # left the placeholder live. sync-api-env.sh re-verifies the value
+            # downstream as defense-in-depth.
             - name: RUNTIME_IMAGE
-              value: "ap-mumbai-1.ocir.io/idin4oltblww/shogo/shogo-runtime:production-bootstrap"
+              value: "RUNTIME_IMAGE_PLACEHOLDER"
             - name: PREVIEW_BASE_DOMAIN
               value: "shogo.ai"
             - name: PREVIEW_ENVIRONMENT
@@ -228,6 +236,16 @@ spec:
                 secretKeyRef:
                   name: api-secrets
                   key: ANTHROPIC_API_KEY
+            # AES-256-GCM master key for encrypting model-provider API keys
+            # at rest (apps/api/src/lib/secret-crypto.ts). Optional so the API
+            # still boots if unset; saving a custom-provider key 503s until it
+            # is provisioned. Must match across regions sharing the primary DB.
+            - name: SECRETS_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: SECRETS_ENCRYPTION_KEY
+                  optional: true
             - name: STRIPE_SECRET_KEY
               valueFrom:
                 secretKeyRef:

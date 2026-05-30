@@ -238,7 +238,7 @@ const COMPOSER_WRAPPER_WEB_DARK = {
 const HomeScreen = observer(function HomeScreen() {
   const router = useRouter()
   const { user, isAuthenticated } = useAuth()
-  const { localMode } = usePlatformConfig()
+  const { localMode, features } = usePlatformConfig()
   const posthog = usePostHogSafe()
   const projects = useProjectCollection()
   const workspaces = useWorkspaceCollection()
@@ -842,7 +842,9 @@ const HomeScreen = observer(function HomeScreen() {
                 isPro={hasAdvancedModelAccess}
                 onUpgradeClick={() => router.push('/billing')}
                 onStartVoiceProjectCreation={
-                  Platform.OS === 'web' ? handleStartVoiceProjectCreation : undefined
+                  Platform.OS === 'web' && features.ezMode
+                    ? handleStartVoiceProjectCreation
+                    : undefined
                 }
                 // Consolidated "where does this project come from?" entry
                 // point. Sits at the leftmost edge of the toolbar so it

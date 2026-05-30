@@ -69,7 +69,7 @@ import { EzModeChatPanel } from '../../../../components/voice-mode/EzModeChatPan
 import type { InteractionMode } from '../../../../components/chat/ChatInput'
 import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../../../components/chat/ChatInput'
 import { loadModelPreference, saveModelPreference } from '../../../../lib/agent-mode-preference'
-import { MODEL_CATALOG } from '@shogo/model-catalog'
+import { resolveReasoningEffort, resolveProvider, useVisibleModels } from '../../../../lib/visible-models'
 import { agentFetch } from '../../../../lib/agent-fetch'
 import { useActiveInstance } from '../../../../contexts/active-instance'
 import { ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
@@ -643,6 +643,11 @@ export default observer(function ProjectLayout() {
   // runtime for this (project, model). Without this sync, Capabilities shows
   // the AsyncStorage-restored model while Overview shows whatever the agent
   // booted with — because the bootstrap previously only updated React state.
+  // Drives the metadata resolvers below (server-managed model set). Including
+  // it as an effect dependency lets the runtime sync retry once the model
+  // metadata lands, so a cold first load (empty cache) still pushes the
+  // persisted model's provider/effort to the agent.
+  const visibleModels = useVisibleModels()
   const modelPrefSyncedRef = useRef<string | null>(null)
   useEffect(() => {
     let cancelled = false
@@ -653,32 +658,36 @@ export default observer(function ProjectLayout() {
       if (!agentUrl) return
       const syncKey = `${projectId}:${next}`
       if (modelPrefSyncedRef.current === syncKey) return
+      const provider = resolveProvider(next)
+      // Metadata not loaded yet — leave the guard unset so this retries when
+      // `visibleModels` arrives (it's an effect dependency).
+      if (!provider) return
       modelPrefSyncedRef.current = syncKey
-      const entry = MODEL_CATALOG[next as keyof typeof MODEL_CATALOG]
-      if (!entry) return
+      const thinkingLevel = resolveReasoningEffort(next)
       agentFetch(`${agentUrl}/agent/config`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: { provider: entry.provider, name: entry.id } }),
+        body: JSON.stringify({ model: { provider, name: next, ...(thinkingLevel ? { thinkingLevel } : {}) } }),
       }).catch((err) => {
         console.error('[ProjectLayout] Failed to sync persisted model to runtime:', err)
         modelPrefSyncedRef.current = null
       })
     })
     return () => { cancelled = true }
-  }, [hasAdvancedModelAccess, projectId, agentUrl])
+  }, [hasAdvancedModelAccess, projectId, agentUrl, visibleModels])
 
   const handleModelChange = useCallback(async (modelId: string) => {
     setSelectedModel(modelId)
     saveModelPreference(modelId, projectId)
     if (agentUrl) {
-      const entry = MODEL_CATALOG[modelId as keyof typeof MODEL_CATALOG]
-      if (entry) {
+      const provider = resolveProvider(modelId)
+      if (provider) {
         try {
+          const thinkingLevel = resolveReasoningEffort(modelId)
           await agentFetch(`${agentUrl}/agent/config`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: { provider: entry.provider, name: entry.id } }),
+            body: JSON.stringify({ model: { provider, name: modelId, ...(thinkingLevel ? { thinkingLevel } : {}) } }),
           })
         } catch (err) {
           console.error('[ProjectLayout] Failed to push model config to runtime:', err)

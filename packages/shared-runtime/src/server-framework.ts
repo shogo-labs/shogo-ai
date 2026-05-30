@@ -276,6 +276,10 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       if (allowed.length > 0 && allowed.includes(origin)) return origin
       if (origin.startsWith('http://localhost:') || origin.startsWith('https://localhost:')) return origin
       if (origin.startsWith('http://127.0.0.1:') || origin.startsWith('https://127.0.0.1:')) return origin
+      // The desktop app renders from the custom `shogo://app` origin and fetches
+      // workspace assets (e.g. chat image copy/download) directly from this
+      // runtime port. Echo it back so those credentialed fetches aren't blocked.
+      if (origin.startsWith('shogo://')) return origin
       return allowed[0] || origin
     },
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],

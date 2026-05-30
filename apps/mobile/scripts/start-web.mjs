@@ -24,6 +24,7 @@
  * per-stat cost or for benchmarking).
  */
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
@@ -70,9 +71,20 @@ function run(cmd, args, opts = {}) {
   })
 }
 
+// Prefer the locally-installed Expo CLI run directly with the current Node
+// binary. `npx` is not guaranteed to be on PATH — bun-only dev machines (and
+// the Node binary Cursor bundles) ship no `npx` shim, so `spawn('npx', …)`
+// dies with ENOENT before Expo ever starts. Falling back to `npx` keeps the
+// path working on machines that only have a global Expo install.
+const localExpoCli = resolve(mobileRoot, 'node_modules/expo/bin/cli')
+
 try {
   await run(process.execPath, ['scripts/copy-monaco-vs.mjs'])
-  await run('npx', ['expo', 'start', '--web'], { shell: process.platform === 'win32' })
+  if (existsSync(localExpoCli)) {
+    await run(process.execPath, [localExpoCli, 'start', '--web'])
+  } else {
+    await run('npx', ['expo', 'start', '--web'], { shell: process.platform === 'win32' })
+  }
 } catch (err) {
   console.error('[start-web]', err?.message ?? err)
   process.exit(1)

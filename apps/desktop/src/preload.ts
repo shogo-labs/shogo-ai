@@ -269,6 +269,132 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
       ipcRenderer.invoke('fs:readFile', root, relPath),
   },
 
+  // --- Git (G1: read-only awareness) ------------------------------------
+  // Backed by `apps/desktop/src/git/` in main. Shells out to the user's
+  // installed `git` CLI in the workspace root and streams porcelain v2
+  // status snapshots to the renderer. Every call validates the workspace
+  // path lives under $HOME on the main side; this surface is harmless on
+  // its own.
+  git: {
+    probe: (): Promise<{ ok: boolean; available: boolean; version: string | null; supportsPorcelainV2: boolean; error?: string }> =>
+      ipcRenderer.invoke('git:probe'),
+    subscribe: (workspaceRoot: string, onSnapshot: (snap: unknown) => void): Promise<{ ok: boolean; subId?: string; channel?: string; reason?: string }> => {
+      const result = ipcRenderer.invoke('git:subscribe', { workspaceRoot })
+      void result.then((r: any) => {
+        if (r?.ok && r.channel) {
+          ipcRenderer.on(r.channel, (_event, snap) => onSnapshot(snap))
+        }
+      })
+      return result
+    },
+    unsubscribe: (subId: string, channel: string): Promise<{ ok: boolean; reason?: string }> => {
+      ipcRenderer.removeAllListeners(channel)
+      return ipcRenderer.invoke('git:unsubscribe', { subId })
+    },
+    refresh: (workspaceRoot: string): Promise<{ ok: boolean; reason?: string }> =>
+      ipcRenderer.invoke('git:refresh', { workspaceRoot }),
+    current: (workspaceRoot: string): Promise<{ ok: boolean; snapshot?: unknown; reason?: string }> =>
+      ipcRenderer.invoke('git:current', { workspaceRoot }),
+    // G2 — write side + project-root resolver. setProjectRoot is called by
+    // useOpenLocalFolder right after POST /from-folders so external folder
+    // projects can be resolved without an API round-trip on every git call.
+    setProjectRoot: (projectId: string, root: string): Promise<{ ok: boolean; reason?: string }> =>
+      ipcRenderer.invoke('git:setProjectRoot', { projectId, root }),
+    unsetProjectRoot: (projectId: string): Promise<{ ok: boolean; reason?: string }> =>
+      ipcRenderer.invoke('git:unsetProjectRoot', { projectId }),
+    resolveProjectRoot: (projectId: string): Promise<{ ok: boolean; root?: string; reason?: string }> =>
+      ipcRenderer.invoke('git:resolveProjectRoot', { projectId }),
+    stage: (workspaceRoot: string, paths: string[]): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:stage', { workspaceRoot, paths }),
+    unstage: (workspaceRoot: string, paths: string[]): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:unstage', { workspaceRoot, paths }),
+    discard: (workspaceRoot: string, paths: string[]): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:discard', { workspaceRoot, paths }),
+    commit: (workspaceRoot: string, message: string, opts?: { amend?: boolean; signoff?: boolean }): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:commit', { workspaceRoot, message, amend: opts?.amend, signoff: opts?.signoff }),
+    fileContent: (workspaceRoot: string, path: string, ref: string): Promise<{ ok: boolean; content?: string; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:fileContent', { workspaceRoot, path, ref }),
+    // G3 — branches.
+    branches: {
+      list: (workspaceRoot: string): Promise<{ ok: boolean; branches?: unknown[]; reason?: string; error?: string }> =>
+        ipcRenderer.invoke('git:branches.list', { workspaceRoot }),
+      checkout: (workspaceRoot: string, name: string): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+        ipcRenderer.invoke('git:branches.checkout', { workspaceRoot, name }),
+      create: (workspaceRoot: string, name: string, base?: string): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+        ipcRenderer.invoke('git:branches.create', { workspaceRoot, name, base }),
+      delete: (workspaceRoot: string, name: string, force?: boolean): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+        ipcRenderer.invoke('git:branches.delete', { workspaceRoot, name, force }),
+      rename: (workspaceRoot: string, oldName: string, newName: string): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+        ipcRenderer.invoke('git:branches.rename', { workspaceRoot, oldName, newName }),
+      publish: (workspaceRoot: string, branch: string, remote?: string): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+        ipcRenderer.invoke('git:branches.publish', { workspaceRoot, branch, remote }),
+    },
+    // G3 — remotes (long-running; the renderer is responsible for the
+    // spinner). Credential prompts are gated by GIT_TERMINAL_PROMPT=0 in
+    // the spawn wrapper so push/pull either succeeds via the user's
+    // credential helper or fails fast.
+    remotes: {
+      list: (workspaceRoot: string): Promise<{ ok: boolean; remotes?: string[]; reason?: string; error?: string }> =>
+        ipcRenderer.invoke('git:remotes.list', { workspaceRoot }),
+      fetch: (workspaceRoot: string, opts?: { remote?: string; prune?: boolean; all?: boolean }): Promise<{ ok: boolean; output?: string; reason?: string; error?: string }> =>
+        ipcRenderer.invoke('git:remotes.fetch', { workspaceRoot, ...(opts ?? {}) }),
+      pull: (workspaceRoot: string, opts?: { remote?: string; branch?: string; rebase?: boolean; ffOnly?: boolean }): Promise<{ ok: boolean; output?: string; reason?: string; error?: string }> =>
+        ipcRenderer.invoke('git:remotes.pull', { workspaceRoot, ...(opts ?? {}) }),
+      push: (workspaceRoot: string, opts?: { remote?: string; branch?: string; force?: boolean; forceWithLease?: boolean; tags?: boolean; setUpstream?: boolean }): Promise<{ ok: boolean; output?: string; reason?: string; error?: string }> =>
+        ipcRenderer.invoke('git:remotes.push', { workspaceRoot, ...(opts ?? {}) }),
+      sync: (workspaceRoot: string, opts?: { remote?: string; branch?: string; rebase?: boolean }): Promise<{ ok: boolean; output?: string; reason?: string; error?: string }> =>
+        ipcRenderer.invoke('git:remotes.sync', { workspaceRoot, ...(opts ?? {}) }),
+    },
+    // G3 — stash.
+    stash: {
+      list: (workspaceRoot: string): Promise<{ ok: boolean; entries?: unknown[]; reason?: string; error?: string }> =>
+        ipcRenderer.invoke('git:stash.list', { workspaceRoot }),
+      push: (workspaceRoot: string, opts?: { message?: string; keepIndex?: boolean; includeUntracked?: boolean }): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+        ipcRenderer.invoke('git:stash.push', { workspaceRoot, ...(opts ?? {}) }),
+      apply: (workspaceRoot: string, ref: string): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+        ipcRenderer.invoke('git:stash.apply', { workspaceRoot, ref }),
+      pop: (workspaceRoot: string, ref: string): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+        ipcRenderer.invoke('git:stash.pop', { workspaceRoot, ref }),
+      drop: (workspaceRoot: string, ref: string): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+        ipcRenderer.invoke('git:stash.drop', { workspaceRoot, ref }),
+    },
+    // G4 — per-file diff markers (for gutter decorations) + blame (for
+    // inline blame at end-of-cursor-line).
+    diffMarkers: (workspaceRoot: string, path: string, base?: string): Promise<{ ok: boolean; markers?: unknown[]; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:diffMarkers', { workspaceRoot, path, base }),
+    blame: (workspaceRoot: string, path: string): Promise<{ ok: boolean; lines?: unknown[]; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:blame', { workspaceRoot, path }),
+    // G4.5 — 3-way merge stages + per-hunk revert.
+    mergeStages: (workspaceRoot: string, path: string): Promise<{ ok: boolean; stages?: { base: string | null; ours: string | null; theirs: string | null; working: string }; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:mergeStages', { workspaceRoot, path }),
+    revertHunk: (workspaceRoot: string, path: string, workingStart: number, workingEnd: number, headStart: number | null, headEnd: number | null): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:revertHunk', { workspaceRoot, path, workingStart, workingEnd, headStart, headEnd }),
+    // G3.5 — streaming fetch/pull/push. `onProgress` is invoked per
+    // stderr progress line; the returned promise resolves when the op
+    // completes (success or failure).
+    fetchStreaming: (workspaceRoot: string, opts: { remote?: string; prune?: boolean; all?: boolean }, onProgress: (p: { phase: string; percent: number | null; raw: string }) => void): Promise<{ ok: boolean; jobId?: string; output?: string; reason?: string; error?: string }> => {
+      const jobId = `job-${Date.now()}-${Math.floor(Math.random() * 9999)}`;
+      const channel = `git:progress:${jobId}`;
+      const listener = (_e: unknown, p: { phase: string; percent: number | null; raw: string }) => onProgress(p);
+      ipcRenderer.on(channel, listener);
+      return ipcRenderer.invoke('git:remotes.fetchStreaming', { workspaceRoot, ...opts, jobId }).finally(() => ipcRenderer.removeListener(channel, listener));
+    },
+    pullStreaming: (workspaceRoot: string, opts: { remote?: string; branch?: string; rebase?: boolean; ffOnly?: boolean }, onProgress: (p: { phase: string; percent: number | null; raw: string }) => void): Promise<{ ok: boolean; jobId?: string; output?: string; reason?: string; error?: string }> => {
+      const jobId = `job-${Date.now()}-${Math.floor(Math.random() * 9999)}`;
+      const channel = `git:progress:${jobId}`;
+      const listener = (_e: unknown, p: { phase: string; percent: number | null; raw: string }) => onProgress(p);
+      ipcRenderer.on(channel, listener);
+      return ipcRenderer.invoke('git:remotes.pullStreaming', { workspaceRoot, ...opts, jobId }).finally(() => ipcRenderer.removeListener(channel, listener));
+    },
+    pushStreaming: (workspaceRoot: string, opts: { remote?: string; branch?: string; forceWithLease?: boolean; force?: boolean; tags?: boolean; setUpstream?: boolean }, onProgress: (p: { phase: string; percent: number | null; raw: string }) => void): Promise<{ ok: boolean; jobId?: string; output?: string; reason?: string; error?: string }> => {
+      const jobId = `job-${Date.now()}-${Math.floor(Math.random() * 9999)}`;
+      const channel = `git:progress:${jobId}`;
+      const listener = (_e: unknown, p: { phase: string; percent: number | null; raw: string }) => onProgress(p);
+      ipcRenderer.on(channel, listener);
+      return ipcRenderer.invoke('git:remotes.pushStreaming', { workspaceRoot, ...opts, jobId }).finally(() => ipcRenderer.removeListener(channel, listener));
+    },
+  },
+
   // --- External preview (Electron WebContentsView) ---------------------
   // Used by ExternalPreviewWebView in apps/mobile to embed a real
   // Chromium view of the user's own dev server. Lives outside the React

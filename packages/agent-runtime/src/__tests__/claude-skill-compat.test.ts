@@ -312,27 +312,27 @@ Old instructions.
       expect(content).toContain('old-skill')
     })
 
-    test('does not migrate if .shogo/skills/ already exists AND is non-empty', () => {
-      // Contract: an existing non-empty .shogo/skills/ is treated as source of truth.
-      // Empty .shogo/skills/ (e.g. pre-created by workspace defaults) does NOT block migration —
-      // see migrateFromLegacySkills() in src/skills.ts for the empty-dir-allows-migrate rule.
-      mkdirSync(join(TEST_DIR, '.shogo', 'skills', 'pre-existing'), { recursive: true })
-      writeFileSync(join(TEST_DIR, '.shogo', 'skills', 'pre-existing', 'SKILL.md'), 'pre-existing')
+    test('does not migrate if .shogo/skills/ already has content', () => {
+      // A non-empty .shogo/skills/ is treated as the source of truth, so the
+      // legacy skills/*.md files are left where they are.
+      mkdirSync(join(TEST_DIR, '.shogo', 'skills', 'existing'), { recursive: true })
+      writeFileSync(join(TEST_DIR, '.shogo', 'skills', 'existing', 'SKILL.md'), '# existing')
       mkdirSync(join(TEST_DIR, 'skills'), { recursive: true })
       writeFileSync(join(TEST_DIR, 'skills', 'should-skip.md'), 'content')
 
       migrateFromLegacySkills(TEST_DIR)
       expect(existsSync(join(TEST_DIR, '.shogo', 'skills', 'should-skip'))).toBe(false)
-      expect(existsSync(join(TEST_DIR, '.shogo', 'skills', 'pre-existing', 'SKILL.md'))).toBe(true)
     })
 
-    test('migrates when .shogo/skills/ exists but is empty (workspace-default case)', () => {
+    test('migrates when .shogo/skills/ exists but is empty', () => {
+      // Workspace defaults pre-create an empty .shogo/skills/; migration must
+      // still run so seeded legacy skills aren't orphaned.
       mkdirSync(join(TEST_DIR, '.shogo', 'skills'), { recursive: true })
       mkdirSync(join(TEST_DIR, 'skills'), { recursive: true })
-      writeFileSync(join(TEST_DIR, 'skills', 'fresh-skill.md'), `---\nname: fresh-skill\ndescription: x\n---\ncontent`)
+      writeFileSync(join(TEST_DIR, 'skills', 'seeded.md'), 'content')
 
       migrateFromLegacySkills(TEST_DIR)
-      expect(existsSync(join(TEST_DIR, '.shogo', 'skills', 'fresh-skill', 'SKILL.md'))).toBe(true)
+      expect(existsSync(join(TEST_DIR, '.shogo', 'skills', 'seeded', 'SKILL.md'))).toBe(true)
     })
 
     test('does nothing when skills/ does not exist', () => {

@@ -12,10 +12,9 @@ import {
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
-  getModelsByProvider,
-  getModelShortDisplayName,
   type ModelTier,
 } from "@shogo/model-catalog"
+import { useModelPickerGroups, resolveShortName } from "../../../lib/visible-models"
 import {
   ClipboardList,
   ArrowLeft,
@@ -36,15 +35,6 @@ import { API_URL } from "../../../lib/api"
 import { DEFAULT_MODEL_PRO } from "../../chat/ChatInput"
 import type { PlanData } from "../../chat/PlanCard"
 import { useDualPlan } from "../../../lib/dual-plan-preference"
-
-const PLAN_MODEL_GROUPS = getModelsByProvider().map((g) => ({
-  label: g.label,
-  models: g.models.map((e) => ({
-    id: e.id,
-    displayName: e.displayName,
-    tier: e.tier as ModelTier,
-  })),
-}))
 
 const TIER_LABELS: Record<ModelTier, string> = {
   premium: "Premium",
@@ -152,6 +142,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
   const [detailLoading, setDetailLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [buildMode, setBuildMode] = useState<string>(selectedModel || DEFAULT_MODEL_PRO)
+  const planModelGroups = useModelPickerGroups()
   const [showModelPicker, setShowModelPicker] = useState(false)
   const [buildStarted, setBuildStarted] = useState(false)
   const [activeTab, setActiveTab] = useState<"technical" | "summary">("technical")
@@ -414,7 +405,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
               className="flex-row items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 bg-muted/30"
             >
               <Text className="text-xs font-medium text-foreground">
-                {getModelShortDisplayName(buildMode)}
+                {resolveShortName(buildMode)}
               </Text>
               <ChevronDown className="h-3 w-3 text-muted-foreground" size={12} />
             </Pressable>
@@ -426,7 +417,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
                 style={{ position: "fixed" as any, top: 0, left: 0, right: 0, bottom: 0, zIndex: 40 }}
               />
               <ScrollView className="absolute right-0 top-9 z-50 w-56 max-h-[280px] rounded-lg border border-border bg-popover shadow-lg">
-                {PLAN_MODEL_GROUPS.map((group) => (
+                {planModelGroups.map((group) => (
                   <View key={group.label}>
                     <View className="px-3 pt-2.5 pb-1">
                       <Text className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">

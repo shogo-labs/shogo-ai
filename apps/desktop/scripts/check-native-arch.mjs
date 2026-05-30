@@ -112,13 +112,17 @@ function main() {
     process.exit(2)
   }
 
+  // Arch tokens as they appear in *paths* (dir/package names), not slice names.
+  const targetTok = arch === 'x64' ? 'x64' : 'arm64'
+  const otherTok = arch === 'x64' ? 'arm64' : 'x64'
+
   console.log(`[check-native-arch] Scanning ${root}`)
   console.log(`[check-native-arch] Target arch: ${arch} (expecting Mach-O slice "${wantSlice}")`)
 
-  const violations = []
+  // Pass 1: inventory every Mach-O file and the slices it actually contains.
+  const inventory = []
   let machoCount = 0
   let skipped = 0
-
   for (const file of walk(root)) {
     if (!isMachO(file)) continue
     machoCount++
@@ -131,28 +135,70 @@ function main() {
       console.warn(`[check-native-arch] WARN: lipo failed for ${file}: ${err.message}`)
       continue
     }
-    if (!archs.includes(wantSlice)) {
-      violations.push({ file: path.relative(root, file), archs })
+    inventory.push({ rel: path.relative(root, file), archs })
+  }
+
+  // Set of relative paths that DO contain the target slice — used to detect
+  // whether a wrong-arch file's correct-arch sibling ships alongside it.
+  const targetOk = new Set(inventory.filter((e) => e.archs.includes(wantSlice)).map((e) => e.rel))
+
+  // Some bundled native binaries legitimately lack the target slice and are
+  // still safe to ship. We never want to silently ignore a genuine v1.8.14
+  // mismatch, so each exemption is narrow and explained.
+  function benignReason(rel) {
+    // (1) Multi-arch packages ship a per-arch artifact for EVERY arch and pick
+    //     the right one at runtime by process.arch (e.g. node-pty's
+    //     prebuilds/darwin-<arch>/, or the sqlite-vec-darwin-<arch> optional
+    //     deps). The wrong-arch member is dead weight as long as the
+    //     target-arch member is present. Find the sibling by swapping the arch
+    //     token in the path and confirming it carries the target slice.
+    if (rel.includes(otherTok)) {
+      const sibling = rel.split(otherTok).join(targetTok)
+      if (sibling !== rel && targetOk.has(sibling)) {
+        return `target-arch sibling present (${sibling})`
+      }
     }
+    // (2) Prisma's NATIVE schema engine is unused: desktop runs migrations via
+    //     the architecture-independent WASM schema engine (the v1.8.14 fix in
+    //     local-server.ts), so this binary is never loaded/executed.
+    if (/@prisma\/engines\/schema-engine-/.test(rel)) {
+      return 'unused native Prisma schema engine (desktop uses the WASM engine)'
+    }
+    return null
+  }
+
+  const violations = []
+  const exempted = []
+  for (const e of inventory) {
+    if (e.archs.includes(wantSlice)) continue
+    const reason = benignReason(e.rel)
+    if (reason) exempted.push({ ...e, reason })
+    else violations.push(e)
   }
 
   console.log(`[check-native-arch] Inspected ${machoCount} Mach-O file(s); ${skipped} unreadable.`)
+  if (exempted.length > 0) {
+    console.log(`[check-native-arch] ${exempted.length} wrong-arch file(s) exempted as benign:`)
+    for (const e of exempted) {
+      console.log(`  • ${e.rel}  (has: ${e.archs.join(', ') || 'none'}) — ${e.reason}`)
+    }
+  }
 
   if (violations.length > 0) {
     console.error('')
     console.error(`[check-native-arch] FAIL — ${violations.length} bundled binary(ies) are missing the "${wantSlice}" slice for the ${arch} build:`)
     for (const v of violations) {
-      console.error(`  - ${v.file}  (has: ${v.archs.join(', ') || 'none'})`)
+      console.error(`  - ${v.rel}  (has: ${v.archs.join(', ') || 'none'})`)
     }
     console.error('')
     console.error('  This is the v1.8.14 failure mode: a host-arch native binary was bundled')
     console.error('  into a cross-compiled build. Ensure the dependency that owns each file')
-    console.error('  ships the target arch (e.g. set PRISMA_CLI_BINARY_TARGETS before install,')
-    console.error('  or install/download the matching-arch artifact).')
+    console.error('  ships the target arch (e.g. install the matching-arch artifact — for')
+    console.error('  optional-dep packages pass `npm install --cpu=<arch> --os=darwin`).')
     process.exit(1)
   }
 
-  console.log(`[check-native-arch] OK — every bundled native binary contains the ${wantSlice} slice.`)
+  console.log(`[check-native-arch] OK — every loaded native binary provides the ${wantSlice} slice (${exempted.length} benign wrong-arch file(s) ignored).`)
 }
 
 main()

@@ -1444,6 +1444,73 @@ model PlatformSetting {
 }
 
 // ============================================================================
+// DB-defined model catalog (super-admin managed; augments the static
+// MODEL_CATALOG shipped in code). See packages/agent/src/model-catalog.
+// ============================================================================
+
+// Custom OpenAI-compatible (or Anthropic-compatible) third-party endpoints,
+// e.g. MiMo / xiaomimimo. Native anthropic/openai providers use env keys and
+// do NOT need a row here. The API key is stored encrypted-at-rest via
+// apps/api/src/lib/secret-crypto.ts and is never returned in plaintext.
+model ModelProvider {
+  id              String   @id @default(uuid())
+  label           String
+  baseUrl         String
+  protocol        String   @default("openai") // "openai" | "anthropic"
+  authStyle       String   @default("bearer") // "bearer" | "api-key-header"
+  encryptedApiKey String
+  enabled         Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  updatedBy       String?
+
+  models ModelDefinition[]
+
+  @@map("model_providers")
+}
+
+// A model addable entirely from super admin. Mirrors the static ModelEntry
+// shape plus per-token pricing. `provider` is one of the native providers
+// ("anthropic" | "openai" | "google" | "openrouter" | "local") or "custom";
+// when "custom", `providerId` links to a ModelProvider for routing.
+model ModelDefinition {
+  id               String  @id
+  provider         String
+  providerId       String?
+  apiModel         String
+  displayName      String
+  shortDisplayName String
+  tier             String  @default("standard") // "economy" | "standard" | "premium"
+  family           String  @default("other") // "opus" | "sonnet" | "haiku" | "gpt" | "other"
+  generation       String  @default("current") // "current" | "legacy"
+  maxOutputTokens  Int     @default(64000)
+  enabled          Boolean @default(true)
+  sortOrder        Int?
+  aliases          Json? // string[] of alias ids
+  capabilities     Json? // { subagentOrchestration?: "reliable"|"flaky"|"unsupported" }
+
+  // User-facing picker metadata.
+  description    String? // Short blurb shown in the model picker info panel.
+  contextWindow  Int? // Total context window in tokens (distinct from maxOutputTokens).
+  reasoningEffort String? // "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
+
+  // Per-1M-token USD list prices (raw; markup applied at billing time).
+  inputPerMillion       Float @default(0)
+  cachedInputPerMillion Float @default(0)
+  cacheWritePerMillion  Float @default(0)
+  outputPerMillion      Float @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+
+  customProvider ModelProvider? @relation(fields: [providerId], references: [id], onDelete: SetNull)
+
+  @@index([providerId])
+  @@map("model_definitions")
+}
+
+// ============================================================================
 // Infrastructure Metrics
 // ============================================================================
 
