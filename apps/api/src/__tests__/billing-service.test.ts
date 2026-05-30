@@ -1132,6 +1132,31 @@ describe('syncSeatsFromMembership', () => {
     const r = await billing.syncSeatsFromMembership('ws-1')
     expect(r.ok).toBe(true)
     expect(r.seats).toBe(1)
+    // Regression: the wallet's included USD must reflect the seats the
+    // workspace is *entitled* to (1 paid + 5 granted free = 6), not just the
+    // member count. Previously this clobbered the allocation back to a single
+    // seat ($20), silently dropping the granted free seats' included usage.
+    expect(walletByWs.get('ws-1').monthlyIncludedUsd).toBe(120)
+    expect(walletByWs.get('ws-1').monthlyIncludedAllocationUsd).toBe(120)
+  })
+
+  test('does not clobber a grant allocation applied just before sync (prod repro)', async () => {
+    // Mirrors prod ticket: a Pro 1-seat personal workspace (1 member) gets a
+    // super-admin grant of 5 free seats + $250/mo. `allocateMonthlyIncluded`
+    // first sets the wallet to 20×(1+5) + 250 = $370; the follow-up
+    // `syncSeatsFromMembership` must NOT overwrite it with 20×1 + 250 = $270.
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'pro', seats: 1, stripeSubscriptionId: 'sub_1' }])
+    membersByWs.set('ws-1', [{ userId: 'u1', projectId: null }])
+    grantsByWs.set('ws-1', [{ freeSeats: 5, monthlyIncludedUsd: 250, planId: 'pro' }])
+
+    await billing.allocateMonthlyIncluded('ws-1', 'pro', 1)
+    expect(walletByWs.get('ws-1').monthlyIncludedUsd).toBe(370)
+
+    const r = await billing.syncSeatsFromMembership('ws-1')
+    expect(r.ok).toBe(true)
+    expect(r.seats).toBe(1)
+    expect(walletByWs.get('ws-1').monthlyIncludedUsd).toBe(370)
+    expect(walletByWs.get('ws-1').monthlyIncludedAllocationUsd).toBe(370)
   })
 })
 

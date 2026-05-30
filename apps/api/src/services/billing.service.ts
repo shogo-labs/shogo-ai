@@ -1111,9 +1111,17 @@ export async function syncSeatsFromMembership(
     // active. Revisit later by pausing the seat item entirely when a
     // grant fully covers all members.
     const desiredStripeSeats = Math.max(1, totalMembers - grant.freeSeats)
-    // The wallet's included USD reflects total seats (paid + granted).
+    // The wallet's included USD reflects total *entitled* seats: the paid
+    // Stripe seats plus the granted free seats. Using `totalMembers` here was
+    // a bug — when a grant's free seats exceed the member count (e.g. a 5-seat
+    // grant on a 1-member personal workspace) it dropped the granted seats'
+    // included usage entirely, and clobbered the larger allocation that
+    // `allocateMonthlyIncluded` had just written. This keeps the two functions
+    // in agreement: `desiredStripeSeats + grant.freeSeats` always equals
+    // `allocateMonthlyIncluded`'s `seats + grant.freeSeats`.
     const includedUsd =
-      getMonthlyIncludedForPlan(sub.planId, totalMembers) + grant.monthlyIncludedUsd
+      getMonthlyIncludedForPlan(sub.planId, desiredStripeSeats + grant.freeSeats) +
+      grant.monthlyIncludedUsd
 
     if (desiredStripeSeats === sub.seats) {
       // Already in sync — still ensure the wallet allocation matches.
