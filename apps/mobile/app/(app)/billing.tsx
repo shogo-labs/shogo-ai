@@ -16,6 +16,7 @@ import {
   Text,
   ScrollView,
   Pressable,
+  TextInput,
   Linking,
   Platform,
   useWindowDimensions,
@@ -31,6 +32,7 @@ import {
   Sparkles,
   Zap,
   Crown,
+  KeyRound,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import { useWorkspaceCollection, useDomainHttp } from '../../contexts/domain'
@@ -163,6 +165,8 @@ export default observer(function BillingPage() {
   const [isPortalLoading, setIsPortalLoading] = useState(false)
   const [regionalPricing, setRegionalPricing] = useState<RegionalPricingResponse | null>(null)
   const [isRestoreLoading, setIsRestoreLoading] = useState(false)
+  const [licenseCode, setLicenseCode] = useState('')
+  const [isRedeeming, setIsRedeeming] = useState(false)
   const iapTransactionsInFlightRef = useRef<Map<string, Promise<'processed' | 'failed'>>>(new Map())
   const toast = useToast()
   const { width } = useWindowDimensions()
@@ -186,6 +190,41 @@ export default observer(function BillingPage() {
       ),
     })
   }, [toast])
+
+  const handleRedeemLicense = useCallback(async () => {
+    const code = licenseCode.trim()
+    if (!code) return
+    const workspaceId = currentWorkspace?.id
+    if (!workspaceId) {
+      showIapToast('error', 'No workspace selected', 'Pick a workspace before redeeming a key.')
+      return
+    }
+    setIsRedeeming(true)
+    try {
+      const result = await api.redeemLicenseKey(http, workspaceId, code)
+      const planLabel = result?.planId ? getPlanDisplayName(result.planId) : 'a new plan'
+      setLicenseCode('')
+      // Reflect the new grant immediately.
+      refetchSubscription()
+      refetchUsageWallet()
+      showIapToast('success', 'License key redeemed', `This workspace is now on ${planLabel}.`)
+    } catch (err) {
+      const status = (err as { status?: number })?.status
+      const { title, description } =
+        status === 404
+          ? { title: 'Invalid key', description: 'We could not find that license key. Double-check the code.' }
+          : status === 410
+            ? { title: 'Key expired', description: 'This license key has expired and can no longer be redeemed.' }
+            : status === 409
+              ? { title: 'Already used', description: 'This license key has already been redeemed.' }
+              : status === 403
+                ? { title: 'Not allowed', description: "You're not a member of this workspace." }
+                : { title: 'Redemption failed', description: err instanceof Error ? err.message : 'Please try again.' }
+      showIapToast('error', title, description)
+    } finally {
+      setIsRedeeming(false)
+    }
+  }, [licenseCode, currentWorkspace?.id, http, refetchSubscription, refetchUsageWallet, showIapToast])
 
   const getIapTransactionKey = useCallback((purchase: IapPurchaseResult) => {
     const transactionId = purchase.transactionId?.trim()
@@ -624,6 +663,40 @@ export default observer(function BillingPage() {
                 </Button>
               )}
             </View>
+          </View>
+        </CardContent>
+      </Card>
+
+      {/* Redeem a license key */}
+      <Card className="mb-4">
+        <CardContent className="p-4 gap-3">
+          <View className="flex-row items-center gap-2">
+            <KeyRound size={16} className="text-primary" />
+            <Text className="text-sm font-medium text-foreground">Redeem a license key</Text>
+          </View>
+          <Text className="text-xs text-muted-foreground">
+            Have a license key? Redeem it to upgrade this workspace.
+          </Text>
+          <View className="flex-row items-center gap-2">
+            <TextInput
+              value={licenseCode}
+              onChangeText={setLicenseCode}
+              placeholder="SHGO-PRO-XXXX-XXXX-XXXX"
+              placeholderTextColor="#9ca3af"
+              autoCapitalize="characters"
+              autoCorrect={false}
+              editable={!isRedeeming}
+              onSubmitEditing={handleRedeemLicense}
+              returnKeyType="done"
+              className="flex-1 border border-border rounded-lg px-3 py-2 text-sm font-mono text-foreground bg-background"
+            />
+            <Button
+              size="sm"
+              onPress={handleRedeemLicense}
+              disabled={isRedeeming || !licenseCode.trim()}
+            >
+              {isRedeeming ? 'Redeeming...' : 'Redeem'}
+            </Button>
           </View>
         </CardContent>
       </Card>
