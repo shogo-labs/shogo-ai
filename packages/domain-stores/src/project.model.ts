@@ -17,6 +17,7 @@ import { ChatSessionModel } from "./chat-session.model"
 import { UsageEventModel } from "./usage-event.model"
 import { StarredProjectModel } from "./starred-project.model"
 import { ProjectFolderModel } from "./project-folder.model"
+import { ChatSessionProjectModel } from "./chat-session-project.model"
 
 // ============================================================================
 // Project Model
@@ -63,6 +64,7 @@ export const ProjectModel = types
     usageEvents: types.optional(types.array(types.safeReference(types.late(() => UsageEventModel))), []),
     starredBy: types.optional(types.array(types.safeReference(types.late(() => StarredProjectModel))), []),
     projectFolders: types.optional(types.array(types.safeReference(types.late(() => ProjectFolderModel))), []),
+    attachedSessions: types.optional(types.array(types.safeReference(types.late(() => ChatSessionProjectModel))), []),
   })
   .views(self => ({
     /** Check if this is a new/unsaved entity */

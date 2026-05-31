@@ -385,6 +385,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'project-auth-config.service.ts:recordSignIn writes from the better-auth after-hook on sign-in/sign-up — single user request per signin; cross-region duplicate sign-in is a narrow failover race, recordSignIn catches P2002 by upserting on the unique pair.',
   },
   {
+    key: 'ChatSessionProject.(projectId,sessionId)',
+    category: 'request_scoped',
+    reason:
+      'Written when a user attaches a project to a workspace-scoped chat session (generated chat-session-project route). One user request per attach; the unique pair just dedupes a double-attach of the same project to the same session.',
+  },
+  {
     key: 'VoiceCallMeter.conversationId',
     category: 'request_scoped',
     reason:
