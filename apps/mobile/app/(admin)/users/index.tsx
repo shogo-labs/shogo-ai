@@ -207,56 +207,24 @@ function UserRow({
   )
 }
 
-export default function AdminUsersPage() {
-  const router = useRouter()
-  const { width } = useWindowDimensions()
-  const isWide = width >= 900
-
-  const [search, setSearch] = useState('')
-  const [page, setPage] = useState(1)
-  const [roleFilter, setRoleFilter] = useState<string>('')
-  const [data, setData] = useState<UsersResponse | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
-  const [roleDialog, setRoleDialog] = useState<{ userId: string; name: string; currentRole: string } | null>(null)
-
-  const loadUsers = useCallback(async () => {
-    const params: Record<string, string> = {
-      page: String(page),
-      limit: '20',
-    }
-    if (search) params.search = search
-    if (roleFilter) params.role = roleFilter
-
-    const result = await fetchAdminJson<UsersResponse>('/users', params)
-    setData(result)
-    setLoading(false)
-    setRefreshing(false)
-  }, [page, search, roleFilter])
-
-  useEffect(() => {
-    setLoading(true)
-    loadUsers()
-  }, [loadUsers])
-
-  const confirmToggleRole = useCallback(async () => {
-    if (!roleDialog) return
-    const newRole = roleDialog.currentRole === 'super_admin' ? 'user' : 'super_admin'
-    const result = await adminUpdateUser(roleDialog.userId, { role: newRole })
-    setRoleDialog(null)
-    if (result.ok) loadUsers()
-  }, [roleDialog, loadUsers])
-
-  const totalPages = data ? Math.ceil(data.total / data.limit) : 1
-
-  const onRefresh = () => {
-    setRefreshing(true)
-    loadUsers()
-  }
-
-  const isPromoting = roleDialog?.currentRole !== 'super_admin'
-
-  const ListHeader = () => (
+function UsersListHeader({
+  isWide,
+  data,
+  search,
+  setSearch,
+  setPage,
+  roleFilter,
+  setRoleFilter,
+}: {
+  isWide: boolean
+  data: UsersResponse | null
+  search: string
+  setSearch: (v: string) => void
+  setPage: (v: number) => void
+  roleFilter: string
+  setRoleFilter: (v: string) => void
+}) {
+  return (
     <View className="gap-3 mb-2">
       <View className={cn(isWide ? 'flex-row items-center gap-3' : 'gap-3')}>
         <View
@@ -353,49 +321,111 @@ export default function AdminUsersPage() {
       </View>
     </View>
   )
+}
 
-  const ListFooter = () => {
-    if (totalPages <= 1) return null
-    return (
-      <View className="flex-row items-center justify-between mt-3 px-1">
+function UsersListFooter({
+  totalPages,
+  data,
+  page,
+  setPage,
+}: {
+  totalPages: number
+  data: UsersResponse | null
+  page: number
+  setPage: (updater: (p: number) => number) => void
+}) {
+  if (totalPages <= 1) return null
+  return (
+    <View className="flex-row items-center justify-between mt-3 px-1">
+      <Text className="text-xs text-muted-foreground">
+        {data?.total} users total
+      </Text>
+      <View className="flex-row items-center gap-2">
+        <Pressable
+          onPress={() => setPage((p) => Math.max(1, p - 1))}
+          disabled={page === 1}
+          className={cn(
+            'p-2 rounded-md border border-border',
+            page === 1 && 'opacity-30',
+          )}
+        >
+          <ChevronLeft size={16} className="text-foreground" />
+        </Pressable>
         <Text className="text-xs text-muted-foreground">
-          {data?.total} users total
+          {page} / {totalPages}
         </Text>
-        <View className="flex-row items-center gap-2">
-          <Pressable
-            onPress={() => setPage((p) => Math.max(1, p - 1))}
-            disabled={page === 1}
-            className={cn(
-              'p-2 rounded-md border border-border',
-              page === 1 && 'opacity-30',
-            )}
-          >
-            <ChevronLeft size={16} className="text-foreground" />
-          </Pressable>
-          <Text className="text-xs text-muted-foreground">
-            {page} / {totalPages}
-          </Text>
-          <Pressable
-            onPress={() => setPage((p) => Math.min(totalPages, p + 1))}
-            disabled={page >= totalPages}
-            className={cn(
-              'p-2 rounded-md border border-border',
-              page >= totalPages && 'opacity-30',
-            )}
-          >
-            <ChevronRight size={16} className="text-foreground" />
-          </Pressable>
-        </View>
+        <Pressable
+          onPress={() => setPage((p) => Math.min(totalPages, p + 1))}
+          disabled={page >= totalPages}
+          className={cn(
+            'p-2 rounded-md border border-border',
+            page >= totalPages && 'opacity-30',
+          )}
+        >
+          <ChevronRight size={16} className="text-foreground" />
+        </Pressable>
       </View>
-    )
-  }
+    </View>
+  )
+}
 
-  const EmptyState = () => (
+function UsersEmptyState() {
+  return (
     <View className="items-center justify-center py-16">
       <Users size={32} className="text-muted-foreground/50 mb-2" />
       <Text className="text-sm text-muted-foreground">No users found</Text>
     </View>
   )
+}
+
+export default function AdminUsersPage() {
+  const router = useRouter()
+  const { width } = useWindowDimensions()
+  const isWide = width >= 900
+
+  const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
+  const [roleFilter, setRoleFilter] = useState<string>('')
+  const [data, setData] = useState<UsersResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [roleDialog, setRoleDialog] = useState<{ userId: string; name: string; currentRole: string } | null>(null)
+
+  const loadUsers = useCallback(async () => {
+    const params: Record<string, string> = {
+      page: String(page),
+      limit: '20',
+    }
+    if (search) params.search = search
+    if (roleFilter) params.role = roleFilter
+
+    const result = await fetchAdminJson<UsersResponse>('/users', params)
+    setData(result)
+    setLoading(false)
+    setRefreshing(false)
+  }, [page, search, roleFilter])
+
+  useEffect(() => {
+    setLoading(true)
+    loadUsers()
+  }, [loadUsers])
+
+  const confirmToggleRole = useCallback(async () => {
+    if (!roleDialog) return
+    const newRole = roleDialog.currentRole === 'super_admin' ? 'user' : 'super_admin'
+    const result = await adminUpdateUser(roleDialog.userId, { role: newRole })
+    setRoleDialog(null)
+    if (result.ok) loadUsers()
+  }, [roleDialog, loadUsers])
+
+  const totalPages = data ? Math.ceil(data.total / data.limit) : 1
+
+  const onRefresh = () => {
+    setRefreshing(true)
+    loadUsers()
+  }
+
+  const isPromoting = roleDialog?.currentRole !== 'super_admin'
 
   return (
     <View className={cn('flex-1 bg-background', isWide ? 'px-8 pt-6' : 'px-4 pt-2')}>
@@ -405,9 +435,26 @@ export default function AdminUsersPage() {
         <FlatList
           data={data?.users ?? []}
           keyExtractor={(item) => item.id}
-          ListHeaderComponent={<ListHeader />}
-          ListFooterComponent={<ListFooter />}
-          ListEmptyComponent={loading ? null : <EmptyState />}
+          ListHeaderComponent={
+            <UsersListHeader
+              isWide={isWide}
+              data={data}
+              search={search}
+              setSearch={setSearch}
+              setPage={setPage}
+              roleFilter={roleFilter}
+              setRoleFilter={setRoleFilter}
+            />
+          }
+          ListFooterComponent={
+            <UsersListFooter
+              totalPages={totalPages}
+              data={data}
+              page={page}
+              setPage={setPage}
+            />
+          }
+          ListEmptyComponent={loading ? null : <UsersEmptyState />}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }
