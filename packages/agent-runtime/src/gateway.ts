@@ -68,6 +68,7 @@ import { SHOGO_SDK_GUIDE } from './shogo-sdk-prompt'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
 import { WorkspaceLSPManager, resolveBin } from '@shogo/shared-runtime'
+import { isWorkspaceRuntimeMode, workspaceAttachedProjectIds } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { deriveApiUrl, getInternalHeaders, postCostMetric } from './internal-api'
 import { getRuntimeTrust } from './runtime-trust'
@@ -926,10 +927,20 @@ export class AgentGateway {
       const tsResult = resolveBin('typescript-language-server', searchDirs, 'lib/cli.mjs')
       const pyResult = resolveBin('pyright', searchDirs)
 
+      // Workspace runtime: the LSP root is the merged-tree parent, which has
+      // no tsconfig of its own. tsserver still resolves each file's nearest
+      // tsconfig per project, but the watch-exclusion patch must be applied
+      // to each attached project's tsconfig so program loads skip
+      // node_modules/dist. Single-project runtimes leave this empty.
+      const tsconfigDirs = isWorkspaceRuntimeMode()
+        ? workspaceAttachedProjectIds().map((id) => join(this.workspaceDir, id))
+        : []
+
       this.lspManager = new WorkspaceLSPManager({
         projectDir: this.workspaceDir,
         tsServerBin: tsResult?.resolved,
         pyrightBin: pyResult?.resolved,
+        tsconfigDirs,
       })
       await this.lspManager.startAll()
       // Bridge chokidar events into tsserver as

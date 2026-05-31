@@ -491,3 +491,93 @@ describe('walkFilesTree (fs error tolerance)', () => {
     }
   })
 })
+
+// ───────────────────────────────────────────────────────────────────────────
+// Nested per-project ignore layering (merged workspace tree).
+//
+// Models a workspace runtime: WORKSPACE_DIR is the parent `workspaces/` dir
+// with NO root .gitignore, and each `<projectId>/` subfolder carries its own
+// `.gitignore`/`.shogoignore`. Each project's rules must apply to its own
+// subtree only, and must survive a lazy re-fetch rooted deep inside it.
+// ───────────────────────────────────────────────────────────────────────────
+describe('walkFilesTree (nested per-project ignores)', () => {
+  const WS = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-ws-'))
+
+  beforeAll(() => {
+    // Project A: ignores `secret.env`, a custom `build-out/` dir (NOT a
+    // built-in lazy dir), and `*.log`.
+    const A = join(WS, 'proj-a')
+    mkdirSync(join(A, 'src'), { recursive: true })
+    writeFileSync(join(A, '.gitignore'), 'secret.env\nbuild-out/\n*.log\n')
+    writeFileSync(join(A, 'index.ts'), 'export const a = 1')
+    writeFileSync(join(A, 'secret.env'), 'TOKEN=xxx')
+    writeFileSync(join(A, 'debug.log'), 'noise')
+    mkdirSync(join(A, 'build-out', 'chunks'), { recursive: true })
+    writeFileSync(join(A, 'build-out', 'app.js'), '/* built */')
+    // A nested file deep under src/ that a deeper ignore should hide.
+    writeFileSync(join(A, 'src', 'keep.ts'), 'export const k = 1')
+    writeFileSync(join(A, 'src', 'gen.local'), 'generated')
+    writeFileSync(join(A, 'src', '.shogoignore'), '*.local\n')
+
+    // Project B: a DIFFERENT ignore. `secret.env` must NOT be hidden here
+    // (project A's rule is scoped to A).
+    const B = join(WS, 'proj-b')
+    mkdirSync(B, { recursive: true })
+    writeFileSync(join(B, '.gitignore'), 'only-b.tmp\n')
+    writeFileSync(join(B, 'secret.env'), 'this one is visible')
+    writeFileSync(join(B, 'only-b.tmp'), 'hidden in b')
+  })
+
+  afterAll(() => {
+    rmSync(WS, { recursive: true, force: true })
+  })
+
+  test("applies each project's own .gitignore within its subtree", async () => {
+    const tree = await walkFilesTree(WS, WS)
+    const a = tree.find((n) => n.name === 'proj-a')
+    const aChildren = (a?.children ?? []).map((n) => n.name).sort()
+    expect(aChildren).toContain('index.ts')
+    expect(aChildren).toContain('src')
+    // Gitignored file + log are hidden; custom build dir is lazy-stubbed.
+    expect(aChildren).not.toContain('secret.env')
+    expect(aChildren).not.toContain('debug.log')
+    const buildOut = a?.children?.find((n) => n.name === 'build-out')
+    expect(buildOut?.lazy).toBe(true)
+    expect(buildOut?.children).toBeUndefined()
+  })
+
+  test("one project's ignore does not leak into a sibling", async () => {
+    const tree = await walkFilesTree(WS, WS)
+    const b = tree.find((n) => n.name === 'proj-b')
+    const bChildren = (b?.children ?? []).map((n) => n.name).sort()
+    // proj-a hides secret.env; proj-b must still show its own secret.env.
+    expect(bChildren).toContain('secret.env')
+    expect(bChildren).not.toContain('only-b.tmp')
+  })
+
+  test('deeper nested ignore (src/.shogoignore) hides matching files', async () => {
+    const tree = await walkFilesTree(WS, WS)
+    const a = tree.find((n) => n.name === 'proj-a')
+    const src = a?.children?.find((n) => n.name === 'src')
+    const srcChildren = (src?.children ?? []).map((n) => n.name).sort()
+    expect(srcChildren).toContain('keep.ts')
+    expect(srcChildren).not.toContain('gen.local')
+  })
+
+  test('lazy re-fetch rooted inside a project still honours its ancestor .gitignore', async () => {
+    // Simulates the IDE expanding `proj-a/` after first paint: the walker is
+    // re-invoked rooted at the subdir, so proj-a/.gitignore (an ancestor of
+    // build-out) must be reconstructed from disk via loadAncestorChain.
+    const subtree = await walkFilesTree(join(WS, 'proj-a'), WS)
+    const names = subtree.map((n) => n.name).sort()
+    expect(names).toContain('index.ts')
+    expect(names).not.toContain('secret.env')
+    expect(names).not.toContain('debug.log')
+
+    // And re-rooting at proj-a/src must still apply src/.shogoignore.
+    const srcTree = await walkFilesTree(join(WS, 'proj-a', 'src'), WS)
+    const srcNames = srcTree.map((n) => n.name).sort()
+    expect(srcNames).toContain('keep.ts')
+    expect(srcNames).not.toContain('gen.local')
+  })
+})
