@@ -43,6 +43,7 @@ export interface BuildWorkspaceEnvOpts {
   _loadProjectWorkspaceIds?: (projectIds: string[]) => Promise<Map<string, string>>
   _getProjectOwnerUserId?: (projectId: string) => Promise<string | undefined>
   _generateProxyToken?: typeof generateProxyToken
+  _loadProjects?: (projectIds: string[]) => Promise<Array<{ id: string; name: string | null }>>
 }
 
 /**
@@ -88,6 +89,30 @@ export async function buildWorkspaceEnv(
     env.COMPOSIO_USER_SCOPE = scope === 'project' ? 'project' : 'workspace'
   } catch (err: any) {
     console.error(`[${prefix}] Failed to load workspace ${workspaceId}:`, err?.message)
+  }
+
+  // Project catalog so the runtime can map UUID-named subfolders back to
+  // human project names. Without this the agent sees the merged tree as
+  // a pile of "UUID-named folders" with no idea what each one is. The
+  // runtime materialises this as WORKSPACE.md + .shogo/workspace.json on
+  // boot (see workspace-runtime-mode.ts / server.ts).
+  try {
+    const loadProjects =
+      opts._loadProjects ??
+      (async (ids: string[]) => {
+        const { prisma } = await import('../prisma')
+        return (await prisma.project.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, name: true },
+        })) as Array<{ id: string; name: string | null }>
+      })
+    const rows = attachedProjectIds.length ? await loadProjects(attachedProjectIds) : []
+    const nameById = new Map(rows.map((r) => [r.id, r.name]))
+    // Preserve attach order; fall back to the id when a name is missing.
+    const manifest = attachedProjectIds.map((id) => ({ id, name: nameById.get(id) || id }))
+    env.WORKSPACE_PROJECTS = JSON.stringify(manifest)
+  } catch (err: any) {
+    console.error(`[${prefix}] Failed to build project catalog for workspace ${workspaceId}:`, err?.message)
   }
 
   // Per-project AI proxy tokens, keyed by projectId, so usage is

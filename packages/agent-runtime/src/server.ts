@@ -72,6 +72,8 @@ import { initTrustResolver, refreshTrust } from './trust-resolver'
 import {
   isWorkspaceRuntimeMode,
   workspaceAttachedProjectIds,
+  workspaceProjectsManifest,
+  renderWorkspaceManifestMarkdown,
   shouldSkipManagedSeeding,
   shouldEnforceProjectIdSanity,
 } from './workspace-runtime-mode'
@@ -593,6 +595,34 @@ function safeMoveSync(src: string, dest: string): void {
   rmSync(src, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
 }
 
+/**
+ * Materialise the workspace project catalog at the merged-tree root:
+ *
+ *   - WORKSPACE.md         — human-readable, naturally surfaced to the
+ *                            agent alongside AGENTS.md/MEMORY.md at root.
+ *   - .shogo/workspace.json — machine-readable manifest for tools.
+ *
+ * Driven by the `WORKSPACE_PROJECTS` env the API attaches
+ * (build-workspace-env.ts). Best-effort: a write failure must never
+ * block boot.
+ */
+function writeWorkspaceManifest(workspaceDir: string): void {
+  try {
+    const projects = workspaceProjectsManifest()
+    const workspaceId = process.env.WORKSPACE_ID || ''
+    writeFileSync(join(workspaceDir, 'WORKSPACE.md'), renderWorkspaceManifestMarkdown(workspaceId, projects))
+    const shogoDir = join(workspaceDir, '.shogo')
+    mkdirSync(shogoDir, { recursive: true })
+    writeFileSync(
+      join(shogoDir, 'workspace.json'),
+      JSON.stringify({ workspaceId, projects }, null, 2),
+    )
+    console.log(`[agent-runtime] Workspace catalog written (${projects.length} projects)`)
+  } catch (err: any) {
+    console.warn(`[agent-runtime] Could not write workspace manifest: ${err?.message ?? err}`)
+  }
+}
+
 function ensureWorkspaceFiles(): void {
   // External (VS Code-style) projects: WORKSPACE_DIR is the user's
   // real repo on their machine. We MUST NOT run any of the seeding
@@ -628,6 +658,9 @@ function ensureWorkspaceFiles(): void {
     // user's repo (external) or the sibling project subfolders
     // (workspace). Lay down only the workspace-level `.shogo` skeleton.
     seedWorkspaceDefaults(WORKSPACE_DIR)
+    if (IS_WORKSPACE_RUNTIME) {
+      writeWorkspaceManifest(WORKSPACE_DIR)
+    }
     workspaceStatus.templateSeeded = true
     logTiming(
       IS_WORKSPACE_RUNTIME
