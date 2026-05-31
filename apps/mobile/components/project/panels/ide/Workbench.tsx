@@ -7,6 +7,7 @@ import { StatusBar } from "./StatusBar";
 import { useGitStatus } from "./git/useGitStatus";
 import { GitStatusProvider } from "./git/GitStatusContext";
 import { SourceControlViewlet } from "./scm/SourceControlViewlet";
+import { GraphView } from "./graph/GraphView";
 import { attachGitDecorations, maybeAutoStageIfConflictResolved } from "./git/editorIntegration";
 import { MergeEditorModal } from "./git/MergeEditorModal";
 import { getDesktopGitBridge } from "./git/bridge";
@@ -59,6 +60,7 @@ import {
   FolderPlus,
   FolderOpen,
   PanelLeftClose,
+  GitBranch,
   X,
 } from "lucide-react-native";
 
@@ -206,6 +208,7 @@ export function Workbench({
 }) {
   const themeMode = useResolvedTheme();
   const [activity, setActivity] = useState<ActivityId>("files");
+  const [graphOpen, setGraphOpen] = useState<boolean>(false);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
     try {
       const raw = localStorage.getItem("shogo.ide.sidebarOpen");
@@ -717,6 +720,23 @@ export function Workbench({
       void openFileInGroup(node, activeGroupIdx);
     },
     [openFileInGroup, activeGroupIdx],
+  );
+
+  // Open a workspace-relative path (used by the commit graph's file list).
+  // Synthesizes a minimal file node against the primary (agent) root.
+  const openWorkspaceFile = useCallback(
+    (path: string) => {
+      const rootId =
+        roots.find((r) => r.kind === "agent")?.id ?? roots[0]?.id;
+      if (!rootId) return;
+      const name = path.split("/").pop() ?? path;
+      setGraphOpen(false);
+      void openFileInGroup(
+        { kind: "file", rootId, path, name } as unknown as TreeNode,
+        activeGroupIdx,
+      );
+    },
+    [roots, openFileInGroup, activeGroupIdx],
   );
 
 
@@ -1478,6 +1498,17 @@ export function Workbench({
                   />
                 )}
                 {activity === "git" && (
+                  <div className="flex flex-col h-full">
+                    {projectId && (
+                      <button
+                        onClick={() => setGraphOpen(true)}
+                        className="flex items-center gap-1.5 mx-2 mt-2 mb-1 px-2 py-1.5 rounded text-[12px] border border-[color:var(--ide-border-strong)] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover)]"
+                      >
+                        <GitBranch size={13} className="text-[color:var(--ide-muted)]" />
+                        Open Commit Graph
+                      </button>
+                    )}
+                    <div className="flex-1 min-h-0">
                   <SourceControlViewlet
                     workspaceRoot={gitWorkspaceRoot}
                     onOpenDiff={(path, group) => {
@@ -1491,6 +1522,8 @@ export function Workbench({
                     }}
                     fallback={projectId ? <CheckpointsPanel visible projectId={projectId} /> : undefined}
                   />
+                    </div>
+                  </div>
                 )}
                 {activity === "settings" && (
                   <SettingsPane settings={settings} onChange={setSettings} />
@@ -1510,6 +1543,25 @@ export function Workbench({
             />
             <div className="flex flex-1 min-h-0 flex-col">
             <div className="flex flex-1 min-h-0 relative">
+              {graphOpen && projectId && (
+                <div className="absolute inset-0 z-30 flex flex-col bg-[color:var(--ide-bg)]">
+                  <div className="flex items-center gap-2 px-3 h-9 border-b border-[color:var(--ide-border)] bg-[color:var(--ide-surface)]">
+                    <GitBranch size={13} className="text-[color:var(--ide-muted)]" />
+                    <span className="text-[12px] text-[color:var(--ide-text-strong)]">Commit Graph</span>
+                    <span className="flex-1" />
+                    <button
+                      onClick={() => setGraphOpen(false)}
+                      title="Close graph"
+                      className="p-1 rounded hover:bg-[color:var(--ide-hover)] text-[color:var(--ide-muted)] hover:text-[color:var(--ide-text-strong)]"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <div className="flex-1 min-h-0">
+                    <GraphView projectId={projectId} onOpenFile={openWorkspaceFile} />
+                  </div>
+                </div>
+              )}
               {groups
                 .map((g, i) => (
                   <div

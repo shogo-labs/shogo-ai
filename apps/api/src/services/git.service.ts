@@ -88,6 +88,47 @@ export interface GitDiff {
   totalDeletions: number;
 }
 
+export type GitRefType = 'head' | 'remote' | 'tag' | 'HEAD';
+
+export interface GitRef {
+  name: string;
+  type: GitRefType;
+}
+
+export interface GitCoAuthor {
+  name: string;
+  email: string;
+}
+
+/**
+ * A commit as needed to render a GitKraken-style DAG: includes parent SHAs
+ * (graph topology), ref decorations (branch/tag/HEAD pills), author +
+ * committer identity, and any `Co-authored-by:` trailers.
+ */
+export interface GitGraphCommit {
+  sha: string;
+  shortSha: string;
+  parents: string[];
+  refs: GitRef[];
+  subject: string;
+  body: string;
+  author: string;
+  authorEmail: string;
+  committer: string;
+  committerEmail: string;
+  /** ISO author date. */
+  date: string;
+  coAuthors: GitCoAuthor[];
+}
+
+export interface GitGraph {
+  commits: GitGraphCommit[];
+  branches: { name: string; isCurrent: boolean }[];
+  tags: string[];
+  head: string | null;
+  currentBranch: string;
+}
+
 export interface CommitOptions {
   message: string;
   author?: string;
@@ -840,6 +881,187 @@ export async function getHistory(
     return commits;
   } catch {
     return [];
+  }
+}
+
+// Field separator (unit sep) between fields, record separator between commits.
+const GIT_GRAPH_FORMAT =
+  '%H%x1f%h%x1f%P%x1f%D%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1e';
+
+const COAUTHOR_RE = /^\s*Co-authored-by:\s*(.+?)\s*<([^>]+)>\s*$/gim;
+
+/** Parse `Co-authored-by:` trailers out of a commit body. */
+function parseCoAuthors(body: string): GitCoAuthor[] {
+  const out: GitCoAuthor[] = [];
+  if (!body) return out;
+  let m: RegExpExecArray | null;
+  COAUTHOR_RE.lastIndex = 0;
+  while ((m = COAUTHOR_RE.exec(body)) !== null) {
+    out.push({ name: m[1].trim(), email: m[2].trim() });
+  }
+  return out;
+}
+
+/**
+ * Parse the `%D` ref-decoration string git emits, e.g.
+ * `HEAD -> main, origin/main, tag: v1.2.0`.
+ */
+function parseRefs(decoration: string): GitRef[] {
+  const refs: GitRef[] = [];
+  if (!decoration) return refs;
+  for (const raw of decoration.split(',')) {
+    const token = raw.trim();
+    if (!token) continue;
+    if (token.startsWith('tag: ')) {
+      refs.push({ name: token.slice('tag: '.length).trim(), type: 'tag' });
+    } else if (token.includes('HEAD -> ')) {
+      const branch = token.slice(token.indexOf('HEAD -> ') + 'HEAD -> '.length).trim();
+      refs.push({ name: 'HEAD', type: 'HEAD' });
+      if (branch) refs.push({ name: branch, type: 'head' });
+    } else if (token === 'HEAD') {
+      refs.push({ name: 'HEAD', type: 'HEAD' });
+    } else if (token.includes('/')) {
+      // origin/main, upstream/feature-x, etc.
+      refs.push({ name: token, type: 'remote' });
+    } else {
+      refs.push({ name: token, type: 'head' });
+    }
+  }
+  return refs;
+}
+
+function parseGraphCommits(output: string): GitGraphCommit[] {
+  const commits: GitGraphCommit[] = [];
+  for (const record of output.split('\x1e')) {
+    const trimmed = record.replace(/^\s+/, '');
+    if (!trimmed) continue;
+    const fields = trimmed.split('\x1f');
+    if (fields.length < 11) continue;
+    const [
+      sha,
+      shortSha,
+      parentStr,
+      decoration,
+      author,
+      authorEmail,
+      committer,
+      committerEmail,
+      dateStr,
+      subject,
+      body,
+    ] = fields;
+    if (!sha) continue;
+    commits.push({
+      sha,
+      shortSha,
+      parents: parentStr.trim() ? parentStr.trim().split(/\s+/) : [],
+      refs: parseRefs(decoration),
+      subject,
+      body: (body ?? '').trim(),
+      author,
+      authorEmail,
+      committer,
+      committerEmail,
+      date: dateStr,
+      coAuthors: parseCoAuthors(body ?? ''),
+    });
+  }
+  return commits;
+}
+
+/**
+ * Get the commit graph for a workspace: every ref's history with parent
+ * pointers and ref decorations, suitable for a GitKraken-style DAG.
+ */
+export async function getGraph(
+  workspacePath: string,
+  options?: { limit?: number; skip?: number; all?: boolean }
+): Promise<GitGraphCommit[]> {
+  const { limit = 200, skip = 0, all = true } = options || {};
+  if (!isGitRepo(workspacePath)) return [];
+
+  const args = ['log', `--format=${GIT_GRAPH_FORMAT}`, '--date-order', '-n', String(limit)];
+  if (skip > 0) args.push('--skip', String(skip));
+  if (all) args.push('--all');
+
+  try {
+    const output = execFileSync('git', args, {
+      cwd: workspacePath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    return parseGraphCommits(output);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * List tag names (most recent first when possible).
+ */
+export async function listTags(workspacePath: string): Promise<string[]> {
+  if (!isGitRepo(workspacePath)) return [];
+  try {
+    const output = execFileSync(
+      'git',
+      ['tag', '--list', '--sort=-creatordate'],
+      { cwd: workspacePath, encoding: 'utf-8', stdio: 'pipe' }
+    );
+    return output.trim().split('\n').map((l) => l.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Files changed by a single commit. Handles the root commit (no parent) by
+ * diffing against the empty tree so the very first commit still lists files.
+ */
+export async function getCommitFiles(
+  workspacePath: string,
+  sha: string
+): Promise<GitDiff> {
+  // Empty-tree object id — diffing against it yields a root commit's files.
+  const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+  let parent = `${sha}^`;
+  try {
+    execFileSync('git', ['rev-parse', '--verify', `${sha}^`], {
+      cwd: workspacePath,
+      stdio: 'pipe',
+    });
+  } catch {
+    parent = EMPTY_TREE;
+  }
+  return getDiff(workspacePath, parent, sha);
+}
+
+/**
+ * Full detail for one commit: metadata + ref decorations + co-authors +
+ * the list of files it changed.
+ */
+export async function getCommitDetail(
+  workspacePath: string,
+  sha: string
+): Promise<(GitGraphCommit & { files: GitDiffFile[]; totalAdditions: number; totalDeletions: number }) | null> {
+  if (!isGitRepo(workspacePath)) return null;
+  try {
+    const output = execFileSync(
+      'git',
+      ['log', '-1', `--format=${GIT_GRAPH_FORMAT}`, sha],
+      { cwd: workspacePath, encoding: 'utf-8', stdio: 'pipe', maxBuffer: 8 * 1024 * 1024 }
+    );
+    const [commit] = parseGraphCommits(output);
+    if (!commit) return null;
+    const diff = await getCommitFiles(workspacePath, sha);
+    return {
+      ...commit,
+      files: diff.files,
+      totalAdditions: diff.totalAdditions,
+      totalDeletions: diff.totalDeletions,
+    };
+  } catch {
+    return null;
   }
 }
 
