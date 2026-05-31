@@ -36,6 +36,7 @@ import { publishRoutes } from './routes/publish'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
 import { projectChatRoutes } from './routes/project-chat'
+import { workspaceChatRoutes } from './routes/workspace-chat'
 import { projectAdminRoutes } from './routes/project-admin'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
 import { diagnosticsRoutes } from '@shogo/shared-runtime'
@@ -1377,6 +1378,10 @@ app.route('/api', instanceRoutes())
 app.route('/api', remoteAuditRoutes())
 // Sync engine — Phase 2 event-driven bidirectional sync
 app.route('/api', syncRoutes())
+// Workspace-scoped chat + session management (multi-project / parent-folder
+// model). Session CRUD is live; the /chat proxy returns 501 until the
+// merged-root workspace runtime (Phase 2b) is enabled via SHOGO_WORKSPACE_RUNTIME.
+app.route('/api', workspaceChatRoutes({ resolveUserId: getAuthUserId }))
 startTunnelHeartbeat()
 
 // Warm pool + cluster capacity status (for operational dashboards and load testing)
