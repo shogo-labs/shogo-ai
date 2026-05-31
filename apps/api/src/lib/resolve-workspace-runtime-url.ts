@@ -23,6 +23,7 @@
  */
 
 import type { IProjectRuntime, IRuntimeManager } from './runtime/types'
+import { withWorkspaceSpawnLease } from './runtime/workspace-spawn-lease'
 
 export type WorkspacePodMode = 'k8s' | 'vm' | 'host'
 
@@ -71,6 +72,14 @@ export interface ResolveWorkspaceRuntimeOpts {
     attachedProjectIds: string[],
     manager?: IRuntimeManager,
   ) => Promise<IProjectRuntime>
+
+  /**
+   * Test-only override for the cross-replica spawn lease wrapper used around
+   * the cloud (k8s/vm) branches. Defaults to `withWorkspaceSpawnLease`
+   * (PostgreSQL advisory lock keyed on workspaceId). Host mode never takes
+   * the lease (single-process, SQLite-backed).
+   */
+  _spawnLease?: <T>(workspaceId: string, fn: () => Promise<T>) => Promise<T>
 }
 
 function defaultIsEnabled(): boolean {
@@ -122,6 +131,9 @@ export async function resolveWorkspaceRuntimeUrl(
   const isKubernetes = opts._isKubernetes ?? defaultIsKubernetes
   const isVMIsolation = opts._isVMIsolation ?? defaultIsVMIsolation
   const attachedProjectIds = opts.attachedProjectIds ?? []
+  // Cloud branches serialize spawns across replicas with an advisory lease.
+  const spawnLease =
+    opts._spawnLease ?? (<T>(id: string, fn: () => Promise<T>) => withWorkspaceSpawnLease(id, fn, { logTag: tag }))
 
   if (!workspaceId) {
     throw new Error('[WorkspaceRuntime] resolveWorkspaceRuntimeUrl: workspaceId is required')
@@ -131,26 +143,31 @@ export async function resolveWorkspaceRuntimeUrl(
   }
 
   if (isKubernetes()) {
-    const resolver =
-      opts._k8sResolver ??
-      (async () => {
-        throw new Error(
-          `[${tag}] k8s workspace runtime not implemented yet (Knative workspace service lands in Phase 2b).`,
-        )
-      })
-    const url = await resolver(workspaceId, attachedProjectIds)
+    // No point serializing a guaranteed failure: when no cloud driver is
+    // wired we throw the config error directly, before touching the DB lease.
+    if (!opts._k8sResolver) {
+      throw new Error(
+        `[${tag}] k8s workspace runtime driver not configured (Knative workspace Service ` +
+          `apply not yet wired). Inject _k8sResolver — see resolve-workspace-runtime-url.ts.`,
+      )
+    }
+    const resolver = opts._k8sResolver
+    // Serialize across replicas: only one builds the workspace KSvc; others
+    // wait and re-resolve via the same resolver (which must short-circuit on
+    // an existing service).
+    const url = await spawnLease(workspaceId, () => resolver(workspaceId, attachedProjectIds))
     return { mode: 'k8s', url }
   }
 
   if (isVMIsolation()) {
-    const resolver =
-      opts._vmResolver ??
-      (async () => {
-        throw new Error(
-          `[${tag}] VM workspace runtime not implemented yet (workspace VM pool lands in Phase 2b).`,
-        )
-      })
-    const url = await resolver(workspaceId, attachedProjectIds)
+    if (!opts._vmResolver) {
+      throw new Error(
+        `[${tag}] VM workspace runtime driver not configured (workspace VM pool assign ` +
+          `not yet wired). Inject _vmResolver — see resolve-workspace-runtime-url.ts.`,
+      )
+    }
+    const resolver = opts._vmResolver
+    const url = await spawnLease(workspaceId, () => resolver(workspaceId, attachedProjectIds))
     return { mode: 'vm', url }
   }
 
