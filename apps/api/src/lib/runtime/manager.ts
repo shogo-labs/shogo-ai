@@ -2073,6 +2073,21 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     this.runtimes.delete(projectId)
   }
 
+  /**
+   * Stop a workspace (merged-root) runtime. Idempotent. Delegates to
+   * stop() with the `ws:<id>` key so the worker child, ports, health
+   * checks and runtimes-map entry are all torn down identically to a
+   * project runtime.
+   */
+  async stopWorkspace(workspaceId: string): Promise<void> {
+    return this.stop(workspaceRuntimeKey(workspaceId))
+  }
+
+  /** Public status of a workspace runtime, or null when not running. */
+  workspaceStatus(workspaceId: string): IProjectRuntime | null {
+    return this.status(workspaceRuntimeKey(workspaceId))
+  }
+
   async restart(projectId: string): Promise<IProjectRuntime> {
     console.log(`[RuntimeManager] Restarting runtime for ${projectId}`)
 

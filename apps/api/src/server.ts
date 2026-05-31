@@ -1381,7 +1381,7 @@ app.route('/api', syncRoutes())
 // Workspace-scoped chat + session management (multi-project / parent-folder
 // model). Session CRUD is live; the /chat proxy returns 501 until the
 // merged-root workspace runtime (Phase 2b) is enabled via SHOGO_WORKSPACE_RUNTIME.
-app.route('/api', workspaceChatRoutes({ resolveUserId: getAuthUserId }))
+app.route('/api', workspaceChatRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
 startTunnelHeartbeat()
 
 // Warm pool + cluster capacity status (for operational dashboards and load testing)

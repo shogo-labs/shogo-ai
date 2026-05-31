@@ -108,4 +108,33 @@ describe('RuntimeManager.startWorkspace', () => {
     const { rm } = makeManager()
     await expect(rm.startWorkspace('', { attachedProjectIds: [] })).rejects.toThrow(/workspaceId is required/)
   })
+
+  test('workspaceStatus reflects the running runtime; stopWorkspace tears it down', async () => {
+    const { rm } = makeManager()
+    expect(rm.workspaceStatus('ws-1')).toBeNull()
+
+    await rm.startWorkspace('ws-1', { attachedProjectIds: ['p1'] })
+    const status = rm.workspaceStatus('ws-1')
+    expect(status).not.toBeNull()
+    expect(status.status).toBe('running')
+
+    await rm.stopWorkspace('ws-1')
+    expect(rm.workspaceStatus('ws-1')).toBeNull()
+    expect(rm.runtimes.has('ws:ws-1')).toBe(false)
+    expect(rm.agentManager.stop.mock.calls.length).toBe(1)
+  })
+
+  test('stopWorkspace is idempotent when nothing is running', async () => {
+    const { rm } = makeManager()
+    await rm.stopWorkspace('ws-unknown') // must not throw
+    expect(rm.workspaceStatus('ws-unknown')).toBeNull()
+  })
+
+  test('stopAll tears down workspace runtimes too', async () => {
+    const { rm } = makeManager()
+    await rm.startWorkspace('ws-1', { attachedProjectIds: [] })
+    expect(rm.runtimes.has('ws:ws-1')).toBe(true)
+    await rm.stopAll()
+    expect(rm.runtimes.size).toBe(0)
+  })
 })
