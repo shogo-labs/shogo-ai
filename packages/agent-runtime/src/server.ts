@@ -69,6 +69,12 @@ import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { createPtyWsHandlers, type WsData } from './pty-ws-handler'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import { initTrustResolver, refreshTrust } from './trust-resolver'
+import {
+  isWorkspaceRuntimeMode,
+  workspaceAttachedProjectIds,
+  shouldSkipManagedSeeding,
+  shouldEnforceProjectIdSanity,
+} from './workspace-runtime-mode'
 import { userMessage } from './pi-adapter'
 import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
@@ -109,6 +115,15 @@ const PORT = parseInt(process.env.PORT || '8080', 10)
  */
 const WORKING_MODE: 'managed' | 'external' =
   process.env.WORKING_MODE === 'external' ? 'external' : 'managed'
+
+/**
+ * Workspace-runtime mode: this runtime serves a merged tree of several
+ * attached projects (WORKSPACE_DIR = the workspaces parent, each project
+ * a top-level subfolder). Toggles off single-project assumptions in the
+ * boot path — see workspace-runtime-mode.ts.
+ */
+const IS_WORKSPACE_RUNTIME = isWorkspaceRuntimeMode()
+const WORKSPACE_RUNTIME_PROJECT_IDS = workspaceAttachedProjectIds()
 
 /**
  * The list of host folders the agent is allowed to read/write inside,
@@ -185,6 +200,18 @@ function checkWorkspaceDirSanity(): void {
     console.log(
       `[agent-runtime] External (folder-linked) project: WORKSPACE_DIR='${WORKSPACE_DIR}' ` +
         `(trust resolved from API; linkedFolders=${LINKED_FOLDERS.length})`,
+    )
+    return
+  }
+
+  // Workspace runtime: WORKSPACE_DIR is the workspaces parent and each
+  // attached project is a top-level subfolder, so the single-PROJECT_ID
+  // basename check does not apply. Log a breadcrumb instead.
+  if (!shouldEnforceProjectIdSanity({ workingMode: WORKING_MODE, isWorkspaceRuntime: IS_WORKSPACE_RUNTIME })) {
+    console.log(
+      `[agent-runtime] Workspace runtime: WORKSPACE_DIR='${WORKSPACE_DIR}' ` +
+        `WORKSPACE_ID='${process.env.WORKSPACE_ID ?? ''}' ` +
+        `attachedProjects=${WORKSPACE_RUNTIME_PROJECT_IDS.length}`,
     )
     return
   }
@@ -593,10 +620,19 @@ function ensureWorkspaceFiles(): void {
   //
   // Re-running just the .shogo subdir creation here keeps the boot
   // idempotent for older bound folders that pre-date that scaffolding.
-  if (WORKING_MODE === 'external') {
+  if (shouldSkipManagedSeeding({ workingMode: WORKING_MODE, isWorkspaceRuntime: IS_WORKSPACE_RUNTIME })) {
+    // External folder projects AND workspace runtimes: WORKSPACE_DIR is
+    // not a fresh single-project sandbox. Seeding a Vite/React template
+    // or running the legacy APP-layout migration here would corrupt the
+    // user's repo (external) or the sibling project subfolders
+    // (workspace). Lay down only the workspace-level `.shogo` skeleton.
     seedWorkspaceDefaults(WORKSPACE_DIR)
     workspaceStatus.templateSeeded = true
-    logTiming('External project: skipped template seeding / legacy migration / LSP config')
+    logTiming(
+      IS_WORKSPACE_RUNTIME
+        ? 'Workspace runtime: skipped template seeding / legacy migration / LSP config'
+        : 'External project: skipped template seeding / legacy migration / LSP config',
+    )
     return
   }
 
