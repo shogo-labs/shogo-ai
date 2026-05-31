@@ -45,8 +45,13 @@ test.describe("Local Mode — API Key Dialog & Integrations", () => {
     await page.goto("/api-keys")
     await page.waitForSelector("text=API Keys", { timeout: 15_000 })
 
-    // Click "+ Create Key" button in the header
-    const createBtn = page.getByText("Create Key").first()
+    // Manual API key creation lives behind the "Manual API keys (advanced)"
+    // disclosure — expand it before the Create Key button is rendered.
+    const manualToggle = page.getByTestId("manual-api-keys-toggle")
+    await manualToggle.waitFor({ state: "visible", timeout: 10_000 })
+    await manualToggle.click()
+
+    const createBtn = page.getByTestId("create-api-key-btn")
     await createBtn.waitFor({ state: "visible", timeout: 10_000 })
     await createBtn.click()
 
@@ -76,8 +81,9 @@ test.describe("Local Mode — API Key Dialog & Integrations", () => {
     await page.goto("/api-keys")
     await page.waitForSelector("text=API Keys", { timeout: 15_000 })
 
-    // Open modal
-    await page.getByText("Create Key").first().click()
+    // Expand the "Manual API keys (advanced)" disclosure, then open the modal
+    await page.getByTestId("manual-api-keys-toggle").click()
+    await page.getByTestId("create-api-key-btn").click()
     await page.waitForSelector("text=Create API Key", { timeout: 5_000 })
 
     const dialog = page.getByRole("dialog", { name: "Create API Key" })
