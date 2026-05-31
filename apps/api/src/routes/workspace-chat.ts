@@ -137,6 +137,29 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     return c.json({ removed })
   })
 
+  // Runtime status for a workspace (null when not running).
+  router.get('/workspaces/:workspaceId/runtime', async (c) => {
+    const auth = await authorize(c)
+    if ('res' in auth) return auth.res
+    const mgr: any = runtimeManager
+    const status =
+      mgr && typeof mgr.workspaceStatus === 'function'
+        ? mgr.workspaceStatus(c.req.param('workspaceId'))
+        : null
+    return c.json({ runtime: status })
+  })
+
+  // Tear down a workspace runtime (idempotent).
+  router.delete('/workspaces/:workspaceId/runtime', async (c) => {
+    const auth = await authorize(c)
+    if ('res' in auth) return auth.res
+    const mgr: any = runtimeManager
+    if (mgr && typeof mgr.stopWorkspace === 'function') {
+      await mgr.stopWorkspace(c.req.param('workspaceId'))
+    }
+    return c.json({ stopped: true })
+  })
+
   // Proxy chat to the workspace runtime.
   router.post('/workspaces/:workspaceId/chat', async (c) => {
     const auth = await authorize(c)
