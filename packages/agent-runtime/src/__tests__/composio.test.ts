@@ -66,6 +66,7 @@ const ENV_KEYS = [
   'COMPOSIO_GITHUB_AUTH_CONFIG', 'COMPOSIO_LINEAR_AUTH_CONFIG',
   'COMPOSIO_NOTION_AUTH_CONFIG',
   'SHOGO_API_KEY', 'SHOGO_CLOUD_URL', 'BETTER_AUTH_URL', 'API_URL',
+  'COMPOSIO_CLOUD_USER_ID', 'COMPOSIO_CLOUD_WORKSPACE_ID',
 ]
 const savedEnv: Record<string, string | undefined> = {}
 function setEnv(k: string, v?: string) {
@@ -172,6 +173,63 @@ describe('buildComposioUserId / buildLegacyComposioUserId', () => {
   })
   it('legacy id is user_project', () => {
     expect(buildLegacyComposioUserId('u', 'p')).toBe('shogo_u_p')
+  })
+})
+
+// --------------------------------------------------------------------------
+// Regression: local cloud-forwarding identity mismatch.
+//
+// In local mode the agent-runtime runs as a *synthetic* local user/workspace
+// (e.g. local@shogo.local / "Local User Personal"), but Composio connections
+// live on the cloud's Composio account keyed by the cloud user/workspace the
+// SHOGO_API_KEY is bound to — the integrations UI forwards "Connect" to the
+// cloud. Without the override the agent builds `shogo_{localUser}_{localWs}`
+// and never resolves the connection, so every toolkit (Google Docs, Gmail,
+// Slack, …) reports needs_auth. The desktop RuntimeManager exports the cloud
+// identity via COMPOSIO_CLOUD_USER_ID / COMPOSIO_CLOUD_WORKSPACE_ID.
+describe('cloud-identity override (local cloud-forwarding mode)', () => {
+  it('buildComposioUserId prefers cloud identity env over the synthetic local ids', () => {
+    setEnv('COMPOSIO_CLOUD_USER_ID', 'cloudUser')
+    setEnv('COMPOSIO_CLOUD_WORKSPACE_ID', 'cloudWs')
+    expect(buildComposioUserId('localUser', 'localWs', 'p', 'workspace')).toBe('shogo_cloudUser_cloudWs')
+    expect(buildComposioUserId('localUser', 'localWs', 'p')).toBe('shogo_cloudUser_cloudWs_p')
+  })
+
+  it('falls back to caller ids when the cloud identity env is unset (self-hosted / BYO-key)', () => {
+    expect(buildComposioUserId('localUser', 'localWs', 'p', 'workspace')).toBe('shogo_localUser_localWs')
+  })
+
+  it('mixes cloud + local halves when only one env var is present', () => {
+    setEnv('COMPOSIO_CLOUD_WORKSPACE_ID', 'cloudWs')
+    expect(buildComposioUserId('localUser', 'localWs', 'p', 'workspace')).toBe('shogo_localUser_cloudWs')
+  })
+
+  it('initComposioSession authorizes the cloud-scoped user id, not the local one', async () => {
+    setEnv('COMPOSIO_API_KEY', 'k')
+    setEnv('COMPOSIO_CLOUD_USER_ID', 'cloudUser')
+    setEnv('COMPOSIO_CLOUD_WORKSPACE_ID', 'cloudWs')
+    let seenId: string | undefined
+    handlers.create = async (id: string) => { seenId = id; return {} }
+    const ok = await initComposioSession('localUser', 'localWs', 'p', 'workspace')
+    expect(ok).toBe(true)
+    expect(seenId).toBe('shogo_cloudUser_cloudWs')
+  })
+
+  it('checkComposioAuth looks up the connection under the cloud identity', async () => {
+    setEnv('COMPOSIO_API_KEY', 'k')
+    setEnv('COMPOSIO_CLOUD_USER_ID', 'cloudUser')
+    setEnv('COMPOSIO_CLOUD_WORKSPACE_ID', 'cloudWs')
+    let listedUserIds: string[] | undefined
+    handlers.create = async () => ({})
+    handlers.connectedAccountsList = async (opts: any) => {
+      listedUserIds = opts?.userIds
+      return { items: [{ status: 'ACTIVE' }] }
+    }
+    await initComposioSession('localUser', 'localWs', 'p', 'workspace')
+    const r = await checkComposioAuth('googledocs')
+    expect(r.status).toBe('active')
+    expect(listedUserIds).toContain('shogo_cloudUser_cloudWs')
+    expect(listedUserIds).not.toContain('shogo_localUser_localWs')
   })
 })
 
