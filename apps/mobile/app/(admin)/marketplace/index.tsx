@@ -24,7 +24,6 @@ import {
   RefreshControl,
   TextInput,
   Modal,
-  Alert,
   useWindowDimensions,
 } from 'react-native'
 import { useRouter } from 'expo-router'
@@ -43,6 +42,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import {
   fetchAdminJson,
   postAdmin,
+  showAdminAlert,
   formatRelative,
   countFindings,
   AUDIT_PILL,
@@ -211,6 +211,61 @@ function RejectModal({
   )
 }
 
+function ApproveModal({
+  visible,
+  listing,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  visible: boolean
+  listing: ReviewQueueItem | null
+  busy: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
+      <View className="flex-1 items-center justify-center bg-black/50 px-6">
+        <View className="bg-card rounded-2xl border border-border p-6 w-full max-w-md">
+          <Text className="text-base font-semibold text-foreground mb-1">
+            Approve listing?
+          </Text>
+          <Text className="text-sm text-muted-foreground mb-4" numberOfLines={2}>
+            {listing?.title ?? ''} will be published immediately.
+          </Text>
+          <View className="flex-row justify-end gap-2">
+            <Pressable
+              onPress={onCancel}
+              disabled={busy}
+              className="px-4 py-2 rounded-lg active:bg-muted"
+            >
+              <Text className="text-sm font-medium text-foreground">Cancel</Text>
+            </Pressable>
+            <Pressable
+              onPress={onConfirm}
+              disabled={busy}
+              className={cn(
+                'px-4 py-2 rounded-lg flex-row items-center gap-1.5',
+                busy ? 'bg-green-500/40' : 'bg-green-600 active:opacity-80',
+              )}
+            >
+              {busy ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <CheckCircle2 size={14} color="#fff" />
+              )}
+              <Text className="text-sm font-semibold text-white">
+                {busy ? 'Approving…' : 'Approve'}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  )
+}
+
 export default function MarketplaceReviewQueuePage() {
   const router = useRouter()
   const { width } = useWindowDimensions()
@@ -222,6 +277,7 @@ export default function MarketplaceReviewQueuePage() {
   const [page, setPage] = useState(1)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [rejectTarget, setRejectTarget] = useState<ReviewQueueItem | null>(null)
+  const [approveTarget, setApproveTarget] = useState<ReviewQueueItem | null>(null)
 
   const load = useCallback(async () => {
     const params: Record<string, string> = { page: String(page), limit: '20' }
@@ -241,25 +297,14 @@ export default function MarketplaceReviewQueuePage() {
     load()
   }
 
-  const onApprove = async (listing: ReviewQueueItem) => {
-    const proceed = await new Promise<boolean>((resolve) => {
-      Alert.alert(
-        'Approve listing?',
-        `${listing.title} will be published immediately.`,
-        [
-          { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-          { text: 'Approve', style: 'default', onPress: () => resolve(true) },
-        ],
-        { cancelable: true, onDismiss: () => resolve(false) },
-      )
-    })
-    if (!proceed) return
-
+  const onConfirmApprove = async () => {
+    if (!approveTarget) return
+    const listing = approveTarget
     setBusyId(listing.id)
     const res = await postAdmin(`/listings/${listing.id}/approve`, {})
     setBusyId(null)
     if (!res.ok) {
-      Alert.alert('Approve failed', res.error ?? 'Unknown error')
+      showAdminAlert('Approve failed', res.error ?? 'Unknown error')
       return
     }
     setData((prev) =>
@@ -271,6 +316,7 @@ export default function MarketplaceReviewQueuePage() {
           }
         : prev,
     )
+    setApproveTarget(null)
   }
 
   const onSubmitReject = async (reason: string) => {
@@ -280,7 +326,7 @@ export default function MarketplaceReviewQueuePage() {
     const res = await postAdmin(`/listings/${rejectTarget.id}/reject`, { reason })
     setBusyId(null)
     if (!res.ok) {
-      Alert.alert('Reject failed', res.error ?? 'Unknown error')
+      showAdminAlert('Reject failed', res.error ?? 'Unknown error')
       return
     }
     setData((prev) =>
@@ -409,7 +455,7 @@ export default function MarketplaceReviewQueuePage() {
               <Pressable
                 onPress={(e) => {
                   e.stopPropagation()
-                  onApprove(item)
+                  setApproveTarget(item)
                 }}
                 disabled={isBusy}
                 className={cn(
@@ -455,6 +501,13 @@ export default function MarketplaceReviewQueuePage() {
         busy={busyId === rejectTarget?.id}
         onCancel={() => setRejectTarget(null)}
         onSubmit={onSubmitReject}
+      />
+      <ApproveModal
+        visible={!!approveTarget}
+        listing={approveTarget}
+        busy={busyId === approveTarget?.id}
+        onCancel={() => setApproveTarget(null)}
+        onConfirm={onConfirmApprove}
       />
     </View>
   )

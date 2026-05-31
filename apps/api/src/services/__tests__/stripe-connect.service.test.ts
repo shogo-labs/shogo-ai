@@ -192,9 +192,22 @@ describe('createCustomAccount', () => {
 })
 
 describe('submitPayoutDetails', () => {
-  it('throws when profile has no Stripe account', async () => {
+  it('throws when the creator profile does not exist', async () => {
+    await expect(sc.submitPayoutDetails('nope', baseDetails)).rejects.toThrow(/not found/)
+  })
+
+  it('self-heals by creating a Connect account when one is missing', async () => {
     profiles.set('c1', { id: 'c1', stripeCustomAccountId: null })
-    await expect(sc.submitPayoutDetails('c1', baseDetails)).rejects.toThrow(/no Stripe Connect/)
+    nextAccountCreate = { id: 'acct_healed' }
+    await sc.submitPayoutDetails('c1', baseDetails)
+    // Account was provisioned, persisted, then updated with payout details.
+    expect(stripeCalls[0].method).toBe('accounts.create')
+    expect(stripeCalls[0].args[0].email).toBe('ada@x.io')
+    expect(stripeCalls[0].args[0].country).toBe('GB')
+    expect(profiles.get('c1')?.stripeCustomAccountId).toBe('acct_healed')
+    const updateCall = stripeCalls.find((c) => c.method === 'accounts.update')!
+    expect(updateCall.args[0]).toBe('acct_healed')
+    expect(profiles.get('c1')?.payoutStatus).toBe('pending_verification')
   })
 
   it('updates DB only when Stripe is unconfigured (no API call)', async () => {
