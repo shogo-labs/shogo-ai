@@ -157,6 +157,7 @@ initTrustResolver({
   workspaceDir: WORKSPACE_DIR,
   workingMode: WORKING_MODE,
   linkedFolders: LINKED_FOLDERS,
+  isWorkspaceRuntime: IS_WORKSPACE_RUNTIME,
 })
 refreshTrust().catch(() => {
   // Best-effort at boot; per-turn refresh in gateway.ts is the
