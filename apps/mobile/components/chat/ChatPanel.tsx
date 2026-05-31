@@ -147,6 +147,7 @@ import { buildStopRequest } from "../../lib/chat-stop"
 import { configureSubagentStop } from "../../lib/subagent-stop"
 import { useChatBridgeRegistrar } from "../voice-mode/ChatBridgeContext"
 import { extractTaskToolsFromMessages } from "./turns/messageParts"
+import { derivePendingQuestion } from "./turns/pendingQuestion"
 import {
   FIX_IN_AGENT_EVENT,
   buildFixPrompt,
@@ -3304,19 +3305,15 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [displayMessages.length, messages, currentSessionId, isNative, shouldFollowBottom, scrollToBottomIfFollowing, markProgrammaticScroll])
 
-  // Detect a pending ask_user tool call in the last assistant message
-  const hasPendingQuestion = useMemo(() => {
-    const lastMsg = messages[messages.length - 1]
-    if (!lastMsg || lastMsg.role !== "assistant") return false
-    const parts = (lastMsg as any).parts as any[] | undefined
-    if (!parts) return false
-    return parts.some(
-      (p: any) =>
-        p.type === "dynamic-tool" &&
-        p.toolName === "ask_user" &&
-        (p.state === "input-available" || p.state === "input-streaming")
-    )
-  }, [messages])
+  // Detect a pending ask_user tool call in the last assistant message and
+  // surface its tool data so the interactive question UI can be attached
+  // above the chat input (instead of rendered inline in the stream).
+  const pendingQuestion = useMemo(
+    () => derivePendingQuestion(messages),
+    [messages]
+  )
+
+  const hasPendingQuestion = pendingQuestion != null
 
   const extractMediaType = useCallback((dataUrl: string): string => {
     const match = dataUrl.match(/^data:([^;]+);/)
@@ -4258,6 +4255,23 @@ export const ChatPanel = observer(function ChatPanel({
     [setMessages, sessionMessages]
   )
 
+  // Submit handler for the input-attached question widget. Mirrors the
+  // inline ask_user handler: send the formatted response as a user message
+  // and persist the tool output so the part flips to answered (which also
+  // clears `pendingQuestion`, unmounting the attached widget).
+  const handleSubmitQuestionResponse = useCallback(
+    (response: string) => {
+      if (!pendingQuestion) return
+      handleSendMessage(response)
+      handleSaveToolOutput({
+        messageId: pendingQuestion.messageId,
+        toolCallId: pendingQuestion.tool.id,
+        output: response,
+      })
+    },
+    [pendingQuestion, handleSendMessage, handleSaveToolOutput]
+  )
+
   // Stable session summary so a new object literal isn't allocated each
   // render even when the underlying session id/name haven't changed.
   const sessionSummary = useMemo(
@@ -4303,6 +4317,7 @@ export const ChatPanel = observer(function ChatPanel({
       agentUrl: resolvedAgentUrl,
       addToolOutput: stableAddToolOutput,
       saveToolOutput: handleSaveToolOutput,
+      focusPendingQuestion: jumpToLatest,
       buildPlan: pendingPlan ? handleConfirmPlan : null,
       confirmPlan: pendingPlan ? handleConfirmPlan : null,
       pendingPlan,
@@ -4319,6 +4334,7 @@ export const ChatPanel = observer(function ChatPanel({
       resolvedAgentUrl,
       stableAddToolOutput,
       handleSaveToolOutput,
+      jumpToLatest,
       pendingPlan,
       handleConfirmPlan,
       confirmedPlan,
@@ -4778,7 +4794,7 @@ export const ChatPanel = observer(function ChatPanel({
                 !featureId
                   ? "Select a feature to start chatting..."
                   : hasPendingQuestion
-                    ? "Respond to the question above, or type a message..."
+                    ? "Respond to the question below, or type a message..."
                     : interactionMode === "plan"
                       ? "Describe what you want to plan..."
                       : interactionMode === "ask"
@@ -4791,6 +4807,8 @@ export const ChatPanel = observer(function ChatPanel({
               onModelChange={handleModelChange}
               isPro={hasAdvancedModelAccess}
               onUpgradeClick={handleUpgradeClick}
+              pendingQuestion={pendingQuestion}
+              onSubmitQuestionResponse={handleSubmitQuestionResponse}
               queuedMessages={messageQueue}
               onRemoveQueuedMessage={handleRemoveQueuedMessage}
               onReorderQueuedMessage={handleReorderQueuedMessage}

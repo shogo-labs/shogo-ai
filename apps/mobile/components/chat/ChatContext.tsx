@@ -85,6 +85,10 @@ export interface ChatContextValue {
   /** Persist a tool output to in-memory messages and the DB (e.g. ask_user answers) */
   saveToolOutput?: (params: { messageId: string; toolCallId: string; output: string }) => void
 
+  /** Scroll the chat to the input-attached pending question (e.g. when the
+   *  collapsed in-stream question bar is tapped). */
+  focusPendingQuestion?: () => void
+
   /** Build and execute a pending plan. Null when no plan is pending. */
   buildPlan?: ((plan?: PlanData | null) => void) | null
 
