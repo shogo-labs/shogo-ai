@@ -81,6 +81,48 @@ describe('resolveWorkspaceRuntimeUrl', () => {
     expect(res.url).toBe('http://localhost:38000')
   })
 
+  it('default host path delegates to runtimeManager.startWorkspace', async () => {
+    let receivedWs = ''
+    let receivedIds: string[] = []
+    const fakeManager: any = {
+      startWorkspace: async (wsId: string, o: { attachedProjectIds: string[] }) => {
+        receivedWs = wsId
+        receivedIds = o.attachedProjectIds
+        return {
+          projectId: `ws:${wsId}`,
+          port: 37700,
+          agentPort: 38700,
+          status: 'running' as const,
+          url: 'http://localhost:37700',
+          startedAt: Date.now(),
+        }
+      },
+    }
+    const res = await resolveWorkspaceRuntimeUrl('ws-9', {
+      attachedProjectIds: ['p1', 'p2'],
+      _isEnabled: enabled,
+      _isKubernetes: () => false,
+      _isVMIsolation: () => false,
+      runtimeManager: fakeManager,
+    })
+    expect(res.mode).toBe('host')
+    expect(res.url).toBe('http://localhost:38700')
+    expect(receivedWs).toBe('ws-9')
+    expect(receivedIds).toEqual(['p1', 'p2'])
+  })
+
+  it('default host path errors clearly when the manager lacks startWorkspace', async () => {
+    await expect(
+      resolveWorkspaceRuntimeUrl('ws-1', {
+        attachedProjectIds: [],
+        _isEnabled: enabled,
+        _isKubernetes: () => false,
+        _isVMIsolation: () => false,
+        runtimeManager: {} as any,
+      }),
+    ).rejects.toThrow(/no startWorkspace/)
+  })
+
   it('production k8s branch throws not-implemented when no resolver injected', async () => {
     await expect(
       resolveWorkspaceRuntimeUrl('ws-1', {

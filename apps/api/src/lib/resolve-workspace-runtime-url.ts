@@ -86,10 +86,11 @@ function defaultIsVMIsolation(): boolean {
 }
 
 /**
- * Default host spawn. Delegates to an optional `startWorkspace` method
- * on the RuntimeManager (added in Phase 2b). Throws a clear error until
- * that method exists, so the gate-off path is the only supported one
- * for now.
+ * Default host spawn. Delegates to `RuntimeManager.startWorkspace`,
+ * which spawns a merged-root agent-runtime (WORKSPACE_RUNTIME=true)
+ * rooted at the workspaces parent and mounting each attached project as
+ * a subfolder. The `typeof` guard stays as defense-in-depth for any
+ * IRuntimeManager implementation that predates the workspace method.
  */
 async function defaultHostStart(
   workspaceId: string,
@@ -100,8 +101,8 @@ async function defaultHostStart(
     manager ?? (await import('./runtime/index')).getRuntimeManager()
   if (typeof m.startWorkspace !== 'function') {
     throw new Error(
-      `[WorkspaceRuntime] host spawn not implemented yet: RuntimeManager.startWorkspace is missing. ` +
-        `This lands in Phase 2b (merged-root agent-runtime).`,
+      `[WorkspaceRuntime] host spawn unavailable: this RuntimeManager has no startWorkspace(). ` +
+        `Expected on the desktop/local RuntimeManager (apps/api/src/lib/runtime/manager.ts).`,
     )
   }
   return m.startWorkspace(workspaceId, { attachedProjectIds })
