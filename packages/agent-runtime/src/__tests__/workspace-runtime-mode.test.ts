@@ -6,6 +6,8 @@ import {
   isWorkspaceRuntimeMode,
   workspaceRuntimeId,
   workspaceAttachedProjectIds,
+  workspaceProjectsManifest,
+  renderWorkspaceManifestMarkdown,
   shouldSkipManagedSeeding,
   shouldEnforceProjectIdSanity,
 } from '../workspace-runtime-mode'
@@ -36,6 +38,44 @@ describe('workspaceAttachedProjectIds', () => {
   it('returns [] when unset or not in workspace mode', () => {
     expect(workspaceAttachedProjectIds({ WORKSPACE_RUNTIME: 'true' } as any)).toEqual([])
     expect(workspaceAttachedProjectIds({ WORKSPACE_PROJECT_IDS: 'p1' } as any)).toEqual([])
+  })
+})
+
+describe('workspaceProjectsManifest', () => {
+  it('parses and sanitises the catalog, defaulting name to id', () => {
+    const env = {
+      WORKSPACE_RUNTIME: 'true',
+      WORKSPACE_PROJECTS: JSON.stringify([
+        { id: 'p1', name: 'alpha-api' },
+        { id: 'p2' },
+        { name: 'no-id' },
+        'garbage',
+      ]),
+    } as any
+    expect(workspaceProjectsManifest(env)).toEqual([
+      { id: 'p1', name: 'alpha-api' },
+      { id: 'p2', name: 'p2' },
+    ])
+  })
+  it('returns [] when not in workspace mode or malformed', () => {
+    expect(workspaceProjectsManifest({ WORKSPACE_PROJECTS: '[]' } as any)).toEqual([])
+    expect(workspaceProjectsManifest({ WORKSPACE_RUNTIME: 'true', WORKSPACE_PROJECTS: '{not json' } as any)).toEqual([])
+    expect(workspaceProjectsManifest({ WORKSPACE_RUNTIME: 'true' } as any)).toEqual([])
+  })
+})
+
+describe('renderWorkspaceManifestMarkdown', () => {
+  it('lists each project folder with its name', () => {
+    const md = renderWorkspaceManifestMarkdown('ws-1', [
+      { id: 'p1', name: 'alpha-api' },
+      { id: 'p2', name: 'beta-web' },
+    ])
+    expect(md).toContain('workspace `ws-1`')
+    expect(md).toContain('`p1/` — **alpha-api**')
+    expect(md).toContain('`p2/` — **beta-web**')
+  })
+  it('handles the empty case', () => {
+    expect(renderWorkspaceManifestMarkdown('ws-1', [])).toContain('_No projects attached._')
   })
 })
 

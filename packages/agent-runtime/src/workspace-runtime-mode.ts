@@ -54,6 +54,69 @@ export function workspaceAttachedProjectIds(env: NodeJS.ProcessEnv = process.env
     .filter((s) => s.length > 0)
 }
 
+export interface WorkspaceProjectEntry {
+  id: string
+  name: string
+}
+
+/**
+ * Parse the project catalog the API attaches as `WORKSPACE_PROJECTS`
+ * (JSON array of `{ id, name }`, set by build-workspace-env.ts). Returns
+ * [] for non-workspace runtimes, unset/empty env, or malformed JSON.
+ * Each entry is sanitised: only string id/name survive, name defaults to
+ * the id.
+ */
+export function workspaceProjectsManifest(env: NodeJS.ProcessEnv = process.env): WorkspaceProjectEntry[] {
+  if (!isWorkspaceRuntimeMode(env)) return []
+  const raw = env.WORKSPACE_PROJECTS
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    const out: WorkspaceProjectEntry[] = []
+    for (const e of parsed) {
+      if (!e || typeof e !== 'object') continue
+      const id = typeof (e as any).id === 'string' ? (e as any).id : null
+      if (!id) continue
+      const name = typeof (e as any).name === 'string' && (e as any).name.length > 0 ? (e as any).name : id
+      out.push({ id, name })
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Render the human-readable `WORKSPACE.md` that sits at the merged-tree
+ * root so the agent immediately understands which subfolder is which
+ * project. Kept as a pure function for snapshot-style unit testing.
+ */
+export function renderWorkspaceManifestMarkdown(
+  workspaceId: string,
+  projects: WorkspaceProjectEntry[],
+): string {
+  const lines: string[] = [
+    '# Workspace',
+    '',
+    `This is a **multi-project workspace** runtime (workspace \`${workspaceId}\`).`,
+    'Each top-level UUID-named folder below is a separate project you can',
+    'read and edit. Treat them as sibling repos under one root.',
+    '',
+    '## Attached projects',
+    '',
+  ]
+  if (projects.length === 0) {
+    lines.push('_No projects attached._')
+  } else {
+    for (const p of projects) {
+      lines.push(`- \`${p.id}/\` — **${p.name}**`)
+    }
+  }
+  lines.push('')
+  return lines.join('\n')
+}
+
 /**
  * Whether the boot should skip managed template/tech-stack seeding and
  * the legacy APP-layout migration. True for external folder projects AND
