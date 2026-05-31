@@ -192,6 +192,11 @@ describe('PreviewManager', () => {
     expect(pm.externalUrl).toBe('https://preview--proj123.dev.shogo.ai')
   })
 
+  test('apiPort option overrides the env-derived sidecar port (per-project workspace runtimes)', () => {
+    const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080, apiPort: 3107 })
+    expect(pm.apiServerUrl).toBe('http://localhost:3107')
+  })
+
   test('externalUrl ignores empty publicUrl string', () => {
     const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080, publicUrl: '' })
     expect(pm.externalUrl).toBe('http://localhost:8080/')
