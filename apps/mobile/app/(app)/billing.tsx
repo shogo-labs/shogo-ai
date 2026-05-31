@@ -23,7 +23,7 @@ import {
 } from 'react-native'
 import * as WebBrowser from 'expo-web-browser'
 import * as ExpoLinking from 'expo-linking'
-import { useRouter } from 'expo-router'
+import { useRouter, useLocalSearchParams } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
   ArrowLeft,
@@ -130,6 +130,7 @@ function UsageWindowBar({ label, window }: { label: string; window: UsageWindowV
 
 export default observer(function BillingPage() {
   const router = useRouter()
+  const { redeem: redeemParam } = useLocalSearchParams<{ redeem?: string }>()
   const { user, isLoading: isAuthLoading } = useAuth()
   const workspaces = useWorkspaceCollection()
   const actions = useDomainActions()
@@ -167,6 +168,7 @@ export default observer(function BillingPage() {
   const [isRestoreLoading, setIsRestoreLoading] = useState(false)
   const [licenseCode, setLicenseCode] = useState('')
   const [isRedeeming, setIsRedeeming] = useState(false)
+  const licenseInputRef = useRef<TextInput>(null)
   const iapTransactionsInFlightRef = useRef<Map<string, Promise<'processed' | 'failed'>>>(new Map())
   const toast = useToast()
   const { width } = useWindowDimensions()
@@ -190,6 +192,16 @@ export default observer(function BillingPage() {
       ),
     })
   }, [toast])
+
+  // Deep-link landing: shogo://billing?redeem=CODE (or <web>/billing?redeem=CODE)
+  // prefills the license-key field and focuses it so the recipient just taps Redeem.
+  useEffect(() => {
+    const code = Array.isArray(redeemParam) ? redeemParam[0] : redeemParam
+    if (!code) return
+    setLicenseCode(code.trim().toUpperCase())
+    const t = setTimeout(() => licenseInputRef.current?.focus(), 350)
+    return () => clearTimeout(t)
+  }, [redeemParam])
 
   const handleRedeemLicense = useCallback(async () => {
     const code = licenseCode.trim()
@@ -679,6 +691,7 @@ export default observer(function BillingPage() {
           </Text>
           <View className="flex-row items-center gap-2">
             <TextInput
+              ref={licenseInputRef}
               value={licenseCode}
               onChangeText={setLicenseCode}
               placeholder="SHGO-PRO-XXXX-XXXX-XXXX"

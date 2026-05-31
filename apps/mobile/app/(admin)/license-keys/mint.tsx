@@ -30,6 +30,7 @@ import {
   Copy,
   Check,
   AlertTriangle,
+  Link as LinkIcon,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../../lib/api'
@@ -83,10 +84,21 @@ function showAlert(title: string, message?: string): void {
   }
 }
 
+// Recipients land on the billing screen with the code prefilled. On web
+// we use the current origin so the link opens the same deployment; native
+// shares fall back to the `shogo://` scheme.
+function buildRedeemLink(code: string): string {
+  const path = `/billing?redeem=${encodeURIComponent(code)}`
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    return `${window.location.origin}${path}`
+  }
+  return `shogo:/${path}`
+}
+
 function buildCsv(keys: MintedKey[]): string {
-  const header = 'code,plan,prefix,expiresAt,id'
+  const header = 'code,plan,prefix,expiresAt,id,redeemLink'
   const rows = keys.map((k) =>
-    [k.plaintext, k.planId, k.codePrefix, k.expiresAt ?? '', k.id]
+    [k.plaintext, k.planId, k.codePrefix, k.expiresAt ?? '', k.id, buildRedeemLink(k.plaintext)]
       .map((v) => `"${String(v).replace(/"/g, '""')}"`)
       .join(','),
   )
@@ -129,6 +141,7 @@ export default function MintLicenseKeysPage() {
   const [result, setResult] = useState<MintResponse | null>(null)
   const [copiedAll, setCopiedAll] = useState(false)
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null)
 
   const onMint = async () => {
     const parsedCount = parseInt(count || '0', 10)
@@ -180,6 +193,12 @@ export default function MintLicenseKeysPage() {
     setTimeout(() => setCopiedId((id) => (id === key.id ? null : id)), 1500)
   }
 
+  const onCopyLink = async (key: MintedKey) => {
+    await Clipboard.setStringAsync(buildRedeemLink(key.plaintext))
+    setCopiedLinkId(key.id)
+    setTimeout(() => setCopiedLinkId((id) => (id === key.id ? null : id)), 1500)
+  }
+
   return (
     <ScrollView
       className="flex-1 bg-background"
@@ -215,13 +234,16 @@ export default function MintLicenseKeysPage() {
             batchId={batchId}
             copiedAll={copiedAll}
             copiedId={copiedId}
+            copiedLinkId={copiedLinkId}
             onCopyAll={onCopyAll}
             onCopyOne={onCopyOne}
+            onCopyLink={onCopyLink}
             onDownload={() => downloadCsv(result.keys, batchId)}
             onMintMore={() => {
               setResult(null)
               setCopiedAll(false)
               setCopiedId(null)
+              setCopiedLinkId(null)
             }}
           />
         ) : (
@@ -339,8 +361,10 @@ function ResultPanel({
   batchId,
   copiedAll,
   copiedId,
+  copiedLinkId,
   onCopyAll,
   onCopyOne,
+  onCopyLink,
   onDownload,
   onMintMore,
 }: {
@@ -348,8 +372,10 @@ function ResultPanel({
   batchId: string
   copiedAll: boolean
   copiedId: string | null
+  copiedLinkId: string | null
   onCopyAll: () => void
   onCopyOne: (key: MintedKey) => void
+  onCopyLink: (key: MintedKey) => void
   onDownload: () => void
   onMintMore: () => void
 }) {
@@ -397,6 +423,10 @@ function ResultPanel({
         </Pressable>
       </View>
 
+      <Text className="text-xs text-muted-foreground">
+        Use the link icon to copy a one-tap redeem link, or the copy icon for the raw code.
+      </Text>
+
       <View className="rounded-xl border border-border bg-card overflow-hidden">
         {result.keys.map((key, idx) => (
           <View
@@ -410,7 +440,19 @@ function ResultPanel({
               {key.plaintext}
             </Text>
             <Pressable
+              onPress={() => onCopyLink(key)}
+              accessibilityLabel="Copy redeem link"
+              className="p-1.5 rounded-md active:bg-muted"
+            >
+              {copiedLinkId === key.id ? (
+                <Check size={14} className="text-green-600 dark:text-green-400" />
+              ) : (
+                <LinkIcon size={14} className="text-muted-foreground" />
+              )}
+            </Pressable>
+            <Pressable
               onPress={() => onCopyOne(key)}
+              accessibilityLabel="Copy code"
               className="p-1.5 rounded-md active:bg-muted"
             >
               {copiedId === key.id ? (
