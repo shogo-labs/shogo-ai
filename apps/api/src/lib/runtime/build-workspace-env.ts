@@ -44,6 +44,21 @@ export interface BuildWorkspaceEnvOpts {
   _getProjectOwnerUserId?: (projectId: string) => Promise<string | undefined>
   _generateProxyToken?: typeof generateProxyToken
   _loadProjects?: (projectIds: string[]) => Promise<Array<{ id: string; name: string | null }>>
+  /**
+   * Cloud per-project DB provisioning. When supplied, called once per
+   * attached project to obtain that project's isolated DATABASE_URL (e.g. a
+   * CloudNativePG database minted by `database.service.provisionDatabase`).
+   * Returning null/undefined for a project leaves it on the runtime's local
+   * per-subfolder sqlite default. Omitted entirely in host/desktop mode, so
+   * local workspaces keep using one sqlite file per project subfolder with
+   * zero provisioning. The resulting map ships as `WORKSPACE_DATABASE_URLS`
+   * and is consumed by the agent-runtime's per-project sidecar env
+   * (`resolveApiServerEnv`).
+   */
+  _provisionProjectDatabase?: (
+    projectId: string,
+    workspaceId: string,
+  ) => Promise<string | null | undefined>
 }
 
 /**
@@ -142,6 +157,27 @@ export async function buildWorkspaceEnv(
     console.error(`[${prefix}] Failed to mint proxy tokens for workspace ${workspaceId}:`, err?.message)
   }
   console.log(`[${prefix}] proxy tokens took ${Date.now() - tokenStart}ms`)
+
+  // Per-project DB isolation. Local/desktop: omit the map → each project's
+  // API sidecar pins its own per-subfolder sqlite (resolveApiServerEnv).
+  // Cloud: a provisioning seam yields an isolated DATABASE_URL per project,
+  // shipped as a JSON map the runtime threads into the matching sidecar.
+  if (opts._provisionProjectDatabase) {
+    const dbStart = Date.now()
+    const dbUrls: Record<string, string> = {}
+    for (const projectId of attachedProjectIds) {
+      try {
+        const url = await opts._provisionProjectDatabase(projectId, workspaceId)
+        if (typeof url === 'string' && url.length > 0) dbUrls[projectId] = url
+      } catch (err: any) {
+        console.error(`[${prefix}] DB provision failed for project ${projectId}:`, err?.message)
+      }
+    }
+    if (Object.keys(dbUrls).length > 0) {
+      env.WORKSPACE_DATABASE_URLS = JSON.stringify(dbUrls)
+    }
+    console.log(`[${prefix}] per-project DB provisioning took ${Date.now() - dbStart}ms`)
+  }
 
   // Workspace-scoped runtime capability (NOT a project token).
   env.RUNTIME_AUTH_SECRET = deriveWorkspaceRuntimeToken(workspaceId)

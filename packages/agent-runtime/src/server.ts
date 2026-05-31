@@ -2043,6 +2043,7 @@ function getWorkspacePreviewManager(projectId: string): PreviewManager | null {
       publicUrl: previewUrls[projectId],
       apiPort: workspaceProjectApiPort(projectId),
       basePath: buildWorkspacePreviewPath(projectId),
+      projectId,
       onConsoleLogReset: clearRuntimeConsoleLogBuffer,
       onLogLine: recordConsoleLogLine,
     })

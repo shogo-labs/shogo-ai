@@ -49,4 +49,46 @@ describe('buildWorkspaceEnv', () => {
   it('requires a workspaceId', async () => {
     await expect(buildWorkspaceEnv('', [], seams as any)).rejects.toThrow(/workspaceId is required/)
   })
+
+  describe('per-project DB provisioning (WORKSPACE_DATABASE_URLS)', () => {
+    it('omits the DB map by default (local/desktop → per-subfolder sqlite)', async () => {
+      const env = await buildWorkspaceEnv('ws-1', ['p1', 'p2'], seams as any)
+      expect(env.WORKSPACE_DATABASE_URLS).toBeUndefined()
+    })
+
+    it('builds a per-project DB map when a provisioning seam is supplied', async () => {
+      const provisioned: string[] = []
+      const env = await buildWorkspaceEnv('ws-1', ['p1', 'p2'], {
+        ...seams,
+        _provisionProjectDatabase: async (projectId: string, workspaceId: string) => {
+          provisioned.push(`${workspaceId}/${projectId}`)
+          return `postgres://pg/${projectId}`
+        },
+      } as any)
+      expect(JSON.parse(env.WORKSPACE_DATABASE_URLS)).toEqual({
+        p1: 'postgres://pg/p1',
+        p2: 'postgres://pg/p2',
+      })
+      expect(provisioned).toEqual(['ws-1/p1', 'ws-1/p2'])
+    })
+
+    it('skips projects whose provisioning returns null (they keep sqlite)', async () => {
+      const env = await buildWorkspaceEnv('ws-1', ['p1', 'p2'], {
+        ...seams,
+        _provisionProjectDatabase: async (projectId: string) =>
+          projectId === 'p1' ? 'postgres://pg/p1' : null,
+      } as any)
+      expect(JSON.parse(env.WORKSPACE_DATABASE_URLS)).toEqual({ p1: 'postgres://pg/p1' })
+    })
+
+    it('isolates provisioning failures and omits the map when none succeed', async () => {
+      const env = await buildWorkspaceEnv('ws-1', ['p1', 'p2'], {
+        ...seams,
+        _provisionProjectDatabase: async () => {
+          throw new Error('CNPG unavailable')
+        },
+      } as any)
+      expect(env.WORKSPACE_DATABASE_URLS).toBeUndefined()
+    })
+  })
 })

@@ -11,6 +11,11 @@ function enabled() {
   return true
 }
 
+// Cloud branches wrap the resolver in the cross-replica spawn lease, which
+// hits Postgres. Unit tests of branch logic inject a passthrough lease (the
+// lease itself is tested in workspace-spawn-lease.test.ts).
+const passthroughLease = <T>(_id: string, fn: () => Promise<T>) => fn()
+
 describe('resolveWorkspaceRuntimeUrl', () => {
   it('throws WorkspaceRuntimeNotEnabledError when the flag is off', async () => {
     await expect(
@@ -27,6 +32,7 @@ describe('resolveWorkspaceRuntimeUrl', () => {
       _isEnabled: enabled,
       _isKubernetes: () => true,
       _isVMIsolation: () => false,
+      _spawnLease: passthroughLease,
       _k8sResolver: async (wsId, ids) => `http://ws.example/${wsId}/${ids.join('+')}`,
     })
     expect(res).toEqual({ mode: 'k8s', url: 'http://ws.example/ws-1/p1+p2' })
@@ -38,9 +44,46 @@ describe('resolveWorkspaceRuntimeUrl', () => {
       _isEnabled: enabled,
       _isKubernetes: () => false,
       _isVMIsolation: () => true,
+      _spawnLease: passthroughLease,
       _vmResolver: async () => 'http://localhost:39300',
     })
     expect(res).toEqual({ mode: 'vm', url: 'http://localhost:39300' })
+  })
+
+  it('wraps the cloud (k8s) resolver in the spawn lease but NOT host mode', async () => {
+    const leaseCalls: string[] = []
+    const observingLease = <T>(id: string, fn: () => Promise<T>) => {
+      leaseCalls.push(id)
+      return fn()
+    }
+    // k8s → lease engaged
+    await resolveWorkspaceRuntimeUrl('ws-cloud', {
+      attachedProjectIds: ['p1'],
+      _isEnabled: enabled,
+      _isKubernetes: () => true,
+      _isVMIsolation: () => false,
+      _spawnLease: observingLease,
+      _k8sResolver: async () => 'http://ws.cloud',
+    })
+    expect(leaseCalls).toEqual(['ws-cloud'])
+
+    // host → lease NOT engaged (single-process / SQLite)
+    await resolveWorkspaceRuntimeUrl('ws-host', {
+      attachedProjectIds: ['p1'],
+      _isEnabled: enabled,
+      _isKubernetes: () => false,
+      _isVMIsolation: () => false,
+      _spawnLease: observingLease,
+      _hostStart: async () => ({
+        projectId: 'ws-host',
+        port: 37000,
+        agentPort: 38000,
+        status: 'running' as const,
+        url: 'http://localhost:37000',
+        startedAt: Date.now(),
+      }),
+    })
+    expect(leaseCalls).toEqual(['ws-cloud']) // unchanged — host took no lease
   })
 
   it('routes host and builds url from runtime.agentPort', async () => {
@@ -123,7 +166,7 @@ describe('resolveWorkspaceRuntimeUrl', () => {
     ).rejects.toThrow(/no startWorkspace/)
   })
 
-  it('production k8s branch throws not-implemented when no resolver injected', async () => {
+  it('production k8s branch throws not-configured when no resolver injected', async () => {
     await expect(
       resolveWorkspaceRuntimeUrl('ws-1', {
         attachedProjectIds: ['p1'],
@@ -131,7 +174,18 @@ describe('resolveWorkspaceRuntimeUrl', () => {
         _isKubernetes: () => true,
         _isVMIsolation: () => false,
       }),
-    ).rejects.toThrow(/k8s workspace runtime not implemented/)
+    ).rejects.toThrow(/k8s workspace runtime driver not configured/)
+  })
+
+  it('production VM branch throws not-configured when no resolver injected', async () => {
+    await expect(
+      resolveWorkspaceRuntimeUrl('ws-1', {
+        attachedProjectIds: ['p1'],
+        _isEnabled: enabled,
+        _isKubernetes: () => false,
+        _isVMIsolation: () => true,
+      }),
+    ).rejects.toThrow(/VM workspace runtime driver not configured/)
   })
 
   it('requires a workspaceId', async () => {

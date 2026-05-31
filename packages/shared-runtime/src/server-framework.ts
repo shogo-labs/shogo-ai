@@ -570,14 +570,29 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       state.poolAssigned = false
       return c.json({ error: 'Invalid request body' }, 400)
     }
-    const { projectId, env: envVars } = body
+    const { projectId: rawProjectId, workspaceId, attachedProjectIds, env: envVars } = body
+    const isWorkspaceBind = typeof workspaceId === 'string' && workspaceId.length > 0
 
-    if (!projectId || typeof projectId !== 'string') {
+    if (isWorkspaceBind) {
+      // Workspace bind: a warm pod (booted in merged-root mode) is bound to
+      // a workspace's attached project SET rather than a single project.
+      if (!Array.isArray(attachedProjectIds)) {
+        state.poolAssigned = false
+        return c.json({ error: 'attachedProjectIds (array) is required for a workspace bind' }, 400)
+      }
+    } else if (!rawProjectId || typeof rawProjectId !== 'string') {
       state.poolAssigned = false
       return c.json({ error: 'projectId (string) is required' }, 400)
     }
 
-    logTiming(`Pool assignment starting for project ${projectId}`)
+    // Assignment identity used for runtime state, the persisted marker, and
+    // logging. Workspace binds use the `ws:<workspaceId>` key (matching
+    // RuntimeManager.workspaceRuntimeKey); single-project binds use the
+    // projectId verbatim. The merged-root boot keys off the WORKSPACE_* vars
+    // carried in `env` (buildWorkspaceEnv), not this identity string.
+    const projectId: string = isWorkspaceBind ? `ws:${workspaceId}` : rawProjectId
+
+    logTiming(`Pool assignment starting for ${projectId}`)
 
     // Snapshot the env keys we are about to overwrite so any rollback path
     // can restore process.env to its pre-assign state. Without this, a
@@ -605,10 +620,15 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       }
     }
 
-    // 1. Update project identity
+    // 1. Update project identity. For a workspace bind, PROJECT_ID is kept as
+    //    the first attached project for back-compat with code that still
+    //    reads it; the merged-root markers (WORKSPACE_RUNTIME / WORKSPACE_ID /
+    //    WORKSPACE_PROJECT_IDS) arrive via the injected env below.
     state.currentProjectId = projectId
     currentProjectId = projectId
-    process.env.PROJECT_ID = projectId
+    process.env.PROJECT_ID = isWorkspaceBind
+      ? ((attachedProjectIds as string[])[0] ?? projectId)
+      : projectId
 
     // 2. Inject environment variables from the controller
     if (envVars && typeof envVars === 'object') {
@@ -659,7 +679,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
 
       const duration = Date.now() - startTime
       logTiming(`Pool assignment complete for ${projectId} (${duration}ms)`)
-      return c.json({ ok: true, projectId, durationMs: duration })
+      return c.json({ ok: true, projectId, ...(isWorkspaceBind ? { workspaceId } : {}), durationMs: duration })
     } catch (error: any) {
       rollbackToPool()
       // Clean up marker if it was written before failure
