@@ -142,6 +142,7 @@ model Workspace {
   agentEvalResults       AgentEvalResult[]
   agentEvalSets          AgentEvalSet[]
   grants                 WorkspaceGrant[]
+  chatSessions           ChatSession[]
 
   @@map("workspaces")
 }
@@ -214,6 +215,7 @@ model Project {
   preferredInstance      Instance?               @relation("ProjectPreferredInstance", fields: [preferredInstanceId], references: [id], onDelete: SetNull)
   authConfig             ProjectAuthConfig?
   authSignIns            ProjectAuthSignIn[]
+  attachedSessions       ChatSessionProject[]
 
   @@index([workspaceId])
   @@index([folderId])
@@ -682,8 +684,12 @@ model ChatSession {
   id                  String   @id @default(uuid())
   name                String?
   inferredName        String
+  // Allowed values mirror schema.prisma ContextType: feature, project,
+  // general, workspace. SQLite has no enum support so we store the string.
   contextType         String
   contextId           String?
+  // Set only for contextType == workspace (see schema.prisma).
+  workspaceId         String?
   phase               String?
   claudeCodeSessionId String?
   cachedMessageCount  Int      @default(0)
@@ -695,12 +701,31 @@ model ChatSession {
   updatedAt           DateTime @default(now()) @updatedAt
   lastActiveAt        DateTime @default(now())
 
-  project      Project?      @relation(fields: [contextId], references: [id], onDelete: Cascade)
-  messages     ChatMessage[]
-  toolCallLogs ToolCallLog[]
+  project          Project?             @relation(fields: [contextId], references: [id], onDelete: Cascade)
+  workspace        Workspace?           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  attachedProjects ChatSessionProject[]
+  messages         ChatMessage[]
+  toolCallLogs     ToolCallLog[]
 
   @@index([contextType, contextId])
+  @@index([workspaceId])
   @@map("chat_sessions")
+}
+
+/// Projects attached to a workspace-scoped ChatSession (see schema.prisma).
+model ChatSessionProject {
+  id         String   @id @default(uuid())
+  sessionId  String
+  projectId  String
+  attachMode String   @default("readwrite")
+  createdAt  DateTime @default(now())
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  project Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, projectId])
+  @@index([projectId])
+  @@map("chat_session_projects")
 }
 
 model ChatMessage {

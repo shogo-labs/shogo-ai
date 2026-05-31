@@ -153,6 +153,7 @@ model Workspace {
   agentEvalResults       AgentEvalResult[]
   agentEvalSets          AgentEvalSet[]
   grants                 WorkspaceGrant[]
+  chatSessions           ChatSession[]
 
   @@map("workspaces")
 }
@@ -260,6 +261,7 @@ model Project {
   preferredInstance      Instance?               @relation("ProjectPreferredInstance", fields: [preferredInstanceId], references: [id], onDelete: SetNull)
   authConfig             ProjectAuthConfig?
   authSignIns            ProjectAuthSignIn[]
+  attachedSessions       ChatSessionProject[]
 
   @@index([workspaceId])
   @@index([folderId])
@@ -867,6 +869,10 @@ model ChatSession {
   inferredName        String
   contextType         ContextType
   contextId           String?
+  // Set only for contextType == workspace. The project FK on contextId
+  // cannot hold a workspace id, so workspace-scoped sessions carry the
+  // workspace reference here and leave contextId null.
+  workspaceId         String?
   phase               String?
   claudeCodeSessionId String?
   cachedMessageCount  Int         @default(0)
@@ -879,18 +885,45 @@ model ChatSession {
   lastActiveAt        DateTime    @default(now())
 
   // Relations - contextId can reference FeatureSession or Project
-  project      Project?      @relation(fields: [contextId], references: [id], onDelete: Cascade)
-  messages     ChatMessage[]
-  toolCallLogs ToolCallLog[]
+  project          Project?             @relation(fields: [contextId], references: [id], onDelete: Cascade)
+  workspace        Workspace?           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  attachedProjects ChatSessionProject[]
+  messages         ChatMessage[]
+  toolCallLogs     ToolCallLog[]
 
   @@index([contextType, contextId])
+  @@index([workspaceId])
   @@map("chat_sessions")
+}
+
+/// Projects attached to a workspace-scoped ChatSession. The workspace
+/// runtime mounts each attached project as a subfolder root and runs its
+/// preview/sidecar/checkpoints per project. `attachMode` controls whether
+/// the attach is exclusive read/write (default) or read-only.
+model ChatSessionProject {
+  id         String   @id @default(uuid())
+  sessionId  String
+  projectId  String
+  attachMode String   @default("readwrite")
+  createdAt  DateTime @default(now())
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  project Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, projectId])
+  @@index([projectId])
+  @@map("chat_session_projects")
 }
 
 enum ContextType {
   feature
   project
   general
+  // Workspace-scoped chat: the session operates over one or more projects
+  // in a workspace (see ChatSession.workspaceId + ChatSessionProject).
+  // contextId stays null for these (the project FK on contextId cannot
+  // hold a workspace id); workspaceId carries the workspace reference.
+  workspace
 }
 
 model ChatMessage {

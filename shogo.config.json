@@ -15,6 +15,7 @@
     "UsageWallet",
     "UsageEvent",
     "ChatSession",
+    "ChatSessionProject",
     "ChatMessage",
     "ToolCallLog",
     "FeatureSession",
