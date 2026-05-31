@@ -82,6 +82,8 @@ export interface VoiceRoute {
   signedUrl: { GET: (req: Request) => Promise<Response> }
   /** `POST /voice/tts-preview` */
   ttsPreview: { POST: (req: Request) => Promise<Response> }
+  /** `POST /voice/music` */
+  music: { POST: (req: Request) => Promise<Response> }
   /** `POST | PATCH | DELETE /voice/agent` */
   agent: {
     POST: (req: Request) => Promise<Response>
@@ -117,6 +119,7 @@ export function createVoiceRoute(config: VoiceHandlersConfig): VoiceRoute {
   return {
     signedUrl: { GET: (req: Request) => v.signedUrl(req) },
     ttsPreview: { POST: (req: Request) => v.tts(req) },
+    music: { POST: (req: Request) => v.music(req) },
     agent: {
       POST: (req: Request) => v.agent.create(req),
       PATCH: (req: Request) => v.agent.patch(req),
