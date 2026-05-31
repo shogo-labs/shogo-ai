@@ -77,6 +77,7 @@ import {
   Key,
   Store,
   Mic,
+  Gift,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Avatar } from '@shogo/shared-ui/primitives'
@@ -418,6 +419,16 @@ function UserMenuContent({
         >
           <User size={18} className="text-muted-foreground" />
           <Text className="text-sm text-foreground">Profile</Text>
+        </Pressable>
+
+        <Pressable
+          onPress={() => { onNavigate('/(app)/affiliate'); onClose() }}
+          role="menuitem"
+          accessibilityLabel="Affiliate"
+          className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+        >
+          <Gift size={18} className="text-muted-foreground" />
+          <Text className="text-sm text-foreground">Affiliate</Text>
         </Pressable>
 
         <Pressable
