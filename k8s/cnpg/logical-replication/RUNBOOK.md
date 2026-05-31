@@ -130,18 +130,51 @@ that fails the deploy if any table in `public` is missing SELECT for
 The regression test in `.github/workflows/ci-cnpg.yml` verifies all three
 properties on every PR.
 
+#### The ownership contract (`enforce-table-ownership.sql`)
+
+Migrations run as the unprivileged role `shogo`, and `ALTER TABLE` requires
+the issuing role to **own** the table. DDL is not replicated, so each region
+creates its own schema locally — normally as `shogo` via
+`prisma migrate deploy`, which makes `shogo` the owner. But any ad-hoc
+`CREATE TABLE` run as `postgres` on a secondary (e.g. an operator manually
+creating a table to unblock a crash-looping apply worker) leaves a
+`postgres`-owned table behind. The next migration that `ALTER`s it then fails
+with `ERROR: must be owner of table <name>` (SQLSTATE `42501`), marks the
+migration failed, and wedges every later deploy with P3009. This happened on
+2026-05-31: `affiliate_commission_tiers` and 9 sibling tables were
+`postgres`-owned on EU and India.
+
+`k8s/cnpg/logical-replication/enforce-table-ownership.sql` closes that gap the
+same way `grants.sql` closes the GRANT gap:
+
+1. A sweep that reassigns every table/sequence in `public` not owned by
+   `shogo` back to `shogo` (surgical — never `REASSIGN OWNED BY postgres`).
+2. An event trigger (`enforce_table_owner_shogo_trg`, `SECURITY DEFINER`)
+   that fires on every `CREATE TABLE` in `public` and reassigns the new table
+   to `shogo`, regardless of which role issued the DDL. The reassignment is
+   wrapped in `BEGIN/EXCEPTION` so a failure can never abort the migration.
+
+Unlike the GRANT reconcile (which runs *after* migrations), the deploy
+workflow runs ownership reconcile + a `Verify ownership contract` assertion
+**before** `Run Prisma migrations` in every regional job — the migration
+itself needs the ownership to already be correct. CI assertions D/E/F in
+`ci-cnpg.yml` verify the sweep, the trigger, and the load-bearing EXCEPTION
+handler on every PR.
+
 **For bootstrap of a brand-new cluster** (first time, before the
-deploy.yml step has ever run on that cluster), apply the same SQL once
-manually so the contract exists before the first migration lands:
+deploy.yml step has ever run on that cluster), apply both contract SQL files
+once manually so they exist before the first migration lands:
 
 ```bash
 for ctx in oke-us oke-eu oke-india; do
-  kubectl --context $ctx exec -i -n shogo-production-system \
-    $(kubectl --context $ctx get pods -n shogo-production-system \
-        -l "cnpg.io/cluster=platform-pg,cnpg.io/instanceRole=primary" \
-        -o jsonpath='{.items[0].metadata.name}') \
-    -c postgres -- psql -U postgres -d shogo \
-    < k8s/cnpg/logical-replication/grants.sql
+  PRIMARY=$(kubectl --context $ctx get pods -n shogo-production-system \
+      -l "cnpg.io/cluster=platform-pg,cnpg.io/instanceRole=primary" \
+      -o jsonpath='{.items[0].metadata.name}')
+  for sql in enforce-table-ownership grants; do
+    kubectl --context $ctx exec -i -n shogo-production-system "$PRIMARY" \
+      -c postgres -- psql -U postgres -d shogo \
+      < k8s/cnpg/logical-replication/${sql}.sql
+  done
 done
 ```
 
