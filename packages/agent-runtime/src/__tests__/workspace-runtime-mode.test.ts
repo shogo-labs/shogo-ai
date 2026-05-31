@@ -10,6 +10,10 @@ import {
   renderWorkspaceManifestMarkdown,
   shouldSkipManagedSeeding,
   shouldEnforceProjectIdSanity,
+  parseWorkspacePreviewPath,
+  buildWorkspacePreviewPath,
+  isAttachedProjectId,
+  parseWorkspacePreviewUrls,
 } from '../workspace-runtime-mode'
 
 describe('isWorkspaceRuntimeMode', () => {
@@ -96,5 +100,74 @@ describe('shouldEnforceProjectIdSanity', () => {
     expect(shouldEnforceProjectIdSanity({ workingMode: 'managed', isWorkspaceRuntime: false })).toBe(true)
     expect(shouldEnforceProjectIdSanity({ workingMode: 'external', isWorkspaceRuntime: false })).toBe(false)
     expect(shouldEnforceProjectIdSanity({ workingMode: 'managed', isWorkspaceRuntime: true })).toBe(false)
+  })
+})
+
+describe('parseWorkspacePreviewPath', () => {
+  it('parses the project root with no trailing slash', () => {
+    expect(parseWorkspacePreviewPath('/p/abc')).toEqual({ projectId: 'abc', rest: '/' })
+  })
+  it('treats a trailing slash as root', () => {
+    expect(parseWorkspacePreviewPath('/p/abc/')).toEqual({ projectId: 'abc', rest: '/' })
+  })
+  it('captures the remainder including nested asset paths', () => {
+    expect(parseWorkspacePreviewPath('/p/abc/assets/app.js')).toEqual({
+      projectId: 'abc',
+      rest: '/assets/app.js',
+    })
+  })
+  it('parses uuid-style project ids', () => {
+    const uuid = 'c4cf1ca6-19d9-48ac-99d8-dab9e1b75b22'
+    expect(parseWorkspacePreviewPath(`/p/${uuid}/index.html`)).toEqual({
+      projectId: uuid,
+      rest: '/index.html',
+    })
+  })
+  it('returns null for non-preview paths', () => {
+    expect(parseWorkspacePreviewPath('/agent/chat')).toBeNull()
+    expect(parseWorkspacePreviewPath('/')).toBeNull()
+    expect(parseWorkspacePreviewPath('/p/')).toBeNull()
+    expect(parseWorkspacePreviewPath('/p')).toBeNull()
+  })
+  it('rejects path traversal and unsafe ids', () => {
+    expect(parseWorkspacePreviewPath('/p/../etc/passwd')).toBeNull()
+    expect(parseWorkspacePreviewPath('/p/.hidden')).toBeNull()
+  })
+})
+
+describe('buildWorkspacePreviewPath', () => {
+  it('round-trips with parse', () => {
+    expect(buildWorkspacePreviewPath('abc')).toBe('/p/abc/')
+    expect(buildWorkspacePreviewPath('abc', '/assets/app.js')).toBe('/p/abc/assets/app.js')
+    expect(buildWorkspacePreviewPath('abc', 'assets/app.js')).toBe('/p/abc/assets/app.js')
+  })
+})
+
+describe('isAttachedProjectId', () => {
+  it('is a membership check', () => {
+    expect(isAttachedProjectId('p1', ['p1', 'p2'])).toBe(true)
+    expect(isAttachedProjectId('p3', ['p1', 'p2'])).toBe(false)
+  })
+})
+
+describe('parseWorkspacePreviewUrls', () => {
+  it('parses a per-project url map in workspace mode', () => {
+    const env = {
+      WORKSPACE_RUNTIME: 'true',
+      WORKSPACE_PREVIEW_URLS: JSON.stringify({ p1: 'https://a.example', p2: 'https://b.example' }),
+    } as any
+    expect(parseWorkspacePreviewUrls(env)).toEqual({ p1: 'https://a.example', p2: 'https://b.example' })
+  })
+  it('drops non-string / empty values', () => {
+    const env = {
+      WORKSPACE_RUNTIME: 'true',
+      WORKSPACE_PREVIEW_URLS: JSON.stringify({ p1: 'https://a.example', p2: '', p3: 5 }),
+    } as any
+    expect(parseWorkspacePreviewUrls(env)).toEqual({ p1: 'https://a.example' })
+  })
+  it('returns {} outside workspace mode or when malformed', () => {
+    expect(parseWorkspacePreviewUrls({ WORKSPACE_PREVIEW_URLS: '{}' } as any)).toEqual({})
+    expect(parseWorkspacePreviewUrls({ WORKSPACE_RUNTIME: 'true', WORKSPACE_PREVIEW_URLS: '{bad' } as any)).toEqual({})
+    expect(parseWorkspacePreviewUrls({ WORKSPACE_RUNTIME: 'true' } as any)).toEqual({})
   })
 })

@@ -118,6 +118,89 @@ export function renderWorkspaceManifestMarkdown(
 }
 
 /**
+ * Path prefix under which a workspace runtime serves each attached
+ * project's preview. The single runtime HTTP port multiplexes every
+ * attached project by path:
+ *
+ *   /p/<projectId>/                 → that project's `dist/index.html`
+ *   /p/<projectId>/assets/foo.js    → static asset from its `dist/`
+ *   /p/<projectId>/api/*            → its `server.tsx` sidecar
+ *   /p/<projectId>/preview/status   → its PreviewManager control routes
+ *
+ * (Single-project runtimes keep serving everything at `/` — these routes
+ * are only registered in workspace mode.)
+ */
+export const WORKSPACE_PREVIEW_PREFIX = '/p/'
+
+/** A project id is a safe single path segment: no slashes, no traversal. */
+const SAFE_PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
+
+export interface ParsedWorkspacePreviewPath {
+  /** The attached project id from the path. */
+  projectId: string
+  /**
+   * The remainder of the path *after* `/p/<projectId>`, always starting
+   * with `/`. `/p/abc` and `/p/abc/` both yield `rest === '/'`.
+   */
+  rest: string
+}
+
+/**
+ * Parse a request pathname of the form `/p/<projectId>[/<rest>]`.
+ *
+ * Returns `null` when the path is not a workspace-preview path or the
+ * project-id segment fails the safe-segment check (which also rejects
+ * `..` traversal and empty ids). Pure — safe to unit test.
+ */
+export function parseWorkspacePreviewPath(pathname: string): ParsedWorkspacePreviewPath | null {
+  if (!pathname.startsWith(WORKSPACE_PREVIEW_PREFIX)) return null
+  const after = pathname.slice(WORKSPACE_PREVIEW_PREFIX.length)
+  if (after.length === 0) return null
+  const slash = after.indexOf('/')
+  const projectId = slash === -1 ? after : after.slice(0, slash)
+  if (!SAFE_PROJECT_ID.test(projectId)) return null
+  const rest = slash === -1 ? '/' : after.slice(slash) || '/'
+  return { projectId, rest: rest.length === 0 ? '/' : rest }
+}
+
+/** Build the runtime-relative preview path for a project (inverse of parse). */
+export function buildWorkspacePreviewPath(projectId: string, rest = '/'): string {
+  const tail = rest.startsWith('/') ? rest : `/${rest}`
+  return `${WORKSPACE_PREVIEW_PREFIX}${projectId}${tail === '/' ? '/' : tail}`
+}
+
+/** Membership check: is `projectId` one of the runtime's attached projects? */
+export function isAttachedProjectId(projectId: string, attachedIds: string[]): boolean {
+  return attachedIds.includes(projectId)
+}
+
+/**
+ * Parse the optional per-project external preview URL map the API may
+ * attach as `WORKSPACE_PREVIEW_URLS` (JSON object `{ [projectId]: url }`).
+ * Used in cloud/k8s where each project has its own externally-reachable
+ * URL; unset locally (callers fall back to the path-prefixed localhost
+ * URL). Returns {} for non-workspace runtimes, unset/empty, or malformed.
+ */
+export function parseWorkspacePreviewUrls(
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  if (!isWorkspaceRuntimeMode(env)) return {}
+  const raw = env.WORKSPACE_PREVIEW_URLS
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const out: Record<string, string> = {}
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === 'string' && v.length > 0) out[k] = v
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+/**
  * Whether the boot should skip managed template/tech-stack seeding and
  * the legacy APP-layout migration. True for external folder projects AND
  * workspace runtimes.

@@ -76,6 +76,10 @@ import {
   renderWorkspaceManifestMarkdown,
   shouldSkipManagedSeeding,
   shouldEnforceProjectIdSanity,
+  parseWorkspacePreviewPath,
+  buildWorkspacePreviewPath,
+  parseWorkspacePreviewUrls,
+  isAttachedProjectId,
 } from './workspace-runtime-mode'
 import { userMessage } from './pi-adapter'
 import { fileURLToPath } from 'url'
@@ -1996,6 +2000,58 @@ function getPreviewManager(): PreviewManager {
 }
 
 // ---------------------------------------------------------------------------
+// Workspace per-project PreviewManager registry (workspace runtime only)
+//
+// A workspace runtime serves N attached projects under one HTTP port,
+// multiplexed by the `/p/<projectId>/…` path prefix. Each project gets its
+// own PreviewManager rooted at its subfolder, with:
+//   - a distinct API sidecar port (so the N `server.tsx` sidecars coexist)
+//   - a vite `--base=/p/<projectId>/` so built asset URLs resolve under the
+//     project's prefix instead of the shared runtime root
+//   - its externally-reachable preview URL from `WORKSPACE_PREVIEW_URLS`
+//     (cloud) or undefined (local → path-prefixed localhost fallback)
+// ---------------------------------------------------------------------------
+
+const workspacePreviewManagers = new Map<string, PreviewManager>()
+
+/**
+ * Deterministic per-project sidecar port: `WORKSPACE_API_PORT_BASE` (default
+ * 3101) offset by the project's index in the attached list. Stable across a
+ * runtime's lifetime so restarts reuse the same port.
+ */
+function workspaceProjectApiPort(projectId: string): number {
+  const base = parseInt(process.env.WORKSPACE_API_PORT_BASE || '3101', 10)
+  const idx = WORKSPACE_RUNTIME_PROJECT_IDS.indexOf(projectId)
+  return base + (idx >= 0 ? idx : 0)
+}
+
+/**
+ * Lazily build (and cache) the PreviewManager for one attached project.
+ * Returns null when not in workspace mode or when `projectId` is not one of
+ * the runtime's attached projects (callers map that to 404 — never serve an
+ * arbitrary subfolder).
+ */
+function getWorkspacePreviewManager(projectId: string): PreviewManager | null {
+  if (!IS_WORKSPACE_RUNTIME) return null
+  if (!isAttachedProjectId(projectId, WORKSPACE_RUNTIME_PROJECT_IDS)) return null
+  let pm = workspacePreviewManagers.get(projectId)
+  if (!pm) {
+    const previewUrls = parseWorkspacePreviewUrls()
+    pm = new PreviewManager({
+      workspaceDir: join(WORKSPACE_DIR, projectId),
+      runtimePort: PORT,
+      publicUrl: previewUrls[projectId],
+      apiPort: workspaceProjectApiPort(projectId),
+      basePath: buildWorkspacePreviewPath(projectId),
+      onConsoleLogReset: clearRuntimeConsoleLogBuffer,
+      onLogLine: recordConsoleLogLine,
+    })
+    workspacePreviewManagers.set(projectId, pm)
+  }
+  return pm
+}
+
+// ---------------------------------------------------------------------------
 // Canvas File Watcher (canvas v2 mode — lazy init)
 // ---------------------------------------------------------------------------
 
@@ -3723,6 +3779,120 @@ app.all('/api/*', async (c) => {
 })
 
 // =============================================================================
+// Workspace per-project preview routes — `/p/<projectId>/…`
+//
+// Registered ONLY in workspace-runtime mode. Multiplexes N attached
+// projects over the single runtime port:
+//   GET  /p/<id>/preview/status          control-plane status
+//   POST /p/<id>/preview/{start,restart,stop}
+//   *    /p/<id>/api/*                    → the project's server.tsx sidecar
+//   GET  /p/<id>/*                        static dist/ serve (SPA fallback)
+//
+// These are registered before the root catch-all (`app.get('*')`) so they
+// win for `/p/…` paths; in single-project mode they're never registered and
+// `/p/…` is just an ordinary app route served from the root dist.
+// =============================================================================
+
+if (IS_WORKSPACE_RUNTIME) {
+  const projectNotAttached = (c: any, projectId: string) =>
+    c.json(
+      { error: 'project_not_attached', message: `Project ${projectId} is not attached to this workspace runtime` },
+      404,
+    )
+
+  app.get('/p/:projectId/preview/status', (c) => {
+    const projectId = c.req.param('projectId')
+    const pm = getWorkspacePreviewManager(projectId)
+    if (!pm) return projectNotAttached(c, projectId)
+    return c.json(pm.getStatus())
+  })
+
+  app.post('/p/:projectId/preview/start', async (c) => {
+    const projectId = c.req.param('projectId')
+    const pm = getWorkspacePreviewManager(projectId)
+    if (!pm) return projectNotAttached(c, projectId)
+    return c.json(await pm.start())
+  })
+
+  app.post('/p/:projectId/preview/restart', async (c) => {
+    const projectId = c.req.param('projectId')
+    const pm = getWorkspacePreviewManager(projectId)
+    if (!pm) return projectNotAttached(c, projectId)
+    return c.json(await pm.restart())
+  })
+
+  app.post('/p/:projectId/preview/stop', (c) => {
+    const projectId = c.req.param('projectId')
+    const pm = getWorkspacePreviewManager(projectId)
+    if (!pm) return projectNotAttached(c, projectId)
+    pm.stop()
+    return c.json({ ok: true })
+  })
+
+  // Proxy `/p/<id>/api/*` to that project's server.tsx sidecar. Mirrors the
+  // root `/api/*` proxy (startup grace window, 503/502 semantics) but strips
+  // the `/p/<id>` prefix so the sidecar sees its own `/api/*` path.
+  app.all('/p/:projectId/api/*', async (c) => {
+    const projectId = c.req.param('projectId')
+    const pm = getWorkspacePreviewManager(projectId)
+    if (!pm) return projectNotAttached(c, projectId)
+
+    let port = pm.apiServerPort
+    if (port == null && API_PROXY_STARTUP_PHASES.has(pm.apiServerPhase)) {
+      const deadline = Date.now() + API_PROXY_STARTUP_WAIT_MS
+      while (port == null && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, API_PROXY_POLL_INTERVAL_MS))
+        if (!API_PROXY_STARTUP_PHASES.has(pm.apiServerPhase)) break
+        port = pm.apiServerPort
+      }
+    }
+    if (port == null) {
+      return c.json({ error: 'API server not ready', phase: pm.apiServerPhase }, 503)
+    }
+
+    const url = new URL(c.req.url)
+    const parsed = parseWorkspacePreviewPath(url.pathname)
+    const sidecarPath = parsed ? parsed.rest : '/'
+    const target = `http://127.0.0.1:${port}${sidecarPath}${url.search}`
+    try {
+      const res = await fetch(target, {
+        method: c.req.method,
+        headers: c.req.raw.headers,
+        body: c.req.method !== 'GET' && c.req.method !== 'HEAD' ? c.req.raw.body : undefined,
+        // @ts-ignore - duplex needed for streaming request bodies
+        duplex: 'half',
+      })
+      return new Response(res.body, { status: res.status, headers: res.headers })
+    } catch (err: any) {
+      console.error(`[ws-api-proxy] Failed to proxy ${c.req.method} ${url.pathname}:`, err.message)
+      return c.json({ error: 'API server not responding', phase: pm.apiServerPhase }, 502)
+    }
+  })
+
+  // Canonicalise the bare project root to the trailing-slash form so the
+  // browser resolves relative URLs against `/p/<id>/` (and `/p/:projectId/*`
+  // matches). Vite builds use absolute `--base` asset URLs regardless, but
+  // the redirect keeps deep-link/back-button behaviour sane.
+  app.get('/p/:projectId', (c) => {
+    const projectId = c.req.param('projectId')
+    if (!getWorkspacePreviewManager(projectId)) return projectNotAttached(c, projectId)
+    return c.redirect(`/p/${projectId}/`)
+  })
+
+  // Static dist/ serve for a project, scoped to its subfolder + base prefix.
+  app.get('/p/:projectId/*', (c) => {
+    const urlPath = new URL(c.req.url).pathname
+    const parsed = parseWorkspacePreviewPath(urlPath)
+    if (!parsed) return c.notFound()
+    const pm = getWorkspacePreviewManager(parsed.projectId)
+    if (!pm) return projectNotAttached(c, parsed.projectId)
+    const distDir = join(WORKSPACE_DIR, parsed.projectId, 'dist')
+    const inFlight = BUILDING_PHASES.has(pm.phase)
+    return serveDistResponse(distDir, parsed.rest, inFlight) ?? c.notFound()
+  })
+}
+
+// =============================================================================
 // Shared MIME map for static file serving
 // =============================================================================
 
@@ -4064,23 +4234,29 @@ function renderBuildingPlaceholder(): Response {
   })
 }
 
-app.get('*', (c) => {
-  const urlPath = new URL(c.req.url).pathname
-
-  if (urlPath.startsWith('/agent') || urlPath.startsWith('/pool') ||
-      urlPath.startsWith('/health') || urlPath.startsWith('/ready') ||
-      urlPath.startsWith('/preview') || urlPath.startsWith('/console-log') ||
-      urlPath.startsWith('/api') || urlPath.startsWith('/templates') ||
-      urlPath.startsWith('/diagnostics')) {
-    return c.notFound()
-  }
-
-  const distDir = getDistDir()
-  const safePath = urlPath.replace(/\.\./g, '').replace(/\/+/g, '/')
+/**
+ * Serve a request out of a `dist/` directory with SPA fallback.
+ *
+ * Shared by the root static handler (single-project: serves
+ * `<WORKSPACE_DIR>/dist`) and the workspace per-project handler
+ * (serves `<WORKSPACE_DIR>/<projectId>/dist`). Returns `null` when there
+ * is genuinely nothing to serve (no matching file, no `index.html`, no
+ * build in flight) so the caller can fall through to `c.notFound()`.
+ *
+ * `requestPath` is the path *relative to the dist root* — for the root
+ * handler that's the full URL path; for the per-project handler it's the
+ * remainder after `/p/<projectId>`.
+ */
+function serveDistResponse(
+  distDir: string,
+  requestPath: string,
+  buildInFlight: boolean,
+): Response | null {
+  const safePath = requestPath.replace(/\.\./g, '').replace(/\/+/g, '/')
   const filePath = join(distDir, safePath === '/' ? 'index.html' : safePath)
 
   if (!filePath.startsWith(resolve(distDir))) {
-    return c.notFound()
+    return null
   }
 
   if (existsSync(filePath) && statSync(filePath).isFile()) {
@@ -4114,11 +4290,25 @@ app.get('*', (c) => {
   // during the first build of a fresh workspace. After the first
   // successful build the atomic-swap pipeline keeps `dist/` populated,
   // so this only matters pre-first-build (or after a fresh wipe).
-  if (isBuildLikelyInFlight()) {
+  if (buildInFlight) {
     return renderBuildingPlaceholder()
   }
 
-  return c.notFound()
+  return null
+}
+
+app.get('*', (c) => {
+  const urlPath = new URL(c.req.url).pathname
+
+  if (urlPath.startsWith('/agent') || urlPath.startsWith('/pool') ||
+      urlPath.startsWith('/health') || urlPath.startsWith('/ready') ||
+      urlPath.startsWith('/preview') || urlPath.startsWith('/console-log') ||
+      urlPath.startsWith('/api') || urlPath.startsWith('/templates') ||
+      urlPath.startsWith('/diagnostics')) {
+    return c.notFound()
+  }
+
+  return serveDistResponse(getDistDir(), urlPath, isBuildLikelyInFlight()) ?? c.notFound()
 })
 
 // =============================================================================

@@ -385,6 +385,28 @@ export interface PreviewManagerConfig {
    * `KUBERNETES_SERVICE_HOST` / `SHOGO_RUNTIME_MODE`.
    */
   localMode?: boolean
+  /**
+   * Explicit API sidecar (`server.tsx`) port for this manager. When unset
+   * the port is resolved from `API_SERVER_PORT` / `SKILL_SERVER_PORT` env
+   * (the process-global single-project contract).
+   *
+   * Workspace runtimes run **multiple** PreviewManagers in one process —
+   * one per attached project — so they cannot share the single env-derived
+   * port. Each per-project manager is constructed with a distinct `apiPort`
+   * so their `server.tsx` sidecars don't collide and the path-prefixed
+   * `/p/<projectId>/api/*` proxy can route to the right one.
+   */
+  apiPort?: number
+  /**
+   * Public base path the built app is served under. Single-project
+   * runtimes serve `dist/` at `/` (base unset → vite default `/`).
+   * Workspace runtimes serve each project under `/p/<projectId>/`, so
+   * the bundle must be built with that base or every absolute asset URL
+   * (`/assets/app.js`) would 404 against the runtime root instead of the
+   * project's prefix. When set, it is passed to `vite build` as
+   * `--base <basePath>`. Must start and end with `/` (e.g. `/p/abc/`).
+   */
+  basePath?: string
 }
 
 // API sidecar port (Hono `server.tsx`) — NOT the app URL. The app is served
@@ -602,6 +624,7 @@ export class PreviewManager {
   private workspaceDir: string
   private runtimePort: number
   private publicUrl?: string
+  private basePath?: string
   private onConsoleLogReset?: () => void
   private onBuildComplete?: () => void
   private buildWatchProcess: ChildProcess | null = null
@@ -754,7 +777,8 @@ export class PreviewManager {
     this.onBuildComplete = config.onBuildComplete
     this.onLogLine = config.onLogLine
     this.localMode = config.localMode ?? detectLocalMode()
-    this.apiPort = resolveApiServerPort()
+    this.apiPort = config.apiPort ?? resolveApiServerPort()
+    this.basePath = config.basePath
     this.depsReadyPromise = new Promise<void>((resolve) => {
       this.depsReadyResolve = resolve
     })
@@ -2051,6 +2075,16 @@ export class PreviewManager {
    * watcher's own first build will eventually populate `dist/` (just
    * with the historical 404 window we're trying to avoid).
    */
+  /**
+   * Extra `vite build` args that pin the public base path. Empty for
+   * single-project runtimes (vite default base `/`); `['--base', '/p/<id>/']`
+   * for a workspace project served under its path prefix so the emitted
+   * `<script src>` / `<link href>` are prefixed too.
+   */
+  private viteBaseArgs(): string[] {
+    return this.basePath ? ['--base', this.basePath] : []
+  }
+
   private async runViteOneShotBuild(
     viteBin: string,
     cwd: string,
@@ -2068,7 +2102,7 @@ export class PreviewManager {
       try {
         proc = spawn(
           isWindows ? `"${invocation.cmd}"` : invocation.cmd,
-          [...invocation.argsPrefix, 'build', '--outDir', DEFAULT_STAGING_DIR, '--emptyOutDir'],
+          [...invocation.argsPrefix, 'build', '--outDir', DEFAULT_STAGING_DIR, '--emptyOutDir', ...this.viteBaseArgs()],
           {
             cwd,
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -2182,7 +2216,7 @@ export class PreviewManager {
     try {
       viteProcess = spawn(
         isWindows ? `"${invocation.cmd}"` : invocation.cmd,
-        [...invocation.argsPrefix, 'build', '--watch', '--emptyOutDir', 'false'],
+        [...invocation.argsPrefix, 'build', '--watch', '--emptyOutDir', 'false', ...this.viteBaseArgs()],
         {
           cwd,
           stdio: ['ignore', 'pipe', 'pipe'],

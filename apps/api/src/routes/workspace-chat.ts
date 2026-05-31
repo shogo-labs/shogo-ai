@@ -137,6 +137,71 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     return c.json({ removed })
   })
 
+  // Per-project preview URL within a workspace runtime.
+  //
+  // A workspace runtime serves every attached project's built app under
+  // the `/p/<projectId>/` path prefix on its single port (see the
+  // agent-runtime `/p/:projectId/*` routes). This resolves the running
+  // workspace runtime (spawning it in host mode if needed) and returns the
+  // client-facing preview URL for one attached project. Session-scoped so
+  // it shares the chat session's attached-project set.
+  router.get('/workspaces/:workspaceId/sessions/:sessionId/projects/:projectId/preview-url', async (c) => {
+    const auth = await authorize(c)
+    if ('res' in auth) return auth.res
+    const workspaceId = c.req.param('workspaceId')
+    const sessionId = c.req.param('sessionId')
+    const projectId = c.req.param('projectId')
+
+    let attachedProjectIds: string[]
+    try {
+      attachedProjectIds = (await getAttachedProjects(sessionId)).map((a) => a.projectId)
+    } catch (err) {
+      return mapSessionError(c, err)
+    }
+    if (!attachedProjectIds.includes(projectId)) {
+      return c.json(
+        {
+          error: {
+            code: 'project_not_attached',
+            message: `Project ${projectId} is not attached to session ${sessionId}`,
+          },
+        },
+        404,
+      )
+    }
+
+    let resolved
+    try {
+      resolved = await resolveWorkspaceRuntimeUrl(workspaceId, {
+        attachedProjectIds,
+        logTag: 'WorkspacePreview',
+        runtimeManager,
+      })
+    } catch (err) {
+      if (err instanceof WorkspaceRuntimeNotEnabledError) {
+        return c.json(
+          {
+            error: {
+              code: 'workspace_runtime_unavailable',
+              message: 'Workspace runtimes are not yet available in this environment.',
+            },
+          },
+          501,
+        )
+      }
+      throw err
+    }
+
+    return c.json({
+      projectId,
+      mode: resolved.mode,
+      runtimeUrl: resolved.url,
+      // Trailing slash is canonical: the app is built with vite base
+      // `/p/<projectId>/`, so its absolute asset URLs resolve under this.
+      previewUrl: `${resolved.url}/p/${projectId}/`,
+    })
+  })
+
   // Runtime status for a workspace (null when not running).
   router.get('/workspaces/:workspaceId/runtime', async (c) => {
     const auth = await authorize(c)
