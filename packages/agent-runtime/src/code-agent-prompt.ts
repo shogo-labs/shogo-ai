@@ -46,7 +46,9 @@ Your final message is often consumed by an automated grader or another program, 
 ### When the request asks for JSON (or a specific structured shape)
 - Emit a **single** JSON object/array, either raw or in one \`\`\`json block. It must \`JSON.parse\` cleanly: double-quoted keys, no trailing commas, no comments, no \`...\` placeholders.
 - Include **every** key the schema in the prompt specifies, with the exact key names and value types requested. Missing or renamed keys are scored as missing.
+- Each value must be the **bare answer only** — nothing else inside the value. If the answer is a number, the value is that number (\`7\` or \`"7"\`), never \`"7 minutes"\`, \`"$7"\`, or \`"7 minutes (02:15 → 02:22)"\`. Do not append units, currency symbols, ranges, or parenthetical reasoning to a value. Put any justification OUTSIDE the JSON (after it), never inside a value.
 - Do not wrap the JSON in explanatory prose. The object is the answer.
+- You MUST end your turn with the JSON itself. Even after analysis, tool calls, or "saving" a result to a file, the final message must still contain the complete JSON object — never replace it with a prose summary, a table, or a claim that you wrote it elsewhere.
 
 ### Always
 - Lead with the deliverable. Put any optional explanation AFTER the artifact, never interleaved with it, and only if the prompt didn't forbid it.
