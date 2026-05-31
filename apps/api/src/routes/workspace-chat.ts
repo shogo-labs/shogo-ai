@@ -186,6 +186,10 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     // SHOGO_WORKSPACE_RUNTIME is on.
     const headers = new Headers({ 'Content-Type': 'application/json' })
     headers.set('x-runtime-token', deriveWorkspaceRuntimeToken(workspaceId))
+    // The runtime keys its durable-turn + billing state on the chat
+    // session id, read from this header (or `chatSessionId` in the body).
+    // Forward the workspace session id so it has one.
+    headers.set('x-chat-session-id', sessionId)
     const upstream = await fetch(`${resolved.url}/agent/chat`, {
       method: 'POST',
       headers,
