@@ -17,10 +17,13 @@
  * `hasWorkspaceAccess`. Mounted by server.ts.
  */
 
+import { join, resolve } from 'path'
+
 import { Hono } from 'hono'
 
 import type { IRuntimeManager } from '../lib/runtime'
 import { hasWorkspaceAccess } from '../services/workspace.service'
+import { autoCheckpointWorkspaceProjects } from '../services/workspace-checkpoint.service'
 import {
   attachProject,
   createWorkspaceSession,
@@ -35,6 +38,12 @@ import {
   WorkspaceRuntimeNotEnabledError,
 } from '../lib/resolve-workspace-runtime-url'
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
+
+// Same resolution as project-chat.ts / RuntimeManager: the `workspaces/`
+// parent where each project lives at `<dir>/<projectId>`. Auto-checkpoints
+// commit the per-project git repo there.
+const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
+const WORKSPACES_DIR = process.env.WORKSPACES_DIR || join(PROJECT_ROOT, 'workspaces')
 
 export interface WorkspaceChatRoutesConfig {
   /** Local runtime manager (used in host mode). */
@@ -284,7 +293,32 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       body: JSON.stringify(body),
       signal: c.req.raw.signal,
     })
-    return new Response(upstream.body, { status: upstream.status, headers: upstream.headers })
+
+    // Per-project auto-checkpoint: when the agent turn's stream completes
+    // cleanly, snapshot each attached project that changed (see
+    // workspace-checkpoint.service.ts — dirtiness-based, per-project git
+    // repo at workspaces/<id>). We tee the stream so the snapshot fires on
+    // normal close; if the client aborts mid-turn the upstream errors and
+    // `flush` never runs, so we don't checkpoint a torn-off turn. Snapshots
+    // are best-effort and never block the response.
+    if (!upstream.body || attachedProjectIds.length === 0) {
+      return new Response(upstream.body, { status: upstream.status, headers: upstream.headers })
+    }
+    const projectsForCheckpoint = attachedProjectIds
+    const checkpointWatcher = new TransformStream({
+      flush() {
+        autoCheckpointWorkspaceProjects(projectsForCheckpoint, {
+          workspacesDir: WORKSPACES_DIR,
+          message: `AI: workspace turn (session ${sessionId.slice(0, 8)})`,
+        }).catch((err) => {
+          console.warn('[WorkspaceChat] Auto-checkpoint failed (non-blocking):', err?.message ?? err)
+        })
+      },
+    })
+    return new Response(upstream.body.pipeThrough(checkpointWatcher), {
+      status: upstream.status,
+      headers: upstream.headers,
+    })
   })
 
   return router

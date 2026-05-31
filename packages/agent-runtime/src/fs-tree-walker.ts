@@ -56,7 +56,7 @@
  */
 
 import { promises as fsp } from 'node:fs'
-import { join } from 'node:path'
+import { join, relative, resolve, sep } from 'node:path'
 import ignore, { type Ignore } from 'ignore'
 
 export const WORKSPACE_TREE_HIDDEN_DIRS: ReadonlySet<string> = new Set([
@@ -166,12 +166,23 @@ export interface WalkFilesTreeOptions {
   signal?: AbortSignal
 }
 
+/**
+ * One layer of the nested-ignore chain: a parsed `.gitignore`/`.shogoignore`
+ * matcher together with the absolute directory it was loaded from. Entry
+ * paths are tested *relative to `baseAbs`*, exactly as Git scopes a nested
+ * ignore file to its own directory subtree.
+ */
+interface IgnoreLayer {
+  baseAbs: string
+  ig: Ignore
+}
+
 interface WalkState {
   rootDir: string
   hiddenDirs: ReadonlySet<string>
   lazyDirs: ReadonlySet<string>
   hiddenFiles: ReadonlySet<string>
-  ig: Ignore | null
+  respectGitignore: boolean
   eagerDepth: number
   maxEntries: number
   maxDepth: number
@@ -185,23 +196,24 @@ interface WalkState {
  * single `ignore` matcher. Returns `null` if there are no ignore files —
  * callers can then skip the per-entry match check entirely.
  *
- * Patterns are kept root-relative, which is exactly the path shape the
- * walker passes to `.ignores()` — so a `node_modules` line in a root
- * `.gitignore` correctly matches `node_modules`, `node_modules/lodash`,
+ * Patterns are kept directory-relative, which is exactly the path shape the
+ * walker passes to `.ignores()` (paths relative to `dir`) — so a
+ * `node_modules` line correctly matches `node_modules`, `node_modules/lodash`,
  * `nested/node_modules`, etc. via the lib's standard gitignore semantics.
  *
- * Nested `.gitignore` files (e.g. `packages/foo/.gitignore`) are NOT
- * currently merged in — the vast majority of repos put all ignores at the
- * root, and the perf win from root-only parsing is already enough to fix
- * the lag. Layered nested-ignore support can come later without changing
- * this module's public surface.
+ * Nested ignore files ARE now supported (see `loadAncestorChain` +
+ * `walkInner`): each directory's own `.gitignore`/`.shogoignore` is layered
+ * on as the walk descends, scoped to that directory's subtree. This matters
+ * for the merged workspace tree, where the parent `workspaces/` dir has no
+ * ignores but each `<projectId>/` subfolder carries its own (`.env`, build
+ * dirs, generated output, …). Returns `null` when `dir` has no ignore files.
  */
-async function loadIgnoreMatcher(rootDir: string): Promise<Ignore | null> {
+async function loadIgnoreMatcher(dir: string): Promise<Ignore | null> {
   let matcher: Ignore | null = null
   for (const file of WORKSPACE_TREE_IGNORE_FILES) {
     let content: string
     try {
-      content = await fsp.readFile(join(rootDir, file), 'utf8')
+      content = await fsp.readFile(join(dir, file), 'utf8')
     } catch {
       continue // file absent or unreadable — fine, just skip
     }
@@ -209,6 +221,56 @@ async function loadIgnoreMatcher(rootDir: string): Promise<Ignore | null> {
     matcher.add(content)
   }
   return matcher
+}
+
+/**
+ * Build the ignore-layer chain for every ancestor directory from `rootDir`
+ * down to (but NOT including) `startDir` — `walkInner` loads `startDir`'s
+ * own ignore file itself. When `startDir === rootDir` the chain is empty.
+ *
+ * This is what makes a *lazy re-fetch* honour nested ignores: when the IDE
+ * expands `<projectId>/src`, the walker is re-invoked rooted at that subdir,
+ * so the `<projectId>/.gitignore` (an ancestor) must be reconstructed from
+ * disk — it isn't carried over from the initial walk.
+ */
+async function loadAncestorChain(rootDir: string, startDir: string): Promise<IgnoreLayer[]> {
+  const root = resolve(rootDir)
+  const start = resolve(startDir)
+  if (start === root) return []
+  const rel = relative(root, start)
+  // start outside root (shouldn't happen — callers validate) → no chain.
+  if (!rel || rel.startsWith('..')) return []
+  const parts = rel.split(sep).filter(Boolean)
+  const layers: IgnoreLayer[] = []
+  let cur = root
+  // root itself, then each ancestor up to parent(startDir).
+  const rootIg = await loadIgnoreMatcher(cur)
+  if (rootIg) layers.push({ baseAbs: cur, ig: rootIg })
+  for (let i = 0; i < parts.length - 1; i++) {
+    cur = join(cur, parts[i])
+    const ig = await loadIgnoreMatcher(cur)
+    if (ig) layers.push({ baseAbs: cur, ig })
+  }
+  return layers
+}
+
+/**
+ * True if any layer in the chain ignores `absPath`. Each layer tests the
+ * path *relative to its own base dir* (with a trailing slash for dirs, per
+ * the `ignore` lib's directory-only-pattern convention). OR-ing layers is a
+ * deliberate, slightly-conservative approximation of Git's deepest-wins
+ * negation semantics: it can't *re-include* a path a shallower layer hid via
+ * a deeper `!pattern`, but that cross-file negation is vanishingly rare and
+ * this is still strictly more correct than the old root-only behaviour.
+ */
+function chainIgnores(chain: IgnoreLayer[], absPath: string, isDir: boolean): boolean {
+  for (const layer of chain) {
+    const relRaw = relative(layer.baseAbs, absPath)
+    if (!relRaw || relRaw.startsWith('..')) continue
+    const rel = relRaw.split(sep).join('/')
+    if (layer.ig.ignores(isDir ? `${rel}/` : rel)) return true
+  }
+  return false
 }
 
 function withinBudget(state: WalkState): boolean {
@@ -228,8 +290,19 @@ async function walkInner(
   dir: string,
   depth: number,
   state: WalkState,
+  chain: IgnoreLayer[],
 ): Promise<WorkspaceTreeNode[]> {
   if (depth > state.maxDepth) return []
+
+  // Layer this directory's own ignore file(s) onto the chain before
+  // scanning its entries, scoped to this subtree. Carried into recursion so
+  // descendants inherit every ancestor's rules (merged-tree per-project
+  // ignores).
+  let localChain = chain
+  if (state.respectGitignore) {
+    const ownIg = await loadIgnoreMatcher(dir)
+    if (ownIg) localChain = [...chain, { baseAbs: dir, ig: ownIg }]
+  }
   // Type inferred from the overload — `withFileTypes: true` returns
   // `Dirent<string>[]`. Explicitly annotating with
   // `Awaited<ReturnType<typeof fsp.readdir>>` would pick the broadest
@@ -262,9 +335,10 @@ async function walkInner(
     const isDir = entry.isDirectory()
     // The `ignore` lib treats trailing-slash patterns as directory-only,
     // so we append a slash for directory paths before checking — matches
-    // how `git check-ignore` reads `.gitignore`.
-    const isGitignored = state.ig
-      ? state.ig.ignores(isDir ? `${relPath}/` : relPath)
+    // how `git check-ignore` reads `.gitignore`. Tested against every layer
+    // (root → this dir) so per-project nested ignores are honoured.
+    const isGitignored = localChain.length > 0
+      ? chainIgnores(localChain, absPath, isDir)
       : false
     if (isDir) {
       if (state.hiddenDirs.has(entry.name)) continue
@@ -299,7 +373,7 @@ async function walkInner(
         path: relPath,
         type: 'directory',
         modified: stat.mtimeMs,
-        children: await walkInner(absPath, depth + 1, state),
+        children: await walkInner(absPath, depth + 1, state, localChain),
       })
     } else {
       if (state.hiddenFiles.has(entry.name)) continue
@@ -340,7 +414,7 @@ export async function walkFilesTree(
     hiddenDirs: options.hiddenDirs ?? WORKSPACE_TREE_HIDDEN_DIRS,
     lazyDirs: options.lazyDirs ?? WORKSPACE_TREE_LAZY_DIRS,
     hiddenFiles: options.hiddenFiles ?? WORKSPACE_TREE_HIDDEN_FILES,
-    ig: respectGitignore ? await loadIgnoreMatcher(rootDir) : null,
+    respectGitignore,
     eagerDepth: options.eagerDepth ?? Number.POSITIVE_INFINITY,
     maxEntries: options.maxEntries ?? DEFAULT_MAX_ENTRIES,
     maxDepth: options.maxDepth ?? DEFAULT_MAX_DEPTH,
@@ -348,5 +422,9 @@ export async function walkFilesTree(
     signal: options.signal,
     entriesScanned: 0,
   }
-  return walkInner(dir, 0, state)
+  // Seed the chain with every ancestor ignore between rootDir and dir so a
+  // lazy re-fetch rooted deep in the tree still honours nested ignores it
+  // didn't load directly. `walkInner` then adds `dir`'s own layer.
+  const ancestorChain = respectGitignore ? await loadAncestorChain(rootDir, dir) : []
+  return walkInner(dir, 0, state, ancestorChain)
 }
