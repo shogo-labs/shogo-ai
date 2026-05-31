@@ -146,6 +146,18 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     ...(config.internalPaths ?? []),
   ])
 
+  // A workspace runtime (WORKSPACE_RUNTIME=true) serves several attached
+  // projects mounted as subfolders and is identified by WORKSPACE_ID, not a
+  // single PROJECT_ID. Adopt the `ws:<id>` identity — the same convention the
+  // /pool/assign workspace-bind path uses — so logging, markers and the token
+  // loop have a stable handle instead of crash-looping on the guard below.
+  if (!currentProjectId && process.env.WORKSPACE_RUNTIME === 'true' && process.env.WORKSPACE_ID) {
+    currentProjectId = `ws:${process.env.WORKSPACE_ID}`
+    logTiming(
+      `Workspace runtime identity: ${currentProjectId} (projects: ${process.env.WORKSPACE_PROJECT_IDS || 'none'})`,
+    )
+  }
+
   if (!currentProjectId) {
     console.error(`[${config.name}] ERROR: PROJECT_ID environment variable is required`)
     process.exit(1)

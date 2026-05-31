@@ -130,6 +130,23 @@ describe('createRuntimeApp shape', () => {
     expect(state.tokenRefresh).toBeNull()
   })
 
+  test('boots a workspace runtime with ws:<id> identity (no PROJECT_ID required)', async () => {
+    // Workspace runtimes are identified by WORKSPACE_ID and have no single
+    // PROJECT_ID. The boot must NOT crash on the PROJECT_ID guard; it adopts
+    // the `ws:<id>` identity (same convention as the /pool/assign workspace
+    // bind) so the merged-root runtime can come up.
+    const { state } = await buildApp({
+      env: {
+        PROJECT_ID: undefined,
+        WORKSPACE_RUNTIME: 'true',
+        WORKSPACE_ID: 'ws-e2e',
+        WORKSPACE_PROJECT_IDS: 'p1,p2',
+      },
+    })
+    expect(state.currentProjectId).toBe('ws:ws-e2e')
+    expect(state.isPoolMode).toBe(false)
+  })
+
   test('logTiming emits to console without throwing', async () => {
     const { logTiming } = await buildApp()
     const originalLog = console.log
