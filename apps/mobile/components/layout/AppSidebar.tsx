@@ -94,12 +94,8 @@ import {
   useDomainHttp,
 } from '../../contexts/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
-import {
-  formatUsd,
-  getPlanDisplayName,
-  getIncludedUsdForPlan,
-  getIncludedUsdCapacityForDisplay,
-} from '../../lib/billing-config'
+import { getPlanDisplayName } from '../../lib/billing-config'
+import { CompactUsageWindows } from '../billing/UsageWindows'
 import { api } from '../../lib/api'
 import { trackPurchase } from '../../lib/tracking'
 import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
@@ -655,20 +651,6 @@ function WorkspaceSwitcher({
     || workspacePlan?.planId
     || 'free'
   const planType = getPlanDisplayName(resolvedPlanId !== 'free' ? resolvedPlanId : undefined)
-  const effectiveBalance = billingData.effectiveBalance
-  const planIdForUsd = resolvedPlanId !== 'free' ? resolvedPlanId : undefined
-  const subSeats = billingData.subscription?.seats ?? 1
-  const usdRemaining =
-    effectiveBalance?.total ?? getIncludedUsdForPlan(planIdForUsd, subSeats)
-  const usdTotal = Math.max(
-    getIncludedUsdCapacityForDisplay({
-      planId: planIdForUsd,
-      seats: subSeats,
-      remainingTotal: effectiveBalance?.total,
-      monthlyIncludedAllocationUsd: effectiveBalance?.monthlyIncludedAllocationUsd,
-    }),
-    0.01,
-  )
 
   return (
     <Popover
@@ -759,26 +741,8 @@ function WorkspaceSwitcher({
             {showBilling && currentWorkspace && (
               <>
                 <View className="px-4 py-3 gap-2">
-                  <View className="flex-row items-center justify-between">
-                    <Text className="text-sm text-muted-foreground">Usage</Text>
-                    <Text className="text-sm font-medium text-foreground">
-                      {formatUsd(usdRemaining)} left
-                    </Text>
-                  </View>
-                  <View className="h-1.5 rounded-full bg-muted overflow-hidden">
-                    <View
-                      className="h-full rounded-full bg-primary"
-                      style={{ width: `${Math.min(100, (usdRemaining / usdTotal) * 100)}%` }}
-                    />
-                  </View>
-                  {effectiveBalance && (
-                    <Text className="text-xs text-muted-foreground">
-                      Daily: {formatUsd(effectiveBalance.dailyIncludedUsd)}{resolvedPlanId !== 'free' ? ` \u00B7 Monthly: ${formatUsd(effectiveBalance.monthlyIncludedUsd)}` : ''}
-                      {effectiveBalance.overageEnabled && effectiveBalance.overageAccumulatedUsd > 0
-                        ? ` \u00B7 Overage: ${formatUsd(effectiveBalance.overageAccumulatedUsd)}`
-                        : ''}
-                    </Text>
-                  )}
+                  <Text className="text-sm text-muted-foreground">Usage</Text>
+                  <CompactUsageWindows windows={billingData.usageWindows} />
                 </View>
 
                 <View className="h-px bg-border" />
@@ -1481,9 +1445,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               <View className="flex-1">
                 <Text className="text-sm font-medium text-foreground">Upgrade to Pro</Text>
                 <Text className="text-xs text-muted-foreground">
-                  {billingData.effectiveBalance
-                    ? `${formatUsd(billingData.effectiveBalance.total)} usage left`
-                    : 'Unlock more benefits'}
+                  Unlock more benefits
                 </Text>
               </View>
               <Plus size={16} className="text-primary" />

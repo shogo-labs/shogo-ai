@@ -44,11 +44,7 @@ import {
 import type { IDomainStore } from '@shogo/domain-stores'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAgentUrl, useBillingData } from '@shogo/shared-app/hooks'
-import {
-  getIncludedUsdForPlan,
-  getIncludedUsdCapacityForDisplay,
-  getPlanDisplayName,
-} from '../../../../lib/billing-config'
+import { getPlanDisplayName } from '../../../../lib/billing-config'
 import { useAuth } from '../../../../contexts/auth'
 import { useDomainHttp } from '../../../../contexts/domain'
 import { authClient } from '../../../../lib/auth-client'
@@ -331,17 +327,6 @@ export default observer(function ProjectLayout() {
   const planLabel = billingData.subscription
     ? getPlanDisplayName(billingData.subscription.planId)
     : 'Free'
-
-  const subSeats = billingData.subscription?.seats ?? 1
-  const usdRemaining =
-    billingData.effectiveBalance?.total ??
-    getIncludedUsdForPlan(billingData.subscription?.planId, subSeats)
-  const usdTotal = getIncludedUsdCapacityForDisplay({
-    planId: billingData.subscription?.planId,
-    seats: subSeats,
-    remainingTotal: billingData.effectiveBalance?.total,
-    monthlyIncludedAllocationUsd: billingData.effectiveBalance?.monthlyIncludedAllocationUsd,
-  })
 
   const isStarred = useMemo(() => {
     try {
@@ -2117,8 +2102,7 @@ export default observer(function ProjectLayout() {
     hasActiveSubscription: effectiveHasActiveSubscription,
     workspaceName,
     planLabel,
-    usdRemaining,
-    usdTotal,
+    usageWindows: billingData.usageWindows,
     ownerName: user?.name || '',
     projectCreatedAt: project.createdAt,
     projectModifiedAt: project.updatedAt,
