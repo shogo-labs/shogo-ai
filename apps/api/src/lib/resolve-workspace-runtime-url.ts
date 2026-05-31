@@ -12,14 +12,23 @@
  *
  * ─── Rollout gate ──────────────────────────────────────────────────
  *
- * The actual workspace runtime spawn (host) and the Knative workspace
- * service (k8s) land in Phase 2b — they require the agent-runtime to
- * boot in merged-root mode and the warm pool to bind a project SET.
- * Until then this resolver is gated behind `SHOGO_WORKSPACE_RUNTIME`:
- * with the flag off it throws `WorkspaceRuntimeNotEnabledError` so the
+ * This resolver is gated behind `SHOGO_WORKSPACE_RUNTIME`: with the flag
+ * off it throws `WorkspaceRuntimeNotEnabledError` so the
  * `/api/workspaces/:id/chat` route can return a clean 501 instead of
- * half-booting a single-project runtime. The branch-selection logic is
- * fully unit-tested today via the `_`-prefixed injection seams.
+ * half-booting a single-project runtime.
+ *
+ * Drivers:
+ *   - k8s:  the Knative workspace driver (`knative-workspace-manager.ts`)
+ *           is wired as the default `_k8sResolver`. It creates the
+ *           `workspace-{id}` merged-root Service and short-circuits on an
+ *           existing one (cheap re-resolution for spawn-lease losers).
+ *   - host: spawns a merged-root agent-runtime via
+ *           `RuntimeManager.startWorkspace` (desktop/local).
+ *   - vm:   the workspace VM pool driver is not yet wired; the branch
+ *           throws "not configured" until a VM resolver is injected.
+ *
+ * The branch-selection logic is fully unit-tested via the `_`-prefixed
+ * injection seams.
  */
 
 import type { IProjectRuntime, IRuntimeManager } from './runtime/types'
@@ -143,18 +152,15 @@ export async function resolveWorkspaceRuntimeUrl(
   }
 
   if (isKubernetes()) {
-    // No point serializing a guaranteed failure: when no cloud driver is
-    // wired we throw the config error directly, before touching the DB lease.
-    if (!opts._k8sResolver) {
-      throw new Error(
-        `[${tag}] k8s workspace runtime driver not configured (Knative workspace Service ` +
-          `apply not yet wired). Inject _k8sResolver — see resolve-workspace-runtime-url.ts.`,
-      )
-    }
-    const resolver = opts._k8sResolver
+    // Default to the Knative workspace driver (creates/short-circuits the
+    // `workspace-{id}` Service). Lazy import keeps k8s deps off the cold path
+    // until the first cloud resolution, mirroring resolve-pod-url.ts.
+    const resolver =
+      opts._k8sResolver ??
+      (await import('./knative-workspace-manager')).getWorkspacePodUrl
     // Serialize across replicas: only one builds the workspace KSvc; others
-    // wait and re-resolve via the same resolver (which must short-circuit on
-    // an existing service).
+    // wait and re-resolve via the same resolver (which short-circuits on an
+    // existing service).
     const url = await spawnLease(workspaceId, () => resolver(workspaceId, attachedProjectIds))
     return { mode: 'k8s', url }
   }

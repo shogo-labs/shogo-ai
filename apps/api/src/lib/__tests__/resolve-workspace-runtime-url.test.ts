@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, mock } from 'bun:test'
 import {
   resolveWorkspaceRuntimeUrl,
   WorkspaceRuntimeNotEnabledError,
@@ -166,15 +166,31 @@ describe('resolveWorkspaceRuntimeUrl', () => {
     ).rejects.toThrow(/no startWorkspace/)
   })
 
-  it('production k8s branch throws not-configured when no resolver injected', async () => {
-    await expect(
-      resolveWorkspaceRuntimeUrl('ws-1', {
-        attachedProjectIds: ['p1'],
-        _isEnabled: enabled,
-        _isKubernetes: () => true,
-        _isVMIsolation: () => false,
-      }),
-    ).rejects.toThrow(/k8s workspace runtime driver not configured/)
+  it('k8s branch wires the default Knative workspace driver when no resolver injected', async () => {
+    // The default _k8sResolver lazy-imports knative-workspace-manager's
+    // getWorkspacePodUrl. Stub the module so we exercise the wiring without
+    // pulling @kubernetes/client-node.
+    const seen: { ws?: string; ids?: string[] } = {}
+    mock.module('../knative-workspace-manager', () => ({
+      getWorkspacePodUrl: async (ws: string, ids: string[]) => {
+        seen.ws = ws
+        seen.ids = ids
+        return `http://workspace-${ws}.shogo-workspaces.svc.cluster.local`
+      },
+    }))
+    const res = await resolveWorkspaceRuntimeUrl('ws-default', {
+      attachedProjectIds: ['p1', 'p2'],
+      _isEnabled: enabled,
+      _isKubernetes: () => true,
+      _isVMIsolation: () => false,
+      _spawnLease: passthroughLease,
+    })
+    expect(res).toEqual({
+      mode: 'k8s',
+      url: 'http://workspace-ws-default.shogo-workspaces.svc.cluster.local',
+    })
+    expect(seen.ws).toBe('ws-default')
+    expect(seen.ids).toEqual(['p1', 'p2'])
   })
 
   it('production VM branch throws not-configured when no resolver injected', async () => {
