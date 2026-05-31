@@ -347,6 +347,71 @@ describe('createVoiceHandlers.tts', () => {
   })
 })
 
+describe('createVoiceHandlers.music', () => {
+  test('POSTs a prompt to /v1/music and forwards the audio', async () => {
+    const { impl, calls } = mockFetch([
+      {
+        url: /\/v1\/music/,
+        status: 200,
+        body: 'music-bytes',
+        headers: { 'content-type': 'audio/mpeg' },
+      },
+    ])
+    const h = buildHandlers({ id: 'user_1' }, impl, makeCompanionStore())
+    const res = await h.music(
+      new Request('http://x/voice/music', {
+        method: 'POST',
+        body: JSON.stringify({ prompt: 'lofi beats', musicLengthMs: 15000 }),
+      }),
+    )
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('audio/mpeg')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.url).toContain('/v1/music')
+    expect((calls[0]!.body as { prompt: string }).prompt).toBe('lofi beats')
+  })
+
+  test('401 when no user is resolved', async () => {
+    const { impl } = mockFetch([])
+    const h = buildHandlers(null, impl, makeCompanionStore())
+    const res = await h.music(
+      new Request('http://x/voice/music', {
+        method: 'POST',
+        body: JSON.stringify({ prompt: 'x' }),
+      }),
+    )
+    expect(res.status).toBe(401)
+  })
+
+  test('400 when neither prompt nor compositionPlan is supplied', async () => {
+    const { impl } = mockFetch([])
+    const h = buildHandlers({ id: 'user_1' }, impl, makeCompanionStore())
+    const res = await h.music(
+      new Request('http://x/voice/music', { method: 'POST', body: JSON.stringify({}) }),
+    )
+    expect(res.status).toBe(400)
+  })
+
+  test('405 on non-POST', async () => {
+    const { impl } = mockFetch([])
+    const h = buildHandlers({ id: 'user_1' }, impl, makeCompanionStore())
+    const res = await h.music(new Request('http://x/voice/music', { method: 'GET' }))
+    expect(res.status).toBe(405)
+  })
+
+  test('502 when 11Labs music request fails', async () => {
+    const { impl } = mockFetch([{ url: /\/v1\/music/, status: 422, body: 'validation' }])
+    const h = buildHandlers({ id: 'user_1' }, impl, makeCompanionStore())
+    const res = await h.music(
+      new Request('http://x/voice/music', {
+        method: 'POST',
+        body: JSON.stringify({ prompt: 'x' }),
+      }),
+    )
+    expect(res.status).toBe(502)
+  })
+})
+
 describe('createVoiceHandlers.audioTags', () => {
   test('returns the catalog without requiring auth', async () => {
     const { impl } = mockFetch([])

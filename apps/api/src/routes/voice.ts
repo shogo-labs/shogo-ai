@@ -587,6 +587,84 @@ export function voiceRoutes() {
   })
 
   /**
+   * POST /voice/music
+   *
+   * Generate music via the ElevenLabs Music API using Shogo's pooled
+   * EL key. Body mirrors the SDK `ComposeMusicParams`: exactly one of
+   * `prompt` / `compositionPlan`, plus optional `musicLengthMs`,
+   * `modelId`, `forceInstrumental`, `outputFormat`. Returns the raw
+   * generated audio bytes.
+   *
+   * Project-scoped (not per-end-user), so runtime-token callers are
+   * accepted here — they reach this via the SDK voice proxy.
+   */
+  router.post('/voice/music', async (c) => {
+    const resolved = resolveShogoElevenLabsClient()
+    if ('error' in resolved) {
+      return c.json({ error: resolved.error }, 503)
+    }
+
+    let body: {
+      prompt?: string
+      compositionPlan?: Record<string, unknown>
+      musicLengthMs?: number
+      modelId?: string
+      forceInstrumental?: boolean
+      outputFormat?: string
+    }
+    try {
+      body = (await c.req.json()) as typeof body
+    } catch {
+      return c.json({ error: 'Invalid JSON body' }, 400)
+    }
+
+    const hasPrompt = typeof body.prompt === 'string' && body.prompt.trim().length > 0
+    const hasPlan = body.compositionPlan != null && typeof body.compositionPlan === 'object'
+    if (hasPrompt === hasPlan) {
+      return c.json(
+        { error: 'Provide exactly one of `prompt` or `compositionPlan`' },
+        400,
+      )
+    }
+
+    try {
+      const { audio, contentType } = await resolved.client.composeMusic({
+        ...(hasPrompt ? { prompt: body.prompt!.trim() } : {}),
+        ...(hasPlan ? { compositionPlan: body.compositionPlan } : {}),
+        ...(typeof body.musicLengthMs === 'number'
+          ? { musicLengthMs: body.musicLengthMs }
+          : {}),
+        ...(typeof body.modelId === 'string' && body.modelId
+          ? { modelId: body.modelId }
+          : {}),
+        ...(typeof body.forceInstrumental === 'boolean'
+          ? { forceInstrumental: body.forceInstrumental }
+          : {}),
+        ...(typeof body.outputFormat === 'string' && body.outputFormat
+          ? { outputFormat: body.outputFormat }
+          : {}),
+      })
+      return new Response(audio, {
+        status: 200,
+        headers: {
+          'content-type': contentType,
+          'cache-control': 'private, max-age=3600',
+        },
+      })
+    } catch (err: any) {
+      console.error('[Voice] music generation failed:', err?.message || err)
+      return c.json(
+        {
+          error: 'Music generation failed',
+          detail: err?.message ?? String(err),
+          elBody: err?.body ?? undefined,
+        },
+        502,
+      )
+    }
+  })
+
+  /**
    * POST /voice/translator/chat/:chatSessionId
    *
    * Streaming translator endpoint. In addition to forwarding the AI SDK

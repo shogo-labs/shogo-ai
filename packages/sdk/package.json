@@ -121,6 +121,12 @@
       "import": "./dist/voice/route/tts-preview.js",
       "require": "./dist/voice/route/tts-preview.cjs"
     },
+    "./voice/route/music": {
+      "types": "./dist/voice/route/music.d.ts",
+      "development": "./src/voice/route/music.ts",
+      "import": "./dist/voice/route/music.js",
+      "require": "./dist/voice/route/music.cjs"
+    },
     "./voice/route/agent": {
       "types": "./dist/voice/route/agent.d.ts",
       "development": "./src/voice/route/agent.ts",
