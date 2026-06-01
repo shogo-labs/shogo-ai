@@ -15,6 +15,7 @@ import { isDesktopRuntime } from '../terminal/pty-factory'
 import { useRunScripts, useRunSession } from './useRunSession'
 import { useDebugSession } from './useDebugSession'
 import { DebugView } from './DebugView'
+import { AnsiText } from '../AnsiText'
 
 interface Props {
   workspaceRoot: string | null
@@ -211,19 +212,13 @@ function OutputView({ output }: { output: { stream: 'stdout' | 'stderr'; data: s
           key={i}
           className={chunk.stream === 'stderr' ? 'whitespace-pre-wrap text-rose-300' : 'whitespace-pre-wrap text-zinc-200'}
         >
-          {stripAnsi(chunk.data)}
+          {/* BUG-013: render ANSI as theme-coloured spans instead of stripping. */}
+          <AnsiText as="span" text={chunk.data} />
         </pre>
       ))}
     </div>
   )
 }
-
-/** Strip ANSI escape sequences for now — full color rendering tracked
- *  as BUG-013. This at least keeps the output readable. */
-function stripAnsi(s: string): string {
-  return s.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
-}
-
 
 /** Run / Debug mode tabs — small pill toggles tucked into the header. */
 function ModeTabs({
