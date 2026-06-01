@@ -169,8 +169,8 @@ function NotEnrolledCard({ onEnroll }: { onEnroll: () => void }) {
       <CardContent className="gap-3 p-5">
         <Text className="text-lg font-semibold text-foreground">Refer Shogo and earn</Text>
         <Text className="text-sm text-muted-foreground">
-          Share your link. When someone signs up and pays, you earn a percentage
-          of their subscription — and a smaller share when they refer others.
+          Share your link. When someone signs up and pays, you earn 20% of their
+          seat subscription for the first 12 months, then 10% forever after.
           Opt in to get your unique link.
         </Text>
         <Button onPress={onEnroll}>

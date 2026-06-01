@@ -78,9 +78,8 @@ export default function AffiliateEnrollScreen() {
           <CardContent className="gap-3 p-5">
             <Text className="text-sm text-foreground">
               You'll get a unique link. When someone clicks it and pays for
-              Shogo, you earn a commission on their recurring subscription.
-              You also earn a smaller share when your referrals refer others
-              (up to a configurable depth).
+              Shogo, you earn 20% of their seat subscription for the first 12
+              months, then 10% forever after.
             </Text>
             <Text className="text-xs text-muted-foreground">
               Stripe issues a 1099-NEC if you earn $600+ in a calendar year.
