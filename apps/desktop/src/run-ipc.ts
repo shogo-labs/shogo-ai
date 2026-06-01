@@ -41,7 +41,7 @@ import type { Readable } from 'stream'
 type RunChild = ChildProcessByStdio<null, Readable, Readable>
 import { promises as fs } from 'fs'
 import * as path from 'path'
-import { validateWorkspace, detectPackageManager, parsePackageJsonScripts, type PackageManager } from './run-ipc-pure'
+import { validateWorkspace, detectPackageManager, parsePackageJsonScripts, buildInspectorNodeOptions, extractInspectorWsUrl, type PackageManager } from './run-ipc-pure'
 import { randomUUID } from 'crypto'
 
 import type { ScriptEntry } from './run-ipc-pure'
@@ -56,7 +56,15 @@ interface ListScriptsResult {
 interface StartResult {
   ok: boolean
   runId?: string
+  /** For debug mode: ws URL once v8 prints it. Empty until then; consumers
+   *  should also subscribe to `run:inspector:<runId>` for the late arrival. */
+  inspectorWsUrl?: string
   error?: string
+}
+
+interface StartOptions {
+  /** Spawn the script with NODE_OPTIONS='--inspect-brk=0' so a debugger can attach. */
+  debug?: boolean
 }
 
 interface RunInfo {
@@ -66,6 +74,12 @@ interface RunInfo {
   packageManager: PackageManager
   startedAt: number
   proc: RunChild
+  /** True when this run was launched with --inspect-brk for the debugger to attach. */
+  debug: boolean
+  /** Buffer of stderr accumulated until we extract the inspector ws URL (then cleared). */
+  stderrPrefix: string
+  /** Discovered ws URL, once v8 prints "Debugger listening on …". null until then. */
+  inspectorWsUrl: string | null
 }
 
 const liveRuns = new Map<string, RunInfo>()
@@ -102,6 +116,7 @@ async function startHandler(
   root: string,
   scriptName: string,
   preferredPm?: PackageManager,
+  options?: StartOptions,
 ): Promise<StartResult> {
   const valid = validateWorkspace(root)
   if (!valid) return { ok: false, error: 'invalid workspace path' }
@@ -119,11 +134,25 @@ async function startHandler(
   const cmd = pm
   const args = ['run', scriptName]
 
+  const debug = options?.debug === true
+  const baseEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    FORCE_COLOR: '1',
+    npm_lifecycle_event: scriptName,
+  }
+  if (debug) {
+    baseEnv.NODE_OPTIONS = buildInspectorNodeOptions({
+      breakOnStart: true,
+      port: 0,
+      existing: process.env.NODE_OPTIONS,
+    })
+  }
+
   let proc: RunChild
   try {
     proc = spawn(cmd, args, {
       cwd: valid,
-      env: { ...process.env, FORCE_COLOR: '1', npm_lifecycle_event: scriptName },
+      env: baseEnv,
       shell: false,
       // Important: do NOT detach. We want children to die when the
       // main process exits.
@@ -141,6 +170,9 @@ async function startHandler(
     packageManager: pm,
     startedAt: Date.now(),
     proc,
+    debug,
+    stderrPrefix: '',
+    inspectorWsUrl: null,
   }
   liveRuns.set(runId, info)
 
@@ -150,8 +182,25 @@ async function startHandler(
   proc.stdout.on('data', (chunk: Buffer) => {
     broadcastToAll(outputChannel, { stream: 'stdout', data: chunk.toString('utf8') })
   })
+  const inspectorChannel = `run:inspector:${runId}`
   proc.stderr.on('data', (chunk: Buffer) => {
-    broadcastToAll(outputChannel, { stream: 'stderr', data: chunk.toString('utf8') })
+    const text = chunk.toString('utf8')
+    if (info.debug && info.inspectorWsUrl === null) {
+      info.stderrPrefix += text
+      const url = extractInspectorWsUrl(info.stderrPrefix)
+      if (url) {
+        info.inspectorWsUrl = url
+        info.stderrPrefix = ''
+        broadcastToAll(inspectorChannel, { runId, wsUrl: url })
+      }
+      // Cap the prefix buffer at 8 KB so a pathological process that
+      // writes a lot to stderr before printing the inspector line
+      // doesn't grow it unbounded.
+      if (info.stderrPrefix.length > 8192) {
+        info.stderrPrefix = info.stderrPrefix.slice(-4096)
+      }
+    }
+    broadcastToAll(outputChannel, { stream: 'stderr', data: text })
   })
   proc.on('error', (err) => {
     broadcastToAll(outputChannel, { stream: 'stderr', data: `\n[shogo] spawn error: ${err.message}\n` })
@@ -161,7 +210,7 @@ async function startHandler(
     broadcastToAll(exitChannel, { code, signal })
   })
 
-  return { ok: true, runId }
+  return { ok: true, runId, inspectorWsUrl: info.inspectorWsUrl ?? undefined }
 }
 
 interface StopResult { ok: boolean; error?: string }
