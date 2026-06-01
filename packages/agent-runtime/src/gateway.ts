@@ -2734,7 +2734,6 @@ export class AgentGateway {
     }
 
     parts.push(CODE_AGENT_GENERAL_GUIDE)
-    parts.push(OUTPUT_CONTRACT_GUIDE)
     if (this.config.browserEnabled !== false) {
       parts.push(BROWSER_TOOL_GUIDE)
     }

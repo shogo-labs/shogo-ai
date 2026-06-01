@@ -209,6 +209,113 @@ describe('ElevenLabsClient.textToSpeech', () => {
   })
 })
 
+describe('ElevenLabsClient.request', () => {
+  test('GET parses a JSON response', async () => {
+    const { impl, calls } = mockFetch([{ status: 200, body: { models: [] } }])
+    const el = new ElevenLabsClient({ apiKey: 'k', fetch: impl })
+    const res = await el.request({ method: 'GET', path: '/v1/models' })
+    expect(calls[0]!.url).toContain('/v1/models')
+    expect(calls[0]!.method).toBe('GET')
+    expect(calls[0]!.headers['xi-api-key']).toBe('k')
+    expect(res.json).toEqual({ models: [] })
+    expect(res.audio).toBeUndefined()
+  })
+
+  test('POST encodes a JSON body and appends query params', async () => {
+    const { impl, calls } = mockFetch([{ status: 200, body: { ok: true } }])
+    const el = new ElevenLabsClient({ apiKey: 'k', fetch: impl })
+    await el.request({
+      method: 'POST',
+      path: '/v1/sound-generation',
+      body: { text: 'door creak' },
+      query: { output_format: 'mp3_44100_128', skip: null },
+    })
+    expect(calls[0]!.method).toBe('POST')
+    expect(calls[0]!.url).toContain('output_format=mp3_44100_128')
+    expect(calls[0]!.url).not.toContain('skip=')
+    expect(calls[0]!.headers['content-type']).toBe('application/json')
+    expect(calls[0]!.body).toEqual({ text: 'door creak' })
+  })
+
+  test('returns binary bytes for non-JSON responses', async () => {
+    const { impl } = mockFetch([
+      { status: 200, body: 'audiobytes', headers: { 'content-type': 'audio/mpeg' } },
+    ])
+    const el = new ElevenLabsClient({ apiKey: 'k', fetch: impl })
+    const res = await el.request({ method: 'POST', path: '/v1/x', accept: 'audio/mpeg' })
+    expect(res.contentType).toBe('audio/mpeg')
+    expect(res.audio).toBeInstanceOf(ArrayBuffer)
+    expect(res.json).toBeUndefined()
+  })
+
+  test('throws ElevenLabsApiError on non-ok response', async () => {
+    const { impl } = mockFetch([{ status: 422, body: 'validation' }])
+    const el = new ElevenLabsClient({ apiKey: 'k', fetch: impl })
+    await expect(el.request({ method: 'GET', path: '/v1/x' })).rejects.toBeInstanceOf(
+      ElevenLabsApiError,
+    )
+  })
+})
+
+describe('ElevenLabsClient.composeMusic', () => {
+  test('posts prompt + length to /v1/music and returns audio bytes', async () => {
+    const { impl, calls } = mockFetch([
+      { status: 200, body: 'musicbytes', headers: { 'content-type': 'audio/mpeg' } },
+    ])
+    const el = new ElevenLabsClient({ apiKey: 'xi_test', fetch: impl })
+    const res = await el.composeMusic({
+      prompt: 'Upbeat synthwave',
+      musicLengthMs: 30_000,
+      outputFormat: 'mp3_44100_128',
+    })
+    expect(res.contentType).toBe('audio/mpeg')
+    expect(res.audio.byteLength).toBeGreaterThan(0)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.url).toContain('/v1/music')
+    expect(calls[0]!.url).toContain('output_format=mp3_44100_128')
+    expect(calls[0]!.headers['xi-api-key']).toBe('xi_test')
+    const body = calls[0]!.body as {
+      prompt: string
+      music_length_ms: number
+      model_id: string
+    }
+    expect(body.prompt).toBe('Upbeat synthwave')
+    expect(body.music_length_ms).toBe(30_000)
+    expect(body.model_id).toBe('music_v1')
+  })
+
+  test('sends a composition plan instead of a prompt', async () => {
+    const { impl, calls } = mockFetch([
+      { status: 200, body: 'bytes', headers: { 'content-type': 'audio/mpeg' } },
+    ])
+    const el = new ElevenLabsClient({ apiKey: 'k', fetch: impl })
+    await el.composeMusic({ compositionPlan: { sections: [] } })
+    const body = calls[0]!.body as { composition_plan?: unknown; prompt?: unknown }
+    expect(body.composition_plan).toEqual({ sections: [] })
+    expect(body.prompt).toBeUndefined()
+  })
+
+  test('rejects when both prompt and compositionPlan are supplied', async () => {
+    const { impl } = mockFetch([{ status: 200, body: 'x' }])
+    const el = new ElevenLabsClient({ apiKey: 'k', fetch: impl })
+    await expect(
+      el.composeMusic({ prompt: 'a', compositionPlan: { sections: [] } }),
+    ).rejects.toThrow(/exactly one/)
+  })
+
+  test('rejects when neither prompt nor compositionPlan is supplied', async () => {
+    const { impl } = mockFetch([{ status: 200, body: 'x' }])
+    const el = new ElevenLabsClient({ apiKey: 'k', fetch: impl })
+    await expect(el.composeMusic({})).rejects.toThrow(/exactly one/)
+  })
+
+  test('maps a non-ok response to ElevenLabsApiError', async () => {
+    const { impl } = mockFetch([{ status: 401, body: 'bad key' }])
+    const el = new ElevenLabsClient({ apiKey: 'k', fetch: impl })
+    await expect(el.composeMusic({ prompt: 'a' })).rejects.toBeInstanceOf(ElevenLabsApiError)
+  })
+})
+
 describe('ElevenLabsClient.voiceExists', () => {
   test('true when the API returns 200', async () => {
     const { impl } = mockFetch([{ status: 200, body: {} }])

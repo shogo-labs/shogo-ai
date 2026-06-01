@@ -151,8 +151,39 @@ mock.module('../lib/prisma', () => withPrismaExports({ prisma: mockPrisma }))
 mock.module('../config/usage-plans', () => ({
   FREE_DAILY_INCLUDED_USD: 1,
   MONTHLY_DAILY_CAP_USD: 30,
+  FIVE_HOUR_MS: 5 * 60 * 60 * 1000,
+  SEVEN_DAY_MS: 7 * 24 * 60 * 60 * 1000,
   PLAN_INCLUDED_USD: { free: 0, basic: 5, pro: 20, business: 40 },
   PLAN_RANK: { free: 0, basic: 1, pro: 2, business: 3, enterprise: 4 },
+  ROLLING_WINDOW_LIMITS: {
+    free: { fiveHourUsd: 0.5, weeklyUsd: 2 },
+    basic: { fiveHourUsd: 2, weeklyUsd: 10 },
+    pro: { fiveHourUsd: 8, weeklyUsd: 40 },
+    business: { fiveHourUsd: 20, weeklyUsd: 120 },
+    enterprise: null,
+  },
+  getWindowLimitsForPlan: (planId: string | null | undefined, seats = 1) => {
+    const lc = String(planId ?? 'free').toLowerCase().trim()
+    const limits: Record<string, { fiveHourUsd: number; weeklyUsd: number } | null> = {
+      free: { fiveHourUsd: 0.5, weeklyUsd: 2 },
+      basic: { fiveHourUsd: 2, weeklyUsd: 10 },
+      pro: { fiveHourUsd: 8, weeklyUsd: 40 },
+      business: { fiveHourUsd: 20, weeklyUsd: 120 },
+      enterprise: null,
+    }
+    const key = lc.startsWith('enterprise') ? 'enterprise'
+      : lc.startsWith('business') ? 'business'
+      : lc.startsWith('pro') ? 'pro'
+      : lc.startsWith('basic') ? 'basic'
+      : 'free'
+    const base = limits[key]
+    if (base == null) return null
+    if (key === 'pro' || key === 'business') {
+      const s = Math.max(1, Math.floor(seats || 1))
+      return { fiveHourUsd: base.fiveHourUsd * s, weeklyUsd: base.weeklyUsd * s }
+    }
+    return { ...base }
+  },
   getDailyIncludedForPlan: (planId: string | null | undefined) => {
     if (!planId) return 1
     const lc = String(planId).toLowerCase().trim()
@@ -593,13 +624,12 @@ describe('hasBalance', () => {
     expect(await billing.hasBalance('ws-1', 0.5)).toBe(true)
   })
 
-  test('does not refill daily when monthly cap has been hit', async () => {
-    const yesterday = new Date(Date.now() - 36 * 60 * 60 * 1000)
+  test('returns false when both windows are exhausted and overage is off', async () => {
+    const start = new Date()
     seedWallet('ws-1', {
-      dailyIncludedUsd: 0,
-      dailyUsedThisMonthUsd: 30, // at cap
-      lastDailyReset: yesterday,
-      lastMonthlyReset: yesterday,
+      overageEnabled: false,
+      fiveHourWindowStart: start, fiveHourUsedUsd: 0.5, // free 5h cap
+      weeklyWindowStart: start, weeklyUsedUsd: 2,         // free weekly cap
     })
     expect(await billing.hasBalance('ws-1', 0.5)).toBe(false)
   })
@@ -610,18 +640,19 @@ describe('hasBalance', () => {
 // ────────────────────────────────────────────────────────────────────
 
 describe('consumeUsage', () => {
-  test('deducts from daily first when sufficient', async () => {
-    seedWallet('ws-1', { dailyIncludedUsd: 1, monthlyIncludedUsd: 5 })
+  test('charges the rolling window with source=window', async () => {
+    seedWallet('ws-1')
     const res = await billing.consumeUsage({
       workspaceId: 'ws-1', projectId: null, memberId: 'm-1',
-      actionType: 'chat', billedUsd: 0.5,
+      actionType: 'chat', billedUsd: 0.3,
     })
     expect(res.success).toBe(true)
-    expect(res.source).toBe('daily')
+    expect(res.source).toBe('window')
     expect(res.overageChargedUsd).toBe(0)
-    expect(walletByWs.get('ws-1').dailyIncludedUsd).toBeCloseTo(0.5)
+    expect(walletByWs.get('ws-1').fiveHourUsedUsd).toBeCloseTo(0.3)
+    expect(walletByWs.get('ws-1').weeklyUsedUsd).toBeCloseTo(0.3)
     expect(usageEvents).toHaveLength(1)
-    expect(usageEvents[0].source).toBe('daily')
+    expect(usageEvents[0].source).toBe('window')
   })
 
   test('returns "No usage wallet found" when allocation fails and re-find still misses', async () => {
@@ -638,15 +669,16 @@ describe('consumeUsage', () => {
     expect(res.error).toMatch(/No usage wallet found/i)
   })
 
-  test('falls through to monthly when daily cannot cover', async () => {
-    seedWallet('ws-1', { dailyIncludedUsd: 0.1, monthlyIncludedUsd: 5 })
+  test('charges amounts within the weekly window cap', async () => {
+    // free caps: 5h = 0.5, weekly = 2. A 0.4 charge fits both windows.
+    seedWallet('ws-1')
     const res = await billing.consumeUsage({
       workspaceId: 'ws-1', projectId: null, memberId: 'm-1',
-      actionType: 'chat', billedUsd: 2,
+      actionType: 'chat', billedUsd: 0.4,
     })
     expect(res.success).toBe(true)
-    expect(res.source).toBe('monthly')
-    expect(walletByWs.get('ws-1').monthlyIncludedUsd).toBe(3)
+    expect(res.source).toBe('window')
+    expect(walletByWs.get('ws-1').fiveHourUsedUsd).toBeCloseTo(0.4)
   })
 
   test('falls through to overage when neither bucket suffices and overage is enabled', async () => {
@@ -750,94 +782,81 @@ describe('consumeUsage', () => {
     ).rejects.toThrow('boom')
   })
 
-  test('daily reset on a new day re-dispenses included daily USD', async () => {
-    const yesterday = new Date(Date.now() - 36 * 60 * 60 * 1000)
+  test('resets the five-hour window after it has elapsed', async () => {
+    const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000)
     seedWallet('ws-1', {
-      dailyIncludedUsd: 0,
-      dailyUsedThisMonthUsd: 5,
-      lastDailyReset: yesterday,
-      lastMonthlyReset: yesterday,
+      fiveHourWindowStart: sixHoursAgo, fiveHourUsedUsd: 0.5,
+      weeklyWindowStart: new Date(), weeklyUsedUsd: 0,
     })
     const res = await billing.consumeUsage({
       workspaceId: 'ws-1', projectId: null, memberId: 'm-1',
       actionType: 'chat', billedUsd: 0.3,
     })
     expect(res.success).toBe(true)
-    expect(res.source).toBe('daily')
     const w = walletByWs.get('ws-1')
-    expect(w.dailyUsedThisMonthUsd).toBe(6) // 5 + 1 newly dispensed
+    expect(w.fiveHourUsedUsd).toBeCloseTo(0.3) // window reopened, only this charge
   })
 
-  test('daily reset honors the monthly daily-dispensing cap', async () => {
-    const yesterday = new Date(Date.now() - 36 * 60 * 60 * 1000)
+  test('blocks (with resetsAt) when the window is exhausted and overage is off', async () => {
+    const start = new Date()
     seedWallet('ws-1', {
-      dailyIncludedUsd: 0,
-      dailyUsedThisMonthUsd: 30, // at cap
-      lastDailyReset: yesterday,
-      lastMonthlyReset: yesterday,
+      overageEnabled: false,
+      fiveHourWindowStart: start, fiveHourUsedUsd: 0.5,
+      weeklyWindowStart: start, weeklyUsedUsd: 2,
     })
     const res = await billing.consumeUsage({
       workspaceId: 'ws-1', projectId: null, memberId: 'm-1',
       actionType: 'chat', billedUsd: 0.3,
     })
     expect(res.success).toBe(false)
+    expect(res.resetsAt).toBeInstanceOf(Date)
   })
 
-  test('monthly rollover refills free workspaces from grants', async () => {
+  test('monthly rollover zeros overage accumulators', async () => {
     const lastMonth = new Date()
     lastMonth.setUTCMonth(lastMonth.getUTCMonth() - 2)
+    const start = new Date()
     seedWallet('ws-1', {
-      dailyIncludedUsd: 0,
-      monthlyIncludedUsd: 0,
-      dailyUsedThisMonthUsd: 10,
-      overageAccumulatedUsd: 5,
-      overageBilledUsd: 0,
+      overageEnabled: true, overageHardLimitUsd: 1000,
+      overageAccumulatedUsd: 5, overageBilledUsd: 100,
       lastDailyReset: lastMonth,
       lastMonthlyReset: lastMonth,
+      fiveHourWindowStart: start, fiveHourUsedUsd: 0.5,
+      weeklyWindowStart: start, weeklyUsedUsd: 2,
     })
-    grantsByWs.set('ws-1', [{ freeSeats: 0, monthlyIncludedUsd: 25 }])
     const res = await billing.consumeUsage({
       workspaceId: 'ws-1', projectId: null, memberId: 'm-1',
       actionType: 'chat', billedUsd: 0.1,
     })
     expect(res.success).toBe(true)
+    expect(res.source).toBe('overage')
     const w = walletByWs.get('ws-1')
-    // Refill ran (25 grant) then deducted from daily ($1 dispensed)
-    expect(w.monthlyIncludedAllocationUsd).toBe(25)
+    // Prior accumulation/billed zeroed on the boundary, then 0.1 charged.
     expect(w.overageBilledUsd).toBe(0)
-    expect(w.overageAccumulatedUsd).toBe(0)
+    expect(w.overageAccumulatedUsd).toBeCloseTo(0.1)
   })
 
-  test('monthly rollover skips grant refill for paid workspaces', async () => {
-    const lastMonth = new Date()
-    lastMonth.setUTCMonth(lastMonth.getUTCMonth() - 2)
-    seedWallet('ws-1', {
-      monthlyIncludedUsd: 5,
-      lastDailyReset: lastMonth,
-      lastMonthlyReset: lastMonth,
-    })
-    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'pro' }])
-    grantsByWs.set('ws-1', [{ freeSeats: 0, monthlyIncludedUsd: 9999 }])
+  test('paid workspace uses its larger window before overage', async () => {
+    seedWallet('ws-1')
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'pro', seats: 1 }])
     const res = await billing.consumeUsage({
       workspaceId: 'ws-1', projectId: null, memberId: 'm-1',
-      actionType: 'chat', billedUsd: 0.1,
+      actionType: 'chat', billedUsd: 5,
     })
+    // pro 5h cap = 8, so a $5 charge fits the window (not overage).
     expect(res.success).toBe(true)
-    const w = walletByWs.get('ws-1')
-    // Grant refill should NOT have applied (would have set monthly to 9999+);
-    // monthly stays at the original 5 minus the 0.1 charge. The daily
-    // allowance is free-tier only, so the cost falls through to monthly
-    // for a Pro workspace.
-    expect(w.monthlyIncludedUsd).toBeCloseTo(4.9, 6)
+    expect(res.source).toBe('window')
+    expect(walletByWs.get('ws-1').fiveHourUsedUsd).toBeCloseTo(5)
   })
 })
 
 describe('consumeCredits (legacy shim)', () => {
   test('converts credits to USD at $0.10/credit and proxies to consumeUsage', async () => {
-    seedWallet('ws-1', { dailyIncludedUsd: 1 })
+    seedWallet('ws-1')
     const res = await billing.consumeCredits('ws-1', null, 'm-1', 'chat', 2)
     expect(res.success).toBe(true)
-    expect(res.remainingCredits).toBeCloseTo((1 - 0.2) / 0.1) // remaining included divided
+    // billed 0.2; free window remaining = min(0.5-0.2, 2-0.2) = 0.3 → /0.1 = 3
+    expect(res.remainingCredits).toBeCloseTo(0.3 / 0.1)
   })
 
   test('propagates failure shape', async () => {
@@ -1113,6 +1132,31 @@ describe('syncSeatsFromMembership', () => {
     const r = await billing.syncSeatsFromMembership('ws-1')
     expect(r.ok).toBe(true)
     expect(r.seats).toBe(1)
+    // Regression: the wallet's included USD must reflect the seats the
+    // workspace is *entitled* to (1 paid + 5 granted free = 6), not just the
+    // member count. Previously this clobbered the allocation back to a single
+    // seat ($20), silently dropping the granted free seats' included usage.
+    expect(walletByWs.get('ws-1').monthlyIncludedUsd).toBe(120)
+    expect(walletByWs.get('ws-1').monthlyIncludedAllocationUsd).toBe(120)
+  })
+
+  test('does not clobber a grant allocation applied just before sync (prod repro)', async () => {
+    // Mirrors prod ticket: a Pro 1-seat personal workspace (1 member) gets a
+    // super-admin grant of 5 free seats + $250/mo. `allocateMonthlyIncluded`
+    // first sets the wallet to 20×(1+5) + 250 = $370; the follow-up
+    // `syncSeatsFromMembership` must NOT overwrite it with 20×1 + 250 = $270.
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'pro', seats: 1, stripeSubscriptionId: 'sub_1' }])
+    membersByWs.set('ws-1', [{ userId: 'u1', projectId: null }])
+    grantsByWs.set('ws-1', [{ freeSeats: 5, monthlyIncludedUsd: 250, planId: 'pro' }])
+
+    await billing.allocateMonthlyIncluded('ws-1', 'pro', 1)
+    expect(walletByWs.get('ws-1').monthlyIncludedUsd).toBe(370)
+
+    const r = await billing.syncSeatsFromMembership('ws-1')
+    expect(r.ok).toBe(true)
+    expect(r.seats).toBe(1)
+    expect(walletByWs.get('ws-1').monthlyIncludedUsd).toBe(370)
+    expect(walletByWs.get('ws-1').monthlyIncludedAllocationUsd).toBe(370)
   })
 })
 

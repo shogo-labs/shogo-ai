@@ -16,13 +16,101 @@ import { describe, test, expect } from 'bun:test'
 import {
   FREE_DAILY_INCLUDED_USD,
   SEAT_INCLUDED_USD,
+  ROLLING_WINDOW_LIMITS,
+  WEEKS_PER_MONTH,
   getDailyIncludedForPlan,
   getIncludedUsdCapacityForDisplay,
   getIncludedUsdForPlan,
+  getMonthlyIncludedEquivalent,
+  getWindowLimitsForPlan,
+  formatResetCountdown,
   formatUsd,
   formatCurrencyPrice,
   getPlanDisplayName,
 } from '../billing-config'
+
+describe('getWindowLimitsForPlan', () => {
+  test('returns free limits for free / unknown plans', () => {
+    expect(getWindowLimitsForPlan('free')).toEqual(ROLLING_WINDOW_LIMITS.free!)
+    expect(getWindowLimitsForPlan(undefined)).toEqual(ROLLING_WINDOW_LIMITS.free!)
+    expect(getWindowLimitsForPlan('mystery')).toEqual(ROLLING_WINDOW_LIMITS.free!)
+  })
+
+  test('does not scale single-pool plans by seats', () => {
+    expect(getWindowLimitsForPlan('basic', 5)).toEqual(ROLLING_WINDOW_LIMITS.basic!)
+  })
+
+  test('scales per-seat plans linearly', () => {
+    const proBase = ROLLING_WINDOW_LIMITS.pro!
+    const pro3 = getWindowLimitsForPlan('pro', 3)
+    expect(pro3).toEqual({ fiveHourUsd: proBase.fiveHourUsd * 3, weeklyUsd: proBase.weeklyUsd * 3 })
+    const bizBase = ROLLING_WINDOW_LIMITS.business!
+    const biz2 = getWindowLimitsForPlan('business', 2)
+    expect(biz2).toEqual({ fiveHourUsd: bizBase.fiveHourUsd * 2, weeklyUsd: bizBase.weeklyUsd * 2 })
+  })
+
+  test('clamps non-positive / fractional seats to at least 1', () => {
+    expect(getWindowLimitsForPlan('pro', 0)).toEqual(ROLLING_WINDOW_LIMITS.pro!)
+    expect(getWindowLimitsForPlan('pro', -4)).toEqual(ROLLING_WINDOW_LIMITS.pro!)
+  })
+
+  test('returns null (uncapped) for enterprise', () => {
+    expect(getWindowLimitsForPlan('enterprise', 99)).toBeNull()
+  })
+
+  test('matches legacy suffixed plan ids by prefix', () => {
+    expect(getWindowLimitsForPlan('pro_200', 1)).toEqual(ROLLING_WINDOW_LIMITS.pro!)
+  })
+})
+
+describe('getMonthlyIncludedEquivalent', () => {
+  test('is weeklyUsd × WEEKS_PER_MONTH for capped plans', () => {
+    expect(getMonthlyIncludedEquivalent('pro', 1)).toBeCloseTo(
+      ROLLING_WINDOW_LIMITS.pro!.weeklyUsd * WEEKS_PER_MONTH,
+      6,
+    )
+  })
+
+  test('scales per seat', () => {
+    expect(getMonthlyIncludedEquivalent('business', 3)).toBeCloseTo(
+      getMonthlyIncludedEquivalent('business', 1)! * 3,
+      6,
+    )
+  })
+
+  test('returns null for uncapped enterprise', () => {
+    expect(getMonthlyIncludedEquivalent('enterprise')).toBeNull()
+  })
+})
+
+describe('formatResetCountdown', () => {
+  const now = Date.parse('2026-05-30T12:00:00Z')
+
+  test('returns "" for no reset time', () => {
+    expect(formatResetCountdown(null, now)).toBe('')
+    expect(formatResetCountdown(undefined, now)).toBe('')
+  })
+
+  test('returns "now" when reset is in the past', () => {
+    expect(formatResetCountdown('2026-05-30T11:00:00Z', now)).toBe('now')
+  })
+
+  test('formats minutes only under an hour', () => {
+    expect(formatResetCountdown('2026-05-30T12:30:00Z', now)).toBe('30m')
+  })
+
+  test('formats hours + minutes under a day', () => {
+    expect(formatResetCountdown('2026-05-30T14:13:00Z', now)).toBe('2h 13m')
+  })
+
+  test('formats days + hours over a day', () => {
+    expect(formatResetCountdown('2026-06-02T16:00:00Z', now)).toBe('3d 4h')
+  })
+
+  test('returns "" for an unparseable value', () => {
+    expect(formatResetCountdown('not-a-date', now)).toBe('')
+  })
+})
 
 describe('getIncludedUsdCapacityForDisplay', () => {
   test('uses wallet-locked monthly allocation when set; paid plans get no daily top-up', () => {

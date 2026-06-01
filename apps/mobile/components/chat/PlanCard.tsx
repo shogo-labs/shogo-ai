@@ -240,7 +240,7 @@ function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConf
             >
               <Play className="h-3.5 w-3.5 text-primary-foreground" size={14} />
               <Text className="text-xs font-semibold text-primary-foreground">
-                Build Plan
+                Build
               </Text>
             </Pressable>
           )}

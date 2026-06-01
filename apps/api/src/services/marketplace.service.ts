@@ -122,7 +122,7 @@ export interface BrowseListingsOptions {
 export type SearchListingsOptions = BrowseListingsOptions;
 
 export interface PaginatedListingsResult {
-  items: MarketplaceListing[];
+  items: ListingWithCreator[];
   total: number;
   page: number;
   limit: number;
@@ -391,6 +391,7 @@ export async function browseListings(options: BrowseListingsOptions = {}): Promi
       orderBy,
       skip,
       take: limit,
+      include: { creator: true },
     }),
     prisma.marketplaceListing.count({ where }),
   ]);
@@ -441,6 +442,7 @@ export async function searchListings(
       orderBy,
       skip,
       take: limit,
+      include: { creator: true },
     }),
     prisma.marketplaceListing.count({ where }),
   ]);
@@ -453,7 +455,7 @@ export async function searchListings(
   };
 }
 
-export async function getFeaturedListings(limit = 12): Promise<MarketplaceListing[]> {
+export async function getFeaturedListings(limit = 12): Promise<ListingWithCreator[]> {
   const take = Math.min(100, Math.max(1, limit));
   return prisma.marketplaceListing.findMany({
     where: publishedListingBaseWhere({
@@ -461,6 +463,7 @@ export async function getFeaturedListings(limit = 12): Promise<MarketplaceListin
     }),
     orderBy: [{ featuredAt: 'desc' }, { publishedAt: 'desc' }],
     take,
+    include: { creator: true },
   });
 }
 

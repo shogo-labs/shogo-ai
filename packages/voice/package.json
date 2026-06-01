@@ -51,6 +51,12 @@
       "import": "./dist/route/tts-preview.js",
       "require": "./dist/route/tts-preview.cjs"
     },
+    "./route/music": {
+      "types": "./dist/route/music.d.ts",
+      "development": "./src/route/music.ts",
+      "import": "./dist/route/music.js",
+      "require": "./dist/route/music.cjs"
+    },
     "./route/agent": {
       "types": "./dist/route/agent.d.ts",
       "development": "./src/route/agent.ts",

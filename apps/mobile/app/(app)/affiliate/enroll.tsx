@@ -34,7 +34,6 @@ function describeError(code: string): string {
 export default function AffiliateEnrollScreen() {
   const router = useRouter()
   const http = useDomainHttp()
-  const [parentCode, setParentCode] = useState('')
   const [code, setCode] = useState('')
   const [accepted, setAccepted] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -50,7 +49,6 @@ export default function AffiliateEnrollScreen() {
     try {
       const res = await affiliateApi.enroll(http, {
         termsAccepted: true,
-        parentCode: parentCode.trim() || undefined,
         code: code.trim() || undefined,
       })
       if (res?.ok) {
@@ -64,7 +62,7 @@ export default function AffiliateEnrollScreen() {
     } finally {
       setSubmitting(false)
     }
-  }, [accepted, code, http, parentCode, router])
+  }, [accepted, code, http, router])
 
   return (
     <View className="flex-1 bg-background">
@@ -80,9 +78,8 @@ export default function AffiliateEnrollScreen() {
           <CardContent className="gap-3 p-5">
             <Text className="text-sm text-foreground">
               You'll get a unique link. When someone clicks it and pays for
-              Shogo, you earn a commission on their recurring subscription.
-              You also earn a smaller share when your referrals refer others
-              (up to a configurable depth).
+              Shogo, you earn 20% of their seat subscription for the first 12
+              months, then 10% forever after.
             </Text>
             <Text className="text-xs text-muted-foreground">
               Stripe issues a 1099-NEC if you earn $600+ in a calendar year.
@@ -91,17 +88,6 @@ export default function AffiliateEnrollScreen() {
             </Text>
           </CardContent>
         </Card>
-
-        <View className="gap-2">
-          <Text className="text-xs uppercase text-muted-foreground tracking-wide">Referred by (optional)</Text>
-          <Input
-            value={parentCode}
-            onChangeText={setParentCode}
-            placeholder="Referrer's code"
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-        </View>
 
         <View className="gap-2">
           <Text className="text-xs uppercase text-muted-foreground tracking-wide">Custom slug (optional)</Text>

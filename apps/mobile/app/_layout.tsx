@@ -75,6 +75,8 @@ import { RootErrorBoundary } from '../components/RootErrorBoundary'
 import { UpdateBanner } from '../components/UpdateBanner'
 import { captureAttribution } from '../lib/attribution'
 import { safeSetItem } from '../lib/safe-storage'
+import { setPendingLicenseCode } from '../lib/pending-license'
+import * as ExpoLinking from 'expo-linking'
 
 Sentry.init({
   dsn: sentryDsn,
@@ -129,11 +131,35 @@ function useCaptureTemplateDeepLink() {
   }, [])
 }
 
+// Capture a license-key redeem code from the deep link before the (app)
+// auth guard can redirect an unauthenticated user to sign-in (which drops
+// the query param). The home screen consumes it once the user is signed in
+// and has a workspace. See lib/pending-license.ts.
+function useCaptureRedeemDeepLink() {
+  const nativeUrl = ExpoLinking.useURL()
+  useEffect(() => {
+    if (Platform.OS === 'web') {
+      if (typeof window === 'undefined') return
+      const params = new URLSearchParams(window.location.search)
+      const code = params.get('redeem')
+      // Leave the param in place so the billing screen's own
+      // useLocalSearchParams read keeps working for signed-in direct
+      // visits; we only mirror it into storage as a signup-detour backup.
+      if (code) setPendingLicenseCode(code)
+      return
+    }
+    if (!nativeUrl) return
+    const code = ExpoLinking.parse(nativeUrl).queryParams?.redeem
+    if (typeof code === 'string' && code) setPendingLicenseCode(code)
+  }, [nativeUrl])
+}
+
 function RootLayoutInner() {
   csMark('root:layout:render')
   useEffect(() => { csMark('root:layout:mounted') }, [])
   useEffect(() => { captureAttribution() }, [])
   useCaptureTemplateDeepLink()
+  useCaptureRedeemDeepLink()
   const systemColorScheme = useColorScheme()
   const { theme, isLoaded } = useTheme()
 

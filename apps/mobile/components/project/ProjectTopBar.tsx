@@ -69,9 +69,10 @@ import {
   Globe,
   History,
 } from 'lucide-react-native'
-import { cn, Badge, Progress } from '@shogo/shared-ui/primitives'
+import { cn, Badge } from '@shogo/shared-ui/primitives'
+import type { UsageWindows } from '@shogo/shared-app/hooks'
 import { useTheme, type ThemePreference } from '../../contexts/theme'
-import { formatUsd } from '../../lib/billing-config'
+import { CompactUsageWindows } from '../billing/UsageWindows'
 import { PublishDropdown } from './PublishDropdown'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
@@ -121,8 +122,7 @@ export interface ProjectTopBarProps {
   hasActiveSubscription?: boolean
   workspaceName?: string
   planLabel?: string
-  usdRemaining?: number
-  usdTotal?: number
+  usageWindows?: UsageWindows
   ownerName?: string
   projectCreatedAt?: string | number
   projectModifiedAt?: string | number
@@ -230,8 +230,7 @@ export function ProjectTopBar({
   hasActiveSubscription = false,
   workspaceName = '',
   planLabel = 'Free',
-  usdRemaining = 0.5,
-  usdTotal = 0.5,
+  usageWindows,
   ownerName = '',
   projectCreatedAt,
   projectModifiedAt,
@@ -425,8 +424,7 @@ export function ProjectTopBar({
                   onClose={() => setShowDropdown(false)}
                   workspaceName={workspaceName}
                   planLabel={planLabel}
-                  usdRemaining={usdRemaining}
-                  usdTotal={usdTotal}
+                  usageWindows={usageWindows}
                   ownerName={ownerName}
                   projectCreatedAt={projectCreatedAt}
                   projectModifiedAt={projectModifiedAt}
@@ -591,8 +589,7 @@ export function ProjectTopBar({
                   onClose={() => setShowDropdown(false)}
                   workspaceName={workspaceName}
                   planLabel={planLabel}
-                  usdRemaining={usdRemaining}
-                  usdTotal={usdTotal}
+                  usageWindows={usageWindows}
                   ownerName={ownerName}
                   projectCreatedAt={projectCreatedAt}
                   projectModifiedAt={projectModifiedAt}
@@ -853,8 +850,7 @@ function ProjectDropdownContent({
   onClose,
   workspaceName,
   planLabel,
-  usdRemaining,
-  usdTotal,
+  usageWindows,
   ownerName,
   projectCreatedAt,
   projectModifiedAt,
@@ -873,8 +869,7 @@ function ProjectDropdownContent({
   onClose: () => void
   workspaceName: string
   planLabel: string
-  usdRemaining: number
-  usdTotal: number
+  usageWindows?: UsageWindows
   ownerName: string
   projectCreatedAt?: string | number
   projectModifiedAt?: string | number
@@ -906,8 +901,7 @@ function ProjectDropdownContent({
       projectName={projectName}
       workspaceName={workspaceName}
       planLabel={planLabel}
-      usdRemaining={usdRemaining}
-      usdTotal={usdTotal}
+      usageWindows={usageWindows}
       onGoToDashboard={onGoToDashboard}
       onSwitchProject={() => setView('switcher')}
       onClose={onClose}
@@ -934,8 +928,7 @@ function ProjectMenuView({
   projectName,
   workspaceName,
   planLabel,
-  usdRemaining,
-  usdTotal,
+  usageWindows,
   onGoToDashboard,
   onSwitchProject,
   onClose,
@@ -954,8 +947,7 @@ function ProjectMenuView({
   projectName: string
   workspaceName: string
   planLabel: string
-  usdRemaining: number
-  usdTotal: number
+  usageWindows?: UsageWindows
   onGoToDashboard: () => void
   onSwitchProject: () => void
   onClose: () => void
@@ -977,7 +969,6 @@ function ProjectMenuView({
   const [isExporting, setIsExporting] = useState(false)
   const { features } = usePlatformConfig()
   const showBilling = features.billing
-  const usdPercent = usdTotal > 0 ? (usdRemaining / usdTotal) * 100 : 0
 
   const runExport = useCallback(async (options: {
     includeChats: boolean
@@ -1128,56 +1119,15 @@ function ProjectMenuView({
 
         {showBilling && (
           <View className="px-4 pb-3">
-            <View className="bg-card border border-border rounded-lg p-3 gap-2">
-              {Platform.OS === 'web' ? (
-                <>
-                  <View className="flex-row items-center justify-between">
-                    <Text className="text-sm font-medium text-foreground">Usage</Text>
-                    <Pressable
-                      onPress={() => { onClose(); router.push('/(app)/billing' as any) }}
-                      className="flex-row items-center gap-1"
-                    >
-                      <Text className="text-sm font-medium text-foreground">
-                        {formatUsd(usdRemaining)} left
-                      </Text>
-                      <ChevronRight size={14} className="text-muted-foreground" />
-                    </Pressable>
-                  </View>
-                  <Progress
-                    value={usdPercent}
-                    className="h-1.5"
-                  />
-                </>
-              ) : (
-                <>
-                  <View className="flex-row items-center justify-between gap-2">
-                    <Text className="text-sm font-medium text-foreground shrink-0">Usage</Text>
-                    <Pressable
-                      onPress={() => { onClose(); router.push('/(app)/billing' as any) }}
-                      className="flex-row items-center gap-1 min-w-0 flex-1 justify-end"
-                    >
-                      <Text
-                        className="text-sm font-medium text-foreground text-right"
-                        numberOfLines={1}
-                        ellipsizeMode="tail"
-                      >
-                        {formatUsd(usdRemaining)} left
-                      </Text>
-                      <ChevronRight size={14} className="text-muted-foreground flex-shrink-0" />
-                    </Pressable>
-                  </View>
-                  <Progress
-                    value={usdPercent}
-                    className="h-1.5 w-full"
-                  />
-                </>
-              )}
-              <View className="flex-row items-center gap-1.5">
-                <View className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
-                <Text className="text-xs text-muted-foreground">
-                  Daily allowance resets at midnight UTC
-                </Text>
-              </View>
+            <View className="bg-card border border-border rounded-lg p-3 gap-2.5">
+              <Pressable
+                onPress={() => { onClose(); router.push('/(app)/billing' as any) }}
+                className="flex-row items-center justify-between"
+              >
+                <Text className="text-sm font-medium text-foreground">Usage</Text>
+                <ChevronRight size={14} className="text-muted-foreground" />
+              </Pressable>
+              <CompactUsageWindows windows={usageWindows} />
             </View>
           </View>
         )}

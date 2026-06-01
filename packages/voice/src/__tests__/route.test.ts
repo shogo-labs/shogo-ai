@@ -27,6 +27,7 @@ import * as signedUrlRoute from '../route/signed-url'
 import * as ttsPreviewRoute from '../route/tts-preview'
 import * as agentRoute from '../route/agent'
 import * as audioTagsRoute from '../route/audio-tags'
+import * as musicRoute from '../route/music'
 import { createVoiceRoute } from '../route/index'
 
 const ORIGINAL_RT = process.env.RUNTIME_AUTH_SECRET
@@ -87,6 +88,59 @@ describe('per-resource module exports', () => {
 
   test('audio-tags exports a GET function', () => {
     expect(typeof audioTagsRoute.GET).toBe('function')
+  })
+
+  test('music exports a POST function', () => {
+    expect(typeof musicRoute.POST).toBe('function')
+  })
+})
+
+describe('music POST (proxy mode via env auto-detect)', () => {
+  test('forwards a prompt body to the Shogo API and streams audio back', async () => {
+    process.env.RUNTIME_AUTH_SECRET = 'rt_music'
+    process.env.PROJECT_ID = 'proj_music'
+    process.env.SHOGO_API_URL = 'http://api.local'
+    fetchHandler = () => ({ status: 200, body: { ok: true } })
+
+    const res = await musicRoute.POST(
+      new Request('http://pod/api/voice/music', {
+        method: 'POST',
+        body: JSON.stringify({ prompt: 'lofi beats', musicLengthMs: 15000 }),
+      }),
+    )
+    expect(res.status).toBe(200)
+    expect(fetchCalls).toHaveLength(1)
+    const [call] = fetchCalls
+    expect(call.url).toBe('http://api.local/api/voice/music?projectId=proj_music')
+    const headers = (call.init.headers ?? {}) as Record<string, string>
+    expect(headers['x-runtime-token']).toBe('rt_music')
+    expect(JSON.parse(call.init.body as string)).toEqual({
+      prompt: 'lofi beats',
+      musicLengthMs: 15000,
+    })
+  })
+
+  test('rejects a body with both prompt and compositionPlan (400, no network)', async () => {
+    process.env.RUNTIME_AUTH_SECRET = 'rt'
+    process.env.PROJECT_ID = 'p'
+
+    const res = await musicRoute.POST(
+      new Request('http://pod/api/voice/music', {
+        method: 'POST',
+        body: JSON.stringify({ prompt: 'x', compositionPlan: { sections: [] } }),
+      }),
+    )
+    expect(res.status).toBe(400)
+    expect(fetchCalls).toHaveLength(0)
+  })
+
+  test('non-POST request returns 405', async () => {
+    process.env.RUNTIME_AUTH_SECRET = 'rt'
+    process.env.PROJECT_ID = 'p'
+    const res = await musicRoute.POST(
+      new Request('http://pod/api/voice/music', { method: 'GET' }),
+    )
+    expect(res.status).toBe(405)
   })
 })
 
@@ -196,6 +250,7 @@ describe('createVoiceRoute (BYO-EL factory)', () => {
     })
     expect(typeof voice.signedUrl.GET).toBe('function')
     expect(typeof voice.ttsPreview.POST).toBe('function')
+    expect(typeof voice.music.POST).toBe('function')
     expect(typeof voice.agent.POST).toBe('function')
     expect(typeof voice.agent.PATCH).toBe('function')
     expect(typeof voice.agent.DELETE).toBe('function')
