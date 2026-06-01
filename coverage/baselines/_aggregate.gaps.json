@@ -1732,6 +1732,48 @@
       "delta": "+0.33pp lines / +0.12pp funcs",
       "commitsSincePrevSync": 86,
       "note": "Gate OPEN (86 commits \u2265 3). Full fresh re-measurement attempted across all 11 packages but surfaced methodology drift: (1) Bun loaded-files-only lcov drops never-imported src from denominator (apps/api 6, agent-runtime 33 missing files); (2) augmenting with all-src over-penalizes voice/agent/sdk client code that is not bun-unit-testable; (3) sdk + model-catalog test infra broken post-merge (pinned). Headline therefore held on sanctioned pin+delta; fresh numbers archived under freshMeasurement_2026_06_01 for the upcoming denominator-reconciliation task. Frontend badge NOT touched."
+    },
+    {
+      "sha": "39e99b4d",
+      "wave": "Wave 4",
+      "session": "Session 10b \u2014 agent-runtime channel-adapter greenfield sweep",
+      "kind": "test(coverage)",
+      "date": "2026-06-01",
+      "files": [
+        {
+          "path": "packages/agent-runtime/src/channels/whatsapp.ts",
+          "before": 0.0,
+          "afterLines": 100.0
+        },
+        {
+          "path": "packages/agent-runtime/src/channels/slack.ts",
+          "before": 0.0,
+          "afterLines": 100.0
+        },
+        {
+          "path": "packages/agent-runtime/src/channels/teams.ts",
+          "before": 0.0,
+          "afterLines": 100.0
+        },
+        {
+          "path": "packages/agent-runtime/src/channels/telegram.ts",
+          "before": 0.0,
+          "afterLines": 100.0
+        },
+        {
+          "path": "packages/agent-runtime/src/channels/webhook.ts",
+          "before": 0.0,
+          "afterLines": 100.0
+        },
+        {
+          "path": "packages/agent-runtime/src/channels/discord.ts",
+          "before": 0.0,
+          "afterLines": 99.47
+        }
+      ],
+      "newTests": 56,
+      "approxGreenfieldLines": 2690,
+      "note": "6 of the 33 never-loaded agent-runtime src files (flagged in freshMeasurement_2026_06_01) covered via one shared fetch+FakeWebSocket harness. Standalone test file, restores globals in afterEach \u2014 verified no leakage into gateway-tools.channel-connect. No prod code changed."
     }
   ],
   "frontend": {
