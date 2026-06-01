@@ -52,6 +52,8 @@ interface AdminLicenseKey {
   redeemedByWorkspaceId: string | null
   redeemedByUserId: string | null
   redeemedGrantId: string | null
+  redeemedByUser: { id: string; name: string | null; email: string } | null
+  redeemedByWorkspace: { id: string; name: string; slug: string } | null
   note: string | null
   createdByUserId: string | null
   createdAt: string
@@ -138,11 +140,23 @@ function LicenseKeyRow({
 }) {
   const state = keyState(licenseKey)
   const pill = STATE_PILL[state]
-  const subtitle = licenseKey.batchId
-    ? `Batch ${licenseKey.batchId}`
-    : licenseKey.expiresAt
-      ? `Expires ${new Date(licenseKey.expiresAt).toLocaleDateString()}`
-      : licenseKey.note || 'No batch'
+  const redeemer =
+    licenseKey.redeemedByUser?.email ||
+    licenseKey.redeemedByUser?.name ||
+    (licenseKey.redeemedByUserId ? `User ${licenseKey.redeemedByUserId.slice(0, 8)}…` : null)
+  const redeemedWorkspace =
+    licenseKey.redeemedByWorkspace?.name ||
+    (licenseKey.redeemedByWorkspaceId
+      ? `Workspace ${licenseKey.redeemedByWorkspaceId.slice(0, 8)}…`
+      : null)
+  const subtitle =
+    state === 'redeemed'
+      ? `Redeemed by ${redeemer ?? 'unknown'}${redeemedWorkspace ? ` · ${redeemedWorkspace}` : ''}`
+      : licenseKey.batchId
+        ? `Batch ${licenseKey.batchId}`
+        : licenseKey.expiresAt
+          ? `Expires ${new Date(licenseKey.expiresAt).toLocaleDateString()}`
+          : licenseKey.note || 'No batch'
 
   return (
     <View
@@ -208,7 +222,11 @@ function LicenseKeyRow({
             </Pressable>
           ) : (
             <Text className="text-xs text-muted-foreground">
-              {new Date(licenseKey.createdAt).toLocaleDateString(undefined, {
+              {new Date(
+                state === 'redeemed' && licenseKey.redeemedAt
+                  ? licenseKey.redeemedAt
+                  : licenseKey.createdAt,
+              ).toLocaleDateString(undefined, {
                 month: 'short',
                 day: 'numeric',
               })}

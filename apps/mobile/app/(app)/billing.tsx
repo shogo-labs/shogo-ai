@@ -37,6 +37,7 @@ import {
 import { useAuth } from '../../contexts/auth'
 import { useWorkspaceCollection, useDomainHttp } from '../../contexts/domain'
 import { api } from '../../lib/api'
+import { clearPendingLicenseCode } from '../../lib/pending-license'
 import { openWebAppSession } from '../../lib/openWebAppSession'
 import { purchaseSubscription, finishPurchase, restorePurchases, initIapListeners, IapError, APP_STORE_SUBSCRIPTIONS_URL } from '../../lib/iap'
 import type { IapPurchaseResult } from '../../lib/iap'
@@ -162,6 +163,9 @@ export default observer(function BillingPage() {
     const code = Array.isArray(redeemParam) ? redeemParam[0] : redeemParam
     if (!code) return
     setLicenseCode(code.trim().toUpperCase())
+    // Consumed — drop any stashed copy so it can't re-trigger a later
+    // navigation back to billing.
+    clearPendingLicenseCode()
     const t = setTimeout(() => licenseInputRef.current?.focus(), 350)
     return () => clearTimeout(t)
   }, [redeemParam])

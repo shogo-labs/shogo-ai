@@ -897,6 +897,7 @@ export interface AffiliateSummary {
   affiliate: any
   clicks30d: number
   signups30d: number
+  commissions30d: number
   pendingCents: number
   approvedCents: number
   paidCents: number
@@ -910,12 +911,15 @@ export async function getAffiliateSummary(userId: string, now: Date = new Date()
 
   const since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
 
-  const [clicks30d, signups30d, commissionStats, downline] = await Promise.all([
+  const [clicks30d, signups30d, commissions30d, commissionStats, downline] = await Promise.all([
     prisma.affiliateClick.count({
       where: { affiliateId: affiliate.id, createdAt: { gte: since } },
     }),
     prisma.affiliateAttribution.count({
       where: { affiliateId: affiliate.id, attributedAt: { gte: since } },
+    }),
+    prisma.affiliateCommission.count({
+      where: { affiliateId: affiliate.id, createdAt: { gte: since } },
     }),
     prisma.affiliateCommission.groupBy({
       by: ['status'],
@@ -952,6 +956,7 @@ export async function getAffiliateSummary(userId: string, now: Date = new Date()
     affiliate,
     clicks30d,
     signups30d,
+    commissions30d,
     pendingCents: byStatus.pending ?? 0,
     approvedCents: byStatus.approved ?? 0,
     paidCents: byStatus.paid ?? 0,

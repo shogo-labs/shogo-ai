@@ -389,6 +389,13 @@ export interface ListLicenseKeysFilter {
  * List license keys for an admin UI. Plaintext is intentionally absent
  * — we only ever store the hash. `codePrefix` is enough to identify a
  * key during reconciliation.
+ *
+ * Redeemed keys are enriched with `redeemedByUser` (email/name) and
+ * `redeemedByWorkspace` (name/slug) so the admin can see *who* redeemed
+ * a key without a second round-trip. These are resolved via batched
+ * lookups (one query each) rather than a Prisma relation because the
+ * `redeemedByUserId` / `redeemedByWorkspaceId` columns are plain
+ * nullable strings, not foreign-key relations on `LicenseKey`.
  */
 export async function listLicenseKeys(filter: ListLicenseKeysFilter = {}) {
   const limit = Math.min(Math.max(filter.limit ?? 100, 1), 1000)
@@ -396,7 +403,7 @@ export async function listLicenseKeys(filter: ListLicenseKeysFilter = {}) {
   if (filter.batchId) where.batchId = filter.batchId
   if (filter.redeemed === true) where.redeemedAt = { not: null }
   if (filter.redeemed === false) where.redeemedAt = null
-  return prisma.licenseKey.findMany({
+  const keys = await prisma.licenseKey.findMany({
     where,
     orderBy: { createdAt: 'desc' },
     take: limit,
@@ -419,6 +426,39 @@ export async function listLicenseKeys(filter: ListLicenseKeysFilter = {}) {
       createdAt: true,
     },
   })
+
+  const userIds = Array.from(
+    new Set(keys.map((k) => k.redeemedByUserId).filter((id): id is string => !!id)),
+  )
+  const workspaceIds = Array.from(
+    new Set(keys.map((k) => k.redeemedByWorkspaceId).filter((id): id is string => !!id)),
+  )
+
+  const [users, workspaces] = await Promise.all([
+    userIds.length
+      ? prisma.user.findMany({
+          where: { id: { in: userIds } },
+          select: { id: true, name: true, email: true },
+        })
+      : Promise.resolve([] as { id: string; name: string | null; email: string }[]),
+    workspaceIds.length
+      ? prisma.workspace.findMany({
+          where: { id: { in: workspaceIds } },
+          select: { id: true, name: true, slug: true },
+        })
+      : Promise.resolve([] as { id: string; name: string; slug: string }[]),
+  ])
+
+  const userById = new Map(users.map((u) => [u.id, u]))
+  const workspaceById = new Map(workspaces.map((w) => [w.id, w]))
+
+  return keys.map((k) => ({
+    ...k,
+    redeemedByUser: k.redeemedByUserId ? userById.get(k.redeemedByUserId) ?? null : null,
+    redeemedByWorkspace: k.redeemedByWorkspaceId
+      ? workspaceById.get(k.redeemedByWorkspaceId) ?? null
+      : null,
+  }))
 }
 
 /**
