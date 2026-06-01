@@ -17,6 +17,8 @@ import { getDesktopGitBridge } from "./git/bridge";
 import { getDesktopFsBridge } from "./workspace/desktopFs";
 import { EditorGroupView } from "./EditorGroup";
 import { applyEditorChange } from "./editor-change-apply";
+import { collectDirtyFiles, resolveSaveTarget } from "./save-target";
+import { findEditorForFileId } from "./model-by-uri";
 import { isImagePath } from "./ImagePreview";
 import {
   isAudioPath,
@@ -959,12 +961,48 @@ export function Workbench({
   );
 
   // ─── Save ────────────────────────────────────────────────────────────
-  const persistOpenFile = useCallback(
-    async (f: OpenFile, silent?: boolean): Promise<boolean> => {
+  // BUG-003 fix: every save-time operation resolves through the file's
+  // STABLE id, captured at invocation. We never read `active` here, never
+  // call `editor.getActiveModel()`, never trust a closure capture. The
+  // file id is the safe key:
+  //
+  //   1. resolveSaveTarget(groupsRef.current, id)  — latest snapshot from
+  //      the live ref, not a render-tick-stale closure;
+  //   2. findEditorForFileId(editorRefs, id)       — the editor whose
+  //      attached model has THIS file's URI, so format-on-save's
+  //      formatDocument runs against the right document (and therefore
+  //      against the right JSON-schema fileMatch, fixing the canvas-
+  //      reported "schema validation runs against wrong file" symptom).
+  const persistByFileId = useCallback(
+    async (id: string, opts?: { silent?: boolean }): Promise<boolean> => {
+      const f = resolveSaveTarget(groupsRef.current, id);
+      if (!f) return false; // closed mid-flight — drop silently
       const svc = svcOf(f.rootId);
       if (!svc) return false;
-      const content = f.content;
-      const id = f.id;
+
+      let content = f.content;
+      // Format-on-save: locate the editor whose model is THIS file (never
+      // the "active" model — which is racy across tab swaps and ambiguous
+      // across split groups), then trigger the formatter through it. After
+      // the formatter applied edits, read the final content from the model
+      // — the React-state `content` is one keystroke stale by then.
+      if (settings.formatOnSave) {
+        const ed = findEditorForFileId(Object.values(editorRefs.current), id);
+        if (ed) {
+          try {
+            const action = ed.getAction?.("editor.action.formatDocument");
+            if (action) await action.run();
+            const m = ed.getModel();
+            if (m) content = m.getValue();
+          } catch {
+            // Format failures must NEVER block the save — log via toast
+            // only when not silent, then proceed with the unformatted
+            // content (matches VS Code's behaviour).
+            if (!opts?.silent) showToast("Format on save failed; saving unformatted", 2500);
+          }
+        }
+      }
+
       try {
         await svc.writeFile(f.path, content);
         let applied = false;
@@ -973,6 +1011,10 @@ export function Workbench({
             ...g,
             files: g.files.map((x) => {
               if (x.id !== id) return x;
+              // If the user kept typing between the format step and the
+              // setState, `x.content` may be ahead of the `content` we
+              // wrote to disk. Don't clobber the dirty flag in that case
+              // — the file is still dirty until the LATEST content lands.
               if (x.content !== content) return x;
               applied = true;
               return { ...x, dirty: false, savedContent: content };
@@ -980,39 +1022,60 @@ export function Workbench({
           })),
         );
         if (applied) setConflicts((cs) => cs.filter((c) => c.fileId !== id));
-        // G4.5 auto-stage: if this file was a merge conflict and the user
-        // saved a buffer with no conflict markers left, treat it as
-        // resolved and `git add` it. No-op on web/native (bridge null).
         const root = gitWorkspaceRootRef.current;
         if (root) {
           void maybeAutoStageIfConflictResolved(root, f.path, content);
         }
-        if (!silent) showToast(`Saved ${f.name}`);
+        if (!opts?.silent) showToast(`Saved ${f.name}`);
         return true;
       } catch (err) {
         showToast(`Save failed: ${err instanceof Error ? err.message : String(err)}`, 3000);
         return false;
       }
     },
-    [svcOf, showToast],
+    [svcOf, showToast, settings.formatOnSave],
+  );
+
+  // Compat shim: a couple of older call sites (autosave timer, merge editor)
+  // still pass an OpenFile snapshot. Route them through persistByFileId
+  // using the id — `f.id` is stable across React renders even if `f` itself
+  // is a stale snapshot, so the resolver still ends up reading the latest
+  // content from groupsRef.
+  const persistOpenFile = useCallback(
+    (f: OpenFile, silent?: boolean): Promise<boolean> =>
+      persistByFileId(f.id, { silent }),
+    [persistByFileId],
   );
 
   const handleSave = useCallback(async () => {
-    if (!active || !active.dirty) return;
-    await persistOpenFile(active);
-  }, [active, persistOpenFile]);
+    // Capture activeId at invocation (NOT active itself — that's the React
+    // render's closure). The actual file is resolved from groupsRef inside
+    // persistByFileId, so this stays correct even if the user has swapped
+    // tabs since Cmd+S was pressed (their intent was to save what was
+    // active when they pressed the key).
+    const id = active?.id;
+    if (!id) return;
+    const f = resolveSaveTarget(groupsRef.current, id);
+    if (!f?.dirty) return;
+    await persistByFileId(id);
+  }, [active?.id, persistByFileId]);
 
   const handleSaveAll = useCallback(async () => {
-    const dirty = groups.flatMap((g) => g.files.filter((f) => f.dirty));
+    // Read directly from the live ref so we see the same set every render
+    // would see — and dedupe by id (same file open in two split groups
+    // must not be written twice).
+    const dirty = collectDirtyFiles(groupsRef.current);
     if (!dirty.length) {
       showToast("Nothing to save");
       return;
     }
-    const results = await Promise.all(dirty.map((f) => persistOpenFile(f, true)));
+    const results = await Promise.all(
+      dirty.map((f) => persistByFileId(f.id, { silent: true })),
+    );
     if (results.every(Boolean)) {
       showToast(`Saved ${dirty.length} file${dirty.length === 1 ? "" : "s"}`);
     }
-  }, [groups, persistOpenFile, showToast]);
+  }, [persistByFileId, showToast]);
 
   // Auto save: debounce while typing; flush when switching away from a tab.
   useEffect(() => {
