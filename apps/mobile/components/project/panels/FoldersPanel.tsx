@@ -8,16 +8,12 @@
  * native picker, mark a folder primary (where `.shogo/` lives), or
  * remove non-primary folders.
  *
- * Banner behaviour:
- *   - When `runtimeEnabled === false`, render an "Enable preview" prompt
- *     explaining that the Vite/Metro dev server is off by default and
- *     offering a switch to opt in. We deliberately don't auto-run
- *     `bun install` for the user — see plan §5, "respect their package
- *     manager".
- *   - When the project isn't external mode at all, render an
- *     informational empty state instead of nothing — saves the user
- *     wondering why the panel is blank if they navigated here from a
- *     managed project.
+ * Also surfaces an "External preview URL" control so users who run their
+ * own dev server (Vite/Metro/etc.) can tell Shogo which local URL the
+ * "Preview" tab should embed. When the project isn't external mode at
+ * all, render an informational empty state instead of nothing — saves
+ * the user wondering why the panel is blank if they navigated here from
+ * a managed project.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ActivityIndicator, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
@@ -32,10 +28,10 @@ import {
   Trash2,
   ShieldAlert,
   ShieldCheck,
-  PlaySquare,
 } from 'lucide-react-native'
 import { useDomainHttp } from '../../../contexts/domain'
 import { API_URL } from '../../../lib/api'
+import { useOpenLocalFolder } from '../useOpenLocalFolder'
 
 interface ProjectFolder {
   id: string
@@ -49,7 +45,6 @@ interface ProjectShape {
   id: string
   name?: string
   workingMode?: 'managed' | 'external'
-  runtimeEnabled?: boolean
   trustLevel?: 'trusted' | 'restricted'
   projectFolders?: ProjectFolder[]
 }
@@ -90,17 +85,28 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
       | null
   }, [])
 
+  // "Open a folder" flow for the managed-project empty state — creates a
+  // new external (folder-linked) project and navigates to it. workspaceId
+  // is left undefined so the API binds it to the user's personal
+  // workspace (single-tenant local mode).
+  const { openFolder, isPicking, isAvailable: canOpenFolder } = useOpenLocalFolder({
+    workspaceId: undefined,
+  })
+
   const refresh = useCallback(async () => {
     if (!projectId) return
     setIsLoading(true)
     setError(null)
     try {
-      // The generated /api/projects/:id route already returns
-      // projectFolders via the include relation (model registered in
-      // shogo.config.json). We use the raw fetch path to bypass any
-      // collection store caching — folder state must reflect on the
-      // next render.
-      const res = await fetch(`${API_URL}/api/projects/${encodeURIComponent(projectId)}?include=projectFolders`, {
+      // Read from the local-projects route, which returns the
+      // `projectFolders` relation alongside `workingMode` / `trustLevel`
+      // in a `{ project }` envelope. The generated `/api/projects/:id`
+      // route does NOT include the folders relation and wraps its body in
+      // `{ ok, data }` — reading that here is what made an external
+      // project mis-render as "Managed project" (workingMode read as
+      // undefined). Raw fetch (not the collection store) so folder state
+      // reflects on the next render without cache staleness.
+      const res = await fetch(`${API_URL}/api/local/projects/${encodeURIComponent(projectId)}`, {
         credentials: Platform.OS === 'web' ? 'include' : 'omit',
       })
       if (!res.ok) {
@@ -108,7 +114,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
         return
       }
       const data: any = await res.json()
-      setProject(data?.project ?? data ?? null)
+      setProject(data?.project ?? null)
     } catch (err: any) {
       setError(err?.message ?? 'Failed to load folders')
     } finally {
@@ -264,30 +270,6 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
     [http, projectId, refresh, onChange],
   )
 
-  const handleEnablePreview = useCallback(async () => {
-    setBusy('runtime')
-    try {
-      // No dedicated route yet — flip `runtimeEnabled` via the generated
-      // /api/projects/:id PATCH route (Project model owns the column).
-      await http.patch(`/api/projects/${encodeURIComponent(projectId)}`, {
-        runtimeEnabled: true,
-      })
-      // Kick a runtime start so the agent picks up Vite/Metro on next
-      // chat turn without waiting for the user to send a message.
-      try {
-        await http.post(`/api/projects/${encodeURIComponent(projectId)}/runtime/start`, {})
-      } catch {
-        /* best-effort */
-      }
-      await refresh()
-      onChange?.()
-    } catch (err: any) {
-      setError(err?.message ?? 'Failed to enable preview')
-    } finally {
-      setBusy(null)
-    }
-  }, [http, projectId, refresh, onChange])
-
   const handleToggleTrust = useCallback(async () => {
     if (!project) return
     const next = project.trustLevel === 'trusted' ? false : true
@@ -353,8 +335,31 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
           </Text>
           <Text className="text-sm text-muted-foreground text-center">
             This project lives in Shogo's managed workspace, not a folder on your machine.
-            Folder linking is available for "Open Folder…" projects only.
+            Folder linking and Workspace Trust apply to "Open Folder…" projects.
           </Text>
+          {canOpenFolder ? (
+            <Pressable
+              onPress={() => void openFolder()}
+              disabled={isPicking}
+              className={cn(
+                'mt-4 flex-row items-center gap-1.5 rounded-lg px-3.5 py-2',
+                isPicking ? 'bg-muted' : 'bg-primary active:opacity-80',
+              )}
+            >
+              <FolderPlus
+                size={14}
+                className={isPicking ? 'text-muted-foreground' : 'text-primary-foreground'}
+              />
+              <Text
+                className={cn(
+                  'text-xs font-medium',
+                  isPicking ? 'text-muted-foreground' : 'text-primary-foreground',
+                )}
+              >
+                {isPicking ? 'Opening\u2026' : 'Open a folder'}
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
       ) : (
         <ScrollView className="flex-1" contentContainerClassName="pb-6">
@@ -378,7 +383,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                   busy === 'trust' ? 'opacity-60' : 'active:opacity-80',
                 )}
               >
-                <Text className="text-[11px] font-medium text-white">Trust</Text>
+                <Text className="text-[11px] font-medium text-white">Trust folder</Text>
               </Pressable>
             </View>
           ) : (
@@ -392,34 +397,10 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                 disabled={busy === 'trust'}
                 className="active:opacity-60"
               >
-                <Text className="text-[11px] text-muted-foreground underline">Revoke</Text>
+                <Text className="text-[11px] text-muted-foreground underline">Restrict</Text>
               </Pressable>
             </View>
           )}
-
-          {/* Preview opt-in banner. */}
-          {project?.runtimeEnabled === false ? (
-            <View className="mx-4 mt-3 rounded-lg border border-border bg-card px-3 py-3 flex-row items-start gap-2">
-              <PlaySquare size={16} className="text-muted-foreground mt-0.5" />
-              <View className="flex-1">
-                <Text className="text-xs font-medium text-foreground">Live preview is off</Text>
-                <Text className="text-[11px] text-muted-foreground mt-0.5">
-                  Shogo won't run Vite or Metro inside your repo unless you opt in. We respect
-                  your existing package manager.
-                </Text>
-              </View>
-              <Pressable
-                onPress={handleEnablePreview}
-                disabled={busy === 'runtime'}
-                className={cn(
-                  'rounded-md bg-primary px-2.5 py-1',
-                  busy === 'runtime' ? 'opacity-60' : 'active:opacity-80',
-                )}
-              >
-                <Text className="text-[11px] font-medium text-primary-foreground">Enable preview</Text>
-              </Pressable>
-            </View>
-          ) : null}
 
           {/* External preview URL — for "I'm running my own dev server"
               workflows. The "Preview" tab embeds whatever URL is saved
