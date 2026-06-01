@@ -1804,6 +1804,46 @@
       "newTests": 10,
       "approxGreenfieldLines": 1440,
       "note": "3 more of the never-loaded agent-runtime src files (pure constants + recipe catalog) \u2192 100%. Standalone test, no prod change."
+    },
+    {
+      "sha": "bf0f198a",
+      "wave": "Wave 4",
+      "session": "Session 10d \u2014 cross-package greenfield sweep (agent-runtime + shogo-worker)",
+      "kind": "test(coverage)",
+      "date": "2026-06-01",
+      "files": [
+        {
+          "path": "packages/agent-runtime/src/integration-catalog.ts",
+          "before": 0.0,
+          "afterLines": 100.0,
+          "afterFuncs": 100.0
+        },
+        {
+          "path": "packages/shogo-worker/src/lib/api-discovery.ts",
+          "before": 0.0,
+          "afterLines": 100.0,
+          "afterFuncs": 100.0
+        },
+        {
+          "path": "packages/shogo-worker/src/lib/process-manager.ts",
+          "before": 0.0,
+          "afterLines": 100.0,
+          "afterFuncs": 92.31
+        },
+        {
+          "path": "packages/shogo-worker/src/lib/preflight.ts",
+          "before": 0.0,
+          "afterLines": 99.08,
+          "afterFuncs": 92.86
+        }
+      ],
+      "alsoTestedNoCredit": [
+        "packages/agent-runtime/src/template-generator/grouper.ts",
+        "packages/agent-runtime/src/template-generator/skill-reader.ts (template-generator/** excluded in bunfig)"
+      ],
+      "newTests": 33,
+      "approxInScopeGreenfieldLines": 430,
+      "note": "integration-catalog (116) + shogo-worker api-discovery/process-manager/preflight (~315). Verified no mock.module leakage: shogo-worker 256/0 across 17 files. preflight line 39 (5s abort-timeout arrow) left uncovered \u2014 impractical to drive, no istanbul pragma."
     }
   ],
   "frontend": {
