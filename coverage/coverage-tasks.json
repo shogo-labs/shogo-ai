@@ -46,9 +46,9 @@
   },
   {
    "package": "packages/shared-runtime",
-   "linesHit": 3658,
-   "linesFound": 4188,
-   "linePct": 87.34,
+   "linesHit": 3816,
+   "linesFound": 4284,
+   "linePct": 89.08,
    "funcsHit": 377,
    "funcsFound": 439,
    "funcPct": 85.88
@@ -1143,8 +1143,8 @@
  "lastUpdated": "2026-06-01",
  "aggregate": {
   "lines": {
-   "hit": 79075,
-   "total": 93805,
+   "hit": 79076,
+   "total": 93806,
    "pct": 84.3
   },
   "functions": {

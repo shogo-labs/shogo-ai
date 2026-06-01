@@ -3,8 +3,8 @@
  "note": "Honest v2 aggregate from per-file-isolated test runs (apps/api + agent-runtime + shared-runtime use run-tests-isolated.ts to merge ~141 per-test-file lcovs each), comment-stripped via coverage-strip-comments.ts. Strict per-package src/ scoping via scripts/sum-lcov.ts --include. Aggregate 87.81% lines. Frontend badge UNTOUCHED.",
  "aggregate": {
   "lines": {
-   "hit": 79075,
-   "total": 93805,
+   "hit": 79076,
+   "total": 93806,
    "pct": 84.3
   },
   "functions": {
@@ -44,9 +44,9 @@
   },
   {
    "package": "packages/shared-runtime",
-   "linesHit": 3815,
-   "linesFound": 4283,
-   "linePct": 89.07,
+   "linesHit": 3816,
+   "linesFound": 4284,
+   "linePct": 89.08,
    "funcsHit": 389,
    "funcsFound": 444,
    "funcPct": 87.61
@@ -1913,6 +1913,34 @@
     }
    },
    "note": "Gate open: 9 commits since last README bump 2360349c (>=3). Sessions 10b-10e were 4 test(coverage) source commits, all pure test additions (no production change) so no pre-existing coverage regressed. Full shogo-worker lcov-sum unreliable (bun captured only 5 of ~25 files) -> used pin+delta per v4 rule."
+  },
+  {
+   "sha": "PENDING_SYNC",
+   "kind": "docs(coverage) \u2014 Sync Readme",
+   "date": "2026-06-01",
+   "syncRun": true,
+   "lastSyncSha": "2c9e720a",
+   "commitsSinceLastSync": 4,
+   "sourceCommits": [
+    "6f51562a",
+    "47247ea5",
+    "6d84af4d"
+   ],
+   "before": {
+    "lines": "84.30% (79075/93805)",
+    "functions": "80.91% (6189/7649)"
+   },
+   "after": {
+    "lines": "84.30% (79076/93806)",
+    "functions": "80.91% (6189/7649)"
+   },
+   "delta": {
+    "lines": "+0.00pp (sub-rounding)",
+    "functions": "0.00pp"
+   },
+   "method": "stabilization sync \u2014 re-measured shared-runtime (crash fixed), pinned others",
+   "note": "The 3 source commits since last sync were STABILIZATION test-fixes (group a + g), not coverage-expansion sessions: (1) 6f51562a shared-runtime pod-env-leak crash fix via test preload \u2014 suite now completes deterministically (467 pass) instead of crashing at ~250; full re-measure 3816/4284 = 89.08% (+1 line vs baseline, i.e. baseline already reflected the full file set). (2) 47247ea5 agent-runtime browser navigate test \u2014 about:blank hard-fail path, already covered elsewhere. (3) 6d84af4d apps/api stripe self-heal + ai-proxy rolling-window tx.subscription mock \u2014 the now-reached chargeOverageBlocks/createCustomAccount paths are already covered by the canonical billing.service/stripe-connect.service suites (stripe-connect.service.ts measured 100%). Net aggregate delta is sub-rounding; headline holds at 84.30%. All 11 backend packages now green/deterministic (0 fail, 0 hang) \u2014 see stabilization sweep.",
+   "allPackagesGreen": true
   }
  ],
  "frontend": {
