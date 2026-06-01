@@ -4951,20 +4951,26 @@ app.patch('/api/admin/settings/infrastructure', async (c) => {
     const controller = getWarmPoolController()
     controller.updateConfig(patch)
 
-    // Persist each setting to DB
+    // Persist each setting to DB, scoped to THIS region. Infra settings are
+    // per-region operational knobs, and this endpoint always runs in the region
+    // it configures (cross-region admin lands here via the /api/admin/regions
+    // proxy), so REGION_ID is the correct scope. Writing `infra.<REGION_ID>.<key>`
+    // (instead of the legacy shared `infra.<key>`) stops one region's change from
+    // bleeding into the others — loadPersistedSettings reads regional > global.
     const { prisma } = await import('./lib/prisma')
     const auth = c.get('auth') as any
     const userId = auth?.user?.id || 'unknown'
 
     for (const [key, value] of Object.entries(patch)) {
+      const scopedKey = `infra.${REGION_ID}.${key}`
       await prisma.platformSetting.upsert({
-        where: { key: `infra.${key}` },
-        create: { key: `infra.${key}`, value: String(value), updatedBy: userId },
+        where: { key: scopedKey },
+        create: { key: scopedKey, value: String(value), updatedBy: userId },
         update: { value: String(value), updatedBy: userId },
       })
     }
 
-    return c.json({ ok: true, applied: patch, config: controller.getConfig() })
+    return c.json({ ok: true, applied: patch, region: REGION_ID, config: controller.getConfig() })
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
   }
