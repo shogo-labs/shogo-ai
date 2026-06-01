@@ -16,6 +16,7 @@ import { useRunScripts, useRunSession } from './useRunSession'
 import { useDebugSession } from './useDebugSession'
 import { DebugView } from './DebugView'
 import { AnsiText } from '../AnsiText'
+import { useStickyBottom } from '../sticky-bottom'
 
 interface Props {
   workspaceRoot: string | null
@@ -193,11 +194,13 @@ function RunDebugPanelInner({ workspaceRoot }: { workspaceRoot: string }) {
 
 function OutputView({ output }: { output: { stream: 'stdout' | 'stderr'; data: string }[] }) {
   const ref = React.useRef<HTMLDivElement>(null)
+  // BUG-009 fix: sticky-bottom — auto-scroll only when within 24px of
+  // bottom so the user can scroll up to read scrollback without being
+  // yanked back down on every new stdout chunk.
+  const { scrollToBottom } = useStickyBottom(ref)
   useEffect(() => {
-    if (ref.current) {
-      ref.current.scrollTop = ref.current.scrollHeight
-    }
-  }, [output.length])
+    scrollToBottom()
+  }, [output.length, scrollToBottom])
   if (output.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center px-3 text-[10px] text-[color:var(--ide-muted)]">

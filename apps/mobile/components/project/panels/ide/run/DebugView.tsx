@@ -23,6 +23,7 @@
  */
 import * as React from 'react'
 import type { UseDebugSessionApi } from './useDebugSession'
+import { useStickyBottom } from '../sticky-bottom'
 
 interface Props {
   api: UseDebugSessionApi
@@ -221,9 +222,12 @@ function AddBpButton({ onAdd, defaultUrl }: { onAdd: (url: string, line: number)
 
 function ConsoleLines({ lines }: { lines: ReadonlyArray<{ level: string; text: string; source?: string }> }) {
   const ref = React.useRef<HTMLDivElement>(null)
+  // BUG-009 fix: sticky-bottom — don't yank the user back when they
+  // scrolled up to read an earlier console line.
+  const { scrollToBottom } = useStickyBottom(ref)
   React.useEffect(() => {
-    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight
-  }, [lines.length])
+    scrollToBottom()
+  }, [lines.length, scrollToBottom])
   if (lines.length === 0) {
     return <div className="px-3 py-1.5 text-[10px] text-[color:var(--ide-muted)]">No output yet.</div>
   }
