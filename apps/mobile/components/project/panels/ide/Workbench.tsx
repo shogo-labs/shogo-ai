@@ -28,6 +28,7 @@ import {
   isVideoPath,
 } from "./MediaPreview";
 import { Palette, type PaletteItem } from "./Palette";
+import { buildDisambiguation, type QuickOpenFile } from "./quick-open-disambiguate";
 import {
   ideBottomPanelStore,
   useBottomPanelState,
@@ -1362,19 +1363,52 @@ export function Workbench({
   );
 
   const fileItems: PaletteItem[] = useMemo(() => {
-    const all: PaletteItem[] = [];
+    // UX-QUICKOPEN-PATH: collapse the sublabel to ONLY the parent-dir
+    // hint when it's actually disambiguating (or when multi-root is
+    // open and the root label is itself useful context). Full path
+    // remains fuzzy-searchable through PaletteItem.searchText, so
+    // typing `components/app` still finds App.tsx even when its row
+    // shows no visible parent-dir hint.
+    const multiRoot = roots.length > 1;
+    type Entry = {
+      id: string;
+      name: string;
+      path: string;
+      rootLabel: string;
+      run: () => void;
+    };
+    const entries: Entry[] = [];
+    const qoFiles: QuickOpenFile[] = [];
     for (const r of roots) {
       const flat = flattenFiles(r.tree);
       for (const n of flat) {
-        all.push({
-          id: fileId(n.rootId, n.path),
-          label: n.name,
-          sublabel: roots.length > 1 ? `${r.label} / ${n.path}` : n.path,
+        const id = fileId(n.rootId, n.path);
+        entries.push({
+          id,
+          name: n.name,
+          path: n.path,
+          rootLabel: r.label,
           run: () => handleOpenFile(n),
+        });
+        qoFiles.push({
+          id,
+          name: n.name,
+          path: n.path,
+          rootLabel: multiRoot ? r.label : undefined,
         });
       }
     }
-    return all;
+    const disambig = buildDisambiguation(qoFiles, { multiRoot });
+    return entries.map((e) => {
+      const d = disambig.get(e.id);
+      return {
+        id: e.id,
+        label: e.name,
+        sublabel: d?.display ?? undefined,
+        searchText: d?.searchText ?? e.path,
+        run: e.run,
+      };
+    });
   }, [roots, handleOpenFile]);
 
   // ─── Keyboard ────────────────────────────────────────────────────────
