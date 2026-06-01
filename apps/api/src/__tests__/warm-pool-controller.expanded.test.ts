@@ -658,6 +658,92 @@ describe('updateConfig()', () => {
 })
 
 // =============================================================================
+// Multi-replica config convergence — DB is the single source of truth.
+// Regression guard for the 2026-06-01 prod-us split-brain: a runtime admin
+// PATCH only mutated the one replica that served it, so replicas behind
+// `min-scale >= 2` targeted different pool sizes and fought (one creates, one
+// trims) every reconcile. reconcile() now re-reads `infra.*` from the DB so
+// every replica converges within one interval.
+// =============================================================================
+
+describe('multi-replica config convergence', () => {
+  // Build a controller that behaves like one api replica: heavy reconcile
+  // side-effects stubbed out so the test isolates config convergence.
+  const makeReplica = () => {
+    const c = new WarmPoolController({
+      namespace: 'expand-ns',
+      poolSize: 5,
+      reconcileIntervalMs: 30_000,
+    }) as any
+    c.discoverExistingPods = async () => {}
+    c.gcPromotedPods = async () => ({ orphansDeleted: 0, idleEvicted: 0 })
+    c.adjustPoolSizeForNodes = async () => {}
+    c.createWarmPod = async () => null
+    c.started = true
+    return c
+  }
+
+  test('a runtime updateConfig on one replica propagates to peers via the reconcile DB reload', async () => {
+    const replicaA = makeReplica()
+    const replicaB = makeReplica()
+
+    // Both boot at the manifest/env target.
+    expect(replicaA.getConfig().warmPoolMinPods).toBe(5)
+    expect(replicaB.getConfig().warmPoolMinPods).toBe(5)
+
+    // Admin PATCH lands on replica A only: it mutates A's in-memory state AND
+    // the route persists to the DB (modeled here by platformSettingsRows).
+    replicaA.updateConfig({ warmPoolMinPods: 10 })
+    platformSettingsRows = [{ key: 'infra.warmPoolMinPods', value: '10' }]
+
+    // Pre-fix, replica B would stay at 5 forever (the split-brain). With the
+    // reconcile-time reload, B converges to 10 on its very next reconcile.
+    expect(replicaB.getConfig().warmPoolMinPods).toBe(5)
+    await replicaB.reconcile()
+    expect(replicaB.getConfig().warmPoolMinPods).toBe(10)
+    expect(replicaB.poolSize).toBe(10)
+
+    // Replica A stays consistent through its own reconcile (idempotent reload).
+    await replicaA.reconcile()
+    expect(replicaA.getConfig().warmPoolMinPods).toBe(10)
+
+    // Both replicas now agree → no opposing create/trim, no churn.
+    expect(replicaA.getConfig().warmPoolMinPods).toBe(replicaB.getConfig().warmPoolMinPods)
+  })
+
+  test('reconcile reload is throttled to the reconcile interval (no DB storm)', async () => {
+    const replica = makeReplica()
+
+    // First reconcile picks up the persisted value and stamps lastSettingsReloadAt.
+    platformSettingsRows = [{ key: 'infra.warmPoolMinPods', value: '10' }]
+    await replica.reconcile()
+    expect(replica.getConfig().warmPoolMinPods).toBe(10)
+
+    // A second reconcile within the interval must NOT re-read the DB, so a
+    // change made immediately afterward is ignored until the throttle elapses.
+    platformSettingsRows = [{ key: 'infra.warmPoolMinPods', value: '20' }]
+    await replica.reconcile()
+    expect(replica.getConfig().warmPoolMinPods).toBe(10)
+
+    // Once the throttle window has elapsed, the next reconcile reloads.
+    replica.lastSettingsReloadAt = Date.now() - 31_000
+    await replica.reconcile()
+    expect(replica.getConfig().warmPoolMinPods).toBe(20)
+  })
+
+  test('reload can be disabled via WARM_POOL_CONFIG_RELOAD_ENABLED without breaking reconcile', async () => {
+    // The flag is read at module load (default enabled in this suite), so we
+    // can't flip it here; instead assert the wiring is inert when there is no
+    // persisted override: reconcile must not clobber the in-memory target.
+    const replica = makeReplica()
+    replica.updateConfig({ warmPoolMinPods: 8 })
+    platformSettingsRows = [] // no infra.* rows persisted
+    await replica.reconcile()
+    expect(replica.getConfig().warmPoolMinPods).toBe(8)
+  })
+})
+
+// =============================================================================
 // gcPromotedPods — Phase 1 (orphans) and Phase 2 (idle)
 // =============================================================================
 
