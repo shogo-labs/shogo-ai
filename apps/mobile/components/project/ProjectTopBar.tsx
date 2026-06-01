@@ -68,6 +68,8 @@ import {
   FolderTree,
   Globe,
   History,
+  ShieldAlert,
+  ShieldCheck,
 } from 'lucide-react-native'
 import { cn, Badge } from '@shogo/shared-ui/primitives'
 import type { UsageWindows } from '@shogo/shared-app/hooks'
@@ -134,6 +136,17 @@ export interface ProjectTopBarProps {
   hiddenTabs?: string[]
   canvasEnabled?: boolean
   activeMode?: 'none' | 'canvas' | 'app'
+  /**
+   * Workspace Trust controls (external / folder-linked projects only).
+   * When `workingMode === 'external'` a persistent shield badge is shown
+   * that flips `trustLevel` via `onToggleTrust`, so users can move
+   * between restricted and trusted after first startup without opening
+   * the Folders panel. Omitted/undefined on managed projects → no badge.
+   */
+  workingMode?: 'managed' | 'external'
+  trustLevel?: 'restricted' | 'trusted'
+  onToggleTrust?: () => void
+  trustBusy?: boolean
   narrowActiveTab?: 'chat' | 'canvas'
   onNarrowTabChange?: (tab: 'chat' | 'canvas') => void
   narrowPreviewTab?: string
@@ -220,6 +233,72 @@ function BarIconButton({
   )
 }
 
+/**
+ * Persistent Workspace Trust badge for external (folder-linked) projects.
+ * Restricted → amber shield + "Restricted"; trusted → emerald shield +
+ * "Trusted". Tapping flips the trust level via `onToggle`.
+ */
+function TrustBadge({
+  trustLevel,
+  onToggle,
+  busy,
+  compact,
+}: {
+  trustLevel: 'restricted' | 'trusted'
+  onToggle: () => void
+  busy?: boolean
+  compact?: boolean
+}) {
+  const restricted = trustLevel === 'restricted'
+  const Icon = restricted ? ShieldAlert : ShieldCheck
+  const label = restricted ? 'Restricted' : 'Trusted'
+  const tip = restricted
+    ? 'Workspace is restricted — tap to trust this folder (enables edits and shell)'
+    : 'Workspace is trusted — tap to restrict (blocks edits and shell)'
+  const tipRef = useWebTitle(tip)
+
+  if (compact) {
+    return (
+      <Pressable
+        ref={tipRef}
+        onPress={onToggle}
+        disabled={busy}
+        className={cn(
+          'h-6 w-6 items-center justify-center rounded-md',
+          busy ? 'opacity-60' : 'active:bg-muted',
+        )}
+        accessibilityLabel={tip}
+      >
+        <Icon size={13} className={restricted ? 'text-amber-500' : 'text-emerald-500'} />
+      </Pressable>
+    )
+  }
+
+  return (
+    <Pressable
+      ref={tipRef}
+      onPress={onToggle}
+      disabled={busy}
+      className={cn(
+        'h-7 flex-row items-center gap-1 px-2 rounded-md border',
+        restricted ? 'border-amber-400/50' : 'border-emerald-400/40',
+        busy ? 'opacity-60' : 'active:bg-muted',
+      )}
+      accessibilityLabel={tip}
+    >
+      <Icon size={12} className={restricted ? 'text-amber-500' : 'text-emerald-500'} />
+      <Text
+        className={cn(
+          'text-[10px] font-medium',
+          restricted ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400',
+        )}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  )
+}
+
 export function ProjectTopBar({
   projectName,
   projectId,
@@ -242,6 +321,10 @@ export function ProjectTopBar({
   hiddenTabs = [],
   canvasEnabled = true,
   activeMode = 'canvas',
+  workingMode,
+  trustLevel,
+  onToggleTrust,
+  trustBusy = false,
   narrowActiveTab,
   onNarrowTabChange,
   narrowPreviewTab,
@@ -311,6 +394,11 @@ export function ProjectTopBar({
   }, [activeChatSessionId, chatRenameValue, onRenameChat])
 
   const isCanvasActive = activeTab === 'canvas'
+
+  // Workspace Trust badge: external (folder-linked) projects only, and
+  // only when the parent wired up a toggle handler + a known trust level.
+  const showTrustBadge =
+    workingMode === 'external' && !!trustLevel && typeof onToggleTrust === 'function'
 
   const visibleTabs = AGENT_TABS.filter(tab => !hiddenTabs.includes(tab.id))
   // Every remaining tab is primary now that secondary controls live behind
@@ -455,6 +543,15 @@ export function ProjectTopBar({
         </View>
 
         <View className="flex-1" />
+
+        {showTrustBadge && (
+          <TrustBadge
+            trustLevel={trustLevel!}
+            onToggle={onToggleTrust!}
+            busy={trustBusy}
+            compact
+          />
+        )}
 
         {onOpenChatSessions && narrowActiveTab === 'chat' && (
           <BarIconButton
@@ -753,7 +850,14 @@ export function ProjectTopBar({
         )}
 
         {/* Right actions */}
-        <View className="flex-row items-center gap-0.5">
+        <View className="flex-row items-center gap-1">
+          {showTrustBadge && (
+            <TrustBadge
+              trustLevel={trustLevel!}
+              onToggle={onToggleTrust!}
+              busy={trustBusy}
+            />
+          )}
           {isCanvasActive && (
             <PublishDropdown projectId={projectId} projectName={projectName} />
           )}
