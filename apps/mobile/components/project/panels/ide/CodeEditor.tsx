@@ -167,12 +167,40 @@ export function CodeEditor({
    * `isDesktopRuntime()` is false so web users never see the desktop themes.
    */
   editorTheme?: string;
-  onChange: (v: string) => void;
+  /**
+   * Fired on user edits only. `fileId` is the Monaco model URI's pathKey at
+   * the time the keystroke landed — NOT a React-closure capture of the
+   * group's `activeId`. Routing by model URI is what makes BUG-001
+   * ("stale model on rapid tab swap") impossible to reintroduce: even if
+   * React hasn't flushed the new activeId yet, the change carries the
+   * authoritative fileId out with it.
+   */
+  onChange: (fileId: string, v: string) => void;
   onCursor: (line: number, col: number) => void;
   onMount?: (ed: editor.IStandaloneCodeEditor, monaco: MonacoNs) => void;
 }) {
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const monacoRef = useRef<MonacoNs | null>(null);
+
+  // Ref mirror of `pathKey` so the Monaco content listener (installed once
+  // in handleMount) always reads the freshest fileId at change-fire time.
+  // Updating in render — instead of in a useEffect — guarantees that any
+  // subsequent Monaco event in the same commit sees the new value. With a
+  // useEffect we'd still have a one-tick window where pathKey has changed
+  // in the React tree but the ref the listener reads from is stale, which
+  // is exactly the race condition BUG-001 reports.
+  const pathKeyRef = useRef(pathKey);
+  pathKeyRef.current = pathKey;
+
+  // Same ref-mirror for the change/cursor callbacks. Without this the listener
+  // installed once in handleMount would forever call the first-render's
+  // `onChange` closure (which holds a stale reference to the parent's
+  // `handleChangeFor`). Render-time mirror keeps the latest callback live.
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const onCursorRef = useRef(onCursor);
+  onCursorRef.current = onCursor;
+
 
   // Resolve the effective Monaco theme:
   //   1. Desktop + caller passed a registered custom/builtin theme  → use it.
@@ -201,8 +229,34 @@ export function CodeEditor({
     configureMonaco(monaco);
     monaco.editor.setTheme(themeName);
 
+    // BUG-001 fix — own the content listener instead of using <Editor onChange>.
+    //
+    // `@monaco-editor/react`'s onChange prop fires for ANY model content
+    // change including the programmatic `model.setValue()` it issues during
+    // a path swap. On a rapid tab swap that synthetic event would (a) get
+    // routed by `g.activeId` (stale by one tick), polluting the freshly-
+    // active tab with the previously-active tab's content, and (b) flip
+    // dirty=true on a file the user never touched.
+    //
+    // Filtering on `ev.isFlush` — true precisely when `setValue()` was
+    // the cause — drops every model-swap echo. The `model.isDisposed()`
+    // guard handles the matching tear-down race (closeTab in flight while
+    // a final keystroke is processing).
+    ed.onDidChangeModelContent((ev) => {
+      if (ev.isFlush) return;
+      const model = ed.getModel();
+      if (!model || model.isDisposed()) return;
+      onChangeRef.current(pathKeyRef.current, model.getValue());
+    });
+
+    // Same disposed-model guard for cursor events. Without it, Monaco's
+    // tear-down sequence on tab close emits a final cursor-position event
+    // against the about-to-be-disposed model and the breadcrumbs/status-bar
+    // shows a stale (1,1) reading for the freshly-active tab.
     ed.onDidChangeCursorPosition((e) => {
-      onCursor(e.position.lineNumber, e.position.column);
+      const model = ed.getModel();
+      if (!model || model.isDisposed()) return;
+      onCursorRef.current(e.position.lineNumber, e.position.column);
     });
 
     onMount?.(ed, monaco);
@@ -215,7 +269,6 @@ export function CodeEditor({
       language={language}
       value={value}
       theme={themeName}
-      onChange={(v) => onChange(v ?? "")}
       onMount={handleMount}
       options={{
         fontSize: settings.fontSize,

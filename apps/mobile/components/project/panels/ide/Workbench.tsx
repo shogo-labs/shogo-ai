@@ -16,6 +16,7 @@ import { MergeEditorModal } from "./git/MergeEditorModal";
 import { getDesktopGitBridge } from "./git/bridge";
 import { getDesktopFsBridge } from "./workspace/desktopFs";
 import { EditorGroupView } from "./EditorGroup";
+import { applyEditorChange } from "./editor-change-apply";
 import { isImagePath } from "./ImagePreview";
 import {
   isAudioPath,
@@ -724,13 +725,17 @@ export function Workbench({
   );
 
 
-  const handleChangeFor = (groupIdx: number) => (val: string) => {
-    updateGroup(groupIdx, (g) => ({
-      ...g,
-      files: g.files.map((f) =>
-        f.id === g.activeId ? { ...f, content: val, dirty: val !== f.savedContent } : f,
-      ),
-    }));
+  // BUG-001 fix: route the change by the explicit `fileId` carried out of
+  // CodeEditor (which derived it from the live Monaco model URI), NOT by
+  // the group's currently-tracked `activeId`. The old code matched on
+  // `f.id === g.activeId`, which on a rapid tab swap could land the
+  // previous tab's last keystroke in the newly-active tab (because React
+  // had already advanced `activeId` while Monaco was still firing for the
+  // outgoing model). `applyEditorChange` is the pure resolver — it ignores
+  // activeId entirely, drops no-op flushes, and treats a missing fileId
+  // (closed mid-flight) as a no-op without re-rendering.
+  const handleChangeFor = (groupIdx: number) => (fileId: string, val: string) => {
+    updateGroup(groupIdx, (g) => applyEditorChange(g, fileId, val));
   };
 
   const closeInGroup = useCallback((groupIdx: number, id: string) => {
