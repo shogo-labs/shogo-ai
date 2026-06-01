@@ -366,6 +366,39 @@ spec:
                   name: api-secrets
                   key: TWILIO_AUTH_TOKEN
                   optional: true
+            # ── Native MLM affiliate program ──────────────────────────
+            # Master flag. When 'true' all /api/affiliates/* routes are
+            # live, the better-auth signup hook starts writing
+            # AffiliateAttribution rows, and the three commission cron
+            # jobs become active. Flipping back to 'false' is a safe
+            # rollback (every code path short-circuits).
+            - name: SHOGO_AFFILIATES_NATIVE
+              value: "true"
+            - name: SHOGO_AFFILIATE_MAX_DEPTH
+              value: "3"
+            # Pay only the direct referrer by default (MLM payouts off);
+            # enrollment tree depth above is unaffected. Set to "3" to
+            # re-enable full multi-level payouts.
+            - name: SHOGO_AFFILIATE_PAYOUT_MAX_DEPTH
+              value: "1"
+            - name: SHOGO_AFFILIATE_REFUND_HOLD_DAYS
+              value: "30"
+            - name: SHOGO_AFFILIATE_MIN_PAYOUT_CENTS
+              value: "5000"
+            - name: SHOGO_AFFILIATE_COOKIE_DAYS
+              value: "60"
+            # Shared secret with shogo-website/functions/r/[code].ts —
+            # the marketing-site Cloudflare Function calls
+            # POST /api/affiliates/click with this header. The API
+            # rejects the request when the value doesn't match.
+            # Set in api-secrets by the deploy workflow (and on first
+            # rollout via `kubectl patch secret api-secrets`).
+            - name: SHOGO_INTERNAL_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: SHOGO_INTERNAL_SECRET
+                  optional: true
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "https://ingest.us.signoz.cloud:443"
             - name: OTEL_SERVICE_NAME
