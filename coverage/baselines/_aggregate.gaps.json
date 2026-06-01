@@ -1876,7 +1876,7 @@
    "note": "3 of the largest never-loaded shogo-worker files \u2192 100% lines. runtime-install (371): detectTarget all platform/arch arms, readInstalledVersion, resolveLatestVersion stable/beta/nightly + error arms, installRuntime full happy/sha-mismatch/missing-bin/download-404/tar-fail/resolve-latest paths. project-checkout (179): all guards + --at sha/checkpoint-name/unshallow-retry/throw arms + resolveCheckpointByName matchers. project-push (89): guards + uploadAll + printSummary success/error + onProgress byte-format branches. Shared mocks node:fs/child_process/crypto/os/stream/stream-promises + ../config/../paths/../git-cloner + cloud-file-transport + routable fetch (set in beforeEach). Verified no leakage: shogo-worker 301/0 across 18 files. No istanbul pragmas, no prod change."
   },
   {
-   "sha": "PENDING_SYNC",
+   "sha": "2c9e720a",
    "kind": "docs(coverage) \u2014 Sync Readme",
    "date": "2026-06-01",
    "syncRun": true,
