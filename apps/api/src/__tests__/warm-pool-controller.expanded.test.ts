@@ -744,6 +744,52 @@ describe('multi-replica config convergence', () => {
 })
 
 // =============================================================================
+// region-scoped infra settings (loadPersistedSettings via startWarmPool)
+// =============================================================================
+
+describe('region-scoped infra settings', () => {
+  // startWarmPool() runs loadPersistedSettings on the singleton, which reads
+  // process.env.REGION_ID live, so each test can pin a region and assert how
+  // the global/regional DB layers merge. Restore REGION_ID after each test.
+  const ORIGINAL_REGION_ID = process.env.REGION_ID
+  afterEach(() => {
+    if (ORIGINAL_REGION_ID === undefined) delete process.env.REGION_ID
+    else process.env.REGION_ID = ORIGINAL_REGION_ID
+  })
+
+  test("a region's own infra.<region>.<key> override wins over the shared global key", async () => {
+    process.env.REGION_ID = 'ap-mumbai-1'
+    platformSettingsRows = [
+      { key: 'infra.warmPoolMinPods', value: '10' }, // shared default (US bumped it)
+      { key: 'infra.ap-mumbai-1.warmPoolMinPods', value: '3' }, // India's override
+    ]
+    const controller = await startWarmPool()
+    expect(controller.getConfig().warmPoolMinPods).toBe(3)
+    await controller.stop()
+  })
+
+  test("another region's override does not bleed into this region (falls back to global)", async () => {
+    process.env.REGION_ID = 'us-ashburn-1'
+    platformSettingsRows = [
+      { key: 'infra.warmPoolMinPods', value: '10' }, // shared default
+      { key: 'infra.ap-mumbai-1.warmPoolMinPods', value: '3' }, // India-only override
+    ]
+    const controller = await startWarmPool()
+    // US has no scoped row, so it keeps the shared global value — India's 3 is ignored.
+    expect(controller.getConfig().warmPoolMinPods).toBe(10)
+    await controller.stop()
+  })
+
+  test('a region with no regional row uses the global default', async () => {
+    process.env.REGION_ID = 'eu-frankfurt-1'
+    platformSettingsRows = [{ key: 'infra.warmPoolMinPods', value: '6' }]
+    const controller = await startWarmPool()
+    expect(controller.getConfig().warmPoolMinPods).toBe(6)
+    await controller.stop()
+  })
+})
+
+// =============================================================================
 // gcPromotedPods — Phase 1 (orphans) and Phase 2 (idle)
 // =============================================================================
 
