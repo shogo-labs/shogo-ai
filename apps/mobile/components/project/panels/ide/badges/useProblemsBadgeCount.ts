@@ -42,12 +42,22 @@ export interface UseProblemsBadgeOptions {
   enabled: boolean
   /** Override poll cadence for tests / future tuning. */
   intervalMs?: number
+  /**
+   * Inject the fetch implementation. Defaults to the module-level
+   * `fetchDiagnostics`. Exposed so tests can drive deterministic
+   * responses (success / unchanged / DiagnosticsApiError / generic
+   * throw) without depending on bun-test's mock-module cache semantics,
+   * which are order-sensitive across the wider test suite. Production
+   * code MUST NOT pass this — the default keeps the hook's contract
+   * (and the BUG-004 fix) identical to its single-import history.
+   */
+  fetchImpl?: typeof fetchDiagnostics
 }
 
 export function useProblemsBadgeCount(
   opts: UseProblemsBadgeOptions,
 ): ProblemsBadgeResult {
-  const { projectId, enabled, intervalMs = DEFAULT_INTERVAL_MS } = opts
+  const { projectId, enabled, intervalMs = DEFAULT_INTERVAL_MS, fetchImpl = fetchDiagnostics } = opts
   const [state, setState] = useState<ProblemsBadgeResult>({ count: 0, severity: null })
   const lastRunAtRef = useRef<string | null>(null)
 
@@ -72,7 +82,7 @@ export function useProblemsBadgeCount(
     const tick = async () => {
       try {
         const since = lastRunAtRef.current ?? undefined
-        const result = await fetchDiagnostics(projectId, { since })
+        const result = await fetchImpl(projectId, { since })
         if (!alive) return
         if ("unchanged" in result) {
           // Server says nothing changed — keep prior count.
@@ -104,7 +114,7 @@ export function useProblemsBadgeCount(
       alive = false
       if (timeoutHandle !== null) clearTimeout(timeoutHandle)
     }
-  }, [projectId, enabled, intervalMs])
+  }, [projectId, enabled, intervalMs, fetchImpl])
 
   return state
 }
