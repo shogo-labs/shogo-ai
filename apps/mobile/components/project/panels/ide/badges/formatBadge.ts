@@ -27,6 +27,7 @@
  */
 
 import type { GitShortCode, GitSnapshot } from "../git/bridge"
+import { isCountedGitCode } from "../git/git-counting"
 import type { Diagnostic } from "../../../../lib/diagnostics-api"
 
 /** Tone tells the renderer which color family to use for the pill. */
@@ -66,17 +67,13 @@ export function formatBadgeCount(n: number | null | undefined): string {
 
 // ─── gitChangeCount ────────────────────────────────────────────────────────
 
-// Codes that count as a "change" for the SCM badge. Excludes '!' (ignored
-// files) — VS Code does the same — and '·' (the synthetic folder-dirty
-// marker which is never stored in `fileStatus` but defensively rejected).
-const COUNTING_CODES: ReadonlySet<GitShortCode> = new Set<GitShortCode>([
-  "M", "A", "D", "R", "C", "T", "U", "?",
-])
-
 /**
  * Number of changed files VS Code's SCM badge would show.
+ *
  * Defensive: returns 0 for null, undefined, non-repo, missing fileStatus,
- * or a fileStatus that is not a plain object.
+ * or a fileStatus that is not a plain object. Per-code rule lives in
+ * git-counting.isCountedGitCode — the single source of truth shared with
+ * ChangesList.buildGroups (BUG-007 fix).
  */
 export function gitChangeCount(snapshot: GitSnapshot | null | undefined): number {
   if (!snapshot || !snapshot.isRepo) return 0
@@ -86,11 +83,14 @@ export function gitChangeCount(snapshot: GitSnapshot | null | undefined): number
   for (const path in fs) {
     // Defend against prototype-polluted iteration.
     if (!Object.prototype.hasOwnProperty.call(fs, path)) continue
-    const code = fs[path]
-    if (COUNTING_CODES.has(code)) n++
+    if (isCountedGitCode(fs[path])) n++
   }
   return n
 }
+
+// Re-exported for back-compat with any test that imported the constant
+// directly; new code should use isCountedGitCode().
+// (Internal: not part of the public API.)
 
 // ─── problemsBadge ─────────────────────────────────────────────────────────
 
