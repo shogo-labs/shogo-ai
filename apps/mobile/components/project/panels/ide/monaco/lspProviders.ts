@@ -28,6 +28,7 @@
 
 import type * as Monaco from 'monaco-editor'
 import type { editor, languages, IDisposable } from 'monaco-editor'
+import { SymbolCache } from './symbol-cache'
 
 type MonacoT = typeof Monaco
 
@@ -333,6 +334,15 @@ export function setupLspProviders(config: LspProvidersConfig): { dispose: () => 
 
   const disposables: IDisposable[] = []
 
+  // BUG-010: cache document-symbol results by (uri, versionId). Without a
+  // cache every breadcrumb hover / cursor move re-hits the backend LSP.
+  // Version-keyed caching means any edit (which bumps model.getVersionId)
+  // auto-invalidates, AND a stale-after-edit hit is structurally impossible
+  // because SymbolCache.set drops any prior version of the same URI in the
+  // same call.
+  const symbolCache = new SymbolCache<languages.DocumentSymbol[]>()
+  disposables.push({ dispose: () => symbolCache.clear() })
+
   // ─── Hover ────────────────────────────────────────────────────────────
   disposables.push(
     monaco.languages.registerHoverProvider(TS_LANGS, {
@@ -443,6 +453,15 @@ export function setupLspProviders(config: LspProvidersConfig): { dispose: () => 
       provideDocumentSymbols: async (model, token) => {
         const path = pathFromModel(model, rootId)
         if (!path) return null
+
+        // Snapshot uri + version BEFORE the await — Monaco may have moved
+        // on by the time the LSP responds. We cache against the snapshot;
+        // the next provideDocumentSymbols call at the new version misses.
+        const uri = model.uri.toString()
+        const versionId = model.getVersionId()
+        const cached = symbolCache.get({ uri, versionId })
+        if (cached) return cached
+
         const result = await post<LspDocumentSymbol[] | LspSymbolInformation[]>('documentSymbol', {
           path,
         }, makeAbortSignal(token))
@@ -450,6 +469,7 @@ export function setupLspProviders(config: LspProvidersConfig): { dispose: () => 
         // tsserver returns DocumentSymbol[] (hierarchical). Older servers
         // return SymbolInformation[]; handle both for safety.
         const isHierarchical = result.length === 0 || 'range' in (result[0] as any)
+        let symbols: languages.DocumentSymbol[]
         if (isHierarchical) {
           const arr = result as LspDocumentSymbol[]
           const map = (s: LspDocumentSymbol): languages.DocumentSymbol => ({
@@ -461,18 +481,27 @@ export function setupLspProviders(config: LspProvidersConfig): { dispose: () => 
             selectionRange: toMonacoRange(s.selectionRange),
             children: s.children?.map(map) ?? [],
           })
-          return arr.map(map)
+          symbols = arr.map(map)
+        } else {
+          const arr = result as LspSymbolInformation[]
+          symbols = arr.map((s) => ({
+            name: s.name,
+            detail: s.containerName ?? '',
+            kind: symbolKind(monaco, s.kind),
+            tags: [],
+            range: toMonacoRange(s.location.range),
+            selectionRange: toMonacoRange(s.location.range),
+            children: [],
+          }))
         }
-        const arr = result as LspSymbolInformation[]
-        return arr.map((s) => ({
-          name: s.name,
-          detail: s.containerName ?? '',
-          kind: symbolKind(monaco, s.kind),
-          tags: [],
-          range: toMonacoRange(s.location.range),
-          selectionRange: toMonacoRange(s.location.range),
-          children: [],
-        }))
+
+        // Only cache if the model is still at the version we fetched for.
+        // If the user typed during the await, the new version's request
+        // will arrive next and we'd just store stale data otherwise.
+        if (model.getVersionId() === versionId) {
+          symbolCache.set({ uri, versionId }, symbols)
+        }
+        return symbols
       },
     }),
   )
