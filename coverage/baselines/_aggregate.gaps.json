@@ -3,14 +3,14 @@
  "note": "Honest v2 aggregate from per-file-isolated test runs (apps/api + agent-runtime + shared-runtime use run-tests-isolated.ts to merge ~141 per-test-file lcovs each), comment-stripped via coverage-strip-comments.ts. Strict per-package src/ scoping via scripts/sum-lcov.ts --include. Aggregate 87.81% lines. Frontend badge UNTOUCHED.",
  "aggregate": {
   "lines": {
-   "hit": 79076,
+   "hit": 79177,
    "total": 93806,
-   "pct": 84.3
+   "pct": 84.41
   },
   "functions": {
-   "hit": 6189,
+   "hit": 6199,
    "total": 7649,
-   "pct": 80.91
+   "pct": 81.04
   }
  },
  "perPackage": [
@@ -107,12 +107,12 @@
   },
   {
    "package": "packages/shogo-worker",
-   "linesHit": 2056,
+   "linesHit": 2157,
    "linesFound": 2302,
-   "linePct": 89.31,
-   "funcsHit": 249,
+   "linePct": 93.7,
+   "funcsHit": 259,
    "funcsFound": 285,
-   "funcPct": 87.37
+   "funcPct": 90.88
   }
  ],
  "topGaps": [
@@ -1941,6 +1941,27 @@
    "method": "stabilization sync \u2014 re-measured shared-runtime (crash fixed), pinned others",
    "note": "The 3 source commits since last sync were STABILIZATION test-fixes (group a + g), not coverage-expansion sessions: (1) 6f51562a shared-runtime pod-env-leak crash fix via test preload \u2014 suite now completes deterministically (467 pass) instead of crashing at ~250; full re-measure 3816/4284 = 89.08% (+1 line vs baseline, i.e. baseline already reflected the full file set). (2) 47247ea5 agent-runtime browser navigate test \u2014 about:blank hard-fail path, already covered elsewhere. (3) 6d84af4d apps/api stripe self-heal + ai-proxy rolling-window tx.subscription mock \u2014 the now-reached chargeOverageBlocks/createCustomAccount paths are already covered by the canonical billing.service/stripe-connect.service suites (stripe-connect.service.ts measured 100%). Net aggregate delta is sub-rounding; headline holds at 84.30%. All 11 backend packages now green/deterministic (0 fail, 0 hang) \u2014 see stabilization sweep.",
    "allPackagesGreen": true
+  },
+  {
+   "sha": "ed0bc927",
+   "wave": "Wave 4/6 \u2014 straggler sweep",
+   "date": "2026-06-01",
+   "kind": "test(coverage)",
+   "files": [
+    {
+     "path": "packages/shogo-worker/src/lib/transport.ts",
+     "before": 3.7,
+     "afterLines": 100.0,
+     "afterFuncs": 100.0
+    }
+   ],
+   "newTests": 21,
+   "deltaLines": 101,
+   "note": "transport.ts (proxy resolution + CONNECT probe via mocked node:http + allowlist derivation) 4/107 -> 105/105. Resolved a bun eager-load mock collision: worker-libs-greenfield globally mocked ../transport, shadowing the real module for this new file. Fix = delegation: worker-libs's ../transport mock now spreads the real module and defaults deriveAllowlist/probeProxy to the real impls (overridden per-test), so sibling files importing the genuine module are not shadowed. shogo-worker full suite 322/0. IMPORTANT FINDING: v4 plan top-gaps are STALE \u2014 gateway-tools.ts is 95.5% (not 61.76%), runtime-manager.ts 95.9% (not 7.55%), voice telephony/server/elevenlabs ~99%, cloud-file-transport 100%, channels/const/worker-libs all done. Genuine remaining >=200 agent-runtime targets: preview-manager.ts (~58-70%, hang-prone, 9 isolated test files) and gateway.ts (~73-87%); both need a dedicated harness session. Baseline topGaps need a refresh.",
+   "aggregateAfter": {
+    "lines": 84.41,
+    "functions": 81.04
+   }
   }
  ],
  "frontend": {
