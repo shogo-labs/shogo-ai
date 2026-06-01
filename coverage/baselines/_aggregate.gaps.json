@@ -3,14 +3,14 @@
  "note": "Honest v2 aggregate from per-file-isolated test runs (apps/api + agent-runtime + shared-runtime use run-tests-isolated.ts to merge ~141 per-test-file lcovs each), comment-stripped via coverage-strip-comments.ts. Strict per-package src/ scoping via scripts/sum-lcov.ts --include. Aggregate 87.81% lines. Frontend badge UNTOUCHED.",
  "aggregate": {
   "lines": {
-   "hit": 77473,
-   "total": 92201,
-   "pct": 84.03
+   "hit": 79075,
+   "total": 93805,
+   "pct": 84.3
   },
   "functions": {
-   "hit": 6045,
-   "total": 7498,
-   "pct": 80.62
+   "hit": 6189,
+   "total": 7649,
+   "pct": 80.91
   }
  },
  "perPackage": [
@@ -26,12 +26,12 @@
   },
   {
    "package": "packages/agent-runtime",
-   "linesHit": 23227,
-   "linesFound": 28696,
-   "linePct": 80.94,
-   "funcsHit": 1596,
-   "funcsFound": 2243,
-   "funcPct": 71.15
+   "linesHit": 24636,
+   "linesFound": 30106,
+   "linePct": 81.83,
+   "funcsHit": 1714,
+   "funcsFound": 2366,
+   "funcPct": 72.44
   },
   {
    "package": "packages/sdk",
@@ -107,12 +107,12 @@
   },
   {
    "package": "packages/shogo-worker",
-   "linesHit": 1863,
-   "linesFound": 2108,
-   "linePct": 88.38,
-   "funcsHit": 223,
-   "funcsFound": 257,
-   "funcPct": 86.77
+   "linesHit": 2056,
+   "linesFound": 2302,
+   "linePct": 89.31,
+   "funcsHit": 249,
+   "funcsFound": 285,
+   "funcPct": 87.37
   }
  ],
  "topGaps": [
@@ -1874,6 +1874,45 @@
    "newTests": 45,
    "approxGreenfieldLines": 640,
    "note": "3 of the largest never-loaded shogo-worker files \u2192 100% lines. runtime-install (371): detectTarget all platform/arch arms, readInstalledVersion, resolveLatestVersion stable/beta/nightly + error arms, installRuntime full happy/sha-mismatch/missing-bin/download-404/tar-fail/resolve-latest paths. project-checkout (179): all guards + --at sha/checkpoint-name/unshallow-retry/throw arms + resolveCheckpointByName matchers. project-push (89): guards + uploadAll + printSummary success/error + onProgress byte-format branches. Shared mocks node:fs/child_process/crypto/os/stream/stream-promises + ../config/../paths/../git-cloner + cloud-file-transport + routable fetch (set in beforeEach). Verified no leakage: shogo-worker 301/0 across 18 files. No istanbul pragmas, no prod change."
+  },
+  {
+   "sha": "PENDING_SYNC",
+   "kind": "docs(coverage) \u2014 Sync Readme",
+   "date": "2026-06-01",
+   "syncRun": true,
+   "lastSyncSha": "2360349c",
+   "commitsSinceLastSync": 9,
+   "before": {
+    "lines": "84.03% (77473/92201)",
+    "functions": "80.62% (6045/7498)"
+   },
+   "after": {
+    "lines": "84.30% (79075/93805)",
+    "functions": "80.91% (6189/7649)"
+   },
+   "delta": {
+    "lines": "+0.27pp",
+    "functions": "+0.29pp"
+   },
+   "method": "pin-baseline + lcov-representable greenfield expansion",
+   "expansion": {
+    "packages/agent-runtime": "+1409/1410 lines, +118/123 funcs \u2014 8 net-new files (channels/{telegram,whatsapp,teams,webhook,slack,discord}.ts + agent-recipes.ts + integration-catalog.ts), comment-stripped, verified absent from baseline lcov denominator. canvas-v2-prompt.ts + optimized-prompts.ts already in baseline -> excluded.",
+    "packages/shogo-worker": "+193/194 lines, +26/28 funcs \u2014 api-discovery.ts + preflight.ts + process-manager.ts (10d)."
+   },
+   "excludedFromHeadline": {
+    "files": [
+     "packages/shogo-worker/src/lib/runtime-install.ts",
+     "packages/shogo-worker/src/commands/project-checkout.ts",
+     "packages/shogo-worker/src/commands/project-push.ts"
+    ],
+    "reason": "Verified 100% lines via text reporter (Session 10e), but bun's lcov reporter OMITS heavily mock.module'd files (text/lcov divergence). Not lcov-representable -> excluded from the lcov-sum headline this cycle to keep the aggregate a pure lcov sum. ~400 executable lines pending the denominator-reconciliation task.",
+    "verifiedLinePct": {
+     "runtime-install.ts": 100.0,
+     "project-checkout.ts": 100.0,
+     "project-push.ts": 100.0
+    }
+   },
+   "note": "Gate open: 9 commits since last README bump 2360349c (>=3). Sessions 10b-10e were 4 test(coverage) source commits, all pure test additions (no production change) so no pre-existing coverage regressed. Full shogo-worker lcov-sum unreliable (bun captured only 5 of ~25 files) -> used pin+delta per v4 rule."
   }
  ],
  "frontend": {
