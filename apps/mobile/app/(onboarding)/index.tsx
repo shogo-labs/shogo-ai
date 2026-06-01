@@ -7,7 +7,6 @@ import { usePostHogSafe } from '../../contexts/posthog'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { API_URL, api, createHttpClient } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
-import { safeSetItem } from '../../lib/safe-storage'
 import { ChatOnboarding, type OnboardingStep, type WidgetType } from '../../components/onboarding/ChatOnboarding'
 import { VMProgress } from '../../components/onboarding/VMProgress'
 import { NameInput } from '../../components/onboarding/steps/NameInput'
@@ -15,7 +14,6 @@ import { AIConfigForm } from '../../components/onboarding/steps/AIConfigForm'
 import { SecurityForm } from '../../components/onboarding/steps/SecurityForm'
 import { MeetingSetupForm } from '../../components/onboarding/steps/MeetingSetupForm'
 import { FeaturesWidget } from '../../components/onboarding/steps/FeaturesWidget'
-import { TemplatesWidget } from '../../components/onboarding/steps/TemplatesWidget'
 import { CompleteWidget } from '../../components/onboarding/steps/CompleteWidget'
 import { VMSetupProgress } from '../../components/onboarding/steps/VMSetupProgress'
 
@@ -109,11 +107,6 @@ function getCloudSteps(): OnboardingStep[] {
       widget: 'features',
     },
     {
-      id: 'templates',
-      text: "Want to start with a template? Pick one to create your first project, or skip to start from scratch.",
-      widget: 'templates',
-    },
-    {
       id: 'complete',
       text: "You\u2019re all set! Let\u2019s go.",
       widget: 'complete',
@@ -131,7 +124,6 @@ export default function OnboardingPage() {
   const { localMode, needsSetup } = usePlatformConfig()
 
   const [userName, setUserName] = useState('')
-  const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null)
 
   const isLocal = !!localMode
   const steps = useMemo(() => (isLocal ? getLocalSteps() : getCloudSteps()), [isLocal])
@@ -147,14 +139,10 @@ export default function OnboardingPage() {
       await api.completeOnboarding(http)
       trackEvent(posthog, EVENTS.ONBOARDING_COMPLETED, {
         mode: isLocal ? 'local' : 'cloud',
-        selected_template: selectedTemplate || null,
       })
-      if (selectedTemplate) {
-        safeSetItem('pending_template_id', selectedTemplate)
-      }
     } catch {}
     router.replace('/(app)')
-  }, [router, posthog, isLocal, selectedTemplate])
+  }, [router, posthog, isLocal])
 
   const handleVMDownloadNeeded = useCallback(() => {
     // VM download is auto-started by the VMProgress widget
@@ -183,20 +171,12 @@ export default function OnboardingPage() {
         return <MeetingSetupForm onComplete={onComplete} />
       case 'features':
         return <FeaturesWidget onComplete={onComplete} />
-      case 'templates':
-        return (
-          <TemplatesWidget
-            onComplete={onComplete}
-            onSelectTemplate={setSelectedTemplate}
-            selectedTemplate={selectedTemplate}
-          />
-        )
       case 'complete':
         return <CompleteWidget onEnter={handleComplete} />
       default:
         return null
     }
-  }, [selectedTemplate, handleComplete])
+  }, [handleComplete])
 
   return (
     <ChatOnboarding
