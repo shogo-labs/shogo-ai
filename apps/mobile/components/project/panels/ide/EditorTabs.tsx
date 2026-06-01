@@ -1,6 +1,7 @@
 import { X, Circle, Pin } from "lucide-react-native";
 import { useCallback, useState } from "react";
 import type { OpenFile } from "./types";
+import { useDragCancel } from "./useDragCancel";
 
 type DropPos = "before" | "after";
 
@@ -28,6 +29,20 @@ export function EditorTabs({
     { id: string; pos: DropPos } | null
   >(null);
 
+  // BUG-011 — Single source of truth for "drag is over, clear everything".
+  // Used by onDragEnd, onDrop's commit path, AND useDragCancel's Esc/blur/
+  // visibility-change fallbacks. Centralising means a future drag-state
+  // field can never drift between the dragend path and the Esc path.
+  const cancelDrag = useCallback(() => {
+    setDragId(null);
+    setDropTarget(null);
+  }, []);
+
+  // Listen for Esc / window-blur / tab-hidden while a drag is in
+  // progress. The HTML5 dragend event is unreliable in Electron and
+  // when focus leaves the renderer; this is the belt-and-braces clear.
+  useDragCancel(dragId !== null, cancelDrag);
+
   // Visual order: pinned tabs stay before unpinned (stable within each group).
   const sorted = [...files].sort((a, b) => {
     if (!!a.pinned === !!b.pinned) return 0;
@@ -51,13 +66,11 @@ export function EditorTabs({
 
   const commitDrop = useCallback(() => {
     if (!dragId || !dropTarget || !onReorder) {
-      setDragId(null);
-      setDropTarget(null);
+      cancelDrag();
       return;
     }
     if (dragId === dropTarget.id) {
-      setDragId(null);
-      setDropTarget(null);
+      cancelDrag();
       return;
     }
     // Reorder against the underlying (unsorted) files array so pin sort still
@@ -66,8 +79,7 @@ export function EditorTabs({
     const fromIdx = ids.indexOf(dragId);
     const targetIdx = ids.indexOf(dropTarget.id);
     if (fromIdx < 0 || targetIdx < 0) {
-      setDragId(null);
-      setDropTarget(null);
+      cancelDrag();
       return;
     }
     const next = ids.filter((x) => x !== dragId);
@@ -75,9 +87,8 @@ export function EditorTabs({
     const insertAt = dropTarget.pos === "before" ? targetInNext : targetInNext + 1;
     next.splice(insertAt, 0, dragId);
     onReorder(next);
-    setDragId(null);
-    setDropTarget(null);
-  }, [dragId, dropTarget, files, onReorder]);
+    cancelDrag();
+  }, [dragId, dropTarget, files, onReorder, cancelDrag]);
 
   if (files.length === 0) return null;
 
@@ -122,10 +133,7 @@ export function EditorTabs({
               e.preventDefault();
               commitDrop();
             }}
-            onDragEnd={() => {
-              setDragId(null);
-              setDropTarget(null);
-            }}
+            onDragEnd={cancelDrag}
             className={`group relative flex cursor-pointer items-center gap-2 border-r border-[color:var(--ide-border)] px-3 text-[13px] transition-opacity ${
               isActive
                 ? "bg-[color:var(--ide-bg)] text-[color:var(--ide-text-strong)]"
