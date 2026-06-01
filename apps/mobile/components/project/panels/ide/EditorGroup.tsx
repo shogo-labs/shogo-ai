@@ -36,7 +36,7 @@ export function EditorGroupView({
   onClose: (id: string) => void;
   onTogglePin: (id: string) => void;
   onReorder?: (orderedIds: string[]) => void;
-  onChange: (val: string) => void;
+  onChange: (fileId: string, val: string) => void;
   onCursor: (line: number, col: number) => void;
   onEditorMount?: (ed: editor.IStandaloneCodeEditor, monaco: MonacoNs) => void;
   settings: EditorSettings;
