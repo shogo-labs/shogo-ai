@@ -1915,7 +1915,7 @@
    "note": "Gate open: 9 commits since last README bump 2360349c (>=3). Sessions 10b-10e were 4 test(coverage) source commits, all pure test additions (no production change) so no pre-existing coverage regressed. Full shogo-worker lcov-sum unreliable (bun captured only 5 of ~25 files) -> used pin+delta per v4 rule."
   },
   {
-   "sha": "PENDING_SYNC",
+   "sha": "e8f96fb5",
    "kind": "docs(coverage) \u2014 Sync Readme",
    "date": "2026-06-01",
    "syncRun": true,
