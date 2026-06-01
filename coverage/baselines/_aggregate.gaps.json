@@ -3,25 +3,26 @@
   "note": "Honest v2 aggregate from per-file-isolated test runs (apps/api + agent-runtime + shared-runtime use run-tests-isolated.ts to merge ~141 per-test-file lcovs each), comment-stripped via coverage-strip-comments.ts. Strict per-package src/ scoping via scripts/sum-lcov.ts --include. Aggregate 87.81% lines. Frontend badge UNTOUCHED.",
   "aggregate": {
     "lines": {
-      "hit": 77173,
+      "hit": 77473,
       "total": 92201,
-      "pct": 83.7
+      "pct": 84.03
     },
     "functions": {
-      "hit": 6036,
+      "hit": 6045,
       "total": 7498,
-      "pct": 80.5
+      "pct": 80.62
     }
   },
   "perPackage": [
     {
       "package": "apps/api",
-      "linesHit": 37560,
+      "linesHit": 37860,
       "linesFound": 44867,
-      "linePct": 83.71,
-      "funcsHit": 2836,
+      "linePct": 84.38,
+      "funcsHit": 2845,
       "funcsFound": 3454,
-      "funcPct": 82.11
+      "funcPct": 82.11,
+      "note": "carry-forward + Sessions 7/8 deltas (meetings.ts +219LH, project-export-import.ts +81LH)"
     },
     {
       "package": "packages/agent-runtime",
@@ -1713,6 +1714,24 @@
       ],
       "fixedFailingTests": 1,
       "notes": "Wave 4 Fix-and-Close style: target file already past v4 95%/99% threshold; commit is fix-only, closes 1 of 7 pre-existing post-main-merge fails."
+    },
+    {
+      "sha": "PENDING_SYNC",
+      "kind": "docs(coverage) \u2014 Sync Readme",
+      "date": "2026-06-01",
+      "isSync": true,
+      "headline": {
+        "linesPct": 84.03,
+        "funcsPct": 80.62,
+        "method": "pin baseline + precise Session 7/8 deltas (+300 LH, +9 FH)"
+      },
+      "prevSync": {
+        "sha": "4255068f",
+        "linesPct": 83.7
+      },
+      "delta": "+0.33pp lines / +0.12pp funcs",
+      "commitsSincePrevSync": 86,
+      "note": "Gate OPEN (86 commits \u2265 3). Full fresh re-measurement attempted across all 11 packages but surfaced methodology drift: (1) Bun loaded-files-only lcov drops never-imported src from denominator (apps/api 6, agent-runtime 33 missing files); (2) augmenting with all-src over-penalizes voice/agent/sdk client code that is not bun-unit-testable; (3) sdk + model-catalog test infra broken post-merge (pinned). Headline therefore held on sanctioned pin+delta; fresh numbers archived under freshMeasurement_2026_06_01 for the upcoming denominator-reconciliation task. Frontend badge NOT touched."
     }
   ],
   "frontend": {
@@ -1729,7 +1748,7 @@
     },
     "note": "Computed fresh from packages/shared-app/coverage/lcov.info using the same lcov+comment-strip methodology as backend."
   },
-  "lastUpdated": "2026-05-29",
+  "lastUpdated": "2026-06-01",
   "scope": [
     "apps/api",
     "packages/agent-runtime",
@@ -1742,5 +1761,96 @@
     "packages/core",
     "packages/cli",
     "packages/shogo-worker"
-  ]
+  ],
+  "freshMeasurement_2026_06_01": {
+    "method": "per-file-isolated bun test --coverage + scripts/coverage-strip-comments.ts, src/-scoped via sum-lcov --include",
+    "caveat": "Bun emits lcov only for files LOADED during the run; never-imported src files vanish from the denominator and inflate %. An augmented pass (injecting zero-coverage for missing instrumentable src files via classifySource) over-penalizes voice/agent/sdk because their src/ ships React/native/browser code that bun cannot unit-test and that the historical baseline scope excluded. Neither raw-loaded nor naive-augmented is directly comparable to the carried baseline; headline kept on pin+delta until a dedicated denominator-reconciliation defines the canonical backend-testable file set per package.",
+    "perPackage_loadedOnly": {
+      "apps/api": {
+        "lh": 37650,
+        "lf": 40637,
+        "linePct": 92.65,
+        "fh": 2887,
+        "fn": 3205,
+        "funcPct": 90.08,
+        "missingSrcFiles": 6
+      },
+      "packages/agent-runtime": {
+        "lh": 19852,
+        "lf": 21229,
+        "linePct": 93.51,
+        "fh": 1326,
+        "fn": 1701,
+        "funcPct": 77.95,
+        "missingSrcFiles": 33
+      },
+      "packages/shared-runtime": {
+        "lh": 3354,
+        "lf": 3471,
+        "linePct": 96.63,
+        "fh": 345,
+        "fn": 367,
+        "funcPct": 94.01,
+        "missingSrcFiles": 6
+      },
+      "packages/voice": {
+        "lh": 1818,
+        "lf": 1824,
+        "linePct": 99.67,
+        "missingSrcFiles": 24,
+        "note": "24 missing = music/server/native handlers, much non-unit-testable"
+      },
+      "packages/email": {
+        "lh": 696,
+        "lf": 696,
+        "linePct": 100.0,
+        "missingSrcFiles": 0
+      },
+      "packages/agent": {
+        "lh": 691,
+        "lf": 871,
+        "linePct": 79.33,
+        "missingSrcFiles": 11,
+        "note": "main-merge added uncovered source"
+      },
+      "packages/core": {
+        "lh": 387,
+        "lf": 393,
+        "linePct": 98.47,
+        "missingSrcFiles": 1
+      },
+      "packages/cli": {
+        "lh": 514,
+        "lf": 596,
+        "linePct": 86.24,
+        "missingSrcFiles": 1
+      },
+      "packages/shogo-worker": {
+        "lh": 1693,
+        "lf": 1733,
+        "linePct": 97.69,
+        "missingSrcFiles": 17
+      },
+      "packages/sdk": {
+        "pinned": true,
+        "reason": "3 voice test files fail to load (@shogo-ai/voice stub missing) \u2192 client.ts + voice/* dropped from lcov, inflating to 97%. Pinned to baseline 82.77%."
+      },
+      "packages/model-catalog": {
+        "pinned": true,
+        "reason": "test infra fully broken (cannot resolve @shogo-ai/sdk/model-catalog) \u2192 0 pass. Pinned to baseline 85.40%."
+      }
+    },
+    "augmented_allSrcDenominator": {
+      "apps/api": 86.77,
+      "packages/agent-runtime": 67.73,
+      "packages/shared-runtime": 91.22,
+      "packages/voice": 39.63,
+      "packages/email": 100.0,
+      "packages/agent": 31.7,
+      "packages/core": 96.75,
+      "packages/cli": 85.95,
+      "packages/shogo-worker": 52.55,
+      "note": "over-penalized for client/non-unit-testable code; NOT the headline."
+    }
+  }
 }
