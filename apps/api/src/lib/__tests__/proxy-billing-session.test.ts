@@ -15,12 +15,16 @@ const realSetInterval = globalThis.setInterval
 }
 
 // Mocks must be installed before importing the module under test.
+const calcCalls: any[][] = []
 let calcImpl = (inT: number, outT: number, _model: string, cIn = 0, cWr = 0) => ({
   rawUsd: (inT + outT + cIn + cWr) * 0.001,
   billedUsd: (inT + outT + cIn + cWr) * 0.002,
 })
 mock.module('../../lib/usage-cost', () => ({
-  calculateUsageCost: (...a: any[]) => (calcImpl as any)(...a),
+  calculateUsageCost: (...a: any[]) => {
+    calcCalls.push(a)
+    return (calcImpl as any)(...a)
+  },
   proxyModelToBillingModel: (m: string) => `billing-${m}`,
 }))
 
@@ -57,6 +61,7 @@ const origConsole = { log: console.log, warn: console.warn, error: console.error
 const logs: { log: any[][]; warn: any[][]; error: any[][] } = { log: [], warn: [], error: [] }
 
 beforeEach(() => {
+  calcCalls.length = 0
   consumeUsageCalls.length = 0
   consumeUsageImpl = async () => ({ success: true, remainingIncludedUsd: 5 })
   costMetricCalls.length = 0
@@ -234,6 +239,27 @@ describe('closeSession', () => {
     expect(arg.actionMetadata.imageBilledUsd).toBe(0.1)
     expect(r.totalTokens).toBe(1650)
     expect(String(logs.log.find((l) => String(l[0]).includes('Charged'))?.[0])).toMatch(/Charged \$/)
+  })
+
+  it('bills on the real model id so DB-defined per-token pricing applies (not the collapsed bucket)', async () => {
+    // Regression: DB-defined models were billed
+    // at the `sonnet` bucket because the session collapsed the real id via
+    // proxyModelToBillingModel before calling calculateUsageCost, defeating
+    // the catalog's DB-pricing lookup.
+    openSession('p1', 'w1', 'u1', 'chat')
+    accumulateUsage('p1', 'hoshi', 1000, 500, 0, 0, 'chat')
+    await closeSession('p1', { chatSessionId: 'chat' })
+
+    // calculateUsageCost must receive the real model id, not "billing-*".
+    expect(calcCalls).toHaveLength(1)
+    expect(calcCalls[0][2]).toBe('hoshi')
+
+    // The analytics metric must also carry the real id so its recompute path
+    // honors the same DB pricing.
+    expect(costMetricCalls).toHaveLength(1)
+    expect(costMetricCalls[0].model).toBe('hoshi')
+    // The collapsed bucket is still recorded for display in metadata.
+    expect(consumeUsageCalls[0].actionMetadata.billingModel).toBe('billing-hoshi')
   })
 
   it('falls back to legacy key when caller forgets to pass chatSessionId on close', async () => {
