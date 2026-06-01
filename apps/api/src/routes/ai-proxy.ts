@@ -1740,7 +1740,11 @@ async function recordUsage(
 
   try {
     const billingModel = proxyModelToBillingModel(model)
-    const { rawUsd, billedUsd } = calculateUsageCost(inputTokens, outputTokens, billingModel, cachedInputTokens, cacheWriteTokens)
+    // Bill on the real model id so `calculateUsageCost` can apply a DB-defined
+    // model's own per-token pricing (custom providers / admin-added models).
+    // Passing the collapsed `billingModel` bucket here billed every DB model at
+    // the `sonnet` fallback rate. `billingModel` is kept only for display.
+    const { rawUsd, billedUsd } = calculateUsageCost(inputTokens, outputTokens, model, cachedInputTokens, cacheWriteTokens)
     const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
     if (billingUserId === 'system') {
       console.warn(`[AI Proxy] ⚠️ No real userId for project ${tokenPayload.projectId} — billing as 'system'. Token userId: ${tokenPayload.userId}`)
