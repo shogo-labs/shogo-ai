@@ -209,7 +209,21 @@ export function affiliateRoutes(): Hono {
     if (!userId) return c.json({ ok: false, error: { code: 'unauthorized' } }, 401)
     const summary = await getAffiliateSummary(userId)
     if (!summary) return c.json({ ok: true, enrolled: false })
-    return c.json({ ok: true, enrolled: true, ...summary })
+    // The mobile dashboard (apps/mobile/lib/affiliate-api.ts) reads a
+    // flatter set of field names than the service emits. Expose both:
+    // the raw service shape (consumed by server tests / future clients)
+    // plus the mobile aliases. The running-balance counters live on the
+    // affiliate row, not in the per-status commission sums.
+    return c.json({
+      ok: true,
+      enrolled: true,
+      ...summary,
+      pendingPayoutCents: summary.affiliate?.pendingPayoutCents ?? 0,
+      lifetimePayoutCents: summary.affiliate?.totalPaidOutCents ?? 0,
+      clicksLast30d: summary.clicks30d,
+      signupsLast30d: summary.signups30d,
+      commissionsLast30d: summary.commissions30d,
+    })
   })
 
   /**

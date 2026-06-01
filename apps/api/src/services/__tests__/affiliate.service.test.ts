@@ -176,6 +176,10 @@ const prismaStub = {
         return true
       })
     },
+    count: async ({ where }: any) => commissions.filter((c) =>
+      (!where.affiliateId || c.affiliateId === where.affiliateId) &&
+      (!where.createdAt?.gte || c.createdAt >= where.createdAt.gte),
+    ).length,
     groupBy: async ({ where, by, _sum }: any) => {
       const filtered = commissions.filter((c) => {
         if (where.status && c.status !== where.status) return false
