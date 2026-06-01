@@ -40,16 +40,16 @@ export interface WindowLimits {
 
 /**
  * Per-window included USD of compute per plan. `null` = uncapped. Sized so a
- * worst-case (window-pinning) user's monthly provider COGS stays ≈72.5% of
- * list subscription revenue (TARGET_COMPUTE_COST_RATIO 0.75) — see the
+ * worst-case (window-pinning) user's monthly provider COGS stays ≈86–90% of
+ * list subscription revenue (TARGET_COMPUTE_COST_RATIO 0.90) — see the
  * don't-lose-money derivation in the backend `usage-plans.ts`. Keep these in
  * sync with the backend values.
  */
 export const ROLLING_WINDOW_LIMITS: Record<PlanId, WindowLimits | null> = {
   free: { fiveHourUsd: 0.2, weeklyUsd: 0.5 },
-  basic: { fiveHourUsd: 0.64, weeklyUsd: 1.6 },
-  pro: { fiveHourUsd: 1.6, weeklyUsd: 4 },
-  business: { fiveHourUsd: 3.2, weeklyUsd: 8 },
+  basic: { fiveHourUsd: 0.76, weeklyUsd: 1.9 },
+  pro: { fiveHourUsd: 1.96, weeklyUsd: 4.9 },
+  business: { fiveHourUsd: 3.96, weeklyUsd: 9.9 },
   enterprise: null,
 }
 
