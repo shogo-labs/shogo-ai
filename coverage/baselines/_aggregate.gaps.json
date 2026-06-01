@@ -1716,7 +1716,7 @@
       "notes": "Wave 4 Fix-and-Close style: target file already past v4 95%/99% threshold; commit is fix-only, closes 1 of 7 pre-existing post-main-merge fails."
     },
     {
-      "sha": "PENDING_SYNC",
+      "sha": "2360349c",
       "kind": "docs(coverage) \u2014 Sync Readme",
       "date": "2026-06-01",
       "isSync": true,
