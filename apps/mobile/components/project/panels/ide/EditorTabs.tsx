@@ -1,7 +1,16 @@
-import { X, Circle, Pin } from "lucide-react-native";
-import { useCallback, useState } from "react";
+import {
+  X,
+  Circle,
+  Pin,
+  ChevronLeft,
+  ChevronRight,
+  ChevronDown,
+} from "lucide-react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenFile } from "./types";
 import { useDragCancel } from "./useDragCancel";
+import { useTabOverflow } from "./useTabOverflow";
+import { TabOverflowDropdown } from "./TabOverflowDropdown";
 
 type DropPos = "before" | "after";
 
@@ -42,6 +51,33 @@ export function EditorTabs({
   // progress. The HTML5 dragend event is unreliable in Electron and
   // when focus leaves the renderer; this is the belt-and-braces clear.
   useDragCancel(dragId !== null, cancelDrag);
+
+  // ── BUG-014: tab overflow controls ────────────────────────────────────
+  // Strip is horizontally scrollable; when content width exceeds the
+  // viewport the user previously had NO affordance to reveal hidden tabs.
+  // We attach chevrons + a "show all" dropdown that activate only when
+  // overflow is actually present. The hook owns all DOM reads so the
+  // booleans here are reactive and de-duplicated.
+  const stripRef = useRef<HTMLDivElement>(null);
+  const dropdownTriggerRef = useRef<HTMLButtonElement>(null);
+  const tabRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const {
+    isOverflowing,
+    canScrollLeft,
+    canScrollRight,
+    scrollByTab,
+    scrollIntoView,
+  } = useTabOverflow(stripRef);
+
+  // When the active tab changes (file-tree click, Cmd+P navigation, etc.)
+  // make sure it is actually visible in the strip — otherwise the user
+  // ends up editing a "ghost" file with no tab in view to indicate which.
+  useEffect(() => {
+    if (!activeId) return;
+    const el = tabRefs.current.get(activeId);
+    if (el) scrollIntoView(el);
+  }, [activeId, scrollIntoView]);
 
   // Visual order: pinned tabs stay before unpinned (stable within each group).
   const sorted = [...files].sort((a, b) => {
@@ -95,11 +131,20 @@ export function EditorTabs({
   return (
     <div
       onMouseDown={onFocus}
-      onDragOver={(e) => {
-        if (dragId) e.preventDefault();
-      }}
-      className="relative flex h-9 items-stretch bg-[color:var(--ide-bg)] border-b border-[color:var(--ide-border)] overflow-x-auto"
+      className="relative flex h-9 items-stretch bg-[color:var(--ide-bg)] border-b border-[color:var(--ide-border)]"
+      data-testid="editor-tabs-root"
     >
+      <div
+        ref={stripRef}
+        onDragOver={(e) => {
+          if (dragId) e.preventDefault();
+        }}
+        className="flex h-full flex-1 items-stretch overflow-x-auto scroll-smooth"
+        // Hide native scrollbar in the strip — chevrons are the affordance.
+        // Falls back to a thin one if the browser ignores the property.
+        style={{ scrollbarWidth: "thin" }}
+        data-testid="editor-tabs-strip"
+      >
       {sorted.map((f) => {
         const isActive = f.id === activeId;
         const isFocusedActive = isActive && groupFocused !== false;
@@ -109,6 +154,11 @@ export function EditorTabs({
         return (
           <div
             key={f.id}
+            ref={(el) => {
+              if (el) tabRefs.current.set(f.id, el);
+              else tabRefs.current.delete(f.id);
+            }}
+            data-testid={`editor-tab-${f.id}`}
             draggable={!!onReorder}
             onDragStart={(e) => {
               if (!onReorder) return;
@@ -189,6 +239,68 @@ export function EditorTabs({
           </div>
         );
       })}
+      </div>
+      {isOverflowing && (
+        <div
+          className="flex h-full shrink-0 items-stretch border-l border-[color:var(--ide-border)] bg-[color:var(--ide-bg)]"
+          data-testid="editor-tabs-overflow-cluster"
+        >
+          <button
+            type="button"
+            aria-label="Scroll tabs left"
+            aria-disabled={!canScrollLeft}
+            disabled={!canScrollLeft}
+            onClick={() => scrollByTab("left")}
+            className="flex w-7 items-center justify-center text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)] disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-default"
+            data-testid="editor-tabs-scroll-left"
+          >
+            <ChevronLeft size={14} />
+          </button>
+          <button
+            type="button"
+            aria-label="Scroll tabs right"
+            aria-disabled={!canScrollRight}
+            disabled={!canScrollRight}
+            onClick={() => scrollByTab("right")}
+            className="flex w-7 items-center justify-center text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)] disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-default"
+            data-testid="editor-tabs-scroll-right"
+          >
+            <ChevronRight size={14} />
+          </button>
+          <div className="relative flex items-stretch">
+            <button
+              ref={dropdownTriggerRef}
+              type="button"
+              aria-label="Show all open tabs"
+              aria-haspopup="menu"
+              aria-expanded={dropdownOpen}
+              onClick={() => setDropdownOpen((o) => !o)}
+              className={`flex w-7 items-center justify-center hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)] ${
+                dropdownOpen
+                  ? "bg-[color:var(--ide-hover)] text-[color:var(--ide-text-strong)]"
+                  : "text-[color:var(--ide-muted)]"
+              }`}
+              data-testid="editor-tabs-overflow-trigger"
+            >
+              <ChevronDown size={14} />
+            </button>
+            {dropdownOpen && (
+              <TabOverflowDropdown
+                files={files}
+                activeId={activeId}
+                onPick={(id) => {
+                  onSelect(id);
+                  // Defer the scroll-into-view until after the parent re-renders
+                  // with the new activeId — the useEffect above will then run
+                  // and centre the strip on the picked tab.
+                }}
+                onClose={() => setDropdownOpen(false)}
+                triggerRef={dropdownTriggerRef}
+              />
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
