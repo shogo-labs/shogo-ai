@@ -32,7 +32,7 @@ A saved snapshot of your agent at a specific point in time. Checkpoints let you 
 The integration platform that connects your agent to 250+ external tools. When you connect GitHub, Slack, Stripe, etc. through the Capabilities panel, it uses Composio under the hood. Some tools use OAuth, others require API keys.
 
 ### Usage
-Spend in Shogo is denominated in US dollars. Every AI request is billed at the provider's raw cost plus a flat 20% markup — there are no credits or unit conversions. Each plan includes a fixed amount of monthly usage; overage (when enabled) is metered and billed by Stripe.
+Each plan includes usage that is unlimited within two rolling windows — a 5-hour window and a weekly (7-day) window — surfaced as a percentage of each window rather than a depleting dollar balance. When a window fills up, usage either pauses until it resets or, if overage is enabled, is metered and billed by Stripe at the provider's raw cost plus a flat 20% markup (no credits or unit conversions).
 
 ### Dashboard
 The main page of your workspace. Has a chat input at the top for creating new agents, and tabs for **Templates**, **My projects**, and **Shared with me**.
@@ -68,7 +68,7 @@ A pre-built agent configuration that you can use as a starting point. Templates 
 A workspace file where your agent stores information about you — your name, timezone, preferences, and other context that helps it serve you better.
 
 ### Workspace
-A shared space that contains agents and members. Workspaces have their own billing, usage pool, and team. You can belong to multiple workspaces.
+A shared space that contains agents and members. Workspaces have their own billing, usage windows, and team. You can belong to multiple workspaces.
 
 ## General technology terms
 
