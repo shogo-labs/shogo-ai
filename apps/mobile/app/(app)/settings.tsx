@@ -94,6 +94,7 @@ import { UsageLeaderboard } from '../../components/analytics/UsageLeaderboard'
 import { BillingProgressCard } from '../../components/billing/BillingProgressCard'
 import { SetSpendLimitDialog } from '../../components/billing/SetSpendLimitDialog'
 import { CostAnalyticsTab } from '../../components/analytics/CostAnalyticsTab'
+import { resolveShortName, useVisibleModels } from '../../lib/visible-models'
 import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
 import { invitationEvents } from '../../lib/invitation-events'
 import {
@@ -2737,11 +2738,11 @@ function fmtUsd(n: number): string {
   return `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
 }
 
-function buildSeries(payload: SpendTimeseriesPayload | null): StackedSeries[] {
+function buildSeries(payload: SpendTimeseriesPayload | null, groupBy: 'model' | 'user' | 'source'): StackedSeries[] {
   if (!payload) return []
   return payload.models.map((m, i) => ({
     id: m,
-    label: m,
+    label: groupBy === 'model' ? resolveShortName(m) : m,
     color: STACKED_PALETTE[i % STACKED_PALETTE.length],
   }))
 }
@@ -2753,6 +2754,9 @@ function WorkspaceAnalyticsTab() {
   const workspaceId = workspace?.id
   const { localMode } = usePlatformConfig()
   const { subscription, effectiveBalance, usageWindows, refetchUsageWallet } = useBillingData(workspaceId)
+  // Warm the visible-models metadata cache so chart series can be labeled with
+  // model display names (e.g. "Hoshi 1.0") rather than raw ids (mimo-v2.5).
+  useVisibleModels()
 
   const planId = subscription?.planId?.toLowerCase() ?? ''
   const isBusinessOrHigher = localMode || planId.startsWith('business') || planId.startsWith('enterprise')
@@ -2830,7 +2834,7 @@ function WorkspaceAnalyticsTab() {
   const includedSpend = spend.data?.totals.totalIncludedUsd ?? 0
   const onDemandSpend = spend.data?.totals.totalOnDemandUsd ?? 0
 
-  const series = buildSeries(spend.data)
+  const series = buildSeries(spend.data, groupBy)
   const chartDays = (spend.data?.days ?? []).map((d) => ({
     date: d.date,
     values: d.byModel,
