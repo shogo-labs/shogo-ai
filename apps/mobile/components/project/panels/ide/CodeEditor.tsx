@@ -304,7 +304,12 @@ export function CodeEditor({
       onMount={handleMount}
       options={{
         fontSize: settings.fontSize,
-        fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, monospace",
+        // BUG-012 — driven by the centralised `EditorSettings.fontFamily`
+        // (curated list in `useEditorFont.ts`). Changes here propagate via
+        // the `<Editor>` options diff → `editor.updateOptions`. Monaco
+        // rerenders the glyph cache and the new font lands without a
+        // remount.
+        fontFamily: settings.fontFamily,
         minimap: { enabled: settings.minimap, scale: 1 },
         wordWrap: settings.wordWrap,
         lineNumbers: settings.lineNumbers,
