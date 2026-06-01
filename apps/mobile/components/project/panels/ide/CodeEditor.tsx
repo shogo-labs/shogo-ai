@@ -229,6 +229,38 @@ export function CodeEditor({
     configureMonaco(monaco);
     monaco.editor.setTheme(themeName);
 
+    // BUG-005: suppress Monaco's keybinding service for the palette
+    // shortcuts. Today the standalone editor doesn't bind Cmd+P or
+    // Cmd+Shift+P by default, but a future Monaco upgrade or contrib
+    // could — and the workbench's window-level handler would then fire
+    // alongside Monaco's, opening BOTH palettes. Registering a no-op
+    // command at the editor level wins over any default registration
+    // and is harmless when no default exists.
+    //
+    // The window-level handler in Workbench still owns the actual
+    // dispatch — these are pure suppressors so Monaco never claims
+    // the keystroke. We use addCommand (not addAction) because actions
+    // appear in the command palette UI; commands don't.
+    try {
+      const CtrlCmd = monaco.KeyMod?.CtrlCmd ?? 0;
+      const Shift = monaco.KeyMod?.Shift ?? 0;
+      const KeyP = monaco.KeyCode?.KeyP;
+      if (CtrlCmd && KeyP != null) {
+        ed.addCommand(CtrlCmd | KeyP, () => {
+          // No-op. Workbench's window handler runs and opens our Quick Open.
+        });
+        ed.addCommand(CtrlCmd | Shift | KeyP, () => {
+          // No-op. Workbench's window handler opens our Command Palette.
+        });
+      }
+    } catch {
+      // Defensive: if Monaco's KeyMod/KeyCode shape ever changes, the
+      // workbench-level dispatcher still works. Just lose Monaco
+      // suppression in that case — no functional regression beyond
+      // the pre-BUG-005 baseline.
+    }
+
+
     // BUG-001 fix — own the content listener instead of using <Editor onChange>.
     //
     // `@monaco-editor/react`'s onChange prop fires for ANY model content

@@ -56,6 +56,7 @@ import { disposeWorkspaceModels, removeModel, removeModelsUnderPath } from "./mo
 import { setupLspProviders } from "./monaco/lspProviders";
 import { setupLspDocumentSync } from "./monaco/lspDocumentSync";
 import { matchesShortcut, type Command } from "./commands";
+import { resolvePaletteIntent } from "./keybindings";
 import { useTheme } from "../../../../contexts/theme";
 import { isBinaryFilePath } from "@shogo-ai/sdk/file-types";
 import {
@@ -1334,11 +1335,16 @@ export function Workbench({
   // ─── Keyboard ────────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (matchesShortcut(e, { meta: true, shift: true, key: "p" })) {
-        e.preventDefault(); setPalette("command"); return;
-      }
-      if (matchesShortcut(e, { meta: true, key: "p" })) {
-        e.preventDefault(); setPalette("file"); return;
+      // BUG-005: single dispatcher for both palette shortcuts. Routes
+      // through the pure resolvePaletteIntent — "Shift wins → command".
+      // stopPropagation prevents any OTHER window-level keydown handler
+      // (FileTree, Terminal, future panels) from also firing on Cmd+P.
+      const paletteIntent = resolvePaletteIntent(e);
+      if (paletteIntent) {
+        e.preventDefault();
+        e.stopPropagation();
+        setPalette(paletteIntent);
+        return;
       }
       if (matchesShortcut(e, { meta: true, key: "s" })) {
         e.preventDefault(); void handleSave(); return;
