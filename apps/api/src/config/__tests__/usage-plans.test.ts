@@ -38,9 +38,9 @@ describe('rolling usage windows', () => {
 
   it('ROLLING_WINDOW_LIMITS covers all tiers with enterprise uncapped', () => {
     expect(ROLLING_WINDOW_LIMITS.free).toEqual({ fiveHourUsd: 0.2, weeklyUsd: 0.5 })
-    expect(ROLLING_WINDOW_LIMITS.basic).toEqual({ fiveHourUsd: 0.64, weeklyUsd: 1.6 })
-    expect(ROLLING_WINDOW_LIMITS.pro).toEqual({ fiveHourUsd: 1.6, weeklyUsd: 4 })
-    expect(ROLLING_WINDOW_LIMITS.business).toEqual({ fiveHourUsd: 3.2, weeklyUsd: 8 })
+    expect(ROLLING_WINDOW_LIMITS.basic).toEqual({ fiveHourUsd: 0.76, weeklyUsd: 1.9 })
+    expect(ROLLING_WINDOW_LIMITS.pro).toEqual({ fiveHourUsd: 1.96, weeklyUsd: 4.9 })
+    expect(ROLLING_WINDOW_LIMITS.business).toEqual({ fiveHourUsd: 3.96, weeklyUsd: 9.9 })
     expect(ROLLING_WINDOW_LIMITS.enterprise).toBeNull()
   })
 
@@ -68,7 +68,7 @@ describe('rolling usage windows', () => {
   })
 
   it('clamps seats to a minimum of 1', () => {
-    expect(getWindowLimitsForPlan('pro', 0)).toEqual({ fiveHourUsd: 1.6, weeklyUsd: 4 })
+    expect(getWindowLimitsForPlan('pro', 0)).toEqual({ fiveHourUsd: 1.96, weeklyUsd: 4.9 })
   })
 
   it('returns null for enterprise regardless of seats', () => {
@@ -108,8 +108,8 @@ describe('getMonthlyIncludedEquivalent', () => {
   })
 
   it('is weeklyUsd × WEEKS_PER_MONTH for capped plans', () => {
-    expect(getMonthlyIncludedEquivalent('pro', 1)).toBeCloseTo(4 * WEEKS_PER_MONTH, 10)
-    expect(getMonthlyIncludedEquivalent('basic')).toBeCloseTo(1.6 * WEEKS_PER_MONTH, 10)
+    expect(getMonthlyIncludedEquivalent('pro', 1)).toBeCloseTo(4.9 * WEEKS_PER_MONTH, 10)
+    expect(getMonthlyIncludedEquivalent('basic')).toBeCloseTo(1.9 * WEEKS_PER_MONTH, 10)
   })
 
   it('scales pro/business per seat', () => {

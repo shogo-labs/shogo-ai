@@ -176,14 +176,17 @@ export const WEEKS_PER_MONTH = 365.25 / 12 / 7
  *
  *     weeklyUsd ≤ TARGET_COMPUTE_COST_RATIO × monthlyPrice × MARKUP / WEEKS_PER_MONTH
  *
- * At MARKUP 1.20, ratio 0.75, prices basic $8 / pro $20 / business $40 the
- * caps are ≈ $1.66 / $4.14 / $8.28 per seat; the values below round *down* to
- * clean figures (worst-case COGS lands ≈72.5% of list / ≈87% of annual
- * revenue). 5-hour windows are sized at 40% of the weekly budget so a single
- * burst can't drain the whole week. `null` = uncapped (enterprise). Values are
- * intended to be tuned operationally — see `TARGET_COMPUTE_COST_RATIO`.
+ * At MARKUP 1.20, ratio 0.90, prices basic $8 / pro $20 / business $40 the
+ * caps are ≈ $1.99 / $4.97 / $9.94 per seat; the values below round *down* to
+ * clean figures (worst-case COGS lands ≈86–90% of list / ≈103–108% of annual
+ * revenue — i.e. a user who pins their windows non-stop for a year runs at a
+ * slight compute loss). That worst case is accepted deliberately: realized
+ * usage is a small fraction of the cap, the served model is cheap, and overage
+ * controls backstop abuse. 5-hour windows are sized at 40% of the weekly budget
+ * so a single burst can't drain the whole week. `null` = uncapped (enterprise).
+ * Values are intended to be tuned operationally — see `TARGET_COMPUTE_COST_RATIO`.
  */
-export const TARGET_COMPUTE_COST_RATIO = 0.75
+export const TARGET_COMPUTE_COST_RATIO = 0.90
 
 /**
  * Per-window included USD-of-compute per plan. Within these windows usage is
@@ -206,9 +209,9 @@ export const ROLLING_WINDOW_LIMITS: Record<
   { fiveHourUsd: number; weeklyUsd: number } | null
 > = {
   free: { fiveHourUsd: 0.2, weeklyUsd: 0.5 },
-  basic: { fiveHourUsd: 0.64, weeklyUsd: 1.6 },
-  pro: { fiveHourUsd: 1.6, weeklyUsd: 4 },
-  business: { fiveHourUsd: 3.2, weeklyUsd: 8 },
+  basic: { fiveHourUsd: 0.76, weeklyUsd: 1.9 },
+  pro: { fiveHourUsd: 1.96, weeklyUsd: 4.9 },
+  business: { fiveHourUsd: 3.96, weeklyUsd: 9.9 },
   enterprise: null,
 }
 
