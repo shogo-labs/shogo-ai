@@ -426,53 +426,49 @@ describe('enrollAffiliate', () => {
     expect(b.code).toMatch(/^shared-[a-z0-9]{4}$/)
   })
 
-  test('rejects self-referral via parentCode (defensive guard)', async () => {
-    // The enroll-by-userId idempotency check normally short-circuits
-    // before the parent self-referral guard can run. Simulate the
-    // corrupted state — an affiliate row whose code lookup resolves
-    // to `u1` but whose userId lookup is missing — by patching the
-    // mock for one call. (Real-world trigger: a backfill that wrote
-    // a code-only row without a corresponding userId mapping.)
-    seedAffiliate({ id: 'aff_mine', userId: 'u1', code: 'mine' })
-    seedUser('u1', 'a@a.com', 'Ada')
-    const origFindUnique = prismaStub.affiliate.findUnique
-    prismaStub.affiliate.findUnique = (async ({ where }: any) => {
-      if (where.userId === 'u1') return null
-      return origFindUnique({ where })
-    }) as any
-    try {
-      await expect(
-        svc.enrollAffiliate('u1', { parentCode: 'mine', termsAccepted: true }),
-      ).rejects.toMatchObject({ code: 'self_referral' })
-    } finally {
-      prismaStub.affiliate.findUnique = origFindUnique
-    }
-  })
-
-  test('rejects parent_too_deep when chain would exceed max depth', async () => {
-    process.env.SHOGO_AFFILIATE_MAX_DEPTH = '3'
-    seedAffiliate({ userId: 'u-root', code: 'root', depth: 1 })
-    const l2 = seedAffiliate({ userId: 'u-l2', code: 'l2', parentAffiliateId: 'aff_1', depth: 2 })
-    seedAffiliate({ userId: 'u-l3', code: 'l3', parentAffiliateId: l2.id, depth: 3 })
-    seedUser('u-new', 'n@n.com', 'New')
-    await expect(
-      svc.enrollAffiliate('u-new', { parentCode: 'l3', termsAccepted: true }),
-    ).rejects.toMatchObject({ code: 'parent_too_deep' })
-  })
-
-  test('happy path with parent updates depth', async () => {
+  test('derives parent from attribution and sets depth', async () => {
     seedAffiliate({ id: 'aff_root', userId: 'u-root', code: 'root', depth: 1 })
     seedUser('u-child', 'c@c.com', 'Child')
-    const child = await svc.enrollAffiliate('u-child', { parentCode: 'root', termsAccepted: true })
+    attributions.set('u-child', {
+      id: 'attr_child', userId: 'u-child', affiliateId: 'aff_root', attributedAt: new Date(),
+    })
+    const child = await svc.enrollAffiliate('u-child', { termsAccepted: true })
     expect(child.depth).toBe(2)
     expect(child.parentAffiliateId).toBe('aff_root')
   })
 
-  test('unknown parent code throws parent_not_found', async () => {
-    seedUser('u1')
-    await expect(
-      svc.enrollAffiliate('u1', { parentCode: 'who-dis', termsAccepted: true }),
-    ).rejects.toMatchObject({ code: 'parent_not_found' })
+  test('no attribution → enrolls at top of tree (depth 1, no parent)', async () => {
+    seedUser('u-solo', 's@s.com', 'Solo')
+    const row = await svc.enrollAffiliate('u-solo', { termsAccepted: true })
+    expect(row.depth).toBe(1)
+    expect(row.parentAffiliateId).toBeNull()
+  })
+
+  test('skips parent (best-effort, no error) when referrer would exceed max depth', async () => {
+    process.env.SHOGO_AFFILIATE_MAX_DEPTH = '3'
+    seedAffiliate({ id: 'aff_root', userId: 'u-root', code: 'root', depth: 1 })
+    const l2 = seedAffiliate({ userId: 'u-l2', code: 'l2', parentAffiliateId: 'aff_root', depth: 2 })
+    const l3 = seedAffiliate({ userId: 'u-l3', code: 'l3', parentAffiliateId: l2.id, depth: 3 })
+    seedUser('u-new', 'n@n.com', 'New')
+    attributions.set('u-new', { id: 'a', userId: 'u-new', affiliateId: l3.id, attributedAt: new Date() })
+    const row = await svc.enrollAffiliate('u-new', { termsAccepted: true })
+    expect(row.depth).toBe(1)
+    expect(row.parentAffiliateId).toBeNull()
+  })
+
+  test('skips parent (best-effort) when referrer is inactive', async () => {
+    seedAffiliate({ id: 'aff_susp', userId: 'u-susp', code: 'susp', depth: 1, status: 'suspended' })
+    seedUser('u-new', 'n@n.com', 'New')
+    attributions.set('u-new', { id: 'a', userId: 'u-new', affiliateId: 'aff_susp', attributedAt: new Date() })
+    const row = await svc.enrollAffiliate('u-new', { termsAccepted: true })
+    expect(row.parentAffiliateId).toBeNull()
+  })
+
+  test('ignores attribution pointing at a missing affiliate', async () => {
+    seedUser('u-new', 'n@n.com', 'New')
+    attributions.set('u-new', { id: 'a', userId: 'u-new', affiliateId: 'aff_ghost', attributedAt: new Date() })
+    const row = await svc.enrollAffiliate('u-new', { termsAccepted: true })
+    expect(row.parentAffiliateId).toBeNull()
   })
 })
 
@@ -570,6 +566,36 @@ describe('resolveAttributionForUser', () => {
     )
     const attr = await svc.resolveAttributionForUser('u-new', 'v', 'a')
     expect(attr!.affiliateId).toBe('aff_a')
+  })
+
+  test('falls back to code attribution when there is no click row', async () => {
+    seedAffiliate({ id: 'aff_a', userId: 'u-a', code: 'cool-code' })
+    seedUser('u-new')
+    // No clicks recorded; only the __shogo_ref cookie code is known.
+    const attr = await svc.resolveAttributionForUser('u-new', 'visitor-1', 'cool-code')
+    expect(attr).not.toBeNull()
+    expect(attr!.affiliateId).toBe('aff_a')
+    expect(attr!.clickId).toBeNull()
+  })
+
+  test('code fallback works even without a visitorId', async () => {
+    seedAffiliate({ id: 'aff_a', userId: 'u-a', code: 'cool-code' })
+    seedUser('u-new')
+    const attr = await svc.resolveAttributionForUser('u-new', null, 'cool-code')
+    expect(attr!.affiliateId).toBe('aff_a')
+  })
+
+  test('code fallback rejects self-referral', async () => {
+    seedAffiliate({ id: 'aff_self', userId: 'u-new', code: 'mine' })
+    seedUser('u-new')
+    const attr = await svc.resolveAttributionForUser('u-new', null, 'mine')
+    expect(attr).toBeNull()
+  })
+
+  test('returns null when given neither a visitor nor a code', async () => {
+    seedUser('u-new')
+    const attr = await svc.resolveAttributionForUser('u-new', null, null)
+    expect(attr).toBeNull()
   })
 })
 
