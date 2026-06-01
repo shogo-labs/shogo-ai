@@ -1687,6 +1687,32 @@
       ],
       "fixedFailingTests": 2,
       "isolatedSuiteStatus": "7902 pass / 7 fail / 42 skip / 2 crashed-files (the 7 fails + 2 crashed files came from the main-merge 648bd84c \u2014 billing/knative/stripe/marketplace test files. This session introduced zero new failures.)"
+    },
+    {
+      "sha": "be718256",
+      "wave": "Wave 4",
+      "session": "Stabilization Session 10a",
+      "kind": "test (stabilization)",
+      "date": "2026-06-01",
+      "files": [
+        {
+          "path": "apps/api/src/__tests__/knative-project-manager.test.ts",
+          "note": "Clear SHOGO_API_URL / API_URL / SYSTEM_NAMESPACE / SHOGO_PUBLIC_API_URL at module-init so AI_PROXY_URL fallback fires deterministically in pod runners.",
+          "before": {
+            "isolated": "42 pass / 1 fail (in pods)"
+          },
+          "after": {
+            "isolated": "43 pass / 0 fail"
+          },
+          "coverage": {
+            "lines": 98.97,
+            "funcs": 88.89,
+            "note": "already at v4 target; no test additions"
+          }
+        }
+      ],
+      "fixedFailingTests": 1,
+      "notes": "Wave 4 Fix-and-Close style: target file already past v4 95%/99% threshold; commit is fix-only, closes 1 of 7 pre-existing post-main-merge fails."
     }
   ],
   "frontend": {
