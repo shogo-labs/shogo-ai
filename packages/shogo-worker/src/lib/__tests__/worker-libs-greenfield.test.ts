@@ -6,7 +6,7 @@
  * Shared mocks: node:fs (controllable), node:child_process (fake spawn),
  * ./paths, ./transport.
  */
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach, mock, afterAll } from 'bun:test'
 import { EventEmitter } from 'node:events'
 
 // ── controllable node:fs ──────────────────────────────────────────────────────
@@ -64,14 +64,18 @@ mock.module('../paths.ts', () => ({
 }))
 
 // ── ./transport (for preflight) ────────────────────────────────────────────────
-let allowlistImpl = (_cloudUrl: string): any[] => ([
-  { host: 'control.shogo.dev', url: 'https://control.shogo.dev', purpose: 'control', criticality: 'fatal' },
-  { host: 'tunnel.shogo.dev', url: 'https://tunnel.shogo.dev', purpose: 'tunnel', criticality: 'graceful' },
-])
-let probeProxyImpl = async (): Promise<{ ok: boolean; detail?: string }> => ({ ok: true, detail: 'proxy ok' })
+// Delegate to the REAL transport by default so sibling files that import the
+// genuine module (e.g. worker-transport-greenfield.test.ts) are not shadowed by
+// this file's process-global mock. Individual tests below override the impls.
+const _realTransport = require('../transport')
+const _defaultAllowlist = _realTransport.deriveAllowlist
+const _defaultProbeProxy = _realTransport.probeProxy
+let allowlistImpl: (cloudUrl: string) => any[] = _defaultAllowlist
+let probeProxyImpl: (...a: any[]) => Promise<{ ok: boolean; detail?: string }> = _defaultProbeProxy
 mock.module('../transport.ts', () => ({
+  ..._realTransport,
   deriveAllowlist: (u: string) => allowlistImpl(u),
-  probeProxy: () => probeProxyImpl(),
+  probeProxy: (...a: any[]) => probeProxyImpl(...a),
 }))
 
 import { findApiEntry } from '../api-discovery'
@@ -257,7 +261,7 @@ describe('preflight', () => {
     const names = checks.map((c) => c.name)
     expect(names[0]).toContain('Runtime')
     expect(names.some((n) => n.includes('Worker directory'))).toBe(true)
-    expect(names.some((n) => n.includes('Reach control.shogo.dev'))).toBe(true)
+    expect(names.some((n) => n.includes('Reach api.shogo.dev'))).toBe(true)
     expect(names.some((n) => n.includes('API key valid'))).toBe(true)
     expect(names.some((n) => n.includes('Proxy'))).toBe(false)
 
@@ -283,12 +287,12 @@ describe('preflight', () => {
     // ok
     globalThis.fetch = (async () => ({ status: 200 })) as any
     let checks = makeChecks(baseOpts)
-    const reach = checks.find((c) => c.name.includes('Reach control'))!
+    const reach = checks.find((c) => c.name.includes('Reach api.shogo.dev'))!
     expect(await reach.run()).toMatchObject({ ok: true, detail: 'HTTP 200' })
     // no response (fetch resolves null via .catch)
     globalThis.fetch = (async () => { throw new Error('conn refused') }) as any
     checks = makeChecks(baseOpts)
-    const reach2 = checks.find((c) => c.name.includes('Reach control'))!
+    const reach2 = checks.find((c) => c.name.includes('Reach api.shogo.dev'))!
     expect((await reach2.run()).ok).toBe(false)
   })
 
@@ -314,7 +318,7 @@ describe('preflight', () => {
     const checks = makeChecks({ ...baseOpts, proxy: { url: 'http://p:1' } as any })
     const proxy = checks.find((c) => c.name.includes('Proxy'))!
     expect(await proxy.run()).toMatchObject({ ok: false, detail: 'proxy down' })
-    probeProxyImpl = async () => ({ ok: true, detail: 'proxy ok' })
+    probeProxyImpl = _defaultProbeProxy
   })
 
   test('makeChecks safeHost falls back to raw on bad proxy URL', () => {
@@ -344,4 +348,8 @@ describe('preflight', () => {
     ]
     expect(await runPreflight(checks)).toBe(false)
   })
+})
+
+afterAll(() => {
+  mock.restore()
 })

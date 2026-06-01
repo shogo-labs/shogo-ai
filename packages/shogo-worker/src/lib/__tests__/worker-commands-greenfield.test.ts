@@ -7,7 +7,7 @@
  * node:stream / node:stream/promises / ../config / ../paths / ../git-cloner /
  * @shogo-ai/sdk/cloud-file-transport, plus a routable global fetch.
  */
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach, mock, afterAll } from 'bun:test'
 import { EventEmitter } from 'node:events'
 
 // ── routable global fetch ─────────────────────────────────────────────────────
@@ -456,4 +456,8 @@ describe('project-push', () => {
     await runProjectPush('p1', {})
     expect(lastTransportOpts.projectId).toBe('p1')
   })
+})
+
+afterAll(() => {
+  mock.restore()
 })
