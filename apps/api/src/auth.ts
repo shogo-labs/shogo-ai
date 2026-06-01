@@ -472,8 +472,12 @@ export const auth = betterAuth({
                 ''
               const visitorId = parseCookieHeader(cookieHeader, '__shogo_ref_visitor')
               const code = parseCookieHeader(cookieHeader, '__shogo_ref')
-              if (visitorId) {
-                await resolveAttributionForUser(user.id, visitorId, code ?? null)
+              // Either signal is enough: the visitor cookie drives
+              // click-based attribution, the code cookie drives the
+              // direct code fallback (resolveAttributionForUser handles
+              // both, including the case where only one is present).
+              if (visitorId || code) {
+                await resolveAttributionForUser(user.id, visitorId ?? null, code ?? null)
               }
             } catch (err) {
               console.error('[Affiliate] attribution on signup failed', err)

@@ -12,7 +12,6 @@ export type WidgetType =
   | 'security'
   | 'meeting-setup'
   | 'features'
-  | 'templates'
   | 'complete'
 
 export interface OnboardingStep {

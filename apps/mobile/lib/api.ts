@@ -892,6 +892,22 @@ export const api = {
     return res.data
   },
 
+  // ─── License keys ─────────────────────────────────────────
+
+  /**
+   * Redeem a single-use license key against a workspace. The current
+   * user must be a member of the workspace. Throws a `ShogoError` on
+   * failure (404 invalid, 410 expired, 409 already redeemed, 403 not a
+   * member) so callers can map `.status` to a friendly message.
+   */
+  async redeemLicenseKey(http: HttpClient, workspaceId: string, code: string) {
+    const res = await http.post<{
+      ok: boolean
+      data?: { planId: string; grantId: string; expiresAt: string | null }
+    }>(`/api/workspaces/${encodeURIComponent(workspaceId)}/redeem-license`, { code })
+    return res.data?.data ?? null
+  },
+
   // ─── Local Security Preferences ───────────────────────────
 
   async getSecurityPrefs(http: HttpClient) {

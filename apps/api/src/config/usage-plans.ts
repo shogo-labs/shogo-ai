@@ -138,6 +138,143 @@ export function comparePlanRank(
 }
 
 /**
+ * Rolling usage-window durations, in milliseconds. Usage is gated by two
+ * independent windows that run in parallel (modeled on how Codex / Claude
+ * Code time-gate "unlimited" plans): a short burst window and a longer
+ * weekly window. Each window starts on the first metered action after the
+ * previous window elapsed (fixed-window-from-first-event) and exposes a
+ * `resetsAt = windowStart + duration`.
+ */
+export const FIVE_HOUR_MS = 5 * 60 * 60 * 1000
+export const SEVEN_DAY_MS = 7 * 24 * 60 * 60 * 1000
+
+/**
+ * Average weeks per calendar month (365.25 / 12 / 7 ≈ 4.348). The weekly
+ * rolling window is the binding constraint on monthly usage, so the
+ * "effective monthly included" usage of a plan is `weeklyUsd × WEEKS_PER_MONTH`
+ * for back-to-back windows. See `getMonthlyIncludedEquivalent`.
+ */
+export const WEEKS_PER_MONTH = 365.25 / 12 / 7
+
+/**
+ * ── How the window limits are sized (don't-lose-money math) ──────────────
+ *
+ * Windows count *marked-up* USD (`billedUsd = providerRawCost × MARKUP`,
+ * MARKUP = 1.20). Included usage is covered by the subscription — we don't
+ * charge per unit inside a window — so our real cost for a maxed window is the
+ * underlying provider COGS = `markedUp / MARKUP`.
+ *
+ * Worst case is a user who pins their windows continuously for a whole month.
+ * Their monthly provider COGS is:
+ *
+ *     monthlyCogsRaw = weeklyUsd × WEEKS_PER_MONTH / MARKUP
+ *
+ * We size `weeklyUsd` so that this worst case stays at or below
+ * `TARGET_COMPUTE_COST_RATIO` of the *list* monthly subscription price,
+ * leaving headroom for the ~17% annual discount, ~3% payment fees, infra and
+ * margin. Solving for the cap:
+ *
+ *     weeklyUsd ≤ TARGET_COMPUTE_COST_RATIO × monthlyPrice × MARKUP / WEEKS_PER_MONTH
+ *
+ * At MARKUP 1.20, ratio 0.90, prices basic $8 / pro $20 / business $40 the
+ * caps are ≈ $1.99 / $4.97 / $9.94 per seat; the values below round *down* to
+ * clean figures (worst-case COGS lands ≈86–90% of list / ≈103–108% of annual
+ * revenue — i.e. a user who pins their windows non-stop for a year runs at a
+ * slight compute loss). That worst case is accepted deliberately: realized
+ * usage is a small fraction of the cap, the served model is cheap, and overage
+ * controls backstop abuse. 5-hour windows are sized at 40% of the weekly budget
+ * so a single burst can't drain the whole week. `null` = uncapped (enterprise).
+ * Values are intended to be tuned operationally — see `TARGET_COMPUTE_COST_RATIO`.
+ */
+export const TARGET_COMPUTE_COST_RATIO = 0.90
+
+/**
+ * Per-window included USD-of-compute per plan. Within these windows usage is
+ * effectively unlimited (no finite monthly pool is drained); when a window is
+ * exhausted, usage falls through to metered overage (if enabled) and otherwise
+ * blocks until the window's `resetsAt`.
+ *
+ * `null` means uncapped (truly unlimited) — used by enterprise.
+ *
+ * For per-seat plans (`pro`, `business`) the limits below are *per seat* and
+ * are multiplied by the seat count in `getWindowLimitsForPlan`. `free` and
+ * `basic` are single-pool (not scaled by seats). `free` is a deliberate
+ * loss-leader (no revenue) capped small.
+ *
+ * Values are USD of marked-up compute (see `usage-cost.ts`). See the block
+ * comment above for the don't-lose-money derivation.
+ */
+export const ROLLING_WINDOW_LIMITS: Record<
+  PlanId,
+  { fiveHourUsd: number; weeklyUsd: number } | null
+> = {
+  free: { fiveHourUsd: 0.2, weeklyUsd: 0.5 },
+  basic: { fiveHourUsd: 0.76, weeklyUsd: 1.9 },
+  pro: { fiveHourUsd: 1.96, weeklyUsd: 4.9 },
+  business: { fiveHourUsd: 3.96, weeklyUsd: 9.9 },
+  enterprise: null,
+}
+
+/** Plans whose window limits scale linearly with the paid seat count. */
+const PER_SEAT_WINDOW_PLANS: ReadonlySet<PlanId> = new Set<PlanId>(['pro', 'business'])
+
+export interface WindowLimits {
+  fiveHourUsd: number
+  weeklyUsd: number
+}
+
+/**
+ * Resolve the rolling-window limits for a (plan, seats) tuple.
+ *
+ * - Returns `null` for uncapped plans (enterprise) — callers treat `null`
+ *   as "unlimited, no window enforcement".
+ * - Per-seat plans (`pro`, `business`) multiply the per-seat limits by
+ *   `max(1, seats)`. Single-pool plans (`free`, `basic`) ignore seats.
+ * - Unknown / unrecognized plan ids fall back to the `free` limits so a
+ *   brand-new workspace whose plan hasn't resolved still gets the safety-net
+ *   window.
+ */
+export function getWindowLimitsForPlan(
+  planId: string | null | undefined,
+  seats: number = 1,
+): WindowLimits | null {
+  const normalized = normalizePlanId(planId) ?? 'free'
+  const base = ROLLING_WINDOW_LIMITS[normalized]
+  if (base == null) return null
+  if (!PER_SEAT_WINDOW_PLANS.has(normalized)) {
+    return { fiveHourUsd: base.fiveHourUsd, weeklyUsd: base.weeklyUsd }
+  }
+  const safeSeats = Math.max(1, Math.floor(seats || 1))
+  return {
+    fiveHourUsd: base.fiveHourUsd * safeSeats,
+    weeklyUsd: base.weeklyUsd * safeSeats,
+  }
+}
+
+/**
+ * Effective monthly included usage (marked-up USD) implied by the weekly
+ * rolling window for a (plan, seats) tuple. The weekly window is the binding
+ * monthly constraint, so for back-to-back windows the monthly ceiling is
+ * `weeklyUsd × WEEKS_PER_MONTH`.
+ *
+ * This is the *upper bound* of included usage assuming continuous use — pausing
+ * pushes each window's reset later, fitting fewer full weekly buckets per
+ * month. It is the included/unlimited zone only; usage beyond it falls through
+ * to metered overage. Returns `null` for uncapped plans (enterprise).
+ *
+ * Intended for internal/finance/admin surfaces — the customer UI shows usage
+ * relative to the window (utilization %), not this dollar figure.
+ */
+export function getMonthlyIncludedEquivalent(
+  planId: string | null | undefined,
+  seats: number = 1,
+): number | null {
+  const limits = getWindowLimitsForPlan(planId, seats)
+  if (limits == null) return null
+  return limits.weeklyUsd * WEEKS_PER_MONTH
+}
+
+/**
  * Voice / telephony raw provider rates (Mode B only). All values are USD.
  * The workspace is charged these rates times `MARKUP_MULTIPLIER` on top
  * of whatever daily/monthly included pool they have.

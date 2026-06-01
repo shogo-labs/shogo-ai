@@ -53,6 +53,7 @@ const sidebars: SidebarsConfig = {
           items: [
             "features/account-settings",
             "features/billing",
+            "features/affiliate-program",
           ],
         },
         {

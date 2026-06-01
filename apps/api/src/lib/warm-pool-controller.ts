@@ -108,6 +108,16 @@ const WARM_POOL_KEEP_ALIVE_TIMEOUT_MS = parseInt(
 // shouldn't see synthetic traffic on its warm pool.
 const WARM_POOL_KEEP_ALIVE_ENABLED = process.env.WARM_POOL_KEEP_ALIVE_ENABLED !== 'false'
 
+// Re-read persisted infra settings from the DB at the top of each reconcile so
+// that a runtime admin change (PATCH /api/admin/settings/infrastructure) is
+// picked up by EVERY api replica, not just the one that served the HTTP
+// request. Without this, replicas behind `min-scale >= 2` diverge on
+// `warmPoolMinPods` and fight forever — one creates pods toward its target
+// while the other trims the "excess" — so the pool churns and never goes hot
+// (the 2026-06-01 prod-us split-brain incident). Throttled to the reconcile
+// interval so burst reconciles don't storm the DB. Opt out with `=false`.
+const WARM_POOL_CONFIG_RELOAD_ENABLED = process.env.WARM_POOL_CONFIG_RELOAD_ENABLED !== 'false'
+
 // `warm_pool.cold_claims` fires when `assign.duration_ms` exceeds this
 // threshold. The signal we care about is "the pod wasn't actually warm
 // when we handed it out" — most healthy assigns land in 1–3s, so 5s
@@ -363,6 +373,13 @@ export class WarmPoolController {
   /** Cycle counter for scheduling periodic namespace-wide GC */
   private reconcileCycleCount = 0
 
+  /**
+   * Wall-clock ms of the last persisted-settings reload. Throttles the
+   * per-reconcile DB read of `infra.*` platform settings (see
+   * WARM_POOL_CONFIG_RELOAD_ENABLED) so burst reconciles don't storm the DB.
+   */
+  private lastSettingsReloadAt = 0
+
   /** Burst detection: timer for rapid replenishment after multiple claims */
   private burstReconcileTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -537,6 +554,21 @@ export class WarmPoolController {
   async reconcile(): Promise<void> {
     if (!this.started) return
     this.reconcileCycleCount++
+
+    // Re-read persisted infra settings so a runtime admin change propagates to
+    // ALL replicas (not just the one that served the PATCH). This makes the DB
+    // the single source of truth and prevents the multi-replica split-brain
+    // where replicas target different pool sizes and fight (one creates, one
+    // trims) every cycle. Throttled to the reconcile interval; set
+    // lastSettingsReloadAt BEFORE awaiting so the nested reconcile that
+    // updateConfig() fires on a real change skips its own reload (no re-entry).
+    if (WARM_POOL_CONFIG_RELOAD_ENABLED) {
+      const nowReload = Date.now()
+      if (nowReload - this.lastSettingsReloadAt >= this.reconcileIntervalMs) {
+        this.lastSettingsReloadAt = nowReload
+        await loadPersistedSettings(this)
+      }
+    }
 
     // Adjust pool size based on cluster node count
     await this.adjustPoolSizeForNodes()

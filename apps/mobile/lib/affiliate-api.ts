@@ -78,7 +78,7 @@ export const affiliateApi = {
 
   async enroll(
     http: HttpClient,
-    body: { termsAccepted: boolean; parentCode?: string | null; code?: string | null },
+    body: { termsAccepted: boolean; code?: string | null },
   ) {
     const res = await http.post<{ ok: boolean; affiliate?: any; error?: any }>(
       '/api/affiliates/enroll',
@@ -126,9 +126,19 @@ export const affiliateApi = {
 }
 
 /**
- * Builds a shareable referral link for the marketing site.
- * Mirrors the Cloudflare Pages Function at shogo-website/functions/r/[code].ts.
+ * Origin the Studio web app is served from, per environment. Mirrors
+ * openWebAppSession.ts so referral links resolve against the same app
+ * that hosts the in-app `/r/[code]` route — and stay within the current
+ * environment (a staging build emits a staging link, not production).
  */
-export function buildReferralLink(code: string, baseUrl = 'https://shogo.ai'): string {
+const REFERRAL_BASE_URL = process.env.EXPO_PUBLIC_WEB_URL ?? 'https://studio.shogo.ai'
+
+/**
+ * Builds a shareable referral link. Defaults to the current
+ * environment's web origin so staging links never point at production;
+ * the `/r/<code>` route (apps/mobile/app/r/[code].tsx) sets the
+ * attribution cookies and redirects to sign-up.
+ */
+export function buildReferralLink(code: string, baseUrl = REFERRAL_BASE_URL): string {
   return `${baseUrl.replace(/\/$/, '')}/r/${encodeURIComponent(code)}`
 }

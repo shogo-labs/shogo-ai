@@ -98,7 +98,7 @@ test.describe("Interaction Modes (Agent / Plan / Ask)", () => {
     await waitForAgentResponse(page, 180_000)
 
     // A plan card should appear with Cursor-like Build and plan-file actions
-    await expect(page.getByText("Build Plan")).toBeVisible({ timeout: 30_000 })
+    await expect(page.getByText("Build")).toBeVisible({ timeout: 30_000 })
     await expect(page.getByText("View Full Plan")).toBeVisible({ timeout: 30_000 })
   })
 

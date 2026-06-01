@@ -52,6 +52,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import {
   fetchAdminJson,
   postAdmin,
+  showAdminAlert,
   formatRelative,
   formatCents,
   countFindings,
@@ -193,6 +194,61 @@ function ReasonModal({
               )}
               <Text className="text-sm font-semibold text-white">
                 {busy ? 'Submitting…' : submitLabel}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  )
+}
+
+function ConfirmModal({
+  visible,
+  title,
+  description,
+  confirmLabel,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  visible: boolean
+  title: string
+  description: string
+  confirmLabel: string
+  busy: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
+      <View className="flex-1 items-center justify-center bg-black/50 px-6">
+        <View className="bg-card rounded-2xl border border-border p-6 w-full max-w-md">
+          <Text className="text-base font-semibold text-foreground mb-1">{title}</Text>
+          <Text className="text-sm text-muted-foreground mb-4">{description}</Text>
+          <View className="flex-row justify-end gap-2">
+            <Pressable
+              onPress={onCancel}
+              disabled={busy}
+              className="px-4 py-2 rounded-lg active:bg-muted"
+            >
+              <Text className="text-sm font-medium text-foreground">Cancel</Text>
+            </Pressable>
+            <Pressable
+              onPress={onConfirm}
+              disabled={busy}
+              className={cn(
+                'px-4 py-2 rounded-lg flex-row items-center gap-1.5',
+                busy ? 'bg-green-500/40' : 'bg-green-600 active:opacity-80',
+              )}
+            >
+              {busy ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <CheckCircle2 size={14} color="#fff" />
+              )}
+              <Text className="text-sm font-semibold text-white">
+                {busy ? 'Working…' : confirmLabel}
               </Text>
             </Pressable>
           </View>
@@ -369,6 +425,7 @@ export default function AdminListingDetailPage() {
     null,
   )
   const [rejectOpen, setRejectOpen] = useState(false)
+  const [approveOpen, setApproveOpen] = useState(false)
 
   const load = useCallback(async () => {
     if (!id) return
@@ -382,27 +439,16 @@ export default function AdminListingDetailPage() {
     load()
   }, [load])
 
-  const onApprove = async () => {
+  const onConfirmApprove = async () => {
     if (!listing) return
-    const proceed = await new Promise<boolean>((resolve) => {
-      Alert.alert(
-        'Approve listing?',
-        `${listing.title} will be published immediately.`,
-        [
-          { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-          { text: 'Approve', style: 'default', onPress: () => resolve(true) },
-        ],
-        { cancelable: true, onDismiss: () => resolve(false) },
-      )
-    })
-    if (!proceed) return
     setBusy('approve')
     const res = await postAdmin(`/listings/${listing.id}/approve`, {})
     setBusy(null)
     if (!res.ok) {
-      Alert.alert('Approve failed', res.error ?? 'Unknown error')
+      showAdminAlert('Approve failed', res.error ?? 'Unknown error')
       return
     }
+    setApproveOpen(false)
     await load()
   }
 
@@ -412,7 +458,7 @@ export default function AdminListingDetailPage() {
     const res = await postAdmin(`/listings/${listing.id}/reject`, { reason })
     setBusy(null)
     if (!res.ok) {
-      Alert.alert('Reject failed', res.error ?? 'Unknown error')
+      showAdminAlert('Reject failed', res.error ?? 'Unknown error')
       return
     }
     setRejectOpen(false)
@@ -570,7 +616,7 @@ export default function AdminListingDetailPage() {
             {canApproveReject && (
               <>
                 <Pressable
-                  onPress={onApprove}
+                  onPress={() => setApproveOpen(true)}
                   disabled={busy !== null}
                   className={cn(
                     'flex-row items-center gap-1.5 px-3 py-2 rounded-lg',
@@ -735,6 +781,15 @@ export default function AdminListingDetailPage() {
         busy={busy === 'reject'}
         onCancel={() => setRejectOpen(false)}
         onSubmit={onReject}
+      />
+      <ConfirmModal
+        visible={approveOpen}
+        title="Approve listing?"
+        description={`${listing.title} will be published immediately.`}
+        confirmLabel="Approve"
+        busy={busy === 'approve'}
+        onCancel={() => setApproveOpen(false)}
+        onConfirm={onConfirmApprove}
       />
     </ScrollView>
   )

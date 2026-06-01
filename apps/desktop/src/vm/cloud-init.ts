@@ -370,11 +370,14 @@ function buildUserData(config: CloudInitConfig): string {
     lines.push('  - |')
     lines.push('    mkdir -p /mnt/seed /packages/sdk/bin')
     lines.push('    mount -t iso9660 /dev/sr0 /mnt/seed 2>/dev/null || mount /dev/cdrom /mnt/seed 2>/dev/null || mount -t iso9660 /dev/vdb /mnt/seed 2>/dev/null || true')
-    lines.push('    mkdir -p /opt/shogo/wasm')
+    lines.push('    mkdir -p /opt/shogo/wasm /opt/shogo/static')
+    // canvas-bridge.js must land in /opt/shogo/static (not /opt/shogo) so it
+    // matches CANVAS_BRIDGE_DIR below. server.js/shogo.js go to /opt/shogo,
+    // wasm grammars to /opt/shogo/wasm.
     lines.push('    for f in /mnt/seed/*; do')
-    lines.push('      case "$f" in *.wasm) cp "$f" /opt/shogo/wasm/ ;; *) cp "$f" /opt/shogo/ ;; esac 2>/dev/null || true')
+    lines.push('      case "$f" in *.wasm) cp "$f" /opt/shogo/wasm/ ;; *canvas-bridge.js) cp "$f" /opt/shogo/static/ ;; *) cp "$f" /opt/shogo/ ;; esac 2>/dev/null || true')
     lines.push('    done')
-    lines.push('    ls -la /opt/shogo/ /opt/shogo/wasm/')
+    lines.push('    ls -la /opt/shogo/ /opt/shogo/wasm/ /opt/shogo/static/')
     lines.push('    ln -sf /opt/shogo/shogo.js /packages/sdk/bin/shogo.ts 2>/dev/null || true')
     // Install a `shogo` shim on PATH so workspace `package.json` scripts
     // that say `bunx shogo generate` resolve to the bundled CLI instead
@@ -399,8 +402,13 @@ function buildUserData(config: CloudInitConfig): string {
       'PROJECT_DIR=/workspace',
       'NODE_ENV=development',
       'TREE_SITTER_WASM_DIR=/opt/shogo/wasm',
+      // The bundled runtime boots from /opt/shogo/server.js, so its default
+      // join(__dirname,'..','static') resolves to /opt/static (never shipped).
+      // Point it at the dir the seed-extraction step above populated so the
+      // canvas "Update available - Refresh" pill works inside the VM.
+      'CANVAS_BRIDGE_DIR=/opt/shogo/static',
     ]
-    const skip = new Set(['PROJECT_ID', 'PORT', 'WORKSPACE_DIR', 'AGENT_DIR', 'PROJECT_DIR', 'NODE_ENV', 'TREE_SITTER_WASM_DIR'])
+    const skip = new Set(['PROJECT_ID', 'PORT', 'WORKSPACE_DIR', 'AGENT_DIR', 'PROJECT_DIR', 'NODE_ENV', 'TREE_SITTER_WASM_DIR', 'CANVAS_BRIDGE_DIR'])
     if (config.env) {
       for (const [k, v] of Object.entries(config.env)) {
         if (!skip.has(k)) envParts.push(`${k}=${shellEscape(v)}`)

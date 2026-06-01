@@ -33,6 +33,7 @@ import {
   type IDomainStore,
 } from '../../contexts/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
+import { CompactUsageWindows } from '../../components/billing/UsageWindows'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { api } from '../../lib/api'
 import {
@@ -52,7 +53,6 @@ import {
   Button,
   Badge,
   Skeleton,
-  Progress,
   cn,
 } from '@shogo/shared-ui/primitives'
 
@@ -309,6 +309,7 @@ const WorkspaceCard = observer(function WorkspaceCard({
   const {
     subscription,
     effectiveBalance,
+    usageWindows,
   } = useBillingData(features.billing ? workspace.id : undefined)
 
   return (
@@ -371,51 +372,27 @@ const WorkspaceCard = observer(function WorkspaceCard({
                 </Button>
               </View>
 
-              {/* Usage Display */}
-              {effectiveBalance && (
-                <View className="bg-muted/50 rounded-lg p-3 gap-2">
-                  <View className="flex-row items-center justify-between">
-                    <View className="flex-row items-center gap-1">
-                      <Zap size={16} className="text-yellow-500" />
-                      <Text className="text-sm font-medium text-foreground">
-                        Usage
-                      </Text>
-                    </View>
-                    <Text className="text-sm font-bold text-foreground">
-                      ${effectiveBalance.total.toFixed(2)} left
-                    </Text>
-                  </View>
-                  <View className="flex-row gap-2">
-                    <View className="flex-1 items-center p-2 bg-background rounded">
-                      <Text className="text-xs font-medium text-foreground">
-                        ${effectiveBalance.dailyIncludedUsd.toFixed(2)}
-                      </Text>
-                      <Text className="text-[10px] text-muted-foreground">
-                        Daily
-                      </Text>
-                    </View>
-                    <View className="flex-1 items-center p-2 bg-background rounded">
-                      <Text className="text-xs font-medium text-foreground">
-                        ${effectiveBalance.monthlyIncludedUsd.toFixed(2)}
-                      </Text>
-                      <Text className="text-[10px] text-muted-foreground">
-                        Monthly
-                      </Text>
-                    </View>
-                  </View>
-                  <Progress
-                    value={
-                      effectiveBalance.monthlyIncludedAllocationUsd > 0
-                        ? Math.min(100, (effectiveBalance.monthlyIncludedUsd / effectiveBalance.monthlyIncludedAllocationUsd) * 100)
-                        : 0
-                    }
-                    className="h-1.5"
-                  />
-                  <Text className="text-[10px] text-muted-foreground">
-                    {subscription.daysRemaining} days until renewal
+              {/* Usage Display — time-gated rolling windows */}
+              <View className="bg-muted/50 rounded-lg p-3 gap-2.5">
+                <View className="flex-row items-center gap-1">
+                  <Zap size={16} className="text-yellow-500" />
+                  <Text className="text-sm font-medium text-foreground">
+                    Usage
                   </Text>
                 </View>
-              )}
+                <CompactUsageWindows windows={usageWindows} />
+                {effectiveBalance?.overageEnabled && effectiveBalance.overageAccumulatedUsd > 0 ? (
+                  <View className="flex-row items-center justify-between">
+                    <Text className="text-xs text-muted-foreground">Overage</Text>
+                    <Text className="text-xs font-medium text-foreground">
+                      ${effectiveBalance.overageAccumulatedUsd.toFixed(2)}
+                    </Text>
+                  </View>
+                ) : null}
+                <Text className="text-[10px] text-muted-foreground">
+                  {subscription.daysRemaining} days until renewal
+                </Text>
+              </View>
             </View>
           ) : (
             <View className="flex-row items-center justify-between">

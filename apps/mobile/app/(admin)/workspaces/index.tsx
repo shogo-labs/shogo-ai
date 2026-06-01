@@ -174,45 +174,24 @@ const SIZE_OPTIONS = [
   { value: 'xlarge', label: 'XL' },
 ]
 
-export default function AdminWorkspacesPage() {
-  const router = useRouter()
-  const { width } = useWindowDimensions()
-  const isWide = width >= 900
-
-  const [search, setSearch] = useState('')
-  const [page, setPage] = useState(1)
-  const [sizeFilter, setSizeFilter] = useState<string>('')
-  const [data, setData] = useState<WorkspacesResponse | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
-
-  const loadWorkspaces = useCallback(async () => {
-    const params: Record<string, string> = {
-      page: String(page),
-      limit: '20',
-    }
-    if (search) params.search = search
-    if (sizeFilter) params.instanceSize = sizeFilter
-
-    const result = await fetchAdminJson<WorkspacesResponse>('/workspaces', params)
-    setData(result)
-    setLoading(false)
-    setRefreshing(false)
-  }, [page, search, sizeFilter])
-
-  useEffect(() => {
-    setLoading(true)
-    loadWorkspaces()
-  }, [loadWorkspaces])
-
-  const totalPages = data ? Math.ceil(data.total / data.limit) : 1
-
-  const onRefresh = () => {
-    setRefreshing(true)
-    loadWorkspaces()
-  }
-
-  const ListHeader = () => (
+function WorkspacesListHeader({
+  isWide,
+  data,
+  search,
+  setSearch,
+  setPage,
+  sizeFilter,
+  setSizeFilter,
+}: {
+  isWide: boolean
+  data: WorkspacesResponse | null
+  search: string
+  setSearch: (v: string) => void
+  setPage: (v: number) => void
+  sizeFilter: string
+  setSizeFilter: (v: string) => void
+}) {
+  return (
     <View className="gap-3 mb-2">
       <View className={cn(isWide ? 'flex-row items-center gap-3' : 'gap-3')}>
         <View
@@ -306,49 +285,100 @@ export default function AdminWorkspacesPage() {
       </View>
     </View>
   )
+}
 
-  const ListFooter = () => {
-    if (totalPages <= 1) return null
-    return (
-      <View className="flex-row items-center justify-between mt-3 px-1">
+function WorkspacesListFooter({
+  totalPages,
+  data,
+  page,
+  setPage,
+}: {
+  totalPages: number
+  data: WorkspacesResponse | null
+  page: number
+  setPage: (updater: (p: number) => number) => void
+}) {
+  if (totalPages <= 1) return null
+  return (
+    <View className="flex-row items-center justify-between mt-3 px-1">
+      <Text className="text-xs text-muted-foreground">
+        {data?.total} workspaces total
+      </Text>
+      <View className="flex-row items-center gap-2">
+        <Pressable
+          onPress={() => setPage((p) => Math.max(1, p - 1))}
+          disabled={page === 1}
+          className={cn(
+            'p-2 rounded-md border border-border',
+            page === 1 && 'opacity-30',
+          )}
+        >
+          <ChevronLeft size={16} className="text-foreground" />
+        </Pressable>
         <Text className="text-xs text-muted-foreground">
-          {data?.total} workspaces total
+          {page} / {totalPages}
         </Text>
-        <View className="flex-row items-center gap-2">
-          <Pressable
-            onPress={() => setPage((p) => Math.max(1, p - 1))}
-            disabled={page === 1}
-            className={cn(
-              'p-2 rounded-md border border-border',
-              page === 1 && 'opacity-30',
-            )}
-          >
-            <ChevronLeft size={16} className="text-foreground" />
-          </Pressable>
-          <Text className="text-xs text-muted-foreground">
-            {page} / {totalPages}
-          </Text>
-          <Pressable
-            onPress={() => setPage((p) => Math.min(totalPages, p + 1))}
-            disabled={page >= totalPages}
-            className={cn(
-              'p-2 rounded-md border border-border',
-              page >= totalPages && 'opacity-30',
-            )}
-          >
-            <ChevronRight size={16} className="text-foreground" />
-          </Pressable>
-        </View>
+        <Pressable
+          onPress={() => setPage((p) => Math.min(totalPages, p + 1))}
+          disabled={page >= totalPages}
+          className={cn(
+            'p-2 rounded-md border border-border',
+            page >= totalPages && 'opacity-30',
+          )}
+        >
+          <ChevronRight size={16} className="text-foreground" />
+        </Pressable>
       </View>
-    )
-  }
+    </View>
+  )
+}
 
-  const EmptyState = () => (
+function WorkspacesEmptyState() {
+  return (
     <View className="items-center justify-center py-16">
       <Building2 size={32} className="text-muted-foreground/50 mb-2" />
       <Text className="text-sm text-muted-foreground">No workspaces found</Text>
     </View>
   )
+}
+
+export default function AdminWorkspacesPage() {
+  const router = useRouter()
+  const { width } = useWindowDimensions()
+  const isWide = width >= 900
+
+  const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
+  const [sizeFilter, setSizeFilter] = useState<string>('')
+  const [data, setData] = useState<WorkspacesResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+
+  const loadWorkspaces = useCallback(async () => {
+    const params: Record<string, string> = {
+      page: String(page),
+      limit: '20',
+    }
+    if (search) params.search = search
+    if (sizeFilter) params.instanceSize = sizeFilter
+
+    const result = await fetchAdminJson<WorkspacesResponse>('/workspaces', params)
+    setData(result)
+    setLoading(false)
+    setRefreshing(false)
+  }, [page, search, sizeFilter])
+
+  useEffect(() => {
+    setLoading(true)
+    loadWorkspaces()
+  }, [loadWorkspaces])
+
+  const totalPages = data ? Math.ceil(data.total / data.limit) : 1
+
+  const onRefresh = () => {
+    setRefreshing(true)
+    loadWorkspaces()
+  }
 
   return (
     <View className={cn('flex-1 bg-background', isWide ? 'px-8 pt-6' : 'px-4 pt-2')}>
@@ -356,9 +386,26 @@ export default function AdminWorkspacesPage() {
         <FlatList
           data={data?.workspaces ?? []}
           keyExtractor={(item) => item.id}
-          ListHeaderComponent={<ListHeader />}
-          ListFooterComponent={<ListFooter />}
-          ListEmptyComponent={loading ? null : <EmptyState />}
+          ListHeaderComponent={
+            <WorkspacesListHeader
+              isWide={isWide}
+              data={data}
+              search={search}
+              setSearch={setSearch}
+              setPage={setPage}
+              sizeFilter={sizeFilter}
+              setSizeFilter={setSizeFilter}
+            />
+          }
+          ListFooterComponent={
+            <WorkspacesListFooter
+              totalPages={totalPages}
+              data={data}
+              page={page}
+              setPage={setPage}
+            />
+          }
+          ListEmptyComponent={loading ? null : <WorkspacesEmptyState />}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }

@@ -34,7 +34,7 @@ export const STRIPE_CARDS = {
  * Signs up a new account at /sign-in, then walks through the cloud chat-style
  * onboarding flow:
  *
- *   welcome (auto-advance) → features → templates → complete → home
+ *   welcome (auto-advance) → features → complete → home
  *
  * Leaves the browser on the home screen with "What's on your mind" visible.
  */
@@ -78,18 +78,7 @@ export async function signUpAndOnboard(page: Page, user: TestUser): Promise<void
     // Already past features step
   }
 
-  // Step 2 – Templates widget: "Skip" (or "Continue" if a template is preselected)
-  try {
-    const skip = page
-      .getByText("Skip", { exact: true })
-      .or(page.getByText("Continue", { exact: true }))
-    await skip.first().waitFor({ timeout: 15_000 })
-    await skip.first().click()
-  } catch {
-    // Already past templates step
-  }
-
-  // Step 3 – Complete widget: "Enter Shogo"
+  // Step 2 – Complete widget: "Enter Shogo"
   try {
     await page.getByText("Enter Shogo", { exact: true }).waitFor({ timeout: 15_000 })
     await page.getByText("Enter Shogo", { exact: true }).click()
@@ -98,51 +87,6 @@ export async function signUpAndOnboard(page: Page, user: TestUser): Promise<void
   }
 
   // ── Home screen ────────────────────────────────────────────────────────────
-  await page.waitForSelector("text=What's on your mind", { timeout: 30_000 })
-}
-
-/**
- * Signs up and onboards, selecting an app template by name during the
- * templates step. Leaves the browser on the home screen.
- */
-export async function signUpAndOnboardWithAppTemplate(
-  page: Page,
-  user: TestUser,
-  templateDisplayName: string
-): Promise<void> {
-  await page.goto("/sign-in")
-  await page.getByRole("tab", { name: "Sign Up" }).click()
-  await page.getByPlaceholder("Enter your name").fill(user.name)
-  await page.getByPlaceholder("you@example.com").fill(user.email)
-  await page.getByPlaceholder("Create a password").fill(user.password)
-  await page.getByText("Sign Up", { exact: true }).last().click()
-
-  await page.waitForURL((url) => !url.pathname.startsWith("/sign-in"), {
-    timeout: 30_000,
-  })
-
-  // Step 1 – Features widget: "Continue" (exact, not "Continue with Google")
-  try {
-    await page
-      .getByText("Continue", { exact: true })
-      .first()
-      .waitFor({ timeout: 15_000 })
-    await page.getByText("Continue", { exact: true }).first().click()
-  } catch {}
-
-  // Step 2 – Templates widget: pick the named template, then "Continue"
-  try {
-    await page.getByText(templateDisplayName).waitFor({ timeout: 15_000 })
-    await page.getByText(templateDisplayName).click()
-    await page.getByText("Continue", { exact: true }).first().click()
-  } catch {}
-
-  // Step 3 – Complete widget: "Enter Shogo"
-  try {
-    await page.getByText("Enter Shogo", { exact: true }).waitFor({ timeout: 15_000 })
-    await page.getByText("Enter Shogo", { exact: true }).click()
-  } catch {}
-
   await page.waitForSelector("text=What's on your mind", { timeout: 30_000 })
 }
 

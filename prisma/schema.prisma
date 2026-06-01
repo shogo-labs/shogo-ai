@@ -680,6 +680,15 @@ model UsageWallet {
   anniversaryDay               Int
   lastDailyReset               DateTime
   lastMonthlyReset             DateTime
+  // Rolling usage windows (time-gated "unlimited"). Each window starts on the
+  // first metered action after the previous window elapsed and accumulates
+  // marked-up USD of compute until it resets. `null` start = window not yet
+  // opened. See `usage-plans.ts` (FIVE_HOUR_MS / SEVEN_DAY_MS) and
+  // `ROLLING_WINDOW_LIMITS`.
+  fiveHourWindowStart          DateTime?
+  fiveHourUsedUsd              Float    @default(0)
+  weeklyWindowStart            DateTime?
+  weeklyUsedUsd                Float    @default(0)
   createdAt                    DateTime @default(now())
   updatedAt                    DateTime @updatedAt
 
@@ -718,6 +727,7 @@ enum UsageSource {
   daily
   monthly
   overage
+  window
 }
 
 /// Super-admin-managed credit grant. Each row gives a workspace a fixed
@@ -2705,8 +2715,9 @@ model AffiliatePayout {
 }
 
 /// Per-level commission configuration. The number of rows defines the
-/// max upline depth (default 3) — adding a row enables L4 commissions
-/// across the system. `rateBps` is in basis points (2000 = 20.00%).
+/// enrollment tree depth; how many levels are actually PAID is capped
+/// separately by SHOGO_AFFILIATE_PAYOUT_MAX_DEPTH (default 1 = direct
+/// referrer only). `rateBps` is in basis points (2000 = 20.00%).
 /// `durationDays` caps the recurring window per level (null = forever);
 /// default 365 matches Rewardful's 12-month policy.
 model AffiliateCommissionTier {
@@ -2714,6 +2725,11 @@ model AffiliateCommissionTier {
   level        Int     @unique
   rateBps      Int
   durationDays Int?
+  /// Optional step-down rate (basis points) applied AFTER `durationDays`
+  /// expires (e.g. 1000 = 10.00% forever once the 365-day window ends).
+  /// Null preserves legacy behavior: the level stops earning after its
+  /// window.
+  secondaryRateBps Int?
   /// Optional display label for the admin UI (e.g. "Direct referral",
   /// "L2 upline"). Free-form; ignored by the commission engine.
   label        String?

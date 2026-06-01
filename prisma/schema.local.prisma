@@ -601,6 +601,10 @@ model UsageWallet {
   anniversaryDay               Int
   lastDailyReset               DateTime
   lastMonthlyReset             DateTime
+  fiveHourWindowStart          DateTime?
+  fiveHourUsedUsd              Float    @default(0)
+  weeklyWindowStart            DateTime?
+  weeklyUsedUsd                Float    @default(0)
   createdAt                    DateTime @default(now())
   updatedAt                    DateTime @updatedAt
 
@@ -2049,6 +2053,7 @@ model AffiliateCommissionTier {
   level        Int     @unique
   rateBps      Int
   durationDays Int?
+  secondaryRateBps Int?
   label        String?
 
   @@map("affiliate_commission_tiers")

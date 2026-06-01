@@ -16,13 +16,14 @@ import {
   Text,
   ScrollView,
   Pressable,
+  TextInput,
   Linking,
   Platform,
   useWindowDimensions,
 } from 'react-native'
 import * as WebBrowser from 'expo-web-browser'
 import * as ExpoLinking from 'expo-linking'
-import { useRouter } from 'expo-router'
+import { useRouter, useLocalSearchParams } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
   ArrowLeft,
@@ -31,10 +32,12 @@ import {
   Sparkles,
   Zap,
   Crown,
+  KeyRound,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import { useWorkspaceCollection, useDomainHttp } from '../../contexts/domain'
 import { api } from '../../lib/api'
+import { clearPendingLicenseCode } from '../../lib/pending-license'
 import { openWebAppSession } from '../../lib/openWebAppSession'
 import { purchaseSubscription, finishPurchase, restorePurchases, initIapListeners, IapError, APP_STORE_SUBSCRIPTIONS_URL } from '../../lib/iap'
 import type { IapPurchaseResult } from '../../lib/iap'
@@ -50,9 +53,7 @@ import {
   PRO_FEATURES,
   BUSINESS_FEATURES,
   ENTERPRISE_FEATURES,
-  SEAT_INCLUDED_USD,
-  getIncludedUsdForPlan,
-  getIncludedUsdCapacityForDisplay,
+  getWindowLimitsForPlan,
   formatUsd,
   formatCurrencyPrice,
   getPlanDisplayName,
@@ -60,6 +61,7 @@ import {
 import { SeatCounter } from '../../components/billing/SeatCounter'
 import { useToast, Toast, ToastTitle, ToastDescription } from '../../components/ui/toast'
 import { FeatureList } from '../../components/billing/FeatureList'
+import { UsageWindowBar } from '../../components/billing/UsageWindows'
 import {
   Card,
   CardContent,
@@ -69,10 +71,30 @@ import {
   cn,
 } from '@shogo/shared-ui/primitives'
 
+// ─── Rolling usage-window bar ──────────────────────────────
+
+// Relative usage framing for plan cards (no dollar figures, like Codex /
+// Claude Code). Expresses each tier's rolling-window allowance as a multiple
+// of the entry paid tier (Basic), derived from the weekly window so copy
+// stays in sync with ROLLING_WINDOW_LIMITS. Enterprise is uncapped.
+const BASIC_WEEKLY_USD = getWindowLimitsForPlan('basic', 1)?.weeklyUsd ?? 0
+
+function relativeUsageCopy(planId: string): string {
+  const limits = getWindowLimitsForPlan(planId, 1)
+  if (!limits) return 'Unlimited usage — no rate windows'
+  if (!BASIC_WEEKLY_USD || limits.weeklyUsd <= BASIC_WEEKLY_USD) {
+    return 'Standard 5-hour & weekly usage windows'
+  }
+  // Round to one decimal, dropping a trailing ".0" (e.g. 2.5×, 5×).
+  const multiple = Number((limits.weeklyUsd / BASIC_WEEKLY_USD).toFixed(1))
+  return `${multiple}× the usage of Basic — higher 5-hour & weekly windows`
+}
+
 // ─── Main Page ─────────────────────────────────────────────
 
 export default observer(function BillingPage() {
   const router = useRouter()
+  const { redeem: redeemParam } = useLocalSearchParams<{ redeem?: string }>()
   const { user, isLoading: isAuthLoading } = useAuth()
   const workspaces = useWorkspaceCollection()
   const actions = useDomainActions()
@@ -93,6 +115,7 @@ export default observer(function BillingPage() {
     refetchSubscription,
     refetchUsageWallet,
     planSource,
+    usageWindows,
   } = useBillingData(currentWorkspace?.id)
   // A grant-conferred plan has no Stripe customer / portal, so hide
   // "Manage" / Stripe-only affordances and let "Free Plan"-style copy
@@ -107,6 +130,9 @@ export default observer(function BillingPage() {
   const [isPortalLoading, setIsPortalLoading] = useState(false)
   const [regionalPricing, setRegionalPricing] = useState<RegionalPricingResponse | null>(null)
   const [isRestoreLoading, setIsRestoreLoading] = useState(false)
+  const [licenseCode, setLicenseCode] = useState('')
+  const [isRedeeming, setIsRedeeming] = useState(false)
+  const licenseInputRef = useRef<TextInput>(null)
   const iapTransactionsInFlightRef = useRef<Map<string, Promise<'processed' | 'failed'>>>(new Map())
   const toast = useToast()
   const { width } = useWindowDimensions()
@@ -130,6 +156,54 @@ export default observer(function BillingPage() {
       ),
     })
   }, [toast])
+
+  // Deep-link landing: shogo://billing?redeem=CODE (or <web>/billing?redeem=CODE)
+  // prefills the license-key field and focuses it so the recipient just taps Redeem.
+  useEffect(() => {
+    const code = Array.isArray(redeemParam) ? redeemParam[0] : redeemParam
+    if (!code) return
+    setLicenseCode(code.trim().toUpperCase())
+    // Consumed — drop any stashed copy so it can't re-trigger a later
+    // navigation back to billing.
+    clearPendingLicenseCode()
+    const t = setTimeout(() => licenseInputRef.current?.focus(), 350)
+    return () => clearTimeout(t)
+  }, [redeemParam])
+
+  const handleRedeemLicense = useCallback(async () => {
+    const code = licenseCode.trim()
+    if (!code) return
+    const workspaceId = currentWorkspace?.id
+    if (!workspaceId) {
+      showIapToast('error', 'No workspace selected', 'Pick a workspace before redeeming a key.')
+      return
+    }
+    setIsRedeeming(true)
+    try {
+      const result = await api.redeemLicenseKey(http, workspaceId, code)
+      const planLabel = result?.planId ? getPlanDisplayName(result.planId) : 'a new plan'
+      setLicenseCode('')
+      // Reflect the new grant immediately.
+      refetchSubscription()
+      refetchUsageWallet()
+      showIapToast('success', 'License key redeemed', `This workspace is now on ${planLabel}.`)
+    } catch (err) {
+      const status = (err as { status?: number })?.status
+      const { title, description } =
+        status === 404
+          ? { title: 'Invalid key', description: 'We could not find that license key. Double-check the code.' }
+          : status === 410
+            ? { title: 'Key expired', description: 'This license key has expired and can no longer be redeemed.' }
+            : status === 409
+              ? { title: 'Already used', description: 'This license key has already been redeemed.' }
+              : status === 403
+                ? { title: 'Not allowed', description: "You're not a member of this workspace." }
+                : { title: 'Redemption failed', description: err instanceof Error ? err.message : 'Please try again.' }
+      showIapToast('error', title, description)
+    } finally {
+      setIsRedeeming(false)
+    }
+  }, [licenseCode, currentWorkspace?.id, http, refetchSubscription, refetchUsageWallet, showIapToast])
 
   const getIapTransactionKey = useCallback((purchase: IapPurchaseResult) => {
     const transactionId = purchase.transactionId?.trim()
@@ -264,16 +338,6 @@ export default observer(function BillingPage() {
     }).catch(() => {})
     return () => { cancelled = true }
   }, [http])
-
-  const subSeats = subscription?.seats ?? 1
-  const usdRemaining =
-    effectiveBalance?.total ?? getIncludedUsdForPlan(subscription?.planId, subSeats)
-  const usdTotal = getIncludedUsdCapacityForDisplay({
-    planId: subscription?.planId,
-    seats: subSeats,
-    remainingTotal: effectiveBalance?.total,
-    monthlyIncludedAllocationUsd: effectiveBalance?.monthlyIncludedAllocationUsd,
-  })
 
   const planName = subscription
     ? `${getPlanDisplayName(subscription.planId)} Plan`
@@ -582,44 +646,86 @@ export default observer(function BillingPage() {
         </CardContent>
       </Card>
 
-      {/* Usage Display */}
+      {/* Redeem a license key */}
+      <Card className="mb-4">
+        <CardContent className="p-4 gap-3">
+          <View className="flex-row items-center gap-2">
+            <KeyRound size={16} className="text-primary" />
+            <Text className="text-sm font-medium text-foreground">Redeem a license key</Text>
+          </View>
+          <Text className="text-xs text-muted-foreground">
+            Have a license key? Redeem it to upgrade this workspace.
+          </Text>
+          <View className="flex-row items-center gap-2">
+            <TextInput
+              ref={licenseInputRef}
+              value={licenseCode}
+              onChangeText={setLicenseCode}
+              placeholder="SHGO-PRO-XXXX-XXXX-XXXX"
+              placeholderTextColor="#9ca3af"
+              autoCapitalize="characters"
+              autoCorrect={false}
+              editable={!isRedeeming}
+              onSubmitEditing={handleRedeemLicense}
+              returnKeyType="done"
+              className="flex-1 border border-border rounded-lg px-3 py-2 text-sm font-mono text-foreground bg-background"
+            />
+            <Button
+              size="sm"
+              onPress={handleRedeemLicense}
+              disabled={isRedeeming || !licenseCode.trim()}
+            >
+              {isRedeeming ? 'Redeeming...' : 'Redeem'}
+            </Button>
+          </View>
+        </CardContent>
+      </Card>
+
+      {/* Usage Display — time-gated rolling windows */}
       <Card className="mb-8">
         <CardContent className="p-4 gap-4">
           <View>
             <Text className="text-sm font-medium text-foreground mb-1">
-              Usage remaining this period
+              Usage limits
             </Text>
             <Text className="text-2xl font-bold text-foreground">
-              {formatUsd(usdRemaining)} of {formatUsd(usdTotal)}
+              Unlimited within your windows
             </Text>
           </View>
+
+          <View className="gap-4">
+            <UsageWindowBar
+              label="5-hour window"
+              window={usageWindows?.fiveHour}
+            />
+            <UsageWindowBar
+              label="Weekly window"
+              window={usageWindows?.weekly}
+            />
+          </View>
+
           <View className="gap-2">
-            <Text className="text-sm font-medium text-foreground">
-              Daily allowance is used before your monthly pool
-            </Text>
-            <View className="gap-2">
+            <View className="flex-row items-center gap-2">
+              <Info size={16} className="text-muted-foreground" />
+              <Text className="text-sm text-muted-foreground">
+                {Platform.OS === 'ios'
+                  ? 'Usage is unlimited within rolling 5-hour and weekly limits. Each window resets on its own schedule.'
+                  : 'Usage is billed at the AI provider\'s raw cost plus a flat 20% markup and is unlimited within rolling 5-hour and weekly limits (per seat on Pro/Business). When a window is exhausted, usage resumes after it resets.'}
+              </Text>
+            </View>
+            {Platform.OS !== 'ios' && effectiveBalance?.overageEnabled && (
               <View className="flex-row items-center gap-2">
                 <Info size={16} className="text-muted-foreground" />
                 <Text className="text-sm text-muted-foreground">
-                  {Platform.OS === 'ios'
-                    ? 'Pro and Business include monthly usage per seat. Daily allowance resets at midnight UTC.'
-                    : 'All usage is billed at the AI provider\'s raw cost plus a flat 20% markup. Pro and Business include $20/$40 of monthly usage per seat. No credits, no unit conversions. Daily allowance resets at midnight UTC.'}
+                  Need more before a window resets? Overage charges in escalating trust blocks ($100 → $500){effectiveBalance.overageHardLimitUsd != null
+                    ? ` (cap ${formatUsd(effectiveBalance.overageHardLimitUsd)}/mo)`
+                    : ''}
+                  {effectiveBalance.overageAccumulatedUsd > 0
+                    ? `. Overage this period: ${formatUsd(effectiveBalance.overageAccumulatedUsd)}`
+                    : ''}
                 </Text>
               </View>
-              {Platform.OS !== 'ios' && effectiveBalance?.overageEnabled && (
-                <View className="flex-row items-center gap-2">
-                  <Info size={16} className="text-muted-foreground" />
-                  <Text className="text-sm text-muted-foreground">
-                    Overage charges in escalating trust blocks ($100 → $500) once included usage runs out{effectiveBalance.overageHardLimitUsd != null
-                      ? ` (cap ${formatUsd(effectiveBalance.overageHardLimitUsd)}/mo)`
-                      : ''}
-                    {effectiveBalance.overageAccumulatedUsd > 0
-                      ? `. Overage this period: ${formatUsd(effectiveBalance.overageAccumulatedUsd)}`
-                      : ''}
-                  </Text>
-                </View>
-              )}
-            </View>
+            )}
           </View>
         </CardContent>
       </Card>
@@ -720,7 +826,7 @@ export default observer(function BillingPage() {
 
               <View className="lg:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
-                  {formatUsd(SEAT_INCLUDED_USD.basic)} of usage / month
+                  {relativeUsageCopy('basic')}
                 </Text>
                 <Text className="text-sm text-muted-foreground">
                   All features in Free, plus:
@@ -782,7 +888,7 @@ export default observer(function BillingPage() {
                     onChange={setProSeats}
                     min={1}
                     max={500}
-                    label={`$${SEAT_INCLUDED_USD.pro} / seat / month`}
+                    label="Usage windows scale per seat"
                   />
                 )}
               </View>
@@ -799,7 +905,7 @@ export default observer(function BillingPage() {
 
               <View className="lg:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
-                  {formatUsd(SEAT_INCLUDED_USD.pro * proSeats)} of usage / month
+                  {relativeUsageCopy('pro')}
                 </Text>
                 <Text className="text-sm text-muted-foreground">
                   All features in Free, plus:
@@ -865,7 +971,7 @@ export default observer(function BillingPage() {
                     onChange={setBusinessSeats}
                     min={1}
                     max={500}
-                    label={`$${SEAT_INCLUDED_USD.business} / seat / month`}
+                    label="Usage windows scale per seat"
                   />
                 )}
               </View>
@@ -882,7 +988,7 @@ export default observer(function BillingPage() {
 
               <View className="lg:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
-                  {formatUsd(SEAT_INCLUDED_USD.business * businessSeats)} of usage / month
+                  {relativeUsageCopy('business')}
                 </Text>
                 <FeatureList features={BUSINESS_FEATURES} />
               </View>

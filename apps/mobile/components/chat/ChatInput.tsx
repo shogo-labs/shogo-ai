@@ -72,6 +72,8 @@ import {
 import { FileViewerModal } from "./FileViewerModal"
 import { PastedTextChip } from "./PastedTextChip"
 import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext"
+import { AskUserQuestionWidget } from "./turns/AskUserQuestionWidget"
+import type { ToolCallData } from "./tools/types"
 
 export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6"
 export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
@@ -180,6 +182,14 @@ export interface ChatInputProps {
   onModelChange?: (modelId: string) => void
   isPro?: boolean
   onUpgradeClick?: () => void
+  /**
+   * Pending ask_user tool call to render as an interactive question widget
+   * attached above the composer (instead of inline in the message stream).
+   * Null when there is no open question.
+   */
+  pendingQuestion?: { messageId: string; tool: ToolCallData } | null
+  /** Called with the formatted response when the attached question is submitted. */
+  onSubmitQuestionResponse?: (response: string) => void
   queuedMessages?: QueuedMessage[]
   onRemoveQueuedMessage?: (messageId: string) => void
   onReorderQueuedMessage?: (messageId: string, direction: "up" | "down") => void
@@ -237,6 +247,8 @@ function ChatInputImpl({
   onModelChange,
   isPro = false,
   onUpgradeClick,
+  pendingQuestion,
+  onSubmitQuestionResponse,
   queuedMessages = [],
   onRemoveQueuedMessage,
   onReorderQueuedMessage,
@@ -766,6 +778,18 @@ function ChatInputImpl({
 
       {voiceInput.error && (
         <Text className="text-sm text-destructive mb-2">{voiceInput.error}</Text>
+      )}
+
+      {/* Pending question — interactive answer UI attached above the composer.
+          Stays expanded while pending; submitting persists the answer and
+          clears `pendingQuestion`, unmounting this panel. */}
+      {pendingQuestion && (
+        <View className="mb-2">
+          <AskUserQuestionWidget
+            tool={pendingQuestion.tool}
+            onSubmitResponse={(response) => onSubmitQuestionResponse?.(response)}
+          />
+        </View>
       )}
 
       {/* Queued messages */}

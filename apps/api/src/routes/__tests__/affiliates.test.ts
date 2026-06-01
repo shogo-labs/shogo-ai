@@ -639,17 +639,37 @@ describe('POST /api/affiliates/enroll (error branches)', () => {
     expect(j.error.code).toBe('invalid_code')
   })
 
-  test('AffiliateError parent_not_found → 404', async () => {
-    users.set('u_e', { id: 'u_e', email: 'e@x.io', name: 'E' })
+  test('derives parent from the user\'s attribution', async () => {
+    users.set('u_ref', { id: 'u_ref', email: 'ref@x.io', name: 'Ref' })
+    affiliateRows.set('aff_owner', {
+      id: 'aff_owner', userId: 'u_owner', code: 'owner', status: 'active', depth: 1,
+    })
+    attributionRows.set('u_ref', { userId: 'u_ref', affiliateId: 'aff_owner' })
     const app = makeApp()
     const res = await app.request('/api/affiliates/enroll', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_e' },
+      headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_ref' },
+      body: JSON.stringify({ termsAccepted: true }),
+    })
+    expect(res.status).toBe(200)
+    const j: any = await res.json()
+    expect(j.affiliate.parentAffiliateId).toBe('aff_owner')
+    expect(j.affiliate.depth).toBe(2)
+  })
+
+  test('ignores a manually supplied parentCode (no longer accepted)', async () => {
+    users.set('u_m', { id: 'u_m', email: 'm@x.io', name: 'M' })
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_m' },
       body: JSON.stringify({ termsAccepted: true, parentCode: 'ghost' }),
     })
-    expect(res.status).toBe(404)
+    // parentCode is stripped by the schema; enrollment succeeds with no parent.
+    expect(res.status).toBe(200)
     const j: any = await res.json()
-    expect(j.error.code).toBe('parent_not_found')
+    expect(j.ok).toBe(true)
+    expect(j.affiliate.parentAffiliateId ?? null).toBeNull()
   })
 
   test('AffiliateError user_not_found → 404 (user missing in db)', async () => {
@@ -684,6 +704,62 @@ describe('POST /api/affiliates/enroll (error branches)', () => {
       prismaStub.user.findUnique = orig
       console.error = origErr
     }
+  })
+})
+
+// ============================================================================
+// Public browser visit recorder (in-app /r/<code> route)
+// ============================================================================
+describe('POST /api/affiliates/visit (public, no secret)', () => {
+  test('503 when flag off', async () => {
+    delete process.env.SHOGO_AFFILIATES_NATIVE
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/visit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: 'alice', visitorId: 'visitor-123' }),
+    })
+    expect(res.status).toBe(503)
+    process.env.SHOGO_AFFILIATES_NATIVE = 'true'
+  })
+
+  test('records a click without the internal secret', async () => {
+    affiliateRows.set('aff_v', {
+      id: 'aff_v', userId: 'u_v', code: 'alice', status: 'active', depth: 1,
+    })
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/visit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: 'alice', visitorId: 'visitor-123' }),
+    })
+    expect(res.status).toBe(200)
+    const j: any = await res.json()
+    expect(j.ok).toBe(true)
+    expect(typeof j.clickId).toBe('string')
+  })
+
+  test('unknown code → 200 no-op (does not disrupt the redirect)', async () => {
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/visit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: 'ghost', visitorId: 'visitor-123' }),
+    })
+    expect(res.status).toBe(200)
+    const j: any = await res.json()
+    expect(j.ok).toBe(false)
+    expect(j.error.code).toBe('affiliate_not_found')
+  })
+
+  test('invalid body → 400', async () => {
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/visit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: 'alice' }),
+    })
+    expect(res.status).toBe(400)
   })
 })
 
