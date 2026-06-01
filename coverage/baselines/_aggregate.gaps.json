@@ -1774,6 +1774,36 @@
       "newTests": 56,
       "approxGreenfieldLines": 2690,
       "note": "6 of the 33 never-loaded agent-runtime src files (flagged in freshMeasurement_2026_06_01) covered via one shared fetch+FakeWebSocket harness. Standalone test file, restores globals in afterEach \u2014 verified no leakage into gateway-tools.channel-connect. No prod code changed."
+    },
+    {
+      "sha": "68d25e92",
+      "wave": "Wave 4",
+      "session": "Session 10c \u2014 agent-runtime constant/data greenfield sweep (batch 2)",
+      "kind": "test(coverage)",
+      "date": "2026-06-01",
+      "files": [
+        {
+          "path": "packages/agent-runtime/src/canvas-v2-prompt.ts",
+          "before": 0.0,
+          "afterLines": 100.0,
+          "afterFuncs": 100.0
+        },
+        {
+          "path": "packages/agent-runtime/src/optimized-prompts.ts",
+          "before": 0.0,
+          "afterLines": 100.0,
+          "afterFuncs": 100.0
+        },
+        {
+          "path": "packages/agent-runtime/src/agent-recipes.ts",
+          "before": 0.0,
+          "afterLines": 100.0,
+          "afterFuncs": 100.0
+        }
+      ],
+      "newTests": 10,
+      "approxGreenfieldLines": 1440,
+      "note": "3 more of the never-loaded agent-runtime src files (pure constants + recipe catalog) \u2192 100%. Standalone test, no prod change."
     }
   ],
   "frontend": {
