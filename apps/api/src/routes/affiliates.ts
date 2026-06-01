@@ -64,7 +64,8 @@ function affiliateErrorStatus(code: string): number {
 }
 
 const enrollSchema = z.object({
-  parentCode: z.string().trim().min(1).max(64).optional().nullable(),
+  // No `parentCode`: the upline is derived server-side from the user's
+  // AffiliateAttribution (the referral cookie), never manually supplied.
   code: z.string().trim().min(2).max(40).optional().nullable(),
   termsAccepted: z.boolean(),
 })
@@ -80,6 +81,16 @@ const clickSchema = z.object({
   utmCampaign: z.string().nullable().optional(),
   referrer: z.string().nullable().optional(),
   country: z.string().length(2).nullable().optional(),
+})
+
+// Browser-facing visit recorder (no internal secret). Minimal surface:
+// just the code + a client-generated visitor id. Used by the in-app
+// `/r/<code>` route (apps/mobile/app/r/[code].tsx).
+const visitSchema = z.object({
+  code: z.string().min(1).max(64),
+  visitorId: z.string().min(8).max(128),
+  landingPage: z.string().max(2048).nullable().optional(),
+  referrer: z.string().max(2048).nullable().optional(),
 })
 
 export function affiliateRoutes(): Hono {
@@ -152,6 +163,56 @@ export function affiliateRoutes(): Hono {
       exists: true,
       displayName: (affiliate as any).user?.name ?? null,
     })
+  })
+
+  /**
+   * POST /api/affiliates/visit
+   * Public, browser-facing click recorder for the in-app `/r/<code>`
+   * route. Unlike `/affiliates/click` this is NOT secret-gated (a browser
+   * can't hold the internal secret); it is analytics-only and tolerant of
+   * bad input. Attribution itself is driven by the `__shogo_ref` cookie at
+   * signup, so a failed/duplicate visit never blocks earning.
+   */
+  router.post('/affiliates/visit', async (c) => {
+    if (!isFlagOn()) {
+      return c.json({ ok: false, error: { code: 'feature_disabled' } }, 503)
+    }
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ ok: false, error: { code: 'bad_request' } }, 400)
+    }
+    const parsed = visitSchema.safeParse(body)
+    if (!parsed.success) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_request', issues: parsed.error.issues } },
+        400,
+      )
+    }
+    const ip =
+      c.req.header('cf-connecting-ip') ||
+      c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
+      null
+    try {
+      const click = await recordClick({
+        code: parsed.data.code,
+        visitorId: parsed.data.visitorId,
+        ip,
+        userAgent: c.req.header('user-agent') ?? null,
+        landingPage: parsed.data.landingPage ?? null,
+        referrer: parsed.data.referrer ?? null,
+        country: c.req.header('cf-ipcountry') ?? null,
+      })
+      return c.json({ ok: true, clickId: click.id })
+    } catch (err) {
+      if (err instanceof AffiliateError) {
+        // Unknown/inactive code — 200 no-op so the redirect isn't disrupted.
+        return c.json({ ok: false, error: { code: err.code } }, 200)
+      }
+      console.error('[Affiliate visit] failed', err)
+      return c.json({ ok: false, error: { code: 'server_error' } }, 500)
+    }
   })
 
   // --------------------------------------------------------------------------

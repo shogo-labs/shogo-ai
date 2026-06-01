@@ -552,12 +552,15 @@ app.use(
       '/api/instances/heartbeat',
       '/api/instances/ws',
       '/api/vm/',
-      // Native MLM affiliate program — two public surfaces:
+      // Native MLM affiliate program — public surfaces:
       //   /lookup  → marketing site validates a code before redirect
       //   /click   → Cloudflare Pages Function records the click using
       //              SHOGO_INTERNAL_SECRET (auth handled in-route)
+      //   /visit   → in-app /r/<code> route records the click from the
+      //              browser (no secret; analytics-only, validated in-route)
       '/api/affiliates/lookup',
       '/api/affiliates/click',
+      '/api/affiliates/visit',
     ]
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
     if (isAllowedUnauthWebchatProxyPath(path)) return next()
