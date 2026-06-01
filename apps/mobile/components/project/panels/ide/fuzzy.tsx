@@ -4,6 +4,12 @@ export interface FuzzyMatch {
 }
 
 /**
+ * @deprecated UX-CMDPAL replaced this scorer with `fzfScore` in
+ * `./fzf-scorer.ts` (better boundary tiers, smartcase, gap penalty,
+ * first-char bonus, position-based tiebreak). Kept here so external
+ * callers don't break — DO NOT use in new code. All in-IDE call sites
+ * already migrated.
+ *
  * Lightweight fuzzy scorer — matches characters of `needle` (in order)
  * against `haystack`, favoring consecutive runs and start-of-word hits.
  * Returns null if any needle char is missing. Case-insensitive.
