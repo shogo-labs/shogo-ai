@@ -143,8 +143,10 @@ export function TrustPrompt({
               <ButtonSpinner />
             ) : (
               <View className="flex-row items-center gap-2">
-                <ShieldCheck size={16} className="text-white" />
-                <ButtonText className="text-white">Trust folder</ButtonText>
+                <ShieldCheck size={16} className="text-typography-0" />
+                <ButtonText className="text-typography-0">
+                  Trust folder
+                </ButtonText>
               </View>
             )}
           </Button>
