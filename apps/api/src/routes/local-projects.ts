@@ -526,28 +526,34 @@ export function localProjectsRoutes(): Hono {
     const finalPrimary = validated[0]!
 
     // Identity check. If the folder already has a project.json, rebind
-    // to the existing row rather than creating a duplicate. Refuse if
-    // the recorded projectId doesn't exist in our DB (folder was bound
-    // on another machine — needs an explicit "import" flow we'll add
-    // later).
+    // to the existing row rather than creating a duplicate. When the
+    // recorded projectId is missing from the local DB the binding is
+    // stale — almost always because the user deleted the project from
+    // the dashboard, which removes the row but leaves the folder's
+    // `.shogo/project.json` untouched. Falling through to the fresh-
+    // create path below lets `writeProjectJson` overwrite the stale id
+    // with a new one, so re-opening a previously-deleted folder Just
+    // Works instead of silently 409'ing (the desktop hook surfaces 409s
+    // via `Alert.alert`, which is effectively invisible on web/Electron
+    // — the user sees "nothing happens"). The "folder bound on another
+    // machine" scenario isn't distinguishable from "deleted locally"
+    // without a hostname marker, and the practical recovery is the
+    // same: rebind to a fresh project on this install.
     const existing = readProjectJson(finalPrimary)
-    if (existing) {
-      const existingProject = await prisma.project.findUnique({
-        where: { id: existing.projectId },
-        include: { projectFolders: true },
-      })
-      if (!existingProject) {
-        return c.json(
-          {
-            error: 'alreadyBoundElsewhere',
-            message:
-              `This folder is already bound to project ${existing.projectId}, which doesn't exist in this Shogo install. ` +
-              `Delete ${finalPrimary}/.shogo/project.json to re-bind, or open the folder on the original device.`,
-            projectId: existing.projectId,
-          },
-          409,
-        )
-      }
+    const existingProject = existing
+      ? await prisma.project.findUnique({
+          where: { id: existing.projectId },
+          include: { projectFolders: true },
+        })
+      : null
+    if (existing && !existingProject) {
+      console.log(
+        `[local-projects] Stale project.json at ${finalPrimary} ` +
+          `(projectId=${existing.projectId} not found in DB). ` +
+          `Rebinding folder to a fresh project.`,
+      )
+    }
+    if (existing && existingProject) {
       // Rebind: refresh lastOpenedAt on the primary folder, sync linked
       // folders with the new selection, and backfill chat-only IDE
       // defaults for any project that was created before they were the
