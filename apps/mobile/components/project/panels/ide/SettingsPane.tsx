@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { RotateCcw, Upload } from "lucide-react-native";
 import { DEFAULT_SETTINGS, type EditorSettings } from "./types";
+import { FONT_FAMILY_OPTIONS } from "./useEditorFont";
 import { TerminalSettingsPane } from "./terminal-settings";
 import { isDesktopRuntime } from "./terminal/pty-factory";
 import {
@@ -44,6 +45,36 @@ export function SettingsPane({
             max={20}
             unit="px"
             onChange={(v) => set("fontSize", v)}
+          />
+          {/*
+            BUG-012 — single Font family setting. The select carries the
+            FULL font-family stack as its `value` (not just the primary
+            name) so the resolved CSS string is identical to what every
+            consumer reads. If the persisted value doesn't match any
+            curated option (e.g. an old payload, or a hand-edited stack
+            via localStorage), we DON'T fall back silently — the select
+            shows "Custom" so the user sees the state. Picking any
+            curated option from there restores standard behaviour.
+          */}
+          <SelectRow
+            label="Font family"
+            value={
+              FONT_FAMILY_OPTIONS.some((o) => o.value === settings.fontFamily)
+                ? settings.fontFamily
+                : "__custom__"
+            }
+            options={[
+              ...FONT_FAMILY_OPTIONS.map((o) => ({ label: o.label, value: o.value })),
+              ...(FONT_FAMILY_OPTIONS.some((o) => o.value === settings.fontFamily)
+                ? []
+                : [{ label: "Custom (from settings file)", value: "__custom__" }]),
+            ]}
+            onChange={(v) => {
+              // Ignore the "__custom__" sentinel — selecting it would
+              // wipe the user's hand-edited stack. Only react to real
+              // curated values.
+              if (v !== "__custom__") set("fontFamily", v);
+            }}
           />
           <SelectRow
             label="Tab size"

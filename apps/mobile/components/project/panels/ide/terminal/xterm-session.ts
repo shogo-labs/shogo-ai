@@ -120,6 +120,41 @@ export class XtermSession {
     try { this.fitAddon?.fit() } catch {}
   }
 
+  /**
+   * BUG-012 — live update fontFamily / fontSize without tearing the
+   * session down. xterm@5 exposes `term.options.fontFamily` as a live
+   * setter that internally invalidates the glyph cache and re-renders
+   * the buffer. We then re-fit so the cell grid matches the new metrics.
+   *
+   * Either argument can be undefined to leave it untouched. No-op if
+   * disposed. If called PRE-attach we mutate `this.opts` so the next
+   * `attach()` picks up the new value via the existing closure path —
+   * the test `setFont before attach is honoured at attach()` pins this.
+   */
+  setFont(fontFamily?: string, fontSize?: number): void {
+    if (this.disposed) return
+    const opts = this.opts as XtermSessionOptions
+    if (fontFamily !== undefined) opts.fontFamily = fontFamily
+    if (fontSize !== undefined) opts.fontSize = fontSize
+    const term = this.term
+    if (!term) return
+    try {
+      // `term.options` is a Proxy in xterm@5 — assigning to a sub-key
+      // triggers the same renderer invalidation as `term.setOption` did
+      // in v4. Cast guarded against future xterm type tightening.
+      if (fontFamily !== undefined) {
+        ;(term.options as unknown as { fontFamily: string }).fontFamily = fontFamily
+      }
+      if (fontSize !== undefined) {
+        ;(term.options as unknown as { fontSize: number }).fontSize = fontSize
+      }
+      this.fitAddon?.fit()
+    } catch {
+      // Unsupported runtime — keep old font on screen. A subsequent
+      // remount picks up the new value via `this.opts`.
+    }
+  }
+
   /** Programmatic clear (keeps the shell alive, just blanks the view). */
   clear(): void {
     if (this.disposed) return

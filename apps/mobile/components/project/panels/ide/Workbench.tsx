@@ -41,6 +41,7 @@ import {
   type Root,
   type TreeNode,
 } from "./types";
+import { broadcastEditorFontChange } from "./useEditorFont";
 import { SearchPane } from "./SearchPane";
 import { SettingsPane } from "./SettingsPane";
 import { CheckpointsPanel } from "../CheckpointsPanel";
@@ -271,6 +272,30 @@ export function Workbench({
       localStorage.setItem("shogo.ide.settings", JSON.stringify(settings));
     } catch { /* ignore */ }
   }, [settings]);
+
+  // BUG-012 — propagate the font-family setting EVERYWHERE in one shot.
+  //   1. Write `--ide-mono-font` inline on the .shogo-ide element. Every
+  //      HTML panel that uses `font-mono` / `.ide-mono` (Output, Problems,
+  //      Debug Console, Run & Debug Output, Debug View) inherits the new
+  //      value via the cascade — no per-panel edits needed.
+  //   2. Broadcast the same-tab change event so `useEditorFont()` consumers
+  //      (Monaco canvas, xterm.js canvas) re-read and re-apply. `storage`
+  //      doesn't fire in the writing tab so this is the ONLY signal that
+  //      reaches same-tab listeners.
+  // We use a ref to the .shogo-ide div instead of document.documentElement
+  // so multiple Workbench instances (multi-workspace future) each own
+  // their own font without bleeding into each other.
+  const ideRootRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const root = ideRootRef.current;
+    if (root) {
+      // Inline style wins over the static `.shogo-ide { --ide-mono-font: … }`
+      // rule in global.css — that's intentional, the static rule is just a
+      // pre-React fallback for the initial paint.
+      root.style.setProperty("--ide-mono-font", settings.fontFamily);
+    }
+    broadcastEditorFontChange(settings.fontFamily);
+  }, [settings.fontFamily]);
 
   const sidebarSplit = useResizable({ initial: 280, min: 200, max: 540, direction: "horizontal" });
   const groupSplit = useResizable({ initial: 0.5, min: 0.2, max: 0.8, direction: "horizontal" });
@@ -1527,6 +1552,7 @@ export function Workbench({
   return (
     <GitStatusProvider snapshot={gitSnapshot}>
     <div
+      ref={ideRootRef}
       className="shogo-ide flex h-full w-full min-w-0 min-h-0 flex-col overflow-hidden"
       data-theme={themeMode}
     >
