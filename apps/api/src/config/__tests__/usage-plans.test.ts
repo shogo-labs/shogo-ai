@@ -5,15 +5,129 @@ import { describe, expect, it } from 'bun:test'
 import {
   FREE_DAILY_INCLUDED_USD,
   MONTHLY_DAILY_CAP_USD,
+  FIVE_HOUR_MS,
+  SEVEN_DAY_MS,
+  WEEKS_PER_MONTH,
+  TARGET_COMPUTE_COST_RATIO,
   PLAN_INCLUDED_USD,
   PLAN_VOICE_RATE_OVERRIDES,
+  ROLLING_WINDOW_LIMITS,
   SEAT_INCLUDED_USD,
   VOICE_RAW_USD,
   comparePlanRank,
   getDailyIncludedForPlan,
   getMonthlyIncludedForPlan,
+  getMonthlyIncludedEquivalent,
+  getWindowLimitsForPlan,
   normalizePlanId,
 } from '../usage-plans'
+import { MARKUP_MULTIPLIER } from '../../lib/usage-cost'
+
+/** List monthly subscription prices used for the don't-lose-money assertions. */
+const LIST_MONTHLY_PRICE: Record<'basic' | 'pro' | 'business', number> = {
+  basic: 8,
+  pro: 20,
+  business: 40,
+}
+
+describe('rolling usage windows', () => {
+  it('FIVE_HOUR_MS and SEVEN_DAY_MS are correct durations', () => {
+    expect(FIVE_HOUR_MS).toBe(5 * 60 * 60 * 1000)
+    expect(SEVEN_DAY_MS).toBe(7 * 24 * 60 * 60 * 1000)
+  })
+
+  it('ROLLING_WINDOW_LIMITS covers all tiers with enterprise uncapped', () => {
+    expect(ROLLING_WINDOW_LIMITS.free).toEqual({ fiveHourUsd: 0.2, weeklyUsd: 0.5 })
+    expect(ROLLING_WINDOW_LIMITS.basic).toEqual({ fiveHourUsd: 0.76, weeklyUsd: 1.9 })
+    expect(ROLLING_WINDOW_LIMITS.pro).toEqual({ fiveHourUsd: 1.96, weeklyUsd: 4.9 })
+    expect(ROLLING_WINDOW_LIMITS.business).toEqual({ fiveHourUsd: 3.96, weeklyUsd: 9.9 })
+    expect(ROLLING_WINDOW_LIMITS.enterprise).toBeNull()
+  })
+
+  it('getWindowLimitsForPlan falls back to free for unknown/null plans', () => {
+    expect(getWindowLimitsForPlan(null)).toEqual(ROLLING_WINDOW_LIMITS.free!)
+    expect(getWindowLimitsForPlan('???')).toEqual(ROLLING_WINDOW_LIMITS.free!)
+  })
+
+  it('does not scale free/basic by seats', () => {
+    expect(getWindowLimitsForPlan('free', 10)).toEqual(ROLLING_WINDOW_LIMITS.free!)
+    expect(getWindowLimitsForPlan('basic', 10)).toEqual(ROLLING_WINDOW_LIMITS.basic!)
+  })
+
+  it('scales pro/business per seat', () => {
+    const pro = ROLLING_WINDOW_LIMITS.pro!
+    expect(getWindowLimitsForPlan('pro', 3)).toEqual({
+      fiveHourUsd: pro.fiveHourUsd * 3,
+      weeklyUsd: pro.weeklyUsd * 3,
+    })
+    const biz = ROLLING_WINDOW_LIMITS.business!
+    expect(getWindowLimitsForPlan('business', 2)).toEqual({
+      fiveHourUsd: biz.fiveHourUsd * 2,
+      weeklyUsd: biz.weeklyUsd * 2,
+    })
+  })
+
+  it('clamps seats to a minimum of 1', () => {
+    expect(getWindowLimitsForPlan('pro', 0)).toEqual({ fiveHourUsd: 1.96, weeklyUsd: 4.9 })
+  })
+
+  it('returns null for enterprise regardless of seats', () => {
+    expect(getWindowLimitsForPlan('enterprise', 50)).toBeNull()
+  })
+
+  it('5-hour window is 40% of the weekly budget for every capped tier', () => {
+    for (const plan of ['free', 'basic', 'pro', 'business'] as const) {
+      const w = ROLLING_WINDOW_LIMITS[plan]!
+      expect(w.fiveHourUsd).toBeCloseTo(w.weeklyUsd * 0.4, 10)
+    }
+  })
+
+  it('window limits keep the worst-case monthly compute COGS within target', () => {
+    // Worst case: a user pins their windows continuously for a whole month.
+    // monthly provider COGS = weeklyUsd × WEEKS_PER_MONTH / MARKUP.
+    for (const plan of ['basic', 'pro', 'business'] as const) {
+      const weekly = getWindowLimitsForPlan(plan, 1)!.weeklyUsd
+      const monthlyCogsRaw = (weekly * WEEKS_PER_MONTH) / MARKUP_MULTIPLIER
+      const ratio = monthlyCogsRaw / LIST_MONTHLY_PRICE[plan]
+      expect(ratio).toBeLessThanOrEqual(TARGET_COMPUTE_COST_RATIO)
+    }
+  })
+
+  it('per-seat windows preserve the COGS ratio at any seat count', () => {
+    const seats = 7
+    const weekly = getWindowLimitsForPlan('pro', seats)!.weeklyUsd
+    const monthlyCogsRaw = (weekly * WEEKS_PER_MONTH) / MARKUP_MULTIPLIER
+    const ratio = monthlyCogsRaw / (LIST_MONTHLY_PRICE.pro * seats)
+    expect(ratio).toBeLessThanOrEqual(TARGET_COMPUTE_COST_RATIO)
+  })
+})
+
+describe('getMonthlyIncludedEquivalent', () => {
+  it('WEEKS_PER_MONTH ≈ 4.348', () => {
+    expect(WEEKS_PER_MONTH).toBeCloseTo(4.3482, 3)
+  })
+
+  it('is weeklyUsd × WEEKS_PER_MONTH for capped plans', () => {
+    expect(getMonthlyIncludedEquivalent('pro', 1)).toBeCloseTo(4.9 * WEEKS_PER_MONTH, 10)
+    expect(getMonthlyIncludedEquivalent('basic')).toBeCloseTo(1.9 * WEEKS_PER_MONTH, 10)
+  })
+
+  it('scales pro/business per seat', () => {
+    expect(getMonthlyIncludedEquivalent('pro', 4)).toBeCloseTo(
+      getMonthlyIncludedEquivalent('pro', 1)! * 4,
+      10,
+    )
+  })
+
+  it('returns null for uncapped enterprise', () => {
+    expect(getMonthlyIncludedEquivalent('enterprise')).toBeNull()
+    expect(getMonthlyIncludedEquivalent('enterprise', 10)).toBeNull()
+  })
+
+  it('falls back to the free window for unknown plans', () => {
+    expect(getMonthlyIncludedEquivalent('platinum')).toBeCloseTo(0.5 * WEEKS_PER_MONTH, 10)
+  })
+})
 
 describe('constants', () => {
   it('FREE_DAILY_INCLUDED_USD is $1.00', () => {

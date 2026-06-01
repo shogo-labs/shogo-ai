@@ -27,6 +27,7 @@ on:
     branches: [main]
     paths:
       - 'k8s/cnpg/**/platform-publication.yaml'
+      - 'k8s/cnpg/logical-replication/enforce-table-ownership.sql'
       - 'scripts/check-publication-drift.ts'
       - '.github/workflows/ci-cnpg.yml'
 
@@ -367,6 +368,138 @@ jobs:
                 < k8s/cnpg/logical-replication/grants.sql
           done
           echo "✓ grants.sql is idempotent"
+
+      # ----------------------------------------------------------------------
+      # Ownership contract regression tests
+      #
+      # `shogo` (the migration role) must own every table in `public`, or a
+      # migration's `ALTER TABLE` fails with `must be owner` (SQLSTATE 42501)
+      # and wedges the cluster with P3009 (2026-05-31 incident).
+      # `k8s/cnpg/logical-replication/enforce-table-ownership.sql` makes this a
+      # structural property via a sweep + an event trigger. Three assertions,
+      # mirroring the GRANT tests above:
+      #
+      #   D. After applying the script, every table in `public` is shogo-owned
+      #      (the sweep covers pre-existing postgres-owned tables).
+      #   E. A CREATE TABLE issued as `postgres` AFTER the script ran is
+      #      reassigned to shogo by the event trigger — no manual ALTER.
+      #   F. **Load-bearing safety:** if the trigger's reassignment fails at
+      #      runtime (simulated by renaming `shogo` away), CREATE TABLE must
+      #      still commit. The EXCEPTION handler must catch it, exactly like
+      #      the grants.sql trigger — replication/ownership machinery must
+      #      never be able to abort a migration.
+      # ----------------------------------------------------------------------
+      - name: Seed a postgres-owned table and apply enforce-table-ownership.sql
+        run: |
+          set -euo pipefail
+          # Seed a postgres-owned table so the sweep has something to fix
+          # (the publication tests above also left some postgres-owned tables).
+          kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo -v ON_ERROR_STOP=1 -c "
+              CREATE TABLE public.owner_sweep_canary (id int PRIMARY KEY);
+            "
+          kubectl exec -i -n "${NS}" platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
+              < k8s/cnpg/logical-replication/enforce-table-ownership.sql
+
+      - name: 'Assert (D) — sweep made every public table shogo-owned'
+        run: |
+          set -euo pipefail
+          DRIFTED=$(kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo -tAc "
+              SELECT count(*)
+              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname='public' AND c.relkind IN ('r','p')
+                AND c.relowner <> 'shogo'::regrole;
+            ")
+          if [ "${DRIFTED}" != "0" ]; then
+            echo "::error::sweep left ${DRIFTED} non-shogo-owned tables"
+            kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+              psql -U postgres -d shogo -c "
+                SELECT n.nspname, c.relname, c.relowner::regrole AS owner
+                FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname='public' AND c.relkind IN ('r','p')
+                  AND c.relowner <> 'shogo'::regrole;
+              "
+            exit 1
+          fi
+          echo "✓ (D) every public table is shogo-owned after the sweep"
+
+      - name: 'Assert (E) — event trigger reassigns a postgres-created table'
+        run: |
+          set -euo pipefail
+          # Created in the default postgres superuser session — the path a
+          # manual operator `CREATE TABLE` on a secondary would take.
+          kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo -v ON_ERROR_STOP=1 -c "
+              CREATE TABLE public.owner_trigger_canary (id int PRIMARY KEY);
+            "
+          OWNER=$(kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo -tAc "
+              SELECT c.relowner::regrole
+              FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+              WHERE n.nspname='public' AND c.relname='owner_trigger_canary';
+            ")
+          if [ "${OWNER}" != "shogo" ]; then
+            echo "::error::event trigger did NOT reassign owner_trigger_canary to shogo (owner=${OWNER})"
+            exit 1
+          fi
+          echo "✓ (E) event trigger reassigned a postgres-created table to shogo"
+
+      - name: 'Assert (F) — EXCEPTION handler prevents trigger from blocking CREATE'
+        run: |
+          set -euo pipefail
+          # Simulate the failure mode: rename `shogo` away so the trigger's
+          # `ALTER ... OWNER TO shogo` throws "role shogo does not exist".
+          # Rename (not drop) because `shogo` owns the database and many
+          # tables; rename preserves all OID-based ownership and is reversible.
+          kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo -v ON_ERROR_STOP=1 -c "
+              ALTER ROLE shogo RENAME TO shogo_rename_test;
+            "
+          set +e
+          OUTPUT=$(kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo -v ON_ERROR_STOP=1 -c "
+              CREATE TABLE public.owner_exception_canary (id int PRIMARY KEY);
+            " 2>&1)
+          EXIT_CODE=$?
+          set -e
+          echo "psql output:"
+          echo "${OUTPUT}"
+          # Always restore the role name before asserting, so a failed
+          # assertion doesn't leave the cluster wedged for later steps.
+          kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo -v ON_ERROR_STOP=1 -c "
+              ALTER ROLE shogo_rename_test RENAME TO shogo;
+            "
+          if [ ${EXIT_CODE} -ne 0 ]; then
+            echo "::error::CREATE TABLE was aborted by the event trigger — EXCEPTION handler is broken."
+            echo "::error::This means a future migration could be blocked by ownership machinery."
+            exit 1
+          fi
+          EXISTS=$(kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo -tAc \
+              "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+               WHERE n.nspname='public' AND c.relname='owner_exception_canary'")
+          if [ "${EXISTS}" != "1" ]; then
+            echo "::error::owner_exception_canary does not exist — CREATE TABLE silently rolled back"
+            exit 1
+          fi
+          if ! echo "${OUTPUT}" | grep -q "enforce_table_owner_shogo: OWNER reassignment failed"; then
+            echo "::warning::Expected an 'OWNER reassignment failed' warning from the trigger, but did not see it in output."
+          fi
+          echo "✓ (F) EXCEPTION handler caught the failed reassignment; CREATE TABLE committed"
+
+      - name: 'Idempotency check — enforce-table-ownership.sql can run twice'
+        run: |
+          set -euo pipefail
+          for i in 1 2; do
+            echo "Run #${i}..."
+            kubectl exec -i -n "${NS}" platform-pg-1 -c postgres -- \
+              psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
+                < k8s/cnpg/logical-replication/enforce-table-ownership.sql
+          done
+          echo "✓ enforce-table-ownership.sql is idempotent"
 
       - name: Diagnostics on failure
         if: failure()

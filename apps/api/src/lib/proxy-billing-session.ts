@@ -268,8 +268,14 @@ export async function closeSession(
   }
 
   const billingModel = proxyModelToBillingModel(session.model)
+  // Bill on the *real* model id, not the collapsed `billingModel` bucket.
+  // `calculateUsageCost` prefers a DB-defined model's own per-token pricing
+  // (custom providers, admin-added models like "Hoshi 1.0" / mimo-v2.5) and
+  // only falls back to the static family bucket for catalog models. Passing
+  // `billingModel` here defeated that lookup and billed every DB model at the
+  // `sonnet` bucket (the `getModelBillingModel` default for unknown ids).
   const tokenCost = calculateUsageCost(
-    session.inputTokens, session.outputTokens, billingModel,
+    session.inputTokens, session.outputTokens, session.model,
     session.cachedInputTokens, session.cacheWriteTokens,
   )
   const rawUsd = tokenCost.rawUsd + session.imageRawUsd
@@ -288,7 +294,10 @@ export async function closeSession(
     workspaceId: session.workspaceId,
     projectId: session.projectId,
     agentType: 'main-chat',
-    model: billingModel,
+    // Record the real model id so the analytics recompute path
+    // (`serverComputeCreditCost`) honors DB-defined per-token pricing too,
+    // keeping cost analytics consistent with the wallet debit above.
+    model: session.model,
     inputTokens: session.inputTokens,
     outputTokens: session.outputTokens,
     cachedInputTokens: session.cachedInputTokens,

@@ -552,12 +552,15 @@ app.use(
       '/api/instances/heartbeat',
       '/api/instances/ws',
       '/api/vm/',
-      // Native MLM affiliate program — two public surfaces:
+      // Native MLM affiliate program — public surfaces:
       //   /lookup  → marketing site validates a code before redirect
       //   /click   → Cloudflare Pages Function records the click using
       //              SHOGO_INTERNAL_SECRET (auth handled in-route)
+      //   /visit   → in-app /r/<code> route records the click from the
+      //              browser (no secret; analytics-only, validated in-route)
       '/api/affiliates/lookup',
       '/api/affiliates/click',
+      '/api/affiliates/visit',
     ]
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
     if (isAllowedUnauthWebchatProxyPath(path)) return next()
@@ -1214,7 +1217,7 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
         body: JSON.stringify({ key: body.key }),
         signal: AbortSignal.timeout(10000),
       })
-      let validateData: { valid: boolean; workspace?: any; error?: string }
+      let validateData: { valid: boolean; workspace?: any; user?: any; error?: string }
       try {
         validateData = await validateRes.json()
       } catch {
@@ -1234,8 +1237,11 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
         }),
         localDb.localConfig.upsert({
           where: { key: 'SHOGO_KEY_INFO' },
-          update: { value: JSON.stringify({ workspace: validateData.workspace }) },
-          create: { key: 'SHOGO_KEY_INFO', value: JSON.stringify({ workspace: validateData.workspace }) },
+          // Persist `user` alongside `workspace` so the agent-runtime can scope
+          // Composio to the cloud identity the key is bound to without a
+          // validate round-trip (see lib/federated-upstream getUpstreamIdentity).
+          update: { value: JSON.stringify({ workspace: validateData.workspace, user: validateData.user }) },
+          create: { key: 'SHOGO_KEY_INFO', value: JSON.stringify({ workspace: validateData.workspace, user: validateData.user }) },
         }),
       ])
 
@@ -4945,20 +4951,26 @@ app.patch('/api/admin/settings/infrastructure', async (c) => {
     const controller = getWarmPoolController()
     controller.updateConfig(patch)
 
-    // Persist each setting to DB
+    // Persist each setting to DB, scoped to THIS region. Infra settings are
+    // per-region operational knobs, and this endpoint always runs in the region
+    // it configures (cross-region admin lands here via the /api/admin/regions
+    // proxy), so REGION_ID is the correct scope. Writing `infra.<REGION_ID>.<key>`
+    // (instead of the legacy shared `infra.<key>`) stops one region's change from
+    // bleeding into the others — loadPersistedSettings reads regional > global.
     const { prisma } = await import('./lib/prisma')
     const auth = c.get('auth') as any
     const userId = auth?.user?.id || 'unknown'
 
     for (const [key, value] of Object.entries(patch)) {
+      const scopedKey = `infra.${REGION_ID}.${key}`
       await prisma.platformSetting.upsert({
-        where: { key: `infra.${key}` },
-        create: { key: `infra.${key}`, value: String(value), updatedBy: userId },
+        where: { key: scopedKey },
+        create: { key: scopedKey, value: String(value), updatedBy: userId },
         update: { value: String(value), updatedBy: userId },
       })
     }
 
-    return c.json({ ok: true, applied: patch, config: controller.getConfig() })
+    return c.json({ ok: true, applied: patch, region: REGION_ID, config: controller.getConfig() })
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
   }
@@ -5615,10 +5627,11 @@ app.get('/api/billing/workspace-plan', async (c) => {
     if (!await verifyWorkspaceMembership(c, workspaceId)) {
       return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
     }
-    const [sub, wallet, effective] = await Promise.all([
+    const [sub, wallet, effective, usageWindows] = await Promise.all([
       billingService.getSubscription(workspaceId),
       billingService.getUsageWallet(workspaceId),
       billingService.getEffectivePlanId(workspaceId),
+      billingService.getUsageWindows(workspaceId),
     ])
     const source: 'subscription' | 'grant' | 'free' =
       sub ? 'subscription' : effective !== 'free' ? 'grant' : 'free'
@@ -5638,9 +5651,32 @@ app.get('/api/billing/workspace-plan', async (c) => {
       overageEnabled: wallet?.overageEnabled ?? false,
       overageHardLimitUsd: wallet?.overageHardLimitUsd ?? null,
       overageAccumulatedUsd: wallet?.overageAccumulatedUsd ?? 0,
+      // Rolling usage windows (time-gated "unlimited"). `limitUsd: null`
+      // means the window is uncapped (enterprise).
+      usageWindows,
     })
   } catch (error: any) {
     return c.json({ error: { code: 'plan_query_failed', message: error.message } }, 500)
+  }
+})
+
+/**
+ * Lightweight usage-windows endpoint for polling the rolling 5-hour and
+ * weekly windows (used for "% remaining" bars + reset countdowns, mirroring
+ * the Codex / Claude Code usage endpoints).
+ */
+app.get('/api/billing/usage-windows', async (c) => {
+  try {
+    const url = new URL(c.req.url)
+    const workspaceId = url.searchParams.get('workspaceId')
+    if (!workspaceId) return c.json({ error: 'missing workspaceId' }, 400)
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
+    }
+    const windows = await billingService.getUsageWindows(workspaceId)
+    return c.json({ ok: true, windows })
+  } catch (error: any) {
+    return c.json({ error: { code: 'usage_windows_failed', message: error.message } }, 500)
   }
 })
 
@@ -6314,7 +6350,16 @@ app.post('/api/webhooks/stripe', async (c) => {
             if (event.type === 'customer.subscription.created') {
               await billingService.allocateMonthlyIncluded(wsId, metaPlanId, quantity)
             } else {
-              const includedUsd = (await import('./config/usage-plans')).getMonthlyIncludedForPlan(metaPlanId, quantity)
+              // Stack any active super-admin grants on top of the plan's
+              // per-seat included USD, mirroring `allocateMonthlyIncluded`.
+              // Omitting grants here silently wiped a workspace's credit
+              // grant on the next Stripe `customer.subscription.updated`
+              // event (e.g. a seat change), making applied credits vanish.
+              const grant = await billingService.getActiveGrantsForWorkspace(wsId)
+              const totalSeats = Math.max(1, Math.floor(quantity || 1)) + grant.freeSeats
+              const includedUsd =
+                (await import('./config/usage-plans')).getMonthlyIncludedForPlan(metaPlanId, totalSeats) +
+                grant.monthlyIncludedUsd
               await prisma.usageWallet.updateMany({
                 where: { workspaceId: wsId },
                 data: {

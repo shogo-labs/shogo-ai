@@ -11,7 +11,22 @@
  * sharing this surface.
  */
 
+import { Alert, Platform } from 'react-native'
+
 import { API_URL } from '../../../lib/api'
+
+// React Native's Alert.alert is a no-op on react-native-web, so error
+// toasts in the admin pages silently vanished on the web dashboard. Route
+// through window.alert on web so admins actually see failures.
+export function showAdminAlert(title: string, message?: string): void {
+  if (Platform.OS === 'web') {
+    if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+      window.alert(message ? `${title}\n\n${message}` : title)
+    }
+    return
+  }
+  Alert.alert(title, message)
+}
 
 export const ADMIN_API_BASE = `${API_URL}/api/admin`
 export const ADMIN_MARKETPLACE_BASE = `${API_URL}/api/admin/marketplace`

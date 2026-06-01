@@ -102,6 +102,53 @@ export interface TextToSpeechParams {
   accept?: string
 }
 
+/** Options for the low-level {@link ElevenLabsClient.request} escape hatch. */
+export interface ElevenLabsRequestOptions {
+  /** HTTP method, e.g. `'POST'`. */
+  method: string
+  /** Path relative to the base URL, e.g. `'/v1/music'`. */
+  path: string
+  /** Request body. Plain objects/arrays are JSON-encoded; strings/binary are sent as-is. */
+  body?: unknown
+  /** Query params appended to the path. `null`/`undefined` values are skipped. */
+  query?: Record<string, string | number | boolean | null | undefined>
+  /** `Accept` header. Defaults to `application/json`. Use `audio/mpeg` for binary endpoints. */
+  accept?: string
+  /** Extra headers merged on top of the `xi-api-key` auth header. */
+  headers?: Record<string, string>
+}
+
+/**
+ * Result of a low-level {@link ElevenLabsClient.request}. Exactly one of
+ * `json` / `audio` is populated depending on the response `content-type`:
+ * JSON responses are parsed into `json`, everything else is returned as
+ * raw `audio` bytes.
+ */
+export interface ElevenLabsResponse {
+  status: number
+  contentType: string
+  json?: unknown
+  audio?: ArrayBuffer
+}
+
+/** Parameters for {@link ElevenLabsClient.composeMusic}. */
+export interface ComposeMusicParams {
+  /** Free-text description of the desired music. Mutually exclusive with `compositionPlan`. */
+  prompt?: string
+  /** Pre-built composition plan. Mutually exclusive with `prompt`. */
+  compositionPlan?: Record<string, unknown>
+  /** Duration in milliseconds (3,000–600,000). Only valid alongside `prompt`. */
+  musicLengthMs?: number
+  /** Music model id. Defaults to `music_v1`. */
+  modelId?: string
+  /** Guarantee an instrumental output (prompt mode only). */
+  forceInstrumental?: boolean
+  /** Output format, e.g. `mp3_44100_128`. Sent as the `output_format` query param. */
+  outputFormat?: string
+}
+
+export const DEFAULT_MUSIC_MODEL = 'music_v1'
+
 /**
  * An error thrown when ElevenLabs returns a non-2xx response. Preserves the
  * status and response body so callers can decide how to surface it.
@@ -332,6 +379,127 @@ export class ElevenLabsClient {
     const audio = await res.arrayBuffer()
     const contentType = res.headers.get('content-type') ?? accept
     return { audio, modelId: used, contentType }
+  }
+
+  /**
+   * Low-level escape hatch for any ElevenLabs endpoint not covered by a
+   * dedicated method (music, sound-generation, speech-to-text, dubbing,
+   * voice-design, …). Handles auth, query encoding, JSON body encoding,
+   * and JSON-vs-binary response parsing; non-2xx responses throw
+   * {@link ElevenLabsApiError} like the typed methods do.
+   *
+   * @example
+   * ```ts
+   * const { json } = await el.request({ method: 'GET', path: '/v1/models' })
+   * const { audio } = await el.request({
+   *   method: 'POST',
+   *   path: '/v1/sound-generation',
+   *   body: { text: 'door creak' },
+   *   accept: 'audio/mpeg',
+   * })
+   * ```
+   */
+  async request(opts: ElevenLabsRequestOptions): Promise<ElevenLabsResponse> {
+    const accept = opts.accept ?? 'application/json'
+
+    let url = `${this.baseUrl}${opts.path.startsWith('/') ? '' : '/'}${opts.path}`
+    if (opts.query) {
+      const params = new URLSearchParams()
+      for (const [k, v] of Object.entries(opts.query)) {
+        if (v !== null && v !== undefined) params.set(k, String(v))
+      }
+      const qs = params.toString()
+      if (qs) url += `${url.includes('?') ? '&' : '?'}${qs}`
+    }
+
+    const headers = this.headers({ accept, ...(opts.headers ?? {}) })
+    const init: RequestInit = { method: opts.method, headers }
+
+    if (opts.body !== undefined && opts.body !== null) {
+      const isPlainPayload =
+        typeof opts.body === 'object' &&
+        !(opts.body instanceof ArrayBuffer) &&
+        !(opts.body instanceof Uint8Array) &&
+        !(typeof Blob !== 'undefined' && opts.body instanceof Blob) &&
+        !(typeof FormData !== 'undefined' && opts.body instanceof FormData)
+      if (isPlainPayload) {
+        headers['content-type'] = 'application/json'
+        init.body = JSON.stringify(opts.body)
+      } else {
+        init.body = opts.body as BodyInit
+      }
+    }
+
+    const res = await this.fetchImpl(url, init)
+    if (!res.ok) {
+      const text = await res.text()
+      throw new ElevenLabsApiError(
+        `request ${opts.method} ${opts.path} failed: ${res.status}`,
+        res.status,
+        text,
+      )
+    }
+
+    const contentType = res.headers.get('content-type') ?? accept
+    if (contentType.includes('application/json')) {
+      return { status: res.status, contentType, json: (await res.json()) as unknown }
+    }
+    return { status: res.status, contentType, audio: await res.arrayBuffer() }
+  }
+
+  /**
+   * Generate music via `POST /v1/music`. Provide exactly one of `prompt`
+   * or `compositionPlan` (ElevenLabs returns 422 otherwise). Returns the
+   * raw audio bytes plus the response content type.
+   *
+   * @example
+   * ```ts
+   * const { audio } = await el.composeMusic({
+   *   prompt: 'Upbeat synthwave with driving bass',
+   *   musicLengthMs: 30_000,
+   * })
+   * ```
+   */
+  async composeMusic(
+    params: ComposeMusicParams,
+  ): Promise<{ audio: ArrayBuffer; contentType: string }> {
+    const hasPrompt = typeof params.prompt === 'string' && params.prompt.length > 0
+    const hasPlan = params.compositionPlan != null
+    if (hasPrompt === hasPlan) {
+      throw new Error(
+        'composeMusic: provide exactly one of `prompt` or `compositionPlan`',
+      )
+    }
+
+    const body: Record<string, unknown> = {
+      model_id: params.modelId ?? DEFAULT_MUSIC_MODEL,
+    }
+    if (hasPrompt) {
+      body.prompt = params.prompt
+      if (params.musicLengthMs !== undefined) body.music_length_ms = params.musicLengthMs
+      if (params.forceInstrumental !== undefined) {
+        body.force_instrumental = params.forceInstrumental
+      }
+    } else {
+      body.composition_plan = params.compositionPlan
+    }
+
+    const { audio, contentType } = await this.request({
+      method: 'POST',
+      path: '/v1/music',
+      body,
+      accept: 'audio/mpeg',
+      ...(params.outputFormat ? { query: { output_format: params.outputFormat } } : {}),
+    })
+
+    if (!audio) {
+      throw new ElevenLabsApiError(
+        'composeMusic: expected audio bytes but got a JSON response',
+        500,
+        '',
+      )
+    }
+    return { audio, contentType }
   }
 
   /** Probe whether a given voice id still exists on the caller's account. */

@@ -34,6 +34,7 @@ import {
   Gift,
   Heart,
   Store,
+  KeyRound,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
@@ -48,6 +49,7 @@ const BASE_NAV_ITEMS = [
   { href: '/(admin)/users', icon: Users, label: 'Users' },
   { href: '/(admin)/workspaces', icon: Building2, label: 'Workspaces' },
   { href: '/(admin)/grants', icon: Gift, label: 'Credit grants' },
+  { href: '/(admin)/license-keys', icon: KeyRound, label: 'License keys' },
   { href: '/(admin)/marketplace', icon: Store, label: 'Marketplace' },
   { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
   { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },

@@ -20,7 +20,15 @@
 import { watch, type FSWatcher, statSync } from 'node:fs';
 import { relative, sep, posix } from 'node:path';
 import type { CloudFileTransport } from '@shogo-ai/sdk/cloud-file-transport';
-import { commitAndPush } from './git-cloner.ts';
+// commitAndPush is dynamically imported so this file does NOT eagerly
+// pull in git-cloner.ts at module-load. git-cloner.ts captures
+// `node:child_process` via `const execFileAsync = promisify(execFile)`
+// at load time; if cloud-sync-watcher.ts (and its tests) trigger that
+// load before git-cloner.test.ts's `mock.module('node:child_process', ...)`
+// hoist runs, the mock no longer applies to the cached `execFileAsync`.
+// Lazy resolution keeps git-cloner.ts unloaded until either a tests-
+// supplied `opts.commitAndPush` short-circuits the default, or the
+// real `flushGit` call path explicitly opts in.
 
 const DEBOUNCE_MS = 1500;
 const EXCLUDED_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.vite', '.cache']);
@@ -126,7 +134,10 @@ export class CloudSyncWatcher {
       throw new Error('CloudSyncWatcher: mode: "git" requires the `git` option block');
     }
     this.git = opts.git;
-    this.commitAndPush = opts.commitAndPush ?? commitAndPush;
+    this.commitAndPush = opts.commitAndPush ?? (async (args) => {
+      const mod = await import('./git-cloner.ts');
+      return mod.commitAndPush(args);
+    });
   }
 
   /**

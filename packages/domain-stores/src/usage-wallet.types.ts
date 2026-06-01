@@ -21,6 +21,10 @@ export interface UsageWalletType {
   anniversaryDay: number
   lastDailyReset: Date
   lastMonthlyReset: Date
+  fiveHourWindowStart?: Date
+  fiveHourUsedUsd: number
+  weeklyWindowStart?: Date
+  weeklyUsedUsd: number
   createdAt: Date
   updatedAt: Date
 }
@@ -39,6 +43,10 @@ export interface UsageWalletCreateInput {
   anniversaryDay: number
   lastDailyReset: Date
   lastMonthlyReset: Date
+  fiveHourWindowStart?: Date
+  fiveHourUsedUsd?: number
+  weeklyWindowStart?: Date
+  weeklyUsedUsd?: number
 }
 
 export interface UsageWalletUpdateInput {
@@ -55,4 +63,8 @@ export interface UsageWalletUpdateInput {
   anniversaryDay?: number
   lastDailyReset?: Date
   lastMonthlyReset?: Date
+  fiveHourWindowStart?: Date
+  fiveHourUsedUsd?: number
+  weeklyWindowStart?: Date
+  weeklyUsedUsd?: number
 }

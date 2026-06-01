@@ -108,6 +108,16 @@ const WARM_POOL_KEEP_ALIVE_TIMEOUT_MS = parseInt(
 // shouldn't see synthetic traffic on its warm pool.
 const WARM_POOL_KEEP_ALIVE_ENABLED = process.env.WARM_POOL_KEEP_ALIVE_ENABLED !== 'false'
 
+// Re-read persisted infra settings from the DB at the top of each reconcile so
+// that a runtime admin change (PATCH /api/admin/settings/infrastructure) is
+// picked up by EVERY api replica, not just the one that served the HTTP
+// request. Without this, replicas behind `min-scale >= 2` diverge on
+// `warmPoolMinPods` and fight forever — one creates pods toward its target
+// while the other trims the "excess" — so the pool churns and never goes hot
+// (the 2026-06-01 prod-us split-brain incident). Throttled to the reconcile
+// interval so burst reconciles don't storm the DB. Opt out with `=false`.
+const WARM_POOL_CONFIG_RELOAD_ENABLED = process.env.WARM_POOL_CONFIG_RELOAD_ENABLED !== 'false'
+
 // `warm_pool.cold_claims` fires when `assign.duration_ms` exceeds this
 // threshold. The signal we care about is "the pod wasn't actually warm
 // when we handed it out" — most healthy assigns land in 1–3s, so 5s
@@ -363,6 +373,13 @@ export class WarmPoolController {
   /** Cycle counter for scheduling periodic namespace-wide GC */
   private reconcileCycleCount = 0
 
+  /**
+   * Wall-clock ms of the last persisted-settings reload. Throttles the
+   * per-reconcile DB read of `infra.*` platform settings (see
+   * WARM_POOL_CONFIG_RELOAD_ENABLED) so burst reconciles don't storm the DB.
+   */
+  private lastSettingsReloadAt = 0
+
   /** Burst detection: timer for rapid replenishment after multiple claims */
   private burstReconcileTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -537,6 +554,21 @@ export class WarmPoolController {
   async reconcile(): Promise<void> {
     if (!this.started) return
     this.reconcileCycleCount++
+
+    // Re-read persisted infra settings so a runtime admin change propagates to
+    // ALL replicas (not just the one that served the PATCH). This makes the DB
+    // the single source of truth and prevents the multi-replica split-brain
+    // where replicas target different pool sizes and fight (one creates, one
+    // trims) every cycle. Throttled to the reconcile interval; set
+    // lastSettingsReloadAt BEFORE awaiting so the nested reconcile that
+    // updateConfig() fires on a real change skips its own reload (no re-entry).
+    if (WARM_POOL_CONFIG_RELOAD_ENABLED) {
+      const nowReload = Date.now()
+      if (nowReload - this.lastSettingsReloadAt >= this.reconcileIntervalMs) {
+        this.lastSettingsReloadAt = nowReload
+        await loadPersistedSettings(this)
+      }
+    }
 
     // Adjust pool size based on cluster node count
     await this.adjustPoolSizeForNodes()
@@ -2767,6 +2799,15 @@ export function getWarmPoolController(): WarmPoolController {
 
 /**
  * Load persisted infrastructure settings from the DB and apply to the controller.
+ *
+ * Settings are region-scoped. Each replica reads two layers and merges them:
+ *   - global rows  `infra.<key>`             (shared default across all regions)
+ *   - regional rows `infra.<REGION_ID>.<key>` (this region's override)
+ * Precedence is regional > global > env/constructor default, so a knob set for
+ * one region (e.g. a US admin bumping `warmPoolMinPods`) no longer bleeds into
+ * the others. The legacy global rows remain a backward-compatible fallback for
+ * any region that has not been given its own override. `REGION_ID` is read on
+ * every call (not cached at import) so tests and per-pod env stay authoritative.
  */
 async function loadPersistedSettings(controller: WarmPoolController): Promise<void> {
   try {
@@ -2777,13 +2818,34 @@ async function loadPersistedSettings(controller: WarmPoolController): Promise<vo
 
     if (settings.length === 0) return
 
-    const patch: Record<string, any> = {}
+    const region = process.env.REGION_ID || 'unknown'
+
+    // Split the flat `infra.*` keyspace into a global layer and this region's
+    // layer. A key is regional when it carries a `<region>.` segment after the
+    // `infra.` prefix; the infra setting names themselves are dot-free camelCase
+    // (warmPoolMinPods, reconcileIntervalMs, ...), so the first dot unambiguously
+    // separates the region id from the setting name.
+    const globalValues: Record<string, string> = {}
+    const regionalValues: Record<string, string> = {}
     for (const s of settings) {
-      const key = s.key.replace('infra.', '')
+      const rest = s.key.slice('infra.'.length)
+      const dot = rest.indexOf('.')
+      if (dot === -1) {
+        globalValues[rest] = s.value
+      } else if (rest.slice(0, dot) === region) {
+        regionalValues[rest.slice(dot + 1)] = s.value
+      }
+    }
+
+    // Regional overrides win over the shared global default.
+    const merged = { ...globalValues, ...regionalValues }
+
+    const patch: Record<string, any> = {}
+    for (const [key, raw] of Object.entries(merged)) {
       if (key === 'promotedPodGcEnabled') {
-        patch[key] = s.value === 'true'
+        patch[key] = raw === 'true'
       } else {
-        const val = parseInt(s.value, 10)
+        const val = parseInt(raw, 10)
         if (Number.isFinite(val) && val >= 0) {
           patch[key] = val
         }
@@ -2792,7 +2854,8 @@ async function loadPersistedSettings(controller: WarmPoolController): Promise<vo
 
     if (Object.keys(patch).length > 0) {
       controller.updateConfig(patch)
-      console.log(`[WarmPool] Loaded ${Object.keys(patch).length} persisted settings from DB`)
+      const scope = Object.keys(regionalValues).length > 0 ? `${region} (region-scoped)` : 'global'
+      console.log(`[WarmPool] Loaded ${Object.keys(patch).length} persisted settings from DB [${scope}]`)
     }
   } catch (err: any) {
     console.warn('[WarmPool] Failed to load persisted settings (non-fatal):', err.message)

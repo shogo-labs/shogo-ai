@@ -1484,6 +1484,43 @@ jobs:
           echo "Located primary on US: $PRIMARY"
           echo "PG_PRIMARY=$PRIMARY" >> "$GITHUB_ENV"
 
+      # Table-ownership contract — keep `shogo` the owner of every table in
+      # `public`. US is the primary and is already fully shogo-owned, so the
+      # sweep is a no-op here, but installing the enforce-owner event trigger
+      # (and asserting the contract) on US too keeps all three regions
+      # symmetric — US is also a subscriber in the active-active topology.
+      # See enforce-table-ownership.sql for the full rationale.
+      - name: Reconcile table ownership
+        run: |
+          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo < k8s/cnpg/logical-replication/enforce-table-ownership.sql \
+            || { echo "::error::table-ownership reconciliation failed on US"; exit 1; }
+
+      - name: Verify ownership contract
+        run: |
+          set -euo pipefail
+          DRIFTED=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo -tAc "
+              SELECT count(*)
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
+                AND c.relowner <> 'shogo'::regrole;
+            ")
+          if [ "$DRIFTED" != "0" ]; then
+            echo "::error::$DRIFTED tables in public are not owned by shogo on US"
+            kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+              psql -U postgres -d shogo -c "
+                SELECT n.nspname || '.' || c.relname AS drifted_table, c.relowner::regrole AS owner
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
+                  AND c.relowner <> 'shogo'::regrole;
+              "
+            exit 1
+          fi
+          echo "✓ shogo owns every table in public on US"
+
       - name: Reconcile logical replication GRANTs
         run: |
           kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
@@ -1775,6 +1812,62 @@ jobs:
               kind: Service
               apiVersion: serving.knative.dev/v1
           EOF
+
+      # ----------------------------------------------------------------------
+      # Table-ownership contract — MUST run before migrations. `shogo` (the
+      # migration role) must own every table in `public`, or an ALTER TABLE
+      # in a migration fails with `must be owner` (SQLSTATE 42501) and wedges
+      # the cluster with P3009 (2026-05-31 incident: affiliate_commission_tiers
+      # + 9 siblings were postgres-owned on EU/India). enforce-table-ownership.sql
+      # sweeps any drifted owner back to shogo and installs an event trigger
+      # that keeps future CREATE TABLEs shogo-owned. This is located before the
+      # migration gate because the migration itself needs the ownership; the
+      # post-migration GRANT block below re-locates the primary in case a
+      # failover happened during a long cold-image-pull migration.
+      # ----------------------------------------------------------------------
+      - name: Locate CNPG primary pod (pre-migration)
+        run: |
+          set -euo pipefail
+          PRIMARY=$(kubectl get pods -n ${{ env.NS_SYSTEM }} \
+            -l "cnpg.io/cluster=platform-pg,cnpg.io/instanceRole=primary" \
+            -o jsonpath='{.items[0].metadata.name}')
+          if [ -z "$PRIMARY" ]; then
+            echo "::error::No primary pod found for platform-pg cluster in ${{ env.NS_SYSTEM }}"
+            exit 1
+          fi
+          echo "Located primary on EU: $PRIMARY"
+          echo "PG_PRIMARY=$PRIMARY" >> "$GITHUB_ENV"
+
+      - name: Reconcile table ownership
+        run: |
+          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo < k8s/cnpg/logical-replication/enforce-table-ownership.sql \
+            || { echo "::error::table-ownership reconciliation failed on EU"; exit 1; }
+
+      - name: Verify ownership contract
+        run: |
+          set -euo pipefail
+          DRIFTED=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo -tAc "
+              SELECT count(*)
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
+                AND c.relowner <> 'shogo'::regrole;
+            ")
+          if [ "$DRIFTED" != "0" ]; then
+            echo "::error::$DRIFTED tables in public are not owned by shogo on EU"
+            kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+              psql -U postgres -d shogo -c "
+                SELECT n.nspname || '.' || c.relname AS drifted_table, c.relowner::regrole AS owner
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
+                  AND c.relowner <> 'shogo'::regrole;
+              "
+            exit 1
+          fi
+          echo "✓ shogo owns every table in public on EU"
 
       - name: Run Prisma migrations
         if: needs.detect-changes.outputs.api_changed == 'true'
@@ -2273,6 +2366,56 @@ jobs:
               kind: Service
               apiVersion: serving.knative.dev/v1
           EOF
+
+      # ----------------------------------------------------------------------
+      # Table-ownership contract — MUST run before migrations. See the matching
+      # block in deploy-eu for full rationale (2026-05-31 `must be owner` /
+      # P3009 incident). Sweeps drifted owners back to shogo and installs the
+      # enforce-owner event trigger before the migration gate.
+      # ----------------------------------------------------------------------
+      - name: Locate CNPG primary pod (pre-migration)
+        run: |
+          set -euo pipefail
+          PRIMARY=$(kubectl get pods -n ${{ env.NS_SYSTEM }} \
+            -l "cnpg.io/cluster=platform-pg,cnpg.io/instanceRole=primary" \
+            -o jsonpath='{.items[0].metadata.name}')
+          if [ -z "$PRIMARY" ]; then
+            echo "::error::No primary pod found for platform-pg cluster in ${{ env.NS_SYSTEM }}"
+            exit 1
+          fi
+          echo "Located primary on India: $PRIMARY"
+          echo "PG_PRIMARY=$PRIMARY" >> "$GITHUB_ENV"
+
+      - name: Reconcile table ownership
+        run: |
+          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo < k8s/cnpg/logical-replication/enforce-table-ownership.sql \
+            || { echo "::error::table-ownership reconciliation failed on India"; exit 1; }
+
+      - name: Verify ownership contract
+        run: |
+          set -euo pipefail
+          DRIFTED=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo -tAc "
+              SELECT count(*)
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
+                AND c.relowner <> 'shogo'::regrole;
+            ")
+          if [ "$DRIFTED" != "0" ]; then
+            echo "::error::$DRIFTED tables in public are not owned by shogo on India"
+            kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+              psql -U postgres -d shogo -c "
+                SELECT n.nspname || '.' || c.relname AS drifted_table, c.relowner::regrole AS owner
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
+                  AND c.relowner <> 'shogo'::regrole;
+              "
+            exit 1
+          fi
+          echo "✓ shogo owns every table in public on India"
 
       - name: Run Prisma migrations
         if: needs.detect-changes.outputs.api_changed == 'true'

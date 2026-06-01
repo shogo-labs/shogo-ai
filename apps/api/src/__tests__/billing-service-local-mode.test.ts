@@ -25,9 +25,19 @@ mock.module('../lib/prisma', () => withPrismaExports({
 mock.module('../config/usage-plans', () => ({
   FREE_DAILY_INCLUDED_USD: 1,
   MONTHLY_DAILY_CAP_USD: 30,
+  FIVE_HOUR_MS: 5 * 60 * 60 * 1000,
+  SEVEN_DAY_MS: 7 * 24 * 60 * 60 * 1000,
   PLAN_INCLUDED_USD: { free: 0, basic: 5, pro: 20, business: 40 },
   PLAN_RANK: { free: 0, basic: 1, pro: 2, business: 3, enterprise: 4 },
   SEAT_INCLUDED_USD: { free: 0, basic: 5, pro: 20, business: 40, enterprise: 2000 },
+  ROLLING_WINDOW_LIMITS: {
+    free: { fiveHourUsd: 0.5, weeklyUsd: 2 },
+    basic: { fiveHourUsd: 2, weeklyUsd: 10 },
+    pro: { fiveHourUsd: 8, weeklyUsd: 40 },
+    business: { fiveHourUsd: 20, weeklyUsd: 120 },
+    enterprise: null,
+  },
+  getWindowLimitsForPlan: () => ({ fiveHourUsd: 0.5, weeklyUsd: 2 }),
   getDailyIncludedForPlan: (planId: string | null | undefined) => {
     const lc = (planId ?? 'free').toString().toLowerCase().trim()
     return lc.startsWith('free') || lc === '' ? 1 : 0

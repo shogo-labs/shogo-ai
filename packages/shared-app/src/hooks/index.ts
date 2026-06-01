@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-export { useBillingData, type BillingDataState } from './useBillingData'
+export {
+  useBillingData,
+  type BillingDataState,
+  type UsageWindowView,
+  type UsageWindows,
+} from './useBillingData'
 export {
   useCheckpoints,
   type Checkpoint,
@@ -42,3 +47,15 @@ export {
   type RemoteState,
 } from './useRemoteState'
 export { useAgentUrl } from './useAgentUrl'
+export {
+  useGitGraph,
+  type GitGraphState,
+  type GitGraphCommit,
+  type GitGraphBranch,
+  type GitRef,
+  type GitRefType,
+  type GitCoAuthor,
+  type GitCommitDetail,
+  type GitCommitDetailFile,
+  type UseGitGraphOptions,
+} from './useGitGraph'

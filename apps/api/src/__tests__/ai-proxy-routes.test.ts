@@ -25,6 +25,12 @@ mock.module('../lib/prisma', () => withPrismaExports({
       findFirst: async () => ({ id: 'test-project', name: 'Test' }),
       findUnique: async () => ({ id: 'test-project', workspaceId: 'test-workspace' }),
     },
+    subscription: {
+      findFirst: async () => null,
+    },
+    workspaceGrant: {
+      findMany: async () => [],
+    },
     usageEvent: {
       create: async () => ({}),
     },
@@ -40,6 +46,11 @@ mock.module('../lib/prisma', () => withPrismaExports({
         overageAccumulatedUsd: 0,
         stripeMeteredItemId: null,
         lastDailyReset: new Date(),
+        // Rolling windows: unopened (null start, 0 used) → free plan has room.
+        fiveHourWindowStart: null,
+        fiveHourUsedUsd: 0,
+        weeklyWindowStart: null,
+        weeklyUsedUsd: 0,
       }),
       create: async (data: any) => data,
     },

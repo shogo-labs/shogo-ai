@@ -71,11 +71,13 @@ async function runHookBody(opts: {
       try {
         const visitorId = parseCookieHeader(ctx.request.headers.get('cookie') || '', '__shogo_ref_visitor')
         const code = parseCookieHeader(ctx.request.headers.get('cookie') || '', '__shogo_ref')
-        if (visitorId) {
+        if (visitorId || code) {
           // Stand-in for `await resolveAttributionForUser(...)` —
-          // mirrors the exact shape of the production call.
-          resolveCalls.push([opts.userId, visitorId, code ?? null])
-          await resolveImpl(opts.userId, visitorId, code ?? null)
+          // mirrors the exact shape of the production call. Either the
+          // visitor cookie (click-based) or the code cookie (direct
+          // fallback) is enough to attempt attribution.
+          resolveCalls.push([opts.userId, visitorId ?? null, code ?? null])
+          await resolveImpl(opts.userId, visitorId ?? null, code ?? null)
         }
       } catch (err) {
         // swallow — auth.ts logs but doesn't throw
@@ -107,9 +109,19 @@ describe('signup hook integration', () => {
     expect(resolveCalls.length).toBe(0)
   })
 
-  test('no-ops when visitor cookie is missing', async () => {
+  test('attributes from the code cookie even when the visitor cookie is missing', async () => {
     await runHookBody({
       cookieHeader: '__shogo_ref=alpha',
+      featureFlag: 'true',
+      userId: 'u1',
+    })
+    expect(resolveCalls.length).toBe(1)
+    expect(resolveCalls[0]).toEqual(['u1', null, 'alpha'])
+  })
+
+  test('no-ops when neither referral cookie is present', async () => {
+    await runHookBody({
+      cookieHeader: 'session=abc; other=1',
       featureFlag: 'true',
       userId: 'u1',
     })

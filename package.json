@@ -122,6 +122,7 @@
   "patchedDependencies": {
     "react-native-css-interop@0.2.2": "patches/react-native-css-interop@0.2.2.patch",
     "@react-navigation/routers@7.5.3": "patches/@react-navigation%2Frouters@7.5.3.patch",
-    "react-native-iap@12.16.4": "patches/react-native-iap@12.16.4.patch"
+    "react-native-iap@12.16.4": "patches/react-native-iap@12.16.4.patch",
+    "@mariozechner/pi-ai@0.73.1": "patches/@mariozechner%2Fpi-ai@0.73.1.patch"
   }
 }
