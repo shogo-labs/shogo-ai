@@ -44,6 +44,7 @@ import {
 import { registerFsIpcHandlers } from './fs-ipc'
 import { registerGitIpcHandlers, disposeGitIpc } from './git/ipc'
 import { registerRunIpcHandlers, disposeRunIpc } from './run-ipc'
+import { registerDebugIpcHandlers, disposeDebugIpc } from './debug-ipc'
 import { registerTerminalIpcHandlers, disposeTerminalIpc } from './ipc/terminal-ipc'
 import { registerLlmIpcHandlers, disposeLlmIpcHandlers } from './ipc/llm-ipc'
 import { registerPortsIpcHandlers, disposePortsIpcHandlers } from './ipc/ports-ipc'
@@ -1258,6 +1259,7 @@ app.whenReady().then(async () => {
   registerFsIpcHandlers()
   registerGitIpcHandlers()
   registerRunIpcHandlers()
+  registerDebugIpcHandlers()
   registerTerminalIpcHandlers()
   registerLlmIpcHandlers()
   registerPortsIpcHandlers()
@@ -1356,6 +1358,7 @@ app.on('before-quit', (event) => {
     disposePortsIpcHandlers()
     disposeGitIpc()
     disposeRunIpc()
+    disposeDebugIpc()
     stopLocalServer().catch(() => {})
     return
   }
@@ -1368,6 +1371,7 @@ app.on('before-quit', (event) => {
   disposePortsIpcHandlers()
   disposeGitIpc()
     disposeRunIpc()
+    disposeDebugIpc()
   Promise.allSettled([disposeTerminalIpc(), stopLocalServer()])
     .then(() => console.log('[Desktop] Server cleanup complete'))
     .catch((err) => console.error('[Desktop] Server cleanup error:', err))

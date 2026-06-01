@@ -157,3 +157,59 @@ describe('parsePackageJsonScripts', () => {
     if (r.ok) expect(r.scripts).toHaveLength(5)
   })
 })
+
+// ─── extractInspectorWsUrl ───────────────────────────────────────────
+
+import { extractInspectorWsUrl, buildInspectorNodeOptions } from '../run-ipc-pure'
+
+describe('extractInspectorWsUrl', () => {
+  it('extracts the ws URL from a real v8 stderr line', () => {
+    const stderr = 'Debugger listening on ws://127.0.0.1:9229/abc-123-def\nFor help, see: https://nodejs.org/en/docs/inspector\n'
+    expect(extractInspectorWsUrl(stderr)).toBe('ws://127.0.0.1:9229/abc-123-def')
+  })
+  it('handles the URL appearing mid-buffer', () => {
+    const stderr = 'random noise\nDebugger listening on ws://127.0.0.1:9230/uuid\nmore noise'
+    expect(extractInspectorWsUrl(stderr)).toBe('ws://127.0.0.1:9230/uuid')
+  })
+  it('returns null when no URL is present', () => {
+    expect(extractInspectorWsUrl('Starting bundler...\nSome other output\n')).toBeNull()
+  })
+  it('returns null on empty input', () => {
+    expect(extractInspectorWsUrl('')).toBeNull()
+  })
+  it('only returns the first URL when multiple appear', () => {
+    const stderr =
+      'Debugger listening on ws://127.0.0.1:9229/first\n' +
+      'Debugger listening on ws://127.0.0.1:9230/second\n'
+    expect(extractInspectorWsUrl(stderr)).toBe('ws://127.0.0.1:9229/first')
+  })
+  it('handles port suffixes / paths with hyphens and underscores', () => {
+    expect(extractInspectorWsUrl('Debugger listening on ws://127.0.0.1:9229/abc_123-DEF\n'))
+      .toBe('ws://127.0.0.1:9229/abc_123-DEF')
+  })
+  it('does not match wss:// (we only enable inspector over loopback ws)', () => {
+    expect(extractInspectorWsUrl('Debugger listening on wss://127.0.0.1:9229/x\n')).toBeNull()
+  })
+})
+
+describe('buildInspectorNodeOptions', () => {
+  it('defaults to --inspect-brk=0', () => {
+    expect(buildInspectorNodeOptions({})).toBe('--inspect-brk=0')
+  })
+  it('honors explicit port', () => {
+    expect(buildInspectorNodeOptions({ port: 9229 })).toBe('--inspect-brk=9229')
+  })
+  it('breakOnStart:false uses --inspect (no break)', () => {
+    expect(buildInspectorNodeOptions({ breakOnStart: false })).toBe('--inspect=0')
+  })
+  it('appends to existing NODE_OPTIONS', () => {
+    expect(buildInspectorNodeOptions({ existing: '--max-old-space-size=4096' }))
+      .toBe('--max-old-space-size=4096 --inspect-brk=0')
+  })
+  it('does NOT double-add if existing already has --inspect', () => {
+    expect(buildInspectorNodeOptions({ existing: '--inspect=9230' })).toBe('--inspect=9230')
+  })
+  it('ignores blank/whitespace existing', () => {
+    expect(buildInspectorNodeOptions({ existing: '   ' })).toBe('--inspect-brk=0')
+  })
+})

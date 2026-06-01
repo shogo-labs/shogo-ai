@@ -464,8 +464,22 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   run: {
     listScripts: (root: string): Promise<{ ok: boolean; scripts?: { name: string; command: string }[]; packageManager?: 'bun' | 'pnpm' | 'yarn' | 'npm'; error?: string }> =>
       ipcRenderer.invoke('run:listScripts', root),
-    start: (root: string, scriptName: string, preferredPm?: 'bun' | 'pnpm' | 'yarn' | 'npm'): Promise<{ ok: boolean; runId?: string; error?: string }> =>
-      ipcRenderer.invoke('run:start', root, scriptName, preferredPm),
+    start: (
+      root: string,
+      scriptName: string,
+      preferredPm?: 'bun' | 'pnpm' | 'yarn' | 'npm',
+      options?: { debug?: boolean },
+    ): Promise<{ ok: boolean; runId?: string; inspectorWsUrl?: string; error?: string }> =>
+      ipcRenderer.invoke('run:start', root, scriptName, preferredPm, options),
+    onInspector: (
+      runId: string,
+      cb: (info: { runId: string; wsUrl: string }) => void,
+    ): (() => void) => {
+      const channel = `run:inspector:${runId}`
+      const listener = (_e: unknown, payload: { runId: string; wsUrl: string }) => cb(payload)
+      ipcRenderer.on(channel, listener)
+      return () => ipcRenderer.removeListener(channel, listener)
+    },
     stop: (runId: string): Promise<{ ok: boolean; error?: string }> =>
       ipcRenderer.invoke('run:stop', runId),
     onOutput: (runId: string, cb: (data: { stream: 'stdout' | 'stderr'; data: string }) => void): (() => void) => {
@@ -477,6 +491,37 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     onExit: (runId: string, cb: (info: { code: number | null; signal: string | null }) => void): (() => void) => {
       const channel = `run:exit:${runId}`
       const listener = (_e: unknown, payload: { code: number | null; signal: string | null }) => cb(payload)
+      ipcRenderer.on(channel, listener)
+      return () => ipcRenderer.removeListener(channel, listener)
+    },
+  },
+
+  // Debug Adapter (Chrome DevTools Protocol) — full breakpoint / step /
+  // evaluate surface, layered on top of an `--inspect-brk` child spawned
+  // by `run.start({ debug: true })`.  The renderer first calls
+  // `run.start(..., { debug: true })`, awaits the inspector URL via
+  // `run.onInspector`, then calls `debug.start(wsUrl)`.
+  debug: {
+    start: (wsUrl: string): Promise<{ ok: boolean; sessionId?: string; error?: string }> =>
+      ipcRenderer.invoke('debug:start', wsUrl),
+    setBreakpoint: (
+      sessionId: string,
+      args: { url: string; lineNumber: number; columnNumber?: number; condition?: string },
+    ): Promise<{ ok: boolean; bp?: { id: string; url: string; lineNumber: number }; error?: string }> =>
+      ipcRenderer.invoke('debug:setBreakpoint', sessionId, args),
+    removeBreakpoint: (sessionId: string, id: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('debug:removeBreakpoint', sessionId, id),
+    resume:   (sessionId: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('debug:resume',   sessionId),
+    pause:    (sessionId: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('debug:pause',    sessionId),
+    stepOver: (sessionId: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('debug:stepOver', sessionId),
+    stepInto: (sessionId: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('debug:stepInto', sessionId),
+    stepOut:  (sessionId: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('debug:stepOut',  sessionId),
+    evaluate: (sessionId: string, expression: string): Promise<{ ok: boolean; result?: { ok: boolean; text: string; data?: unknown }; error?: string }> =>
+      ipcRenderer.invoke('debug:evaluate', sessionId, expression),
+    detach:   (sessionId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('debug:detach', sessionId),
+    onEvent:  (sessionId: string, cb: (ev: { type: string; payload: unknown }) => void): (() => void) => {
+      const channel = `debug:event:${sessionId}`
+      const listener = (_e: unknown, payload: { type: string; payload: unknown }) => cb(payload)
       ipcRenderer.on(channel, listener)
       return () => ipcRenderer.removeListener(channel, listener)
     },
