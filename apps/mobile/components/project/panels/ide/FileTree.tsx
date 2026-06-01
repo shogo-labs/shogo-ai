@@ -15,6 +15,8 @@ import type { TreeNode } from "./types";
 import { ContextMenu, type MenuEntry } from "./ContextMenu";
 import { useGitStatusContext } from "./git/GitStatusContext";
 import type { GitShortCode } from "./git/bridge";
+import { computeDropZone } from "./file-tree-drop-zone";
+import { useDragAutoScroll } from "./useDragAutoScroll";
 
 export interface FileTreeHandlers {
   onOpen: (node: TreeNode) => void;
@@ -133,6 +135,16 @@ export function FileTree({
   const [menu, setMenu] = useState<{ x: number; y: number; node: TreeNode | null } | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  // BUG-002: edge auto-scroll + scrollTop-correct drop zone math.
+  // The hook owns the rAF loop; pure math lives in computeDropZone.
+  const autoScroll = useDragAutoScroll(containerRef);
+  // Track whether a drag is currently in progress over the tree, so
+  // the scroll listener can clear stale dropTarget highlights. Without
+  // this, manually scrolling during a drag leaves the previously-
+  // hovered folder visually marked even after the pointer no longer
+  // sits over it (the drop highlight is set by per-row onDragOver and
+  // wouldn't fire again until the next pointer move).
+  const dragActiveRef = useRef(false);
   const git = useGitStatusContext();
 
   const rows = useMemo(() => {
@@ -617,6 +629,48 @@ export function FileTree({
       onClick={() => {
         setSelected(null);
         setMultiSelected(new Set());
+      }}
+      // BUG-002: container-level dragOver drives the auto-scroll loop using
+      // scrollTop-corrected coordinates. Per-row handlers below still set
+      // the drop target (the browser already resolves which row is under
+      // the pointer), but the container is the only element that can
+      // observe the pointer when the user has reached the edge band.
+      onDragOver={(e) => {
+        dragActiveRef.current = true;
+        const el = containerRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        const { scrollDelta } = computeDropZone({
+          clientY: e.clientY,
+          containerRect: { top: rect.top, bottom: rect.bottom, height: rect.height },
+          scrollTop: el.scrollTop,
+          scrollHeight: el.scrollHeight,
+        });
+        autoScroll.updateDelta(scrollDelta);
+      }}
+      onDragLeave={(e) => {
+        // Browser fires dragLeave on every child cross-over; only act when
+        // the pointer truly leaves the container (relatedTarget outside).
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+        dragActiveRef.current = false;
+        autoScroll.stop();
+      }}
+      onDrop={() => {
+        dragActiveRef.current = false;
+        autoScroll.stop();
+      }}
+      onDragEnd={() => {
+        // Fires on the source element regardless of where the drop landed,
+        // including drops that escaped the container — canonical stop signal.
+        dragActiveRef.current = false;
+        autoScroll.stop();
+      }}
+      onScroll={() => {
+        // BUG-002 follow-on: if the user manually scrolls during a drag, the
+        // last-set dropTarget refers to a row that may no longer be under
+        // the pointer. Clear it so the next onDragOver can re-resolve from
+        // the freshly-laid-out DOM, avoiding a stale highlight.
+        if (dragActiveRef.current) setDropTarget(null);
       }}
     >
       {rows.map((row, i) => {
