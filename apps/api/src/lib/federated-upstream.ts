@@ -35,8 +35,10 @@ import { getShogoCloudUrl } from './cloud-urls'
 // ─── Auth + gate ────────────────────────────────────────────────────────────
 
 const CREDENTIAL_TTL_MS = 30_000
+const IDENTITY_TTL_MS = 5 * 60_000
 let cachedCredential: { value: string | null; expiresAt: number } | null = null
 let cachedCloudWorkspaceId: { value: string | null; expiresAt: number } | null = null
+let cachedCloudIdentity: { value: { userId: string; workspaceId: string } | null; expiresAt: number } | null = null
 
 /**
  * Resolve the cloud credential local mode uses. Reads `process.env`
@@ -71,6 +73,20 @@ export async function getUpstreamCredential(): Promise<string | null> {
 export function _resetUpstreamCredentialCache(): void {
   cachedCredential = null
   cachedCloudWorkspaceId = null
+  cachedCloudIdentity = null
+}
+
+/** Read + parse `localConfig.SHOGO_KEY_INFO`. Returns null when unset/malformed. */
+async function readKeyInfo(): Promise<{ workspace?: { id?: string }; user?: { id?: string } } | null> {
+  try {
+    const row = await (prisma as any).localConfig
+      .findUnique({ where: { key: 'SHOGO_KEY_INFO' } })
+      .catch(() => null)
+    if (!row?.value) return null
+    return JSON.parse(row.value)
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -103,6 +119,65 @@ export async function getUpstreamWorkspaceId(): Promise<string | null> {
   }
   cachedCloudWorkspaceId = { value, expiresAt: now + CREDENTIAL_TTL_MS }
   return value
+}
+
+/**
+ * Resolve the *cloud* identity (user + workspace) the local SHOGO_API_KEY is
+ * bound to. Composio connections live on the cloud's Composio account keyed by
+ * this identity — the integrations UI forwards "Connect" to the cloud (see
+ * `routes/integrations.ts` `shouldForwardToCloud`), so connections are created
+ * under `shogo_{cloudUser}_{cloudWs}`. The agent-runtime must scope Composio to
+ * the same identity instead of the synthetic local user/workspace, otherwise
+ * every auth check returns `needs_auth`. See
+ * `packages/agent-runtime/src/composio.ts` (`resolveComposioIdentity`).
+ *
+ * Fast path reads both ids from `localConfig.SHOGO_KEY_INFO`. Older sign-ins
+ * persisted only `workspace`, so when `user.id` is missing we validate the key
+ * against the cloud once to learn it (result cached). Returns null when there
+ * is no key, the cloud is unreachable, or it rejects — callers then fall back
+ * to local ids and behave exactly as before.
+ */
+export async function getUpstreamIdentity(): Promise<{ userId: string; workspaceId: string } | null> {
+  const now = Date.now()
+  if (cachedCloudIdentity && cachedCloudIdentity.expiresAt > now) return cachedCloudIdentity.value
+
+  const cache = (value: { userId: string; workspaceId: string } | null) => {
+    cachedCloudIdentity = { value, expiresAt: now + (value ? IDENTITY_TTL_MS : CREDENTIAL_TTL_MS) }
+    return value
+  }
+
+  // Fast path: both ids already persisted by PUT /api/local/shogo-key.
+  const info = await readKeyInfo()
+  const storedWs = info?.workspace?.id
+  const storedUser = info?.user?.id
+  if (typeof storedWs === 'string' && storedWs && typeof storedUser === 'string' && storedUser) {
+    return cache({ userId: storedUser, workspaceId: storedWs })
+  }
+
+  // Backfill: older sessions stored only `workspace`. Validate the key once to
+  // learn the cloud user the key is bound to.
+  const key = await getUpstreamCredential()
+  if (!key) return cache(null)
+  try {
+    const resp = await fetch(`${getShogoCloudUrl()}/api/api-keys/validate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key }),
+      signal: AbortSignal.timeout(5_000),
+    })
+    if (!resp.ok) return cache(null)
+    const data = (await resp.json().catch(() => null)) as
+      | { valid?: boolean; workspace?: { id?: string }; user?: { id?: string } }
+      | null
+    const vWs = data?.workspace?.id
+    const vUser = data?.user?.id
+    if (data?.valid && typeof vWs === 'string' && vWs && typeof vUser === 'string' && vUser) {
+      return cache({ userId: vUser, workspaceId: vWs })
+    }
+  } catch {
+    /* offline / timeout — fall through to local ids */
+  }
+  return cache(null)
 }
 
 /** Federation is on when local mode is active and we have a credential. */

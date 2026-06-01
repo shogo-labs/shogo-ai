@@ -236,10 +236,17 @@ export function ExternalPreviewWebView({
             onTrustRequired?.(url)
           }
           setLoadError(res?.error ?? 'open-failed')
+          return
         }
+        // If the parent has hidden this preview (for example while a
+        // React modal is open), re-apply that state after `open` creates
+        // the native Electron view. A prior `setVisible(false)` can be a
+        // no-op when the view does not exist yet.
+        void bridge.setVisible(projectId, visible)
+        if (visible) pushBounds()
       })
     }
-  }, [bridge, projectId, url, isTrusted, onTrustRequired])
+  }, [bridge, projectId, url, isTrusted, onTrustRequired, visible, pushBounds])
 
   useEffect(() => {
     if (!bridge) return

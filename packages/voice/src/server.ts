@@ -59,6 +59,7 @@ import {
   ElevenLabsClient,
   MEMORY_CLIENT_TOOLS,
   resolveConvaiTtsModel,
+  type ComposeMusicParams,
   type ConvaiClientTool,
   type ElevenLabsClientConfig,
 } from './elevenlabs.js'
@@ -139,6 +140,12 @@ export interface VoiceHandlers {
   signedUrl: (req: Request) => Promise<Response>
   /** `POST /voice/tts-preview` — returns raw audio bytes. Expects {@link TtsPreviewBody}. */
   tts: (req: Request) => Promise<Response>
+  /**
+   * `POST /voice/music` — generate music via the ElevenLabs Music API.
+   * Returns raw audio bytes. Body mirrors {@link ComposeMusicParams}
+   * (`prompt` XOR `compositionPlan`, `musicLengthMs`, `modelId`, …).
+   */
+  music: (req: Request) => Promise<Response>
   /** Agent CRUD endpoints. */
   agent: {
     /** `POST /voice/agent` — create a companion + 11Labs agent for the authed user. */
@@ -176,6 +183,37 @@ async function readJson(req: Request): Promise<unknown> {
 
 const NOOP_LOGGER: NonNullable<VoiceHandlersConfig['logger']> = () => {
   /* noop */
+}
+
+/**
+ * Validate + normalize a raw music request body into {@link ComposeMusicParams}.
+ * Returns a `{ error }` describing the first validation failure, or
+ * `{ params }` on success. Enforces the EL contract that exactly one of
+ * `prompt` / `compositionPlan` is supplied.
+ */
+function parseMusicBody(raw: unknown): { params: ComposeMusicParams } | { error: string } {
+  if (raw === null || typeof raw !== 'object') return { error: 'Invalid JSON body' }
+  const b = raw as Record<string, unknown>
+
+  const hasPrompt = typeof b.prompt === 'string' && b.prompt.trim().length > 0
+  const hasPlan = b.compositionPlan != null && typeof b.compositionPlan === 'object'
+  if (hasPrompt === hasPlan) {
+    return { error: 'Provide exactly one of `prompt` or `compositionPlan`' }
+  }
+
+  const params: ComposeMusicParams = {}
+  if (hasPrompt) {
+    params.prompt = (b.prompt as string).trim()
+    if (typeof b.musicLengthMs === 'number') params.musicLengthMs = b.musicLengthMs
+    if (typeof b.forceInstrumental === 'boolean') params.forceInstrumental = b.forceInstrumental
+  } else {
+    params.compositionPlan = b.compositionPlan as Record<string, unknown>
+  }
+  if (typeof b.modelId === 'string' && b.modelId.length > 0) params.modelId = b.modelId
+  if (typeof b.outputFormat === 'string' && b.outputFormat.length > 0) {
+    params.outputFormat = b.outputFormat
+  }
+  return { params }
 }
 
 /**
@@ -309,6 +347,41 @@ function createProxyHandlers(
     })
   }
 
+  /**
+   * Music generation proxies to the Shogo API, which holds the pooled
+   * EL key. Unlike companion CRUD this is project-scoped (not per-end-user),
+   * so it works in runtime-token mode. We forward the validated JSON body
+   * and stream the audio response straight back.
+   */
+  async function doMusic(req: Request): Promise<Response> {
+    if (req.method !== 'POST') return json({ error: 'Method Not Allowed' }, 405)
+    const raw = await readJson(req)
+    const parsed = parseMusicBody(raw)
+    if ('error' in parsed) return json({ error: parsed.error }, 400)
+    try {
+      const upstream = await fetchImpl(proxyUrl('/api/voice/music', {}), {
+        method: 'POST',
+        headers: {
+          'x-runtime-token': proxy.runtimeToken,
+          'content-type': 'application/json',
+          accept: 'audio/mpeg',
+        },
+        body: JSON.stringify(parsed.params),
+        credentials: 'omit',
+      })
+      const buf = await upstream.arrayBuffer()
+      const headers: Record<string, string> = {}
+      const ct = upstream.headers.get('content-type')
+      if (ct) headers['content-type'] = ct
+      return new Response(buf, { status: upstream.status, headers })
+    } catch (err) {
+      log('error', 'proxy music failed', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return json({ error: 'music proxy failed' }, 502)
+    }
+  }
+
   function notImplemented(label: string): (req: Request) => Promise<Response> {
     return async () =>
       json(
@@ -323,6 +396,7 @@ function createProxyHandlers(
   return {
     signedUrl: doSignedUrl,
     tts: notImplemented('tts'),
+    music: doMusic,
     agent: {
       create: notImplemented('agent.create'),
       patch: notImplemented('agent.patch'),
@@ -492,6 +566,28 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
       })
     } catch (e) {
       return handleElError(e, 'TTS failed')
+    }
+  }
+
+  async function doMusic(req: Request): Promise<Response> {
+    if (req.method !== 'POST') return json({ error: 'Method Not Allowed' }, 405)
+    const u = await resolveUser(req)
+    if (u instanceof Response) return u
+
+    const raw = await readJson(req)
+    const parsed = parseMusicBody(raw)
+    if ('error' in parsed) return json({ error: parsed.error }, 400)
+
+    try {
+      const { audio, contentType } = await el.composeMusic(parsed.params)
+      return new Response(audio, {
+        headers: {
+          'content-type': contentType,
+          'cache-control': 'private, max-age=3600',
+        },
+      })
+    } catch (e) {
+      return handleElError(e, 'Music generation failed')
     }
   }
 
@@ -672,6 +768,7 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
   return {
     signedUrl: doSignedUrl,
     tts: doTts,
+    music: doMusic,
     agent: {
       create: doAgentCreate,
       patch: doAgentPatch,

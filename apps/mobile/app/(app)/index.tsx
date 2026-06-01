@@ -45,6 +45,7 @@ import { usePlatformConfig } from '../../lib/platform-config'
 import { api, getOnboardingMessage } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { safeGetItem, safeRemoveItem } from '../../lib/safe-storage'
+import { getPendingLicenseCode, clearPendingLicenseCode } from '../../lib/pending-license'
 import type { AgentTileListing } from '../../components/marketplace/AgentTile'
 import { ProjectSourceMenu } from '../../components/project/ProjectSourceMenu'
 
@@ -359,6 +360,18 @@ const HomeScreen = observer(function HomeScreen() {
         safeRemoveItem('pending_template_id')
       })
   }, [currentWorkspace?.id, user?.id])
+
+  // Deep-link: a license-key redeem link stashed before sign-up/onboarding
+  // (lib/pending-license.ts). Now that the user is authenticated with a
+  // workspace, route them to billing with the code prefilled so they can
+  // complete the redemption.
+  useEffect(() => {
+    if (!currentWorkspace?.id || !user?.id) return
+    const code = getPendingLicenseCode()
+    if (!code) return
+    clearPendingLicenseCode()
+    router.replace({ pathname: '/(app)/billing', params: { redeem: code } } as any)
+  }, [currentWorkspace?.id, user?.id, router])
 
   // APP_MODE_DISABLED: pending_app_template deep-link removed
 

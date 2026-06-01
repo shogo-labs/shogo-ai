@@ -152,6 +152,54 @@ describe('createVoiceHandlers — runtime-token proxy mode', () => {
     expect(body.groups).toBeTruthy()
   })
 
+  test('music forwards to /api/voice/music with the runtime token + projectId', async () => {
+    const { fetch: fetchImpl, calls } = makeMockFetch(() => ({
+      status: 200,
+      body: {},
+    }))
+    const handlers = createVoiceHandlers({
+      proxy: {
+        runtimeToken: 'rt_music',
+        projectId: 'proj_music',
+        apiUrl: 'http://api',
+        fetch: fetchImpl,
+      },
+    })
+    const res = await handlers.music(
+      new Request('http://pod/api/voice/music', {
+        method: 'POST',
+        body: JSON.stringify({ prompt: 'synthwave', musicLengthMs: 20000 }),
+      }),
+    )
+    expect(res.status).toBe(200)
+    expect(calls).toHaveLength(1)
+    const [call] = calls
+    expect(call.url).toBe('http://api/api/voice/music?projectId=proj_music')
+    const headers = (call.init.headers ?? {}) as Record<string, string>
+    expect(headers['x-runtime-token']).toBe('rt_music')
+    expect(JSON.parse(call.init.body as string)).toEqual({
+      prompt: 'synthwave',
+      musicLengthMs: 20000,
+    })
+  })
+
+  test('music rejects an invalid body (prompt XOR compositionPlan) without hitting the network', async () => {
+    const { fetch: fetchImpl, calls } = makeMockFetch(() => ({ status: 200, body: {} }))
+    const handlers = createVoiceHandlers({
+      proxy: {
+        runtimeToken: 'rt',
+        projectId: 'p',
+        apiUrl: 'http://api',
+        fetch: fetchImpl,
+      },
+    })
+    const res = await handlers.music(
+      new Request('http://pod/api/voice/music', { method: 'POST', body: '{}' }),
+    )
+    expect(res.status).toBe(400)
+    expect(calls).toHaveLength(0)
+  })
+
   test('tts + agent.* return 501 in proxy mode (no end-user context)', async () => {
     const handlers = createVoiceHandlers({
       proxy: {

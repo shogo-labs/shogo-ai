@@ -30,12 +30,14 @@ function makeHttp(scriptedResponses: Record<string, any> = {}) {
 }
 
 describe('buildReferralLink', () => {
+  // Default base comes from EXPO_PUBLIC_WEB_URL, which is unset under test,
+  // so it falls back to the production Studio origin.
   test('uses default base', () => {
-    expect(buildReferralLink('alice')).toBe('https://shogo.ai/r/alice')
+    expect(buildReferralLink('alice')).toBe('https://studio.shogo.ai/r/alice')
   })
 
   test('encodes special characters', () => {
-    expect(buildReferralLink('al ice')).toBe('https://shogo.ai/r/al%20ice')
+    expect(buildReferralLink('al ice')).toBe('https://studio.shogo.ai/r/al%20ice')
   })
 
   test('respects custom base and strips trailing slash', () => {
@@ -77,13 +79,13 @@ describe('affiliateApi.enroll', () => {
       'POST /api/affiliates/enroll': { ok: true, affiliate: { id: 'aff_new' } },
     })
     const res = await affiliateApi.enroll(http, {
-      termsAccepted: true, parentCode: 'alice', code: 'mycode',
+      termsAccepted: true, code: 'mycode',
     })
     expect(res?.ok).toBe(true)
     expect(calls[0]).toEqual({
       method: 'POST',
       url: '/api/affiliates/enroll',
-      body: { termsAccepted: true, parentCode: 'alice', code: 'mycode' },
+      body: { termsAccepted: true, code: 'mycode' },
     })
   })
 })

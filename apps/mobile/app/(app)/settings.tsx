@@ -64,7 +64,7 @@ import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { setActiveWorkspaceId } from '../../lib/workspace-store'
 import { api, API_URL } from '../../lib/api'
 import { useBillingData } from '@shogo/shared-app/hooks'
-import { getIncludedUsdCapacityForDisplay, formatUsd, PLAN_PRICING } from '../../lib/billing-config'
+import { formatUsd, formatResetCountdown, PLAN_PRICING } from '../../lib/billing-config'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { openWebAppSession } from '../../lib/openWebAppSession'
 import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
@@ -94,6 +94,7 @@ import { UsageLeaderboard } from '../../components/analytics/UsageLeaderboard'
 import { BillingProgressCard } from '../../components/billing/BillingProgressCard'
 import { SetSpendLimitDialog } from '../../components/billing/SetSpendLimitDialog'
 import { CostAnalyticsTab } from '../../components/analytics/CostAnalyticsTab'
+import { resolveShortName, useVisibleModels } from '../../lib/visible-models'
 import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
 import { invitationEvents } from '../../lib/invitation-events'
 import {
@@ -1247,6 +1248,14 @@ function formatUsdLabel(value: number): string {
   return `$${value.toFixed(2)}`
 }
 
+/** Renders a member's included usage as their share of the team total (no dollar pool). */
+function formatSharePct(value: number, total: number): string {
+  if (total <= 0 || value <= 0) return '0%'
+  const pct = (value / total) * 100
+  if (pct < 1) return '<1%'
+  return `${Math.round(pct)}%`
+}
+
 const PeopleTab = observer(function PeopleTab() {
   const { width } = useWindowDimensions()
   const isMobilePeopleLayout = width < SETTINGS_WIDE_BREAKPOINT
@@ -1381,6 +1390,11 @@ const PeopleTab = observer(function PeopleTab() {
     })
     return result
   }, [workspaceMembers, search, roleFilter, sortField, sortDir, memberUsage])
+
+  const includedTotalAll = useMemo(
+    () => Object.values(memberUsage.included).reduce((sum, v) => sum + (v || 0), 0),
+    [memberUsage.included],
+  )
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -1569,7 +1583,7 @@ const PeopleTab = observer(function PeopleTab() {
 
               <View className={cn(colUsage, 'items-end')}>
                 <Text className="text-sm text-foreground text-right tabular-nums">
-                  {formatUsdLabel(memberUsage.included[member.userId] ?? 0)}
+                  {formatSharePct(memberUsage.included[member.userId] ?? 0, includedTotalAll)}
                 </Text>
               </View>
 
@@ -2499,7 +2513,7 @@ function BillingTab() {
   const router = useRouter()
   const http = useDomainHttp()
   const workspace = useActiveWorkspace()
-  const { subscription, effectiveBalance, refetchUsageWallet } = useBillingData(workspace?.id)
+  const { subscription, effectiveBalance, usageWindows, refetchUsageWallet } = useBillingData(workspace?.id)
   const [instanceLabel, setInstanceLabel] = useState<string | null>(null)
   const [spendLimitOpen, setSpendLimitOpen] = useState(false)
 
@@ -2532,16 +2546,6 @@ function BillingTab() {
           ? 'Basic'
           : 'Free'
   const hasActiveSubscription = subscription?.status === 'active' || subscription?.status === 'trialing'
-  const subSeats = subscription?.seats ?? 1
-  const totalUsd = getIncludedUsdCapacityForDisplay({
-    planId: hasActiveSubscription ? subscription?.planId : undefined,
-    seats: subSeats,
-    remainingTotal: effectiveBalance?.total,
-    monthlyIncludedAllocationUsd: effectiveBalance?.monthlyIncludedAllocationUsd,
-  })
-  const usdRemaining = effectiveBalance?.total ?? 0
-  const usdUsed = Math.max(0, totalUsd - usdRemaining)
-  const usagePct = totalUsd > 0 ? Math.min(100, Math.round((usdUsed / totalUsd) * 100)) : 0
   const canUseOverage = hasActiveSubscription
 
   if (!workspace?.id) {
@@ -2582,24 +2586,37 @@ function BillingTab() {
 
           <Separator />
 
-          <View className="gap-2">
-            <View className="flex-row items-center justify-between">
-              <Text className="text-sm text-muted-foreground">Usage</Text>
-              <Text className="text-sm font-medium text-foreground">
-                {formatUsd(effectiveBalance?.total ?? 0)} / {formatUsd(totalUsd)}
-              </Text>
-            </View>
-            <View className="h-2 bg-muted rounded-full overflow-hidden">
-              <View
-                className={cn('h-full rounded-full', usagePct > 80 ? 'bg-destructive' : 'bg-primary')}
-                style={{ width: `${Math.max(0, 100 - usagePct)}%` }}
-              />
-            </View>
-            <Text className="text-xs text-muted-foreground">
-              {effectiveBalance
-                ? `${formatUsd(effectiveBalance.dailyIncludedUsd)} daily + ${formatUsd(effectiveBalance.monthlyIncludedUsd)} monthly remaining`
-                : 'Loading...'}
-            </Text>
+          <View className="gap-3">
+            {(['fiveHour', 'weekly'] as const).map((key) => {
+              const w = usageWindows?.[key]
+              const label = key === 'fiveHour' ? '5-hour usage' : 'Weekly usage'
+              const uncapped = !!w && w.limitUsd == null
+              const pct = w ? Math.round(Math.min(1, Math.max(0, w.utilization)) * 100) : 0
+              const countdown = w ? formatResetCountdown(w.resetsAt) : ''
+              return (
+                <View key={key} className="gap-1">
+                  <View className="flex-row items-center justify-between">
+                    <Text className="text-sm text-muted-foreground">{label}</Text>
+                    <Text className="text-sm font-medium text-foreground">
+                      {!w ? '—' : uncapped ? 'Unlimited' : `${pct}% used`}
+                    </Text>
+                  </View>
+                  {!uncapped && (
+                    <View className="h-2 bg-muted rounded-full overflow-hidden">
+                      <View
+                        className={cn('h-full rounded-full', pct >= 100 ? 'bg-destructive' : 'bg-primary')}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </View>
+                  )}
+                  {!uncapped && countdown ? (
+                    <Text className="text-xs text-muted-foreground">
+                      {pct >= 100 ? `Limit reached — resets in ${countdown}` : `Resets in ${countdown}`}
+                    </Text>
+                  ) : null}
+                </View>
+              )
+            })}
             {Platform.OS !== 'ios' && effectiveBalance?.overageEnabled && effectiveBalance.overageAccumulatedUsd > 0 && (
               <Text className="text-xs text-muted-foreground">
                 Overage this period: {formatUsd(effectiveBalance.overageAccumulatedUsd)} (billed in trust blocks: $100 → $500)
@@ -2721,11 +2738,11 @@ function fmtUsd(n: number): string {
   return `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
 }
 
-function buildSeries(payload: SpendTimeseriesPayload | null): StackedSeries[] {
+function buildSeries(payload: SpendTimeseriesPayload | null, groupBy: 'model' | 'user' | 'source'): StackedSeries[] {
   if (!payload) return []
   return payload.models.map((m, i) => ({
     id: m,
-    label: m,
+    label: groupBy === 'model' ? resolveShortName(m) : m,
     color: STACKED_PALETTE[i % STACKED_PALETTE.length],
   }))
 }
@@ -2736,7 +2753,10 @@ function WorkspaceAnalyticsTab() {
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id
   const { localMode } = usePlatformConfig()
-  const { subscription, effectiveBalance, refetchUsageWallet } = useBillingData(workspaceId)
+  const { subscription, effectiveBalance, usageWindows, refetchUsageWallet } = useBillingData(workspaceId)
+  // Warm the visible-models metadata cache so chart series can be labeled with
+  // model display names (e.g. "Hoshi 1.0") rather than raw ids (mimo-v2.5).
+  useVisibleModels()
 
   const planId = subscription?.planId?.toLowerCase() ?? ''
   const isBusinessOrHigher = localMode || planId.startsWith('business') || planId.startsWith('enterprise')
@@ -2803,37 +2823,18 @@ function WorkspaceAnalyticsTab() {
   }
 
   // ─── Progress card data ──────────────────────────────────
-  const subSeats = subscription?.seats ?? 1
-  const includedTotal = getIncludedUsdCapacityForDisplay({
-    planId: subscription?.planId,
-    seats: subSeats,
-    remainingTotal: effectiveBalance?.total,
-    monthlyIncludedAllocationUsd: effectiveBalance?.monthlyIncludedAllocationUsd,
-  })
-  const includedRemaining = effectiveBalance?.total ?? includedTotal
-  const includedUsed = Math.max(0, includedTotal - includedRemaining)
-  const includedPct = includedTotal > 0 ? Math.min(100, (includedUsed / includedTotal) * 100) : 0
-
   const onDemandUsed = effectiveBalance?.overageAccumulatedUsd ?? 0
   const onDemandLimit = effectiveBalance?.overageHardLimitUsd ?? null
   const onDemandPct = onDemandLimit && onDemandLimit > 0
     ? Math.min(100, (onDemandUsed / onDemandLimit) * 100)
     : (onDemandUsed > 0 ? Math.min(100, onDemandUsed / 1000 * 100) : 0)
 
-  const resetDateLabel = (() => {
-    const ts = (subscription as any)?.currentPeriodEnd
-    if (!ts) return 'Resets monthly'
-    const d = ts instanceof Date ? ts : new Date(ts)
-    if (isNaN(d.getTime())) return 'Resets monthly'
-    return `Resets ${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`
-  })()
-
   // ─── Summary cards ───────────────────────────────────────
   const totalSpend = spend.data?.totals.totalSpendUsd ?? 0
   const includedSpend = spend.data?.totals.totalIncludedUsd ?? 0
   const onDemandSpend = spend.data?.totals.totalOnDemandUsd ?? 0
 
-  const series = buildSeries(spend.data)
+  const series = buildSeries(spend.data, groupBy)
   const chartDays = (spend.data?.days ?? []).map((d) => ({
     date: d.date,
     values: d.byModel,
@@ -2861,14 +2862,32 @@ function WorkspaceAnalyticsTab() {
 
       {/* Progress cards */}
       <View className="flex-row flex-wrap gap-3">
-        <BillingProgressCard
-          title="Your included usage"
-          current={fmtUsd(includedUsed)}
-          total={fmtUsd(includedTotal)}
-          percent={includedPct}
-          tone={includedPct > 90 ? 'destructive' : 'primary'}
-          helper={resetDateLabel}
-        />
+        {(['fiveHour', 'weekly'] as const).map((key) => {
+          const w = usageWindows?.[key]
+          const label = key === 'fiveHour' ? '5-hour usage' : 'Weekly usage'
+          const uncapped = !!w && w.limitUsd == null
+          const pct = w ? Math.round(Math.min(1, Math.max(0, w.utilization)) * 100) : 0
+          const countdown = w ? formatResetCountdown(w.resetsAt) : ''
+          return (
+            <BillingProgressCard
+              key={key}
+              title={label}
+              current={!w ? '—' : uncapped ? 'Unlimited' : `${pct}%`}
+              total={null}
+              percent={uncapped ? 0 : pct}
+              tone={pct >= 100 ? 'destructive' : pct >= 90 ? 'warning' : 'primary'}
+              helper={
+                uncapped
+                  ? 'Unlimited — no usage window'
+                  : countdown
+                    ? pct >= 100
+                      ? `Limit reached — resets in ${countdown}`
+                      : `Resets in ${countdown}`
+                    : 'Window not started'
+              }
+            />
+          )
+        })}
         <BillingProgressCard
           title="On-Demand Usage (Team)"
           current={fmtUsd(onDemandUsed)}

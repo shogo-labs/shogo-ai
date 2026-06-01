@@ -16,6 +16,8 @@ import {
   ChevronRight,
   ChevronDown,
   RefreshCw,
+  MessageCircleQuestion,
+  ArrowDown,
 } from "lucide-react-native"
 import {
   type ToolCallData,
@@ -703,6 +705,50 @@ export function AskUserQuestionWidget({
         </View>
       )}
     </View>
+  )
+}
+
+export interface AskUserQuestionBarProps {
+  tool: ToolCallData
+  /** Tap handler — typically scrolls to the input-attached question widget. */
+  onPress?: () => void
+  className?: string
+}
+
+/**
+ * Collapsed in-stream placeholder for a pending ask_user call. Styled like the
+ * unexpanded TodoWidget header. The interactive answer UI lives attached above
+ * the chat input; tapping this bar scrolls there via `onPress`.
+ */
+export function AskUserQuestionBar({
+  tool,
+  onPress,
+  className,
+}: AskUserQuestionBarProps) {
+  const questions = useMemo(() => parseQuestions(tool.args), [tool.args])
+  const count = questions.length
+
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityLabel="Pending question — answer below"
+      className={cn(
+        "rounded-md border border-primary/30 bg-primary/5 w-full flex-row items-center gap-1.5 py-1.5 px-2",
+        className
+      )}
+    >
+      <MessageCircleQuestion className="w-3 h-3 text-primary" />
+
+      <Text className="font-mono text-[10px] font-medium text-foreground">
+        Questions
+      </Text>
+
+      <Text className="flex-1 text-[9px] text-muted-foreground text-right">
+        {count > 1 ? `${count} questions • ` : ""}Answer below
+      </Text>
+
+      <ArrowDown className="w-3 h-3 text-primary" />
+    </Pressable>
   )
 }
 

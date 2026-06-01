@@ -310,6 +310,13 @@ export class Win32VMManager implements VMManager {
       if (fs.existsSync(p)) files[name] = fs.readFileSync(p)
     }
 
+    // canvas-bridge.js powers the workspace iframe's "Update available -
+    // Refresh" pill. cloud-init.ts routes this file into /opt/shogo/static
+    // and points CANVAS_BRIDGE_DIR there; without embedding it the in-VM
+    // runtime serves the empty stub and the pill never renders.
+    const canvasBridge = path.join(bundleDir, 'static', 'canvas-bridge.js')
+    if (fs.existsSync(canvasBridge)) files['canvas-bridge.js'] = fs.readFileSync(canvasBridge)
+
     const wasmDir = path.join(bundleDir, 'wasm')
     if (fs.existsSync(wasmDir)) {
       for (const f of fs.readdirSync(wasmDir)) {

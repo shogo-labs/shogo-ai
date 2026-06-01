@@ -11,6 +11,7 @@ export default defineConfig({
     'src/route/index.ts',
     'src/route/signed-url.ts',
     'src/route/tts-preview.ts',
+    'src/route/music.ts',
     'src/route/agent.ts',
     'src/route/audio-tags.ts',
   ],

@@ -213,9 +213,20 @@ export async function submitPayoutDetails(
   const profile = await prisma.creatorProfile.findUnique({
     where: { id: creatorProfileId },
   });
-  if (!profile?.stripeCustomAccountId) {
-    throw new Error('Creator has no Stripe Connect account');
+  if (!profile) {
+    throw new Error('Creator profile not found');
   }
+
+  // Self-heal: if the Connect account was never provisioned (e.g. the
+  // best-effort creation during profile setup failed, or predates that
+  // step), create it now rather than rejecting the payout submission.
+  const stripeAccountId =
+    profile.stripeCustomAccountId ??
+    (await createCustomAccount(
+      creatorProfileId,
+      details.email,
+      details.address.country,
+    ));
 
   if (!isStripeConfigured()) {
     await prisma.creatorProfile.update({
@@ -255,7 +266,7 @@ export async function submitPayoutDetails(
     params.external_account = details.bankAccountToken;
   }
 
-  await stripe.accounts.update(profile.stripeCustomAccountId, params);
+  await stripe.accounts.update(stripeAccountId, params);
 
   await prisma.creatorProfile.update({
     where: { id: creatorProfileId },

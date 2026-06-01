@@ -39,14 +39,31 @@ import { withGlobalJobLock } from '../lib/global-job-lock'
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
 export const DEFAULT_MAX_DEPTH = 3
+// Levels actually PAID commissions. Default 1 = direct referrer only (MLM
+// payouts off). This is decoupled from DEFAULT_MAX_DEPTH so deep enrollment
+// trees still form; we just don't pay the upline beyond this depth. Set
+// SHOGO_AFFILIATE_PAYOUT_MAX_DEPTH=3 to re-enable full multi-level payouts.
+export const DEFAULT_PAYOUT_MAX_DEPTH = 1
 export const DEFAULT_REFUND_HOLD_DAYS = 30
 export const DEFAULT_MIN_PAYOUT_CENTS = 5000
 export const DEFAULT_COOKIE_DAYS = 60
 
+/** Max enrollment depth: how deep a `parentCode` chain may grow. */
 export function getMaxDepth(): number {
   const raw = process.env.SHOGO_AFFILIATE_MAX_DEPTH
   const n = raw ? parseInt(raw, 10) : DEFAULT_MAX_DEPTH
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_MAX_DEPTH
+}
+
+/**
+ * Max PAYOUT depth: how many upline levels actually earn a commission on an
+ * invoice. Defaults to 1 (direct referrer only). Independent from
+ * getMaxDepth() so the enrollment tree can be deeper than what we pay.
+ */
+export function getPayoutMaxDepth(): number {
+  const raw = process.env.SHOGO_AFFILIATE_PAYOUT_MAX_DEPTH
+  const n = raw ? parseInt(raw, 10) : DEFAULT_PAYOUT_MAX_DEPTH
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_PAYOUT_MAX_DEPTH
 }
 
 export function getRefundHoldDays(): number {
@@ -97,21 +114,20 @@ function deriveSlug(input: string): string {
  * program" — we never auto-enroll. Generates a slug from the user's
  * email if none provided, retries on uniqueness collision.
  *
- * `parentCode` ties this affiliate into someone else's downline (the
- * upline goes through that affiliate at level 1, this affiliate at
- * the new bottom). Rejects:
- *   - self_referral: a user can't list their own future code as parent
- *   - parent_not_found: bad code
- *   - parent_too_deep: would push depth past SHOGO_AFFILIATE_MAX_DEPTH
- *   - cycle: parent is already a descendant of `userId` (paranoid; the
- *     `userId @unique` constraint should already prevent this, but
- *     we keep the explicit guard so future schema changes can't
- *     silently regress)
+ * The upline parent ("referred by") is NOT user-supplied: it is derived
+ * from the enrolling user's own `AffiliateAttribution`, which was locked
+ * at signup from the `__shogo_ref` referral cookie. This guarantees the
+ * tree reflects who actually referred the user, and makes manual
+ * referrer entry impossible.
+ *
+ * Parent attachment is best-effort. If there is no attribution, or the
+ * referrer is inactive, would push depth past SHOGO_AFFILIATE_MAX_DEPTH,
+ * is the user themselves, or would form a cycle, we enroll at the top of
+ * the tree (depth 1, no parent) rather than blocking a legitimate opt-in.
  */
 export async function enrollAffiliate(
   userId: string,
   opts: {
-    parentCode?: string | null
     code?: string | null
     termsAccepted: boolean
     /** For tests: skip uniqueness retries (sync DBs). */
@@ -126,48 +142,46 @@ export async function enrollAffiliate(
   const existing = await prisma.affiliate.findUnique({ where: { userId } })
   if (existing) return existing
 
-  // Resolve parent if provided.
+  // Derive the upline parent from this user's attribution (set at signup
+  // from the referral cookie). Best-effort — invalid/missing referrer
+  // just means a top-of-tree enrollment, never an error.
   let parentAffiliate: any = null
   let depth = 1
-  if (opts.parentCode) {
-    parentAffiliate = await prisma.affiliate.findUnique({
-      where: { code: opts.parentCode.toLowerCase().trim() },
+  const attribution = await prisma.affiliateAttribution.findUnique({ where: { userId } })
+  if (attribution) {
+    const candidateParent = await prisma.affiliate.findUnique({
+      where: { id: attribution.affiliateId },
     })
-    if (!parentAffiliate) {
-      throw new AffiliateError('parent_not_found', `No affiliate found for code "${opts.parentCode}"`)
-    }
-    if (parentAffiliate.userId === userId) {
-      throw new AffiliateError('self_referral', 'You cannot enroll under your own affiliate code')
-    }
-    if (parentAffiliate.status !== 'active') {
-      throw new AffiliateError('parent_inactive', 'Parent affiliate is not active')
-    }
-    depth = parentAffiliate.depth + 1
-    if (depth > getMaxDepth()) {
-      throw new AffiliateError(
-        'parent_too_deep',
-        `Enrolling under ${opts.parentCode} would exceed max depth ${getMaxDepth()}`,
-      )
-    }
-    // Cycle guard: walk up `parentAffiliate.parentAffiliateId` and bail
-    // if we ever encounter `userId`. The new affiliate hasn't been
-    // created yet, so a cycle here can only happen if `userId` is
-    // already an Affiliate sitting upstream — which `userId @unique`
-    // on Affiliate makes impossible — but the guard is cheap and the
-    // failure mode (infinite walk + double-pay loop) is catastrophic.
-    let cursor: any = parentAffiliate
-    const seen = new Set<string>()
-    while (cursor?.parentAffiliateId) {
-      if (seen.has(cursor.parentAffiliateId)) break
-      seen.add(cursor.parentAffiliateId)
-      const next = await prisma.affiliate.findUnique({
-        where: { id: cursor.parentAffiliateId },
-      })
-      if (!next) break
-      if (next.userId === userId) {
-        throw new AffiliateError('cycle', 'Cycle detected in affiliate upline chain')
+    if (
+      candidateParent &&
+      candidateParent.userId !== userId &&
+      candidateParent.status === 'active' &&
+      candidateParent.depth + 1 <= getMaxDepth()
+    ) {
+      // Cycle guard (defensive): bail if `userId` already sits upstream.
+      // The `userId @unique` constraint on Affiliate should make this
+      // impossible, but the failure mode (infinite walk + double-pay
+      // loop) is catastrophic, so the cheap walk stays.
+      let cursor: any = candidateParent
+      const seen = new Set<string>()
+      let cyclic = false
+      while (cursor?.parentAffiliateId) {
+        if (seen.has(cursor.parentAffiliateId)) break
+        seen.add(cursor.parentAffiliateId)
+        const next = await prisma.affiliate.findUnique({
+          where: { id: cursor.parentAffiliateId },
+        })
+        if (!next) break
+        if (next.userId === userId) {
+          cyclic = true
+          break
+        }
+        cursor = next
       }
-      cursor = next
+      if (!cyclic) {
+        parentAffiliate = candidateParent
+        depth = candidateParent.depth + 1
+      }
     }
   }
 
@@ -303,57 +317,26 @@ export async function recordClick(input: RecordClickInput): Promise<any> {
  *
  * Idempotent on the `userId` unique constraint — re-calling never
  * moves an attribution. Returns `null` when nothing matches or when
- * the click would be a self-referral.
+ * the only candidate would be a self-referral.
  *
- * `code` is an optional hint (the value of `__shogo_ref` cookie) used
- * to disambiguate when several affiliates have clicks for the same
- * visitor in the cookie window; it picks the matching one before
- * falling back to "most recent".
+ * Two resolution paths:
+ *   1. Click-based (last-click wins): the most-recent non-expired click
+ *      for `visitorId`; `code` (the `__shogo_ref` cookie) disambiguates
+ *      when several affiliates clicked for the same visitor.
+ *   2. Code fallback: if there's no usable click row but `code` is
+ *      present, attribute directly to that affiliate (clickId null).
+ *      This lets the in-app `/r/<code>` route attribute purely from the
+ *      cookie, without depending on the secret-gated click recorder.
  */
-export async function resolveAttributionForUser(
+async function createAttribution(
   userId: string,
+  affiliateId: string,
   visitorId: string | null,
-  code: string | null = null,
-  now: Date = new Date(),
-): Promise<any | null> {
-  if (!visitorId) return null
-
-  // Existing attribution wins — never overwrite.
-  const existing = await prisma.affiliateAttribution.findUnique({ where: { userId } })
-  if (existing) return existing
-
-  // Find the most recent non-expired click for this visitor. If `code`
-  // is supplied, prefer a click for that affiliate.
-  const clicks: any[] = await prisma.affiliateClick.findMany({
-    where: {
-      visitorId,
-      expiresAt: { gt: now },
-    },
-    orderBy: { createdAt: 'desc' },
-    take: 25,
-    include: { affiliate: true },
-  })
-  if (clicks.length === 0) return null
-
-  let chosen = clicks[0]
-  if (code) {
-    const target = code.toLowerCase().trim()
-    const match = clicks.find((c) => c.affiliate?.code === target)
-    if (match) chosen = match
-  }
-
-  // Self-referral guard: a user cannot attribute to their own affiliate.
-  if (chosen.affiliate?.userId === userId) return null
-  if (chosen.affiliate?.status !== 'active') return null
-
+  clickId: string | null,
+): Promise<any> {
   try {
     return await prisma.affiliateAttribution.create({
-      data: {
-        userId,
-        affiliateId: chosen.affiliateId,
-        visitorId,
-        clickId: chosen.id,
-      },
+      data: { userId, affiliateId, visitorId, clickId },
     })
   } catch (err: any) {
     // Race with a concurrent attribution write — the unique constraint
@@ -363,6 +346,57 @@ export async function resolveAttributionForUser(
     }
     throw err
   }
+}
+
+export async function resolveAttributionForUser(
+  userId: string,
+  visitorId: string | null,
+  code: string | null = null,
+  now: Date = new Date(),
+): Promise<any | null> {
+  // Need at least one signal to attribute.
+  if (!visitorId && !code) return null
+
+  // Existing attribution wins — never overwrite.
+  const existing = await prisma.affiliateAttribution.findUnique({ where: { userId } })
+  if (existing) return existing
+
+  const normalizedCode = code ? code.toLowerCase().trim() : null
+
+  // 1. Click-based attribution.
+  if (visitorId) {
+    const clicks: any[] = await prisma.affiliateClick.findMany({
+      where: {
+        visitorId,
+        expiresAt: { gt: now },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 25,
+      include: { affiliate: true },
+    })
+    if (clicks.length > 0) {
+      let chosen = clicks[0]
+      if (normalizedCode) {
+        const match = clicks.find((c) => c.affiliate?.code === normalizedCode)
+        if (match) chosen = match
+      }
+      // Self-referral / inactive guard. If the click is unusable we fall
+      // through to the code fallback rather than giving up.
+      if (chosen.affiliate?.userId !== userId && chosen.affiliate?.status === 'active') {
+        return createAttribution(userId, chosen.affiliateId, visitorId, chosen.id)
+      }
+    }
+  }
+
+  // 2. Code fallback (cookie-only, no usable click row).
+  if (normalizedCode) {
+    const affiliate = await prisma.affiliate.findUnique({ where: { code: normalizedCode } })
+    if (affiliate && affiliate.userId !== userId && affiliate.status === 'active') {
+      return createAttribution(userId, affiliate.id, visitorId, null)
+    }
+  }
+
+  return null
 }
 
 // ============================================================================
@@ -508,7 +542,10 @@ export async function recordCommissionsForInvoice(
     orderBy: { level: 'asc' },
   })
   if (tiers.length === 0) return 0
-  const cap = Math.min(tiers.length, getMaxDepth())
+  // Payout depth is capped independently of enrollment depth: by default
+  // only the direct referrer (level 1) earns, even when the enrollment
+  // upline is deeper. Bump SHOGO_AFFILIATE_PAYOUT_MAX_DEPTH to pay deeper.
+  const cap = Math.min(tiers.length, getPayoutMaxDepth())
   const upline = await getUpline(affiliateId, cap)
 
   const refundHoldDays = getRefundHoldDays()
@@ -526,12 +563,18 @@ export async function recordCommissionsForInvoice(
     if (level > cap) break
     const uplineEntry = upline.find((u) => u.level === level)
     if (!uplineEntry) continue
+    let rateBps = tier.rateBps as number
     if (tier.durationDays != null && attrAgeDays > tier.durationDays) {
-      // This level's window has expired; skip it but keep walking
-      // (callers may have configured a longer L3 window than L1).
-      continue
+      // This level's primary window has expired. If a step-down rate is
+      // configured (e.g. 20% for year one -> 10% forever), keep paying at
+      // that reduced rate; otherwise the level stops earning (legacy
+      // behavior — and callers may set a longer window on a deeper level).
+      if (tier.secondaryRateBps != null) {
+        rateBps = tier.secondaryRateBps as number
+      } else {
+        continue
+      }
     }
-    const rateBps = tier.rateBps as number
     const amountCents = Math.floor((basisCents * rateBps) / 10_000)
     if (amountCents <= 0) continue
 
@@ -871,6 +914,7 @@ export interface AffiliateSummary {
   affiliate: any
   clicks30d: number
   signups30d: number
+  commissions30d: number
   pendingCents: number
   approvedCents: number
   paidCents: number
@@ -884,12 +928,15 @@ export async function getAffiliateSummary(userId: string, now: Date = new Date()
 
   const since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
 
-  const [clicks30d, signups30d, commissionStats, downline] = await Promise.all([
+  const [clicks30d, signups30d, commissions30d, commissionStats, downline] = await Promise.all([
     prisma.affiliateClick.count({
       where: { affiliateId: affiliate.id, createdAt: { gte: since } },
     }),
     prisma.affiliateAttribution.count({
       where: { affiliateId: affiliate.id, attributedAt: { gte: since } },
+    }),
+    prisma.affiliateCommission.count({
+      where: { affiliateId: affiliate.id, createdAt: { gte: since } },
     }),
     prisma.affiliateCommission.groupBy({
       by: ['status'],
@@ -926,6 +973,7 @@ export async function getAffiliateSummary(userId: string, now: Date = new Date()
     affiliate,
     clicks30d,
     signups30d,
+    commissions30d,
     pendingCents: byStatus.pending ?? 0,
     approvedCents: byStatus.approved ?? 0,
     paidCents: byStatus.paid ?? 0,

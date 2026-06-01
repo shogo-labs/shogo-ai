@@ -1,6 +1,6 @@
 # Backend → 100% Coverage Finale (v3 — Aggressive Sprint)
 
-**Branch:** `fix(coverage)/unitTest-cases-backend`
+**Branch:** `fix(coverage)/backend-unit-test-cases`
 **Starting point:** 88.79% lines (66,750 / 75,174), 86.14% functions (5,322 / 6,178), commit `e9dbe48` carried over from prior branch.
 **Distance to wall:** 8,424 uncovered lines, 856 uncovered functions.
 **Target:** 100% lines & functions across all 11 backend packages.
@@ -81,7 +81,7 @@ The top 11 files = **5,373 uncov** = **63.8% of total gap**. Closing them alone 
 
 ## 3. Execution rules (locked)
 
-1. **Branch:** `fix(coverage)/unitTest-cases-backend` only. Never push to `main`. Never open intermediate PRs.
+1. **Branch:** `fix(coverage)/backend-unit-test-cases` only. Never push to `main`. Never open intermediate PRs.
 2. **One commit per file (or per batch of small files)** with message `test(coverage): <file> — <before>% → <after>% lines`.
 3. **Every commit:** measure with `bun --conditions=development test --coverage` for the affected package; if isolated, use `scripts/run-tests-isolated.ts`. Refuse to commit if any new failure introduced.
 4. **Dead-code rule:** if a guard is provably unreachable (e.g. `if (foo)` where TypeScript proves `foo` is never falsy), **delete it** rather than testing it. Note deletion in commit message.
@@ -124,5 +124,5 @@ Blockers: <none | description>
 - [ ] `scripts/sum-lcov.ts` + `scripts/coverage-strip-comments.ts` aggregate = 100.00% lines, 100.00% functions.
 - [ ] README badge = brightgreen `100%`.
 - [ ] `coverage/thresholds.json` ratcheted to `1.00`.
-- [ ] PR opened from `fix(coverage)/unitTest-cases-backend` → `main` with full delta report.
+- [ ] PR opened from `fix(coverage)/backend-unit-test-cases` → `main` with full delta report.
 - [ ] Frontend badge UNTOUCHED.

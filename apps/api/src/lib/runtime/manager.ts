@@ -1379,6 +1379,29 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         const proxyUrl = buildAiProxyUrl(apiBase)
         runtimeEnv.AI_PROXY_URL = proxyUrl
 
+        // Pin SHOGO_API_URL to the LOCAL desktop API. Without this, the
+        // embedded WorkerRuntimeManager would default SHOGO_API_URL to
+        // `cfg.cloudUrl` (= https://studio.shogo.ai) — that's the right
+        // value for cloud-forwarded LLM / Composio calls (still on
+        // SHOGO_CLOUD_URL), but it's the WRONG host for the runtime's
+        // internal control-plane callbacks (trust resolution, heartbeat
+        // completion, subagent overrides) which live on the desktop's
+        // own API and authenticate via the local `x-runtime-token`.
+        //
+        // This was the root cause of the "Trust folder still restricted"
+        // regression after #670: the IPC ping POST /internal/refresh-trust
+        // landed correctly on the local runtime, but the refresh handler
+        // then fetched GET /api/internal/projects/:id/trust against
+        // studio.shogo.ai (which rejects the local runtime-token), the
+        // trust-resolver kept its fail-closed `restricted` default, and
+        // assertAllowedPath() kept blocking write/exec tools.
+        //
+        // Mirrors the cloud spawn path in `build-project-env.ts:131`,
+        // which has always pinned this correctly. Goes into `runtimeEnv`
+        // (a.k.a. `extraEnv`), which the worker's buildEnv applies LAST
+        // so it overrides the worker's `cfg.cloudUrl` default.
+        runtimeEnv.SHOGO_API_URL = apiBase
+
         let proxyConfigured = false
         const workspaceId = await this.getProjectWorkspaceId(projectId) || 'local-dev'
         try {
@@ -1447,6 +1470,25 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           // OPENROUTER_API_KEY is preserved so BYOK OpenRouter routing
           // works end-to-end.
           console.log(`[RuntimeManager] Shogo Cloud mode: all providers routed through proxy for ${projectId}`)
+
+          // Composio connections live on the cloud's Composio account keyed by
+          // the cloud user/workspace the SHOGO_API_KEY is bound to (the
+          // integrations UI forwards "Connect" to the cloud). Scope the
+          // runtime's Composio identity to those cloud ids so the agent
+          // resolves the same connections instead of the *synthetic local*
+          // user/workspace (which would always read back needs_auth). See
+          // packages/agent-runtime/src/composio.ts (resolveComposioIdentity).
+          try {
+            const { getUpstreamIdentity } = await import('../federated-upstream')
+            const cloudIdentity = await getUpstreamIdentity()
+            if (cloudIdentity) {
+              runtimeEnv.COMPOSIO_CLOUD_USER_ID = cloudIdentity.userId
+              runtimeEnv.COMPOSIO_CLOUD_WORKSPACE_ID = cloudIdentity.workspaceId
+              console.log(`[RuntimeManager] Composio scoped to cloud identity for ${projectId}`)
+            }
+          } catch (err: any) {
+            console.warn(`[RuntimeManager] Could not resolve cloud Composio identity: ${err?.message}`)
+          }
         }
 
         // Security policy — read user prefs + project overrides, merge, and pass to runtime

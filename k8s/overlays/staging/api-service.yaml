@@ -356,6 +356,11 @@ spec:
               value: "true"
             - name: SHOGO_AFFILIATE_MAX_DEPTH
               value: "3"
+            # Pay only the direct referrer by default (MLM payouts off);
+            # enrollment tree depth above is unaffected. Set to "3" to
+            # re-enable full multi-level payouts.
+            - name: SHOGO_AFFILIATE_PAYOUT_MAX_DEPTH
+              value: "1"
             - name: SHOGO_AFFILIATE_REFUND_HOLD_DAYS
               value: "30"
             - name: SHOGO_AFFILIATE_MIN_PAYOUT_CENTS
