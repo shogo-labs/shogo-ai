@@ -6,7 +6,20 @@ import { getMRUBonusFrom, readMRU, recordPick } from "./palette-mru";
 export interface PaletteItem {
   id: string;
   label: string;
+  /**
+   * Secondary text shown in muted-foreground beneath the label. ALSO
+   * searched as a fallback fuzzy tier (below label, above searchText)
+   * with the same -8 score penalty. Quick Open uses this for
+   * disambiguated parent-dir hints — see UX-QUICKOPEN-PATH.
+   */
   sublabel?: string;
+  /**
+   * Hidden searchable text — fuzzy-matched but NEVER rendered. Quick
+   * Open uses this to make the full path searchable even when the
+   * basename is unique and no visible sublabel is shown. Same -8
+   * penalty as a sublabel-only match, so a label match always wins.
+   */
+  searchText?: string;
   hint?: string;
   run: () => void | Promise<void>;
 }
@@ -75,6 +88,19 @@ export function Palette({
       // label text we render.
       if (item.sublabel) {
         const sm = fzfScore(query, item.sublabel);
+        if (sm) {
+          const bonus = getMRUBonusFrom(mru, item.id, now);
+          scored.push({ item, score: sm.score - 8 + bonus, indices: [] });
+          continue;
+        }
+      }
+      // searchText: render-less third tier. Used by Quick Open so
+      // `components/app` still matches App.tsx even when no sublabel
+      // is rendered (unique basename, single-root mode). Same -8
+      // penalty as sublabel — both are non-label-text matches and
+      // should rank equally against each other; only label wins.
+      if (item.searchText) {
+        const sm = fzfScore(query, item.searchText);
         if (sm) {
           const bonus = getMRUBonusFrom(mru, item.id, now);
           scored.push({ item, score: sm.score - 8 + bonus, indices: [] });
