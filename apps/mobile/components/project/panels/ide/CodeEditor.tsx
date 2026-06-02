@@ -5,6 +5,17 @@ import type { EditorSettings } from "./types";
 import { setupAgentFix } from "./agentFixProvider";
 import { setMonacoRef } from "./monaco/workspaceModels";
 import { setupExtraLibs } from "./monaco/extraLibs";
+import { installMonacoCanceledErrorSuppressor } from "./monaco/suppressCanceled";
+
+// Several Monaco contributions cancel pending async work during disposal
+// (`setModel`, `restoreViewState`, Strict-Mode double-mount, etc.) and the
+// resulting `Canceled` cancellation token can escape Monaco's internal
+// error filter — surfacing as an "Uncaught Error: Canceled" overlay even
+// though nothing is actually broken. This installs window-level filters
+// that drop ONLY those errors (matched by `name === message === "Canceled"`),
+// leaving real bugs to propagate normally. See `monaco/suppressCanceled.ts`
+// for the upstream issue links.
+installMonacoCanceledErrorSuppressor();
 
 // Point `@monaco-editor/loader` at our self-hosted Monaco bundle (mirrored
 // from `node_modules/monaco-editor/min/vs` into `public/vs` by
