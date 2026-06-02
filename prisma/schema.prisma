@@ -2573,6 +2573,13 @@ model Affiliate {
   /// Sum of `paid` commissions in cents. Differs from totalEarnings only
   /// when clawbacks adjust the running total.
   totalPaidOutCents     Int             @default(0)
+  /// Optional per-affiliate commission-rate override (basis points;
+  /// 2000 = 20.00%). When set, it replaces the `AffiliateCommissionTier`
+  /// rate for THIS affiliate's direct (L1) referrals and is applied as a
+  /// flat rate — the tier's `durationDays` window and `secondaryRateBps`
+  /// step-down are ignored at L1. Null = use the tier rate (default).
+  /// Only affects level 1; deeper upline levels always use tier rates.
+  commissionRateBps     Int?
   /// Set when the user accepted the affiliate terms during enroll.
   termsAcceptedAt       DateTime?
   createdAt             DateTime        @default(now())
