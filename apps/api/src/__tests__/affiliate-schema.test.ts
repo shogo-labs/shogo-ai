@@ -67,6 +67,11 @@ describe('Affiliate schema (PG)', () => {
     expect(block).toMatch(/depth\s+Int\s+@default\(1\)/)
   })
 
+  test('Affiliate has the optional per-affiliate commissionRateBps override', () => {
+    const block = modelBlock(PG_SCHEMA, 'Affiliate')
+    expect(block).toMatch(/commissionRateBps\s+Int\?/)
+  })
+
   test('AffiliateCommission has the (invoice, affiliate, level) idempotency key', () => {
     const block = modelBlock(PG_SCHEMA, 'AffiliateCommission')
     expect(block).toMatch(/@@unique\(\[stripeInvoiceId,\s*affiliateId,\s*level\]\)/)
@@ -136,6 +141,11 @@ describe('Affiliate schema (local SQLite mirror)', () => {
     expect(block).toMatch(/affiliate\s+Affiliate\?/)
     expect(block).toMatch(/affiliateAttribution\s+AffiliateAttribution\?/)
   })
+
+  test('mirrors the per-affiliate commissionRateBps override column', () => {
+    const block = modelBlock(LOCAL_SCHEMA, 'Affiliate')
+    expect(block).toMatch(/commissionRateBps\s+Int\?/)
+  })
 })
 
 describe('Affiliate migrations', () => {
@@ -188,6 +198,20 @@ describe('Affiliate migrations', () => {
     expect(SQLITE_MIGRATION).toMatch(/INSERT OR IGNORE INTO "affiliate_commission_tiers"/)
     expect(SQLITE_MIGRATION).toMatch(/'aff_tier_l1', 1, 2000/)
     expect(SQLITE_MIGRATION).toMatch(/'aff_tier_l3', 3, 200/)
+  })
+
+  test('per-affiliate rate migrations add the commissionRateBps column on both tracks', () => {
+    const pg = readFileSync(
+      resolve(REPO_ROOT, 'prisma/migrations/20260602203002_affiliate_per_affiliate_rate/migration.sql'),
+      'utf-8',
+    )
+    const sqlite = readFileSync(
+      resolve(REPO_ROOT, 'apps/desktop/prisma/migrations/20260602203002_affiliate_per_affiliate_rate/migration.sql'),
+      'utf-8',
+    )
+    const addColumn = /ALTER TABLE "affiliates" ADD COLUMN "commissionRateBps" INTEGER;/
+    expect(pg).toMatch(addColumn)
+    expect(sqlite).toMatch(addColumn)
   })
 
   test('SQLite migration uses TEXT for the would-be enum columns', () => {
