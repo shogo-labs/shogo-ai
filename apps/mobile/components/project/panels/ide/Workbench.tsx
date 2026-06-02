@@ -5,14 +5,21 @@ import { ActivityBar } from "./ActivityBar";
 import { FileTree, type FileTreeHandlers } from "./FileTree";
 import { StatusBar } from "./StatusBar";
 import { useGitStatus } from "./git/useGitStatus";
+import { isDesktopRuntime } from "./terminal/pty-factory";
+import { gitChangeCount, type BadgeData } from "./badges/formatBadge";
+import { useProblemsBadgeCount } from "./badges/useProblemsBadgeCount";
 import { GitStatusProvider } from "./git/GitStatusContext";
 import { SourceControlViewlet } from "./scm/SourceControlViewlet";
+import { RunDebugPanel } from "./run/RunDebugPanel";
 import { GraphView } from "./graph/GraphView";
 import { attachGitDecorations, maybeAutoStageIfConflictResolved } from "./git/editorIntegration";
 import { MergeEditorModal } from "./git/MergeEditorModal";
 import { getDesktopGitBridge } from "./git/bridge";
 import { getDesktopFsBridge } from "./workspace/desktopFs";
 import { EditorGroupView } from "./EditorGroup";
+import { applyEditorChange } from "./editor-change-apply";
+import { collectDirtyFiles, resolveSaveTarget } from "./save-target";
+import { findEditorForFileId } from "./model-by-uri";
 import { isImagePath } from "./ImagePreview";
 import {
   isAudioPath,
@@ -21,6 +28,7 @@ import {
   isVideoPath,
 } from "./MediaPreview";
 import { Palette, type PaletteItem } from "./Palette";
+import { buildDisambiguation, type QuickOpenFile } from "./quick-open-disambiguate";
 import {
   ideBottomPanelStore,
   useBottomPanelState,
@@ -35,7 +43,11 @@ import {
   type Root,
   type TreeNode,
 } from "./types";
+import { broadcastEditorFontChange } from "./useEditorFont";
 import { SearchPane } from "./SearchPane";
+import { OutlinePanel } from "./OutlinePanel";
+import { getDocumentSymbols } from "./monaco/lspProviders";
+import type { DocumentSymbolLike } from "./outline-model";
 import { SettingsPane } from "./SettingsPane";
 import { CheckpointsPanel } from "../CheckpointsPanel";
 import { useLiveAgentEdits, type LiveConflict } from "./useLiveAgentEdits";
@@ -50,6 +62,7 @@ import { disposeWorkspaceModels, removeModel, removeModelsUnderPath } from "./mo
 import { setupLspProviders } from "./monaco/lspProviders";
 import { setupLspDocumentSync } from "./monaco/lspDocumentSync";
 import { matchesShortcut, type Command } from "./commands";
+import { resolvePaletteIntent } from "./keybindings";
 import { useTheme } from "../../../../contexts/theme";
 import { isBinaryFilePath } from "@shogo-ai/sdk/file-types";
 import {
@@ -267,6 +280,30 @@ export function Workbench({
     } catch { /* ignore */ }
   }, [settings]);
 
+  // BUG-012 — propagate the font-family setting EVERYWHERE in one shot.
+  //   1. Write `--ide-mono-font` inline on the .shogo-ide element. Every
+  //      HTML panel that uses `font-mono` / `.ide-mono` (Output, Problems,
+  //      Debug Console, Run & Debug Output, Debug View) inherits the new
+  //      value via the cascade — no per-panel edits needed.
+  //   2. Broadcast the same-tab change event so `useEditorFont()` consumers
+  //      (Monaco canvas, xterm.js canvas) re-read and re-apply. `storage`
+  //      doesn't fire in the writing tab so this is the ONLY signal that
+  //      reaches same-tab listeners.
+  // We use a ref to the .shogo-ide div instead of document.documentElement
+  // so multiple Workbench instances (multi-workspace future) each own
+  // their own font without bleeding into each other.
+  const ideRootRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const root = ideRootRef.current;
+    if (root) {
+      // Inline style wins over the static `.shogo-ide { --ide-mono-font: … }`
+      // rule in global.css — that's intentional, the static rule is just a
+      // pre-React fallback for the initial paint.
+      root.style.setProperty("--ide-mono-font", settings.fontFamily);
+    }
+    broadcastEditorFontChange(settings.fontFamily);
+  }, [settings.fontFamily]);
+
   const sidebarSplit = useResizable({ initial: 280, min: 200, max: 540, direction: "horizontal" });
   const groupSplit = useResizable({ initial: 0.5, min: 0.2, max: 0.8, direction: "horizontal" });
 
@@ -276,6 +313,12 @@ export function Workbench({
   // below can run as soon as `monaco` is first available (effects can't read
   // refs reactively).
   const [monacoReadyTick, setMonacoReadyTick] = useState(0);
+
+  // FEAT-OUTLINE — document symbols for the active editor, fetched through
+  // the shared backend-LSP (version-keyed cache) only while the Outline view
+  // is open. `null` = not yet fetched / unavailable; `[]` = fetched, no symbols.
+  const [outlineSymbols, setOutlineSymbols] = useState<DocumentSymbolLike[] | null>(null);
+  const [outlineLoading, setOutlineLoading] = useState(false);
   const groupsRef = useRef(groups);
   groupsRef.current = groups;
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -740,13 +783,17 @@ export function Workbench({
   );
 
 
-  const handleChangeFor = (groupIdx: number) => (val: string) => {
-    updateGroup(groupIdx, (g) => ({
-      ...g,
-      files: g.files.map((f) =>
-        f.id === g.activeId ? { ...f, content: val, dirty: val !== f.savedContent } : f,
-      ),
-    }));
+  // BUG-001 fix: route the change by the explicit `fileId` carried out of
+  // CodeEditor (which derived it from the live Monaco model URI), NOT by
+  // the group's currently-tracked `activeId`. The old code matched on
+  // `f.id === g.activeId`, which on a rapid tab swap could land the
+  // previous tab's last keystroke in the newly-active tab (because React
+  // had already advanced `activeId` while Monaco was still firing for the
+  // outgoing model). `applyEditorChange` is the pure resolver — it ignores
+  // activeId entirely, drops no-op flushes, and treats a missing fileId
+  // (closed mid-flight) as a no-op without re-rendering.
+  const handleChangeFor = (groupIdx: number) => (fileId: string, val: string) => {
+    updateGroup(groupIdx, (g) => applyEditorChange(g, fileId, val));
   };
 
   const closeInGroup = useCallback((groupIdx: number, id: string) => {
@@ -970,12 +1017,48 @@ export function Workbench({
   );
 
   // ─── Save ────────────────────────────────────────────────────────────
-  const persistOpenFile = useCallback(
-    async (f: OpenFile, silent?: boolean): Promise<boolean> => {
+  // BUG-003 fix: every save-time operation resolves through the file's
+  // STABLE id, captured at invocation. We never read `active` here, never
+  // call `editor.getActiveModel()`, never trust a closure capture. The
+  // file id is the safe key:
+  //
+  //   1. resolveSaveTarget(groupsRef.current, id)  — latest snapshot from
+  //      the live ref, not a render-tick-stale closure;
+  //   2. findEditorForFileId(editorRefs, id)       — the editor whose
+  //      attached model has THIS file's URI, so format-on-save's
+  //      formatDocument runs against the right document (and therefore
+  //      against the right JSON-schema fileMatch, fixing the canvas-
+  //      reported "schema validation runs against wrong file" symptom).
+  const persistByFileId = useCallback(
+    async (id: string, opts?: { silent?: boolean }): Promise<boolean> => {
+      const f = resolveSaveTarget(groupsRef.current, id);
+      if (!f) return false; // closed mid-flight — drop silently
       const svc = svcOf(f.rootId);
       if (!svc) return false;
-      const content = f.content;
-      const id = f.id;
+
+      let content = f.content;
+      // Format-on-save: locate the editor whose model is THIS file (never
+      // the "active" model — which is racy across tab swaps and ambiguous
+      // across split groups), then trigger the formatter through it. After
+      // the formatter applied edits, read the final content from the model
+      // — the React-state `content` is one keystroke stale by then.
+      if (settings.formatOnSave) {
+        const ed = findEditorForFileId(Object.values(editorRefs.current), id);
+        if (ed) {
+          try {
+            const action = ed.getAction?.("editor.action.formatDocument");
+            if (action) await action.run();
+            const m = ed.getModel();
+            if (m) content = m.getValue();
+          } catch {
+            // Format failures must NEVER block the save — log via toast
+            // only when not silent, then proceed with the unformatted
+            // content (matches VS Code's behaviour).
+            if (!opts?.silent) showToast("Format on save failed; saving unformatted", 2500);
+          }
+        }
+      }
+
       try {
         await svc.writeFile(f.path, content);
         let applied = false;
@@ -984,6 +1067,10 @@ export function Workbench({
             ...g,
             files: g.files.map((x) => {
               if (x.id !== id) return x;
+              // If the user kept typing between the format step and the
+              // setState, `x.content` may be ahead of the `content` we
+              // wrote to disk. Don't clobber the dirty flag in that case
+              // — the file is still dirty until the LATEST content lands.
               if (x.content !== content) return x;
               applied = true;
               return { ...x, dirty: false, savedContent: content };
@@ -991,39 +1078,60 @@ export function Workbench({
           })),
         );
         if (applied) setConflicts((cs) => cs.filter((c) => c.fileId !== id));
-        // G4.5 auto-stage: if this file was a merge conflict and the user
-        // saved a buffer with no conflict markers left, treat it as
-        // resolved and `git add` it. No-op on web/native (bridge null).
         const root = gitWorkspaceRootRef.current;
         if (root) {
           void maybeAutoStageIfConflictResolved(root, f.path, content);
         }
-        if (!silent) showToast(`Saved ${f.name}`);
+        if (!opts?.silent) showToast(`Saved ${f.name}`);
         return true;
       } catch (err) {
         showToast(`Save failed: ${err instanceof Error ? err.message : String(err)}`, 3000);
         return false;
       }
     },
-    [svcOf, showToast],
+    [svcOf, showToast, settings.formatOnSave],
+  );
+
+  // Compat shim: a couple of older call sites (autosave timer, merge editor)
+  // still pass an OpenFile snapshot. Route them through persistByFileId
+  // using the id — `f.id` is stable across React renders even if `f` itself
+  // is a stale snapshot, so the resolver still ends up reading the latest
+  // content from groupsRef.
+  const persistOpenFile = useCallback(
+    (f: OpenFile, silent?: boolean): Promise<boolean> =>
+      persistByFileId(f.id, { silent }),
+    [persistByFileId],
   );
 
   const handleSave = useCallback(async () => {
-    if (!active || !active.dirty) return;
-    await persistOpenFile(active);
-  }, [active, persistOpenFile]);
+    // Capture activeId at invocation (NOT active itself — that's the React
+    // render's closure). The actual file is resolved from groupsRef inside
+    // persistByFileId, so this stays correct even if the user has swapped
+    // tabs since Cmd+S was pressed (their intent was to save what was
+    // active when they pressed the key).
+    const id = active?.id;
+    if (!id) return;
+    const f = resolveSaveTarget(groupsRef.current, id);
+    if (!f?.dirty) return;
+    await persistByFileId(id);
+  }, [active?.id, persistByFileId]);
 
   const handleSaveAll = useCallback(async () => {
-    const dirty = groups.flatMap((g) => g.files.filter((f) => f.dirty));
+    // Read directly from the live ref so we see the same set every render
+    // would see — and dedupe by id (same file open in two split groups
+    // must not be written twice).
+    const dirty = collectDirtyFiles(groupsRef.current);
     if (!dirty.length) {
       showToast("Nothing to save");
       return;
     }
-    const results = await Promise.all(dirty.map((f) => persistOpenFile(f, true)));
+    const results = await Promise.all(
+      dirty.map((f) => persistByFileId(f.id, { silent: true })),
+    );
     if (results.every(Boolean)) {
       showToast(`Saved ${dirty.length} file${dirty.length === 1 ? "" : "s"}`);
     }
-  }, [groups, persistOpenFile, showToast]);
+  }, [persistByFileId, showToast]);
 
   // Auto save: debounce while typing; flush when switching away from a tab.
   useEffect(() => {
@@ -1097,6 +1205,51 @@ export function Workbench({
     },
     [activeGroup],
   );
+
+  // FEAT-OUTLINE — jump the caret to a symbol's selection range.
+  const revealSymbol = useCallback(
+    (line: number, col: number) => {
+      const ed = editorRefs.current[activeGroup?.id ?? ""];
+      if (!ed) return;
+      ed.revealPositionInCenter({ lineNumber: line, column: col });
+      ed.setPosition({ lineNumber: line, column: col });
+      ed.focus();
+    },
+    [activeGroup],
+  );
+
+  // FEAT-OUTLINE — (re)fetch document symbols for the active editor while the
+  // Outline view is open. Keyed on the active file, Monaco readiness, and the
+  // caret line: an edit bumps the model version (invalidating the shared LSP
+  // cache) and also moves the caret, so this refreshes after typing — yet
+  // every navigation-only move is a cheap cache hit. A cancellation guard
+  // drops stale responses from rapid file/caret changes.
+  useEffect(() => {
+    if (activity !== "outline") return;
+    const ed = editorRefs.current[activeGroup?.id ?? ""];
+    const model = ed?.getModel();
+    if (!monacoNsRef.current || !model) {
+      setOutlineSymbols(null);
+      setOutlineLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setOutlineLoading(true);
+    getDocumentSymbols(model)
+      .then((syms) => {
+        if (!cancelled) setOutlineSymbols((syms as DocumentSymbolLike[] | null) ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setOutlineSymbols([]);
+      })
+      .finally(() => {
+        if (!cancelled) setOutlineLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activity, active?.id, monacoReadyTick, cursor.line, activeGroup]);
 
   // Reveal a specific location across any root (used by project search)
   const revealMatch = useCallback(
@@ -1231,6 +1384,15 @@ export function Workbench({
         run: () => setActivity("search"),
       },
       {
+        id: "view.openOutline",
+        label: "View: Show Outline",
+        shortcut: "⌘⇧O",
+        run: () => {
+          setActivity("outline");
+          if (!sidebarOpen) setSidebarOpen(true);
+        },
+      },
+      {
         id: "view.openSourceControl",
         label: "View: Show Source Control",
         shortcut: "⌃⇧G",
@@ -1264,29 +1426,67 @@ export function Workbench({
   );
 
   const fileItems: PaletteItem[] = useMemo(() => {
-    const all: PaletteItem[] = [];
+    // UX-QUICKOPEN-PATH: collapse the sublabel to ONLY the parent-dir
+    // hint when it's actually disambiguating (or when multi-root is
+    // open and the root label is itself useful context). Full path
+    // remains fuzzy-searchable through PaletteItem.searchText, so
+    // typing `components/app` still finds App.tsx even when its row
+    // shows no visible parent-dir hint.
+    const multiRoot = roots.length > 1;
+    type Entry = {
+      id: string;
+      name: string;
+      path: string;
+      rootLabel: string;
+      run: () => void;
+    };
+    const entries: Entry[] = [];
+    const qoFiles: QuickOpenFile[] = [];
     for (const r of roots) {
       const flat = flattenFiles(r.tree);
       for (const n of flat) {
-        all.push({
-          id: fileId(n.rootId, n.path),
-          label: n.name,
-          sublabel: roots.length > 1 ? `${r.label} / ${n.path}` : n.path,
+        const id = fileId(n.rootId, n.path);
+        entries.push({
+          id,
+          name: n.name,
+          path: n.path,
+          rootLabel: r.label,
           run: () => handleOpenFile(n),
+        });
+        qoFiles.push({
+          id,
+          name: n.name,
+          path: n.path,
+          rootLabel: multiRoot ? r.label : undefined,
         });
       }
     }
-    return all;
+    const disambig = buildDisambiguation(qoFiles, { multiRoot });
+    return entries.map((e) => {
+      const d = disambig.get(e.id);
+      return {
+        id: e.id,
+        label: e.name,
+        sublabel: d?.display ?? undefined,
+        searchText: d?.searchText ?? e.path,
+        run: e.run,
+      };
+    });
   }, [roots, handleOpenFile]);
 
   // ─── Keyboard ────────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (matchesShortcut(e, { meta: true, shift: true, key: "p" })) {
-        e.preventDefault(); setPalette("command"); return;
-      }
-      if (matchesShortcut(e, { meta: true, key: "p" })) {
-        e.preventDefault(); setPalette("file"); return;
+      // BUG-005: single dispatcher for both palette shortcuts. Routes
+      // through the pure resolvePaletteIntent — "Shift wins → command".
+      // stopPropagation prevents any OTHER window-level keydown handler
+      // (FileTree, Terminal, future panels) from also firing on Cmd+P.
+      const paletteIntent = resolvePaletteIntent(e);
+      if (paletteIntent) {
+        e.preventDefault();
+        e.stopPropagation();
+        setPalette(paletteIntent);
+        return;
       }
       if (matchesShortcut(e, { meta: true, key: "s" })) {
         e.preventDefault(); void handleSave(); return;
@@ -1441,9 +1641,35 @@ export function Workbench({
     gitSnapshot?.refreshedAt,
   ]);
 
+  // Activity Bar badges — desktop-only signal so web/mobile keep their
+  // intentionally bare rail. `useProblemsBadgeCount` short-circuits
+  // when `enabled` is false, so the diagnostics endpoint is never hit
+  // outside Electron.
+  const desktopBadgesEnabled = isDesktopRuntime();
+  const problemsBadgeResult = useProblemsBadgeCount({
+    projectId: projectId ?? null,
+    enabled: desktopBadgesEnabled,
+  });
+  const activityBadges: Partial<Record<ActivityId, BadgeData>> | null = useMemo(() => {
+    if (!desktopBadgesEnabled) return null;
+    const out: Partial<Record<ActivityId, BadgeData>> = {};
+    const gitN = gitChangeCount(gitSnapshot);
+    if (gitN > 0) out.git = { count: gitN, tone: "neutral" };
+    if (problemsBadgeResult.count > 0) {
+      const tone = problemsBadgeResult.severity === "error" ? "error" : "warn";
+      // Shogo surfaces the Problems pane under the Files (Explorer)
+      // activity (the bottom panel hosts it from Files context), so the
+      // problems dot lives on the Files icon — same convention as the
+      // BottomPanel toggle.
+      out.files = { count: problemsBadgeResult.count, tone };
+    }
+    return Object.keys(out).length === 0 ? null : out;
+  }, [desktopBadgesEnabled, gitSnapshot, problemsBadgeResult.count, problemsBadgeResult.severity]);
+
   return (
     <GitStatusProvider snapshot={gitSnapshot}>
     <div
+      ref={ideRootRef}
       className="shogo-ide flex h-full w-full min-w-0 min-h-0 flex-col overflow-hidden"
       data-theme={themeMode}
     >
@@ -1452,6 +1678,7 @@ export function Workbench({
           active={activity}
           sidebarOpen={sidebarOpen}
           terminalOpen={bottomPanelOpen}
+          badges={activityBadges}
           onSelect={(id) => {
             setActivity(id);
             if (!sidebarOpen) setSidebarOpen(true);
@@ -1497,6 +1724,16 @@ export function Workbench({
                     }}
                   />
                 )}
+                {activity === "outline" && (
+                  <OutlinePanel
+                    symbols={outlineSymbols}
+                    loading={outlineLoading}
+                    hasFile={!!active}
+                    activeLine={cursor.line}
+                    onReveal={revealSymbol}
+                    onCollapse={() => setSidebarOpen(false)}
+                  />
+                )}
                 {activity === "git" && (
                   <div className="flex flex-col h-full">
                     {projectId && (
@@ -1520,10 +1757,19 @@ export function Workbench({
                         setMergePath(path);
                       }
                     }}
-                    fallback={projectId ? <CheckpointsPanel visible projectId={projectId} /> : undefined}
+                    // Checkpoint now lives on its own activity bar entry
+                    // (id: "checkpoint"); the SourceControl viewlet no
+                    // longer falls back to it. If the project has no git
+                    // repo, the viewlet renders its own empty state.
                   />
                     </div>
                   </div>
+                )}
+                {activity === "checkpoint" && projectId && (
+                  <CheckpointsPanel visible projectId={projectId} />
+                )}
+                {activity === "debug" && (
+                  <RunDebugPanel workspaceRoot={gitWorkspaceRoot} />
                 )}
                 {activity === "settings" && (
                   <SettingsPane settings={settings} onChange={setSettings} />
@@ -1581,6 +1827,7 @@ export function Workbench({
                       group={g}
                       focused={i === activeGroupIdx}
                       themeMode={themeMode}
+                      editorTheme={settings.editorTheme}
                       onFocus={() => setActiveGroupIdx(i)}
                       onSelect={(id) => updateGroup(i, (gg) => ({ ...gg, activeId: id }))}
                       onClose={(id) => closeInGroup(i, id)}
