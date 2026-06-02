@@ -56,10 +56,29 @@ USER appuser
 # generate:routes). Mobile source is shallow enough to copy directly.
 COPY --chown=appuser:appgroup apps/mobile ./apps/mobile
 
+# Mirror Monaco's self-hosted AMD bundle (node_modules/monaco-editor/min/vs)
+# into public/vs BEFORE exporting. `expo export` copies public/ into dist/,
+# so this is what lands `dist/vs/loader.js` at the same origin as the app
+# shell. CodeEditor.tsx pins `@monaco-editor/loader` at `/vs` (not the CDN)
+# to satisfy the desktop CSP and work offline — if /vs is missing, the
+# loader's `/vs/loader.js` request falls through nginx's SPA fallback to
+# index.html, the browser gets HTML for a <script>, and Monaco fails with
+# "Monaco initialization: error: Event" (blank IDE editors). The `build` npm
+# script chains this same step; the Docker build must not drift from it.
+WORKDIR /app/apps/mobile
+RUN node scripts/copy-monaco-vs.mjs
+
 # Build Expo web export (Metro bundler outputs to apps/mobile/dist/).
 # packages/*/dist are already pre-built in workspace-deps.
-WORKDIR /app/apps/mobile
 RUN npx expo export --platform web
+
+# Fail the build loudly if the self-hosted Monaco bundle didn't make it into
+# the export. Mirrors the integrity guard in apps/desktop/scripts/sync-web.mjs
+# so we never ship a Monaco-less web image again (the blank-IDE / "Monaco
+# initialization: error: Event" regression). Catches both a skipped copy step
+# AND a future Expo upgrade that stops copying public/ into dist/.
+RUN test -f dist/vs/loader.js && test -f dist/vs/editor/editor.main.js \
+    || (echo "ERROR: Monaco /vs assets missing from dist/ — IDE editors would be blank. Did scripts/copy-monaco-vs.mjs run and did expo export copy public/?" && exit 1)
 
 # Inject analytics scripts into the exported HTML (Expo "single" mode strips
 # <script> tags from +html.tsx, so we inject them post-export).

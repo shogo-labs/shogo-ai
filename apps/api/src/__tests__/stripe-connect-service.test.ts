@@ -180,11 +180,16 @@ const SAMPLE_DETAILS = {
 }
 
 describe('submitPayoutDetails', () => {
-  test('throws when profile has no stripe account id', async () => {
+  test('self-heals by creating a Connect account when one is missing', async () => {
+    // Post-merge behaviour: rather than rejecting when the Connect account was
+    // never provisioned, submitPayoutDetails now creates it on the fly. In
+    // mock mode (no STRIPE_SECRET_KEY) createCustomAccount mints acct_mock_<id>.
+    delete process.env.STRIPE_SECRET_KEY
     profiles.set('cp_1', { id: 'cp_1' })
-    await expect(svc.submitPayoutDetails('cp_1', SAMPLE_DETAILS)).rejects.toThrow(
-      'Creator has no Stripe Connect account',
-    )
+    await svc.submitPayoutDetails('cp_1', SAMPLE_DETAILS)
+    const p = profiles.get('cp_1')
+    expect(p.stripeCustomAccountId).toBe('acct_mock_cp_1')
+    expect(p.payoutStatus).toBe('pending_verification')
   })
 
   test('mock mode: marks pending_verification without calling Stripe', async () => {

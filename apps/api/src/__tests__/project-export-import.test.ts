@@ -41,6 +41,12 @@ delete process.env.S3_WORKSPACES_BUCKET
 const tmpRoot = mkdtempSync(join(tmpdir(), 'shogo-export-import-test-'))
 process.env.WORKSPACES_DIR = tmpRoot
 
+// ─── Toggle flags driven by individual tests (k8s + S3 branches) ────────────
+let bundleResponse: any = { files: { 'README.md': Buffer.from('hello').toString('base64') } }
+let bundleThrows = false
+let s3UploadResult: { errors?: string[]; archiveSize?: number } = { errors: [], archiveSize: 0 }
+let s3SyncReturnsNull = false
+
 // ────────────────────────────────────────────────────────────────────
 // In-memory Prisma mock
 // ────────────────────────────────────────────────────────────────────
@@ -153,15 +159,25 @@ mock.module('../lib/prisma', () => withPrismaExports({
 }))
 
 mock.module('@shogo/shared-runtime', () => ({
-  createS3SyncForProject: () => null,
+  createS3SyncForProject: () => {
+    if (s3SyncReturnsNull) return null
+    return { uploadAll: async () => s3UploadResult }
+  },
   isMacOSJunkName: (n: string) => n === '__MACOSX' || n.startsWith('._'),
   RUNTIME_CONFIG: {},
+}))
+
+// knative-project-manager: only used in k8s export branch. Lazy-imported by
+// route, so this mock is consumed only when KUBERNETES_SERVICE_HOST is set.
+mock.module('../lib/knative-project-manager', () => ({
+  getProjectPodUrl: async (projectId: string) => `http://pod-${projectId}.local`,
 }))
 
 mock.module('@shogo-ai/sdk/agent', () => ({
   AgentClient: class StubAgentClient {
     async getWorkspaceBundle() {
-      return { files: {} }
+      if (bundleThrows) throw new Error('pod unreachable')
+      return bundleResponse
     }
   },
 }))
@@ -177,6 +193,13 @@ beforeEach(() => {
   agentConfigs.length = 0
   chatSessions.length = 0
   chatMessages.length = 0
+  // Reset env to local mode by default; k8s tests opt in explicitly.
+  delete process.env.KUBERNETES_SERVICE_HOST
+  delete process.env.S3_WORKSPACES_BUCKET
+  bundleResponse = { files: { 'README.md': Buffer.from('hello').toString('base64') } }
+  bundleThrows = false
+  s3UploadResult = { errors: [], archiveSize: 0 }
+  s3SyncReturnsNull = false
 })
 
 // Imports AFTER mocks.
@@ -520,5 +543,239 @@ describe('projectExportImportRoutes', () => {
       method: 'POST', body: form,
     }))
     expect(res.status).toBe(400)
+  })
+})
+
+// ============================================================================
+// v4 ad-hoc coverage: k8s export branch, SSE streaming, k8s S3 sync paths
+// (Consolidated from the deleted project-export-import-v4.test.ts file —
+//  sharing the prisma / agent / shared-runtime mock harness above.)
+// ============================================================================
+
+function seedProject(id = 'p-x', overrides: Partial<ProjectRow> = {}) {
+  const p: ProjectRow = {
+    id, name: 'P', description: null, workspaceId: 'w-1', createdBy: 'u-1',
+    tier: 'starter', status: 'draft', accessLevel: 'anyone',
+    schemas: [], category: null, siteTitle: null, siteDescription: null,
+    settings: JSON.stringify({}),
+    ...overrides,
+  }
+  projects.set(id, p)
+  agentConfigs.push({
+    projectId: id, heartbeatInterval: 1800, heartbeatEnabled: false,
+    modelProvider: 'anthropic', modelName: 'claude-haiku-4-5', channels: [],
+  })
+  return p
+}
+
+function exportReq(projectId: string) {
+  return new Request(`http://x/api/projects/${projectId}/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ includeChats: false }),
+  })
+}
+
+describe('POST /:projectId/export — k8s source mode', () => {
+  test('k8s mode: AgentClient bundle files are written under workspace/ in the zip', async () => {
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    process.env.S3_WORKSPACES_BUCKET = 'test-bucket'
+    seedProject('p-k8s')
+    bundleResponse = {
+      files: {
+        'README.md': Buffer.from('readme content').toString('base64'),
+        'src/main.ts': Buffer.from('console.log(1)').toString('base64'),
+      },
+    }
+    const app = new Hono()
+    app.route('/api/projects', projectExportImportRoutes())
+    const res = await app.fetch(exportReq('p-k8s'))
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toBe('application/zip')
+    const body = await res.arrayBuffer()
+    expect(body.byteLength).toBeGreaterThan(0)
+  })
+
+  test('k8s mode: empty bundle emits warning but still returns 200', async () => {
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    seedProject('p-empty-bundle')
+    bundleResponse = { files: {} }
+    const app = new Hono()
+    app.route('/api/projects', projectExportImportRoutes())
+    const res = await app.fetch(exportReq('p-empty-bundle'))
+    expect(res.status).toBe(200)
+  })
+
+  test('k8s mode: bundle with backslash paths is normalised to forward slashes', async () => {
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    seedProject('p-backslash')
+    bundleResponse = {
+      files: {
+        'memory\\2026-05-28.md': Buffer.from('hi').toString('base64'),
+        'src\\nested\\thing.ts': Buffer.from('x').toString('base64'),
+      },
+    }
+    const app = new Hono()
+    app.route('/api/projects', projectExportImportRoutes())
+    const res = await app.fetch(exportReq('p-backslash'))
+    expect(res.status).toBe(200)
+    expect((await res.arrayBuffer()).byteLength).toBeGreaterThan(0)
+  })
+
+  test('k8s mode: bundle with malformed shape (no files object) falls back to empty', async () => {
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    seedProject('p-malformed-bundle')
+    bundleResponse = { somethingElse: true }
+    const app = new Hono()
+    app.route('/api/projects', projectExportImportRoutes())
+    const res = await app.fetch(exportReq('p-malformed-bundle'))
+    expect(res.status).toBe(200)
+  })
+
+  test('k8s mode: AgentClient throws → sourceMode falls back to k8s-fallback-empty', async () => {
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    seedProject('p-pod-down')
+    bundleThrows = true
+    const app = new Hono()
+    app.route('/api/projects', projectExportImportRoutes())
+    const res = await app.fetch(exportReq('p-pod-down'))
+    expect(res.status).toBe(200)
+    expect((await res.arrayBuffer()).byteLength).toBeGreaterThan(0)
+  })
+
+  test('k8s mode: bundle filenames matching excluded patterns are skipped', async () => {
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    seedProject('p-excluded')
+    bundleResponse = {
+      files: {
+        '.git/HEAD': Buffer.from('ref').toString('base64'),
+        'node_modules/x/package.json': Buffer.from('{}').toString('base64'),
+        'README.md': Buffer.from('keep me').toString('base64'),
+      },
+    }
+    const app = new Hono()
+    app.route('/api/projects', projectExportImportRoutes())
+    const res = await app.fetch(exportReq('p-excluded'))
+    expect(res.status).toBe(200)
+  })
+})
+
+describe('POST /import — SSE streaming branch', () => {
+  function authedApp() {
+    const app = new Hono()
+    app.use('*', async (c, next) => {
+      ;(c as any).set('auth', { isAuthenticated: true, userId: 'u-1' })
+      await next()
+    })
+    app.route('/api/projects', projectExportImportRoutes())
+    return app
+  }
+
+  test('SSE: streams done event for successful import', async () => {
+    members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
+    const buf = zipSync({ 'project.json': strToU8(makeProjectJson()) })
+    const form = new FormData()
+    form.append('file', new Blob([buf]), 'b.zip')
+    form.append('workspaceId', 'w-1')
+    const res = await authedApp().fetch(new Request('http://x/api/projects/import', {
+      method: 'POST',
+      headers: { Accept: 'text/event-stream' },
+      body: form,
+    }))
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toMatch(/event-stream/)
+    const text = await res.text()
+    expect(text.length).toBeGreaterThan(0)
+    expect(text).toMatch(/event:|data:/)
+  })
+
+  test('SSE: streams fatal event when zip is invalid', async () => {
+    members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
+    const form = new FormData()
+    form.append('file', new Blob([new Uint8Array([0, 1, 2, 3])]), 'bad.zip')
+    form.append('workspaceId', 'w-1')
+    const res = await authedApp().fetch(new Request('http://x/api/projects/import', {
+      method: 'POST',
+      headers: { Accept: 'text/event-stream' },
+      body: form,
+    }))
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).toMatch(/fatal|error/)
+  })
+
+  test('SSE: streams fatal event when project.json is missing', async () => {
+    members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
+    const buf = zipSync({ 'workspace/README.md': strToU8('hi') })
+    const form = new FormData()
+    form.append('file', new Blob([buf]), 'b.zip')
+    form.append('workspaceId', 'w-1')
+    const res = await authedApp().fetch(new Request('http://x/api/projects/import', {
+      method: 'POST',
+      headers: { Accept: 'text/event-stream' },
+      body: form,
+    }))
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).toMatch(/fatal|error|project\.json/)
+  })
+})
+
+describe('runImport: k8s mode S3 sync paths', () => {
+  test('k8s + bucket set + sync ok: import succeeds', async () => {
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    process.env.S3_WORKSPACES_BUCKET = 'test-bucket'
+    members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
+    s3UploadResult = { errors: [], archiveSize: 0 }
+    const buf = zipSync({ 'project.json': strToU8(makeProjectJson()) })
+    const result = await runImport(
+      new Uint8Array(buf), 'w-1', 'u-1', { includeChats: false, runBootstrap: false },
+      () => {},
+    )
+    expect(result.ok).toBe(true)
+  })
+
+  test('k8s + bucket set + S3 misconfig (createS3SyncForProject returns null): 500 + rolls back', async () => {
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    process.env.S3_WORKSPACES_BUCKET = 'test-bucket'
+    members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
+    s3SyncReturnsNull = true
+    const buf = zipSync({ 'project.json': strToU8(makeProjectJson()) })
+    const result = await runImport(
+      new Uint8Array(buf), 'w-1', 'u-1', { includeChats: false, runBootstrap: false },
+      () => {},
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.status).toBe(500)
+      expect(result.error).toMatch(/S3/i)
+    }
+  })
+
+  test('k8s + bucket set + uploadAll returns ok:false: 500 + rolls back', async () => {
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    process.env.S3_WORKSPACES_BUCKET = 'test-bucket'
+    members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
+    s3UploadResult = { errors: ['aws creds missing'] }
+    const buf = zipSync({ 'project.json': strToU8(makeProjectJson()) })
+    const result = await runImport(
+      new Uint8Array(buf), 'w-1', 'u-1', { includeChats: false, runBootstrap: false },
+      () => {},
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.status).toBe(500)
+  })
+
+  test('progress emit receives syncToS3 phase events during k8s import', async () => {
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    process.env.S3_WORKSPACES_BUCKET = 'test-bucket'
+    members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
+    const phases: string[] = []
+    const buf = zipSync({ 'project.json': strToU8(makeProjectJson()) })
+    await runImport(
+      new Uint8Array(buf), 'w-1', 'u-1', { includeChats: false, runBootstrap: false },
+      (ev: any) => { phases.push(ev.phase) },
+    )
+    expect(phases).toContain('syncToS3')
   })
 })
