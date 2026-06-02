@@ -711,6 +711,15 @@ jobs:
           echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
 
+      # Pre-rollout gate (2026-06-02 EU incident class): refuse to apply
+      # manifests / patch ksvcs into a disk-starved cluster. A node above the
+      # disk threshold (or already under DiskPressure) cannot bring up a new
+      # revision — the kubelet evicts/GCs instead — so the rollout would only
+      # fail 10 minutes later with ProgressDeadlineExceeded. Fail fast with an
+      # actionable message instead.
+      - name: Check node disk headroom (pre-rollout gate)
+        run: .github/scripts/check-node-disk-headroom.sh 80
+
       - name: Apply Kubernetes manifests
         run: |
           # Render RUNTIME_IMAGE into the api ksvc at apply time, mirroring the
@@ -1169,6 +1178,15 @@ jobs:
           echo "web_image=$(get_image studio ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
           echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+
+      # Pre-rollout gate (2026-06-02 EU incident class): refuse to apply
+      # manifests / patch ksvcs into a disk-starved cluster. A node above the
+      # disk threshold (or already under DiskPressure) cannot bring up a new
+      # revision — the kubelet evicts/GCs instead — so the rollout would only
+      # fail 10 minutes later with ProgressDeadlineExceeded. Fail fast with an
+      # actionable message instead.
+      - name: Check node disk headroom (pre-rollout gate)
+        run: .github/scripts/check-node-disk-headroom.sh 80
 
       - name: Apply Kubernetes manifests
         run: |
@@ -1735,6 +1753,15 @@ jobs:
           echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
 
+      # Pre-rollout gate (2026-06-02 EU incident class): refuse to apply
+      # manifests / patch ksvcs into a disk-starved cluster. A node above the
+      # disk threshold (or already under DiskPressure) cannot bring up a new
+      # revision — the kubelet evicts/GCs instead — so the rollout would only
+      # fail 10 minutes later with ProgressDeadlineExceeded. Fail fast with an
+      # actionable message instead.
+      - name: Check node disk headroom (pre-rollout gate)
+        run: .github/scripts/check-node-disk-headroom.sh 80
+
       - name: Apply Kubernetes manifests
         run: |
           # Render RUNTIME_IMAGE into the api ksvc at apply time, mirroring the
@@ -2288,6 +2315,15 @@ jobs:
           echo "web_image=$(get_image studio ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
           echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+
+      # Pre-rollout gate (2026-06-02 EU incident class): refuse to apply
+      # manifests / patch ksvcs into a disk-starved cluster. A node above the
+      # disk threshold (or already under DiskPressure) cannot bring up a new
+      # revision — the kubelet evicts/GCs instead — so the rollout would only
+      # fail 10 minutes later with ProgressDeadlineExceeded. Fail fast with an
+      # actionable message instead.
+      - name: Check node disk headroom (pre-rollout gate)
+        run: .github/scripts/check-node-disk-headroom.sh 80
 
       - name: Apply Kubernetes manifests
         run: |

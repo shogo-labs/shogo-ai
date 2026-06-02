@@ -129,6 +129,14 @@ module "india" {
   system_pool_min       = 2
   system_pool_max       = 10
 
+  # 200 GB to match production-us. India is currently LIVE at 100 GB — the
+  # same latent exposure that caused the EU 2026-06-02 DiskPressure incident;
+  # India simply hasn't tipped over yet (lower workspace load). As with EU,
+  # the oke module ignores in-place boot-volume changes, so this needs a
+  # one-time controlled node-pool replacement to take effect (see
+  # terraform/README.md "Boot volume remediation").
+  system_node_boot_volume_gb = 200
+
   enable_workload_pool = false
 
   # Data layer points to US primary
