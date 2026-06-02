@@ -17,7 +17,8 @@
  */
 
 import { spawn, spawnSync, type Subprocess } from "bun";
-import { resolve } from "path";
+import { spawn as nodeSpawn } from "node:child_process";
+import { isAbsolute, resolve } from "path";
 
 const ROOT = resolve(import.meta.dir, "..");
 const API_PORT = Number(process.env.API_PORT ?? 8002);
@@ -162,52 +163,142 @@ async function killProcessOnPort(port: number) {
 // those two steps (Ctrl+C, watch-api crash mid-boot, OS sleep) the
 // schema moves forward but the ledger row stays incomplete. Next boot,
 // `prisma migrate deploy` re-runs the same SQL and SQLite returns
-// `duplicate column name: X` (P3018), aborting `dev:all` until the user
-// manually `prisma migrate resolve --applied`s every stuck row.
+// `duplicate column name: X` / `table X already exists` (P3018). Left
+// unrecovered, that failed row turns every *subsequent* boot into P3009
+// ("failed migrations in the target database"), so `dev:all` aborts until
+// the user manually `prisma migrate resolve --applied`s every stuck row.
 //
-// We auto-recover from this specific shape — and only this shape — by
-// detecting the P3018 + duplicate-column error, confirming every
-// ALTER TABLE ADD COLUMN target in the migration.sql is already
-// physically present in the DB, marking the migration applied, and
-// retrying. Anything that doesn't fit (DROP COLUMN, data-migration SQL,
-// CREATE TABLE, etc.) falls through to the original abort so we never
-// silently paper over a real schema problem.
+// Recovery happens in two layers:
+//
+//   * migrateDoctor() (Phase 2) runs BEFORE deploy. It finds unfinished
+//     ledger rows, confirms via `prisma migrate diff` that the live DB only
+//     drifts on the accepted-drift allow-list, verifies each stuck
+//     migration's objects are physically present, and marks them applied —
+//     healing the common "interrupted boot" case in one shot.
+//
+//   * The deploy loop (Phase 1) is the backstop: it parses P3018/P3009 out
+//     of `migrate deploy`'s output, and for each named migration verifies
+//     EVERY object it creates (columns, tables, indexes, and the SQLite
+//     table-rebuild idiom) already exists before marking it applied.
+//
+// Anything we can't positively verify (DROP COLUMN, triggers, views, raw
+// DDL, or a stuck migration whose objects are genuinely missing) falls
+// through to a loud abort so we never silently paper over real schema drift.
+//
+// The whole phase also runs inside a SIGINT guard (see runMigratePhase):
+// `migrate deploy` is spawned in its own process group so a Ctrl+C aimed at
+// `dev:all` can't tear it down mid-write, and the parent defers its own exit
+// until the current step finishes.
 // ---------------------------------------------------------------------------
 
 const MIGRATIONS_DIR = "apps/desktop/prisma/migrations";
-const SHOGO_DB_PATH = "shogo.db";
+const PRISMA_CONFIG = "prisma.config.local.ts";
+// Matches the `datasource.url` default in prisma.config.local.ts. In
+// practice the real path comes from DATABASE_URL (.env.local), which Bun
+// auto-loads for `bun dev:all`.
+const DEFAULT_DB_FILE = "shogo.db";
 const MAX_AUTO_RESOLVE_RETRIES = 10;
 
 /**
- * Run `prisma migrate deploy` once and capture stderr so we can match
- * known recoverable failure shapes against it. stdout still streams
- * inherit-style so the user sees normal progress output in the
- * `dev:all` terminal.
+ * Resolve the on-disk path of the local SQLite DB exactly the way Prisma
+ * does for `prisma.config.local.ts`: prefer `DATABASE_URL` and fall back to
+ * the config's `file:./shogo.db` default. Relative `file:` paths resolve
+ * against the repo root, where the Prisma config lives.
+ *
+ * This used to be hardcoded to `shogo.db`. Any developer who set
+ * `DATABASE_URL=file:./shogo-local.db` therefore pointed the auto-resolver
+ * at the wrong (usually empty) database, so `isMigrationFullyApplied` never
+ * found the columns and the recovery silently never fired.
  */
-async function runMigrateDeploy(): Promise<{ code: number; stderr: string }> {
-  const proc = spawn({
-    cmd: [
+export function resolveLocalDbPath(
+  opts: { rootDir?: string; databaseUrl?: string } = {},
+): string {
+  const rootDir = opts.rootDir ?? ROOT;
+  const raw = (
+    opts.databaseUrl ??
+    process.env.DATABASE_URL ??
+    `file:${DEFAULT_DB_FILE}`
+  ).trim();
+  let p = raw.startsWith("file:") ? raw.slice("file:".length) : raw;
+  // Drop any `?connection_limit=…` style suffix defensively.
+  const queryIdx = p.indexOf("?");
+  if (queryIdx !== -1) p = p.slice(0, queryIdx);
+  if (p.length === 0) p = DEFAULT_DB_FILE;
+  return isAbsolute(p) ? p : resolve(rootDir, p);
+}
+
+/**
+ * Run a prisma CLI command in its own process group (POSIX), streaming
+ * stdout to the user and capturing stderr so callers can pattern-match
+ * known recoverable failure shapes.
+ *
+ * `detached` is the load-bearing detail: a Ctrl+C in the `dev:all` terminal
+ * is delivered to the foreground process group. Putting prisma in its OWN
+ * group means the signal can't kill it between "execute migration SQL" and
+ * "write _prisma_migrations.finished_at" — the exact race that creates the
+ * ledger drift this module exists to recover from.
+ */
+function runPrismaDetached(args: string[]): Promise<{ code: number; stderr: string }> {
+  return new Promise((resolvePromise) => {
+    const child = nodeSpawn(
       "bun",
-      "x",
-      "prisma",
-      "migrate",
-      "deploy",
-      "--config",
-      "prisma.config.local.ts",
-    ],
-    cwd: ROOT,
-    stdout: "inherit",
-    stderr: "pipe",
-    env: { ...process.env },
+      ["x", "prisma", ...args, "--config", PRISMA_CONFIG],
+      {
+        cwd: ROOT,
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "inherit", "pipe"],
+        env: { ...process.env },
+      },
+    );
+    let stderr = "";
+    child.stderr?.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      stderr += text;
+      // Mirror in real time so the user sees errors as they happen.
+      process.stderr.write(text);
+    });
+    child.on("error", (err) => {
+      process.stderr.write(`[dev:all] failed to spawn prisma: ${String(err)}\n`);
+      resolvePromise({ code: 1, stderr });
+    });
+    child.on("close", (code) => resolvePromise({ code: code ?? 1, stderr }));
   });
-  const stderrText = await new Response(proc.stderr).text();
-  // Mirror captured stderr to our own stderr so the user sees the error
-  // in real time even when `migrate deploy` fails. (Inherit would have
-  // done this for us, but we need the captured copy to pattern-match
-  // against.)
-  if (stderrText) process.stderr.write(stderrText);
-  const code = await proc.exited;
-  return { code, stderr: stderrText };
+}
+
+async function runMigrateDeploy(): Promise<{ code: number; stderr: string }> {
+  return runPrismaDetached(["migrate", "deploy"]);
+}
+
+/**
+ * Run a prisma command capturing BOTH stdout and stderr (used for
+ * `migrate diff`, whose human-readable summary goes to stdout). Not
+ * detached — diff is read-only and never writes the ledger.
+ */
+function runPrismaCapture(
+  args: string[],
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolvePromise) => {
+    const child = nodeSpawn(
+      "bun",
+      ["x", "prisma", ...args, "--config", PRISMA_CONFIG],
+      {
+        cwd: ROOT,
+        stdio: ["ignore", "pipe", "pipe"],
+        // `migrate diff --from-migrations` replays the SQLite migration
+        // history into a shadow DB; SHOGO_LOCAL_MODE keeps the config on the
+        // SQLite track (mirrors check-desktop-schema-drift.ts).
+        env: { ...process.env, SHOGO_LOCAL_MODE: "true" },
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (c: Buffer) => (stdout += c.toString()));
+    child.stderr?.on("data", (c: Buffer) => (stderr += c.toString()));
+    child.on("error", (err) =>
+      resolvePromise({ code: 1, stdout, stderr: stderr + String(err) }),
+    );
+    child.on("close", (code) => resolvePromise({ code: code ?? 1, stdout, stderr }));
+  });
 }
 
 interface RecoverableFailure {
@@ -233,10 +324,185 @@ export function parseDuplicateColumnFailure(stderr: string): RecoverableFailure 
 }
 
 /**
- * Verify the failed migration is purely a sequence of `ALTER TABLE
- * ADD COLUMN` statements AND every column it would add is already
- * present in the live DB. Returns true iff it's safe to mark the
- * migration applied without re-running its SQL.
+ * Identify which migration(s) `prisma migrate deploy` choked on, for both
+ * recoverable shapes:
+ *
+ *   * P3018 — a migration failed *while applying* because its SQL re-ran
+ *     against a DB that already has the objects (`duplicate column name` or
+ *     `table … already exists`). The error names a single migration.
+ *   * P3009 — one or more migrations are recorded as *failed* in
+ *     `_prisma_migrations` from a previous boot, so deploy refuses to start.
+ *     A P3018 that isn't recovered decays into P3009 on the next run. The
+ *     error lists every failed migration.
+ *
+ * Returns null for every other shape (NOT NULL / FK violation, engine
+ * crash, datasource unreachable, …) so the caller aborts loudly. Whether
+ * it's actually safe to mark these applied is decided separately by
+ * isMigrationFullyApplied — this only extracts names.
+ */
+export function parseRecoverableFailure(
+  stderr: string,
+): { migrationNames: string[] } | null {
+  if (stderr.includes("Error: P3018")) {
+    const nameMatch = stderr.match(/Migration name:\s+(\S+)/);
+    const recoverableCause =
+      /duplicate column name:/i.test(stderr) || /already exists/i.test(stderr);
+    if (nameMatch && recoverableCause) return { migrationNames: [nameMatch[1]!] };
+    return null;
+  }
+  if (stderr.includes("Error: P3009")) {
+    const names = [
+      ...stderr.matchAll(/The `([^`]+)` migration started at [^\n]*failed/g),
+    ].map((m) => m[1]!);
+    if (names.length > 0) return { migrationNames: [...new Set(names)] };
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Rows in `_prisma_migrations` that Prisma treats as failed: SQL was
+ * attempted (`started_at` set) but the row was never finished or rolled
+ * back. These are exactly the rows that trip P3009 on the next deploy.
+ */
+export async function findStuckMigrations(dbPath: string): Promise<string[]> {
+  const { existsSync, statSync } = await import("node:fs");
+  if (!existsSync(dbPath) || statSync(dbPath).size === 0) return [];
+  const { Database } = await import("bun:sqlite");
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    const hasLedger = db
+      .query(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='_prisma_migrations'",
+      )
+      .get();
+    if (!hasLedger) return [];
+    const rows = db
+      .query(
+        "SELECT migration_name FROM _prisma_migrations " +
+          "WHERE finished_at IS NULL AND rolled_back_at IS NULL " +
+          "ORDER BY started_at",
+      )
+      .all() as Array<{ migration_name: string }>;
+    return rows.map((r) => r.migration_name);
+  } finally {
+    db.close();
+  }
+}
+
+interface MigrationObjectPlan {
+  /** Columns the migration adds (table must end up containing each). */
+  columns: Array<{ table: string; column: string }>;
+  /** Tables that must exist after the migration runs. */
+  tablesPresent: string[];
+  /** Rebuild temp tables (`new_*`) that must NOT exist after a finished run. */
+  tablesAbsent: string[];
+  /** Indexes that must exist after the migration runs. */
+  indexesPresent: string[];
+  /** True if the migration also runs seed/backfill data statements. */
+  hasDataStatements: boolean;
+}
+
+/**
+ * Model the *net* schema objects a migration.sql produces, or return null if
+ * it contains a statement we can't safely verify (so the caller fails
+ * closed). Recognises ADD COLUMN, CREATE TABLE, CREATE [UNIQUE] INDEX, the
+ * SQLite "table rebuild" idiom (CREATE `new_X` → copy → DROP `X` → RENAME
+ * `new_X`→`X`), PRAGMA toggles, and data statements (INSERT/UPDATE/DELETE).
+ *
+ * Standalone DROP TABLE (not part of a rebuild), DROP COLUMN, RENAME COLUMN,
+ * triggers, views, and anything else return null.
+ */
+export function planMigrationObjects(sql: string): MigrationObjectPlan | null {
+  // Strip line comments so a `-- DROP TABLE foo;` in a comment can't make
+  // the check fail closed (or open).
+  const stripped = sql.replace(/--[^\n]*\n/g, "\n");
+  const stmts = stripped
+    .split(";")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  const reAddColumn = /^ALTER\s+TABLE\s+"([^"]+)"\s+ADD\s+COLUMN\s+"([^"]+)"/i;
+  const reCreateTable = /^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"([^"]+)"/i;
+  const reRename = /^ALTER\s+TABLE\s+"([^"]+)"\s+RENAME\s+TO\s+"([^"]+)"/i;
+  const reDropTable = /^DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?"([^"]+)"/i;
+  const reCreateIndex = /^CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?"([^"]+)"/i;
+  const reDropIndex = /^DROP\s+INDEX\s+(?:IF\s+EXISTS\s+)?"([^"]+)"/i;
+  const reInsert = /^INSERT\s+INTO\s+"([^"]+)"/i;
+  const reUpdateDelete = /^(UPDATE|DELETE)\s+/i;
+  const rePragma = /^PRAGMA\s+/i;
+
+  const columns: Array<{ table: string; column: string }> = [];
+  const created = new Set<string>();
+  const dropped: string[] = [];
+  const renames: Array<{ from: string; to: string }> = [];
+  const indexesCreated = new Set<string>();
+  const indexesDropped = new Set<string>();
+  let hasDataStatements = false;
+
+  for (const stmt of stmts) {
+    let m: RegExpMatchArray | null;
+    if ((m = stmt.match(reAddColumn))) {
+      columns.push({ table: m[1]!, column: m[2]! });
+    } else if ((m = stmt.match(reCreateTable))) {
+      created.add(m[1]!);
+    } else if ((m = stmt.match(reRename))) {
+      renames.push({ from: m[1]!, to: m[2]! });
+    } else if ((m = stmt.match(reDropTable))) {
+      dropped.push(m[1]!);
+    } else if ((m = stmt.match(reCreateIndex))) {
+      indexesCreated.add(m[1]!);
+    } else if ((m = stmt.match(reDropIndex))) {
+      indexesDropped.add(m[1]!);
+    } else if (rePragma.test(stmt)) {
+      // foreign_keys / defer_foreign_keys toggles in a rebuild — no-op.
+    } else if ((m = stmt.match(reInsert))) {
+      // `INSERT INTO new_*` is the rebuild row-copy; other inserts are seeds.
+      if (!m[1]!.startsWith("new_")) hasDataStatements = true;
+    } else if (reUpdateDelete.test(stmt)) {
+      hasDataStatements = true;
+    } else {
+      return null;
+    }
+  }
+
+  const renameTargets = new Set(renames.map((r) => r.to));
+  const renameSources = new Set(renames.map((r) => r.from));
+
+  // A DROP TABLE is only skip-verifiable when the same table is recreated by
+  // a rename in this migration (the rebuild idiom). A standalone DROP is a
+  // destructive change we won't auto-resolve.
+  for (const d of dropped) {
+    if (!renameTargets.has(d)) return null;
+  }
+
+  const tablesPresent = new Set<string>();
+  for (const t of created) {
+    if (!renameSources.has(t)) tablesPresent.add(t); // rebuild temps excluded
+  }
+  for (const t of renameTargets) tablesPresent.add(t);
+  for (const c of columns) tablesPresent.add(c.table);
+
+  return {
+    columns,
+    tablesPresent: [...tablesPresent],
+    tablesAbsent: [...renameSources],
+    indexesPresent: [...indexesCreated].filter((i) => !indexesDropped.has(i)),
+    hasDataStatements,
+  };
+}
+
+/**
+ * Verify a failed/unfinished migration's effects are ALREADY physically
+ * present in the live DB, so it's safe to mark applied without re-running
+ * its SQL. Returns true iff every object the migration produces — columns,
+ * tables, indexes, and the net result of any SQLite table-rebuild — exists.
+ *
+ * Fails closed (returns false) for anything planMigrationObjects can't model
+ * (DROP COLUMN, triggers, standalone DROP TABLE, …) or any object that isn't
+ * actually present, so we never silently paper over real schema drift. Data
+ * statements (seeds/backfills) are NOT verified — marking applied skips them,
+ * exactly as a hand-run `prisma migrate resolve --applied` would.
  */
 export async function isMigrationFullyApplied(
   migrationName: string,
@@ -247,57 +513,69 @@ export async function isMigrationFullyApplied(
 
   const rootDir = opts.rootDir ?? ROOT;
   const migrationsDir = opts.migrationsDir ?? MIGRATIONS_DIR;
-  const dbPath = opts.dbPath ?? resolve(rootDir, SHOGO_DB_PATH);
+  const dbPath = opts.dbPath ?? resolveLocalDbPath({ rootDir });
 
   const sqlPath = resolve(rootDir, migrationsDir, migrationName, "migration.sql");
   if (!existsSync(sqlPath)) return false;
   const sql = readFileSync(sqlPath, "utf8");
 
-  // Strip SQL line comments so a `-- DROP TABLE foo;` in a comment
-  // doesn't make the safety check fail open.
-  const stripped = sql.replace(/--[^\n]*\n/g, "\n");
+  const plan = planMigrationObjects(sql);
+  if (!plan) {
+    console.log(
+      `[dev:all] auto-resolve: ${migrationName} contains a statement we can't ` +
+        `safely verify (DROP COLUMN, trigger, standalone DROP TABLE, …) — ` +
+        `falling through to abort.`,
+    );
+    return false;
+  }
 
-  // Tokenise statements. Migration.sql files don't contain BEGIN/COMMIT
-  // so a naive `;` split is enough for our purposes.
-  const stmts = stripped
-    .split(";")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-
-  const addColumnRe =
-    /^ALTER\s+TABLE\s+"([^"]+)"\s+ADD\s+COLUMN\s+"([^"]+)"/i;
-
-  // Conservative: every non-empty statement must be ADD COLUMN. Anything
-  // else (DROP, CREATE, UPDATE, RENAME) means the migration could have
-  // side-effects we can't safely skip.
-  const additions: Array<{ table: string; column: string }> = [];
-  for (const stmt of stmts) {
-    const m = stmt.match(addColumnRe);
-    if (!m) {
+  // Validate identifier shape before interpolating any name into a PRAGMA
+  // (bound params aren't allowed there) — defence in depth against a
+  // malformed migration.sql.
+  const safeIdent = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  const idents = [
+    ...plan.columns.flatMap((c) => [c.table, c.column]),
+    ...plan.tablesPresent,
+    ...plan.tablesAbsent,
+    ...plan.indexesPresent,
+  ];
+  for (const id of idents) {
+    if (!safeIdent.test(id)) {
       console.log(
-        `[dev:all] auto-resolve: ${migrationName} contains a non-ADD-COLUMN ` +
-          `statement (${stmt.slice(0, 60)}…) — falling through to abort.`,
+        `[dev:all] auto-resolve: ${migrationName} references a non-identifier-shaped ` +
+          `name (${id}) — falling through to abort.`,
       );
       return false;
     }
-    additions.push({ table: m[1]!, column: m[2]! });
   }
 
-  // Validate identifier shape before interpolating into PRAGMA — bound
-  // parameters aren't allowed for PRAGMA arguments and we need defence
-  // in depth against a malformed migration.sql.
-  const safeIdent = /^[A-Za-z_][A-Za-z0-9_]*$/;
   const { Database } = await import("bun:sqlite");
   const db = new Database(dbPath, { readonly: true });
   try {
-    for (const { table, column } of additions) {
-      if (!safeIdent.test(table) || !safeIdent.test(column)) {
+    const objectExists = (type: "table" | "index", name: string): boolean =>
+      db
+        .query(`SELECT 1 FROM sqlite_master WHERE type=? AND name=?`)
+        .get(type, name) != null;
+
+    for (const t of plan.tablesPresent) {
+      if (!objectExists("table", t)) {
         console.log(
-          `[dev:all] auto-resolve: ${migrationName} references a non-identifier-shaped ` +
-            `name (${table}.${column}) — falling through to abort.`,
+          `[dev:all] auto-resolve: ${migrationName} expects table ${t} but it is ` +
+            `NOT present — re-running the migration is required.`,
         );
         return false;
       }
+    }
+    for (const t of plan.tablesAbsent) {
+      if (objectExists("table", t)) {
+        console.log(
+          `[dev:all] auto-resolve: ${migrationName} left rebuild temp table ${t} ` +
+            `behind — the table rebuild did not finish; re-running is required.`,
+        );
+        return false;
+      }
+    }
+    for (const { table, column } of plan.columns) {
       const cols = db.query(`PRAGMA table_info('${table}')`).all() as Array<{
         name: string;
       }>;
@@ -308,6 +586,22 @@ export async function isMigrationFullyApplied(
         );
         return false;
       }
+    }
+    for (const i of plan.indexesPresent) {
+      if (!objectExists("index", i)) {
+        console.log(
+          `[dev:all] auto-resolve: ${migrationName} expects index ${i} but it is ` +
+            `NOT present — re-running the migration is required.`,
+        );
+        return false;
+      }
+    }
+    if (plan.hasDataStatements) {
+      console.log(
+        `[dev:all] auto-resolve: ${migrationName} — all schema objects present; ` +
+          `its seed/backfill data statements are NOT re-run (this matches ` +
+          `\`prisma migrate resolve --applied\` semantics).`,
+      );
     }
     return true;
   } finally {
@@ -329,7 +623,7 @@ async function markMigrationApplied(migrationName: string): Promise<boolean> {
       "--applied",
       migrationName,
       "--config",
-      "prisma.config.local.ts",
+      PRISMA_CONFIG,
     ],
     cwd: ROOT,
     stdout: "inherit",
@@ -340,8 +634,93 @@ async function markMigrationApplied(migrationName: string): Promise<boolean> {
   return code === 0;
 }
 
-async function migrate() {
+/**
+ * Phase-2 safety gate. Compare the live DB against what the full migration
+ * history *should* produce. The desktop SQLite track carries known,
+ * intentional drift (ACCEPTED_DRIFT in check-desktop-schema-drift.ts), so we
+ * don't require an empty diff — only that every drifting table is on that
+ * allow-list. Any *unexpected* drift means something deeper is wrong and we
+ * must NOT auto-heal the ledger.
+ */
+async function liveDbDriftIsAllowlistedOnly(): Promise<boolean> {
+  const { ACCEPTED_DRIFT, parseDrift } = await import(
+    "./check-desktop-schema-drift"
+  );
+  const { code, stdout, stderr } = await runPrismaCapture([
+    "migrate",
+    "diff",
+    "--from-migrations",
+    MIGRATIONS_DIR,
+    "--to-config-datasource",
+  ]);
+  if (code !== 0) {
+    console.warn(
+      `[dev:all] migrate doctor: \`migrate diff\` exited ${code}; skipping the ` +
+        `auto-resolve safety gate and leaving the ledger to \`migrate deploy\`.` +
+        (stderr ? `\n${stderr}` : ""),
+    );
+    return false;
+  }
+  const drift = parseDrift(stdout);
+  const unexpected = drift.filter((d) => !(d.table in ACCEPTED_DRIFT));
+  if (unexpected.length > 0) {
+    console.warn(
+      `[dev:all] migrate doctor: ${unexpected.length} table(s) drift outside the ` +
+        `accepted-drift allow-list (${unexpected
+          .map((d) => d.table)
+          .join(", ")}). Not auto-resolving — letting \`migrate deploy\` ` +
+        `surface this loudly.`,
+    );
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Phase 2: reconcile ledger drift BEFORE `migrate deploy` runs, so the
+ * common "schema is ahead of the ledger after an interrupted boot" case
+ * heals in one shot instead of surfacing as P3009/P3018.
+ */
+export async function migrateDoctor(): Promise<void> {
+  const dbPath = resolveLocalDbPath();
+  const stuck = await findStuckMigrations(dbPath);
+  if (stuck.length === 0) return;
+
+  console.log(
+    `[dev:all] migrate doctor: ${stuck.length} unfinished migration ledger ` +
+      `row(s) detected (${stuck.join(", ")}). Verifying against the live DB…`,
+  );
+
+  if (!(await liveDbDriftIsAllowlistedOnly())) return;
+
+  for (const name of stuck) {
+    if (!(await isMigrationFullyApplied(name, { dbPath }))) {
+      console.warn(
+        `[dev:all] migrate doctor: ${name} is NOT fully applied in the DB — ` +
+          `leaving it for \`migrate deploy\` to run/repair.`,
+      );
+      continue;
+    }
+    if (!(await markMigrationApplied(name))) {
+      console.warn(`[dev:all] migrate doctor: failed to mark ${name} as applied.`);
+    }
+  }
+}
+
+function abortMigrate(code: number, msg: string): never {
+  console.error(`[dev:all] ${msg}`);
+  process.exit(code || 1);
+}
+
+export async function migrate() {
   console.log("[dev:all] Running SQLite migrations…");
+
+  // Phase 2: heal known ledger drift before deploy even tries.
+  await migrateDoctor();
+
+  // Phase 1: deploy, with a bounded recovery loop as a backstop for any
+  // drift the doctor couldn't see (e.g. a genuinely-pending migration whose
+  // columns already exist, so it isn't yet a ledger row).
   for (let attempt = 0; attempt <= MAX_AUTO_RESOLVE_RETRIES; attempt++) {
     const { code, stderr } = await runMigrateDeploy();
     if (code === 0) {
@@ -349,44 +728,81 @@ async function migrate() {
       return;
     }
 
-    const failure = parseDuplicateColumnFailure(stderr);
+    const failure = parseRecoverableFailure(stderr);
     if (!failure) {
-      console.error("[dev:all] Migration failed — aborting.");
-      process.exit(code);
+      abortMigrate(code, "Migration failed — aborting.");
     }
 
     if (attempt === MAX_AUTO_RESOLVE_RETRIES) {
-      console.error(
-        `[dev:all] auto-resolve gave up after ${MAX_AUTO_RESOLVE_RETRIES} ` +
-          `recoveries — aborting. Run \`prisma migrate status --config ` +
-          `prisma.config.local.ts\` to inspect the ledger manually.`,
+      abortMigrate(
+        code,
+        `auto-resolve gave up after ${MAX_AUTO_RESOLVE_RETRIES} recoveries — ` +
+          `aborting. Run \`bun x prisma migrate status --config ${PRISMA_CONFIG}\` ` +
+          `to inspect the ledger manually.`,
       );
-      process.exit(code);
     }
 
     console.log(
-      `[dev:all] Detected P3018 ledger drift on ${failure.migrationName} ` +
-        `(duplicate column ${failure.duplicateColumn}); attempting auto-resolve…`,
+      `[dev:all] Detected recoverable migration failure on ` +
+        `${failure.migrationNames.join(", ")}; verifying against the live DB…`,
     );
 
-    const safe = await isMigrationFullyApplied(failure.migrationName);
-    if (!safe) {
-      console.error("[dev:all] Migration failed — aborting.");
-      process.exit(code);
-    }
-
-    const resolved = await markMigrationApplied(failure.migrationName);
-    if (!resolved) {
-      console.error(
-        `[dev:all] auto-resolve: failed to mark ${failure.migrationName} ` +
-          `as applied — aborting.`,
-      );
-      process.exit(code);
+    for (const name of failure.migrationNames) {
+      if (!(await isMigrationFullyApplied(name))) {
+        abortMigrate(
+          code,
+          `${name} is genuinely not applied (its objects are missing) — ` +
+            `re-running it is required but its SQL fails. This is real schema ` +
+            `drift, not ledger drift. Aborting; inspect with ` +
+            `\`bun x prisma migrate status --config ${PRISMA_CONFIG}\`.`,
+        );
+      }
+      if (!(await markMigrationApplied(name))) {
+        abortMigrate(code, `failed to mark ${name} as applied — aborting.`);
+      }
     }
     // Loop back and retry `migrate deploy` — the next iteration either
-    // succeeds outright or surfaces the next stuck migration in the
-    // chain (which we attempt to recover up to MAX_AUTO_RESOLVE_RETRIES
-    // times before giving up).
+    // succeeds outright or surfaces the next stuck migration in the chain
+    // (recovered up to MAX_AUTO_RESOLVE_RETRIES times before giving up).
+  }
+}
+
+/**
+ * Run the migration phase under a SIGINT guard. `migrate deploy` is already
+ * spawned in its own process group (see runPrismaDetached) so a Ctrl+C can't
+ * kill prisma mid-write; here we also stop the *parent* from tearing down
+ * until the current step finishes, then exit cleanly. A second Ctrl+C forces
+ * an immediate exit.
+ */
+async function runMigratePhase(): Promise<void> {
+  let interruptCount = 0;
+  let interruptRequested = false;
+  const onSigint = () => {
+    interruptCount++;
+    if (interruptCount >= 2) {
+      console.error(
+        "\n[dev:all] Force-exiting mid-migration — the ledger may need recovery " +
+          "on next boot (it will self-heal).",
+      );
+      process.exit(130);
+    }
+    interruptRequested = true;
+    console.error(
+      "\n[dev:all] Ctrl+C during migrations — finishing the current step first " +
+        "(interrupting now is what corrupts the ledger). Press Ctrl+C again to force.",
+    );
+  };
+  process.on("SIGINT", onSigint);
+  try {
+    await migrate();
+  } finally {
+    process.off("SIGINT", onSigint);
+  }
+  if (interruptRequested) {
+    console.error(
+      "[dev:all] Exiting after deferred Ctrl+C (migrations completed safely).",
+    );
+    process.exit(130);
   }
 }
 
@@ -553,7 +969,7 @@ async function startDevServers() {
 
 if (import.meta.main) {
   await Promise.all([killProcessOnPort(API_PORT), killProcessOnPort(WEB_PORT)]);
-  await migrate();
+  await runMigratePhase();
   await generatePrismaClients();
   await generateRoutes();
   await buildSdk();

@@ -91,7 +91,7 @@ interface Cli {
   quiet: boolean
 }
 
-interface DriftEntry {
+export interface DriftEntry {
   table: string
   kind: 'redefined' | 'changed' | 'added' | 'removed'
   raw: string
@@ -122,7 +122,7 @@ const REPO_ROOT = resolve(import.meta.dir, '..')
  * and add every table the output mentions, with a one-line note
  * indicating what is known about the drift on it.
  */
-const ACCEPTED_DRIFT: Record<string, KnownDrift> = {
+export const ACCEPTED_DRIFT: Record<string, KnownDrift> = {
   agent_configs: {
     reason:
       'Pre-existing drift discovered when this check was added (2026-05-21). Detailed audit pending.',
@@ -219,7 +219,7 @@ function runMigrateDiff(extraArgs: string[]): {
   }
 }
 
-function parseDrift(output: string): DriftEntry[] {
+export function parseDrift(output: string): DriftEntry[] {
   const entries: DriftEntry[] = []
   for (const line of output.split('\n')) {
     // Prisma's summary format is documented at
@@ -359,4 +359,9 @@ function main(): void {
   process.exit(0)
 }
 
-main()
+// Guard the side-effecting entrypoint so other scripts (e.g.
+// `scripts/dev-all.ts`'s migrate doctor) can import `ACCEPTED_DRIFT` and
+// `parseDrift` without triggering the CLI's `process.exit`.
+if (import.meta.main) {
+  main()
+}
