@@ -928,6 +928,36 @@ export function localProjectsRoutes(): Hono {
     return c.json({ projects: ranked })
   })
 
+  /**
+   * GET /:id — relation-loaded project for the desktop Folders/Workspace
+   * panel and the project layout's folder hydration.
+   *
+   * Why this exists separately from the generated `GET /api/projects/:id`:
+   * that route returns the bare scalar row wrapped in a `{ ok, data }`
+   * envelope and does NOT honor `?include=projectFolders`, so the folder
+   * UI never sees linked folders and (because callers were reading the
+   * wrong envelope key) mis-read `workingMode` as `undefined` and fell
+   * back to the dead "Managed project" empty state. This route returns
+   * the `projectFolders` relation in the `{ project }` shape the folder /
+   * trust UI already expects, keeping every desktop folder read on one
+   * consistent contract.
+   *
+   * Registered after `/recent` so the static route still wins; Hono
+   * prioritizes static segments over `:id` regardless, but ordering keeps
+   * the intent obvious.
+   */
+  router.get('/:id', async (c) => {
+    const auth = c.get('auth' as never) as { userId?: string } | undefined
+    if (!auth?.userId) return c.json({ error: 'unauthenticated' }, 401)
+    const projectId = c.req.param('id')
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      include: { projectFolders: true },
+    })
+    if (!project) return c.json({ error: 'not_found' }, 404)
+    return c.json({ project })
+  })
+
   return router
 }
 

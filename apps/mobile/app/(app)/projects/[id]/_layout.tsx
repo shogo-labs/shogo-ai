@@ -540,6 +540,84 @@ export default observer(function ProjectLayout() {
     }
   }, [projectId])
 
+  // Top-bar trust toggle: flips between restricted and trusted based on
+  // the current level. Restricted -> trust this folder; trusted ->
+  // restrict it again. Reuses the same /trust route as the prompt and
+  // updates local state from the returned (folder-included) project.
+  const handleToggleTrust = useCallback(async () => {
+    if (!projectId) return
+    const next = projectTrustLevel !== 'trusted'
+    setTrustSubmitting(true)
+    try {
+      const res = await fetch(
+        `${API_URL}/api/local/projects/${encodeURIComponent(projectId)}/trust`,
+        {
+          method: 'POST',
+          credentials: Platform.OS === 'web' ? 'include' : 'omit',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ trusted: next }),
+        },
+      )
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        Alert.alert('Could not update trust', String(body?.error ?? `HTTP ${res.status}`))
+        return
+      }
+      const body = await res.json().catch(() => ({}))
+      if (body?.project) setProject(body.project)
+    } catch (err: any) {
+      Alert.alert('Could not update trust', err?.message ?? String(err))
+    } finally {
+      setTrustSubmitting(false)
+    }
+  }, [projectId, projectTrustLevel])
+
+  // Single source for refreshing the project WITH its projectFolders
+  // relation + current workingMode / trustLevel. The generated
+  // /api/projects/:id route the MST collection store uses omits the
+  // folders relation (and wraps its body in `{ ok, data }`), so we read
+  // the local-projects route — which returns a `{ project }` envelope
+  // including folders — and merge the result into local state.
+  // Best-effort: no-op outside SHOGO_LOCAL_MODE (the route 404s).
+  const refreshLocalProject = useCallback(async () => {
+    if (!projectId) return
+    try {
+      const res = await fetch(
+        `${API_URL}/api/local/projects/${encodeURIComponent(projectId)}`,
+        { credentials: Platform.OS === 'web' ? 'include' : 'omit' },
+      )
+      if (!res.ok) return
+      const body = await res.json().catch(() => null)
+      const lp = body?.project
+      if (!lp) return
+      setProject((prev: any) => {
+        if (!prev) return prev
+        return {
+          ...prev,
+          workingMode: lp.workingMode ?? prev.workingMode,
+          trustLevel: lp.trustLevel ?? prev.trustLevel,
+          projectFolders: Array.isArray(lp.projectFolders)
+            ? lp.projectFolders
+            : prev.projectFolders,
+        }
+      })
+    } catch {
+      /* best-effort; managed/cloud builds have no local-projects route */
+    }
+  }, [projectId])
+
+  // Hydrate projectFolders (and reconcile workingMode/trustLevel) once
+  // the project row has loaded. Without this, `primaryFolderPath` and the
+  // TrustPrompt would see an empty folder list because the collection
+  // store's loadById can't include the relation. Runs once per projectId.
+  const foldersHydratedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!projectId || !project?.id) return
+    if (foldersHydratedRef.current === projectId) return
+    foldersHydratedRef.current = projectId
+    void refreshLocalProject()
+  }, [projectId, project?.id, refreshLocalProject])
+
   // Auto-show the trust prompt the first time an external + restricted
   // project lands on this layout. We track this with a ref so the modal
   // doesn't re-pop after the user has dismissed it once per session.
@@ -2114,6 +2192,11 @@ export default observer(function ProjectLayout() {
     hiddenTabs,
     canvasEnabled,
     activeMode,
+    // Workspace Trust badge (external/folder-linked projects only).
+    workingMode: isExternalProject ? 'external' as const : 'managed' as const,
+    trustLevel: projectTrustLevel,
+    onToggleTrust: handleToggleTrust,
+    trustBusy: trustSubmitting,
     showChatSessions: isChatFullscreen ? false : showChatSessions,
     isChatCollapsed: isChatFullscreen ? true : chatCollapsed,
     onChatSessionsToggle: isChatFullscreen ? undefined : () => setShowChatSessions((s: boolean) => !s),
@@ -2549,41 +2632,31 @@ export default observer(function ProjectLayout() {
             </PanelErrorBoundary>
             <PanelErrorBoundary panelName="Settings">
               {(() => {
-                // Folders' onChange refreshes the project so workingMode /
-                // trust / folders changes propagate without a full reload.
+                // Folders' onChange refreshes the project (with folders +
+                // workingMode + trustLevel) so trust / folder changes
+                // propagate without a full reload.
                 const reloadProject = () => {
-                  if (!projectId) return
-                  void fetch(
-                    `${API_URL}/api/projects/${encodeURIComponent(projectId)}?include=projectFolders`,
-                    { credentials: Platform.OS === 'web' ? 'include' : 'omit' },
-                  )
-                    .then((r) => (r.ok ? r.json() : null))
-                    .then((data) => {
-                      const next = data?.project ?? data
-                      if (next) setProject(next)
-                    })
-                    .catch(() => {})
+                  void refreshLocalProject()
                 }
                 const workspaceItems: SettingsSectionItem[] = []
-                // Folders is only meaningful for external projects (it lets
-                // the user pick which local directories the agent has
-                // access to). Managed projects don't expose this knob.
-                if (isExternalProject) {
-                  workspaceItems.push({
-                    id: 'folders',
-                    label: 'Folders',
-                    icon: FolderTree,
-                    render: () => (
-                      <PanelErrorBoundary panelName="Folders">
-                        <FoldersPanel
-                          visible
-                          projectId={projectId!}
-                          onChange={reloadProject}
-                        />
-                      </PanelErrorBoundary>
-                    ),
-                  })
-                }
+                // Always expose the Folders/Workspace panel. For external
+                // projects it manages linked folders + the trust toggle;
+                // for managed projects it renders an informational state
+                // with an "Open a folder" CTA instead of a dead end.
+                workspaceItems.push({
+                  id: 'folders',
+                  label: 'Folders',
+                  icon: FolderTree,
+                  render: () => (
+                    <PanelErrorBoundary panelName="Folders">
+                      <FoldersPanel
+                        visible
+                        projectId={projectId!}
+                        onChange={reloadProject}
+                      />
+                    </PanelErrorBoundary>
+                  ),
+                })
                 // Checkpoints on web lives in the IDE's Source Control
                 // activity-bar entry; native users still reach it from
                 // Settings.

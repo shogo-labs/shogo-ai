@@ -403,3 +403,105 @@ describe('localProjectsRoutes other routes', () => {
     expect([404, 500]).toContain(res.status)
   })
 })
+
+describe('localProjectsRoutes GET /:id', () => {
+  test('401 unauthenticated', async () => {
+    const app = appNoAuth()
+    const res = await app.request('/proj-x')
+    expect(res.status).toBe(401)
+  })
+
+  test('404 when project missing', async () => {
+    const app = appWithAuth()
+    const res = await app.request('/missing-id')
+    expect(res.status).toBe(404)
+  })
+
+  test('200 returns { project } with projectFolders, workingMode, trustLevel', async () => {
+    projects.set('proj-x', {
+      id: 'proj-x',
+      name: 'External One',
+      workingMode: 'external',
+      trustLevel: 'restricted',
+      projectFolders: [{ id: 'folder-1', path: rootDir, isPrimary: true }],
+    })
+    const app = appWithAuth()
+    const res = await app.request('/proj-x')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as any
+    // The folder UI reads `body.project.*` — not the `{ ok, data }`
+    // envelope the generated route uses. Lock that contract in.
+    expect(body.project?.id).toBe('proj-x')
+    expect(body.project?.workingMode).toBe('external')
+    expect(body.project?.trustLevel).toBe('restricted')
+    expect(Array.isArray(body.project?.projectFolders)).toBe(true)
+    expect(body.project.projectFolders[0]?.isPrimary).toBe(true)
+  })
+
+  test('static GET /recent still wins over the /:id param route', async () => {
+    const app = appWithAuth()
+    const res = await app.request('/recent')
+    expect([200, 500]).toContain(res.status)
+    if (res.status === 200) {
+      const body = (await res.json()) as any
+      // /recent returns { projects: [...] }, never a single { project }.
+      expect(Array.isArray(body.projects)).toBe(true)
+      expect(body.project).toBeUndefined()
+    }
+  })
+})
+
+describe('localProjectsRoutes POST /:id/trust write + refresh ping', () => {
+  test('200 flips trustLevel restricted -> trusted and persists', async () => {
+    projects.set('proj-trust', {
+      id: 'proj-trust',
+      workingMode: 'external',
+      trustLevel: 'restricted',
+      projectFolders: [],
+    })
+    const app = appWithAuth()
+    const res = await app.request('/proj-trust/trust', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ trusted: true }),
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as any
+    expect(body.project?.trustLevel).toBe('trusted')
+    expect(projects.get('proj-trust')?.trustLevel).toBe('trusted')
+  })
+
+  test('200 flips trustLevel trusted -> restricted (revoke)', async () => {
+    projects.set('proj-trust2', {
+      id: 'proj-trust2',
+      workingMode: 'external',
+      trustLevel: 'trusted',
+      projectFolders: [],
+    })
+    const app = appWithAuth()
+    const res = await app.request('/proj-trust2/trust', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ trusted: false }),
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as any
+    expect(body.project?.trustLevel).toBe('restricted')
+  })
+
+  test('400 when `trusted` is not a boolean', async () => {
+    projects.set('proj-trust3', {
+      id: 'proj-trust3',
+      workingMode: 'external',
+      trustLevel: 'restricted',
+      projectFolders: [],
+    })
+    const app = appWithAuth()
+    const res = await app.request('/proj-trust3/trust', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ trusted: 'yes' }),
+    })
+    expect(res.status).toBe(400)
+  })
+})
