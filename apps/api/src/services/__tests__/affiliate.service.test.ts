@@ -809,6 +809,55 @@ describe('recordCommissionsForInvoice', () => {
     const created = await svc.recordCommissionsForInvoice(buildInvoice(), makeStripe(), new Date('2026-05-15'))
     expect(created).toBe(0)
   })
+
+  test('per-affiliate L1 override replaces the tier rate as a flat rate', async () => {
+    const { direct } = setupTree()
+    direct.commissionRateBps = 3000 // 30% custom deal
+    const created = await svc.recordCommissionsForInvoice(buildInvoice(), makeStripe(), new Date('2026-05-15'))
+    expect(created).toBe(1)
+    expect(commissions[0].level).toBe(1)
+    expect(commissions[0].rateBps).toBe(3000)
+    expect(commissions[0].amountCents).toBe(3000) // 30% of 10_000
+    expect(affiliates.get('aff_direct')!.pendingPayoutCents).toBe(3000)
+  })
+
+  test('L1 override bypasses the durationDays window and step-down', async () => {
+    const { direct } = setupTree()
+    direct.commissionRateBps = 2500 // 25% flat
+    // Attribution well past the 365-day window — normally L1 would step
+    // down to the tier's secondaryRateBps (1000). The override wins.
+    attributions.set('u-buyer', {
+      id: 'attr_buyer',
+      userId: 'u-buyer',
+      affiliateId: direct.id,
+      attributedAt: new Date('2025-01-01'),
+    })
+    const created = await svc.recordCommissionsForInvoice(buildInvoice(), makeStripe(), new Date('2026-12-15'))
+    expect(created).toBe(1)
+    expect(commissions[0].rateBps).toBe(2500)
+    expect(commissions[0].amountCents).toBe(2500)
+  })
+
+  test('L1 override does not affect L2/L3 (they keep tier rates)', async () => {
+    process.env.SHOGO_AFFILIATE_PAYOUT_MAX_DEPTH = '3'
+    const { direct } = setupTree()
+    direct.commissionRateBps = 3000 // override only the direct referrer
+    const created = await svc.recordCommissionsForInvoice(buildInvoice(), makeStripe(), new Date('2026-05-15'))
+    expect(created).toBe(3)
+    const byAff = Object.fromEntries(commissions.map((c) => [c.affiliateId, c]))
+    expect(byAff.aff_direct.amountCents).toBe(3000) // 30% override
+    expect(byAff.aff_l2.amountCents).toBe(500) // tier 5%
+    expect(byAff.aff_root.amountCents).toBe(200) // tier 2%
+  })
+
+  test('null override falls back to the tier rate', async () => {
+    const { direct } = setupTree()
+    direct.commissionRateBps = null
+    const created = await svc.recordCommissionsForInvoice(buildInvoice(), makeStripe(), new Date('2026-05-15'))
+    expect(created).toBe(1)
+    expect(commissions[0].rateBps).toBe(2000) // unchanged tier rate
+    expect(commissions[0].amountCents).toBe(2000)
+  })
 })
 
 // ===========================================================================

@@ -136,6 +136,16 @@ const prisma = {
   signupAttribution: {
     upsert: mock(async () => ({})),
   },
+  affiliate: {
+    findUnique: mock(async ({ where }: any) => (where.id === 'aff-1' ? { id: 'aff-1' } : null)),
+    update: mock(async ({ where, data }: any) => ({
+      id: where.id,
+      userId: 'user-9',
+      code: 'creator',
+      status: 'active',
+      commissionRateBps: data.commissionRateBps,
+    })),
+  },
 }
 
 mock.module('../lib/prisma', () => withPrismaExports({ prisma }))
@@ -389,6 +399,47 @@ describe('PATCH /heartbeats/projects/:projectId — gap-closer branches', () => 
     const lastCall = prisma.agentConfig.update.mock.calls.at(-1)![0]
     expect(lastCall.data.heartbeatEnabled).toBe(false)
     expect(lastCall.data.nextHeartbeatAt).toBeNull()
+  })
+})
+
+describe('PATCH /affiliates/:id — per-affiliate commission-rate override', () => {
+  function patch(id: string, body: unknown) {
+    return adminRoutes().request(`http://api.test/affiliates/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  test('sets a valid override rate', async () => {
+    const res = await patch('aff-1', { commissionRateBps: 3000 })
+    expect(res.status).toBe(200)
+    const body = await json(res)
+    expect(body.ok).toBe(true)
+    expect(body.affiliate.commissionRateBps).toBe(3000)
+    expect(prisma.affiliate.update.mock.calls.at(-1)![0].data).toEqual({ commissionRateBps: 3000 })
+  })
+
+  test('clears the override when passed null', async () => {
+    const res = await patch('aff-1', { commissionRateBps: null })
+    expect(res.status).toBe(200)
+    const body = await json(res)
+    expect(body.affiliate.commissionRateBps).toBeNull()
+    expect(prisma.affiliate.update.mock.calls.at(-1)![0].data).toEqual({ commissionRateBps: null })
+  })
+
+  test('rejects out-of-range and non-integer rates', async () => {
+    expect((await patch('aff-1', { commissionRateBps: 10001 })).status).toBe(400)
+    expect((await patch('aff-1', { commissionRateBps: -1 })).status).toBe(400)
+    expect((await patch('aff-1', { commissionRateBps: 12.5 })).status).toBe(400)
+    expect((await patch('aff-1', { commissionRateBps: 'lots' })).status).toBe(400)
+  })
+
+  test('returns 404 for an unknown affiliate', async () => {
+    const res = await patch('ghost', { commissionRateBps: 1000 })
+    expect(res.status).toBe(404)
+    const body = await json(res)
+    expect(body.error.code).toBe('affiliate_not_found')
   })
 })
 

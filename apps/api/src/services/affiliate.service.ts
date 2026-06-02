@@ -463,6 +463,9 @@ type InvoiceForCommission = {
  *   - excludes overage trust-block line items from the commission basis
  *   - per-level `durationDays` window: skips a level if the attribution
  *     is older than that window
+ *   - per-affiliate L1 override: when the direct referrer has
+ *     `commissionRateBps` set, that flat rate replaces the level-1 tier
+ *     rate (durationDays / secondaryRateBps bypassed for that affiliate)
  *   - upsert keyed on (invoice, affiliate, level) — webhook replays
  *     never produce duplicate rows
  */
@@ -548,6 +551,18 @@ export async function recordCommissionsForInvoice(
   const cap = Math.min(tiers.length, getPayoutMaxDepth())
   const upline = await getUpline(affiliateId, cap)
 
+  // Per-affiliate L1 override. The direct referrer (level 1) is exactly
+  // `affiliateId` (the customer's attributed affiliate). When that affiliate
+  // has a `commissionRateBps` set, it replaces the level-1 tier rate as a
+  // FLAT rate: the tier's durationDays window and secondaryRateBps step-down
+  // are intentionally bypassed for this affiliate's direct referrals. Deeper
+  // upline levels always use tier rates.
+  const directAffiliate = await prisma.affiliate.findUnique({
+    where: { id: affiliateId },
+    select: { commissionRateBps: true },
+  })
+  const l1OverrideBps = directAffiliate?.commissionRateBps ?? null
+
   const refundHoldDays = getRefundHoldDays()
   const eligibleAt = new Date(now.getTime() + refundHoldDays * 24 * 60 * 60 * 1000)
 
@@ -564,7 +579,11 @@ export async function recordCommissionsForInvoice(
     const uplineEntry = upline.find((u) => u.level === level)
     if (!uplineEntry) continue
     let rateBps = tier.rateBps as number
-    if (tier.durationDays != null && attrAgeDays > tier.durationDays) {
+    if (level === 1 && l1OverrideBps != null) {
+      // Flat per-affiliate override for the direct referrer: ignore the
+      // tier's durationDays / secondaryRateBps and always pay this rate.
+      rateBps = l1OverrideBps
+    } else if (tier.durationDays != null && attrAgeDays > tier.durationDays) {
       // This level's primary window has expired. If a step-down rate is
       // configured (e.g. 20% for year one -> 10% forever), keep paying at
       // that reduced rate; otherwise the level stops earning (legacy
