@@ -7,9 +7,8 @@ import { csrf } from 'hono/csrf'
 import { secureHeaders } from 'hono/secure-headers'
 import { bodyLimit } from 'hono/body-limit'
 import Stripe from 'stripe'
-import { generateText, type ModelMessage } from 'ai'
+import { type ModelMessage } from 'ai'
 import { z } from 'zod'
-import { createAnthropic } from '@ai-sdk/anthropic'
 import { resolve, join } from 'path'
 import { fileURLToPath } from 'url'
 import { readdir, stat, mkdir, appendFile } from 'fs/promises'
@@ -52,6 +51,11 @@ import { chatRoutes } from './routes/chat'
 import { createChatMessageEditRoutes } from './routes/chat-message-edits'
 import { toolsProxyRoutes } from './routes/tools-proxy'
 import { calculateUsageCost } from './lib/usage-cost'
+import {
+  generateTitleCompletion,
+  setTitleGenerationModelId,
+  TITLE_MODEL_SETTING_KEY,
+} from './lib/title-model'
 import { openSession, closeSession, hasSession } from './lib/proxy-billing-session'
 import { teeChatStreamForBilling } from './lib/chat-usage-tracker'
 import { adminRoutes, userAttributionRoute } from './routes/admin'
@@ -5041,6 +5045,48 @@ app.put('/api/admin/settings/agent-models', async (c) => {
 })
 
 // =============================================================================
+// Title Generation Model — super-admin selectable model for chat/project
+// title generation (`POST /api/generate-project-name`). Stored as a single
+// PlatformSetting row; null/empty resets to the platform default (Haiku).
+// =============================================================================
+
+// GET /api/admin/settings/title-generation-model
+app.get('/api/admin/settings/title-generation-model', async (c) => {
+  try {
+    const row = await prisma.platformSetting.findUnique({ where: { key: TITLE_MODEL_SETTING_KEY } })
+    return c.json({ model: row?.value ?? null })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// PUT /api/admin/settings/title-generation-model
+app.put('/api/admin/settings/title-generation-model', async (c) => {
+  try {
+    const body = await c.req.json()
+    const auth = c.get('auth') as any
+    const userId = auth?.user?.id || 'unknown'
+    const value = typeof body?.model === 'string' ? body.model.trim() : ''
+
+    if (value.length === 0) {
+      await prisma.platformSetting.deleteMany({ where: { key: TITLE_MODEL_SETTING_KEY } })
+      setTitleGenerationModelId(null)
+      return c.json({ ok: true, model: null })
+    }
+
+    await prisma.platformSetting.upsert({
+      where: { key: TITLE_MODEL_SETTING_KEY },
+      create: { key: TITLE_MODEL_SETTING_KEY, value, updatedBy: userId },
+      update: { value, updatedBy: userId },
+    })
+    setTitleGenerationModelId(value)
+    return c.json({ ok: true, model: value })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// =============================================================================
 // Visible Models Config — admin-curated model allowlist for the user picker.
 // =============================================================================
 //
@@ -5347,17 +5393,12 @@ app.post('/api/generate-project-name', async (c) => {
       return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
     }
 
-    // Check if ANTHROPIC_API_KEY is available
-    if (!process.env.ANTHROPIC_API_KEY) {
-      console.log('[/api/generate-project-name] ANTHROPIC_API_KEY not set, using fallback')
-      const name = fallbackGenerateProjectName(prompt)
-      return c.json({ name, description: '' })
-    }
-
-    const anthropic = createAnthropic()
-
-    const result = await generateText({
-      model: anthropic('claude-haiku-4-5-20251001'),
+    // Run the admin-configured title-generation model (super-admin selectable
+    // via the `title-generation.model` PlatformSetting; defaults to Haiku).
+    // Custom OpenAI-compatible providers (e.g. Hoshi) don't need
+    // ANTHROPIC_API_KEY; the helper falls back to the default Haiku model and,
+    // failing that, throws so the outer catch returns a heuristic name.
+    const result = await generateTitleCompletion({
       maxTokens: 80,
       system: `You generate short titles for chat conversations. The user will provide the first message from a conversation. Your job is to generate a short title summarizing the topic.
 
@@ -5408,13 +5449,14 @@ Examples:
       name = fallbackGenerateProjectName(prompt)
     }
 
-    // Track USD usage (fire-and-forget, small cost for Haiku)
+    // Track USD usage (fire-and-forget). Bill against the resolved model id so
+    // DB per-token pricing (custom providers like Hoshi) is honored instead of
+    // the static Haiku bucket.
     if (workspaceId) {
-      const usage = result.usage as any
-      const inTok = usage?.inputTokens || usage?.promptTokens || 0
-      const outTok = usage?.outputTokens || usage?.completionTokens || 0
+      const inTok = result.inputTokens
+      const outTok = result.outputTokens
       if (inTok + outTok > 0) {
-        const { rawUsd, billedUsd } = calculateUsageCost(inTok, outTok, 'haiku')
+        const { rawUsd, billedUsd } = calculateUsageCost(inTok, outTok, result.billingModelId)
         billingService.consumeUsage({
           workspaceId,
           projectId: null,
@@ -5422,7 +5464,7 @@ Examples:
           actionType: 'project_name_generation',
           rawUsd,
           billedUsd,
-          actionMetadata: { inputTokens: inTok, outputTokens: outTok, totalTokens: inTok + outTok, rawUsd },
+          actionMetadata: { inputTokens: inTok, outputTokens: outTok, totalTokens: inTok + outTok, rawUsd, model: result.billingModelId },
         }).catch(() => {})
       }
     }
@@ -7420,6 +7462,20 @@ await (async () => {
     }
   } catch (err: any) {
     console.log('[AgentModels] No model overrides loaded (non-fatal):', err.message)
+  }
+})()
+
+// Load the admin-configured title-generation model from platform_settings into
+// memory so `/api/generate-project-name` resolves it without a DB round-trip.
+await (async () => {
+  try {
+    const row = await prisma.platformSetting.findUnique({ where: { key: TITLE_MODEL_SETTING_KEY } })
+    if (row?.value) {
+      setTitleGenerationModelId(row.value)
+      console.log('[TitleModel] Loaded admin title-generation model:', row.value)
+    }
+  } catch (err: any) {
+    console.log('[TitleModel] No title model override loaded (non-fatal):', err.message)
   }
 })()
 
