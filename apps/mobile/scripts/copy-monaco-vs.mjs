@@ -31,30 +31,43 @@
  */
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.resolve(__dirname, '..');
 
-const SOURCE_VS = path.join(APP_ROOT, 'node_modules', 'monaco-editor', 'min', 'vs');
-const SOURCE_PKG = path.join(APP_ROOT, 'node_modules', 'monaco-editor', 'package.json');
-const DEST_VS = path.join(APP_ROOT, 'public', 'vs');
-const VERSION_STAMP = path.join(DEST_VS, '.monaco-editor-version');
-
 function fail(msg) {
   console.error(`[copy-monaco-vs] ${msg}`);
   process.exit(1);
 }
 
-if (!existsSync(SOURCE_VS)) {
-  // `monaco-editor` is a direct dep of @shogo/mobile — if it's missing the
-  // workspace was never installed. Surface that loud instead of silently
-  // shipping an IDE-less build.
-  fail(`source not found: ${SOURCE_VS} — run \`bun install\` from the repo root.`);
+// Resolve `monaco-editor` via Node's module resolution rather than assuming a
+// fixed `apps/mobile/node_modules` layout. Bun's workspace install hoists
+// shared deps to the repo-root `node_modules`, so the package may live at
+// `/app/node_modules/monaco-editor` (root) OR `apps/mobile/node_modules`
+// (symlink). Hard-coding the latter made the Docker web build fail with
+// "source not found" whenever hoisting won — keep it robust by letting the
+// resolver find the real install location.
+const require = createRequire(import.meta.url);
+let SOURCE_PKG;
+try {
+  SOURCE_PKG = require.resolve('monaco-editor/package.json', { paths: [APP_ROOT] });
+} catch {
+  // `monaco-editor` is a direct dep of @shogo/mobile — if it can't be
+  // resolved the workspace was never installed. Surface that loud instead of
+  // silently shipping an IDE-less build.
+  fail('cannot resolve `monaco-editor` — run `bun install` from the repo root.');
 }
-if (!existsSync(SOURCE_PKG)) {
-  fail(`source package.json not found: ${SOURCE_PKG}`);
+
+const MONACO_ROOT = dirname(SOURCE_PKG);
+const SOURCE_VS = path.join(MONACO_ROOT, 'min', 'vs');
+const DEST_VS = path.join(APP_ROOT, 'public', 'vs');
+const VERSION_STAMP = path.join(DEST_VS, '.monaco-editor-version');
+
+if (!existsSync(SOURCE_VS)) {
+  fail(`source not found: ${SOURCE_VS} — reinstall \`monaco-editor\` (\`bun install\`).`);
 }
 
 const monacoVersion = JSON.parse(readFileSync(SOURCE_PKG, 'utf8')).version;
