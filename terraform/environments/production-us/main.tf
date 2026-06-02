@@ -135,6 +135,11 @@ module "us" {
   system_pool_min       = 3
   system_pool_max       = 15
 
+  # Live US nodes are already 200 GB (matches the module default). Stated
+  # explicitly so the cross-region parity check has a US baseline to compare
+  # EU/India against (see .github/scripts/check-node-disk-parity.sh).
+  system_node_boot_volume_gb = 200
+
   enable_workload_pool = false
 
   # Autoscaler IAM (tenancy-level — only enable in primary region)

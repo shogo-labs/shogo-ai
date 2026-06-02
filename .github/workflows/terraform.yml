@@ -105,6 +105,26 @@ jobs:
       - name: terraform validate
         run: terraform validate -no-color
 
+      # Cross-region node-pool boot-volume parity guard (2026-06-02 EU
+      # incident): EU/India bootstrapped at 100 GB while US ran 200 GB, and
+      # the oke module ignores in-place boot-volume changes, so the drift was
+      # invisible to `terraform plan`. This asserts parity against the LIVE
+      # OCI pools so the gap can never silently re-open.
+      - name: Install OCI CLI
+        run: pip install oci-cli --quiet
+
+      - name: Node disk parity check (cross-region boot volumes)
+        env:
+          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_CLI_REGION: us-ashburn-1
+          COMPARTMENT_ID: ${{ vars.COMPARTMENT_ID }}
+          EXPECTED_GB: "200"
+          REGIONS: "us-ashburn-1 eu-frankfurt-1 ap-mumbai-1"
+        run: "$GITHUB_WORKSPACE/.github/scripts/check-node-disk-parity.sh"
+
       - name: terraform plan
         id: plan
         env:
