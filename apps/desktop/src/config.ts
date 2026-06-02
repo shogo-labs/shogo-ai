@@ -68,7 +68,7 @@ export function getCloudUrl(): string {
 }
 
 const DEFAULT_VM_CONFIG: VMIsolationConfig = {
-  enabled: 'auto',
+  enabled: false,
   memoryMB: 4096,
   poolMemoryMB: 1536,
   cpus: 0,  // 0 = auto (half physical cores)
