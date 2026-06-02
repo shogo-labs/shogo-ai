@@ -92,6 +92,23 @@ variable "system_node_memory_gb" {
   default     = 64
 }
 
+variable "system_node_boot_volume_gb" {
+  # Set explicitly per environment so the value is auditable and a
+  # cross-region drift (e.g. EU bootstrapped at 100 GB while US is 200 GB)
+  # is visible in code, not hidden behind a module default. The EU
+  # 2026-06-02 incident was caused by EU nodes running 100 GB boot volumes:
+  # ~30 GB of stacked 8 GB runtime images pushed them past the kubelet
+  # DiskPressure threshold, triggering eviction/image-GC and warm-pool churn.
+  #
+  # NOTE: the oke module ignores in-place changes to this attribute
+  # (boot volume changes force a rolling node replacement). Raising it on an
+  # already-bootstrapped pool therefore requires a deliberate node-pool
+  # replacement — see terraform/README.md ("Boot volume remediation").
+  description = "Boot volume size (GB) for system nodes. Must match across regions."
+  type        = number
+  default     = 200
+}
+
 variable "system_pool_size" {
   description = "Desired system node count"
   type        = number

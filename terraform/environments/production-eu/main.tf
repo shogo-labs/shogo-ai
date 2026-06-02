@@ -118,6 +118,15 @@ module "eu" {
   system_pool_min       = 2
   system_pool_max       = 10
 
+  # 200 GB to match production-us. EU was bootstrapped at 100 GB, which
+  # caused the 2026-06-02 DiskPressure incident (stacked 8 GB runtime images
+  # filled the disk -> kubelet eviction/image-GC -> warm-pool churn -> the
+  # api rollout could not reach initial scale). The oke module ignores
+  # in-place boot-volume changes, so applying this requires a one-time
+  # controlled node-pool replacement (see terraform/README.md "Boot volume
+  # remediation"). Until that cycle runs, the live value stays 100 GB.
+  system_node_boot_volume_gb = 200
+
   enable_workload_pool = false
 
   # Observability
