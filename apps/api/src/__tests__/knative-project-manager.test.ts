@@ -22,6 +22,14 @@ import { withPrismaExports } from './helpers/prisma-mock-exports'
 // Force kubernetes-mode for the lifetime of this test file. `isKubernetes()`
 // reads `KUBERNETES_SERVICE_HOST` lazily so we can set it before importing
 // the manager.
+// Clear env vars that leak into pod runners (staging/prod set SHOGO_API_URL,
+// API_URL, etc. via the runtime's outer env, which would otherwise short-circuit
+// the manager's `process.env.API_URL || process.env.SHOGO_API_URL || `http://api.${systemNamespace}.svc.cluster.local``
+// fallback and make tests fail when run inside a Shogo agent pod).
+delete process.env.API_URL
+delete process.env.SHOGO_API_URL
+delete process.env.SYSTEM_NAMESPACE
+delete process.env.SHOGO_PUBLIC_API_URL
 process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
 process.env.KUBERNETES_SERVICE_PORT = '443'
 process.env.PREVIEW_BASE_DOMAIN = 'example.com'
