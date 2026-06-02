@@ -41,7 +41,12 @@
  * managed (which always live inside our sandbox).
  */
 
+import { existsSync } from 'fs'
+
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
+
+/** Same path internal-api.ts uses to detect a Kubernetes service account. */
+const SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token'
 
 export type WorkingMode = 'managed' | 'external'
 export type TrustLevel = 'trusted' | 'restricted'
@@ -149,6 +154,23 @@ export async function refreshTrust(): Promise<void> {
   if (!apiUrl) {
     // No API to ask. Same fallback as above.
     return
+  }
+
+  // Diagnostic for the silent fail-closed case: if we resolved to the
+  // in-cluster service fallback but there's no Kubernetes service-account
+  // token present, this is almost certainly a desktop / local install
+  // whose runtime env is missing SHOGO_API_URL / API_URL. The fetch below
+  // will fail to resolve `api.<ns>.svc.cluster.local`, the resolver keeps
+  // its fail-closed `restricted` default, and "Trust folder" appears to do
+  // nothing. Surface a clear breadcrumb instead of a mysterious hang.
+  if (apiUrl.includes('.svc.cluster.local') && !existsSync(SA_TOKEN_PATH)) {
+    console.warn(
+      `[trust-resolver] deriveApiUrl() resolved to the in-cluster fallback ` +
+        `(${apiUrl}) but no Kubernetes service-account token is present. If this ` +
+        `is a desktop/local install, SHOGO_API_URL was not seeded into the runtime ` +
+        `env — trust cannot be refreshed and will stay fail-closed (restricted). ` +
+        `Ensure the runtime manager sets SHOGO_API_URL (or API_URL) to the local API.`,
+    )
   }
 
   const url = `${apiUrl}/api/internal/projects/${encodeURIComponent(projectId)}/trust`
