@@ -839,7 +839,12 @@ export class AgentGateway {
     // from CanvasFileWatcher events plus a persisted "last scan"
     // timestamp so subsequent boots skip the full re-walk — is
     // tracked separately.
-    const prewarm = (process.env.SHOGO_INDEX_PREWARM ?? '').trim() === '1'
+    // Pre-warm when explicitly requested, or whenever the search tool is
+    // enabled — otherwise the first `search` call would trigger a multi-minute
+    // lazy reindex and (now) hit the 10s tool timeout instead of returning hits.
+    const prewarm =
+      (process.env.SHOGO_INDEX_PREWARM ?? '').trim() === '1' ||
+      (process.env.SHOGO_SEARCH_ENABLED ?? '').trim() === '1'
     const indexDelayMs = parseInt(process.env.SHOGO_INDEX_START_DELAY_MS ?? '3000', 10)
     if (prewarm) {
       setTimeout(() => this.initIndexEngine({ prewarm: true }), Math.max(0, indexDelayMs))
