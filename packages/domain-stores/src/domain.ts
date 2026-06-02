@@ -26,6 +26,7 @@ import { UsageWalletCollection, type IUsageWalletCollection } from "./usage-wall
 import { UsageEventCollection, type IUsageEventCollection } from "./usage-event.collection"
 import { WorkspaceGrantCollection, type IWorkspaceGrantCollection } from "./workspace-grant.collection"
 import { ChatSessionCollection, type IChatSessionCollection } from "./chat-session.collection"
+import { ChatSessionProjectCollection, type IChatSessionProjectCollection } from "./chat-session-project.collection"
 import { ChatMessageCollection, type IChatMessageCollection } from "./chat-message.collection"
 import { ToolCallLogCollection, type IToolCallLogCollection } from "./tool-call-log.collection"
 import { FeatureSessionCollection, type IFeatureSessionCollection } from "./feature-session.collection"
@@ -46,6 +47,7 @@ export { UsageWalletModel, type IUsageWallet, type IUsageWalletSnapshotIn, type 
 export { UsageEventModel, type IUsageEvent, type IUsageEventSnapshotIn, type IUsageEventSnapshotOut } from "./usage-event.model"
 export { WorkspaceGrantModel, type IWorkspaceGrant, type IWorkspaceGrantSnapshotIn, type IWorkspaceGrantSnapshotOut } from "./workspace-grant.model"
 export { ChatSessionModel, type IChatSession, type IChatSessionSnapshotIn, type IChatSessionSnapshotOut } from "./chat-session.model"
+export { ChatSessionProjectModel, type IChatSessionProject, type IChatSessionProjectSnapshotIn, type IChatSessionProjectSnapshotOut } from "./chat-session-project.model"
 export { ChatMessageModel, type IChatMessage, type IChatMessageSnapshotIn, type IChatMessageSnapshotOut } from "./chat-message.model"
 export { ToolCallLogModel, type IToolCallLog, type IToolCallLogSnapshotIn, type IToolCallLogSnapshotOut } from "./tool-call-log.model"
 export { FeatureSessionModel, type IFeatureSession, type IFeatureSessionSnapshotIn, type IFeatureSessionSnapshotOut } from "./feature-session.model"
@@ -66,6 +68,7 @@ export { UsageWalletCollection, type IUsageWalletCollection }
 export { UsageEventCollection, type IUsageEventCollection }
 export { WorkspaceGrantCollection, type IWorkspaceGrantCollection }
 export { ChatSessionCollection, type IChatSessionCollection }
+export { ChatSessionProjectCollection, type IChatSessionProjectCollection }
 export { ChatMessageCollection, type IChatMessageCollection }
 export { ToolCallLogCollection, type IToolCallLogCollection }
 export { FeatureSessionCollection, type IFeatureSessionCollection }
@@ -112,6 +115,7 @@ export const DomainStore = types
     usageEventCollection: types.optional(UsageEventCollection, { items: {} }),
     workspaceGrantCollection: types.optional(WorkspaceGrantCollection, { items: {} }),
     chatSessionCollection: types.optional(ChatSessionCollection, { items: {} }),
+    chatSessionProjectCollection: types.optional(ChatSessionProjectCollection, { items: {} }),
     chatMessageCollection: types.optional(ChatMessageCollection, { items: {} }),
     toolCallLogCollection: types.optional(ToolCallLogCollection, { items: {} }),
     featureSessionCollection: types.optional(FeatureSessionCollection, { items: {} }),
@@ -136,6 +140,7 @@ export const DomainStore = types
         "usageEventCollection",
         "workspaceGrantCollection",
         "chatSessionCollection",
+        "chatSessionProjectCollection",
         "chatMessageCollection",
         "toolCallLogCollection",
         "featureSessionCollection",
@@ -161,6 +166,7 @@ export const DomainStore = types
       self.usageEventCollection.clear()
       self.workspaceGrantCollection.clear()
       self.chatSessionCollection.clear()
+      self.chatSessionProjectCollection.clear()
       self.chatMessageCollection.clear()
       self.toolCallLogCollection.clear()
       self.featureSessionCollection.clear()
@@ -183,6 +189,7 @@ export const DomainStore = types
       self.usageEventCollection.clearError()
       self.workspaceGrantCollection.clearError()
       self.chatSessionCollection.clearError()
+      self.chatSessionProjectCollection.clearError()
       self.chatMessageCollection.clearError()
       self.toolCallLogCollection.clearError()
       self.featureSessionCollection.clearError()

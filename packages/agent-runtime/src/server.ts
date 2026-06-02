@@ -69,6 +69,18 @@ import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { createPtyWsHandlers, type WsData } from './pty-ws-handler'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import { initTrustResolver, refreshTrust } from './trust-resolver'
+import {
+  isWorkspaceRuntimeMode,
+  workspaceAttachedProjectIds,
+  workspaceProjectsManifest,
+  renderWorkspaceManifestMarkdown,
+  shouldSkipManagedSeeding,
+  shouldEnforceProjectIdSanity,
+  parseWorkspacePreviewPath,
+  buildWorkspacePreviewPath,
+  parseWorkspacePreviewUrls,
+  isAttachedProjectId,
+} from './workspace-runtime-mode'
 import { userMessage } from './pi-adapter'
 import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
@@ -111,6 +123,15 @@ const WORKING_MODE: 'managed' | 'external' =
   process.env.WORKING_MODE === 'external' ? 'external' : 'managed'
 
 /**
+ * Workspace-runtime mode: this runtime serves a merged tree of several
+ * attached projects (WORKSPACE_DIR = the workspaces parent, each project
+ * a top-level subfolder). Toggles off single-project assumptions in the
+ * boot path — see workspace-runtime-mode.ts.
+ */
+const IS_WORKSPACE_RUNTIME = isWorkspaceRuntimeMode()
+const WORKSPACE_RUNTIME_PROJECT_IDS = workspaceAttachedProjectIds()
+
+/**
  * The list of host folders the agent is allowed to read/write inside,
  * in addition to `WORKSPACE_DIR`. Parsed once at boot — folder set is
  * immutable for a runtime instance (changing it requires a restart).
@@ -142,6 +163,7 @@ initTrustResolver({
   workspaceDir: WORKSPACE_DIR,
   workingMode: WORKING_MODE,
   linkedFolders: LINKED_FOLDERS,
+  isWorkspaceRuntime: IS_WORKSPACE_RUNTIME,
 })
 refreshTrust().catch(() => {
   // Best-effort at boot; per-turn refresh in gateway.ts is the
@@ -185,6 +207,18 @@ function checkWorkspaceDirSanity(): void {
     console.log(
       `[agent-runtime] External (folder-linked) project: WORKSPACE_DIR='${WORKSPACE_DIR}' ` +
         `(trust resolved from API; linkedFolders=${LINKED_FOLDERS.length})`,
+    )
+    return
+  }
+
+  // Workspace runtime: WORKSPACE_DIR is the workspaces parent and each
+  // attached project is a top-level subfolder, so the single-PROJECT_ID
+  // basename check does not apply. Log a breadcrumb instead.
+  if (!shouldEnforceProjectIdSanity({ workingMode: WORKING_MODE, isWorkspaceRuntime: IS_WORKSPACE_RUNTIME })) {
+    console.log(
+      `[agent-runtime] Workspace runtime: WORKSPACE_DIR='${WORKSPACE_DIR}' ` +
+        `WORKSPACE_ID='${process.env.WORKSPACE_ID ?? ''}' ` +
+        `attachedProjects=${WORKSPACE_RUNTIME_PROJECT_IDS.length}`,
     )
     return
   }
@@ -565,6 +599,34 @@ function safeMoveSync(src: string, dest: string): void {
   rmSync(src, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
 }
 
+/**
+ * Materialise the workspace project catalog at the merged-tree root:
+ *
+ *   - WORKSPACE.md         — human-readable, naturally surfaced to the
+ *                            agent alongside AGENTS.md/MEMORY.md at root.
+ *   - .shogo/workspace.json — machine-readable manifest for tools.
+ *
+ * Driven by the `WORKSPACE_PROJECTS` env the API attaches
+ * (build-workspace-env.ts). Best-effort: a write failure must never
+ * block boot.
+ */
+function writeWorkspaceManifest(workspaceDir: string): void {
+  try {
+    const projects = workspaceProjectsManifest()
+    const workspaceId = process.env.WORKSPACE_ID || ''
+    writeFileSync(join(workspaceDir, 'WORKSPACE.md'), renderWorkspaceManifestMarkdown(workspaceId, projects))
+    const shogoDir = join(workspaceDir, '.shogo')
+    mkdirSync(shogoDir, { recursive: true })
+    writeFileSync(
+      join(shogoDir, 'workspace.json'),
+      JSON.stringify({ workspaceId, projects }, null, 2),
+    )
+    console.log(`[agent-runtime] Workspace catalog written (${projects.length} projects)`)
+  } catch (err: any) {
+    console.warn(`[agent-runtime] Could not write workspace manifest: ${err?.message ?? err}`)
+  }
+}
+
 function ensureWorkspaceFiles(): void {
   // External (VS Code-style) projects: WORKSPACE_DIR is the user's
   // real repo on their machine. We MUST NOT run any of the seeding
@@ -593,10 +655,22 @@ function ensureWorkspaceFiles(): void {
   //
   // Re-running just the .shogo subdir creation here keeps the boot
   // idempotent for older bound folders that pre-date that scaffolding.
-  if (WORKING_MODE === 'external') {
+  if (shouldSkipManagedSeeding({ workingMode: WORKING_MODE, isWorkspaceRuntime: IS_WORKSPACE_RUNTIME })) {
+    // External folder projects AND workspace runtimes: WORKSPACE_DIR is
+    // not a fresh single-project sandbox. Seeding a Vite/React template
+    // or running the legacy APP-layout migration here would corrupt the
+    // user's repo (external) or the sibling project subfolders
+    // (workspace). Lay down only the workspace-level `.shogo` skeleton.
     seedWorkspaceDefaults(WORKSPACE_DIR)
+    if (IS_WORKSPACE_RUNTIME) {
+      writeWorkspaceManifest(WORKSPACE_DIR)
+    }
     workspaceStatus.templateSeeded = true
-    logTiming('External project: skipped template seeding / legacy migration / LSP config')
+    logTiming(
+      IS_WORKSPACE_RUNTIME
+        ? 'Workspace runtime: skipped template seeding / legacy migration / LSP config'
+        : 'External project: skipped template seeding / legacy migration / LSP config',
+    )
     return
   }
 
@@ -1923,6 +1997,59 @@ function getPreviewManager(): PreviewManager {
     })
   }
   return previewManager
+}
+
+// ---------------------------------------------------------------------------
+// Workspace per-project PreviewManager registry (workspace runtime only)
+//
+// A workspace runtime serves N attached projects under one HTTP port,
+// multiplexed by the `/p/<projectId>/…` path prefix. Each project gets its
+// own PreviewManager rooted at its subfolder, with:
+//   - a distinct API sidecar port (so the N `server.tsx` sidecars coexist)
+//   - a vite `--base=/p/<projectId>/` so built asset URLs resolve under the
+//     project's prefix instead of the shared runtime root
+//   - its externally-reachable preview URL from `WORKSPACE_PREVIEW_URLS`
+//     (cloud) or undefined (local → path-prefixed localhost fallback)
+// ---------------------------------------------------------------------------
+
+const workspacePreviewManagers = new Map<string, PreviewManager>()
+
+/**
+ * Deterministic per-project sidecar port: `WORKSPACE_API_PORT_BASE` (default
+ * 3101) offset by the project's index in the attached list. Stable across a
+ * runtime's lifetime so restarts reuse the same port.
+ */
+function workspaceProjectApiPort(projectId: string): number {
+  const base = parseInt(process.env.WORKSPACE_API_PORT_BASE || '3101', 10)
+  const idx = WORKSPACE_RUNTIME_PROJECT_IDS.indexOf(projectId)
+  return base + (idx >= 0 ? idx : 0)
+}
+
+/**
+ * Lazily build (and cache) the PreviewManager for one attached project.
+ * Returns null when not in workspace mode or when `projectId` is not one of
+ * the runtime's attached projects (callers map that to 404 — never serve an
+ * arbitrary subfolder).
+ */
+function getWorkspacePreviewManager(projectId: string): PreviewManager | null {
+  if (!IS_WORKSPACE_RUNTIME) return null
+  if (!isAttachedProjectId(projectId, WORKSPACE_RUNTIME_PROJECT_IDS)) return null
+  let pm = workspacePreviewManagers.get(projectId)
+  if (!pm) {
+    const previewUrls = parseWorkspacePreviewUrls()
+    pm = new PreviewManager({
+      workspaceDir: join(WORKSPACE_DIR, projectId),
+      runtimePort: PORT,
+      publicUrl: previewUrls[projectId],
+      apiPort: workspaceProjectApiPort(projectId),
+      basePath: buildWorkspacePreviewPath(projectId),
+      projectId,
+      onConsoleLogReset: clearRuntimeConsoleLogBuffer,
+      onLogLine: recordConsoleLogLine,
+    })
+    workspacePreviewManagers.set(projectId, pm)
+  }
+  return pm
 }
 
 // ---------------------------------------------------------------------------
@@ -3653,6 +3780,120 @@ app.all('/api/*', async (c) => {
 })
 
 // =============================================================================
+// Workspace per-project preview routes — `/p/<projectId>/…`
+//
+// Registered ONLY in workspace-runtime mode. Multiplexes N attached
+// projects over the single runtime port:
+//   GET  /p/<id>/preview/status          control-plane status
+//   POST /p/<id>/preview/{start,restart,stop}
+//   *    /p/<id>/api/*                    → the project's server.tsx sidecar
+//   GET  /p/<id>/*                        static dist/ serve (SPA fallback)
+//
+// These are registered before the root catch-all (`app.get('*')`) so they
+// win for `/p/…` paths; in single-project mode they're never registered and
+// `/p/…` is just an ordinary app route served from the root dist.
+// =============================================================================
+
+if (IS_WORKSPACE_RUNTIME) {
+  const projectNotAttached = (c: any, projectId: string) =>
+    c.json(
+      { error: 'project_not_attached', message: `Project ${projectId} is not attached to this workspace runtime` },
+      404,
+    )
+
+  app.get('/p/:projectId/preview/status', (c) => {
+    const projectId = c.req.param('projectId')
+    const pm = getWorkspacePreviewManager(projectId)
+    if (!pm) return projectNotAttached(c, projectId)
+    return c.json(pm.getStatus())
+  })
+
+  app.post('/p/:projectId/preview/start', async (c) => {
+    const projectId = c.req.param('projectId')
+    const pm = getWorkspacePreviewManager(projectId)
+    if (!pm) return projectNotAttached(c, projectId)
+    return c.json(await pm.start())
+  })
+
+  app.post('/p/:projectId/preview/restart', async (c) => {
+    const projectId = c.req.param('projectId')
+    const pm = getWorkspacePreviewManager(projectId)
+    if (!pm) return projectNotAttached(c, projectId)
+    return c.json(await pm.restart())
+  })
+
+  app.post('/p/:projectId/preview/stop', (c) => {
+    const projectId = c.req.param('projectId')
+    const pm = getWorkspacePreviewManager(projectId)
+    if (!pm) return projectNotAttached(c, projectId)
+    pm.stop()
+    return c.json({ ok: true })
+  })
+
+  // Proxy `/p/<id>/api/*` to that project's server.tsx sidecar. Mirrors the
+  // root `/api/*` proxy (startup grace window, 503/502 semantics) but strips
+  // the `/p/<id>` prefix so the sidecar sees its own `/api/*` path.
+  app.all('/p/:projectId/api/*', async (c) => {
+    const projectId = c.req.param('projectId')
+    const pm = getWorkspacePreviewManager(projectId)
+    if (!pm) return projectNotAttached(c, projectId)
+
+    let port = pm.apiServerPort
+    if (port == null && API_PROXY_STARTUP_PHASES.has(pm.apiServerPhase)) {
+      const deadline = Date.now() + API_PROXY_STARTUP_WAIT_MS
+      while (port == null && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, API_PROXY_POLL_INTERVAL_MS))
+        if (!API_PROXY_STARTUP_PHASES.has(pm.apiServerPhase)) break
+        port = pm.apiServerPort
+      }
+    }
+    if (port == null) {
+      return c.json({ error: 'API server not ready', phase: pm.apiServerPhase }, 503)
+    }
+
+    const url = new URL(c.req.url)
+    const parsed = parseWorkspacePreviewPath(url.pathname)
+    const sidecarPath = parsed ? parsed.rest : '/'
+    const target = `http://127.0.0.1:${port}${sidecarPath}${url.search}`
+    try {
+      const res = await fetch(target, {
+        method: c.req.method,
+        headers: c.req.raw.headers,
+        body: c.req.method !== 'GET' && c.req.method !== 'HEAD' ? c.req.raw.body : undefined,
+        // @ts-ignore - duplex needed for streaming request bodies
+        duplex: 'half',
+      })
+      return new Response(res.body, { status: res.status, headers: res.headers })
+    } catch (err: any) {
+      console.error(`[ws-api-proxy] Failed to proxy ${c.req.method} ${url.pathname}:`, err.message)
+      return c.json({ error: 'API server not responding', phase: pm.apiServerPhase }, 502)
+    }
+  })
+
+  // Canonicalise the bare project root to the trailing-slash form so the
+  // browser resolves relative URLs against `/p/<id>/` (and `/p/:projectId/*`
+  // matches). Vite builds use absolute `--base` asset URLs regardless, but
+  // the redirect keeps deep-link/back-button behaviour sane.
+  app.get('/p/:projectId', (c) => {
+    const projectId = c.req.param('projectId')
+    if (!getWorkspacePreviewManager(projectId)) return projectNotAttached(c, projectId)
+    return c.redirect(`/p/${projectId}/`)
+  })
+
+  // Static dist/ serve for a project, scoped to its subfolder + base prefix.
+  app.get('/p/:projectId/*', (c) => {
+    const urlPath = new URL(c.req.url).pathname
+    const parsed = parseWorkspacePreviewPath(urlPath)
+    if (!parsed) return c.notFound()
+    const pm = getWorkspacePreviewManager(parsed.projectId)
+    if (!pm) return projectNotAttached(c, parsed.projectId)
+    const distDir = join(WORKSPACE_DIR, parsed.projectId, 'dist')
+    const inFlight = BUILDING_PHASES.has(pm.phase)
+    return serveDistResponse(distDir, parsed.rest, inFlight) ?? c.notFound()
+  })
+}
+
+// =============================================================================
 // Shared MIME map for static file serving
 // =============================================================================
 
@@ -3994,23 +4235,29 @@ function renderBuildingPlaceholder(): Response {
   })
 }
 
-app.get('*', (c) => {
-  const urlPath = new URL(c.req.url).pathname
-
-  if (urlPath.startsWith('/agent') || urlPath.startsWith('/pool') ||
-      urlPath.startsWith('/health') || urlPath.startsWith('/ready') ||
-      urlPath.startsWith('/preview') || urlPath.startsWith('/console-log') ||
-      urlPath.startsWith('/api') || urlPath.startsWith('/templates') ||
-      urlPath.startsWith('/diagnostics')) {
-    return c.notFound()
-  }
-
-  const distDir = getDistDir()
-  const safePath = urlPath.replace(/\.\./g, '').replace(/\/+/g, '/')
+/**
+ * Serve a request out of a `dist/` directory with SPA fallback.
+ *
+ * Shared by the root static handler (single-project: serves
+ * `<WORKSPACE_DIR>/dist`) and the workspace per-project handler
+ * (serves `<WORKSPACE_DIR>/<projectId>/dist`). Returns `null` when there
+ * is genuinely nothing to serve (no matching file, no `index.html`, no
+ * build in flight) so the caller can fall through to `c.notFound()`.
+ *
+ * `requestPath` is the path *relative to the dist root* — for the root
+ * handler that's the full URL path; for the per-project handler it's the
+ * remainder after `/p/<projectId>`.
+ */
+function serveDistResponse(
+  distDir: string,
+  requestPath: string,
+  buildInFlight: boolean,
+): Response | null {
+  const safePath = requestPath.replace(/\.\./g, '').replace(/\/+/g, '/')
   const filePath = join(distDir, safePath === '/' ? 'index.html' : safePath)
 
   if (!filePath.startsWith(resolve(distDir))) {
-    return c.notFound()
+    return null
   }
 
   if (existsSync(filePath) && statSync(filePath).isFile()) {
@@ -4044,11 +4291,25 @@ app.get('*', (c) => {
   // during the first build of a fresh workspace. After the first
   // successful build the atomic-swap pipeline keeps `dist/` populated,
   // so this only matters pre-first-build (or after a fresh wipe).
-  if (isBuildLikelyInFlight()) {
+  if (buildInFlight) {
     return renderBuildingPlaceholder()
   }
 
-  return c.notFound()
+  return null
+}
+
+app.get('*', (c) => {
+  const urlPath = new URL(c.req.url).pathname
+
+  if (urlPath.startsWith('/agent') || urlPath.startsWith('/pool') ||
+      urlPath.startsWith('/health') || urlPath.startsWith('/ready') ||
+      urlPath.startsWith('/preview') || urlPath.startsWith('/console-log') ||
+      urlPath.startsWith('/api') || urlPath.startsWith('/templates') ||
+      urlPath.startsWith('/diagnostics')) {
+    return c.notFound()
+  }
+
+  return serveDistResponse(getDistDir(), urlPath, isBuildLikelyInFlight()) ?? c.notFound()
 })
 
 // =============================================================================

@@ -31,7 +31,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
 
-import { PreviewManager, resolveApiServerEnv } from '../preview-manager'
+import { PreviewManager, resolveApiServerEnv } from '../../preview-manager'
 
 const TEST_DIR = '/tmp/test-preview-manager-branches'
 

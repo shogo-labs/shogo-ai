@@ -875,11 +875,57 @@ function extOf(filePath: string): string {
   return dot >= 0 ? filePath.slice(dot) : ''
 }
 
+/**
+ * Merge the required `watchOptions.excludeDirectories` entries into the
+ * tsconfig at `tsconfigPath` so tsserver doesn't walk `node_modules`/`dist`
+ * during program load. No-op when the file is absent or already complete;
+ * tolerant of malformed/commented tsconfigs (logged, never throws).
+ *
+ * Exported (and returns whether it wrote) so the workspace multi-tsconfig
+ * behaviour can be unit-tested without standing up a tsserver.
+ */
+export function patchTsconfigWatchExclusions(tsconfigPath: string): boolean {
+  const REQUIRED = ['**/node_modules', '**/dist', '**/.git', '**/.shogo']
+  try {
+    if (!existsSync(tsconfigPath)) return false
+    const raw = readFileSync(tsconfigPath, 'utf-8')
+    const config = JSON.parse(raw)
+
+    const existing: string[] = Array.isArray(config.watchOptions?.excludeDirectories)
+      ? config.watchOptions.excludeDirectories.filter((x: unknown): x is string => typeof x === 'string')
+      : []
+    const merged = Array.from(new Set([...existing, ...REQUIRED]))
+
+    if (merged.length === existing.length) return false // nothing to add
+
+    config.watchOptions = {
+      ...config.watchOptions,
+      excludeDirectories: merged,
+    }
+    writeFileSync(tsconfigPath, JSON.stringify(config, null, 2) + '\n', 'utf-8')
+    console.log(`[LSP-TS] Merged watchOptions.excludeDirectories in ${tsconfigPath}:`, merged)
+    return true
+  } catch {
+    // Non-fatal — tsconfig may have comments or be malformed
+    return false
+  }
+}
+
 export interface WorkspaceLSPManagerOptions {
   projectDir: string
   tsServerBin?: string
   /** Path to the pyright CLI binary (not pyright-langserver) */
   pyrightBin?: string
+  /**
+   * Extra directories whose `tsconfig.json` should also get the
+   * `watchOptions.excludeDirectories` patch on startup. In a workspace
+   * runtime `projectDir` is the merged-tree parent (usually with no
+   * tsconfig); the real tsconfigs live in each attached `<projectId>/`
+   * subfolder. The gateway passes those subfolder paths here so every
+   * project's tsserver program load skips `node_modules`/`dist` the same
+   * way a single-project runtime does. Unset for single-project runtimes.
+   */
+  tsconfigDirs?: string[]
 }
 
 /**
@@ -899,11 +945,13 @@ export class WorkspaceLSPManager {
   private pyCachedDiags = new Map<string, LSPDiagnostic[]>()
   private pyAvailable = false
   private warmupPromise: Promise<void> | null = null
+  private tsconfigDirs: string[]
 
   constructor(opts: WorkspaceLSPManagerOptions) {
     this.projectDir = resolve(opts.projectDir)
     this.tsServerBin = opts.tsServerBin
     this.pyrightBin = opts.pyrightBin
+    this.tsconfigDirs = (opts.tsconfigDirs ?? []).map((d) => resolve(d))
   }
 
   async startAll(): Promise<void> {
@@ -1019,28 +1067,13 @@ export class WorkspaceLSPManager {
    * for over a month before the 2026-05 incident.
    */
   private ensureTsconfigWatchExclusions(): void {
-    const tsconfigPath = join(this.projectDir, 'tsconfig.json')
-    const REQUIRED = ['**/node_modules', '**/dist', '**/.git', '**/.shogo']
-    try {
-      if (!existsSync(tsconfigPath)) return
-      const raw = readFileSync(tsconfigPath, 'utf-8')
-      const config = JSON.parse(raw)
-
-      const existing: string[] = Array.isArray(config.watchOptions?.excludeDirectories)
-        ? config.watchOptions.excludeDirectories.filter((x: unknown): x is string => typeof x === 'string')
-        : []
-      const merged = Array.from(new Set([...existing, ...REQUIRED]))
-
-      if (merged.length === existing.length) return // nothing to add
-
-      config.watchOptions = {
-        ...config.watchOptions,
-        excludeDirectories: merged,
-      }
-      writeFileSync(tsconfigPath, JSON.stringify(config, null, 2) + '\n', 'utf-8')
-      console.log('[LSP-TS] Merged watchOptions.excludeDirectories in tsconfig.json:', merged)
-    } catch {
-      // Non-fatal — tsconfig may have comments or be malformed
+    // Single-project: patch the one tsconfig at the project root. Workspace
+    // runtime: `projectDir` is the merged-tree parent (typically no
+    // tsconfig), so also patch each attached `<projectId>/tsconfig.json`
+    // supplied via `tsconfigDirs`. De-duped in case a caller overlaps.
+    const dirs = Array.from(new Set([this.projectDir, ...this.tsconfigDirs]))
+    for (const dir of dirs) {
+      patchTsconfigWatchExclusions(join(dir, 'tsconfig.json'))
     }
   }
 
