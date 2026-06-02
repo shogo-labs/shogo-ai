@@ -154,6 +154,15 @@ mock.module('../lib/prisma', () => withPrismaExports({
             return data
           },
         },
+        // The merged rolling-window billing path resolves plan limits inside
+        // the consume transaction via tx.subscription.findFirst — mirror the
+        // top-level subscription mock so resolveWorkspaceWindowLimits works.
+        subscription: {
+          findFirst: async ({ where }: any) =>
+            where.workspaceId === 'ws-cloud'
+              ? { planId: 'pro', seats: 1, stripeCustomerId: 'cus_cloud' }
+              : null,
+        },
       }),
   },
 }))

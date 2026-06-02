@@ -485,6 +485,9 @@ describe('gateway-tools browser tool (playwright-core mocked)', () => {
   test('action throws → caught and surfaced as Browser error', async () => {
     const { tool } = await freshBrowserTool()
     fakePage._gotoErr = new Error('nav-failed')
+    // No document landed (about:blank) → navigate must hard-fail rather than
+    // take the soft-timeout "continue with loaded page" branch.
+    fakePage._currentUrl = 'about:blank'
     const r = await exec(tool, { action: 'navigate', url: 'https://x.example/' })
     expect(r.details.error).toContain('Browser error: nav-failed')
   })
