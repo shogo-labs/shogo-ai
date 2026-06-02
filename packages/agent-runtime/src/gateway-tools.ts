@@ -4330,7 +4330,9 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     g(createWriteFileTool(ctx), 'file_write'),
     g(createEditFileTool(ctx), 'file_write'),
     g(createDeleteFileTool(ctx), 'file_delete'),
-    g(createSearchTool(ctx), 'file_read'),
+    // search is disabled while local indexing is off (reindex-on-query hangs).
+    // Re-enable with SHOGO_SEARCH_ENABLED=1 (also pre-warms the index — see gateway.ts start()).
+    ...(process.env.SHOGO_SEARCH_ENABLED === '1' ? [g(createSearchTool(ctx), 'file_read')] : []),
     g(createImpactRadiusTool(ctx), 'file_read'),
     g(createDetectChangesTool(ctx), 'file_read'),
     g(createReviewContextTool(ctx), 'file_read'),
@@ -4775,6 +4777,8 @@ function createDeleteFileTool(ctx: ToolContext): AgentTool {
   }
 }
 
+const SEARCH_TIMEOUT_MS = 10_000
+
 function createSearchTool(ctx: ToolContext): AgentTool {
   return {
     name: 'search',
@@ -4797,7 +4801,26 @@ function createSearchTool(ctx: ToolContext): AgentTool {
       }
       const engine = getOrCreateIndex(ctx)
       const searchSource = source === 'all' || !source ? undefined : source
-      const results = await engine.search(query, { source: searchSource, limit, pathFilter: path_filter, extensions: file_extensions })
+      // The first query triggers a lazy full reindex (see IndexEngine.search),
+      // which on a large/cold workspace can run for minutes. Cap it so the tool
+      // fails fast with a clear message instead of hanging the turn.
+      let results: Awaited<ReturnType<typeof engine.search>>
+      try {
+        results = await Promise.race([
+          engine.search(query, { source: searchSource, limit, pathFilter: path_filter, extensions: file_extensions }),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('SEARCH_TIMEOUT')), SEARCH_TIMEOUT_MS)),
+        ])
+      } catch (err) {
+        if (err instanceof Error && err.message === 'SEARCH_TIMEOUT') {
+          return textResult({
+            error: `Search timed out after ${SEARCH_TIMEOUT_MS / 1000}s. The workspace index may be cold or still building — try again shortly or narrow the query with path_filter/file_extensions.`,
+            query,
+            source: source ?? 'all',
+          })
+        }
+        throw err
+      }
       return textResult({
         query,
         source: source ?? 'all',
