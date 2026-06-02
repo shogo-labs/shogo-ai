@@ -16,6 +16,7 @@ import { ContextMenu, type MenuEntry } from "./ContextMenu";
 import { useGitStatusContext } from "./git/GitStatusContext";
 import type { GitShortCode } from "./git/bridge";
 import { computeDropZone } from "./file-tree-drop-zone";
+import { buildCompactFolderChain } from "./explorer-compact-folders";
 import { useDragAutoScroll } from "./useDragAutoScroll";
 
 export interface FileTreeHandlers {
@@ -35,7 +36,7 @@ export interface FileTreeHandlers {
 }
 
 type FlatRow =
-  | { kind: "node"; node: TreeNode; depth: number; parentPath: string }
+  | { kind: "node"; node: TreeNode; depth: number; parentPath: string; compactLabel?: string }
   | { kind: "new"; depth: number; parentPath: string; mode: "file" | "dir" }
   // Synthetic rows rendered beneath an expanded lazy directory whose
   // children haven't materialised yet (loading) or whose fetch failed
@@ -54,8 +55,16 @@ function flatten(
   parentPath = "",
   out: FlatRow[] = [],
 ): FlatRow[] {
-  for (const n of tree) {
-    out.push({ kind: "node", node: n, depth, parentPath });
+  for (const original of tree) {
+    const compact = buildCompactFolderChain(original);
+    const n = compact.node;
+    out.push({
+      kind: "node",
+      node: n,
+      depth,
+      parentPath,
+      compactLabel: compact.compacted ? compact.label : undefined,
+    });
     if (n.kind === "dir" && expanded.has(n.path)) {
       if (n.children && n.children.length > 0) {
         flatten(n.children, expanded, loadingLazy, lazyErrors, depth + 1, n.path, out);
@@ -66,8 +75,6 @@ function flatten(
         else if (loadingLazy.has(k)) out.push({ kind: "lazy-loading", depth: depth + 1, parent: n });
         else out.push({ kind: "lazy-empty", depth: depth + 1, parent: n });
       } else if (n.children) {
-        // Loaded directory that just happens to be empty — fall through with
-        // no synthetic row.
         flatten(n.children, expanded, loadingLazy, lazyErrors, depth + 1, n.path, out);
       }
     }
@@ -173,15 +180,17 @@ export function FileTree({
       return [newRow, ...base];
     }
     return base;
-  }, [tree, expanded, creating]);
+  }, [tree, expanded, loadingLazy, lazyErrors, creating]);
+
+  const visibleRows = useMemo(
+    () => rows.filter((r): r is Extract<FlatRow, { kind: "node" }> => r.kind === "node"),
+    [rows],
+  );
 
   /** Linear view of *visible* nodes used by keyboard nav and range selection. */
   const visibleNodes = useMemo(
-    () =>
-      rows
-        .filter((r): r is Extract<FlatRow, { kind: "node" }> => r.kind === "node")
-        .map((r) => r.node),
-    [rows],
+    () => visibleRows.map((r) => r.node),
+    [visibleRows],
   );
 
   /** Prune selections that are no longer visible (e.g. after a parent was
@@ -494,12 +503,18 @@ export function FileTree({
         }
       } else if (e.key === "ArrowLeft") {
         const n = nodes[idx];
-        if (!n) return;
+        const row = visibleRows[idx];
+        if (!n || !row) return;
         if (n.kind === "dir" && expanded.has(n.path)) {
           toggle(n.path);
         } else {
-          const parent = parentOf(n.path);
-          if (parent) setSelected(parent);
+          for (let i = idx - 1; i >= 0; i--) {
+            const candidate = visibleRows[i];
+            if (candidate.depth < row.depth) {
+              setSelected(candidate.node.path);
+              break;
+            }
+          }
         }
         e.preventDefault();
       } else if (e.key === "Enter") {
@@ -531,7 +546,7 @@ export function FileTree({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [visibleNodes, selected, expanded, renaming, creating, handlers, expand, toggle, toggleDir, multiSelected, openSelected]);
+  }, [visibleNodes, visibleRows, selected, expanded, renaming, creating, handlers, expand, toggle, toggleDir, multiSelected, openSelected]);
 
   const menuItems = (node: TreeNode | null): MenuEntry[] => {
     const defaultRootId = tree[0]?.rootId ?? "agent";
@@ -743,6 +758,7 @@ export function FileTree({
         }
 
         const { node, depth } = row;
+        const displayName = row.compactLabel ?? node.name;
         const isExpanded = node.kind === "dir" && expanded.has(node.path);
         const isActive = node.path === activePath;
         const isSelected = node.path === selected;
@@ -847,7 +863,7 @@ export function FileTree({
                 <File size={15} className={iconFor(ext)} />
               </>
             )}
-            <span className="truncate min-w-0 flex-1" title={node.path}>{node.name}</span>
+            <span className="truncate min-w-0 flex-1" title={node.path}>{displayName}</span>
             <GitStatusBadge code={node.kind === "dir" ? (git.folderDirty(node.path) ? "·" : null) : git.getStatus(node.path)} isFolderDirty={node.kind === "dir" && git.folderDirty(node.path)} />
           </div>
         );
