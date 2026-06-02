@@ -158,6 +158,34 @@ The same pattern can be reused when adopting `production-eu`,
 `production-india`, and `production-global` — follow the iteration loop
 of plan → diff → set per-env override → repeat until plan is clean.
 
+## Boot volume remediation
+
+`system_node_boot_volume_gb` must be **200 GB and identical across all
+production regions**. EU/India were bootstrapped at 100 GB, which caused the
+2026-06-02 EU DiskPressure incident: ~30 GB of stacked 8 GB runtime images
+pushed the busiest 100 GB nodes past the kubelet DiskPressure threshold,
+triggering pod eviction + image GC, warm-pool churn, and a stuck `api`
+rollout (`ProgressDeadlineExceeded`).
+
+The OKE module **ignores in-place changes** to
+`node_source_details[0].boot_volume_size_in_gbs` (a boot-volume change forces
+a rolling node replacement; the ignore protects already-bootstrapped pools
+from surprise replacement). So bumping `system_node_boot_volume_gb` in an env
+will **not** apply on its own. To remediate a region that is below 200 GB:
+
+1. Confirm the live drift (and that CI's parity check is failing):
+   `EXPECTED_GB=200 COMPARTMENT_ID=<id> .github/scripts/check-node-disk-parity.sh`
+2. Update the node pool's boot volume out-of-band (does not affect running nodes):
+   `oci ce node-pool update --node-pool-id <ocid> --node-source-details '{"sourceType":"IMAGE","imageId":"<id>","bootVolumeSizeInGBs":200}'`
+3. Cycle nodes so they re-provision at 200 GB — drain + terminate a few at a
+   time (cordon, `kubectl drain`, then terminate the instance so the autoscaler
+   replaces it), watching `DiskPressure` and warm-pool readiness between batches.
+4. Re-run the parity check to confirm green.
+
+Day-to-day disk safety is additionally guarded at deploy time by
+`.github/scripts/check-node-disk-headroom.sh` (a pre-rollout gate) and at
+runtime by the `DiskPressure` check in `k8s/base/warm-pool-monitor.yaml`.
+
 ## Configuration
 
 See `environments/*/variables.tf` for configurable options per environment.

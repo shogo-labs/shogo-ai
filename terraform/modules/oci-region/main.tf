@@ -114,6 +114,7 @@ module "oke" {
   node_shape     = var.system_node_shape
   node_ocpus     = var.system_node_ocpus
   node_memory_gb = var.system_node_memory_gb
+  boot_volume_gb = var.system_node_boot_volume_gb
   node_pool_size = var.system_pool_size
   node_pool_min  = var.system_pool_min
   node_pool_max  = var.system_pool_max

@@ -19,6 +19,10 @@
 #       — same incident class, runtime variant.
 #   * warm-pool ksvcs exist but 0 are Ready
 #       — controller alive but every pod broken.
+#   * any node is under DiskPressure
+#       — node disk exhaustion (the 2026-06-02 EU incident class): boot
+#         volume fills with stacked runtime images, kubelet evicts pods and
+#         GCs images, and the warm pool churns. Earliest clear signal.
 #
 # Modeled after k8s/cnpg/logical-replication/replication-monitor.yaml
 # (deliberately the same structure/operator-experience).
@@ -51,6 +55,13 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["pods"]
+    verbs: ["get", "list"]
+  # Node read is required for the DiskPressure check (check #4). The EU
+  # 2026-06-02 incident was a node-disk exhaustion event (100 GB boot
+  # volumes + stacked 8 GB runtime images -> kubelet eviction/image-GC ->
+  # warm-pool churn) that this monitor was blind to.
+  - apiGroups: [""]
+    resources: ["nodes"]
     verbs: ["get", "list"]
   - apiGroups: ["serving.knative.dev"]
     resources: ["services", "revisions"]
@@ -95,7 +106,13 @@ spec:
               # alpine/k8s ships kubectl + jq + a posix shell in a small
               # multi-arch image. Pinned to a specific patch so a
               # registry-side mutation can't change behavior under us.
-              image: alpine/k8s:1.31.5
+              # MUST be fully qualified with the docker.io/ registry prefix:
+              # the OKE nodes run cri-o with `short-name-mode=enforcing`, which
+              # rejects a bare `alpine/k8s:1.31.5` with "short name mode is
+              # enforcing ... returns ambiguous list" (ImageInspectError). That
+              # silently broke this CronJob on every run, so it never fired
+              # during the EU 2026-06-02 incident.
+              image: docker.io/alpine/k8s:1.31.5
               env:
                 - name: API_NS
                   value: shogo-staging-system
@@ -159,6 +176,24 @@ spec:
                   echo "  total=$TOTAL  ready=$READY"
                   if [ "$TOTAL" -gt 0 ] && [ "$READY" -eq 0 ]; then
                     echo "CRITICAL: $TOTAL warm-pool ksvcs but 0 are Ready"
+                    EXIT_RC=1
+                  fi
+
+                  # 4) Node DiskPressure.
+                  # The EU 2026-06-02 incident: 100 GB boot volumes filled with
+                  # stacked 8 GB runtime images -> kubelet set DiskPressure ->
+                  # pod eviction + image GC -> warm-pool churn + a stuck api
+                  # rollout. DiskPressure on ANY node is the earliest, clearest
+                  # signal of that class and must page before the churn starts.
+                  echo "--- node DiskPressure ---"
+                  PRESSURED=$(kubectl get nodes -o json | jq -r '
+                    [.items[]
+                      | select((.status.conditions // [])[] | select(.type == "DiskPressure" and .status == "True"))
+                      | .metadata.name
+                    ] | join("; ")
+                  ')
+                  if [ -n "$PRESSURED" ]; then
+                    echo "CRITICAL: node(s) under DiskPressure: $PRESSURED"
                     EXIT_RC=1
                   fi
 
