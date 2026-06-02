@@ -192,6 +192,11 @@ describe('PreviewManager', () => {
     expect(pm.externalUrl).toBe('https://preview--proj123.dev.shogo.ai')
   })
 
+  test('apiPort option overrides the env-derived sidecar port (per-project workspace runtimes)', () => {
+    const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080, apiPort: 3107 })
+    expect(pm.apiServerUrl).toBe('http://localhost:3107')
+  })
+
   test('externalUrl ignores empty publicUrl string', () => {
     const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080, publicUrl: '' })
     expect(pm.externalUrl).toBe('http://localhost:8080/')
@@ -801,6 +806,52 @@ export default { port: Number(process.env.PORT) || 3001, fetch: app.fetch }
         parentEnv: { DATABASE_URL: 'postgres://elsewhere/db' },
         portStr: PORT,
         cwd: FIXED_CWD,
+      })
+      expect(env.DATABASE_URL).toBe(`file:${FIXED_CWD}/prisma/dev.db`)
+    })
+
+    test('workspace project with a provisioned DB uses its WORKSPACE_DATABASE_URLS entry', () => {
+      const env = resolveApiServerEnv({
+        parentEnv: {
+          WORKSPACE_DATABASE_URLS: JSON.stringify({
+            'proj-a': 'postgres://pg/proj_a',
+            'proj-b': 'postgres://pg/proj_b',
+          }),
+        },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+        projectId: 'proj-a',
+      })
+      expect(env.DATABASE_URL).toBe('postgres://pg/proj_a')
+      // The merged map must never leak into a sidecar's env.
+      expect(env.WORKSPACE_DATABASE_URLS).toBeUndefined()
+    })
+
+    test('workspace project NOT in the map falls back to per-cwd sqlite', () => {
+      const env = resolveApiServerEnv({
+        parentEnv: { WORKSPACE_DATABASE_URLS: JSON.stringify({ 'proj-a': 'postgres://pg/proj_a' }) },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+        projectId: 'proj-zzz',
+      })
+      expect(env.DATABASE_URL).toBe(`file:${FIXED_CWD}/prisma/dev.db`)
+    })
+
+    test('no projectId (single-project runtime) ignores any DB map → sqlite', () => {
+      const env = resolveApiServerEnv({
+        parentEnv: { WORKSPACE_DATABASE_URLS: JSON.stringify({ 'proj-a': 'postgres://pg/proj_a' }) },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env.DATABASE_URL).toBe(`file:${FIXED_CWD}/prisma/dev.db`)
+    })
+
+    test('malformed WORKSPACE_DATABASE_URLS falls back to sqlite (never breaks the sidecar)', () => {
+      const env = resolveApiServerEnv({
+        parentEnv: { WORKSPACE_DATABASE_URLS: '{ not json' },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+        projectId: 'proj-a',
       })
       expect(env.DATABASE_URL).toBe(`file:${FIXED_CWD}/prisma/dev.db`)
     })

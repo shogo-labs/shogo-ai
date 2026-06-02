@@ -1,0 +1,325 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * Workspace Chat + Session Routes
+ *
+ * The workspace-scoped sibling of `project-chat.ts`. Provides:
+ *
+ *   - Workspace chat session management (create / list / attach / detach
+ *     projects) — fully functional today, DB-backed.
+ *   - POST /workspaces/:workspaceId/chat — resolves the workspace runtime
+ *     and proxies the chat. The runtime spawn lands in Phase 2b; until
+ *     `SHOGO_WORKSPACE_RUNTIME=true` this returns a clean 501 rather than
+ *     half-booting a single-project runtime.
+ *
+ * Auth: every route resolves the caller via the injected `resolveUserId`
+ * (Better Auth session / API key) and checks workspace membership with
+ * `hasWorkspaceAccess`. Mounted by server.ts.
+ */
+
+import { join, resolve } from 'path'
+
+import { Hono } from 'hono'
+
+import type { IRuntimeManager } from '../lib/runtime'
+import { hasWorkspaceAccess } from '../services/workspace.service'
+import { autoCheckpointWorkspaceProjects } from '../services/workspace-checkpoint.service'
+import {
+  attachProject,
+  createWorkspaceSession,
+  detachProject,
+  getAttachedProjects,
+  listWorkspaceSessions,
+  WorkspaceSessionError,
+  type AttachMode,
+} from '../services/workspace-session.service'
+import {
+  resolveWorkspaceRuntimeUrl,
+  WorkspaceRuntimeNotEnabledError,
+} from '../lib/resolve-workspace-runtime-url'
+import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
+
+// Same resolution as project-chat.ts / RuntimeManager: the `workspaces/`
+// parent where each project lives at `<dir>/<projectId>`. Auto-checkpoints
+// commit the per-project git repo there.
+const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
+const WORKSPACES_DIR = process.env.WORKSPACES_DIR || join(PROJECT_ROOT, 'workspaces')
+
+export interface WorkspaceChatRoutesConfig {
+  /** Local runtime manager (used in host mode). */
+  runtimeManager?: IRuntimeManager
+  /**
+   * Resolve the authenticated user id from the request context. In
+   * production server.ts passes `getAuthUserId`; tests inject a stub.
+   */
+  resolveUserId: (c: any) => Promise<string | null>
+}
+
+function mapSessionError(c: any, err: unknown) {
+  if (err instanceof WorkspaceSessionError) {
+    const status = err.code === 'session_not_found' ? 404 : 400
+    return c.json({ error: { code: err.code, message: err.message } }, status)
+  }
+  throw err
+}
+
+export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
+  const router = new Hono()
+  const { resolveUserId, runtimeManager } = config
+
+  /**
+   * Auth guard shared by every route: returns the userId or sends the
+   * 401/403 response (caller returns it directly).
+   */
+  async function authorize(c: any): Promise<{ userId: string } | { res: Response }> {
+    const workspaceId = c.req.param('workspaceId')
+    const userId = await resolveUserId(c)
+    if (!userId) {
+      return { res: c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401) }
+    }
+    const ok = await hasWorkspaceAccess(workspaceId, userId)
+    if (!ok) {
+      return { res: c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403) }
+    }
+    return { userId }
+  }
+
+  // List workspace-scoped chat sessions.
+  router.get('/workspaces/:workspaceId/sessions', async (c) => {
+    const auth = await authorize(c)
+    if ('res' in auth) return auth.res
+    const sessions = await listWorkspaceSessions(c.req.param('workspaceId'))
+    return c.json({ sessions })
+  })
+
+  // Create a workspace-scoped chat session (optionally pre-attaching projects).
+  router.post('/workspaces/:workspaceId/sessions', async (c) => {
+    const auth = await authorize(c)
+    if ('res' in auth) return auth.res
+    const body = await c.req.json().catch(() => ({}))
+    try {
+      const session = await createWorkspaceSession(c.req.param('workspaceId'), {
+        name: body?.name,
+        inferredName: body?.inferredName,
+        attachProjectIds: Array.isArray(body?.attachProjectIds) ? body.attachProjectIds : undefined,
+        attachMode: body?.attachMode as AttachMode | undefined,
+      })
+      return c.json({ session }, 201)
+    } catch (err) {
+      return mapSessionError(c, err)
+    }
+  })
+
+  // List attached projects for a session.
+  router.get('/workspaces/:workspaceId/sessions/:sessionId/projects', async (c) => {
+    const auth = await authorize(c)
+    if ('res' in auth) return auth.res
+    const attached = await getAttachedProjects(c.req.param('sessionId'))
+    return c.json({ attached })
+  })
+
+  // Attach a project to a session.
+  router.post('/workspaces/:workspaceId/sessions/:sessionId/projects', async (c) => {
+    const auth = await authorize(c)
+    if ('res' in auth) return auth.res
+    const body = await c.req.json().catch(() => ({}))
+    if (!body?.projectId) {
+      return c.json({ error: { code: 'bad_request', message: 'projectId is required' } }, 400)
+    }
+    try {
+      const attached = await attachProject(
+        c.req.param('sessionId'),
+        body.projectId,
+        (body.attachMode as AttachMode) ?? 'readwrite',
+      )
+      return c.json({ attached }, 201)
+    } catch (err) {
+      return mapSessionError(c, err)
+    }
+  })
+
+  // Detach a project from a session.
+  router.delete('/workspaces/:workspaceId/sessions/:sessionId/projects/:projectId', async (c) => {
+    const auth = await authorize(c)
+    if ('res' in auth) return auth.res
+    const removed = await detachProject(c.req.param('sessionId'), c.req.param('projectId'))
+    return c.json({ removed })
+  })
+
+  // Per-project preview URL within a workspace runtime.
+  //
+  // A workspace runtime serves every attached project's built app under
+  // the `/p/<projectId>/` path prefix on its single port (see the
+  // agent-runtime `/p/:projectId/*` routes). This resolves the running
+  // workspace runtime (spawning it in host mode if needed) and returns the
+  // client-facing preview URL for one attached project. Session-scoped so
+  // it shares the chat session's attached-project set.
+  router.get('/workspaces/:workspaceId/sessions/:sessionId/projects/:projectId/preview-url', async (c) => {
+    const auth = await authorize(c)
+    if ('res' in auth) return auth.res
+    const workspaceId = c.req.param('workspaceId')
+    const sessionId = c.req.param('sessionId')
+    const projectId = c.req.param('projectId')
+
+    let attachedProjectIds: string[]
+    try {
+      attachedProjectIds = (await getAttachedProjects(sessionId)).map((a) => a.projectId)
+    } catch (err) {
+      return mapSessionError(c, err)
+    }
+    if (!attachedProjectIds.includes(projectId)) {
+      return c.json(
+        {
+          error: {
+            code: 'project_not_attached',
+            message: `Project ${projectId} is not attached to session ${sessionId}`,
+          },
+        },
+        404,
+      )
+    }
+
+    let resolved
+    try {
+      resolved = await resolveWorkspaceRuntimeUrl(workspaceId, {
+        attachedProjectIds,
+        logTag: 'WorkspacePreview',
+        runtimeManager,
+      })
+    } catch (err) {
+      if (err instanceof WorkspaceRuntimeNotEnabledError) {
+        return c.json(
+          {
+            error: {
+              code: 'workspace_runtime_unavailable',
+              message: 'Workspace runtimes are not yet available in this environment.',
+            },
+          },
+          501,
+        )
+      }
+      throw err
+    }
+
+    return c.json({
+      projectId,
+      mode: resolved.mode,
+      runtimeUrl: resolved.url,
+      // Trailing slash is canonical: the app is built with vite base
+      // `/p/<projectId>/`, so its absolute asset URLs resolve under this.
+      previewUrl: `${resolved.url}/p/${projectId}/`,
+    })
+  })
+
+  // Runtime status for a workspace (null when not running).
+  router.get('/workspaces/:workspaceId/runtime', async (c) => {
+    const auth = await authorize(c)
+    if ('res' in auth) return auth.res
+    const mgr: any = runtimeManager
+    const status =
+      mgr && typeof mgr.workspaceStatus === 'function'
+        ? mgr.workspaceStatus(c.req.param('workspaceId'))
+        : null
+    return c.json({ runtime: status })
+  })
+
+  // Tear down a workspace runtime (idempotent).
+  router.delete('/workspaces/:workspaceId/runtime', async (c) => {
+    const auth = await authorize(c)
+    if ('res' in auth) return auth.res
+    const mgr: any = runtimeManager
+    if (mgr && typeof mgr.stopWorkspace === 'function') {
+      await mgr.stopWorkspace(c.req.param('workspaceId'))
+    }
+    return c.json({ stopped: true })
+  })
+
+  // Proxy chat to the workspace runtime.
+  router.post('/workspaces/:workspaceId/chat', async (c) => {
+    const auth = await authorize(c)
+    if ('res' in auth) return auth.res
+    const workspaceId = c.req.param('workspaceId')
+
+    const body = await c.req.json().catch(() => ({} as any))
+    const sessionId: string | undefined = body?.sessionId
+    if (!sessionId) {
+      return c.json({ error: { code: 'bad_request', message: 'sessionId is required' } }, 400)
+    }
+
+    let attachedProjectIds: string[]
+    try {
+      attachedProjectIds = (await getAttachedProjects(sessionId)).map((a) => a.projectId)
+    } catch (err) {
+      return mapSessionError(c, err)
+    }
+
+    let resolved
+    try {
+      resolved = await resolveWorkspaceRuntimeUrl(workspaceId, {
+        attachedProjectIds,
+        logTag: 'WorkspaceChat',
+        runtimeManager,
+      })
+    } catch (err) {
+      if (err instanceof WorkspaceRuntimeNotEnabledError) {
+        return c.json(
+          {
+            error: {
+              code: 'workspace_runtime_unavailable',
+              message:
+                'Workspace runtimes are not yet available in this environment. ' +
+                'Multi-project chat lands with the merged-root runtime (Phase 2b).',
+            },
+          },
+          501,
+        )
+      }
+      throw err
+    }
+
+    // Runtime is enabled: proxy the chat through. Full billing/usage
+    // parity with project-chat.ts is wired in Phase 2b; this is the
+    // minimal forward so the merged-root runtime can be exercised once
+    // SHOGO_WORKSPACE_RUNTIME is on.
+    const headers = new Headers({ 'Content-Type': 'application/json' })
+    headers.set('x-runtime-token', deriveWorkspaceRuntimeToken(workspaceId))
+    // The runtime keys its durable-turn + billing state on the chat
+    // session id, read from this header (or `chatSessionId` in the body).
+    // Forward the workspace session id so it has one.
+    headers.set('x-chat-session-id', sessionId)
+    const upstream = await fetch(`${resolved.url}/agent/chat`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: c.req.raw.signal,
+    })
+
+    // Per-project auto-checkpoint: when the agent turn's stream completes
+    // cleanly, snapshot each attached project that changed (see
+    // workspace-checkpoint.service.ts — dirtiness-based, per-project git
+    // repo at workspaces/<id>). We tee the stream so the snapshot fires on
+    // normal close; if the client aborts mid-turn the upstream errors and
+    // `flush` never runs, so we don't checkpoint a torn-off turn. Snapshots
+    // are best-effort and never block the response.
+    if (!upstream.body || attachedProjectIds.length === 0) {
+      return new Response(upstream.body, { status: upstream.status, headers: upstream.headers })
+    }
+    const projectsForCheckpoint = attachedProjectIds
+    const checkpointWatcher = new TransformStream({
+      flush() {
+        autoCheckpointWorkspaceProjects(projectsForCheckpoint, {
+          workspacesDir: WORKSPACES_DIR,
+          message: `AI: workspace turn (session ${sessionId.slice(0, 8)})`,
+        }).catch((err) => {
+          console.warn('[WorkspaceChat] Auto-checkpoint failed (non-blocking):', err?.message ?? err)
+        })
+      },
+    })
+    return new Response(upstream.body.pipeThrough(checkpointWatcher), {
+      status: upstream.status,
+      headers: upstream.headers,
+    })
+  })
+
+  return router
+}

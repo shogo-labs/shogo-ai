@@ -24,9 +24,16 @@ log_timing "NODE_ENV: ${NODE_ENV:-production}"
 log_timing "S3_WORKSPACES_BUCKET: ${S3_WORKSPACES_BUCKET:-not set}"
 log_timing "=================================================="
 
-if [ -z "$PROJECT_ID" ]; then
+# A workspace runtime (WORKSPACE_RUNTIME=true) is identified by WORKSPACE_ID
+# and mounts several attached projects as subfolders — it has no single
+# PROJECT_ID. Only single-project runtimes require PROJECT_ID.
+if [ -z "$PROJECT_ID" ] && [ "$WORKSPACE_RUNTIME" != "true" ]; then
   log_timing "ERROR: PROJECT_ID environment variable is required"
   exit 1
+fi
+
+if [ "$WORKSPACE_RUNTIME" = "true" ]; then
+  log_timing "WORKSPACE_RUNTIME=true (WORKSPACE_ID: ${WORKSPACE_ID:-not set}, projects: ${WORKSPACE_PROJECT_IDS:-none})"
 fi
 
 WORKSPACE_DIR="${WORKSPACE_DIR:-/app/workspace}"
@@ -35,7 +42,15 @@ export WORKSPACE_DIR
 # =============================================================================
 # Ensure workspace directory exists
 # =============================================================================
-mkdir -p "$WORKSPACE_DIR" "$WORKSPACE_DIR/project"
+# Workspace runtimes treat WORKSPACE_DIR as the parent of several attached
+# project subfolders, so we must NOT create a stray `project/` child (it would
+# surface as a bogus project in the merged tree). Single-project runtimes keep
+# the legacy `project/` working dir.
+if [ "$WORKSPACE_RUNTIME" = "true" ]; then
+  mkdir -p "$WORKSPACE_DIR"
+else
+  mkdir -p "$WORKSPACE_DIR" "$WORKSPACE_DIR/project"
+fi
 
 if [ ! -f "$WORKSPACE_DIR/config.json" ]; then
   log_timing "Creating default workspace config..."

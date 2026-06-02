@@ -385,6 +385,35 @@ export interface PreviewManagerConfig {
    * `KUBERNETES_SERVICE_HOST` / `SHOGO_RUNTIME_MODE`.
    */
   localMode?: boolean
+  /**
+   * Explicit API sidecar (`server.tsx`) port for this manager. When unset
+   * the port is resolved from `API_SERVER_PORT` / `SKILL_SERVER_PORT` env
+   * (the process-global single-project contract).
+   *
+   * Workspace runtimes run **multiple** PreviewManagers in one process —
+   * one per attached project — so they cannot share the single env-derived
+   * port. Each per-project manager is constructed with a distinct `apiPort`
+   * so their `server.tsx` sidecars don't collide and the path-prefixed
+   * `/p/<projectId>/api/*` proxy can route to the right one.
+   */
+  apiPort?: number
+  /**
+   * Public base path the built app is served under. Single-project
+   * runtimes serve `dist/` at `/` (base unset → vite default `/`).
+   * Workspace runtimes serve each project under `/p/<projectId>/`, so
+   * the bundle must be built with that base or every absolute asset URL
+   * (`/assets/app.js`) would 404 against the runtime root instead of the
+   * project's prefix. When set, it is passed to `vite build` as
+   * `--base <basePath>`. Must start and end with `/` (e.g. `/p/abc/`).
+   */
+  basePath?: string
+  /**
+   * The attached project id this manager serves, in a workspace runtime.
+   * Used to select that project's isolated `DATABASE_URL` from the
+   * `WORKSPACE_DATABASE_URLS` env map (cloud per-project DB sidecars). Unset
+   * for single-project runtimes, which fall back to the per-cwd sqlite file.
+   */
+  projectId?: string
 }
 
 // API sidecar port (Hono `server.tsx`) — NOT the app URL. The app is served
@@ -543,8 +572,17 @@ export function resolveApiServerEnv(input: {
   parentEnv: NodeJS.ProcessEnv
   portStr: string
   cwd: string
+  /**
+   * Workspace runtimes pass the project id this sidecar serves so we can
+   * select its isolated DB from `WORKSPACE_DATABASE_URLS` (a JSON map
+   * projectId→DATABASE_URL set by the API when each attached project gets a
+   * provisioned cloud DB). Falls back to the per-cwd sqlite file when the
+   * map is absent or has no entry — which is the local/desktop default and
+   * the single-project behaviour (projectId unset).
+   */
+  projectId?: string
 }): Record<string, string> {
-  const { parentEnv, portStr, cwd } = input
+  const { parentEnv, portStr, cwd, projectId } = input
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(parentEnv)) {
     if (typeof v === 'string') out[k] = v
@@ -558,11 +596,39 @@ export function resolveApiServerEnv(input: {
   out.PORT = portStr
   out.API_SERVER_PORT = portStr
   out.SKILL_SERVER_PORT = portStr
-  out.DATABASE_URL = `file:${join(cwd, 'prisma', 'dev.db')}`
+  out.DATABASE_URL = resolveSidecarDatabaseUrl(parentEnv, cwd, projectId)
+  // The merged map is a workspace transport detail — the sidecar must not
+  // see a sibling project's connection string.
+  delete out.WORKSPACE_DATABASE_URLS
   if (parentEnv.SHOGO_LOCAL_MODE === 'true' && !parentEnv.SHOGO_API_URL) {
     out.SHOGO_API_URL = 'http://localhost:8002'
   }
   return out
+}
+
+/**
+ * Resolve the `DATABASE_URL` for a project's API sidecar. Prefers a
+ * per-project entry in the `WORKSPACE_DATABASE_URLS` env map (cloud
+ * provisioned DBs in workspace mode); otherwise pins the local sqlite file
+ * inside the project's own working directory (per-subfolder isolation).
+ */
+function resolveSidecarDatabaseUrl(
+  parentEnv: NodeJS.ProcessEnv,
+  cwd: string,
+  projectId?: string,
+): string {
+  const sqliteDefault = `file:${join(cwd, 'prisma', 'dev.db')}`
+  if (!projectId) return sqliteDefault
+  const raw = parentEnv.WORKSPACE_DATABASE_URLS
+  if (!raw) return sqliteDefault
+  try {
+    const map = JSON.parse(raw)
+    const url = map?.[projectId]
+    return typeof url === 'string' && url.length > 0 ? url : sqliteDefault
+  } catch {
+    // Malformed map — fall back to sqlite rather than break the sidecar.
+    return sqliteDefault
+  }
 }
 
 export type PreviewPhase =
@@ -602,6 +668,8 @@ export class PreviewManager {
   private workspaceDir: string
   private runtimePort: number
   private publicUrl?: string
+  private basePath?: string
+  private workspaceProjectId?: string
   private onConsoleLogReset?: () => void
   private onBuildComplete?: () => void
   private buildWatchProcess: ChildProcess | null = null
@@ -754,7 +822,9 @@ export class PreviewManager {
     this.onBuildComplete = config.onBuildComplete
     this.onLogLine = config.onLogLine
     this.localMode = config.localMode ?? detectLocalMode()
-    this.apiPort = resolveApiServerPort()
+    this.apiPort = config.apiPort ?? resolveApiServerPort()
+    this.basePath = config.basePath
+    this.workspaceProjectId = config.projectId
     this.depsReadyPromise = new Promise<void>((resolve) => {
       this.depsReadyResolve = resolve
     })
@@ -2051,6 +2121,16 @@ export class PreviewManager {
    * watcher's own first build will eventually populate `dist/` (just
    * with the historical 404 window we're trying to avoid).
    */
+  /**
+   * Extra `vite build` args that pin the public base path. Empty for
+   * single-project runtimes (vite default base `/`); `['--base', '/p/<id>/']`
+   * for a workspace project served under its path prefix so the emitted
+   * `<script src>` / `<link href>` are prefixed too.
+   */
+  private viteBaseArgs(): string[] {
+    return this.basePath ? ['--base', this.basePath] : []
+  }
+
   private async runViteOneShotBuild(
     viteBin: string,
     cwd: string,
@@ -2068,7 +2148,7 @@ export class PreviewManager {
       try {
         proc = spawn(
           isWindows ? `"${invocation.cmd}"` : invocation.cmd,
-          [...invocation.argsPrefix, 'build', '--outDir', DEFAULT_STAGING_DIR, '--emptyOutDir'],
+          [...invocation.argsPrefix, 'build', '--outDir', DEFAULT_STAGING_DIR, '--emptyOutDir', ...this.viteBaseArgs()],
           {
             cwd,
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -2182,7 +2262,7 @@ export class PreviewManager {
     try {
       viteProcess = spawn(
         isWindows ? `"${invocation.cmd}"` : invocation.cmd,
-        [...invocation.argsPrefix, 'build', '--watch', '--emptyOutDir', 'false'],
+        [...invocation.argsPrefix, 'build', '--watch', '--emptyOutDir', 'false', ...this.viteBaseArgs()],
         {
           cwd,
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -2373,6 +2453,7 @@ export class PreviewManager {
         parentEnv: process.env,
         portStr,
         cwd,
+        projectId: this.workspaceProjectId,
       }),
     })
 
