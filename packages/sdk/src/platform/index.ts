@@ -678,6 +678,24 @@ export class PlatformApi {
     await this.http.request('/api/admin/settings/agent-models', { method: 'PUT', body: overrides })
   }
 
+  /** Get the admin-configured model used to generate chat/project titles.
+   *  Returns `{ model: null }` when unset (platform default applies). */
+  async getTitleGenerationModel(): Promise<{ model: string | null }> {
+    const res = await this.http.get<{ model: string | null }>(
+      '/api/admin/settings/title-generation-model',
+    )
+    return res.data ?? { model: null }
+  }
+
+  /** Set the model used to generate chat/project titles. Pass null/empty to
+   *  reset to the platform default (Haiku). */
+  async putTitleGenerationModel(model: string | null): Promise<void> {
+    await this.http.request('/api/admin/settings/title-generation-model', {
+      method: 'PUT',
+      body: { model },
+    })
+  }
+
   // ===========================================================================
   // Admin: Visible Models (catalog allowlist + curated OpenRouter models)
   // ===========================================================================
