@@ -1,6 +1,15 @@
-import { RotateCcw } from "lucide-react-native";
+import { useRef, useState } from "react";
+import { RotateCcw, Upload } from "lucide-react-native";
 import { DEFAULT_SETTINGS, type EditorSettings } from "./types";
+import { FONT_FAMILY_OPTIONS } from "./useEditorFont";
 import { TerminalSettingsPane } from "./terminal-settings";
+import { isDesktopRuntime } from "./terminal/pty-factory";
+import {
+  listAvailableThemes,
+  parseThemeJson,
+  registerCustomTheme,
+} from "./monaco/themes";
+import { getMonacoRef } from "./monaco/workspaceModels";
 
 export function SettingsPane({
   settings,
@@ -36,6 +45,36 @@ export function SettingsPane({
             max={20}
             unit="px"
             onChange={(v) => set("fontSize", v)}
+          />
+          {/*
+            BUG-012 — single Font family setting. The select carries the
+            FULL font-family stack as its `value` (not just the primary
+            name) so the resolved CSS string is identical to what every
+            consumer reads. If the persisted value doesn't match any
+            curated option (e.g. an old payload, or a hand-edited stack
+            via localStorage), we DON'T fall back silently — the select
+            shows "Custom" so the user sees the state. Picking any
+            curated option from there restores standard behaviour.
+          */}
+          <SelectRow
+            label="Font family"
+            value={
+              FONT_FAMILY_OPTIONS.some((o) => o.value === settings.fontFamily)
+                ? settings.fontFamily
+                : "__custom__"
+            }
+            options={[
+              ...FONT_FAMILY_OPTIONS.map((o) => ({ label: o.label, value: o.value })),
+              ...(FONT_FAMILY_OPTIONS.some((o) => o.value === settings.fontFamily)
+                ? []
+                : [{ label: "Custom (from settings file)", value: "__custom__" }]),
+            ]}
+            onChange={(v) => {
+              // Ignore the "__custom__" sentinel — selecting it would
+              // wipe the user's hand-edited stack. Only react to real
+              // curated values.
+              if (v !== "__custom__") set("fontFamily", v);
+            }}
           />
           <SelectRow
             label="Tab size"
@@ -109,6 +148,13 @@ export function SettingsPane({
           />
         </Section>
 
+        {isDesktopRuntime() && (
+          <ThemeSection
+            value={settings.editorTheme}
+            onChange={(v) => set("editorTheme", v)}
+          />
+        )}
+
         <TerminalSettingsPane />
 
         <div className="mt-4 rounded border border-[color:var(--ide-border)] bg-[color:var(--ide-panel)] p-2 text-[10px] text-[color:var(--ide-muted)]">
@@ -118,6 +164,91 @@ export function SettingsPane({
         </div>
       </div>
     </div>
+  );
+}
+
+function ThemeSection({
+  value,
+  onChange,
+}: {
+  value: string | undefined;
+  onChange: (v: string) => void;
+}) {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const themes = listAvailableThemes();
+  const [error, setError] = useState<string | null>(null);
+
+  const handleImport = async (file: File) => {
+    setError(null);
+    let text: string;
+    try {
+      // File.text() can reject for permission/abort/IO errors. Surface them
+      // as an inline message instead of an unhandled promise rejection.
+      text = await file.text();
+    } catch (e) {
+      setError(`failed to read file: ${(e as Error).message || String(e)}`);
+      return;
+    }
+    const parsed = parseThemeJson(text);
+    if (!parsed.ok) {
+      setError(parsed.error);
+      return;
+    }
+    const monaco = getMonacoRef();
+    if (!monaco) {
+      setError("Monaco not mounted yet — open a file and try again.");
+      return;
+    }
+    try {
+      const id = registerCustomTheme(monaco, parsed.theme);
+      onChange(id);
+    } catch (e) {
+      setError(`failed to register theme: ${(e as Error).message || String(e)}`);
+    }
+  };
+
+  return (
+    <Section title="Color theme">
+      <SelectRow
+        label="Editor theme"
+        value={value ?? ""}
+        options={[
+          { label: "Default (follows app theme)", value: "" },
+          ...themes.map((t) => ({ label: `${t.label}${t.origin === "custom" ? " (custom)" : ""}`, value: t.id })),
+        ]}
+        onChange={(v) => onChange(v)}
+      />
+      <div className="flex items-center justify-between gap-2 px-3 py-2">
+        <div className="flex-1 text-[12px] text-[color:var(--ide-text)]">
+          Import theme JSON
+          <div className="text-[10px] text-[color:var(--ide-muted)]">
+            Monaco `IStandaloneThemeData` shape — base, colors, rules.
+          </div>
+        </div>
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          className="flex items-center gap-1 rounded border border-[color:var(--ide-border)] px-2 py-1 text-[11px] hover:bg-[color:var(--ide-hover-subtle)]"
+        >
+          <Upload size={11} /> Import…
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="application/json,.json"
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) void handleImport(f);
+            e.target.value = "";
+          }}
+        />
+      </div>
+      {error && (
+        <div className="mx-3 mb-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[10.5px] text-red-300">
+          {error}
+        </div>
+      )}
+    </Section>
   );
 }
 

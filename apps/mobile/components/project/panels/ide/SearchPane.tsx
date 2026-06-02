@@ -5,6 +5,7 @@ import {
 } from "lucide-react-native";
 import type { Root } from "./types";
 import type { SearchFileResult, WorkspaceService } from "./workspace/types";
+import { explainRegexError } from "./regex-support";
 
 interface RootResult {
   rootId: string;
@@ -119,6 +120,13 @@ export function SearchPane({
       new RegExp(query, caseSensitive ? "g" : "gi");
       return null;
     } catch (e) {
+      // BUG-008: if the pattern uses a feature the host V8 lacks
+      // (lookbehind on Electron <116, named groups / Unicode property
+      // escapes on very old runtimes), surface the targeted explanation
+      // instead of V8's cryptic "Invalid group" message. Falls back to
+      // the V8 message when the feature-detection doesn't have a hit.
+      const targeted = explainRegexError(query);
+      if (targeted) return targeted;
       return e instanceof Error ? e.message : "Invalid regex";
     }
   }, [useRegex, query, caseSensitive]);

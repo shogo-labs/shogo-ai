@@ -28,6 +28,7 @@
 
 import type * as Monaco from 'monaco-editor'
 import type { editor, languages, IDisposable } from 'monaco-editor'
+import { SymbolCache } from './symbol-cache'
 
 type MonacoT = typeof Monaco
 
@@ -40,6 +41,29 @@ type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respo
  * URL is a no-op so split-mounts don't double-register.
  */
 let installed: { agentUrl: string; rootId: string; dispose: () => void } | null = null
+
+/**
+ * The live document-symbol fetcher from the most-recent `setupLspProviders`
+ * call. The Outline view (FEAT-OUTLINE) reads symbols through this so it
+ * shares the backend-LSP request path AND the version-keyed cache with
+ * Monaco's breadcrumb picker — no duplicate network traffic, no second
+ * cache to invalidate. Null before setup / after dispose.
+ */
+let activeSymbolFetcher:
+  | ((model: editor.ITextModel) => Promise<languages.DocumentSymbol[] | null>)
+  | null = null
+
+/**
+ * Fetch document symbols for a Monaco model via the registered backend LSP
+ * (cached). Returns null when no LSP is installed, the model is on a
+ * non-agent root, or the backend has no symbols. Safe to call from React.
+ */
+export function getDocumentSymbols(
+  model: editor.ITextModel,
+): Promise<languages.DocumentSymbol[] | null> {
+  if (!activeSymbolFetcher) return Promise.resolve(null)
+  return activeSymbolFetcher(model)
+}
 
 const TS_LANGS = ['typescript', 'javascript', 'typescriptreact', 'javascriptreact']
 
@@ -333,6 +357,15 @@ export function setupLspProviders(config: LspProvidersConfig): { dispose: () => 
 
   const disposables: IDisposable[] = []
 
+  // BUG-010: cache document-symbol results by (uri, versionId). Without a
+  // cache every breadcrumb hover / cursor move re-hits the backend LSP.
+  // Version-keyed caching means any edit (which bumps model.getVersionId)
+  // auto-invalidates, AND a stale-after-edit hit is structurally impossible
+  // because SymbolCache.set drops any prior version of the same URI in the
+  // same call.
+  const symbolCache = new SymbolCache<languages.DocumentSymbol[]>()
+  disposables.push({ dispose: () => symbolCache.clear() })
+
   // ─── Hover ────────────────────────────────────────────────────────────
   disposables.push(
     monaco.languages.registerHoverProvider(TS_LANGS, {
@@ -437,19 +470,32 @@ export function setupLspProviders(config: LspProvidersConfig): { dispose: () => 
   )
 
   // ─── Document Symbols (outline / breadcrumb) ──────────────────────────
-  disposables.push(
-    monaco.languages.registerDocumentSymbolProvider(TS_LANGS, {
-      displayName: 'Shogo Backend LSP',
-      provideDocumentSymbols: async (model, token) => {
+  // Extracted to a named const so the Outline view (FEAT-OUTLINE) can call
+  // the exact same backend-LSP + cache path as Monaco's breadcrumb picker,
+  // via the module-level `getDocumentSymbols` accessor wired below.
+  const provideDocumentSymbols = async (
+    model: editor.ITextModel,
+    token?: { isCancellationRequested: boolean; onCancellationRequested: (cb: () => void) => IDisposable },
+  ): Promise<languages.DocumentSymbol[] | null> => {
         const path = pathFromModel(model, rootId)
         if (!path) return null
+
+        // Snapshot uri + version BEFORE the await — Monaco may have moved
+        // on by the time the LSP responds. We cache against the snapshot;
+        // the next provideDocumentSymbols call at the new version misses.
+        const uri = model.uri.toString()
+        const versionId = model.getVersionId()
+        const cached = symbolCache.get({ uri, versionId })
+        if (cached) return cached
+
         const result = await post<LspDocumentSymbol[] | LspSymbolInformation[]>('documentSymbol', {
           path,
-        }, makeAbortSignal(token))
+        }, token ? makeAbortSignal(token) : undefined)
         if (!result || !Array.isArray(result)) return null
         // tsserver returns DocumentSymbol[] (hierarchical). Older servers
         // return SymbolInformation[]; handle both for safety.
         const isHierarchical = result.length === 0 || 'range' in (result[0] as any)
+        let symbols: languages.DocumentSymbol[]
         if (isHierarchical) {
           const arr = result as LspDocumentSymbol[]
           const map = (s: LspDocumentSymbol): languages.DocumentSymbol => ({
@@ -461,21 +507,40 @@ export function setupLspProviders(config: LspProvidersConfig): { dispose: () => 
             selectionRange: toMonacoRange(s.selectionRange),
             children: s.children?.map(map) ?? [],
           })
-          return arr.map(map)
+          symbols = arr.map(map)
+        } else {
+          const arr = result as LspSymbolInformation[]
+          symbols = arr.map((s) => ({
+            name: s.name,
+            detail: s.containerName ?? '',
+            kind: symbolKind(monaco, s.kind),
+            tags: [],
+            range: toMonacoRange(s.location.range),
+            selectionRange: toMonacoRange(s.location.range),
+            children: [],
+          }))
         }
-        const arr = result as LspSymbolInformation[]
-        return arr.map((s) => ({
-          name: s.name,
-          detail: s.containerName ?? '',
-          kind: symbolKind(monaco, s.kind),
-          tags: [],
-          range: toMonacoRange(s.location.range),
-          selectionRange: toMonacoRange(s.location.range),
-          children: [],
-        }))
-      },
+
+        // Only cache if the model is still at the version we fetched for.
+        // If the user typed during the await, the new version's request
+        // will arrive next and we'd just store stale data otherwise.
+        if (model.getVersionId() === versionId) {
+          symbolCache.set({ uri, versionId }, symbols)
+        }
+        return symbols
+  }
+
+  disposables.push(
+    monaco.languages.registerDocumentSymbolProvider(TS_LANGS, {
+      displayName: 'Shogo Backend LSP',
+      provideDocumentSymbols: (model, token) => provideDocumentSymbols(model, token),
     }),
   )
+
+  // Expose the (cached) fetcher to the Outline view. Cleared on dispose so a
+  // stale closure from a torn-down workspace can't answer Outline requests.
+  activeSymbolFetcher = provideDocumentSymbols
+  disposables.push({ dispose: () => { if (activeSymbolFetcher === provideDocumentSymbols) activeSymbolFetcher = null } })
 
   // ─── Signature Help (parameter hints while typing args) ───────────────
   disposables.push(

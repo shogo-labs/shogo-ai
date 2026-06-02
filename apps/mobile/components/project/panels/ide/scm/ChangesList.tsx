@@ -9,6 +9,7 @@ import { ChevronDown, ChevronRight, FileIcon, Minus, Plus, RotateCcw } from "luc
 import { useMemo, useState } from "react";
 
 import type { GitShortCode, GitSnapshot } from "../git/bridge";
+import { isCountedGitCode } from "../git/git-counting";
 
 interface Group {
   id: "merge" | "staged" | "changes";
@@ -64,7 +65,10 @@ function buildGroups(snapshot: GitSnapshot): Group[] {
   // The viewer can still stage/unstage; refresh re-renders accurately.
   for (const [path, code] of Object.entries(snapshot.fileStatus)) {
     if (snapshot.conflictPaths.includes(path)) continue;
-    if (code === "·" || code === "!") continue;
+    // BUG-007: route through the shared isCountedGitCode source-of-truth
+    // so the "ignored ('!') excluded" rule cannot drift between the SCM
+    // badge count and the Source Control viewlet's Changes group.
+    if (!isCountedGitCode(code)) continue;
     working.push({ path, code });
   }
   const groups: Group[] = [
