@@ -716,6 +716,65 @@ export function adminRoutes(): Hono {
     }
   })
 
+  // --------------------------------------------------------------------------
+  // Affiliate management
+  // --------------------------------------------------------------------------
+
+  /**
+   * PATCH /affiliates/:id - Set or clear an affiliate's per-affiliate
+   * commission-rate override. `commissionRateBps` is in basis points
+   * (2000 = 20.00%), range 0..10000 (0%..100%). Pass `null` to clear the
+   * override and fall back to the per-level `AffiliateCommissionTier` rate.
+   *
+   * The override only affects the affiliate's direct (L1) referral
+   * commissions, applied as a flat rate (the tier's durationDays window and
+   * secondaryRateBps step-down are bypassed). See
+   * apps/api/src/services/affiliate.service.ts:recordCommissionsForInvoice.
+   */
+  router.patch('/affiliates/:id', async (c) => {
+    const id = c.req.param('id')
+    let body: any
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
+    }
+
+    const raw = body?.commissionRateBps
+    let commissionRateBps: number | null
+    if (raw === null) {
+      commissionRateBps = null
+    } else if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 && raw <= 10000) {
+      commissionRateBps = raw
+    } else {
+      return c.json(
+        {
+          error: {
+            code: 'invalid_rate',
+            message: 'commissionRateBps must be null or an integer between 0 and 10000 (basis points)',
+          },
+        },
+        400,
+      )
+    }
+
+    try {
+      const existing = await prisma.affiliate.findUnique({ where: { id }, select: { id: true } })
+      if (!existing) {
+        return c.json({ error: { code: 'affiliate_not_found', message: 'Affiliate not found' } }, 404)
+      }
+      const updated = await prisma.affiliate.update({
+        where: { id },
+        data: { commissionRateBps },
+        select: { id: true, userId: true, code: true, status: true, commissionRateBps: true },
+      })
+      return c.json({ ok: true, affiliate: updated })
+    } catch (error: any) {
+      console.error('[Admin] Affiliate rate patch error:', error)
+      return c.json({ error: { code: 'affiliate_update_failed', message: error.message } }, 500)
+    }
+  })
+
   return router
 }
 
