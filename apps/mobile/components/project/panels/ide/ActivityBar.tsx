@@ -1,4 +1,4 @@
-import { Files, GitCommit, Search, Settings, Terminal as TerminalIcon } from "lucide-react-native";
+import { Files, GitCommit, ListTree, Search, Settings, Terminal as TerminalIcon } from "lucide-react-native";
 import { CodiconSourceControl, CodiconRunDebug } from "./icons";
 import type { ActivityId } from "./types";
 import { formatBadgeCount, type BadgeData, type BadgeTone } from "./badges/formatBadge";
@@ -6,6 +6,8 @@ import { formatBadgeCount, type BadgeData, type BadgeTone } from "./badges/forma
 const ITEMS: { id: ActivityId; icon: React.ComponentType<{ size?: number }>; label: string; hint?: string }[] = [
   { id: "files",      icon: Files,                label: "Explorer",       hint: "⌘⇧E" },
   { id: "search",     icon: Search,               label: "Search",         hint: "⌘⇧F" },
+  // VS Code parity — Outline (symbol tree for the active editor)
+  { id: "outline",    icon: ListTree,             label: "Outline",        hint: "⌘⇧O" },
   // VS Code parity — dedicated Source Control glyph (3-circle Y branch)
   { id: "git",        icon: CodiconSourceControl, label: "Source Control", hint: "⌃⇧G" },
   // VS Code parity — Run and Debug (bug + play triangle)
