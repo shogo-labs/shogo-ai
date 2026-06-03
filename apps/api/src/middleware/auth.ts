@@ -295,6 +295,8 @@ const PUBLIC_PREFIXES = [
   '/api/internal/',
   '/api/local/',
   '/api/ai/',
+  // Public OpenAI-compatible API — self-authenticates with a `shogo_sk_*` key.
+  '/api/v1/',
   '/api/tools/',
   '/api/api-keys/validate',
   // Cloud-side device-code login entry. The CLI worker and the desktop
