@@ -61,6 +61,7 @@ const sidebars: SidebarsConfig = {
           label: "My Machines",
           items: [
             "features/my-machines/quickstart",
+            "features/my-machines/interactive-cli",
             "features/my-machines/networking",
             "features/my-machines/project-pull",
             "features/my-machines/checkpoints-on-the-vps",
