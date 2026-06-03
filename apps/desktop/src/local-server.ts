@@ -571,7 +571,11 @@ function listBundledMigrationNames(): string[] {
  *                  applied (so `prisma migrate deploy` does nothing), and
  *                  `'introspect'` mode also skips it because it's in
  *                  `existing`. Only this rescue pass actually re-applies the
- *                  ALTER TABLE.
+ *                  ALTER TABLE. NOTE: `CREATE TABLE` targets that are RENAMEd
+ *                  away within the same migration (Prisma's `RedefineTables`
+ *                  `new_<table>` temp tables) are deliberately skipped — they
+ *                  are transient and recreating them as empty orphans poisons
+ *                  any later migration that reuses the same temp name.
  *
  * Historically this shelled out to the `sqlite3` CLI, which is not present
  * on a stock Windows install — the previous implementation silently warned
@@ -680,11 +684,48 @@ function baselineMigrations(
     if (mode === 'rescue') {
       const repaired = [];
       const tables = loadSchema();
+      // Every "new_<table>" name that any migration RENAMEs away — i.e. the
+      // full set of RedefineTables temp-table names across history. These must
+      // never exist in a healthy schema; older app versions left them behind as
+      // empty orphans (see comment below), so we sweep them out at the end.
+      const tempTableNames = new Set();
       for (const name of names) {
         const sqlPath = path.join(migrationsDir, name, 'migration.sql');
         let sql;
         try { sql = fs.readFileSync(sqlPath, 'utf-8'); } catch { continue; }
-        for (const stmt of splitSqlStatements(sql)) {
+        const stmts = splitSqlStatements(sql);
+        // Prisma's "RedefineTables" pattern (used to add/drop columns or FKs on
+        // SQLite, which lacks full ALTER TABLE) emits a temporary "new_<table>"
+        // that is populated from the original and then RENAMEd back over it:
+        //
+        //     CREATE TABLE "new_x" (...);
+        //     INSERT INTO "new_x" SELECT ... FROM "x";
+        //     DROP TABLE "x";
+        //     ALTER TABLE "new_x" RENAME TO "x";
+        //
+        // Those "new_<table>" tables are transient — they do NOT exist in a
+        // healthy post-migration schema. A naive "create any CREATE TABLE whose
+        // target is missing" sweep resurrects them as empty orphans on EVERY
+        // launch, which is mostly harmless until a *later* migration legitimately
+        // reuses the same temp name: `prisma migrate deploy` then hits
+        // "table new_<table> already exists", half-applies, and bricks startup
+        // (this is exactly what 20260531063135_add_workspace_chat_sessions did to
+        // every v1.9.11 install). Collect the RENAME-source names within this
+        // migration and never recreate them here.
+        // Only the classic RedefineTables shape counts as a transient temp
+        // table: a "new_<x>" renamed onto "<x>" (source === "new_" + dest).
+        // A *genuine* table rename to a different name (e.g.
+        // credit_ledgers -> usage_wallets) is NOT transient — its source is a
+        // real, now-retired table and must not be treated as a temp orphan.
+        const redefineTemp = new Set();
+        for (const stmt of stmts) {
+          const renamed = stmt.match(/^ALTER\\s+TABLE\\s+"?(\\w+)"?\\s+RENAME\\s+TO\\s+"?(\\w+)"?/i);
+          if (renamed && renamed[1] === 'new_' + renamed[2]) {
+            redefineTemp.add(renamed[1]);
+            tempTableNames.add(renamed[1]);
+          }
+        }
+        for (const stmt of stmts) {
           const addCol = stmt.match(/^ALTER\\s+TABLE\\s+"?(\\w+)"?\\s+ADD\\s+COLUMN\\s+"?(\\w+)"?/i);
           if (addCol) {
             const [, table, col] = addCol;
@@ -706,6 +747,7 @@ function baselineMigrations(
           const createTbl = stmt.match(/^CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?"?(\\w+)"?/i);
           if (createTbl) {
             const [, table] = createTbl;
+            if (redefineTemp.has(table)) continue; // transient RedefineTables temp table
             if (tables.has(table)) continue;
             try {
               db.exec(stmt);
@@ -720,6 +762,30 @@ function baselineMigrations(
             continue;
           }
           // Other statements (UPDATE, RENAME, etc.) are NOT replayed by rescue.
+        }
+      }
+      // Defuse landmines left by older app versions: a RedefineTables temp
+      // table ("new_<x>") must never survive into a healthy schema, so any that
+      // still exists is a stale orphan from the pre-fix rescue sweep. Drop them
+      // so a future migration can safely reuse the same temp name without
+      // hitting "table new_<x> already exists" and bricking startup.
+      for (const t of tempTableNames) {
+        if (!tables.has(t)) continue;
+        try {
+          const q = '"' + t.replace(/"/g, '""') + '"';
+          // Belt-and-braces: only drop if empty. The orphans the old rescue
+          // sweep created were never populated (CREATE TABLE with no INSERT),
+          // and a genuinely mid-flight RedefineTables would be a failed
+          // migration caught by the preflight before rescue ever runs — so a
+          // non-empty "new_<x>" is unexpected. Leave it for a human rather than
+          // risk discarding rows.
+          const n = db.query(\`SELECT COUNT(*) AS c FROM \${q}\`).get().c;
+          if (n > 0) { repaired.push({ kind: 'orphan_temp_table_nonempty_skipped', table: t, rows: n }); continue; }
+          db.exec(\`DROP TABLE IF EXISTS \${q}\`);
+          tables.delete(t);
+          repaired.push({ kind: 'drop_orphan_temp_table', table: t });
+        } catch (e) {
+          repaired.push({ kind: 'drop_orphan_temp_table_failed', table: t, error: String(e && e.message || e) });
         }
       }
       db.close();

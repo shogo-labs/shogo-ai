@@ -11,6 +11,15 @@
 -- accepted-drift tables (see scripts/check-desktop-schema-drift.ts
 -- allow-list) are intentionally left untouched.
 
+-- Recover from a half-applied / poisoned state. Earlier app versions ran a
+-- "schema rescue" sweep on every launch that resurrected RedefineTables temp
+-- tables (e.g. "new_chat_sessions") as empty orphans, and a first attempt at
+-- this migration could leave "chat_session_projects" behind after failing on
+-- the orphaned "new_chat_sessions". Both tables are owned exclusively by this
+-- migration (or are transient), so dropping any stale copy first makes the
+-- migration safe to retry without manual DB surgery.
+DROP TABLE IF EXISTS "chat_session_projects";
+
 -- CreateTable
 CREATE TABLE "chat_session_projects" (
     "id" TEXT NOT NULL PRIMARY KEY,
@@ -25,6 +34,7 @@ CREATE TABLE "chat_session_projects" (
 -- RedefineTables
 PRAGMA defer_foreign_keys=ON;
 PRAGMA foreign_keys=OFF;
+DROP TABLE IF EXISTS "new_chat_sessions";
 CREATE TABLE "new_chat_sessions" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT,
