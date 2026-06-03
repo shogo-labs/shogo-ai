@@ -49,6 +49,7 @@
     "@playwright/mcp": "^0.0.68",
     "@shogo-ai/sdk": "workspace:*",
     "@shogo/model-catalog": "workspace:*",
+    "@shogo/pty-core": "workspace:*",
     "@shogo/shared-runtime": "workspace:*",
     "@sinclair/typebox": "^0.34.48",
     "@types/diff": "^8.0.0",
@@ -61,11 +62,13 @@
     "hono": "^4.7.10",
     "ignore": "^7.0.5",
     "imapflow": "^1.2.10",
+    "ink": "^5",
     "ioredis": "^5.10.1",
     "linkedom": "^0.18.12",
     "nodemailer": "^8.0.1",
     "openai": "^6.25.0",
     "playwright-core": "^1.58.2",
+    "react": "^18",
     "sqlite-vec": "^0.1.7-alpha.2",
     "tar": "^7.4.3",
     "tree-sitter-wasms": "^0.1.13",
@@ -76,12 +79,12 @@
     "unpdf": "^1.4.0",
     "web-tree-sitter": "0.25.10",
     "yaml": "^2.7.1",
-    "zod": "^4.3.6",
-    "@shogo/pty-core": "workspace:*"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/bun": "latest",
     "@types/nodemailer": "^7.0.10",
+    "@types/react": "^18",
     "@types/turndown": "^5.0.6",
     "pyright": "^1.1.400",
     "typescript-language-server": "^5.1.3"
