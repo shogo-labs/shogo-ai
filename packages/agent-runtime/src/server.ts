@@ -106,6 +106,16 @@ import { subscribe as subscribeScreencast, getLastFrame as getLastScreencastFram
 import { WhatsAppAdapter } from './channels/whatsapp'
 import { TeamsAdapter } from './channels/teams'
 import { saveUploadedFileParts, buildUploadedFilesNote } from './upload-attachments'
+import { maybeRunInteractive } from './interactive/entry'
+
+// Interactive CLI mode. When this binary is invoked as `agent-runtime
+// interactive` (or with SHOGO_INTERACTIVE=1) it runs the in-process REPL and
+// exits before any HTTP listener / gateway boot below. For the normal server
+// path this is a no-op that returns immediately. It MUST remain the first
+// top-level statement so the heavy module body (trust resolver, route
+// registration, `Bun.serve` via the default export) never executes — and the
+// REPL never loads React/Ink — in the interactive path.
+await maybeRunInteractive()
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)

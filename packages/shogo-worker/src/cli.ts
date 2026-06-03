@@ -28,6 +28,7 @@ import { runProjectPull } from './commands/project-pull.ts';
 import { runProjectPush } from './commands/project-push.ts';
 import { runProjectCheckout } from './commands/project-checkout.ts';
 import { runDoctor } from './commands/doctor.ts';
+import { runAgent } from './commands/agent.ts';
 
 const VERSION = '0.1.0';
 
@@ -158,6 +159,31 @@ program
   .option('--bun <path>', 'Path to a bun binary (default: bundled/PATH bun)')
   .option('--no-backup', 'Skip the pre-repair database backup (discouraged)')
   .action((flags) => handle(() => runDoctor(flags)));
+
+program
+  .command('chat', { isDefault: true })
+  .description('Start the interactive coding agent in the current directory')
+  .argument('[prompt...]', 'Optional one-shot prompt (runs non-interactively, like -p)')
+  .option('-p, --print <prompt>', 'Headless one-shot: run a single turn and print the result')
+  .option('--model <model>', 'Model id to use for new turns')
+  .option('--cwd <dir>', 'Working directory to operate in (default: $PWD)')
+  .option('--runtime-bin <path>', 'Override the agent-runtime binary path')
+  .option('--no-tui', 'Disable the rich TUI; use a plain readline renderer')
+  .option('--api-key <key>', 'Override API key for this run')
+  .option('--cloud-url <url>', 'Override Shogo Cloud URL for this run')
+  .action((promptParts: string[], flags) =>
+    handle(() =>
+      runAgent({
+        print: flags.print ?? (promptParts.length ? promptParts.join(' ') : undefined),
+        model: flags.model,
+        cwd: flags.cwd,
+        runtimeBin: flags.runtimeBin,
+        noTui: flags.tui === false,
+        apiKey: flags.apiKey,
+        cloudUrl: flags.cloudUrl,
+      }),
+    ),
+  );
 
 program.showHelpAfterError(pc.dim('\n(use --help for usage)'));
 program.parseAsync(process.argv);
