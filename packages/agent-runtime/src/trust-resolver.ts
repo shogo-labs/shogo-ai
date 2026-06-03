@@ -64,6 +64,14 @@ interface ResolverState extends ResolvedTrust {
   /** Project id used for the /internal/projects/:id/trust read. */
   projectId: string | null
   /**
+   * Workspace (merged-root) runtime: there is no single project to read
+   * trust for, and the runtime lives inside our sandbox (every attached
+   * project is a subfolder we own). Trust is statically `trusted`; the
+   * resolver must NOT call /internal/projects/:id/trust (the synthetic
+   * `ws:<id>` PROJECT_ID 401s there).
+   */
+  isWorkspaceRuntime: boolean
+  /**
    * Wall-clock ms of the last successful refresh. Exposed for
    * diagnostics / future TTL eviction; not used as a staleness gate
    * today (per-turn refresh is the gate). */
@@ -86,6 +94,7 @@ const state: ResolverState = {
   linkedFolders: [],
   initialized: false,
   projectId: null,
+  isWorkspaceRuntime: false,
   lastRefreshAt: null,
   inFlight: null,
 }
@@ -95,6 +104,8 @@ export interface InitArgs {
   workspaceDir: string
   workingMode: WorkingMode
   linkedFolders: string[]
+  /** Workspace (merged-root) runtime — statically trusted, no API trust read. */
+  isWorkspaceRuntime?: boolean
 }
 
 /**
@@ -110,8 +121,11 @@ export function initTrustResolver(args: InitArgs): void {
   state.workspaceDir = args.workspaceDir
   state.workingMode = args.workingMode
   state.linkedFolders = args.linkedFolders.slice()
-  state.trustLevel = defaultTrustFor(args.workingMode)
-  state.initialized = false
+  state.isWorkspaceRuntime = args.isWorkspaceRuntime ?? false
+  // Workspace runtimes are always trusted (sandboxed, multi-project);
+  // there is no per-project trust to reconcile, so mark initialized.
+  state.trustLevel = state.isWorkspaceRuntime ? 'trusted' : defaultTrustFor(args.workingMode)
+  state.initialized = state.isWorkspaceRuntime
   state.lastRefreshAt = null
   state.inFlight = null
 }
@@ -142,6 +156,15 @@ export function isTrustResolverInitialized(): boolean {
  */
 export async function refreshTrust(): Promise<void> {
   if (state.inFlight) return state.inFlight
+
+  // Workspace (merged-root) runtimes are statically trusted and have no
+  // single project to read trust for. Short-circuit so we never hit
+  // /internal/projects/ws:<id>/trust (which 401s on the synthetic id).
+  if (state.isWorkspaceRuntime) {
+    state.trustLevel = 'trusted'
+    state.initialized = true
+    return
+  }
 
   const projectId = state.projectId
   if (!projectId) {
@@ -252,6 +275,7 @@ export function __resetTrustForTests(): void {
   state.linkedFolders = []
   state.initialized = false
   state.projectId = null
+  state.isWorkspaceRuntime = false
   state.lastRefreshAt = null
   state.inFlight = null
 }

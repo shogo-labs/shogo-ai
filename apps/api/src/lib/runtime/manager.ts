@@ -24,6 +24,7 @@ import type {
   RuntimeStatus,
 } from './types'
 import { getShogoCloudUrl, buildAiProxyUrl, buildToolsProxyUrl } from '../cloud-urls'
+import { buildWorkspaceEnv } from './build-workspace-env'
 
 /** Get the directory where this module is located */
 const __filename = fileURLToPath(import.meta.url)
@@ -62,6 +63,14 @@ const RUNTIME_SERVER = process.env.AGENT_RUNTIME_ENTRY
 const PORT_RANGE_START = 37100
 const PORT_RANGE_END = 37900
 const AGENT_PORT_OFFSET = 1000
+
+/**
+ * Internal runtimes-map key for a workspace runtime. Prefixed so a
+ * workspace id can never collide with a project id in the same Map.
+ */
+export function workspaceRuntimeKey(workspaceId: string): string {
+  return `ws:${workspaceId}`
+}
 
 /** Default configuration values */
 const DEFAULT_CONFIG: IRuntimeConfig = {
@@ -1121,6 +1130,153 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     }
   }
 
+  /**
+   * Start (or join an in-flight start of) a WORKSPACE runtime — one
+   * agent-runtime rooted at the `workspaces/` parent that mounts several
+   * attached projects as subfolders (the merged-root mode toggled by
+   * `WORKSPACE_RUNTIME=true`, see agent-runtime/workspace-runtime-mode.ts).
+   *
+   * Keyed by `ws:<workspaceId>` so it can never collide with a single
+   * project runtime of the same id. Idempotent + dedupes concurrent
+   * starts, exactly like `start()`.
+   */
+  async startWorkspace(
+    workspaceId: string,
+    opts: { attachedProjectIds: string[] },
+  ): Promise<IProjectRuntime> {
+    if (!workspaceId) throw new Error('[RuntimeManager] startWorkspace: workspaceId is required')
+    const key = workspaceRuntimeKey(workspaceId)
+
+    const existing = this.runtimes.get(key)
+    if (existing && existing.status === 'running' && existing.agentPort) {
+      return this.toPublicRuntime(existing)
+    }
+
+    const inflight = this.startingPromises.get(key)
+    if (inflight) {
+      console.log(`[RuntimeManager] Waiting on in-flight workspace start for ${key}`)
+      return inflight
+    }
+
+    if (existing && (existing.status === 'error' || existing.status === 'starting')) {
+      try {
+        await this.stop(key)
+      } catch (err: any) {
+        console.warn(`[RuntimeManager] startWorkspace(${key}): pre-respawn stop failed: ${err?.message ?? err}`)
+      }
+    }
+
+    const promise = this.doStartWorkspace(workspaceId, opts.attachedProjectIds ?? [])
+    this.startingPromises.set(key, promise)
+    try {
+      return await promise
+    } finally {
+      this.startingPromises.delete(key)
+    }
+  }
+
+  private async doStartWorkspace(
+    workspaceId: string,
+    attachedProjectIds: string[],
+  ): Promise<IProjectRuntime> {
+    const key = workspaceRuntimeKey(workspaceId)
+    const startedAtMs = Date.now()
+    const phase = (name: string, extra?: Record<string, unknown>) => {
+      console.log(
+        `[RuntimeManager:doStartWorkspace:${workspaceId.slice(0, 8)}] ${name} ` +
+          `(+${Date.now() - startedAtMs}ms${extra ? ' ' + JSON.stringify(extra) : ''})`,
+      )
+    }
+    phase('begin', { attachedProjectIds: attachedProjectIds.length })
+
+    // The workspace runtime is rooted at the workspaces PARENT; each
+    // attached project is an existing subfolder. We never seed/template
+    // here — the merged-root boot skips that (workspace-runtime-mode.ts).
+    const workspacesDir = resolve(this.config.workspacesDir || join(PROJECT_ROOT, 'workspaces'))
+    if (!existsSync(workspacesDir)) mkdirSync(workspacesDir, { recursive: true })
+
+    const port = await this.allocatePortAsync()
+    const agentPort = port + AGENT_PORT_OFFSET
+    const url = this.buildUrl(key, port)
+    const startedAt = Date.now()
+
+    const runtime: InternalRuntime = {
+      id: key,
+      port,
+      status: 'starting',
+      url,
+      startedAt,
+      process: null,
+      agentProcess: null,
+      agentPort,
+    }
+    this.runtimes.set(key, runtime)
+
+    try {
+      const runtimeServerPath = process.env.AGENT_RUNTIME_ENTRY || RUNTIME_SERVER
+      if (!existsSync(runtimeServerPath)) {
+        throw new Error(`[RuntimeManager] Runtime server not found at ${runtimeServerPath}`)
+      }
+
+      // Base workspace env (WORKSPACE_ID, attached ids, per-project AI
+      // proxy tokens, workspace runtime token, proxy URLs, S3, Composio
+      // scope). Layer the host-dev-only keys on top.
+      const runtimeEnv = await buildWorkspaceEnv(workspaceId, attachedProjectIds, {
+        logPrefix: 'doStartWorkspace',
+      })
+      runtimeEnv.WORKSPACE_RUNTIME = 'true'
+      runtimeEnv.WORKING_MODE = 'managed'
+      runtimeEnv.NODE_ENV = 'development'
+      runtimeEnv.SCHEMAS_PATH = join(workspacesDir, '..', '.schemas')
+
+      const apiPort = process.env.API_PORT || '8002'
+      const apiBase = `http://localhost:${apiPort}`
+      // buildWorkspaceEnv already set AI_PROXY_URL; add the tools proxy
+      // (index-engine embeddings etc.) the same way doStart does.
+      runtimeEnv.TOOLS_PROXY_URL = buildToolsProxyUrl(apiBase)
+
+      if (process.env.PROJECTS_DATABASE_URL) {
+        runtimeEnv.DATABASE_URL = process.env.PROJECTS_DATABASE_URL
+      }
+
+      const spawnConfig: ProjectSpawnConfig = {
+        cloudUrl: getShogoCloudUrl(),
+        apiKey: process.env.SHOGO_API_KEY || '',
+        // projectDir becomes WORKSPACE_DIR in the child — the parent dir.
+        projectDir: workspacesDir,
+        name: runtimeEnv.AGENT_NAME,
+        workspaceId,
+        extraEnv: runtimeEnv,
+      }
+
+      phase('agentManager.ensureRunning:begin')
+      const agentStatus = await this.agentManager.ensureRunning(key, spawnConfig)
+      phase('agentManager.ensureRunning:end', { status: agentStatus?.status, agentPort: agentStatus?.agentPort })
+      this.agentManagedProjects.add(key)
+
+      runtime.agentPort = agentStatus.agentPort
+      if (!agentStatus.agentPort) {
+        throw new Error(
+          `workspace agent-runtime for ${key} returned no port (status=${agentStatus.status}` +
+            (agentStatus.lastError ? `, error=${agentStatus.lastError}` : '') + ')',
+        )
+      }
+      runtime.url = this.buildUrl(key, agentStatus.agentPort)
+      runtime.status = 'running'
+      this.startHealthCheck(key)
+      phase('done', { totalMs: Date.now() - startedAtMs })
+      return this.toPublicRuntime(runtime)
+    } catch (err) {
+      runtime.status = 'error'
+      this.releasePort(port)
+      if (this.agentManagedProjects.has(key)) {
+        this.agentManagedProjects.delete(key)
+        await this.agentManager.stop(key).catch(() => {})
+      }
+      throw err
+    }
+  }
+
   private async doStart(projectId: string): Promise<IProjectRuntime> {
     const startedAtMs = Date.now()
     const phase = (name: string, extra?: Record<string, unknown>) => {
@@ -1915,6 +2071,21 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     runtime.status = 'stopped'
     this.releasePort(runtime.port)
     this.runtimes.delete(projectId)
+  }
+
+  /**
+   * Stop a workspace (merged-root) runtime. Idempotent. Delegates to
+   * stop() with the `ws:<id>` key so the worker child, ports, health
+   * checks and runtimes-map entry are all torn down identically to a
+   * project runtime.
+   */
+  async stopWorkspace(workspaceId: string): Promise<void> {
+    return this.stop(workspaceRuntimeKey(workspaceId))
+  }
+
+  /** Public status of a workspace runtime, or null when not running. */
+  workspaceStatus(workspaceId: string): IProjectRuntime | null {
+    return this.status(workspaceRuntimeKey(workspaceId))
   }
 
   async restart(projectId: string): Promise<IProjectRuntime> {

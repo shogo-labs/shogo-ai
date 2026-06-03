@@ -35,8 +35,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  findStuckMigrations,
   isMigrationFullyApplied,
   parseDuplicateColumnFailure,
+  parseRecoverableFailure,
+  planMigrationObjects,
+  resolveLocalDbPath,
 } from "../dev-all";
 
 describe("parseDuplicateColumnFailure", () => {
@@ -171,10 +175,9 @@ ALTER TABLE "projects" ADD COLUMN "newColumnNotYetApplied" TEXT;
     expect(ok).toBe(false);
   });
 
-  test("false when migration contains a non-ADD-COLUMN statement", async () => {
-    // A migration that mixes ADD COLUMN with CREATE INDEX could have
-    // partial state we can't safely paper over by marking it applied —
-    // the index might be missing even if every column is there.
+  test("false when a created index from an ADD COLUMN + CREATE INDEX migration is missing", async () => {
+    // Column is present but the index was never created (interrupted between
+    // the two statements) — we must NOT mark it applied.
     writeMigration(
       "20260602000000_add_with_index",
       `ALTER TABLE "workspace_grants" ADD COLUMN "planId" TEXT;
@@ -183,6 +186,138 @@ CREATE INDEX "workspace_grants_planId_idx" ON "workspace_grants"("planId");
     );
     const ok = await isMigrationFullyApplied(
       "20260602000000_add_with_index",
+      { rootDir: workDir, dbPath, migrationsDir },
+    );
+    expect(ok).toBe(false);
+  });
+
+  test("true when both the added column AND its index are present", async () => {
+    const db = new Database(dbPath);
+    db.run(
+      `CREATE INDEX "workspace_grants_planId_idx" ON "workspace_grants"("planId")`,
+    );
+    db.close();
+    writeMigration(
+      "20260602000000_add_with_index",
+      `ALTER TABLE "workspace_grants" ADD COLUMN "planId" TEXT;
+CREATE INDEX "workspace_grants_planId_idx" ON "workspace_grants"("planId");
+`,
+    );
+    const ok = await isMigrationFullyApplied(
+      "20260602000000_add_with_index",
+      { rootDir: workDir, dbPath, migrationsDir },
+    );
+    expect(ok).toBe(true);
+  });
+
+  test("true for a CREATE TABLE migration when the table already exists", async () => {
+    const db = new Database(dbPath);
+    db.run(`CREATE TABLE "chat_session_projects" ("id" TEXT PRIMARY KEY)`);
+    db.close();
+    writeMigration(
+      "20260606000000_create_join_table",
+      `CREATE TABLE "chat_session_projects" (
+  "id" TEXT NOT NULL PRIMARY KEY,
+  "sessionId" TEXT NOT NULL
+);
+`,
+    );
+    const ok = await isMigrationFullyApplied(
+      "20260606000000_create_join_table",
+      { rootDir: workDir, dbPath, migrationsDir },
+    );
+    expect(ok).toBe(true);
+  });
+
+  test("false for a CREATE TABLE migration when the table is still missing", async () => {
+    writeMigration(
+      "20260606000001_create_missing_table",
+      `CREATE TABLE "not_created_yet" ("id" TEXT PRIMARY KEY);`,
+    );
+    const ok = await isMigrationFullyApplied(
+      "20260606000001_create_missing_table",
+      { rootDir: workDir, dbPath, migrationsDir },
+    );
+    expect(ok).toBe(false);
+  });
+
+  test("true for the SQLite table-rebuild idiom once the rebuild has finished", async () => {
+    // Simulate a completed RedefineTables: `projects` already has the new
+    // `archivedAt` column and the transient `new_projects` is gone.
+    const db = new Database(dbPath);
+    db.run(`ALTER TABLE "projects" ADD COLUMN "archivedAt" DATETIME`);
+    db.run(
+      `CREATE INDEX "projects_archivedAt_idx" ON "projects"("archivedAt")`,
+    );
+    db.close();
+    writeMigration(
+      "20260607000000_rebuild_projects",
+      `PRAGMA defer_foreign_keys=ON;
+PRAGMA foreign_keys=OFF;
+CREATE TABLE "new_projects" (
+  "id" TEXT NOT NULL PRIMARY KEY,
+  "publishStatus" TEXT,
+  "publishError" TEXT,
+  "publishStatusAt" INTEGER,
+  "archivedAt" DATETIME
+);
+INSERT INTO "new_projects" ("id") SELECT "id" FROM "projects";
+DROP TABLE "projects";
+ALTER TABLE "new_projects" RENAME TO "projects";
+CREATE INDEX "projects_archivedAt_idx" ON "projects"("archivedAt");
+PRAGMA foreign_keys=ON;
+PRAGMA defer_foreign_keys=OFF;
+`,
+    );
+    const ok = await isMigrationFullyApplied(
+      "20260607000000_rebuild_projects",
+      { rootDir: workDir, dbPath, migrationsDir },
+    );
+    expect(ok).toBe(true);
+  });
+
+  test("false for the table-rebuild idiom when the transient new_* table is left behind", async () => {
+    // Interrupted mid-rebuild: `new_projects` still exists, so the rename
+    // never happened — re-running is required.
+    const db = new Database(dbPath);
+    db.run(`CREATE TABLE "new_projects" ("id" TEXT PRIMARY KEY)`);
+    db.close();
+    writeMigration(
+      "20260607000001_rebuild_interrupted",
+      `CREATE TABLE "new_projects" ("id" TEXT NOT NULL PRIMARY KEY, "archivedAt" DATETIME);
+INSERT INTO "new_projects" ("id") SELECT "id" FROM "projects";
+DROP TABLE "projects";
+ALTER TABLE "new_projects" RENAME TO "projects";
+`,
+    );
+    const ok = await isMigrationFullyApplied(
+      "20260607000001_rebuild_interrupted",
+      { rootDir: workDir, dbPath, migrationsDir },
+    );
+    expect(ok).toBe(false);
+  });
+
+  test("true for ADD COLUMN + seed UPDATE when the column is present (data not verified)", async () => {
+    writeMigration(
+      "20260608000000_add_col_and_seed",
+      `ALTER TABLE "workspace_grants" ADD COLUMN "planId" TEXT;
+UPDATE "workspace_grants" SET "planId" = 'free' WHERE "planId" IS NULL;
+`,
+    );
+    const ok = await isMigrationFullyApplied(
+      "20260608000000_add_col_and_seed",
+      { rootDir: workDir, dbPath, migrationsDir },
+    );
+    expect(ok).toBe(true);
+  });
+
+  test("false for a standalone DROP TABLE (destructive, not a rebuild)", async () => {
+    writeMigration(
+      "20260609000000_drop_table",
+      `DROP TABLE "projects";`,
+    );
+    const ok = await isMigrationFullyApplied(
+      "20260609000000_drop_table",
       { rootDir: workDir, dbPath, migrationsDir },
     );
     expect(ok).toBe(false);
@@ -247,5 +382,230 @@ ALTER TABLE "workspace_grants" ADD COLUMN "planId" TEXT;
     } finally {
       db.close();
     }
+  });
+});
+
+describe("parseRecoverableFailure", () => {
+  test("P3018 duplicate-column names the single failing migration", () => {
+    const stderr = `Applying migration \`20260530053000_add_rolling_usage_windows\`
+Error: P3018
+
+Migration name: 20260530053000_add_rolling_usage_windows
+
+Database error:
+duplicate column name: fiveHourWindowStart`;
+    expect(parseRecoverableFailure(stderr)).toEqual({
+      migrationNames: ["20260530053000_add_rolling_usage_windows"],
+    });
+  });
+
+  test("P3018 `table already exists` is also recoverable", () => {
+    const stderr = `Error: P3018
+
+Migration name: 20260531063135_add_workspace_chat_sessions
+
+Database error:
+table "chat_session_projects" already exists in -- Migration: …`;
+    expect(parseRecoverableFailure(stderr)).toEqual({
+      migrationNames: ["20260531063135_add_workspace_chat_sessions"],
+    });
+  });
+
+  test("P3018 with a non-recoverable cause (NOT NULL) returns null", () => {
+    const stderr = `Error: P3018
+Migration name: 20260101000000_add_required_field
+Database error:
+NOT NULL constraint failed: projects.requiredField`;
+    expect(parseRecoverableFailure(stderr)).toBeNull();
+  });
+
+  test("P3009 extracts the single failed migration from the ledger", () => {
+    const stderr = `Error: P3009
+
+migrate found failed migrations in the target database, new migrations will not be applied.
+The \`20260530202030_affiliate_secondary_rate\` migration started at 2026-06-02 21:32:10.978 UTC failed`;
+    expect(parseRecoverableFailure(stderr)).toEqual({
+      migrationNames: ["20260530202030_affiliate_secondary_rate"],
+    });
+  });
+
+  test("P3009 extracts and de-dupes multiple failed migrations", () => {
+    const stderr = `Error: P3009
+The \`20260525000000_add_affiliate_system\` migration started at 2026-06-01 10:00:00 UTC failed
+The \`20260530053000_add_rolling_usage_windows\` migration started at 2026-06-02 21:28:53 UTC failed
+The \`20260525000000_add_affiliate_system\` migration started at 2026-06-01 10:00:00 UTC failed`;
+    expect(parseRecoverableFailure(stderr)).toEqual({
+      migrationNames: [
+        "20260525000000_add_affiliate_system",
+        "20260530053000_add_rolling_usage_windows",
+      ],
+    });
+  });
+
+  test("unrelated errors (engine down, empty) return null", () => {
+    expect(parseRecoverableFailure("Error: P1001\nCan't reach database server")).toBeNull();
+    expect(parseRecoverableFailure("")).toBeNull();
+  });
+});
+
+describe("resolveLocalDbPath", () => {
+  const rootDir = "/repo/root";
+
+  test("prefers DATABASE_URL over the config default", () => {
+    expect(resolveLocalDbPath({ rootDir, databaseUrl: "file:./shogo-local.db" })).toBe(
+      "/repo/root/shogo-local.db",
+    );
+  });
+
+  test("strips a bare `file:` prefix without `./`", () => {
+    expect(resolveLocalDbPath({ rootDir, databaseUrl: "file:shogo.db" })).toBe(
+      "/repo/root/shogo.db",
+    );
+  });
+
+  test("keeps absolute file paths as-is", () => {
+    expect(resolveLocalDbPath({ rootDir, databaseUrl: "file:/var/data/shogo.db" })).toBe(
+      "/var/data/shogo.db",
+    );
+  });
+
+  test("drops a query-string suffix defensively", () => {
+    expect(
+      resolveLocalDbPath({ rootDir, databaseUrl: "file:./shogo.db?connection_limit=1" }),
+    ).toBe("/repo/root/shogo.db");
+  });
+
+  test("falls back to the config default when no URL is given", () => {
+    expect(resolveLocalDbPath({ rootDir, databaseUrl: "" })).toBe("/repo/root/shogo.db");
+  });
+});
+
+describe("planMigrationObjects", () => {
+  test("models ADD COLUMN targets", () => {
+    const plan = planMigrationObjects(
+      `ALTER TABLE "usage_wallets" ADD COLUMN "fiveHourWindowStart" DATETIME;
+ALTER TABLE "usage_wallets" ADD COLUMN "weeklyUsedUsd" REAL NOT NULL DEFAULT 0;`,
+    );
+    expect(plan).not.toBeNull();
+    expect(plan!.columns).toEqual([
+      { table: "usage_wallets", column: "fiveHourWindowStart" },
+      { table: "usage_wallets", column: "weeklyUsedUsd" },
+    ]);
+    expect(plan!.tablesPresent).toEqual(["usage_wallets"]);
+    expect(plan!.hasDataStatements).toBe(false);
+  });
+
+  test("models CREATE TABLE + CREATE INDEX", () => {
+    const plan = planMigrationObjects(
+      `CREATE TABLE "chat_session_projects" ("id" TEXT NOT NULL PRIMARY KEY);
+CREATE UNIQUE INDEX "chat_session_projects_sessionId_projectId_key" ON "chat_session_projects"("sessionId", "projectId");`,
+    );
+    expect(plan).not.toBeNull();
+    expect(plan!.tablesPresent).toEqual(["chat_session_projects"]);
+    expect(plan!.indexesPresent).toEqual([
+      "chat_session_projects_sessionId_projectId_key",
+    ]);
+  });
+
+  test("collapses the table-rebuild idiom to its net effect", () => {
+    const plan = planMigrationObjects(
+      `CREATE TABLE "new_chat_sessions" ("id" TEXT NOT NULL PRIMARY KEY, "workspaceId" TEXT);
+INSERT INTO "new_chat_sessions" ("id") SELECT "id" FROM "chat_sessions";
+DROP TABLE "chat_sessions";
+ALTER TABLE "new_chat_sessions" RENAME TO "chat_sessions";
+CREATE INDEX "chat_sessions_workspaceId_idx" ON "chat_sessions"("workspaceId");`,
+    );
+    expect(plan).not.toBeNull();
+    expect(plan!.tablesPresent).toContain("chat_sessions");
+    expect(plan!.tablesPresent).not.toContain("new_chat_sessions");
+    expect(plan!.tablesAbsent).toEqual(["new_chat_sessions"]);
+    expect(plan!.indexesPresent).toEqual(["chat_sessions_workspaceId_idx"]);
+    // The INSERT … SELECT row-copy is part of the rebuild, not a seed.
+    expect(plan!.hasDataStatements).toBe(false);
+  });
+
+  test("flags seed UPDATE/INSERT as data statements", () => {
+    const plan = planMigrationObjects(
+      `ALTER TABLE "affiliate_commission_tiers" ADD COLUMN "secondaryRateBps" INTEGER;
+UPDATE "affiliate_commission_tiers" SET "secondaryRateBps" = 1000 WHERE "level" = 1;`,
+    );
+    expect(plan).not.toBeNull();
+    expect(plan!.hasDataStatements).toBe(true);
+  });
+
+  test("returns null for DROP COLUMN", () => {
+    expect(
+      planMigrationObjects(`ALTER TABLE "workspace_grants" DROP COLUMN "legacyField";`),
+    ).toBeNull();
+  });
+
+  test("returns null for a standalone DROP TABLE (no matching rebuild rename)", () => {
+    expect(planMigrationObjects(`DROP TABLE "projects";`)).toBeNull();
+  });
+
+  test("returns null for unmodelled DDL (CREATE TRIGGER)", () => {
+    expect(
+      planMigrationObjects(
+        `CREATE TRIGGER "t" AFTER INSERT ON "projects" BEGIN SELECT 1; END;`,
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("findStuckMigrations", () => {
+  let workDir: string;
+  let dbPath: string;
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), "dev-all-stuck-"));
+    dbPath = join(workDir, "shogo.db");
+  });
+
+  afterEach(() => {
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  function seedLedger(): Database {
+    const db = new Database(dbPath);
+    db.run(`CREATE TABLE "_prisma_migrations" (
+      id TEXT PRIMARY KEY,
+      migration_name TEXT NOT NULL,
+      started_at DATETIME,
+      finished_at DATETIME,
+      rolled_back_at DATETIME
+    )`);
+    return db;
+  }
+
+  test("returns [] when the DB file does not exist", async () => {
+    expect(await findStuckMigrations(join(workDir, "nope.db"))).toEqual([]);
+  });
+
+  test("returns [] when there is no _prisma_migrations table", async () => {
+    const db = new Database(dbPath);
+    db.run(`CREATE TABLE "unrelated" (id TEXT)`);
+    db.close();
+    expect(await findStuckMigrations(dbPath)).toEqual([]);
+  });
+
+  test("returns only started-but-unfinished, non-rolled-back rows, ordered by started_at", async () => {
+    const db = seedLedger();
+    db.run(
+      `INSERT INTO _prisma_migrations VALUES ('1','done', '2026-01-01', '2026-01-01', NULL)`,
+    );
+    db.run(
+      `INSERT INTO _prisma_migrations VALUES ('2','rolled_back', '2026-01-02', NULL, '2026-01-02')`,
+    );
+    db.run(
+      `INSERT INTO _prisma_migrations VALUES ('3','stuck_later', '2026-01-04', NULL, NULL)`,
+    );
+    db.run(
+      `INSERT INTO _prisma_migrations VALUES ('4','stuck_earlier', '2026-01-03', NULL, NULL)`,
+    );
+    db.close();
+    expect(await findStuckMigrations(dbPath)).toEqual([
+      "stuck_earlier",
+      "stuck_later",
+    ]);
   });
 });

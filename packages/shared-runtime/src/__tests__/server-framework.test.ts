@@ -130,6 +130,23 @@ describe('createRuntimeApp shape', () => {
     expect(state.tokenRefresh).toBeNull()
   })
 
+  test('boots a workspace runtime with ws:<id> identity (no PROJECT_ID required)', async () => {
+    // Workspace runtimes are identified by WORKSPACE_ID and have no single
+    // PROJECT_ID. The boot must NOT crash on the PROJECT_ID guard; it adopts
+    // the `ws:<id>` identity (same convention as the /pool/assign workspace
+    // bind) so the merged-root runtime can come up.
+    const { state } = await buildApp({
+      env: {
+        PROJECT_ID: undefined,
+        WORKSPACE_RUNTIME: 'true',
+        WORKSPACE_ID: 'ws-e2e',
+        WORKSPACE_PROJECT_IDS: 'p1,p2',
+      },
+    })
+    expect(state.currentProjectId).toBe('ws:ws-e2e')
+    expect(state.isPoolMode).toBe(false)
+  })
+
   test('logTiming emits to console without throwing', async () => {
     const { logTiming } = await buildApp()
     const originalLog = console.log
@@ -540,6 +557,65 @@ describe('/pool/assign', () => {
     const markerPath = join(workDir, '.shogo-pool-assignment')
     expect(existsSync(markerPath)).toBe(true)
     expect(readFileSync(markerPath, 'utf-8')).toBe('proj-new')
+  })
+
+  test('workspace bind: assigns a project SET, keys identity ws:<id>, sets merged-root env', async () => {
+    const workDir = makeWorkDir()
+    let assignedWith: { projectId?: string; env?: Record<string, string> } = {}
+    const { app, state } = await buildApp({
+      workDir,
+      env: { PROJECT_ID: '__POOL__', WARM_POOL_MODE: 'true' },
+      config: {
+        async onAssign(projectId, env) {
+          assignedWith = { projectId, env }
+        },
+      },
+    })
+
+    const res = await app.request('/pool/assign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        workspaceId: 'ws-42',
+        attachedProjectIds: ['p1', 'p2'],
+        env: {
+          WORKSPACE_RUNTIME: 'true',
+          WORKSPACE_ID: 'ws-42',
+          WORKSPACE_PROJECT_IDS: 'p1,p2',
+        },
+      }),
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.ok).toBe(true)
+    expect(body.projectId).toBe('ws:ws-42') // identity keyed on the workspace
+    expect(body.workspaceId).toBe('ws-42')
+
+    // Identity + merged-root markers
+    expect(state.currentProjectId).toBe('ws:ws-42')
+    expect(assignedWith.projectId).toBe('ws:ws-42')
+    expect(process.env.WORKSPACE_RUNTIME).toBe('true')
+    expect(process.env.WORKSPACE_PROJECT_IDS).toBe('p1,p2')
+    // Back-compat: PROJECT_ID pinned to the first attached project.
+    expect(process.env.PROJECT_ID).toBe('p1')
+
+    // Marker persists the workspace identity for self-assign after restart.
+    expect(readFileSync(join(workDir, '.shogo-pool-assignment'), 'utf-8')).toBe('ws:ws-42')
+  })
+
+  test('workspace bind: rejects a missing attachedProjectIds array', async () => {
+    const { app, state } = await buildApp({
+      env: { PROJECT_ID: '__POOL__', WARM_POOL_MODE: 'true' },
+    })
+    const res = await app.request('/pool/assign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws-42', env: {} }),
+    })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toMatch(/attachedProjectIds \(array\) is required/)
+    // Failed validation must leave the pod claimable.
+    expect(state.poolAssigned).toBe(false)
   })
 
   test('rejects re-assignment when already assigned', async () => {

@@ -10,6 +10,8 @@ import { types, Instance, SnapshotIn, SnapshotOut } from "mobx-state-tree"
 
 // Referenced models (use types.late() to avoid circular imports)
 import { ProjectModel } from "./project.model"
+import { WorkspaceModel } from "./workspace.model"
+import { ChatSessionProjectModel } from "./chat-session-project.model"
 import { ChatMessageModel } from "./chat-message.model"
 import { ToolCallLogModel } from "./tool-call-log.model"
 
@@ -22,8 +24,9 @@ export const ChatSessionModel = types
     id: types.identifier,
     name: types.optional(types.string, ""),
     inferredName: types.string,
-    contextType: types.enumeration("ContextType", ["feature", "project", "general"]),
+    contextType: types.enumeration("ContextType", ["feature", "project", "general", "workspace"]),
     contextId: types.optional(types.string, ""),
+    workspaceId: types.optional(types.string, ""),
     phase: types.optional(types.string, ""),
     claudeCodeSessionId: types.optional(types.string, ""),
     cachedMessageCount: types.optional(types.number, 0),
@@ -35,6 +38,8 @@ export const ChatSessionModel = types
     updatedAt: types.optional(types.number, 0),
     lastActiveAt: types.optional(types.number, 0),
     project: types.safeReference(types.late(() => ProjectModel)),
+    workspace: types.safeReference(types.late(() => WorkspaceModel)),
+    attachedProjects: types.optional(types.array(types.safeReference(types.late(() => ChatSessionProjectModel))), []),
     messages: types.optional(types.array(types.safeReference(types.late(() => ChatMessageModel))), []),
     toolCallLogs: types.optional(types.array(types.safeReference(types.late(() => ToolCallLogModel))), []),
   })
