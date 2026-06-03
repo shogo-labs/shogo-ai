@@ -124,9 +124,17 @@ export async function runStart(flags: StartFlags): Promise<void> {
   }
   console.log('');
 
+  // Derive the AI proxy URL from the cloud URL so the agent-runtime
+  // routes LLM calls through Shogo Cloud's proxy instead of requiring
+  // direct API keys on the machine.  The proxy endpoint lives at
+  // <cloudUrl>/api/ai/v1 — the same base the desktop app uses.
+  const aiProxyUrl = `${cfg.cloudUrl.replace(/\/+$/, '')}/api/ai/v1`;
+
   const defaultSpawnConfig: ProjectSpawnConfig = {
     cloudUrl: cfg.cloudUrl,
     apiKey: cfg.apiKey,
+    aiProxyUrl,
+    aiProxyToken: cfg.apiKey,
     // No projectDir up front — the runtime manager's `maybeAutoPull`
     // sets PROJECT_DIR per-project to <projectsDir>/<projectId>/ once
     // the clone completes. CWD defaults to that same directory.
