@@ -187,6 +187,12 @@ model Project {
   publishStatus      PublishStatus    @default(idle)
   publishError       String?
   publishStatusAt    DateTime?
+  // The exact git commit + annotated tag that the current publish points
+  // at. Written by apps/api/src/routes/publish.ts after it flushes the
+  // pod's git sync and tags the published HEAD (publish/<subdomain>/<ts>).
+  // Gives the publish panel + UI a traceable "this is what's live" anchor.
+  publishedCommitSha String?
+  publishedTag       String?
   accessLevel        AccessLevel      @default(anyone)
   category           ProjectCategory?
   siteTitle          String?
@@ -233,9 +239,12 @@ model Project {
   //                   Layer 2 stays suppressed but armed as an automatic
   //                   fallback if push fails repeatedly, and always writes
   //                   the cold-start snapshot at evict.
-  // Operationally additive: existing projects keep `s3` semantics.
-  // See apps/docs/docs/architecture/cloud-pod-sync.md.
-  cloudSyncMode CloudSyncMode @default(s3)
+  // Default is now `git_only`: the durable object-store-backed git repo
+  // is the source of truth for per-turn checkpoints + history, with S3
+  // Layer 2 kept armed as an automatic fallback. Legacy `s3` projects are
+  // backfilled to `git_only` and seed their durable repo on next cold
+  // start. See apps/docs/docs/architecture/cloud-pod-sync.md.
+  cloudSyncMode CloudSyncMode @default(git_only)
 
   // Relations
   workspace              Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)

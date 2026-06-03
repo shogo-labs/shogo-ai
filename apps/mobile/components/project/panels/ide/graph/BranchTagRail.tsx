@@ -4,7 +4,7 @@
 // The BRANCH / TAG column: ref pills aligned to the commit row each ref
 // points at, with local / remote / tag iconography (GitKraken-style).
 
-import { Check, GitBranch, Monitor, Tag } from "lucide-react-native";
+import { Check, GitBranch, Monitor, Rocket, Tag } from "lucide-react-native";
 
 import type { GitRef } from "@shogo/shared-app/hooks";
 import { ROW_HEIGHT, type DisplayRow } from "./types";
@@ -38,6 +38,27 @@ function RefPill({ refInfo, isCurrent }: { refInfo: GitRef; isCurrent: boolean }
 
   const isTag = refInfo.type === "tag";
   const isRemote = refInfo.type === "remote";
+  // Publish tags are written by the publish flow as
+  // `publish/<subdomain>/<unix-ts>` (apps/api/src/routes/publish.ts). Render
+  // them as a distinct "Published" badge instead of a generic tag pill.
+  const isPublish = isTag && refInfo.name.startsWith("publish/");
+
+  if (isPublish) {
+    return (
+      <span
+        className="flex items-center gap-1 rounded px-1.5 h-[18px] max-w-[160px] border text-[11px]"
+        style={{
+          background: "color-mix(in srgb, var(--ide-success, #10b981) 18%, transparent)",
+          borderColor: "var(--ide-success, #10b981)",
+          color: "var(--ide-text-strong)",
+        }}
+        title={refInfo.name}
+      >
+        <Rocket size={10} className="shrink-0" style={{ color: "var(--ide-success, #10b981)" }} />
+        <span className="truncate">Published: {publishSubdomain(refInfo.name)}</span>
+      </span>
+    );
+  }
 
   return (
     <span
@@ -69,4 +90,10 @@ function shortName(name: string): string {
     return name.slice(slash + 1);
   }
   return name;
+}
+
+function publishSubdomain(tagName: string): string {
+  // publish/<subdomain>/<unix-ts> -> <subdomain>
+  const parts = tagName.split("/");
+  return parts[1] ?? tagName;
 }

@@ -17,6 +17,7 @@ import { join } from 'path';
 import * as checkpointService from '../services/checkpoint.service';
 import * as gitService from '../services/git.service';
 import { prisma } from '../lib/prisma';
+import { hydrateRepo } from '../services/git-repo-store';
 
 // =============================================================================
 // Types
@@ -40,6 +41,21 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
    */
   function getWorkspacePath(projectId: string): string {
     return join(workspacesDir, projectId);
+  }
+
+  /**
+   * Ensure the project's git repo is present on this (stateless) API pod
+   * before a read-only git operation (graph/commit/diff/status). The
+   * durable repo lives in object storage; this hydrates it on demand so
+   * any pod can serve the request. No-op when already local, no object
+   * storage is configured, or no durable repo exists yet.
+   */
+  async function withHydratedRepo(projectId: string): Promise<string> {
+    const workspacePath = getWorkspacePath(projectId);
+    await hydrateRepo(projectId, workspacePath).catch((err) =>
+      console.warn(`[Checkpoints] hydrate for ${projectId} failed:`, err?.message ?? err),
+    );
+    return workspacePath;
   }
 
   /**
@@ -281,7 +297,7 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
       if (isExternal(project as any)) return externalModeResponse(c);
 
       const diff = await checkpointService.getDiff(
-        getWorkspacePath(projectId),
+        await withHydratedRepo(projectId),
         checkpointId,
         toCheckpointId
       );
@@ -321,7 +337,7 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
       if (isExternal(project as any)) return externalModeResponse(c);
 
       const status = await checkpointService.getProjectStatus(
-        getWorkspacePath(projectId)
+        await withHydratedRepo(projectId)
       );
 
       return c.json({ ok: true, status });
@@ -354,7 +370,7 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
       }
       if (isExternal(project as any)) return externalModeResponse(c);
 
-      const workspacePath = getWorkspacePath(projectId);
+      const workspacePath = await withHydratedRepo(projectId);
       const [commits, branches, tags, head, currentBranch] = await Promise.all([
         gitService.getGraph(workspacePath, { limit, skip }),
         gitService.listBranches(workspacePath),
@@ -404,7 +420,7 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
       }
       if (isExternal(project as any)) return externalModeResponse(c);
 
-      const detail = await gitService.getCommitDetail(getWorkspacePath(projectId), sha);
+      const detail = await gitService.getCommitDetail(await withHydratedRepo(projectId), sha);
       if (!detail) {
         return c.json(
           { error: { code: 'commit_not_found', message: 'Commit not found' } },

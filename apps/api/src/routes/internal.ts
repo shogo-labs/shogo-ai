@@ -556,4 +556,72 @@ app.get('/projects/:projectId/trust', async (c) => {
   }
 })
 
+/**
+ * POST /api/internal/projects/:projectId/checkpoints/record
+ *   body: { commitSha, commitMessage, branch, filesChanged, additions,
+ *           deletions, isAutomatic? }
+ *
+ * Called by the agent-runtime pod after each local commit in the pod-owned
+ * `git_only` model. The pod owns the durable repo (it persists `.git` to
+ * object storage) and no longer pushes to an API origin, so the legacy
+ * post-receive hook can't write the `ProjectCheckpoint` row. The pod
+ * computes the commit metadata locally and hands it to us; we insert the
+ * row, idempotent on `commitSha`.
+ *
+ * Auth: K8s SA token (cluster) OR `x-runtime-token` (local desktop).
+ */
+app.post('/projects/:projectId/checkpoints/record', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+
+  if (!(await validateAuth(c, projectId))) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+
+  const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+  if (!body || typeof body !== 'object') {
+    return c.json({ error: 'Invalid JSON body' }, 400)
+  }
+
+  const commitSha = typeof body.commitSha === 'string' ? body.commitSha : null
+  if (!commitSha || !/^[0-9a-f]{7,64}$/i.test(commitSha)) {
+    return c.json({ error: 'Valid commitSha is required' }, 400)
+  }
+
+  try {
+    const { prisma } = await import('../lib/prisma')
+
+    // Idempotent: a re-delivered record (pod retry, warm-pool race) must not
+    // create a duplicate row for the same commit.
+    const existing = await prisma.projectCheckpoint.findFirst({
+      where: { projectId, commitSha },
+      select: { id: true },
+    })
+    if (existing) {
+      return c.json({ ok: true, id: existing.id, deduped: true })
+    }
+
+    const row = await prisma.projectCheckpoint.create({
+      data: {
+        projectId,
+        commitSha,
+        commitMessage: typeof body.commitMessage === 'string' && body.commitMessage
+          ? body.commitMessage
+          : '(no message)',
+        branch: typeof body.branch === 'string' && body.branch ? body.branch : 'main',
+        includesDb: false,
+        filesChanged: numberOr(body.filesChanged, 0),
+        additions: numberOr(body.additions, 0),
+        deletions: numberOr(body.deletions, 0),
+        isAutomatic: body.isAutomatic !== false,
+      },
+      select: { id: true },
+    })
+    return c.json({ ok: true, id: row.id })
+  } catch (err: any) {
+    console.error(`[Internal] Failed to record checkpoint for ${projectId}:`, err.message)
+    return c.json({ error: 'Failed to record checkpoint' }, 500)
+  }
+})
+
 export default app

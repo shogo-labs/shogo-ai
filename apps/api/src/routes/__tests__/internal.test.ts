@@ -30,6 +30,10 @@ const store = {
   recordedEval: null as any,
   previewVerifyThrow: null as null | Error,
   runtimeVerifyThrow: null as null | Error,
+  checkpointExisting: null as null | { id: string },
+  checkpointFindThrow: null as null | Error,
+  checkpointCreateThrow: null as null | Error,
+  createdCheckpoint: null as any,
 }
 
 mock.module('../../lib/k8s-auth', () => ({
@@ -79,6 +83,17 @@ mock.module('../../lib/prisma', () => ({
       },
       update: async () => store.agentConfigUpdateOne,
     },
+    projectCheckpoint: {
+      findFirst: async () => {
+        if (store.checkpointFindThrow) throw store.checkpointFindThrow
+        return store.checkpointExisting
+      },
+      create: async (args: any) => {
+        if (store.checkpointCreateThrow) throw store.checkpointCreateThrow
+        store.createdCheckpoint = args.data
+        return { id: 'cp-new' }
+      },
+    },
   },
 }))
 
@@ -123,6 +138,10 @@ beforeEach(() => {
   store.recordedEval = null
   store.previewVerifyThrow = null
   store.runtimeVerifyThrow = null
+  store.checkpointExisting = null
+  store.checkpointFindThrow = null
+  store.checkpointCreateThrow = null
+  store.createdCheckpoint = null
   delete process.env.SHOGO_LOCAL_MODE
 })
 
@@ -751,6 +770,90 @@ describe('GET /projects/:projectId/trust', () => {
   test('500 when prisma throws', async () => {
     store.prismaProjectFindUniqueThrow = new Error('db down')
     const res = await app.request('/projects/p1/trust', { headers: { ...SA } })
+    expect(res.status).toBe(500)
+  })
+})
+
+// ─── POST /projects/:projectId/checkpoints/record ───────────────────────────
+//
+// Pod-owned git_only: the runtime pod commits locally + persists `.git`, then
+// POSTs the commit metadata here so the ProjectCheckpoint row exists (the old
+// post-receive hook can't fire — there's no per-turn push).
+describe('POST /projects/:projectId/checkpoints/record', () => {
+  const SHA = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0'
+  const body = {
+    commitSha: SHA,
+    commitMessage: 'auto: turn complete',
+    branch: 'main',
+    filesChanged: 3,
+    additions: 12,
+    deletions: 4,
+  }
+
+  test('401 when auth fails', async () => {
+    store.podIdentity = null
+    const res = await app.request('/projects/p1/checkpoints/record', {
+      method: 'POST', headers: { ...JSON_H }, body: JSON.stringify(body),
+    })
+    expect(res.status).toBe(401)
+  })
+
+  test('400 when commitSha missing or malformed', async () => {
+    const res = await app.request('/projects/p1/checkpoints/record', {
+      method: 'POST', headers: { ...SA, ...JSON_H }, body: JSON.stringify({ ...body, commitSha: 'nope!' }),
+    })
+    expect(res.status).toBe(400)
+  })
+
+  test('200 inserts a row with the supplied metadata', async () => {
+    const res = await app.request('/projects/proj-x/checkpoints/record', {
+      method: 'POST', headers: { ...SA, ...JSON_H }, body: JSON.stringify(body),
+    })
+    expect(res.status).toBe(200)
+    expect((await res.json())).toEqual({ ok: true, id: 'cp-new' })
+    expect(store.createdCheckpoint).toMatchObject({
+      projectId: 'proj-x',
+      commitSha: SHA,
+      commitMessage: 'auto: turn complete',
+      branch: 'main',
+      includesDb: false,
+      filesChanged: 3,
+      additions: 12,
+      deletions: 4,
+      isAutomatic: true,
+    })
+  })
+
+  test('200 dedupes when a row for the sha already exists (no insert)', async () => {
+    store.checkpointExisting = { id: 'cp-existing' }
+    const res = await app.request('/projects/proj-x/checkpoints/record', {
+      method: 'POST', headers: { ...SA, ...JSON_H }, body: JSON.stringify(body),
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true, id: 'cp-existing', deduped: true })
+    expect(store.createdCheckpoint).toBeNull()
+  })
+
+  test('falls back to defaults for missing optional fields', async () => {
+    const res = await app.request('/projects/proj-x/checkpoints/record', {
+      method: 'POST', headers: { ...SA, ...JSON_H }, body: JSON.stringify({ commitSha: SHA }),
+    })
+    expect(res.status).toBe(200)
+    expect(store.createdCheckpoint).toMatchObject({
+      commitMessage: '(no message)',
+      branch: 'main',
+      filesChanged: 0,
+      additions: 0,
+      deletions: 0,
+      isAutomatic: true,
+    })
+  })
+
+  test('500 when prisma create throws', async () => {
+    store.checkpointCreateThrow = new Error('db down')
+    const res = await app.request('/projects/proj-x/checkpoints/record', {
+      method: 'POST', headers: { ...SA, ...JSON_H }, body: JSON.stringify(body),
+    })
     expect(res.status).toBe(500)
   })
 })

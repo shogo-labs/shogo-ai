@@ -51,11 +51,12 @@ export async function buildProjectEnv(
       // also no longer read — see agent-runtime/src/server.ts.
       if (project.name) env.AGENT_NAME = project.name
 
-      // Per-project cloud sync strategy. Default `s3` is omitted so
-      // existing pods boot with identical env to today (no behavioral
-      // change unless a project explicitly opts into the new modes).
-      // Routed by `agent-runtime/src/server.ts` `resolveCloudSyncMode`.
-      if (project.cloudSyncMode && project.cloudSyncMode !== 's3') {
+      // Per-project cloud sync strategy. The pod-side default is now
+      // `git_only` (see shared-runtime `resolveCloudSyncMode`), so we
+      // inject the mode for EVERY project — otherwise a project explicitly
+      // pinned to `s3` would silently boot in git_only. Routed by
+      // `agent-runtime/src/server.ts`.
+      if (project.cloudSyncMode) {
         env.SHOGO_CLOUD_SYNC_MODE = project.cloudSyncMode
       }
 
