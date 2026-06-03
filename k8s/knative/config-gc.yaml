@@ -31,8 +31,15 @@ data:
   
   # Minimum age of a revision before it can be deleted (even if over max-non-active).
   # This prevents deletion of very recently created revisions.
-  # Default is 48h. We keep this for stability.
-  retain-since-create-time: "48h"
+  #
+  # Default is 48h. Lowered to 6h (run 26873062665, 2026-06-03) to bound
+  # runtime-image accumulation on nodes: every deploy pulls a new ~8 GB
+  # runtime image, and at 48h each old revision kept its image referenced
+  # (un-reclaimable by the kubelet) for two days. Stacked images pushed
+  # India's nodes past the kubelet DiskPressure threshold and aborted the
+  # deploy at the pre-rollout disk gate. 6h still allows same-day rollback
+  # while letting the kubelet reclaim unreferenced images within hours.
+  retain-since-create-time: "6h"
   
   # Minimum age since a revision was last active before it can be deleted.
   # Default is 15h. We reduce this for faster cleanup after scale-to-zero.

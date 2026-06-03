@@ -785,6 +785,21 @@ jobs:
           kubectl patch configmap config-defaults -n knative-serving --type merge \
             -p '{"data":{"max-revision-timeout-seconds":"3600","revision-idle-timeout-seconds":"0"}}' || true
 
+      # Durable guardrail (run 26873062665, 2026-06-03): bound runtime-image
+      # accumulation on nodes. Each deploy pulls a new ~8 GB runtime image;
+      # with retain-since-create-time at the old 48h default, every superseded
+      # revision kept its image referenced (un-reclaimable by the kubelet) for
+      # two days. Stacked images pushed India's nodes past the kubelet
+      # DiskPressure threshold and aborted the deploy at the pre-rollout disk
+      # gate. Enforcing tightened GC on EVERY deploy (instead of the previous
+      # apply-once / manual k8s/knative/config-gc.yaml, which silently drifts)
+      # lets the kubelet reclaim unreferenced images within hours. Keep these
+      # values in sync with k8s/knative/config-gc.yaml.
+      - name: Ensure Knative revision GC bounds runtime-image accumulation
+        run: |
+          kubectl patch configmap config-gc -n knative-serving --type merge \
+            -p '{"data":{"max-non-active-revisions":"2","retain-since-create-time":"6h","retain-since-last-active-time":"30m","min-non-active-revisions":"1"}}' || true
+
       # Knative docs: when raising max-revision-timeout-seconds, the
       # activator's terminationGracePeriodSeconds should be at least as
       # long, so in-flight requests aren't disrupted on activator drain.
@@ -1253,6 +1268,21 @@ jobs:
         run: |
           kubectl patch configmap config-defaults -n knative-serving --type merge \
             -p '{"data":{"max-revision-timeout-seconds":"3600","revision-idle-timeout-seconds":"0"}}' || true
+
+      # Durable guardrail (run 26873062665, 2026-06-03): bound runtime-image
+      # accumulation on nodes. Each deploy pulls a new ~8 GB runtime image;
+      # with retain-since-create-time at the old 48h default, every superseded
+      # revision kept its image referenced (un-reclaimable by the kubelet) for
+      # two days. Stacked images pushed India's nodes past the kubelet
+      # DiskPressure threshold and aborted the deploy at the pre-rollout disk
+      # gate. Enforcing tightened GC on EVERY deploy (instead of the previous
+      # apply-once / manual k8s/knative/config-gc.yaml, which silently drifts)
+      # lets the kubelet reclaim unreferenced images within hours. Keep these
+      # values in sync with k8s/knative/config-gc.yaml.
+      - name: Ensure Knative revision GC bounds runtime-image accumulation
+        run: |
+          kubectl patch configmap config-gc -n knative-serving --type merge \
+            -p '{"data":{"max-non-active-revisions":"2","retain-since-create-time":"6h","retain-since-last-active-time":"30m","min-non-active-revisions":"1"}}' || true
 
       # Knative docs: when raising max-revision-timeout-seconds, the
       # activator's terminationGracePeriodSeconds should be at least as
@@ -1851,6 +1881,21 @@ jobs:
           kubectl patch configmap config-defaults -n knative-serving --type merge \
             -p '{"data":{"max-revision-timeout-seconds":"3600","revision-idle-timeout-seconds":"0"}}' || true
 
+      # Durable guardrail (run 26873062665, 2026-06-03): bound runtime-image
+      # accumulation on nodes. Each deploy pulls a new ~8 GB runtime image;
+      # with retain-since-create-time at the old 48h default, every superseded
+      # revision kept its image referenced (un-reclaimable by the kubelet) for
+      # two days. Stacked images pushed India's nodes past the kubelet
+      # DiskPressure threshold and aborted the deploy at the pre-rollout disk
+      # gate. Enforcing tightened GC on EVERY deploy (instead of the previous
+      # apply-once / manual k8s/knative/config-gc.yaml, which silently drifts)
+      # lets the kubelet reclaim unreferenced images within hours. Keep these
+      # values in sync with k8s/knative/config-gc.yaml.
+      - name: Ensure Knative revision GC bounds runtime-image accumulation
+        run: |
+          kubectl patch configmap config-gc -n knative-serving --type merge \
+            -p '{"data":{"max-non-active-revisions":"2","retain-since-create-time":"6h","retain-since-last-active-time":"30m","min-non-active-revisions":"1"}}' || true
+
       # Knative docs: when raising max-revision-timeout-seconds, the
       # activator's terminationGracePeriodSeconds should be at least as
       # long, so in-flight requests aren't disrupted on activator drain.
@@ -2436,6 +2481,21 @@ jobs:
         run: |
           kubectl patch configmap config-defaults -n knative-serving --type merge \
             -p '{"data":{"max-revision-timeout-seconds":"3600","revision-idle-timeout-seconds":"0"}}' || true
+
+      # Durable guardrail (run 26873062665, 2026-06-03): bound runtime-image
+      # accumulation on nodes. Each deploy pulls a new ~8 GB runtime image;
+      # with retain-since-create-time at the old 48h default, every superseded
+      # revision kept its image referenced (un-reclaimable by the kubelet) for
+      # two days. Stacked images pushed India's nodes past the kubelet
+      # DiskPressure threshold and aborted the deploy at the pre-rollout disk
+      # gate. Enforcing tightened GC on EVERY deploy (instead of the previous
+      # apply-once / manual k8s/knative/config-gc.yaml, which silently drifts)
+      # lets the kubelet reclaim unreferenced images within hours. Keep these
+      # values in sync with k8s/knative/config-gc.yaml.
+      - name: Ensure Knative revision GC bounds runtime-image accumulation
+        run: |
+          kubectl patch configmap config-gc -n knative-serving --type merge \
+            -p '{"data":{"max-non-active-revisions":"2","retain-since-create-time":"6h","retain-since-last-active-time":"30m","min-non-active-revisions":"1"}}' || true
 
       # Knative docs: when raising max-revision-timeout-seconds, the
       # activator's terminationGracePeriodSeconds should be at least as

@@ -156,7 +156,7 @@ spec:
                           | map(select(. == "ImagePullBackOff" or . == "ErrImagePull" or . == "CrashLoopBackOff"))
                         ) as $bad
                       | select(($bad | length) > 0)
-                      | "\(.metadata.name) [\($bad | join(\",\"))]"
+                      | "\(.metadata.name) [\($bad | join(","))]"
                     ] | join("; ")
                   ')
                   if [ -n "$BROKEN" ]; then
