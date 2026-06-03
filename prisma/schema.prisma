@@ -154,6 +154,7 @@ model Workspace {
   agentEvalSets          AgentEvalSet[]
   grants                 WorkspaceGrant[]
   chatSessions           ChatSession[]
+  modelVisibility        WorkspaceModelVisibility[]
 
   @@map("workspaces")
 }
@@ -1493,6 +1494,31 @@ model PlatformSetting {
   updatedBy String?
 
   @@map("platform_settings")
+}
+
+// ============================================================================
+// Workspace-scoped model visibility (workspace owner/admin curated).
+// ============================================================================
+//
+// One row per model a workspace admin has explicitly allowed. Semantics:
+//   - zero rows for a workspace  -> inherit ALL platform-visible models
+//   - >= 1 row                   -> restrict to exactly those model ids
+// Each allowed id must be in the platform-visible set; the workspace selection
+// can only narrow what the super-admin already exposes (never widen it).
+// `modelId` is a catalog id (e.g. "claude-opus-4-7") or an OpenRouter id
+// (e.g. "openrouter:anthropic/claude-3.5-sonnet").
+model WorkspaceModelVisibility {
+  id          String   @id @default(uuid())
+  workspaceId String
+  modelId     String
+  createdAt   DateTime @default(now())
+  createdBy   String?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, modelId])
+  @@index([workspaceId])
+  @@map("workspace_model_visibility")
 }
 
 // ============================================================================

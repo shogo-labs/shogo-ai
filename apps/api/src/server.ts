@@ -31,6 +31,7 @@ import {
   sendMemberJoinedEmail, sendMemberRemovedEmail, sendAccountDeletedEmail,
 } from './services/email.service'
 import * as workspaceService from './services/workspace.service'
+import * as workspaceModelsService from './services/workspace-models.service'
 import { publishRoutes } from './routes/publish'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
@@ -844,6 +845,20 @@ async function resolveVisibleCatalogModels(
   return bySortOrder(out)
 }
 
+/** Build the full platform-visible model payload: the catalog allowlist
+ *  resolved to picker-ready entries plus the admin-curated OpenRouter extras.
+ *  Shared by `GET /api/platform/visible-models` and the per-workspace endpoint
+ *  (which intersects this with the workspace's own allowlist). */
+async function resolvePlatformVisibleModels(): Promise<{
+  catalogIds: string[] | null
+  openrouterModels: VisibleOpenRouterModelStored[]
+  catalogModels: Awaited<ReturnType<typeof resolveVisibleCatalogModels>>
+}> {
+  const config = await readVisibleModelsConfig()
+  const catalogModels = await resolveVisibleCatalogModels(config.catalogIds)
+  return { catalogIds: config.catalogIds, openrouterModels: config.openrouterModels, catalogModels }
+}
+
 // Visible-models read endpoint — open to all callers (drives user-facing
 // chat-input pickers). Returns the admin allowlist as stored, with `null`
 // catalogIds meaning "all current-generation catalog models are visible".
@@ -861,32 +876,8 @@ app.get('/api/platform/visible-models', async (c) => {
   }
 
   try {
-    const row = await prisma.platformSetting.findUnique({ where: { key: 'models.visible' } }).catch(() => null)
-    const raw = row?.value ?? null
-    let catalogIds: string[] | null = null
-    let openrouterModels: Array<{ id: string; displayName: string; contextLength?: number; tier?: string }> = []
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw)
-        if (Array.isArray(parsed?.catalogIds)) {
-          catalogIds = parsed.catalogIds.filter((x: unknown): x is string => typeof x === 'string')
-        }
-        if (Array.isArray(parsed?.openrouterModels)) {
-          openrouterModels = parsed.openrouterModels
-            .filter((m: any) => m && typeof m.id === 'string' && typeof m.displayName === 'string')
-            .map((m: any) => ({
-              id: m.id,
-              displayName: m.displayName,
-              contextLength: typeof m.contextLength === 'number' ? m.contextLength : undefined,
-              tier: typeof m.tier === 'string' ? m.tier : undefined,
-            }))
-        }
-      } catch {
-        // fall through with defaults
-      }
-    }
-    const catalogModels = await resolveVisibleCatalogModels(catalogIds)
-    return c.json({ catalogIds, openrouterModels, catalogModels })
+    const payload = await resolvePlatformVisibleModels()
+    return c.json(payload)
   } catch (err: any) {
     // Omit catalogModels entirely so clients fall back to their bundled
     // catalog rather than rendering an empty picker.
@@ -6248,6 +6239,99 @@ app.post('/api/billing/instance-portal', async (c) => {
   } catch (error: any) {
     console.error('[Instance] Portal error:', error)
     return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
+// =============================================================================
+// Workspace-scoped visible models — owner/admin curated subset of the
+// platform-visible set.
+// =============================================================================
+//
+// The picker reads GET; the workspace settings UI reads GET (for the resolved
+// set + the raw allowlist) and writes PUT. The selection can only narrow what
+// the super-admin has made platform-visible (the subset rule is enforced on
+// write). Hard enforcement of "can't use a hidden model" lives in the AI proxy.
+
+// GET /api/workspaces/:id/visible-models — resolved set for this workspace
+// (platform-visible ∩ workspace allowlist). Any member may read it (drives the
+// chat picker). `allowedModelIds` is the raw allowlist: `null` = inherit all.
+app.get('/api/workspaces/:id/visible-models', async (c) => {
+  try {
+    const workspaceId = c.req.param('id')
+    if (!(await verifyWorkspaceMembership(c, workspaceId))) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
+    }
+
+    const platform = await resolvePlatformVisibleModels()
+    const allowed = await workspaceModelsService.getAllowedModelIds(workspaceId)
+
+    if (allowed === null) {
+      // Inherit: the workspace sees everything the platform exposes.
+      return c.json({ ...platform, allowedModelIds: null })
+    }
+
+    const narrowed = workspaceModelsService.filterToAllowlist(platform, allowed)
+    return c.json({
+      catalogIds: platform.catalogIds,
+      catalogModels: narrowed.catalogModels,
+      openrouterModels: narrowed.openrouterModels,
+      allowedModelIds: Array.from(allowed),
+    })
+  } catch (error: any) {
+    console.error('[WorkspaceModels] Get visible-models error:', error)
+    return c.json({ error: { code: 'internal_error', message: error.message } }, 500)
+  }
+})
+
+// PUT /api/workspaces/:id/visible-models — replace the workspace allowlist.
+// Body: { allowedModelIds: string[] | null }. `null` or `[]` reverts to
+// "inherit all platform-visible models". Owner/admin only. Every id must be in
+// the current platform-visible set (the subset rule).
+app.put('/api/workspaces/:id/visible-models', async (c) => {
+  try {
+    const workspaceId = c.req.param('id')
+    const userId = await verifyWorkspaceMembership(c, workspaceId)
+    if (!userId) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
+    }
+    const admin = await prisma.member.findFirst({
+      where: { userId, workspaceId, role: { in: ['owner', 'admin'] } },
+    })
+    if (!admin) {
+      return c.json({ error: { code: 'forbidden', message: 'Workspace admin access required' } }, 403)
+    }
+
+    const body = await c.req.json().catch(() => ({}))
+    const rawIds = Array.isArray(body?.allowedModelIds)
+      ? (body.allowedModelIds as unknown[]).filter((x): x is string => typeof x === 'string')
+      : null
+
+    // null / empty => inherit (clear all rows).
+    if (!rawIds || rawIds.length === 0) {
+      await workspaceModelsService.setAllowedModelIds(workspaceId, [], userId)
+      return c.json({ ok: true, allowedModelIds: null })
+    }
+
+    // Subset rule: a workspace can only narrow the platform-visible set.
+    const platform = await resolvePlatformVisibleModels()
+    const invalid = workspaceModelsService.modelsOutsidePlatform(rawIds, platform)
+    if (invalid.length > 0) {
+      return c.json(
+        {
+          error: {
+            code: 'invalid_models',
+            message: `These models are not in the platform-visible set: ${invalid.join(', ')}`,
+          },
+        },
+        400,
+      )
+    }
+
+    await workspaceModelsService.setAllowedModelIds(workspaceId, rawIds, userId)
+    return c.json({ ok: true, allowedModelIds: rawIds })
+  } catch (error: any) {
+    console.error('[WorkspaceModels] Put visible-models error:', error)
+    return c.json({ error: { code: 'internal_error', message: error.message } }, 500)
   }
 })
 

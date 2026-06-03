@@ -37,6 +37,7 @@ import {
 import { verifyRuntimeToken } from '../lib/runtime-token'
 import { resolveApiKey } from './api-keys'
 import { getDbRoutingConfigSync, getMergedModelEntrySync } from '../services/model-registry.service'
+import { isModelVisibleForWorkspace } from '../services/workspace-models.service'
 import { getNativeProviderApiKeySync } from '../services/provider-credentials.service'
 import { wipeCloudKey } from '../lib/cloud-key-wipe'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
@@ -2314,6 +2315,22 @@ export function aiProxyRoutes() {
         )
       }
 
+      // Enforce workspace model visibility: a workspace admin may restrict the
+      // team to a subset of platform-visible models. Hidden models are blocked
+      // here too, so a member can't bypass the picker via a direct API call.
+      if (!isLocalDev && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, request.model))) {
+        return c.json(
+          {
+            error: {
+              message: `Model '${request.model}' is not available for this workspace. A workspace admin has restricted the available models.`,
+              type: 'invalid_request_error',
+              code: 'model_not_visible',
+            },
+          },
+          403
+        )
+      }
+
       // Enforce model tier: free/basic users can only use economy-tier models.
       // Local LLMs and BYOK OpenRouter calls are user-paid, so no tier check
       // applies — the user is paying their own provider directly.
@@ -2450,6 +2467,19 @@ export function aiProxyRoutes() {
       const modelConfig = resolveModel(resolvedModel)
       if (!modelConfig) {
         return c.json({ error: { message: `Model '${requestedModel}' is not supported.`, type: 'invalid_request_error' } }, 400)
+      }
+
+      if (!isLocalDev && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, resolvedModel))) {
+        return c.json(
+          {
+            error: {
+              message: `Model '${requestedModel}' is not available for this workspace. A workspace admin has restricted the available models.`,
+              type: 'invalid_request_error',
+              code: 'model_not_visible',
+            },
+          },
+          403
+        )
       }
 
       const apiKey = getProviderApiKey(modelConfig.provider)
@@ -2739,6 +2769,14 @@ export function aiProxyRoutes() {
 
       const { resolvedModel, isLocal } = resolveAgentModel(requestModel)
       console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
+
+      // Enforce workspace model visibility (see chat/completions for rationale).
+      if (!isLocal && !isLocalDev && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, resolvedModel))) {
+        return c.json(
+          { type: 'error', error: { type: 'invalid_request_error', message: `Model '${resolvedModel}' is not available for this workspace. A workspace admin has restricted the available models.` } },
+          403
+        )
+      }
 
       // Enforce model tier: free/basic users can only use economy-tier models
       if (!isLocal && !isLocalDev) {
