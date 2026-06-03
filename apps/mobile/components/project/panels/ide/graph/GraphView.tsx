@@ -9,6 +9,7 @@
 
 import {
   AlertTriangle,
+  BookmarkPlus,
   GitBranch,
   Loader2,
   RefreshCw,
@@ -24,7 +25,8 @@ import {
 } from "@shogo/shared-app/hooks";
 import { API_URL } from "../../../../../lib/api";
 import { authClient } from "../../../../../lib/auth-client";
-import { computeGraphLayout } from "./graphLayout";
+import { CreateCheckpointModal } from "../../CheckpointModals";
+import { buildDisplayRows } from "./displayRows";
 import { BranchTagRail } from "./BranchTagRail";
 import { CommitGraphCanvas } from "./CommitGraphCanvas";
 import { CommitDetailPanel } from "./CommitDetailPanel";
@@ -50,7 +52,14 @@ export function GraphView({
   }, []);
 
   const graph = useGitGraph(projectId, { baseUrl: API_URL, credentials, headers: nativeHeaders });
-  const { checkpoints, rollback, isMutating, refetch: refetchCheckpoints } = useCheckpoints(projectId, {
+  const {
+    checkpoints,
+    rollback,
+    createCheckpoint,
+    isMutating,
+    disabledForExternalMode: checkpointsDisabled,
+    refetch: refetchCheckpoints,
+  } = useCheckpoints(projectId, {
     baseUrl: API_URL,
     credentials,
     headers: nativeHeaders,
@@ -60,6 +69,7 @@ export function GraphView({
   const [query, setQuery] = useState("");
   const [detail, setDetail] = useState<GitCommitDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
 
   const checkpointBySha = useMemo(() => {
     const m = new Map<string, string>();
@@ -69,45 +79,8 @@ export function GraphView({
 
   // Build aligned display rows (+ a WIP row when the working tree is dirty).
   const { rows, maxLanes } = useMemo(() => {
-    const layout = computeGraphLayout(
-      graph.commits.map((c) => ({ sha: c.sha, parents: c.parents })),
-    );
-    const commitRows: DisplayRow[] = layout.rows.map((r, i) => ({
-      kind: "commit",
-      sha: graph.commits[i].sha,
-      commit: graph.commits[i],
-      lane: r.lane,
-      color: r.color,
-      edges: r.edges,
-      refs: graph.commits[i].refs,
-      isCheckpoint: checkpointBySha.has(graph.commits[i].sha),
-    }));
-
-    const ws = graph.workingStatus as
-      | (typeof graph.workingStatus & { modified?: string[] })
-      | null;
-    const wipCount = ws
-      ? (ws.staged?.length ?? 0) +
-        (ws.unstaged?.length ?? 0) +
-        (ws.modified?.length ?? 0) +
-        (ws.untracked?.length ?? 0)
-      : 0;
-
-    if (graph.workingStatus?.hasChanges && commitRows.length > 0) {
-      const headLane = commitRows[0].lane;
-      const wip: DisplayRow = {
-        kind: "wip",
-        sha: null,
-        lane: headLane,
-        color: commitRows[0].color,
-        edges: [{ fromLane: headLane, toLane: commitRows[0].lane, color: commitRows[0].color }],
-        refs: [],
-        isCheckpoint: false,
-        wipCount,
-      };
-      return { rows: [wip, ...commitRows], maxLanes: layout.maxLanes };
-    }
-    return { rows: commitRows, maxLanes: layout.maxLanes };
+    const checkpointShas = new Set(checkpointBySha.keys());
+    return buildDisplayRows(graph.commits, graph.workingStatus, checkpointShas);
   }, [graph.commits, graph.workingStatus, checkpointBySha]);
 
   // Default selection: WIP if present, else the head commit.
@@ -150,6 +123,20 @@ export function GraphView({
     [rollback, graph, refetchCheckpoints],
   );
 
+  const handleCreate = useCallback(
+    async (opts: { message: string; name?: string; description?: string }) => {
+      setShowCreate(false);
+      const created = await createCheckpoint(opts);
+      if (created) {
+        graph.refetch();
+        refetchCheckpoints();
+      }
+    },
+    [createCheckpoint, graph, refetchCheckpoints],
+  );
+
+  const canCreate = !graph.disabledForExternalMode && !checkpointsDisabled;
+
   const lowerQuery = query.trim().toLowerCase();
   const matches = useCallback(
     (row: DisplayRow): boolean => {
@@ -179,6 +166,8 @@ export function GraphView({
           onQuery={setQuery}
           onRefresh={() => graph.refetch()}
           loading={graph.isLoading}
+          canCreate={canCreate}
+          onCreate={() => setShowCreate(true)}
         />
 
         {graph.disabledForExternalMode ? (
@@ -231,6 +220,13 @@ export function GraphView({
         )}
       </div>
 
+      <CreateCheckpointModal
+        visible={showCreate}
+        onClose={() => setShowCreate(false)}
+        onCreate={handleCreate}
+        isMutating={isMutating}
+      />
+
       {/* Right: detail panel */}
       <div className="shrink-0 w-[400px] min-w-[320px] bg-[color:var(--ide-surface)]">
         <CommitDetailPanel
@@ -266,6 +262,8 @@ function Header({
   onQuery,
   onRefresh,
   loading,
+  canCreate,
+  onCreate,
 }: {
   currentBranch: string | null;
   commitCount: number;
@@ -273,6 +271,8 @@ function Header({
   onQuery: (q: string) => void;
   onRefresh: () => void;
   loading: boolean;
+  canCreate: boolean;
+  onCreate: () => void;
 }) {
   return (
     <div className="flex items-center gap-2 px-3 py-2 border-b border-[color:var(--ide-border)]">
@@ -291,6 +291,16 @@ function Header({
           className="w-40 bg-transparent text-[12px] focus:outline-none placeholder-[color:var(--ide-muted)] text-[color:var(--ide-text-strong)]"
         />
       </div>
+      {canCreate && (
+        <button
+          onClick={onCreate}
+          title="Create checkpoint"
+          className="flex items-center gap-1 rounded-md border border-[color:var(--ide-border-strong)] px-2 py-0.5 text-[12px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover)]"
+        >
+          <BookmarkPlus size={12} className="text-[color:var(--ide-muted)]" />
+          Checkpoint
+        </button>
+      )}
       <button
         onClick={onRefresh}
         title="Refresh"
