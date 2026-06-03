@@ -27,9 +27,69 @@ describe('parseConflictBlocks', () => {
       start: 2, // 1-based line of `<<<<<<<`
       mid: 5,
       end: 7,
+      currentEnd: 5, // 2-way: current section ends at the `=======` line
       current: 'mine line 1\nmine line 2',
       incoming: 'theirs line 1',
     })
+  })
+
+  it('parses a diff3-style block with a `|||||||` base section', () => {
+    const text = [
+      'unchanged',
+      '<<<<<<< ours',
+      'our change',
+      '||||||| merged common ancestors',
+      'original line',
+      '=======',
+      'their change',
+      '>>>>>>> theirs',
+      'tail',
+    ].join('\n')
+    const out = parseConflictBlocks(text)
+    expect(out).toHaveLength(1)
+    expect(out[0]).toEqual({
+      start: 2, // `<<<<<<<`
+      baseStart: 4, // `|||||||`
+      mid: 6, // `=======`
+      end: 8, // `>>>>>>>`
+      currentEnd: 4, // current stops at the base marker, NOT the separator
+      current: 'our change', // base section excluded
+      base: 'original line',
+      incoming: 'their change',
+    })
+  })
+
+  it('diff3: multi-line current/base/incoming sections', () => {
+    const text = [
+      '<<<<<<< ours',
+      'c1', 'c2',
+      '||||||| base',
+      'b1', 'b2',
+      '=======',
+      'i1', 'i2',
+      '>>>>>>> theirs',
+    ].join('\n')
+    const out = parseConflictBlocks(text)
+    expect(out[0].current).toBe('c1\nc2')
+    expect(out[0].base).toBe('b1\nb2')
+    expect(out[0].incoming).toBe('i1\ni2')
+    expect(out[0].currentEnd).toBe(4) // the `|||||||` line
+  })
+
+  it('diff3: bare `|||||||` marker (no label) is still recognised', () => {
+    const text = ['<<<<<<< a', 'x', '|||||||', 'base', '=======', 'y', '>>>>>>> b'].join('\n')
+    const out = parseConflictBlocks(text)
+    expect(out).toHaveLength(1)
+    expect(out[0].current).toBe('x')
+    expect(out[0].base).toBe('base')
+    expect(out[0].incoming).toBe('y')
+  })
+
+  it('2-way blocks carry no base fields', () => {
+    const out = parseConflictBlocks('<<<<<<< a\nx\n=======\ny\n>>>>>>> b\n')
+    expect(out[0].base).toBeUndefined()
+    expect(out[0].baseStart).toBeUndefined()
+    expect(out[0].currentEnd).toBe(out[0].mid)
   })
 
   it('parses multiple blocks and preserves order', () => {

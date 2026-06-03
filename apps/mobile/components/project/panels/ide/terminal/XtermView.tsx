@@ -23,6 +23,7 @@ import { Platform } from 'react-native'
 import { XtermSession } from './xterm-session'
 import { isDesktopRuntime, type PtyClientLike } from './pty-factory'
 import type { PtyClientState } from './pty-client'
+import { useEditorFont } from '../useEditorFont'
 
 interface XtermViewProps {
   client: PtyClientLike
@@ -70,6 +71,15 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   const [DesktopSurface, setDesktopSurface] = useState<React.ComponentType<any> | null>(null)
   const [state, setState] = useState<PtyClientState>(client.state)
 
+  // BUG-012 — Terminal.tsx doesn't have the EditorSettings prop in scope
+  // (it sits outside the Workbench prop tree). Instead of threading
+  // settings through a 5-level prop chain, XtermView reads the live
+  // font-family from the same localStorage key the rest of the IDE
+  // settings already use, subscribed via `useEditorFont`. An explicit
+  // `fontFamily` PROP still wins — desktop surfaces & tests can override.
+  const settingFamily = useEditorFont()
+  const effectiveFamily = fontFamily ?? settingFamily
+
   useEffect(() => {
     if (Platform.OS !== 'web') return
     if (!isDesktopRuntime()) return
@@ -87,7 +97,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     if (isDesktopRuntime()) return
     const container = containerRef.current
     if (!container) return
-    const session = new XtermSession(client, { fontSize, fontFamily })
+    const session = new XtermSession(client, { fontSize, fontFamily: effectiveFamily })
     sessionRef.current = session
     let cancelled = false
     void session.attach(container).then(() => {
@@ -100,10 +110,21 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       session.dispose()
     }
     // We deliberately don't depend on hidden/autoFocus/font here — the
-    // session lives across re-renders. Font changes after mount aren't
-    // currently supported (would need a teardown + remount).
+    // session lives across re-renders. BUG-012: font changes are now
+    // applied live by the effect below via `session.setFont()`, NOT by
+    // a teardown + remount (which would reset the scrollback).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client])
+
+  // BUG-012 — push font changes into the live xterm session without
+  // a remount. The session preserves its scrollback / cwd / shell PID;
+  // only the glyph cache is invalidated. `fontSize` is included so this
+  // path also fixes any "change font size, see no change" follow-on.
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    if (isDesktopRuntime()) return
+    sessionRef.current?.setFont(effectiveFamily, fontSize)
+  }, [effectiveFamily, fontSize])
 
   // Refit on container size changes.
   useEffect(() => {
@@ -154,7 +175,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         client={client}
         hidden={hidden}
         fontSize={fontSize}
-        fontFamily={fontFamily}
+        fontFamily={effectiveFamily}
         autoFocus={autoFocus}
         projectId={projectId}
         onCwdChange={onCwdChange}

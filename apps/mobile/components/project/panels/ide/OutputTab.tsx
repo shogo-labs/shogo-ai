@@ -32,6 +32,7 @@ import {
   type RuntimeLogSource,
 } from '../../../../lib/runtime-logs/runtime-log-store'
 import { useRuntimeLogStream } from '../../../../lib/runtime-logs/useRuntimeLogStream'
+import { useStickyBottom } from './sticky-bottom'
 
 type SourceFilter = 'all' | RuntimeLogSource
 
@@ -126,15 +127,16 @@ export function OutputTab({
     return filtered.map(deriveLogRow)
   }, [entries, sourceFilter, search])
 
-  // Auto-scroll to bottom when new rows land. We re-run when the filtered
-  // length changes — not just `entries.length` — so toggling a filter
-  // doesn't unscroll the user.
+  // BUG-009 fix: sticky-bottom auto-scroll. The user's autoScroll toggle
+  // enables tail-follow; the hook honours it ONLY when the viewport is
+  // within 24px of the bottom (canvas prescription). If the user scrolls
+  // up to read scrollback, new rows arrive silently below — no yank.
+  // Re-running on filtered length (not entries length) so toggling a
+  // source filter doesn't unscroll the user.
+  const { scrollToBottom } = useStickyBottom(listRef, { enabled: autoScroll })
   useEffect(() => {
-    if (!autoScroll) return
-    const el = listRef.current
-    if (!el) return
-    el.scrollTop = el.scrollHeight
-  }, [rows.length, autoScroll])
+    scrollToBottom()
+  }, [rows.length, scrollToBottom])
 
   const errorCount = useMemo(
     () => entries.filter((e) => e.level === 'error').length,

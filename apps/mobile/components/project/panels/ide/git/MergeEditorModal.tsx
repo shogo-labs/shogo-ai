@@ -125,10 +125,13 @@ export function MergeEditorModal({ monaco, workspaceRoot, relPath, onClose, onSa
     if (!ed || !b) return;
     const model = ed.getModel();
     if (!model) return;
+    // The current section ends at b.currentEnd (the `|||||||` base marker
+    // under diff3, otherwise the `=======` separator) — never include the
+    // common-ancestor section in "Accept Current"/"Accept Both".
     const replacement =
-      kind === "current" ? model.getValueInRange(new monaco.Range(b.start + 1, 1, b.mid, 1)) :
+      kind === "current" ? model.getValueInRange(new monaco.Range(b.start + 1, 1, b.currentEnd, 1)) :
       kind === "incoming" ? model.getValueInRange(new monaco.Range(b.mid + 1, 1, b.end, 1)) :
-      model.getValueInRange(new monaco.Range(b.start + 1, 1, b.mid, 1)) + model.getValueInRange(new monaco.Range(b.mid + 1, 1, b.end, 1));
+      model.getValueInRange(new monaco.Range(b.start + 1, 1, b.currentEnd, 1)) + model.getValueInRange(new monaco.Range(b.mid + 1, 1, b.end, 1));
     // Clamp to model bounds: if `>>>>>>>` is the final line of the file
     // there is no `b.end + 1` to anchor on. End at column-end of b.end.
     const lastLine = model.getLineCount();

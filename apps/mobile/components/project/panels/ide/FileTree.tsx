@@ -15,6 +15,9 @@ import type { TreeNode } from "./types";
 import { ContextMenu, type MenuEntry } from "./ContextMenu";
 import { useGitStatusContext } from "./git/GitStatusContext";
 import type { GitShortCode } from "./git/bridge";
+import { computeDropZone } from "./file-tree-drop-zone";
+import { buildCompactFolderChain } from "./explorer-compact-folders";
+import { useDragAutoScroll } from "./useDragAutoScroll";
 
 export interface FileTreeHandlers {
   onOpen: (node: TreeNode) => void;
@@ -33,7 +36,7 @@ export interface FileTreeHandlers {
 }
 
 type FlatRow =
-  | { kind: "node"; node: TreeNode; depth: number; parentPath: string }
+  | { kind: "node"; node: TreeNode; depth: number; parentPath: string; compactLabel?: string }
   | { kind: "new"; depth: number; parentPath: string; mode: "file" | "dir" }
   // Synthetic rows rendered beneath an expanded lazy directory whose
   // children haven't materialised yet (loading) or whose fetch failed
@@ -52,8 +55,16 @@ function flatten(
   parentPath = "",
   out: FlatRow[] = [],
 ): FlatRow[] {
-  for (const n of tree) {
-    out.push({ kind: "node", node: n, depth, parentPath });
+  for (const original of tree) {
+    const compact = buildCompactFolderChain(original);
+    const n = compact.node;
+    out.push({
+      kind: "node",
+      node: n,
+      depth,
+      parentPath,
+      compactLabel: compact.compacted ? compact.label : undefined,
+    });
     if (n.kind === "dir" && expanded.has(n.path)) {
       if (n.children && n.children.length > 0) {
         flatten(n.children, expanded, loadingLazy, lazyErrors, depth + 1, n.path, out);
@@ -64,8 +75,6 @@ function flatten(
         else if (loadingLazy.has(k)) out.push({ kind: "lazy-loading", depth: depth + 1, parent: n });
         else out.push({ kind: "lazy-empty", depth: depth + 1, parent: n });
       } else if (n.children) {
-        // Loaded directory that just happens to be empty — fall through with
-        // no synthetic row.
         flatten(n.children, expanded, loadingLazy, lazyErrors, depth + 1, n.path, out);
       }
     }
@@ -133,6 +142,16 @@ export function FileTree({
   const [menu, setMenu] = useState<{ x: number; y: number; node: TreeNode | null } | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  // BUG-002: edge auto-scroll + scrollTop-correct drop zone math.
+  // The hook owns the rAF loop; pure math lives in computeDropZone.
+  const autoScroll = useDragAutoScroll(containerRef);
+  // Track whether a drag is currently in progress over the tree, so
+  // the scroll listener can clear stale dropTarget highlights. Without
+  // this, manually scrolling during a drag leaves the previously-
+  // hovered folder visually marked even after the pointer no longer
+  // sits over it (the drop highlight is set by per-row onDragOver and
+  // wouldn't fire again until the next pointer move).
+  const dragActiveRef = useRef(false);
   const git = useGitStatusContext();
 
   const rows = useMemo(() => {
@@ -161,15 +180,17 @@ export function FileTree({
       return [newRow, ...base];
     }
     return base;
-  }, [tree, expanded, creating]);
+  }, [tree, expanded, loadingLazy, lazyErrors, creating]);
+
+  const visibleRows = useMemo(
+    () => rows.filter((r): r is Extract<FlatRow, { kind: "node" }> => r.kind === "node"),
+    [rows],
+  );
 
   /** Linear view of *visible* nodes used by keyboard nav and range selection. */
   const visibleNodes = useMemo(
-    () =>
-      rows
-        .filter((r): r is Extract<FlatRow, { kind: "node" }> => r.kind === "node")
-        .map((r) => r.node),
-    [rows],
+    () => visibleRows.map((r) => r.node),
+    [visibleRows],
   );
 
   /** Prune selections that are no longer visible (e.g. after a parent was
@@ -482,12 +503,18 @@ export function FileTree({
         }
       } else if (e.key === "ArrowLeft") {
         const n = nodes[idx];
-        if (!n) return;
+        const row = visibleRows[idx];
+        if (!n || !row) return;
         if (n.kind === "dir" && expanded.has(n.path)) {
           toggle(n.path);
         } else {
-          const parent = parentOf(n.path);
-          if (parent) setSelected(parent);
+          for (let i = idx - 1; i >= 0; i--) {
+            const candidate = visibleRows[i];
+            if (candidate.depth < row.depth) {
+              setSelected(candidate.node.path);
+              break;
+            }
+          }
         }
         e.preventDefault();
       } else if (e.key === "Enter") {
@@ -519,7 +546,7 @@ export function FileTree({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [visibleNodes, selected, expanded, renaming, creating, handlers, expand, toggle, toggleDir, multiSelected, openSelected]);
+  }, [visibleNodes, visibleRows, selected, expanded, renaming, creating, handlers, expand, toggle, toggleDir, multiSelected, openSelected]);
 
   const menuItems = (node: TreeNode | null): MenuEntry[] => {
     const defaultRootId = tree[0]?.rootId ?? "agent";
@@ -618,6 +645,48 @@ export function FileTree({
         setSelected(null);
         setMultiSelected(new Set());
       }}
+      // BUG-002: container-level dragOver drives the auto-scroll loop using
+      // scrollTop-corrected coordinates. Per-row handlers below still set
+      // the drop target (the browser already resolves which row is under
+      // the pointer), but the container is the only element that can
+      // observe the pointer when the user has reached the edge band.
+      onDragOver={(e) => {
+        dragActiveRef.current = true;
+        const el = containerRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        const { scrollDelta } = computeDropZone({
+          clientY: e.clientY,
+          containerRect: { top: rect.top, bottom: rect.bottom, height: rect.height },
+          scrollTop: el.scrollTop,
+          scrollHeight: el.scrollHeight,
+        });
+        autoScroll.updateDelta(scrollDelta);
+      }}
+      onDragLeave={(e) => {
+        // Browser fires dragLeave on every child cross-over; only act when
+        // the pointer truly leaves the container (relatedTarget outside).
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+        dragActiveRef.current = false;
+        autoScroll.stop();
+      }}
+      onDrop={() => {
+        dragActiveRef.current = false;
+        autoScroll.stop();
+      }}
+      onDragEnd={() => {
+        // Fires on the source element regardless of where the drop landed,
+        // including drops that escaped the container — canonical stop signal.
+        dragActiveRef.current = false;
+        autoScroll.stop();
+      }}
+      onScroll={() => {
+        // BUG-002 follow-on: if the user manually scrolls during a drag, the
+        // last-set dropTarget refers to a row that may no longer be under
+        // the pointer. Clear it so the next onDragOver can re-resolve from
+        // the freshly-laid-out DOM, avoiding a stale highlight.
+        if (dragActiveRef.current) setDropTarget(null);
+      }}
     >
       {rows.map((row, i) => {
         if (row.kind === "new") {
@@ -689,6 +758,7 @@ export function FileTree({
         }
 
         const { node, depth } = row;
+        const displayName = row.compactLabel ?? node.name;
         const isExpanded = node.kind === "dir" && expanded.has(node.path);
         const isActive = node.path === activePath;
         const isSelected = node.path === selected;
@@ -793,7 +863,7 @@ export function FileTree({
                 <File size={15} className={iconFor(ext)} />
               </>
             )}
-            <span className="truncate min-w-0 flex-1" title={node.path}>{node.name}</span>
+            <span className="truncate min-w-0 flex-1" title={node.path}>{displayName}</span>
             <GitStatusBadge code={node.kind === "dir" ? (git.folderDirty(node.path) ? "·" : null) : git.getStatus(node.path)} isFolderDirty={node.kind === "dir" && git.folderDirty(node.path)} />
           </div>
         );
