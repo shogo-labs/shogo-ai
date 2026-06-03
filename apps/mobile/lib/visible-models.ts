@@ -24,6 +24,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { PlatformApi, type ResolvedVisibleModels } from '@shogo-ai/sdk'
 import { AUTO_MODEL_ID, type ModelTier } from '@shogo/model-catalog'
 import { createHttpClient } from './api'
+import { getActiveWorkspaceId } from './workspace-store'
 
 export type ReasoningEffort = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 
@@ -57,6 +58,17 @@ const DEFAULT_OR_TIER: ModelTier = 'standard'
 
 const STORAGE_KEY = 'shogo.visibleModels.v1'
 
+/** Sentinel cache key for the unscoped platform-visible set (no active
+ *  workspace). Real workspace ids are used verbatim as keys, so the picker is
+ *  scoped to the active workspace's admin-curated subset. */
+const PLATFORM_KEY = '__platform__'
+
+/** The cache key for the picker right now: the active workspace id, or the
+ *  platform sentinel when none is selected (e.g. local mode / signed-out). */
+function activeCacheKey(): string {
+  return getActiveWorkspaceId() ?? PLATFORM_KEY
+}
+
 /** Web localStorage when available; undefined on native / SSR / tests. */
 function storage(): Storage | undefined {
   try {
@@ -67,22 +79,26 @@ function storage(): Storage | undefined {
   }
 }
 
-function readPersisted(): ResolvedVisibleModels | null {
+function storageKeyFor(cacheKey: string): string {
+  return `${STORAGE_KEY}:${cacheKey}`
+}
+
+function readPersisted(cacheKey: string): ResolvedVisibleModels | null {
   const ls = storage()
   if (!ls) return null
   try {
-    const raw = ls.getItem(STORAGE_KEY)
+    const raw = ls.getItem(storageKeyFor(cacheKey))
     return raw ? (JSON.parse(raw) as ResolvedVisibleModels) : null
   } catch {
     return null
   }
 }
 
-function writePersisted(data: ResolvedVisibleModels): void {
+function writePersisted(cacheKey: string, data: ResolvedVisibleModels): void {
   const ls = storage()
   if (!ls) return
   try {
-    ls.setItem(STORAGE_KEY, JSON.stringify(data))
+    ls.setItem(storageKeyFor(cacheKey), JSON.stringify(data))
   } catch {
     /* quota / serialization — non-fatal, fall back to in-memory only */
   }
@@ -131,41 +147,72 @@ function indexServerCatalog(data: ResolvedVisibleModels): void {
   }
 }
 
-// Seed the cache (and the metadata index) from persisted storage at module
-// load so the very first render — including after a full page reload — has the
-// last-known model set immediately, with no bundled-catalog flicker.
-let cached: ResolvedVisibleModels | null = readPersisted()
-if (cached) indexServerCatalog(cached)
-let inflight: Promise<ResolvedVisibleModels> | null = null
+// Per-key snapshot cache (keyed by active workspace id, or PLATFORM_KEY). Seed
+// the active key from persisted storage at module load so the very first render
+// — including after a full page reload — has the last-known model set
+// immediately, with no bundled-catalog flicker.
+const cache = new Map<string, ResolvedVisibleModels>()
+const inflight = new Map<string, Promise<ResolvedVisibleModels>>()
 
-/** Fetch the latest snapshot, update the in-memory + persisted cache and the
- *  metadata index, and return it. Deduplicates concurrent callers. On failure
- *  the last-known snapshot is preserved (returned if present). */
-function revalidate(): Promise<ResolvedVisibleModels> {
-  if (!inflight) {
-    const platform = new PlatformApi(createHttpClient())
-    inflight = platform
-      .getVisibleModels()
-      .then((data) => {
-        cached = data
-        indexServerCatalog(data)
-        writePersisted(data)
-        return data
-      })
-      .catch(() => cached ?? { catalogIds: null, openrouterModels: [] })
-      .finally(() => {
-        inflight = null
-      })
+{
+  const key = activeCacheKey()
+  const seed = readPersisted(key)
+  if (seed) {
+    cache.set(key, seed)
+    indexServerCatalog(seed)
   }
-  return inflight
 }
 
-/** Drop the cached visible-models snapshot and refetch. Call after admin saves
- *  changes so chat pickers pick up the new set. The last-known snapshot is kept
- *  in `cached` until the refetch lands, so there's no empty flash. */
-export function invalidateVisibleModelsCache(): void {
-  inflight = null
-  void revalidate()
+/** Read the cached snapshot for a key (in-memory, then persisted). */
+function getCached(cacheKey: string): ResolvedVisibleModels | null {
+  const mem = cache.get(cacheKey)
+  if (mem) return mem
+  const persisted = readPersisted(cacheKey)
+  if (persisted) cache.set(cacheKey, persisted)
+  return persisted
+}
+
+/** Fetch the latest snapshot for a key, update the in-memory + persisted cache
+ *  and the metadata index, and return it. Deduplicates concurrent callers. On
+ *  failure the last-known snapshot is preserved (returned if present).
+ *
+ *  When the key is a workspace id the workspace-scoped endpoint is used (the
+ *  admin-curated subset); otherwise the unscoped platform set. */
+function revalidate(cacheKey: string): Promise<ResolvedVisibleModels> {
+  let pending = inflight.get(cacheKey)
+  if (!pending) {
+    const platform = new PlatformApi(createHttpClient())
+    const fetcher =
+      cacheKey === PLATFORM_KEY
+        ? platform.getVisibleModels()
+        : platform.getWorkspaceVisibleModels(cacheKey)
+    pending = fetcher
+      .then((data) => {
+        cache.set(cacheKey, data)
+        // Only re-index the global metadata map when this key is still the
+        // active one, so a background refresh for a now-inactive workspace
+        // doesn't clobber the active workspace's metadata.
+        if (cacheKey === activeCacheKey()) indexServerCatalog(data)
+        writePersisted(cacheKey, data)
+        return data
+      })
+      .catch(() => getCached(cacheKey) ?? { catalogIds: null, openrouterModels: [] })
+      .finally(() => {
+        inflight.delete(cacheKey)
+      })
+    inflight.set(cacheKey, pending)
+  }
+  return pending
+}
+
+/** Drop the cached visible-models snapshot and refetch. Call after an admin
+ *  saves changes so chat pickers pick up the new set. Pass a workspace id to
+ *  refresh that workspace's scoped set; omit to refresh the currently-active
+ *  key. The last-known snapshot is kept until the refetch lands (no flash). */
+export function invalidateVisibleModelsCache(workspaceId?: string): void {
+  const key = workspaceId ?? activeCacheKey()
+  inflight.delete(key)
+  void revalidate(key)
 }
 
 // ===========================================================================
@@ -298,22 +345,27 @@ export function buildModelGroups(visible: ResolvedVisibleModels | null): PickerG
   return groups.filter((g) => g.models.length > 0)
 }
 
-/** Subscribe to the admin-configured visible-models snapshot. Returns the
- *  cached snapshot synchronously (when available) and revalidates in the
- *  background. While the first-ever fetch is in flight (and nothing is
+/** Subscribe to the visible-models snapshot for the active workspace (the
+ *  admin-curated subset), or the platform set when no workspace is active.
+ *  Returns the cached snapshot synchronously (when available) and revalidates
+ *  in the background. While the first-ever fetch is in flight (and nothing is
  *  cached) this is `null` — callers render an empty/loading picker. */
 export function useVisibleModels(): ResolvedVisibleModels | null {
-  const [snapshot, setSnapshot] = useState<ResolvedVisibleModels | null>(cached)
+  const cacheKey = activeCacheKey()
+  const [snapshot, setSnapshot] = useState<ResolvedVisibleModels | null>(() => getCached(cacheKey))
 
   useEffect(() => {
     let cancelled = false
-    revalidate().then((data) => {
+    // Paint the cached snapshot for this key immediately (covers a workspace
+    // switch where the key changed since the last render).
+    setSnapshot(getCached(cacheKey))
+    revalidate(cacheKey).then((data) => {
       if (!cancelled) setSnapshot(data)
     })
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [cacheKey])
 
   return snapshot
 }
