@@ -261,13 +261,18 @@ function buildChildArgv(flags: StartFlags): string[] {
  *   2. The compiled binary at /usr/local/bin/shogo on PATH (best-effort).
  *   3. The bin shim shipped with this package.
  */
-function resolveSelfEntry(): { entry: string; runner: 'bun' | 'node' } {
+function resolveSelfEntry(): { entry: string; runner: 'bun' | 'node' | 'tsx' } {
   // process.execPath is the bun/node binary; argv[1] is the script.
   const execPath = process.execPath;
   const isBun = /\bbun(?:-[^/\\]*)?$/.test(execPath) || typeof (globalThis as any).Bun !== 'undefined';
   const argvScript = process.argv[1];
   if (argvScript && existsSync(argvScript)) {
-    return { entry: argvScript, runner: isBun ? 'bun' : 'node' };
+    // When spawned via tsx (from the bin shim), process.execPath is still
+    // `node` because tsx runs on top of Node. Detect a .ts entry and route
+    // through tsx so the detached child can handle TypeScript natively.
+    const isTs = /\.ts$/.test(argvScript);
+    const runner = isBun ? 'bun' : (isTs ? 'tsx' : 'node');
+    return { entry: argvScript, runner };
   }
   // Fallback: the compiled bin shim shipped with the package.
   // Resolved relative to this file via import.meta.url so it works
