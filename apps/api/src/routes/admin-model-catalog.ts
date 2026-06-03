@@ -348,19 +348,26 @@ export function adminModelCatalogRoutes() {
 
       const items = Array.isArray(body?.models) ? body.models : []
       for (const item of items) {
-        const id = typeof item?.id === 'string' ? item.id.trim() : ''
-        if (!id) continue
+        // The discovered `id` is the upstream provider slug (e.g.
+        // `gpt-5-mini`). It becomes the row's `apiModel`, NOT its primary key:
+        // the canonical id is a generated UUID so billing/routing key on an
+        // opaque id while the slug stays addressable via `aliases`.
+        const apiModel = typeof item?.id === 'string' ? item.id.trim() : ''
+        if (!apiModel) continue
         const enabled = item?.enabled !== false
         const displayName = typeof item?.displayName === 'string' && item.displayName.trim()
           ? item.displayName.trim()
-          : id
+          : apiModel
         const contextWindow = sanitizeContextWindow(item?.contextWindow)
-        const family = inferFamily(provider, id)
+        const family = inferFamily(provider, apiModel)
 
-        const existing = await (prisma as any).modelDefinition.findUnique({ where: { id } })
+        // Match on (provider, apiModel) since the id is now an opaque UUID.
+        const existing = await (prisma as any).modelDefinition.findFirst({
+          where: { provider, apiModel },
+        })
         if (existing) {
           await (prisma as any).modelDefinition.update({
-            where: { id },
+            where: { id: existing.id },
             data: {
               enabled,
               ...(contextWindow ? { contextWindow } : {}),
@@ -371,13 +378,13 @@ export function adminModelCatalogRoutes() {
           // Auto-fill per-token pricing + context window from the LiteLLM
           // catalog (falling back to the per-family bucket) so the model is
           // never billed at $0. The daily refresh keeps these current.
-          const pricing = await resolveEnablePricing(id)
+          const pricing = await resolveEnablePricing(apiModel)
           const effectiveContextWindow = contextWindow ?? pricing.contextWindow ?? null
           await (prisma as any).modelDefinition.create({
             data: {
-              id,
+              id: crypto.randomUUID(),
               provider,
-              apiModel: id,
+              apiModel,
               displayName,
               shortDisplayName: displayName,
               tier: 'standard',
@@ -385,6 +392,9 @@ export function adminModelCatalogRoutes() {
               generation: 'current',
               maxOutputTokens: 64000,
               enabled: true,
+              // Keep the provider slug addressable so existing references that
+              // stored it (and human admins) still resolve to this row.
+              aliases: [apiModel],
               ...(effectiveContextWindow ? { contextWindow: effectiveContextWindow } : {}),
               inputPerMillion: pricing.inputPerMillion,
               cachedInputPerMillion: pricing.cachedInputPerMillion,
@@ -561,7 +571,10 @@ export function adminModelCatalogRoutes() {
       const auth = c.get('auth') as any
       const userId = auth?.user?.id || 'unknown'
 
-      const id = typeof body?.id === 'string' ? body.id.trim() : ''
+      // The canonical id is always a generated UUID — the upstream provider
+      // slug lives in `apiModel` (and as an alias). Any client-supplied `id`
+      // is ignored so billing/routing key on an opaque, stable identifier.
+      const id = crypto.randomUUID()
       const provider = typeof body?.provider === 'string' ? body.provider : ''
       const apiModel = typeof body?.apiModel === 'string' ? body.apiModel.trim() : ''
       const displayName = typeof body?.displayName === 'string' ? body.displayName.trim() : ''
@@ -569,7 +582,6 @@ export function adminModelCatalogRoutes() {
         ? body.shortDisplayName.trim()
         : displayName
 
-      if (!id) return c.json({ error: 'id is required' }, 400)
       if (!MODEL_PROVIDERS.has(provider)) return c.json({ error: 'invalid provider' }, 400)
       if (!apiModel) return c.json({ error: 'apiModel is required' }, 400)
       if (!displayName) return c.json({ error: 'displayName is required' }, 400)
@@ -592,7 +604,10 @@ export function adminModelCatalogRoutes() {
       // Fill pricing + context window from the LiteLLM catalog (then per-family
       // bucket) for any field the admin didn't supply, so a manually-added
       // model is never billed at $0 and carries a context window.
-      const litellm = await resolveEnablePricing(id, apiModel)
+      // Look up pricing by the provider slug — `id` is now an opaque UUID, so
+      // both the LiteLLM match and the family-bucket fallback must key on
+      // `apiModel`.
+      const litellm = await resolveEnablePricing(apiModel, apiModel)
       const pickPrice = (raw: unknown, fallback: number) =>
         raw != null ? sanitizePrice(raw) : fallback
       const contextWindow = sanitizeContextWindow(body?.contextWindow) ?? litellm.contextWindow ?? null
@@ -619,7 +634,9 @@ export function adminModelCatalogRoutes() {
           maxOutputTokens,
           enabled: body?.enabled !== false,
           sortOrder: Number.isFinite(body?.sortOrder) ? Math.floor(body.sortOrder) : null,
-          aliases: sanitizeAliases(body?.aliases),
+          // Keep the provider slug addressable alongside any admin-supplied
+          // aliases so the UUID id stays resolvable by its human-readable name.
+          aliases: Array.from(new Set([...sanitizeAliases(body?.aliases), apiModel])),
           capabilities: body?.capabilities && typeof body.capabilities === 'object' ? body.capabilities : null,
           description,
           contextWindow,
