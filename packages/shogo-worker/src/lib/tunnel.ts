@@ -102,7 +102,7 @@ type TunnelWebSocketConstructor = new (url: string, init: TunnelWebSocketInit) =
 
 type RuntimeWithBunWebSocketHeaders = typeof globalThis & {
   Bun?: unknown;
-  process?: { versions?: { bun?: string } };
+  process?: { versions?: { bun?: string; node?: string } };
 };
 
 interface HeartbeatResponse {
@@ -116,8 +116,8 @@ export class TunnelWebSocketHeaderSupportError extends Error {
   code = 'TUNNEL_WS_HEADERS_UNSUPPORTED' as const;
   constructor() {
     super(
-      'Tunnel WebSocket auth requires Bun WebSocket header support. ' +
-        'This runtime does not advertise Bun, so Authorization headers may be dropped.',
+      'Tunnel WebSocket auth requires a runtime with WebSocket header support (Bun or Node >= 21). ' +
+        'Current runtime does not support WebSocket constructor headers.',
     );
     this.name = 'TunnelWebSocketHeaderSupportError';
   }
@@ -231,7 +231,15 @@ export class WorkerTunnel {
   private supportsWebSocketConstructorHeaders(
     runtime: RuntimeWithBunWebSocketHeaders = globalThis as RuntimeWithBunWebSocketHeaders,
   ): boolean {
-    return typeof runtime.Bun !== 'undefined' || typeof runtime.process?.versions?.bun === 'string';
+    if (typeof runtime.Bun !== 'undefined' || typeof runtime.process?.versions?.bun === 'string') return true;
+    // Node 21+ ships WebSocket (via undici) with header support in the constructor.
+    // Detect by checking for Node >= 21 (the version that made WebSocket a global).
+    const nodeVersion = runtime.process?.versions?.node;
+    if (nodeVersion) {
+      const major = parseInt(nodeVersion.split('.')[0] ?? '0', 10);
+      if (major >= 21) return true;
+    }
+    return false;
   }
 
   private createTunnelWebSocket(
