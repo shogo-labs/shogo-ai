@@ -859,15 +859,38 @@ function baselineMigrations(
   }
 }
 
+/**
+ * Build the command prefix used to invoke Prisma's CLI so that it ALWAYS runs
+ * under the bundled Bun runtime — never the user's system Node.
+ *
+ * Plain `bun x prisma …` resolves Prisma's bin through `node_modules/.bin`, and
+ * on Windows that shim (`prisma.cmd` / the `#!/usr/bin/env node` shebang) hands
+ * execution to whatever `node` is on PATH. Prisma 7's CLI synchronously
+ * `require()`s `@prisma/dev/dist/state.cjs`, which in turn `require()`s the
+ * ESM-only `zeptomatch`. On Node < 20.19 / < 22.12 that throws
+ * `ERR_REQUIRE_ESM`, killing the migrate step and producing the FATAL
+ * "Failed to run database migrations" crash loop seen by Windows users on an
+ * old system Node.
+ *
+ * The `--bun` flag forces the Bun runtime for the resolved bin, so the shim
+ * can't delegate to system Node and Bun's `require(esm)` support handles the
+ * ESM-only deps cleanly. This matches the idiom used everywhere else in the
+ * repo (project templates, `packages/sdk/bin/cli.mjs`, example apps).
+ */
+function prismaInvocation(bunPath: string): string {
+  return `"${bunPath}" x --bun prisma`
+}
+
 function runMigrations(bunPath: string, env: Record<string, string>): void {
   const projectRoot = getProjectRoot()
   const IS_DEV = !require('electron').app.isPackaged
+  const prisma = prismaInvocation(bunPath)
 
   if (IS_DEV) {
     console.log('[Desktop] Dev mode: running SQLite migrations...')
     try {
       const result = execSync(
-        `"${bunPath}" x prisma migrate deploy --config=prisma.config.local.ts`,
+        `${prisma} migrate deploy --config=prisma.config.local.ts`,
         {
           cwd: projectRoot,
           env,
@@ -915,7 +938,7 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
   const runDeploy = (): { stdout: string; stderr: string; ok: boolean; error?: any } => {
     try {
       const result = execSync(
-        `"${bunPath}" x prisma migrate deploy --config=prisma.config.js`,
+        `${prisma} migrate deploy --config=prisma.config.js`,
         {
           cwd: projectRoot,
           env,

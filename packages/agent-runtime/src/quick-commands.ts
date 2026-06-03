@@ -192,22 +192,25 @@ function commandsFromPrisma(workspaceDir: string): QuickCommand[] {
       description: 'Regenerate Prisma client after schema changes',
       // Use `bun x` instead of `bunx`: Shogo Desktop on Windows ships
       // bun.exe without a bunx.exe companion, so the bunx form fails
-      // immediately with `'bunx' is not recognized`.
-      command: 'bun x prisma generate',
+      // immediately with `'bunx' is not recognized`. The `--bun` flag forces
+      // the Bun runtime so the Windows bin shim can't delegate to a system
+      // `node` (Prisma 7's CLI `require()`s the ESM-only `zeptomatch`, which
+      // throws ERR_REQUIRE_ESM on Node < 20.19).
+      command: 'bun x --bun prisma generate',
       category: 'database',
     },
     {
       id: 'prisma-push',
       label: 'Push Schema',
       description: 'Push schema changes to the database',
-      command: 'bun x prisma db push',
+      command: 'bun x --bun prisma db push',
       category: 'database',
     },
     {
       id: 'prisma-migrate',
       label: 'Run Migrations',
       description: 'Create and apply database migrations',
-      command: 'bun x prisma migrate dev --name auto',
+      command: 'bun x --bun prisma migrate dev --name auto',
       category: 'database',
       timeout: 60_000,
     },
@@ -215,7 +218,7 @@ function commandsFromPrisma(workspaceDir: string): QuickCommand[] {
       id: 'prisma-reset',
       label: 'Reset Database',
       description: 'Wipe and recreate database from schema (destructive)',
-      command: 'bun x prisma db push --force-reset',
+      command: 'bun x --bun prisma db push --force-reset',
       category: 'database',
       dangerous: true,
       timeout: 30_000,
