@@ -374,6 +374,31 @@ export interface ModelDefinitionInput {
   outputPerMillion?: number
 }
 
+/**
+ * A public model alias as served on the public `/v1/*` API. Maps an external
+ * `publicId` (e.g. `hoshi-1.0`) to an internal backing model id. The admin read
+ * shape adds `backingValid` / `backingDisplayName` so the UI can flag aliases
+ * whose backing model no longer resolves.
+ */
+export interface PublicModel {
+  publicId: string
+  displayName: string
+  backingModelId: string
+  enabled: boolean
+  /** Read-only: whether `backingModelId` resolves to a known model. */
+  backingValid?: boolean
+  /** Read-only: display name of the resolved backing model, if any. */
+  backingDisplayName?: string | null
+}
+
+/** Write payload entry for {@link PlatformApi.putPublicModels}. */
+export interface PublicModelInput {
+  publicId: string
+  displayName?: string
+  backingModelId: string
+  enabled?: boolean
+}
+
 export interface InstanceInfo {
   name: string
   hostname: string
@@ -786,6 +811,22 @@ export class PlatformApi {
   /** Delete a DB-defined model. */
   async deleteModel(id: string): Promise<void> {
     await this.http.request(`/api/admin/settings/models/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  }
+
+  /** List the public `/v1/*` API model aliases (e.g. `hoshi-1.0`). */
+  async getPublicModels(): Promise<PublicModel[]> {
+    const res = await this.http.get<{ models: PublicModel[] }>('/api/admin/settings/public-models')
+    return res.data?.models ?? []
+  }
+
+  /** Replace the public model alias map. Each `backingModelId` must resolve to
+   * a known model or the server rejects the whole write. */
+  async putPublicModels(models: PublicModelInput[]): Promise<PublicModel[]> {
+    const res = await this.http.request<{ ok: boolean; models: PublicModel[] }>(
+      '/api/admin/settings/public-models',
+      { method: 'PUT', body: { models } },
+    )
+    return res.data?.models ?? []
   }
 
   // ===========================================================================

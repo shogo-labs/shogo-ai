@@ -23,7 +23,16 @@ import {
   maskSecret,
   isSecretCryptoConfigured,
 } from '../lib/secret-crypto'
-import { invalidateModelRegistry } from '../services/model-registry.service'
+import {
+  invalidateModelRegistry,
+  getMergedModelEntrySync,
+} from '../services/model-registry.service'
+import {
+  PUBLIC_MODELS_SETTING_KEY,
+  parsePublicModels,
+  invalidatePublicModels,
+  type PublicModel,
+} from '../services/public-models.service'
 import {
   SUPPORTED_NATIVE_PROVIDERS,
   isNativeProvider,
@@ -284,6 +293,91 @@ export function adminModelCatalogRoutes() {
         keys[provider] = getNativeProviderKeyInfoSync(provider)
       }
       return c.json({ ok: true, keys })
+    } catch (err: any) {
+      return c.json({ error: err.message }, 500)
+    }
+  })
+
+  // GET /public-models — the public `/v1/*` API's model alias map. Each entry
+  // maps an external `publicId` (e.g. `hoshi-1.0`) to an internal backing model
+  // id. Enriched with `backingValid` + `backingDisplayName` so the admin can
+  // see whether the alias resolves. Never exposed on the public surface.
+  router.get('/public-models', async (c) => {
+    const row = (await prisma.platformSetting.findUnique({
+      where: { key: PUBLIC_MODELS_SETTING_KEY },
+    })) as { value: string } | null
+    const models = parsePublicModels(row?.value).map((m) => {
+      const merged = getMergedModelEntrySync(m.backingModelId)
+      return {
+        ...m,
+        backingValid: !!merged,
+        backingDisplayName: merged?.displayName ?? null,
+      }
+    })
+    return c.json({ models })
+  })
+
+  // PUT /public-models — replace the public model alias map. Body:
+  // `{ models: [{ publicId, displayName?, backingModelId, enabled? }] }`.
+  // Each `backingModelId` must resolve to a known model; invalid aliases are
+  // rejected so the public API never serves a dangling id. Invalidates the
+  // public-models cache so the change takes effect immediately.
+  router.put('/public-models', async (c) => {
+    try {
+      const body = (await c.req.json<{ models?: unknown }>()) ?? {}
+      const auth = c.get('auth') as any
+      const userId = auth?.user?.id || 'unknown'
+
+      if (!Array.isArray(body.models)) {
+        return c.json({ error: 'Body must be { models: [...] }' }, 400)
+      }
+
+      const normalized: PublicModel[] = []
+      const seen = new Set<string>()
+      for (const raw of body.models) {
+        if (!raw || typeof raw !== 'object') {
+          return c.json({ error: 'Each model must be an object' }, 400)
+        }
+        const r = raw as Record<string, unknown>
+        const publicId = typeof r.publicId === 'string' ? r.publicId.trim() : ''
+        const backingModelId =
+          typeof r.backingModelId === 'string' ? r.backingModelId.trim() : ''
+        if (!publicId) {
+          return c.json({ error: 'Each model requires a non-empty publicId' }, 400)
+        }
+        if (!backingModelId) {
+          return c.json({ error: `Model '${publicId}' requires a backingModelId` }, 400)
+        }
+        if (seen.has(publicId)) {
+          return c.json({ error: `Duplicate publicId '${publicId}'` }, 400)
+        }
+        const resolves = !!getMergedModelEntrySync(backingModelId)
+        if (!resolves) {
+          return c.json(
+            { error: `backingModelId '${backingModelId}' for '${publicId}' does not resolve to a known model` },
+            400,
+          )
+        }
+        seen.add(publicId)
+        normalized.push({
+          publicId,
+          backingModelId,
+          displayName:
+            typeof r.displayName === 'string' && r.displayName.trim()
+              ? r.displayName.trim()
+              : publicId,
+          enabled: r.enabled === undefined ? true : r.enabled !== false,
+        })
+      }
+
+      await prisma.platformSetting.upsert({
+        where: { key: PUBLIC_MODELS_SETTING_KEY },
+        update: { value: JSON.stringify(normalized), updatedBy: userId },
+        create: { key: PUBLIC_MODELS_SETTING_KEY, value: JSON.stringify(normalized), updatedBy: userId },
+      })
+      await invalidatePublicModels()
+
+      return c.json({ ok: true, models: normalized })
     } catch (err: any) {
       return c.json({ error: err.message }, 500)
     }

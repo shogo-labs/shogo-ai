@@ -122,6 +122,7 @@ const sidebars: SidebarsConfig = {
       type: "category",
       label: "Reference",
       items: [
+        "reference/api",
         "reference/glossary",
         "reference/keyboard-shortcuts",
         "reference/support",

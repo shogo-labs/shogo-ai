@@ -45,6 +45,7 @@ import {
   type ModelDefinition,
   type ModelDefinitionInput,
   type DiscoveredProviderModel,
+  type PublicModel,
 } from '@shogo-ai/sdk'
 import { invalidateVisibleModelsCache } from '../../lib/visible-models'
 
@@ -187,6 +188,415 @@ function SegmentedControl<T extends string>({
           </Text>
         </Pressable>
       ))}
+    </View>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Public API models (cloud super-admin only)
+// ---------------------------------------------------------------------------
+
+interface PublicModelFormState {
+  publicId: string
+  displayName: string
+  backingModelId: string
+  enabled: boolean
+}
+
+const EMPTY_PUBLIC_FORM: PublicModelFormState = {
+  publicId: '',
+  displayName: '',
+  backingModelId: '',
+  enabled: true,
+}
+
+/**
+ * Manage the public `/v1/*` API model aliases (e.g. `hoshi-1.0`). Each alias
+ * maps an external, Shogo-branded `publicId` to an internal backing model id
+ * (any DB-defined or static-catalog model). The whole map is replaced on each
+ * write via `putPublicModels`, mirroring the server's PUT semantics.
+ */
+function PublicModelsSection({
+  platform,
+  models,
+}: {
+  platform: PlatformApi
+  models: ModelDefinition[]
+}) {
+  const [list, setList] = useState<PublicModel[]>([])
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [collapsed, setCollapsed] = useState(true)
+
+  const [showForm, setShowForm] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [form, setForm] = useState<PublicModelFormState>(EMPTY_PUBLIC_FORM)
+  const [backingSearch, setBackingSearch] = useState('')
+
+  const reload = useCallback(async () => {
+    try {
+      setList(await platform.getPublicModels())
+      setError(null)
+    } catch (err: any) {
+      setError(err?.message || 'Failed to load public models')
+    }
+  }, [platform])
+
+  useEffect(() => {
+    reload().finally(() => setLoading(false))
+  }, [reload])
+
+  const persist = useCallback(
+    async (next: PublicModel[]) => {
+      setBusy(true)
+      setError(null)
+      try {
+        const saved = await platform.putPublicModels(
+          next.map((m) => ({
+            publicId: m.publicId,
+            displayName: m.displayName,
+            backingModelId: m.backingModelId,
+            enabled: m.enabled,
+          })),
+        )
+        setList(saved)
+        return true
+      } catch (err: any) {
+        setError(err?.message || 'Failed to save public models')
+        await reload()
+        return false
+      } finally {
+        setBusy(false)
+      }
+    },
+    [platform, reload],
+  )
+
+  const openCreate = useCallback(() => {
+    setEditingId(null)
+    setForm(EMPTY_PUBLIC_FORM)
+    setBackingSearch('')
+    setShowForm(true)
+  }, [])
+
+  const openEdit = useCallback((m: PublicModel) => {
+    setEditingId(m.publicId)
+    setForm({
+      publicId: m.publicId,
+      displayName: m.displayName,
+      backingModelId: m.backingModelId,
+      enabled: m.enabled,
+    })
+    setBackingSearch('')
+    setShowForm(true)
+  }, [])
+
+  const closeForm = useCallback(() => {
+    setShowForm(false)
+    setEditingId(null)
+    setForm(EMPTY_PUBLIC_FORM)
+    setBackingSearch('')
+  }, [])
+
+  const submit = useCallback(async () => {
+    const publicId = form.publicId.trim()
+    const backingModelId = form.backingModelId.trim()
+    if (!publicId || !backingModelId) return
+    const entry: PublicModel = {
+      publicId,
+      displayName: form.displayName.trim() || publicId,
+      backingModelId,
+      enabled: form.enabled,
+    }
+    // Replace an existing entry (by original publicId) or append a new one.
+    const next = editingId
+      ? list.map((m) => (m.publicId === editingId ? entry : m))
+      : [...list.filter((m) => m.publicId !== publicId), entry]
+    if (await persist(next)) closeForm()
+  }, [form, editingId, list, persist, closeForm])
+
+  const toggleEnabled = useCallback(
+    (m: PublicModel) => {
+      persist(list.map((x) => (x.publicId === m.publicId ? { ...x, enabled: !x.enabled } : x)))
+    },
+    [list, persist],
+  )
+
+  const remove = useCallback(
+    (publicId: string) => {
+      persist(list.filter((m) => m.publicId !== publicId))
+    },
+    [list, persist],
+  )
+
+  const backingOptions = useMemo(() => {
+    const q = backingSearch.trim().toLowerCase()
+    const enabled = models.filter((m) => m.enabled)
+    return q
+      ? enabled.filter(
+          (m) => m.id.toLowerCase().includes(q) || m.displayName.toLowerCase().includes(q),
+        )
+      : enabled
+  }, [models, backingSearch])
+
+  const canSubmit = !!form.publicId.trim() && !!form.backingModelId.trim()
+
+  return (
+    <View className="px-5 py-4 border-b border-border gap-3">
+      <Pressable
+        onPress={() => setCollapsed((v) => !v)}
+        className="flex-row items-center justify-between"
+      >
+        <View className="flex-row items-center gap-1.5 flex-1">
+          {collapsed ? (
+            <ChevronRight size={14} className="text-muted-foreground" />
+          ) : (
+            <ChevronDown size={14} className="text-muted-foreground" />
+          )}
+          <FieldLabel>Public API models</FieldLabel>
+          {list.length > 0 && (
+            <Text className="text-[11px] text-muted-foreground">({list.length})</Text>
+          )}
+        </View>
+        {!collapsed && !showForm && (
+          <Pressable
+            onPress={openCreate}
+            className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-md border border-border bg-background"
+          >
+            <Plus size={14} className="text-foreground" />
+            <Text className="text-xs text-foreground">Add</Text>
+          </Pressable>
+        )}
+      </Pressable>
+
+      {!collapsed && (
+        <>
+          <Text className="text-[11px] text-muted-foreground">
+            Shogo-branded model ids served on the OpenAI-compatible /v1 API (e.g.
+            hoshi-1.0). Each maps to an internal backing model; the provider stays
+            hidden from callers.
+          </Text>
+
+          {loading ? (
+            <ActivityIndicator size="small" />
+          ) : (
+            <>
+              {error && <Text className="text-xs text-red-500">{error}</Text>}
+
+              {list.length === 0 && !showForm && (
+                <Text className="text-xs text-muted-foreground">
+                  No public models yet. Add one to expose it on the public API.
+                </Text>
+              )}
+
+              {list.map((m) => (
+                <View
+                  key={m.publicId}
+                  className="px-3 py-2.5 rounded-lg border border-border bg-background"
+                >
+                  <View className="flex-row items-center justify-between">
+                    <View className="flex-1">
+                      <Text className="text-sm font-medium text-foreground">{m.displayName}</Text>
+                      <Text className="text-xs text-muted-foreground mt-0.5">
+                        {m.publicId} → {m.backingDisplayName || m.backingModelId}
+                      </Text>
+                      {m.backingValid === false && (
+                        <View className="flex-row items-center gap-1 mt-0.5">
+                          <AlertTriangle size={11} className="text-amber-500" />
+                          <Text className="text-[11px] text-amber-500">
+                            Backing model does not resolve
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                    <View className="flex-row items-center gap-1.5">
+                      <Pressable
+                        onPress={() => toggleEnabled(m)}
+                        disabled={busy}
+                        className={cn(
+                          'px-2 py-1 rounded-md border',
+                          m.enabled ? 'border-primary/50 bg-primary/10' : 'border-border bg-background',
+                        )}
+                      >
+                        <Text
+                          className={cn('text-[11px]', m.enabled ? 'text-primary' : 'text-muted-foreground')}
+                        >
+                          {m.enabled ? 'Enabled' : 'Disabled'}
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => openEdit(m)}
+                        disabled={busy}
+                        className="p-1.5 rounded-md border border-border"
+                      >
+                        <Pencil size={13} className="text-muted-foreground" />
+                      </Pressable>
+                      <Pressable
+                        onPress={() => remove(m.publicId)}
+                        disabled={busy}
+                        className="p-1.5 rounded-md border border-border"
+                      >
+                        <Trash2 size={13} className="text-red-500" />
+                      </Pressable>
+                    </View>
+                  </View>
+                </View>
+              ))}
+            </>
+          )}
+        </>
+      )}
+
+      <Modal visible={showForm} transparent animationType="fade" onRequestClose={closeForm}>
+        <View className="flex-1 bg-black/50 items-center justify-center p-4">
+          <Pressable
+            accessibilityLabel="Dismiss"
+            onPress={closeForm}
+            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+          />
+          <View className="bg-card border border-border rounded-xl w-full max-w-xl max-h-[88%] overflow-hidden">
+            <View className="px-5 py-4 border-b border-border flex-row items-center justify-between">
+              <Text className="text-base font-semibold text-foreground">
+                {editingId ? 'Edit public model' : 'Add public model'}
+              </Text>
+              <Pressable onPress={closeForm} className="p-1">
+                <X size={16} className="text-muted-foreground" />
+              </Pressable>
+            </View>
+
+            <ScrollView
+              className="px-5 py-4"
+              contentContainerClassName="gap-3"
+              nestedScrollEnabled
+              keyboardShouldPersistTaps="handled"
+            >
+              <View>
+                <FieldLabel>Public id</FieldLabel>
+                <TextInput
+                  value={form.publicId}
+                  onChangeText={(t) => setForm((f) => ({ ...f, publicId: t }))}
+                  editable={!editingId}
+                  placeholder="hoshi-1.0"
+                  placeholderTextColor="#9ca3af"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  className={cn(
+                    'px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm',
+                    !!editingId && 'opacity-50',
+                  )}
+                />
+              </View>
+
+              <View>
+                <FieldLabel>Display name</FieldLabel>
+                <TextInput
+                  value={form.displayName}
+                  onChangeText={(t) => setForm((f) => ({ ...f, displayName: t }))}
+                  placeholder="Hoshi 1.0"
+                  placeholderTextColor="#9ca3af"
+                  className="px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm"
+                />
+              </View>
+
+              <View>
+                <FieldLabel>Backing model id</FieldLabel>
+                <TextInput
+                  value={form.backingModelId}
+                  onChangeText={(t) => setForm((f) => ({ ...f, backingModelId: t }))}
+                  placeholder="claude-opus-4-7"
+                  placeholderTextColor="#9ca3af"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  className="px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm"
+                />
+                {models.length > 0 && (
+                  <View className="mt-2 gap-1.5">
+                    <View className="flex-row items-center gap-2 bg-background border border-border rounded-lg px-3 py-2">
+                      <Search size={12} className="text-muted-foreground" />
+                      <TextInput
+                        value={backingSearch}
+                        onChangeText={setBackingSearch}
+                        placeholder="Search configured models…"
+                        placeholderTextColor="#666"
+                        className="flex-1 text-sm text-foreground"
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                      />
+                    </View>
+                    <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled>
+                      {backingOptions.map((m) => {
+                        const selected = form.backingModelId === m.id
+                        return (
+                          <Pressable
+                            key={m.id}
+                            onPress={() => setForm((f) => ({ ...f, backingModelId: m.id }))}
+                            className={cn(
+                              'px-3 py-2 rounded-lg border mb-1.5',
+                              selected ? 'border-primary/50 bg-primary/5' : 'border-border bg-background',
+                            )}
+                          >
+                            <View className="flex-row items-center gap-2">
+                              <View
+                                className={cn(
+                                  'w-4 h-4 rounded-full border items-center justify-center',
+                                  selected ? 'border-primary bg-primary' : 'border-border',
+                                )}
+                              >
+                                {selected && <Check size={11} color="#fff" />}
+                              </View>
+                              <View className="flex-1">
+                                <Text className="text-sm text-foreground">{m.displayName}</Text>
+                                <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
+                                  {m.id}
+                                </Text>
+                              </View>
+                            </View>
+                          </Pressable>
+                        )
+                      })}
+                      {backingOptions.length === 0 && (
+                        <Text className="text-xs text-muted-foreground italic py-2">
+                          No configured models match. You can also type any catalog model id above.
+                        </Text>
+                      )}
+                    </ScrollView>
+                  </View>
+                )}
+              </View>
+
+              <Pressable
+                onPress={() => setForm((f) => ({ ...f, enabled: !f.enabled }))}
+                className="flex-row items-center justify-between p-2.5 rounded-md border border-border bg-background"
+              >
+                <Text className="text-sm text-foreground">Enabled</Text>
+                {form.enabled && <Check size={16} className="text-primary" />}
+              </Pressable>
+            </ScrollView>
+
+            <View className="px-5 py-3 border-t border-border">
+              <Pressable
+                onPress={submit}
+                disabled={!canSubmit || busy}
+                className={cn('items-center py-2.5 rounded-md', canSubmit && !busy ? 'bg-primary' : 'bg-muted')}
+              >
+                {busy ? (
+                  <ActivityIndicator size="small" />
+                ) : (
+                  <Text
+                    className={cn(
+                      'text-sm font-medium',
+                      canSubmit ? 'text-primary-foreground' : 'text-muted-foreground',
+                    )}
+                  >
+                    {editingId ? 'Save changes' : 'Add public model'}
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   )
 }
@@ -656,6 +1066,9 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
           )
         })}
       </View>
+
+      {/* Public API models (cloud super-admin only) */}
+      {!localMode && <PublicModelsSection platform={platform} models={models} />}
 
       {/* Models list + form */}
       <View className="px-5 py-4 gap-3">

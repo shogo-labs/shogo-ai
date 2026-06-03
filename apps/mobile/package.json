@@ -17,7 +17,7 @@
     "build:android": "eas build --platform android --profile preview",
     "build:android:prod": "eas build --platform android --profile production",
     "build:android:local": "eas build --platform android --profile preview --local",
-    "prebuild": "expo prebuild --clean",
+    "prebuild:native": "expo prebuild --clean",
     "eas-build-post-install": "cd ../../packages/sdk && bun run build",
     "bundle:monaco-types": "node scripts/bundle-monaco-types.mjs",
     "copy:monaco-vs": "node scripts/copy-monaco-vs.mjs",

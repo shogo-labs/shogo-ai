@@ -47,6 +47,7 @@ import { gitHttpRoutes } from './routes/git-http'
 import { thumbnailRoutes } from './routes/thumbnail'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
+import { publicApiRoutes } from './routes/public-api'
 import { voiceRoutes } from './routes/voice'
 import { chatRoutes } from './routes/chat'
 import { createChatMessageEditRoutes } from './routes/chat-message-edits'
@@ -6666,6 +6667,21 @@ app.post('/api/webhooks/stripe', async (c) => {
 const aiProxy = aiProxyRoutes()
 app.route('/api', aiProxy)
 
+// Public OpenAI-compatible API (`/v1/*`). External developers call this with a
+// Shogo API key (`shogo_sk_*`). It is NOT under `/api/*`, so the session auth /
+// rate-limit middleware above does not apply — auth is handled in-route and a
+// dedicated IP rate limiter is attached here. The global CORS / secureHeaders /
+// bodyLimit `*` middleware still wraps it.
+app.use(
+  '/v1/*',
+  rateLimiter('public-api', {
+    max: Number(process.env.RATE_LIMIT_PUBLIC_API_MAX) || 600,
+    windowMs: Number(process.env.RATE_LIMIT_PUBLIC_API_WINDOW_MS) || 60_000,
+    skipPrefixes: ['/v1/health'],
+  }),
+)
+app.route('/v1', publicApiRoutes())
+
 // Tools passthrough proxy (Composio, Serper, OpenAI embeddings).
 // Uses the same JWT auth as the AI proxy — no raw API keys in agent pods.
 const toolsProxy = toolsProxyRoutes()
@@ -7367,6 +7383,8 @@ console.log(`   AI Proxy: POST http://localhost:${API_PORT}/api/ai/v1/chat/compl
 console.log(`   AI Proxy: POST http://localhost:${API_PORT}/api/ai/v1/responses`)
 console.log(`   AI Models: GET  http://localhost:${API_PORT}/api/ai/v1/models`)
 console.log(`   AI Proxy Health: GET  http://localhost:${API_PORT}/api/ai/proxy/health`)
+console.log(`   Public API: POST http://localhost:${API_PORT}/v1/chat/completions (shogo_sk_ keys)`)
+console.log(`   Public Models: GET  http://localhost:${API_PORT}/v1/models`)
 console.log(`   CORS origin: http://localhost:${VITE_PORT}`)
 console.log(`   AI Providers: Anthropic=${!!process.env.ANTHROPIC_API_KEY}, OpenAI=${!!process.env.OPENAI_API_KEY}, Google=${!!process.env.GOOGLE_API_KEY}`)
 
@@ -7492,8 +7510,9 @@ await (async () => {
   try {
     const { primeModelRegistry } = await import('./services/model-registry.service')
     const { primeProviderCredentials } = await import('./services/provider-credentials.service')
-    await Promise.all([primeModelRegistry(), primeProviderCredentials()])
-    console.log('[ModelRegistry] Primed DB-defined model catalog + provider credentials')
+    const { primePublicModels } = await import('./services/public-models.service')
+    await Promise.all([primeModelRegistry(), primeProviderCredentials(), primePublicModels()])
+    console.log('[ModelRegistry] Primed DB-defined model catalog + provider credentials + public models')
   } catch (err: any) {
     console.log('[ModelRegistry] Could not prime registry (non-fatal):', err.message)
   }
