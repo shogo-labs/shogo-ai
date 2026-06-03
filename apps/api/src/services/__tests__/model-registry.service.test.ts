@@ -202,6 +202,47 @@ describe('model-registry.service', () => {
     expect(routing!.apiKey).toBeUndefined()
     expect(routing!.baseUrl).toBeUndefined()
   })
+
+  test('a UUID-keyed model resolves routing + pricing by its slug alias', async () => {
+    // Mirrors the post-migration world: the canonical id is an opaque UUID and
+    // the provider slug lives in `apiModel` + `aliases`. Existing references
+    // that still hold the slug must resolve to the UUID row.
+    const uuid = '11111111-2222-4333-8444-555555555555'
+    MODELS = [
+      {
+        id: uuid,
+        provider: 'custom',
+        providerId: 'prov-1',
+        apiModel: 'mimo-v2.5',
+        displayName: 'MiMo v2.5',
+        shortDisplayName: 'MiMo 2.5',
+        tier: 'standard',
+        family: 'other',
+        generation: 'current',
+        maxOutputTokens: 128000,
+        enabled: true,
+        sortOrder: 1,
+        aliases: ['mimo-v2.5', 'mimo'],
+        capabilities: null,
+        inputPerMillion: 1.5,
+        cachedInputPerMillion: 0.3,
+        cacheWritePerMillion: 2,
+        outputPerMillion: 6,
+      },
+    ]
+    await invalidateModelRegistry()
+
+    // Canonical UUID lookup works.
+    expect(getMergedModelEntrySync(uuid)?.apiModel).toBe('mimo-v2.5')
+    expect(getDbRoutingConfigSync(uuid)?.apiModel).toBe('mimo-v2.5')
+    // …and so does the legacy slug, via the alias map.
+    expect(getMergedModelEntrySync('mimo-v2.5')?.id).toBe(uuid)
+    expect(getDbRoutingConfigSync('mimo-v2.5')?.apiKey).toBe(MIMO_KEY)
+    expect(getDbModelPricingSync('mimo-v2.5')?.outputPerMillion).toBe(6)
+    // Billing keys on the slug resolve to the same per-token rates.
+    const { billedUsd } = calculateUsageCost(1_000_000, 0, 'mimo-v2.5')
+    expect(billedUsd).toBeCloseTo(1.5 * MARKUP_MULTIPLIER, 10)
+  })
 })
 
 describe('usage-cost DB per-token billing', () => {

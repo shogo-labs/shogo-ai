@@ -31,6 +31,38 @@ const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 
+/**
+ * DB-defined model ids are instance-local UUIDs, so a bundle that shipped a
+ * raw `modelName` UUID would dangle when imported on another instance. These
+ * helpers translate to/from a portable identifier — the upstream `apiModel`
+ * slug — at the export/import boundary. Static-catalog ids are already
+ * portable slugs and pass through unchanged.
+ */
+async function toPortableModelName(modelName?: string | null): Promise<string | undefined> {
+  if (!modelName) return modelName ?? undefined
+  try {
+    const row = await (prisma as any).modelDefinition.findUnique({ where: { id: modelName } })
+    if (row?.apiModel) return row.apiModel
+  } catch {
+    // Best-effort: fall through to the original value.
+  }
+  return modelName
+}
+
+/** Inverse of {@link toPortableModelName}: map a portable slug back to this
+ *  instance's canonical id (a DB model's UUID) when one matches by `apiModel`;
+ *  otherwise return the value unchanged (static-catalog slug or unknown). */
+async function fromPortableModelName(value?: string | null): Promise<string | undefined> {
+  if (!value) return value ?? undefined
+  try {
+    const row = await (prisma as any).modelDefinition.findFirst({ where: { apiModel: value } })
+    if (row?.id) return row.id
+  } catch {
+    // Best-effort: fall through to the original value.
+  }
+  return value
+}
+
 // `dist/` and `build/` are intentionally NOT excluded here — we want the prebuilt
 // app output in the bundle so an imported project can serve its preview
 // immediately (preview-manager treats `project/dist/index.html` as "ready").
@@ -450,7 +482,9 @@ export async function runImport(
       heartbeatInterval: ac?.heartbeatInterval ?? 1800,
       heartbeatEnabled: ac?.heartbeatEnabled ?? false,
       modelProvider: ac?.modelProvider ?? 'anthropic',
-      modelName: ac?.modelName ?? 'claude-haiku-4-5',
+      // Map the bundle's portable model slug back to this instance's canonical
+      // id (a DB model's UUID when one matches by apiModel).
+      modelName: (await fromPortableModelName(ac?.modelName)) ?? 'claude-haiku-4-5',
       channels: channelsValue,
     }
     // PG-only fields — include only when present in the bundle
@@ -898,7 +932,9 @@ export function projectExportImportRoutes() {
           heartbeatInterval: project.agentConfig.heartbeatInterval,
           heartbeatEnabled: project.agentConfig.heartbeatEnabled,
           modelProvider: project.agentConfig.modelProvider,
-          modelName: project.agentConfig.modelName,
+          // Ship a portable model identifier (the upstream slug), not the
+          // instance-local UUID, so the bundle resolves on import elsewhere.
+          modelName: await toPortableModelName(project.agentConfig.modelName),
           channels: sanitizedChannels,
         }
       : null
