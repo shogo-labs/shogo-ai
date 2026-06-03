@@ -1378,8 +1378,10 @@ app.route('/api', remoteAuditRoutes())
 // Sync engine — Phase 2 event-driven bidirectional sync
 app.route('/api', syncRoutes())
 // Workspace-scoped chat + session management (multi-project / parent-folder
-// model). Session CRUD is live; the /chat proxy returns 501 until the
-// merged-root workspace runtime (Phase 2b) is enabled via SHOGO_WORKSPACE_RUNTIME.
+// model). Session CRUD is live; the /chat proxy (+ turn/stream/stop) reaches
+// project-chat parity (billing, persistence, auto-resume) but the merged-root
+// workspace runtime it proxies to is gated behind SHOGO_WORKSPACE_RUNTIME —
+// runtime resolution returns 501 until that flag is enabled.
 app.route('/api', workspaceChatRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
 startTunnelHeartbeat()
 

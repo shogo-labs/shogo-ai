@@ -177,6 +177,8 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
       <iframe
         ref={iframeRef}
         src={url}
+        data-testid="canvas-preview-iframe"
+        title="Project preview"
         style={{
           width: '100%',
           height: '100%',

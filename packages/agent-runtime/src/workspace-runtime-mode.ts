@@ -4,9 +4,11 @@
  * Workspace-runtime boot mode helpers.
  *
  * A WORKSPACE runtime serves a merged tree of several attached projects:
- * `WORKSPACE_DIR` points at the parent `workspaces/` directory and each
- * attached project is a top-level subfolder. This differs from the
- * single-project `managed` boot in two ways the boot path must respect:
+ * `WORKSPACE_DIR` points at a per-workspace merged root that contains only
+ * this workspace's attached projects as top-level subfolders (on host they
+ * are symlinks into the shared `workspaces/` pool; in cloud they are real
+ * subfolders on the pod volume). This differs from the single-project
+ * `managed` boot in two ways the boot path must respect:
  *
  *   1. Template / tech-stack seeding must be skipped — the parent dir
  *      already contains real project subfolders; dumping a Vite + React

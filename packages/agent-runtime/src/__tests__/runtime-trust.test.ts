@@ -39,6 +39,7 @@ function clearTrustState(): void {
   delete process.env.WORKING_MODE
   delete process.env.TRUST_LEVEL
   delete process.env.LINKED_FOLDERS
+  delete process.env.READONLY_ROOTS
 }
 
 describe('runtime-trust', () => {
@@ -67,12 +68,14 @@ describe('runtime-trust', () => {
     workingMode?: 'managed' | 'external'
     trustLevel?: 'trusted' | 'restricted'
     linkedFolders?: string[]
+    readonlyRoots?: string[]
   }): void {
     __setTrustForTests({
       workingMode: opts.workingMode ?? 'external',
       trustLevel: opts.trustLevel ?? 'restricted',
       workspaceDir,
       linkedFolders: opts.linkedFolders ?? [],
+      readonlyRoots: opts.readonlyRoots ?? [],
       initialized: true,
     })
   }
@@ -205,6 +208,49 @@ describe('runtime-trust', () => {
     setTrust({ trustLevel: 'trusted', linkedFolders: [linkedDir] })
     const r = assertAllowedPath(join(linkedDir, 'inside.txt'), 'read')
     expect(r.ok).toBe(true)
+  })
+
+  describe('read-only roots (attachMode=readonly)', () => {
+    test('read inside a read-only root: ALLOWED', () => {
+      setTrust({ trustLevel: 'trusted', linkedFolders: [linkedDir], readonlyRoots: [linkedDir] })
+      const r = assertAllowedPath(join(linkedDir, 'inside.txt'), 'read')
+      expect(r.ok).toBe(true)
+    })
+
+    test('write inside a read-only root: BLOCKED even when trusted', () => {
+      setTrust({ trustLevel: 'trusted', linkedFolders: [linkedDir], readonlyRoots: [linkedDir] })
+      const r = assertAllowedPath(join(linkedDir, 'inside.txt'), 'write')
+      expect(r.ok).toBe(false)
+      expect(r.reason).toBe('readonly_root_write')
+    })
+
+    test('exec inside a read-only root: BLOCKED even when trusted', () => {
+      setTrust({ trustLevel: 'trusted', linkedFolders: [linkedDir], readonlyRoots: [linkedDir] })
+      const r = assertAllowedPath(join(linkedDir, 'inside.txt'), 'exec')
+      expect(r.ok).toBe(false)
+      expect(r.reason).toBe('readonly_root_exec')
+    })
+
+    test('new file under a read-only root: write BLOCKED (ancestor resolves under root)', () => {
+      setTrust({ trustLevel: 'trusted', linkedFolders: [linkedDir], readonlyRoots: [linkedDir] })
+      const r = assertAllowedPath(join(linkedDir, 'newdir', 'newfile.txt'), 'write')
+      expect(r.ok).toBe(false)
+      expect(r.reason).toBe('readonly_root_write')
+    })
+
+    test('write in workspaceDir is unaffected when only a sibling root is read-only', () => {
+      setTrust({ trustLevel: 'trusted', linkedFolders: [linkedDir], readonlyRoots: [linkedDir] })
+      const r = assertAllowedPath(join(workspaceDir, 'inside.txt'), 'write')
+      expect(r.ok).toBe(true)
+    })
+
+    test('env fallback: READONLY_ROOTS JSON parsed', () => {
+      process.env.WORKSPACE_DIR = workspaceDir
+      process.env.WORKING_MODE = 'managed'
+      process.env.READONLY_ROOTS = JSON.stringify([linkedDir])
+      const t = getRuntimeTrust()
+      expect(t.readonlyRoots).toEqual([linkedDir])
+    })
   })
 
   test('symlink escape: symlink inside workspace pointing to outsideDir is REJECTED', () => {

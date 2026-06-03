@@ -8,21 +8,14 @@
  *
  * Sections:
  *  - Logo row: gradient "S" badge + "Shogo" text + collapse toggle
- *  - Workspace switcher
- *  - Primary nav: Home + Search (Cmd+K)
- *  - PROJECTS section: Recent (5 projects), All Projects (with New Folder), Starred, Shared
- *  - RESOURCES section: Marketplace, Instance Picker, API Keys, Docs (external)
- *
- * Templates were folded into the marketplace — every former built-in
- * template is now a `MarketplaceListing` row owned by the official
- * "Shogo" creator. The standalone Templates nav entry was removed
- * once that consolidation landed; users discover and install the same
- * content through Marketplace.
+ *  - Primary nav: Home + Search (Cmd+K) [+ Meetings in local mode]
+ *  - PROJECTS tree: every project, each expandable to reveal its chats
  *  - Upgrade to Pro CTA
- *  - User avatar + Sign Out
+ *  - Consolidated account button (workspace switcher + resource links +
+ *    user/profile/sign-out) anchored at the bottom
  */
 
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import {
   View,
   Text,
@@ -51,8 +44,6 @@ import { observer } from 'mobx-react-lite'
 import {
   Home,
   Search,
-  Clock,
-  LayoutGrid,
   Star,
   Users,
   User,
@@ -60,8 +51,8 @@ import {
   ChevronDown,
   ChevronRight,
   PanelLeftClose,
-  PanelLeft,
-  FolderPlus,
+  Folder,
+  MessageSquare,
   Plus,
   X,
   LogOut,
@@ -82,14 +73,12 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { Avatar } from '@shogo/shared-ui/primitives'
 import { CommandPalette, useCommandPalette } from './CommandPalette'
-import { InstancePicker } from './InstancePicker'
 import { useActiveInstance } from '../../contexts/active-instance'
 import { ShogoLogoMark } from '../branding/ShogoLogoMark'
 import { useAuth } from '../../contexts/auth'
 import {
   useProjectCollection,
   useWorkspaceCollection,
-  useFolderCollection,
   useDomainActions,
   useDomainHttp,
 } from '../../contexts/domain'
@@ -111,18 +100,6 @@ function getInitials(name: string | null | undefined): string {
     .join('')
     .toUpperCase()
     .slice(0, 2)
-}
-
-function isRouteActive(pathname: string, href: string): boolean {
-  if (href === '/') {
-    return pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
-  }
-  const normalizedPathname = pathname.replace('/(app)', '')
-  const normalizedHref = href.replace('/(app)', '')
-  if (normalizedHref === '/projects') {
-    return normalizedPathname === '/projects' || normalizedPathname.startsWith('/projects/')
-  }
-  return normalizedPathname === normalizedHref || normalizedPathname.startsWith(normalizedHref + '/')
 }
 
 // ─── NavItem ───────────────────────────────────────────────
@@ -206,85 +183,124 @@ function NavItem({
   )
 }
 
-// ─── NavSection (collapsible) ──────────────────────────────
+// ─── ChatTreeItem (a single chat nested under a project) ────
 
-interface NavSectionProps {
-  title: string
-  collapsed?: boolean
-  children: React.ReactNode
-  defaultExpanded?: boolean
+function chatLabel(session: any): string {
+  const name = typeof session.name === 'string' ? session.name.trim() : ''
+  if (name) return name
+  if (session.inferredName) return session.inferredName
+  const created = session.createdAt ? new Date(session.createdAt) : new Date()
+  return `Chat · ${created.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
 }
 
-function NavSection({ title, collapsed, children, defaultExpanded = true }: NavSectionProps) {
-  const [expanded, setExpanded] = useState(defaultExpanded)
-
-  if (collapsed) return <>{children}</>
+function ChatTreeItem({
+  session,
+  projectId,
+  onNavPress,
+}: {
+  session: any
+  projectId: string
+  onNavPress?: () => void
+}) {
+  const router = useRouter()
 
   return (
-    <View className="mt-4">
-      <Pressable
-        onPress={() => setExpanded(!expanded)}
-        className="flex-row items-center gap-1 px-3 py-1"
-      >
-        {expanded ? (
-          <ChevronDown size={12} className="text-muted-foreground" />
-        ) : (
-          <ChevronRight size={12} className="text-muted-foreground" />
-        )}
-        <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          {title}
-        </Text>
-      </Pressable>
-      {expanded && children}
-    </View>
+    <Pressable
+      onPress={() => {
+        router.push({
+          pathname: '/(app)/projects/[id]',
+          params: { id: projectId, chatSessionId: session.id },
+        } as any)
+        onNavPress?.()
+      }}
+      role="link"
+      accessibilityLabel={`Chat: ${chatLabel(session)}`}
+      className="flex-row items-center gap-2 rounded-md px-2 py-1.5 active:bg-accent/50"
+    >
+      <MessageSquare size={13} className="text-muted-foreground" />
+      <Text className="text-sm text-muted-foreground flex-1" numberOfLines={1}>
+        {chatLabel(session)}
+      </Text>
+    </Pressable>
   )
 }
 
-// ─── ExpandableNavItem ─────────────────────────────────────
+// ─── ProjectTreeItem (a project + its nested chats) ─────────
 
-interface ExpandableNavItemProps {
-  icon: React.ElementType
-  label: string
-  href?: string
-  active?: boolean
-  collapsed?: boolean
-  defaultExpanded?: boolean
-  children?: React.ReactNode
-  onNavPress?: () => void
-}
-
-function ExpandableNavItem({
-  icon: Icon,
-  label,
-  href,
-  active,
+const ProjectTreeItem = observer(function ProjectTreeItem({
+  project,
   collapsed,
-  defaultExpanded = true,
-  children,
   onNavPress,
-}: ExpandableNavItemProps) {
-  const [expanded, setExpanded] = useState(defaultExpanded)
+}: {
+  project: any
+  collapsed?: boolean
+  onNavPress?: () => void
+}) {
   const router = useRouter()
+  const pathname = usePathname()
+  const http = useDomainHttp()
+  const [expanded, setExpanded] = useState(false)
+  // Chats are fetched directly into local state (rather than the shared
+  // chat-session collection) because the collection's loaders prune items
+  // from other contexts — expanding a second project would otherwise wipe
+  // the first project's chats out of the cache.
+  const [sessions, setSessions] = useState<any[]>([])
+  const [loaded, setLoaded] = useState(false)
+  const seededRef = useRef(false)
 
-  const handlePress = useCallback(() => {
-    if (href) {
-      router.push(href as any)
-      onNavPress?.()
+  const isActive = pathname.includes(project.id)
+
+  const loadChats = useCallback(async () => {
+    if (seededRef.current || !http) return
+    seededRef.current = true
+    try {
+      const res = await http.get<{ ok: boolean; items?: any[] }>(
+        `/api/chat-sessions?contextId=${encodeURIComponent(project.id)}&limit=50`,
+      )
+      const items = Array.isArray(res.data?.items) ? res.data!.items! : []
+      const normalized = items
+        .map((s: any) => ({
+          id: s.id,
+          name: typeof s.name === 'string' ? s.name : '',
+          inferredName: s.inferredName ?? '',
+          createdAt: s.createdAt ? new Date(s.createdAt).getTime() : 0,
+          activity: new Date(s.lastActiveAt || s.updatedAt || s.createdAt || 0).getTime(),
+        }))
+        .sort((a, b) => b.activity - a.activity)
+      setSessions(normalized)
+    } catch (e) {
+      console.error('[AppSidebar] Failed to load chats:', e)
+      seededRef.current = false
+    } finally {
+      setLoaded(true)
     }
-  }, [href, router, onNavPress])
+  }, [http, project.id])
+
+  const toggleExpanded = useCallback(() => {
+    setExpanded((prev) => {
+      const next = !prev
+      if (next) void loadChats()
+      return next
+    })
+  }, [loadChats])
+
+  const openProject = useCallback(() => {
+    router.push(`/(app)/projects/${project.id}` as any)
+    onNavPress?.()
+  }, [router, project.id, onNavPress])
 
   if (collapsed) {
     return (
       <Pressable
-        onPress={handlePress}
+        onPress={openProject}
         role="link"
-        accessibilityLabel={label}
+        accessibilityLabel={`Project: ${project.name || 'Untitled'}`}
         className={cn(
           'items-center justify-center rounded-md px-2 py-2',
-          active ? 'bg-accent' : 'active:bg-accent/50'
+          isActive ? 'bg-accent' : 'active:bg-accent/50',
         )}
       >
-        <Icon size={16} className={active ? 'text-foreground' : 'text-muted-foreground'} />
+        <Folder size={16} className={isActive ? 'text-foreground' : 'text-muted-foreground'} />
       </Pressable>
     )
   }
@@ -293,81 +309,62 @@ function ExpandableNavItem({
     <View>
       <View
         className={cn(
-          'flex-row items-center gap-3 rounded-md px-3 py-2',
-          active ? 'bg-accent' : ''
+          'flex-row items-center gap-1.5 rounded-md pr-2 py-1.5',
+          isActive ? 'bg-accent' : '',
         )}
       >
-        <Pressable onPress={handlePress} role="link" accessibilityLabel={label} className="flex-1 flex-row items-center gap-3 active:opacity-70">
-          <Icon
-            size={16}
-            className={active ? 'text-foreground' : 'text-muted-foreground'}
-          />
-          <Text
-            className={cn('text-sm flex-1', active ? 'text-foreground' : 'text-muted-foreground')}
-            numberOfLines={1}
-          >
-            {label}
-          </Text>
-        </Pressable>
-        <Pressable onPress={() => setExpanded(!expanded)} role="button" accessibilityLabel={`${expanded ? 'Collapse' : 'Expand'} ${label}`} className="p-1 -mr-1 active:opacity-70">
+        <Pressable
+          onPress={toggleExpanded}
+          role="button"
+          accessibilityLabel={`${expanded ? 'Collapse' : 'Expand'} ${project.name || 'Untitled'}`}
+          className="p-1 active:opacity-70"
+        >
           {expanded ? (
             <ChevronDown size={14} className="text-muted-foreground" />
           ) : (
             <ChevronRight size={14} className="text-muted-foreground" />
           )}
         </Pressable>
+        <Pressable
+          onPress={openProject}
+          role="link"
+          accessibilityLabel={`Project: ${project.name || 'Untitled'}`}
+          className="flex-1 flex-row items-center gap-2 active:opacity-70"
+        >
+          <Folder size={15} className={isActive ? 'text-foreground' : 'text-muted-foreground'} />
+          <Text
+            className={cn('text-sm flex-1', isActive ? 'text-foreground' : 'text-foreground')}
+            numberOfLines={1}
+          >
+            {project.name || 'Untitled'}
+          </Text>
+        </Pressable>
       </View>
       {expanded && (
         <View className="ml-6 mt-0.5">
-          {children}
+          {sessions.length === 0 ? (
+            <View className="px-2 py-1.5">
+              <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+                {loaded ? 'No chats yet' : 'Loading…'}
+              </Text>
+            </View>
+          ) : (
+            sessions.map((s: any) => (
+              <ChatTreeItem
+                key={s.id}
+                session={s}
+                projectId={project.id}
+                onNavPress={onNavPress}
+              />
+            ))
+          )}
         </View>
       )}
     </View>
   )
-}
+})
 
-// ─── ProjectItem ───────────────────────────────────────────
-
-function ProjectItem({
-  name,
-  projectId,
-  onNavPress,
-}: {
-  name: string
-  projectId: string
-  onNavPress?: () => void
-}) {
-  const router = useRouter()
-  const pathname = usePathname()
-  const isActive = pathname.includes(projectId)
-
-  return (
-    <Pressable
-      onPress={() => {
-        router.push(`/(app)/projects/${projectId}` as any)
-        onNavPress?.()
-      }}
-      role="link"
-      accessibilityLabel={`Project: ${name}`}
-      className={cn(
-        'flex-row items-center rounded-md px-2 py-1.5',
-        isActive ? 'bg-accent' : 'active:bg-accent/50'
-      )}
-    >
-      <Text
-        className={cn(
-          'text-sm',
-          isActive ? 'text-foreground' : 'text-muted-foreground'
-        )}
-        numberOfLines={1}
-      >
-        {name}
-      </Text>
-    </Pressable>
-  )
-}
-
-// ─── UserMenu (popover anchored to avatar) ─────────────────
+// ─── UserMenuContent (user section of the account menu) ────
 
 interface UserMenuProps {
   user: { name?: string | null; email?: string | null; image?: string | null } | null
@@ -502,54 +499,350 @@ function UserMenuContent({
   )
 }
 
-function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bottomInset = 0, collapsed }: UserMenuProps) {
+// ─── WorkspaceMenuSection (workspace block inside the account menu) ─
+
+interface WorkspaceMenuSectionProps {
+  workspaces: any[]
+  currentWorkspace: any
+  billingData: any
+  workspacePlan: { planId: string; status: string | null } | null
+  allPlans: Record<string, { planId: string; status: string | null }>
+  showBilling: boolean
+  onNavigate: (href: string) => void
+  onSwitchWorkspace: (workspaceId: string) => void
+  onCreateWorkspace: () => void
+  localMode?: boolean
+  onClose: () => void
+}
+
+function WorkspaceMenuSection({
+  workspaces,
+  currentWorkspace,
+  billingData,
+  workspacePlan,
+  allPlans,
+  showBilling,
+  onNavigate,
+  onSwitchWorkspace,
+  onCreateWorkspace,
+  localMode,
+  onClose,
+}: WorkspaceMenuSectionProps) {
+  const posthog = usePostHogSafe()
+
+  const wsInitial = currentWorkspace?.name?.[0]?.toUpperCase() ?? 'W'
+  const resolvedPlanId = (billingData.hasActiveSubscription && billingData.subscription?.planId)
+    || workspacePlan?.planId
+    || 'free'
+  const planType = getPlanDisplayName(resolvedPlanId !== 'free' ? resolvedPlanId : undefined)
+
+  return (
+    <>
+      {currentWorkspace && (
+        <View className="px-4 py-3">
+          <View className="flex-row items-start gap-3">
+            <View className="h-10 w-10 rounded-lg bg-primary/10 items-center justify-center">
+              <Text className="text-sm font-medium text-primary">{wsInitial}</Text>
+            </View>
+            <View className="flex-1 min-w-0">
+              <Text className="font-medium text-foreground" numberOfLines={1}>
+                {currentWorkspace.name}
+              </Text>
+              {showBilling && (
+                <Text className="text-xs text-muted-foreground">
+                  {planType} Plan {'\u00B7'} 1 member
+                </Text>
+              )}
+            </View>
+          </View>
+        </View>
+      )}
+
+      {currentWorkspace && (
+        <View className="px-3 pb-2 flex-row gap-2">
+          <Pressable
+            onPress={() => { onNavigate('/(app)/settings'); onClose() }}
+            className="flex-1 flex-row items-center justify-center gap-1.5 h-8 rounded-md border border-border active:bg-muted"
+          >
+            <Settings size={14} className="text-muted-foreground" />
+            <Text className="text-xs text-foreground">Settings</Text>
+          </Pressable>
+          {!localMode && (
+            <Pressable
+              onPress={() => { onNavigate('/(app)/settings?tab=people'); onClose() }}
+              className="flex-1 flex-row items-center justify-center gap-1.5 h-8 rounded-md border border-border active:bg-muted"
+            >
+              <Users size={14} className="text-muted-foreground" />
+              <Text className="text-xs text-foreground">Invite</Text>
+            </Pressable>
+          )}
+        </View>
+      )}
+
+      {showBilling && currentWorkspace && (
+        <>
+          <View className="h-px bg-border" />
+          <View className="px-4 py-3 gap-2">
+            <Text className="text-sm text-muted-foreground">Usage</Text>
+            <CompactUsageWindows windows={billingData.usageWindows} />
+          </View>
+        </>
+      )}
+
+      {showBilling && currentWorkspace && planType === 'Free' && (
+        <View className="px-3 py-2">
+          <Pressable
+            onPress={() => { trackEvent(posthog, EVENTS.UPGRADE_CLICKED); onNavigate('/(app)/billing'); onClose() }}
+            className="flex-row items-center justify-center gap-2 h-9 rounded-md"
+            style={Platform.OS === 'web'
+              ? { backgroundImage: 'linear-gradient(to right, #3b82f6, #9333ea)' } as any
+              : { backgroundColor: '#7c3aed' }}
+          >
+            <Zap size={16} className="text-white" />
+            <Text className="text-sm font-medium text-white">Upgrade to Pro</Text>
+          </Pressable>
+        </View>
+      )}
+
+      <View className="h-px bg-border" />
+
+      <View className="py-1">
+        <Text className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          All workspaces
+        </Text>
+        {workspaces.map((ws: any) => {
+          const isCurrent = ws.id === currentWorkspace?.id
+          return (
+            <Pressable
+              key={ws.id}
+              onPress={() => {
+                if (!isCurrent) {
+                  onSwitchWorkspace(ws.id)
+                }
+                onClose()
+              }}
+              className="flex-row items-center gap-2 px-4 py-2 active:bg-muted"
+            >
+              <View className="h-6 w-6 rounded bg-primary/10 items-center justify-center">
+                <Text className="text-[10px] font-medium text-primary">
+                  {ws.name?.[0]?.toUpperCase() ?? 'W'}
+                </Text>
+              </View>
+              <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+                {ws.name}
+              </Text>
+              {showBilling && (() => {
+                const wsPlanId = (allPlans[ws.id]?.planId
+                  ?? (ws.id === currentWorkspace?.id && billingData.subscription?.planId))
+                  || 'free'
+                const isPaid = wsPlanId !== 'free'
+                const label = isPaid
+                  ? wsPlanId.charAt(0).toUpperCase() + wsPlanId.slice(1)
+                  : 'Free'
+                return (
+                  <View className={cn('rounded px-1.5 py-0.5', isPaid ? 'bg-primary/10' : 'bg-muted')}>
+                    <Text className={cn('text-[10px]', isPaid ? 'text-primary font-medium' : 'text-muted-foreground')}>{label}</Text>
+                  </View>
+                )
+              })()}
+              {isCurrent && (
+                <Check size={16} className="text-primary" />
+              )}
+            </Pressable>
+          )
+        })}
+
+        {!localMode && (
+          <Pressable
+            onPress={() => { onClose(); onCreateWorkspace() }}
+            className="flex-row items-center gap-2 px-4 py-2 rounded-md active:bg-muted"
+          >
+            <Plus size={16} className="text-muted-foreground" />
+            <Text className="text-sm text-foreground">Create new workspace</Text>
+          </Pressable>
+        )}
+      </View>
+    </>
+  )
+}
+
+// ─── AccountNavLinks (resources/links moved into the account menu) ─
+
+function AccountNavLinks({
+  features,
+  localMode,
+  onNavigate,
+  onClose,
+}: {
+  features: { marketplace?: boolean }
+  localMode?: boolean
+  onNavigate: (href: string) => void
+  onClose: () => void
+}) {
+  const items: Array<{ icon: React.ElementType; label: string; href: string }> = [
+    { icon: Star, label: 'Starred', href: '/(app)/starred' },
+    ...(!localMode ? [{ icon: Users, label: 'Shared with me', href: '/(app)/shared' }] : []),
+    ...(features.marketplace ? [{ icon: Store, label: 'Marketplace', href: '/(app)/marketplace' }] : []),
+    { icon: Monitor, label: 'Remote Control', href: '/(app)/remote-control' },
+    ...(!localMode ? [{ icon: Key, label: 'API Keys', href: '/(app)/api-keys' }] : []),
+  ]
+
+  return (
+    <View role="menu" className="py-1">
+      {items.map(({ icon: Icon, label, href }) => (
+        <Pressable
+          key={label}
+          onPress={() => { onNavigate(href); onClose() }}
+          role="menuitem"
+          accessibilityLabel={label}
+          className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+        >
+          <Icon size={18} className="text-muted-foreground" />
+          <Text className="text-sm text-foreground">{label}</Text>
+        </Pressable>
+      ))}
+      <Pressable
+        onPress={() => { Linking.openURL('https://docs.shogo.ai/'); onClose() }}
+        role="menuitem"
+        accessibilityLabel="Docs"
+        className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+      >
+        <ExternalLink size={18} className="text-muted-foreground" />
+        <Text className="text-sm text-foreground">Docs</Text>
+      </Pressable>
+    </View>
+  )
+}
+
+// ─── AccountMenu (consolidated workspace + user button) ─────
+
+interface AccountMenuProps extends UserMenuProps {
+  workspaces: any[]
+  currentWorkspace: any
+  billingData: any
+  workspacePlan: { planId: string; status: string | null } | null
+  allPlans: Record<string, { planId: string; status: string | null }>
+  showBilling: boolean
+  onSwitchWorkspace: (workspaceId: string) => void
+  onCreateWorkspace: () => void
+  localMode?: boolean
+  features: { marketplace?: boolean }
+}
+
+function AccountMenu({
+  user,
+  onSignOut,
+  onNavigate,
+  isSuperAdmin,
+  isWide = true,
+  bottomInset = 0,
+  collapsed,
+  workspaces,
+  currentWorkspace,
+  billingData,
+  workspacePlan,
+  allPlans,
+  showBilling,
+  onSwitchWorkspace,
+  onCreateWorkspace,
+  localMode,
+  features,
+}: AccountMenuProps) {
   const [isOpen, setIsOpen] = useState(false)
+  const close = useCallback(() => setIsOpen(false), [])
+
+  const triggerInner = (
+    <>
+      <View className="h-7 w-7 rounded bg-primary/20 items-center justify-center">
+        <Text className="text-[11px] font-bold text-primary">
+          {currentWorkspace?.name?.[0]?.toUpperCase() || 'W'}
+        </Text>
+      </View>
+      {!collapsed && (
+        <View className="flex-1 min-w-0">
+          <Text className="text-sm text-foreground" numberOfLines={1} ellipsizeMode="tail">
+            {currentWorkspace?.name || 'Workspace'}
+          </Text>
+          <Text className="text-xs text-muted-foreground" numberOfLines={1} ellipsizeMode="tail">
+            {user?.name || 'User'}
+          </Text>
+        </View>
+      )}
+      {!collapsed && (
+        <Avatar fallback={getInitials(user?.name)} src={user?.image} size="sm" />
+      )}
+    </>
+  )
+
+  const menuSections = (
+    <>
+      <WorkspaceMenuSection
+        workspaces={workspaces}
+        currentWorkspace={currentWorkspace}
+        billingData={billingData}
+        workspacePlan={workspacePlan}
+        allPlans={allPlans}
+        showBilling={showBilling}
+        onNavigate={onNavigate}
+        onSwitchWorkspace={onSwitchWorkspace}
+        onCreateWorkspace={onCreateWorkspace}
+        localMode={localMode}
+        onClose={close}
+      />
+      <View className="h-px bg-border" />
+      <AccountNavLinks
+        features={features}
+        localMode={localMode}
+        onNavigate={onNavigate}
+        onClose={close}
+      />
+      <View className="h-px bg-border" />
+      <UserMenuContent
+        user={user}
+        onSignOut={onSignOut}
+        onNavigate={onNavigate}
+        isSuperAdmin={isSuperAdmin}
+        onClose={close}
+      />
+    </>
+  )
 
   if (isWide) {
     return (
       <Popover
         placement="top"
-        size="xs"
+        size="sm"
         className="flex-1 min-w-0 w-auto h-auto items-stretch"
         isOpen={isOpen}
         onOpen={() => setIsOpen(true)}
-        onClose={() => setIsOpen(false)}
+        onClose={close}
         trigger={(triggerProps) => (
           <Pressable
             {...triggerProps}
             role="button"
-            accessibilityLabel={`${user?.name || 'User'} — open user menu`}
-            accessibilityHint="Opens menu with profile, appearance, and sign out options"
+            accessibilityLabel={`${currentWorkspace?.name || 'Workspace'}, ${user?.name || 'User'} — open account menu`}
+            accessibilityHint="Opens menu to switch workspace, navigate, and manage your account"
             accessibilityState={{ expanded: isOpen }}
-            className="flex-row items-center gap-2 active:opacity-80 flex-1 min-w-0"
-          >
-            <Avatar
-              fallback={getInitials(user?.name)}
-              src={user?.image}
-              size="sm"
-            />
-            {!collapsed && (
-              <Text
-                className="text-sm text-foreground flex-1 min-w-0"
-                numberOfLines={1}
-                ellipsizeMode="tail"
-              >
-                {user?.name || 'User'}
-              </Text>
+            className={cn(
+              'flex-row items-center gap-2 active:opacity-80 flex-1 min-w-0',
+              collapsed && 'justify-center',
             )}
+          >
+            {triggerInner}
           </Pressable>
         )}
       >
         <PopoverBackdrop />
-        <PopoverContent className="w-[280px] max-w-[320px] p-0">
+        <PopoverContent className="w-[300px] max-w-[340px] p-0">
           <PopoverBody>
-            <UserMenuContent
-              user={user}
-              onSignOut={onSignOut}
-              onNavigate={onNavigate}
-              isSuperAdmin={isSuperAdmin}
-              onClose={() => setIsOpen(false)}
-            />
+            <ScrollView
+              className="max-h-[520px]"
+              showsVerticalScrollIndicator={false}
+              bounces={false}
+              overScrollMode="never"
+            >
+              {menuSections}
+            </ScrollView>
           </PopoverBody>
         </PopoverContent>
       </Popover>
@@ -561,37 +854,24 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
       <Pressable
         onPress={() => setIsOpen(true)}
         role="button"
-        accessibilityLabel={`${user?.name || 'User'} — open user menu`}
-        accessibilityHint="Opens menu with profile, appearance, and sign out options"
+        accessibilityLabel={`${currentWorkspace?.name || 'Workspace'}, ${user?.name || 'User'} — open account menu`}
+        accessibilityHint="Opens menu to switch workspace, navigate, and manage your account"
         accessibilityState={{ expanded: isOpen }}
-        className="flex-row items-center gap-2 active:opacity-80 flex-1 min-w-0"
-      >
-        <Avatar
-          fallback={getInitials(user?.name)}
-          src={user?.image}
-          size="sm"
-        />
-        {!collapsed && (
-          <Text
-            className="text-sm text-foreground flex-1 min-w-0"
-            numberOfLines={1}
-            ellipsizeMode="tail"
-          >
-            {user?.name || 'User'}
-          </Text>
+        className={cn(
+          'flex-row items-center gap-2 active:opacity-80 flex-1 min-w-0',
+          collapsed && 'justify-center',
         )}
+      >
+        {triggerInner}
       </Pressable>
       <Modal
         visible={isOpen}
         transparent
         animationType="slide"
         statusBarTranslucent
-        onRequestClose={() => setIsOpen(false)}
+        onRequestClose={close}
       >
-        <Pressable
-          className="flex-1 bg-black/50 justify-end"
-          onPress={() => setIsOpen(false)}
-        >
+        <Pressable className="flex-1 bg-black/50 justify-end" onPress={close}>
           <Pressable
             onPress={(e) => e.stopPropagation()}
             className="bg-card border-t border-border rounded-t-2xl shadow-2xl"
@@ -600,316 +880,13 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
             <View className="items-center pt-2 pb-1">
               <View className="w-10 h-1 rounded-full bg-muted-foreground/30" />
             </View>
-            <UserMenuContent
-              user={user}
-              onSignOut={onSignOut}
-              onNavigate={onNavigate}
-              isSuperAdmin={isSuperAdmin}
-              onClose={() => setIsOpen(false)}
-            />
+            <ScrollView className="max-h-[480px]" showsVerticalScrollIndicator={false}>
+              {menuSections}
+            </ScrollView>
           </Pressable>
         </Pressable>
       </Modal>
     </>
-  )
-}
-
-// ─── WorkspaceSwitcher (popover anchored to workspace button) ─
-
-interface WorkspaceSwitcherProps {
-  collapsed: boolean
-  workspaces: any[]
-  currentWorkspace: any
-  billingData: any
-  workspacePlan: { planId: string; status: string | null } | null
-  allPlans: Record<string, { planId: string; status: string | null }>
-  showBilling: boolean
-  onNavigate: (href: string) => void
-  onSwitchWorkspace: (workspaceId: string) => void
-  onCreateWorkspace: () => void
-  localMode?: boolean
-}
-
-function WorkspaceSwitcher({
-  collapsed,
-  workspaces,
-  currentWorkspace,
-  billingData,
-  workspacePlan,
-  allPlans,
-  showBilling,
-  onNavigate,
-  onSwitchWorkspace,
-  onCreateWorkspace,
-  localMode,
-}: WorkspaceSwitcherProps) {
-  const posthog = usePostHogSafe()
-  const [isOpen, setIsOpen] = useState(false)
-
-  const wsInitial = currentWorkspace?.name?.[0]?.toUpperCase() ?? 'W'
-  const resolvedPlanId = (billingData.hasActiveSubscription && billingData.subscription?.planId)
-    || workspacePlan?.planId
-    || 'free'
-  const planType = getPlanDisplayName(resolvedPlanId !== 'free' ? resolvedPlanId : undefined)
-
-  return (
-    <Popover
-      placement="bottom"
-      size="sm"
-      isOpen={isOpen}
-      onOpen={() => setIsOpen(true)}
-      onClose={() => setIsOpen(false)}
-      trigger={(triggerProps) => (
-        <Pressable
-          {...triggerProps}
-          className={cn(
-            'flex-row items-center gap-2 rounded-md px-2 py-1.5 active:bg-muted',
-            collapsed && 'justify-center px-0'
-          )}
-        >
-          <View className="h-6 w-6 rounded bg-primary/20 items-center justify-center">
-            <Text className="text-[10px] font-bold text-primary">
-              {currentWorkspace?.name?.[0]?.toUpperCase() || 'W'}
-            </Text>
-          </View>
-          {!collapsed && (
-            <>
-              <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
-                {currentWorkspace?.name || 'Workspace'}
-              </Text>
-              <ChevronDown size={14} className="text-muted-foreground" />
-            </>
-          )}
-        </Pressable>
-      )}
-    >
-      <PopoverBackdrop />
-      <PopoverContent className="max-w-[280px] p-0">
-        <View className="flex-col overflow-hidden max-h-[480px]">
-          {/* ── Pinned top: workspace header + actions ── */}
-          {currentWorkspace && (
-            <View className="px-4 py-3">
-              <View className="flex-row items-start gap-3">
-                <View className="h-10 w-10 rounded-lg bg-primary/10 items-center justify-center">
-                  <Text className="text-sm font-medium text-primary">{wsInitial}</Text>
-                </View>
-                <View className="flex-1 min-w-0">
-                  <Text className="font-medium text-foreground" numberOfLines={1}>
-                    {currentWorkspace.name}
-                  </Text>
-                  {showBilling && (
-                    <Text className="text-xs text-muted-foreground">
-                      {planType} Plan {'\u00B7'} 1 member
-                    </Text>
-                  )}
-                </View>
-              </View>
-            </View>
-          )}
-
-          {currentWorkspace && (
-            <View className="px-3 pb-2 flex-row gap-2">
-              <Pressable
-                onPress={() => { onNavigate('/(app)/settings'); setIsOpen(false) }}
-                className="flex-1 flex-row items-center justify-center gap-1.5 h-8 rounded-md border border-border active:bg-muted"
-              >
-                <Settings size={14} className="text-muted-foreground" />
-                <Text className="text-xs text-foreground">Settings</Text>
-              </Pressable>
-              {!localMode && (
-                <Pressable
-                  onPress={() => { onNavigate('/(app)/settings?tab=people'); setIsOpen(false) }}
-                  className="flex-1 flex-row items-center justify-center gap-1.5 h-8 rounded-md border border-border active:bg-muted"
-                >
-                  <Users size={14} className="text-muted-foreground" />
-                  <Text className="text-xs text-foreground">Invite</Text>
-                </Pressable>
-              )}
-            </View>
-          )}
-
-          <View className="h-px bg-border" />
-
-          {/* ── Scrollable middle ── */}
-          <ScrollView
-            className="shrink"
-            showsVerticalScrollIndicator={false}
-            bounces={false}
-            overScrollMode="never"
-          >
-            {/* Usage */}
-            {showBilling && currentWorkspace && (
-              <>
-                <View className="px-4 py-3 gap-2">
-                  <Text className="text-sm text-muted-foreground">Usage</Text>
-                  <CompactUsageWindows windows={billingData.usageWindows} />
-                </View>
-
-                <View className="h-px bg-border" />
-              </>
-            )}
-
-            {/* Upgrade CTA */}
-            {showBilling && currentWorkspace && planType === 'Free' && (
-              <>
-                <View className="px-3 py-2">
-                  <Pressable
-                    onPress={() => { trackEvent(posthog, EVENTS.UPGRADE_CLICKED); onNavigate('/(app)/billing'); setIsOpen(false) }}
-                    className="flex-row items-center justify-center gap-2 h-9 rounded-md"
-                    style={Platform.OS === 'web'
-                      ? { backgroundImage: 'linear-gradient(to right, #3b82f6, #9333ea)' } as any
-                      : { backgroundColor: '#7c3aed' }}
-                  >
-                    <Zap size={16} className="text-white" />
-                    <Text className="text-sm font-medium text-white">Upgrade to Pro</Text>
-                  </Pressable>
-                </View>
-
-                <View className="h-px bg-border" />
-              </>
-            )}
-
-            {/* All workspaces */}
-            <View className="py-1">
-              <Text className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                All workspaces
-              </Text>
-              {workspaces.map((ws: any) => {
-                const isCurrent = ws.id === currentWorkspace?.id
-                return (
-                  <Pressable
-                    key={ws.id}
-                    onPress={() => {
-                      if (!isCurrent) {
-                        onSwitchWorkspace(ws.id)
-                      }
-                      setIsOpen(false)
-                    }}
-                    className="flex-row items-center gap-2 px-4 py-2 active:bg-muted"
-                  >
-                    <View className="h-6 w-6 rounded bg-primary/10 items-center justify-center">
-                      <Text className="text-[10px] font-medium text-primary">
-                        {ws.name?.[0]?.toUpperCase() ?? 'W'}
-                      </Text>
-                    </View>
-                    <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
-                      {ws.name}
-                    </Text>
-                    {showBilling && (() => {
-                      const wsPlanId = (allPlans[ws.id]?.planId
-                        ?? (ws.id === currentWorkspace?.id && billingData.subscription?.planId))
-                        || 'free'
-                      const isPaid = wsPlanId !== 'free'
-                      const label = isPaid
-                        ? wsPlanId.charAt(0).toUpperCase() + wsPlanId.slice(1)
-                        : 'Free'
-                      return (
-                        <View className={cn('rounded px-1.5 py-0.5', isPaid ? 'bg-primary/10' : 'bg-muted')}>
-                          <Text className={cn('text-[10px]', isPaid ? 'text-primary font-medium' : 'text-muted-foreground')}>{label}</Text>
-                        </View>
-                      )
-                    })()}
-                    {isCurrent && (
-                      <Check size={16} className="text-primary" />
-                    )}
-                  </Pressable>
-                )
-              })}
-            </View>
-          </ScrollView>
-
-          <View className="h-px bg-border" />
-
-          {/* ── Pinned bottom: create workspace ── */}
-          {!localMode && (
-            <View className="p-1">
-              <Pressable
-                onPress={() => {
-                  setIsOpen(false)
-                  onCreateWorkspace()
-                }}
-                className="flex-row items-center gap-2 px-4 py-2 rounded-md active:bg-muted"
-              >
-                <Plus size={16} className="text-muted-foreground" />
-                <Text className="text-sm text-foreground">Create new workspace</Text>
-              </Pressable>
-            </View>
-          )}
-        </View>
-      </PopoverContent>
-    </Popover>
-  )
-}
-
-// ─── CreateFolderModal ─────────────────────────────────────
-
-function CreateFolderModal({
-  visible,
-  onClose,
-  onSubmit,
-}: {
-  visible: boolean
-  onClose: () => void
-  onSubmit: (name: string) => void
-}) {
-  const [name, setName] = useState('')
-
-  const handleSubmit = useCallback(() => {
-    if (name.trim()) {
-      onSubmit(name.trim())
-      setName('')
-      onClose()
-    }
-  }, [name, onSubmit, onClose])
-
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable className="flex-1 bg-black/50 items-center justify-center" onPress={onClose}>
-        <Pressable
-          className="bg-card rounded-xl p-6 w-80 border border-border"
-          onPress={(e) => e.stopPropagation()}
-        >
-          <View className="flex-row items-center justify-between mb-1">
-            <Text className="text-base font-semibold text-foreground">Create new folder</Text>
-            <Pressable onPress={onClose} className="p-1">
-              <X size={20} className="text-muted-foreground" />
-            </Pressable>
-          </View>
-          <Text className="text-sm text-muted-foreground mb-4">
-            Create a new folder to organize your projects
-          </Text>
-          <TextInput
-            value={name}
-            onChangeText={setName}
-            placeholder="Enter folder name"
-            placeholderTextColor="#9ca3af"
-            className="border border-border rounded-md px-3 py-2 text-sm text-foreground bg-background mb-4"
-            autoFocus
-            onSubmitEditing={handleSubmit}
-          />
-          <View className="flex-row gap-2 justify-end">
-            <Pressable
-              onPress={onClose}
-              className="px-4 py-2 rounded-md border border-border active:bg-muted"
-            >
-              <Text className="text-sm text-foreground">Cancel</Text>
-            </Pressable>
-            <Pressable
-              onPress={handleSubmit}
-              className={cn(
-                'px-4 py-2 rounded-md',
-                name.trim() ? 'bg-primary active:bg-primary/80' : 'bg-muted'
-              )}
-              disabled={!name.trim()}
-            >
-              <Text className={cn('text-sm', name.trim() ? 'text-primary-foreground' : 'text-muted-foreground')}>
-                Create folder
-              </Text>
-            </Pressable>
-          </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
   )
 }
 
@@ -1111,25 +1088,22 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
 
   const [allPlans, setAllPlans] = useState<Record<string, { planId: string; status: string | null }>>({})
 
-  let recentProjects: any[]
+  let workspaceProjects: any[]
   try {
     const all = projects?.all ?? []
     const workspaceScoped = activeWorkspaceId
       ? all.filter((p: any) => p.workspaceId === activeWorkspaceId)
       : all
-    recentProjects = [...workspaceScoped]
-      .sort((a: any, b: any) => {
-        const aTime = a.lastMessageAt || a.updatedAt || 0
-        const bTime = b.lastMessageAt || b.updatedAt || 0
-        return bTime - aTime
-      })
-      .slice(0, 5)
+    workspaceProjects = [...workspaceScoped].sort((a: any, b: any) => {
+      const aTime = a.lastMessageAt || a.updatedAt || 0
+      const bTime = b.lastMessageAt || b.updatedAt || 0
+      return bTime - aTime
+    })
   } catch {
-    recentProjects = []
+    workspaceProjects = []
   }
 
   const [collapsed, setCollapsed] = useState(false)
-  const [createFolderOpen, setCreateFolderOpen] = useState(false)
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false)
   const { open: commandPaletteOpen, setOpen: setCommandPaletteOpen } = useCommandPalette()
   const { instance: activeRemoteInstance } = useActiveInstance()
@@ -1151,19 +1125,6 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const isPaidPlan = billingData.hasActiveSubscription || (workspacePlan?.planId !== 'free' && workspacePlan?.status === 'active')
 
   const toggleCollapse = useCallback(() => setCollapsed((c) => !c), [])
-
-  const handleCreateFolder = useCallback(
-    async (name: string) => {
-      if (currentWorkspace?.id) {
-        try {
-          await actions.createFolder(name, currentWorkspace.id, null)
-        } catch (e) {
-          console.warn('Failed to create folder:', e)
-        }
-      }
-    },
-    [actions, currentWorkspace]
-  )
 
   const handleSwitchWorkspace = useCallback(
     (workspaceId: string) => {
@@ -1229,7 +1190,6 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   }, [setCommandPaletteOpen])
 
   const isHomePage = pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
-  const isProjectsPage = pathname.startsWith('/projects') || pathname.startsWith('/(app)/projects')
   const isMeetingsPage = pathname.startsWith('/meetings') || pathname.startsWith('/(app)/meetings')
 
   const sidebarContent = (
@@ -1278,26 +1238,6 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
         </View>
       )}
 
-      {/* ── Workspace Switcher ── */}
-      <View className={cn('p-2 border-b border-border', collapsed && 'px-1')}>
-        <WorkspaceSwitcher
-          collapsed={collapsed}
-          workspaces={allWorkspaces}
-          currentWorkspace={currentWorkspace}
-          billingData={billingData}
-          workspacePlan={workspacePlan}
-          allPlans={allPlans}
-          showBilling={features.billing}
-          onNavigate={(href) => {
-            if (!isWide) onClose?.()
-            router.push(href as any)
-          }}
-          onSwitchWorkspace={handleSwitchWorkspace}
-          onCreateWorkspace={handleCreateWorkspace}
-          localMode={localMode}
-        />
-      </View>
-
       {/* ── Main Navigation (scrollable) ── */}
       <ScrollView className="flex-1 py-2" showsVerticalScrollIndicator={false}>
         {/* Primary nav */}
@@ -1329,105 +1269,30 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
           )}
         </View>
 
-        {/* PROJECTS section */}
-        <NavSection title="Projects" collapsed={collapsed}>
-          <View className="px-2">
-            <ExpandableNavItem
-              icon={Clock}
-              label="Recent"
-              collapsed={collapsed}
-              defaultExpanded={true}
-            >
-              {recentProjects.map((project: any) => (
-                <ProjectItem
-                  key={project.id}
-                  name={project.name}
-                  projectId={project.id}
-                  onNavPress={onNavPress}
-                />
-              ))}
-            </ExpandableNavItem>
-
-            <ExpandableNavItem
-              icon={LayoutGrid}
-              label="All projects"
-              href="/(app)/projects"
-              active={isProjectsPage && !isHomePage}
-              collapsed={collapsed}
-              defaultExpanded={true}
-              onNavPress={onNavPress}
-            >
-              {!collapsed && (
-                <Pressable
-                  onPress={() => setCreateFolderOpen(true)}
-                  className="flex-row items-center gap-2 px-2 py-1.5 rounded-md active:bg-accent/50"
-                >
-                  <FolderPlus size={14} className="text-muted-foreground" />
-                  <Text className="text-sm text-muted-foreground">New folder</Text>
-                </Pressable>
-              )}
-            </ExpandableNavItem>
-
-            <NavItem
-              icon={Star}
-              label="Starred"
-              href="/(app)/starred"
-              active={isRouteActive(pathname, '/(app)/starred')}
-              collapsed={collapsed}
-              onNavPress={onNavPress}
-            />
-            {!localMode && (
-              <NavItem
-                icon={Users}
-                label="Shared with me"
-                href="/(app)/shared"
-                active={isRouteActive(pathname, '/(app)/shared')}
+        {/* PROJECTS tree — each project expands to show its chats */}
+        <View className="mt-4 px-2">
+          {!collapsed && (
+            <Text className="px-1 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Projects
+            </Text>
+          )}
+          {workspaceProjects.length === 0 ? (
+            !collapsed && (
+              <View className="px-2 py-2">
+                <Text className="text-xs text-muted-foreground">No projects yet</Text>
+              </View>
+            )
+          ) : (
+            workspaceProjects.map((project: any) => (
+              <ProjectTreeItem
+                key={project.id}
+                project={project}
                 collapsed={collapsed}
                 onNavPress={onNavPress}
               />
-            )}
-          </View>
-        </NavSection>
-
-        {/* RESOURCES section */}
-        <NavSection title="Resources" collapsed={collapsed}>
-          <View className="px-2">
-            {features.marketplace && (
-              <NavItem
-                icon={Store}
-                label="Marketplace"
-                href="/(app)/marketplace"
-                active={isRouteActive(pathname, '/(app)/marketplace')}
-                collapsed={collapsed}
-                onNavPress={onNavPress}
-              />
-            )}
-            <NavItem
-              icon={Monitor}
-              label="Remote Control"
-              href="/(app)/remote-control"
-              active={isRouteActive(pathname, '/(app)/remote-control')}
-              collapsed={collapsed}
-              onNavPress={onNavPress}
-            />
-            {!localMode && (
-              <NavItem
-                icon={Key}
-                label="API Keys"
-                href="/(app)/api-keys"
-                active={isRouteActive(pathname, '/(app)/api-keys')}
-                collapsed={collapsed}
-                onNavPress={onNavPress}
-              />
-            )}
-            <NavItem
-              icon={ExternalLink}
-              label="Docs"
-              externalHref="https://docs.shogo.ai/"
-              collapsed={collapsed}
-            />
-          </View>
-        </NavSection>
+            ))
+          )}
+        </View>
       </ScrollView>
 
       {/* ── Bottom Section ── */}
@@ -1453,7 +1318,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
           </View>
         )}
 
-        {/* User row */}
+        {/* Consolidated workspace + user row */}
         <View
           className={cn(
             'flex-row items-center gap-2 p-2 border-t border-border',
@@ -1461,14 +1326,24 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
           )}
         >
           <View className={cn('min-w-0', !collapsed && 'flex-1')}>
-            <UserMenu
+            <AccountMenu
               user={user}
               onSignOut={handleSignOut}
-              onNavigate={(href) => { router.push(href as any); onNavPress() }}
+              onNavigate={(href) => { if (!isWide) onClose?.(); router.push(href as any); onNavPress() }}
               isSuperAdmin={isSuperAdmin}
               isWide={isWide}
               bottomInset={insets.bottom}
               collapsed={collapsed}
+              workspaces={allWorkspaces}
+              currentWorkspace={currentWorkspace}
+              billingData={billingData}
+              workspacePlan={workspacePlan}
+              allPlans={allPlans}
+              showBilling={features.billing}
+              onSwitchWorkspace={handleSwitchWorkspace}
+              onCreateWorkspace={handleCreateWorkspace}
+              localMode={localMode}
+              features={features}
             />
           </View>
 
@@ -1609,11 +1484,6 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       </Modal>
 
       {/* Modals (true dialogs that are fine as centered overlays) */}
-      <CreateFolderModal
-        visible={createFolderOpen}
-        onClose={() => setCreateFolderOpen(false)}
-        onSubmit={handleCreateFolder}
-      />
       <CreateWorkspaceModal
         visible={createWorkspaceOpen}
         onClose={() => setCreateWorkspaceOpen(false)}

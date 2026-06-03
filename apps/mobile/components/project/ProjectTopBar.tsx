@@ -206,12 +206,14 @@ function BarIconButton({
   active,
   title,
   size = 12,
+  testID,
 }: {
   icon: React.ElementType
   onPress: () => void
   active?: boolean
   title?: string
   size?: number
+  testID?: string
 }) {
   const tipRef = useWebTitle(title)
 
@@ -219,6 +221,7 @@ function BarIconButton({
     <Pressable
       ref={tipRef}
       onPress={onPress}
+      testID={testID}
       className={cn(
         'h-6 w-6 items-center justify-center rounded-md',
         active ? 'bg-primary' : 'active:bg-muted',
@@ -475,6 +478,7 @@ export function ProjectTopBar({
                   isNativePhone ? { maxWidth: nativeNarrowTitleMaxWidth } : undefined,
                 ]}
                 accessibilityLabel="Switch project"
+                testID="project-switcher-trigger"
               >
                 <Text
                   className="text-xs font-semibold text-foreground"
@@ -660,6 +664,7 @@ export function ProjectTopBar({
                   isNativePhone ? { maxWidth: 180 } : undefined,
                 ]}
                 accessibilityLabel="Switch project"
+                testID="project-switcher-trigger"
               >
                 <Text
                   className="text-xs font-semibold text-foreground"
@@ -809,6 +814,7 @@ export function ProjectTopBar({
               onPress={() => handleTabPress(tab.id)}
               active={getTabActive(tab.id)}
               title={tab.label}
+              testID={`project-tab-${tab.id}`}
             />
           ))}
         </View>
@@ -1197,6 +1203,7 @@ function ProjectMenuView({
         <Pressable
           onPress={onSwitchProject}
           className="px-4 py-3 active:bg-muted"
+          testID="project-switcher-open"
         >
           <View className="flex-row items-center gap-2.5">
             <View className="h-8 w-8 rounded-lg bg-primary items-center justify-center">
@@ -1678,6 +1685,7 @@ function ProjectSwitcherView({
                 <Pressable
                   key={project.id}
                   onPress={() => onSelect(project.id)}
+                  testID={`project-switcher-item-${project.id}`}
                   className={cn(
                     'flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted',
                     isCurrent && 'bg-accent/50',
