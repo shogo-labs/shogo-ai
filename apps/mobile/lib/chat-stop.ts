@@ -4,6 +4,12 @@
 export interface StopRequestConfig {
   localAgentUrl?: string | null
   projectId?: string | null
+  /**
+   * Workspace id for workspace-scoped chat. When set (and no localAgentUrl),
+   * the stop request targets `/api/workspaces/:workspaceId/chat/stop` instead
+   * of the per-project endpoint.
+   */
+  workspaceId?: string | null
   apiBaseUrl: string
   platform: string
   getCookie?: () => string | null
@@ -20,13 +26,15 @@ export interface StopRequestResult {
  * including the correct auth credentials for the target.
  */
 export function buildStopRequest(config: StopRequestConfig): StopRequestResult | null {
-  const { localAgentUrl, projectId, apiBaseUrl, platform, getCookie, chatSessionId } = config
+  const { localAgentUrl, projectId, workspaceId, apiBaseUrl, platform, getCookie, chatSessionId } = config
 
   const url = localAgentUrl
     ? `${localAgentUrl}/agent/stop`
-    : projectId
-      ? `${apiBaseUrl}/api/projects/${projectId}/chat/stop`
-      : null
+    : workspaceId
+      ? `${apiBaseUrl}/api/workspaces/${workspaceId}/chat/stop`
+      : projectId
+        ? `${apiBaseUrl}/api/projects/${projectId}/chat/stop`
+        : null
 
   if (!url) return null
 

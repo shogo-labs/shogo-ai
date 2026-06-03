@@ -56,6 +56,13 @@ export interface ResolvedTrust {
   workingMode: WorkingMode
   workspaceDir: string
   linkedFolders: string[]
+  /**
+   * Subset of allowed roots that are mounted READ-ONLY (e.g. a project
+   * attached with `attachMode='readonly'`). Reads are permitted; writes
+   * and exec under these roots are denied even though the root is allowed
+   * for reads. Enforced in `assertAllowedPath` (runtime-trust.ts).
+   */
+  readonlyRoots: string[]
 }
 
 interface ResolverState extends ResolvedTrust {
@@ -92,6 +99,7 @@ const state: ResolverState = {
   workingMode: 'external',
   workspaceDir: '',
   linkedFolders: [],
+  readonlyRoots: [],
   initialized: false,
   projectId: null,
   isWorkspaceRuntime: false,
@@ -104,6 +112,8 @@ export interface InitArgs {
   workspaceDir: string
   workingMode: WorkingMode
   linkedFolders: string[]
+  /** Read-only subset of the allowed roots (write/exec denied). */
+  readonlyRoots?: string[]
   /** Workspace (merged-root) runtime — statically trusted, no API trust read. */
   isWorkspaceRuntime?: boolean
 }
@@ -121,6 +131,7 @@ export function initTrustResolver(args: InitArgs): void {
   state.workspaceDir = args.workspaceDir
   state.workingMode = args.workingMode
   state.linkedFolders = args.linkedFolders.slice()
+  state.readonlyRoots = (args.readonlyRoots ?? []).slice()
   state.isWorkspaceRuntime = args.isWorkspaceRuntime ?? false
   // Workspace runtimes are always trusted (sandboxed, multi-project);
   // there is no per-project trust to reconcile, so mark initialized.
@@ -137,6 +148,7 @@ export function getResolvedTrust(): ResolvedTrust {
     workingMode: state.workingMode,
     workspaceDir: state.workspaceDir,
     linkedFolders: state.linkedFolders.slice(),
+    readonlyRoots: state.readonlyRoots.slice(),
   }
 }
 
@@ -264,6 +276,7 @@ export function __setTrustForTests(partial: Partial<ResolvedTrust> & { initializ
   if (partial.workingMode) state.workingMode = partial.workingMode
   if (typeof partial.workspaceDir === 'string') state.workspaceDir = partial.workspaceDir
   if (Array.isArray(partial.linkedFolders)) state.linkedFolders = partial.linkedFolders.slice()
+  if (Array.isArray(partial.readonlyRoots)) state.readonlyRoots = partial.readonlyRoots.slice()
   if (typeof partial.initialized === 'boolean') state.initialized = partial.initialized
 }
 
@@ -273,6 +286,7 @@ export function __resetTrustForTests(): void {
   state.workingMode = 'external'
   state.workspaceDir = ''
   state.linkedFolders = []
+  state.readonlyRoots = []
   state.initialized = false
   state.projectId = null
   state.isWorkspaceRuntime = false

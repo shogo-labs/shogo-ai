@@ -57,6 +57,11 @@ export interface TrustWorkspaceOpts {
    * test and a static path for another.
    */
   linkedFolders?: string[]
+  /**
+   * Subset of allowed roots mounted read-only (write/exec denied). Used by
+   * tests exercising `attachMode='readonly'` enforcement.
+   */
+  readonlyRoots?: string[]
 }
 
 /**
@@ -82,6 +87,7 @@ export function trustWorkspaceForTests(
     workspaceDir,
     linkedFolders: opts.linkedFolders ?? [],
     initialized: true,
+    readonlyRoots: opts.readonlyRoots ?? [],
   })
   ;(globalThis as any).__SHOGO_AGENT_RUNTIME_CONFIG__ = {
     workingMode: opts.workingMode ?? 'managed',

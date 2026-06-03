@@ -256,6 +256,14 @@ export interface ChatPanelProps {
   workspaceId?: string
   userId?: string
   projectId?: string
+  /**
+   * Chat routing scope. `'project'` (default) chats against the per-project
+   * runtime (`/api/projects/:projectId/chat`); `'workspace'` chats against
+   * the merged-root workspace runtime (`/api/workspaces/:workspaceId/chat`)
+   * using `chatSessionId` as a workspace-scoped session id. The workspace
+   * path requires `workspaceId`.
+   */
+  chatScope?: "project" | "workspace"
   localAgentUrl?: string | null
   children?: React.ReactNode
   className?: string
@@ -675,6 +683,7 @@ export const ChatPanel = observer(function ChatPanel({
   workspaceId,
   userId,
   projectId,
+  chatScope = "project",
   localAgentUrl,
   children,
   className,
@@ -1223,9 +1232,16 @@ export const ChatPanel = observer(function ChatPanel({
   // the user taps Stop before the model produced any text or tool calls.
   const userInitiatedStopRef = useRef(false)
 
+  // Workspace-scoped chat routes to `/api/workspaces/:workspaceId/chat`
+  // instead of the per-project endpoint. Only set when this panel is
+  // operating in workspace scope and we actually have a workspace id.
+  const chatWorkspaceId =
+    chatScope === "workspace" && workspaceId ? workspaceId : undefined
+
   const transportConfig = useChatTransportConfig({
     apiBaseUrl: API_URL!,
     projectId,
+    workspaceId: chatWorkspaceId,
     localAgentUrl,
     credentials: Platform.OS === 'web' ? 'include' : 'omit',
     headers: nativeHeaders,
@@ -2428,6 +2444,7 @@ export const ChatPanel = observer(function ChatPanel({
     const req = buildStopRequest({
       localAgentUrl,
       projectId,
+      workspaceId: chatWorkspaceId,
       apiBaseUrl: API_URL!,
       platform: Platform.OS,
       getCookie: () => authClient.getCookie(),
@@ -2439,7 +2456,7 @@ export const ChatPanel = observer(function ChatPanel({
         console.warn("[ChatPanel] Failed to send stop signal to backend:", err)
       })
     }
-  }, [stop, projectId, localAgentUrl, expoFetch, currentSessionId])
+  }, [stop, projectId, chatWorkspaceId, localAgentUrl, expoFetch, currentSessionId])
 
   // Keep the shared subagent-stop helper pointed at the current API/runtime
   // so SubagentCard (chat) and AgentEntry (agents panel) can cancel without
@@ -2871,6 +2888,7 @@ export const ChatPanel = observer(function ChatPanel({
           projectId,
           localAgentUrl,
           loadSessionId,
+          chatWorkspaceId,
         )
         void probeChatTurnStatus({
           url: turnUrl,
