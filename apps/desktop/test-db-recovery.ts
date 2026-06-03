@@ -385,6 +385,46 @@ console.log('\n── Test 9: DatabaseRecoveryError shape ──')
 }
 
 // =============================================================================
+// Test 10: on-demand "Repair Local Database" composition
+// =============================================================================
+// main.ts's repairLocalDatabaseInteractive() / performDatabaseRepair() are
+// electron-coupled (dialogs + app.relaunch), so we can't drive them directly
+// here. This asserts the exact primitive sequence they run: detect → (back up
+// + clear) → re-detect-empty. A healthy DB short-circuits to "nothing to do".
+console.log('\n── Test 10: on-demand repair composition ──')
+{
+  // Healthy DB: detection returns [] so the helper would show the
+  // "database is healthy" dialog and make no changes.
+  const healthy = makeDb()
+  seed(healthy, [{ name: '0000_baseline', startedAt: 1_000, finishedAt: 1_100 }])
+  check(
+    'healthy DB short-circuits (no failures detected)',
+    detectFailedMigrations(BUN_PATH, healthy).length === 0,
+  )
+  queueCleanup(path.dirname(healthy))
+
+  // Broken DB: detection finds the stuck row, repair backs up + clears,
+  // and a follow-up detection is clean (relaunch would then re-deploy).
+  const broken = makeDb()
+  seed(broken, [
+    { name: 'baseline', startedAt: 1_000, finishedAt: 1_100 },
+    { name: 'wedged', startedAt: 2_000, finishedAt: null, logs: 'P3009-ish failure' },
+  ])
+  const detected = detectFailedMigrations(BUN_PATH, broken)
+  check('on-demand: detected the wedged migration', detected.length === 1)
+
+  const backupPath = backupDatabase(broken)
+  check('on-demand: backup created before repair', fs.existsSync(backupPath))
+
+  repairFailedMigrations(BUN_PATH, broken, detected.map((f) => f.name))
+  check(
+    'on-demand: DB is clean after repair',
+    detectFailedMigrations(BUN_PATH, broken).length === 0,
+  )
+  queueCleanup(path.dirname(broken))
+}
+
+// =============================================================================
 // Report
 // =============================================================================
 const failed = results.filter((r) => !r.ok)

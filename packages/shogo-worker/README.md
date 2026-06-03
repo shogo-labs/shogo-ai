@@ -94,6 +94,7 @@ SHOGO_API_KEY=shogo_sk_... shogo worker start --foreground
 | `shogo worker logs [-f]` | Tail `~/.shogo/logs/worker.log`. |
 | `shogo config show` | Print config (API key masked). |
 | `shogo config set <key> <value>` | Edit a single key. |
+| `shogo doctor` | Repair a wedged local **Shogo Desktop** database (clears failed migrations so the app can boot). Flags: `--check` (detect only), `--yes` (skip prompt), `--db <path>`, `--bun <path>`, `--no-backup`. See [Repair a wedged local Shogo build](#repair-a-wedged-local-shogo-build). |
 
 ## Files & layout
 
@@ -378,6 +379,50 @@ SHOGO_DEBUG=1 shogo worker status  # verbose errors
 shogo runtime where     # see what's resolved
 shogo runtime install   # (re)download the latest stable binary
 ```
+
+### Repair a wedged local Shogo build
+
+The Shogo Desktop app keeps its data in a local SQLite database and applies
+schema changes with `prisma migrate deploy` on every launch. If a migration
+is interrupted (a crash, a forced quit, or a buggy update), it can leave a
+`_prisma_migrations` row in a half-applied state. Prisma's P3009 check then
+refuses to run **any** further migrations, and the app gets stuck on startup.
+
+The desktop app surfaces a recovery dialog when it hits this on boot, and you
+can trigger the same fix from its **Help → Repair Local Database...** menu. If
+the app won't open at all (or you're walking someone through a fix over a call),
+run it from a terminal instead:
+
+```bash
+shogo doctor              # detect, confirm, back up, then clear the wedge
+shogo doctor --check      # diagnose only — never touches the database (exit 1 if wedged)
+shogo doctor --yes        # repair without the interactive confirmation
+```
+
+What it does:
+
+1. **Detects** stuck migrations in the desktop app's local `shogo.db`.
+2. **Backs up** the database to a `shogo.db.bak-<timestamp>` sibling file
+   (skip with `--no-backup`, discouraged).
+3. **Clears** the failed migration record (equivalent to
+   `prisma migrate resolve --rolled-back`).
+
+It does **not** re-run migrations itself — relaunch the Shogo app afterward and
+it will re-apply them cleanly on the next boot. Repair only sticks if you're on
+an app version where the underlying migration is fixed; otherwise you'll hit the
+same state again, but your data is safe in the backup.
+
+```bash
+# Point at a non-default database or a specific bun binary
+shogo doctor --db "/path/to/shogo.db"
+shogo doctor --bun "/Applications/Shogo.app/Contents/Resources/bun/bun"
+```
+
+`shogo doctor` finds the desktop database automatically
+(`~/Library/Application Support/Shogo/data/shogo.db` on macOS,
+`%APPDATA%\Shogo\data\shogo.db` on Windows, `~/.config/Shogo/data/shogo.db` on
+Linux) and uses the `bun` shipped inside the app (or one on your `PATH`). This
+command is local-only; it never contacts Shogo Cloud.
 
 ## Links
 
