@@ -262,11 +262,35 @@ model Project {
   authConfig             ProjectAuthConfig?
   authSignIns            ProjectAuthSignIn[]
   attachedSessions       ChatSessionProject[]
+  attachments            ProjectAttachment[]     @relation("ProjectAttachmentAnchor")
+  attachedTo             ProjectAttachment[]     @relation("ProjectAttachmentTarget")
 
   @@index([workspaceId])
   @@index([folderId])
   @@index([preferredInstanceId])
   @@map("projects")
+}
+
+/// Persistent project-to-project attachment. The ANCHOR project (`projectId`)
+/// runs an anchor-keyed merged-root workspace runtime that mounts each
+/// attached project (`attachedProjectId`) as an additional member root, so
+/// the agent can read/edit across them. `attachMode` controls whether the
+/// attached project is read-only or read-write (enforced via READONLY_ROOTS
+/// in the runtime; see packages/agent-runtime/src/runtime-trust.ts).
+model ProjectAttachment {
+  id                String   @id @default(uuid())
+  projectId         String
+  attachedProjectId String
+  attachMode        String   @default("readwrite")
+  createdAt         DateTime @default(now())
+
+  project  Project @relation("ProjectAttachmentAnchor", fields: [projectId], references: [id], onDelete: Cascade)
+  attached Project @relation("ProjectAttachmentTarget", fields: [attachedProjectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, attachedProjectId])
+  @@index([projectId])
+  @@index([attachedProjectId])
+  @@map("project_attachments")
 }
 
 /// External host folder linked to a project (workingMode='external').

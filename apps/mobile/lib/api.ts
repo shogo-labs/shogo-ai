@@ -739,6 +739,68 @@ export const api = {
     }
   },
 
+  // ─── Workspace-scoped chat sessions ─────────────────────────
+  // The workspace-aware sibling of per-project chat: a workspace session
+  // (contextType='workspace') with a set of attached projects, chatting
+  // against the merged-root runtime. See routes/workspace-chat.ts.
+
+  /**
+   * Create a workspace-scoped chat session, optionally pre-attaching
+   * projects. Returns the session id + the resolved attachments.
+   */
+  async createWorkspaceSession(
+    http: HttpClient,
+    workspaceId: string,
+    opts: {
+      name?: string
+      inferredName?: string
+      attachProjectIds?: string[]
+      attachMode?: 'readwrite' | 'readonly'
+    } = {},
+  ): Promise<{ id: string; workspaceId: string; attached: Array<{ id: string; projectId: string; attachMode: string }> }> {
+    const res = await http.post<{ session: { id: string; workspaceId: string; attached: Array<{ id: string; projectId: string; attachMode: string }> } }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions`,
+      opts,
+    )
+    if (!res.data?.session) throw new Error('createWorkspaceSession: no session returned')
+    return res.data.session
+  },
+
+  /** Attach a project to an existing workspace session. */
+  async attachProject(
+    http: HttpClient,
+    workspaceId: string,
+    sessionId: string,
+    projectId: string,
+    attachMode: 'readwrite' | 'readonly' = 'readwrite',
+  ): Promise<{ id: string; projectId: string; attachMode: string }> {
+    const res = await http.post<{ attached: { id: string; projectId: string; attachMode: string } }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/projects`,
+      { projectId, attachMode },
+    )
+    if (!res.data?.attached) throw new Error('attachProject: no attachment returned')
+    return res.data.attached
+  },
+
+  /**
+   * Best-effort: warm the merged-root workspace runtime. Mirrors
+   * prewarmProjectRuntime. Pass the workspace session id (and/or explicit
+   * attach project ids) so the runtime mounts the right subfolders.
+   */
+  async prewarmWorkspaceRuntime(
+    http: HttpClient,
+    workspaceId: string,
+    opts: { sessionId?: string; attachProjectIds?: string[] } = {},
+  ): Promise<void> {
+    try {
+      await http.post(`/api/workspaces/${encodeURIComponent(workspaceId)}/runtime/prewarm`, opts)
+    } catch (err) {
+      // Prewarm is an optimization only; the first chat turn still resolves
+      // (or cold-starts) the runtime.
+      console.warn('[api.prewarmWorkspaceRuntime] best-effort prewarm failed:', err)
+    }
+  },
+
   // ─── Local "external folder" projects (Shogo Desktop only) ─────────────
   /**
    * Create an external (VS Code-style) project from a set of host
@@ -824,6 +886,155 @@ export const api = {
       }
     } catch (err: any) {
       return { error: err?.message ?? 'Browse failed' }
+    }
+  },
+
+  /**
+   * Fetch a project with its persistent attachments (the anchor merged-root
+   * runtime mounts these). Returns `{ project, attachments }`.
+   */
+  async getLocalProjectWithAttachments(
+    http: HttpClient,
+    projectId: string,
+  ): Promise<{
+    project: any | null
+    attachments: Array<{
+      id: string
+      attachedProjectId: string
+      attachedProjectName: string | null
+      attachMode: 'readwrite' | 'readonly'
+    }>
+  }> {
+    try {
+      const res = await http.get<any>(`/api/local/projects/${encodeURIComponent(projectId)}`)
+      return {
+        project: res.data?.project ?? null,
+        attachments: Array.isArray(res.data?.attachments) ? res.data!.attachments : [],
+      }
+    } catch {
+      return { project: null, attachments: [] }
+    }
+  },
+
+  /**
+   * Attach another Shogo project (same workspace) to this anchor project so
+   * its files mount into the anchor merged-root runtime. `attachMode`
+   * defaults to `readwrite`; `readonly` mounts it write-protected.
+   */
+  async attachProjectToProject(
+    http: HttpClient,
+    projectId: string,
+    attachedProjectId: string,
+    attachMode: 'readwrite' | 'readonly' = 'readwrite',
+  ): Promise<{ attachment?: any; error?: string }> {
+    try {
+      const res = await http.post<any>(
+        `/api/local/projects/${encodeURIComponent(projectId)}/attachments`,
+        { attachedProjectId, attachMode },
+      )
+      if (res.data?.attachment) return { attachment: res.data.attachment }
+      const errBody = (res.error ?? res.data ?? {}) as { error?: string; message?: string }
+      return { error: errBody.message ?? errBody.error ?? 'Failed to attach project' }
+    } catch (err: any) {
+      return { error: err?.message ?? 'Failed to attach project' }
+    }
+  },
+
+  /** Detach a previously-attached project. No-op if it wasn't attached. */
+  async detachProjectFromProject(
+    http: HttpClient,
+    projectId: string,
+    attachedProjectId: string,
+  ): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await http.delete(
+        `/api/local/projects/${encodeURIComponent(projectId)}/attachments/${encodeURIComponent(attachedProjectId)}`,
+      )
+      return { ok: true }
+    } catch (err: any) {
+      return { ok: false, error: err?.message ?? 'Failed to detach project' }
+    }
+  },
+
+  /** Add a linked local folder to a project (managed or external). */
+  async addProjectFolder(
+    http: HttpClient,
+    projectId: string,
+    path: string,
+  ): Promise<{ folder?: any; error?: string }> {
+    try {
+      const res = await http.post<any>(
+        `/api/local/projects/${encodeURIComponent(projectId)}/folders`,
+        { path },
+      )
+      if (res.data?.folder) return { folder: res.data.folder }
+      const errBody = (res.error ?? res.data ?? {}) as { error?: string }
+      return { error: errBody.error ?? 'Failed to add folder' }
+    } catch (err: any) {
+      return { error: err?.message ?? 'Failed to add folder' }
+    }
+  },
+
+  /** Remove a linked local folder. */
+  async removeProjectFolder(
+    http: HttpClient,
+    projectId: string,
+    folderId: string,
+  ): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await http.delete(
+        `/api/local/projects/${encodeURIComponent(projectId)}/folders/${encodeURIComponent(folderId)}`,
+      )
+      return { ok: true }
+    } catch (err: any) {
+      return { ok: false, error: err?.message ?? 'Failed to remove folder' }
+    }
+  },
+
+  /**
+   * Get (or create) the project-pinned workspace chat session. Routing the
+   * project's chat through this session boots the anchor merged-root runtime.
+   */
+  async getProjectWorkspaceSession(
+    http: HttpClient,
+    projectId: string,
+  ): Promise<{ session?: { id: string; workspaceId: string }; attachments?: any[]; error?: string }> {
+    try {
+      const res = await http.post<any>(
+        `/api/local/projects/${encodeURIComponent(projectId)}/workspace-session`,
+        {},
+      )
+      if (res.data?.session) return { session: res.data.session, attachments: res.data.attachments ?? [] }
+      const errBody = (res.error ?? res.data ?? {}) as { error?: string; message?: string }
+      return { error: errBody.message ?? errBody.error ?? 'Failed to open workspace session' }
+    } catch (err: any) {
+      return { error: err?.message ?? 'Failed to open workspace session' }
+    }
+  },
+
+  /**
+   * Poll the readiness of a project's anchor merged-root runtime. `generation`
+   * bumps on every fresh boot (e.g. a read-only attach that needs a
+   * READONLY_ROOTS restart), and `ready` means the runtime answered a health
+   * probe. Used to clear the Folders panel's "Restarting context…" indicator
+   * on real readiness rather than a fixed timer.
+   */
+  async getWorkspaceRuntimeStatus(
+    http: HttpClient,
+    projectId: string,
+  ): Promise<{ running: boolean; ready: boolean; generation: number }> {
+    try {
+      const res = await http.get<{ running?: boolean; ready?: boolean; generation?: number }>(
+        `/api/local/projects/${encodeURIComponent(projectId)}/workspace-runtime-status`,
+      )
+      const d = res.data ?? {}
+      return {
+        running: !!d.running,
+        ready: !!d.ready,
+        generation: typeof d.generation === 'number' ? d.generation : 0,
+      }
+    } catch {
+      return { running: false, ready: false, generation: 0 }
     }
   },
 

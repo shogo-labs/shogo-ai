@@ -1157,6 +1157,7 @@ function ChatInputImpl({
           }}
           placeholder={placeholder}
           placeholderTextColor="#9ca3af"
+          testID="project-composer-input"
           accessibilityLabel="Chat message input"
           editable={!disabled && !voiceInput.isRecording}
           multiline

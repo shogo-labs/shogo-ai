@@ -191,6 +191,7 @@ function WideSidebar({
               return (
                 <Pressable
                   key={item.id}
+                  testID={`settings-nav-${item.id}`}
                   onPress={() => onSelect(item.id)}
                   className={cn(
                     'mx-1.5 my-0.5 px-2 py-1.5 rounded-md flex-row items-center gap-2',
@@ -253,6 +254,7 @@ function NarrowSidebar({
                 )}
                 <Pressable
                   onPress={() => onSelect(item.id)}
+                  testID={`settings-nav-${item.id}`}
                   className={cn(
                     'px-2.5 py-1 rounded-md flex-row items-center gap-1.5',
                     isActive ? 'bg-accent' : 'active:bg-muted',

@@ -58,6 +58,20 @@ function isLocalMode(): boolean {
   return !!(window as any).shogoDesktop?.isDesktop
 }
 
+/**
+ * Whether the client should route new "home" chats through the
+ * workspace-aware (merged-root) runtime — a workspace-scoped chat session
+ * with the project attached — instead of the per-project runtime.
+ *
+ * Opt-in via `EXPO_PUBLIC_WORKSPACE_RUNTIME=true`. The API independently
+ * gates the actual runtime behind `SHOGO_WORKSPACE_RUNTIME` (workspace chat
+ * returns 501 when that's off), so BOTH must agree for workspace chat to
+ * function. Default off preserves the existing per-project create flow.
+ */
+export function isWorkspaceRuntimeEnabled(): boolean {
+  return process.env.EXPO_PUBLIC_WORKSPACE_RUNTIME === 'true'
+}
+
 let cachedConfig: PlatformConfig | null = null
 
 function getInitialConfig(): PlatformConfig {

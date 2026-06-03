@@ -244,6 +244,13 @@ export default observer(function ProjectLayout() {
   const params = useLocalSearchParams<{
     id: string
     chatSessionId?: string
+    /**
+     * Routing scope for the initial chat session: 'workspace' means
+     * `chatSessionId` is a workspace-scoped session (the project is attached)
+     * that chats against the merged-root runtime; absent/'project' is the
+     * legacy per-project session. Only applies to the initial tab.
+     */
+    chatScope?: string
     initialMessage?: string
     initialInteractionMode?: string
     appTemplateName?: string
@@ -274,6 +281,12 @@ export default observer(function ProjectLayout() {
   // The session ID that should receive these one-time props (only the first tab).
   const [initialPropsSessionId] = useState(() => params.chatSessionId ?? null)
   const [capturedInitialMessage] = useState(() => params.initialMessage ?? undefined)
+  // Scope of the initial session tab. Only the tab matching
+  // `initialPropsSessionId` chats in workspace scope; tabs created later are
+  // ordinary per-project sessions.
+  const [capturedChatScope] = useState<'project' | 'workspace'>(() =>
+    params.chatScope === 'workspace' ? 'workspace' : 'project'
+  )
   const [capturedInitialInteractionMode] = useState<InteractionMode | undefined>(() => {
     const raw = params.initialInteractionMode
     const m = Array.isArray(raw) ? raw[0] : raw
@@ -301,6 +314,25 @@ export default observer(function ProjectLayout() {
   const [chatSessionId, setChatSessionId] = useState<string | null>(
     () => params.chatSessionId ?? null
   )
+
+  // Universal workspace-runtime rollout gate. When on, a project's chat runs
+  // on its anchor-keyed merged-root runtime via a single project-pinned
+  // workspace session (mounting the project + its attachments + linked
+  // folders). Strictly flag-gated so flag-off behavior is byte-identical to
+  // the legacy single-project runtime + project-scoped chat.
+  const workspaceRuntimeEnabled = process.env.EXPO_PUBLIC_WORKSPACE_RUNTIME === 'true'
+  // The project-pinned workspace session id (resolved from the API when the
+  // flag is on). Tabs whose id is this session chat in 'workspace' scope.
+  const [pinnedWorkspaceSessionId, setPinnedWorkspaceSessionId] = useState<string | null>(null)
+  // Whether the pinned-session resolve has settled (success OR failure). Used
+  // to gate the chat render: while unresolved (flag on, no deep-link) we show a
+  // loading state rather than the legacy empty/project-tab chat, so there is no
+  // async swap/re-mount race. On failure we fall through to the legacy chat.
+  const [pinnedResolveFailed, setPinnedResolveFailed] = useState(false)
+  // Tracks whether we've already promoted the pinned session to the active
+  // chat for the current project, so we only force it once (the user can
+  // switch tabs afterwards).
+  const pinnedSessionAppliedRef = useRef(false)
 
   // Project state
   const [project, setProject] = useState<any>(null)
@@ -694,6 +726,55 @@ export default observer(function ProjectLayout() {
   }, [remoteAgentBaseUrl, projectId])
   const agentUrl = remoteProjectAgentBaseUrl ?? resolvedAgentUrl
 
+  // Resolve (or create) the project-pinned workspace session once, when the
+  // workspace-runtime flag is on. This session is what routes the project's
+  // chat through the anchor merged-root runtime. Gated so flag-off does
+  // nothing. Best-effort: a failure simply leaves the project on the legacy
+  // project-scoped chat.
+  useEffect(() => {
+    if (!workspaceRuntimeEnabled || !projectId) return
+    // New project → re-pin from scratch.
+    pinnedSessionAppliedRef.current = false
+    setPinnedWorkspaceSessionId(null)
+    setPinnedResolveFailed(false)
+    let cancelled = false
+    void (async () => {
+      const res = await api.getProjectWorkspaceSession(http, projectId)
+      if (cancelled) return
+      if (res.session?.id) {
+        setPinnedWorkspaceSessionId(res.session.id)
+      } else {
+        // Resolve failed: drop the loading gate so the project falls back to
+        // the legacy project-scoped chat instead of hanging on a spinner.
+        console.warn(
+          `[ProjectLayout] pinned workspace session resolve failed: ${res.error ?? 'unknown'}`,
+        )
+        setPinnedResolveFailed(true)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceRuntimeEnabled, projectId, http])
+
+  // Make the pinned workspace session the project's canonical chat (flag-on
+  // only). Under the "always workspace runtime" model every project is driven
+  // by its anchor merged-root runtime, so the active chat must be the
+  // anchor-pinned workspace session (seeded with [anchor + attachments]) — not
+  // a project-scoped session that would boot the legacy single-project
+  // runtime. We apply this once per project load (tracked by a ref) so the
+  // user can still switch tabs afterwards, and we defer to an explicit
+  // deep-linked `chatSessionId`. Mirrors the home flow's workspace-session
+  // seeding; the "ensure active session in tabs" effect adds it to the
+  // open-tabs list and ChatPanel renders it in 'workspace' scope.
+  useEffect(() => {
+    if (!workspaceRuntimeEnabled || !pinnedWorkspaceSessionId) return
+    if (params.chatSessionId) return
+    if (pinnedSessionAppliedRef.current) return
+    pinnedSessionAppliedRef.current = true
+    setChatSessionId(pinnedWorkspaceSessionId)
+  }, [workspaceRuntimeEnabled, pinnedWorkspaceSessionId, params.chatSessionId])
+
   // APP_MODE_DISABLED: app template copy effect removed
 
   // Shared model selection — shared between ChatPanel and CapabilitiesPanel
@@ -899,6 +980,18 @@ export default observer(function ProjectLayout() {
   // Restore open tabs from AsyncStorage on mount
   useEffect(() => {
     if (!projectId || openTabsRestoredRef.current) return
+    // Under the always-on workspace runtime, a project has exactly one chat:
+    // its anchor-pinned workspace session. Restoring previously-open
+    // project-scoped tabs here would (a) mount hidden sibling ChatPanels on the
+    // legacy single-project runtime and (b) make `openChatTabIds` non-empty
+    // before the pinned session resolves, defeating the loading gate. So when
+    // the flag is on and we're not following an explicit deep-link, skip the
+    // restore entirely and let the pinned-session promotion seed the sole tab.
+    if (workspaceRuntimeEnabled && !params.chatSessionId) {
+      openTabsRestoredRef.current = true
+      setTabsHydration('fresh')
+      return
+    }
     AsyncStorage.getItem(`shogo:chatTabs:${projectId}`).then((raw) => {
       if (raw === null) {
         openTabsRestoredRef.current = true
@@ -1022,6 +1115,13 @@ export default observer(function ProjectLayout() {
       }
 
       if (chatSessionId) return
+      // Under the always-on workspace runtime, the project-pinned workspace
+      // session owns active-session selection (see the pinned-session
+      // promotion effect). Auto-selecting / auto-creating a project-scoped
+      // session here would race that promotion and strand the visible chat on
+      // the wrong (project) session — and boot the legacy single-project
+      // runtime instead of the anchor merged root.
+      if (workspaceRuntimeEnabled) return
       // Wait for restore to finish so we know which branch to take.
       if (tabsHydration === 'loading') return
       // Only auto-select / auto-create on a truly fresh visit. On
@@ -1071,6 +1171,8 @@ export default observer(function ProjectLayout() {
   const pickedFromRestoreRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     if (!projectId) return
+    // Flag-on: pinned workspace session owns selection (see above).
+    if (workspaceRuntimeEnabled) return
     if (pickedFromRestoreRef.current.has(projectId)) return
     if (tabsHydration !== 'restored-with-tabs') return
     if (chatSessionId) {
@@ -1590,6 +1692,17 @@ export default observer(function ProjectLayout() {
   }, [store?.chatSessionCollection?.all, sessionNames, projectId, _sessionFieldsKey])
 
   const handleCreateNewSession = useCallback(async () => {
+    // Flag-on: a project has exactly one chat — its anchor-pinned workspace
+    // session. A "new chat" must not mint a project-scoped session (that would
+    // strand the project on the legacy single-project runtime). Just re-select
+    // the pinned session instead.
+    if (workspaceRuntimeEnabled && pinnedWorkspaceSessionId) {
+      setOpenChatTabIds((prev) =>
+        prev.includes(pinnedWorkspaceSessionId) ? prev : [...prev, pinnedWorkspaceSessionId],
+      )
+      setChatSessionId(pinnedWorkspaceSessionId)
+      return
+    }
     try {
       const newSession = await actions.createChatSession({
         inferredName: 'Untitled',
@@ -1603,7 +1716,7 @@ export default observer(function ProjectLayout() {
     } catch (err) {
       console.error('[ProjectLayout] Failed to create chat session:', err)
     }
-  }, [actions, projectId])
+  }, [actions, projectId, workspaceRuntimeEnabled, pinnedWorkspaceSessionId])
 
   // ─── Canvas-error → "Debug" toast ───────────────────────────────────────
   // The canvas iframe (and its ShogoErrorBoundary) postMessage `canvas-error`
@@ -2061,7 +2174,22 @@ export default observer(function ProjectLayout() {
    * `tabsHydration === 'loading'` we render nothing extra to avoid flashing
    * the empty state for one frame on every mount.
    */
-  const showEmptyChatState = tabsHydration !== 'loading' && openChatTabIds.length === 0
+  // Flag-on loading gate: while the anchor-pinned workspace session is still
+  // resolving (and we aren't following an explicit deep-link), render a single
+  // loading state and mount no ChatPanel. This makes the pinned session the
+  // chat from first paint — no async swap, no fill-wipe re-mount, no lingering
+  // project-session sibling tabs. Once the pinned session resolves it becomes
+  // the sole open tab (so `openChatTabIds.length > 0` clears the gate); on
+  // resolve failure `pinnedResolveFailed` clears it and we fall back to the
+  // legacy empty-chat list.
+  const workspaceChatLoading =
+    workspaceRuntimeEnabled &&
+    !params.chatSessionId &&
+    !pinnedResolveFailed &&
+    openChatTabIds.length === 0
+
+  const showEmptyChatState =
+    !workspaceChatLoading && tabsHydration !== 'loading' && openChatTabIds.length === 0
 
   const renderEmptyChatList = (onSelectClose?: () => void) => (
     <ChatSessionSidebar
@@ -2110,6 +2238,13 @@ export default observer(function ProjectLayout() {
                 userId={user?.id}
                 projectId={projectId}
                 projectType="unified"
+                chatScope={
+                  workspaceRuntimeEnabled && tabId === pinnedWorkspaceSessionId
+                    ? 'workspace'
+                    : isInitialSession
+                      ? capturedChatScope
+                      : 'project'
+                }
                 isActive={isActive}
                 localAgentUrl={remoteProjectAgentBaseUrl ?? undefined}
                 initialMessage={isInitialSession ? capturedInitialMessage : (debugSeed ?? undefined)}
@@ -2444,11 +2579,22 @@ export default observer(function ProjectLayout() {
                   >
                     <View
                       className="absolute inset-0"
-                      style={showEmptyChatState || narrowChatPickerOpen ? { opacity: 0 } : undefined}
-                      pointerEvents={showEmptyChatState || narrowChatPickerOpen ? 'none' : 'auto'}
+                      style={showEmptyChatState || narrowChatPickerOpen || workspaceChatLoading ? { opacity: 0 } : undefined}
+                      pointerEvents={showEmptyChatState || narrowChatPickerOpen || workspaceChatLoading ? 'none' : 'auto'}
                     >
                       <EzModeAwareChatPanels>{chatPanels}</EzModeAwareChatPanels>
                     </View>
+                    {workspaceChatLoading && (
+                      <View
+                        testID="workspace-chat-loading"
+                        className="absolute inset-0 bg-background items-center justify-center"
+                      >
+                        <ActivityIndicator size="large" />
+                        <Text className="text-sm text-muted-foreground mt-3 text-center">
+                          Starting workspace…
+                        </Text>
+                      </View>
+                    )}
                     {showEmptyChatState && (
                       isChatFullscreen || showSidebar ? (
                         <View className="absolute inset-0 bg-background items-center justify-center px-8">
