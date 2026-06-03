@@ -424,8 +424,10 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
     console.warn('[Checkpoint] Failed to create pre-rollback checkpoint:', err);
   }
 
-  // Checkout the target commit
-  const result = await gitService.checkout(workspacePath, checkpoint.commitSha, {
+  // Make sure HEAD is on the project branch. Unlike the old flow we never
+  // detach onto the checkpoint commit — keeping the branch ref at its current
+  // tip is what lets us preserve the commits made after the checkpoint.
+  const result = await gitService.checkout(workspacePath, checkpoint.branch, {
     force: true,
   });
 
@@ -451,6 +453,39 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
     };
   }
 
+  // Restore the working tree + index to the checkpoint's tree WITHOUT moving
+  // the branch ref. `git read-tree -u --reset <sha>` performs the same index
+  // and working-tree update as `git reset --hard`, but it leaves HEAD pointing
+  // at the current branch tip. The subsequent commit therefore records a single
+  // revert-to-checkpoint commit on top of the existing history, so none of the
+  // commits made after the checkpoint are deleted.
+  try {
+    execSync(`git read-tree -u --reset ${checkpoint.commitSha}`, {
+      cwd: workspacePath,
+      stdio: 'pipe',
+    });
+  } catch (err: any) {
+    return {
+      success: false,
+      previousCheckpoint: {
+        id: checkpoint.id,
+        commitSha: checkpoint.commitSha,
+        branch: checkpoint.branch,
+        name: checkpoint.name,
+        description: checkpoint.description,
+        message: checkpoint.commitMessage,
+        filesChanged: checkpoint.filesChanged,
+        additions: checkpoint.additions,
+        deletions: checkpoint.deletions,
+        includesDb: checkpoint.includesDb,
+        isAutomatic: checkpoint.isAutomatic,
+        createdAt: checkpoint.createdAt,
+      },
+      newCheckpoint: preRollbackCheckpoint,
+      error: err?.message || 'Failed to restore checkpoint tree',
+    };
+  }
+
   // Restore database if checkpoint includes it and user requested it
   if (includeDatabase && checkpoint.includesDb) {
     try {
@@ -461,19 +496,12 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
     }
   }
 
-  // Create a "rollback" checkpoint to mark this point in history
+  // Commit the rolled-back tree as a new checkpoint. Because HEAD still points
+  // at the old branch tip, this records a single commit whose diff is the
+  // inverse of every change made since the checkpoint — a revert, not a
+  // history rewrite.
   let newCheckpoint: CheckpointResult | null = null;
   try {
-    // Switch back to main branch with the rolled-back files
-    await gitService.checkout(workspacePath, checkpoint.branch, { force: true });
-
-    // Reset to the checkpoint commit
-    execSync(`git reset --hard ${checkpoint.commitSha}`, {
-      cwd: workspacePath,
-      stdio: 'pipe',
-    });
-
-    // Create a new commit marking the rollback
     newCheckpoint = await createCheckpoint({
       projectId,
       workspacePath,
