@@ -77,6 +77,9 @@ let accountsRetrieveImpl = async (_id: string) => ({
   requirements: { currently_due: [], past_due: [], disabled_reason: null },
 })
 const accountsUpdateSpy = mock(async (_id: string, _p: any) => ({ id: 'acct_updated' }))
+const accountLinksCreateSpy = mock(async (_p: any) => ({
+  url: 'https://connect.stripe.com/setup/c/acct_live/abc',
+}))
 let checkoutCreateImpl: (params: any) => Promise<any> = async () => ({
   url: 'https://checkout/x',
 })
@@ -90,6 +93,9 @@ class FakeStripe {
     create: (p: any) => accountsCreateImpl(p),
     retrieve: (id: string) => accountsRetrieveImpl(id),
     update: (id: string, p: any) => accountsUpdateSpy(id, p),
+  }
+  accountLinks = {
+    create: (p: any) => accountLinksCreateSpy(p),
   }
   checkout = {
     sessions: { create: (p: any) => checkoutCreateImpl(p) },
@@ -116,6 +122,10 @@ beforeEach(() => {
     requirements: { currently_due: [], past_due: [], disabled_reason: null },
   })
   accountsUpdateSpy.mockClear()
+  accountLinksCreateSpy.mockClear()
+  accountLinksCreateSpy.mockImplementation(async (_p: any) => ({
+    url: 'https://connect.stripe.com/setup/c/acct_live/abc',
+  }))
   checkoutCreateImpl = async () => ({ url: 'https://checkout/x' })
   balanceRetrieveImpl = async (_o: any) => ({
     available: [{ amount: 0, currency: 'usd' }],
@@ -221,6 +231,50 @@ describe('submitPayoutDetails', () => {
     const params = accountsUpdateSpy.mock.calls[0][1]
     expect(params.individual.ssn_last_4).toBeUndefined()
     expect(params.external_account).toBeUndefined()
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────
+// createOnboardingLink
+// ──────────────────────────────────────────────────────────────────────
+
+describe('createOnboardingLink', () => {
+  const URLS = {
+    refreshUrl: 'https://app.test/marketplace/creator/payout-setup?refresh=1',
+    returnUrl: 'https://app.test/marketplace/creator/payout-setup?return=1',
+  }
+
+  test('throws when profile has no stripe account id', async () => {
+    profiles.set('cp_1', { id: 'cp_1' })
+    await expect(svc.createOnboardingLink('cp_1', URLS)).rejects.toThrow(
+      'Creator has no Stripe Connect account',
+    )
+  })
+
+  test('throws when profile is missing entirely', async () => {
+    await expect(svc.createOnboardingLink('cp_missing', URLS)).rejects.toThrow(
+      'Creator has no Stripe Connect account',
+    )
+  })
+
+  test('mock mode: returns returnUrl without hitting Stripe', async () => {
+    delete process.env.STRIPE_SECRET_KEY
+    profiles.set('cp_1', { id: 'cp_1', stripeCustomAccountId: 'acct_mock_1' })
+    const res = await svc.createOnboardingLink('cp_1', URLS)
+    expect(res.url).toBe(URLS.returnUrl)
+    expect(accountLinksCreateSpy).not.toHaveBeenCalled()
+  })
+
+  test('live: forwards account + URLs to Stripe and returns link url', async () => {
+    profiles.set('cp_1', { id: 'cp_1', stripeCustomAccountId: 'acct_live' })
+    const res = await svc.createOnboardingLink('cp_1', URLS)
+    expect(accountLinksCreateSpy).toHaveBeenCalledTimes(1)
+    const params = accountLinksCreateSpy.mock.calls[0][0]
+    expect(params.account).toBe('acct_live')
+    expect(params.refresh_url).toBe(URLS.refreshUrl)
+    expect(params.return_url).toBe(URLS.returnUrl)
+    expect(params.type).toBe('account_onboarding')
+    expect(res.url).toBe('https://connect.stripe.com/setup/c/acct_live/abc')
   })
 })
 

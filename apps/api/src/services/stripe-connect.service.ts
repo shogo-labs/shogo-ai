@@ -277,6 +277,42 @@ export async function submitPayoutDetails(
   });
 }
 
+/**
+ * Create a Stripe-hosted onboarding URL for a creator's Connect account.
+ *
+ * Returns a short-lived URL that walks the creator through identity,
+ * address, DOB, SSN, document upload, and bank-account collection on
+ * Stripe's own pages — replaces the custom KYC form previously posted
+ * to `submitPayoutDetails`.
+ *
+ * In mock mode (no STRIPE_SECRET_KEY) returns `params.returnUrl` so the
+ * client flow stays exercisable in dev/CI without hitting Stripe.
+ */
+export async function createOnboardingLink(
+  creatorProfileId: string,
+  params: { refreshUrl: string; returnUrl: string },
+): Promise<{ url: string }> {
+  const profile = await prisma.creatorProfile.findUnique({
+    where: { id: creatorProfileId },
+  });
+  if (!profile?.stripeCustomAccountId) {
+    throw new Error('Creator has no Stripe Connect account');
+  }
+
+  if (!isStripeConfigured()) {
+    return { url: params.returnUrl };
+  }
+
+  const stripe = getStripe();
+  const link = await stripe.accountLinks.create({
+    account: profile.stripeCustomAccountId,
+    refresh_url: params.refreshUrl,
+    return_url: params.returnUrl,
+    type: 'account_onboarding',
+  });
+  return { url: link.url };
+}
+
 export async function getAccountStatus(creatorProfileId: string): Promise<{
   chargesEnabled: boolean;
   payoutsEnabled: boolean;
