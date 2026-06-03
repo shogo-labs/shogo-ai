@@ -5,6 +5,12 @@ import type { EditorSettings } from "./types";
 import { setupAgentFix } from "./agentFixProvider";
 import { setMonacoRef } from "./monaco/workspaceModels";
 import { setupExtraLibs } from "./monaco/extraLibs";
+import { isDesktopRuntime } from "./terminal/pty-factory";
+import {
+  registerDesktopThemes,
+  loadCustomThemes,
+  BUILTIN_DESKTOP_THEMES,
+} from "./monaco/themes";
 
 // Point `@monaco-editor/loader` at our self-hosted Monaco bundle (mirrored
 // from `node_modules/monaco-editor/min/vs` into `public/vs` by
@@ -125,6 +131,15 @@ function configureMonaco(monaco: MonacoNs) {
   // Register the "Fix with Shogo" hover button + quick-fix code action for
   // every language Monaco knows about. Idempotent across split editors.
   setupAgentFix(monaco);
+
+  // Desktop-only: register the curated theme catalog and replay any
+  // user-imported JSON themes from localStorage. Gated by isDesktopRuntime()
+  // so the web/mobile bundle never registers these themes — that surface is
+  // intentionally frozen at shogo-dark / shogo-light.
+  if (isDesktopRuntime()) {
+    registerDesktopThemes(monaco);
+    loadCustomThemes(monaco);
+  }
 }
 
 export function CodeEditor({
@@ -133,6 +148,7 @@ export function CodeEditor({
   pathKey,
   settings,
   themeMode,
+  editorTheme,
   onChange,
   onCursor,
   onMount,
@@ -144,14 +160,62 @@ export function CodeEditor({
   settings: EditorSettings;
   /** Resolved app theme — Monaco flips between shogo-dark / shogo-light. */
   themeMode: "dark" | "light";
-  onChange: (v: string) => void;
+  /**
+   * Desktop-only override for the Monaco theme id. When set to a registered
+   * theme (one of `BUILTIN_DESKTOP_THEMES` or a user-imported custom theme),
+   * it takes precedence over the shogo-dark/light auto-pick. Ignored when
+   * `isDesktopRuntime()` is false so web users never see the desktop themes.
+   */
+  editorTheme?: string;
+  /**
+   * Fired on user edits only. `fileId` is the Monaco model URI's pathKey at
+   * the time the keystroke landed — NOT a React-closure capture of the
+   * group's `activeId`. Routing by model URI is what makes BUG-001
+   * ("stale model on rapid tab swap") impossible to reintroduce: even if
+   * React hasn't flushed the new activeId yet, the change carries the
+   * authoritative fileId out with it.
+   */
+  onChange: (fileId: string, v: string) => void;
   onCursor: (line: number, col: number) => void;
   onMount?: (ed: editor.IStandaloneCodeEditor, monaco: MonacoNs) => void;
 }) {
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const monacoRef = useRef<MonacoNs | null>(null);
 
-  const themeName = themeMode === "light" ? "shogo-light" : "shogo-dark";
+  // Ref mirror of `pathKey` so the Monaco content listener (installed once
+  // in handleMount) always reads the freshest fileId at change-fire time.
+  // Updating in render — instead of in a useEffect — guarantees that any
+  // subsequent Monaco event in the same commit sees the new value. With a
+  // useEffect we'd still have a one-tick window where pathKey has changed
+  // in the React tree but the ref the listener reads from is stale, which
+  // is exactly the race condition BUG-001 reports.
+  const pathKeyRef = useRef(pathKey);
+  pathKeyRef.current = pathKey;
+
+  // Same ref-mirror for the change/cursor callbacks. Without this the listener
+  // installed once in handleMount would forever call the first-render's
+  // `onChange` closure (which holds a stale reference to the parent's
+  // `handleChangeFor`). Render-time mirror keeps the latest callback live.
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const onCursorRef = useRef(onCursor);
+  onCursorRef.current = onCursor;
+
+
+  // Resolve the effective Monaco theme:
+  //   1. Desktop + caller passed a registered custom/builtin theme  → use it.
+  //   2. Otherwise fall back to the always-available shogo-dark/light.
+  // Falling through (instead of trusting whatever the caller sent) means a
+  // stale localStorage value for a theme that no longer exists can never
+  // brick the editor with an undefined theme id.
+  const fallback = themeMode === "light" ? "shogo-light" : "shogo-dark";
+  const desktopRegistered = isDesktopRuntime()
+    && !!editorTheme
+    && (
+      BUILTIN_DESKTOP_THEMES.some(t => t.id === editorTheme)
+      || editorTheme.startsWith("shogo-user-")
+    );
+  const themeName = desktopRegistered ? (editorTheme as string) : fallback;
 
   // Live-swap Monaco theme when the app theme changes under an already-mounted
   // editor (e.g. user toggles theme while a file is open).
@@ -165,8 +229,66 @@ export function CodeEditor({
     configureMonaco(monaco);
     monaco.editor.setTheme(themeName);
 
+    // BUG-005: suppress Monaco's keybinding service for the palette
+    // shortcuts. Today the standalone editor doesn't bind Cmd+P or
+    // Cmd+Shift+P by default, but a future Monaco upgrade or contrib
+    // could — and the workbench's window-level handler would then fire
+    // alongside Monaco's, opening BOTH palettes. Registering a no-op
+    // command at the editor level wins over any default registration
+    // and is harmless when no default exists.
+    //
+    // The window-level handler in Workbench still owns the actual
+    // dispatch — these are pure suppressors so Monaco never claims
+    // the keystroke. We use addCommand (not addAction) because actions
+    // appear in the command palette UI; commands don't.
+    try {
+      const CtrlCmd = monaco.KeyMod?.CtrlCmd ?? 0;
+      const Shift = monaco.KeyMod?.Shift ?? 0;
+      const KeyP = monaco.KeyCode?.KeyP;
+      if (CtrlCmd && KeyP != null) {
+        ed.addCommand(CtrlCmd | KeyP, () => {
+          // No-op. Workbench's window handler runs and opens our Quick Open.
+        });
+        ed.addCommand(CtrlCmd | Shift | KeyP, () => {
+          // No-op. Workbench's window handler opens our Command Palette.
+        });
+      }
+    } catch {
+      // Defensive: if Monaco's KeyMod/KeyCode shape ever changes, the
+      // workbench-level dispatcher still works. Just lose Monaco
+      // suppression in that case — no functional regression beyond
+      // the pre-BUG-005 baseline.
+    }
+
+
+    // BUG-001 fix — own the content listener instead of using <Editor onChange>.
+    //
+    // `@monaco-editor/react`'s onChange prop fires for ANY model content
+    // change including the programmatic `model.setValue()` it issues during
+    // a path swap. On a rapid tab swap that synthetic event would (a) get
+    // routed by `g.activeId` (stale by one tick), polluting the freshly-
+    // active tab with the previously-active tab's content, and (b) flip
+    // dirty=true on a file the user never touched.
+    //
+    // Filtering on `ev.isFlush` — true precisely when `setValue()` was
+    // the cause — drops every model-swap echo. The `model.isDisposed()`
+    // guard handles the matching tear-down race (closeTab in flight while
+    // a final keystroke is processing).
+    ed.onDidChangeModelContent((ev) => {
+      if (ev.isFlush) return;
+      const model = ed.getModel();
+      if (!model || model.isDisposed()) return;
+      onChangeRef.current(pathKeyRef.current, model.getValue());
+    });
+
+    // Same disposed-model guard for cursor events. Without it, Monaco's
+    // tear-down sequence on tab close emits a final cursor-position event
+    // against the about-to-be-disposed model and the breadcrumbs/status-bar
+    // shows a stale (1,1) reading for the freshly-active tab.
     ed.onDidChangeCursorPosition((e) => {
-      onCursor(e.position.lineNumber, e.position.column);
+      const model = ed.getModel();
+      if (!model || model.isDisposed()) return;
+      onCursorRef.current(e.position.lineNumber, e.position.column);
     });
 
     onMount?.(ed, monaco);
@@ -179,11 +301,15 @@ export function CodeEditor({
       language={language}
       value={value}
       theme={themeName}
-      onChange={(v) => onChange(v ?? "")}
       onMount={handleMount}
       options={{
         fontSize: settings.fontSize,
-        fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, monospace",
+        // BUG-012 — driven by the centralised `EditorSettings.fontFamily`
+        // (curated list in `useEditorFont.ts`). Changes here propagate via
+        // the `<Editor>` options diff → `editor.updateOptions`. Monaco
+        // rerenders the glyph cache and the new font lands without a
+        // remount.
+        fontFamily: settings.fontFamily,
         minimap: { enabled: settings.minimap, scale: 1 },
         wordWrap: settings.wordWrap,
         lineNumbers: settings.lineNumbers,

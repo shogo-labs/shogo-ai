@@ -418,6 +418,18 @@ body {
    below, so the in-app code editor follows the rest of the UI.
    ────────────────────────────────────────────────────────────────────────── */
 .shogo-ide {
+  /* BUG-012 — single source of truth for the IDE monospace font.
+     Workbench writes this inline (on the same `.shogo-ide` element)
+     whenever `EditorSettings.fontFamily` changes, so every panel that
+     reads `var(--ide-mono-font)` (Output, Problems, Debug Console,
+     Run & Debug Output, Debug View, the .ide-mono utility) updates in
+     one go. The fallback below MUST match `DEFAULT_FONT_FAMILY` in
+     useEditorFont.ts and `DEFAULT_SETTINGS.fontFamily` in types.ts —
+     `useEditorFont.triple-source.test.ts` pins all three sources. */
+  --ide-mono-font:
+    'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Consolas,
+    'Liberation Mono', monospace;
+
   /* Dark defaults — matches the VS Code "Dark+" look the IDE started with. */
   --ide-bg: #1e1e1e;
   --ide-surface: #252526;
@@ -518,4 +530,33 @@ html:not(.dark) .shogo-ide,
 }
 .shogo-ide *::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   BUG-012 — IDE monospace cascade.
+
+   The `.ide-mono` utility lets a panel opt into the user's preferred IDE
+   font without inline styles. Plus: inside `.shogo-ide`, Tailwind's
+   `font-mono` utility is rebound to the same variable so existing
+   `className="font-mono"` consumers (OutputTab, Problems, RunDebug,
+   DebugConsole, DebugView, …) inherit the user's choice for FREE —
+   no per-component edits needed. Outside `.shogo-ide` (rest of the app)
+   `font-mono` keeps Tailwind's default stack.
+
+   The `!important` is deliberate and scoped — Tailwind's utility wins
+   specificity ties otherwise, and we want OUR rule to win inside the
+   IDE root only.
+   ────────────────────────────────────────────────────────────────────────── */
+.shogo-ide .ide-mono,
+.shogo-ide .font-mono {
+  font-family: var(
+    --ide-mono-font,
+    'JetBrains Mono',
+    'Fira Code',
+    'Cascadia Code',
+    Menlo,
+    Consolas,
+    'Liberation Mono',
+    monospace
+  ) !important;
 }

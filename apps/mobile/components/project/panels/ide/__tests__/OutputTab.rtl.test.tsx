@@ -347,20 +347,37 @@ describe('OutputTab — export', () => {
 })
 
 describe('OutputTab — auto-scroll', () => {
-  test('auto-scrolls to the bottom when new entries land', async () => {
+  test('auto-scrolls to the bottom when new entries land (user is at bottom)', async () => {
+    // BUG-009: sticky-bottom — auto-scroll fires ONLY when the user is
+    // already near the bottom. Set up scrollHeight/clientHeight/scrollTop
+    // so isNearBottom returns true at the time the entry lands.
     renderTab()
     const region = screen.getByRole('region', { name: /output entries/i })
-    Object.defineProperty(region, 'scrollHeight', {
-      configurable: true,
-      get: () => 1000,
-    })
-    region.scrollTop = 0
+    Object.defineProperty(region, 'scrollHeight', { configurable: true, get: () => 1000 })
+    Object.defineProperty(region, 'clientHeight', { configurable: true, get: () => 200 })
+    region.scrollTop = 800 // exactly at the bottom (1000 - 200) → sticky
 
     await act(async () => {
       pushEntries(PROJECT, [entry({ seq: 1, text: 'first' })])
     })
 
     expect(region.scrollTop).toBe(1000)
+  })
+
+  test('BUG-009: does NOT auto-scroll when user has scrolled up', async () => {
+    // The new contract: even with autoScroll toggle ON, sticky-bottom
+    // means "follow tail while at bottom" — never "yank user back".
+    renderTab()
+    const region = screen.getByRole('region', { name: /output entries/i })
+    Object.defineProperty(region, 'scrollHeight', { configurable: true, get: () => 1000 })
+    Object.defineProperty(region, 'clientHeight', { configurable: true, get: () => 200 })
+    region.scrollTop = 0 // user scrolled WAY up — past the 24px threshold
+
+    await act(async () => {
+      pushEntries(PROJECT, [entry({ seq: 1, text: 'first' })])
+    })
+
+    expect(region.scrollTop).toBe(0) // unchanged — user's position respected
   })
 
   test('toggling auto-scroll off pins scroll position on next entry', async () => {
