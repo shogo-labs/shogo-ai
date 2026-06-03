@@ -15,11 +15,17 @@ The first model available on the public API is **Hoshi 1.0** (`hoshi-1.0`).
 ## Base URL
 
 ```
-https://api.shogo.ai/v1
+https://studio.shogo.ai/api/v1
 ```
 
 Because the API follows the OpenAI wire format, you only need to change the
 **base URL** and **API key** in any existing OpenAI integration.
+
+:::note
+A shorter `https://api.shogo.ai/v1` alias is planned. Until it ships, use the
+`https://studio.shogo.ai/api/v1` base URL above — the endpoints, request, and
+response shapes are identical.
+:::
 
 ## Authentication
 
@@ -44,7 +50,7 @@ Hoshi 1.0 is served under the stable id `hoshi-1.0`. List the models available
 to your key:
 
 ```bash
-curl https://api.shogo.ai/v1/models \
+curl https://studio.shogo.ai/api/v1/models \
   -H "Authorization: Bearer $SHOGO_API_KEY"
 ```
 
@@ -67,7 +73,7 @@ curl https://api.shogo.ai/v1/models \
 ### curl
 
 ```bash
-curl https://api.shogo.ai/v1/chat/completions \
+curl https://studio.shogo.ai/api/v1/chat/completions \
   -H "Authorization: Bearer $SHOGO_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -84,7 +90,7 @@ curl https://api.shogo.ai/v1/chat/completions \
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="https://api.shogo.ai/v1",
+    base_url="https://studio.shogo.ai/api/v1",
     api_key="shogo_sk_your_key_here",
 )
 
@@ -101,7 +107,7 @@ print(resp.choices[0].message.content)
 import OpenAI from "openai";
 
 const client = new OpenAI({
-  baseURL: "https://api.shogo.ai/v1",
+  baseURL: "https://studio.shogo.ai/api/v1",
   apiKey: process.env.SHOGO_API_KEY,
 });
 
@@ -118,7 +124,7 @@ Set `"stream": true` to receive server-sent events in the standard OpenAI
 chunk format:
 
 ```bash
-curl https://api.shogo.ai/v1/chat/completions \
+curl https://studio.shogo.ai/api/v1/chat/completions \
   -H "Authorization: Bearer $SHOGO_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{

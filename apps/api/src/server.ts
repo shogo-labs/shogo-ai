@@ -512,7 +512,7 @@ app.use('/api/webhooks/*', rateLimiter('webhooks', { max: Number(process.env.RAT
 app.use('/api/*', rateLimiter('global', {
   max: Number(process.env.RATE_LIMIT_GLOBAL_MAX) || 600,
   windowMs: Number(process.env.RATE_LIMIT_GLOBAL_WINDOW_MS) || 60_000,
-  skipPrefixes: ['/api/ai/', '/api/internal/', '/api/health', '/api/warm-pool/status'],
+  skipPrefixes: ['/api/ai/', '/api/v1/', '/api/internal/', '/api/health', '/api/warm-pool/status'],
 }))
 
 function isWebchatProxyPath(path: string): boolean {
@@ -551,6 +551,9 @@ app.use(
       '/api/internal/',
       '/api/local/',
       '/api/ai/',
+      // Public OpenAI-compatible API — authenticates in-route with a Shogo API
+      // key (`shogo_sk_*`); session-cookie / runtime-token gating must not run.
+      '/api/v1/',
       '/api/tools/',
       '/api/api-keys/validate',
       '/api/marketplace',
@@ -6667,11 +6670,20 @@ app.post('/api/webhooks/stripe', async (c) => {
 const aiProxy = aiProxyRoutes()
 app.route('/api', aiProxy)
 
-// Public OpenAI-compatible API (`/v1/*`). External developers call this with a
-// Shogo API key (`shogo_sk_*`). It is NOT under `/api/*`, so the session auth /
-// rate-limit middleware above does not apply — auth is handled in-route and a
-// dedicated IP rate limiter is attached here. The global CORS / secureHeaders /
-// bodyLimit `*` middleware still wraps it.
+// Public OpenAI-compatible API. External developers call this with a Shogo API
+// key (`shogo_sk_*`); auth is handled in-route (no session cookies / runtime
+// tokens) and a dedicated IP rate limiter is attached here.
+//
+// It is served on TWO mounts that share one router:
+//   - `/api/v1/*`  — the deployable path TODAY. The shared ingress only routes
+//     `/api/*` to this service (see k8s/base/ingress.yaml), so this is what
+//     external callers actually reach. It rides the `/api/*` middleware chain
+//     but is allow-listed out of session auth (the inline `publicPrefixes`
+//     gate) and the global `/api/*` rate limiter — exactly like `/api/ai/*`.
+//   - `/v1/*`      — the eventual clean public path. Works locally (single
+//     process, no ingress) and once an ingress rule routes `/v1` → this
+//     service. Kept so the public URL can move to `/v1` without an app change.
+const publicApi = publicApiRoutes()
 app.use(
   '/v1/*',
   rateLimiter('public-api', {
@@ -6680,7 +6692,16 @@ app.use(
     skipPrefixes: ['/v1/health'],
   }),
 )
-app.route('/v1', publicApiRoutes())
+app.route('/v1', publicApi)
+app.use(
+  '/api/v1/*',
+  rateLimiter('public-api', {
+    max: Number(process.env.RATE_LIMIT_PUBLIC_API_MAX) || 600,
+    windowMs: Number(process.env.RATE_LIMIT_PUBLIC_API_WINDOW_MS) || 60_000,
+    skipPrefixes: ['/api/v1/health'],
+  }),
+)
+app.route('/api/v1', publicApi)
 
 // Tools passthrough proxy (Composio, Serper, OpenAI embeddings).
 // Uses the same JWT auth as the AI proxy — no raw API keys in agent pods.
@@ -7383,8 +7404,8 @@ console.log(`   AI Proxy: POST http://localhost:${API_PORT}/api/ai/v1/chat/compl
 console.log(`   AI Proxy: POST http://localhost:${API_PORT}/api/ai/v1/responses`)
 console.log(`   AI Models: GET  http://localhost:${API_PORT}/api/ai/v1/models`)
 console.log(`   AI Proxy Health: GET  http://localhost:${API_PORT}/api/ai/proxy/health`)
-console.log(`   Public API: POST http://localhost:${API_PORT}/v1/chat/completions (shogo_sk_ keys)`)
-console.log(`   Public Models: GET  http://localhost:${API_PORT}/v1/models`)
+console.log(`   Public API: POST http://localhost:${API_PORT}/api/v1/chat/completions (also /v1/*; shogo_sk_ keys)`)
+console.log(`   Public Models: GET  http://localhost:${API_PORT}/api/v1/models`)
 console.log(`   CORS origin: http://localhost:${VITE_PORT}`)
 console.log(`   AI Providers: Anthropic=${!!process.env.ANTHROPIC_API_KEY}, OpenAI=${!!process.env.OPENAI_API_KEY}, Google=${!!process.env.GOOGLE_API_KEY}`)
 
