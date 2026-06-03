@@ -38,6 +38,7 @@ function makeSpawnFake() {
   function classify(args: string[]): string {
     for (const a of args) {
       if (a === 'add' || a === 'commit' || a === 'diff' || a === 'push' || a === 'archive') return a
+      if (a === 'rev-parse') return 'rev-parse'
     }
     return 'unknown'
   }
@@ -57,7 +58,7 @@ function makeSpawnFake() {
   return {
     spawn,
     calls,
-    queueResponse(kind: 'add' | 'commit' | 'diff' | 'push' | 'archive', r: SpawnResult) {
+    queueResponse(kind: 'add' | 'commit' | 'diff' | 'push' | 'archive' | 'rev-parse', r: SpawnResult) {
       const q = responses.get(kind) ?? []
       q.push(r)
       responses.set(kind, q)
@@ -157,6 +158,89 @@ describe('argv construction', () => {
     expect(kinds).toContain('add')
     expect(kinds).toContain('diff')
     expect(kinds).not.toContain('commit')
+    expect(fake.calls.find((c) => c.args.includes('push'))).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// localOnly (pod-owned git_only): commit locally + afterCommit, no push
+// ---------------------------------------------------------------------------
+
+function mkLocalSync(
+  afterCommit: (sha: string) => void | Promise<void>,
+  overrides: { degradeAfter?: number; debounceMs?: number } = {},
+) {
+  return new GitWorkspaceSync({
+    workspaceDir: '/tmp/ws-local',
+    cloudApiUrl: 'http://api.test:8002',
+    runtimeAuthSecret: 's3cr3t',
+    projectId: 'proj-local',
+    debounceMs: overrides.debounceMs ?? 5,
+    degradeAfterFailures: overrides.degradeAfter ?? 3,
+    localOnly: true,
+    afterCommit,
+    onDegrade,
+    onRecovered,
+    spawnGit: fake.spawn,
+    logger: { log: () => { }, warn: () => { }, error: () => { } },
+  })
+}
+
+describe('localOnly (pod-owned)', () => {
+  test('commits locally, resolves HEAD, calls afterCommit with the sha, and does NOT push', async () => {
+    const seen: string[] = []
+    const sync = mkLocalSync((sha) => { seen.push(sha) })
+    fake.queueResponse('add', { exitCode: 0 })
+    fake.queueResponse('diff', { exitCode: 1 }) // staged changes
+    fake.queueResponse('commit', { exitCode: 0 })
+    fake.queueResponse('rev-parse', { exitCode: 0, stdout: 'deadbeefcafe\n' })
+
+    sync.triggerSync(true)
+    await wait(40)
+
+    // No push in localOnly mode.
+    expect(fake.calls.find((c) => c.args.includes('push'))).toBeUndefined()
+    // add → diff → commit → rev-parse, then afterCommit(sha).
+    const kinds = fake.calls.map((c) => c.args.find((a) =>
+      ['add', 'diff', 'commit', 'rev-parse', 'push'].includes(a)
+    ))
+    expect(kinds).toEqual(['add', 'diff', 'commit', 'rev-parse'])
+    expect(seen).toEqual(['deadbeefcafe'])
+    expect(sync.isDegraded).toBe(false)
+    expect(sync.consecutiveFailures).toBe(0)
+  })
+
+  test('skips afterCommit when nothing is staged', async () => {
+    let called = 0
+    const sync = mkLocalSync(() => { called += 1 })
+    fake.queueResponse('add', { exitCode: 0 })
+    fake.queueResponse('diff', { exitCode: 0 }) // nothing staged
+
+    sync.triggerSync(true)
+    await wait(40)
+
+    expect(called).toBe(0)
+    expect(fake.calls.find((c) => c.args.includes('commit'))).toBeUndefined()
+    expect(fake.calls.find((c) => c.args.includes('push'))).toBeUndefined()
+  })
+
+  test('afterCommit throwing trips degrade after N consecutive failures (S3 fallback)', async () => {
+    const sync = mkLocalSync(() => { throw new Error('object storage unreachable') }, { degradeAfter: 2 })
+    for (let i = 0; i < 4; i++) {
+      fake.queueResponse('add', { exitCode: 0 })
+      fake.queueResponse('diff', { exitCode: 1 })
+      fake.queueResponse('commit', { exitCode: 0 })
+      fake.queueResponse('rev-parse', { exitCode: 0, stdout: `sha${i}\n` })
+    }
+
+    sync.triggerSync(true)
+    await wait(30)
+    sync.triggerSync(true)
+    await wait(30)
+
+    expect(sync.isDegraded).toBe(true)
+    expect(onDegrade).toHaveBeenCalledTimes(1)
+    // The durable persist failed, so we must NOT have pushed anywhere either.
     expect(fake.calls.find((c) => c.args.includes('push'))).toBeUndefined()
   })
 })
@@ -342,8 +426,8 @@ type SpawnFn = SpawnGitFn
 import { resolveCloudSyncMode, createGitSyncFromEnv } from '../git-sync'
 
 describe('resolveCloudSyncMode', () => {
-  test('defaults to "s3" when env var unset', () => {
-    expect(resolveCloudSyncMode({})).toBe('s3')
+  test('defaults to "git_only" when env var unset', () => {
+    expect(resolveCloudSyncMode({})).toBe('git_only')
   })
   test('accepts "dual_shadow" verbatim', () => {
     expect(resolveCloudSyncMode({ SHOGO_CLOUD_SYNC_MODE: 'dual_shadow' })).toBe('dual_shadow')
@@ -351,12 +435,15 @@ describe('resolveCloudSyncMode', () => {
   test('accepts "git_only" verbatim', () => {
     expect(resolveCloudSyncMode({ SHOGO_CLOUD_SYNC_MODE: 'git_only' })).toBe('git_only')
   })
+  test('accepts explicit "s3" verbatim', () => {
+    expect(resolveCloudSyncMode({ SHOGO_CLOUD_SYNC_MODE: 's3' })).toBe('s3')
+  })
   test('lowercases input ("GIT_ONLY" → "git_only")', () => {
     expect(resolveCloudSyncMode({ SHOGO_CLOUD_SYNC_MODE: 'GIT_ONLY' })).toBe('git_only')
   })
-  test('clamps unrecognized values to "s3"', () => {
-    expect(resolveCloudSyncMode({ SHOGO_CLOUD_SYNC_MODE: 'azure' })).toBe('s3')
-    expect(resolveCloudSyncMode({ SHOGO_CLOUD_SYNC_MODE: '' })).toBe('s3')
+  test('clamps unrecognized values to "git_only"', () => {
+    expect(resolveCloudSyncMode({ SHOGO_CLOUD_SYNC_MODE: 'azure' })).toBe('git_only')
+    expect(resolveCloudSyncMode({ SHOGO_CLOUD_SYNC_MODE: '' })).toBe('git_only')
   })
   test('reads from process.env when no override is passed', () => {
     const before = process.env.SHOGO_CLOUD_SYNC_MODE

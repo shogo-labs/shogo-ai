@@ -30,12 +30,13 @@
  */
 
 import { spawn } from 'child_process'
-import { existsSync } from 'fs'
+import { existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { Hono, type Context } from 'hono'
 import { prisma } from '../lib/prisma'
 import { authorizeProject } from '../middleware/auth'
 import * as gitService from '../services/git.service'
+import { hydrateRepo } from '../services/git-repo-store'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -115,7 +116,19 @@ function parseCgiHeaders(buffer: Uint8Array): { headers: Record<string, string>;
  * Idempotent: safe to call on every smart-HTTP request.
  */
 function ensureRepoConfigured(workspacePath: string): boolean {
-  if (!existsSync(workspacePath)) return false
+  // The API runs without a persistent workspace volume, so the dir may
+  // not exist on this (stateless) pod even for a known project — the
+  // durable repo lives in object storage and is hydrated by the caller
+  // before we get here. If hydrate found no remote repo (brand-new or
+  // legacy project), create the dir so initRepo can seed an empty repo
+  // and accept the cloud-pod's first push.
+  if (!existsSync(workspacePath)) {
+    try {
+      mkdirSync(workspacePath, { recursive: true })
+    } catch {
+      return false
+    }
+  }
   // initRepo is idempotent; it leaves an existing repo alone but
   // initializes a new one with the same Shogo-managed gitignore +
   // checkpoint-safe config (autocrlf=false, longpaths=true, …).
@@ -329,6 +342,13 @@ async function runGitHttpBackend(c: Context, opts: {
     // events that already fired, which silently dropped checkpoint rows.
     exitPromise.then((code) => {
       if (code === 0) {
+        // NOTE: pod-owned `git_only` model — the agent-runtime pod owns the
+        // durable repo and persists `.git` to object storage itself. This
+        // receive-pack path is now only exercised by the external VPS
+        // push-back flow (shogo-worker), which is NOT a durability path: we
+        // record a checkpoint row for visibility but deliberately do NOT
+        // persist back to object storage, since that would clobber the
+        // authoritative pod-persisted repo with a stale API-side copy.
         runPostReceiveHook(projectId, workspacePath, userId).catch((err) => {
           console.warn(`[git-http] post-receive hook for ${projectId} failed:`, err?.message ?? err)
         })
@@ -478,6 +498,11 @@ export function gitHttpRoutes(config: GitHttpRoutesConfig) {
     }
 
     const workspacePath = join(workspacesDir, projectId)
+    // Hydrate the durable repo from object storage onto this (stateless)
+    // pod before serving. No-op when already local or no remote exists.
+    await hydrateRepo(projectId, workspacePath).catch((err) =>
+      console.warn(`[git-http] hydrate for ${projectId} failed:`, err?.message ?? err),
+    )
     if (!ensureRepoConfigured(workspacePath)) {
       return c.json(
         { error: { code: 'workspace_not_found', message: 'Workspace not found for project' } },
@@ -510,6 +535,9 @@ export function gitHttpRoutes(config: GitHttpRoutesConfig) {
       if (denied) return denied
 
       const workspacePath = join(workspacesDir, projectId)
+      await hydrateRepo(projectId, workspacePath).catch((err) =>
+        console.warn(`[git-http] hydrate for ${projectId} failed:`, err?.message ?? err),
+      )
       if (!ensureRepoConfigured(workspacePath)) {
         return c.json(
           { error: { code: 'workspace_not_found', message: 'Workspace not found for project' } },

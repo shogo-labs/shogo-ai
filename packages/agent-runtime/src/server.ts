@@ -42,6 +42,17 @@ import {
   GitWorkspaceSync,
   createGitSyncFromEnv,
   resolveCloudSyncMode,
+  ensureWorkspaceRepo,
+  syncLargeFiles,
+  restoreLargeFiles,
+  largeFileSyncConfigFromEnv,
+  restoreRepoFromStore,
+  persistRepoToStore,
+  seedRepoIfAbsent,
+  createTagLocal,
+  getHeadSha,
+  repoStoreConfigFromEnv,
+  gatherCommitMeta,
   type CloudSyncMode,
 } from '@shogo/shared-runtime'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
@@ -67,7 +78,7 @@ import {
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { createPtyWsHandlers, type WsData } from './pty-ws-handler'
-import { deriveApiUrl, getInternalHeaders } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, postCheckpointRecord } from './internal-api'
 import { initTrustResolver, refreshTrust } from './trust-resolver'
 import {
   isWorkspaceRuntimeMode,
@@ -269,6 +280,55 @@ async function reportHeartbeatComplete(projectId: string): Promise<void> {
 let agentGateway: any = null
 let s3SyncInstance: import('@shogo/shared-runtime').S3Sync | null = null
 let gitSyncInstance: GitWorkspaceSync | null = null
+
+/**
+ * Offload large/binary assets to S3 and refresh `.git/info/exclude` so the
+ * subsequent git push stays source-only. Fire-and-forget — paired with the
+ * git push at the turn-complete boundary in `git_only` / `dual_shadow`.
+ * No-op unless object storage is configured and a git sync is active.
+ */
+function triggerLargeFileSync(): void {
+  if (!gitSyncInstance) return
+  const cfg = largeFileSyncConfigFromEnv(WORKSPACE_DIR)
+  if (!cfg) return
+  void syncLargeFiles(cfg).catch((err: any) =>
+    console.warn('[agent-runtime] large-file sync threw:', err?.message ?? err),
+  )
+}
+
+/**
+ * Pod-owned `git_only` durability: after a local commit, persist `.git` to
+ * object storage (the durable home of the repo) and record the
+ * `ProjectCheckpoint` row via the API. Wired as GitWorkspaceSync's
+ * `afterCommit`. A persist failure THROWS so the sync's retry/degrade path
+ * re-arms S3 Layer 2; a checkpoint-record failure is best-effort (the commit
+ * is already durable and the row can be reconciled on the next API hydrate).
+ */
+async function persistAndRecordCheckpoint(sha: string): Promise<void> {
+  const repoCfg = repoStoreConfigFromEnv()
+  if (repoCfg) {
+    const res = await persistRepoToStore(WORKSPACE_DIR, repoCfg)
+    if (!res.ok) throw new Error(`durable repo persist failed: ${res.reason}`)
+  }
+  // Record the checkpoint row (best-effort; the commit is already durable in
+  // the persisted `.git`). Compute metadata locally then POST via the authed
+  // internal channel (SA token in cluster, x-runtime-token locally).
+  const projectId = process.env.PROJECT_ID
+  if (projectId) {
+    const meta = await gatherCommitMeta(WORKSPACE_DIR, sha)
+    if (meta) {
+      await postCheckpointRecord(projectId, {
+        commitSha: meta.sha,
+        commitMessage: meta.message,
+        branch: meta.branch,
+        filesChanged: meta.filesChanged,
+        additions: meta.additions,
+        deletions: meta.deletions,
+        isAutomatic: true,
+      })
+    }
+  }
+}
 
 const workspaceStatus: {
   templateSeeded: boolean
@@ -1424,15 +1484,18 @@ app.post('/agent/chat', async (c) => {
         writer.write({ type: 'finish', finishReason: usage?.wasAborted ? 'abort' : 'stop' })
         turnSucceeded = true
 
-        // Per-turn git push: in `dual_shadow` / `git_only` modes,
-        // flush the workspace once the agent finishes its turn. This
-        // is the natural ProjectCheckpoint granularity — one row per
-        // assistant turn, materialized via the smart-HTTP backend's
-        // post-receive hook (see apps/api/src/routes/git-http.ts).
+        // Per-turn git sync: in `dual_shadow` / `git_only` modes, sync
+        // the workspace once the agent finishes its turn. This is the
+        // natural ProjectCheckpoint granularity — one row per assistant
+        // turn. In `git_only` (pod-owned) the commit is local and the
+        // sync's afterCommit persists `.git` to object storage and records
+        // the ProjectCheckpoint row via the internal API endpoint (see
+        // persistAndRecordCheckpoint above). In `dual_shadow` it pushes to
+        // the API origin, whose post-receive hook writes the row.
         //
         // We deliberately do NOT hook the S3Sync filesystem watcher
-        // for git: that fires per file event and would push 5–50
-        // commits per turn (every tool call, every edit). The
+        // for git: that fires per file event and would commit 5–50
+        // times per turn (every tool call, every edit). The
         // turn-complete site is the same boundary the checkpoints
         // system has always used.
         //
@@ -1441,6 +1504,9 @@ app.post('/agent/chat', async (c) => {
         // doesn't add latency to the turn-complete response.
         if (gitSyncInstance) {
           try {
+            // Offload large/binary assets first (updates .git/info/exclude
+            // synchronously so the debounced push below stays source-only).
+            triggerLargeFileSync()
             gitSyncInstance.triggerSync(false)
           } catch (err: any) {
             console.warn('[agent-runtime] gitSync triggerSync at turn-complete threw:', err?.message ?? err)
@@ -4166,6 +4232,54 @@ app.get('/agent/dist-files', (c) => {
 })
 
 /**
+ * Force an immediate, AWAITED git sync of the workspace and return the
+ * resulting HEAD sha. Called by the publish flow (apps/api/src/routes/
+ * publish.ts) so the published source is committed + persisted to the
+ * durable repo before the API records the publish.
+ *
+ * In the pod-owned `git_only` model the pod owns the repo, so this also
+ * handles publish-as-tag: when a `tag` is supplied, after the flush we
+ * create the annotated tag locally and re-persist `.git` (now carrying the
+ * tag) to object storage. The API then records publishedCommitSha/Tag and
+ * picks the tag up on its next read-hydrate. Also flushes the S3 large-file
+ * offload first so the durable repo stays source-only. No-op (flushed=false)
+ * when git sync isn't active for this pod (e.g. legacy `s3` mode).
+ */
+app.post('/agent/git-flush', async (c) => {
+  if (!gitSyncInstance) {
+    return c.json({ ok: true, flushed: false, reason: 'git-sync-not-active' })
+  }
+  let tag: string | undefined
+  let tagMessage: string | undefined
+  try {
+    const body = await c.req.json().catch(() => ({}))
+    tag = typeof body?.tag === 'string' ? body.tag : undefined
+    tagMessage = typeof body?.tagMessage === 'string' ? body.tagMessage : undefined
+  } catch {
+    /* no body */
+  }
+  try {
+    const lfCfg = largeFileSyncConfigFromEnv(WORKSPACE_DIR)
+    if (lfCfg) await syncLargeFiles(lfCfg)
+    await gitSyncInstance.flush()
+
+    let taggedSha: string | null = null
+    if (tag) {
+      taggedSha = await createTagLocal(WORKSPACE_DIR, tag, { message: tagMessage, force: true })
+      // Re-persist so the durable repo carries the new tag.
+      const repoCfg = repoStoreConfigFromEnv()
+      if (repoCfg) await persistRepoToStore(WORKSPACE_DIR, repoCfg)
+    }
+
+    const sha = taggedSha ?? (await getHeadSha(WORKSPACE_DIR))
+    return c.json({ ok: true, flushed: true, sha, tag: tag ?? null })
+  } catch (err: any) {
+    console.error('[agent-runtime] /agent/git-flush failed:', err?.message ?? err)
+    return c.json({ ok: false, error: err?.message ?? 'git-flush failed' }, 500)
+  }
+})
+
+/**
  * Phases during which a build is plausibly in flight and `dist/` may
  * legitimately be missing. When a navigation request would otherwise
  * 404 we render a small "Building..." placeholder instead so the user
@@ -4439,8 +4553,89 @@ async function initializeEssentials(): Promise<void> {
   // of the session. On recovery we re-suppress (only in git_only mode;
   // dual_shadow always keeps S3 Layer 2 active).
   if (!skipInternalSync && wantGitSync) {
+    // Cold-start git lifecycle. The pod owns the repo: before the per-turn
+    // committer can run, the working tree must be a git repo with the durable
+    // history present.
+    //
+    //   git_only (pod-owned)  → restore `.git` from object storage (the pod's
+    //     own durable copy). If no durable object exists yet, seed a fresh
+    //     repo from the S3-restored tree (legacy s3-mode migration) and
+    //     persist it. No API origin involved.
+    //   dual_shadow           → ensureWorkspaceRepo fetches/seeds against the
+    //     API origin (the legacy push model is still the durability path).
+    //
+    // Then restore the S3-offloaded large/binary assets so the pod sees a
+    // complete tree.
+    const cloudApiUrl = process.env.SHOGO_API_URL
+    const runtimeAuthSecret = process.env.RUNTIME_AUTH_SECRET
+    const projectId = process.env.PROJECT_ID
+    if (cloudApiUrl && runtimeAuthSecret && projectId) {
+      try {
+        if (cloudSyncMode === 'git_only') {
+          const repoCfg = repoStoreConfigFromEnv()
+          let restored = false
+          if (repoCfg) {
+            const res = await restoreRepoFromStore(WORKSPACE_DIR, repoCfg)
+            restored = res.restored
+          }
+          if (!restored) {
+            // No durable repo yet (brand-new or legacy s3 project): seed from
+            // the on-disk tree and persist so the next cold start hydrates it.
+            const seededSha = await seedRepoIfAbsent(WORKSPACE_DIR)
+            if (seededSha && repoCfg) {
+              await persistRepoToStore(WORKSPACE_DIR, repoCfg)
+              // Record the baseline seed commit so it shows in the checkpoints
+              // timeline (not just the git graph).
+              const meta = await gatherCommitMeta(WORKSPACE_DIR, seededSha)
+              if (meta) {
+                await postCheckpointRecord(projectId, {
+                  commitSha: meta.sha,
+                  commitMessage: meta.message,
+                  branch: meta.branch,
+                  filesChanged: meta.filesChanged,
+                  additions: meta.additions,
+                  deletions: meta.deletions,
+                  isAutomatic: true,
+                })
+              }
+            }
+            logTiming(`Git repo bootstrap (git_only, restored=false, seeded=${Boolean(seededSha)})`)
+          } else {
+            logTiming('Git repo bootstrap (git_only, restored=true)')
+          }
+        } else {
+          const result = await ensureWorkspaceRepo({
+            workspaceDir: WORKSPACE_DIR,
+            cloudApiUrl,
+            runtimeAuthSecret,
+            projectId,
+          })
+          logTiming(
+            `Git repo bootstrap (preexisting=${result.preexisting}, cloned=${result.cloned}, seeded=${result.seeded})`,
+          )
+        }
+      } catch (error: any) {
+        console.error('[agent-runtime] git repo bootstrap failed (falling back to S3 durability):', error.message)
+      }
+      const lfCfg = largeFileSyncConfigFromEnv(WORKSPACE_DIR)
+      if (lfCfg) {
+        try {
+          await restoreLargeFiles(lfCfg)
+          logTiming('Large-file assets restored')
+        } catch (error: any) {
+          console.error('[agent-runtime] restoreLargeFiles failed:', error.message)
+        }
+      }
+    } else {
+      console.warn('[agent-runtime] git mode requested but SHOGO_API_URL/RUNTIME_AUTH_SECRET/PROJECT_ID incomplete; skipping repo bootstrap')
+    }
     try {
       gitSyncInstance = createGitSyncFromEnv(WORKSPACE_DIR, {
+        // git_only is pod-owned: commit locally + persist `.git` + record
+        // the checkpoint row via afterCommit, instead of pushing to an API
+        // origin. dual_shadow keeps the push model.
+        localOnly: cloudSyncMode === 'git_only',
+        afterCommit: cloudSyncMode === 'git_only' ? persistAndRecordCheckpoint : undefined,
         onDegrade: (reason) => {
           console.warn(
             `[agent-runtime] cloud-sync degraded (mode=${cloudSyncMode}): ${reason}`,
@@ -4628,7 +4823,10 @@ async function startGateway(): Promise<void> {
       // s3SyncInstance.triggerSync no-ops on Layer 2 (suppressed) but
       // still gates Layer 1 deps. In dual_shadow both write.
       s3SyncInstance?.triggerSync(true)
-      gitSyncInstance?.triggerSync(true)
+      if (gitSyncInstance) {
+        triggerLargeFileSync()
+        gitSyncInstance.triggerSync(true)
+      }
     })
   }
 
@@ -4700,6 +4898,16 @@ async function gracefulShutdown(signal: string): Promise<void> {
   try {
     const mode = resolveCloudSyncMode()
     if (gitSyncInstance) {
+      // Final large-file offload before the last push so the durable repo
+      // stays source-only and the offloaded asset set is current.
+      const lfCfg = largeFileSyncConfigFromEnv(WORKSPACE_DIR)
+      if (lfCfg) {
+        try {
+          await syncLargeFiles(lfCfg)
+        } catch (err: any) {
+          console.warn('[agent-runtime] large-file flush during shutdown threw:', err?.message ?? err)
+        }
+      }
       try {
         await gitSyncInstance.flushAndShutdown(5_000)
       } catch (err: any) {

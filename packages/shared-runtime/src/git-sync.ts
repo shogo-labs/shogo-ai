@@ -109,6 +109,22 @@ export interface GitWorkspaceSyncConfig {
   authorEmail?: string
   /** Author name for the auto-commit. */
   authorName?: string
+  /**
+   * Pod-owned `git_only` mode. When true, the sync commits locally and
+   * invokes {@link afterCommit} instead of pushing to a cloud remote. The
+   * pod owns durability (persist `.git` to object storage) and checkpoint
+   * recording; there is no API-side origin to push to. The failure-isolation
+   * machinery is reused: if `afterCommit` throws `degradeAfterFailures`
+   * times in a row, `onDegrade` fires so S3 Layer 2 re-engages.
+   */
+  localOnly?: boolean
+  /**
+   * Called after a successful local commit (localOnly mode) with the new
+   * HEAD sha. Used to persist `.git` to object storage and record the
+   * `ProjectCheckpoint` row via the API. Throwing routes through the same
+   * retry/degrade path as a failed push.
+   */
+  afterCommit?: (sha: string) => Promise<void> | void
 }
 
 export interface SpawnGitFn {
@@ -178,13 +194,14 @@ function buildGitUrl(cloudApiUrl: string, projectId: string): string {
 
 export class GitWorkspaceSync {
   private readonly cfg: Required<Omit<GitWorkspaceSyncConfig,
-    'onDegrade' | 'onRecovered' | 'logger' | 'spawnGit' | 'authorEmail' | 'authorName'>> & {
+    'onDegrade' | 'onRecovered' | 'logger' | 'spawnGit' | 'authorEmail' | 'authorName' | 'afterCommit'>> & {
     onDegrade: (reason: string) => void
     onRecovered: () => void
     logger: Logger
     spawnGit: SpawnGitFn
     authorEmail: string
     authorName: string
+    afterCommit: ((sha: string) => Promise<void> | void) | null
   }
 
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -207,12 +224,14 @@ export class GitWorkspaceSync {
       debounceMs: config.debounceMs ?? SYNC_DEBOUNCE_MS,
       degradeAfterFailures: config.degradeAfterFailures ?? DEFAULT_DEGRADE_AFTER,
       branch: config.branch ?? 'HEAD',
+      localOnly: config.localOnly ?? false,
       onDegrade: config.onDegrade ?? (() => { }),
       onRecovered: config.onRecovered ?? (() => { }),
       logger: config.logger ?? console,
       spawnGit: config.spawnGit ?? defaultSpawnGit,
       authorEmail: config.authorEmail ?? 'agent-runtime@shogo.ai',
       authorName: config.authorName ?? 'Shogo Agent',
+      afterCommit: config.afterCommit ?? null,
     }
   }
 
@@ -247,6 +266,28 @@ export class GitWorkspaceSync {
       this.debounceTimer = null
       void this.runPushCycle()
     }, this.cfg.debounceMs)
+  }
+
+  /**
+   * Synchronously flush the current working tree to the cloud and AWAIT
+   * the push, WITHOUT shutting the sync down. Used by the publish flow
+   * (`POST /agent/git-flush`) to guarantee the published source is in the
+   * durable repo before the API tags HEAD.
+   *
+   * Cancels any pending debounce, waits for an in-flight push to finish,
+   * then runs a fresh push cycle so the very latest tree lands.
+   */
+  async flush(): Promise<void> {
+    if (this.shuttingDown) return
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer)
+      this.debounceTimer = null
+    }
+    // Wait out any in-flight push so we capture the latest staged tree.
+    while (this.isPushing) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    await this.runPushCycle()
   }
 
   /**
@@ -330,14 +371,26 @@ export class GitWorkspaceSync {
         commitEnv,
       )
 
-      // Push with the bearer header via `-c` so it never lands in argv-as-URL.
-      const header = `http.extraHeader=Authorization: Bearer ${this.cfg.runtimeAuthSecret}`
-      await this.runGit(
-        spawnGit,
-        ['-c', header, 'push', url, branch],
-        workspaceDir,
-        commitEnv,
-      )
+      if (this.cfg.localOnly) {
+        // Pod-owned durability: no cloud origin to push to. Resolve the new
+        // HEAD and hand it to afterCommit (persist `.git` to object storage
+        // + record the ProjectCheckpoint row). Throwing here is treated like
+        // a push failure → retry/backoff/degrade.
+        const head = await spawnGit(['rev-parse', 'HEAD'], workspaceDir, commitEnv)
+        const sha = head.stdout.trim()
+        if (this.cfg.afterCommit) {
+          await this.cfg.afterCommit(sha)
+        }
+      } else {
+        // Push with the bearer header via `-c` so it never lands in argv-as-URL.
+        const header = `http.extraHeader=Authorization: Bearer ${this.cfg.runtimeAuthSecret}`
+        await this.runGit(
+          spawnGit,
+          ['-c', header, 'push', url, branch],
+          workspaceDir,
+          commitEnv,
+        )
+      }
 
       // SUCCESS — clear backoff + recover from degraded state if applicable.
       if (this.backoffTimer) {
@@ -427,13 +480,15 @@ export type CloudSyncMode = 's3' | 'dual_shadow' | 'git_only'
 
 /**
  * Read `SHOGO_CLOUD_SYNC_MODE` from the environment, normalize case,
- * and clamp anything unrecognized to `s3` (the safe default — today's
- * behavior). Exported for unit testing.
+ * and clamp anything unrecognized to `git_only` (the new default — the
+ * durable object-store-backed git repo is the source of truth for
+ * checkpoints + history). Explicit `s3` / `dual_shadow` still honored.
+ * Exported for unit testing.
  */
 export function resolveCloudSyncMode(env: NodeJS.ProcessEnv = process.env): CloudSyncMode {
-  const raw = (env.SHOGO_CLOUD_SYNC_MODE ?? 's3').toLowerCase()
-  if (raw === 'dual_shadow' || raw === 'git_only') return raw
-  return 's3'
+  const raw = (env.SHOGO_CLOUD_SYNC_MODE ?? 'git_only').toLowerCase()
+  if (raw === 's3' || raw === 'dual_shadow') return raw
+  return 'git_only'
 }
 
 /**
@@ -448,7 +503,7 @@ export function resolveCloudSyncMode(env: NodeJS.ProcessEnv = process.env): Clou
  */
 export function createGitSyncFromEnv(
   workspaceDir: string,
-  opts: Pick<GitWorkspaceSyncConfig, 'onDegrade' | 'onRecovered' | 'debounceMs' | 'degradeAfterFailures' | 'logger'> = {},
+  opts: Pick<GitWorkspaceSyncConfig, 'onDegrade' | 'onRecovered' | 'debounceMs' | 'degradeAfterFailures' | 'logger' | 'localOnly' | 'afterCommit'> = {},
 ): GitWorkspaceSync | null {
   const cloudApiUrl = process.env.SHOGO_API_URL
   const runtimeAuthSecret = process.env.RUNTIME_AUTH_SECRET

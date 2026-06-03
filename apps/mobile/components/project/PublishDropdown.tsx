@@ -64,6 +64,7 @@ export function PublishDropdown({ projectId, projectName }: PublishDropdownProps
   const [isPublished, setIsPublished] = useState(false)
   const [publishedAt, setPublishedAt] = useState<number | null>(null)
   const [publishedSubdomain, setPublishedSubdomain] = useState<string | null>(null)
+  const [publishedCommitSha, setPublishedCommitSha] = useState<string | null>(null)
   const [isPublishing, setIsPublishing] = useState(false)
   const [isUnpublishing, setIsUnpublishing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -90,6 +91,7 @@ export function PublishDropdown({ projectId, projectName }: PublishDropdownProps
         setPublishedSubdomain(data.subdomain)
         setSubdomain(data.subdomain)
         setPublishedAt(data.publishedAt ?? null)
+        setPublishedCommitSha(data.publishedCommitSha ?? null)
         if (data.accessLevel) setAccessLevel(data.accessLevel as AccessLevel)
       }
     } catch {}
@@ -198,11 +200,18 @@ export function PublishDropdown({ projectId, projectName }: PublishDropdownProps
 
           {/* Published URL banner */}
           {isPublished && publishedSubdomain && (
-            <View className="flex-row items-center gap-2 p-3 bg-emerald-500/10 rounded-lg border border-emerald-500/20 mb-4">
-              <CheckCircle size={16} color="#10b981" />
-              <Text className="text-sm text-emerald-600 dark:text-emerald-400">
-                {publishedSubdomain}.{PUBLISH_DOMAIN}
-              </Text>
+            <View className="gap-1 p-3 bg-emerald-500/10 rounded-lg border border-emerald-500/20 mb-4">
+              <View className="flex-row items-center gap-2">
+                <CheckCircle size={16} color="#10b981" />
+                <Text className="text-sm text-emerald-600 dark:text-emerald-400">
+                  {publishedSubdomain}.{PUBLISH_DOMAIN}
+                </Text>
+              </View>
+              {publishedCommitSha && (
+                <Text className="text-[11px] text-muted-foreground ml-6 font-mono">
+                  commit {publishedCommitSha.slice(0, 8)}
+                </Text>
+              )}
             </View>
           )}
 

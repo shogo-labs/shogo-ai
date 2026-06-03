@@ -1056,11 +1056,11 @@ export class KnativeProjectManager {
         select: { workspaceId: true, cloudSyncMode: true } as any,
       }) as ({ workspaceId: string | null; cloudSyncMode?: string | null }) | null
       if (project) {
-        // Per-project cloud sync strategy: only inject when non-default so
-        // existing pods boot with identical env (no behavior change unless a
-        // project explicitly opts into dual_shadow / git_only). Resolved by
-        // packages/agent-runtime/src/server.ts → resolveCloudSyncMode().
-        if (project.cloudSyncMode && project.cloudSyncMode !== 's3') {
+        // Per-project cloud sync strategy. The pod-side default is now
+        // `git_only`, so we inject the mode for EVERY project — otherwise a
+        // project explicitly pinned to `s3` would silently boot in git_only.
+        // Resolved by packages/agent-runtime/src/server.ts → resolveCloudSyncMode().
+        if (project.cloudSyncMode) {
           env.push({ name: "SHOGO_CLOUD_SYNC_MODE", value: project.cloudSyncMode })
           console.log(`[KnativeProjectManager] Injected SHOGO_CLOUD_SYNC_MODE=${project.cloudSyncMode} for project ${projectId}`)
         }

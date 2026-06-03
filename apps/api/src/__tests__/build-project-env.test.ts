@@ -263,13 +263,13 @@ describe('buildProjectEnv — project-derived fields', () => {
     expect(getAgentTemplateByIdMock).not.toHaveBeenCalled()
   })
 
-  test('omits SHOGO_CLOUD_SYNC_MODE when cloudSyncMode is the default ("s3")', async () => {
+  test('injects SHOGO_CLOUD_SYNC_MODE for an explicit "s3" project (pod default is git_only)', async () => {
     findUniqueProjectMock.mockImplementation(async () => ({
       workspaceId: 'ws-1',
       cloudSyncMode: 's3',
     }))
     const env = await buildProjectEnv('proj-sync-default')
-    expect(env.SHOGO_CLOUD_SYNC_MODE).toBeUndefined()
+    expect(env.SHOGO_CLOUD_SYNC_MODE).toBe('s3')
   })
 
   test('injects SHOGO_CLOUD_SYNC_MODE when cloudSyncMode is "dual_shadow"', async () => {

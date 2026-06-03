@@ -1015,6 +1015,57 @@ export async function listTags(workspacePath: string): Promise<string[]> {
 }
 
 /**
+ * Create an annotated tag at `ref` (defaults to HEAD).
+ *
+ * Used by the publish flow to mark the exact commit that was deployed
+ * (`publish/<subdomain>/<unix-ts>`). Annotated (not lightweight) so the
+ * tag carries the publish timestamp + message and renders as a `tag:`
+ * decoration in the commit graph via `parseRefs`.
+ *
+ * Returns the resolved sha the tag points at, or null on failure.
+ */
+export async function createTag(
+  workspacePath: string,
+  name: string,
+  options?: { message?: string; ref?: string; force?: boolean },
+): Promise<string | null> {
+  if (!isGitRepo(workspacePath)) return null;
+  const { message, ref = 'HEAD', force = false } = options || {};
+  // Validate the tag name so it can't smuggle args into the git CLI.
+  if (!/^[0-9a-zA-Z][0-9a-zA-Z._/-]{0,199}$/.test(name)) {
+    throw new Error(`Invalid tag name: ${name}`);
+  }
+  if (!/^[0-9a-zA-Z][0-9a-zA-Z._/-]{0,199}$/.test(ref)) {
+    throw new Error(`Invalid tag ref: ${ref}`);
+  }
+  try {
+    const args = ['tag', '-a'];
+    if (force) args.push('-f');
+    args.push('-m', message || name, name, ref);
+    execFileSync('git', args, {
+      cwd: workspacePath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME || 'Shogo',
+        GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL || 'bot@shogo.ai',
+        GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || 'Shogo',
+        GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL || 'bot@shogo.ai',
+      },
+    });
+    const sha = execFileSync('git', ['rev-list', '-n', '1', name], {
+      cwd: workspacePath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+    return sha.trim() || null;
+  } catch (err: any) {
+    throw new Error(`createTag failed: ${err?.message ?? err}`);
+  }
+}
+
+/**
  * Files changed by a single commit. Handles the root commit (no parent) by
  * diffing against the empty tree so the very first commit still lists files.
  */

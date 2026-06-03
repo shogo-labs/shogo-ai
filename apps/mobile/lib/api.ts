@@ -477,7 +477,13 @@ export const api = {
   // ─── Publish ─────────────────────────────────────────────
 
   async getPublishState(http: HttpClient, projectId: string) {
-    const res = await http.get<{ subdomain?: string; publishedAt?: number; accessLevel?: string }>(
+    const res = await http.get<{
+      subdomain?: string
+      publishedAt?: number
+      accessLevel?: string
+      publishedCommitSha?: string
+      publishedTag?: string
+    }>(
       `/api/projects/${projectId}/publish`,
     )
     return res.data

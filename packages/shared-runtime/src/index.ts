@@ -19,6 +19,38 @@ export {
 } from './git-sync'
 
 export {
+  ensureWorkspaceRepo,
+  type EnsureWorkspaceRepoConfig,
+  type EnsureWorkspaceRepoResult,
+} from './git-bootstrap'
+
+export {
+  persistRepoToStore,
+  restoreRepoFromStore,
+  seedRepoIfAbsent,
+  createTagLocal,
+  getHeadSha,
+  repoExistsInStore,
+  repoStoreConfigFromEnv,
+  type RepoStoreConfig,
+} from './repo-store'
+
+export {
+  gatherCommitMeta,
+  type CommitMeta,
+} from './checkpoint-record'
+
+export {
+  classifyLargeFiles,
+  syncLargeFiles,
+  restoreLargeFiles,
+  largeFileThreshold,
+  largeFileSyncConfigFromEnv,
+  DEFAULT_LARGE_FILE_BYTES,
+  type LargeFileSyncConfig,
+} from './large-file-sync'
+
+export {
   initializePostgresBackup,
   createPostgresBackupFromEnv,
   waitForPostgres,

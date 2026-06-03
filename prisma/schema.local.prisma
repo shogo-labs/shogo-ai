@@ -167,6 +167,10 @@ model Project {
   publishStatus      String    @default("idle")
   publishError       String?
   publishStatusAt    DateTime?
+  // The exact git commit + annotated tag the current publish points at.
+  // See prisma/schema.prisma for the canonical comment.
+  publishedCommitSha String?
+  publishedTag       String?
   accessLevel        String    @default("anyone")
   category           String?
   siteTitle          String?
@@ -190,7 +194,9 @@ model Project {
   // store it as TEXT with the same allowed values used by the PG enum:
   //   's3' | 'dual_shadow' | 'git_only'. The check constraint lives in
   //   the migration. See prisma/schema.prisma for the canonical comment.
-  cloudSyncMode String @default("s3")
+  //   Default mirrors the PG schema (`git_only`); harmless on desktop
+  //   where cloud sync is disabled (SHOGO_LOCAL_MODE).
+  cloudSyncMode String @default("git_only")
 
   workspace              Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   folder                 Folder?                 @relation(fields: [folderId], references: [id], onDelete: SetNull)

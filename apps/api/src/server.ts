@@ -1551,6 +1551,18 @@ app.get('/api/subdomains/:subdomain/check', async (c) => {
   return router.fetch(newReq)
 })
 
+// Current publish state (used by the publish panel)
+app.get('/api/projects/:projectId/publish', async (c) => {
+  const router = publishRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/publish`
+  const newReq = new Request(url.toString(), {
+    method: 'GET',
+    headers: c.req.raw.headers,
+  })
+  return router.fetch(newReq)
+})
+
 // Publish a project
 app.post('/api/projects/:projectId/publish', async (c) => {
   const router = publishRoutes()

@@ -12,8 +12,8 @@ import { describe, test, expect } from 'bun:test'
 import { resolveCloudSyncMode } from '../git-sync'
 
 describe('resolveCloudSyncMode', () => {
-  test('defaults to s3 when SHOGO_CLOUD_SYNC_MODE is unset', () => {
-    expect(resolveCloudSyncMode({})).toBe('s3')
+  test('defaults to git_only when SHOGO_CLOUD_SYNC_MODE is unset', () => {
+    expect(resolveCloudSyncMode({})).toBe('git_only')
   })
 
   test('routes "dual_shadow"', () => {
@@ -24,13 +24,17 @@ describe('resolveCloudSyncMode', () => {
     expect(resolveCloudSyncMode({ SHOGO_CLOUD_SYNC_MODE: 'git_only' })).toBe('git_only')
   })
 
+  test('routes explicit "s3"', () => {
+    expect(resolveCloudSyncMode({ SHOGO_CLOUD_SYNC_MODE: 's3' })).toBe('s3')
+  })
+
   test('is case-insensitive', () => {
     expect(resolveCloudSyncMode({ SHOGO_CLOUD_SYNC_MODE: 'GIT_ONLY' })).toBe('git_only')
     expect(resolveCloudSyncMode({ SHOGO_CLOUD_SYNC_MODE: 'Dual_Shadow' })).toBe('dual_shadow')
   })
 
-  test('clamps unrecognized values to s3 (safe default)', () => {
-    expect(resolveCloudSyncMode({ SHOGO_CLOUD_SYNC_MODE: 'magic' })).toBe('s3')
-    expect(resolveCloudSyncMode({ SHOGO_CLOUD_SYNC_MODE: '' })).toBe('s3')
+  test('clamps unrecognized values to git_only (new default)', () => {
+    expect(resolveCloudSyncMode({ SHOGO_CLOUD_SYNC_MODE: 'magic' })).toBe('git_only')
+    expect(resolveCloudSyncMode({ SHOGO_CLOUD_SYNC_MODE: '' })).toBe('git_only')
   })
 })

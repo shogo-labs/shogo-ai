@@ -70,6 +70,50 @@ export interface AgentCostMetricPayload {
   responseEmpty?: boolean
 }
 
+/**
+ * Record a `ProjectCheckpoint` row for an already-made local commit
+ * (pod-owned `git_only` model). Best-effort — failures are logged, never
+ * thrown: the commit is already durable in the persisted `.git`, and the
+ * row can be reconciled on a later read. Auth uses the standard internal
+ * headers (K8s SA token in cluster, `x-runtime-token` locally).
+ */
+export interface CheckpointRecordPayload {
+  commitSha: string
+  commitMessage: string
+  branch: string
+  filesChanged: number
+  additions: number
+  deletions: number
+  isAutomatic?: boolean
+}
+
+export async function postCheckpointRecord(
+  projectId: string,
+  payload: CheckpointRecordPayload,
+): Promise<boolean> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return false
+  try {
+    const res = await fetch(
+      `${apiUrl}/api/internal/projects/${encodeURIComponent(projectId)}/checkpoints/record`,
+      {
+        method: 'POST',
+        headers: getInternalHeaders(),
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(5_000),
+      },
+    )
+    if (!res.ok) {
+      console.warn(`[Runtime] postCheckpointRecord HTTP ${res.status} for ${projectId}`)
+      return false
+    }
+    return true
+  } catch (err: any) {
+    console.warn('[Runtime] postCheckpointRecord failed:', err?.message ?? err)
+    return false
+  }
+}
+
 export async function postCostMetric(payload: AgentCostMetricPayload): Promise<void> {
   const apiUrl = deriveApiUrl()
   if (!apiUrl) return

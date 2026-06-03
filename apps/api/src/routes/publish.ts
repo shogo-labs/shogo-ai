@@ -16,14 +16,9 @@
  */
 
 import { Hono } from "hono"
-import { resolve } from "path"
 import { S3Client, PutObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } from "@aws-sdk/client-s3"
 import { prisma } from "../lib/prisma"
 import { deriveRuntimeToken } from "../lib/runtime-token"
-import * as checkpointService from "../services/checkpoint.service"
-
-// Workspaces directory for checkpoint creation
-const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(import.meta.dir, '../../../../workspaces')
 
 // S3 configuration. `PUBLISH_BUCKET` must be set explicitly in every K8s
 // overlay (k8s/overlays/{staging,production-*}/api-service.yaml) — the
@@ -277,6 +272,71 @@ async function downloadDistFiles(projectId: string): Promise<Map<string, Buffer>
 }
 
 /**
+ * Force the runtime pod to flush its git sync so the published source is
+ * committed + pushed into the durable repo before we tag HEAD. Best-effort
+ * — a pod in legacy `s3` mode (or with git sync inactive) returns
+ * `flushed:false` and we fall back to whatever HEAD the durable repo
+ * already holds. Never throws; the publish must still proceed.
+ */
+async function flushGitSync(
+  projectId: string,
+  opts: { tag?: string; tagMessage?: string } = {},
+): Promise<{ sha: string | null; tag: string | null } | null> {
+  try {
+    const { getProjectPodUrl } = await import("../lib/knative-project-manager")
+    const podUrl = await getProjectPodUrl(projectId)
+    const response = await fetch(`${podUrl}/agent/git-flush`, {
+      method: 'POST',
+      headers: {
+        'x-runtime-token': deriveRuntimeToken(projectId),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ tag: opts.tag, tagMessage: opts.tagMessage }),
+      signal: AbortSignal.timeout(PUBLISH_BUILD_TIMEOUT_MS),
+    })
+    if (!response.ok) {
+      console.warn(`[Publish] git-flush returned ${response.status} for ${projectId} (continuing)`)
+      return null
+    }
+    const result = await response.json().catch(() => ({})) as { sha?: string; tag?: string }
+    console.log(`[Publish] git-flush for ${projectId}:`, result)
+    return { sha: result.sha ?? null, tag: result.tag ?? null }
+  } catch (err: any) {
+    console.warn(`[Publish] git-flush failed for ${projectId} (continuing):`, err?.message ?? err)
+    return null
+  }
+}
+
+/**
+ * Mark the published commit with an annotated git tag so the publish is a
+ * traceable, immutable point in the project's history (visible in the
+ * commit graph as a `tag:` decoration). Records `publishedCommitSha` +
+ * `publishedTag` on the Project for the publish panel.
+ *
+ * Pod-owned model: the pod owns the durable repo, so the tag is created
+ * AND persisted by the pod inside `/agent/git-flush` (we pass the tag name
+ * and read back the tagged sha). The API just records the result; the tag
+ * shows up in the graph on the API's next read-hydrate. Best-effort — a
+ * failure here must not fail an otherwise-successful publish.
+ */
+async function tagPublishedCommit(
+  projectId: string,
+  subdomain: string,
+): Promise<{ sha: string; tag: string } | null> {
+  const tag = `publish/${subdomain}/${Math.floor(Date.now() / 1000)}`
+  const result = await flushGitSync(projectId, {
+    tag,
+    tagMessage: `Published ${subdomain}.${PUBLISH_DOMAIN}`,
+  })
+  if (!result?.sha) {
+    console.warn(`[Publish] No HEAD to tag for ${projectId} (pod git sync inactive or repo empty?)`)
+    return null
+  }
+  console.log(`[Publish] Tagged ${projectId} HEAD ${result.sha.slice(0, 8)} as ${tag}`)
+  return { sha: result.sha, tag: result.tag ?? tag }
+}
+
+/**
  * Upload files to S3 bucket under the subdomain prefix
  */
 async function uploadToS3(subdomain: string, files: Map<string, Buffer>): Promise<void> {
@@ -372,6 +432,45 @@ export function publishRoutes() {
     } catch (error: any) {
       console.error("[Publish] Check subdomain error:", error)
       return c.json({ error: { code: "check_failed", message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /projects/:projectId/publish - Current publish state for the panel.
+   * Returns null-ish fields when the project has never been published.
+   */
+  router.get("/projects/:projectId/publish", async (c) => {
+    try {
+      const projectId = c.req.param("projectId")
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: {
+          publishedSubdomain: true,
+          publishedAt: true,
+          accessLevel: true,
+          siteTitle: true,
+          siteDescription: true,
+          publishStatus: true,
+          publishedCommitSha: true,
+          publishedTag: true,
+        } as any,
+      }) as (Record<string, any>) | null
+      if (!project) {
+        return c.json({ error: { code: "project_not_found", message: "Project not found" } }, 404)
+      }
+      return c.json({
+        subdomain: project.publishedSubdomain ?? undefined,
+        publishedAt: project.publishedAt ? new Date(project.publishedAt).getTime() : undefined,
+        accessLevel: project.accessLevel ?? undefined,
+        siteTitle: project.siteTitle ?? undefined,
+        siteDescription: project.siteDescription ?? undefined,
+        publishStatus: project.publishStatus ?? undefined,
+        publishedCommitSha: project.publishedCommitSha ?? undefined,
+        publishedTag: project.publishedTag ?? undefined,
+      }, 200)
+    } catch (error: any) {
+      console.error("[Publish] Get publish state error:", error)
+      return c.json({ error: { code: "get_state_failed", message: error.message } }, 500)
     }
   })
 
@@ -501,6 +600,15 @@ export function publishRoutes() {
         console.log(`[Publish] Local mode - would publish to ${subdomain}.${PUBLISH_DOMAIN}`)
       }
 
+      // Tag the published commit in the durable git repo. This replaces
+      // the old auto-checkpoint-on-publish, which created the checkpoint
+      // against WORKSPACES_DIR/<id> on the API pod — a path that doesn't
+      // exist in the cloud topology (the workspace lives on the runtime
+      // pod / object storage), so it silently no-op'd for every cloud
+      // publish. Tagging flushes the pod's git sync, hydrates the durable
+      // repo here, and marks HEAD with `publish/<subdomain>/<ts>`.
+      const tagged = await tagPublishedCommit(projectId, subdomain)
+
       // Update project with publish info
       const publishedAt = new Date()
       await prisma.project.update({
@@ -514,19 +622,8 @@ export function publishRoutes() {
           accessLevel: accessLevel as any,
           siteTitle,
           siteDescription,
-        },
-      })
-
-      // Auto-checkpoint on publish (fire-and-forget)
-      const workspacePath = resolve(WORKSPACES_DIR, projectId)
-      checkpointService.createCheckpoint({
-        projectId,
-        workspacePath,
-        message: `Published to ${subdomain}.${PUBLISH_DOMAIN}`,
-        name: `Publish: ${subdomain}.${PUBLISH_DOMAIN}`,
-        isAutomatic: true,
-      }).catch((err) => {
-        console.warn('[Publish] Auto-checkpoint failed (non-blocking):', err.message)
+          ...(tagged && { publishedCommitSha: tagged.sha, publishedTag: tagged.tag }),
+        } as any,
       })
 
       // Auto-capture thumbnail after publish (fire-and-forget, delayed to let CDN propagate)
@@ -681,6 +778,10 @@ export function publishRoutes() {
         }
       }
 
+      // Tag the republished commit in the durable git repo (replaces the
+      // old WORKSPACES_DIR-based auto-checkpoint — see the publish handler).
+      const tagged = await tagPublishedCommit(projectId, subdomain)
+
       // Update publishedAt timestamp
       const publishedAt = new Date()
       await prisma.project.update({
@@ -690,19 +791,8 @@ export function publishRoutes() {
           publishStatus: 'live' as any,
           publishError: null,
           publishStatusAt: publishedAt,
-        },
-      })
-
-      // Auto-checkpoint on republish (fire-and-forget)
-      const workspacePath = resolve(WORKSPACES_DIR, projectId)
-      checkpointService.createCheckpoint({
-        projectId,
-        workspacePath,
-        message: `Republished to ${subdomain}.${PUBLISH_DOMAIN}`,
-        name: `Republish: ${subdomain}.${PUBLISH_DOMAIN}`,
-        isAutomatic: true,
-      }).catch((err) => {
-        console.warn('[Publish] Auto-checkpoint on republish failed (non-blocking):', err.message)
+          ...(tagged && { publishedCommitSha: tagged.sha, publishedTag: tagged.tag }),
+        } as any,
       })
 
       return c.json({
