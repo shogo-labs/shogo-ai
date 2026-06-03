@@ -22,6 +22,7 @@
     "./runtime-resolver": "./src/lib/runtime-resolver.ts",
     "./runtime-install": "./src/lib/runtime-install.ts",
     "./cloud-login": "./src/lib/cloud-login.ts",
+    "./db-doctor": "./src/lib/db-doctor.ts",
     "./paths": "./src/lib/paths.ts"
   },
   "files": [
