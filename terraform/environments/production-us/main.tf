@@ -129,10 +129,20 @@ module "us" {
   #      that churn without `Insufficient memory` for paying users.
   #   2. `system_pool_size` 2 -> 3 to match `min`. (terraform `size` is
   #      the desired count, autoscaler manages above this floor.)
+  #
+  # 2026-06-02 rollout-headroom bump (run 26865807851): `min` 3 -> 4 (and
+  # `size` to match) so there is always one warm, already-prepulled spare
+  # node beyond steady-state. A new revision's `min-scale: 2` api pods then
+  # land on that warm node instead of forcing the autoscaler to provision a
+  # COLD node mid-rollout (the cold-pull-mid-rollout failure class). This
+  # value MUST match the live floor: GitHub Actions variable NODE_POOL_MIN
+  # for environment production-us (consumed by deploy.yml "Deploy Cluster
+  # Autoscaler"). terraform `min`/`max` here are the source of truth for
+  # that var; the autoscaler `--nodes` flag is what enforces it live.
   system_node_ocpus     = 4
   system_node_memory_gb = 24
-  system_pool_size      = 3
-  system_pool_min       = 3
+  system_pool_size      = 4
+  system_pool_min       = 4
   system_pool_max       = 15
 
   # Live US nodes are already 200 GB (matches the module default). Stated

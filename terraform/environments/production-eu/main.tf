@@ -111,11 +111,19 @@ module "eu" {
   placement_ad_names = ["XYpk:EU-FRANKFURT-1-AD-1"]
 
   # EU uses A2.Flex (A4 not available in this region)
+  #
+  # 2026-06-02 rollout-headroom bump (run 26865807851): `min`/`size` 2 -> 3
+  # so there is always one warm, already-prepulled spare node beyond
+  # steady-state. A new revision's `min-scale: 2` api pods then land on that
+  # warm node instead of forcing the autoscaler to provision a COLD node
+  # mid-rollout (EU's warm pool never reached Ready in that run). MUST match
+  # the live floor: GitHub Actions variable NODE_POOL_MIN for environment
+  # production-eu (consumed by deploy.yml "Deploy Cluster Autoscaler").
   system_node_shape     = "VM.Standard.A2.Flex"
   system_node_ocpus     = 4
   system_node_memory_gb = 24
-  system_pool_size      = 2
-  system_pool_min       = 2
+  system_pool_size      = 3
+  system_pool_min       = 3
   system_pool_max       = 10
 
   # 200 GB to match production-us. EU was bootstrapped at 100 GB, which

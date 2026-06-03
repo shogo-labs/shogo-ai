@@ -837,7 +837,15 @@ jobs:
           if [ -z "$NODE_POOL_OCID" ]; then
             echo "NODE_POOL_OCID not set, skipping"
           else
-            sed "s|NODE_POOL_OCID_PLACEHOLDER|$NODE_POOL_OCID|g" k8s/base/cluster-autoscaler.yaml | kubectl apply -f -
+            # Standing-headroom floor: see the production "Deploy Cluster
+            # Autoscaler" step. MIN>=2 default prevents the old scale-to-1
+            # regression; keep vars in sync with terraform system_pool_min/max.
+            NODE_POOL_MIN="${{ vars.NODE_POOL_MIN || '2' }}"
+            NODE_POOL_MAX="${{ vars.NODE_POOL_MAX || '10' }}"
+            sed -e "s|NODE_POOL_MIN_PLACEHOLDER|$NODE_POOL_MIN|g" \
+                -e "s|NODE_POOL_MAX_PLACEHOLDER|$NODE_POOL_MAX|g" \
+                -e "s|NODE_POOL_OCID_PLACEHOLDER|$NODE_POOL_OCID|g" \
+                k8s/base/cluster-autoscaler.yaml | kubectl apply -f -
             # Force a reload so a stale OCID rolls out immediately, not next pod restart
             kubectl rollout restart deployment/cluster-autoscaler -n kube-system || true
             kubectl rollout status deployment/cluster-autoscaler -n kube-system --timeout=180s || true
@@ -887,6 +895,16 @@ jobs:
               -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
               k8s/base/image-prepuller.yaml | kubectl apply -f -
           kubectl get daemonset image-prepuller -n ${{ env.NS_SYSTEM }}
+
+      # Hard gate (run 26865807851, 2026-06-02): block until the
+      # image-prepuller DaemonSet has finished pulling the runtime image
+      # onto every node BEFORE patching the api/warm-pool revisions onto
+      # it. Without this the revisions race the pull and lose. No-op when
+      # the runtime tag is unchanged. See
+      # .github/scripts/wait-runtime-prepulled.sh.
+      - name: Wait for runtime image prepull (gate)
+        run: |
+          .github/scripts/wait-runtime-prepulled.sh "${{ env.NS_SYSTEM }}"
 
       # See the matching production step for context — a 5-minute
       # CronJob that catches the 2026-05-27 incident classes (placeholder
@@ -1285,7 +1303,19 @@ jobs:
         run: |
           NODE_POOL_OCID="${{ vars.NODE_POOL_OCID }}"
           if [ -z "$NODE_POOL_OCID" ]; then echo "Skipping autoscaler"; exit 0; fi
-          sed "s|NODE_POOL_OCID_PLACEHOLDER|$NODE_POOL_OCID|g" k8s/base/cluster-autoscaler.yaml | kubectl apply -f -
+          # Standing-headroom floor (run 26865807851, 2026-06-02): keep MIN
+          # warm (already-prepulled) nodes at idle so a rollout's `min-scale`
+          # api/warm-pool pods always land on a warm node instead of forcing
+          # the autoscaler to provision a COLD one mid-deploy. Defaults keep
+          # MIN>=2 so a missing var can never regress to the old scale-to-1
+          # behavior. Keep vars.NODE_POOL_MIN/MAX in sync with terraform
+          # system_pool_min/system_pool_max.
+          NODE_POOL_MIN="${{ vars.NODE_POOL_MIN || '2' }}"
+          NODE_POOL_MAX="${{ vars.NODE_POOL_MAX || '10' }}"
+          sed -e "s|NODE_POOL_MIN_PLACEHOLDER|$NODE_POOL_MIN|g" \
+              -e "s|NODE_POOL_MAX_PLACEHOLDER|$NODE_POOL_MAX|g" \
+              -e "s|NODE_POOL_OCID_PLACEHOLDER|$NODE_POOL_OCID|g" \
+              k8s/base/cluster-autoscaler.yaml | kubectl apply -f -
           kubectl rollout restart deployment/cluster-autoscaler -n kube-system || true
           kubectl rollout status deployment/cluster-autoscaler -n kube-system --timeout=180s || true
 
@@ -1320,6 +1350,17 @@ jobs:
           sed -e "s|RUNTIME_IMAGE_PLACEHOLDER|$RUNTIME_IMAGE|g" \
               -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
               k8s/base/image-prepuller.yaml | kubectl apply -f -
+
+      # Hard gate (run 26865807851, 2026-06-02): block until the
+      # image-prepuller DaemonSet has finished pulling the runtime image
+      # onto every node BEFORE patching the api/warm-pool revisions onto
+      # it. Without this the revisions race the pull and lose — India's
+      # api revision never achieved initial scale (ProgressDeadlineExceeded)
+      # and EU's warm pool never reached Ready. No-op when the runtime tag
+      # is unchanged. See .github/scripts/wait-runtime-prepulled.sh.
+      - name: Wait for runtime image prepull (gate)
+        run: |
+          .github/scripts/wait-runtime-prepulled.sh "${{ env.NS_SYSTEM }}"
 
       # Continuous warm-pool health monitor: a 5-minute CronJob that fails
       # the K8s job (and pages via the existing kube_job_status_failed
@@ -2029,7 +2070,19 @@ jobs:
         run: |
           NODE_POOL_OCID="${{ vars.NODE_POOL_OCID }}"
           if [ -z "$NODE_POOL_OCID" ]; then echo "Skipping autoscaler"; exit 0; fi
-          sed "s|NODE_POOL_OCID_PLACEHOLDER|$NODE_POOL_OCID|g" k8s/base/cluster-autoscaler.yaml | kubectl apply -f -
+          # Standing-headroom floor (run 26865807851, 2026-06-02): keep MIN
+          # warm (already-prepulled) nodes at idle so a rollout's `min-scale`
+          # api/warm-pool pods always land on a warm node instead of forcing
+          # the autoscaler to provision a COLD one mid-deploy. Defaults keep
+          # MIN>=2 so a missing var can never regress to the old scale-to-1
+          # behavior. Keep vars.NODE_POOL_MIN/MAX in sync with terraform
+          # system_pool_min/system_pool_max.
+          NODE_POOL_MIN="${{ vars.NODE_POOL_MIN || '2' }}"
+          NODE_POOL_MAX="${{ vars.NODE_POOL_MAX || '10' }}"
+          sed -e "s|NODE_POOL_MIN_PLACEHOLDER|$NODE_POOL_MIN|g" \
+              -e "s|NODE_POOL_MAX_PLACEHOLDER|$NODE_POOL_MAX|g" \
+              -e "s|NODE_POOL_OCID_PLACEHOLDER|$NODE_POOL_OCID|g" \
+              k8s/base/cluster-autoscaler.yaml | kubectl apply -f -
           kubectl rollout restart deployment/cluster-autoscaler -n kube-system || true
           kubectl rollout status deployment/cluster-autoscaler -n kube-system --timeout=180s || true
 
@@ -2064,6 +2117,17 @@ jobs:
           sed -e "s|RUNTIME_IMAGE_PLACEHOLDER|$RUNTIME_IMAGE|g" \
               -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
               k8s/base/image-prepuller.yaml | kubectl apply -f -
+
+      # Hard gate (run 26865807851, 2026-06-02): block until the
+      # image-prepuller DaemonSet has finished pulling the runtime image
+      # onto every node BEFORE patching the api/warm-pool revisions onto
+      # it. Without this the revisions race the pull and lose — India's
+      # api revision never achieved initial scale (ProgressDeadlineExceeded)
+      # and EU's warm pool never reached Ready. No-op when the runtime tag
+      # is unchanged. See .github/scripts/wait-runtime-prepulled.sh.
+      - name: Wait for runtime image prepull (gate)
+        run: |
+          .github/scripts/wait-runtime-prepulled.sh "${{ env.NS_SYSTEM }}"
 
       # Continuous warm-pool health monitor: a 5-minute CronJob that fails
       # the K8s job (and pages via the existing kube_job_status_failed
@@ -2568,7 +2632,19 @@ jobs:
         run: |
           NODE_POOL_OCID="${{ vars.NODE_POOL_OCID }}"
           if [ -z "$NODE_POOL_OCID" ]; then echo "Skipping autoscaler"; exit 0; fi
-          sed "s|NODE_POOL_OCID_PLACEHOLDER|$NODE_POOL_OCID|g" k8s/base/cluster-autoscaler.yaml | kubectl apply -f -
+          # Standing-headroom floor (run 26865807851, 2026-06-02): keep MIN
+          # warm (already-prepulled) nodes at idle so a rollout's `min-scale`
+          # api/warm-pool pods always land on a warm node instead of forcing
+          # the autoscaler to provision a COLD one mid-deploy. Defaults keep
+          # MIN>=2 so a missing var can never regress to the old scale-to-1
+          # behavior. Keep vars.NODE_POOL_MIN/MAX in sync with terraform
+          # system_pool_min/system_pool_max.
+          NODE_POOL_MIN="${{ vars.NODE_POOL_MIN || '2' }}"
+          NODE_POOL_MAX="${{ vars.NODE_POOL_MAX || '10' }}"
+          sed -e "s|NODE_POOL_MIN_PLACEHOLDER|$NODE_POOL_MIN|g" \
+              -e "s|NODE_POOL_MAX_PLACEHOLDER|$NODE_POOL_MAX|g" \
+              -e "s|NODE_POOL_OCID_PLACEHOLDER|$NODE_POOL_OCID|g" \
+              k8s/base/cluster-autoscaler.yaml | kubectl apply -f -
           kubectl rollout restart deployment/cluster-autoscaler -n kube-system || true
           kubectl rollout status deployment/cluster-autoscaler -n kube-system --timeout=180s || true
 
@@ -2603,6 +2679,17 @@ jobs:
           sed -e "s|RUNTIME_IMAGE_PLACEHOLDER|$RUNTIME_IMAGE|g" \
               -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
               k8s/base/image-prepuller.yaml | kubectl apply -f -
+
+      # Hard gate (run 26865807851, 2026-06-02): block until the
+      # image-prepuller DaemonSet has finished pulling the runtime image
+      # onto every node BEFORE patching the api/warm-pool revisions onto
+      # it. Without this the revisions race the pull and lose — India's
+      # api revision never achieved initial scale (ProgressDeadlineExceeded)
+      # and EU's warm pool never reached Ready. No-op when the runtime tag
+      # is unchanged. See .github/scripts/wait-runtime-prepulled.sh.
+      - name: Wait for runtime image prepull (gate)
+        run: |
+          .github/scripts/wait-runtime-prepulled.sh "${{ env.NS_SYSTEM }}"
 
       # Continuous warm-pool health monitor: a 5-minute CronJob that fails
       # the K8s job (and pages via the existing kube_job_status_failed

@@ -6,9 +6,16 @@
 # OR an OCI VM died and didn't get replaced) and we had no alert on
 # the drift. This rule catches the drift within 5 minutes.
 #
-# Threshold mirrors the Phase 3 bump: prod-us min is now 3.
-# When you adjust min in terraform/environments/production-us/main.tf,
-# update this threshold to match.
+# As of 2026-06-02 (run 26865807851) the autoscaler MIN floor is now
+# wired to the live deploy via vars.NODE_POOL_MIN (deploy.yml "Deploy
+# Cluster Autoscaler" -> k8s/base/cluster-autoscaler.yaml `--nodes`),
+# so the old "autoscaler hardcoded to 1, ignores terraform min" drift
+# class should no longer occur. A breach now means an OCI VM died and
+# wasn't replaced, or the deploy hasn't re-applied the floor yet.
+#
+# Threshold mirrors the rollout-headroom bump: prod-us min is now 4.
+# When you adjust min in terraform/environments/production-us/main.tf
+# (and the matching NODE_POOL_MIN GitHub var), update this threshold.
 
 alert: ProdNodeCountBelowMin
 ruleType: threshold_rule
@@ -22,7 +29,7 @@ condition:
         legend: nodes
         disabled: false
   op: "<"
-  target: 3
+  target: 4
   matchType: "1" # at-least-once-during
   selectedQuery: A
 evalWindow: "5m0s"
@@ -32,17 +39,20 @@ labels:
   team: platform
   cluster: oke-production-us
 annotations:
-  summary: "oke-production-us has fewer than 3 nodes"
+  summary: "oke-production-us has fewer than 4 nodes"
   description: |
     Live node count has dropped below the terraform-declared
-    `system_pool_min = 3`. Either:
+    `system_pool_min = 4`. Either:
       (a) An OCI VM has died and the node pool isn't replacing it.
           Check OCI Console -> OKE -> oke-production-us -> Node Pools.
       (b) The cluster autoscaler is ignoring the min floor. Check
-          autoscaler logs:
+          autoscaler logs (and confirm `--nodes` MIN matches
+          vars.NODE_POOL_MIN=4):
             kubectl logs -n kube-system deployment/cluster-autoscaler
 
-    Without 3+ nodes the warm-pool churn during a deploy will
-    starve paying users on `Insufficient memory`.
+    Without 4+ nodes the warm-pool churn during a deploy will
+    starve paying users on `Insufficient memory`, and a new revision's
+    `min-scale: 2` pods may force a COLD node to be provisioned
+    mid-rollout (the cold-pull-mid-rollout failure class).
 
     Runbook: docs/runbooks/deploy-prod.md
