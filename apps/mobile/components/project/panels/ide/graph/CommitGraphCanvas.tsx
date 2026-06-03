@@ -140,19 +140,28 @@ function GraphNode({
   const commit = row.commit!;
   const ai = isAiAuthor(commit.author, commit.authorEmail);
   const bg = ai ? "#e0457b" : avatarColor(commit.authorEmail || commit.author);
+  const isCp = row.isCheckpoint;
+
+  // Checkpoint commits get a distinct amber ring so they stand out from
+  // ordinary commits in the graph (matches the amber rollback accent used
+  // elsewhere in the checkpoint UI). Selection ring stacks on top.
+  const boxShadow = [
+    selected ? `0 0 0 2px var(--ide-active-ring)` : `0 0 0 1px rgba(0,0,0,0.4)`,
+    isCp ? `0 0 0 ${selected ? 4 : 2.5}px #f59e0b` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
 
   return (
     <div
       {...common}
-      title={`${commit.author} · ${commit.shortSha}`}
+      title={`${commit.author} · ${commit.shortSha}${isCp ? " · checkpoint" : ""}`}
       className="flex items-center justify-center rounded-full cursor-pointer select-none"
       style={{
         ...common.style,
         background: bg,
         border: `2px solid var(--ide-bg)`,
-        boxShadow: selected
-          ? `0 0 0 2px var(--ide-active-ring)`
-          : `0 0 0 1px rgba(0,0,0,0.4)`,
+        boxShadow,
       }}
     >
       <span className="text-[8px] font-bold leading-none text-white">

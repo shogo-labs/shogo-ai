@@ -49,7 +49,6 @@ import { OutlinePanel } from "./OutlinePanel";
 import { getDocumentSymbols } from "./monaco/lspProviders";
 import type { DocumentSymbolLike } from "./outline-model";
 import { SettingsPane } from "./SettingsPane";
-import { CheckpointsPanel } from "../CheckpointsPanel";
 import { useLiveAgentEdits, type LiveConflict } from "./useLiveAgentEdits";
 import { AgentEditBanner } from "./AgentEditBanner";
 import { applyAgentEdit, type MonacoNs } from "./agentEditAnimation";
@@ -1688,7 +1687,11 @@ export function Workbench({
         />
 
         <div className="flex flex-1 min-w-0">
-          {sidebarOpen && (
+          {/* The Checkpoint activity renders the commit graph as a full
+              main-area view (graph columns + a 400px detail panel), so it
+              suppresses the narrow sidebar — otherwise the detail panel
+              overflows and squeezes the graph to nothing. */}
+          {sidebarOpen && activity !== "checkpoint" && (
             <>
               <div
                 style={{ width: sidebarSplit.size, flexShrink: 0, maxWidth: "55%", minWidth: 0 }}
@@ -1765,9 +1768,6 @@ export function Workbench({
                     </div>
                   </div>
                 )}
-                {activity === "checkpoint" && projectId && (
-                  <CheckpointsPanel visible projectId={projectId} />
-                )}
                 {activity === "debug" && (
                   <RunDebugPanel workspaceRoot={gitWorkspaceRoot} />
                 )}
@@ -1808,7 +1808,12 @@ export function Workbench({
                   </div>
                 </div>
               )}
-              {groups
+              {activity === "checkpoint" && projectId ? (
+                // Checkpoint tab: the commit graph takes the full main area
+                // and the editor panel is hidden.
+                <GraphView projectId={projectId} onOpenFile={openWorkspaceFile} />
+              ) : (
+              groups
                 .map((g, i) => (
                   <div
                     key={g.id}
@@ -1877,7 +1882,8 @@ export function Workbench({
                     );
                   }
                   return acc;
-                }, [])}
+                }, [])
+              )}
 
               {toast && (
                 <div className="pointer-events-none absolute bottom-4 right-4 z-40 rounded bg-[color:var(--ide-primary)] px-3 py-1.5 text-[12px] text-white shadow-lg">

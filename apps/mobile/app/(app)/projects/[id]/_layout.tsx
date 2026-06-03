@@ -82,7 +82,6 @@ import {
   CapabilitiesIntegrationsPane,
   PlansPanel,
   AgentsPanel,
-  CheckpointsPanel,
   SettingsPanel,
   StatusPanel,
   AnalyticsPanel,
@@ -92,6 +91,7 @@ import {
   type SettingsSectionItem,
 } from '../../../../components/project/panels'
 import { FoldersPanel } from '../../../../components/project/panels/FoldersPanel'
+import { CheckpointGraphNative } from '../../../../components/project/panels/ide/graph/CheckpointGraphNative'
 import { TrustPrompt, type TrustDecision } from '../../../../components/project/TrustPrompt'
 import { DrawerHost } from '../../../../components/project/panels/ide/DrawerHost'
 import {
@@ -2657,9 +2657,9 @@ export default observer(function ProjectLayout() {
                     </PanelErrorBoundary>
                   ),
                 })
-                // Checkpoints on web lives in the IDE's Source Control
-                // activity-bar entry; native users still reach it from
-                // Settings.
+                // Checkpoints on web lives in the IDE's Checkpoint
+                // activity-bar entry (rendered as the commit node graph);
+                // native users reach the same graph from Settings.
                 if (Platform.OS !== 'web') {
                   workspaceItems.push({
                     id: 'checkpoints',
@@ -2667,7 +2667,7 @@ export default observer(function ProjectLayout() {
                     icon: GitCommit,
                     render: () => (
                       <PanelErrorBoundary panelName="Checkpoints">
-                        <CheckpointsPanel visible projectId={projectId!} />
+                        <CheckpointGraphNative projectId={projectId!} />
                       </PanelErrorBoundary>
                     ),
                   })
