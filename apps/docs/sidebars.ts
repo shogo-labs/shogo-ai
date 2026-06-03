@@ -36,6 +36,7 @@ const sidebars: SidebarsConfig = {
           label: "Build",
           items: [
             "features/chat-with-ai",
+            "features/capabilities",
             "features/history-and-checkpoints",
           ],
         },
