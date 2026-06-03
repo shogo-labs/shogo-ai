@@ -33,7 +33,6 @@ import { useInstancePicker, type Instance } from "@shogo/shared-app/hooks"
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
 import { API_URL } from "../../lib/api"
 import { authClient } from "../../lib/auth-client"
-import { usePlatformConfig } from "../../lib/platform-config"
 
 function getAuthHeaders(): Record<string, string> {
   if (Platform.OS === "web") return {}
@@ -72,7 +71,6 @@ export interface EnvironmentPickerProps {
 
 export function EnvironmentPicker({ disabled }: EnvironmentPickerProps) {
   const [open, setOpen] = useState(false)
-  const { localMode } = usePlatformConfig()
   const workspace = useActiveWorkspace()
   const { instance: activeInstance, setInstance, clearInstance } = useActiveInstance()
 
@@ -97,19 +95,6 @@ export function EnvironmentPicker({ disabled }: EnvironmentPickerProps) {
   const triggerIcon = activeInstance
     ? <Laptop className="h-3.5 w-3.5 text-emerald-500" size={14} />
     : <Cloud className="h-3.5 w-3.5 text-muted-foreground" size={14} />
-
-  if (localMode) {
-    return (
-      <WebTooltip label="Environment: Local">
-        <View
-          accessibilityLabel="Environment: Local"
-          className="h-[22px] w-[22px] items-center justify-center rounded-md"
-        >
-          <Laptop className="h-3.5 w-3.5 text-muted-foreground" size={14} />
-        </View>
-      </WebTooltip>
-    )
-  }
 
   return (
     <Popover
