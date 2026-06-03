@@ -31,7 +31,7 @@ import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
 import { runAgentLoop, type LoopDetectorConfig } from './agent-loop'
 import type { ToolContext } from './gateway-tools'
-import { createTools, textResult } from './gateway-tools'
+import { createTools, textResult, filterDisabledCapabilityTools } from './gateway-tools'
 import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { HookEmitter, loadAllHooks } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
@@ -82,7 +82,7 @@ import {
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
 import { FileStateCache } from './file-state-cache'
 import { SUBAGENT_GUIDE } from './subagent-prompts'
-import { buildGuideRegistry, CAPABILITIES_INDEX } from './guide-registry'
+import { buildGuideRegistry, buildCapabilitiesIndex } from './guide-registry'
 import { AgentManager } from './agent-manager'
 import { CommandRegistry } from './command-registry'
 import { TeamManager } from './team-manager'
@@ -239,6 +239,10 @@ export interface GatewayConfig {
   quickActionsEnabled?: boolean
   /** Whether the Shogo SDK guide section is included in the system prompt (default: true) */
   sdkGuideEnabled?: boolean
+  /** Whether managed-integration / MCP discovery is available — gates the integration tools (search_integrations / connect / disconnect) AND the prompt guidance (default: true) */
+  integrationsEnabled?: boolean
+  /** Whether channel connection / messaging is available — gates the channel tools (channel_connect / channel_list / send_message, …) AND the prompt guidance (default: true) */
+  channelsEnabled?: boolean
   /** Whether canvas tools are enabled (default: true). Automatically set false when switching to app/none mode. */
   canvasEnabled?: boolean
   /** Prompt profile: 'full' = all sections (default), 'swe' = minimal coding-only profile for SWE evals, 'general' = workspace + tools + skills (no personality/canvas) */
@@ -1689,28 +1693,10 @@ export class AgentGateway {
     // Suppress MCP Playwright tools — built-in browser tool has feature parity
     assembledTools = assembledTools.filter(t => !t.name.startsWith('mcp_playwright_'))
 
-    // Capability toggles (independent of mode)
-    if (this.config.webEnabled === false) {
-      assembledTools = assembledTools.filter(t => t.name !== 'web')
-    }
-    if (this.config.browserEnabled === false) {
-      assembledTools = assembledTools.filter(t => t.name !== 'browser')
-    }
-    if (this.config.shellEnabled === false) {
-      assembledTools = assembledTools.filter(t => t.name !== 'exec' && t.name !== 'exec_wait')
-    }
-    if (this.config.heartbeatEnabled === false) {
-      assembledTools = assembledTools.filter(t => t.name !== 'heartbeat_configure' && t.name !== 'heartbeat_status')
-    }
-    if (this.config.imageGenEnabled === false) {
-      assembledTools = assembledTools.filter(t => t.name !== 'generate_image')
-    }
-    if (this.config.memoryEnabled === false) {
-      assembledTools = assembledTools.filter(t => !t.name.startsWith('memory_'))
-    }
-    if (this.config.quickActionsEnabled === false) {
-      assembledTools = assembledTools.filter(t => t.name !== 'quick_action')
-    }
+    // Capability toggles (independent of mode). Shared with the subagent
+    // parent-tool path (allToolsGetter) so disabling a capability removes its
+    // tools everywhere, not just from the main agent.
+    assembledTools = filterDisabledCapabilityTools(assembledTools, this.config)
     // Code analysis tools are only available via subagents (code-reviewer, explore)
     const CODE_REVIEW_ONLY_TOOLS = new Set(['detect_changes', 'review_context', 'impact_radius'])
     assembledTools = assembledTools.filter(t => !CODE_REVIEW_ONLY_TOOLS.has(t.name))
@@ -2873,19 +2859,54 @@ export class AgentGateway {
     // 3. Capabilities Index — compact pointers to on-demand guides served by read_guide tool.
     // Full guide content lives in guide-registry.ts and is returned by the read_guide tool,
     // saving ~4,600 tokens per turn compared to inlining all guides.
-    this.currentGuideRegistry = buildGuideRegistry(this.promptOverrides)
-    pushStable('capabilities-index', CAPABILITIES_INDEX)
+    // Shogo-platform surfaces — gated so code-only agents can drop messaging,
+    // integration, and heartbeat guidance from the cached prefix.
+    const integrationsGuideOn = this.config.integrationsEnabled !== false
+    const channelsGuideOn = this.config.channelsEnabled !== false
+    const mediaGuideOn = this.config.imageGenEnabled !== false
+    const devopsGuideOn = this.config.heartbeatEnabled !== false
 
-    pushStable('action-tools-guide', [
-      '## Action Tools',
-      '',
-      'When the user asks you to connect an integration, configure a channel, or set up a scheduled reminder, use the relevant tool immediately instead of only describing what you would do.',
-      '- Credentials or hostnames in the user message are permission to call `channel_connect` for email, Slack, Discord, Telegram, etc.',
-      '- For managed integrations (Google, Slack, GitHub, etc.) and MCP servers alike, call `search_integrations` then `connect`. The result\'s `source` tag (`managed` | `mcp` | `skill`) tells you which path was taken.',
-      '- For recurring reminders, digests, check-ins, or autonomous routines, call `heartbeat_configure` and write or update `HEARTBEAT.md` with the exact checklist.',
-      '- If you need a missing detail such as timezone or channel name, call `ask_user` instead of asking only in prose.',
-      '- A successful final response should summarize what you configured, not ask whether to start.',
-    ].join('\n'))
+    this.currentGuideRegistry = buildGuideRegistry(this.promptOverrides)
+    pushStable('capabilities-index', buildCapabilitiesIndex({
+      integrations: integrationsGuideOn,
+      channels: channelsGuideOn,
+      media: mediaGuideOn,
+      devops: devopsGuideOn,
+    }))
+
+    // Action Tools guide — only worth including when at least one of its
+    // action surfaces (channels, managed integrations, heartbeat) is enabled.
+    if (channelsGuideOn || integrationsGuideOn || devopsGuideOn) {
+      const actionVerbs = [
+        integrationsGuideOn ? 'connect an integration' : null,
+        channelsGuideOn ? 'configure a channel' : null,
+        devopsGuideOn ? 'set up a scheduled reminder' : null,
+      ].filter((v): v is string => v !== null)
+      const actionVerbPhrase =
+        actionVerbs.length === 1
+          ? actionVerbs[0]
+          : `${actionVerbs.slice(0, -1).join(', ')}, or ${actionVerbs[actionVerbs.length - 1]}`
+
+      const actionLines: string[] = [
+        '## Action Tools',
+        '',
+        `When the user asks you to ${actionVerbPhrase}, use the relevant tool immediately instead of only describing what you would do.`,
+      ]
+      if (channelsGuideOn) {
+        actionLines.push('- Credentials or hostnames in the user message are permission to call `channel_connect` for email, Slack, Discord, Telegram, etc.')
+      }
+      if (integrationsGuideOn) {
+        actionLines.push('- For managed integrations (Google, Slack, GitHub, etc.) and MCP servers alike, call `search_integrations` then `connect`. The result\'s `source` tag (`managed` | `mcp` | `skill`) tells you which path was taken.')
+      }
+      if (devopsGuideOn) {
+        actionLines.push('- For recurring reminders, digests, check-ins, or autonomous routines, call `heartbeat_configure` and write or update `HEARTBEAT.md` with the exact checklist.')
+      }
+      actionLines.push(
+        '- If you need a missing detail such as timezone or channel name, call `ask_user` instead of asking only in prose.',
+        '- A successful final response should summarize what you configured, not ask whether to start.',
+      )
+      pushStable('action-tools-guide', actionLines.join('\n'))
+    }
 
     if (this.config.quickActionsEnabled !== false) {
       pushStable('quick-action-guide', QUICK_ACTION_GUIDE)

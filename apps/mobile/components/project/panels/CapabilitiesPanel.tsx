@@ -53,6 +53,8 @@ export interface CapabilitySettings {
   memoryEnabled: boolean
   quickActionsEnabled: boolean
   sdkGuideEnabled: boolean
+  integrationsEnabled: boolean
+  channelsEnabled: boolean
 }
 
 interface CapabilityDef {
@@ -168,6 +170,24 @@ const CAPABILITIES: CapabilityDef[] = [
     icon: Package,
     toolNames: [],
     badgeLabel: 'Prompt section',
+  },
+  {
+    key: 'integrationsEnabled',
+    label: 'Integrations',
+    description: 'Discover and connect managed integrations and MCP servers',
+    detail: 'Gives the agent the search_integrations / connect / disconnect tools for managed OAuth integrations (Google, Slack, GitHub, etc.) and MCP servers, plus the matching prompt guidance. Turn off for code-only agents that work a repo via the gh/CLI + tokens and never connect managed integrations — this removes both the tools and the prompt guidance.',
+    disabledDescription: 'No managed-integration discovery',
+    icon: Layers,
+    toolNames: ['search_integrations', 'connect', 'disconnect'],
+  },
+  {
+    key: 'channelsEnabled',
+    label: 'Channels',
+    description: 'Connect to and message through chat channels',
+    detail: 'Gives the agent the channel_connect / channel_list / send_message tools for wiring up to Telegram, Discord, Slack, email, webchat, etc., plus the matching prompt guidance. Turn off for code-only agents working a GitHub repo that never message through a channel — this removes both the tools and the prompt guidance.',
+    disabledDescription: 'No channel/messaging tools',
+    icon: MessageSquare,
+    toolNames: ['channel_connect', 'channel_disconnect', 'channel_list', 'send_message'],
   },
 ]
 

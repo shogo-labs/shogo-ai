@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, test, expect } from 'bun:test'
-import { buildGuideRegistry, CAPABILITIES_INDEX } from '../guide-registry'
+import { buildGuideRegistry, buildCapabilitiesIndex, CAPABILITIES_INDEX } from '../guide-registry'
 import { createTools, type ToolContext } from '../gateway-tools'
 
 function createCtx(overrides?: Partial<ToolContext>): ToolContext {
@@ -57,6 +57,68 @@ describe('Guide Registry', () => {
 
   test('CAPABILITIES_INDEX mentions read_guide tool', () => {
     expect(CAPABILITIES_INDEX).toContain('read_guide')
+  })
+})
+
+describe('buildCapabilitiesIndex flags', () => {
+  test('default (no flags) equals the full CAPABILITIES_INDEX', () => {
+    expect(buildCapabilitiesIndex()).toBe(CAPABILITIES_INDEX)
+  })
+
+  test('all platform lines present by default', () => {
+    const idx = buildCapabilitiesIndex()
+    expect(idx).toContain('- **integrations**')
+    expect(idx).toContain('- **channel**')
+    expect(idx).toContain('- **media**')
+    expect(idx).toContain('- **devops**')
+    // subagent line still advertises the delegated types
+    expect(idx).toContain('integration, channel, media, devops')
+  })
+
+  test('channels: false drops the channel line and subagent mention', () => {
+    const idx = buildCapabilitiesIndex({ channels: false })
+    expect(idx).not.toContain('- **channel**')
+    expect(idx).not.toContain('Telegram, Discord, webchat')
+    // subagent type list no longer lists `channel`
+    expect(idx).not.toMatch(/browser, integration, channel/)
+    // unrelated coding capabilities remain
+    expect(idx).toContain('- **subagent**')
+    expect(idx).toContain('- **memory**')
+    expect(idx).toContain('- **integrations**')
+  })
+
+  test('integrations: false drops the integrations line', () => {
+    const idx = buildCapabilitiesIndex({ integrations: false })
+    expect(idx).not.toContain('- **integrations**')
+    expect(idx).not.toContain('search_integrations')
+    // channel line untouched
+    expect(idx).toContain('- **channel**')
+  })
+
+  test('media + devops false drop their respective lines', () => {
+    const idx = buildCapabilitiesIndex({ media: false, devops: false })
+    expect(idx).not.toContain('- **media**')
+    expect(idx).not.toContain('- **devops**')
+    expect(idx).toContain('- **channel**')
+    expect(idx).toContain('- **integrations**')
+  })
+
+  test('all platform lines off keeps the coding-only core', () => {
+    const idx = buildCapabilitiesIndex({
+      integrations: false,
+      channels: false,
+      media: false,
+      devops: false,
+    })
+    for (const line of ['integrations', 'channel', 'media', 'devops']) {
+      expect(idx).not.toContain(`- **${line}**`)
+    }
+    for (const line of ['subagent', 'browser', 'memory', 'skill-matching', 'self-evolution', 'tool-planning', 'personality', 'constraint-awareness']) {
+      expect(idx).toContain(`- **${line}**`)
+    }
+    expect(idx).toContain('read_guide')
+    // subagent list collapses to coding types only
+    expect(idx).toContain('explore, general-purpose, code-reviewer, browser, fork mode, and team swarm')
   })
 })
 
