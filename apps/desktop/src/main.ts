@@ -29,6 +29,7 @@ import {
 } from './web-bundle'
 import {
   DatabaseRecoveryError,
+  detectFailedMigrations,
   backupDatabase,
   repairFailedMigrations,
 } from './db-recovery'
@@ -438,8 +439,21 @@ async function handleDatabaseRecovery(
     return 'quit'
   }
 
-  // Choice 0: Repair. Belt-and-braces — back up first, ALWAYS, even if
-  // the user clicks through multiple repair attempts in a row.
+  // Choice 0: Repair.
+  return performDatabaseRepair(failures, dbPath)
+}
+
+// Shared repair body for both the boot-time recovery dialog and the
+// on-demand "Repair Local Database" action. Belt-and-braces — back up
+// first, ALWAYS, then clear the failed migration row(s) and relaunch so
+// the next startup runs `prisma migrate deploy` against the recovered DB.
+//
+// Returns 'relaunched' on success (caller must NOT call app.quit() — we
+// already called app.relaunch + app.exit) or 'quit' if the repair failed.
+function performDatabaseRepair(
+  failures: { name: string }[],
+  dbPath: string,
+): 'relaunched' | 'quit' {
   try {
     const bunPath = getBunPath()
     const backupPath = backupDatabase(dbPath)
@@ -479,6 +493,63 @@ async function handleDatabaseRecovery(
   app.relaunch()
   app.exit(0)
   return 'relaunched'
+}
+
+// On-demand database repair, triggered from the Help menu or a settings
+// button (NOT the boot-failure path). Detects failed migrations up front
+// so a healthy DB gets a reassuring "nothing to do" message instead of a
+// scary repair prompt. When failures exist, confirms with the user, then
+// runs the same backup + clear + relaunch flow as the boot dialog.
+async function repairLocalDatabaseInteractive(): Promise<void> {
+  const dbPath = getDbPath()
+
+  let failures: { name: string; errorExcerpt: string }[]
+  try {
+    failures = detectFailedMigrations(getBunPath(), dbPath)
+  } catch (err) {
+    writeLogSync('ERROR', '[Desktop] On-demand repair: detection failed:', err)
+    dialog.showErrorBox(
+      'Could not check the database',
+      `Shogo could not inspect its local database.\n\n` +
+        `Error: ${err instanceof Error ? err.message : String(err)}\n\n` +
+        `Logs: ${logFile}`,
+    )
+    return
+  }
+
+  if (failures.length === 0) {
+    await dialog.showMessageBox({
+      type: 'info',
+      title: 'Shogo: database is healthy',
+      message: 'No repair needed.',
+      detail:
+        `Shogo's local database has no failed migrations.\n\n` +
+        `Database: ${dbPath}`,
+      buttons: ['OK'],
+      defaultId: 0,
+      noLink: true,
+    })
+    return
+  }
+
+  const names = failures.map((f) => f.name).join('\n  • ')
+  const res = await dialog.showMessageBox({
+    type: 'warning',
+    title: 'Shogo: repair local database',
+    message: `Found ${failures.length} failed migration(s).`,
+    detail:
+      `The following migration(s) are recorded as failed:\n\n  • ${names}\n\n` +
+      `Repair backs up your current database (to a .bak-<timestamp> file next to it), ` +
+      `clears the failed migration record, and relaunches Shogo so the migration can be ` +
+      `re-attempted.`,
+    buttons: ['Repair and relaunch', 'Cancel'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  })
+  if (res.response !== 0) return
+
+  performDatabaseRepair(failures, dbPath)
 }
 
 function buildAppMenu(): void {
@@ -564,6 +635,10 @@ function buildAppMenu(): void {
         },
         { type: 'separator' },
         {
+          label: 'Repair Local Database...',
+          click: () => { void repairLocalDatabaseInteractive() },
+        },
+        {
           label: 'Report Bug...',
           click: () => {
             if (mainWindow) {
@@ -582,6 +657,20 @@ function buildAppMenu(): void {
 function registerIpcHandlers(): void {
   ipcMain.handle('get-app-mode', () => readConfig().mode)
   ipcMain.handle('get-app-config', () => readConfig())
+
+  // On-demand local-database repair, surfaced from the support/settings UI.
+  // Detects failed migrations, confirms with the user, then backs up,
+  // clears the failed row(s), and relaunches. Returns a status the
+  // renderer can use to show a toast (the relaunch case never returns).
+  ipcMain.handle('repair-database', async () => {
+    try {
+      await repairLocalDatabaseInteractive()
+      return { ok: true as const }
+    } catch (err) {
+      writeLogSync('ERROR', '[Desktop] repair-database IPC failed:', err)
+      return { ok: false as const, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
   ipcMain.handle('set-app-mode', (_event, mode: 'local' | 'cloud') => {
     writeConfig({ mode })
     app.relaunch()
