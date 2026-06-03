@@ -57,6 +57,14 @@ mock.module('../../lib/prisma', () => withPrismaExports({
     modelDefinition: {
       findMany: async () => [...models.values()],
       findUnique: async ({ where }: any) => models.get(where.id) ?? null,
+      findFirst: async ({ where }: any) => {
+        for (const m of models.values()) {
+          if (where?.provider != null && m.provider !== where.provider) continue
+          if (where?.apiModel != null && m.apiModel !== where.apiModel) continue
+          return m
+        }
+        return null
+      },
       create: async ({ data }: any) => {
         if (models.has(data.id)) {
           const e: any = new Error('Unique constraint')
@@ -187,10 +195,12 @@ describe('admin model-providers CRUD', () => {
   })
 })
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 describe('admin models CRUD', () => {
-  test('creates a native model and lists it', async () => {
+  test('mints a UUID id (ignoring any client id) and keeps apiModel addressable', async () => {
     const res = await post('/models', {
-      id: 'claude-opus-4-8',
+      id: 'claude-opus-4-8', // ignored — the server always mints a UUID
       provider: 'anthropic',
       apiModel: 'claude-opus-4-8',
       displayName: 'Claude Opus 4.8',
@@ -204,30 +214,42 @@ describe('admin models CRUD', () => {
     })
     expect(res.status).toBe(200)
     const data = await res.json() as any
-    expect(data.model.id).toBe('claude-opus-4-8')
-    // Non-string / blank aliases are sanitized out.
-    expect(data.model.aliases).toEqual(['opus'])
+    // The canonical id is an opaque UUID, NOT the provider slug.
+    expect(data.model.id).toMatch(UUID_RE)
+    expect(data.model.id).not.toBe('claude-opus-4-8')
+    expect(data.model.apiModel).toBe('claude-opus-4-8')
+    // Sanitized admin aliases + the apiModel slug, so the model stays
+    // addressable by its human-readable name.
+    expect(data.model.aliases).toContain('opus')
+    expect(data.model.aliases).toContain('claude-opus-4-8')
     const list = await (await get('/models')).json() as any
-    expect(list.models.map((m: any) => m.id)).toContain('claude-opus-4-8')
+    expect(list.models.map((m: any) => m.apiModel)).toContain('claude-opus-4-8')
   })
 
-  test('rejects an invalid provider and a duplicate id', async () => {
-    expect((await post('/models', { id: 'x', provider: 'bogus', apiModel: 'x', displayName: 'X' })).status).toBe(400)
-    await post('/models', { id: 'dup', provider: 'openai', apiModel: 'dup', displayName: 'Dup' })
-    expect((await post('/models', { id: 'dup', provider: 'openai', apiModel: 'dup', displayName: 'Dup' })).status).toBe(409)
+  test('rejects an invalid provider and a missing apiModel', async () => {
+    expect((await post('/models', { provider: 'bogus', apiModel: 'x', displayName: 'X' })).status).toBe(400)
+    expect((await post('/models', { provider: 'openai', displayName: 'X' })).status).toBe(400)
+  })
+
+  test('allows two catalog entries for the same upstream model (distinct UUIDs)', async () => {
+    const a = await (await post('/models', { provider: 'openai', apiModel: 'gpt-5', displayName: 'GPT-5 A' })).json() as any
+    const b = await (await post('/models', { provider: 'openai', apiModel: 'gpt-5', displayName: 'GPT-5 B' })).json() as any
+    expect(a.model.id).toMatch(UUID_RE)
+    expect(b.model.id).toMatch(UUID_RE)
+    expect(a.model.id).not.toBe(b.model.id)
   })
 
   test('custom model requires a valid providerId', async () => {
     // No provider exists yet.
     expect((await post('/models', {
-      id: 'mimo-v2.5', provider: 'custom', apiModel: 'mimo-v2.5', displayName: 'MiMo', providerId: 'ghost',
+      provider: 'custom', apiModel: 'mimo-v2.5', displayName: 'MiMo', providerId: 'ghost',
     })).status).toBe(400)
 
     const prov = await (await post('/model-providers', {
       label: 'MiMo', baseUrl: 'https://api.xiaomimimo.com/v1', apiKey: 'sk-key-here-1234',
     })).json() as any
     const res = await post('/models', {
-      id: 'mimo-v2.5', provider: 'custom', apiModel: 'mimo-v2.5', displayName: 'MiMo v2.5', providerId: prov.provider.id,
+      provider: 'custom', apiModel: 'mimo-v2.5', displayName: 'MiMo v2.5', providerId: prov.provider.id,
     })
     expect(res.status).toBe(200)
     const data = await res.json() as any
@@ -238,10 +260,10 @@ describe('admin models CRUD', () => {
     const prov = await (await post('/model-providers', {
       label: 'MiMo', baseUrl: 'https://api.xiaomimimo.com/v1', apiKey: 'sk-key-here-1234',
     })).json() as any
-    await post('/models', {
-      id: 'mimo-v2.5', provider: 'custom', apiModel: 'mimo-v2.5', displayName: 'MiMo', providerId: prov.provider.id,
-    })
-    const res = await put('/models/mimo-v2.5', { provider: 'openai', displayName: 'Now OpenAI' })
+    const created = await (await post('/models', {
+      provider: 'custom', apiModel: 'mimo-v2.5', displayName: 'MiMo', providerId: prov.provider.id,
+    })).json() as any
+    const res = await put(`/models/${created.model.id}`, { provider: 'openai', displayName: 'Now OpenAI' })
     expect(res.status).toBe(200)
     const data = await res.json() as any
     expect(data.model.displayName).toBe('Now OpenAI')
@@ -255,7 +277,6 @@ describe('admin models CRUD', () => {
 
   test('persists picker metadata (description, contextWindow, reasoningEffort)', async () => {
     const res = await post('/models', {
-      id: 'sonnet-meta',
       provider: 'anthropic',
       apiModel: 'claude-sonnet-4-6',
       displayName: 'Claude Sonnet 4.6',
@@ -272,27 +293,51 @@ describe('admin models CRUD', () => {
 
   test('rejects an invalid reasoningEffort on create and update', async () => {
     expect((await post('/models', {
-      id: 'bad-effort', provider: 'openai', apiModel: 'x', displayName: 'X', reasoningEffort: 'turbo',
+      provider: 'openai', apiModel: 'x', displayName: 'X', reasoningEffort: 'turbo',
     })).status).toBe(400)
 
-    await post('/models', { id: 'ok-effort', provider: 'openai', apiModel: 'x', displayName: 'X' })
-    expect((await put('/models/ok-effort', { reasoningEffort: 'turbo' })).status).toBe(400)
+    const ok = await (await post('/models', { provider: 'openai', apiModel: 'x', displayName: 'X' })).json() as any
+    expect((await put(`/models/${ok.model.id}`, { reasoningEffort: 'turbo' })).status).toBe(400)
     // A valid level updates cleanly.
-    const ok = await put('/models/ok-effort', { reasoningEffort: 'high' })
-    expect(ok.status).toBe(200)
-    expect((await ok.json() as any).model.reasoningEffort).toBe('high')
+    const updated = await put(`/models/${ok.model.id}`, { reasoningEffort: 'high' })
+    expect(updated.status).toBe(200)
+    expect((await updated.json() as any).model.reasoningEffort).toBe('high')
   })
 
   test('update clears metadata when passed null/empty', async () => {
-    await post('/models', {
-      id: 'clearable', provider: 'openai', apiModel: 'x', displayName: 'X',
+    const created = await (await post('/models', {
+      provider: 'openai', apiModel: 'x', displayName: 'X',
       description: 'temporary', contextWindow: 128000, reasoningEffort: 'low',
-    })
-    const res = await put('/models/clearable', { description: '  ', contextWindow: 0, reasoningEffort: null })
+    })).json() as any
+    const res = await put(`/models/${created.model.id}`, { description: '  ', contextWindow: 0, reasoningEffort: null })
     expect(res.status).toBe(200)
     const data = await res.json() as any
     expect(data.model.description).toBeNull()
     expect(data.model.contextWindow).toBeNull()
     expect(data.model.reasoningEffort).toBeNull()
+  })
+
+  test('discovery-enable keys on (provider, apiModel): UUID id + slug alias, idempotent toggle', async () => {
+    const enable = (models: any[]) =>
+      adminModelCatalogRoutes().request('http://api.test/providers/openai/models/enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ models }),
+      })
+
+    expect((await enable([{ id: 'gpt-5-mini', displayName: 'GPT-5 mini', enabled: true }])).status).toBe(200)
+    let list = await (await get('/models')).json() as any
+    expect(list.models).toHaveLength(1)
+    const row = list.models[0]
+    expect(row.id).toMatch(UUID_RE)
+    expect(row.apiModel).toBe('gpt-5-mini')
+    expect(row.aliases).toContain('gpt-5-mini')
+
+    // Re-enabling the same slug must not create a duplicate row.
+    await enable([{ id: 'gpt-5-mini', displayName: 'GPT-5 mini', enabled: false }])
+    list = await (await get('/models')).json() as any
+    expect(list.models).toHaveLength(1)
+    expect(list.models[0].id).toBe(row.id)
+    expect(list.models[0].enabled).toBe(false)
   })
 })

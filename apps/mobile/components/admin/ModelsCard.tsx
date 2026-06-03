@@ -80,7 +80,6 @@ type FamilyOption = (typeof MODEL_FAMILY_OPTIONS)[number]
 type DiscoveredModel = DiscoveredProviderModel
 
 interface ModelFormState {
-  id: string
   provider: string
   providerId: string
   apiModel: string
@@ -102,7 +101,6 @@ interface ModelFormState {
 }
 
 const EMPTY_MODEL_FORM: ModelFormState = {
-  id: '',
   provider: 'anthropic',
   providerId: '',
   apiModel: '',
@@ -376,7 +374,6 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
   const applyDiscovered = useCallback((m: DiscoveredModel) => {
     setForm((f) => ({
       ...f,
-      id: m.id,
       apiModel: m.id,
       displayName: m.displayName,
       shortDisplayName: m.displayName,
@@ -406,7 +403,6 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
   const openEdit = useCallback((m: ModelDefinition) => {
     setEditingId(m.id)
     setForm({
-      id: m.id,
       provider: m.provider,
       providerId: m.providerId ?? '',
       apiModel: m.apiModel,
@@ -462,7 +458,7 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
         enabled: form.enabled,
       }
       if (editingId) await platform.updateModel(editingId, payload)
-      else await platform.createModel({ ...payload, id: form.id.trim() })
+      else await platform.createModel(payload)
       invalidateVisibleModelsCache()
       closeForm()
       await reload()
@@ -550,7 +546,6 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
   )
 
   const canSubmit =
-    (editingId || form.id.trim()) &&
     form.apiModel.trim() &&
     form.displayName.trim() &&
     (form.provider !== 'custom' || form.providerId)
@@ -692,7 +687,7 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
               <View className="flex-1">
                 <Text className="text-sm font-medium text-foreground">{m.displayName}</Text>
                 <Text className="text-xs text-muted-foreground mt-0.5">
-                  {m.id} · {providerLabel(m)} · {m.tier}
+                  {m.apiModel} · {providerLabel(m)} · {m.tier}
                 </Text>
                 <Text className="text-[11px] text-muted-foreground mt-0.5">
                   in ${m.inputPerMillion}/M · out ${m.outputPerMillion}/M · {m.maxOutputTokens} max
@@ -817,7 +812,7 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
                     )}
                     <ScrollView style={{ maxHeight: 240 }} nestedScrollEnabled>
                       {(discoveryList ?? []).map((m) => {
-                        const selected = form.id === m.id
+                        const selected = form.apiModel === m.id
                         return (
                           <Pressable
                             key={m.id}
@@ -887,21 +882,10 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
               </View>
             )}
 
-            {/* Core fields */}
-            {!editingId && (
-              <View>
-                <FieldLabel>Model id (canonical)</FieldLabel>
-                <TextInput
-                  value={form.id}
-                  onChangeText={(t) => setForm((f) => ({ ...f, id: t }))}
-                  placeholder="claude-sonnet-4-5"
-                  placeholderTextColor="#9ca3af"
-                  autoCapitalize="none"
-                  className="px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm"
-                />
-              </View>
-            )}
-
+            {/* Core fields. The canonical id is a server-generated UUID — the
+                admin only supplies the upstream api model (the provider slug),
+                which is also kept as an alias so the model stays addressable by
+                name. */}
             <View>
               <FieldLabel>Upstream api model</FieldLabel>
               <TextInput
