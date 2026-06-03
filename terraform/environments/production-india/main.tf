@@ -125,8 +125,17 @@ module "india" {
   system_node_shape     = "VM.Standard.A1.Flex"
   system_node_ocpus     = 4
   system_node_memory_gb = 24
+  # 2026-06-02 rollout-headroom bump (run 26865807851): `min` 2 -> 3 so
+  # there is always one warm, already-prepulled spare node beyond
+  # steady-state. A new revision's `min-scale: 2` api pods then land on that
+  # warm node instead of forcing the autoscaler to provision a COLD node
+  # mid-rollout — India's api revision never achieved initial scale
+  # (ProgressDeadlineExceeded) in that run. `size` already 4 (>= min). MUST
+  # match the live floor: GitHub Actions variable NODE_POOL_MIN for
+  # environment production-india (consumed by deploy.yml "Deploy Cluster
+  # Autoscaler").
   system_pool_size      = 4
-  system_pool_min       = 2
+  system_pool_min       = 3
   system_pool_max       = 10
 
   # 200 GB to match production-us. India is currently LIVE at 100 GB — the

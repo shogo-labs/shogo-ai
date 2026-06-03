@@ -156,7 +156,19 @@ spec:
             - --stderrthreshold=info
             - --cloud-provider=oci
             - --max-node-provision-time=25m
-            - --nodes=1:10:NODE_POOL_OCID_PLACEHOLDER
+            # MIN:MAX:OCID. MIN is the standing-headroom floor — the
+            # autoscaler never scales the pool below it, so a warm
+            # (already-prepulled) spare node is always available to absorb
+            # a rollout's `min-scale` api/warm-pool pods without
+            # provisioning a COLD node mid-rollout (the cold-pull failure
+            # class from run 26865807851, 2026-06-02). MIN/MAX are
+            # substituted per-region by the deploy's "Deploy Cluster
+            # Autoscaler" step from vars.NODE_POOL_MIN / vars.NODE_POOL_MAX
+            # (kept in sync with terraform `system_pool_min`/`system_pool_max`).
+            # The previous hardcoded MIN=1 let the pool scale to a single
+            # node despite terraform declaring a higher floor — see
+            # docs/runbooks/deploy-prod.md and the prod-node-count-low alert.
+            - --nodes=NODE_POOL_MIN_PLACEHOLDER:NODE_POOL_MAX_PLACEHOLDER:NODE_POOL_OCID_PLACEHOLDER
             - --scale-down-delay-after-add=5m
             - --scale-down-unneeded-time=5m
             - --unremovable-node-recheck-timeout=5m

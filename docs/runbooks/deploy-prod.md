@@ -12,6 +12,22 @@
 >
 > Pre-scaling and post-roll verification would have prevented all of
 > this.
+>
+> **2026-06-02 update (run 26865807851)**: two of the manual steps below
+> are now automated by the deploy pipeline, so this runbook is mostly a
+> fallback / verification aid:
+>
+> 1. **Standing headroom** — the cluster-autoscaler MIN floor is now wired
+>    to `vars.NODE_POOL_MIN` per environment (US=4, EU=3, India=3), which
+>    includes one warm spare node beyond steady-state. The autoscaler no
+>    longer drops to a single node (the old `--nodes=1:10` hardcode is gone;
+>    see [`k8s/base/cluster-autoscaler.yaml`](../../k8s/base/cluster-autoscaler.yaml)).
+>    Manual "pre-scale by 1" is therefore usually unnecessary.
+> 2. **Cold-pull gate** — every region now blocks on the image-prepuller
+>    DaemonSet finishing its pull before patching the Knative revisions
+>    (see [`.github/scripts/wait-runtime-prepulled.sh`](../../.github/scripts/wait-runtime-prepulled.sh)),
+>    so a new revision can no longer race the runtime image pull onto a
+>    cold node.
 
 ## Pre-roll checklist
 
@@ -37,22 +53,31 @@ If any of these fail, **stop and resolve before deploying**. A red
 `kubectl top nodes` value is the single best predictor of a roll
 that ends in a capacity-famine incident.
 
-## Pre-scale by 1 node
+## Pre-scale by 1 node (now automated — fallback only)
+
+> Normally you do **not** need to do this manually anymore: the standing
+> headroom floor (`vars.NODE_POOL_MIN`, which already bakes in a +1 spare)
+> keeps a warm node ready. Only follow this if the alert
+> `ProdNodeCountBelowMin` is firing or you're rolling something unusually
+> large.
 
 A warm-pool image roll terminates the existing warm pods and lets
 the controller recreate them. With ~30 warm pods at ~500 MB each
 that's a 15 GB transient memory spike against the system pool.
 Pre-scaling absorbs that spike without evicting paying users.
 
-```bash
-# Bump min to (current + 1). Autoscaler scales up immediately.
-# This is a TEMPORARY change — restore after the roll completes.
-kubectl patch nodepool ... # see terraform/environments/production-us/main.tf
-```
+The durable lever is the per-environment `NODE_POOL_MIN` GitHub Actions
+variable (mirrored from terraform `system_pool_min`). To temporarily add
+headroom for an exceptional roll, raise it and re-run the deploy's
+"Deploy Cluster Autoscaler" step (it re-applies `--nodes=MIN:MAX:OCID`),
+then restore it afterwards:
 
-For OCI/OKE specifically, prefer adjusting via the cluster autoscaler
-config (`min-nodes-total`) so the change is stateful and surfaces in
-the same dashboards.
+```bash
+# Source of truth lives in terraform/environments/production-*/main.tf
+# (system_pool_min) and the matching NODE_POOL_MIN env var. The autoscaler
+# enforces it live via --nodes=MIN:MAX:OCID in cluster-autoscaler.yaml.
+gh variable set NODE_POOL_MIN --env production-us --body "<current+1>"
+```
 
 ## Roll
 
@@ -100,10 +125,12 @@ curl -X POST https://studio.shogo.ai/api/projects/<id>/publish ...
 
 ## Scale back
 
-Once the roll is complete and the warm pool has stabilized for ~10
-minutes, restore `system_pool_min` to its declared terraform value
-and `terraform apply`. The autoscaler will scale down opportunistically
-when load drops; you do not need to drain nodes manually.
+Only needed if you temporarily raised the floor above its declared value.
+Restore `system_pool_min` (terraform) and `NODE_POOL_MIN` (GitHub var) to
+their declared values and re-apply / re-run the autoscaler step. The
+autoscaler will scale down opportunistically when load drops; you do not
+need to drain nodes manually. The standing-headroom floor (declared value)
+stays in place — do not lower it below `system_pool_min`.
 
 ## If a publish hangs
 
