@@ -1347,6 +1347,8 @@ export interface TechStackSummary {
     memoryEnabled?: boolean
     quickActionsEnabled?: boolean
     sdkGuideEnabled?: boolean
+    integrationsEnabled?: boolean
+    channelsEnabled?: boolean
   }
 }
 

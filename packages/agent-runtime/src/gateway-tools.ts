@@ -4362,7 +4362,11 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createReadGuideTool(ctx),
   ]
 
-  const allToolsGetter = () => tools
+  // Subagents and orchestration tools draw their parent tool set from here.
+  // Filter out capability-disabled tools so a delegated subagent (media,
+  // devops, channel, integration, …) cannot reach a tool the project has
+  // turned off — matching how the main agent's tool list is gated.
+  const allToolsGetter = () => filterDisabledCapabilityTools(tools, ctx.config)
   tools.push(createSkillTool(ctx, allToolsGetter))
 
   // Agent orchestration tools
@@ -4732,6 +4736,43 @@ export function resolveToolNames(refs: string[]): string[] {
     }
   }
   return [...resolved]
+}
+
+/**
+ * Remove tools whose owning capability is disabled in `config`.
+ *
+ * This is the single source of truth for capability-based tool gating. It is
+ * applied to BOTH the main agent's tool list AND the parent tool set handed to
+ * subagents (via `allToolsGetter`), so a disabled capability — image
+ * generation, heartbeat, channels, managed integrations, etc. — is truly
+ * unreachable rather than merely dropped from the main agent's prompt. Without
+ * this, a delegated subagent (media / devops / channel / integration) would
+ * still receive the tool because subagents draw from the unfiltered set.
+ *
+ * Capability flags default to enabled, so only an explicit `=== false`
+ * disables a tool group.
+ */
+export function filterDisabledCapabilityTools(
+  tools: AgentTool[],
+  config: import('./gateway').GatewayConfig,
+): AgentTool[] {
+  const disabled = new Set<string>()
+  if (config.webEnabled === false) for (const n of TOOL_GROUP_MAP.web) disabled.add(n)
+  if (config.browserEnabled === false) disabled.add('browser')
+  if (config.shellEnabled === false) for (const n of TOOL_GROUP_MAP.shell) disabled.add(n)
+  if (config.heartbeatEnabled === false) for (const n of TOOL_GROUP_MAP.heartbeat) disabled.add(n)
+  if (config.imageGenEnabled === false) disabled.add('generate_image')
+  if (config.quickActionsEnabled === false) disabled.add('quick_action')
+  if (config.channelsEnabled === false) for (const n of TOOL_GROUP_MAP.messaging) disabled.add(n)
+  if (config.integrationsEnabled === false) for (const n of TOOL_GROUP_MAP.integrations) disabled.add(n)
+
+  const memoryOff = config.memoryEnabled === false
+  if (disabled.size === 0 && !memoryOff) return tools
+  return tools.filter(t => {
+    if (disabled.has(t.name)) return false
+    if (memoryOff && t.name.startsWith('memory_')) return false
+    return true
+  })
 }
 
 // ---------------------------------------------------------------------------

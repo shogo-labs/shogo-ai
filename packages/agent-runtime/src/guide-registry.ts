@@ -111,18 +111,89 @@ export function buildGuideRegistry(promptOverrides?: Map<string, string>): Map<s
 // Capabilities Index — compact summary embedded in the system prompt
 // ---------------------------------------------------------------------------
 
-export const CAPABILITIES_INDEX = `## Capabilities Index
-Read the full guide with \`read_guide({ name: "..." })\` before using these capabilities for the first time.
+/**
+ * Toggles for the Shogo-platform-specific lines of the Capabilities Index.
+ * Each defaults to enabled (`true`); pass `false` to drop that line so
+ * code-only agents (working on a plain repo, SWE benches, etc.) don't carry
+ * messaging/integration/heartbeat guidance they will never use.
+ */
+export interface CapabilitiesIndexFlags {
+  /** Managed OAuth integration + MCP discovery line (default: true) */
+  integrations?: boolean
+  /** Channel connection / messaging line (default: true) */
+  channels?: boolean
+  /** Media (image generation / audio) line (default: true) */
+  media?: boolean
+  /** Devops / heartbeat scheduling line (default: true) */
+  devops?: boolean
+}
 
-- **integrations**: Discovery and lifecycle for managed OAuth integrations (Google, Slack, GitHub, etc.), bundled skills, and MCP protocol servers via the unified \`search_integrations\` / \`connect\` / \`disconnect\` surface. Also covers CLI-first tools when the user provides a token. Read before installing or searching for tools.
-- **subagent**: Agent orchestration — explore, general-purpose, code-reviewer, browser, integration, channel, media, devops, fork mode, and team swarm. Read before delegating tasks.
-- **browser**: Browser automation via snapshot/ref/click workflow. Delegated — use \`agent_spawn({ type: "browser", prompt: "..." })\`. The \`web\` tool for HTTP fetching is available directly. Read the guide before first browser delegation.
-- **constraint-awareness**: Track and enforce user constraints (budgets, dates, requirements). Read when user states explicit constraints.
-- **personality**: Rules for updating AGENTS.md identity/personality. Read before modifying personality, tone, or role.
-- **skill-matching**: Skill discovery, trigger matching, and management in .shogo/skills/. Read before skill operations.
-- **self-evolution**: When and how to write reusable skills. Read when you discover a reusable pattern or workaround.
-- **tool-planning**: Batching tool calls and handling uploaded files in files/. Reference when planning complex multi-step tool sequences.
-- **memory**: When to save/skip memory entries in MEMORY.md. Read when deciding whether to persist information.
-- **media**: Image generation and audio transcription. Delegated — use \`agent_spawn({ type: "media", prompt: "..." })\`.
-- **channel**: Channel connection and messaging (Telegram, Discord, webchat). Delegated — use \`agent_spawn({ type: "channel", prompt: "..." })\`.
-- **devops**: Heartbeat scheduling, monitoring, and skill server sync. Delegated — use \`agent_spawn({ type: "devops", prompt: "..." })\`.`
+/**
+ * Build the Capabilities Index embedded in the system prompt. The coding /
+ * orchestration capabilities are always present; the Shogo-platform lines
+ * (integrations, channel, media, devops) are gated by `flags` so they can be
+ * stripped without dropping the whole index.
+ */
+export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): string {
+  const integrations = flags.integrations !== false
+  const channels = flags.channels !== false
+  const media = flags.media !== false
+  const devops = flags.devops !== false
+
+  // The subagent line advertises delegated agent types; only list the ones
+  // whose surface is still enabled so we don't point at unavailable paths.
+  const subagentTypes = [
+    'explore',
+    'general-purpose',
+    'code-reviewer',
+    'browser',
+    ...(integrations ? ['integration'] : []),
+    ...(channels ? ['channel'] : []),
+    ...(media ? ['media'] : []),
+    ...(devops ? ['devops'] : []),
+    'fork mode',
+    'and team swarm',
+  ].join(', ')
+
+  const lines: string[] = [
+    '## Capabilities Index',
+    'Read the full guide with `read_guide({ name: "..." })` before using these capabilities for the first time.',
+    '',
+  ]
+
+  if (integrations) {
+    lines.push(
+      '- **integrations**: Discovery and lifecycle for managed OAuth integrations (Google, Slack, GitHub, etc.), bundled skills, and MCP protocol servers via the unified `search_integrations` / `connect` / `disconnect` surface. Also covers CLI-first tools when the user provides a token. Read before installing or searching for tools.',
+    )
+  }
+  lines.push(
+    `- **subagent**: Agent orchestration — ${subagentTypes}. Read before delegating tasks.`,
+    '- **browser**: Browser automation via snapshot/ref/click workflow. Delegated — use `agent_spawn({ type: "browser", prompt: "..." })`. The `web` tool for HTTP fetching is available directly. Read the guide before first browser delegation.',
+    '- **constraint-awareness**: Track and enforce user constraints (budgets, dates, requirements). Read when user states explicit constraints.',
+    '- **personality**: Rules for updating AGENTS.md identity/personality. Read before modifying personality, tone, or role.',
+    '- **skill-matching**: Skill discovery, trigger matching, and management in .shogo/skills/. Read before skill operations.',
+    '- **self-evolution**: When and how to write reusable skills. Read when you discover a reusable pattern or workaround.',
+    '- **tool-planning**: Batching tool calls and handling uploaded files in files/. Reference when planning complex multi-step tool sequences.',
+    '- **memory**: When to save/skip memory entries in MEMORY.md. Read when deciding whether to persist information.',
+  )
+  if (media) {
+    lines.push(
+      '- **media**: Image generation and audio transcription. Delegated — use `agent_spawn({ type: "media", prompt: "..." })`.',
+    )
+  }
+  if (channels) {
+    lines.push(
+      '- **channel**: Channel connection and messaging (Telegram, Discord, webchat). Delegated — use `agent_spawn({ type: "channel", prompt: "..." })`.',
+    )
+  }
+  if (devops) {
+    lines.push(
+      '- **devops**: Heartbeat scheduling, monitoring, and skill server sync. Delegated — use `agent_spawn({ type: "devops", prompt: "..." })`.',
+    )
+  }
+
+  return lines.join('\n')
+}
+
+/** Full Capabilities Index with every line enabled (default behavior). */
+export const CAPABILITIES_INDEX = buildCapabilitiesIndex()
