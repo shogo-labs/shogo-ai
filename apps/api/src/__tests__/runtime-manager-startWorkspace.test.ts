@@ -10,14 +10,19 @@ import { join } from 'node:path'
 
 // Stub the workspace env builder so the spawn path never touches the DB.
 mock.module('../lib/runtime/build-workspace-env', () => ({
-  buildWorkspaceEnv: async (workspaceId: string, attachedProjectIds: string[]) => ({
+  buildWorkspaceEnv: async (
+    workspaceId: string,
+    attachedProjectIds: string[],
+    opts?: { anchorProjectId?: string },
+  ) => ({
     WORKSPACE_ID: workspaceId,
     WORKSPACE_PROJECT_IDS: attachedProjectIds.join(','),
+    ...(opts?.anchorProjectId ? { WORKSPACE_ANCHOR_PROJECT_ID: opts.anchorProjectId } : {}),
     AGENT_NAME: 'Test WS',
   }),
 }))
 
-const { RuntimeManager, workspaceRuntimeKey } = await import('../lib/runtime/manager')
+const { RuntimeManager, workspaceRuntimeKey, projectWorkspaceRuntimeKey } = await import('../lib/runtime/manager')
 
 let dirs: string[] = []
 const origEnv = { ...process.env }
@@ -45,6 +50,13 @@ function makeManager(opts: { agentStatus?: any; agentThrows?: Error } = {}) {
   rm.allocatePortAsync = mock(async () => 37100)
   rm.buildUrl = (_id: string, port: number) => `http://localhost:${port}`
   rm.startHealthCheck = mock(() => {})
+  // Hermetic seeding: create the member project dir without the real
+  // template-copy + `bun install` so the merged-root symlinks resolve.
+  rm.ensureProjectDirectory = mock(async (id: string) => {
+    const d = join(workspacesDir, id)
+    mkdirSync(d, { recursive: true })
+    return d
+  })
   rm.agentManager = {
     ensureRunning: mock(async () => {
       if (opts.agentThrows) throw opts.agentThrows
@@ -58,7 +70,7 @@ function makeManager(opts: { agentStatus?: any; agentThrows?: Error } = {}) {
 }
 
 describe('RuntimeManager.startWorkspace', () => {
-  test('spawns a workspace runtime rooted at the workspaces parent', async () => {
+  test('spawns a workspace runtime rooted at the per-workspace merged root', async () => {
     const { rm, workspacesDir } = makeManager()
     const res = await rm.startWorkspace('ws-1', { attachedProjectIds: ['p1', 'p2'] })
 
@@ -68,11 +80,21 @@ describe('RuntimeManager.startWorkspace', () => {
     const call = rm.agentManager.ensureRunning.mock.calls[0]
     expect(call[0]).toBe(workspaceRuntimeKey('ws-1')) // key = ws:ws-1
     const spawnConfig = call[1]
-    expect(spawnConfig.projectDir).toBe(workspacesDir)
+    // projectDir is now the per-workspace merged root (symlinks to the
+    // attached projects), NOT the shared workspaces parent.
+    const mergedRoot = join(workspacesDir, '.workspace-roots', 'ws-1')
+    expect(spawnConfig.projectDir).toBe(mergedRoot)
     expect(spawnConfig.workspaceId).toBe('ws-1')
     expect(spawnConfig.extraEnv.WORKSPACE_RUNTIME).toBe('true')
     expect(spawnConfig.extraEnv.WORKING_MODE).toBe('managed')
     expect(spawnConfig.extraEnv.WORKSPACE_PROJECT_IDS).toBe('p1,p2')
+    // The merged root holds one symlink per attached project, and the real
+    // dirs are shipped as LINKED_FOLDERS for path-allowance.
+    expect(existsSync(join(mergedRoot, 'p1'))).toBe(true)
+    expect(existsSync(join(mergedRoot, 'p2'))).toBe(true)
+    const linked = JSON.parse(spawnConfig.extraEnv.LINKED_FOLDERS)
+    expect(linked).toContain(join(workspacesDir, 'p1'))
+    expect(linked).toContain(join(workspacesDir, 'p2'))
   })
 
   test('keys the runtime under ws:<id> (no collision with a project of same id)', async () => {
@@ -136,5 +158,73 @@ describe('RuntimeManager.startWorkspace', () => {
     expect(rm.runtimes.has('ws:ws-1')).toBe(true)
     await rm.stopAll()
     expect(rm.runtimes.size).toBe(0)
+  })
+})
+
+describe('RuntimeManager.startProjectWorkspace (anchor-keyed merged root)', () => {
+  test('keys the runtime by the anchor project (ws:proj:<anchor>)', async () => {
+    const { rm } = makeManager()
+    await rm.startProjectWorkspace('anchor-1', {
+      workspaceId: 'ws-1',
+      attachedProjectIds: ['p2'],
+    })
+    expect(rm.runtimes.has(projectWorkspaceRuntimeKey('anchor-1'))).toBe(true)
+    // Distinct from both the plain project key and the workspace-session key.
+    expect(rm.runtimes.has('anchor-1')).toBe(false)
+    expect(rm.runtimes.has('ws:ws-1')).toBe(false)
+  })
+
+  test('mounts the anchor first plus its attachments as subfolders', async () => {
+    const { rm, workspacesDir } = makeManager()
+    await rm.startProjectWorkspace('anchor-1', {
+      workspaceId: 'ws-1',
+      attachedProjectIds: ['anchor-1', 'p2'], // anchor duplicated → deduped
+    })
+    const call = rm.agentManager.ensureRunning.mock.calls[0]
+    expect(call[0]).toBe(projectWorkspaceRuntimeKey('anchor-1'))
+    const spawnConfig = call[1]
+    const mergedRoot = join(workspacesDir, '.workspace-roots', 'proj-anchor-1')
+    expect(spawnConfig.projectDir).toBe(mergedRoot)
+    expect(existsSync(join(mergedRoot, 'anchor-1'))).toBe(true)
+    expect(existsSync(join(mergedRoot, 'p2'))).toBe(true)
+    expect(spawnConfig.extraEnv.WORKSPACE_ANCHOR_PROJECT_ID).toBe('anchor-1')
+    expect(spawnConfig.extraEnv.WORKSPACE_PROJECT_IDS).toBe('anchor-1,p2')
+  })
+
+  test('symlinks linked local folders by basename and ships them as LINKED_FOLDERS', async () => {
+    const { rm, workspacesDir } = makeManager()
+    const localFolder = join(workspacesDir, '..', 'my-local-folder')
+    mkdirSync(localFolder, { recursive: true })
+    await rm.startProjectWorkspace('anchor-1', {
+      workspaceId: 'ws-1',
+      attachedProjectIds: [],
+      localFolders: [localFolder],
+    })
+    const mergedRoot = join(workspacesDir, '.workspace-roots', 'proj-anchor-1')
+    expect(existsSync(join(mergedRoot, 'my-local-folder'))).toBe(true)
+    const spawnConfig = rm.agentManager.ensureRunning.mock.calls[0][1]
+    const linked = JSON.parse(spawnConfig.extraEnv.LINKED_FOLDERS)
+    expect(linked.some((p: string) => p.endsWith('my-local-folder'))).toBe(true)
+  })
+
+  test('emits READONLY_ROOTS for read-only attachments', async () => {
+    const { rm, workspacesDir } = makeManager()
+    await rm.startProjectWorkspace('anchor-1', {
+      workspaceId: 'ws-1',
+      attachedProjectIds: ['p2', 'p3'],
+      readonlyProjectIds: ['p3'],
+    })
+    const spawnConfig = rm.agentManager.ensureRunning.mock.calls[0][1]
+    const readonly = JSON.parse(spawnConfig.extraEnv.READONLY_ROOTS)
+    expect(readonly).toEqual([join(workspacesDir, 'p3')])
+    // The anchor + read-write attachment are NOT read-only.
+    expect(readonly).not.toContain(join(workspacesDir, 'anchor-1'))
+    expect(readonly).not.toContain(join(workspacesDir, 'p2'))
+  })
+
+  test('requires an anchorProjectId and a workspaceId', async () => {
+    const { rm } = makeManager()
+    await expect(rm.startProjectWorkspace('', { workspaceId: 'ws-1' })).rejects.toThrow(/anchorProjectId is required/)
+    await expect(rm.startProjectWorkspace('anchor-1', { workspaceId: '' })).rejects.toThrow(/workspaceId is required/)
   })
 })

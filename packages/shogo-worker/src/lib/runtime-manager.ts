@@ -51,6 +51,16 @@ const API_PORT_OFFSET = 1; // API server port = agentPort + 1.
 /** Default idle eviction window — unused runtimes get killed after this. */
 const RUNTIME_IDLE_MS = 15 * 60 * 1000;
 
+/**
+ * A runtime touched within this window is treated as "actively in use"
+ * (likely mid-stream — the agent-proxy/ai-proxy refresh `lastUsedAt` on
+ * every forwarded chunk) and is never picked as an LRU eviction victim
+ * by {@link WorkerRuntimeManager.enforceMaxRuntimes}, even when the cap
+ * is exceeded. Better to briefly run one over the cap than to SIGKILL a
+ * live chat stream out from under the user.
+ */
+const STREAM_ACTIVE_WINDOW_MS = 30 * 1000;
+
 /** Restart backoff bounds. */
 const RESTART_BACKOFF_BASE_MS = 1_000;
 const RESTART_BACKOFF_MAX_MS = 60_000;
@@ -222,6 +232,16 @@ export interface WorkerRuntimeManagerOptions {
    * Cloud workers leave this unset so the default still fires.
    */
   idleMs?: number;
+  /**
+   * Hard ceiling on the number of concurrently-running runtimes. Once
+   * exceeded, `ensureRunning` LRU-evicts the least-recently-used slot
+   * that has not been touched within {@link STREAM_ACTIVE_WINDOW_MS}
+   * (i.e. is not mid-stream). Pass `0`, a negative number, or a
+   * non-finite value to disable the cap (the historical behaviour —
+   * runtimes were then bounded only by idle eviction). Defaults to
+   * disabled when unset.
+   */
+  maxRuntimes?: number;
   /** Optional logger. Defaults to console. */
   logger?: Pick<Console, 'log' | 'warn' | 'error'>;
   /** Working directory for spawned runtimes. Defaults to OS tmpdir/shogo-runtime. */
@@ -629,9 +649,68 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     slot.startPromise = this.doStart(slot);
     try {
       const r = await slot.startPromise;
+      // We just brought a (possibly new) runtime up — enforce the hard
+      // ceiling now so a busy multi-project session can't accumulate
+      // runtimes without bound. Never evicts the one we just started.
+      this.enforceMaxRuntimes(projectId);
       return this.snapshot(r);
     } finally {
       slot.startPromise = null;
+    }
+  }
+
+  /**
+   * Enforce {@link WorkerRuntimeManagerOptions.maxRuntimes} by LRU-evicting
+   * the least-recently-used running slot until the count is at/under the
+   * cap. Skips:
+   *   - the slot we just started (`keepProjectId`),
+   *   - any slot touched within {@link STREAM_ACTIVE_WINDOW_MS} (treated as
+   *     mid-stream — we never cut a live chat),
+   *   - non-running slots (starting/restarting/stopping/failed don't count
+   *     against the cap and aren't safe to tear down here).
+   *
+   * If every over-cap slot is actively streaming we stop early and let the
+   * count ride briefly over the cap rather than killing a live stream — the
+   * next ensureRunning (or idle eviction) reclaims it once it goes quiet.
+   *
+   * Fire-and-forget: eviction `stop()` is async (process-group kill +
+   * grace window) but we don't await it — the caller shouldn't block its
+   * own spawn on tearing down someone else's idle runtime.
+   */
+  private enforceMaxRuntimes(keepProjectId: string): void {
+    const cap = this.opts.maxRuntimes;
+    if (cap == null || !Number.isFinite(cap) || cap <= 0) return;
+
+    const now = Date.now();
+    const running = Array.from(this.runtimes.values()).filter((r) => r.status === 'running');
+    if (running.length <= cap) return;
+
+    // LRU order: oldest lastUsedAt first.
+    const candidates = running
+      .filter((r) => r.projectId !== keepProjectId && now - r.lastUsedAt >= STREAM_ACTIVE_WINDOW_MS)
+      .sort((a, b) => a.lastUsedAt - b.lastUsedAt);
+
+    let overBy = running.length - cap;
+    for (const victim of candidates) {
+      if (overBy <= 0) break;
+      const idleMs = now - victim.lastUsedAt;
+      this.log.log(
+        `[WorkerRuntimeManager] maxRuntimes=${cap} exceeded (${running.length} running) — ` +
+          `LRU-evicting ${victim.projectId} (idle ${Math.round(idleMs / 1000)}s)`,
+      );
+      void this.stop(victim.projectId).catch((err: any) => {
+        this.log.warn(
+          `[WorkerRuntimeManager] maxRuntimes eviction of ${victim.projectId} failed: ${err?.message ?? err}`,
+        );
+      });
+      overBy--;
+    }
+
+    if (overBy > 0) {
+      this.log.log(
+        `[WorkerRuntimeManager] maxRuntimes=${cap} still exceeded by ${overBy} after eviction pass — ` +
+          `remaining over-cap slots are mid-stream; will retry on next spawn / idle reap`,
+      );
     }
   }
 

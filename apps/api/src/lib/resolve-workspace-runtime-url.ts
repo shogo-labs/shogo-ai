@@ -60,6 +60,19 @@ export interface ResolveWorkspaceRuntimeOpts {
   /** Attached project ids this runtime should mount. */
   attachedProjectIds: string[]
 
+  /**
+   * For the universal project-anchored path: the anchor project id. When
+   * set, host mode spawns a PROJECT-anchored merged runtime
+   * (`startProjectWorkspace`, keyed `ws:proj:<anchor>`) that mounts the
+   * anchor + attachments + linked folders, instead of the workspace-session
+   * runtime keyed by workspaceId. Cloud (k8s/vm) is not yet anchor-aware.
+   */
+  anchorProjectId?: string
+  /** Linked local host folders to mount (project-anchored host path only). */
+  localFolders?: string[]
+  /** Subset of attached projects mounted read-only (write-denied). */
+  readonlyProjectIds?: string[]
+
   /** Log tag included in fallback/error log lines. */
   logTag?: string
 
@@ -79,6 +92,17 @@ export interface ResolveWorkspaceRuntimeOpts {
   _hostStart?: (
     workspaceId: string,
     attachedProjectIds: string[],
+    manager?: IRuntimeManager,
+  ) => Promise<IProjectRuntime>
+  /** Test-only override for the project-anchored host spawn. */
+  _hostStartProject?: (
+    anchorProjectId: string,
+    opts: {
+      workspaceId: string
+      attachedProjectIds: string[]
+      localFolders: string[]
+      readonlyProjectIds: string[]
+    },
     manager?: IRuntimeManager,
   ) => Promise<IProjectRuntime>
 
@@ -127,6 +151,31 @@ async function defaultHostStart(
 }
 
 /**
+ * Default host spawn for the project-anchored path. Delegates to
+ * `RuntimeManager.startProjectWorkspace`, keyed `ws:proj:<anchor>`.
+ */
+async function defaultHostStartProject(
+  anchorProjectId: string,
+  opts: {
+    workspaceId: string
+    attachedProjectIds: string[]
+    localFolders: string[]
+    readonlyProjectIds: string[]
+  },
+  manager?: IRuntimeManager,
+): Promise<IProjectRuntime> {
+  const m: any =
+    manager ?? (await import('./runtime/index')).getRuntimeManager()
+  if (typeof m.startProjectWorkspace !== 'function') {
+    throw new Error(
+      `[WorkspaceRuntime] host spawn unavailable: this RuntimeManager has no startProjectWorkspace(). ` +
+        `Expected on the desktop/local RuntimeManager (apps/api/src/lib/runtime/manager.ts).`,
+    )
+  }
+  return m.startProjectWorkspace(anchorProjectId, opts)
+}
+
+/**
  * Resolve the agent-runtime URL for a workspace, honouring the
  * k8s/vm/host hierarchy. Throws `WorkspaceRuntimeNotEnabledError` when
  * the feature flag is off.
@@ -149,6 +198,16 @@ export async function resolveWorkspaceRuntimeUrl(
   }
   if (!isEnabled()) {
     throw new WorkspaceRuntimeNotEnabledError(workspaceId)
+  }
+
+  // Cloud (k8s/vm) is keyed by workspaceId Service and is not yet
+  // anchor-aware. Fail loudly rather than silently mounting the wrong tree
+  // when a project-anchored runtime is requested in cloud.
+  if (opts.anchorProjectId && (isKubernetes() || isVMIsolation())) {
+    throw new Error(
+      `[${tag}] project-anchored workspace runtime (anchor=${opts.anchorProjectId}) is not yet ` +
+        `supported in cloud (k8s/vm). It is currently host/desktop-only.`,
+    )
   }
 
   if (isKubernetes()) {
@@ -178,8 +237,23 @@ export async function resolveWorkspaceRuntimeUrl(
   }
 
   // Host mode.
-  const start = opts._hostStart ?? defaultHostStart
-  const runtime = await start(workspaceId, attachedProjectIds, opts.runtimeManager)
+  let runtime: IProjectRuntime
+  if (opts.anchorProjectId) {
+    const startProject = opts._hostStartProject ?? defaultHostStartProject
+    runtime = await startProject(
+      opts.anchorProjectId,
+      {
+        workspaceId,
+        attachedProjectIds,
+        localFolders: opts.localFolders ?? [],
+        readonlyProjectIds: opts.readonlyProjectIds ?? [],
+      },
+      opts.runtimeManager,
+    )
+  } else {
+    const start = opts._hostStart ?? defaultHostStart
+    runtime = await start(workspaceId, attachedProjectIds, opts.runtimeManager)
+  }
 
   let host = 'localhost'
   try {
