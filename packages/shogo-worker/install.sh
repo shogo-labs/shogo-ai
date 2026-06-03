@@ -118,15 +118,16 @@ else
   install_via_npm
 fi
 
-case ":$PATH:" in
-  *":$PREFIX:"*) ;;
-  *)
-    echo
-    warn "$PREFIX is not in your PATH."
-    echo "    Add this to ~/.zshrc or ~/.bashrc:"
-    echo "      export PATH=\"$PREFIX:\$PATH\""
-    ;;
-esac
+if [ "$BIN_PATH" != "$PREFIX/shogo" ]; then
+  : # installed via npm — shogo is already on PATH
+elif case ":$PATH:" in *":$PREFIX:"*) true;; *) false;; esac; then
+  : # PREFIX already on PATH
+else
+  echo
+  warn "$PREFIX is not in your PATH."
+  echo "    Add this to ~/.zshrc or ~/.bashrc:"
+  echo "      export PATH=\"$PREFIX:\$PATH\""
+fi
 
 echo
 "$BIN_PATH" --version 2>/dev/null && ok "shogo CLI ready"
