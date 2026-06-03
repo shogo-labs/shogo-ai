@@ -752,13 +752,9 @@ describe('rollback', () => {
   it('logs but does not fail when post-rollback checkpoint creation throws', async () => {
     seedProject({ id: 'p' })
     seedCheckpoint({ id: 'cp_post', projectId: 'p', commitSha: 'sha_x', branch: 'main' })
-    // Make the second checkout (back to branch) throw
-    let checkoutCalls = 0
-    checkoutImpl = async () => {
-      checkoutCalls++
-      if (checkoutCalls === 2) throw new Error('checkout to branch failed')
-      return { success: true } as any
-    }
+    // No pre-rollback auto-save (clean tree), so the only createCheckpoint call
+    // is the post-rollback marker. Make its internal commit throw.
+    commitImpl = async () => { throw new Error('commit failed') }
     const warns: string[] = []
     const orig = console.warn
     console.warn = (...a: any[]) => warns.push(a.join(' '))
@@ -772,6 +768,38 @@ describe('rollback', () => {
     } finally {
       console.warn = orig
     }
+  })
+
+  it('restores the checkpoint tree without rewriting history (read-tree, no reset --hard)', async () => {
+    seedProject({ id: 'p' })
+    seedCheckpoint({ id: 'cp_tree', projectId: 'p', commitSha: 'sha_target', branch: 'main' })
+    const out = await svc.rollback({
+      projectId: 'p', workspacePath: '/ws', checkpointId: 'cp_tree',
+    })
+    expect(out.success).toBe(true)
+    // Tree is restored with read-tree -u --reset (HEAD stays on the branch tip).
+    expect(execCalls.some((c) => c.cmd === 'git read-tree -u --reset sha_target')).toBe(true)
+    // The destructive branch rewind must not happen anymore.
+    expect(execCalls.some((c) => c.cmd.includes('reset --hard'))).toBe(false)
+    // We only ever checkout the branch, never detach onto the commit.
+    expect(gitCalls.checkout.every((c: any) => c.r === 'main')).toBe(true)
+  })
+
+  it('returns failure when restoring the checkpoint tree fails', async () => {
+    seedProject({ id: 'p' })
+    seedCheckpoint({
+      id: 'cp_rt_fail', projectId: 'p', commitSha: 'sha_target', branch: 'main', name: 'Tree CP',
+    })
+    execImpl = (cmd: string) => {
+      if (cmd.startsWith('git read-tree')) throw new Error('read-tree boom')
+      return ''
+    }
+    const out = await svc.rollback({
+      projectId: 'p', workspacePath: '/ws', checkpointId: 'cp_rt_fail',
+    })
+    expect(out.success).toBe(false)
+    expect(out.error).toBe('read-tree boom')
+    expect(out.previousCheckpoint.name).toBe('Tree CP')
   })
 
   it('uses short SHA in messages when checkpoint.name is null', async () => {
