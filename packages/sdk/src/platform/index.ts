@@ -271,6 +271,16 @@ export interface ResolvedVisibleModels {
   catalogModels?: VisibleCatalogModel[]
 }
 
+/** Resolved view returned by `GET /api/workspaces/:id/visible-models`.
+ *
+ * Same shape as {@link ResolvedVisibleModels} (the picker consumes it
+ * identically) plus `allowedModelIds`: the workspace admin's raw allowlist.
+ * `null` means the workspace inherits every platform-visible model; an array
+ * is the explicit subset the admin selected. */
+export interface WorkspaceVisibleModels extends ResolvedVisibleModels {
+  allowedModelIds: string[] | null
+}
+
 // ===========================================================================
 // DB-defined model catalog (super-admin managed). Lets new models, including
 // custom OpenAI-compatible providers (e.g. MiMo), be added without a release.
@@ -749,6 +759,35 @@ export class PlatformApi {
       '/api/platform/visible-models',
     )
     return res.data ?? { catalogIds: null, openrouterModels: [] }
+  }
+
+  // ===========================================================================
+  // Workspace-scoped visible models (owner/admin curated subset)
+  // ===========================================================================
+
+  /** Read the resolved visible-models set for a workspace: the platform-visible
+   * set narrowed by the workspace admin's allowlist. `allowedModelIds` is the
+   * raw allowlist (`null` = inherit all platform-visible models). Use this in
+   * the chat picker when a workspace is active; any member may read it. */
+  async getWorkspaceVisibleModels(workspaceId: string): Promise<WorkspaceVisibleModels> {
+    const res = await this.http.get<WorkspaceVisibleModels>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/visible-models`,
+    )
+    return res.data ?? { catalogIds: null, openrouterModels: [], allowedModelIds: null }
+  }
+
+  /** Replace the workspace's model allowlist (owner/admin only). Pass `null` or
+   * `[]` to revert to "inherit all platform-visible models". Every id must be in
+   * the platform-visible set or the server rejects the write. */
+  async putWorkspaceVisibleModels(
+    workspaceId: string,
+    allowedModelIds: string[] | null,
+  ): Promise<{ ok: boolean; allowedModelIds: string[] | null }> {
+    const res = await this.http.request<{ ok: boolean; allowedModelIds: string[] | null }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/visible-models`,
+      { method: 'PUT', body: { allowedModelIds } },
+    )
+    return res.data ?? { ok: false, allowedModelIds: null }
   }
 
   // ===========================================================================

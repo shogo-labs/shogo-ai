@@ -97,6 +97,7 @@ export {
   type VisibleOpenRouterModel,
   type VisibleCatalogModel,
   type ResolvedVisibleModels,
+  type WorkspaceVisibleModels,
   type ModelProvider,
   type ModelProviderInput,
   type ModelDefinition,

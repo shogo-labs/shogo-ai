@@ -190,6 +190,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'Per-project upsert keyed on `projectId`; PATCH heartbeat-settings request from one region.',
   },
   {
+    key: 'WorkspaceModelVisibility.(modelId,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'workspace-models.service.ts setAllowedModelIds deletes+recreates a workspace\'s allowlist in one transaction from an owner/admin PUT request; per-workspace, not a global/cron writer.',
+  },
+  {
     key: 'GitHubConnection.projectId',
     category: 'single_tenant_upsert',
     reason: 'github.service.ts:309 upserts on projectId from a user request.',

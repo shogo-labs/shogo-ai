@@ -30,6 +30,7 @@ import {
   ArrowLeft,
   Building2,
   Users,
+  Boxes,
   Shield,
   User,
   ExternalLink,
@@ -71,6 +72,7 @@ import { SecuritySettingsPanel } from '../../components/security/SecuritySetting
 import { ComputeTab } from '../../components/settings/ComputeTab'
 import { BugReportTab } from '../../components/settings/BugReportTab'
 import { IntegrationsTab } from '../../components/settings/IntegrationsTab'
+import { WorkspaceModelsTab } from '../../components/settings/WorkspaceModelsTab'
 import {
   type AnalyticsPeriod,
   type UsageSummaryData,
@@ -113,9 +115,9 @@ import { useDualPlan } from '../../lib/dual-plan-preference'
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'integrations' | 'account' | 'security' | 'billing' | 'compute' | 'analytics' | 'costs' | 'support'
+type TabId = 'workspace' | 'people' | 'models' | 'integrations' | 'account' | 'security' | 'billing' | 'compute' | 'analytics' | 'costs' | 'support'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'integrations', 'account', 'security', 'billing', 'compute', 'analytics', 'costs', 'support']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'models', 'integrations', 'account', 'security', 'billing', 'compute', 'analytics', 'costs', 'support']
 
 /** Tablet/desktop split: matches `SettingsPage` `isWide` (sidebar layout). */
 const SETTINGS_WIDE_BREAKPOINT = 768
@@ -130,6 +132,7 @@ interface NavItem {
 const MOBILE_NAV_ITEMS: NavItem[] = [
   { id: 'workspace', label: 'Workspace', icon: Building2 },
   { id: 'people', label: 'People', icon: Users },
+  { id: 'models', label: 'Models', icon: Boxes },
   { id: 'integrations', label: 'Integrations', icon: Plug },
   { id: 'account', label: 'Account', icon: User },
   ...(!HIDE_COMPUTE_PURCHASES_ON_IOS ? [{ id: 'compute' as TabId, label: 'Compute', icon: Server }] : []),
@@ -231,6 +234,7 @@ function SettingsSidebar({
   const workspaceItems: SidebarItem[] = [
     { id: 'workspace', label: workspaceName || 'Workspace', avatar: (workspaceName?.[0] || 'W').toUpperCase() },
     ...(!(localMode || !showBilling) ? [{ id: 'people' as TabId, label: 'People' }] : []),
+    ...(!(localMode || !showBilling) ? [{ id: 'models' as TabId, label: 'Models' }] : []),
     { id: 'integrations' as TabId, label: 'Integrations' },
     ...(showBilling
       ? [
@@ -3170,6 +3174,7 @@ const SettingsContent = observer(function SettingsContent({
     <>
       {activeTab === 'workspace' && <WorkspaceSettingsTab />}
       {activeTab === 'people' && !isLocal && <PeopleTab />}
+      {activeTab === 'models' && !isLocal && <WorkspaceModelsTab />}
       {activeTab === 'integrations' && <IntegrationsTab />}
       {activeTab === 'account' && <AccountTab />}
       {activeTab === 'security' && <SecuritySettingsPanel />}
@@ -3201,6 +3206,7 @@ export default observer(function SettingsPage() {
   useEffect(() => {
     const isLocal = localMode || !features.billing
     if (activeTab === 'people' && isLocal) setActiveTab('workspace')
+    if (activeTab === 'models' && isLocal) setActiveTab('workspace')
     if (activeTab === 'compute' && (isLocal || HIDE_COMPUTE_PURCHASES_ON_IOS)) setActiveTab('workspace')
     if (activeTab === 'billing' && isLocal) setActiveTab('workspace')
   }, [activeTab, features.billing, localMode])

@@ -143,6 +143,7 @@ model Workspace {
   agentEvalSets          AgentEvalSet[]
   grants                 WorkspaceGrant[]
   chatSessions           ChatSession[]
+  modelVisibility        WorkspaceModelVisibility[]
 
   @@map("workspaces")
 }
@@ -1144,6 +1145,25 @@ model PlatformSetting {
   updatedBy String?
 
   @@map("platform_settings")
+}
+
+// ============================================================================
+// Workspace-scoped model visibility (workspace owner/admin curated).
+// Zero rows = inherit all platform-visible models; >= 1 row = restrict to
+// exactly those ids. See packages/api workspace-models.service.ts.
+// ============================================================================
+model WorkspaceModelVisibility {
+  id          String   @id @default(uuid())
+  workspaceId String
+  modelId     String
+  createdAt   DateTime @default(now())
+  createdBy   String?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, modelId])
+  @@index([workspaceId])
+  @@map("workspace_model_visibility")
 }
 
 // ============================================================================
