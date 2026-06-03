@@ -397,6 +397,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'Written when a user attaches a project to a workspace-scoped chat session (generated chat-session-project route). One user request per attach; the unique pair just dedupes a double-attach of the same project to the same session.',
   },
   {
+    key: 'ProjectAttachment.(attachedProjectId,projectId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'project-attachment.service.ts:attachProjectToProject upserts on the (projectId,attachedProjectId) composite from a single Folders-panel attach request (one project owner per region); detach is deleteMany on the same pair.',
+  },
+  {
     key: 'VoiceCallMeter.conversationId',
     category: 'request_scoped',
     reason:

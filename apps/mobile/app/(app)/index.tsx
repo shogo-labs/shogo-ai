@@ -4,8 +4,6 @@ import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react'
 import {
   View,
   Text,
-  Pressable,
-  ScrollView,
   Platform,
   Alert,
   useWindowDimensions,
@@ -13,10 +11,7 @@ import {
 import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
-import { ArrowRight } from 'lucide-react-native'
 import Svg, { Defs, RadialGradient, Stop, Ellipse } from 'react-native-svg'
-import { ProjectCard } from '../../components/home/ProjectCard'
-import { cn } from '@shogo/shared-ui/primitives'
 import { Button } from '@shogo/shared-ui/primitives'
 import { usePostHogSafe } from '../../contexts/posthog'
 import { useAuth } from '../../contexts/auth'
@@ -27,7 +22,6 @@ import {
   useDomainActions,
   useDomainHttp,
 } from '../../contexts/domain'
-import type { IProject, IMember, IWorkspace } from '../../contexts/domain'
 import { CompactChatInput } from '../../components/chat/CompactChatInput'
 import type { FileAttachment, InteractionMode } from '../../components/chat/ChatInput'
 import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../components/chat/ChatInput'
@@ -39,9 +33,8 @@ import { loadModelPreference, saveModelPreference } from '../../lib/agent-mode-p
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { workspaceProjectFilter } from '../../lib/project-load'
-import { getActiveWorkspaceId } from '../../lib/workspace-store'
 import { useBillingData } from '@shogo/shared-app/hooks'
-import { usePlatformConfig } from '../../lib/platform-config'
+import { usePlatformConfig, isWorkspaceRuntimeEnabled } from '../../lib/platform-config'
 import { api, getOnboardingMessage } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { safeGetItem, safeRemoveItem } from '../../lib/safe-storage'
@@ -205,26 +198,12 @@ const LovableGradient = memo(function LovableGradient({ isDark }: { isDark: bool
 // (apps/mobile/components/project/useOpenLocalFolder.ts), shared with
 // the `/projects` page's "New project" menu so both surfaces stay in sync.
 
-// Tab descriptors are static — keep them at module scope so the array
-// reference doesn't churn on every render of HomeScreen.
-//
-// The "Templates" tab was removed when built-in templates were folded
-// into the marketplace; the surface the user sees is now exclusively
-// their own projects, plus shared. Marketplace browsing happens on
-// the dedicated `/marketplace` route and via the marketing-site
-// `pending_template_id` deep-link below.
-const TAB_ITEMS = [
-  { key: 'projects' as const, label: 'My projects' },
-  { key: 'shared' as const, label: 'Shared with me' },
-]
-
 // Static style fragments. The composer-wrapper variants below are a
 // per-theme ✕ per-platform decision tree, so we precompute the four
 // possibilities once and pick by index instead of building a new object
 // literal on every render.
-const TAB_BAR_CONTENT_STYLE = { alignItems: 'center' as const, gap: 2 }
-const SCROLL_VIEW_CONTENT_STYLE = { flexGrow: 1 }
 const COMPOSER_WRAPPER_NATIVE = { maxWidth: 680 }
+const CONTENT_MAX_WIDTH = { maxWidth: 680 } as const
 const COMPOSER_WRAPPER_WEB_LIGHT = {
   maxWidth: 680,
   boxShadow:
@@ -249,7 +228,6 @@ const HomeScreen = observer(function HomeScreen() {
   const isDark = useDarkMode()
   const { width: screenWidth } = useWindowDimensions()
   const isMobile = screenWidth < 640
-  const gridColumns = screenWidth < 640 ? 2 : screenWidth < 1024 ? 2 : 3
 
   const [prompt, setPrompt] = useState('')
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
@@ -257,20 +235,27 @@ const HomeScreen = observer(function HomeScreen() {
   const [isCreating, setIsCreating] = useState(false)
 
   /**
-   * Draft project the homepage opens behind the scenes as soon as the
-   * user starts composing (typing or tapping the mic for EZ Mode).
+   * Draft project the homepage opens behind the scenes for a creation
+   * gesture (pressing Send or tapping the mic for EZ Mode). It is NOT
+   * created while the user is merely typing — see `handlePromptChange`.
    * Reused by both submit and the Shogo voice entry point so we never
-   * create two projects for one creation gesture, and so a runtime pod
-   * is being warmed while the user is still composing.
+   * create two projects for one creation gesture.
    */
-  type HomeDraft = { projectId: string; chatSessionId: string }
+  type HomeDraft = {
+    projectId: string
+    chatSessionId: string
+    /**
+     * Whether `chatSessionId` is a workspace-scoped session (the project is
+     * attached to it) chatting against the merged-root runtime, or a legacy
+     * per-project session. Drives the route param + ChatPanel scope.
+     */
+    chatScope: 'project' | 'workspace'
+  }
   const draftRef = useRef<HomeDraft | null>(null)
   const draftPromiseRef = useRef<Promise<HomeDraft | null> | null>(null)
   const draftPrewarmedRef = useRef<Set<string>>(new Set())
-  const draftTypeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   // APP_MODE_DISABLED: homeAppTemplates state removed
-  const [activeTab, setActiveTab] = useState<'projects' | 'shared'>('projects')
 
   const [workspaceError, setWorkspaceError] = useState(false)
 
@@ -375,46 +360,6 @@ const HomeScreen = observer(function HomeScreen() {
 
   // APP_MODE_DISABLED: pending_app_template deep-link removed
 
-  const myProjects = useMemo((): IProject[] => {
-    try {
-      const all = projects?.all
-      const workspaceId = currentWorkspace?.id ?? getActiveWorkspaceId()
-      return [...(Array.isArray(all) ? all : [])]
-        .filter((p) => !workspaceId || p.workspaceId === workspaceId)
-        .sort((a: any, b: any) => {
-          const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
-          const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0
-          return bTime - aTime
-        })
-    } catch {
-      return []
-    }
-  }, [projects?.all, currentWorkspace?.id])
-
-  const sharedProjects = useMemo((): IProject[] => {
-    if (!user?.id) return []
-    try {
-      const userMembers = membersColl.all.filter((m: IMember) => m.userId === user.id)
-      const sharedWsIds = new Set(
-        workspaces.all
-          .filter((ws: IWorkspace) => {
-            const membership = userMembers.find((m: IMember) => m.workspaceId === ws.id)
-            return membership && membership.role !== 'owner'
-          })
-          .map((ws: IWorkspace) => ws.id)
-      )
-      return [...(projects?.all ?? [])]
-        .filter((p) => sharedWsIds.has(p.workspaceId))
-        .sort((a, b) => {
-          const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
-          const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0
-          return bTime - aTime
-        })
-    } catch {
-      return []
-    }
-  }, [user?.id, projects?.all, membersColl.all, workspaces.all])
-
   const firstName = useMemo(() => {
     const name = user?.name || 'there'
     return name.split(' ')[0] || 'there'
@@ -438,23 +383,65 @@ const HomeScreen = observer(function HomeScreen() {
         : undefined
 
   /**
+   * Create the chat session for a freshly-created home project. When the
+   * workspace runtime is enabled (client + server agree), this is a
+   * workspace-scoped session with the project attached; otherwise it's the
+   * legacy per-project session. Returns the draft descriptor.
+   */
+  const createHomeDraftSession = useCallback(
+    async (projectId: string, workspaceId: string): Promise<HomeDraft> => {
+      if (isWorkspaceRuntimeEnabled()) {
+        const session = await api.createWorkspaceSession(http, workspaceId, {
+          inferredName: 'Untitled',
+          attachProjectIds: [projectId],
+          attachMode: 'readwrite',
+        })
+        return { projectId, chatSessionId: session.id, chatScope: 'workspace' }
+      }
+      const chatSession = await actions.createChatSession({
+        inferredName: 'Untitled',
+        contextType: 'project',
+        contextId: projectId,
+      })
+      return { projectId, chatSessionId: chatSession.id, chatScope: 'project' }
+    },
+    [actions, http],
+  )
+
+  /** Fire-and-forget warm the runtime that backs a draft (workspace or project). */
+  const prewarmHomeDraft = useCallback(
+    (draft: HomeDraft, workspaceId: string) => {
+      if (draft.chatScope === 'workspace') {
+        void api.prewarmWorkspaceRuntime(http, workspaceId, {
+          sessionId: draft.chatSessionId,
+          attachProjectIds: [draft.projectId],
+        })
+      } else {
+        void api.prewarmProjectRuntime(http, draft.projectId)
+      }
+    },
+    [http],
+  )
+
+  /**
    * Single-flight: create the draft project + chat session for the home
    * composer, kick off a runtime prewarm, and return them. Concurrent
-   * callers (typing debounce + submit + mic) all join the same in-flight
-   * promise so we never duplicate creation. Once a draft exists, future
-   * calls resolve to the same draft until it has been consumed by a
-   * navigation away from the home screen.
+   * callers (submit + mic) all join the same in-flight promise so we never
+   * duplicate creation. Once a draft exists, future calls resolve to the
+   * same draft until it has been consumed by a navigation away from the
+   * home screen.
    */
   const ensureDraftProject = useCallback(async (): Promise<HomeDraft | null> => {
     if (draftRef.current) return draftRef.current
     if (draftPromiseRef.current) return draftPromiseRef.current
     if (!user?.id || !currentWorkspace?.id) return null
 
+    const workspaceId = currentWorkspace.id
     const promise = (async (): Promise<HomeDraft | null> => {
       try {
         const newProject = await actions.createProject(
           'New Project',
-          currentWorkspace.id,
+          workspaceId,
           undefined,
           user.id,
         )
@@ -464,15 +451,7 @@ const HomeScreen = observer(function HomeScreen() {
         // marketplace install path is the source of tech-stack-aware
         // seeding. The runtime defaults to react-app for projects with
         // no settings.techStackId, matching the old fallback.
-        const chatSession = await actions.createChatSession({
-          inferredName: 'Untitled',
-          contextType: 'project',
-          contextId: newProject.id,
-        })
-        const draft: HomeDraft = {
-          projectId: newProject.id,
-          chatSessionId: chatSession.id,
-        }
+        const draft = await createHomeDraftSession(newProject.id, workspaceId)
         draftRef.current = draft
 
         // Fire-and-forget runtime prewarm. The API returns 202 and warms
@@ -482,7 +461,7 @@ const HomeScreen = observer(function HomeScreen() {
         // per project id locally.
         if (!draftPrewarmedRef.current.has(draft.projectId)) {
           draftPrewarmedRef.current.add(draft.projectId)
-          void api.prewarmProjectRuntime(http, draft.projectId)
+          prewarmHomeDraft(draft, workspaceId)
         }
 
         return draft
@@ -496,27 +475,16 @@ const HomeScreen = observer(function HomeScreen() {
 
     draftPromiseRef.current = promise
     return promise
-  }, [actions, currentWorkspace?.id, http, user?.id])
+  }, [actions, createHomeDraftSession, currentWorkspace?.id, prewarmHomeDraft, user?.id])
 
-  /** Wrap `setPrompt` so the homepage starts warming as soon as there's real input. */
+  /**
+   * Home composer input handler. Updates local state only — project and
+   * chat-session creation is deferred to the actual creation gesture
+   * (Send -> `createProjectFromPrompt`, mic -> `handleStartVoiceProjectCreation`)
+   * so we never open a stray project while the user is still typing.
+   */
   const handlePromptChange = useCallback((next: string) => {
     setPrompt(next)
-    if (next.trim().length < 3) return
-    if (draftRef.current || draftPromiseRef.current) return
-    if (draftTypeTimerRef.current) clearTimeout(draftTypeTimerRef.current)
-    // Tiny debounce so a single keystroke doesn't trigger creation, but
-    // we still kick off well before submit so warm-pool claim has time
-    // to land.
-    draftTypeTimerRef.current = setTimeout(() => {
-      draftTypeTimerRef.current = null
-      void ensureDraftProject()
-    }, 250)
-  }, [ensureDraftProject])
-
-  useEffect(() => {
-    return () => {
-      if (draftTypeTimerRef.current) clearTimeout(draftTypeTimerRef.current)
-    }
   }, [])
 
   const createProjectFromPrompt = useCallback(async (
@@ -549,16 +517,11 @@ const HomeScreen = observer(function HomeScreen() {
             undefined,
             user.id,
           )
-          const chatSession = await actions.createChatSession({
-            inferredName: 'Untitled',
-            contextType: 'project',
-            contextId: newProject.id,
-          })
-          draft = { projectId: newProject.id, chatSessionId: chatSession.id }
+          draft = await createHomeDraftSession(newProject.id, currentWorkspace.id)
           draftRef.current = draft
           if (!draftPrewarmedRef.current.has(draft.projectId)) {
             draftPrewarmedRef.current.add(draft.projectId)
-            void api.prewarmProjectRuntime(http, draft.projectId)
+            prewarmHomeDraft(draft, currentWorkspace.id)
           }
         } catch (err: any) {
           const detail = err?.message || err?.details?.error?.message || String(err)
@@ -588,6 +551,7 @@ const HomeScreen = observer(function HomeScreen() {
         params: {
           id: consumed.projectId,
           chatSessionId: consumed.chatSessionId,
+          chatScope: consumed.chatScope,
           initialMessage: text,
           initialInteractionMode: submissionInteractionMode,
         },
@@ -596,10 +560,17 @@ const HomeScreen = observer(function HomeScreen() {
       // Fire-and-forget: replace heuristic name with AI-generated name
       const pid = consumed.projectId
       const sid = consumed.chatSessionId
+      const sidScope = consumed.chatScope
       api.generateProjectName(http, text, currentWorkspace.id).then(({ name, description }) => {
         if (name && name !== projectName) {
           actions.updateProject(pid, { name, description: description || undefined })
-          actions.updateChatSession(sid, { inferredName: name })
+          // Only project-scoped sessions live in the local MST collection.
+          // Workspace sessions are created server-side (api.createWorkspaceSession)
+          // and aren't in `chatSessionCollection`, so updateChatSession would
+          // throw "Item not found" — skip the local rename for them.
+          if (sidScope === 'project') {
+            actions.updateChatSession(sid, { inferredName: name })
+          }
         }
       }).catch((err) => {
         console.warn('[Home] AI project name generation failed, keeping heuristic name:', err)
@@ -609,11 +580,13 @@ const HomeScreen = observer(function HomeScreen() {
     }
   }, [
     actions,
+    createHomeDraftSession,
     currentWorkspace?.id,
     ensureDraftProject,
     http,
     interactionMode,
     posthog,
+    prewarmHomeDraft,
     projects,
     router,
     user?.id,
@@ -650,6 +623,7 @@ const HomeScreen = observer(function HomeScreen() {
         params: {
           id: consumed.projectId,
           chatSessionId: consumed.chatSessionId,
+          chatScope: consumed.chatScope,
           initialInteractionMode: interactionMode,
           startEzMode: '1',
           autoStartVoice: '1',
@@ -733,18 +707,6 @@ const HomeScreen = observer(function HomeScreen() {
   // boundaries, so caching them gives every memoized child the same
   // identity-equal style across renders driven by other state (input
   // value, mobx ticks, etc.).
-  const heroOuterStyle = useMemo(
-    () => ({ minHeight: isMobile ? 340 : 420 }),
-    [isMobile],
-  )
-  const heroInnerStyle = useMemo(
-    () => ({
-      paddingHorizontal: isMobile ? 16 : 24,
-      paddingTop: isMobile ? 48 : 64,
-      paddingBottom: isMobile ? 32 : 48,
-    }),
-    [isMobile],
-  )
   const heroTitleStyle = useMemo(
     () => ({
       fontSize: isMobile ? 26 : 36,
@@ -763,35 +725,6 @@ const HomeScreen = observer(function HomeScreen() {
         ? COMPOSER_WRAPPER_WEB_DARK
         : COMPOSER_WRAPPER_WEB_LIGHT
       : COMPOSER_WRAPPER_NATIVE
-  const bottomSectionStyle = useMemo(
-    () => ({
-      marginTop: -24,
-      paddingTop: 20,
-      marginLeft: isMobile ? 8 : 20,
-      marginRight: isMobile ? 8 : 20,
-    }),
-    [isMobile],
-  )
-  const tabBarRowStyle = useMemo(
-    () => ({ paddingHorizontal: isMobile ? 12 : 24, gap: 4 }),
-    [isMobile],
-  )
-  const tabContentPaddingStyle = useMemo(
-    () => ({ paddingHorizontal: isMobile ? 12 : 24, paddingBottom: 40 }),
-    [isMobile],
-  )
-  const gridContainerStyle = useMemo(
-    () =>
-      Platform.OS === 'web'
-        ? ({
-            display: 'grid' as any,
-            gridTemplateColumns: `repeat(${gridColumns}, 1fr)`,
-            gap: isMobile ? 10 : 16,
-            width: '100%',
-          } as any)
-        : {},
-    [gridColumns, isMobile],
-  )
 
   if (!isAuthenticated) {
     if (localMode) {
@@ -815,170 +748,63 @@ const HomeScreen = observer(function HomeScreen() {
 
   return (
     <View className="flex-1 bg-background">
-      <ScrollView className="flex-1" contentContainerStyle={SCROLL_VIEW_CONTENT_STYLE}>
-        {/* Hero section with gradient */}
-        <View className="relative" style={heroOuterStyle}>
-          <LovableGradient isDark={isDark} />
+      <View className="relative flex-1 items-center justify-center px-4">
+        <LovableGradient isDark={isDark} />
 
-          <View
-            className="relative items-center justify-center"
-            style={heroInnerStyle}
-          >
-            <Text
-              className="text-center font-bold mb-2 text-foreground"
-              style={heroTitleStyle}
-            >
-              What's on your mind, {firstName}?
-            </Text>
-            <Text
-              className="text-center mb-8 text-muted-foreground"
-              style={heroSubtitleStyle}
-            >
-              Build agents by chatting with AI
-            </Text>
-
-            <View
-              className="w-full rounded-2xl"
-              style={composerWrapperStyle}
-            >
-              <CompactChatInput
-                onSubmit={handlePromptSubmit}
-                isLoading={isCreating}
-                placeholder={homeComposerPlaceholder}
-                agentPlaceholderActive={interactionMode === 'agent'}
-                value={prompt}
-                onChange={handlePromptChange}
-                interactionMode={interactionMode}
-                onInteractionModeChange={handleHomeInteractionModeChange}
-                selectedModel={selectedModel}
-                onModelChange={handleHomeModelChange}
-                isPro={hasAdvancedModelAccess}
-                onUpgradeClick={() => router.push('/billing')}
-                onStartVoiceProjectCreation={
-                  Platform.OS === 'web' && features.ezMode
-                    ? handleStartVoiceProjectCreation
-                    : undefined
-                }
-                // Consolidated "where does this project come from?" entry
-                // point. Sits at the leftmost edge of the toolbar so it
-                // reads as "what am I creating?" before model + mode.
-                // Selecting "Blank" is a no-op (the composer itself IS
-                // the blank-project surface — Send creates one); "Open
-                // folder" / "Import" fire their flows immediately and
-                // route into the resulting project.
-                leadingControls={
-                  <ProjectSourceMenu
-                    workspaceId={currentWorkspace?.id}
-                    variant="chip"
-                  />
-                }
-              />
-            </View>
-          </View>
-        </View>
-
-        {/* Bottom section: tab bar + template cards */}
         <View
-          className="flex-1 rounded-t-3xl bg-card border-t border-border"
-          style={bottomSectionStyle}
+          className="relative w-full items-center justify-center"
+          style={CONTENT_MAX_WIDTH}
         >
-          <View
-            className="flex-row items-center mb-5"
-            style={tabBarRowStyle}
+          <Text
+            className="text-center font-bold mb-2 text-foreground"
+            style={heroTitleStyle}
           >
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={TAB_BAR_CONTENT_STYLE}
-              className="flex-1"
-            >
-              {TAB_ITEMS.map((tab) => (
-                <Pressable
-                  key={tab.key}
-                  onPress={() => setActiveTab(tab.key)}
-                  className={cn(
-                    'px-3 py-2 rounded-lg',
-                    activeTab === tab.key && 'bg-muted',
-                  )}
-                >
-                  <Text
-                    className={cn(
-                      'text-[13px]',
-                      activeTab === tab.key
-                        ? 'text-foreground font-semibold'
-                        : 'text-muted-foreground'
-                    )}
-                    numberOfLines={1}
-                  >
-                    {tab.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </ScrollView>
+            What's on your mind, {firstName}?
+          </Text>
+          <Text
+            className="text-center mb-8 text-muted-foreground"
+            style={heroSubtitleStyle}
+          >
+            Build agents by chatting with AI
+          </Text>
 
-            {activeTab === 'shared' && (
-              <Pressable
-                onPress={() => router.push('/(app)/shared' as any)}
-                className="flex-row items-center gap-1 active:opacity-70 flex-shrink-0"
-              >
-                <Text className="text-[13px] font-medium text-foreground">
-                  View all
-                </Text>
-                <ArrowRight size={14} className="text-foreground" />
-              </Pressable>
-            )}
-          </View>
-
-          <View style={tabContentPaddingStyle}>
-            {activeTab === 'projects' && (
-              myProjects.length > 0 ? (
-                <View className="gap-3" style={gridContainerStyle}>
-                  {myProjects.map((project) => (
-                    <ProjectCard
-                      key={project.id}
-                      name={String(project.name || 'Untitled')}
-                      description={typeof project.description === 'string' ? project.description : undefined}
-                      updatedAt={project.updatedAt}
-                      createdAt={project.createdAt}
-                      onPress={() => router.push(`/(app)/projects/${project.id}`)}
-                      isDark={isDark}
-                      compact={isMobile}
-                    />
-                  ))}
-                </View>
-              ) : (
-                <View className="items-center py-12">
-                  <Text className="text-muted-foreground text-sm">No projects yet — create one above!</Text>
-                </View>
-              )
-            )}
-
-            {activeTab === 'shared' && (
-              sharedProjects.length > 0 ? (
-                <View className="gap-3" style={gridContainerStyle}>
-                  {sharedProjects.map((project) => (
-                    <ProjectCard
-                      key={project.id}
-                      name={String(project.name || 'Untitled')}
-                      description={typeof project.description === 'string' ? project.description : undefined}
-                      updatedAt={project.updatedAt}
-                      createdAt={project.createdAt}
-                      onPress={() => router.push(`/(app)/projects/${project.id}`)}
-                      isDark={isDark}
-                      badge="Shared"
-                      compact={isMobile}
-                    />
-                  ))}
-                </View>
-              ) : (
-                <View className="items-center py-12">
-                  <Text className="text-muted-foreground text-sm">No shared projects</Text>
-                </View>
-              )
-            )}
+          <View className="w-full rounded-2xl" style={composerWrapperStyle}>
+            <CompactChatInput
+              onSubmit={handlePromptSubmit}
+              isLoading={isCreating}
+              placeholder={homeComposerPlaceholder}
+              agentPlaceholderActive={interactionMode === 'agent'}
+              value={prompt}
+              onChange={handlePromptChange}
+              interactionMode={interactionMode}
+              onInteractionModeChange={handleHomeInteractionModeChange}
+              selectedModel={selectedModel}
+              onModelChange={handleHomeModelChange}
+              isPro={hasAdvancedModelAccess}
+              onUpgradeClick={() => router.push('/billing')}
+              onStartVoiceProjectCreation={
+                Platform.OS === 'web' && features.ezMode
+                  ? handleStartVoiceProjectCreation
+                  : undefined
+              }
+              // Consolidated "where does this project come from?" entry
+              // point. Sits at the leftmost edge of the toolbar so it
+              // reads as "what am I creating?" before model + mode.
+              // Selecting "Blank" is a no-op (the composer itself IS
+              // the blank-project surface — the project is created on
+              // Send, not while typing); "Open folder" / "Import" fire
+              // their flows immediately and route into the resulting
+              // project.
+              leadingControls={
+                <ProjectSourceMenu
+                  workspaceId={currentWorkspace?.id}
+                  variant="chip"
+                />
+              }
+            />
           </View>
         </View>
-      </ScrollView>
+      </View>
     </View>
   )
 })

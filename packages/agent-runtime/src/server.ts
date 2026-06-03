@@ -157,18 +157,27 @@ const WORKSPACE_RUNTIME_PROJECT_IDS = workspaceAttachedProjectIds()
  * in addition to `WORKSPACE_DIR`. Parsed once at boot — folder set is
  * immutable for a runtime instance (changing it requires a restart).
  */
-const LINKED_FOLDERS: string[] = (() => {
-  const raw = process.env.LINKED_FOLDERS
+const parseFolderListEnv = (name: string): string[] => {
+  const raw = process.env[name]
   if (!raw) return []
   try {
     const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
     return parsed.filter((p): p is string => typeof p === 'string' && p.length > 0)
   } catch (err) {
-    console.warn(`[agent-runtime] Could not parse LINKED_FOLDERS env: ${err}`)
+    console.warn(`[agent-runtime] Could not parse ${name} env: ${err}`)
     return []
   }
-})()
+}
+const LINKED_FOLDERS: string[] = parseFolderListEnv('LINKED_FOLDERS')
+
+/**
+ * Subset of the allowed roots mounted READ-ONLY (attachments added with
+ * `attachMode='readonly'`). Reads pass; writes/exec are denied under these
+ * roots even when the runtime is trusted. Parsed once at boot — the set is
+ * immutable for a runtime instance (changing it requires a restart).
+ */
+const READONLY_ROOTS: string[] = parseFolderListEnv('READONLY_ROOTS')
 
 // Seed the live trust resolver with the immutable directory layout
 // (workspaceDir, workingMode, linkedFolders). The initial trustLevel
@@ -184,6 +193,7 @@ initTrustResolver({
   workspaceDir: WORKSPACE_DIR,
   workingMode: WORKING_MODE,
   linkedFolders: LINKED_FOLDERS,
+  readonlyRoots: READONLY_ROOTS,
   isWorkspaceRuntime: IS_WORKSPACE_RUNTIME,
 })
 refreshTrust().catch(() => {

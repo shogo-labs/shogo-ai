@@ -15,6 +15,14 @@ export interface ChatTransportOptions {
   apiBaseUrl?: string
   /** Project ID for routing to the correct chat endpoint */
   projectId: string | undefined
+  /**
+   * Workspace ID for routing to the workspace-scoped chat endpoint
+   * (`/api/workspaces/:workspaceId/chat`). When set it takes precedence
+   * over `projectId` so a workspace session chats against the merged-root
+   * runtime instead of a single project pod. `localAgentUrl` still wins
+   * (direct-to-runtime local dev).
+   */
+  workspaceId?: string | undefined
   /** Direct agent URL for local development (bypasses API proxy) */
   localAgentUrl?: string | null
   /** Fetch credentials mode */
@@ -63,8 +71,10 @@ export function buildChatApiUrl(
   apiBaseUrl: string,
   projectId: string | undefined,
   localAgentUrl?: string | null,
+  workspaceId?: string | undefined,
 ): string {
   if (localAgentUrl) return `${localAgentUrl}/agent/chat`
+  if (workspaceId) return `${apiBaseUrl}/api/workspaces/${workspaceId}/chat`
   if (projectId) return `${apiBaseUrl}/api/projects/${projectId}/chat`
   return `${apiBaseUrl}/api/chat`
 }
@@ -88,8 +98,9 @@ export function buildChatTurnUrl(
   projectId: string | undefined,
   localAgentUrl: string | null | undefined,
   chatSessionId: string,
+  workspaceId?: string | undefined,
 ): string {
-  const base = buildChatApiUrl(apiBaseUrl, projectId, localAgentUrl).replace(/\/+$/, '')
+  const base = buildChatApiUrl(apiBaseUrl, projectId, localAgentUrl, workspaceId).replace(/\/+$/, '')
   return `${base}/${encodeURIComponent(chatSessionId)}/turn`
 }
 
@@ -99,6 +110,7 @@ export function buildChatTurnUrl(
 export function useChatTransportConfig({
   apiBaseUrl = '',
   projectId,
+  workspaceId,
   localAgentUrl,
   credentials,
   fetch: customFetch,
@@ -108,7 +120,7 @@ export function useChatTransportConfig({
   onChunk,
 }: ChatTransportOptions): ChatTransportConfig | undefined {
   return useMemo(() => {
-    if (!projectId && !localAgentUrl) return undefined
+    if (!projectId && !workspaceId && !localAgentUrl) return undefined
 
     const baseFetch = customFetch ?? globalThis.fetch
     const fetch = durableResume
@@ -127,10 +139,10 @@ export function useChatTransportConfig({
         : headers
 
     return {
-      api: buildChatApiUrl(apiBaseUrl, projectId, localAgentUrl),
+      api: buildChatApiUrl(apiBaseUrl, projectId, localAgentUrl, workspaceId),
       credentials,
       fetch,
       headers: composedHeaders,
     }
-  }, [apiBaseUrl, projectId, localAgentUrl, credentials, customFetch, headers, chatSessionId, durableResume, onChunk])
+  }, [apiBaseUrl, projectId, workspaceId, localAgentUrl, credentials, customFetch, headers, chatSessionId, durableResume, onChunk])
 }

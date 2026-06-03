@@ -223,11 +223,31 @@ model Project {
   authConfig             ProjectAuthConfig?
   authSignIns            ProjectAuthSignIn[]
   attachedSessions       ChatSessionProject[]
+  attachments            ProjectAttachment[]     @relation("ProjectAttachmentAnchor")
+  attachedTo             ProjectAttachment[]     @relation("ProjectAttachmentTarget")
 
   @@index([workspaceId])
   @@index([folderId])
   @@index([preferredInstanceId])
   @@map("projects")
+}
+
+/// Persistent project-to-project attachment. See prisma/schema.prisma for
+/// the canonical comment.
+model ProjectAttachment {
+  id                String   @id @default(uuid())
+  projectId         String
+  attachedProjectId String
+  attachMode        String   @default("readwrite")
+  createdAt         DateTime @default(now())
+
+  project  Project @relation("ProjectAttachmentAnchor", fields: [projectId], references: [id], onDelete: Cascade)
+  attached Project @relation("ProjectAttachmentTarget", fields: [attachedProjectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, attachedProjectId])
+  @@index([projectId])
+  @@index([attachedProjectId])
+  @@map("project_attachments")
 }
 
 /// External host folder linked to a project (workingMode='external').
