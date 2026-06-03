@@ -102,6 +102,8 @@ export {
   type ModelDefinition,
   type ModelDefinitionInput,
   type DiscoveredProviderModel,
+  type PublicModel,
+  type PublicModelInput,
 } from './platform/index.js'
 
 // Machines API (paired desktops / VPS workers + per-project "Run on" routing)

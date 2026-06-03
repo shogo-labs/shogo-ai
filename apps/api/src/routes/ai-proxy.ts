@@ -86,7 +86,7 @@ interface ChatCompletionContentBlock {
 }
 
 /** OpenAI-compatible chat completion request */
-interface ChatCompletionRequest {
+export interface ChatCompletionRequest {
   model: string
   messages: Array<{
     role: 'system' | 'user' | 'assistant' | 'tool'
@@ -123,7 +123,7 @@ interface ChatCompletionRequest {
 }
 
 /** Model routing configuration (derived from the shared catalog) */
-interface ModelConfig {
+export interface ModelConfig {
   provider: Provider
   apiModel: string
   displayName: string
@@ -163,7 +163,7 @@ for (const [alias, canonicalId] of Object.entries(MODEL_ALIASES)) {
  * Resolve a model name to its configuration.
  * Supports exact matches and prefix matching (e.g., "claude-3" matches the first claude-3.x model).
  */
-function resolveModel(model: string): ModelConfig | null {
+export function resolveModel(model: string): ModelConfig | null {
   // Agent mode aliases — resolve via resolveAgentModel (handles local vs cloud)
   if (model === 'basic' || model === 'advanced') {
     const { resolvedModel, isLocal } = resolveAgentModel(model)
@@ -231,7 +231,7 @@ function resolveModel(model: string): ModelConfig | null {
  * custom providers) over the static catalog so admin-configured tiers gate
  * correctly. Falls back to the static heuristic for unknown ids.
  */
-function resolveModelTier(model: string): ModelTier {
+export function resolveModelTier(model: string): ModelTier {
   const dbEntry = getMergedModelEntrySync(model)
   if (dbEntry) return dbEntry.tier
   return getModelTier(model)
@@ -261,7 +261,7 @@ function getProviderApiKey(provider: Provider): string | null {
  * their decrypted key on the config (from the encrypted DB row); everything
  * else reads the server-side env var for its provider.
  */
-function resolveModelApiKey(modelConfig: ModelConfig): string | null {
+export function resolveModelApiKey(modelConfig: ModelConfig): string | null {
   if (modelConfig.provider === 'custom') return modelConfig.apiKey || null
   return getProviderApiKey(modelConfig.provider)
 }
@@ -1167,7 +1167,7 @@ function convertOpenAIStreamToAnthropicStream(body: ReadableStream<Uint8Array>, 
 /**
  * Proxy a streaming request to Anthropic and convert SSE to OpenAI format.
  */
-async function proxyAnthropicStream(
+export async function proxyAnthropicStream(
   request: ChatCompletionRequest,
   apiKey: string,
   modelConfig: ModelConfig,
@@ -1406,7 +1406,7 @@ function convertAnthropicStreamEvent(event: any, id: string, model: string): any
 /**
  * Proxy a non-streaming request to Anthropic.
  */
-async function proxyAnthropicNonStream(
+export async function proxyAnthropicNonStream(
   request: ChatCompletionRequest,
   apiKey: string,
   modelConfig: ModelConfig,
@@ -1490,7 +1490,7 @@ function getOpenAICompatibleHeaders(apiKey: string, modelConfig: ModelConfig): R
 /**
  * Proxy a streaming request to an OpenAI-compatible endpoint (OpenAI, Ollama, LM Studio).
  */
-async function proxyOpenAIStream(
+export async function proxyOpenAIStream(
   request: ChatCompletionRequest,
   apiKey: string,
   modelConfig: ModelConfig,
@@ -1595,7 +1595,7 @@ async function proxyOpenAIStream(
 /**
  * Proxy a non-streaming request to an OpenAI-compatible endpoint.
  */
-async function proxyOpenAINonStream(
+export async function proxyOpenAINonStream(
   request: ChatCompletionRequest,
   apiKey: string,
   modelConfig: ModelConfig,
@@ -1674,7 +1674,7 @@ import { accumulateUsage, accumulateImageUsage } from '../lib/proxy-billing-sess
  * "resets in X" countdown (mirroring Codex / Claude Code). Best-effort:
  * returns nulls if the windows can't be resolved.
  */
-async function buildUsageLimitInfo(
+export async function buildUsageLimitInfo(
   workspaceId: string,
 ): Promise<{ resetsAt: string | null; window: string | null; retryAfterSeconds: number | null }> {
   try {
@@ -1709,7 +1709,7 @@ async function buildUsageLimitInfo(
  * same project bill independently. When omitted the legacy
  * projectId-only key is used (back-compat with older runtimes).
  */
-async function recordUsage(
+export async function recordUsage(
   tokenPayload: ProxyTokenPayload,
   model: string,
   inputTokens: number,

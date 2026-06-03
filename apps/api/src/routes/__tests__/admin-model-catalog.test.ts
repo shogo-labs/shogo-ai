@@ -21,7 +21,14 @@ import { withPrismaExports } from '../../__tests__/helpers/prisma-mock-exports'
 // ─── In-memory prisma store ───────────────────────────────────────────────
 let providers: Map<string, any>
 let models: Map<string, any>
+let settings: Map<string, any>
 let providerSeq = 0
+
+// Known backing model ids the registry "resolves" for public-model validation.
+const KNOWN_BACKING: Record<string, string> = {
+  'claude-opus-4-7': 'Claude Opus 4.7',
+  'gpt-5.5': 'GPT-5.5',
+}
 
 function notFound(): never {
   const e: any = new Error('Record not found')
@@ -89,11 +96,22 @@ mock.module('../../lib/prisma', () => withPrismaExports({
         return row
       },
     },
+    platformSetting: {
+      findUnique: async ({ where }: any) => settings.get(where.key) ?? null,
+      upsert: async ({ where, update, create }: any) => {
+        const existing = settings.get(where.key)
+        const row = existing ? { ...existing, ...update } : { key: where.key, ...create }
+        settings.set(where.key, row)
+        return row
+      },
+    },
   },
 }))
 
 mock.module('../../services/model-registry.service', () => ({
   invalidateModelRegistry: async () => {},
+  getMergedModelEntrySync: (id: string) =>
+    KNOWN_BACKING[id] ? { id, displayName: KNOWN_BACKING[id] } : undefined,
 }))
 
 const { adminModelCatalogRoutes } = await import('../admin-model-catalog')
@@ -122,6 +140,7 @@ function get(path: string) {
 beforeEach(() => {
   providers = new Map()
   models = new Map()
+  settings = new Map()
   providerSeq = 0
 })
 
@@ -339,5 +358,77 @@ describe('admin models CRUD', () => {
     expect(list.models).toHaveLength(1)
     expect(list.models[0].id).toBe(row.id)
     expect(list.models[0].enabled).toBe(false)
+  })
+})
+
+describe('admin public-models', () => {
+  test('GET returns an empty list when unset', async () => {
+    const res = await get('/public-models')
+    expect(res.status).toBe(200)
+    expect((await res.json() as any).models).toEqual([])
+  })
+
+  test('PUT persists the alias map and enriches reads with backing validity', async () => {
+    const res = await put('/public-models', {
+      models: [
+        { publicId: 'hoshi-1.0', displayName: 'Hoshi 1.0', backingModelId: 'claude-opus-4-7' },
+      ],
+    })
+    expect(res.status).toBe(200)
+    const data = await res.json() as any
+    expect(data.ok).toBe(true)
+    expect(data.models).toHaveLength(1)
+    expect(data.models[0]).toMatchObject({
+      publicId: 'hoshi-1.0',
+      displayName: 'Hoshi 1.0',
+      backingModelId: 'claude-opus-4-7',
+      enabled: true,
+    })
+
+    // Stored as JSON in the platform_settings row.
+    expect(JSON.parse(settings.get('public-models').value)).toHaveLength(1)
+
+    // Read back enriches with backingValid + backingDisplayName.
+    const read = await (await get('/public-models')).json() as any
+    expect(read.models[0].backingValid).toBe(true)
+    expect(read.models[0].backingDisplayName).toBe('Claude Opus 4.7')
+  })
+
+  test('PUT rejects a backingModelId that does not resolve', async () => {
+    const res = await put('/public-models', {
+      models: [{ publicId: 'ghost-1.0', backingModelId: 'no-such-model' }],
+    })
+    expect(res.status).toBe(400)
+    expect((await res.json() as any).error).toContain('does not resolve')
+  })
+
+  test('PUT rejects entries missing publicId or backingModelId, and duplicates', async () => {
+    expect((await put('/public-models', { models: [{ backingModelId: 'gpt-5.5' }] })).status).toBe(400)
+    expect((await put('/public-models', { models: [{ publicId: 'x' }] })).status).toBe(400)
+    expect(
+      (await put('/public-models', {
+        models: [
+          { publicId: 'dup', backingModelId: 'gpt-5.5' },
+          { publicId: 'dup', backingModelId: 'claude-opus-4-7' },
+        ],
+      })).status,
+    ).toBe(400)
+  })
+
+  test('PUT requires a models array', async () => {
+    expect((await put('/public-models', {})).status).toBe(400)
+  })
+
+  test('GET marks a stale backing model as invalid', async () => {
+    // Seed a row whose backing id is no longer known to the registry.
+    settings.set('public-models', {
+      key: 'public-models',
+      value: JSON.stringify([
+        { publicId: 'legacy-1.0', displayName: 'Legacy', backingModelId: 'retired-model', enabled: true },
+      ]),
+    })
+    const read = await (await get('/public-models')).json() as any
+    expect(read.models[0].backingValid).toBe(false)
+    expect(read.models[0].backingDisplayName).toBeNull()
   })
 })

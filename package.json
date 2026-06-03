@@ -59,7 +59,7 @@
     "mobile:android": "cd apps/mobile && npx expo start --android",
     "mobile:web": "cd apps/mobile && npx expo start --web",
     "desktop:build-web": "EXPO_PUBLIC_LOCAL_MODE=true EXPO_PUBLIC_API_URL=http://localhost:8002 bun run --cwd apps/mobile build",
-    "desktop:dev": "DATABASE_URL=file:./shogo-local.db bun run db:generate:all && SHOGO_LOCAL_MODE=true bun run desktop:build-web && cd apps/desktop && npx tsc && SHOGO_LOCAL_MODE=true DATABASE_URL=file:./shogo-local.db npx electron .",
+    "desktop:dev": "DATABASE_URL=file:./shogo-local.db bun run db:generate:all && SHOGO_LOCAL_MODE=true bun run desktop:build-web && cd apps/desktop && npx tsc && node scripts/bundle-main.mjs && node scripts/bundle-pty-host.mjs && SHOGO_LOCAL_MODE=true DATABASE_URL=file:./shogo-local.db npx electron .",
     "desktop:dev:clean": "rm -rf \"$HOME/Library/Application Support/Shogo/data\" && bun run desktop:dev",
     "docs:dev": "bun run --cwd apps/docs dev",
     "docs:build": "bun run --cwd apps/docs build",
