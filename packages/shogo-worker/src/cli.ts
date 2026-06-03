@@ -27,6 +27,7 @@ import {
 import { runProjectPull } from './commands/project-pull.ts';
 import { runProjectPush } from './commands/project-push.ts';
 import { runProjectCheckout } from './commands/project-checkout.ts';
+import { runDoctor } from './commands/doctor.ts';
 
 const VERSION = '0.1.0';
 
@@ -147,6 +148,16 @@ project
   .option('--api-key <key>', 'Override API key for this run')
   .option('--cloud-url <url>', 'Override Shogo Cloud URL for this run')
   .action((id: string, flags) => handle(() => runProjectCheckout(id, flags)));
+
+program
+  .command('doctor')
+  .description("Diagnose & repair a wedged local Shogo database (clears failed migrations so the app can reboot)")
+  .option('--check', 'Detect only — never modify the database')
+  .option('--yes', 'Repair without the confirmation prompt')
+  .option('--db <path>', 'Path to shogo.db (default: the desktop app\'s local database)')
+  .option('--bun <path>', 'Path to a bun binary (default: bundled/PATH bun)')
+  .option('--no-backup', 'Skip the pre-repair database backup (discouraged)')
+  .action((flags) => handle(() => runDoctor(flags)));
 
 program.showHelpAfterError(pc.dim('\n(use --help for usage)'));
 program.parseAsync(process.argv);
