@@ -6,8 +6,10 @@
  * The workspace-scoped sibling of `build-project-env.ts`. Where
  * `buildProjectEnv` assembles the env for a single-project pod, this
  * assembles the env for a runtime that mounts several attached projects
- * as subfolders under one `WORKSPACE_DIR` (the parent `workspaces/`
- * directory). It carries:
+ * as subfolders under one `WORKSPACE_DIR` (a per-workspace MERGED ROOT
+ * built by RuntimeManager.buildWorkspaceMergedRoot — on host that's a
+ * dir of symlinks to the real `workspaces/<id>` project dirs; in cloud
+ * it's the pod volume that holds only the attached projects). It carries:
  *
  *   - WORKSPACE_ID / WORKSPACE_RUNTIME — mode markers the agent-runtime
  *     boot reads to switch into merged-root mode.
@@ -22,10 +24,13 @@
  *   - AI proxy URLs / S3 config / model overrides — identical to the
  *     project builder so cloud, desktop and host behave the same.
  *
- * Note: file-tool path allowance does not need LINKED_FOLDERS here —
- * every attached project is a child of `WORKSPACE_DIR`, and
- * `getAllowedRoots()` (packages/agent-runtime/src/runtime-trust.ts)
- * already admits descendants of the workspace dir.
+ * Note: on host the merged root holds symlinks, and path allowance
+ * (`assertAllowedPath`) realpath-resolves symlinks back to the real
+ * `workspaces/<id>` dirs — so RuntimeManager.doStartWorkspace ships those
+ * real dirs as `LINKED_FOLDERS` to keep them admitted as allowed roots.
+ * That wiring lives in the manager, not here, because only it knows the
+ * on-disk layout. In cloud (real subfolders, no symlinks) the descendant
+ * rule under `WORKSPACE_DIR` suffices and LINKED_FOLDERS is unset.
  */
 
 import { generateProxyToken } from '../ai-proxy-token'
@@ -34,6 +39,13 @@ import { deriveWorkspaceRuntimeToken } from '../workspace-runtime-token'
 
 export interface BuildWorkspaceEnvOpts {
   logPrefix?: string
+  /**
+   * For project-anchored merged runtimes: the anchor project id. Exposed to
+   * the runtime as `WORKSPACE_ANCHOR_PROJECT_ID` so it can pick a sensible
+   * default preview target (`/p/<anchor>`) and label the merged root. Unset
+   * for workspace-session runtimes (no single anchor).
+   */
+  anchorProjectId?: string
   /**
    * Test-only injection seams. Production callers omit these and the
    * builder resolves prisma / owner lookup / token mint lazily, exactly
@@ -82,6 +94,9 @@ export async function buildWorkspaceEnv(
     WORKSPACE_ID: workspaceId,
     WORKSPACE_RUNTIME: 'true',
     WORKSPACE_PROJECT_IDS: attachedProjectIds.join(','),
+  }
+  if (opts.anchorProjectId) {
+    env.WORKSPACE_ANCHOR_PROJECT_ID = opts.anchorProjectId
   }
 
   // Workspace identity carries the base agent persona; per-project

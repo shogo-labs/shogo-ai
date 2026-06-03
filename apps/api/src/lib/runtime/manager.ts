@@ -8,8 +8,8 @@
  */
 
 import { execSync, type ChildProcess } from 'child_process'
-import { existsSync, cpSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, rmSync } from 'fs'
-import { join, dirname, resolve } from 'path'
+import { existsSync, cpSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, rmSync, symlinkSync, lstatSync } from 'fs'
+import { join, dirname, resolve, basename } from 'path'
 import { fileURLToPath } from 'url'
 import { pkg, isMobileTechStack, stackSeedsItself } from '@shogo/shared-runtime'
 import {
@@ -72,6 +72,18 @@ export function workspaceRuntimeKey(workspaceId: string): string {
   return `ws:${workspaceId}`
 }
 
+/**
+ * Internal runtimes-map key for a PROJECT-ANCHORED merged-root runtime —
+ * the universal "every project runs on the workspace runtime" path. Keyed
+ * by the anchor project id (not the workspace id) so two projects in the
+ * same workspace with different attachment sets never collide on one
+ * merged root. Distinct prefix from both the plain project key (`<id>`)
+ * and the workspace-session key (`ws:<workspaceId>`).
+ */
+export function projectWorkspaceRuntimeKey(anchorProjectId: string): string {
+  return `ws:proj:${anchorProjectId}`
+}
+
 /** Default configuration values */
 const DEFAULT_CONFIG: IRuntimeConfig = {
   basePort: PORT_RANGE_START,
@@ -107,6 +119,17 @@ export class RuntimeManager implements IRuntimeManager {
   private usedPorts: Set<number> = new Set()
   private healthCheckTimers: Map<string, NodeJS.Timeout> = new Map()
   private startingPromises: Map<string, Promise<IProjectRuntime>> = new Map()
+  /**
+   * Monotonic "boot generation" per merged-root runtime key. Bumped every
+   * time a NEW agent process is spawned for that key (cold start or restart —
+   * NOT a reuse). Env-coupled changes like `READONLY_ROOTS` (read-only
+   * attachments) only take effect on a fresh boot, so the generation is how
+   * callers observe "the runtime has actually restarted with my new config":
+   * attach/detach/mode-change bumps it, and the mobile composer / e2e poll
+   * {@link getProjectWorkspaceReadiness} until the generation advances and the
+   * runtime reports healthy.
+   */
+  private workspaceRuntimeGeneration: Map<string, number> = new Map()
   /**
    * Embedded MIT WorkerRuntimeManager that owns the agent-runtime
    * spawn lifecycle (port allocation in its own range, env injection,
@@ -169,10 +192,26 @@ export class RuntimeManager implements IRuntimeManager {
       // server.ts (agent-proxy) and routes/ai-proxy.ts (AI proxy)
       // refresh `lastUsedAt` on every chunk forwarded and every model
       // call from the agent, so cloud's 15-min reaper now only fires
-      // on a genuinely-idle slot. Local mode additionally disables
-      // the reaper outright as a belt-and-suspenders since there is
-      // no resource motivation to ever reap there.
-      idleMs: process.env.SHOGO_LOCAL_MODE === 'true' ? 0 : undefined,
+      // on a genuinely-idle slot.
+      //
+      // We used to disable the reaper outright in local mode (`idleMs: 0`),
+      // but that let runtimes accumulate forever — every project the
+      // heartbeat or UI ever touched left a permanent ~700MB agent-runtime
+      // tree, with nothing to reclaim it. We instead use a generous local
+      // window (default 45 min via RUNTIME_LOCAL_IDLE_MS) so genuinely-idle
+      // projects are eventually reaped while the touch hooks keep active
+      // chat streams alive. Set RUNTIME_LOCAL_IDLE_MS=0 to opt back into
+      // the old never-reap behaviour.
+      idleMs:
+        process.env.SHOGO_LOCAL_MODE === 'true'
+          ? parseInt(process.env.RUNTIME_LOCAL_IDLE_MS || String(45 * 60 * 1000), 10)
+          : undefined,
+      // Hard ceiling on concurrent runtimes. Without this the worker only
+      // ever reaped on idle, so a busy multi-project session (or a disabled
+      // idle window) could exceed the intended cap unbounded. The worker
+      // LRU-evicts the least-recently-used non-streaming slot once this is
+      // exceeded. Mirrors `this.config.maxRuntimes` (RUNTIME_MAX_COUNT).
+      maxRuntimes: this.config.maxRuntimes,
     })
   }
 
@@ -903,6 +942,16 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         log('rm-node_modules', { ms: Date.now() - tRm })
       }
 
+      // Materialize `@shogo-ai/* : workspace:*` pins to a concrete version
+      // before installing. A freshly-seeded project dir lives at
+      // `workspaces/<id>` and is NOT a member of the monorepo's bun
+      // workspace graph, so `bun install` cannot resolve `workspace:*`
+      // (fails with "Workspace dependency @shogo-ai/sdk not found"). The
+      // shipped/desktop template is already materialized at build time, so
+      // this is a no-op there; it only does work in monorepo/host dev where
+      // the bundled template still carries `workspace:*`.
+      this.materializeWorkspaceDeps(projectDir, projectId)
+
       const cmdName = pkg.isWindows ? 'npm.cmd' : pkg.bunBinary
       console.log(`[RuntimeManager] Installing dependencies for ${projectId} (${cmdName})...`)
       const tInstall = Date.now()
@@ -925,6 +974,81 @@ export class ShogoErrorBoundary extends Component<Props, State> {
 
     log('done', { projectDir })
     return projectDir
+  }
+
+  /**
+   * Rewrite `@shogo-ai/* : workspace:*` specifiers in a freshly-seeded
+   * project's `package.json` to a concrete `^X.Y.Z` so `bun install`
+   * resolves them standalone. Mirrors
+   * `scripts/materialize-runtime-template.ts`, but offline: in host/desktop
+   * mode the monorepo's `packages/<pkg>` is present, so we pin to its
+   * in-repo version (no network, deterministic). No-op when the template
+   * was already materialized at build time (no `workspace:*` deps left).
+   */
+  private materializeWorkspaceDeps(projectDir: string, projectId: string): void {
+    const pkgPath = join(projectDir, 'package.json')
+    if (!existsSync(pkgPath)) return
+
+    let manifest: any
+    let raw: string
+    try {
+      raw = readFileSync(pkgPath, 'utf8')
+      manifest = JSON.parse(raw)
+    } catch {
+      return
+    }
+
+    const DEP_KEYS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']
+    let changed = false
+    for (const key of DEP_KEYS) {
+      const deps = manifest[key]
+      if (!deps || typeof deps !== 'object') continue
+      for (const [name, spec] of Object.entries(deps)) {
+        if (typeof spec !== 'string' || !spec.startsWith('workspace:')) continue
+        if (!name.startsWith('@shogo-ai/')) continue
+        const version = this.resolveInRepoPackageVersion(name)
+        if (version) {
+          deps[name] = `^${version}`
+        } else {
+          // No in-repo package to pin against (e.g. a partial bundle).
+          // Fall back to the published `latest` so the install can still
+          // resolve rather than dying on the `workspace:` protocol.
+          console.warn(
+            `[RuntimeManager] No in-repo version for ${name} while seeding ${projectId} — pinning to "latest"`,
+          )
+          deps[name] = 'latest'
+        }
+        changed = true
+      }
+    }
+
+    if (!changed) return
+    try {
+      const trailing = raw.endsWith('\n') ? '\n' : ''
+      writeFileSync(pkgPath, JSON.stringify(manifest, null, 2) + trailing)
+      console.log(`[RuntimeManager] Materialized @shogo-ai/* workspace deps for ${projectId}`)
+    } catch (err: any) {
+      console.warn(
+        `[RuntimeManager] Failed to materialize workspace deps for ${projectId}:`,
+        err?.message ?? err,
+      )
+    }
+  }
+
+  /**
+   * Best-effort in-repo version for an `@shogo-ai/<pkg>` package, read from
+   * `<repo>/packages/<pkg>/package.json`. Returns null if not present.
+   */
+  private resolveInRepoPackageVersion(name: string): string | null {
+    const short = name.replace(/^@shogo-ai\//, '')
+    const candidate = join(PROJECT_ROOT, 'packages', short, 'package.json')
+    if (!existsSync(candidate)) return null
+    try {
+      const version = JSON.parse(readFileSync(candidate, 'utf8'))?.version
+      return typeof version === 'string' ? version : null
+    } catch {
+      return null
+    }
   }
 
   private async getProjectInfo(projectId: string): Promise<{
@@ -1083,7 +1207,68 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     }
   }
 
+  /**
+   * Resolve the project-anchored spawn options for an anchor project: its
+   * workspace id plus the current attachment / linked-folder / read-only
+   * sets. Mirrors the lookup in `local-projects.ts:restartAnchorRuntime`
+   * so the bare-key `start()` path and the attach/restart path build the
+   * identical merged root.
+   *
+   * Returns `null` when the project has no `workspaceId` (it cannot be
+   * anchored), so callers fall back to the legacy single-project path.
+   *
+   * Uses dynamic imports to keep prisma / the attachment service off this
+   * module's static dependency graph — `manager.ts` is imported very early
+   * and `restartAnchorRuntime` already lazy-imports the same modules.
+   */
+  private async resolveAnchorSpawnOpts(anchorProjectId: string): Promise<{
+    workspaceId: string
+    attachedProjectIds: string[]
+    localFolders: string[]
+    readonlyProjectIds: string[]
+  } | null> {
+    const [{ prisma }, attachmentSvc] = await Promise.all([
+      import('../prisma'),
+      import('../../services/project-attachment.service'),
+    ])
+
+    const anchor = await prisma.project.findUnique({
+      where: { id: anchorProjectId },
+      select: { workspaceId: true },
+    })
+    if (!anchor?.workspaceId) return null
+
+    // Keep the pinned workspace session in lockstep, then collect the
+    // current member + folder + readonly set for the spawn.
+    await attachmentSvc.syncPinnedSessionAttachments(anchorProjectId).catch(() => {})
+    const attachments = await attachmentSvc.listAttachments(anchorProjectId)
+    const localFolders = await attachmentSvc.getAnchorLocalFolders(anchorProjectId)
+    const attachedProjectIds = attachments.map((a) => a.attachedProjectId)
+    const readonlyProjectIds = attachments
+      .filter((a) => a.attachMode === 'readonly')
+      .map((a) => a.attachedProjectId)
+
+    return { workspaceId: anchor.workspaceId, attachedProjectIds, localFolders, readonlyProjectIds }
+  }
+
   async start(projectId: string): Promise<IProjectRuntime> {
+    // Universal workspace-runtime model: when SHOGO_WORKSPACE_RUNTIME is
+    // enabled, every project runs on its project-anchored merged-root
+    // runtime (`ws:proj:<id>`). The legacy single-project runtime keyed by
+    // the bare `<projectId>` would otherwise be spawned *in addition* to
+    // the anchored one — prewarm + heartbeat take this `start()` path while
+    // chat / attach take `startProjectWorkspace` — giving two agent-runtime
+    // trees per project that never dedup against each other. Delegating here
+    // collapses them onto one key so prewarm, heartbeat, chat and attach all
+    // share a single runtime.
+    if (process.env.SHOGO_WORKSPACE_RUNTIME === 'true') {
+      const anchorOpts = await this.resolveAnchorSpawnOpts(projectId)
+      if (anchorOpts) {
+        return this.startProjectWorkspace(projectId, anchorOpts)
+      }
+      // No workspaceId — cannot anchor; fall through to the legacy path.
+    }
+
     // Check if already running
     const existing = this.runtimes.get(projectId)
     if (existing && existing.status === 'running') {
@@ -1166,7 +1351,14 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       }
     }
 
-    const promise = this.doStartWorkspace(workspaceId, opts.attachedProjectIds ?? [])
+    const promise = this.doStartMergedRuntime({
+      key,
+      rootName: workspaceId,
+      workspaceId,
+      memberProjectIds: opts.attachedProjectIds ?? [],
+      localFolders: [],
+      logLabel: workspaceId.slice(0, 8),
+    })
     this.startingPromises.set(key, promise)
     try {
       return await promise
@@ -1175,25 +1367,139 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     }
   }
 
-  private async doStartWorkspace(
-    workspaceId: string,
-    attachedProjectIds: string[],
+  /**
+   * Start (or join an in-flight start of) a PROJECT-ANCHORED merged-root
+   * runtime — the universal "every project runs on the workspace runtime"
+   * path. Keyed by the anchor project id, it mounts the anchor plus its
+   * attached projects (as subfolders) and its linked local folders. A plain
+   * project is simply an anchor with no extra members.
+   */
+  async startProjectWorkspace(
+    anchorProjectId: string,
+    opts: {
+      workspaceId: string
+      attachedProjectIds?: string[]
+      localFolders?: string[]
+      readonlyProjectIds?: string[]
+    },
   ): Promise<IProjectRuntime> {
-    const key = workspaceRuntimeKey(workspaceId)
+    if (!anchorProjectId) {
+      throw new Error('[RuntimeManager] startProjectWorkspace: anchorProjectId is required')
+    }
+    if (!opts.workspaceId) {
+      throw new Error('[RuntimeManager] startProjectWorkspace: workspaceId is required')
+    }
+    const key = projectWorkspaceRuntimeKey(anchorProjectId)
+
+    // Anchor is always the first member; attachments follow (deduped).
+    const memberProjectIds = [anchorProjectId, ...(opts.attachedProjectIds ?? [])].filter(
+      (id, i, arr) => id && arr.indexOf(id) === i,
+    )
+
+    const existing = this.runtimes.get(key)
+    if (existing && existing.status === 'running' && existing.agentPort) {
+      // The merged root is built once at process start. A project (or linked
+      // folder) attached AFTER the runtime came up would otherwise never get
+      // symlinked into the root, so a reused runtime would not "see" it. The
+      // agent reads its merged-root WORKSPACE_DIR live, so re-running the
+      // (idempotent) symlink builder here makes new members appear without a
+      // full restart. Env-coupled changes (READONLY_ROOTS) still need a
+      // restart, which the attach route triggers explicitly.
+      try {
+        const workspacesDir = resolve(this.config.workspacesDir || join(PROJECT_ROOT, 'workspaces'))
+        await this.buildWorkspaceMergedRoot(workspacesDir, `proj-${anchorProjectId}`, memberProjectIds, {
+          localFolders: opts.localFolders ?? [],
+          readonlyProjectIds: opts.readonlyProjectIds ?? [],
+        })
+      } catch (err: any) {
+        console.warn(
+          `[RuntimeManager] startProjectWorkspace(${key}): merged-root refresh on reuse failed: ${err?.message ?? err}`,
+        )
+      }
+      return this.toPublicRuntime(existing)
+    }
+
+    const inflight = this.startingPromises.get(key)
+    if (inflight) {
+      console.log(`[RuntimeManager] Waiting on in-flight project-workspace start for ${key}`)
+      return inflight
+    }
+
+    if (existing && (existing.status === 'error' || existing.status === 'starting')) {
+      try {
+        await this.stop(key)
+      } catch (err: any) {
+        console.warn(`[RuntimeManager] startProjectWorkspace(${key}): pre-respawn stop failed: ${err?.message ?? err}`)
+      }
+    }
+
+    const promise = this.doStartMergedRuntime({
+      key,
+      rootName: `proj-${anchorProjectId}`,
+      workspaceId: opts.workspaceId,
+      anchorProjectId,
+      memberProjectIds,
+      localFolders: opts.localFolders ?? [],
+      readonlyProjectIds: opts.readonlyProjectIds ?? [],
+      logLabel: `proj:${anchorProjectId.slice(0, 8)}`,
+    })
+    this.startingPromises.set(key, promise)
+    try {
+      return await promise
+    } finally {
+      this.startingPromises.delete(key)
+    }
+  }
+
+  /**
+   * Shared boot path for every merged-root runtime, whether keyed by a
+   * workspace session (`ws:<workspaceId>`) or anchored on a project
+   * (`ws:proj:<anchorId>`). It builds the per-runtime merged root (symlinks
+   * to each member project + linked local folder), assembles the workspace
+   * env (per-project AI proxy tokens, manifest, READONLY_ROOTS for
+   * read-only attachments), and spawns the agent-runtime in WORKSPACE mode.
+   */
+  private async doStartMergedRuntime(spec: {
+    key: string
+    rootName: string
+    workspaceId: string
+    memberProjectIds: string[]
+    localFolders: string[]
+    anchorProjectId?: string
+    readonlyProjectIds?: string[]
+    logLabel: string
+  }): Promise<IProjectRuntime> {
+    const { key, rootName, workspaceId, memberProjectIds, localFolders } = spec
     const startedAtMs = Date.now()
     const phase = (name: string, extra?: Record<string, unknown>) => {
       console.log(
-        `[RuntimeManager:doStartWorkspace:${workspaceId.slice(0, 8)}] ${name} ` +
+        `[RuntimeManager:doStartMergedRuntime:${spec.logLabel}] ${name} ` +
           `(+${Date.now() - startedAtMs}ms${extra ? ' ' + JSON.stringify(extra) : ''})`,
       )
     }
-    phase('begin', { attachedProjectIds: attachedProjectIds.length })
+    phase('begin', { members: memberProjectIds.length, folders: localFolders.length, anchor: spec.anchorProjectId })
 
-    // The workspace runtime is rooted at the workspaces PARENT; each
-    // attached project is an existing subfolder. We never seed/template
-    // here — the merged-root boot skips that (workspace-runtime-mode.ts).
+    // A fresh agent process is about to spawn for this key — bump the boot
+    // generation so readiness pollers can tell this boot apart from the one it
+    // replaced (env-coupled config like READONLY_ROOTS only applies per boot).
+    this.workspaceRuntimeGeneration.set(key, (this.workspaceRuntimeGeneration.get(key) ?? 0) + 1)
+
+    // The runtime is rooted at a per-runtime MERGED ROOT that contains only
+    // this runtime's members (as symlinks to their real `workspaces/<id>`
+    // dirs) plus any linked local folders. Rooting directly at the shared
+    // `workspaces/` pool would expose every project + template on the host
+    // to the agent. The merged root scopes `ls`, the agent CWD, and
+    // path-allowance to just the members.
     const workspacesDir = resolve(this.config.workspacesDir || join(PROJECT_ROOT, 'workspaces'))
     if (!existsSync(workspacesDir)) mkdirSync(workspacesDir, { recursive: true })
+
+    const { dir: mergedRootDir, linkedFolders, readonlyFolders } = await this.buildWorkspaceMergedRoot(
+      workspacesDir,
+      rootName,
+      memberProjectIds,
+      { localFolders, readonlyProjectIds: spec.readonlyProjectIds },
+    )
+    phase('merged-root:ready', { mergedRootDir, links: linkedFolders.length, readonly: readonlyFolders.length })
 
     const port = await this.allocatePortAsync()
     const agentPort = port + AGENT_PORT_OFFSET
@@ -1218,16 +1524,30 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         throw new Error(`[RuntimeManager] Runtime server not found at ${runtimeServerPath}`)
       }
 
-      // Base workspace env (WORKSPACE_ID, attached ids, per-project AI
+      // Base workspace env (WORKSPACE_ID, member ids, per-project AI
       // proxy tokens, workspace runtime token, proxy URLs, S3, Composio
       // scope). Layer the host-dev-only keys on top.
-      const runtimeEnv = await buildWorkspaceEnv(workspaceId, attachedProjectIds, {
-        logPrefix: 'doStartWorkspace',
+      const runtimeEnv = await buildWorkspaceEnv(workspaceId, memberProjectIds, {
+        logPrefix: 'doStartMergedRuntime',
+        anchorProjectId: spec.anchorProjectId,
       })
       runtimeEnv.WORKSPACE_RUNTIME = 'true'
       runtimeEnv.WORKING_MODE = 'managed'
       runtimeEnv.NODE_ENV = 'development'
       runtimeEnv.SCHEMAS_PATH = join(workspacesDir, '..', '.schemas')
+      // The merged root holds symlinks to the real `workspaces/<id>` dirs.
+      // The runtime's path-allowance (assertAllowedPath) realpath-resolves
+      // symlinks, so reads/writes through `mergedRoot/<id>/...` resolve to
+      // `workspaces/<id>/...` — which must be admitted as an allowed root.
+      // Ship the real project dirs as LINKED_FOLDERS so they are.
+      if (linkedFolders.length > 0) {
+        runtimeEnv.LINKED_FOLDERS = JSON.stringify(linkedFolders)
+      }
+      // Read-only attachments: their real dirs are allowed for reads but
+      // denied for writes by assertAllowedPath (see runtime-trust.ts).
+      if (readonlyFolders.length > 0) {
+        runtimeEnv.READONLY_ROOTS = JSON.stringify(readonlyFolders)
+      }
 
       const apiPort = process.env.API_PORT || '8002'
       const apiBase = `http://localhost:${apiPort}`
@@ -1242,8 +1562,9 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       const spawnConfig: ProjectSpawnConfig = {
         cloudUrl: getShogoCloudUrl(),
         apiKey: process.env.SHOGO_API_KEY || '',
-        // projectDir becomes WORKSPACE_DIR in the child — the parent dir.
-        projectDir: workspacesDir,
+        // projectDir becomes WORKSPACE_DIR in the child — the per-runtime
+        // merged root that contains only this runtime's members.
+        projectDir: mergedRootDir,
         name: runtimeEnv.AGENT_NAME,
         workspaceId,
         extraEnv: runtimeEnv,
@@ -1275,6 +1596,121 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       }
       throw err
     }
+  }
+
+  /**
+   * Build (or refresh) the per-runtime MERGED ROOT directory that a
+   * merged-root runtime is rooted at. It lives at
+   * `workspaces/.workspace-roots/<rootName>` (dot-prefixed so it's never
+   * mistaken for a project) and contains one symlink per member project
+   * (pointing at its real `workspaces/<projectId>` dir) plus one symlink per
+   * linked local folder (by basename), and nothing else.
+   *
+   * Each member project's real dir is seeded first (template + deps via
+   * `ensureProjectDirectory`, idempotent) so the merged tree actually
+   * contains a working project rather than a dangling link.
+   *
+   * Returns the merged-root path, the list of all real member dirs (for
+   * LINKED_FOLDERS path-allowance), and the subset that is read-only (for
+   * READONLY_ROOTS write-denial — see the caller). Symlinks are recreated
+   * on every start so attach/detach/folder changes reflect after a restart.
+   */
+  private async buildWorkspaceMergedRoot(
+    workspacesDir: string,
+    rootName: string,
+    memberProjectIds: string[],
+    opts: { localFolders?: string[]; readonlyProjectIds?: string[] } = {},
+  ): Promise<{ dir: string; linkedFolders: string[]; readonlyFolders: string[] }> {
+    const mergedRoot = join(workspacesDir, '.workspace-roots', rootName)
+    mkdirSync(mergedRoot, { recursive: true })
+
+    const linkType = pkg.isWindows ? 'junction' : 'dir'
+    const linkedFolders: string[] = []
+    const readonlyFolders: string[] = []
+    const readonlySet = new Set(opts.readonlyProjectIds ?? [])
+    const expectedLinkNames = new Set<string>()
+
+    // (Re)create a single symlink `<mergedRoot>/<linkName> -> <absTarget>`,
+    // replacing whatever is currently there. Records the name so the prune
+    // pass below keeps it.
+    const linkInto = (absTarget: string, linkName: string) => {
+      expectedLinkNames.add(linkName)
+      const linkPath = join(mergedRoot, linkName)
+      try {
+        const st = lstatSync(linkPath)
+        if (st.isSymbolicLink()) unlinkSync(linkPath)
+        else rmSync(linkPath, { recursive: true, force: true })
+      } catch {
+        /* nothing at linkPath yet */
+      }
+      try {
+        symlinkSync(absTarget, linkPath, linkType)
+      } catch (err: any) {
+        console.warn(
+          `[RuntimeManager] buildWorkspaceMergedRoot: failed to link ${linkName} -> ${absTarget}: ${err?.message ?? err}`,
+        )
+      }
+    }
+
+    // Member projects (anchor + attachments) — symlinked by project id.
+    for (const projectId of memberProjectIds) {
+      // Seed the real project dir (template + deps). Idempotent — the
+      // install is sentinel-gated, so repeat starts are cheap.
+      let realProjectDir: string
+      try {
+        realProjectDir = await this.ensureProjectDirectory(projectId)
+      } catch (err: any) {
+        console.warn(
+          `[RuntimeManager] buildWorkspaceMergedRoot: failed to seed member project ${projectId}: ${err?.message ?? err}`,
+        )
+        realProjectDir = join(workspacesDir, projectId)
+      }
+      if (!existsSync(realProjectDir)) {
+        console.warn(
+          `[RuntimeManager] buildWorkspaceMergedRoot: member project ${projectId} has no directory at ${realProjectDir} — skipping link`,
+        )
+        continue
+      }
+      const absProjectDir = resolve(realProjectDir)
+      linkedFolders.push(absProjectDir)
+      if (readonlySet.has(projectId)) readonlyFolders.push(absProjectDir)
+      linkInto(absProjectDir, projectId)
+    }
+
+    // Linked local host folders — symlinked by basename (collision-safe).
+    for (const folder of opts.localFolders ?? []) {
+      const abs = resolve(folder)
+      if (!existsSync(abs)) {
+        console.warn(`[RuntimeManager] buildWorkspaceMergedRoot: linked folder missing on disk: ${abs} — skipping`)
+        continue
+      }
+      const base = basename(abs) || 'folder'
+      let name = base
+      let i = 2
+      while (expectedLinkNames.has(name)) name = `${base}-${i++}`
+      linkedFolders.push(abs)
+      linkInto(abs, name)
+    }
+
+    // Prune stale links no longer expected so detached projects / removed
+    // folders stop appearing in the merged tree after a restart.
+    try {
+      const { readdirSync } = await import('fs')
+      for (const entry of readdirSync(mergedRoot)) {
+        if (expectedLinkNames.has(entry)) continue
+        const entryPath = join(mergedRoot, entry)
+        try {
+          const st = lstatSync(entryPath)
+          if (st.isSymbolicLink()) unlinkSync(entryPath)
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch {
+      /* merged root just created / unreadable — nothing to prune */
+    }
+
+    return { dir: mergedRoot, linkedFolders, readonlyFolders }
   }
 
   private async doStart(projectId: string): Promise<IProjectRuntime> {
@@ -2102,8 +2538,44 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   }
 
   status(projectId: string): IProjectRuntime | null {
+    // Universal workspace-runtime model: when the flag is on, a project
+    // runs on its anchored merged-root runtime (`ws:proj:<id>`), so a bare
+    // `<projectId>` lookup would miss it and make callers (e.g. the local
+    // heartbeat scheduler) believe nothing is running and cold-start a
+    // duplicate. Prefer the anchored key, falling back to the bare key for
+    // any legacy runtime started before the flag was enabled.
+    if (process.env.SHOGO_WORKSPACE_RUNTIME === 'true') {
+      const anchored = this.runtimes.get(projectWorkspaceRuntimeKey(projectId))
+      if (anchored) return this.toPublicRuntime(anchored)
+    }
     const runtime = this.runtimes.get(projectId)
     return runtime ? this.toPublicRuntime(runtime) : null
+  }
+
+  /**
+   * Observable readiness of a project's anchor merged-root runtime
+   * (`ws:proj:<anchorId>`). `generation` is the boot counter (see
+   * {@link workspaceRuntimeGeneration}); `ready` means the agent process is up
+   * and the runtime answers a health probe. Callers poll this after an
+   * attach/detach/mode-change so they only send (or assert read-only
+   * enforcement) once the runtime has rebooted with the new config.
+   */
+  async getProjectWorkspaceReadiness(anchorProjectId: string): Promise<{
+    running: boolean
+    ready: boolean
+    generation: number
+    agentPort?: number
+  }> {
+    const key = projectWorkspaceRuntimeKey(anchorProjectId)
+    const generation = this.workspaceRuntimeGeneration.get(key) ?? 0
+    const runtime = this.runtimes.get(key)
+    if (!runtime) return { running: false, ready: false, generation }
+    const running = runtime.status === 'running' && !!runtime.agentPort
+    if (!running) {
+      return { running: false, ready: false, generation, agentPort: runtime.agentPort || undefined }
+    }
+    const health = await this.getHealth(key).catch(() => ({ healthy: false }) as IHealthStatus)
+    return { running, ready: !!health.healthy, generation, agentPort: runtime.agentPort || undefined }
   }
 
   async getHealth(projectId: string): Promise<IHealthStatus> {

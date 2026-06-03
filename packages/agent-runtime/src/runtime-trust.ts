@@ -49,6 +49,11 @@ export interface RuntimeTrust {
   workspaceDir: string
   /** Additional host folders linked to the project (external mode). */
   linkedFolders: string[]
+  /**
+   * Subset of allowed roots mounted read-only (e.g. an attached project
+   * with `attachMode='readonly'`). Reads pass; writes/exec are denied.
+   */
+  readonlyRoots: string[]
 }
 
 /**
@@ -94,19 +99,21 @@ export function getRuntimeTrust(): RuntimeTrust {
         : workingMode === 'external'
           ? 'restricted'
           : 'trusted'
-  let linkedFolders: string[] = []
-  try {
-    const raw = process.env.LINKED_FOLDERS
-    if (raw) {
+  const parseFolderEnv = (raw: string | undefined): string[] => {
+    if (!raw) return []
+    try {
       const parsed = JSON.parse(raw)
       if (Array.isArray(parsed)) {
-        linkedFolders = parsed.filter((p): p is string => typeof p === 'string' && p.length > 0)
+        return parsed.filter((p): p is string => typeof p === 'string' && p.length > 0)
       }
+    } catch {
+      // ignore, default to empty
     }
-  } catch {
-    // ignore, default to empty
+    return []
   }
-  return { workingMode, trustLevel, workspaceDir, linkedFolders }
+  const linkedFolders = parseFolderEnv(process.env.LINKED_FOLDERS)
+  const readonlyRoots = parseFolderEnv(process.env.READONLY_ROOTS)
+  return { workingMode, trustLevel, workspaceDir, linkedFolders, readonlyRoots }
 }
 
 /** Allowed roots = [workspaceDir, ...linkedFolders], deduplicated. */
@@ -125,6 +132,8 @@ export interface PathCheckResult {
     | 'outside_allowed_roots'
     | 'restricted_mode_write'
     | 'restricted_mode_exec'
+    | 'readonly_root_write'
+    | 'readonly_root_exec'
     | 'invalid_path'
   /**
    * Human-readable error suitable for surfacing to the agent (so it
@@ -241,6 +250,37 @@ export function assertAllowedPath(targetPath: string, mode: PathMode): PathCheck
         message:
           `Workspace is in restricted mode — shell / exec tools are disabled. ` +
           `Click "Trust folder" in the project header to enable edits and shell commands.`,
+      }
+    }
+  }
+
+  // Read-only attachment enforcement. The root is allowed for reads (it
+  // passed the `inAllowedRoot` check above), but writes / exec under a
+  // read-only root are denied even when the runtime is otherwise trusted.
+  if ((mode === 'write' || mode === 'exec') && (trust.readonlyRoots?.length ?? 0) > 0) {
+    const readonlyRoots = trust.readonlyRoots
+      .filter((p) => typeof p === 'string' && p.length > 0)
+      .map((p) => {
+        const resolved = resolve(p)
+        try {
+          return realpathSync(resolved)
+        } catch {
+          return resolved
+        }
+      })
+    const underReadonly = readonlyRoots.some((root) => {
+      const normalized = root.endsWith(sep) ? root : root + sep
+      return real === root || real.startsWith(normalized)
+    })
+    if (underReadonly) {
+      return {
+        ok: false,
+        reason: mode === 'write' ? 'readonly_root_write' : 'readonly_root_exec',
+        resolved: real,
+        message:
+          `This folder is attached read-only — ${mode === 'write' ? 'edits' : 'shell / exec commands'} are disabled here.\n` +
+          `Path: ${real}\n` +
+          `Re-attach the project as read-write in the "Folders" panel to allow changes.`,
       }
     }
   }

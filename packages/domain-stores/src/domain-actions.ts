@@ -324,7 +324,7 @@ export function createDomainActions(store: IDomainStore) {
      */
     createChatSession: async (data: {
       inferredName: string
-      contextType: "feature" | "project" | "general"
+      contextType: "feature" | "project" | "general" | "workspace"
       contextId?: string
       name?: string
       phase?: string

@@ -34,6 +34,13 @@ import { cpSync } from 'fs'
 import { dirname, isAbsolute, join, resolve, sep } from 'path'
 import os from 'os'
 import { prisma } from '../lib/prisma'
+import {
+  attachProjectToProject,
+  detachProjectFromProject,
+  getOrCreatePinnedWorkspaceSession,
+  listAttachments,
+  ProjectAttachmentError,
+} from '../services/project-attachment.service'
 
 // =============================================================================
 // Runtime pre-warm
@@ -83,6 +90,66 @@ function prewarmRuntimeBackground(projectId: string, hint: string): void {
     .catch((err) => {
       console.warn(`[local-projects] prewarm: import of runtime/manager failed: ${err?.message ?? err}`)
     })
+}
+
+/**
+ * Fire-and-forget: tear down and re-warm the ANCHOR merged-root runtime
+ * (`ws:proj:<anchorId>`) so a just-changed attachment / linked-folder set is
+ * remounted. `LINKED_FOLDERS` / `READONLY_ROOTS` are parsed once at runtime
+ * boot, so the set only takes effect after a restart.
+ *
+ * No-op (swallowed) when `SHOGO_WORKSPACE_RUNTIME` is off — in that case the
+ * project still runs on the legacy single-project runtime and attachments
+ * are inert until the flag is enabled.
+ */
+async function restartAnchorRuntime(anchorProjectId: string, hint: string): Promise<void> {
+  const [{ getRuntimeManager, projectWorkspaceRuntimeKey }, resolveMod] = await Promise.all([
+    import('../lib/runtime/manager'),
+    import('../lib/resolve-workspace-runtime-url'),
+  ])
+
+  const manager: any = getRuntimeManager()
+
+  // Single source of truth for the anchor's merged-root spawn options
+  // (workspaceId + the current attachment / linked-folder / readonly sets).
+  // Shared with `RuntimeManager.start()`'s dedup path so a restart rebuilds
+  // the exact same root the bare-key callers would. Returns null when the
+  // project has no workspaceId (nothing to anchor).
+  const spawnOpts = await manager.resolveAnchorSpawnOpts(anchorProjectId)
+  if (!spawnOpts) return
+
+  try {
+    await manager.stop(projectWorkspaceRuntimeKey(anchorProjectId))
+  } catch {
+    /* not running — nothing to tear down */
+  }
+
+  // Await the resolve so the new boot (with the updated READONLY_ROOTS /
+  // member set) is actually up by the time this resolves — that's what makes
+  // the runtime-status generation bump observable to a polling client.
+  await resolveMod
+    .resolveWorkspaceRuntimeUrl(spawnOpts.workspaceId, {
+      anchorProjectId,
+      attachedProjectIds: spawnOpts.attachedProjectIds,
+      localFolders: spawnOpts.localFolders,
+      readonlyProjectIds: spawnOpts.readonlyProjectIds,
+      logTag: 'AnchorRestart',
+      runtimeManager: manager,
+    })
+    .catch((err: any) => {
+      if (err instanceof resolveMod.WorkspaceRuntimeNotEnabledError) return
+      console.warn(
+        `[local-projects] anchor restart (${hint}) for ${anchorProjectId} failed: ${err?.message ?? err}`,
+      )
+    })
+}
+
+function restartAnchorRuntimeBackground(anchorProjectId: string, hint: string): void {
+  void restartAnchorRuntime(anchorProjectId, hint).catch((err: any) => {
+    console.warn(
+      `[local-projects] anchor restart (${hint}) for ${anchorProjectId} threw: ${err?.message ?? err}`,
+    )
+  })
 }
 
 /**
@@ -731,20 +798,24 @@ export function localProjectsRoutes(): Hono {
       include: { projectFolders: true },
     })
     if (!project) return c.json({ error: 'not_found' }, 404)
-    if (project.workingMode !== 'external') {
-      return c.json({ error: 'not_external_project' }, 409)
-    }
+    // Managed projects may now link local folders too (they mount into the
+    // anchor merged-root runtime). Only EXTERNAL projects use the primary
+    // folder to host `.shogo/`, so a managed project's linked folders are
+    // never primary.
     if (project.projectFolders.some((f) => f.path === validated.path)) {
       return c.json({ error: 'folder_already_linked' }, 409)
     }
 
+    const isExternal = project.workingMode === 'external'
     const folder = await prisma.projectFolder.create({
       data: {
         projectId,
         path: validated.path!,
-        isPrimary: project.projectFolders.length === 0,
+        isPrimary: isExternal && project.projectFolders.length === 0,
       },
     })
+    // Remount the merged-root runtime so the agent sees the new folder.
+    restartAnchorRuntimeBackground(projectId, 'folder-add')
     return c.json({ folder }, 201)
   })
 
@@ -774,6 +845,7 @@ export function localProjectsRoutes(): Hono {
       )
     }
     await prisma.projectFolder.delete({ where: { id: folderId } })
+    restartAnchorRuntimeBackground(projectId, 'folder-remove')
     return c.json({ ok: true })
   })
 
@@ -955,10 +1027,118 @@ export function localProjectsRoutes(): Hono {
       include: { projectFolders: true },
     })
     if (!project) return c.json({ error: 'not_found' }, 404)
-    return c.json({ project })
+    // Persistent project-to-project attachments (the anchor merged-root
+    // runtime mounts these as subfolders). Folded into the project payload
+    // so the Folders panel can render both sections from one fetch.
+    const attachments = await listAttachments(projectId)
+    return c.json({ project, attachments })
+  })
+
+  /**
+   * POST /:id/workspace-session — get (or create) the project-pinned
+   * workspace chat session for this project. Opening the project routes its
+   * chat through this session so the agent runs on the anchor merged-root
+   * runtime (mounting the project + its attachments + linked folders).
+   */
+  router.post('/:id/workspace-session', async (c) => {
+    const auth = c.get('auth' as never) as { userId?: string } | undefined
+    if (!auth?.userId) return c.json({ error: 'unauthenticated' }, 401)
+    const projectId = c.req.param('id')
+    try {
+      const session = await getOrCreatePinnedWorkspaceSession(projectId)
+      const attachments = await listAttachments(projectId)
+      return c.json({
+        session: { id: session.id, workspaceId: session.workspaceId },
+        attachments,
+      })
+    } catch (err) {
+      return mapAttachmentError(c, err)
+    }
+  })
+
+  /**
+   * POST /:id/attachments { attachedProjectId, attachMode? } — attach
+   * GET /:id/workspace-runtime-status — observable readiness of this
+   * project's anchor merged-root runtime. Returns `{ running, ready,
+   * generation }`. The mobile Folders panel polls this after attach/detach/
+   * mode-change (which trigger an env-coupled restart) so the
+   * "Restarting context…" indicator clears on real readiness, and the e2e
+   * gates its read-only write assertion on the generation bump instead of a
+   * fixed sleep.
+   */
+  router.get('/:id/workspace-runtime-status', async (c) => {
+    const auth = c.get('auth' as never) as { userId?: string } | undefined
+    if (!auth?.userId) return c.json({ error: 'unauthenticated' }, 401)
+    const projectId = c.req.param('id')
+    try {
+      const { getRuntimeManager } = await import('../lib/runtime/manager')
+      const manager: any = getRuntimeManager()
+      const readiness = await manager.getProjectWorkspaceReadiness(projectId)
+      return c.json(readiness)
+    } catch (err: any) {
+      console.warn(
+        `[local-projects] workspace-runtime-status for ${projectId} failed: ${err?.message ?? err}`,
+      )
+      return c.json({ running: false, ready: false, generation: 0 })
+    }
+  })
+
+  /**
+   * another Shogo project (same workspace) to this anchor. Idempotent.
+   */
+  router.post('/:id/attachments', async (c) => {
+    const auth = c.get('auth' as never) as { userId?: string } | undefined
+    if (!auth?.userId) return c.json({ error: 'unauthenticated' }, 401)
+    const projectId = c.req.param('id')
+
+    let body: { attachedProjectId?: string; attachMode?: string }
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: 'invalid_json' }, 400)
+    }
+    const attachedProjectId = body.attachedProjectId
+    if (!attachedProjectId || typeof attachedProjectId !== 'string') {
+      return c.json({ error: 'attachedProjectId_required' }, 400)
+    }
+    const attachMode = body.attachMode === 'readonly' ? 'readonly' : 'readwrite'
+
+    try {
+      const attachment = await attachProjectToProject(projectId, attachedProjectId, attachMode)
+      restartAnchorRuntimeBackground(projectId, 'attach')
+      return c.json({ attachment }, 201)
+    } catch (err) {
+      return mapAttachmentError(c, err)
+    }
+  })
+
+  /**
+   * DELETE /:id/attachments/:attachedProjectId — detach a project. No-op if
+   * it wasn't attached.
+   */
+  router.delete('/:id/attachments/:attachedProjectId', async (c) => {
+    const auth = c.get('auth' as never) as { userId?: string } | undefined
+    if (!auth?.userId) return c.json({ error: 'unauthenticated' }, 401)
+    const projectId = c.req.param('id')
+    const attachedProjectId = c.req.param('attachedProjectId')
+
+    const removed = await detachProjectFromProject(projectId, attachedProjectId)
+    if (removed) restartAnchorRuntimeBackground(projectId, 'detach')
+    return c.json({ ok: true, removed })
   })
 
   return router
+}
+
+/** Map a ProjectAttachmentError to an HTTP response. */
+function mapAttachmentError(c: any, err: unknown): Response {
+  if (err instanceof ProjectAttachmentError) {
+    const status =
+      err.code === 'project_not_found' ? 404 : err.code === 'self_attach' ? 400 : 409
+    return c.json({ error: err.code, message: err.message }, status)
+  }
+  console.error('[local-projects] attachment error:', err)
+  return c.json({ error: 'internal_error' }, 500)
 }
 
 // =============================================================================
