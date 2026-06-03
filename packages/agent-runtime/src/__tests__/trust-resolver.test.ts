@@ -84,6 +84,27 @@ describe('trust-resolver', () => {
     expect(getResolvedTrust().trustLevel).toBe('trusted')
   })
 
+  test('workspace runtime: init is trusted+initialized, refresh never calls the API', async () => {
+    initTrustResolver({
+      projectId: 'ws:ed9dfc44',
+      workspaceDir: '/sandbox/workspaces',
+      workingMode: 'managed',
+      linkedFolders: [],
+      isWorkspaceRuntime: true,
+    })
+    expect(getResolvedTrust().trustLevel).toBe('trusted')
+    expect(isTrustResolverInitialized()).toBe(true) // no API read needed
+
+    let calls = 0
+    installFetchMock(async () => {
+      calls++
+      return jsonRes({ trustLevel: 'restricted', workingMode: 'managed' })
+    })
+    await refreshTrust()
+    expect(calls).toBe(0) // short-circuited — no /internal/projects/ws:.../trust
+    expect(getResolvedTrust().trustLevel).toBe('trusted')
+  })
+
   test('refresh() pulls authoritative trust from API and flips the cell', async () => {
     initTrustResolver({
       projectId: 'p-ext',
