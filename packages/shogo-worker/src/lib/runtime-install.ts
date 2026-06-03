@@ -60,7 +60,7 @@ export type Channel = 'stable' | 'beta' | 'nightly';
  * Layout assumed by `buildAssetUrls()`:
  *   ${baseUrl}/v${version}/${assetName}
  */
-export const DEFAULT_RELEASES_BASE_URL = 'https://github.com/shogo-ai/shogo/releases/download';
+export const DEFAULT_RELEASES_BASE_URL = 'https://github.com/shogo-labs/shogo-ai/releases/download';
 
 export interface InstallOptions {
   /** Specific version to install (e.g. "0.1.0"). Default: latest in channel. */

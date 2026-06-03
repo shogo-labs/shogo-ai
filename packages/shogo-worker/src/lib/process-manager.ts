@@ -20,7 +20,7 @@ import { PID_FILE, WORKER_LOG, WORKER_ERR, ensureHome } from './paths.ts';
 
 export interface SpawnOpts {
   entry: string;
-  runner: 'bun' | 'node';
+  runner: 'bun' | 'node' | 'tsx';
   env: NodeJS.ProcessEnv;
   cwd: string;
   detach?: boolean;
