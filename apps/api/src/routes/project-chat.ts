@@ -194,6 +194,43 @@ export async function trackUsageFromStream(
   }
 
   /**
+   * Partial reset on an inference retry. The runtime re-issued a model call
+   * that dropped mid-generation, so the failed step's partial text/reasoning
+   * (and any partially-streamed tool input that never executed) must be
+   * discarded — otherwise the regenerated output gets concatenated onto the
+   * thrown-away partial in the persisted ChatMessage. Earlier COMPLETED steps
+   * (assistant text + executed tool calls) are preserved: pi-agent-core runs
+   * tools only after a complete assistant message, so a failed step never
+   * produced a `tool-input-available` part.
+   */
+  function resetCurrentStepPartials() {
+    if (currentReasoningPart) {
+      const idx = orderedParts.lastIndexOf(currentReasoningPart)
+      if (idx >= 0) orderedParts.splice(idx, 1)
+      currentReasoningPart = null
+      reasoningStartedAt = null
+    }
+    if (currentTextPart) {
+      const idx = orderedParts.lastIndexOf(currentTextPart)
+      if (idx >= 0) orderedParts.splice(idx, 1)
+      currentTextPart = null
+    }
+    // Drop any partially-streamed tool calls from the failed step. A completed
+    // tool from an earlier step reached `tool-input-available` and so has an
+    // entry in `toolPartIndex`; a failed step's tool only ever got a
+    // `tool-input-start` (toolCallMap only) and never executed.
+    for (const id of [...toolCallMap.keys()]) {
+      if (!toolPartIndex.has(id)) toolCallMap.delete(id)
+    }
+    // Recompute the flattened text from the surviving ordered text parts so
+    // `content` reflects only completed output.
+    accumulatedText = orderedParts
+      .filter((p) => p.type === 'text')
+      .map((p) => p.text)
+      .join('')
+  }
+
+  /**
    * Process one SSE line (already \n-split). Updates the closure-scoped
    * accumulator state in place. Tolerant of legacy (`9:`, `e:`, `d:`)
    * data-stream prefixes alongside the modern `data: {json}` SSE format.
@@ -326,6 +363,14 @@ export async function trackUsageFromStream(
         part.output = data.output ?? { success: true }
         part.state = 'output-available'
       }
+    }
+
+    // The runtime emits `data-inference-retry` when it re-issues a model call
+    // that dropped mid-generation. Discard the failed step's partial output so
+    // the persisted message holds the final retried output, not a concatenation.
+    if (type === 'data-inference-retry') {
+      resetCurrentStepPartials()
+      return
     }
 
     // The runtime writes `data-turn-complete` exactly once at the tail

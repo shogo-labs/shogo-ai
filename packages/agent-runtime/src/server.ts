@@ -1357,6 +1357,27 @@ app.post('/agent/chat', async (c) => {
     }
   }
 
+  // Non-destructive continuation. When a turn ended incomplete (e.g. a model
+  // call dropped and inference retries were exhausted), the client can ask the
+  // agent to pick up from where it stopped WITHOUT re-sending the original user
+  // message. The interrupted turn's completed tool calls were already persisted
+  // to the session (see gateway: persist result.newMessages before UI cleanup),
+  // so buildHistory replays them and the agent continues from that exact point.
+  // We supply a crafted continuation instruction server-side rather than
+  // re-running the original prompt (which would restart the work).
+  const isContinueTurn = body.continue === true || body.continueTurn === true
+  if (isContinueTurn && userFileParts.length === 0) {
+    // The model receives a crafted continuation instruction regardless of any
+    // short label the client rendered (e.g. a "Continue" bubble) so it resumes
+    // the preserved work instead of re-running the original prompt.
+    userText =
+      'Continue from where you stopped. The previous response was interrupted ' +
+      'mid-turn. Build on the tool results and progress already made in this ' +
+      'conversation — do not restart, repeat completed steps, or re-run tools ' +
+      'whose results are already present. Pick up exactly where you left off ' +
+      'and finish the task.'
+  }
+
   if (!userText && userFileParts.length === 0) {
     return c.json({ error: 'message is required — send { messages: [{ role: "user", parts: [{ type: "text", text: "..." }] }] }' }, 400)
   }

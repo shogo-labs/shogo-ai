@@ -2362,6 +2362,36 @@ export class AgentGateway {
             uiWriter.write({ type: 'text-delta', id: uiTextId, delta })
           }
         },
+        onInferenceRetry: (info) => {
+          // The dropped model call is being re-issued. Close any in-progress
+          // text/reasoning block so the client can drop the failed step's
+          // partial deltas, then emit an explicit marker the client + the
+          // API-side accumulator key on to reset (avoids concatenating the
+          // discarded partial with the regenerated output).
+          if (uiWriter && uiTextId) {
+            uiWriter.write({ type: 'text-end', id: uiTextId })
+            uiTextId = null
+          }
+          if (uiWriter && uiReasoningId) {
+            uiWriter.write({ type: 'reasoning-end', id: uiReasoningId })
+            uiReasoningId = null
+          }
+          if (uiWriter) {
+            uiWriter.write({
+              type: 'data-inference-retry',
+              data: {
+                attempt: info.attempt,
+                maxAttempts: info.maxAttempts,
+                reason: info.reason,
+                delayMs: info.delayMs,
+              },
+            } as any)
+          }
+          console.warn(
+            `${this.logPrefix} Inference retry ${info.attempt}/${info.maxAttempts} ` +
+              `(reason=${info.reason}, delay=${info.delayMs}ms) for session ${sessionId}`,
+          )
+        },
         onToolCallStart: (toolName, toolCallId) => {
           this._lastTool = toolName
           if (uiWriter && uiTextId) {
