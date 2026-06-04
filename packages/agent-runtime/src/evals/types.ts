@@ -46,6 +46,7 @@ export type EvalCategory =
   | 'subagent-coordination'
   | 'teammate-coordination'
   | 'plan'
+  | 'workspace-attachments'
 
 export type ValidationPhase = 'intention' | 'execution' | 'interaction'
 
