@@ -180,6 +180,28 @@ function updateGitExclude(workspaceDir: string, relPaths: string[]): void {
 }
 
 /**
+ * Whether `.git/info/exclude` still carries the managed large-file block.
+ * Used as the "not yet migrated to Git LFS" marker for a project.
+ */
+export function hasManagedExclude(workspaceDir: string): boolean {
+  const excludePath = join(workspaceDir, '.git', 'info', 'exclude')
+  try {
+    return readFileSync(excludePath, 'utf-8').includes(MANAGED_EXCLUDE_HEADER)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Remove the managed large-file block from `.git/info/exclude` so the
+ * previously-offloaded files can be staged (and re-tracked via Git LFS).
+ * Part of the one-time LFS migration in `lfs.ts`.
+ */
+export function clearManagedExclude(workspaceDir: string): void {
+  updateGitExclude(workspaceDir, [])
+}
+
+/**
  * Sync the current large-file set to object storage: upload new/changed
  * assets, prune assets no longer present, and refresh the git-exclude
  * block. Best-effort — logs and continues on per-file errors.
