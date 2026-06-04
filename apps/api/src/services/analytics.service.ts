@@ -10,6 +10,7 @@
  */
 
 import { prisma, Prisma } from '../lib/prisma'
+import { resolveModelLabels } from './model-registry.service'
 
 /** Parse actionMetadata that may have been double-JSON-stringified. */
 function parseMeta(raw: unknown): Record<string, any> {
@@ -548,6 +549,18 @@ export async function getSpendTimeseries(
     userMap = new Map(users.map((u) => [u.id, u.email || u.name || u.id]))
   }
 
+  // Resolve model ids → display names when grouping by model (post catalog-uuid
+  // migration the stored ids are UUIDs).
+  let modelLabels = new Map<string, string>()
+  if (groupBy === 'model') {
+    modelLabels = await resolveModelLabels(
+      events.map((e) => {
+        const m = parseMeta(e.actionMetadata)
+        return (m.model || m.modelUsed || 'unknown') as string
+      }),
+    )
+  }
+
   // Aggregate {date → {seriesKey → metric value}} and totals
   const byDay = new Map<string, Map<string, number>>()
   const seriesTotals = new Map<string, number>()
@@ -572,12 +585,13 @@ export async function getSpendTimeseries(
     const day = isoDay(event.createdAt)
     const costUsd = eventCostUsd(event, meta)
 
+    const rawModel = meta.model || meta.modelUsed || 'unknown'
     const series =
       groupBy === 'user'
         ? userMap.get(event.memberId) ?? event.memberId
         : groupBy === 'source'
           ? event.source
-          : (meta.model || meta.modelUsed || 'unknown')
+          : (modelLabels.get(rawModel) ?? rawModel)
 
     const value =
       metric === 'tokens'
@@ -819,11 +833,23 @@ export async function getUsageLog(
   })
   const userMap = new Map(users.map((u) => [u.id, u]))
 
+  // Stored model ids are opaque UUIDs after the catalog-uuid migration; resolve
+  // them to human display names (alias / static-catalog aware) for the UI.
+  const modelLabels = await resolveModelLabels(
+    events
+      .filter((e) => !(typeof e.actionType === 'string' && e.actionType.startsWith('voice_')))
+      .map((e) => {
+        const m = parseMeta(e.actionMetadata)
+        return (m.model || m.modelUsed || 'unknown') as string
+      }),
+  )
+
   const entries: UsageLogEntry[] = events.map((event) => {
     const meta = parseMeta(event.actionMetadata)
     const user = userMap.get(event.memberId)
     const isVoice = typeof event.actionType === 'string' &&
       event.actionType.startsWith('voice_')
+    const rawModel = meta.model || meta.modelUsed || 'unknown'
     return {
       id: event.id,
       userId: event.memberId,
@@ -832,7 +858,7 @@ export async function getUsageLog(
       userImage: user?.image ?? null,
       model: isVoice
         ? voiceLabel(event.actionType)
-        : (meta.model || meta.modelUsed || 'unknown'),
+        : (modelLabels.get(rawModel) ?? rawModel),
       provider: isVoice ? 'elevenlabs' : (meta.provider || 'anthropic'),
       inputTokens: meta.inputTokens || 0,
       outputTokens: meta.outputTokens || 0,
@@ -941,6 +967,12 @@ export async function getUsageSummary(
   })
   const userMap = new Map(users.map((u) => [u.id, u]))
 
+  // Stored model ids are opaque UUIDs after the catalog-uuid migration; resolve
+  // them to human display names for the UI (uniqueModels still counts raw ids).
+  const modelLabels = await resolveModelLabels(
+    [...aggregateMap.values()].map((a) => a.model),
+  )
+
   // Also get tool call counts per user (from ToolCallLog → ChatSession → Project)
   // We aggregate tool calls through the workspace scope if available
   const toolCallWhere: any = { status: 'complete' }
@@ -965,7 +997,7 @@ export async function getUsageSummary(
         userName: user?.name ?? null,
         userEmail: user?.email ?? agg.userId,
         userImage: user?.image ?? null,
-        model: agg.model,
+        model: modelLabels.get(agg.model) ?? agg.model,
         provider: agg.provider,
         requestCount: agg.requestCount,
         totalInputTokens: agg.totalInputTokens,
@@ -988,7 +1020,7 @@ export async function getUsageSummary(
     totalRawUsd: summaries.reduce((s, e) => s + e.totalRawUsd, 0),
     totalToolCalls,
     uniqueUsers: new Set(summaries.map((s) => s.userId)).size,
-    uniqueModels: new Set(summaries.map((s) => s.model)).size,
+    uniqueModels: new Set([...aggregateMap.values()].map((a) => a.model)).size,
   }
 
   return { summaries, totals }

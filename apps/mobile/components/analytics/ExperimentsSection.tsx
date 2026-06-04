@@ -30,7 +30,11 @@ export interface ExperimentItem {
   name: string
   agentType: string
   modelA: string
+  /** Server-resolved display label for `modelA` (falls back to client resolution). */
+  modelALabel?: string
   modelB: string
+  /** Server-resolved display label for `modelB` (falls back to client resolution). */
+  modelBLabel?: string
   status: string
   splitPercentage: number
   totalRunsA: number
@@ -181,6 +185,7 @@ export function ExperimentsSection({
                     <ExperimentVariantCard
                       label="Model A"
                       model={exp.modelA}
+                      modelLabel={exp.modelALabel}
                       runs={exp.totalRunsA}
                       cost={exp.totalCostA}
                       costPerRun={costPerRunA}
@@ -190,6 +195,7 @@ export function ExperimentsSection({
                     <ExperimentVariantCard
                       label="Model B"
                       model={exp.modelB}
+                      modelLabel={exp.modelBLabel}
                       runs={exp.totalRunsB}
                       cost={exp.totalCostB}
                       costPerRun={costPerRunB}
@@ -324,6 +330,7 @@ function OptionRow({
 function ExperimentVariantCard({
   label,
   model,
+  modelLabel,
   runs,
   cost,
   costPerRun,
@@ -332,6 +339,7 @@ function ExperimentVariantCard({
 }: {
   label: string
   model: string
+  modelLabel?: string
   runs: number
   cost: number
   costPerRun: number
@@ -343,7 +351,7 @@ function ExperimentVariantCard({
       <Text className="text-[9px] font-medium text-muted-foreground mb-1">{label}</Text>
       <View className={cn('px-1.5 py-0.5 rounded border self-start mb-1.5', getModelColor(model))}>
         <Text className={cn('text-[10px] font-medium', getModelTextColor(model))}>
-          {getModelDisplayName(model)}
+          {modelLabel ?? getModelDisplayName(model)}
         </Text>
       </View>
       <View className="gap-0.5">

@@ -19,6 +19,7 @@ import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
 import { MODEL_CATALOG, MODEL_ALIASES } from '@shogo/model-catalog'
 import { prisma } from '../lib/prisma'
+import { resolveModelLabelSync } from '../services/model-registry.service'
 import { requireSuperAdmin } from '../middleware/super-admin'
 import { authMiddleware, requireAuth } from '../middleware/auth'
 
@@ -134,7 +135,7 @@ function mapRunSummary(r: any) {
     id: r.id,
     name: `agent-runtime-${r.track}`,
     track: r.track,
-    model: r.model,
+    model: resolveModelLabelSync(r.model),
     workers: r.workers,
     status: r.status,
     label: r.label ?? null,
@@ -241,7 +242,7 @@ export function evalAdminRoutes(): Hono {
         id: activeRun.id,
         pid: activeRun.pid,
         track: activeRun.track,
-        model: activeRun.model,
+        model: resolveModelLabelSync(activeRun.model),
         workers: activeRun.workers,
         completed: progressResults.length,
         passed: progressResults.filter((r) => r.passed).length,
@@ -489,7 +490,7 @@ export function evalAdminRoutes(): Hono {
         history: completedResults.map((r) => ({
           runId: r.run.id,
           track: r.run.track,
-          model: r.run.model,
+          model: resolveModelLabelSync(r.run.model),
           timestamp: r.run.startedAt?.toISOString() ?? r.run.createdAt.toISOString(),
           passed: r.passed,
           score: r.score,
@@ -592,7 +593,7 @@ export function evalAdminRoutes(): Hono {
     }
 
     const models = Object.entries(byModel).map(([model, run]) => ({
-      model,
+      model: resolveModelLabelSync(model),
       runId: run.id,
       track: run.track,
       timestamp: run.startedAt?.toISOString() ?? run.createdAt.toISOString(),
@@ -673,7 +674,7 @@ export function evalAdminRoutes(): Hono {
         category: r.category,
         level: r.level,
         track: r.run.track,
-        model: r.run.model,
+        model: resolveModelLabelSync(r.run.model),
         passed: r.passed,
         score: r.score,
         maxScore: r.maxScore,
