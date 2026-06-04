@@ -17,11 +17,17 @@ export type ChatSessionSelectRequest = {
   sessionId: string
 }
 
+export type ChatSessionNewChatRequest = {
+  projectId: string
+}
+
 type ChangeListener = (event: ChatSessionChange) => void
 type SelectListener = (event: ChatSessionSelectRequest) => void
+type NewChatListener = (event: ChatSessionNewChatRequest) => void
 
 const changeListeners = new Set<ChangeListener>()
 const selectListeners = new Set<SelectListener>()
+const newChatListeners = new Set<NewChatListener>()
 
 /**
  * Lightweight pub/sub bridging the project workspace and the AppSidebar (the
@@ -33,6 +39,9 @@ const selectListeners = new Set<SelectListener>()
  *  - `subscribeSelect` / `requestSelect`: sidebar -> workspace. Ask the
  *    already-mounted project workspace to switch chats IN PLACE (no
  *    navigation, no remount) when the project is already open.
+ *  - `subscribeNewChat` / `requestNewChat`: sidebar -> workspace. Ask the
+ *    already-mounted project workspace to create a fresh chat (reusing its
+ *    canonical creation logic) when the project is already open.
  */
 export const chatSessionEvents = {
   subscribe(fn: ChangeListener) {
@@ -55,6 +64,17 @@ export const chatSessionEvents = {
 
   requestSelect(event: ChatSessionSelectRequest) {
     selectListeners.forEach((fn) => fn(event))
+  },
+
+  subscribeNewChat(fn: NewChatListener) {
+    newChatListeners.add(fn)
+    return () => {
+      newChatListeners.delete(fn)
+    }
+  },
+
+  requestNewChat(event: ChatSessionNewChatRequest) {
+    newChatListeners.forEach((fn) => fn(event))
   },
 }
 

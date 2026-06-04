@@ -271,6 +271,13 @@ export default observer(function ProjectLayout() {
      * project, so the apply effect re-fires even though `tab` is unchanged.
      */
     tabNonce?: string
+    /**
+     * When '1', create a fresh chat on arrival (sidebar project "+" pressed
+     * for a project that isn't open yet). Consumed once per `newChatNonce`.
+     */
+    newChat?: string
+    /** Bumped alongside `newChat` so the one-shot create re-fires on re-press. */
+    newChatNonce?: string
   }>()
   const projectId = params.id
   const { width, height } = useWindowDimensions()
@@ -784,10 +791,14 @@ export default observer(function ProjectLayout() {
   useEffect(() => {
     if (!workspaceRuntimeEnabled || !pinnedWorkspaceSessionId) return
     if (params.chatSessionId) return
+    // A pending "+ new chat" arrival creates its own session — don't promote
+    // the pinned session over it (it may resolve after the create and clobber
+    // the fresh chat).
+    if (params.newChat === '1') return
     if (pinnedSessionAppliedRef.current) return
     pinnedSessionAppliedRef.current = true
     setChatSessionId(pinnedWorkspaceSessionId)
-  }, [workspaceRuntimeEnabled, pinnedWorkspaceSessionId, params.chatSessionId])
+  }, [workspaceRuntimeEnabled, pinnedWorkspaceSessionId, params.chatSessionId, params.newChat])
 
   // APP_MODE_DISABLED: app template copy effect removed
 
@@ -1052,6 +1063,26 @@ export default observer(function ProjectLayout() {
     })
   }, [chatSessionId])
 
+  // Apply a deep-linked chat session whenever the `chatSessionId` param
+  // changes — e.g. selecting a chat in a project that isn't open yet. The
+  // initial useState seed only covers the first mount; React Navigation may
+  // reuse this screen (rather than remounting) when navigating between
+  // projects, so without this the new param would be ignored and the project
+  // would show its default chat instead of the one the user clicked. We key
+  // off the param alone (not `chatSessionId`) so an in-place switch via the
+  // event bus — which changes `chatSessionId` without touching the URL —
+  // doesn't get reverted to the stale deep-link.
+  useEffect(() => {
+    const incoming = Array.isArray(params.chatSessionId)
+      ? params.chatSessionId[0]
+      : params.chatSessionId
+    if (incoming && incoming !== chatSessionId) {
+      setChatSessionId(incoming)
+      setOpenChatTabIds((prev) => (prev.includes(incoming) ? prev : [...prev, incoming]))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.chatSessionId])
+
   const handleCloseTab = useCallback((tabId: string) => {
     streamingChangeHandlersRef.current.delete(tabId)
     prevStreamingByTabRef.current.delete(tabId)
@@ -1129,6 +1160,10 @@ export default observer(function ProjectLayout() {
       }
 
       if (chatSessionId) return
+      // A pending sidebar "+ new chat" request owns session creation on this
+      // arrival (handled by the one-shot newChat effect) — don't also
+      // auto-select an existing chat or we'd land on the wrong one.
+      if (params.newChat === '1') return
       // Under the always-on workspace runtime, the project-pinned workspace
       // session owns active-session selection (see the pinned-session
       // promotion effect). Auto-selecting / auto-creating a project-scoped
@@ -1177,7 +1212,7 @@ export default observer(function ProjectLayout() {
     return () => {
       cancelled = true
     }
-  }, [projectId, store, chatSessionId, actions, tabsHydration])
+  }, [projectId, store, chatSessionId, actions, tabsHydration, params.newChat])
 
   // After a 'restored-with-tabs' hydration, choose which restored tab is
   // active. Prefer the persisted `lastChatSession` if it's still in the list,
@@ -1819,6 +1854,32 @@ export default observer(function ProjectLayout() {
       setChatSessionId(sessionId)
     })
   }, [projectId])
+
+  // Let the sidebar create a fresh chat for this project IN PLACE while it's
+  // already open. Reuses `handleCreateNewSession` so workspace-runtime vs
+  // project-scope session creation stays in one place.
+  useEffect(() => {
+    if (!projectId) return
+    return chatSessionEvents.subscribeNewChat(({ projectId: pid }) => {
+      if (pid !== projectId) return
+      void handleCreateNewSession()
+    })
+  }, [projectId, handleCreateNewSession])
+
+  // Honor a `newChat=1` arrival (sidebar "+" pressed on a project that wasn't
+  // open yet): create one fresh chat per `newChatNonce`. Ref-guarded so
+  // re-renders and the param lingering in the URL never spawn duplicates.
+  const newChatAppliedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (params.newChat !== '1' || !projectId) return
+    const rawNonce = Array.isArray(params.newChatNonce)
+      ? params.newChatNonce[0]
+      : params.newChatNonce
+    const key = `${projectId}:${rawNonce ?? '1'}`
+    if (newChatAppliedRef.current === key) return
+    newChatAppliedRef.current = key
+    void handleCreateNewSession()
+  }, [params.newChat, params.newChatNonce, projectId, handleCreateNewSession])
 
   // Broadcast the active chat so the sidebar highlights it — even when the
   // chat was selected via local state (e.g. the pinned/bootstrap session) and
