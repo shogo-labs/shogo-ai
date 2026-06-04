@@ -824,6 +824,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           scrollbar-width: thin;
         }
         [data-shogo-terminal-surface] .xterm-rows {
+          padding-left: 32px !important;
           padding-right: 6px;
         }
         [data-shogo-terminal-surface] .xterm-viewport::-webkit-scrollbar {

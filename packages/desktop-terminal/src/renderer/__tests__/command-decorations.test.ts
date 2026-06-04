@@ -68,7 +68,7 @@ describe('CommandDecorations', () => {
     cmdComplete(tracker, 0)
     expect(host.registered.length).toBe(2)
     // Left-anchored gutter decoration (width:1, no anchor = left default)
-    expect(host.registered[1]!.opts.width).toBe(0)
+    expect(host.registered[1]!.opts.width).toBe(1)
     expect(host.registered[1]!.opts.anchor).toBeUndefined()
   })
 
@@ -76,7 +76,7 @@ describe('CommandDecorations', () => {
     const dec = new CommandDecorations({ tracker, host: host as any })
     cmdComplete(tracker, 1)
     expect(host.registered.length).toBe(2)
-    expect(host.registered[1]!.opts.width).toBe(0)
+    expect(host.registered[1]!.opts.width).toBe(1)
     expect(host.registered[1]!.opts.anchor).toBeUndefined()
   })
 
@@ -99,7 +99,7 @@ describe('CommandDecorations', () => {
     cmdComplete(tracker, 0)
     expect(host.registered.length).toBe(2)
     // onClick is wired — decoration exists and has the right width
-    expect(host.registered[1]!.opts.width).toBe(0)
+    expect(host.registered[1]!.opts.width).toBe(1)
   })
 
   it('adopts pre-existing commands', () => {
