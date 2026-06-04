@@ -30,6 +30,7 @@ export {
   useFolderCollection,
   useStarredProjectCollection,
   useInvitationCollection,
+  useNotificationCollection,
   useChatSessionCollection,
   useChatMessageCollection,
   useDomainActions,

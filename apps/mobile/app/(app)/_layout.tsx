@@ -50,6 +50,9 @@ export default function AppLayout() {
     && pathname !== '/(app)/projects'
   const isSettingsPage = pathname === '/settings' || pathname === '/(app)/settings' || pathname.includes('/settings')
   const isBillingPage = pathname === '/billing' || pathname === '/(app)/billing'
+  // The notifications inbox provides its own header (back + mark-all-read), so
+  // suppress the app header on narrow screens to avoid stacking two headers.
+  const isNotificationsPage = pathname === '/notifications' || pathname === '/(app)/notifications'
 
   usePostHogIdentify()
   const posthog = usePostHogSafe()
@@ -118,7 +121,7 @@ export default function AppLayout() {
           {showSidebar && <AppSidebar />}
 
           <View className="flex-1">
-            {!isWide && !isProjectDetail && !isBillingPage && <AppHeader onMenuPress={openDrawer} />}
+            {!isWide && !isProjectDetail && !isBillingPage && !isNotificationsPage && <AppHeader onMenuPress={openDrawer} />}
             <View className="flex-1">
               <VMDownloadBanner />
               {localMode && <RecordingIndicator />}
