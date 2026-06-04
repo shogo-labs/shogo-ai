@@ -455,10 +455,17 @@ export async function authenticateInstanceWs(
     )
 
     const instance = await prisma.instance.upsert({
-      where: { workspaceId_hostname: { workspaceId: resolved.workspaceId, hostname } },
+      where: {
+        workspaceId_userId_hostname: {
+          workspaceId: resolved.workspaceId,
+          userId: resolved.userId,
+          hostname,
+        },
+      },
       update: { name, os, arch, kind, status: 'online', lastSeenAt: new Date(), wsRequestedAt: null },
       create: {
         workspaceId: resolved.workspaceId,
+        userId: resolved.userId,
         name,
         hostname,
         os,
@@ -666,7 +673,11 @@ export function instanceRoutes() {
 
     const instance = await prisma.instance.upsert({
       where: {
-        workspaceId_hostname: { workspaceId: resolved.workspaceId, hostname: body.hostname },
+        workspaceId_userId_hostname: {
+          workspaceId: resolved.workspaceId,
+          userId: resolved.userId,
+          hostname: body.hostname,
+        },
       },
       update: {
         name: body.name || body.hostname,
@@ -678,6 +689,7 @@ export function instanceRoutes() {
       },
       create: {
         workspaceId: resolved.workspaceId,
+        userId: resolved.userId,
         name: body.name || body.hostname,
         hostname: body.hostname,
         os: body.os || null,
@@ -759,6 +771,13 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
+    // Machines are scoped to the user who paired them. A workspace member
+    // may not view or drive another member's machine. Legacy rows with no
+    // recorded owner (userId null) fall back to the membership check above.
+    if (instance.userId && instance.userId !== auth.userId) {
+      return c.json({ error: { code: 'forbidden', message: 'Not your machine' } }, 403)
+    }
+
     if (tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id)) {
       return c.json({ ok: true, status: 'already_connected' })
     }
@@ -794,8 +813,11 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
+    // Scope to the machines this user paired. Ownership is stamped from the
+    // API key used to register/heartbeat the machine (see resolveApiKey), so
+    // each member only sees their own machines, not everyone's in the workspace.
     const instances = await prisma.instance.findMany({
-      where: { workspaceId },
+      where: { workspaceId, userId: auth.userId },
       orderBy: { lastSeenAt: 'desc' },
     })
 
@@ -849,7 +871,7 @@ export function instanceRoutes() {
     }
 
     const instances = await prisma.instance.findMany({
-      where: { workspaceId },
+      where: { workspaceId, userId: auth.userId },
       orderBy: { lastSeenAt: 'desc' },
     })
 
@@ -904,6 +926,13 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
+    // Machines are scoped to the user who paired them. A workspace member
+    // may not view or drive another member's machine. Legacy rows with no
+    // recorded owner (userId null) fall back to the membership check above.
+    if (instance.userId && instance.userId !== auth.userId) {
+      return c.json({ error: { code: 'forbidden', message: 'Not your machine' } }, 403)
+    }
+
     const controllers = await getActiveControllers(instance.id)
     return c.json({
       ...instance,
@@ -938,6 +967,13 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
+    // Machines are scoped to the user who paired them. A workspace member
+    // may not view or drive another member's machine. Legacy rows with no
+    // recorded owner (userId null) fall back to the membership check above.
+    if (instance.userId && instance.userId !== auth.userId) {
+      return c.json({ error: { code: 'forbidden', message: 'Not your machine' } }, 403)
+    }
+
     const body = await c.req.json<{ name?: string }>()
     const updated = await prisma.instance.update({
       where: { id: instance.id },
@@ -964,6 +1000,13 @@ export function instanceRoutes() {
     })
     if (!member) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+    }
+
+    // Machines are scoped to the user who paired them. A workspace member
+    // may not view or drive another member's machine. Legacy rows with no
+    // recorded owner (userId null) fall back to the membership check above.
+    if (instance.userId && instance.userId !== auth.userId) {
+      return c.json({ error: { code: 'forbidden', message: 'Not your machine' } }, 403)
     }
 
     const conn = tunnels.get(instance.id)
@@ -1000,6 +1043,13 @@ export function instanceRoutes() {
     })
     if (!member) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+    }
+
+    // Machines are scoped to the user who paired them. A workspace member
+    // may not view or drive another member's machine. Legacy rows with no
+    // recorded owner (userId null) fall back to the membership check above.
+    if (instance.userId && instance.userId !== auth.userId) {
+      return c.json({ error: { code: 'forbidden', message: 'Not your machine' } }, 403)
     }
 
     if (!tunnels.has(instance.id) && !await isTunnelConnectedAnywhere(instance.id)) {
@@ -1111,6 +1161,13 @@ export function instanceRoutes() {
     })
     if (!member) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+    }
+
+    // Machines are scoped to the user who paired them. A workspace member
+    // may not view or drive another member's machine. Legacy rows with no
+    // recorded owner (userId null) fall back to the membership check above.
+    if (instance.userId && instance.userId !== auth.userId) {
+      return c.json({ error: { code: 'forbidden', message: 'Not your machine' } }, 403)
     }
 
     if (!tunnels.has(instance.id) && !await isTunnelConnectedAnywhere(instance.id)) {
@@ -1263,6 +1320,13 @@ export function instanceRoutes() {
     })
     if (!member) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+    }
+
+    // Machines are scoped to the user who paired them. A workspace member
+    // may not view or drive another member's machine. Legacy rows with no
+    // recorded owner (userId null) fall back to the membership check above.
+    if (instance.userId && instance.userId !== auth.userId) {
+      return c.json({ error: { code: 'forbidden', message: 'Not your machine' } }, 403)
     }
 
     const localTunnel = tunnels.has(instanceId)

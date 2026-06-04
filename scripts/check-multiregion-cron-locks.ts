@@ -291,10 +291,10 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason: 'Random key + hash; collision cryptographically impossible.',
   },
   {
-    key: 'Instance.(hostname,workspaceId)',
+    key: 'Instance.(hostname,userId,workspaceId)',
     category: 'single_tenant_upsert',
     reason:
-      'instances.ts:667 upserts on (workspaceId,hostname) from instance heartbeat; one writer per instance.',
+      'instances.ts upserts on (workspaceId,userId,hostname) from instance heartbeat / WS-auth; one writer per (user,instance), scoped to the registering API key.',
   },
   {
     key: 'PushSubscription.(instanceId,pushToken)',

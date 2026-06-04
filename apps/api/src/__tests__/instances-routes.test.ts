@@ -24,6 +24,7 @@ process.env.SHOGO_LOCAL_MODE = 'true'
 type Instance = {
   id: string
   workspaceId: string
+  userId: string | null
   hostname: string
   name: string
   os: string | null
@@ -46,11 +47,16 @@ const mockPrisma = {
       return inst ? { ...inst } : null
     },
     findMany: async (args: any) =>
-      [...instancesById.values()].filter((i) => i.workspaceId === args.where.workspaceId),
+      [...instancesById.values()].filter(
+        (i) =>
+          i.workspaceId === args.where.workspaceId &&
+          (args.where.userId === undefined || i.userId === args.where.userId),
+      ),
     upsert: async (args: any) => {
-      const key = `${args.where.workspaceId_hostname.workspaceId}::${args.where.workspaceId_hostname.hostname}`
+      const w = args.where.workspaceId_userId_hostname
+      const key = `${w.workspaceId}::${w.userId}::${w.hostname}`
       for (const inst of instancesById.values()) {
-        if (`${inst.workspaceId}::${inst.hostname}` === key) {
+        if (`${inst.workspaceId}::${inst.userId}::${inst.hostname}` === key) {
           Object.assign(inst, args.update, { updatedAt: new Date() })
           return { ...inst }
         }
@@ -124,6 +130,7 @@ function seedInstance(overrides: Partial<Instance> = {}): Instance {
   const inst: Instance = {
     id: 'i-1',
     workspaceId: 'ws-1',
+    userId: 'u-1',
     hostname: 'mac',
     name: 'mac',
     os: 'darwin',
@@ -246,6 +253,17 @@ describe('GET /instances', () => {
     const body = await res.json() as any
     expect(body.instances).toHaveLength(1)
     expect(body.instances[0].status).toBeDefined()
+  })
+
+  test('200 excludes machines registered to another user in the same workspace', async () => {
+    membersByUserWs.set(memberKey('u-1', 'ws-1'), { id: 'm-1', userId: 'u-1', workspaceId: 'ws-1' })
+    seedInstance({ id: 'i-mine', userId: 'u-1' })
+    seedInstance({ id: 'i-theirs', hostname: 'their-mac', userId: 'u-2' })
+    const res = await buildApp().fetch(new Request('http://x/api/instances?workspaceId=ws-1'))
+    expect(res.status).toBe(200)
+    const body = await res.json() as any
+    expect(body.instances).toHaveLength(1)
+    expect(body.instances[0].id).toBe('i-mine')
   })
 })
 
