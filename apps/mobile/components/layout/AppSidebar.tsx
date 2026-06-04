@@ -1023,7 +1023,6 @@ function AccountNavLinks({
   const items: Array<{ icon: React.ElementType; label: string; href: string }> = [
     // { icon: Star, label: 'Starred', href: '/(app)/starred' },
     // ...(!localMode ? [{ icon: Users, label: 'Shared with me', href: '/(app)/shared' }] : []),
-    { icon: Monitor, label: 'Remote Control', href: '/(app)/remote-control' },
     ...(!localMode ? [{ icon: Key, label: 'API Keys', href: '/(app)/api-keys' }] : []),
   ]
 
