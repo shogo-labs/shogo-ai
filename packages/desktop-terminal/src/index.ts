@@ -54,19 +54,12 @@ export type {
 export {
   CommandDecorations,
   DEFAULT_STYLES,
-  classify,
 } from './renderer/command-decorations'
 export type {
-  CommandDecorationsOptions,
-  CommandClickHandler,
-  CommandClickEvent,
-  DecorationHost,
-  DecorationHandle,
-  DecorationOptions,
-  DecorationKind,
   DecorationStyle,
-  OverviewRulerOptions,
+  DecorationHost,
 } from './renderer/command-decorations'
+export type { CommandKind as DecorationCommandKind } from './renderer/command-decorations'
 
 export {
   CommandNavigation,

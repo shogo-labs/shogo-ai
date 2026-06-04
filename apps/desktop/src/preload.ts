@@ -127,6 +127,10 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   // Open the native folder picker for external/IDE-style projects.
   // Returns `{ ok: true, paths: string[] }` on selection or
   // `{ ok: false, error?: string }` on cancel/error.
+  clipboardWriteText: (text: string): Promise<boolean> =>
+    ipcRenderer.invoke('clipboard:write-text', text),
+  clipboardReadText: (): Promise<string> =>
+    ipcRenderer.invoke('clipboard:read-text'),
   pickFolders: (opts?: { multi?: boolean; defaultPath?: string }): Promise<
     { ok: true; paths: string[] } | { ok: false; error?: string }
   > => ipcRenderer.invoke('pick-folders', opts ?? {}),

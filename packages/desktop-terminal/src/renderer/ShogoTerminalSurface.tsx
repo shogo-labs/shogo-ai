@@ -24,6 +24,24 @@ import { TerminalPersistence } from './terminal-persistence'
 import { AddToChatButton, dispatchAddToChat } from './add-to-chat-button'
 import { captureTerminalText, formatTerminalContextForChat } from './terminal-selection'
 import { extractCommandText } from './terminal-command-text'
+
+/**
+ * Reliable clipboard write that works in Electron and web.
+ * Uses Electron's native clipboard module via IPC when available,
+ * falls back to navigator.clipboard API.
+ */
+function copyToClipboard(text: string): void {
+  const bridge = (globalThis as any).shogoDesktop
+  if (bridge?.clipboardWriteText) {
+    // Electron: use native clipboard via IPC (always works, no permission issues)
+    void bridge.clipboardWriteText(text)
+    return
+  }
+  // Web fallback
+  try {
+    void navigator.clipboard?.writeText(text)
+  } catch (_e) { /* noop */ }
+}
 import { serializeTerminalCommands } from './context-aggregator'
 import { useShogoTheme, type ThemeSource, type XtermThemeColors } from './use-shogo-theme'
 import { SnapshotStore, captureScrollback, restoreScrollback } from './persistence/snapshot-store'
@@ -240,7 +258,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           cwd: snap.cwd,
           content,
         })
-      } catch { /* non-desktop / bridge unavailable */ }
+      } catch (_e) { /* non-desktop / bridge unavailable */ }
     }, [])
     const publishContextToMainRef = React.useRef(publishContextToMain)
     publishContextToMainRef.current = publishContextToMain
@@ -310,7 +328,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
 
     const [cmdK] = React.useState(() => new CmdKController({
       llm: llm ?? (() => {
-        try { return getDesktopBridge().llm ?? noopLlm } catch { return noopLlm }
+        try { return getDesktopBridge().llm ?? noopLlm } catch (_e) { return noopLlm }
       })(),
       contextProvider: () => ({
         cwd: tracker.snapshot().cwd,
@@ -341,7 +359,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           if (ev.kind === 'host:unresponsive') setHostUnresponsive(true)
           if (ev.kind === 'host:ready' || ev.kind === 'host:beat') setHostUnresponsive(false)
         })
-      } catch {
+      } catch (_e) {
         return undefined
       }
     }, [])
@@ -687,7 +705,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         } else {
           setHasClipboard(false)
         }
-      } catch {
+      } catch (_e) {
         setHasClipboard(false)
       }
       setMenuPos({ x: ev.clientX, y: ev.clientY })
@@ -745,8 +763,8 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         onCopy: () => {
           if (!selection) return
           try {
-            navigator.clipboard?.writeText(selection).catch(() => undefined)
-          } catch { /* noop */ }
+            copyToClipboard(selection)
+          } catch (_e) { /* noop */ }
         },
         onCopyAsHtml: () => {
           // xterm doesn't ship HTML selection out of the box — fall back
@@ -761,14 +779,15 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
               'text/plain': new Blob([selection], { type: 'text/plain' }),
             })
             navigator.clipboard?.write([item]).catch(() => undefined)
-          } catch {
-            navigator.clipboard?.writeText(selection).catch(() => undefined)
+          } catch (_e) {
+            copyToClipboard(selection)
           }
         },
-        onPaste: () => {
+        onPaste: async () => {
           try {
-            navigator.clipboard?.readText().then((t) => { if (t) client.send(t) }).catch(() => undefined)
-          } catch { /* noop */ }
+            const t = await navigator.clipboard?.readText()
+            if (t) client.send(t)
+          } catch (_e) { /* noop */ }
         },
         onSelectAll: () => term?.selectAll(),
         onFind: () => setSearchOpen(true),
@@ -807,8 +826,13 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         [data-shogo-terminal-surface] .xterm-rows {
           padding-left: 32px !important;
         }
+        [data-shogo-terminal-surface] .xterm-decoration-overlay-container,
+        [data-shogo-terminal-surface] .xterm-decoration-container,
         [data-shogo-terminal-surface] .xterm-decoration {
           box-sizing: border-box;
+          padding-left: 4px !important;
+        }
+        [data-shogo-terminal-surface] .xterm-decoration {
           width: 28px !important;
           margin-left: 0 !important;
           padding-right: 6px;
@@ -850,7 +874,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
                 onSelect: () => {
                   const cmdText = extractCommandText(cmdMenu.command, termRef.current)
                   if (!cmdText) return
-                  try { void navigator.clipboard?.writeText(cmdText) } catch { /* noop */ }
+                  copyToClipboard(cmdText)
                 },
               },
               {
@@ -866,7 +890,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
                   for (let line = startLine; line <= endLine; line += 1) {
                     rows.push(term.buffer.active.getLine(line - base)?.translateToString(true) ?? '')
                   }
-                  try { navigator.clipboard?.writeText(rows.join('\n').trimEnd()).catch(() => undefined) } catch { /* */ }
+                  copyToClipboard(rows.join('\n').trimEnd())
                 },
               },
 

@@ -298,7 +298,9 @@ describe('serializeContext', () => {
       tokenEstimate: 0, sources: [],
     }
     const text = serializeContext(ctx)
-    expect(text).toContain('(no command)')
+    // Empty commands are filtered out by the aggregator
+    expect(text).not.toContain('(no command)')
+    expect(text).not.toContain('Terminal')
   })
 
   it('serializes diagnostics with correct icons', () => {

@@ -702,6 +702,15 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('get-device-info', () => getDeviceInfo())
+  ipcMain.handle('clipboard:write-text', (_event, text: string) => {
+    const { clipboard } = require('electron') as typeof import('electron')
+    clipboard.writeText(text)
+    return true
+  })
+  ipcMain.handle('clipboard:read-text', () => {
+    const { clipboard } = require('electron') as typeof import('electron')
+    return clipboard.readText()
+  })
 
   // Cloud sign-in: drive the same poll-based device flow the CLI uses
   // (see runCloudSignIn() above). We open the system browser pointed at

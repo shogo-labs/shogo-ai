@@ -451,6 +451,56 @@ function createExecTool(ctx: ToolContext): AgentTool {
         return textResult({ error: `Blocked command: ${command}` })
       }
 
+      // Desktop auto-redirect: when the user asks the agent to run a
+      // dev server / long-lived process, route through terminalExec
+      // so it spawns a visible ∞ terminal tab (matching Cursor UX).
+      // Only matches EXPLICIT dev server commands — not build/test/lint.
+      if (ctx.terminalExec) {
+        const lc = command.toLowerCase().trim()
+        const DEV_SERVER_PATTERNS = [
+          /^npm\s+run\s+(dev|start|serve|preview)(?:\s|$)/,
+          /^npx\s+(vite|expo|next|nuxt|astro|remix|webpack-dev-server|turbopack|metro)(?:\s|$)/,
+          /^bun\s+(dev|start|serve|preview)(?:\s|$)/,
+          /^yarn\s+(dev|start|serve|preview)(?:\s|$)/,
+          /^pnpm\s+(dev|start|serve|preview)(?:\s|$)/,
+          /^\.?\/node_modules\/\.bin\/(vite|expo|next|nuxt|astro)(?:\s|$)/,
+          /^vite(?:\s|$)/,
+          /^expo\s+start(?:\s|$)/,
+          /^next\s+dev(?:\s|$)/,
+          /^nuxt\s+dev(?:\s|$)/,
+          /^astro\s+dev(?:\s|$)/,
+          /^remix\s+dev(?:\s|$)/,
+          /^webpack-dev-server(?:\s|$)/,
+          /^turbo(?:\s|$)/,
+          /^serve(?:\s|$)/,
+          /^http-server(?:\s|$)/,
+          /^live-server(?:\s|$)/,
+          /^python3?\s+-m\s+(http\.server|SimpleHTTPServer|flask|django)(?:\s|$)/,
+          /^docker\s+compose\s+up(?:\s|$)/,
+          /^docker\s+run(?:\s|$)/,
+          /^pm2\s+(start|serve)(?:\s|$)/,
+          /^nodemon(?:\s|$)/,
+          /^tailwindcss\s+-i(?:\s|$)/,
+          /^concurrently(?:\s|$)/,
+          /^foreman\s+start(?:\s|$)/,
+          /^mux\s+start(?:\s|$)/,
+          /^dnsmasq(?:\s|$)/,
+        ]
+        const isDevServer = DEV_SERVER_PATTERNS.some((p) => p.test(lc))
+        if (isDevServer) {
+          try {
+            const result = await ctx.terminalExec({
+              command,
+              timeoutMs: undefined,
+              mode: 'background',
+            })
+            return textResult(result)
+          } catch (err: any) {
+            // Fallback: run in sandbox if terminalExec fails
+          }
+        }
+      }
+
       let currentCwd = ctx.shellState?.getCwd() || ctx.workspaceDir
       // Defend against the persisted cwd having been deleted (e.g. agent did
       // `rm -rf game/` while inside it). Without this, the wrapping `cd` below
