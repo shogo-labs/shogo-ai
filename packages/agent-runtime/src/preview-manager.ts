@@ -709,6 +709,14 @@ export class PreviewManager {
   private customRoutesWatcher: FSWatcher | null = null
   private customRoutesTimer: ReturnType<typeof setTimeout> | null = null
   private apiPhase: ApiServerPhase = 'idle'
+  // Disambiguates "this project has no API sidecar" from "the sidecar
+  // hasn't come up yet" for `getStatus().apiReady`. `null` until
+  // `startApiServer()` decides; `true` once it commits to spawning
+  // `server.tsx`; `false` when it returns without a sidecar to run.
+  // Without this, `apiPhase === 'idle'` is ambiguous (no-server vs.
+  // not-started-yet), which would let the client load the UI during the
+  // window before the sidecar is spawned.
+  private hasApiServer: boolean | null = null
   private regenerating = false
   private pendingSchemaChange = false
   private lastGenerateError: string | null = null
@@ -2041,6 +2049,16 @@ export class PreviewManager {
     phase: PreviewPhase
     devServer: DevServerKind
     metroUrl: string | null
+    // Phase of the project's API sidecar (root `server.tsx`). Surfaced so
+    // clients can render an accurate "Starting API server…" label.
+    apiServerPhase: ApiServerPhase
+    // Single gate for "is it safe to load the app UI?". True when the
+    // project has no sidecar (nothing to wait for) or the sidecar passed
+    // its `/health` check. Distinct from `running`: a prebuilt `dist/`
+    // makes `running` true immediately, well before the sidecar binds its
+    // port, so the client must gate on this instead to avoid rendering the
+    // SPA while its `/api/*` calls still 503.
+    apiReady: boolean
     // Per-stage errors. `null` means that stage either has not run or
     // completed successfully. PreviewManager catches and logs install /
     // prisma failures rather than crashing — without surfacing them here,
@@ -2064,6 +2082,8 @@ export class PreviewManager {
       phase: this._phase,
       devServer: this.resolveDevServer(),
       metroUrl: running ? this.metroUrl : null,
+      apiServerPhase: this.apiPhase,
+      apiReady: this.hasApiServer === false || this.apiPhase === 'healthy',
       errors: {
         install: this.lastInstallError,
         generate: this.lastGenerateError,
@@ -2368,6 +2388,8 @@ export class PreviewManager {
       const schemaPath = join(cwd, 'prisma', 'schema.prisma')
       if (!existsSync(join(cwd, 'package.json')) || !existsSync(schemaPath)) {
         this.apiPhase = 'idle'
+        // No sidecar for this project — nothing for the UI to wait on.
+        this.hasApiServer = false
         return
       }
 
@@ -2384,6 +2406,10 @@ export class PreviewManager {
       // `shogo.config.json` isn't configured to emit it.
       if (!existsSync(serverFile)) {
         this.apiPhase = ok ? 'idle' : 'crashed'
+        // Generation produced no `server.tsx` (idle) or failed (crashed);
+        // either way there's no sidecar process to come up, so don't make
+        // the client wait on one.
+        this.hasApiServer = false
         return
       }
     }
@@ -2424,6 +2450,9 @@ export class PreviewManager {
     const buildLogPath = previewBuildLogPath(this.workspaceDir)
     console.log(`[${LOG_PREFIX}] Starting API server on port ${this.apiPort}...`)
     this.apiPhase = 'starting'
+    // Committed to spawning a sidecar — the UI must wait for it to pass its
+    // health check before loading (`getStatus().apiReady`).
+    this.hasApiServer = true
     // We're about to spawn a brand-new process; the previous one (if any)
     // is no longer authoritative for "is the port bound?". Re-flip on
     // successful health check below.
