@@ -15,6 +15,7 @@ import { requireSuperAdmin } from '../middleware/super-admin'
 import { authMiddleware, requireAuth } from '../middleware/auth'
 import * as analytics from '../services/analytics.service'
 import type { AnalyticsPeriod } from '../services/analytics.service'
+import { resolveModelLabel, resolveModelLabels } from '../services/model-registry.service'
 import { prisma } from '../lib/prisma'
 
 // ============================================================================
@@ -555,10 +556,16 @@ export function adminRoutes(): Hono {
         }),
       ])
 
+      // agent_configs.modelName is an opaque UUID for DB models post catalog-uuid
+      // migration; resolve display labels (id kept intact for the model picker).
+      const modelLabels = await resolveModelLabels(
+        rows.map((r) => r.modelName).filter((m): m is string => !!m),
+      )
       const enriched = rows.map((row) => {
         const b = breakerById.get(row.projectId)
         return {
           ...row,
+          modelLabel: row.modelName ? (modelLabels.get(row.modelName) ?? row.modelName) : null,
           breaker: b ? { count: b.count, backoffUntil: b.backoffUntil } : null,
         }
       })
@@ -692,7 +699,13 @@ export function adminRoutes(): Hono {
         },
       })
 
-      return c.json({ ok: true, data: updated })
+      return c.json({
+        ok: true,
+        data: {
+          ...updated,
+          modelLabel: updated.modelName ? await resolveModelLabel(updated.modelName) : null,
+        },
+      })
     } catch (error: any) {
       console.error('[Admin] Heartbeats patch error:', error)
       return c.json({ error: { code: 'heartbeats_failed', message: error.message } }, 500)

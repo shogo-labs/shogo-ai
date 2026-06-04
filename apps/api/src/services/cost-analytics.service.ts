@@ -27,6 +27,7 @@ import {
 } from '../lib/usage-cost'
 import { resolveModelId } from '@shogo/model-catalog'
 import { getDbModelPricing } from '../lib/db-model-pricing'
+import { resolveModelLabelSync } from './model-registry.service'
 
 // ============================================================================
 // Types
@@ -42,7 +43,10 @@ export function isCostPeriod(value: string): value is CostPeriod {
 
 interface AgentBreakdownEntry {
   agentType: string
+  /** Raw model id (UUID for DB models / slug for static catalog) — used for keyed lookups. */
   model: string
+  /** Human display label resolved from the model registry. */
+  modelLabel: string
   totalRuns: number
   /** Legacy "promise resolved" successes — kept for backwards compat / debug. */
   promiseSuccesses: number
@@ -71,7 +75,11 @@ interface AgentBreakdownEntry {
 interface CostRecommendation {
   agentType: string
   currentModel: string
+  /** Human display label for `currentModel`. */
+  currentModelLabel: string
   recommendedModel: string
+  /** Human display label for `recommendedModel`. */
+  recommendedModelLabel: string
   reason: string
   estimatedSavingsPercent: number
   estimatedMonthlySavings: number
@@ -293,6 +301,7 @@ export async function getAgentCostBreakdown(
     return {
       agentType: g.agentType,
       model: g.model,
+      modelLabel: resolveModelLabelSync(g.model),
       totalRuns,
       promiseSuccesses,
       qualitySuccesses,
@@ -390,7 +399,9 @@ export async function getCostRecommendations(
         recommendations.push({
           agentType: entry.agentType,
           currentModel: entry.model,
+          currentModelLabel: resolveModelLabelSync(entry.model),
           recommendedModel: candidate,
+          recommendedModelLabel: resolveModelLabelSync(candidate),
           reason,
           estimatedSavingsPercent: savingsPercent,
           estimatedMonthlySavings: monthlySavings,
@@ -410,8 +421,10 @@ export async function getCostRecommendations(
         recommendations.push({
           agentType: entry.agentType,
           currentModel: entry.model,
+          currentModelLabel: resolveModelLabelSync(entry.model),
           recommendedModel: candidate,
-          reason: `${entry.agentType} succeeds on only ${entry.qualitySuccessRate}% of runs (loop trips: ${entry.loopDetected}, max-turn hits: ${entry.hitMaxTurns}, escalations: ${entry.escalated}). Upgrading to ${candidate} should reduce wasted spend on retries.`,
+          recommendedModelLabel: resolveModelLabelSync(candidate),
+          reason: `${entry.agentType} succeeds on only ${entry.qualitySuccessRate}% of runs (loop trips: ${entry.loopDetected}, max-turn hits: ${entry.hitMaxTurns}, escalations: ${entry.escalated}). Upgrading to ${resolveModelLabelSync(candidate)} should reduce wasted spend on retries.`,
           estimatedSavingsPercent: -30,
           estimatedMonthlySavings: -Math.round(monthlyCost * 0.3 * 100) / 100,
           confidence: entry.totalRuns >= 30 ? 'medium' : 'low',
@@ -427,7 +440,9 @@ export async function getCostRecommendations(
       recommendations.push({
         agentType: entry.agentType,
         currentModel: entry.model,
+        currentModelLabel: resolveModelLabelSync(entry.model),
         recommendedModel: entry.model,
+        recommendedModelLabel: resolveModelLabelSync(entry.model),
         reason: `${entry.agentType} has very low prompt cache utilization (${Math.round(cacheRatio * 100)}%). Enabling prompt caching could reduce input token costs by up to 90%.`,
         estimatedSavingsPercent: 20,
         estimatedMonthlySavings: 0,
@@ -465,9 +480,9 @@ function buildDowngradeReason(
   if (entry.loopDetected > 0) parts.push(`${entry.loopDetected} loop trips`)
   if (entry.hitMaxTurns > 0) parts.push(`${entry.hitMaxTurns} max-turn hits`)
 
-  let reason = `${entry.agentType} on ${entry.model}: ${parts.join(' · ')}. Switching to ${candidate} should preserve quality at lower cost.`
+  let reason = `${entry.agentType} on ${resolveModelLabelSync(entry.model)}: ${parts.join(' · ')}. Switching to ${resolveModelLabelSync(candidate)} should preserve quality at lower cost.`
   if (evalAnchor) {
-    reason += ` Eval-anchored: ${candidate} passes ${Math.round(evalAnchor.passRate * 100)}% of ${evalAnchor.suite}.`
+    reason += ` Eval-anchored: ${resolveModelLabelSync(candidate)} passes ${Math.round(evalAnchor.passRate * 100)}% of ${evalAnchor.suite}.`
   }
   return reason
 }
@@ -882,10 +897,17 @@ export async function createShadowExperiment(
 
 export async function getExperiments(workspaceId: string) {
   try {
-    return await prisma.modelExperiment.findMany({
+    const rows = await prisma.modelExperiment.findMany({
       where: { workspaceId },
       orderBy: { createdAt: 'desc' },
     })
+    // modelA/modelB are opaque UUIDs for DB models post catalog-uuid migration;
+    // attach display labels (ids kept intact for actions/keys).
+    return rows.map((r) => ({
+      ...r,
+      modelALabel: resolveModelLabelSync(r.modelA),
+      modelBLabel: resolveModelLabelSync(r.modelB),
+    }))
   } catch (error) {
     if (isAnalyticsTableUnavailable(error)) return []
     throw error
@@ -1078,12 +1100,12 @@ export async function summarizeExperiment(experimentId: string, workspaceId: str
     if (qualityCloseEnough && b.avgCostPerRun < a.avgCostPerRun) {
       verdict = 'B'
       reasons.push(
-        `Variant B (${exp.modelB}) hits the same quality bar at ${(((a.avgCostPerRun - b.avgCostPerRun) / a.avgCostPerRun) * 100).toFixed(1)}% lower cost.`,
+        `Variant B (${resolveModelLabelSync(exp.modelB)}) hits the same quality bar at ${(((a.avgCostPerRun - b.avgCostPerRun) / a.avgCostPerRun) * 100).toFixed(1)}% lower cost.`,
       )
     } else if (qualityWorse) {
       verdict = 'A'
       reasons.push(
-        `Variant B (${exp.modelB}) regressed on quality signals — keep ${exp.modelA}.`,
+        `Variant B (${resolveModelLabelSync(exp.modelB)}) regressed on quality signals — keep ${resolveModelLabelSync(exp.modelA)}.`,
       )
     } else if (b.avgCostPerRun >= a.avgCostPerRun && qualityCloseEnough) {
       verdict = 'A'
@@ -1172,10 +1194,13 @@ export async function listSubagentOverrides(workspaceId: string) {
   if (!overrides) return []
 
   try {
-    return await overrides.findMany({
+    const rows = await overrides.findMany({
       where: { workspaceId },
       orderBy: [{ projectId: 'asc' }, { agentType: 'asc' }],
     })
+    // `model` is an opaque UUID for DB models post catalog-uuid migration; attach
+    // a display label while keeping `model` as the id (used by the picker / apply).
+    return rows.map((o) => ({ ...o, modelLabel: resolveModelLabelSync(o.model) }))
   } catch (error) {
     if (isAnalyticsTableUnavailable(error)) return []
     throw error
@@ -1394,6 +1419,8 @@ export interface OptimizerInActionReport {
     projectId: string | null
     fromModel: string | null  // best-guess builtin default — null when unknown
     toModel: string
+    /** Human display label for `toModel`. */
+    toModelLabel: string
     appliedAt: string
     updatedBy: string | null
     /** 30-day pre-override avg cost-per-run (null if no data). */
@@ -1411,6 +1438,8 @@ export interface OptimizerInActionReport {
   evalScores: Array<{
     agentType: string
     model: string
+    /** Human display label for `model`. */
+    modelLabel: string
     suite: string
     passRate: number
     totalCases: number
@@ -1422,7 +1451,11 @@ export interface OptimizerInActionReport {
     name: string
     agentType: string
     modelA: string
+    /** Human display label for `modelA`. */
+    modelALabel: string
     modelB: string
+    /** Human display label for `modelB`. */
+    modelBLabel: string
     status: string
     expectedEndAt: string | null
     runsA: number
@@ -1536,6 +1569,7 @@ export async function getOptimizerInActionReport(
       projectId: ov.projectId,
       fromModel: null,  // We don't store the previous default; UI fills in from builtin catalog.
       toModel: ov.model,
+      toModelLabel: resolveModelLabelSync(ov.model),
       appliedAt: ov.updatedAt.toISOString(),
       updatedBy: ov.updatedBy,
       avgCostBefore: avgBefore,
@@ -1566,6 +1600,7 @@ export async function getOptimizerInActionReport(
     evalScores.push({
       agentType: r.agentType,
       model: r.model,
+      modelLabel: resolveModelLabelSync(r.model),
       suite: r.suite,
       passRate: r.passRate,
       totalCases: r.totalCases,
@@ -1597,7 +1632,9 @@ export async function getOptimizerInActionReport(
       name: exp.name,
       agentType: exp.agentType,
       modelA: exp.modelA,
+      modelALabel: resolveModelLabelSync(exp.modelA),
       modelB: exp.modelB,
+      modelBLabel: resolveModelLabelSync(exp.modelB),
       status: exp.status,
       expectedEndAt: exp.expectedEndAt ? exp.expectedEndAt.toISOString() : null,
       runsA: exp.totalRunsA,
