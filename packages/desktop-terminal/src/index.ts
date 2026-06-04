@@ -50,17 +50,6 @@ export type {
   TrackerListener,
 } from './renderer/osc633-tracker'
 
-// Phase 4 — decorations, navigation, sticky scroll, bg-process warning
-export {
-  CommandDecorations,
-  DEFAULT_STYLES,
-} from './renderer/command-decorations'
-export type {
-  DecorationStyle,
-  DecorationHost,
-} from './renderer/command-decorations'
-export type { CommandKind as DecorationCommandKind } from './renderer/command-decorations'
-
 export {
   CommandNavigation,
   collectPromptAnchors,
