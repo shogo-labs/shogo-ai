@@ -33,6 +33,7 @@ import {
   isValidTabColor,
   labelsFor,
   makeSession,
+  makeAgentSession,
   patchSession as patchSessionInList,
   renameGroup as renameGroupInList,
   reorderGroups as reorderGroupsInList,
@@ -297,7 +298,17 @@ export function Terminal({
         const initial = estimateGridSize(panelRef.current);
         let data: CreateSessionResponse;
         let client: PtyClientLike;
-        if (isDesktopRuntime()) {
+        const existing = sessionsRef.current.find((x) => x.id === sessionId);
+        if (isDesktopRuntime() && existing?.ptySessionId) {
+          client = await createPtyClient({ sessionId: existing.ptySessionId });
+          data = {
+            id: existing.ptySessionId,
+            cwd: existing.cwd ?? process.env.HOME ?? "/",
+            cols: initial.cols,
+            rows: initial.rows,
+            createdAt: Date.now(),
+          };
+        } else if (isDesktopRuntime()) {
           const provisioned = await createPtyClientSession({
             spawn: {
               projectId,
@@ -436,6 +447,39 @@ export function Terminal({
       void provisionSession(s.id);
     }
   }, [projectId, visible, provisionSession, sessions]);
+
+  // Agent long-running commands spawn a background ∞ Shogo tab via the
+  // desktop terminal-exec server; attach the UI when main notifies us.
+  useEffect(() => {
+    if (Platform.OS !== "web" || !isDesktopRuntime()) return;
+    const bridge = (globalThis as { shogoDesktopTerminal?: {
+      onAgentTerminalSpawned?: (cb: (p: {
+        sessionId: string
+        terminalLabel: string
+        cwd: string | null
+      }) => void) => () => void
+    } }).shogoDesktopTerminal;
+    if (!bridge?.onAgentTerminalSpawned) return;
+    return bridge.onAgentTerminalSpawned((payload) => {
+      if (sessionsRef.current.some((s) => s.ptySessionId === payload.sessionId)) return;
+      const s = makeAgentSession({
+        ptySessionId: payload.sessionId,
+        label: payload.terminalLabel,
+        cwd: payload.cwd,
+      });
+      setSessions((prev) => addSessionToList(prev, s));
+      setGroupLayouts((prev) => {
+        const next = new Map(prev);
+        next.set(s.groupId, splitLeafNode(s.id));
+        return next;
+      });
+      setActiveId(s.id);
+      if (projectId) {
+        provisionedRef.current.add(s.id);
+        void provisionSession(s.id);
+      }
+    });
+  }, [projectId, provisionSession]);
 
   // ─── Preset commands (kebab menu) ───────────────────────────────────
   const loadCommands = useCallback(async () => {
@@ -1290,6 +1334,7 @@ function SessionTabs({
                   />
                 ) : (
                   <span className="truncate" title="Double-click or F2 to rename">
+                    {rep.isAgentTerminal ? "∞ " : ""}
                     {label}
                     {paneCount > 1 ? ` (${paneCount})` : ""}
                   </span>
@@ -1938,6 +1983,7 @@ function SplitLeafView(
           hidden={!props.isActiveGroup}
           autoFocus={isActive && props.isActiveGroup && props.visible}
           projectId={props.projectId}
+          ptySessionId={s.ptySessionId}
           onCwdChange={(cwd) => {
             props.onPatch(s.id, (cur) => ({ ...cur, cwd }));
           }}

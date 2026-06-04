@@ -3942,6 +3942,21 @@ export const ChatPanel = observer(function ChatPanel({
     return unsub
   }, [currentSessionId, handleSendMessage])
 
+  // Terminal "Add to Chat" (⌘L) — inserts captured selection into the chat input.
+  useEffect(() => {
+    if (Platform.OS !== "web" || !isActive) return
+    const onAddToChat = (e: Event) => {
+      const text = (e as CustomEvent<{ text?: string }>).detail?.text?.trim()
+      if (!text) return
+      setRestoreDraftRequest({
+        nonce: Date.now(),
+        content: text,
+      })
+    }
+    window.addEventListener("shogo:add-to-chat", onAddToChat as EventListener)
+    return () => window.removeEventListener("shogo:add-to-chat", onAddToChat as EventListener)
+  }, [isActive])
+
   // Collapse toggle — persist to AsyncStorage only when using internal state
   const handleToggleCollapse = useCallback(() => {
     const newCollapsed = !isCollapsed

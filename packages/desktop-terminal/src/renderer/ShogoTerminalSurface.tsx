@@ -21,6 +21,10 @@ import { ApprovalStore, workspaceHashOf, type ApprovalDecision } from './approva
 import { AgentTerminalBridge, type CommandResult, type BackgroundTask } from './agent-terminal-bridge'
 import { terminalContextStore } from './terminal-context-store'
 import { TerminalPersistence } from './terminal-persistence'
+import { AddToChatButton, dispatchAddToChat } from './add-to-chat-button'
+import { captureTerminalText, formatTerminalContextForChat } from './terminal-selection'
+import { extractCommandText } from './terminal-command-text'
+import { serializeTerminalCommands } from './context-aggregator'
 import { useShogoTheme, type ThemeSource, type XtermThemeColors } from './use-shogo-theme'
 import { SnapshotStore, captureScrollback, restoreScrollback } from './persistence/snapshot-store'
 // xterm.js depends on this stylesheet to size the row container and
@@ -97,6 +101,8 @@ export interface ShogoTerminalSurfaceProps {
    * at the host layer.
    */
   sessionId?: string
+  /** Live PTY session id — used for persistence + main-process context bridge. */
+  ptySessionId?: string | null
   snapshotStore?: SnapshotStore
   /**
    * Phase 10 — theme sync. When provided, the surface drives its xterm
@@ -164,6 +170,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
     contextColors = DEFAULT_CONTEXT_COLORS,
     contextIcons,
     sessionId,
+    ptySessionId,
     snapshotStore,
     themeSource,
     themeOverride,
@@ -204,6 +211,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
     const [hasClipboard, setHasClipboard] = React.useState(false)
     /** Phase 6: gutter-glyph click → 4-item action popover. */
     const [cmdMenu, setCmdMenu] = React.useState<{ x: number; y: number; command: Command } | null>(null)
+    const [hasTerminalSelection, setHasTerminalSelection] = React.useState(false)
     const matcherRef = React.useRef(new MatcherEngine())
     const commandOutputRef = React.useRef(new Map<number, string[]>())
     const activeCommandRef = React.useRef<number | null>(null)
@@ -216,6 +224,39 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
     // unfocused xterm that swallows every keystroke.
     const onCwdChangeRef = React.useRef<typeof onCwdChange>(onCwdChange)
     onCwdChangeRef.current = onCwdChange
+    const ptySessionIdRef = React.useRef(ptySessionId)
+    ptySessionIdRef.current = ptySessionId
+
+    const publishContextToMain = React.useCallback(() => {
+      const sid = ptySessionIdRef.current
+      if (!sid) return
+      try {
+        const snap = trackerRef.current.snapshot()
+        const recent = snap.commands.filter((c) => (c.commandLine ?? '').trim().length > 0).slice(-12)
+        const content = serializeTerminalCommands(recent)
+        if (!content) return
+        void getDesktopBridge().publishTerminalContext?.({
+          sessionId: sid,
+          cwd: snap.cwd,
+          content,
+        })
+      } catch { /* non-desktop / bridge unavailable */ }
+    }, [])
+    const publishContextToMainRef = React.useRef(publishContextToMain)
+    publishContextToMainRef.current = publishContextToMain
+
+    const addSelectionToChat = React.useCallback(() => {
+      const term = termRef.current
+      if (!term) return
+      const captured = captureTerminalText(term, {
+        cwd: trackerRef.current.snapshot().cwd ?? null,
+        maxLines: 80,
+      })
+      if (!captured.text.trim()) return
+      dispatchAddToChat(formatTerminalContextForChat(captured))
+    }, [])
+    const addSelectionToChatRef = React.useRef(addSelectionToChat)
+    addSelectionToChatRef.current = addSelectionToChat
 
     /**
      * Phase 8 — ApprovalStore singleton.
@@ -341,6 +382,21 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         termRef.current = term
         fitRef.current = fit
 
+        term.onSelectionChange(() => {
+          setHasTerminalSelection((term.getSelection() ?? '').trim().length > 0)
+        })
+
+        term.attachCustomKeyEventHandler((ev) => {
+          const isMac = navigator.platform.toLowerCase().includes('mac')
+          const mod = isMac ? ev.metaKey : ev.ctrlKey
+          if (mod && ev.key.toLowerCase() === 'l' && !ev.shiftKey && !ev.altKey) {
+            ev.preventDefault()
+            addSelectionToChatRef.current()
+            return false
+          }
+          return true
+        })
+
         // Phase 10 — restore scrollback from a prior snapshot (if both
         // `sessionId` and `snapshotStore` are configured). Must happen
         // before any client.onData listener can write live bytes, so
@@ -458,12 +514,14 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
             // Persistence: every finished command is a good time to
             // checkpoint scrollback + cwd to the snapshot store.
             scheduleSnapshotSave()
+            publishContextToMainRef.current()
             // Persist to disk for agent terminal_read tool
             persistenceRef.current?.persistSnapshot(tracker.snapshot().commands, tracker.snapshot().cwd ?? null).catch(() => {})
           }
         })
+        publishContextToMainRef.current()
         // Terminal persistence — saves command history to disk for agent read-back
-        const persistenceId = `terminal-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+        const persistenceId = ptySessionIdRef.current ?? `terminal-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
         persistenceRef.current = new TerminalPersistence({
           terminalId: persistenceId,
           dir: '.shogo/terminals',
@@ -574,6 +632,9 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
       }
     }, [theme])
 
+    // Search / ⌘K shortcuts on the host wrapper; ⌘L is handled via
+    // xterm.attachCustomKeyEventHandler so it fires while the xterm
+    // textarea has focus (the common case).
     React.useEffect(() => {
       const onKey = (ev: KeyboardEvent) => {
         const isMac = navigator.platform.toLowerCase().includes('mac')
@@ -584,32 +645,6 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         if ((isMac ? ev.metaKey : ev.ctrlKey) && ev.key.toLowerCase() === 'k') {
           ev.preventDefault()
           cmdK.open()
-        }
-        // F3 / Shift+F3 — VS Code parity. Only meaningful when search is
-        // already open AND a query has been typed; otherwise we just open
-        // the popover so the user can start typing.
-        // Cmd+L — Add to Chat: capture selected or recent terminal text
-        if ((isMac ? ev.metaKey : ev.ctrlKey) && ev.key.toLowerCase() === 'l') {
-          ev.preventDefault()
-          const term = termRef.current
-          if (!term) return
-          let text = term.getSelection() || ''
-          if (!text.trim()) {
-            // Fall back to last 20 lines of scrollback
-            const buf = term.buffer.active
-            const lines: string[] = []
-            const start = Math.max(0, buf.length - 20)
-            for (let i = start; i < buf.length; i++) {
-              const line = buf.getLine(i)
-              if (line) lines.push(line.translateToString(true))
-            }
-            text = lines.join('\n').trim()
-          }
-          if (text) {
-            try {
-              window.dispatchEvent(new CustomEvent('shogo:add-to-chat', { detail: { text } }))
-            } catch { /* noop */ }
-          }
         }
         if (ev.key === 'F3') {
           ev.preventDefault()
@@ -747,6 +782,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
 
     return React.createElement('div', {
       'data-shogo-terminal-surface': 'true',
+      'data-shogo-terminal-container': 'true',
       onContextMenu: openContextMenu,
       // mousedown fires before the browser commits focus, so calling
       // term.focus() here wins the race against any default focus rule.
@@ -769,10 +805,14 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           scrollbar-width: thin;
         }
         [data-shogo-terminal-surface] .xterm-rows {
-          padding-left: 24px !important;
+          padding-left: 32px !important;
         }
         [data-shogo-terminal-surface] .xterm-decoration {
-          margin-left: 0px !important;
+          box-sizing: border-box;
+          width: 28px !important;
+          margin-left: 0 !important;
+          padding-right: 6px;
+          justify-content: flex-end !important;
         }
         [data-shogo-terminal-surface] .xterm-viewport::-webkit-scrollbar {
           width: 10px;
@@ -808,21 +848,9 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
                 label: 'Copy command',
                 disabled: false,
                 onSelect: () => {
-                  let cmdText = cmdMenu.command.commandLine
-                  if (!cmdText) {
-                    const term = termRef.current
-                    const pLine = cmdMenu.command.promptMarker?.line
-                    const sLine = cmdMenu.command.startMarker?.line
-                    if (term && pLine != null && sLine != null && sLine > pLine) {
-                      const base = term.buffer.active.baseY
-                      const raw = term.buffer.active.getLine(sLine - base)?.translateToString(true) ?? ''
-                      const lastDollar = Math.max(raw.lastIndexOf('$ '), raw.lastIndexOf('% '))
-                      cmdText = lastDollar >= 0 ? raw.slice(lastDollar + 2).trim() : raw.trim()
-                    }
-                  }
-                  if (cmdText) {
-                    try { navigator.clipboard?.writeText(cmdText).catch(() => undefined) } catch { /* noop */ }
-                  }
+                  const cmdText = extractCommandText(cmdMenu.command, termRef.current)
+                  if (!cmdText) return
+                  try { void navigator.clipboard?.writeText(cmdText) } catch { /* noop */ }
                 },
               },
               {
@@ -896,6 +924,10 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         className: 'shogo-recent-command-picker',
       }),
       React.createElement(CmdKPopover, { controller: cmdK }),
+      React.createElement(AddToChatButton, {
+        hasContent: hasTerminalSelection,
+        onAddToChat: addSelectionToChat,
+      }),
       hostUnresponsive
         ? React.createElement('button', {
             type: 'button',

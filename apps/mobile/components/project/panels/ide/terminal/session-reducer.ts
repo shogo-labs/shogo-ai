@@ -65,6 +65,8 @@ export interface Session {
    * is normalised to `null` on write.
    */
   tabColor: string | null
+  /** Agent-spawned (∞ Shogo) background terminal — read-only tab. */
+  isAgentTerminal?: boolean
 }
 
 let _idSeq = 0
@@ -95,6 +97,23 @@ export function makeSession(groupId?: string): Session {
     exit: null,
     customLabel: null,
     tabColor: null,
+    isAgentTerminal: false,
+  }
+}
+
+/** Attach UI to an agent-spawned PTY session (already running in the host). */
+export function makeAgentSession(opts: {
+  ptySessionId: string
+  label: string
+  cwd?: string | null
+}): Session {
+  const s = makeSession()
+  return {
+    ...s,
+    ptySessionId: opts.ptySessionId,
+    customLabel: opts.label,
+    cwd: opts.cwd ?? null,
+    isAgentTerminal: true,
   }
 }
 
