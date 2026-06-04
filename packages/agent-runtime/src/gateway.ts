@@ -349,6 +349,14 @@ export class AgentGateway {
   private skillServerManager: SkillServerManager
   /** Multi-language LSP manager for read_lints diagnostics */
   private lspManager: WorkspaceLSPManager | null = null
+  /**
+   * Getter for the runtime's "workspace deps ready" promise. Set via
+   * `setWorkspaceDepsReady` so the LSP start can wait for the background cold
+   * install instead of racing it (which surfaces spurious "cannot find module"
+   * diagnostics). Optional — when unset (e.g. tests) the LSP starts without
+   * waiting.
+   */
+  private workspaceDepsReady?: () => Promise<void>
   /** Tracks files the agent has read across turns for cache-aware compaction */
   private fileStateCache = new FileStateCache()
   /**
@@ -447,6 +455,16 @@ export class AgentGateway {
   /** Set a log callback for forwarding gateway events to the UI Logs tab */
   setLogCallback(fn: (line: string) => void): void {
     this._onLog = fn
+  }
+
+  /**
+   * Provide a getter for the runtime's "workspace deps ready" promise so the
+   * LSP start can gate on the background install instead of blocking the whole
+   * gateway start. See the `startLSP` deferral in `start()` for how this is
+   * consumed.
+   */
+  setWorkspaceDepsReady(fn: () => Promise<void>): void {
+    this.workspaceDepsReady = fn
   }
 
   setUserTimezone(tz: string): void {
@@ -774,9 +792,22 @@ export class AgentGateway {
     // invisible in practice. Tunable via `SHOGO_LSP_START_DELAY_MS`.
     const lspDelayMs = parseInt(process.env.SHOGO_LSP_START_DELAY_MS ?? '2000', 10)
     setTimeout(() => {
-      this.startLSP().catch(err => {
-        console.warn(`${this.logPrefix} LSP startup failed (non-fatal):`, err.message)
-      })
+      // Gate the LSP start on workspace deps being ready. Cold boot now
+      // installs node_modules in the background (so the first chat message
+      // streams immediately); starting tsserver before deps land would surface
+      // a burst of spurious "cannot find module" diagnostics. We still start
+      // within a bounded window so a stalled or missing install can't disable
+      // the LSP forever — tsserver re-resolves once node_modules appears via
+      // the chokidar -> didChangeWatchedFiles bridge. Tunable via
+      // SHOGO_LSP_DEPS_WAIT_MS.
+      const depsWaitMs = parseInt(process.env.SHOGO_LSP_DEPS_WAIT_MS ?? '60000', 10)
+      const depsReady = this.workspaceDepsReady?.() ?? Promise.resolve()
+      const cap = new Promise<void>(resolve => setTimeout(resolve, Math.max(0, depsWaitMs)))
+      Promise.race([depsReady, cap])
+        .then(() => this.startLSP())
+        .catch(err => {
+          console.warn(`${this.logPrefix} LSP startup failed (non-fatal):`, err.message)
+        })
     }, Math.max(0, lspDelayMs))
 
     // Start canvas build manager for Vite builds (fire-and-forget)
