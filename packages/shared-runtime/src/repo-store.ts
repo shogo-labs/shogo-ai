@@ -209,10 +209,18 @@ export async function repoExistsInStore(cfg: RepoStoreConfig): Promise<boolean> 
 /**
  * Persist `<workspaceDir>/.git` to object storage. Called after each
  * local commit and at shutdown. No-op when `.git` is absent.
+ *
+ * In Git LFS mode the large object bytes live in their own object-storage
+ * namespace (`<projectId>/lfs/objects/...`, uploaded via `git lfs push`), so
+ * pass `excludeLfsObjects: true` to keep the local `.git/lfs/objects` cache
+ * OUT of the tarball and stop it bloating every hydrate. Callers should only
+ * set this once the LFS push has succeeded — otherwise the bytes would exist
+ * nowhere durable, so the safe fallback is to leave them in the tarball.
  */
 export async function persistRepoToStore(
   workspaceDir: string,
   cfg: RepoStoreConfig,
+  opts: { excludeLfsObjects?: boolean } = {},
 ): Promise<{ ok: boolean; changed: boolean; reason?: string }> {
   const logger = cfg.logger ?? console
   if (!existsSync(join(workspaceDir, '.git'))) {
@@ -221,7 +229,12 @@ export async function persistRepoToStore(
   const client = makeClient(cfg)
   const tmpFile = join(tmpdir(), `repo-${cfg.projectId}-${randomUUID()}.tar.gz`)
   try {
-    await run('tar', ['-czf', tmpFile, '-C', workspaceDir, '.git'])
+    // `--exclude` must precede the `.git` operand. Paths are matched as they
+    // appear in the archive (`.git/lfs/objects/...`).
+    const tarArgs = ['-czf', tmpFile, '-C', workspaceDir]
+    if (opts.excludeLfsObjects) tarArgs.push('--exclude=.git/lfs/objects')
+    tarArgs.push('.git')
+    await run('tar', tarArgs)
     await client.send(
       new PutObjectCommand({
         Bucket: cfg.bucket,
