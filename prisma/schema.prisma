@@ -655,6 +655,16 @@ enum NotificationType {
   member_joined
   member_left
   workspace_updated
+  // Billing / usage notifications. `payment_succeeded` and `payment_failed`
+  // mirror the matching Stripe invoice webhooks; `overage_charged` fires
+  // when a mid-cycle overage block is invoiced; `usage_threshold` warns as
+  // included usage / the spend cap is approached; `spend_limit_reached`
+  // fires when the hard cap halts further usage.
+  payment_succeeded
+  payment_failed
+  overage_charged
+  usage_threshold
+  spend_limit_reached
 }
 
 // =============================================================================
@@ -712,6 +722,13 @@ model UsageWallet {
   // value, a new $100 invoice is created mid-cycle and this field bumps.
   // Resets to 0 each monthly allocation reset.
   overageBilledUsd             Float    @default(0)
+  // Per-period dedupe ledger for proactive usage/overage alerts so a given
+  // threshold notification (e.g. "overage started", "80% of spend cap")
+  // fires at most once per allocation period. Shape:
+  // `{ overage_started?: true, approaching_cap?: true, cap_reached?: true,
+  //    blocksNotified?: number }`. Reset to null on each monthly allocation
+  // reset alongside `overageBilledUsd`.
+  alertsSentThisPeriod         Json?
   stripeMeteredItemId          String?
   anniversaryDay               Int
   lastDailyReset               DateTime
