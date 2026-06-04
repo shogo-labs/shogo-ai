@@ -783,6 +783,14 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
                     },
                   })
                   setDebugPanel(ctx)
+                  // Also push the context to the IDE's chat panel so
+                  // the user can continue debugging in a conversational
+                  // flow. Best-effort: if the bridge is unavailable
+                  // (e.g. web/mobile) the local side panel still works.
+                  try {
+                    const md = serialiseDebugContext(ctx)
+                    void getDesktopBridge().llm?.openChatWithContext?.(md)
+                  } catch { /* bridge unavailable */ }
                 },
               },
             ]],

@@ -3902,6 +3902,23 @@ export const ChatPanel = observer(function ChatPanel({
     return () => window.removeEventListener(FIX_IN_AGENT_EVENT, onFix as EventListener)
   }, [isActive, currentSessionId, handleSendMessage])
 
+  // ─── Terminal context → Chat ─────────────────────────────────────────
+  // Desktop-only: when the user right-clicks a failing command in the
+  // terminal and picks "Debug with AI", the terminal bridge pushes a
+  // pre-rendered markdown report via IPC. We listen for it here and
+  // inject it as the next user message so the AI can help debug.
+  useEffect(() => {
+    if (Platform.OS !== "web") return
+    const desktop = (globalThis as any).shogoDesktop
+    if (!desktop?.onChatWithContext) return
+
+    const unsub = desktop.onChatWithContext((data: { markdown: string }) => {
+      if (!data?.markdown || !currentSessionId) return
+      handleSendMessage(data.markdown)
+    })
+    return unsub
+  }, [currentSessionId, handleSendMessage])
+
   // Collapse toggle — persist to AsyncStorage only when using internal state
   const handleToggleCollapse = useCallback(() => {
     const newCollapsed = !isCollapsed

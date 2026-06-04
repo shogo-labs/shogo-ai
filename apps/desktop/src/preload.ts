@@ -540,6 +540,19 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     ipcRenderer.invoke('set-bug-report-config', config),
   getSystemInfo: (): Promise<Record<string, unknown>> =>
     ipcRenderer.invoke('get-system-info'),
+
+  // Terminal → Chat: receive terminal debug context from the desktop terminal
+  // bridge (e.g. "Debug with AI" right-click action). The payload carries a
+  // pre-rendered markdown report that the chat panel can inject as the
+  // initial user message.
+  onChatWithContext: (callback: (data: { markdown: string }) => void): (() => void) => {
+    const listener = (_e: unknown, data: { markdown: string }) => callback(data)
+    ipcRenderer.on('shogo:chat:open-with-context', listener)
+    return () => { ipcRenderer.removeListener('shogo:chat:open-with-context', listener) }
+  },
+  removeChatWithContextListener: () => {
+    ipcRenderer.removeAllListeners('shogo:chat:open-with-context')
+  },
 })
 
 // ─── Desktop terminal bridge ─────────────────────────────────────────────────
