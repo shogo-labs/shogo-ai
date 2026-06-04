@@ -216,6 +216,202 @@ describe('runAgentLoop error recovery', () => {
 })
 
 // ===========================================================================
+// agent-loop: inference reconnect/retry (Agent.continue)
+// ===========================================================================
+
+type ScriptStep = AssistantMessage | { throw: string }
+
+/**
+ * StreamFn driven by a script of steps. Each call consumes the next step
+ * (clamped to the last so a single error step is "persistent"): an
+ * `AssistantMessage` streams normally; a `{ throw }` step throws, which
+ * pi-agent-core catches and surfaces as a trailing assistant `errorMessage`.
+ */
+function createScriptedStreamFn(
+  steps: ScriptStep[],
+  onCall?: (index: number, messages: Message[]) => void,
+): { fn: StreamFn; getCalls: () => number } {
+  let calls = 0
+  const fn: StreamFn = (_model, context, _options) => {
+    const i = calls++
+    onCall?.(i, context.messages)
+    const step = steps[Math.min(i, steps.length - 1)]
+    if (step && (step as any).throw) {
+      throw new Error((step as any).throw)
+    }
+    const msg = step as AssistantMessage
+    const stream = createAssistantMessageEventStream()
+    queueMicrotask(() => {
+      stream.push({ type: 'start', partial: msg })
+      const reason = msg.content.some((c) => c.type === 'toolCall') ? 'toolUse' : 'stop'
+      stream.push({ type: 'done', reason, message: msg })
+      stream.end(msg)
+    })
+    return stream as any
+  }
+  return { fn, getCalls: () => calls }
+}
+
+const NO_BACKOFF = { computeDelayMs: () => 0, sleep: async () => {} }
+
+describe('runAgentLoop inference retry', () => {
+  test('retryable mid-stream drop completes after retry', async () => {
+    const { fn, getCalls } = createScriptedStreamFn([
+      { throw: 'socket hang up' },
+      buildTextResponse('Recovered answer'),
+    ])
+
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Hello',
+      tools: [],
+      streamFn: fn,
+      inferenceRetry: { maxAttempts: 2, ...NO_BACKOFF },
+    })
+
+    expect(result.error).toBeUndefined()
+    expect(result.text).toBe('Recovered answer')
+    expect(getCalls()).toBe(2) // initial failure + one re-issue
+  })
+
+  test('no tool re-execution on retry; earlier tool result preserved', async () => {
+    const tracker = new MockToolTracker()
+    const tool = tracker.createTool('read_file', 'Read a file', { content: 'file data' })
+
+    // step0: tool use (executes the tool once)
+    // step1: follow-up LLM call fails (retryable 5xx)
+    // step2: re-issued follow-up succeeds with final text
+    const { fn, getCalls } = createScriptedStreamFn([
+      buildToolUseResponse([{ name: 'read_file', arguments: { path: 'a.txt' }, id: 'toolu_1' }]),
+      { throw: '502 Bad Gateway' },
+      buildTextResponse('Here is the file summary'),
+    ])
+
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Read a.txt',
+      tools: [tool],
+      streamFn: fn,
+      inferenceRetry: { maxAttempts: 2, ...NO_BACKOFF },
+    })
+
+    expect(result.error).toBeUndefined()
+    expect(result.text).toBe('Here is the file summary')
+    expect(result.toolCalls).toHaveLength(1)
+    expect(result.toolCalls[0].name).toBe('read_file')
+    // Critical idempotency guarantee: the completed tool executed exactly once
+    // across the failed attempt + successful retry.
+    expect(tracker.getCallsFor('read_file')).toHaveLength(1)
+    expect(getCalls()).toBe(3) // tool call + failed follow-up + retried follow-up
+  })
+
+  test('non-retryable error does not retry', async () => {
+    const { fn, getCalls } = createScriptedStreamFn([{ throw: '401 Unauthorized: invalid api key' }])
+
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Hello',
+      tools: [],
+      streamFn: fn,
+      inferenceRetry: { maxAttempts: 3, ...NO_BACKOFF },
+    })
+
+    expect(result.error).toBeDefined()
+    expect(getCalls()).toBe(1) // no re-issue for a non-retryable failure
+  })
+
+  test('abort never retries', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const { fn, getCalls } = createScriptedStreamFn([{ throw: 'socket hang up' }])
+
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Hello',
+      tools: [],
+      streamFn: fn,
+      signal: controller.signal,
+      inferenceRetry: { maxAttempts: 3, ...NO_BACKOFF },
+    })
+
+    // Aborted before the prompt ran: the stream fn is never invoked and the
+    // retry loop is skipped (guarded by !abortTriggered).
+    expect(getCalls()).toBe(0)
+    expect(result.toolCalls).toHaveLength(0)
+  })
+
+  test('persistent retryable failure stops at the cap', async () => {
+    const { fn, getCalls } = createScriptedStreamFn([{ throw: 'ECONNRESET' }])
+
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Hello',
+      tools: [],
+      streamFn: fn,
+      inferenceRetry: { maxAttempts: 2, ...NO_BACKOFF },
+    })
+
+    // initial attempt + exactly maxAttempts re-issues, then give up
+    expect(getCalls()).toBe(3)
+    expect(result.error).toBeDefined()
+  })
+
+  test('backoff is invoked between attempts with increasing delay', async () => {
+    const sleeps: number[] = []
+    const { fn, getCalls } = createScriptedStreamFn([{ throw: 'fetch failed' }])
+
+    await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Hello',
+      tools: [],
+      streamFn: fn,
+      inferenceRetry: {
+        maxAttempts: 3,
+        computeDelayMs: (attempt) => attempt * 100,
+        sleep: async (ms) => {
+          sleeps.push(ms)
+        },
+      },
+    })
+
+    expect(sleeps).toEqual([100, 200, 300])
+    expect(getCalls()).toBe(4) // initial + 3 re-issues
+  })
+
+  test('retry can be disabled via inferenceRetry: false', async () => {
+    const { fn, getCalls } = createScriptedStreamFn([
+      { throw: 'socket hang up' },
+      buildTextResponse('would-be recovery'),
+    ])
+
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Hello',
+      tools: [],
+      streamFn: fn,
+      inferenceRetry: false,
+    })
+
+    expect(getCalls()).toBe(1) // no retry attempted
+    expect(result.error).toBeDefined()
+  })
+})
+
+// ===========================================================================
 // gateway: error recovery + session persistence
 // ===========================================================================
 

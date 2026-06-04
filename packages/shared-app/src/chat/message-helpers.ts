@@ -70,25 +70,38 @@ export function isTunnelDisconnectError(message: string): boolean {
     CONNECTION_ERROR_PATTERNS.some((p) => p.test(raw))
 }
 
+/**
+ * Internal retryability marker the AI proxy embeds in stream-error messages
+ * (see `apps/api/src/routes/ai-proxy.ts` / `packages/agent/src/retry-classifier.ts`).
+ * It is meant for the server-side retry classifier, never for users, so we
+ * strip it before rendering any error text.
+ */
+const STREAM_ERROR_MARKER_PATTERN = /\s*\[shogo:retryable=[^\]]*\]/gi
+
+export function stripInternalErrorMarkers(message: string): string {
+  return message.replace(STREAM_ERROR_MARKER_PATTERN, '').trim()
+}
+
 export function formatErrorMessage(rawMessage: string): string {
+  const cleaned = stripInternalErrorMarkers(rawMessage)
   try {
-    const parsed = JSON.parse(rawMessage)
+    const parsed = JSON.parse(cleaned)
     if (parsed?.error?.code && ERROR_CODE_MESSAGES[parsed.error.code]) {
       return ERROR_CODE_MESSAGES[parsed.error.code]
     }
     if (parsed?.error?.message) {
-      return parsed.error.message
+      return stripInternalErrorMarkers(parsed.error.message)
     }
     if (parsed?.message) {
-      return parsed.message
+      return stripInternalErrorMarkers(parsed.message)
     }
   } catch {
     // Not JSON
   }
-  if (CONNECTION_ERROR_PATTERNS.some((p) => p.test(rawMessage))) {
+  if (CONNECTION_ERROR_PATTERNS.some((p) => p.test(cleaned))) {
     return 'Connection interrupted. Please tap Retry to continue.'
   }
-  return rawMessage
+  return cleaned
 }
 
 /**
