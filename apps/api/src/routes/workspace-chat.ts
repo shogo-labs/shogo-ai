@@ -43,7 +43,11 @@ import {
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { setProjectUser } from '../lib/project-user-context'
 import { openSession, closeSession } from '../lib/proxy-billing-session'
-import { enrichWorkspaceReferences } from '../lib/chat-references'
+import { enrichWorkspaceReferences, enrichProjectReferences } from '../lib/chat-references'
+import {
+  attachProjectToProject,
+  syncPinnedSessionAttachments,
+} from '../services/project-attachment.service'
 import { trackUsageFromStream } from './project-chat'
 
 // Same resolution as project-chat.ts / RuntimeManager: the `workspaces/`
@@ -68,6 +72,27 @@ function mapSessionError(c: any, err: unknown) {
     return c.json({ error: { code: err.code, message: err.message } }, status)
   }
   throw err
+}
+
+/**
+ * Tear down the anchor-keyed merged-root runtime (`ws:proj:<anchorId>`) so the
+ * next resolve respawns it. Used after a mid-chat attachment change: a member's
+ * real dir is shipped as `LINKED_FOLDERS` and parsed once at runtime boot, so a
+ * newly-attached project is only admitted as an allowed root after a fresh
+ * spawn. Best-effort — swallowed when nothing is running. Mirrors
+ * `local-projects.ts:restartAnchorRuntime` (minus the explicit re-resolve,
+ * which the chat route does itself right after).
+ */
+async function stopAnchorRuntime(anchorProjectId: string, manager?: any): Promise<void> {
+  try {
+    const { getRuntimeManager, projectWorkspaceRuntimeKey } = await import('../lib/runtime/manager')
+    const mgr: any = manager ?? getRuntimeManager()
+    if (typeof mgr?.stop === 'function') {
+      await mgr.stop(projectWorkspaceRuntimeKey(anchorProjectId))
+    }
+  } catch {
+    /* not running / no manager — nothing to tear down */
+  }
 }
 
 /**
@@ -538,12 +563,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       return mapSessionError(c, err)
     }
 
-    // Billing anchor: the AI proxy accumulates usage keyed by projectId, and
-    // build-workspace-env mints the first attached project's token as the
-    // runtime's default AI_PROXY_TOKEN, so we anchor billing on the first
-    // attached project. Per-call multi-project attribution is Phase 2b.
-    const billingProjectId: string | null = attachedProjectIds[0] ?? null
-
     // Model-tier guard: downgrade non-economy models for workspaces without
     // advanced access (server-side enforcement, same as project chat).
     if (parsedBody.agentMode) {
@@ -556,14 +575,54 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       }
     }
 
-    // Harden "@" workspace references: verify the acting user's access and
-    // replace client summaries with authoritative DB metadata + project list
-    // (dropping any the user can't access) before forwarding to the runtime.
+    // Harden "@" references before forwarding to the runtime:
+    //  - workspace refs: re-derive the summary from the DB after membership;
+    //  - project refs: access-check, then DURABLY attach any newly-referenced
+    //    same-workspace sibling to this chat's anchor so the merged-root runtime
+    //    mounts it (and WORKSPACE.md tells the agent it owns it). New
+    //    attachments are env-coupled (LINKED_FOLDERS is parsed once at boot), so
+    //    the anchor runtime is restarted before we resolve; refs that are
+    //    already attached are a no-op and stay warm.
     if (Array.isArray(parsedBody?.references) && parsedBody.references.length > 0) {
-      if (await enrichWorkspaceReferences(parsedBody, auth.userId)) {
-        body = JSON.stringify(parsedBody)
+      const wsChanged = await enrichWorkspaceReferences(parsedBody, auth.userId)
+      const projectRefs = await enrichProjectReferences(parsedBody, auth.userId, workspaceId)
+      const anchorProjectId = runtimeExtra.anchorProjectId
+      if (anchorProjectId && projectRefs.attachProjectIds.length > 0) {
+        const alreadyAttached = new Set(attachedProjectIds)
+        const newIds = projectRefs.attachProjectIds.filter(
+          (id) => id !== anchorProjectId && !alreadyAttached.has(id),
+        )
+        if (newIds.length > 0) {
+          try {
+            for (const id of newIds) {
+              await attachProjectToProject(anchorProjectId, id, 'readwrite')
+            }
+            // attachProjectToProject only syncs the anchor's pinned session;
+            // reconcile THIS session too so loadRuntimeArgs picks up the members.
+            await syncPinnedSessionAttachments(anchorProjectId, sessionId)
+            // Restart so the new members are admitted as allowed roots, then
+            // re-read the (now larger) attached set for the resolve below.
+            await stopAnchorRuntime(anchorProjectId, runtimeManager)
+            const reload = await loadRuntimeArgs(sessionId)
+            attachedProjectIds = reload.attachedProjectIds
+            runtimeExtra = reload.extra
+          } catch (err: any) {
+            console.warn(
+              `[WorkspaceChat] attach-on-mention failed for anchor ${anchorProjectId}:`,
+              err?.message ?? err,
+            )
+          }
+        }
       }
+      if (wsChanged || projectRefs.changed) body = JSON.stringify(parsedBody)
     }
+
+    // Billing anchor: the AI proxy accumulates usage keyed by projectId, and
+    // build-workspace-env mints the first attached project's token as the
+    // runtime's default AI_PROXY_TOKEN, so we anchor billing on the first
+    // attached project. Computed AFTER attach-on-mention so a freshly-attached
+    // member is reflected. Per-call multi-project attribution is Phase 2b.
+    const billingProjectId: string | null = attachedProjectIds[0] ?? null
 
     // Resolve the workspace runtime (501 when SHOGO_WORKSPACE_RUNTIME off).
     const runtimeRes = await resolveOr501(c, workspaceId, attachedProjectIds, 'WorkspaceChat', runtimeExtra)

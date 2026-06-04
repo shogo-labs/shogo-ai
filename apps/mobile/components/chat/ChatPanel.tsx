@@ -66,13 +66,14 @@ import {
   rollbackProjectToCheckpoint,
   type PrecedingCheckpointResult,
 } from "@shogo/shared-app/chat"
-import { useSDKDomains, useDomainActions, useChatMessageCollectionForSession, useWorkspaceCollection } from "@shogo/shared-app/domain"
+import { useSDKDomains, useDomainActions, useChatMessageCollectionForSession, useProjectCollection } from "@shogo/shared-app/domain"
 import { decideMessagesPropagation } from "./messages-propagation"
 import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import { probeChatTurnStatus, shouldAttachLiveStream, type ChatTurnStatus } from "./probe-turn-status"
 import { decideRetryAction, lastAssistantHasResumableWork } from "./retry-triage"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
+import { workspaceProjectFilter } from "../../lib/project-load"
 import { hasAcceptedAiConsent, acceptAiConsent, revokeAiConsent, AI_PROVIDERS } from "../../lib/ai-consent"
 
 import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
@@ -87,7 +88,7 @@ import {
   type InteractionMode,
   type FileAttachment,
   type ChatReference,
-  type WorkspaceMentionOption,
+  type ProjectMentionOption,
   type RestoreDraftRequest,
 } from "./ChatInput"
 import {
@@ -732,29 +733,40 @@ export const ChatPanel = observer(function ChatPanel({
   const { studioChat } = useSDKDomains()
   const actions = useDomainActions()
 
-  // Org/team workspaces for the composer's "@" mention menu. AppSidebar
-  // already loads these app-wide; we call loadAll() defensively in case the
-  // panel mounts first. ChatPanel is an observer, so the memo below re-runs
-  // when the collection populates.
-  const workspaceCollection = useWorkspaceCollection()
+  // Sibling projects (same workspace, excluding the current one) for the
+  // composer's "@" mention menu. Tagging one mounts it into the chat runtime
+  // so the agent can read its files. AppSidebar already loads the collection
+  // app-wide; we loadAll() defensively in case the panel mounts first.
+  const projectCollection = useProjectCollection()
   useEffect(() => {
-    workspaceCollection.loadAll().catch(() => {})
-  }, [workspaceCollection])
-  const workspaceMentionSignature = workspaceCollection.all
-    .map((w: any) => `${w.id}:${w.name}:${w.slug}`)
+    projectCollection.loadAll(workspaceProjectFilter(workspaceId)).catch(() => {})
+  }, [projectCollection, workspaceId])
+  // The current project's workspace: prefer the workspace-scope prop, else
+  // recover it from the loaded collection so we only offer true siblings.
+  const currentWorkspaceId =
+    workspaceId ??
+    projectCollection.all.find((p: any) => p.id === projectId)?.workspaceId
+  const projectMentionSignature = projectCollection.all
+    .filter(
+      (p: any) =>
+        p.id !== projectId &&
+        (!currentWorkspaceId || p.workspaceId === currentWorkspaceId)
+    )
+    .map((p: any) => `${p.id}:${p.name}`)
     .join("|")
-  const workspaceMentionOptions = useMemo<WorkspaceMentionOption[]>(
+  const projectMentionOptions = useMemo<ProjectMentionOption[]>(
     () =>
-      workspaceCollection.all.map((w: any) => ({
-        id: w.id,
-        name: w.name,
-        slug: w.slug,
-        description: w.description ?? "",
-      })),
+      projectCollection.all
+        .filter(
+          (p: any) =>
+            p.id !== projectId &&
+            (!currentWorkspaceId || p.workspaceId === currentWorkspaceId)
+        )
+        .map((p: any) => ({ id: p.id, name: p.name })),
     // Signature keeps the array referentially stable across token-by-token
     // streaming re-renders (matters because ChatInput is memoized).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [workspaceMentionSignature]
+    [projectMentionSignature]
   )
 
   const platformFeatures = legacyDomains?.platformFeatures
@@ -5006,7 +5018,7 @@ export const ChatPanel = observer(function ChatPanel({
               onQuickActionClick={handleQuickActionClick}
               restoreDraftRequest={restoreDraftRequest}
               projectId={projectId}
-              workspaces={workspaceMentionOptions}
+              projects={projectMentionOptions}
             />
           </View>
         </KeyboardAvoidingView>
