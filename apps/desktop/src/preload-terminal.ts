@@ -36,6 +36,8 @@ const CH = {
   discardSnapshot: 'shogo:terminal:snapshots:discard',
   restartHost: 'shogo:terminal:host:restart',
   event:  'shogo:terminal:event',
+  publishContext: 'shogo:terminal:publish-context',
+  agentSpawned: 'shogo:terminal:agent-spawned',
   llmStreamCommand: 'shogo:llm:stream-command',
   llmOpenChatWithContext: 'shogo:llm:open-chat-with-context',
   llmDelta: 'shogo:llm:stream-command:delta',
@@ -179,6 +181,22 @@ const bridge = {
   onEvent(cb: (ev: ControlEvent) => void): () => void {
     eventListeners.add(cb)
     return () => { eventListeners.delete(cb) }
+  },
+  async publishTerminalContext(payload: {
+    sessionId: string
+    cwd: string | null
+    content: string
+  }): Promise<void> {
+    await ipcRenderer.invoke(CH.publishContext, payload)
+  },
+  onAgentTerminalSpawned(cb: (payload: {
+    sessionId: string
+    terminalLabel: string
+    cwd: string | null
+  }) => void): () => void {
+    const listener = (_e: IpcRendererEvent, data: { sessionId: string; terminalLabel: string; cwd: string | null }) => cb(data)
+    ipcRenderer.on(CH.agentSpawned, listener)
+    return () => { ipcRenderer.removeListener(CH.agentSpawned, listener) }
   },
   llm: {
     async streamCommand(opts: {
