@@ -55,7 +55,6 @@ import {
   getHeadSha,
   repoStoreConfigFromEnv,
   gatherCommitMeta,
-  isLfsEnabled,
   ensureLfsRepoSetup,
   autoTrackLargeFiles,
   lfsPushAll,
@@ -322,10 +321,11 @@ let workspaceMemberSyncs: Map<string, import('@shogo/shared-runtime').S3Sync> = 
  * pod-owned default): the LFS object-offload step is wired into that mode's
  * `afterCommit` durability path, and LFS attributes are only written for
  * these repos, so other modes (dual_shadow/s3) keep the legacy offload and
- * never accidentally LFS-ify files.
+ * never accidentally LFS-ify files. LFS is always on for git_only — there is
+ * no separate enable flag.
  */
 function isLfsActive(): boolean {
-  return resolveCloudSyncMode() === 'git_only' && isLfsEnabled()
+  return resolveCloudSyncMode() === 'git_only'
 }
 
 /**
@@ -4744,7 +4744,7 @@ async function initializeEssentials(): Promise<void> {
           console.error('[agent-runtime] restoreLargeFiles failed:', error.message)
         }
       }
-      // Git LFS (git_only + LFS_ENABLED): configure the repo's LFS filter +
+      // Git LFS (git_only): configure the repo's LFS filter +
       // .gitattributes, run the one-time migration off the legacy assets/
       // offload (no-op once done), then materialize object bytes for the
       // current checkout (smudge is skipped on checkout, so we fetch

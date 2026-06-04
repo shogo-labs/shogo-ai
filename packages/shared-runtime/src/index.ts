@@ -53,7 +53,6 @@ export {
 } from './large-file-sync'
 
 export {
-  isLfsEnabled,
   lfsKeyPrefix,
   isValidLfsOid,
   lfsObjectKey,

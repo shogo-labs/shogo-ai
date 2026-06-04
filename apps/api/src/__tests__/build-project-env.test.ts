@@ -69,7 +69,6 @@ const ENV_KEYS = [
   'S3_REGION',
   'S3_ENDPOINT',
   'S3_FORCE_PATH_STYLE',
-  'LFS_ENABLED',
   'SHOGO_VOICE_MODE',
   'SHOGO_DEMO_VOICE',
   'SHOGO_MOCK_CAPTURE_DIR',
@@ -407,27 +406,6 @@ describe('buildProjectEnv — S3 config', () => {
     process.env.S3_FORCE_PATH_STYLE = '1' // non-"true" string → omitted
     env = await buildProjectEnv('proj-s3-fps-2')
     expect(env.S3_FORCE_PATH_STYLE).toBeUndefined()
-  })
-})
-
-// ─── Git LFS ───────────────────────────────────────────────────────────────
-
-describe('buildProjectEnv — Git LFS', () => {
-  test('omits LFS_ENABLED by default', async () => {
-    const env = await buildProjectEnv('proj-no-lfs')
-    expect(env.LFS_ENABLED).toBeUndefined()
-  })
-
-  test('forwards LFS_ENABLED to the pod when enabled on the API', async () => {
-    process.env.LFS_ENABLED = 'true'
-    const env = await buildProjectEnv('proj-lfs')
-    expect(env.LFS_ENABLED).toBe('true')
-  })
-
-  test('does not forward a non-truthy LFS_ENABLED', async () => {
-    process.env.LFS_ENABLED = 'false'
-    const env = await buildProjectEnv('proj-lfs-off')
-    expect(env.LFS_ENABLED).toBeUndefined()
   })
 })
 
