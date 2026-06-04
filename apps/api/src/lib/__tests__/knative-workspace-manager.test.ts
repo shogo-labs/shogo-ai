@@ -71,6 +71,10 @@ describe('workspaceServiceName', () => {
   it('is workspace-{id}', () => {
     expect(workspaceServiceName('ws-abc')).toBe('workspace-ws-abc')
   })
+
+  it('is workspace-proj-{anchor} when anchored', () => {
+    expect(workspaceServiceName('ws-abc', 'proj-9')).toBe('workspace-proj-proj-9')
+  })
 })
 
 describe('buildKnativeWorkspaceService — metadata', () => {
@@ -83,6 +87,27 @@ describe('buildKnativeWorkspaceService — metadata', () => {
     expect(svc.metadata.labels['shogo.io/workspace']).toBe('ws-123')
     expect(svc.metadata.labels['app.kubernetes.io/part-of']).toBe('shogo')
     expect(svc.metadata.labels['shogo.io/component']).toBe('runtime')
+    // No anchor → no anchor label.
+    expect(svc.metadata.labels['shogo.io/anchor-project']).toBeUndefined()
+  })
+
+  it('names the service workspace-proj-{anchor} with an anchor label + anchor env when anchored', () => {
+    const svc = buildKnativeWorkspaceService(
+      baseOpts({
+        anchorProjectId: 'p1',
+        env: {
+          WORKSPACE_ID: 'ws-123',
+          WORKSPACE_RUNTIME: 'true',
+          WORKSPACE_PROJECT_IDS: 'p1,p2',
+          WORKSPACE_ANCHOR_PROJECT_ID: 'p1',
+        },
+      }),
+    )
+    expect(svc.metadata.name).toBe('workspace-proj-p1')
+    expect(svc.metadata.labels['shogo.io/anchor-project']).toBe('p1')
+    const env = envByName(svc)
+    expect(env.WORKSPACE_ANCHOR_PROJECT_ID.value).toBe('p1')
+    expect(env.WORKSPACE_PROJECT_IDS.value).toBe('p1,p2')
   })
 })
 

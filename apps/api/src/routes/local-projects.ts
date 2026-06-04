@@ -36,6 +36,7 @@ import os from 'os'
 import { prisma } from '../lib/prisma'
 import {
   attachProjectToProject,
+  createProjectWorkspaceSession,
   detachProjectFromProject,
   getOrCreatePinnedWorkspaceSession,
   listAttachments,
@@ -1051,6 +1052,33 @@ export function localProjectsRoutes(): Hono {
         session: { id: session.id, workspaceId: session.workspaceId },
         attachments,
       })
+    } catch (err) {
+      return mapAttachmentError(c, err)
+    }
+  })
+
+  /**
+   * POST /:id/workspace-sessions — mint an ADDITIONAL workspace chat session
+   * for this project (a project may have many chats, each a workspace session
+   * on the project's anchor merged-root runtime). Mirrors the pinned session's
+   * attachment set so the new chat boots the same merged runtime.
+   */
+  router.post('/:id/workspace-sessions', async (c) => {
+    const auth = c.get('auth' as never) as { userId?: string } | undefined
+    if (!auth?.userId) return c.json({ error: 'unauthenticated' }, 401)
+    const projectId = c.req.param('id')
+    let body: { name?: string; inferredName?: string } = {}
+    try {
+      body = (await c.req.json()) as { name?: string; inferredName?: string }
+    } catch {
+      body = {}
+    }
+    try {
+      const session = await createProjectWorkspaceSession(projectId, {
+        name: body?.name,
+        inferredName: body?.inferredName,
+      })
+      return c.json({ session: { id: session.id, workspaceId: session.workspaceId } })
     } catch (err) {
       return mapAttachmentError(c, err)
     }

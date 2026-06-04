@@ -65,7 +65,9 @@ export interface ResolveWorkspaceRuntimeOpts {
    * set, host mode spawns a PROJECT-anchored merged runtime
    * (`startProjectWorkspace`, keyed `ws:proj:<anchor>`) that mounts the
    * anchor + attachments + linked folders, instead of the workspace-session
-   * runtime keyed by workspaceId. Cloud (k8s/vm) is not yet anchor-aware.
+   * runtime keyed by workspaceId. Cloud (k8s) is anchor-aware too: the
+   * Knative Service is keyed `workspace-proj-<anchor>` and the pod hydrates
+   * every member into its own subfolder (VM is not yet wired).
    */
   anchorProjectId?: string
   /** Linked local host folders to mount (project-anchored host path only). */
@@ -87,7 +89,11 @@ export interface ResolveWorkspaceRuntimeOpts {
   _isVMIsolation?: () => boolean
 
   /** Test-only branch resolvers (mirror resolve-pod-url's seams). */
-  _k8sResolver?: (workspaceId: string, attachedProjectIds: string[]) => Promise<string>
+  _k8sResolver?: (
+    workspaceId: string,
+    attachedProjectIds: string[],
+    opts?: { anchorProjectId?: string; readonlyProjectIds?: string[] },
+  ) => Promise<string>
   _vmResolver?: (workspaceId: string, attachedProjectIds: string[]) => Promise<string>
   _hostStart?: (
     workspaceId: string,
@@ -200,27 +206,48 @@ export async function resolveWorkspaceRuntimeUrl(
     throw new WorkspaceRuntimeNotEnabledError(workspaceId)
   }
 
-  // Cloud (k8s/vm) is keyed by workspaceId Service and is not yet
-  // anchor-aware. Fail loudly rather than silently mounting the wrong tree
-  // when a project-anchored runtime is requested in cloud.
-  if (opts.anchorProjectId && (isKubernetes() || isVMIsolation())) {
+  // VM isolation is still keyed by workspaceId only and is not anchor-aware.
+  // Fail loudly rather than silently mounting the wrong tree there. (k8s IS
+  // anchor-aware now — see below.)
+  if (opts.anchorProjectId && isVMIsolation() && !isKubernetes()) {
     throw new Error(
       `[${tag}] project-anchored workspace runtime (anchor=${opts.anchorProjectId}) is not yet ` +
-        `supported in cloud (k8s/vm). It is currently host/desktop-only.`,
+        `supported in VM-isolation mode. It is currently host/desktop + k8s only.`,
     )
   }
 
   if (isKubernetes()) {
     // Default to the Knative workspace driver (creates/short-circuits the
-    // `workspace-{id}` Service). Lazy import keeps k8s deps off the cold path
-    // until the first cloud resolution, mirroring resolve-pod-url.ts.
+    // `workspace-{id}` — or `workspace-proj-<anchor>` when anchored — Service).
+    // Lazy import keeps k8s deps off the cold path until the first cloud
+    // resolution, mirroring resolve-pod-url.ts.
     const resolver =
       opts._k8sResolver ??
       (await import('./knative-workspace-manager')).getWorkspacePodUrl
     // Serialize across replicas: only one builds the workspace KSvc; others
     // wait and re-resolve via the same resolver (which short-circuits on an
-    // existing service).
-    const url = await spawnLease(workspaceId, () => resolver(workspaceId, attachedProjectIds))
+    // existing service). Anchored runtimes lease on the anchor id so two
+    // anchors in one workspace don't serialize against each other.
+    const leaseKey = opts.anchorProjectId ? `proj:${opts.anchorProjectId}` : workspaceId
+    const url = await spawnLease(leaseKey, () =>
+      resolver(workspaceId, attachedProjectIds, {
+        anchorProjectId: opts.anchorProjectId,
+        readonlyProjectIds: opts.readonlyProjectIds,
+      }),
+    )
+    // Keep the last-N most-recently-opened workspace runtimes warm: record this
+    // resolution in the MRU so the keep-warm sweep pings the top-N /health
+    // endpoints and refreshes their Knative scale-to-zero retention. The rest
+    // scale to zero. Best-effort; never blocks resolution. Skipped under test
+    // resolver injection to keep unit tests free of the singleton.
+    if (!opts._k8sResolver) {
+      try {
+        const { getWorkspaceKeepWarm } = await import('./workspace-keep-warm')
+        getWorkspaceKeepWarm().recordOpened(leaseKey, url)
+      } catch {
+        // keep-warm is an optimization; never fail resolution on it.
+      }
+    }
     return { mode: 'k8s', url }
   }
 

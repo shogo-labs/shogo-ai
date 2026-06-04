@@ -1001,6 +1001,29 @@ export const api = {
    * Get (or create) the project-pinned workspace chat session. Routing the
    * project's chat through this session boots the anchor merged-root runtime.
    */
+  /**
+   * Mint an ADDITIONAL workspace chat session for a project — used by
+   * "+ new chat" under the workspace-runtime model so a project can hold many
+   * chats, each one a workspace session on the project's merged-root runtime.
+   */
+  async createProjectWorkspaceSession(
+    http: HttpClient,
+    projectId: string,
+    opts: { name?: string; inferredName?: string } = {},
+  ): Promise<{ session?: { id: string; workspaceId: string }; error?: string }> {
+    try {
+      const res = await http.post<any>(
+        `/api/local/projects/${encodeURIComponent(projectId)}/workspace-sessions`,
+        opts,
+      )
+      if (res.data?.session) return { session: res.data.session }
+      const errBody = (res.error ?? res.data ?? {}) as { error?: string; message?: string }
+      return { error: errBody.message ?? errBody.error ?? 'Failed to create workspace session' }
+    } catch (err: any) {
+      return { error: err?.message ?? 'Failed to create workspace session' }
+    }
+  },
+
   async getProjectWorkspaceSession(
     http: HttpClient,
     projectId: string,

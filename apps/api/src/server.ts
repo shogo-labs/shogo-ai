@@ -7735,6 +7735,19 @@ if (isKubernetes()) {
       console.error('[WarmPool] Failed to start warm pool controller (non-fatal):', err.message)
     }
 
+    // Keep the last-N most-recently-opened workspace runtimes warm by pinging
+    // their /health (refreshes Knative scale-to-zero retention). The resolver
+    // populates the MRU; this just starts the periodic sweep.
+    if (process.env.SHOGO_WORKSPACE_RUNTIME === 'true') {
+      try {
+        const { getWorkspaceKeepWarm } = await import('./lib/workspace-keep-warm')
+        getWorkspaceKeepWarm().start()
+        console.log('[WorkspaceKeepWarm] Keep-warm controller started')
+      } catch (err: any) {
+        console.error('[WorkspaceKeepWarm] Failed to start keep-warm (non-fatal):', err.message)
+      }
+    }
+
     try {
       const { startInfraMetricsCollector } = await import('./lib/infra-metrics-collector')
       startInfraMetricsCollector(prisma)

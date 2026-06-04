@@ -109,7 +109,7 @@ export default function AppLayout() {
   if (isLoading) return null
   if (!isAuthenticated) return null
 
-  const showSidebar = isWide && !isProjectDetail && !isSettingsPage && !isBillingPage
+  const showSidebar = isWide && !isSettingsPage && !isBillingPage
 
   return (
     <DomainProvider>

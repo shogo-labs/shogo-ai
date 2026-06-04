@@ -50,6 +50,7 @@ import { useDomainHttp } from '../../../../contexts/domain'
 import { authClient } from '../../../../lib/auth-client'
 import { API_URL, api } from '../../../../lib/api'
 import { openWebAppSession } from '../../../../lib/openWebAppSession'
+import { chatSessionEvents, chatActivityEvents } from '../../../../lib/chat-session-events'
 import { workspaceProjectFilter } from '../../../../lib/project-load'
 import { getActiveWorkspaceId } from '../../../../lib/workspace-store'
 import { usePlatformConfig } from '../../../../lib/platform-config'
@@ -259,6 +260,17 @@ export default observer(function ProjectLayout() {
     startEzMode?: string
     /** When '1' alongside `startEzMode`, auto-connect the voice session once. */
     autoStartVoice?: string
+    /**
+     * Landing tab requested by the sidebar project-name click
+     * ('canvas' | 'chat-fullscreen' | 'external-preview'). Applied with
+     * precedence over the saved last-tab init. See {@link defaultTabForProject}.
+     */
+    tab?: string
+    /**
+     * Bumped by the sidebar when re-selecting the SAME tab on an already-open
+     * project, so the apply effect re-fires even though `tab` is unchanged.
+     */
+    tabNonce?: string
   }>()
   const projectId = params.id
   const { width, height } = useWindowDimensions()
@@ -1153,6 +1165,7 @@ export default observer(function ProjectLayout() {
           })
           if (newSession?.id && !cancelled) {
             setChatSessionId(newSession.id)
+            chatSessionEvents.emit({ projectId, activeSessionId: newSession.id, refresh: true })
           }
         }
       } catch (err) {
@@ -1234,7 +1247,6 @@ export default observer(function ProjectLayout() {
   // Hydrated from AsyncStorage so the user's "history sidebar open/closed"
   // preference survives navigation; only read once per project mount.
   const showChatSessionsHydratedRef = useRef<string | null>(null)
-  const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
   // Narrow (mobile) chat-session picker that temporarily replaces the chat
   // panel with the session list. Auto-closes when the user leaves the chat tab.
   const [narrowChatPickerOpen, setNarrowChatPickerOpen] = useState(false)
@@ -1312,19 +1324,61 @@ export default observer(function ProjectLayout() {
   // reset to the default tab is the correct migration.
   const PREVIEW_TAB_STORAGE_PREFIX = 'shogo:lastPreviewTab:v2:'
 
+  // Apply the initial preview tab exactly once per project, after the project
+  // (and thus its `workingMode`) is known. Tracks the project it ran for so a
+  // navigation to a different project re-applies.
+  const previewTabInitForRef = useRef<string | null>(null)
+
+  // Sidebar "open project" tab intent. Clicking a project name in the sidebar
+  // deep-links a `tab` param (canvas / chat-fullscreen / external-preview). It
+  // takes precedence over the saved last-tab init below: we stamp that init as
+  // already-consumed for this project so its async AsyncStorage read can't
+  // clobber the explicit choice. `tabNonce` lets a repeat click on the SAME
+  // tab (project already open) re-fire this effect. Declared BEFORE the saved-
+  // tab init effect so it runs first on mount.
+  const appliedTabIntentRef = useRef<string | null>(null)
   useEffect(() => {
-    if (!projectId) return
+    const requested = params.tab
+    if (
+      !projectId ||
+      !requested ||
+      (requested !== 'canvas' &&
+        requested !== 'chat-fullscreen' &&
+        requested !== 'external-preview')
+    ) {
+      return
+    }
+    const token = `${projectId}:${requested}:${params.tabNonce ?? ''}`
+    if (appliedTabIntentRef.current === token) return
+    appliedTabIntentRef.current = token
+    previewTabInitForRef.current = projectId
+    setPreviewTab(requested)
+  }, [projectId, params.tab, params.tabNonce])
+
+  useEffect(() => {
+    if (!projectId || !project) return
+    if (previewTabInitForRef.current === projectId) return
+    previewTabInitForRef.current = projectId
     AsyncStorage.getItem(`${PREVIEW_TAB_STORAGE_PREFIX}${projectId}`).then((saved) => {
-      if (!saved) return
       // Legacy values written before the v1 dynamic-app -> canvas tab rename
       // (chore/remove-canvas-v1) get normalized on read so existing users don't
       // land on an unknown tab and fall back to the default.
       const normalized = saved === 'dynamic-app' ? 'canvas' : saved
-      setPreviewTab(normalized)
+      // External (folder-linked) projects can't render their app in the agent
+      // canvas, and when live preview is off there's no canvas server at all —
+      // the canvas tab would hang forever on "Loading preview…". Their
+      // first-class surface is the embedded dev-server webview, so default to
+      // (and heal a stale persisted) 'external-preview'. The canvas tab stays
+      // available for anyone who explicitly switches to it.
+      if (isExternalProject && (!normalized || normalized === 'canvas')) {
+        setPreviewTab('external-preview')
+        return
+      }
+      if (normalized) setPreviewTab(normalized)
     }).catch(() => {})
     // Best-effort cleanup of the pre-fix v1 key so it doesn't linger.
     AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(() => {})
-  }, [projectId])
+  }, [projectId, project, isExternalProject])
 
   useEffect(() => {
     if (projectId && previewTab && PERSISTABLE_PREVIEW_TABS.has(previewTab)) {
@@ -1391,6 +1445,31 @@ export default observer(function ProjectLayout() {
       return next
     })
   }, [chatSessionId])
+
+  // Mirror this project's live streaming / new-activity state into the
+  // AppSidebar (the permanent home for chats) so its chat rows can show the
+  // spinner + activity dot. Kept on a separate channel from the create /
+  // rename / delete refresh events so a stream tick never triggers a chat-
+  // list re-fetch. Only the active project's workspace is mounted, so only
+  // its rows ever light up.
+  useEffect(() => {
+    if (!projectId) return
+    chatActivityEvents.emit({
+      projectId,
+      streamingSessionIds: [...streamingTabIds],
+      completedSessionIds: [...completedTabIds],
+    })
+  }, [projectId, streamingTabIds, completedTabIds])
+
+  // Clear this project's activity when the workspace unmounts or the project
+  // changes — streams stop with the panels, so stale dots would otherwise
+  // linger in the sidebar after navigating away.
+  useEffect(() => {
+    if (!projectId) return
+    return () => {
+      chatActivityEvents.emit({ projectId, streamingSessionIds: [], completedSessionIds: [] })
+    }
+  }, [projectId])
   const streamingChangeHandlersRef = useRef<Map<string, (streaming: boolean) => void>>(new Map())
   const getStreamingChangeHandler = useCallback((tabId: string) => {
     let handler = streamingChangeHandlersRef.current.get(tabId)
@@ -1694,31 +1773,61 @@ export default observer(function ProjectLayout() {
   }, [store?.chatSessionCollection?.all, sessionNames, projectId, _sessionFieldsKey])
 
   const handleCreateNewSession = useCallback(async () => {
-    // Flag-on: a project has exactly one chat — its anchor-pinned workspace
-    // session. A "new chat" must not mint a project-scoped session (that would
-    // strand the project on the legacy single-project runtime). Just re-select
-    // the pinned session instead.
-    if (workspaceRuntimeEnabled && pinnedWorkspaceSessionId) {
-      setOpenChatTabIds((prev) =>
-        prev.includes(pinnedWorkspaceSessionId) ? prev : [...prev, pinnedWorkspaceSessionId],
-      )
-      setChatSessionId(pinnedWorkspaceSessionId)
-      return
-    }
+    if (!projectId) return
     try {
+      if (workspaceRuntimeEnabled) {
+        // Flag-on: every project chat is a workspace session bound to the
+        // project's anchor merged-root runtime. A project can hold many, so
+        // mint a fresh workspace session (with attachments synced to match the
+        // pinned one) rather than re-selecting a single canonical chat.
+        const res = await api.createProjectWorkspaceSession(http, projectId, {
+          inferredName: 'New chat',
+        })
+        const id = res.session?.id
+        if (id) {
+          setOpenChatTabIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
+          setChatSessionId(id)
+          chatSessionEvents.emit({ projectId, activeSessionId: id, refresh: true })
+        } else if (res.error) {
+          console.error('[ProjectLayout] Failed to create workspace chat:', res.error)
+        }
+        return
+      }
       const newSession = await actions.createChatSession({
         inferredName: 'Untitled',
         contextType: 'project',
-        contextId: projectId!,
+        contextId: projectId,
       })
       if (newSession?.id) {
         setOpenChatTabIds((prev) => prev.includes(newSession.id) ? prev : [...prev, newSession.id])
         setChatSessionId(newSession.id)
+        chatSessionEvents.emit({ projectId, activeSessionId: newSession.id, refresh: true })
       }
     } catch (err) {
       console.error('[ProjectLayout] Failed to create chat session:', err)
     }
-  }, [actions, projectId, workspaceRuntimeEnabled, pinnedWorkspaceSessionId])
+  }, [actions, projectId, workspaceRuntimeEnabled, http])
+
+  // Let the sidebar switch this project's chats IN PLACE (no navigation /
+  // remount) while the project is already open. The sidebar emits a select
+  // request instead of router.push when its row is the active project.
+  useEffect(() => {
+    if (!projectId) return
+    return chatSessionEvents.subscribeSelect(({ projectId: pid, sessionId }) => {
+      if (pid !== projectId) return
+      setOpenChatTabIds((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]))
+      setChatSessionId(sessionId)
+    })
+  }, [projectId])
+
+  // Broadcast the active chat so the sidebar highlights it — even when the
+  // chat was selected via local state (e.g. the pinned/bootstrap session) and
+  // never touched the URL.
+  useEffect(() => {
+    if (projectId && chatSessionId) {
+      chatSessionEvents.emit({ projectId, activeSessionId: chatSessionId })
+    }
+  }, [projectId, chatSessionId])
 
   // ─── Canvas-error → "Debug" toast ───────────────────────────────────────
   // The canvas iframe (and its ShogoErrorBoundary) postMessage `canvas-error`
@@ -1759,6 +1868,7 @@ export default observer(function ProjectLayout() {
           prev.includes(newId) ? prev : [...prev, newId],
         )
         setChatSessionId(newId)
+        chatSessionEvents.emit({ projectId, activeSessionId: newId, refresh: true })
         // Narrow layouts hide the chat column behind the canvas tab, so flip
         // back to it. Wide layouts already show the chat column alongside the
         // canvas — leave the preview pane (canvas / IDE / etc.) untouched.
@@ -1853,33 +1963,36 @@ export default observer(function ProjectLayout() {
         // Flush into the local sessionNames cache so the useMemo dep changes
         // and chatSessions recomputes immediately.
         setSessionNames((prev) => ({ ...prev, [sessionId]: newName }))
+        if (projectId) chatSessionEvents.emit({ projectId, refresh: true })
       } catch (err) {
         console.error('[ProjectLayout] Failed to rename chat session:', err)
       }
     },
-    [actions],
+    [actions, projectId],
   )
 
   const handleTogglePinChatSession = useCallback(
     async (sessionId: string, next: boolean) => {
       try {
         await actions.updateChatSession(sessionId, { isPinned: next })
+        if (projectId) chatSessionEvents.emit({ projectId, refresh: true })
       } catch (err) {
         console.error('[ProjectLayout] Failed to toggle pin on chat session:', err)
       }
     },
-    [actions],
+    [actions, projectId],
   )
 
   const handleToggleArchiveChatSession = useCallback(
     async (sessionId: string, next: boolean) => {
       try {
         await actions.updateChatSession(sessionId, { isArchived: next })
+        if (projectId) chatSessionEvents.emit({ projectId, refresh: true })
       } catch (err) {
         console.error('[ProjectLayout] Failed to toggle archive on chat session:', err)
       }
     },
-    [actions],
+    [actions, projectId],
   )
 
   const performDeleteChatSession = useCallback(
@@ -1890,11 +2003,12 @@ export default observer(function ProjectLayout() {
         // No client-side EZ Mode teardown needed: voice rows are stored
         // in chat_messages with agent="voice" and cascade-delete with
         // the ChatSession on the server.
+        if (projectId) chatSessionEvents.emit({ projectId, refresh: true })
       } catch (err) {
         console.error('[ProjectLayout] Failed to delete chat session:', err)
       }
     },
-    [actions, handleCloseTab],
+    [actions, handleCloseTab, projectId],
   )
 
   const handleDeleteChatSession = useCallback(
@@ -2211,8 +2325,6 @@ export default observer(function ProjectLayout() {
       hasMore={store?.chatSessionCollection?.hasMore ?? false}
       isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
       hideHeader
-      searchOpen={sidebarSearchOpen}
-      onSearchClose={() => setSidebarSearchOpen(false)}
     />
   )
 
@@ -2241,7 +2353,7 @@ export default observer(function ProjectLayout() {
                 projectId={projectId}
                 projectType="unified"
                 chatScope={
-                  workspaceRuntimeEnabled && tabId === pinnedWorkspaceSessionId
+                  workspaceRuntimeEnabled
                     ? 'workspace'
                     : isInitialSession
                       ? capturedChatScope
@@ -2334,21 +2446,21 @@ export default observer(function ProjectLayout() {
     trustLevel: projectTrustLevel,
     onToggleTrust: handleToggleTrust,
     trustBusy: trustSubmitting,
-    showChatSessions: isChatFullscreen ? false : showChatSessions,
+    // The app sidebar is now the single home for browsing projects + chats,
+    // so the project's own in-split chat-sessions panel and its toggles are
+    // disabled. The `chat-fullscreen` power-user mode is left intact.
+    showChatSessions: false,
     isChatCollapsed: isChatFullscreen ? true : chatCollapsed,
-    onChatSessionsToggle: isChatFullscreen ? undefined : () => setShowChatSessions((s: boolean) => !s),
+    onChatSessionsToggle: undefined,
     onChatCollapseToggle: isChatFullscreen ? undefined : () => setChatCollapsed((c: boolean) => !c),
     onCreateNewSession: isChatFullscreen ? undefined : handleCreateNewSession,
-    // Top bar chat zone spans the chat column. When the collapsible history
-    // sidebar is open in split mode, include its 280px so the zone aligns.
-    chatPanelWidth: clampChatWidth(chatPanelWidth) + (isWide && !isChatFullscreen && showChatSessions ? 280 : 0),
-    chatFullscreenSidebarWidth: isChatFullscreen ? 280 : undefined,
-    onSearchChats: isChatFullscreen ? () => setSidebarSearchOpen(true) : undefined,
-    // Narrow-only: tapping the History icon swaps the chat panel for the
-    // session list. Closing happens when the user picks/creates a session,
-    // taps the icon again, or leaves the chat tab.
-    onOpenChatSessions: !isWide ? () => setNarrowChatPickerOpen((p) => !p) : undefined,
-    chatSessionsOpen: !isWide && narrowChatPickerOpen,
+    chatPanelWidth: clampChatWidth(chatPanelWidth),
+    // Fullscreen no longer renders its own chat-history rail (the app sidebar
+    // owns chat browsing now), so the top bar's left zone drops back to a
+    // content-width project switcher and the in-bar chat search is gone.
+    // Narrow chat picker is disabled too — phones use the drawer sidebar.
+    onOpenChatSessions: undefined,
+    chatSessionsOpen: false,
     onNewChat: isChatFullscreen ? handleCreateNewSession : undefined,
     onRenameChat: isChatFullscreen ? handleRenameChatSession : undefined,
     onDeleteChat: isChatFullscreen ? handleDeleteChatSession : undefined,
@@ -2413,29 +2525,20 @@ export default observer(function ProjectLayout() {
               poking past the workspace's left edge. */}
           <View className={cn('flex-1 overflow-hidden', isWide && 'flex-row')} ref={splitRowRef}>
             {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
-            {/* Sidebar is shown always in fullscreen and toggleable in wide-split via showChatSessions. */}
             {(() => {
-              const showSidebar = isChatFullscreen || (isWide && showChatSessions)
-              // The sidebar wrapper stays mounted whenever the chat column
-              // is in a layout where it COULD be shown (wide-split or
-              // fullscreen). That lets the CSS width transition below have
-              // both a before- and after-value to animate between when the
-              // user toggles `showChatSessions`; conditional rendering
-              // (`{showSidebar && …}`) would mount/unmount the View on each
-              // toggle and the transition would never get a starting frame.
-              const sidebarMounted = isChatFullscreen || isWide
+              // The app sidebar (main app layout) is now the single home for
+              // browsing chats, so the project's own in-split / fullscreen
+              // chat-history rail has been removed. The chat column just holds
+              // the chat content: in wide-split it slides out via an animated
+              // marginLeft when collapsed (clipped by the parent's
+              // overflow-hidden); in fullscreen it owns the full width.
               return (
                 <View
                   className={cn(
                     'flex min-h-0',
                     isChatFullscreen
-                      ? 'flex-1 flex-row'
+                      ? 'flex-1'
                       : isWide
-                        // Always flex-row in wide-split so the always-
-                        // mounted sidebar (width 0 when closed) sits to
-                        // the left of the chat content during animations.
-                        // Snapping to flex-col mid-close would re-stack
-                        // the kids vertically and break the slide.
                         ? 'shrink-0 bg-background z-10 flex-row'
                         : 'relative flex-1 flex-col',
                     // Narrow-mode tab switches still use display:none —
@@ -2453,22 +2556,14 @@ export default observer(function ProjectLayout() {
                           // reflow during the slide — the negative
                           // marginLeft below tucks the column off-screen
                           // and the parent row's overflow-hidden clips it.
-                          width: clampChatWidth(chatPanelWidth) + (showSidebar ? 280 : 0),
+                          width: clampChatWidth(chatPanelWidth),
                           // Slide-out: a marginLeft equal to -width makes
-                          // the column's flex contribution net zero (the
-                          // negative margin cancels the positive width),
-                          // so the canvas's flex-1 expands to fill the
-                          // freed space as the slide progresses. Slide-in
-                          // is the reverse: marginLeft animates back to 0.
-                          marginLeft: chatHidden
-                            ? -(clampChatWidth(chatPanelWidth) + (showSidebar ? 280 : 0))
-                            : 0,
-                          // Web-only: smooth the wrapper's resize +
-                          // collapse so width (sidebar toggle) and
-                          // margin-left (chat collapse) animate together
-                          // in lock-step with the sidebar's own width
-                          // transition below. RN native ignores these
-                          // style props (no regression there).
+                          // the column's flex contribution net zero, so the
+                          // canvas's flex-1 expands to fill the freed space
+                          // as the slide progresses. Slide-in is the reverse.
+                          marginLeft: chatHidden ? -clampChatWidth(chatPanelWidth) : 0,
+                          // Web-only: smooth the collapse so margin-left
+                          // animates. RN native ignores these style props.
                           transitionProperty: 'width, margin-left',
                           transitionDuration: '220ms',
                           transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
@@ -2476,97 +2571,6 @@ export default observer(function ProjectLayout() {
                       : undefined
                   }
                 >
-                  {sidebarMounted && (
-                    // `overflow-hidden` clips the always-mounted inner
-                    // 200px content box so the sidebar can collapse to
-                    // width 0 without distorting its children, AND keeps
-                    // the absolutely-positioned inset shadow gradients
-                    // pinned inside the sidebar's rectangle.
-                    <View
-                      className="bg-muted/50 dark:bg-black/30 relative overflow-hidden"
-                      style={{
-                        width: showSidebar ? 200 : 0,
-                        transitionProperty: 'width',
-                        transitionDuration: '220ms',
-                        transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
-                      } as any}
-                    >
-                      {/* Inner content stays at fixed 200px so the
-                          ChatSessionSidebar's FlatList doesn't re-layout
-                          mid-animation; the parent's `overflow-hidden`
-                          clips it to whatever width is currently visible. */}
-                      <View style={{ width: 200, height: '100%' }}>
-                      <ChatSessionSidebar
-                        sessions={chatSessions}
-                        currentSessionId={chatSessionId ?? undefined}
-                        onSelect={(sessionId) => {
-                          setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
-                          setChatSessionId(sessionId)
-                        }}
-                        onCreate={handleCreateNewSession}
-                        onRename={handleRenameChatSession}
-                        onDelete={handleDeleteChatSession}
-                        onTogglePin={handleTogglePinChatSession}
-                        onToggleArchive={handleToggleArchiveChatSession}
-                        onLoadMore={handleLoadMoreSessions}
-                        hasMore={store?.chatSessionCollection?.hasMore ?? false}
-                        isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
-                        hideHeader
-                        searchOpen={sidebarSearchOpen}
-                        onSearchClose={() => setSidebarSearchOpen(false)}
-                        streamingSessionIds={streamingTabIds}
-                        completedSessionIds={completedTabIds}
-                        projectId={projectId ?? undefined}
-                      />
-                      </View>
-                      {/* Inset right-edge shadow — sidebar reads as the
-                          recessed surface and the chat column as elevated
-                          above it. Dark at the seam, fading to transparent
-                          inward, so the boundary feels like a soft drop
-                          shadow cast by the chat panel onto the sidebar.
-                          Theme-aware opacity: dark mode needs ~5× the
-                          alpha to register the same perceived depth,
-                          because black-on-`rgb(13)` darkens far less per
-                          unit alpha than black-on-`rgb(250)`. */}
-                      <LinearGradient
-                        colors={
-                          isDark
-                            ? ["rgba(0,0,0,0)", "rgba(0,0,0,0.4)"]
-                            : ["rgba(0,0,0,0)", "rgba(0,0,0,0.08)"]
-                        }
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 0 }}
-                        pointerEvents="none"
-                        style={{
-                          position: 'absolute',
-                          top: 0,
-                          bottom: 0,
-                          right: 0,
-                          width: 12,
-                        }}
-                      />
-                      {/* Inset top-edge shadow — same idea rotated 90°,
-                          casting from the topbar down onto the sidebar's
-                          recessed surface. */}
-                      <LinearGradient
-                        colors={
-                          isDark
-                            ? ["rgba(0,0,0,0.4)", "rgba(0,0,0,0)"]
-                            : ["rgba(0,0,0,0.04)", "rgba(0,0,0,0)"]
-                        }
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 0, y: 1 }}
-                        pointerEvents="none"
-                        style={{
-                          position: 'absolute',
-                          top: 0,
-                          left: 0,
-                          right: 0,
-                          height: 12,
-                        }}
-                      />
-                    </View>
-                  )}
                   {/* Chat content column. The recessed-under-canvas styling
                       (rounded top-right + inset shadow) only makes sense
                       in wide split mode where the canvas actually sits to
@@ -2598,7 +2602,7 @@ export default observer(function ProjectLayout() {
                       </View>
                     )}
                     {showEmptyChatState && (
-                      isChatFullscreen || showSidebar ? (
+                      isChatFullscreen ? (
                         <View className="absolute inset-0 bg-background items-center justify-center px-8">
                           <MessageSquare size={28} className="text-muted-foreground" />
                           <Text className="text-sm text-muted-foreground mt-3 text-center">
@@ -3360,7 +3364,14 @@ function CanvasPanel({
   // generic "Connecting to agent runtime…" + misleading "Send a message
   // in the Chat tab to wake the agent" hint (the runtime already starts
   // via `runtime/prewarm`; chat sends are not what wakes it).
-  const { phase: previewPhase } = usePreviewPhase(agentUrl)
+  //
+  // In workspace-runtime mode `canvasBaseUrl` carries a `/p/<id>` suffix, so
+  // the per-project preview status lives at `${canvasBaseUrl}/preview/status`
+  // (the global manager stays idle there). Detect that and override the poll
+  // base so the phase label reflects the project actually being previewed.
+  const workspacePreviewBase =
+    canvasBaseUrl && /\/p\/[^/]+$/.test(canvasBaseUrl) ? canvasBaseUrl : null
+  const { phase: previewPhase } = usePreviewPhase(agentUrl, workspacePreviewBase)
 
   const CONNECTION_TIMEOUT_MS = 60_000
   const [timedOut, setTimedOut] = useState(false)
@@ -3471,24 +3482,32 @@ const PHASE_LABELS: Record<string, string> = {
  * in the Chat tab to wake the agent" hint can be replaced with real,
  * accurate phase labels.
  */
-function usePreviewPhase(agentUrl: string | null): { phase: string; running: boolean } {
+function usePreviewPhase(
+  agentUrl: string | null,
+  // Workspace runtimes host each project under `/p/<id>/`, so the global
+  // `${agentUrl}/preview/status` (the shared runtime's idle global manager)
+  // reports a stale phase. When set, this overrides the status base so the
+  // poll targets the per-project `/p/<id>/preview/status` instead.
+  statusBaseOverride?: string | null,
+): { phase: string; running: boolean } {
   const [phase, setPhase] = useState<string>('idle')
   const [running, setRunning] = useState<boolean>(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const statusBase = statusBaseOverride || agentUrl
 
   useEffect(() => {
-    // Reset on agentUrl change so consumers see a fresh "idle" phase on
+    // Reset on status-base change so consumers see a fresh "idle" phase on
     // navigation instead of a stale `running=true` from the previous
     // project.
     setPhase('idle')
     setRunning(false)
 
-    if (!agentUrl) return
+    if (!statusBase) return
 
     let cancelled = false
     const poll = async () => {
       try {
-        const resp = await fetch(`${agentUrl}/preview/status`, {
+        const resp = await fetch(`${statusBase}/preview/status`, {
           credentials: Platform.OS === 'web' ? 'include' : 'omit',
           signal: AbortSignal.timeout(5000),
         })
@@ -3519,7 +3538,7 @@ function usePreviewPhase(agentUrl: string | null): { phase: string; running: boo
         pollRef.current = null
       }
     }
-  }, [agentUrl])
+  }, [statusBase])
 
   return { phase, running }
 }

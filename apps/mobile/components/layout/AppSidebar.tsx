@@ -27,6 +27,7 @@ import {
   useWindowDimensions,
   Platform,
   ActivityIndicator,
+  type GestureResponderEvent,
 } from 'react-native'
 import { usePostHogSafe } from '../../contexts/posthog'
 import { useTheme } from '../../contexts/theme'
@@ -38,7 +39,8 @@ import {
   PopoverBody,
   PopoverContent,
 } from '@/components/ui/popover'
-import { usePathname, useRouter } from 'expo-router'
+import { usePathname, useRouter, useLocalSearchParams } from 'expo-router'
+import { defaultTabForProject } from '../../lib/project-preview-tab'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
 import {
@@ -69,6 +71,12 @@ import {
   Store,
   Mic,
   Gift,
+  Pin,
+  PinOff,
+  Archive,
+  ArchiveRestore,
+  Pencil,
+  Loader2,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Avatar } from '@shogo/shared-ui/primitives'
@@ -91,6 +99,7 @@ import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-
 import { workspaceProjectFilter } from '../../lib/project-load'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { invitationEvents } from '../../lib/invitation-events'
+import { chatSessionEvents, chatActivityEvents } from '../../lib/chat-session-events'
 
 function getInitials(name: string | null | undefined): string {
   if (!name) return '?'
@@ -150,7 +159,7 @@ function NavItem({
       role={href || externalHref ? 'link' : 'button'}
       accessibilityLabel={label}
       className={cn(
-        'flex-row items-center gap-3 rounded-md px-3 py-2',
+        'flex-row items-center gap-2 rounded-md px-2 py-2',
         active
           ? 'bg-accent'
           : 'active:bg-accent/50',
@@ -158,7 +167,7 @@ function NavItem({
       )}
     >
       <Icon
-        size={16}
+        size={12}
         className={cn(
           active ? 'text-foreground' : 'text-muted-foreground'
         )}
@@ -166,7 +175,7 @@ function NavItem({
       {!collapsed && (
         <Text
           className={cn(
-            'text-sm flex-1',
+            'text-xs flex-1',
             active ? 'text-foreground' : 'text-muted-foreground'
           )}
           numberOfLines={1}
@@ -175,7 +184,7 @@ function NavItem({
         </Text>
       )}
       {!collapsed && shortcut && Platform.OS === 'web' && (
-        <View className="ml-auto rounded border border-border bg-muted px-1.5 py-0.5">
+        <View className="ml-auto rounded border border-border bg-muted py-0.5">
           <Text className="text-[10px] font-mono text-muted-foreground">{shortcut}</Text>
         </View>
       )}
@@ -195,32 +204,120 @@ function chatLabel(session: any): string {
 
 function ChatTreeItem({
   session,
-  projectId,
-  onNavPress,
+  active,
+  isStreaming,
+  isCompleted,
+  onSelect,
+  onTogglePin,
+  onRename,
+  onToggleArchive,
 }: {
   session: any
-  projectId: string
-  onNavPress?: () => void
+  active?: boolean
+  isStreaming?: boolean
+  isCompleted?: boolean
+  onSelect: (sessionId: string) => void
+  onTogglePin: (sessionId: string, next: boolean) => void
+  onRename: (sessionId: string, name: string) => void
+  onToggleArchive: (sessionId: string, next: boolean) => void
 }) {
-  const router = useRouter()
+  const [editing, setEditing] = useState(false)
+  const [editValue, setEditValue] = useState('')
+
+  const startEdit = useCallback(() => {
+    setEditValue(chatLabel(session))
+    setEditing(true)
+  }, [session])
+
+  const saveEdit = useCallback(() => {
+    const trimmed = editValue.trim()
+    if (trimmed && trimmed !== chatLabel(session)) onRename(session.id, trimmed)
+    setEditing(false)
+  }, [editValue, session, onRename])
+
+  // Swallow the row's select press so tapping an action icon doesn't also
+  // open the chat (RN-Web bubbles the nested Pressable's click to the row).
+  const stop = (e: GestureResponderEvent) => e.stopPropagation?.()
+
+  if (editing) {
+    return (
+      <View className="flex-row items-center gap-1 rounded-md px-1 py-1">
+        <TextInput
+          value={editValue}
+          onChangeText={setEditValue}
+          onSubmitEditing={saveEdit}
+          onBlur={saveEdit}
+          autoFocus
+          className="flex-1 h-6 px-1 text-xs rounded border border-border bg-background text-foreground"
+        />
+        <Pressable onPress={saveEdit} className="p-0.5" accessibilityLabel="Save name">
+          <Check size={12} className="text-primary" />
+        </Pressable>
+        <Pressable onPress={() => setEditing(false)} className="p-0.5" accessibilityLabel="Cancel rename">
+          <X size={12} className="text-muted-foreground" />
+        </Pressable>
+      </View>
+    )
+  }
 
   return (
     <Pressable
-      onPress={() => {
-        router.push({
-          pathname: '/(app)/projects/[id]',
-          params: { id: projectId, chatSessionId: session.id },
-        } as any)
-        onNavPress?.()
-      }}
+      onPress={() => onSelect(session.id)}
       role="link"
       accessibilityLabel={`Chat: ${chatLabel(session)}`}
-      className="flex-row items-center gap-2 rounded-md px-2 py-1.5 active:bg-accent/50"
+      aria-current={active ? 'page' : undefined}
+      className={cn(
+        'group flex-row items-center gap-1 rounded-md px-1 py-1.5',
+        active ? 'bg-accent' : 'active:bg-accent/50',
+      )}
     >
-      <MessageSquare size={13} className="text-muted-foreground" />
-      <Text className="text-sm text-muted-foreground flex-1" numberOfLines={1}>
+      {isStreaming ? (
+        <Loader2 size={11} className="text-primary animate-spin shrink-0" accessibilityLabel="Chat running" />
+      ) : isCompleted ? (
+        <View className="h-1.5 w-1.5 rounded-full bg-primary shrink-0" accessibilityLabel="Chat has new activity" />
+      ) : session.isPinned ? (
+        <Pin size={10} className="text-muted-foreground shrink-0" />
+      ) : null}
+      <Text
+        className={cn('text-xs flex-1', active ? 'text-foreground' : 'text-muted-foreground')}
+        numberOfLines={1}
+      >
         {chatLabel(session)}
       </Text>
+      {/* Hover-reveal actions (web). Always mounted; visibility is purely
+          CSS-driven via the row's `group` + `group-hover:flex` so moving the
+          cursor between icons never tears down the hover target. */}
+      <View className="hidden group-hover:flex flex-row items-center gap-0.5 shrink-0">
+        <Pressable
+          onPress={(e) => { stop(e); onTogglePin(session.id, !session.isPinned) }}
+          className="p-0.5"
+          accessibilityLabel={session.isPinned ? `Unpin ${chatLabel(session)}` : `Pin ${chatLabel(session)}`}
+        >
+          {session.isPinned ? (
+            <PinOff size={11} className="text-muted-foreground" />
+          ) : (
+            <Pin size={11} className="text-muted-foreground" />
+          )}
+        </Pressable>
+        <Pressable
+          onPress={(e) => { stop(e); onToggleArchive(session.id, !session.isArchived) }}
+          className="p-0.5"
+          accessibilityLabel={session.isArchived ? `Unarchive ${chatLabel(session)}` : `Archive ${chatLabel(session)}`}
+        >
+          {session.isArchived ? (
+            <ArchiveRestore size={11} className="text-muted-foreground" />
+          ) : (
+            <Archive size={11} className="text-muted-foreground" />
+          )}
+        </Pressable>
+        <Pressable
+          onPress={(e) => { stop(e); startEdit() }}
+          className="p-0.5"
+          accessibilityLabel={`Rename ${chatLabel(session)}`}
+        >
+          <Pencil size={11} className="text-muted-foreground" />
+        </Pressable>
+      </View>
     </Pressable>
   )
 }
@@ -238,7 +335,9 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
 }) {
   const router = useRouter()
   const pathname = usePathname()
+  const params = useLocalSearchParams<{ chatSessionId?: string }>()
   const http = useDomainHttp()
+  const actions = useDomainActions()
   const [expanded, setExpanded] = useState(false)
   // Chats are fetched directly into local state (rather than the shared
   // chat-session collection) because the collection's loaders prune items
@@ -247,8 +346,26 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
   const [sessions, setSessions] = useState<any[]>([])
   const [loaded, setLoaded] = useState(false)
   const seededRef = useRef(false)
+  // Collapsible "Archived" subsection (in-memory; defaults to collapsed).
+  const [archivedExpanded, setArchivedExpanded] = useState(false)
+  // Live streaming / new-activity state mirrored from the open project
+  // workspace (the only one mounted) via the activity event bus.
+  const [streamingIds, setStreamingIds] = useState<Set<string>>(new Set())
+  const [completedIds, setCompletedIds] = useState<Set<string>>(new Set())
 
   const isActive = pathname.includes(project.id)
+  const routeChatId = Array.isArray(params.chatSessionId)
+    ? params.chatSessionId[0]
+    : params.chatSessionId
+  // The project workspace selects new chats via local state (no URL change),
+  // so the route param alone can't tell us which chat is active. An override,
+  // fed by chat-session events, keeps the highlight in sync.
+  const [activeOverride, setActiveOverride] = useState<string | undefined>(routeChatId)
+  const activeChatId = activeOverride ?? routeChatId
+
+  useEffect(() => {
+    if (routeChatId) setActiveOverride(routeChatId)
+  }, [routeChatId])
 
   const loadChats = useCallback(async () => {
     if (seededRef.current || !http) return
@@ -265,6 +382,8 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
           inferredName: s.inferredName ?? '',
           createdAt: s.createdAt ? new Date(s.createdAt).getTime() : 0,
           activity: new Date(s.lastActiveAt || s.updatedAt || s.createdAt || 0).getTime(),
+          isPinned: !!s.isPinned,
+          isArchived: !!s.isArchived,
         }))
         .sort((a, b) => b.activity - a.activity)
       setSessions(normalized)
@@ -276,6 +395,12 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
     }
   }, [http, project.id])
 
+  // Force a re-fetch even if this project's chats were already seeded.
+  const refreshChats = useCallback(() => {
+    seededRef.current = false
+    void loadChats()
+  }, [loadChats])
+
   const toggleExpanded = useCallback(() => {
     setExpanded((prev) => {
       const next = !prev
@@ -284,10 +409,126 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
     })
   }, [loadChats])
 
+  // The project workspace creates / renames / deletes chats and switches the
+  // active chat without touching this sidebar's local state or the URL. Listen
+  // so the tree re-fetches (on create/rename/delete) and always re-highlights
+  // the active chat immediately.
+  useEffect(() => {
+    return chatSessionEvents.subscribe(({ projectId, activeSessionId, refresh }) => {
+      if (projectId !== project.id) return
+      if (refresh) {
+        setExpanded(true)
+        refreshChats()
+      }
+      if (activeSessionId) setActiveOverride(activeSessionId)
+    })
+  }, [project.id, refreshChats])
+
+  // Mirror the open workspace's live streaming / new-activity state so chat
+  // rows can show a spinner / activity dot. Decoupled from the refresh events
+  // above so a stream tick never triggers a chat-list re-fetch.
+  useEffect(() => {
+    return chatActivityEvents.subscribe(({ projectId, streamingSessionIds, completedSessionIds }) => {
+      if (projectId !== project.id) return
+      setStreamingIds(new Set(streamingSessionIds))
+      setCompletedIds(new Set(completedSessionIds))
+    })
+  }, [project.id])
+
+  // When this project is the one open in the content pane, reveal its chats
+  // automatically so the active chat is visible without a manual expand.
+  useEffect(() => {
+    if (isActive && !collapsed) {
+      setExpanded(true)
+      void loadChats()
+    }
+  }, [isActive, collapsed, loadChats])
+
   const openProject = useCallback(() => {
-    router.push(`/(app)/projects/${project.id}` as any)
+    // Clicking a project name is an explicit "take me to this project's main
+    // surface" intent: Canvas for canvas-capable projects, fullscreen Chat
+    // for chat-only agents, the external preview for folder-linked projects.
+    // We pass it as a `tab` param the project layout applies (with precedence
+    // over the saved last-tab). `tabNonce` forces re-application when the
+    // project is already open and the tab value is unchanged.
+    const tab = defaultTabForProject(project)
+    if (!isActive) {
+      router.push({
+        pathname: '/(app)/projects/[id]',
+        params: { id: project.id, tab },
+      } as any)
+    } else {
+      // Already on this project — re-pushing remounts the workspace and
+      // flashes, so switch the tab in place via params instead.
+      router.setParams({ tab, tabNonce: String(Date.now()) } as any)
+    }
     onNavPress?.()
-  }, [router, project.id, onNavPress])
+  }, [router, project, onNavPress, isActive])
+
+  // Select a chat. If its project is already open, switch IN PLACE via the
+  // event bus (no navigation / remount). Otherwise navigate to the project
+  // with the chat deep-linked.
+  const handleSelectChat = useCallback(
+    (sessionId: string) => {
+      if (sessionId === activeChatId) {
+        onNavPress?.()
+        return
+      }
+      if (isActive) {
+        setActiveOverride(sessionId)
+        chatSessionEvents.requestSelect({ projectId: project.id, sessionId })
+      } else {
+        router.push({
+          pathname: '/(app)/projects/[id]',
+          params: { id: project.id, chatSessionId: sessionId },
+        } as any)
+      }
+      onNavPress?.()
+    },
+    [activeChatId, isActive, project.id, router, onNavPress],
+  )
+
+  // Pin / rename / archive operate against the domain collection and update
+  // local state optimistically (the sidebar fetches chats over HTTP, so it
+  // isn't auto-synced to the collection). On failure we re-fetch to reconcile.
+  const handleTogglePin = useCallback(
+    async (sessionId: string, next: boolean) => {
+      setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, isPinned: next } : s)))
+      try {
+        await actions.updateChatSession(sessionId, { isPinned: next })
+      } catch (e) {
+        console.error('[AppSidebar] Failed to toggle pin:', e)
+        refreshChats()
+      }
+    },
+    [actions, refreshChats],
+  )
+
+  const handleToggleArchive = useCallback(
+    async (sessionId: string, next: boolean) => {
+      setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, isArchived: next } : s)))
+      try {
+        await actions.updateChatSession(sessionId, { isArchived: next })
+      } catch (e) {
+        console.error('[AppSidebar] Failed to toggle archive:', e)
+        refreshChats()
+      }
+    },
+    [actions, refreshChats],
+  )
+
+  const handleRename = useCallback(
+    async (sessionId: string, name: string) => {
+      setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, name } : s)))
+      try {
+        await actions.updateChatSession(sessionId, { name })
+      } catch (e) {
+        console.error('[AppSidebar] Failed to rename chat:', e)
+        refreshChats()
+      }
+    },
+    [actions, refreshChats],
+  )
 
   if (collapsed) {
     return (
@@ -313,53 +554,80 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
           isActive ? 'bg-accent' : '',
         )}
       >
-        <Pressable
-          onPress={toggleExpanded}
-          role="button"
-          accessibilityLabel={`${expanded ? 'Collapse' : 'Expand'} ${project.name || 'Untitled'}`}
-          className="p-1 active:opacity-70"
-        >
-          {expanded ? (
-            <ChevronDown size={14} className="text-muted-foreground" />
-          ) : (
-            <ChevronRight size={14} className="text-muted-foreground" />
-          )}
-        </Pressable>
+
         <Pressable
           onPress={openProject}
           role="link"
           accessibilityLabel={`Project: ${project.name || 'Untitled'}`}
-          className="flex-1 flex-row items-center gap-2 active:opacity-70"
+          className="flex-1 flex-row items-center gap-2 px-2 active:opacity-70"
         >
-          <Folder size={15} className={isActive ? 'text-foreground' : 'text-muted-foreground'} />
+          <Folder size={12} className={isActive ? 'text-foreground' : 'text-muted-foreground'} />
           <Text
-            className={cn('text-sm flex-1', isActive ? 'text-foreground' : 'text-foreground')}
+            className={cn('text-xs flex-1', isActive ? 'text-foreground' : 'text-foreground')}
             numberOfLines={1}
           >
             {project.name || 'Untitled'}
           </Text>
         </Pressable>
       </View>
-      {expanded && (
-        <View className="ml-6 mt-0.5">
-          {sessions.length === 0 ? (
-            <View className="px-2 py-1.5">
-              <Text className="text-xs text-muted-foreground" numberOfLines={1}>
-                {loaded ? 'No chats yet' : 'Loading…'}
-              </Text>
-            </View>
-          ) : (
-            sessions.map((s: any) => (
-              <ChatTreeItem
-                key={s.id}
-                session={s}
-                projectId={project.id}
-                onNavPress={onNavPress}
-              />
-            ))
-          )}
-        </View>
-      )}
+      {expanded && (() => {
+        const activeSessions = sessions
+          .filter((s: any) => !s.isArchived)
+          // Pinned float to the top; the sort is stable so the activity order
+          // (sessions is already sorted by activity desc) holds within groups.
+          .sort((a: any, b: any) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0))
+        const archivedSessions = sessions.filter((s: any) => s.isArchived)
+        const renderChat = (s: any) => (
+          <ChatTreeItem
+            key={s.id}
+            session={s}
+            active={isActive && s.id === activeChatId}
+            isStreaming={streamingIds.has(s.id)}
+            isCompleted={completedIds.has(s.id)}
+            onSelect={handleSelectChat}
+            onTogglePin={handleTogglePin}
+            onRename={handleRename}
+            onToggleArchive={handleToggleArchive}
+          />
+        )
+        return (
+          <View className="ml-6 mt-0.5">
+            {sessions.length === 0 ? (
+              <View className="px-2 py-1.5">
+                <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+                  {loaded ? 'No chats yet' : 'Loading…'}
+                </Text>
+              </View>
+            ) : (
+              <>
+                {activeSessions.map(renderChat)}
+                {archivedSessions.length > 0 && (
+                  <>
+                    <Pressable
+                      onPress={() => setArchivedExpanded((v) => !v)}
+                      accessibilityLabel={`${archivedExpanded ? 'Collapse' : 'Expand'} archived chats`}
+                      className="flex-row items-center gap-1 px-1 pt-2 pb-0.5 active:opacity-70"
+                    >
+                      {archivedExpanded ? (
+                        <ChevronDown size={10} className="text-muted-foreground shrink-0" />
+                      ) : (
+                        <ChevronRight size={10} className="text-muted-foreground shrink-0" />
+                      )}
+                      <Text className="text-[10px] uppercase tracking-wide text-muted-foreground flex-1">
+                        Archived
+                      </Text>
+                      <Text className="text-[10px] text-muted-foreground shrink-0">
+                        {archivedSessions.length}
+                      </Text>
+                    </Pressable>
+                    {archivedExpanded && archivedSessions.map(renderChat)}
+                  </>
+                )}
+              </>
+            )}
+          </View>
+        )
+      })()}
     </View>
   )
 })

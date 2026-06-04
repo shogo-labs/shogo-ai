@@ -175,6 +175,43 @@ export async function getOrCreatePinnedWorkspaceSession(
 }
 
 /**
+ * Create an ADDITIONAL workspace chat session for a project. Unlike
+ * `getOrCreatePinnedWorkspaceSession` (which returns the project's single
+ * canonical session), this always mints a new `ChatSession`
+ * (contextType='workspace', contextId=anchor) and reconciles its attachments
+ * to `[anchor + ProjectAttachment]`, so it boots the SAME anchor merged-root
+ * runtime as the pinned session. This is what powers "+ new chat" under the
+ * universal workspace-runtime model: a project can have many chats, each one a
+ * workspace session on the project's merged-root runtime.
+ */
+export async function createProjectWorkspaceSession(
+  anchorProjectId: string,
+  opts: { name?: string; inferredName?: string } = {},
+): Promise<{ id: string; workspaceId: string }> {
+  const anchor = await prisma.project.findUnique({
+    where: { id: anchorProjectId },
+    select: { id: true, workspaceId: true, name: true },
+  })
+  if (!anchor) {
+    throw new ProjectAttachmentError('project_not_found', `Anchor project ${anchorProjectId} not found`)
+  }
+
+  const session = (await prisma.chatSession.create({
+    data: {
+      contextType: 'workspace',
+      contextId: anchorProjectId,
+      workspaceId: anchor.workspaceId,
+      name: opts.name,
+      inferredName: opts.inferredName ?? 'New chat',
+    } as any,
+    select: { id: true },
+  })) as { id: string }
+
+  await syncPinnedSessionAttachments(anchorProjectId, session.id)
+  return { id: session.id, workspaceId: anchor.workspaceId }
+}
+
+/**
  * Reconcile the pinned session's `ChatSessionProject` rows to exactly
  * `[anchor (readwrite), ...ProjectAttachment (mode)]`. Called on create and
  * on every attach/detach so "every chat opened in this project includes the

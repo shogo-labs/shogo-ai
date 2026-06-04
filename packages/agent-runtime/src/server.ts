@@ -31,9 +31,11 @@ import {
   cpSync,
   appendFileSync,
 } from 'fs'
+import { hydrateWorkspaceMembers, type MemberSync } from './workspace-hydration'
 import {
   createRuntimeApp, traceOperation,
   initializeS3Sync,
+  createS3SyncForProject,
   initializePostgresBackup,
   configureAIProxy,
   StreamBufferStore,
@@ -300,6 +302,13 @@ async function reportHeartbeatComplete(projectId: string): Promise<void> {
 let agentGateway: any = null
 let s3SyncInstance: import('@shogo/shared-runtime').S3Sync | null = null
 let gitSyncInstance: GitWorkspaceSync | null = null
+/**
+ * Per-member S3 sync instances in WORKSPACE mode (cloud). Each member project
+ * lives under `<WORKSPACE_DIR>/<id>/` with its own S3 prefix, so a single
+ * workspace-rooted sync can't cover them — we keep one uploader/watcher per
+ * member and flush them all on shutdown. Empty for single-project runtimes.
+ */
+let workspaceMemberSyncs: Map<string, import('@shogo/shared-runtime').S3Sync> = new Map()
 
 /**
  * Offload large/binary assets to S3 and refresh `.git/info/exclude` so the
@@ -2108,7 +2117,17 @@ const workspacePreviewManagers = new Map<string, PreviewManager>()
 function workspaceProjectApiPort(projectId: string): number {
   const base = parseInt(process.env.WORKSPACE_API_PORT_BASE || '3101', 10)
   const idx = WORKSPACE_RUNTIME_PROJECT_IDS.indexOf(projectId)
-  return base + (idx >= 0 ? idx : 0)
+  // A project that isn't a known member has no deterministic port slot.
+  // Returning `base + 0` would alias it onto the FIRST member's sidecar
+  // (port collision → two server.tsx processes fighting over one port), so
+  // fail loudly instead. Callers only reach here via getWorkspacePreviewManager,
+  // which already gates on isAttachedProjectId, so this should never fire.
+  if (idx < 0) {
+    throw new Error(
+      `[agent-runtime] workspaceProjectApiPort: ${projectId} is not an attached workspace project`,
+    )
+  }
+  return base + idx
 }
 
 /**
@@ -3913,6 +3932,9 @@ if (IS_WORKSPACE_RUNTIME) {
     const pm = getWorkspacePreviewManager(projectId)
     if (!pm) return projectNotAttached(c, projectId)
     pm.stop()
+    // Drop the cached instance so a subsequent start() rebuilds from a clean
+    // PreviewManager (no leftover timers/child-slot state from this run).
+    workspacePreviewManagers.delete(projectId)
     return c.json({ ok: true })
   })
 
@@ -4535,7 +4557,41 @@ async function initializeEssentials(): Promise<void> {
     console.log(`[agent-runtime] cloudSyncMode=${cloudSyncMode} (wantS3Layer2=${wantS3Layer2}, wantGit=${wantGitSync})`)
   }
 
-  if (!skipInternalSync && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
+  if (!skipInternalSync && IS_WORKSPACE_RUNTIME && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
+    // Workspace runtime: each attached project is stored under its own S3
+    // prefix and lives in its own `<WORKSPACE_DIR>/<id>/` subfolder. A single
+    // workspace-rooted `initializeS3Sync` (prefix = PROJECT_ID) would download
+    // the anchor's archive over the merged root and never see the other
+    // members, so hydrate each member into its own subfolder, then start a
+    // periodic uploader + watcher per member (mirrors the single-project
+    // uploader). All members are flushed on shutdown.
+    try {
+      const interval = parseInt(process.env.S3_SYNC_INTERVAL || '30000', 10)
+      const watchEnabled = process.env.S3_WATCH_ENABLED !== 'false'
+      const { hydrated, skipped, failed, syncs } = await hydrateWorkspaceMembers(
+        WORKSPACE_DIR,
+        WORKSPACE_RUNTIME_PROJECT_IDS,
+        {
+          createSync: (localDir, projectId): MemberSync | null =>
+            createS3SyncForProject(localDir, projectId, {
+              syncInterval: interval,
+              watchEnabled,
+              suppressProjectArchive: !wantS3Layer2,
+            }),
+        },
+      )
+      workspaceMemberSyncs = syncs as Map<string, import('@shogo/shared-runtime').S3Sync>
+      for (const sync of workspaceMemberSyncs.values()) {
+        sync.startPeriodicSync()
+        sync.startWatcher()
+      }
+      logTiming(
+        `Workspace S3 hydration: ${hydrated.length} hydrated, ${skipped.length} skipped, ${failed.length} failed`,
+      )
+    } catch (error: any) {
+      console.error('[agent-runtime] Workspace S3 hydration failed:', error.message)
+    }
+  } else if (!skipInternalSync && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
     try {
       const result = await initializeS3Sync(WORKSPACE_DIR, {
         suppressProjectArchive: !wantS3Layer2,
@@ -4752,7 +4808,33 @@ async function initializeEssentials(): Promise<void> {
   const hasRootPkg = existsSync(join(WORKSPACE_DIR, 'package.json'))
   const externalAutoPreviewBlocked =
     WORKING_MODE === 'external' && process.env.RUNTIME_ENABLED !== 'true'
-  if ((hasLegacyPkg || hasRootPkg) && !externalAutoPreviewBlocked) {
+  if (IS_WORKSPACE_RUNTIME) {
+    // Workspace-runtime layout: every attached project lives under its own
+    // `<workspace>/<projectId>` subtree and is served under `/p/<projectId>/`.
+    // The global PreviewManager would resolve `bundlerCwd = <ws>/project`
+    // (which doesn't exist) and bail, so nothing ever builds the per-project
+    // dist. Auto-start ONLY the anchor project's preview (the project the
+    // user opened — its canvas is what `/sandbox/url` points at). Attached
+    // projects are for cross-folder editing via chat, not live preview, so
+    // we don't pile up an extra vite-watch + API sidecar per attachment;
+    // their previews start on demand via `POST /p/<id>/preview/start`. This
+    // builds `<ws>/<anchor>/dist` (with `--base /p/<anchor>/`) for the
+    // `/p/:projectId/*` static route. `start()` is idempotent.
+    const anchorId =
+      process.env.WORKSPACE_ANCHOR_PROJECT_ID || WORKSPACE_RUNTIME_PROJECT_IDS[0]
+    const wpm = anchorId ? getWorkspacePreviewManager(anchorId) : null
+    if (wpm && wpm.phase === 'idle') {
+      logTiming(`Workspace runtime: auto-starting preview for anchor ${anchorId}`)
+      setTimeout(() => {
+        wpm.start().catch((err: any) =>
+          console.error(
+            `[agent-runtime] Auto-start workspace preview failed for ${anchorId}:`,
+            err.message,
+          ),
+        )
+      }, 0)
+    }
+  } else if ((hasLegacyPkg || hasRootPkg) && !externalAutoPreviewBlocked) {
     const pm = getPreviewManager()
     const status = pm.getStatus()
     if (!status.running) {
@@ -4960,12 +5042,46 @@ async function gracefulShutdown(signal: string): Promise<void> {
     console.error(`[agent-runtime] Cloud sync flush error during shutdown:`, err.message)
   }
 
+  // Flush every workspace member's S3 sync (cloud workspace runtime). Each
+  // member owns its own prefix/subfolder, so the single-instance flush above
+  // (which is null in workspace mode) doesn't cover them.
+  if (workspaceMemberSyncs.size > 0) {
+    console.log(`[agent-runtime] Flushing ${workspaceMemberSyncs.size} workspace member sync(s)`)
+    await Promise.all(
+      Array.from(workspaceMemberSyncs.entries()).map(async ([id, sync]) => {
+        try {
+          await sync.flushAndShutdown({ timeoutMs: 10_000, forceProjectArchive: true })
+        } catch (err: any) {
+          console.error(`[agent-runtime] Member sync flush failed for ${id}:`, err?.message ?? err)
+        }
+      }),
+    )
+  }
+
   try {
     if (agentGateway) {
       await agentGateway.stop()
     }
   } catch (err: any) {
     console.error(`[agent-runtime] Gateway stop error during shutdown:`, err.message)
+  }
+
+  // Stop every per-project workspace PreviewManager (vite watch + server.tsx
+  // sidecar). The gateway only owns the global merged-root manager, so without
+  // this the per-project vite/API children can outlive SIGTERM and linger as
+  // orphans (the exact watcher pile-up that degrades after many open/closes).
+  if (workspacePreviewManagers.size > 0) {
+    console.log(
+      `[agent-runtime] Stopping ${workspacePreviewManagers.size} workspace preview manager(s)`,
+    )
+    for (const pm of workspacePreviewManagers.values()) {
+      try {
+        pm.stop()
+      } catch (err: any) {
+        console.warn(`[agent-runtime] workspace preview stop during shutdown threw:`, err?.message ?? err)
+      }
+    }
+    workspacePreviewManagers.clear()
   }
 
   console.log(`[agent-runtime] Graceful shutdown complete`)

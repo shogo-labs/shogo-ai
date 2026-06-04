@@ -1648,7 +1648,11 @@ export function createS3SyncFromEnv(
  * Returns null if S3_WORKSPACES_BUCKET is unset so callers can fall back to
  * local-only behavior in dev / unconfigured environments.
  */
-export function createS3SyncForProject(localDir: string, projectId: string): S3Sync | null {
+export function createS3SyncForProject(
+  localDir: string,
+  projectId: string,
+  opts: { syncInterval?: number; watchEnabled?: boolean; suppressProjectArchive?: boolean } = {},
+): S3Sync | null {
   const bucket = process.env.S3_WORKSPACES_BUCKET
   if (!bucket || !projectId) {
     console.log(`[S3Sync] [createForProject] Not configured (bucket=${bucket ?? 'unset'}, projectId=${projectId ?? 'unset'})`)
@@ -1667,8 +1671,12 @@ export function createS3SyncForProject(localDir: string, projectId: string): S3S
     endpoint,
     region,
     forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
-    syncInterval: 0,
-    watchEnabled: false,
+    // Default to one-shot (no watcher / no interval) for the import-seed use
+    // case. Long-running callers (workspace member hydration) opt into a
+    // periodic uploader + watcher by passing these explicitly.
+    syncInterval: opts.syncInterval ?? 0,
+    watchEnabled: opts.watchEnabled ?? false,
+    suppressProjectArchive: opts.suppressProjectArchive,
   })
 }
 
